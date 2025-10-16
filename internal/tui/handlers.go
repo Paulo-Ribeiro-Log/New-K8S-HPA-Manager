@@ -467,7 +467,7 @@ func (a *App) handleHPASelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(a.model.SelectedHPAs) > 0 {
 				// Mostrar modal de confirmação
 				a.model.ShowConfirmModal = true
-				a.model.ConfirmModalMessage = fmt.Sprintf("Aplicar alterações em TODOS os HPAs selecionados")
+				a.model.ConfirmModalMessage = "Aplicar alterações em TODOS os HPAs selecionados"
 				a.model.ConfirmModalCallback = "apply_batch_hpa"
 				a.model.ConfirmModalItemCount = len(a.model.SelectedHPAs)
 				return a, nil
@@ -934,7 +934,7 @@ func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			message = fmt.Sprintf("Executar sequencialmente:\n*1 %s → *2 %s", firstPool.Name, secondPool.Name)
 			itemCount = 2
 		} else if len(modifiedNodePools) > 0 {
-			message = fmt.Sprintf("Aplicar alterações nos Node Pools modificados")
+			message = "Aplicar alterações nos Node Pools modificados"
 			itemCount = len(modifiedNodePools)
 		}
 
@@ -977,7 +977,7 @@ func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			message = fmt.Sprintf("Executar sequencialmente:\n*1 %s → *2 %s", firstPool.Name, secondPool.Name)
 			itemCount = 2
 		} else if len(modifiedNodePools) > 0 {
-			message = fmt.Sprintf("Aplicar alterações nos Node Pools modificados")
+			message = "Aplicar alterações nos Node Pools modificados"
 			itemCount = len(modifiedNodePools)
 		}
 

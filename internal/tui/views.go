@@ -2878,6 +2878,7 @@ func (a *App) renderHelp() string {
 	}{
 		{"🌐 NAVEGAÇÃO GLOBAL", [][]string{
 			{"?", "Mostrar esta ajuda"},
+			{"F3", "Visualizar logs da aplicação (scroll, copiar, limpar)"},
 			{"F4", "Sair da aplicação"},
 			{"F5 / R", "Recarregar/Retry (útil após reconectar VPN)"},
 			{"F9", "Gerenciar CronJobs do cluster"},

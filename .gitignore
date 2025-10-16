@@ -44,3 +44,7 @@ apoio.txt
 
 # Session data (opcional - remova se quiser versionar sessões)
 # .k8s-hpa-manager/
+
+# Log files
+Logs/
+*.log

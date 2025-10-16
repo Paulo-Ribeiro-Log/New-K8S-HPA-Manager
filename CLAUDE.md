@@ -275,6 +275,94 @@ k8s-hpa-manager/
 - **Delegação**: Handler ESC delegado para `handleEscape()` com lógica unificada
 - **Consistência**: Comportamento idêntico ao F8 (Prometheus)
 
+### 🐛 Correção de Warnings Azure CLI como Erros (Outubro 2025)
+**Problema resolvido:** Azure CLI warnings (como `pkg_resources deprecated`) eram tratados como erros fatais, abortando operações de node pool
+
+**Solução implementada:**
+- ✅ **Separação stdout/stderr** - `cmd.Stdout` e `cmd.Stderr` em buffers separados
+- ✅ **Lista de warnings conhecidos** - Ignora `pkg_resources`, `extension altered`, etc
+- ✅ **Validação inteligente** - Verifica se stderr contém APENAS warnings
+- ✅ **Exit code real** - Usa `cmd.Run()` para verificar sucesso, não presença de stderr
+- ✅ **Debug mode** - Warnings aparecem em `--debug` mas não falham operação
+
+**Warnings ignorados:**
+```
+UserWarning: pkg_resources is deprecated
+The behavior of this command has been altered by the following extension
+__import__('pkg_resources').declare_namespace(__name__)
+WARNING: (qualquer linha com prefixo WARNING:)
+```
+
+**Arquivos modificados:**
+- `internal/tui/app.go:3535-3683` - Função `executeAzureCommand()` refatorada
+- Import `bytes` adicionado para buffers separados
+
+**Antes:**
+```go
+output, err := cmd.CombinedOutput()  // ❌ Mistura stdout + stderr
+if err != nil { return error }       // ❌ Warnings tratados como erro
+```
+
+**Depois:**
+```go
+var stdout, stderr bytes.Buffer
+cmd.Stdout, cmd.Stderr = &stdout, &stderr
+err := cmd.Run()
+if err != nil && !isOnlyWarnings(stderr) { return error }  // ✅ Ignora warnings
+```
+
+### 🔄 Lógica Sequencial Inteligente de Node Pools (Outubro 2025)
+**Problema resolvido:** Azure CLI não permite `scale` com autoscaling habilitado - aplicação tentava scale ANTES de desabilitar autoscaling
+
+**Cenário problemático:**
+- Usuário muda node pool de **AUTO → MANUAL** e define `NodeCount = 0`
+- Aplicação tentava: `az aks nodepool scale` → ❌ **ERROR: Cannot scale cluster autoscaler enabled node pool**
+- Ordem errada dos comandos causava falha
+
+**Solução implementada:**
+- ✅ **4 cenários detectados automaticamente**:
+  1. **AUTO → MANUAL**: Desabilita autoscaling → Faz scale
+  2. **MANUAL → AUTO**: Faz scale → Habilita autoscaling com min/max
+  3. **AUTO → AUTO**: Atualiza min/max count
+  4. **MANUAL → MANUAL**: Faz scale direto
+
+**Arquivos modificados:**
+- `internal/tui/app.go:3433-3545` - Lógica de construção de comandos refatorada
+
+**Workflow esperado pelo usuário (agora funciona!):**
+```bash
+# Cenário: Stress test com scale down completo
+# 1. Node pool "fatura" está com autoscaling AUTO (min: 2, max: 5)
+# 2. Usuário muda para MANUAL e define NodeCount = 0
+# 3. Aplicação INTELIGENTEMENTE executa:
+#    → PASSO 1: az aks nodepool update --disable-cluster-autoscaler
+#    → PASSO 2: az aks nodepool scale --node-count 0
+# ✅ Operação bem-sucedida!
+```
+
+**Código antes (ordem errada):**
+```go
+// ❌ Tentava scale ANTES de desabilitar
+if pool.NodeCount != pool.OriginalValues.NodeCount {
+    cmds.append(scaleCommand)  // ERRO se autoscaling ativo!
+}
+if pool.AutoscalingEnabled != pool.OriginalValues.AutoscalingEnabled {
+    cmds.append(disableAutoscaling)
+}
+```
+
+**Código depois (ordem inteligente):**
+```go
+// ✅ Detecta cenário e ordena comandos corretamente
+changingToManual := pool.OriginalValues.AutoscalingEnabled && !pool.AutoscalingEnabled
+if changingToManual {
+    cmds.append(disableAutoscaling)  // PRIMEIRO desabilita
+    if nodeCountChanged {
+        cmds.append(scaleCommand)     // DEPOIS faz scale
+    }
+}
+```
+
 ### 🚀 Execução Sequencial Assíncrona de Node Pools (Outubro 2025)
 **Problema resolvido:** Execução sequencial bloqueava a interface durante aplicação de node pools
 

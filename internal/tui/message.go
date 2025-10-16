@@ -316,8 +316,8 @@ func (a *App) initAzureAuth() tea.Cmd {
 // performAzureAuth realiza a autenticação via Azure CLI
 func (a *App) performAzureAuth() tea.Cmd {
 	return func() tea.Msg {
-		fmt.Printf("🔐 Starting Azure CLI authentication...\n")
-		fmt.Printf("📱 Your browser will open for Azure login\n")
+		a.model.StatusContainer.AddInfo("azure-auth", "🔐 Starting Azure CLI authentication...")
+		a.model.StatusContainer.AddInfo("azure-auth", "📱 Your browser will open for Azure login")
 		
 		// Executar az login
 		cmd := exec.Command("az", "login")
@@ -338,7 +338,7 @@ func (a *App) performAzureAuth() tea.Cmd {
 			}
 		}
 
-		fmt.Printf("✅ Azure CLI authentication successful\n")
+		a.model.StatusContainer.AddSuccess("azure-auth", "✅ Azure CLI authentication successful")
 		
 		return azureAuthResultMsg{
 			success: true,
@@ -423,10 +423,7 @@ func configurateSubscriptionWithStatus(clusterConfig *models.ClusterConfig, stat
 		}
 
 		// 4. Normalizar nome do cluster para Azure CLI (remover -admin se existir)
-		clusterNameForAzure := clusterConfig.ClusterName
-		if strings.HasSuffix(clusterNameForAzure, "-admin") {
-			clusterNameForAzure = strings.TrimSuffix(clusterNameForAzure, "-admin")
-		}
+		clusterNameForAzure := strings.TrimSuffix(clusterConfig.ClusterName, "-admin")
 
 		// 5. Listar node pools do cluster via Azure CLI usando a função correta com StatusPanel
 		nodePools, err := loadNodePoolsFromAzureWithRetryAndStatus(clusterNameForAzure, clusterConfig.ResourceGroup, clusterConfig.Subscription, true, statusPanel)
@@ -668,10 +665,7 @@ func extractResourceGroupFromCluster(clusterName string) (string, error) {
 // findClusterInConfig busca o cluster no arquivo clusters-config.json
 func findClusterInConfig(clusterName string) (*models.ClusterConfig, error) {
 	// Normalizar nome do cluster (remover -admin se existir para busca)
-	searchName := clusterName
-	if strings.HasSuffix(searchName, "-admin") {
-		searchName = strings.TrimSuffix(searchName, "-admin")
-	}
+	searchName := strings.TrimSuffix(clusterName, "-admin")
 
 	// Carregar configurações dos clusters
 	configs, err := loadClusterConfig()

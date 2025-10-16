@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-runewidth"
+	"k8s-hpa-manager/internal/logs"
 	"k8s-hpa-manager/internal/ui"
 )
 
@@ -62,6 +63,11 @@ func (sc *StatusContainer) AddMessage(msgType MessageType, source, content strin
 		Timestamp: time.Now(),
 	}
 	sc.messages = append(sc.messages, msg)
+
+	// Salvar no arquivo de log
+	logManager := logs.GetInstance()
+	levelStr := string(msgType)
+	logManager.Log(strings.ToUpper(levelStr), source, content)
 
 	// Auto-scroll para mostrar mensagem mais recente
 	sc.autoScroll()

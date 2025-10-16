@@ -154,6 +154,7 @@ const (
 	StateCronJobSelection          // F9 - Seleção de CronJobs
 	StateCronJobEditing           // Editando CronJob específico
 	StateAddingCluster            // F7 - Adicionando novo cluster
+	StateLogViewer                // F3 - Visualização de logs
 	StateHelp
 )
 
@@ -611,6 +612,12 @@ type AppModel struct {
 	AddClusterFormFields  map[string]string // Campos do formulário: "name", "resource_group", "subscription"
 	AddClusterActiveField string // Campo atualmente ativo no formulário
 	AddClusterFieldOrder  []string // Ordem dos campos para navegação
+
+	// Log Viewer (F3)
+	LogViewerLogs       []string // Logs carregados do arquivo
+	LogViewerScrollPos  int      // Posição de scroll no log viewer
+	LogViewerLoading    bool     // Se está carregando logs
+	LogViewerMessage    string   // Mensagem de status do log viewer
 }
 
 // PanelState armazena o estado completo de um painel para memorização
