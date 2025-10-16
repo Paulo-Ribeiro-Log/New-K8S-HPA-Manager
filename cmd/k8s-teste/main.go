@@ -30,7 +30,7 @@ A lógica completa permanece no aplicativo principal.`,
 		fmt.Println("🚀 K8s HPA Manager - Layout de Teste")
 		fmt.Println("📐 Container: 200x50 com moldura unificada")
 		fmt.Println("🎨 Header dinâmico baseado no estado atual")
-		fmt.Println("⚠️  Versão APENAS para teste visual\n")
+		fmt.Println("⚠️  Versão APENAS para teste visual")
 
 		// Initialize the simple demo
 		app := NewSimpleDemo()

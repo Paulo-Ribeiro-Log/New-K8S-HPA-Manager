@@ -170,7 +170,7 @@ func validateAzureAuth() error {
 // performAzureLogin executa o login no Azure AD
 func performAzureLogin() error {
 	fmt.Println("\n🔐 Iniciando login no Azure AD...")
-	fmt.Println("📌 Uma janela do navegador será aberta para autenticação.\n")
+	fmt.Println("📌 Uma janela do navegador será aberta para autenticação.")
 
 	// Login simples sem forçar tenant/subscription específico
 	// Isso permite que o Azure use as subscriptions disponíveis para o usuário
@@ -184,7 +184,7 @@ func performAzureLogin() error {
 	err := loginCmd.Run()
 	if err != nil {
 		// Em caso de erro, rodar novamente com output visível para debug
-		fmt.Println("\n⚠️  Erro no login. Tentando novamente com output detalhado...\n")
+		fmt.Println("\n⚠️  Erro no login. Tentando novamente com output detalhado...")
 		retryCmd := exec.Command("az", "login")
 		retryCmd.Stdout = os.Stdout
 		retryCmd.Stderr = os.Stderr
@@ -194,7 +194,7 @@ func performAzureLogin() error {
 		}
 	}
 
-	fmt.Println("\n✅ Login Azure AD concluído com sucesso!\n")
+	fmt.Println("\n✅ Login Azure AD concluído com sucesso!")
 	return nil
 }
 

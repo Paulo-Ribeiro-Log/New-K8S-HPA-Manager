@@ -42,6 +42,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Log detalhado de alterações** - todas as mudanças exibidas no StatusContainer (antes → depois)
 - ✅ **Navegação sequencial de abas** - Ctrl+←/→ para navegar entre abas com wrap-around
 - ✅ **Versionamento automático** - via git tags com verificação de updates 1x/dia
+- ✅ **Sistema de Logs Completo** (F3) - visualizador com scroll, copiar, limpar logs
+- ✅ **Navegação ESC corrigida** - Node Pools voltam para Namespaces (origem do Ctrl+N)
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -584,6 +586,69 @@ Quando houver update disponível (após 3s do startup):
 - `internal/tui/app.go` - Notificação no StatusContainer (checkForUpdatesInBackground)
 - `makefile` - LDFLAGS com injeção de versão, targets version e release
 
+### 📝 Sistema de Logs Completo (Outubro 2025)
+**Funcionalidade:** Sistema completo de logging com visualizador TUI integrado
+
+**Características implementadas:**
+- ✅ **Salvamento automático** - Todos os logs do StatusContainer salvos em `Logs/k8s-hpa-manager_YYYY-MM-DD.log`
+- ✅ **Rotação de arquivos** - 10MB por arquivo, mantém 5 backups
+- ✅ **Thread-safe** - Mutex para operações concorrentes
+- ✅ **Buffer em memória** - 1000 linhas para acesso rápido
+- ✅ **Visualizador TUI (F3)** - Interface completa de visualização
+- ✅ **Colorização** - Logs coloridos por nível (ERROR vermelho, WARNING laranja, SUCCESS verde)
+- ✅ **Navegação completa** - ↑↓/k j, PgUp/PgDn, Home/End
+- ✅ **Copiar logs** - Tecla C copia para `/tmp/k8s-hpa-manager-logs.txt`
+- ✅ **Limpar logs** - Tecla L limpa arquivo de logs
+- ✅ **Reload** - R/F5 recarrega logs em tempo real
+- ✅ **ESC para voltar** - Retorna ao estado anterior
+
+**Estrutura:**
+```
+Logs/
+└── k8s-hpa-manager_2025-10-15.log    # Logs do dia
+internal/logs/
+└── manager.go                         # Singleton LogManager
+internal/tui/
+├── logviewer_handlers.go              # Handlers de navegação
+└── logviewer_views.go                 # Renderização colorida
+```
+
+**Arquivos modificados:**
+- `internal/logs/manager.go` (NOVO) - Sistema completo de logging
+- `internal/tui/logviewer_handlers.go` (NOVO) - Handlers do visualizador
+- `internal/tui/logviewer_views.go` (NOVO) - Renderização TUI
+- `internal/tui/components/status_container.go` - Integração automática
+- `internal/tui/app.go` - F3 global, handleEscape para StateLogViewer
+- `internal/models/types.go` - StateLogViewer e campos relacionados
+- `.gitignore` - Ignora `Logs/` e `*.log`
+
+### 🐛 Correção de Navegação ESC em Node Pools (Outubro 2025)
+**Problema resolvido:** ESC na tela de node pools voltava para seleção de clusters em vez de namespaces
+
+**Solução implementada:**
+- ✅ **Fluxo corrigido**: Namespaces → Ctrl+N → Node Pools → ESC → Namespaces
+- ✅ **Consistência**: Volta para onde veio (origem do Ctrl+N)
+
+**Arquivo modificado:**
+- `internal/tui/app.go:1603` - `StateNodeSelection` agora vai para `StateNamespaceSelection`
+
+**Antes:** `Clusters ← ESC ← Node Pools` ❌
+**Depois:** `Namespaces ← ESC ← Node Pools` ✅
+
+### 🔧 Correções de Linter para CI/CD (Outubro 2025)
+**Problema resolvido:** GitHub Actions falhavam com erros de linter
+
+**Correções aplicadas:**
+- ✅ **strings.TrimSuffix** - Simplificado em 3 locais (app.go, message.go)
+- ✅ **fmt.Sprintf desnecessário** - Removido em 4 locais (handlers.go, app.go)
+- ✅ **fmt.Println com \n redundante** - Corrigido em cmd/root.go e cmd/k8s-teste/main.go
+- ✅ **Nil check redundante** - Removido em app.go:4362
+
+**Resultado:**
+- ✅ `make test` passa sem erros
+- ✅ CI do GitHub passa
+- ℹ️ 77 sugestões de linter restantes (não críticas, código funcional)
+
 ### 💾 Salvamento Manual para Rollback (Janeiro 2025)
 - **Ctrl+S sem modificações**: Cria snapshots para rollback
 - **Workflow**:
@@ -643,6 +708,7 @@ Quando houver update disponível (após 3s do startup):
 - **Space**: Select/deselect items
 - **Enter**: Confirm selection or edit
 - **ESC**: Go back/cancel (preserva contexto!)
+- **F3**: Log viewer (scroll, copiar, limpar)
 - **F4**: Exit application
 - **?**: Help screen (scrollable)
 
@@ -689,6 +755,17 @@ Quando houver update disponível (após 3s do startup):
 - **Shift+Up/Down**: Scroll painéis responsivos
 - **Mouse Wheel**: Alternative scroll
 - **Indicadores**: `[5-15/45]` mostram posição
+
+### Log Viewer (F3)
+- **F3**: Open log viewer
+- **↑↓ / k j**: Scroll line by line
+- **PgUp/PgDn**: Scroll by page
+- **Home**: Jump to beginning
+- **End**: Jump to end
+- **C**: Copy logs to `/tmp/k8s-hpa-manager-logs.txt`
+- **L**: Clear all logs
+- **R / F5**: Reload logs
+- **ESC**: Return to previous screen
 
 ### Special Features
 - **S** (namespace selection): Toggle system namespaces
