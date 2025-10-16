@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,9 +30,10 @@ type ClusterConfig struct {
 
 // KubeConfigManager gerencia a configuração do Kubernetes
 type KubeConfigManager struct {
-	configPath string
-	config     *api.Config
-	clients    map[string]kubernetes.Interface
+	configPath  string
+	config      *api.Config
+	clients     map[string]kubernetes.Interface
+	clientMutex sync.RWMutex // Protege acesso concorrente aos clients
 }
 
 // NewKubeConfigManager cria um novo gerenciador de kubeconfig
@@ -143,7 +145,19 @@ func (k *KubeConfigManager) GetClient(clusterName string) (kubernetes.Interface,
 
 // getClient cria ou retorna um cliente existente para o cluster
 func (k *KubeConfigManager) getClient(clusterName string) (kubernetes.Interface, error) {
-	// Verificar se já temos um cliente para este cluster
+	// Primeiro, tentar ler o cliente existente com read lock (permite leituras concorrentes)
+	k.clientMutex.RLock()
+	if client, exists := k.clients[clusterName]; exists {
+		k.clientMutex.RUnlock()
+		return client, nil
+	}
+	k.clientMutex.RUnlock()
+
+	// Cliente não existe - adquirir write lock para criação
+	k.clientMutex.Lock()
+	defer k.clientMutex.Unlock()
+
+	// Double-check: outro goroutine pode ter criado o cliente enquanto esperávamos o lock
 	if client, exists := k.clients[clusterName]; exists {
 		return client, nil
 	}

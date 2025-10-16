@@ -44,6 +44,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Versionamento automático** - via git tags com verificação de updates 1x/dia
 - ✅ **Sistema de Logs Completo** (F3) - visualizador com scroll, copiar, limpar logs
 - ✅ **Navegação ESC corrigida** - Node Pools voltam para Namespaces (origem do Ctrl+N)
+- ✅ **Race condition corrigida** - Mutex RWLock para testes paralelos de cluster (thread-safe)
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -276,6 +277,76 @@ k8s-hpa-manager/
 - **Fluxo**: Clusters → Namespaces → F9 (CronJobs) → ESC (volta preservando)
 - **Delegação**: Handler ESC delegado para `handleEscape()` com lógica unificada
 - **Consistência**: Comportamento idêntico ao F8 (Prometheus)
+
+### 🔒 Correção de Race Condition em Testes de Cluster (Outubro 2025)
+**Problema resolvido:** Goroutines concorrentes causavam race condition ao testar conexões com múltiplos clusters simultaneamente
+
+**Sintomas:**
+- Stack trace mostrando múltiplos goroutines (104, 105, 106, 107) acessando kubeconfig simultaneamente
+- Erro em `message.go:216` durante `testSingleClusterConnection`
+- Race condition em `json.Unmarshal` durante parsing de kubeconfig
+- Concurrent map access em HTTP header creation
+
+**Causa raiz:**
+- `testClusterConnections()` iniciava testes paralelos para TODOS os clusters via `tea.Batch()`
+- Cada goroutine chamava `getClient()` que carregava e parseava kubeconfig
+- Operações de criação de cliente NÃO eram thread-safe
+- Múltiplos goroutines tentavam criar clientes simultaneamente sem sincronização
+
+**Solução implementada:**
+- ✅ **Mutex RWLock** - Adicionado `sync.RWMutex` em `KubeConfigManager`
+- ✅ **Double-check locking** - Padrão otimizado para minimizar contenção
+- ✅ **Read lock para leituras** - Permite múltiplas leituras concorrentes de clientes existentes
+- ✅ **Write lock para criação** - Serializa criação de novos clientes
+- ✅ **Thread-safe client cache** - Map de clientes protegido por mutex
+
+**Arquivos modificados:**
+- `internal/config/kubeconfig.go` - Adicionado import `sync`, field `clientMutex sync.RWMutex`, lógica de double-check locking
+
+**Código antes:**
+```go
+func (k *KubeConfigManager) getClient(clusterName string) (kubernetes.Interface, error) {
+    if client, exists := k.clients[clusterName]; exists {  // ❌ Race condition
+        return client, nil
+    }
+    // ... criar cliente sem proteção ...
+    k.clients[clusterName] = client  // ❌ Concurrent map write
+    return client, nil
+}
+```
+
+**Código depois:**
+```go
+func (k *KubeConfigManager) getClient(clusterName string) (kubernetes.Interface, error) {
+    // 1. Read lock para checagem rápida (permite leituras concorrentes)
+    k.clientMutex.RLock()
+    if client, exists := k.clients[clusterName]; exists {
+        k.clientMutex.RUnlock()
+        return client, nil
+    }
+    k.clientMutex.RUnlock()
+
+    // 2. Write lock para criação (serializa criação)
+    k.clientMutex.Lock()
+    defer k.clientMutex.Unlock()
+
+    // 3. Double-check: outro goroutine pode ter criado enquanto esperávamos lock
+    if client, exists := k.clients[clusterName]; exists {
+        return client, nil
+    }
+
+    // 4. Criar cliente de forma thread-safe
+    // ... código de criação ...
+    k.clients[clusterName] = client  // ✅ Protegido por write lock
+    return client, nil
+}
+```
+
+**Benefícios:**
+- **Performance**: Read lock permite múltiplas leituras simultâneas (baixa contenção)
+- **Segurança**: Write lock serializa criação de clientes (sem race conditions)
+- **Eficiência**: Double-check locking evita lock desnecessário se cliente já existe
+- **Produção-ready**: Solução padrão para lazy initialization concorrente em Go
 
 ### 🐛 Correção de Warnings Azure CLI como Erros (Outubro 2025)
 **Problema resolvido:** Azure CLI warnings (como `pkg_resources deprecated`) eram tratados como erros fatais, abortando operações de node pool
