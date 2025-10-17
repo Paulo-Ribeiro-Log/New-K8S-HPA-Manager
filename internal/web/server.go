@@ -127,6 +127,7 @@ func (s *Server) setupRoutes() {
 	// Node Pools
 	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager)
 	api.GET("/nodepools", nodePoolHandler.List)
+	api.POST("/nodepools/apply-sequential", nodePoolHandler.ApplySequential)
 
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()

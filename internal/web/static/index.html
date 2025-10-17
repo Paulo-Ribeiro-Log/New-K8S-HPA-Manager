@@ -788,6 +788,28 @@
         </div>
     </div>
 
+    <!-- Modal de Aplicação Node Pools -->
+    <div id="applyNodePoolModal" class="apply-modal-overlay">
+        <div class="apply-modal">
+            <h2>✅ Aplicar Alterações no Node Pool</h2>
+            <div class="apply-modal-subtitle" id="applyNodePoolSubtitle">
+                Confirme as alterações que serão aplicadas
+            </div>
+
+            <div class="hpa-changes-list" id="nodePoolChangesList"></div>
+
+            <div class="applying-spinner" id="applyingNodePoolSpinner">
+                <div class="spinner"></div>
+                <p>Aplicando alterações...</p>
+            </div>
+
+            <div class="apply-modal-actions">
+                <button class="btn-apply" id="confirmApplyNodePoolBtn" onclick="confirmApplyNodePool()">✅ Confirmar e Aplicar</button>
+                <button class="btn-cancel-modal" onclick="closeApplyNodePoolModal()">❌ Cancelar</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal de Aplicação HPAs -->
     <div id="applyModal" class="apply-modal-overlay">
         <div class="apply-modal">
@@ -821,6 +843,9 @@
                 </select>
             </div>
             <div class="header-right">
+                <button id="applySequentialBtn" class="logout-btn" onclick="applySequential()" style="background: #ff9800; border-color: #ff9800; display: none;">
+                    ⚡ Aplicar Sequencial <span id="sequentialCounter"></span>
+                </button>
                 <button class="logout-btn" onclick="applyAllModified()" style="background: #28a745; border-color: #28a745;">
                     ✅ Aplicar Todos <span id="modifiedCounter" style="display: none;"></span>
                 </button>
@@ -950,6 +975,8 @@
             modifiedHPAs: new Map(), // Map de HPAs modificados: key = "namespace/name", value = hpa modificado
             nodepools: [],
             selectedNodePool: null,
+            modifiedNodePools: new Map(), // Map de node pools modificados
+            sequentialNodePools: [], // Array com até 2 node pools para execução sequencial [*1, *2]
             charts: {}
         };
 
@@ -1709,6 +1736,11 @@
                         `Autoscaling: ${np.min_node_count}-${np.max_node_count}` :
                         `Node Count: ${np.node_count}`;
 
+                    // Verificar se está marcado para execução sequencial
+                    const seqIndex = state.sequentialNodePools.indexOf(np.name);
+                    const seqBadge = seqIndex >= 0 ?
+                        `<span class="status-badge" style="background: #ff9800; color: white; margin-left: 5px;">⚡*${seqIndex + 1}</span>` : '';
+
                     html += `
                         <div class="nodepool-card" onclick="selectNodePool(event, '${np.name}')">
                             <div class="nodepool-name">
@@ -1716,6 +1748,7 @@
                                 <span class="status-badge ${statusClass}">
                                     ${np.is_system_pool ? 'System' : 'User'}
                                 </span>
+                                ${seqBadge}
                             </div>
                             <div class="nodepool-details">
                                 <div><strong>VM Size:</strong> ${np.vm_size}</div>
@@ -1812,8 +1845,19 @@
                         <input type="text" value="${nodepool.is_system_pool ? 'Sim' : 'Não'}" disabled>
                     </div>
 
+                    <div style="margin: 20px 0; padding: 12px 15px; background: #fff3e0; border-radius: 6px; border-left: 4px solid #ff9800;">
+                        <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 500; font-size: 14px;">
+                            <input type="checkbox" id="sequentialExecution" ${state.sequentialNodePools.includes(nodepool.name) ? 'checked' : ''} style="cursor: pointer;">
+                            <span>⚡ Marcar para Execução Sequencial</span>
+                        </label>
+                        <p style="margin: 8px 0 0 26px; font-size: 12px; color: #e65100;">
+                            <strong>Útil para stress tests:</strong> Marque 2 node pools para executar em ordem (*1 → *2)
+                        </p>
+                    </div>
+
                     <div class="btn-group">
                         <button type="submit">💾 Salvar Alterações</button>
+                        <button type="button" onclick="applyThisNodePool()" style="background: #28a745;">✅ Aplicar Este Node Pool</button>
                         <button type="button" onclick="cancelNodePoolEdit()">❌ Cancelar</button>
                     </div>
                 </form>
@@ -1850,6 +1894,7 @@
             const nodeCount = parseInt(document.getElementById('nodeCount').value);
             const minNodeCount = parseInt(document.getElementById('minNodeCount').value);
             const maxNodeCount = parseInt(document.getElementById('maxNodeCount').value);
+            const sequentialExecution = document.getElementById('sequentialExecution').checked;
 
             // Validação
             if (autoscalingEnabled && minNodeCount > maxNodeCount) {
@@ -1857,14 +1902,326 @@
                 return;
             }
 
-            showSuccess(`Alterações do node pool "${state.selectedNodePool.name}" salvas! Funcionalidade de aplicação em desenvolvimento.`);
-            console.log('Node pool modificado:', {
+            // Gerenciar sequenciamento
+            if (sequentialExecution) {
+                // Adicionar à lista de sequenciamento se não estiver
+                if (!state.sequentialNodePools.includes(state.selectedNodePool.name)) {
+                    // Limitar a 2 node pools
+                    if (state.sequentialNodePools.length >= 2) {
+                        showError('Máximo de 2 node pools podem ser marcados para execução sequencial');
+                        return;
+                    }
+                    state.sequentialNodePools.push(state.selectedNodePool.name);
+                }
+            } else {
+                // Remover da lista se desmarcou
+                const index = state.sequentialNodePools.indexOf(state.selectedNodePool.name);
+                if (index > -1) {
+                    state.sequentialNodePools.splice(index, 1);
+                }
+            }
+
+            // Salvar no Map de modificados
+            const key = state.selectedNodePool.name;
+            state.modifiedNodePools.set(key, {
                 name: state.selectedNodePool.name,
                 autoscaling_enabled: autoscalingEnabled,
                 node_count: nodeCount,
                 min_node_count: minNodeCount,
-                max_node_count: maxNodeCount
+                max_node_count: maxNodeCount,
+                sequence_order: state.sequentialNodePools.indexOf(state.selectedNodePool.name) + 1, // 1, 2 ou 0
+                _originalValues: {
+                    autoscaling_enabled: state.selectedNodePool.autoscaling_enabled,
+                    node_count: state.selectedNodePool.node_count,
+                    min_node_count: state.selectedNodePool.min_node_count,
+                    max_node_count: state.selectedNodePool.max_node_count
+                }
             });
+
+            // Mostrar mensagem de sucesso com indicador sequencial
+            let message = `Alterações do node pool "${state.selectedNodePool.name}" salvas!`;
+            if (sequentialExecution) {
+                const order = state.sequentialNodePools.indexOf(state.selectedNodePool.name) + 1;
+                message += `\n⚡ Marcado para execução sequencial (*${order})`;
+            }
+            showSuccess(message);
+
+            // Recarregar lista para mostrar badges
+            loadNodePools();
+            cancelNodePoolEdit();
+
+            // Atualizar visibilidade do botão sequencial
+            updateSequentialButton();
+        }
+
+        // Atualizar visibilidade do botão "Aplicar Sequencial"
+        function updateSequentialButton() {
+            const btn = document.getElementById('applySequentialBtn');
+            const counter = document.getElementById('sequentialCounter');
+
+            if (state.sequentialNodePools.length === 2) {
+                btn.style.display = 'inline-block';
+                counter.textContent = '(*1 → *2)';
+            } else {
+                btn.style.display = 'none';
+            }
+        }
+
+        // Aplicar execução sequencial
+        async function applySequential() {
+            if (state.sequentialNodePools.length !== 2) {
+                showError('Marque exatamente 2 node pools para execução sequencial');
+                return;
+            }
+
+            const pool1Name = state.sequentialNodePools[0];
+            const pool2Name = state.sequentialNodePools[1];
+
+            const pool1 = state.modifiedNodePools.get(pool1Name);
+            const pool2 = state.modifiedNodePools.get(pool2Name);
+
+            if (!pool1 || !pool2) {
+                showError('Edite ambos os node pools antes de aplicar sequencialmente');
+                return;
+            }
+
+            // Modal de confirmação
+            const confirmed = confirm(`Executar sequencialmente:\n\n` +
+                `*1 ${pool1Name}:\n` +
+                `   ${pool1.autoscaling_enabled ? `Autoscaling (${pool1.min_node_count}-${pool1.max_node_count})` : `Manual (${pool1.node_count} nodes)`}\n\n` +
+                `*2 ${pool2Name}:\n` +
+                `   ${pool2.autoscaling_enabled ? `Autoscaling (${pool2.min_node_count}-${pool2.max_node_count})` : `Manual (${pool2.node_count} nodes)`}\n\n` +
+                `⚠️ *1 será executado primeiro, depois *2 automaticamente`
+            );
+
+            if (!confirmed) return;
+
+            try {
+                showSuccess('⏳ Iniciando execução sequencial...');
+
+                const payload = {
+                    cluster: state.selectedCluster,
+                    node_pools: [
+                        {
+                            name: pool1Name,
+                            autoscaling_enabled: pool1.autoscaling_enabled,
+                            node_count: pool1.node_count,
+                            min_node_count: pool1.min_node_count,
+                            max_node_count: pool1.max_node_count,
+                            order: 1
+                        },
+                        {
+                            name: pool2Name,
+                            autoscaling_enabled: pool2.autoscaling_enabled,
+                            node_count: pool2.node_count,
+                            min_node_count: pool2.min_node_count,
+                            max_node_count: pool2.max_node_count,
+                            order: 2
+                        }
+                    ]
+                };
+
+                const response = await apiRequest('/nodepools/apply-sequential', {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+
+                showSuccess(`✅ ${response.message}\n\n${response.results.map(r => r.message).join('\n')}`);
+
+                // Limpar estado
+                state.sequentialNodePools = [];
+                state.modifiedNodePools.delete(pool1Name);
+                state.modifiedNodePools.delete(pool2Name);
+
+                updateSequentialButton();
+                loadNodePools();
+
+            } catch (error) {
+                showError(`❌ Erro na execução sequencial: ${error.message}`);
+            }
+        }
+
+        // Aplicar um node pool específico
+        async function applyThisNodePool() {
+            if (!state.selectedNodePool) return;
+
+            const key = state.selectedNodePool.name;
+            const modified = state.modifiedNodePools.get(key);
+
+            if (!modified) {
+                showError('Nenhuma alteração para aplicar neste node pool. Salve as alterações primeiro.');
+                return;
+            }
+
+            // Mostrar modal com alterações
+            showApplyNodePoolModal(modified);
+        }
+
+        // Mostrar modal de aplicação de node pool
+        function showApplyNodePoolModal(modified) {
+            const modal = document.getElementById('applyNodePoolModal');
+            const subtitle = document.getElementById('applyNodePoolSubtitle');
+            const changesList = document.getElementById('nodePoolChangesList');
+
+            subtitle.textContent = `Node Pool: ${modified.name}`;
+
+            // Renderizar alterações
+            const orig = modified._originalValues;
+            let html = `
+                <div class="hpa-change-item">
+                    <div class="hpa-change-header">🖥️ ${modified.name}</div>
+                    <div class="hpa-change-details">
+            `;
+
+            // Autoscaling
+            if (orig.autoscaling_enabled !== modified.autoscaling_enabled) {
+                html += `
+                    <div class="change-line">
+                        <span class="change-label">Autoscaling:</span>
+                        <div class="change-value">
+                            <span class="value-before">${orig.autoscaling_enabled ? 'Habilitado' : 'Desabilitado'}</span>
+                            <span class="change-arrow">→</span>
+                            <span class="value-after">${modified.autoscaling_enabled ? 'Habilitado' : 'Desabilitado'}</span>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Node Count (se manual)
+            if (!modified.autoscaling_enabled && orig.node_count !== modified.node_count) {
+                html += `
+                    <div class="change-line">
+                        <span class="change-label">Node Count:</span>
+                        <div class="change-value">
+                            <span class="value-before">${orig.node_count}</span>
+                            <span class="change-arrow">→</span>
+                            <span class="value-after">${modified.node_count}</span>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Min/Max (se autoscaling)
+            if (modified.autoscaling_enabled) {
+                if (orig.min_node_count !== modified.min_node_count) {
+                    html += `
+                        <div class="change-line">
+                            <span class="change-label">Min Node Count:</span>
+                            <div class="change-value">
+                                <span class="value-before">${orig.min_node_count}</span>
+                                <span class="change-arrow">→</span>
+                                <span class="value-after">${modified.min_node_count}</span>
+                            </div>
+                        </div>
+                    `;
+                }
+                if (orig.max_node_count !== modified.max_node_count) {
+                    html += `
+                        <div class="change-line">
+                            <span class="change-label">Max Node Count:</span>
+                            <div class="change-value">
+                                <span class="value-before">${orig.max_node_count}</span>
+                                <span class="change-arrow">→</span>
+                                <span class="value-after">${modified.max_node_count}</span>
+                            </div>
+                        </div>
+                    `;
+                }
+            }
+
+            html += `
+                    </div>
+                    <div class="rollout-progress" id="nodepool-progress-${modified.name}">
+                        <div class="progress-bar-container">
+                            <div class="progress-bar-fill" style="width: 0%"></div>
+                        </div>
+                        <div class="progress-text">Aguardando...</div>
+                    </div>
+                </div>
+            `;
+
+            changesList.innerHTML = html;
+            modal.style.display = 'flex';
+        }
+
+        // Confirmar e aplicar node pool
+        async function confirmApplyNodePool() {
+            const modified = state.modifiedNodePools.get(state.selectedNodePool.name);
+            if (!modified) return;
+
+            const spinner = document.getElementById('applyingNodePoolSpinner');
+            const confirmBtn = document.getElementById('confirmApplyNodePoolBtn');
+            const progressDiv = document.getElementById(`nodepool-progress-${modified.name}`);
+
+            // Mostrar spinner e progress bar
+            spinner.classList.add('active');
+            confirmBtn.disabled = true;
+            if (progressDiv) progressDiv.classList.add('active');
+
+            try {
+                // Atualizar progress
+                if (progressDiv) {
+                    const progressBar = progressDiv.querySelector('.progress-bar-fill');
+                    const progressText = progressDiv.querySelector('.progress-text');
+                    progressBar.style.width = '50%';
+                    progressText.textContent = 'Aplicando alterações...';
+                }
+
+                // Criar payload para aplicação individual
+                const payload = {
+                    cluster: state.selectedCluster,
+                    node_pools: [{
+                        name: modified.name,
+                        autoscaling_enabled: modified.autoscaling_enabled,
+                        node_count: modified.node_count,
+                        min_node_count: modified.min_node_count,
+                        max_node_count: modified.max_node_count,
+                        order: 1
+                    }]
+                };
+
+                const response = await apiRequest('/nodepools/apply-sequential', {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+
+                // Atualizar progress para 100%
+                if (progressDiv) {
+                    const progressBar = progressDiv.querySelector('.progress-bar-fill');
+                    const progressText = progressDiv.querySelector('.progress-text');
+                    progressBar.style.width = '100%';
+                    progressText.textContent = '✅ Completado';
+                }
+
+                showSuccess(`✅ ${response.message}`);
+
+                // Remover do Map
+                state.modifiedNodePools.delete(modified.name);
+
+                // Recarregar
+                await loadNodePools();
+
+                setTimeout(() => {
+                    closeApplyNodePoolModal();
+                }, 1500);
+
+            } catch (error) {
+                if (progressDiv) {
+                    const progressText = progressDiv.querySelector('.progress-text');
+                    progressText.textContent = '❌ Erro: ' + error.message;
+                    progressText.style.color = '#d32f2f';
+                }
+                showError(`❌ Erro ao aplicar node pool: ${error.message}`);
+            } finally {
+                spinner.classList.remove('active');
+                confirmBtn.disabled = false;
+            }
+        }
+
+        // Fechar modal de node pool
+        function closeApplyNodePoolModal() {
+            const modal = document.getElementById('applyNodePoolModal');
+            modal.style.display = 'none';
         }
 
         // Cancelar edição de node pool
