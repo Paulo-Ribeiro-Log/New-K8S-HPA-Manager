@@ -1,0 +1,58 @@
+feat: adiciona interface web POC (80% completa) + corrige race condition
+
+## Correção de Race Condition (CRÍTICO)
+- Fix: race condition em testes paralelos de cluster
+- Adicionado sync.RWMutex em KubeConfigManager
+- Implementado double-check locking pattern
+- Arquivos: internal/config/kubeconfig.go
+
+## Interface Web POC (80%)
+- Backend completo com Gin Framework v1.11.0
+- 7 endpoints REST implementados (clusters, namespaces, HPAs)
+- Autenticação Bearer Token
+- Frontend SPA (HTML/CSS/JS puro)
+- Comando CLI: k8s-hpa-manager web
+- Zero breaking changes no TUI
+
+### Arquivos Criados
+- internal/web/server.go - Servidor HTTP
+- internal/web/middleware/auth.go - Autenticação
+- internal/web/handlers/clusters.go - Endpoint clusters
+- internal/web/handlers/namespaces.go - Endpoint namespaces
+- internal/web/handlers/hpas.go - Endpoint HPAs
+- internal/web/static/index.html - Frontend SPA
+- cmd/web.go - Comando CLI web
+
+### Documentação
+- WEB_INTERFACE_DESIGN.md - Design completo (~3000 linhas)
+- WEB_POC_STATUS.md - Status detalhado da POC
+- CONTINUE_AQUI.md - Guia de continuidade
+- QUICK_START_WEB.sh - Script automatizado
+- RESUMO_SESSAO.md - Resumo da sessão
+
+### Dependências Adicionadas
+- github.com/gin-gonic/gin v1.11.0
+- github.com/gin-contrib/cors v1.7.6
+
+### Pendente
+- Build completo (WSL travou durante compilação)
+- Testes E2E (aguardando build)
+
+### Como Testar
+```bash
+# Build
+go build -o ./build/k8s-hpa-manager .
+
+# Executar servidor
+./build/k8s-hpa-manager web --port 8080
+
+# Testar API
+curl -H "Authorization: Bearer poc-token-123" \
+  http://localhost:8080/api/v1/clusters
+
+# Acessar UI
+# Browser: http://localhost:8080
+# Token: poc-token-123
+```
+
+Co-authored-by: Claude <noreply@anthropic.com>

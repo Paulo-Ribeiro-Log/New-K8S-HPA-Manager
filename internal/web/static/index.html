@@ -1,0 +1,2205 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>k8s-hpa-manager - Web Interface</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f5f7fa;
+            color: #333;
+            overflow: hidden;
+        }
+
+        .dashboard-container {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 0 20px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            flex-shrink: 0;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .cluster-selector {
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 6px;
+            padding: 8px 12px;
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+            min-width: 250px;
+        }
+
+        .cluster-selector option {
+            background: #667eea;
+            color: white;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .user-info {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .logout-btn {
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            padding: 6px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s;
+        }
+
+        .logout-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+
+        /* Modal de Validação */
+        .validation-modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 10000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .validation-modal {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 600px;
+            width: 90%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+
+        .validation-modal h2 {
+            color: #d32f2f;
+            margin-bottom: 20px;
+            font-size: 24px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .validation-error-list {
+            background: #ffebee;
+            border-left: 4px solid #d32f2f;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+
+        .validation-error-list h3 {
+            color: #d32f2f;
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+
+        .validation-error-list ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .validation-error-list li {
+            padding: 8px 0;
+            border-bottom: 1px solid #ffcdd2;
+            color: #c62828;
+            font-size: 14px;
+        }
+
+        .validation-error-list li:last-child {
+            border-bottom: none;
+        }
+
+        .validation-warning-list {
+            background: #fff3e0;
+            border-left: 4px solid #f57c00;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+
+        .validation-warning-list h3 {
+            color: #f57c00;
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+
+        .validation-warning-list ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .validation-warning-list li {
+            padding: 8px 0;
+            color: #e65100;
+            font-size: 14px;
+        }
+
+        .validation-modal-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            justify-content: flex-end;
+        }
+
+        .validation-modal-actions button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .btn-retry {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-retry:hover {
+            background: #5568d3;
+        }
+
+        .btn-close {
+            background: #f5f7fa;
+            color: #666;
+        }
+
+        .btn-close:hover {
+            background: #e0e0e0;
+        }
+
+        .validating-spinner {
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Modal de Aplicação HPAs */
+        .apply-modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .apply-modal {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 800px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+
+        .apply-modal h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 24px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .apply-modal-subtitle {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 20px;
+            padding: 10px;
+            background: #f5f7fa;
+            border-radius: 6px;
+        }
+
+        .hpa-changes-list {
+            margin: 20px 0;
+        }
+
+        .hpa-change-item {
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+
+        .hpa-change-header {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .hpa-change-details {
+            display: grid;
+            gap: 8px;
+            font-size: 14px;
+        }
+
+        .change-line {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 5px 0;
+        }
+
+        .change-label {
+            color: #666;
+            min-width: 120px;
+        }
+
+        .change-value {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #333;
+        }
+
+        .value-before {
+            color: #d32f2f;
+            font-weight: 500;
+        }
+
+        .value-after {
+            color: #388e3c;
+            font-weight: 500;
+        }
+
+        .change-arrow {
+            color: #999;
+        }
+
+        /* Progress Bar para Rollouts */
+        .rollout-progress {
+            margin-top: 15px;
+            display: none;
+        }
+
+        .rollout-progress.active {
+            display: block;
+        }
+
+        .progress-bar-container {
+            background: #e0e0e0;
+            border-radius: 4px;
+            height: 8px;
+            overflow: hidden;
+            margin-bottom: 5px;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            transition: width 0.3s ease;
+        }
+
+        .progress-text {
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+        }
+
+        .apply-modal-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 25px;
+            justify-content: flex-end;
+            border-top: 1px solid #e0e0e0;
+            padding-top: 20px;
+        }
+
+        .apply-modal-actions button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .btn-apply {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn-apply:hover {
+            background: #218838;
+        }
+
+        .btn-apply:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .btn-cancel-modal {
+            background: #f5f7fa;
+            color: #666;
+        }
+
+        .btn-cancel-modal:hover {
+            background: #e0e0e0;
+        }
+
+        .applying-spinner {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .applying-spinner.active {
+            display: block;
+        }
+
+        /* Stats Cards */
+        .stats-grid {
+            height: 120px;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            padding: 15px 20px;
+            background: #f5f7fa;
+            flex-shrink: 0;
+        }
+
+        .stat-card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+
+        .stat-value {
+            font-size: 32px;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+            font-weight: 500;
+        }
+
+        /* Tabs */
+        .tabs {
+            height: 50px;
+            background: white;
+            border-bottom: 2px solid #e0e0e0;
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            gap: 5px;
+            flex-shrink: 0;
+        }
+
+        .tab {
+            padding: 12px 20px;
+            cursor: pointer;
+            border-radius: 6px 6px 0 0;
+            font-weight: 500;
+            font-size: 14px;
+            color: #666;
+            transition: all 0.3s;
+        }
+
+        .tab:hover {
+            background: #f5f7fa;
+            color: #667eea;
+        }
+
+        .tab.active {
+            background: #667eea;
+            color: white;
+        }
+
+        /* Tab Content */
+        .tab-content {
+            flex: 1;
+            overflow: auto;
+            padding: 20px;
+            background: #f5f7fa;
+        }
+
+        .tab-pane {
+            display: none;
+        }
+
+        .tab-pane.active {
+            display: block;
+        }
+
+        /* Dashboard Charts */
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            height: 100%;
+        }
+
+        .chart-card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chart-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .chart-container {
+            flex: 1;
+            position: relative;
+            min-height: 0;
+        }
+
+        /* HPAs Split View */
+        .split-view {
+            display: grid;
+            grid-template-columns: 40% 60%;
+            gap: 20px;
+            height: 100%;
+        }
+
+        .hpa-list-panel, .hpa-editor-panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            overflow: auto;
+        }
+
+        .panel-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+
+        .hpa-list {
+            list-style: none;
+        }
+
+        .hpa-item {
+            padding: 12px;
+            border: 1px solid #e0e0e0;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .hpa-item:hover {
+            background: #f8f9ff;
+            border-color: #667eea;
+        }
+
+        .hpa-item.selected {
+            background: #f8f9ff;
+            border-color: #667eea;
+            border-width: 2px;
+        }
+
+        /* Form Styles */
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #555;
+            font-size: 14px;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #5568d3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        /* Loading & Messages */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+
+        .success {
+            background: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        /* Login Screen */
+        .auth-box {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            max-width: 400px;
+            margin: 50px auto;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .auth-box h2 {
+            margin-bottom: 20px;
+            color: #667eea;
+        }
+
+        /* Node Pools Grid */
+        .nodepool-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 15px;
+        }
+
+        .nodepool-card {
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .nodepool-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 8px rgba(102, 126, 234, 0.2);
+        }
+
+        .nodepool-card.selected {
+            border-color: #667eea;
+            border-width: 2px;
+            background: #f8f9ff;
+        }
+
+        .nodepool-name {
+            font-weight: 600;
+            font-size: 16px;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .nodepool-details {
+            font-size: 13px;
+            color: #666;
+            line-height: 1.8;
+        }
+
+        /* Node Pool Editor Panel */
+        .nodepool-list-panel, .nodepool-editor-panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            overflow: auto;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+            margin-left: 8px;
+        }
+
+        .status-active {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-inactive {
+            background: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <!-- Login Screen -->
+    <div id="loginScreen">
+        <div class="auth-box">
+            <h2>🔐 Autenticação</h2>
+            <div class="form-group">
+                <label for="tokenInput">Token de Acesso:</label>
+                <input type="password" id="tokenInput" placeholder="Digite o token (padrão: poc-token-123)" value="poc-token-123">
+            </div>
+            <button onclick="login()">Entrar</button>
+            <div id="loginError" class="error hidden" style="margin-top: 15px;"></div>
+        </div>
+    </div>
+
+    <!-- Modal de Validação (VPN + Azure) -->
+    <div id="validationModal" class="validation-modal-overlay">
+        <div class="validation-modal">
+            <div id="validatingContent" class="validating-spinner">
+                <div class="spinner"></div>
+                <p>Validando pré-requisitos...</p>
+            </div>
+            <div id="validationContent" style="display: none;">
+                <h2>⚠️ Pré-requisitos não atendidos</h2>
+                <div id="validationErrors"></div>
+                <div id="validationWarnings"></div>
+                <div class="validation-modal-actions">
+                    <button class="btn-retry" onclick="retryValidation()">🔄 Tentar Novamente</button>
+                    <button class="btn-close" onclick="closeValidationModal()">Fechar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Aplicação HPAs -->
+    <div id="applyModal" class="apply-modal-overlay">
+        <div class="apply-modal">
+            <h2>✅ Aplicar Alterações nos HPAs</h2>
+            <div class="apply-modal-subtitle" id="applySubtitle">
+                Confirme as alterações que serão aplicadas
+            </div>
+
+            <div class="hpa-changes-list" id="hpaChangesList"></div>
+
+            <div class="applying-spinner" id="applyingSpinner">
+                <div class="spinner"></div>
+                <p>Aplicando alterações...</p>
+            </div>
+
+            <div class="apply-modal-actions">
+                <button class="btn-apply" id="confirmApplyBtn" onclick="confirmApply()">✅ Confirmar e Aplicar</button>
+                <button class="btn-cancel-modal" onclick="closeApplyModal()">❌ Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="mainApp" class="dashboard-container hidden">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <h1>k8s-hpa-manager</h1>
+                <select id="clusterSelect" class="cluster-selector" onchange="onClusterChange()">
+                    <option value="">Selecione um cluster...</option>
+                </select>
+            </div>
+            <div class="header-right">
+                <button class="logout-btn" onclick="applyAllModified()" style="background: #28a745; border-color: #28a745;">
+                    ✅ Aplicar Todos <span id="modifiedCounter" style="display: none;"></span>
+                </button>
+                <span class="user-info" id="userInfo">—</span>
+                <button class="logout-btn" onclick="logout()">Sair</button>
+            </div>
+        </header>
+
+        <!-- Stats Cards -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="statClusters">-</div>
+                <div class="stat-label">Clusters</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statNamespaces">-</div>
+                <div class="stat-label">Namespaces</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statHPAs">-</div>
+                <div class="stat-label">HPAs</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statNodePools">-</div>
+                <div class="stat-label">Node Pools</div>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('dashboard')">📊 Dashboard</div>
+            <div class="tab" onclick="switchTab('hpas')">⚖️ HPAs</div>
+            <div class="tab" onclick="switchTab('nodepools')">🖥️ Node Pools</div>
+            <div class="tab" onclick="switchTab('cronjobs')">⏰ CronJobs</div>
+        </div>
+
+        <!-- Tab Content -->
+        <div class="tab-content">
+            <!-- Dashboard Tab -->
+            <div id="dashboard" class="tab-pane active">
+                <div class="charts-grid hidden">
+                    <div class="chart-card">
+                        <div class="chart-title">📈 CPU Usage Over Time</div>
+                        <div class="chart-container">
+                            <canvas id="cpuChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-title">💾 Memory Usage Over Time</div>
+                        <div class="chart-container">
+                            <canvas id="memoryChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-title">📦 HPAs por Namespace</div>
+                        <div class="chart-container">
+                            <canvas id="hpaChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-title">🔢 Distribuição de Replicas</div>
+                        <div class="chart-container">
+                            <canvas id="replicaChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- HPAs Tab -->
+            <div id="hpas" class="tab-pane">
+                <div class="split-view">
+                    <!-- HPA List (40%) -->
+                    <div class="hpa-list-panel">
+                        <div class="panel-title">HPAs Disponíveis</div>
+                        <div id="namespacesContainer" class="loading">Selecione um cluster primeiro</div>
+                    </div>
+
+                    <!-- HPA Editor (60%) -->
+                    <div class="hpa-editor-panel">
+                        <div class="panel-title">Editor de HPA</div>
+                        <div id="hpaEditor">
+                            <div style="text-align: center; color: #999; padding: 40px;">
+                                Selecione um HPA para editar
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Node Pools Tab -->
+            <div id="nodepools" class="tab-pane">
+                <div class="split-view">
+                    <!-- Node Pool List (40%) -->
+                    <div class="nodepool-list-panel">
+                        <div class="panel-title">Node Pools Disponíveis</div>
+                        <div id="nodepoolsContainer" class="loading">Selecione um cluster primeiro</div>
+                    </div>
+
+                    <!-- Node Pool Editor (60%) -->
+                    <div class="nodepool-editor-panel">
+                        <div class="panel-title">Editor de Node Pool</div>
+                        <div id="nodepoolEditor">
+                            <div style="text-align: center; color: #999; padding: 40px;">
+                                Selecione um node pool para editar
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CronJobs Tab -->
+            <div id="cronjobs" class="tab-pane">
+                <div id="cronjobsContainer" class="loading">Selecione um cluster primeiro</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Estado da aplicação
+        let state = {
+            token: null,
+            selectedCluster: null,
+            clusters: [],
+            namespaces: [],
+            hpas: [],
+            selectedHPA: null,
+            modifiedHPAs: new Map(), // Map de HPAs modificados: key = "namespace/name", value = hpa modificado
+            nodepools: [],
+            selectedNodePool: null,
+            charts: {}
+        };
+
+        // API Base URL
+        const API_BASE = window.location.origin + '/api/v1';
+
+        // Utility: fazer requisição autenticada
+        async function apiRequest(endpoint, options = {}) {
+            const headers = {
+                'Authorization': `Bearer ${state.token}`,
+                'Content-Type': 'application/json',
+                ...options.headers
+            };
+
+            const response = await fetch(API_BASE + endpoint, {
+                ...options,
+                headers
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error?.message || 'Request failed');
+            }
+
+            return data;
+        }
+
+        // Validação de Pré-requisitos (VPN + Azure CLI)
+        async function validatePrerequisites() {
+            try {
+                const response = await apiRequest('/validate');
+
+                if (response.success) {
+                    // Validações passaram
+                    return true;
+                } else {
+                    // Validações falharam - mostrar modal
+                    showValidationModal(response);
+                    return false;
+                }
+            } catch (error) {
+                console.error('Erro ao validar pré-requisitos:', error);
+                showValidationModal({
+                    success: false,
+                    errors: ['Erro ao conectar com servidor'],
+                    warnings: ['Verifique se o servidor está rodando']
+                });
+                return false;
+            }
+        }
+
+        function showValidationModal(result) {
+            const modal = document.getElementById('validationModal');
+            const validatingContent = document.getElementById('validatingContent');
+            const validationContent = document.getElementById('validationContent');
+            const errorsDiv = document.getElementById('validationErrors');
+            const warningsDiv = document.getElementById('validationWarnings');
+
+            // Esconder spinner, mostrar conteúdo
+            validatingContent.style.display = 'none';
+            validationContent.style.display = 'block';
+
+            // Renderizar erros
+            if (result.errors && result.errors.length > 0) {
+                errorsDiv.innerHTML = `
+                    <div class="validation-error-list">
+                        <h3>❌ Erros Críticos:</h3>
+                        <ul>
+                            ${result.errors.map(err => `<li>• ${err}</li>`).join('')}
+                        </ul>
+                    </div>
+                `;
+            } else {
+                errorsDiv.innerHTML = '';
+            }
+
+            // Renderizar avisos
+            if (result.warnings && result.warnings.length > 0) {
+                warningsDiv.innerHTML = `
+                    <div class="validation-warning-list">
+                        <h3>💡 Ações necessárias:</h3>
+                        <ul>
+                            ${result.warnings.map(warn => `<li>• ${warn}</li>`).join('')}
+                        </ul>
+                    </div>
+                `;
+            } else {
+                warningsDiv.innerHTML = '';
+            }
+
+            // Mostrar modal
+            modal.style.display = 'flex';
+        }
+
+        async function retryValidation() {
+            const modal = document.getElementById('validationModal');
+            const validatingContent = document.getElementById('validatingContent');
+            const validationContent = document.getElementById('validationContent');
+
+            // Mostrar spinner novamente
+            validatingContent.style.display = 'block';
+            validationContent.style.display = 'none';
+
+            // Revalidar
+            const valid = await validatePrerequisites();
+
+            if (valid) {
+                // Validações passaram - fechar modal
+                modal.style.display = 'none';
+            }
+        }
+
+        function closeValidationModal() {
+            const modal = document.getElementById('validationModal');
+            modal.style.display = 'none';
+        }
+
+        // Login
+        async function login() {
+            const token = document.getElementById('tokenInput').value;
+            const errorDiv = document.getElementById('loginError');
+
+            try {
+                state.token = token;
+
+                // Testar token fazendo request para clusters
+                await apiRequest('/clusters');
+
+                // Sucesso - validar pré-requisitos ANTES de mostrar app
+                const valid = await validatePrerequisites();
+
+                if (!valid) {
+                    // Validações falharam - modal já foi mostrado
+                    return;
+                }
+
+                // Validações OK - mostrar app
+                document.getElementById('loginScreen').classList.add('hidden');
+                document.getElementById('mainApp').classList.remove('hidden');
+
+                // Carregar dados iniciais
+                loadClusters();
+                initCharts();
+            } catch (error) {
+                errorDiv.textContent = `❌ Falha na autenticação: ${error.message}`;
+                errorDiv.classList.remove('hidden');
+                state.token = null;
+            }
+        }
+
+        // Logout
+        async function logout() {
+            try {
+                // Chamar endpoint de shutdown
+                await fetch('/shutdown', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${state.token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                // Mostrar mensagem e limpar estado
+                showSuccess('Servidor web sendo desligado...');
+
+                setTimeout(() => {
+                    state.token = null;
+                    state.selectedCluster = null;
+                    state.clusters = [];
+                    document.getElementById('mainApp').classList.add('hidden');
+                    document.getElementById('loginScreen').classList.remove('hidden');
+                    document.getElementById('tokenInput').value = '';
+                    document.querySelector('.charts-grid').classList.add('hidden');
+                }, 1000);
+            } catch (error) {
+                // Se falhar, apenas limpar localmente
+                console.error('Erro ao desligar servidor:', error);
+                state.token = null;
+                state.selectedCluster = null;
+                state.clusters = [];
+                document.getElementById('mainApp').classList.add('hidden');
+                document.getElementById('loginScreen').classList.remove('hidden');
+                document.getElementById('tokenInput').value = '';
+                document.querySelector('.charts-grid').classList.add('hidden');
+            }
+        }
+
+        // Carregar clusters
+        async function loadClusters() {
+            try {
+                const response = await apiRequest('/clusters');
+                state.clusters = response.data;
+
+                // Atualizar stat
+                document.getElementById('statClusters').textContent = state.clusters.length;
+
+                // Preencher dropdown
+                const select = document.getElementById('clusterSelect');
+                select.innerHTML = '<option value="">Selecione um cluster...</option>';
+
+                state.clusters.forEach(cluster => {
+                    const option = document.createElement('option');
+                    option.value = cluster.context;
+                    option.textContent = cluster.name;
+                    select.appendChild(option);
+                });
+
+                // Mostrar info do usuário
+                document.getElementById('userInfo').textContent = `${state.clusters.length} clusters disponíveis`;
+
+            } catch (error) {
+                showError(`Erro ao carregar clusters: ${error.message}`);
+            }
+        }
+
+        // Mudança de cluster
+        async function onClusterChange() {
+            const select = document.getElementById('clusterSelect');
+            state.selectedCluster = select.value;
+
+            if (!state.selectedCluster) {
+                return;
+            }
+
+            // Carregar namespaces e HPAs
+            await loadNamespaces();
+            await loadAllHPAs();
+
+            // Carregar Node Pools e CronJobs
+            loadNodePools();
+            loadCronJobs();
+
+            // Mostrar gráficos após selecionar cluster
+            document.querySelector('.charts-grid').classList.remove('hidden');
+
+            updateCharts();
+        }
+
+        // Carregar namespaces
+        async function loadNamespaces() {
+            if (!state.selectedCluster) {
+                return;
+            }
+
+            const container = document.getElementById('namespacesContainer');
+            container.innerHTML = '<div class="loading">Carregando namespaces...</div>';
+
+            try {
+                const response = await apiRequest(`/namespaces?cluster=${state.selectedCluster}&showSystem=false`);
+                state.namespaces = response.data;
+
+                // Atualizar stat
+                document.getElementById('statNamespaces').textContent = state.namespaces.length;
+
+                // Renderizar lista de namespaces com HPAs
+                let html = '<ul class="hpa-list">';
+
+                for (const ns of state.namespaces) {
+                    // Carregar HPAs do namespace
+                    const hpaResponse = await apiRequest(`/hpas?cluster=${state.selectedCluster}&namespace=${ns.name}`);
+                    const hpas = hpaResponse.data || [];
+
+                    if (hpas.length > 0) {
+                        html += `<li style="margin-bottom: 20px;">`;
+                        html += `<div style="font-weight: 600; color: #667eea; margin-bottom: 8px;">${ns.name} (${hpas.length} HPAs)</div>`;
+
+                        hpas.forEach(hpa => {
+                            html += `
+                                <div class="hpa-item" onclick="selectHPA(event, '${ns.name}', '${hpa.name}')">
+                                    <strong>${hpa.name}</strong>
+                                    <div style="font-size: 12px; color: #666; margin-top: 5px;">
+                                        Min: ${hpa.min_replicas || 'N/A'} | Max: ${hpa.max_replicas || 'N/A'} | Current: ${hpa.current_replicas || 'N/A'}
+                                    </div>
+                                </div>
+                            `;
+                        });
+
+                        html += '</li>';
+                    }
+                }
+
+                html += '</ul>';
+                container.innerHTML = html;
+
+            } catch (error) {
+                showError(`Erro ao carregar namespaces: ${error.message}`);
+                container.innerHTML = '<div class="error">Erro ao carregar namespaces</div>';
+            }
+        }
+
+        // Carregar todos os HPAs para stats
+        async function loadAllHPAs() {
+            if (!state.selectedCluster || !state.namespaces) {
+                return;
+            }
+
+            let totalHPAs = 0;
+            state.hpas = [];
+
+            for (const ns of state.namespaces) {
+                try {
+                    const response = await apiRequest(`/hpas?cluster=${state.selectedCluster}&namespace=${ns.name}`);
+                    if (response.data) {
+                        totalHPAs += response.data.length;
+                        state.hpas.push(...response.data.map(hpa => ({ ...hpa, namespace: ns.name })));
+                    }
+                } catch (error) {
+                    console.error(`Error loading HPAs for ${ns.name}:`, error);
+                }
+            }
+
+            document.getElementById('statHPAs').textContent = totalHPAs;
+        }
+
+        // Selecionar HPA para edição
+        async function selectHPA(event, namespace, hpaName) {
+            try {
+                const response = await apiRequest(`/hpas?cluster=${state.selectedCluster}&namespace=${namespace}`);
+                const hpa = response.data.find(h => h.name === hpaName);
+
+                if (!hpa) {
+                    throw new Error('HPA não encontrado');
+                }
+
+                state.selectedHPA = { ...hpa, namespace };
+
+                // Renderizar editor
+                const editor = document.getElementById('hpaEditor');
+                editor.innerHTML = `
+                    <form onsubmit="saveHPA(event)">
+                        <div class="form-group">
+                            <label>Nome:</label>
+                            <input type="text" value="${hpa.name}" disabled>
+                        </div>
+                        <div class="form-group">
+                            <label>Namespace:</label>
+                            <input type="text" value="${namespace}" disabled>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Min Replicas:</label>
+                                <input type="number" id="minReplicas" value="${hpa.min_replicas || 1}" min="0">
+                            </div>
+                            <div class="form-group">
+                                <label>Max Replicas:</label>
+                                <input type="number" id="maxReplicas" value="${hpa.max_replicas || 10}" min="1">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Target CPU (%):</label>
+                                <input type="number" id="targetCPU" value="${hpa.target_cpu || 80}" min="1" max="100">
+                            </div>
+                            <div class="form-group">
+                                <label>Current Replicas:</label>
+                                <input type="number" value="${hpa.current_replicas || 0}" disabled>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>CPU Request:</label>
+                                <input type="text" id="cpuRequest" value="${hpa.target_cpu_request || 'N/A'}" disabled>
+                            </div>
+                            <div class="form-group">
+                                <label>Memory Request:</label>
+                                <input type="text" id="memoryRequest" value="${hpa.target_memory_request || 'N/A'}" disabled>
+                            </div>
+                        </div>
+
+                        <div style="margin-top: 20px; padding: 12px 15px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #667eea;">
+                            <h4 style="margin: 0 0 10px 0; color: #667eea; font-size: 14px;">🔄 Rollout</h4>
+                            <div style="display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 8px;">
+                                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px;">
+                                    <input type="checkbox" id="performRollout" ${hpa.perform_rollout ? 'checked' : ''}>
+                                    <span>Deployment</span>
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px;">
+                                    <input type="checkbox" id="performDaemonSetRollout" ${hpa.perform_daemonset_rollout ? 'checked' : ''}>
+                                    <span>DaemonSet</span>
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px;">
+                                    <input type="checkbox" id="performStatefulSetRollout" ${hpa.perform_statefulset_rollout ? 'checked' : ''}>
+                                    <span>StatefulSet</span>
+                                </label>
+                            </div>
+                            <p style="margin: 0; font-size: 11px; color: #666; line-height: 1.4;">
+                                💡 Reinicia os pods do tipo selecionado após aplicar alterações
+                            </p>
+                        </div>
+
+                        <div class="btn-group">
+                            <button type="submit">💾 Salvar Alterações</button>
+                            <button type="button" onclick="applyThisHPA()" style="background: #28a745;">✅ Aplicar Este HPA</button>
+                            <button type="button" onclick="cancelEdit()">❌ Cancelar</button>
+                        </div>
+                    </form>
+                `;
+
+                // Highlight selected HPA
+                document.querySelectorAll('.hpa-item').forEach(item => {
+                    item.classList.remove('selected');
+                });
+
+                // Adicionar classe selected ao item clicado
+                const clickedItem = event.target.closest('.hpa-item');
+                if (clickedItem) {
+                    clickedItem.classList.add('selected');
+                }
+
+            } catch (error) {
+                showError(`Erro ao carregar HPA: ${error.message}`);
+            }
+        }
+
+        // Salvar HPA
+        // Salvar alterações no Map (não aplica ainda)
+        function saveHPA(event) {
+            event.preventDefault();
+
+            if (!state.selectedHPA) {
+                showError('Nenhum HPA selecionado');
+                return;
+            }
+
+            const minReplicas = parseInt(document.getElementById('minReplicas').value);
+            const maxReplicas = parseInt(document.getElementById('maxReplicas').value);
+            const targetCPU = parseInt(document.getElementById('targetCPU').value);
+
+            // Capturar valores de rollout
+            const performRollout = document.getElementById('performRollout').checked;
+            const performDaemonSetRollout = document.getElementById('performDaemonSetRollout').checked;
+            const performStatefulSetRollout = document.getElementById('performStatefulSetRollout').checked;
+
+            // Validação básica
+            if (minReplicas > maxReplicas) {
+                showError('Min Replicas não pode ser maior que Max Replicas');
+                return;
+            }
+
+            if (targetCPU < 1 || targetCPU > 100) {
+                showError('Target CPU deve estar entre 1 e 100%');
+                return;
+            }
+
+            // Salvar no Map de modificados
+            const key = `${state.selectedHPA.namespace}/${state.selectedHPA.name}`;
+            state.modifiedHPAs.set(key, {
+                ...state.selectedHPA,
+                min_replicas: minReplicas,
+                max_replicas: maxReplicas,
+                target_cpu: targetCPU,
+                perform_rollout: performRollout,
+                perform_daemonset_rollout: performDaemonSetRollout,
+                perform_statefulset_rollout: performStatefulSetRollout,
+                _originalValues: {
+                    min_replicas: state.selectedHPA.min_replicas,
+                    max_replicas: state.selectedHPA.max_replicas,
+                    target_cpu: state.selectedHPA.target_cpu,
+                    perform_rollout: state.selectedHPA.perform_rollout || false,
+                    perform_daemonset_rollout: state.selectedHPA.perform_daemonset_rollout || false,
+                    perform_statefulset_rollout: state.selectedHPA.perform_statefulset_rollout || false
+                }
+            });
+
+            showSuccess(`Alterações salvas! Use os botões abaixo para aplicar.`);
+
+            // Atualizar contador de alterações
+            updateModifiedCounter();
+            cancelEdit();
+        }
+
+        // Aplicar um HPA específico
+        async function applyThisHPA() {
+            if (!state.selectedHPA) return;
+
+            const key = `${state.selectedHPA.namespace}/${state.selectedHPA.name}`;
+            const modified = state.modifiedHPAs.get(key);
+
+            if (!modified) {
+                showError('Nenhuma alteração para aplicar neste HPA');
+                return;
+            }
+
+            try {
+                const payload = {
+                    min_replicas: modified.min_replicas,
+                    max_replicas: modified.max_replicas,
+                    target_cpu: modified.target_cpu,
+                    perform_rollout: modified.perform_rollout || false,
+                    perform_daemonset_rollout: modified.perform_daemonset_rollout || false,
+                    perform_statefulset_rollout: modified.perform_statefulset_rollout || false
+                };
+
+                await apiRequest(`/hpas/${state.selectedCluster}/${modified.namespace}/${modified.name}`, {
+                    method: 'PUT',
+                    body: JSON.stringify(payload)
+                });
+
+                // Montar mensagem de sucesso com rollouts
+                let successMsg = `✅ HPA "${modified.name}" atualizado!\n` +
+                                `Min: ${modified._originalValues.min_replicas} → ${modified.min_replicas}\n` +
+                                `Max: ${modified._originalValues.max_replicas} → ${modified.max_replicas}\n` +
+                                `CPU: ${modified._originalValues.target_cpu}% → ${modified.target_cpu}%`;
+
+                if (modified.perform_rollout || modified.perform_daemonset_rollout || modified.perform_statefulset_rollout) {
+                    successMsg += '\n\n🔄 Rollouts agendados:';
+                    if (modified.perform_rollout) successMsg += '\n✅ Deployment';
+                    if (modified.perform_daemonset_rollout) successMsg += '\n✅ DaemonSet';
+                    if (modified.perform_statefulset_rollout) successMsg += '\n✅ StatefulSet';
+                }
+
+                showSuccess(successMsg);
+
+                // Remover do Map
+                state.modifiedHPAs.delete(key);
+                updateModifiedCounter();
+
+                // Recarregar
+                await loadNamespaces();
+                await loadAllHPAs();
+
+            } catch (error) {
+                showError(`❌ Erro ao aplicar HPA: ${error.message}`);
+            }
+        }
+
+        // Aplicar TODOS os HPAs modificados (mostra modal)
+        function applyAllModified() {
+            if (state.modifiedHPAs.size === 0) {
+                showError('Nenhuma alteração para aplicar');
+                return;
+            }
+
+            showApplyModal();
+        }
+
+        // Mostrar modal de aplicação com lista de alterações
+        function showApplyModal() {
+            const modal = document.getElementById('applyModal');
+            const subtitle = document.getElementById('applySubtitle');
+            const changesList = document.getElementById('hpaChangesList');
+
+            const count = state.modifiedHPAs.size;
+            subtitle.textContent = `${count} HPA${count > 1 ? 's' : ''} ${count > 1 ? 'serão atualizados' : 'será atualizado'}`;
+
+            // Renderizar lista de alterações
+            let html = '';
+            for (const [key, modified] of state.modifiedHPAs.entries()) {
+                const orig = modified._originalValues;
+                html += `
+                    <div class="hpa-change-item">
+                        <div class="hpa-change-header">📦 ${modified.namespace}/${modified.name}</div>
+                        <div class="hpa-change-details">
+                            ${orig.min_replicas !== modified.min_replicas ? `
+                                <div class="change-line">
+                                    <span class="change-label">Min Replicas:</span>
+                                    <div class="change-value">
+                                        <span class="value-before">${orig.min_replicas}</span>
+                                        <span class="change-arrow">→</span>
+                                        <span class="value-after">${modified.min_replicas}</span>
+                                    </div>
+                                </div>
+                            ` : ''}
+                            ${orig.max_replicas !== modified.max_replicas ? `
+                                <div class="change-line">
+                                    <span class="change-label">Max Replicas:</span>
+                                    <div class="change-value">
+                                        <span class="value-before">${orig.max_replicas}</span>
+                                        <span class="change-arrow">→</span>
+                                        <span class="value-after">${modified.max_replicas}</span>
+                                    </div>
+                                </div>
+                            ` : ''}
+                            ${orig.target_cpu !== modified.target_cpu ? `
+                                <div class="change-line">
+                                    <span class="change-label">Target CPU:</span>
+                                    <div class="change-value">
+                                        <span class="value-before">${orig.target_cpu}%</span>
+                                        <span class="change-arrow">→</span>
+                                        <span class="value-after">${modified.target_cpu}%</span>
+                                    </div>
+                                </div>
+                            ` : ''}
+                        </div>
+                        ${modified.perform_rollout || modified.perform_daemonset_rollout || modified.perform_statefulset_rollout ? `
+                            <div style="margin-top: 12px; padding: 10px; background: #e8f4f8; border-radius: 4px; border-left: 3px solid #667eea;">
+                                <div style="font-weight: 600; color: #667eea; font-size: 12px; margin-bottom: 6px;">🔄 Rollouts Agendados:</div>
+                                <div style="font-size: 11px; color: #555; display: flex; flex-direction: column; gap: 4px;">
+                                    ${modified.perform_rollout ? '<div>✅ Deployment Rollout</div>' : ''}
+                                    ${modified.perform_daemonset_rollout ? '<div>✅ DaemonSet Rollout</div>' : ''}
+                                    ${modified.perform_statefulset_rollout ? '<div>✅ StatefulSet Rollout</div>' : ''}
+                                </div>
+                            </div>
+                        ` : ''}
+                        <div class="rollout-progress" id="rollout-${key}">
+                            <div class="progress-bar-container">
+                                <div class="progress-bar-fill" style="width: 0%"></div>
+                            </div>
+                            <div class="progress-text">Aguardando...</div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            changesList.innerHTML = html;
+            modal.style.display = 'flex';
+        }
+
+        // Confirmar e aplicar alterações
+        async function confirmApply() {
+            const spinner = document.getElementById('applyingSpinner');
+            const confirmBtn = document.getElementById('confirmApplyBtn');
+
+            // Mostrar spinner
+            spinner.classList.add('active');
+            confirmBtn.disabled = true;
+
+            let success = 0;
+            let failed = 0;
+
+            for (const [key, modified] of state.modifiedHPAs.entries()) {
+                try {
+                    // Mostrar progresso individual
+                    const progressDiv = document.getElementById(`rollout-${key}`);
+                    if (progressDiv) {
+                        progressDiv.classList.add('active');
+                        const progressBar = progressDiv.querySelector('.progress-bar-fill');
+                        const progressText = progressDiv.querySelector('.progress-text');
+
+                        progressBar.style.width = '50%';
+                        progressText.textContent = 'Aplicando...';
+                    }
+
+                    const payload = {
+                        min_replicas: modified.min_replicas,
+                        max_replicas: modified.max_replicas,
+                        target_cpu: modified.target_cpu,
+                        perform_rollout: modified.perform_rollout || false,
+                        perform_daemonset_rollout: modified.perform_daemonset_rollout || false,
+                        perform_statefulset_rollout: modified.perform_statefulset_rollout || false
+                    };
+
+                    await apiRequest(`/hpas/${state.selectedCluster}/${modified.namespace}/${modified.name}`, {
+                        method: 'PUT',
+                        body: JSON.stringify(payload)
+                    });
+
+                    // Atualizar progresso
+                    if (progressDiv) {
+                        const progressBar = progressDiv.querySelector('.progress-bar-fill');
+                        const progressText = progressDiv.querySelector('.progress-text');
+                        progressBar.style.width = '100%';
+                        progressText.textContent = '✅ Completado';
+                    }
+
+                    success++;
+                } catch (error) {
+                    console.error(`Erro ao aplicar ${key}:`, error);
+
+                    // Mostrar erro
+                    const progressDiv = document.getElementById(`rollout-${key}`);
+                    if (progressDiv) {
+                        const progressText = progressDiv.querySelector('.progress-text');
+                        progressText.textContent = '❌ Erro: ' + error.message;
+                        progressText.style.color = '#d32f2f';
+                    }
+
+                    failed++;
+                }
+            }
+
+            // Esconder spinner
+            spinner.classList.remove('active');
+            confirmBtn.disabled = false;
+
+            // Limpar Map
+            state.modifiedHPAs.clear();
+            updateModifiedCounter();
+
+            // Feedback
+            if (failed === 0) {
+                showSuccess(`✅ Todos os ${success} HPAs foram atualizados com sucesso!`);
+                closeApplyModal();
+            } else {
+                showError(`⚠️ ${success} HPAs atualizados, ${failed} falharam`);
+            }
+
+            // Recarregar
+            await loadNamespaces();
+            await loadAllHPAs();
+        }
+
+        // Fechar modal de aplicação
+        function closeApplyModal() {
+            const modal = document.getElementById('applyModal');
+            modal.style.display = 'none';
+        }
+
+        // Atualizar contador de HPAs modificados
+        function updateModifiedCounter() {
+            const counter = document.getElementById('modifiedCounter');
+            if (counter) {
+                const count = state.modifiedHPAs.size;
+                if (count > 0) {
+                    counter.textContent = `(${count} alterado${count > 1 ? 's' : ''})`;
+                    counter.style.display = 'inline';
+                } else {
+                    counter.style.display = 'none';
+                }
+            }
+        }
+
+        // Cancelar edição
+        function cancelEdit() {
+            document.getElementById('hpaEditor').innerHTML = `
+                <div style="text-align: center; color: #999; padding: 40px;">
+                    Selecione um HPA para editar
+                </div>
+            `;
+            state.selectedHPA = null;
+            document.querySelectorAll('.hpa-item').forEach(item => {
+                item.classList.remove('selected');
+            });
+        }
+
+        // Carregar Node Pools
+        async function loadNodePools() {
+            if (!state.selectedCluster) {
+                return;
+            }
+
+            const container = document.getElementById('nodepoolsContainer');
+            container.innerHTML = '<div class="loading">Carregando node pools...</div>';
+
+            try {
+                const response = await apiRequest(`/nodepools?cluster=${state.selectedCluster}`);
+                const nodepools = response.data || [];
+
+                // Salvar no state
+                state.nodepools = nodepools;
+
+                // Atualizar stat
+                document.getElementById('statNodePools').textContent = nodepools.length;
+
+                if (nodepools.length === 0) {
+                    container.innerHTML = '<div style="padding: 40px; text-align: center; color: #666;">Nenhum node pool encontrado.</div>';
+                    return;
+                }
+
+                // Renderizar grid de cards clicáveis
+                let html = '<div class="nodepool-grid">';
+
+                nodepools.forEach(np => {
+                    const statusClass = np.status === 'Succeeded' ? 'status-active' : 'status-inactive';
+                    const autoscaling = np.autoscaling_enabled ?
+                        `Autoscaling: ${np.min_node_count}-${np.max_node_count}` :
+                        `Node Count: ${np.node_count}`;
+
+                    html += `
+                        <div class="nodepool-card" onclick="selectNodePool(event, '${np.name}')">
+                            <div class="nodepool-name">
+                                ${np.name}
+                                <span class="status-badge ${statusClass}">
+                                    ${np.is_system_pool ? 'System' : 'User'}
+                                </span>
+                            </div>
+                            <div class="nodepool-details">
+                                <div><strong>VM Size:</strong> ${np.vm_size}</div>
+                                <div><strong>${autoscaling}</strong></div>
+                                <div><strong>Status:</strong> ${np.status}</div>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                html += '</div>';
+                container.innerHTML = html;
+
+            } catch (error) {
+                showError(`Erro ao carregar node pools: ${error.message}`);
+                container.innerHTML = `
+                    <div class="error" style="padding: 20px;">
+                        Erro ao carregar node pools: ${error.message}
+                        <br><br>
+                        <small>Certifique-se que:</small>
+                        <ul style="text-align: left; margin-top: 10px;">
+                            <li>Azure CLI está instalado (az --version)</li>
+                            <li>Você está autenticado (az login)</li>
+                            <li>clusters-config.json existe (k8s-hpa-manager autodiscover)</li>
+                        </ul>
+                    </div>
+                `;
+            }
+        }
+
+        // Selecionar Node Pool para edição
+        function selectNodePool(event, poolName) {
+            const nodepool = state.nodepools.find(np => np.name === poolName);
+
+            if (!nodepool) {
+                showError('Node pool não encontrado');
+                return;
+            }
+
+            state.selectedNodePool = nodepool;
+
+            // Renderizar editor
+            const editor = document.getElementById('nodepoolEditor');
+            editor.innerHTML = `
+                <form onsubmit="saveNodePool(event)">
+                    <div class="form-group">
+                        <label>Nome:</label>
+                        <input type="text" value="${nodepool.name}" disabled>
+                    </div>
+                    <div class="form-group">
+                        <label>VM Size:</label>
+                        <input type="text" value="${nodepool.vm_size}" disabled>
+                    </div>
+
+                    <div style="margin: 25px 0; padding: 15px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #667eea;">
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 500; font-size: 14px;">
+                                <input type="checkbox" id="autoscalingEnabled" ${nodepool.autoscaling_enabled ? 'checked' : ''} onchange="toggleAutoscaling()" style="cursor: pointer;">
+                                <span>🔄 Habilitar Autoscaling</span>
+                            </label>
+                            <p style="margin: 8px 0 0 26px; font-size: 12px; color: #666;">
+                                Ativa o escalonamento automático de nodes baseado na carga
+                            </p>
+                        </div>
+
+                        <div id="manualScaling" style="${nodepool.autoscaling_enabled ? 'display: none;' : ''}">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label>Node Count (fixo):</label>
+                                <input type="number" id="nodeCount" value="${nodepool.node_count || 0}" min="0">
+                            </div>
+                        </div>
+
+                        <div id="autoScaling" style="${nodepool.autoscaling_enabled ? '' : 'display: none;'}">
+                            <div class="form-row">
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label>Min Node Count:</label>
+                                    <input type="number" id="minNodeCount" value="${nodepool.min_node_count || 1}" min="0">
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label>Max Node Count:</label>
+                                    <input type="number" id="maxNodeCount" value="${nodepool.max_node_count || 10}" min="1">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Status:</label>
+                        <input type="text" value="${nodepool.status}" disabled>
+                    </div>
+
+                    <div class="form-group">
+                        <label>System Pool:</label>
+                        <input type="text" value="${nodepool.is_system_pool ? 'Sim' : 'Não'}" disabled>
+                    </div>
+
+                    <div class="btn-group">
+                        <button type="submit">💾 Salvar Alterações</button>
+                        <button type="button" onclick="cancelNodePoolEdit()">❌ Cancelar</button>
+                    </div>
+                </form>
+            `;
+
+            // Highlight selected node pool
+            document.querySelectorAll('.nodepool-card').forEach(card => {
+                card.classList.remove('selected');
+            });
+
+            const clickedCard = event.target.closest('.nodepool-card');
+            if (clickedCard) {
+                clickedCard.classList.add('selected');
+            }
+        }
+
+        // Toggle autoscaling visibility
+        function toggleAutoscaling() {
+            const enabled = document.getElementById('autoscalingEnabled').checked;
+            document.getElementById('manualScaling').style.display = enabled ? 'none' : 'block';
+            document.getElementById('autoScaling').style.display = enabled ? 'block' : 'none';
+        }
+
+        // Salvar alterações do node pool
+        function saveNodePool(event) {
+            event.preventDefault();
+
+            if (!state.selectedNodePool) {
+                showError('Nenhum node pool selecionado');
+                return;
+            }
+
+            const autoscalingEnabled = document.getElementById('autoscalingEnabled').checked;
+            const nodeCount = parseInt(document.getElementById('nodeCount').value);
+            const minNodeCount = parseInt(document.getElementById('minNodeCount').value);
+            const maxNodeCount = parseInt(document.getElementById('maxNodeCount').value);
+
+            // Validação
+            if (autoscalingEnabled && minNodeCount > maxNodeCount) {
+                showError('Min Node Count não pode ser maior que Max Node Count');
+                return;
+            }
+
+            showSuccess(`Alterações do node pool "${state.selectedNodePool.name}" salvas! Funcionalidade de aplicação em desenvolvimento.`);
+            console.log('Node pool modificado:', {
+                name: state.selectedNodePool.name,
+                autoscaling_enabled: autoscalingEnabled,
+                node_count: nodeCount,
+                min_node_count: minNodeCount,
+                max_node_count: maxNodeCount
+            });
+        }
+
+        // Cancelar edição de node pool
+        function cancelNodePoolEdit() {
+            document.getElementById('nodepoolEditor').innerHTML = `
+                <div style="text-align: center; color: #999; padding: 40px;">
+                    Selecione um node pool para editar
+                </div>
+            `;
+            state.selectedNodePool = null;
+            document.querySelectorAll('.nodepool-card').forEach(card => {
+                card.classList.remove('selected');
+            });
+        }
+
+        // Carregar CronJobs
+        async function loadCronJobs() {
+            if (!state.selectedCluster) {
+                return;
+            }
+
+            const container = document.getElementById('cronjobsContainer');
+            container.innerHTML = '<div class="loading">Carregando cronjobs...</div>';
+
+            try {
+                // TODO: Implementar endpoint de cronjobs no backend
+                // Por enquanto, mostra mensagem informativa
+                container.innerHTML = `
+                    <div style="padding: 40px; text-align: center; color: #666;">
+                        <h3 style="color: #667eea; margin-bottom: 20px;">CronJobs</h3>
+                        <p>Funcionalidade em desenvolvimento.</p>
+                        <p style="margin-top: 10px;">Cluster selecionado: <strong>${state.selectedCluster}</strong></p>
+                        <p style="margin-top: 20px; font-size: 12px; color: #999;">
+                            Endpoint necessário: GET /api/v1/cronjobs?cluster=${state.selectedCluster}
+                        </p>
+                    </div>
+                `;
+
+                // Quando o endpoint estiver pronto:
+                // const response = await apiRequest(`/cronjobs?cluster=${state.selectedCluster}`);
+                // const cronjobs = response.data || [];
+                // Renderizar lista de cronjobs
+
+            } catch (error) {
+                showError(`Erro ao carregar cronjobs: ${error.message}`);
+                container.innerHTML = '<div class="error">Erro ao carregar cronjobs</div>';
+            }
+        }
+
+        // Inicializar gráficos
+        function initCharts() {
+            // CPU Chart - Line
+            const cpuCtx = document.getElementById('cpuChart').getContext('2d');
+            state.charts.cpu = new Chart(cpuCtx, {
+                type: 'line',
+                data: {
+                    labels: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'],
+                    datasets: [{
+                        label: 'CPU Usage (%)',
+                        data: [45, 52, 68, 75, 62, 58],
+                        borderColor: '#667eea',
+                        backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100
+                        }
+                    }
+                }
+            });
+
+            // Memory Chart - Area
+            const memCtx = document.getElementById('memoryChart').getContext('2d');
+            state.charts.memory = new Chart(memCtx, {
+                type: 'line',
+                data: {
+                    labels: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'],
+                    datasets: [{
+                        label: 'Memory Usage (GB)',
+                        data: [12, 15, 18, 22, 19, 16],
+                        borderColor: '#f093fb',
+                        backgroundColor: 'rgba(240, 147, 251, 0.2)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+
+            // HPA Chart - Horizontal Bar
+            const hpaCtx = document.getElementById('hpaChart').getContext('2d');
+            state.charts.hpa = new Chart(hpaCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['ingress-nginx', 'default', 'kube-system', 'monitoring', 'production'],
+                    datasets: [{
+                        label: 'HPAs',
+                        data: [5, 3, 2, 8, 12],
+                        backgroundColor: [
+                            '#667eea',
+                            '#764ba2',
+                            '#f093fb',
+                            '#4facfe',
+                            '#00f2fe'
+                        ]
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+
+            // Replica Chart - Doughnut
+            const repCtx = document.getElementById('replicaChart').getContext('2d');
+            state.charts.replica = new Chart(repCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Min (1-3)', 'Medium (4-10)', 'High (11+)'],
+                    datasets: [{
+                        data: [12, 18, 8],
+                        backgroundColor: [
+                            '#4facfe',
+                            '#667eea',
+                            '#f093fb'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false
+                }
+            });
+        }
+
+        // Atualizar gráficos com dados reais
+        function updateCharts() {
+            if (!state.hpas || state.hpas.length === 0) {
+                console.log('No HPAs loaded yet');
+                return;
+            }
+
+            // 1. Agrupar HPAs por namespace
+            const hpasByNamespace = {};
+            state.hpas.forEach(hpa => {
+                const ns = hpa.namespace || 'default';
+                hpasByNamespace[ns] = (hpasByNamespace[ns] || 0) + 1;
+            });
+
+            // 2. Distribuição de replicas
+            let lowReplicas = 0;   // 1-3
+            let medReplicas = 0;   // 4-10
+            let highReplicas = 0;  // 11+
+
+            state.hpas.forEach(hpa => {
+                const min = hpa.min_replicas || 0;
+                if (min >= 1 && min <= 3) lowReplicas++;
+                else if (min >= 4 && min <= 10) medReplicas++;
+                else if (min >= 11) highReplicas++;
+            });
+
+            // 3. CPU targets médios (para simular timeline)
+            const avgCPU = state.hpas.reduce((sum, hpa) => sum + (hpa.target_cpu || 0), 0) / state.hpas.length;
+            const cpuVariation = avgCPU * 0.15; // 15% variação
+            const cpuData = [
+                avgCPU - cpuVariation,
+                avgCPU - cpuVariation * 0.5,
+                avgCPU + cpuVariation * 0.3,
+                avgCPU + cpuVariation,
+                avgCPU + cpuVariation * 0.5,
+                avgCPU
+            ];
+
+            // 4. Memory targets médios (convertendo para GB simulado)
+            const avgMemory = state.hpas.reduce((sum, hpa) => sum + (hpa.target_memory || 0), 0) / state.hpas.length;
+            const memVariation = avgMemory * 0.2;
+            const memData = [
+                avgMemory - memVariation,
+                avgMemory - memVariation * 0.3,
+                avgMemory + memVariation * 0.5,
+                avgMemory + memVariation,
+                avgMemory + memVariation * 0.6,
+                avgMemory
+            ];
+
+            // Atualizar gráfico de CPU
+            if (state.charts.cpu) {
+                state.charts.cpu.data.datasets[0].data = cpuData;
+                state.charts.cpu.update();
+            }
+
+            // Atualizar gráfico de Memory
+            if (state.charts.memory) {
+                state.charts.memory.data.datasets[0].data = memData;
+                state.charts.memory.update();
+            }
+
+            // Atualizar gráfico de HPAs por Namespace
+            if (state.charts.hpa) {
+                const namespaces = Object.keys(hpasByNamespace).slice(0, 10); // Top 10
+                const counts = namespaces.map(ns => hpasByNamespace[ns]);
+
+                state.charts.hpa.data.labels = namespaces;
+                state.charts.hpa.data.datasets[0].data = counts;
+                state.charts.hpa.update();
+            }
+
+            // Atualizar gráfico de Distribuição de Replicas
+            if (state.charts.replica) {
+                state.charts.replica.data.datasets[0].data = [lowReplicas, medReplicas, highReplicas];
+                state.charts.replica.update();
+            }
+
+            console.log(`Charts updated with data from ${state.hpas.length} HPAs`);
+        }
+
+        // Switch tabs
+        function switchTab(tabName) {
+            // Update tab buttons
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            // Update tab panes
+            document.querySelectorAll('.tab-pane').forEach(pane => {
+                pane.classList.remove('active');
+            });
+            document.getElementById(tabName).classList.add('active');
+        }
+
+        // Mostrar mensagens
+        function showError(message) {
+            console.error(message);
+            showToast(message, 'error');
+        }
+
+        function showSuccess(message) {
+            console.log(message);
+            showToast(message, 'success');
+        }
+
+        // Toast notification
+        function showToast(message, type = 'info') {
+            const toast = document.createElement('div');
+            toast.style.cssText = `
+                position: fixed;
+                top: 80px;
+                right: 20px;
+                max-width: 400px;
+                padding: 15px 20px;
+                background: ${type === 'error' ? '#f8d7da' : '#d4edda'};
+                color: ${type === 'error' ? '#721c24' : '#155724'};
+                border: 1px solid ${type === 'error' ? '#f5c6cb' : '#c3e6cb'};
+                border-radius: 6px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                z-index: 10000;
+                font-size: 14px;
+                line-height: 1.5;
+                animation: slideIn 0.3s ease-out;
+                white-space: pre-line;
+            `;
+            toast.textContent = message;
+
+            document.body.appendChild(toast);
+
+            // Remover após 5 segundos
+            setTimeout(() => {
+                toast.style.animation = 'slideOut 0.3s ease-in';
+                setTimeout(() => toast.remove(), 300);
+            }, 5000);
+
+            // Adicionar animações CSS
+            if (!document.getElementById('toast-animations')) {
+                const style = document.createElement('style');
+                style.id = 'toast-animations';
+                style.textContent = `
+                    @keyframes slideIn {
+                        from {
+                            transform: translateX(400px);
+                            opacity: 0;
+                        }
+                        to {
+                            transform: translateX(0);
+                            opacity: 1;
+                        }
+                    }
+                    @keyframes slideOut {
+                        from {
+                            transform: translateX(0);
+                            opacity: 1;
+                        }
+                        to {
+                            transform: translateX(400px);
+                            opacity: 0;
+                        }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+        }
+
+        // Enter no campo de token faz login
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('tokenInput').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    login();
+                }
+            });
+        });
+    </script>
+</body>
+</html>

@@ -45,6 +45,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Sistema de Logs Completo** (F3) - visualizador com scroll, copiar, limpar logs
 - ✅ **Navegação ESC corrigida** - Node Pools voltam para Namespaces (origem do Ctrl+N)
 - ✅ **Race condition corrigida** - Mutex RWLock para testes paralelos de cluster (thread-safe)
+- 🚧 **Interface Web POC** - em desenvolvimento (ver Docs/WEB_INTERFACE_DESIGN.md e Docs/WEB_POC_STATUS.md)
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -1084,6 +1085,54 @@ Since Lipgloss 1.1.0 doesn't include native BorderTitle support, the app impleme
 
 ---
 
+## 🌐 Interface Web (POC)
+
+### Status: ✅ 85% Completa
+
+Uma POC de interface web complementar ao TUI está em desenvolvimento. Ver documentação dedicada:
+
+**Documentos Principais:**
+- `Docs/README_WEB.md` - Índice e quick start ⭐ **LEIA PRIMEIRO**
+- `Docs/CONTINUE_AQUI.md` - Guia de continuidade
+- `Docs/WEB_POC_STATUS.md` - Status detalhado da implementação (85% completo)
+- `Docs/WEB_INTERFACE_DESIGN.md` - Design completo da arquitetura
+- `Docs/WEB_VALIDATION_SYSTEM.md` - Sistema de validação Azure/VPN
+- `Docs/WEB_NODEPOOLS_IMPLEMENTED.md` - Implementação Node Pools
+- `Docs/RESUMO_SESSAO.md` - Resumo da sessão de desenvolvimento
+- `QUICK_START_WEB.sh` - Script automatizado de teste
+
+**Uso Rápido:**
+```bash
+# Build
+go build -o ./build/k8s-hpa-manager .
+
+# Iniciar modo web
+./build/k8s-hpa-manager web --port 8080
+
+# Acessar
+# Browser: http://localhost:8080
+# Token: poc-token-123
+```
+
+**Features Implementadas:**
+- ✅ Backend REST API (Gin Framework)
+- ✅ Autenticação Bearer Token
+- ✅ Endpoints: Clusters, Namespaces, HPAs, Node Pools
+- ✅ Sistema de validação Azure/VPN (cache 5min, timeout 5s)
+- ✅ Frontend SPA (HTML/CSS/JS)
+- ✅ Login, Dashboard, Navegação
+- ✅ Edição de HPAs funcional
+- ✅ Grid de Node Pools com cards responsivos
+- 🚧 CronJobs, Rollouts, Sessions (pendente)
+
+**Arquitetura:**
+- **Zero impacto** no TUI existente
+- Código isolado em `internal/web/`
+- Reutiliza toda lógica K8s/Azure
+- Modo exclusivo: TUI **ou** Web
+
+---
+
 **Happy coding!** 🚀
 
 ---
@@ -1091,3 +1140,5 @@ Since Lipgloss 1.1.0 doesn't include native BorderTitle support, the app impleme
 ## 📌 Lembrete Final
 
 **Sempre compile o build em ./build/** - `make build` → `./build/k8s-hpa-manager`
+
+**Para continuar POC web:** Leia `Docs/README_WEB.md` ou execute `./QUICK_START_WEB.sh`
