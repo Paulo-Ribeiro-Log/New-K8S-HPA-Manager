@@ -2,14 +2,41 @@ package cmd
 
 import (
 	"fmt"
+	"os/exec"
+	"runtime"
+	"time"
+
+	"k8s-hpa-manager/internal/web"
 
 	"github.com/spf13/cobra"
-	"k8s-hpa-manager/internal/web"
 )
 
 var (
-	webPort int
+	webPort   int
+	noBrowser bool
 )
+
+// openBrowser opens the default browser at the given URL
+func openBrowser(url string) error {
+	var cmd string
+	var args []string
+
+	switch runtime.GOOS {
+	case "linux":
+		cmd = "xdg-open"
+		args = []string{url}
+	case "darwin":
+		cmd = "open"
+		args = []string{url}
+	case "windows":
+		cmd = "cmd"
+		args = []string{"/c", "start", url}
+	default:
+		return fmt.Errorf("unsupported platform")
+	}
+
+	return exec.Command(cmd, args...).Start()
+}
 
 var webCmd = &cobra.Command{
 	Use:   "web",
@@ -53,6 +80,20 @@ API Endpoints:
 			return fmt.Errorf("failed to create web server: %w", err)
 		}
 
+		// Abrir browser automaticamente (após um pequeno delay para garantir que o servidor iniciou)
+		if !noBrowser {
+			go func() {
+				time.Sleep(1 * time.Second)
+				url := fmt.Sprintf("http://localhost:%d", webPort)
+				if err := openBrowser(url); err != nil {
+					fmt.Printf("Could not open browser automatically: %v\n", err)
+					fmt.Printf("Please open manually: %s\n", url)
+				} else {
+					fmt.Printf("Opening browser at %s\n", url)
+				}
+			}()
+		}
+
 		// Iniciar servidor
 		return server.Start()
 	},
@@ -64,4 +105,5 @@ func init() {
 
 	// Flags específicas do web
 	webCmd.Flags().IntVar(&webPort, "port", 8080, "Port for web server")
+	webCmd.Flags().BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically")
 }

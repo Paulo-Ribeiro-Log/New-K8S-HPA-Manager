@@ -26,6 +26,7 @@ const (
 	FolderHPADownscale  SessionFolder = "HPA-Downscale"
 	FolderNodeUpscale   SessionFolder = "Node-Upscale"
 	FolderNodeDownscale SessionFolder = "Node-Downscale"
+	FolderRollback      SessionFolder = "Rollback"
 )
 
 // NewManager cria um novo gerenciador de sessões
@@ -42,7 +43,7 @@ func NewManager() (*Manager, error) {
 	}
 
 	// Criar subdiretórios para cada tipo de sessão
-	folders := []SessionFolder{FolderHPAUpscale, FolderHPADownscale, FolderNodeUpscale, FolderNodeDownscale}
+	folders := []SessionFolder{FolderHPAUpscale, FolderHPADownscale, FolderNodeUpscale, FolderNodeDownscale, FolderRollback}
 	for _, folder := range folders {
 		folderPath := filepath.Join(sessionDir, string(folder))
 		if err := os.MkdirAll(folderPath, 0755); err != nil {
@@ -118,7 +119,7 @@ func (m *Manager) SaveSessionToFolder(session *models.Session, folder SessionFol
 
 // ListSessionFolders retorna todas as pastas de sessão disponíveis
 func (m *Manager) ListSessionFolders() []SessionFolder {
-	return []SessionFolder{FolderHPAUpscale, FolderHPADownscale, FolderNodeUpscale, FolderNodeDownscale}
+	return []SessionFolder{FolderHPAUpscale, FolderHPADownscale, FolderNodeUpscale, FolderNodeDownscale, FolderRollback}
 }
 
 // ListSessionsInFolder retorna as sessões de uma pasta específica

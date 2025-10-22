@@ -1,0 +1,6 @@
+Backup criado em: 2025-10-20 14:36:38
+Descrição: pre_restore_143632
+Branch atual: dev-k8s-hpa-manager
+Último commit: 33df281 correção das funções do prmetheus, do cronjob que tinham um namespace select e impediam o funcionamento dos HPAS. além da implementação do dark mode
+Usuário: paulo
+Hostname: Paulo

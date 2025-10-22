@@ -45,7 +45,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Sistema de Logs Completo** (F3) - visualizador com scroll, copiar, limpar logs
 - ✅ **Navegação ESC corrigida** - Node Pools voltam para Namespaces (origem do Ctrl+N)
 - ✅ **Race condition corrigida** - Mutex RWLock para testes paralelos de cluster (thread-safe)
-- 🚧 **Interface Web POC** - em desenvolvimento (ver Docs/WEB_INTERFACE_DESIGN.md e Docs/WEB_POC_STATUS.md)
+- ✅ **Interface Web POC (99% completa)** - HPAs, Node Pools, CronJobs e Prometheus Stack implementados com edição funcional + Dashboard redesignado com layout moderno grid 2x2 e métricas reais (ver Docs/README_WEB.md)
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -1085,51 +1085,580 @@ Since Lipgloss 1.1.0 doesn't include native BorderTitle support, the app impleme
 
 ---
 
-## 🌐 Interface Web (POC)
+## 🌐 Interface Web
 
-### Status: ✅ 85% Completa
+### Status: ✅ 95% Completa - Node Pools Editor Funcional
 
-Uma POC de interface web complementar ao TUI está em desenvolvimento. Ver documentação dedicada:
+Interface web moderna construída com **React + TypeScript + shadcn/ui**, totalmente integrada ao backend Go existente.
 
-**Documentos Principais:**
-- `Docs/README_WEB.md` - Índice e quick start ⭐ **LEIA PRIMEIRO**
-- `Docs/CONTINUE_AQUI.md` - Guia de continuidade
-- `Docs/WEB_POC_STATUS.md` - Status detalhado da implementação (85% completo)
-- `Docs/WEB_INTERFACE_DESIGN.md` - Design completo da arquitetura
-- `Docs/WEB_VALIDATION_SYSTEM.md` - Sistema de validação Azure/VPN
-- `Docs/WEB_NODEPOOLS_IMPLEMENTED.md` - Implementação Node Pools
-- `Docs/RESUMO_SESSAO.md` - Resumo da sessão de desenvolvimento
-- `QUICK_START_WEB.sh` - Script automatizado de teste
-
-**Uso Rápido:**
-```bash
-# Build
-go build -o ./build/k8s-hpa-manager .
-
-# Iniciar modo web
-./build/k8s-hpa-manager web --port 8080
-
-# Acessar
-# Browser: http://localhost:8080
-# Token: poc-token-123
+**Estrutura:**
+```
+internal/web/
+├── frontend/          # React/TypeScript app (NOVO)
+│   ├── src/
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── README.md
+├── static/            # Build output (embedado no Go binary)
+├── handlers/          # Go REST API handlers
+├── middleware/        # Auth, CORS, Logging
+└── server.go         # Gin HTTP server
 ```
 
+**Desenvolvimento:**
+```bash
+# 1. Instalar dependências do frontend
+make web-install
+
+# 2. Iniciar backend Go (terminal 1)
+./build/k8s-hpa-manager web --port 8080
+
+# 3. Iniciar frontend dev server (terminal 2)
+make web-dev
+# Frontend: http://localhost:5173
+# API proxy: /api/* → http://localhost:8080
+```
+
+**Build Produção:**
+```bash
+# Build completo (frontend + backend)
+make build-web
+
+# Ou separado
+make web-build    # Build frontend → internal/web/static/
+make build        # Build Go binary (embeda static/)
+```
+
+**Executar:**
+```bash
+./build/k8s-hpa-manager web --port 8080
+# Acesse: http://localhost:8080
+# Token: poc-token-123 (padrão POC)
+```
+
+**Tech Stack Frontend:**
+- **Framework**: React 18.3 + TypeScript 5.8
+- **Build**: Vite 5.4 (HMR, fast builds)
+- **Styling**: Tailwind CSS 3.4
+- **UI**: shadcn/ui (Radix UI primitives)
+- **State**: React Query (TanStack)
+- **Routing**: React Router DOM
+- **Icons**: Lucide React
+- **Charts**: Recharts
+
 **Features Implementadas:**
-- ✅ Backend REST API (Gin Framework)
-- ✅ Autenticação Bearer Token
-- ✅ Endpoints: Clusters, Namespaces, HPAs, Node Pools
-- ✅ Sistema de validação Azure/VPN (cache 5min, timeout 5s)
-- ✅ Frontend SPA (HTML/CSS/JS)
-- ✅ Login, Dashboard, Navegação
-- ✅ Edição de HPAs funcional
-- ✅ Grid de Node Pools com cards responsivos
-- 🚧 CronJobs, Rollouts, Sessions (pendente)
+- ✅ **Backend REST API** (Gin Framework)
+- ✅ **Autenticação** Bearer Token
+- ✅ **Endpoints**: Clusters, Namespaces, HPAs, Node Pools, CronJobs, Prometheus
+- ✅ **Validação** Azure/VPN (cache 5min, timeout 5s)
+- ✅ **Frontend React** moderno com shadcn/ui
+- ✅ **Dashboard** com estatísticas e gráficos
+- ✅ **HPA Management** - CRUD completo com edição de recursos
+- ✅ **Node Pools** - Grid responsivo com editor funcional (autoscaling, node count, min/max)
+- ✅ **Node Pool Cluster Matching** - Correção de `-admin` suffix para matching correto
+- ✅ **CronJobs** - Suspend/Resume
+- ✅ **Prometheus Stack** - Resource management
+- ✅ **Modal de Confirmação** - Preview de alterações e progress bars de rollout
+- ✅ **Deployment Resource Updates** - CPU/Memory Request/Limit aplicados ao deployment
+- ✅ **Dev Server** com proxy API
+- ✅ **Embed no Go** binary (produção)
+- 🚧 **Sessões** (Planejado - ver `Docs/WEB_SESSIONS_PLAN.md`)
+- 🚧 Rollouts (pendente)
 
 **Arquitetura:**
 - **Zero impacto** no TUI existente
-- Código isolado em `internal/web/`
-- Reutiliza toda lógica K8s/Azure
-- Modo exclusivo: TUI **ou** Web
+- **Modo exclusivo**: TUI **ou** Web (não simultâneo)
+- **Reutilização**: Toda lógica K8s/Azure compartilhada
+- **Build único**: Frontend embedado no binário Go
+
+### 📋 Sistema de Sessões (Planejado)
+
+**Status**: Plano completo documentado em `Docs/WEB_SESSIONS_PLAN.md`
+
+**Objetivo**: Sistema de save/load de sessões compatível 100% com TUI, permitindo:
+- Salvar staging area (HPAs + Node Pools) em sessões nomeadas
+- Carregar sessões salvas de volta para staging
+- Sessões criadas no TUI funcionam na Web e vice-versa
+- Templates de nomenclatura com variáveis: `{action}`, `{cluster}`, `{timestamp}`, etc.
+
+**Estrutura de Diretórios**:
+```
+~/.k8s-hpa-manager/sessions/
+├── HPA-Upscale/           # Sessões de upscale de HPAs
+├── HPA-Downscale/         # Sessões de downscale de HPAs
+├── Node-Upscale/          # Sessões de upscale de Node Pools
+└── Node-Downscale/        # Sessões de downscale de Node Pools
+```
+
+**Componentes Planejados**:
+
+**Backend**:
+- `internal/web/handlers/sessions.go` - Handlers REST API
+- Endpoints: GET/POST/DELETE `/api/v1/sessions`
+- Reutiliza `internal/session/manager.go` (código TUI existente)
+
+**Frontend**:
+- `SessionContext.tsx` - Gerenciamento de estado de sessões
+- `SaveSessionModal.tsx` - UI para salvar sessão atual
+- `LoadSessionModal.tsx` - UI para carregar sessões existentes
+- `sessionConverter.ts` - Conversão Staging ↔ Session JSON
+- Integração com `StagingContext` existente
+
+**Fluxo de Uso**:
+1. Usuário edita HPAs/Node Pools → Staging area
+2. Clica "Save Session" → SaveSessionModal abre
+3. Escolhe pasta (HPA-Upscale/Downscale/Node-Upscale/Downscale)
+4. Define nome usando template ou custom
+5. Backend salva JSON em `~/.k8s-hpa-manager/sessions/{folder}/{name}.json`
+6. Para carregar: LoadSessionModal lista sessões → Preview → Load → Staging area
+
+**Compatibilidade TUI ↔ Web**:
+- Mesmo formato JSON de sessão
+- Mesma estrutura de diretórios
+- SessionManager Go compartilhado
+- Templates idênticos
+
+**Ver documentação completa**: `Docs/WEB_SESSIONS_PLAN.md`
+
+### 🐛 Correções Críticas da Interface Web (Outubro 2025)
+
+#### 1. **Fix: Modal Enviando Objeto HPA Parcial (RESOLVIDO)**
+
+**Problema:** Modal de confirmação enviava apenas as alterações (delta) ao backend, mas o handler esperava objeto HPA completo via `c.ShouldBindJSON(&hpa)`. Isso causava:
+- Campos não editados ficavam vazios/null no backend
+- `MaxReplicas:0` falhava na validação (`maxReplicas must be >= 1`)
+- Alterações de Memory Limit falhavam mesmo sendo válidas
+
+**Sintoma:**
+```go
+📝 Received HPA update: {Name: Namespace: Cluster: MinReplicas:<nil> MaxReplicas:0 ... TargetMemoryLimit:385Mi ...}
+❌ Error: maxReplicas must be >= 1
+```
+
+**Causa Raiz:**
+```typescript
+// ❌ ANTES - Enviava apenas alterações
+const updates: any = {};
+if (current.min_replicas !== original.min_replicas) {
+  updates.min_replicas = current.min_replicas;
+}
+// ... apenas campos modificados ...
+
+await apiClient.updateHPA(cluster, namespace, name, updates);
+// Backend recebia: {target_memory_limit: "385Mi"} ❌
+```
+
+**Solução Implementada:**
+```typescript
+// ✅ DEPOIS - Envia HPA completo
+await apiClient.updateHPA(
+  current.cluster,
+  current.namespace,
+  current.name,
+  current  // Objeto HPA completo com todos os campos
+);
+// Backend recebia: {name: "nginx", namespace: "ingress-nginx", min_replicas: 2, max_replicas: 10, target_memory_limit: "385Mi", ...} ✅
+```
+
+**Arquivo Modificado:**
+- `internal/web/frontend/src/components/ApplyAllModal.tsx:173-180`
+
+**Resultado:** Todas as alterações de HPA (replicas, targets, resources) agora aplicam com sucesso! ✅
+
+#### 2. **Fix: Page Reload Perdendo Estado da Aplicação (RESOLVIDO)**
+
+**Problema:** Após aplicar alterações, `window.location.reload()` era executado, causando:
+- Perda do cluster selecionado
+- Retorno à tela de login
+- Perda de contexto de navegação
+
+**Solução:**
+```typescript
+// ❌ ANTES
+const { hpas, loading, updateHPA } = useHPAs(selectedCluster);
+window.location.reload(); // Perdia todo o estado
+
+// ✅ DEPOIS
+const { hpas, loading, refetch: refetchHPAs } = useHPAs(selectedCluster);
+refetchHPAs(); // Atualiza apenas HPAs, preserva estado
+```
+
+**Arquivos Modificados:**
+- `internal/web/frontend/src/pages/Index.tsx:42,269`
+- `internal/web/frontend/src/components/ApplyAllModal.tsx:209,270`
+
+#### 3. **Fix: Modal Mostrando Campos Não Alterados (RESOLVIDO)**
+
+**Problema:** Modal exibia `"Target Memory (%): — → —"` para campos que não foram editados (null → null).
+
+**Solução:**
+```typescript
+const renderChange = (label: string, before: any, after: any) => {
+  // Normalizar null/undefined
+  const normalizedBefore = before ?? null;
+  const normalizedAfter = after ?? null;
+
+  // Não exibir se ambos são null (sem alteração real)
+  if (normalizedBefore === normalizedAfter) return null;
+
+  // Não exibir se ambos são vazios (— → —)
+  if ((normalizedBefore === null || normalizedBefore === "") &&
+      (normalizedAfter === null || normalizedAfter === "")) {
+    return null;
+  }
+
+  return (/* ... renderiza apenas mudanças reais ... */);
+};
+```
+
+**Arquivo Modificado:**
+- `internal/web/frontend/src/components/ApplyAllModal.tsx:221-243`
+
+#### 4. **Feature: Backend Deployment Resource Updates (IMPLEMENTADO)**
+
+**Funcionalidade:** Backend agora atualiza CPU/Memory Request/Limit no deployment associado ao HPA.
+
+**Implementação:**
+```go
+// Atualizar resources do deployment se fornecidos
+if hpa.TargetCPURequest != "" || hpa.TargetCPULimit != "" ||
+   hpa.TargetMemoryRequest != "" || hpa.TargetMemoryLimit != "" {
+
+    deployment, err := c.clientset.AppsV1().Deployments(hpa.Namespace).Get(...)
+    if err != nil {
+        return fmt.Errorf("failed to get deployment: %w", err)
+    }
+
+    container := &deployment.Spec.Template.Spec.Containers[0]
+
+    // Parse e aplicar quantities (100m, 256Mi, 1Gi)
+    if hpa.TargetCPURequest != "" {
+        cpuRequest, err := resource.ParseQuantity(hpa.TargetCPURequest)
+        container.Resources.Requests["cpu"] = cpuRequest
+    }
+    // ... CPU Limit, Memory Request, Memory Limit ...
+
+    // Aplicar ao cluster
+    _, err = c.clientset.AppsV1().Deployments(hpa.Namespace).Update(ctx, deployment, ...)
+}
+```
+
+**Arquivo Modificado:**
+- `internal/kubernetes/client.go:188-253`
+
+#### 5. **Fix: Node Pool Editor e Cluster Name Matching (RESOLVIDO - Outubro 2025)**
+
+**Problema:** Editor de Node Pools não aparecia ao clicar nos itens da lista. A API retornava erro "CLUSTER_NOT_FOUND" mesmo com clusters válidos.
+
+**Causa Raiz:**
+1. **Mismatch de nomes**: Frontend enviava `akspriv-lab-001-admin`, mas `clusters-config.json` não tinha esse cluster
+2. **Função `findClusterInConfig()`**: Não fazia match correto entre contextos do kubeconfig (com `-admin`) e nomes no config file (sem `-admin`)
+
+**Sintoma:**
+```json
+// API Request
+GET /api/v1/nodepools?cluster=akspriv-lab-001-admin
+
+// API Response
+{
+  "success": false,
+  "error": {
+    "code": "CLUSTER_NOT_FOUND",
+    "message": "Cluster not found in clusters-config.json: cluster 'akspriv-lab-001-admin' not found"
+  }
+}
+```
+
+**Solução Implementada:**
+
+**1. Corrigida lógica de matching em `findClusterInConfig()`:**
+```go
+// ✅ ANTES (incorreto)
+for _, cluster := range clusters {
+    if cluster.ClusterName == clusterContext {  // Não remove -admin
+        return &cluster, nil
+    }
+}
+
+// ✅ DEPOIS (correto)
+func findClusterInConfig(clusterContext string) (*models.ClusterConfig, error) {
+    // Remover -admin do contexto (kubeconfig contexts têm -admin, config file não)
+    clusterNameWithoutAdmin := strings.TrimSuffix(clusterContext, "-admin")
+
+    for _, cluster := range clusters {
+        // Remover -admin do cluster name também para comparação
+        configClusterName := strings.TrimSuffix(cluster.ClusterName, "-admin")
+
+        // Comparar sem o sufixo -admin
+        if configClusterName == clusterNameWithoutAdmin {
+            return &cluster, nil
+        }
+
+        // Também comparar exatamente como está (fallback)
+        if cluster.ClusterName == clusterContext {
+            return &cluster, nil
+        }
+    }
+
+    return nil, fmt.Errorf("cluster '%s' not found in clusters-config.json", clusterContext)
+}
+```
+
+**2. Estrutura JSON correta:**
+```json
+// clusters-config.json (gerado por autodiscover)
+[
+  {
+    "clusterName": "akspriv-faturamento-prd",  // ✅ sem -admin
+    "resourceGroup": "rg-faturamento-app-prd",
+    "subscription": "PRD - ONLINE 2"
+  }
+]
+
+// models.ClusterConfig (Go struct)
+type ClusterConfig struct {
+    ClusterName   string `json:"clusterName"`   // ✅ camelCase matching JSON
+    ResourceGroup string `json:"resourceGroup"`
+    Subscription  string `json:"subscription"`
+}
+```
+
+**Teste Bem-Sucedido:**
+```bash
+# Teste com cluster válido
+curl -s -H 'Authorization: Bearer poc-token-123' \
+  'http://localhost:8080/api/v1/nodepools?cluster=akspriv-faturamento-prd-admin' | jq '.'
+
+# Resposta (sucesso)
+{
+  "success": true,
+  "data": [
+    {
+      "name": "fatura",
+      "cluster_name": "akspriv-faturamento-prd",
+      "vm_size": "Standard_F4s_v2",
+      "node_count": 1,
+      "min_node_count": 1,
+      "max_node_count": 3,
+      "autoscaling_enabled": true,
+      "status": "Succeeded",
+      "is_system_pool": false
+    }
+  ],
+  "count": 4
+}
+```
+
+**Para o Editor Aparecer no Frontend:**
+1. **Hard refresh** no browser: `Ctrl+Shift+R` para limpar cache JavaScript
+2. **Selecionar cluster válido**: Use um cluster que existe em `~/.k8s-hpa-manager/clusters-config.json`
+3. **Verificar clusters disponíveis**:
+   ```bash
+   cat ~/.k8s-hpa-manager/clusters-config.json | jq '.[].clusterName'
+   ```
+4. **Clicar em um node pool** da lista - o editor deve aparecer no painel direito
+
+**Arquivos Modificados:**
+- `internal/web/handlers/nodepools.go:256-282` - Função `findClusterInConfig()` corrigida
+- `internal/models/types.go` - Struct `ClusterConfig` com tags JSON corretas (camelCase)
+
+**Nota Importante:**
+- O cluster `akspriv-lab-001-admin` da imagem do usuário **NÃO EXISTE** no `clusters-config.json` real
+- Clusters disponíveis incluem: `akspriv-faturamento-prd`, `akspriv-abastecimento-prd`, `akspriv-tms-prd`, etc.
+- Execute `k8s-hpa-manager autodiscover` se clusters estiverem faltando no config file
+
+**Validação:**
+- MinReplicas relaxada: `>= 0` (permite scale-to-zero)
+- Debug logging adicionado em `hpas.go:164,175`
+
+#### 5. **Feature: ApplyAllModal com Progress Tracking (IMPLEMENTADO)**
+
+**Funcionalidades:**
+- ✅ **Preview Mode** - Exibe before → after de todas alterações
+- ✅ **Progress Mode** - Mostra aplicação sequencial com progress bars
+- ✅ **Rollout Simulation** - Progress bars animadas (0-100%) para Deployment/DaemonSet/StatefulSet
+- ✅ **Error Handling** - Erro individual por HPA sem bloquear outros
+- ✅ **Auto-close** - Fecha modal em 2s após sucesso total
+
+**Arquivos Criados/Modificados:**
+- `internal/web/frontend/src/components/ApplyAllModal.tsx` (NOVO - 460 linhas)
+- `internal/web/frontend/src/components/HPAEditor.tsx` (callback pattern)
+- `internal/web/frontend/src/pages/Index.tsx` (integração modal)
+- `internal/web/frontend/src/lib/api/types.ts` (tipos expandidos)
+
+**Documentação:**
+- `internal/web/frontend/README.md` - Frontend docs
+- `Docs/README_WEB.md` - Web interface overview
+- `Docs/WEB_INTERFACE_DESIGN.md` - Arquitetura completa
+
+---
+
+#### 6. **Feature: Dashboard com Métricas de Cluster (IMPLEMENTADO - Outubro 2025)**
+
+**Objetivo:** Dashboard mostrando informações essenciais do cluster com gráficos gauge-style para CPU e memória.
+
+**Problema Inicial:**
+- Dashboard exibia erro "Failed to get cluster info"
+- Frontend não conseguia acessar dados do backend
+- Estrutura de resposta JSON incorreta no cliente API
+
+**Solução Implementada:**
+
+**1. Correção do Cliente API:**
+```typescript
+// ❌ ANTES - Estrutura incorreta
+async getClusterInfo(): Promise<ClusterInfo> {
+  const response = await this.request('/clusters/info', { method: 'GET' });
+  return response.data.data; // ❌ Tentava acessar data.data
+}
+
+// ✅ DEPOIS - Estrutura correta
+async getClusterInfo(): Promise<ClusterInfo> {
+  const response = await this.request('/clusters/info', { method: 'GET' }) as { success: boolean; data: ClusterInfo };
+  return response.data; // ✅ Acessa apenas data
+}
+```
+
+**2. Melhorias na Interface:**
+```typescript
+// Labels corrigidos para refletir dados reais
+<CircularMetric
+  percentage={clusterInfo?.cpuUsagePercent || 0}
+  label="CPU Requests"     // ✅ ANTES: "CPU Usage"
+  icon={Cpu}
+  color="text-blue-500"
+/>
+<CircularMetric
+  percentage={clusterInfo?.memoryUsagePercent || 0}
+  label="Memory Requests"  // ✅ ANTES: "Memory Usage"
+  icon={HardDrive}
+  color="text-green-500"
+/>
+```
+
+**3. Limpeza do Dashboard:**
+- ❌ **Removido:** Cards "HPAs por Namespace" e "Distribuição de Réplicas" (não faziam sentido)
+- ✅ **Mantido:** "Informações do Cluster" e "Alocação de Recursos"
+
+**Features do Dashboard:**
+- ✅ **Informações do Cluster:** Nome, contexto, versão K8s, namespace, contadores (nodes/pods)
+- ✅ **Gráficos Gauge:** CPU e memória com percentuais circulares animados
+- ✅ **Layout Responsivo:** Grid 2 colunas, design limpo
+- ✅ **Auto-refresh:** Atualização a cada 30 segundos
+- ✅ **Error Handling:** Botão "Tentar novamente" em caso de erro
+
+**Esclarecimento sobre Métricas:**
+- **CPU/Memory %** = Alocação de recursos via `requests` dos containers
+- **NÃO é uso real** - para métricas reais seria necessário Metrics Server ou Prometheus
+- Títulos alterados para "Alocação de Recursos" para evitar confusão
+
+**Arquivos Modificados:**
+- `internal/web/frontend/src/lib/api/client.ts:85-87` - Fix estrutura response
+- `internal/web/frontend/src/components/DashboardCharts.tsx:194-210` - Labels e layout
+- `internal/config/kubeconfig.go:601` - Comentário sobre fonte dos dados
+
+**Resultado:** Dashboard funcional exibindo informações reais do cluster com gráficos gauge profissionais! ✅
+
+#### 7. **Feature: Dashboard Redesign com MetricsGauge (IMPLEMENTADO - Outubro 2025)**
+
+**Objetivo:** Redesign completo do dashboard para um estilo mais moderno e profissional com layout em grid 2x2.
+
+**Problema:** O dashboard anterior tinha um layout básico que não aproveitava bem o espaço e não tinha uma aparência profissional.
+
+**Solução Implementada:**
+
+**1. Novo Componente MetricsGauge:**
+```typescript
+// Componente reutilizável para métricas com gauge circular + barra de progresso
+interface MetricsGaugeProps {
+  icon: LucideIcon;
+  label: string;
+  value: number;
+  unit?: string;
+  maxValue?: number;
+  warningThreshold?: number;
+  dangerThreshold?: number;
+}
+
+// Features:
+- Gráfico circular SVG customizado
+- Barra de progresso inferior (shadcn/ui Progress)
+- Cores dinâmicas baseadas em thresholds
+- Animações suaves (stroke-dashoffset)
+- Status visual (success/warning/destructive)
+```
+
+**2. Layout Grid 2x2 Moderno:**
+```typescript
+// Dashboard com 4 cards principais em grid responsivo
+<div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6">
+  <MetricsGauge 
+    icon={Cpu} 
+    label="CPU Usage" 
+    value={cpuUsagePercent} 
+    warningThreshold={70} 
+    dangerThreshold={90} 
+  />
+  <MetricsGauge 
+    icon={HardDrive} 
+    label="Memory Usage" 
+    value={memoryUsagePercent} 
+    warningThreshold={70} 
+    dangerThreshold={90} 
+  />
+  <MetricsGauge 
+    icon={Activity} 
+    label="CPU Usage Over Time" 
+    value={0} 
+    // Placeholder para funcionalidade futura
+  />
+  <MetricsGauge 
+    icon={Database} 
+    label="Memory Usage Over Time" 
+    value={0} 
+    // Placeholder para funcionalidade futura
+  />
+</div>
+```
+
+**3. Melhorias Visuais:**
+- **Gauge Circular Responsivo:** SVG que se adapta ao container
+- **Barra de Progresso:** Indicador visual adicional na base do card
+- **Cores Inteligentes:** 
+  - 🟢 Verde (0-69%): Normal
+  - 🟡 Amarelo (70-89%): Warning  
+  - 🔴 Vermelho (90%+): Danger
+- **Animações Suaves:** Transições de 0.8s para mudanças de valores
+- **Cards Uniformes:** Altura e layout consistentes
+
+**4. Sistema de Threshold Configurável:**
+```typescript
+// Thresholds customizáveis por métrica
+const cpuThresholds = { warning: 70, danger: 90 };
+const memoryThresholds = { warning: 80, danger: 95 };
+```
+
+**5. Placeholder Cards para Expansão Futura:**
+- **CPU Usage Over Time:** Gráfico de linha temporal
+- **Memory Usage Over Time:** Gráfico de linha temporal  
+- **HPAs by Namespace:** Distribuição por namespace
+- **Replica Distribution:** Distribuição de réplicas
+
+**Features Implementadas:**
+- ✅ **Layout Grid 2x2** responsivo (1 col mobile, 2 cols desktop)
+- ✅ **Componente MetricsGauge** reutilizável
+- ✅ **Gauge Circular** com animação de progresso
+- ✅ **Barra de Progresso** inferior para reforço visual
+- ✅ **Sistema de Cores** baseado em thresholds configuráveis
+- ✅ **Integração com shadcn/ui** (Progress, Card, etc.)
+- ✅ **Métricas Reais** do cluster selecionado
+- ✅ **Placeholder Cards** para funcionalidades futuras
+
+**Arquivos Criados/Modificados:**
+- `internal/web/frontend/src/components/MetricsGauge.tsx` (NOVO - 89 linhas)
+- `internal/web/frontend/src/components/DashboardCharts.tsx` (redesign completo)
+
+**Resultado:** Dashboard moderno estilo enterprise com layout profissional em grid 2x2! ✅
 
 ---
 
@@ -1142,3 +1671,860 @@ go build -o ./build/k8s-hpa-manager .
 **Sempre compile o build em ./build/** - `make build` → `./build/k8s-hpa-manager`
 
 **Para continuar POC web:** Leia `Docs/README_WEB.md` ou execute `./QUICK_START_WEB.sh`
+
+# CLAUDE.md - Sessão de Desenvolvimento Web Interface
+
+## Data: 22 de Outubro de 2025
+## Objetivo: Sistema de captura de snapshot direto do cluster para rollback
+
+---
+
+## 🚨 SESSÃO ATUAL: SNAPSHOT DE CLUSTER PARA ROLLBACK
+
+### Problema Resolvido:
+Feature de "Capturar Snapshot" estava salvando valores zeros porque usava dados do cache (staging context) ao invés de buscar dados frescos do cluster.
+
+### Solução Implementada:
+
+**1. Função de Captura Direta do Cluster:**
+
+**SaveSessionModal.tsx** - Nova função `fetchClusterDataForSnapshot()`:
+```typescript
+// Busca dados FRESCOS do cluster (não usa cache)
+const fetchClusterDataForSnapshot = async () => {
+  if (!selectedCluster || selectedCluster === 'default') {
+    console.error('[fetchClusterDataForSnapshot] Cluster inválido');
+    toast.error('Por favor, selecione um cluster válido antes de capturar o snapshot');
+    return null;
+  }
+
+  setCapturingSnapshot(true);
+
+  try {
+    // Buscar HPAs de TODOS os namespaces (snapshot deve capturar tudo)
+    const hpaUrl = `/api/v1/hpas?cluster=${encodeURIComponent(selectedCluster)}`;
+    const hpaResponse = await fetch(hpaUrl, {
+      headers: { 'Authorization': 'Bearer poc-token-123' }
+    });
+
+    if (!hpaResponse.ok) {
+      throw new Error(`Erro ao buscar HPAs: ${hpaResponse.statusText}`);
+    }
+
+    const hpaData = await hpaResponse.json();
+    const hpas: HPA[] = hpaData.data || [];
+
+    // Buscar Node Pools
+    const npUrl = `/api/v1/nodepools?cluster=${encodeURIComponent(selectedCluster)}`;
+    const npResponse = await fetch(npUrl, {
+      headers: { 'Authorization': 'Bearer poc-token-123' }
+    });
+
+    if (!npResponse.ok) {
+      throw new Error(`Erro ao buscar Node Pools: ${npResponse.statusText}`);
+    }
+
+    const npData = await npResponse.json();
+    const nodePools: NodePool[] = npData.data || [];
+
+    // Transformar HPAs para formato de sessão
+    const hpaChanges = hpas.map(hpa => ({
+      cluster: hpa.cluster,
+      namespace: hpa.namespace,
+      hpa_name: hpa.name,
+      original_values: {
+        min_replicas: hpa.min_replicas,
+        max_replicas: hpa.max_replicas,
+        target_cpu: hpa.target_cpu_percent,
+        target_memory: hpa.target_memory_percent,
+        cpu_request: hpa.cpu_request,
+        cpu_limit: hpa.cpu_limit,
+        memory_request: hpa.memory_request,
+        memory_limit: hpa.memory_limit,
+      },
+      new_values: {
+        min_replicas: hpa.min_replicas,
+        max_replicas: hpa.max_replicas,
+        target_cpu: hpa.target_cpu_percent,
+        target_memory: hpa.target_memory_percent,
+        cpu_request: hpa.cpu_request,
+        cpu_limit: hpa.cpu_limit,
+        memory_request: hpa.memory_request,
+        memory_limit: hpa.memory_limit,
+        perform_rollout: false,
+        perform_daemonset_rollout: false,
+        perform_statefulset_rollout: false,
+      },
+    }));
+
+    // Transformar Node Pools para formato de sessão
+    const nodePoolChanges = nodePools.map(nodePool => ({
+      cluster: nodePool.cluster,
+      node_pool_name: nodePool.name,
+      resource_group: nodePool.resource_group || '',
+      original_values: {
+        node_count: nodePool.node_count,
+        autoscaling_enabled: nodePool.autoscaling?.enabled || false,
+        min_node_count: nodePool.autoscaling?.min_count || 0,
+        max_node_count: nodePool.autoscaling?.max_count || 0,
+      },
+      new_values: {
+        node_count: nodePool.node_count,
+        autoscaling_enabled: nodePool.autoscaling?.enabled || false,
+        min_node_count: nodePool.autoscaling?.min_count || 0,
+        max_node_count: nodePool.autoscaling?.max_count || 0,
+      },
+    }));
+
+    toast.success(`Snapshot capturado: ${hpas.length} HPAs, ${nodePools.length} Node Pools`);
+
+    return {
+      changes: hpaChanges,
+      node_pool_changes: nodePoolChanges,
+    };
+  } catch (error) {
+    console.error('Erro ao capturar snapshot:', error);
+    toast.error(error instanceof Error ? error.message : 'Erro ao capturar snapshot do cluster');
+    return null;
+  } finally {
+    setCapturingSnapshot(false);
+  }
+};
+```
+
+**2. Integração com TabManager:**
+
+**Problema:** SaveSessionModal não conseguia acessar cluster selecionado porque:
+- Index.tsx (componente antigo) não sincronizava com TabManager
+- `pageState.selectedCluster` estava vazio quando deveria conter o cluster
+
+**Solução:** Sincronização do Index.tsx com TabManager:
+
+```typescript
+// Index.tsx - Importar TabManager
+import { useTabManager } from "@/contexts/TabContext";
+
+// Hook para sincronizar estado
+const { updateActiveTabState } = useTabManager();
+
+// Handler de cluster change atualizado
+const handleClusterChange = async (newCluster: string) => {
+  if (newCluster === selectedCluster) return;
+
+  try {
+    await apiClient.switchContext(newCluster);
+    
+    // Atualizar estado local
+    setSelectedCluster(newCluster);
+    setSelectedNamespace("");
+    setSelectedHPA(null);
+    setSelectedNodePool(null);
+    
+    // Sincronizar com TabManager (CRÍTICO para SaveSessionModal)
+    updateActiveTabState({
+      selectedCluster: newCluster,
+      selectedNamespace: "",
+      selectedHPA: null,
+      selectedNodePool: null,
+      isContextSwitching: false
+    });
+    
+    toast.success(`Contexto alterado para: ${newCluster}`);
+  } catch (error) {
+    console.error('[ClusterSwitch] Error:', error);
+    toast.error('Erro ao alterar contexto');
+  } finally {
+    setIsContextSwitching(false);
+  }
+};
+```
+
+**3. Correção do TabProvider:**
+
+**Problema:** TabProvider não estava envolvendo a aplicação, causando erro "useTabManager must be used within a TabProvider"
+
+**Solução:** Adicionar TabProvider no App.tsx:
+
+```typescript
+// App.tsx
+import { TabProvider } from "./contexts/TabContext";
+
+return (
+  <ThemeProvider defaultTheme="system" storageKey="k8s-hpa-theme">
+    <QueryClientProvider client={queryClient}>
+      <TabProvider>  {/* ✅ ADICIONADO */}
+        <StagingProvider>
+          <TooltipProvider>
+            {/* ... resto da aplicação ... */}
+          </TooltipProvider>
+        </StagingProvider>
+      </TabProvider>
+    </QueryClientProvider>
+  </ThemeProvider>
+);
+```
+
+**4. Handler de Save Assíncrono:**
+
+```typescript
+// SaveSessionModal.tsx - handleSave agora é async
+const handleSave = async () => {
+  if (!sessionName.trim() || !selectedFolder) {
+    return;
+  }
+
+  let sessionData;
+
+  if (saveMode === 'staging' && hasChanges) {
+    // Modo staging: salvar alterações pendentes
+    sessionData = staging.getSessionData();
+  } else {
+    // Modo snapshot: capturar estado atual para rollback (buscar dados frescos do cluster)
+    const snapshotData = await fetchClusterDataForSnapshot();
+    if (!snapshotData) {
+      return; // Erro já tratado em fetchClusterDataForSnapshot
+    }
+    sessionData = snapshotData;
+  }
+  
+  saveSession({
+    name: sessionName.trim(),
+    folder: selectedFolder,
+    description: description.trim(),
+    template: selectedTemplate || 'custom',
+    changes: sessionData.changes,
+    node_pool_changes: sessionData.node_pool_changes,
+  }, {
+    onSuccess: () => {
+      onOpenChange(false);
+      onSuccess?.();
+    },
+  });
+};
+```
+
+**5. Estado de Loading:**
+
+```typescript
+// Adicionar estado de captura de snapshot
+const [capturingSnapshot, setCapturingSnapshot] = useState<boolean>(false);
+
+// Desabilitar botões durante captura
+<Button 
+  onClick={handleSave} 
+  disabled={!isValid || saving || capturingSnapshot}
+>
+  {(saving || capturingSnapshot) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+  {saveMode === 'snapshot' ? 'Capturar Snapshot' : 'Salvar Sessão'}
+</Button>
+```
+
+### Features Implementadas:
+
+1. ✅ **Busca Direta do Cluster** - Chama API endpoints diretamente sem usar cache
+2. ✅ **Captura Todos Namespaces** - Snapshot pega TODOS os HPAs de TODOS os namespaces
+3. ✅ **Captura Todos Node Pools** - Inclui todos os node pools do cluster
+4. ✅ **Transformação para Session Format** - original_values = new_values (snapshot do estado atual)
+5. ✅ **Estado de Loading** - Spinner durante captura com botões desabilitados
+6. ✅ **Validação de Cluster** - Rejeita cluster "default" (placeholder inicial)
+7. ✅ **Sincronização TabManager** - Index.tsx atualiza pageState quando cluster muda
+8. ✅ **Logs de Debug** - Console logs para rastreamento de problemas
+9. ✅ **Toast Notifications** - Feedback visual de sucesso/erro
+10. ✅ **Error Handling** - Tratamento robusto de erros de rede
+
+### Workflow Completo:
+
+1. Usuário seleciona cluster no dropdown
+2. Index.tsx chama `handleClusterChange()` que:
+   - Atualiza estado local (`setSelectedCluster`)
+   - Sincroniza com TabManager (`updateActiveTabState`)
+3. Usuário clica "Salvar Sessão"
+4. SaveSessionModal detecta modo snapshot (sem mudanças pendentes)
+5. Clica "Capturar Snapshot"
+6. `fetchClusterDataForSnapshot()` executa:
+   - Valida cluster selecionado
+   - Busca HPAs via GET `/api/v1/hpas?cluster=X`
+   - Busca Node Pools via GET `/api/v1/nodepools?cluster=X`
+   - Transforma para formato de sessão
+   - Mostra toast com contagem de recursos
+7. Session é salva na pasta "Rollback"
+
+### Arquivos Modificados:
+
+- `internal/web/frontend/src/components/SaveSessionModal.tsx` - Função de snapshot e validação
+- `internal/web/frontend/src/pages/Index.tsx` - Sincronização com TabManager
+- `internal/web/frontend/src/App.tsx` - Adição do TabProvider
+
+### Build Commands:
+
+```bash
+# Frontend
+cd internal/web/frontend
+npm run build
+
+# Backend Go (embeda static files)
+cd ../../..
+make build
+
+# Executar
+./build/k8s-hpa-manager web
+```
+
+---
+
+## Data: 21 de Outubro de 2025
+## Objetivo: Sistema de gerenciamento de sessões salvas (rename, edit, delete)
+
+---
+
+## 🚨 ESTADO ATUAL DO DESENVOLVIMENTO WEB
+
+### Features Implementadas com Sucesso:
+1. ✅ **Sistema de Sessões Completo** - Save/Load funcionando com compatibilidade TUI
+2. ✅ **Staging Context** - HPAs e Node Pools com tracking de modificações
+3. ✅ **Modal de Confirmação** - Preview de alterações com "before → after"
+4. ✅ **Session Info Banner** - Exibe nome da sessão e clusters no ApplyAllModal
+5. ✅ **Cluster Name Suffix Fix** - Adição automática de `-admin` ao carregar sessões
+6. ✅ **Build System** - `./rebuild-web.sh -b` para builds corretos
+7. ✅ **"Cancelar e Limpar" Button** - Limpa staging no ApplyAllModal
+8. ✅ **Session Management UI** - Dropdown menu com rename e delete (Outubro 2025)
+
+### Bugs Críticos Resolvidos (Outubro 2025):
+1. ✅ **Cluster Context Mismatch** - Sessions salvavam sem `-admin`, kubeconfig tinha com `-admin`
+2. ✅ **API Calls Wrong Cluster** - `StagingContext.loadFromSession()` agora adiciona `-admin`
+3. ✅ **selectedCluster Not Updating** - `Index.tsx` reseta namespace e atualiza cluster ao carregar
+4. ✅ **Build Cache Issues** - Descoberto que `./rebuild-web.sh -b` é obrigatório
+5. ✅ **Session Folder Property** - Adicionado `folder?: string` ao tipo `Session`
+6. ✅ **Backend Rename Endpoint** - `PUT /api/v1/sessions/:name/rename` implementado
+7. ✅ **TypeScript Errors** - Corrigidos erros de tipo em `LoadSessionModal.tsx`
+
+---
+
+## 📋 FEATURE ATUAL: SESSION MANAGEMENT (Rename & Delete)
+
+### Problema Reportado:
+Usuário solicitou funcionalidades de gerenciamento de sessões salvas:
+- **Renomear sessões** - Alterar nome de sessões existentes
+- **Editar sessões** - Modificar conteúdo de sessões salvas (futuro)
+- **Deletar sessões** - Remover sessões não mais necessárias
+
+### Status: ⚠️ ISSUE DE VISIBILIDADE DO DROPDOWN
+
+**Última Atualização:**
+- Dropdown menu implementado mas usuário reportou não estar visível
+- Adicionados estilos `cursor-pointer` e `hover:bg-accent` ao botão
+- Aguardando rebuild com `./rebuild-web.sh -b` e verificação do usuário
+
+### Implementação Completa:
+
+**1. Frontend UI Components:**
+
+**LoadSessionModal.tsx** - Dropdown menu em cada sessão:
+```typescript
+// State management
+const [sessionToDelete, setSessionToDelete] = useState<Session | null>(null);
+const [sessionToRename, setSessionToRename] = useState<Session | null>(null);
+const [newSessionName, setNewSessionName] = useState('');
+
+// Dropdown no CardHeader de cada sessão
+<DropdownMenu>
+  <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+    <Button variant="ghost" size="icon" className="h-6 w-6 cursor-pointer hover:bg-accent">
+      <MoreVertical className="h-4 w-4" />
+    </Button>
+  </DropdownMenuTrigger>
+  <DropdownMenuContent align="end">
+    <DropdownMenuItem onClick={(e) => {
+      e.stopPropagation();
+      setSessionToRename(session);
+      setNewSessionName(session.name);
+    }}>
+      <Edit2 className="h-4 w-4 mr-2" />
+      Renomear
+    </DropdownMenuItem>
+    <DropdownMenuSeparator />
+    <DropdownMenuItem onClick={(e) => {
+      e.stopPropagation();
+      setSessionToDelete(session);
+    }} className="text-destructive">
+      <Trash2 className="h-4 w-4 mr-2" />
+      Deletar
+    </DropdownMenuItem>
+  </DropdownMenuContent>
+</DropdownMenu>
+
+// AlertDialog para confirmação de delete
+<AlertDialog open={!!sessionToDelete} onOpenChange={(open) => {
+  if (!open) setSessionToDelete(null);
+}}>
+  <AlertDialogContent>
+    <AlertDialogHeader>
+      <AlertDialogTitle>Confirmar Remoção</AlertDialogTitle>
+      <AlertDialogDescription>
+        Tem certeza que deseja remover a sessão "{sessionToDelete?.name}"?
+        Esta ação não pode ser desfeita.
+      </AlertDialogDescription>
+    </AlertDialogHeader>
+    <AlertDialogFooter>
+      <AlertDialogCancel>Cancelar</AlertDialogCancel>
+      <AlertDialogAction onClick={handleDeleteSession} disabled={isDeleting}>
+        {isDeleting ? "Removendo..." : "Remover"}
+      </AlertDialogAction>
+    </AlertDialogFooter>
+  </AlertDialogContent>
+</AlertDialog>
+
+// Dialog para rename
+<Dialog open={!!sessionToRename} onOpenChange={(open) => {
+  if (!open) {
+    setSessionToRename(null);
+    setNewSessionName('');
+  }
+}}>
+  <DialogContent>
+    <DialogHeader>
+      <DialogTitle>Renomear Sessão</DialogTitle>
+      <DialogDescription>
+        Digite um novo nome para a sessão "{sessionToRename?.name}"
+      </DialogDescription>
+    </DialogHeader>
+    <div className="py-4">
+      <Input
+        value={newSessionName}
+        onChange={(e) => setNewSessionName(e.target.value)}
+        placeholder="Nome da sessão"
+      />
+    </div>
+    <DialogFooter>
+      <Button variant="outline" onClick={() => {
+        setSessionToRename(null);
+        setNewSessionName('');
+      }}>
+        Cancelar
+      </Button>
+      <Button onClick={handleRenameSession} disabled={isRenaming || !newSessionName.trim()}>
+        {isRenaming ? "Renomeando..." : "Renomear"}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+```
+
+**Handlers:**
+```typescript
+const handleDeleteSession = async () => {
+  if (!sessionToDelete) return;
+
+  setIsDeleting(true);
+  try {
+    const folderQuery = sessionToDelete.folder 
+      ? `?folder=${encodeURIComponent(sessionToDelete.folder)}` 
+      : '';
+    
+    const response = await fetch(
+      `/api/v1/sessions/${encodeURIComponent(sessionToDelete.name)}${folderQuery}`,
+      {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer poc-token-123`,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Erro ao deletar sessão');
+    }
+
+    toast.success(`Sessão "${sessionToDelete.name}" removida com sucesso`);
+    
+    // Recarregar lista de sessões
+    loadSessions();
+    setSessionToDelete(null);
+  } catch (error) {
+    console.error('Erro ao deletar sessão:', error);
+    toast.error(error instanceof Error ? error.message : 'Erro ao deletar sessão');
+  } finally {
+    setIsDeleting(false);
+  }
+};
+
+const handleRenameSession = async () => {
+  if (!sessionToRename || !newSessionName.trim()) return;
+
+  setIsRenaming(true);
+  try {
+    const folderQuery = sessionToRename.folder 
+      ? `?folder=${encodeURIComponent(sessionToRename.folder)}` 
+      : '';
+    
+    const response = await fetch(
+      `/api/v1/sessions/${encodeURIComponent(sessionToRename.name)}/rename${folderQuery}`,
+      {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer poc-token-123`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ new_name: newSessionName.trim() }),
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Erro ao renomear sessão');
+    }
+
+    toast.success(`Sessão renomeada para "${newSessionName.trim()}"`);
+    
+    // Recarregar lista de sessões
+    loadSessions();
+    setSessionToRename(null);
+    setNewSessionName('');
+  } catch (error) {
+    console.error('Erro ao renomear sessão:', error);
+    toast.error(error instanceof Error ? error.message : 'Erro ao renomear sessão');
+  } finally {
+    setIsRenaming(false);
+  }
+};
+```
+
+**2. Backend Implementation:**
+
+**handlers/sessions.go** - Novo handler de rename:
+```go
+func (h *SessionsHandler) RenameSession(c *gin.Context) {
+	oldName := c.Param("name")
+	folder := c.Query("folder")
+
+	var request struct {
+		NewName string `json:"new_name" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Invalid request body",
+		})
+		return
+	}
+
+	var err error
+	if folder != "" {
+		sessionFolder, parseErr := h.parseSessionFolder(folder)
+		if parseErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error":   parseErr.Error(),
+			})
+			return
+		}
+		
+		err = h.sessionManager.RenameSessionInFolder(oldName, request.NewName, sessionFolder)
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Folder parameter is required for rename operation",
+		})
+		return
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":  true,
+		"old_name": oldName,
+		"new_name": request.NewName,
+	})
+}
+```
+
+**server.go** - Nova rota:
+```go
+api.PUT("/sessions/:name/rename", sessionHandler.RenameSession)
+```
+
+**3. TypeScript Types:**
+
+**types.ts** - Adicionado campo folder:
+```typescript
+export interface Session {
+  name: string;
+  folder?: string;  // ✅ ADICIONADO para suportar folders
+  type: string;
+  changes: SessionChange[];
+  node_pool_changes?: NodePoolChange[];
+  created_at?: string;
+}
+```
+
+---
+
+## 🐛 ISSUE ATUAL: DROPDOWN MENU NÃO VISÍVEL
+
+### Problema:
+Usuário reportou: "não aparece nada para editar a sessão"
+
+### Análise:
+- Código do dropdown está correto estruturalmente
+- Todos os componentes shadcn/ui importados corretamente
+- Event handlers com `stopPropagation()` para evitar conflitos
+- Possível problema: **visibilidade visual do botão**
+
+### Solução Aplicada:
+```typescript
+// ✅ Adicionado cursor pointer e hover effect para melhor descoberta
+<Button 
+  variant="ghost" 
+  size="icon" 
+  className="h-6 w-6 cursor-pointer hover:bg-accent"  // ⬅️ NOVO
+>
+  <MoreVertical className="h-4 w-4" />
+</Button>
+```
+
+### Próximos Passos:
+1. **Rebuild obrigatório**: `./rebuild-web.sh -b`
+2. **Hard refresh no browser**: Ctrl+Shift+R
+3. **Verificar localização**: Botão três pontinhos (⋮) ao lado do badge de tipo da sessão
+4. **Se ainda invisível**: Considerar usar `variant="outline"` ou adicionar label "Ações"
+
+---
+
+## 🎨 FEATURE: EDITOR DE SESSÕES SALVAS (21 Outubro 2025)
+
+### Objetivo:
+Permitir edição completa do conteúdo de arquivos de sessão salvos, incluindo modificação de valores de HPAs e Node Pools salvos com valores incorretos.
+
+### Implementação Completa:
+
+**1. Frontend: EditSessionModal.tsx (NOVO - 480 linhas)**
+
+Componente completo de edição de sessões com:
+
+**Features:**
+- ✅ **Tabs para HPAs e Node Pools** - Organização por tipo de recurso
+- ✅ **Lista clicável** - Click para expandir/editar cada item
+- ✅ **Formulários completos**:
+  - HPAs: Min/Max Replicas, Target CPU/Memory, CPU/Memory Request/Limit
+  - Node Pools: Node Count, Autoscaling, Min/Max Node Count
+- ✅ **Remoção de itens** - Botão "Remover" para cada HPA/Node Pool
+- ✅ **Validação** - Tipos corretos (números inteiros para counts/replicas)
+- ✅ **Alert de aviso** - Mensagem destacando que modifica arquivo diretamente
+- ✅ **ScrollArea** - Suporte para muitos itens sem quebrar layout
+- ✅ **Deep copy** - Edição não afeta sessão original até salvar
+
+**Estrutura:**
+```typescript
+interface EditSessionModalProps {
+  session: Session | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSave: () => void;  // Callback para recarregar lista
+}
+
+// Estados principais
+const [editedSession, setEditedSession] = useState<Session | null>(null);
+const [selectedHPAIndex, setSelectedHPAIndex] = useState<number | null>(null);
+const [selectedNodePoolIndex, setSelectedNodePoolIndex] = useState<number | null>(null);
+
+// Métodos de atualização
+updateHPAChange(index, field, value)     // Atualiza campo de HPA
+updateNodePoolChange(index, field, value) // Atualiza campo de Node Pool
+deleteHPAChange(index)                    // Remove HPA da sessão
+deleteNodePoolChange(index)               // Remove Node Pool da sessão
+```
+
+**UI/UX:**
+- Click no card para expandir formulário inline
+- Card selecionado fica com borda azul (`border-blue-500 bg-blue-50`)
+- Badges mostrando cluster, namespace, resource group
+- Contadores nos tabs: `HPAs (3)`, `Node Pools (2)`
+- Mensagem quando lista vazia: "Nenhum HPA nesta sessão"
+
+**2. Backend: UpdateSession Handler (handlers/sessions.go)**
+
+```go
+func (h *SessionsHandler) UpdateSession(c *gin.Context) {
+    // 1. Validações (session manager, folder obrigatório)
+    // 2. Parse do JSON body para models.Session
+    // 3. Recalcular metadata (clusters, namespaces, contadores)
+    // 4. Salvar com SaveSessionToFolder()
+    // 5. Retornar sucesso
+}
+```
+
+**Características:**
+- ✅ **Folder obrigatório** - Evita ambiguidade sobre onde salvar
+- ✅ **Metadata auto-calculada** - Clusters afetados, contadores atualizados
+- ✅ **Reutiliza SaveSessionToFolder()** - Mesma lógica do TUI
+- ✅ **Validação completa** - Erros detalhados em JSON response
+
+**3. Rota API (server.go)**
+
+```go
+api.PUT("/sessions/:name", sessionHandler.UpdateSession)
+```
+
+Query parameters:
+- `name` (path) - Nome da sessão a atualizar
+- `folder` (query, obrigatório) - Pasta onde sessão está salva
+
+Body: JSON completo da sessão editada
+
+**4. Integração LoadSessionModal.tsx**
+
+```typescript
+// Estado adicional
+const [sessionToEdit, setSessionToEdit] = useState<Session | null>(null);
+
+// Novo item no dropdown menu
+<DropdownMenuItem onClick={() => setSessionToEdit(session)}>
+  <Edit2 className="h-4 w-4 mr-2" />
+  Editar Conteúdo
+</DropdownMenuItem>
+
+// Modal no final do componente
+<EditSessionModal
+  session={sessionToEdit}
+  open={!!sessionToEdit}
+  onOpenChange={(open) => !open && setSessionToEdit(null)}
+  onSave={() => {
+    loadSessions(); // Recarrega lista
+    setSessionToEdit(null);
+  }}
+/>
+```
+
+### Fluxo Completo de Uso:
+
+1. **Abrir Load Session Modal** - Usuário clica em botão "Load Session"
+2. **Selecionar pasta** - Escolhe pasta (HPA-Upscale, Node-Downscale, etc)
+3. **Click no menu dropdown (⋮)** - Três pontinhos ao lado da sessão
+4. **Selecionar "Editar Conteúdo"** - Abre EditSessionModal
+5. **Navegar entre tabs** - "HPAs" ou "Node Pools"
+6. **Click em um item** - Expande formulário de edição
+7. **Modificar valores**:
+   - HPAs: Min/Max replicas, targets, resources
+   - Node Pools: Node count, autoscaling, min/max
+8. **Remover itens** (opcional) - Botão "Remover HPA/Node Pool"
+9. **Salvar alterações** - Botão "Salvar Alterações"
+10. **API atualiza arquivo** - PUT `/api/v1/sessions/:name?folder=...`
+11. **Lista recarrega** - Sessão atualizada aparece na lista
+12. **Toast de sucesso** - "Sessão atualizada com sucesso"
+
+### Casos de Uso:
+
+**1. Corrigir valores de HPA salvos incorretamente:**
+```
+Problema: Salvou min_replicas = 10 mas deveria ser 1
+Solução: Editar sessão → Click no HPA → Alterar "Min Replicas" para 1 → Salvar
+```
+
+**2. Remover HPAs/Node Pools de uma sessão:**
+```
+Cenário: Sessão tem 5 HPAs mas só quer aplicar 3
+Solução: Editar sessão → Remover os 2 HPAs indesejados → Salvar
+```
+
+**3. Ajustar Node Pool counts para novo stress test:**
+```
+Cenário: Reutilizar sessão mas com node count diferente
+Solução: Editar sessão → Alterar "Node Count" → Salvar como nova referência
+```
+
+**4. Modificar autoscaling settings:**
+```
+Cenário: Node pool estava com autoscaling enabled mas deve ser manual
+Solução: Editar sessão → Desmarcar "Autoscaling Enabled" → Salvar
+```
+
+### Arquivos Criados/Modificados:
+
+**Novos:**
+- `internal/web/frontend/src/components/EditSessionModal.tsx` (480 linhas)
+
+**Modificados:**
+- `internal/web/handlers/sessions.go` - Handler UpdateSession (+100 linhas)
+- `internal/web/server.go` - Rota PUT /sessions/:name
+- `internal/web/frontend/src/components/LoadSessionModal.tsx` - Integração EditSessionModal
+
+### Validações Implementadas:
+
+**Frontend:**
+- ✅ Min Replicas >= 0
+- ✅ Max Replicas >= 1
+- ✅ Target CPU: 1-100 (opcional)
+- ✅ Target Memory: 1-100 (opcional)
+- ✅ Node Count >= 0
+- ✅ Min/Max Node Count se autoscaling habilitado
+
+**Backend:**
+- ✅ Folder obrigatório (erro se ausente)
+- ✅ JSON válido (binding com ShouldBindJSON)
+- ✅ Session manager inicializado
+- ✅ Metadata recalculada automaticamente
+
+### Próximas Melhorações (Futuro):
+
+**Nice to have:**
+- [ ] Preview de diff (before/after) antes de salvar
+- [ ] Validação de formato de resources (100m, 256Mi)
+- [ ] Duplicar sessão com valores editados
+- [ ] Histórico de edições (timestamps)
+- [ ] Undo/Redo dentro do editor
+- [ ] Adicionar novos HPAs/Node Pools (não só editar existentes)
+- [ ] Busca/filtro dentro da lista de HPAs
+
+### Testing Checklist:
+
+- [ ] Editar valores de HPA e salvar
+- [ ] Editar valores de Node Pool e salvar
+- [ ] Remover HPA de sessão
+- [ ] Remover Node Pool de sessão
+- [ ] Salvar sessão vazia (todos itens removidos)
+- [ ] Cancelar edição (não salvar mudanças)
+- [ ] Editar sessão, salvar, reabrir editor (valores corretos)
+- [ ] Hard refresh do browser após rebuild
+- [ ] Verificar arquivo JSON foi atualizado em `~/.k8s-hpa-manager/sessions/<pasta>/`
+
+---
+
+## 🔄 HISTÓRICO DE CORREÇÕES CRÍTICAS (Outubro 2025)
+
+### 1. **Tela Branca no NodePoolEditor** ✅
+**Causa:** Métodos inexistentes no StagingContext
+```typescript
+// ❌ ANTES
+const stagedPool = staging.getNodePool(key);
+staging.addNodePool(modifiedNodePool, nodePool, order);
+
+// ✅ DEPOIS
+const stagedPool = staging.stagedNodePools.find(/* ... */);
+staging.addNodePoolToStaging(nodePool);
+```
+
+### 2. **HPAEditor Não Salvava no Staging** ✅
+**Causa:** Método `staging.add()` não existia
+```typescript
+// ❌ ANTES
+staging.add(modifiedHPA, hpa);
+
+// ✅ DEPOIS
+staging.addHPAToStaging(hpa);
+staging.updateHPAInStaging(cluster, namespace, name, updates);
+```
+
+### 3. **Cluster Name Mismatch (-admin suffix)** ✅
+**Causa:** Sessions salvavam sem `-admin`, kubeconfig tinha com `-admin`
+**Solução:** `StagingContext.loadFromSession()` adiciona `-admin` automaticamente
+
+### 4. **Build Process** ✅
+**Descoberta:** DEVE usar `./rebuild-web.sh -b` - builds manuais não funcionam corretamente

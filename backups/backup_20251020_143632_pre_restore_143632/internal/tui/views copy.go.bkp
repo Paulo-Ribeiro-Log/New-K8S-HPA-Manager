@@ -1,0 +1,825 @@
+package tui
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	"k8s-hpa-manager/internal/models"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+// Definir estilos lipgloss
+var (
+	titleStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#FAFAFA")).
+		Background(lipgloss.Color("#7D56F4")).
+		Padding(0, 1)
+
+	selectedStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#EE6FF8")).
+		Background(lipgloss.Color("#2A2A2A")).
+		Padding(0, 1)
+
+	normalStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#DDDDDD"))
+
+	boxStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#874BFD")).
+		Padding(1, 2)
+
+	helpStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#626262"))
+
+	warningStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#FF5F56"))
+
+	headerStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#FFFFFF")).
+		Background(lipgloss.Color("#5C7CFA")).
+		Padding(0, 1)
+
+	successStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#00FF00"))
+
+	errorStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#FF0000"))
+)
+
+// renderClusterDiscovery renderiza a tela de descoberta de clusters
+func (a *App) renderClusterDiscovery() string {
+	var content strings.Builder
+
+	// Título
+	title := titleStyle.Render("🔍 Kubernetes HPA Manager")
+	content.WriteString(title + "\n\n")
+
+	// Status de descoberta
+	if a.model.Loading {
+		content.WriteString("🔍 Descobrindo clusters akspriv-*...\n\n")
+	} else {
+		content.WriteString(fmt.Sprintf("📊 %d clusters encontrados\n\n", len(a.model.Clusters)))
+	}
+
+	// Lista de clusters
+	if len(a.model.Clusters) > 0 {
+		clusterBox := a.renderClusterList()
+		content.WriteString(clusterBox)
+	}
+
+	// Contador de selecionados
+	selectedCount := 0
+	for _, cluster := range a.model.Clusters {
+		if cluster.Selected {
+			selectedCount++
+		}
+	}
+
+	if selectedCount > 0 {
+		countText := fmt.Sprintf("📊 %d/%d clusters selecionados", selectedCount, len(a.model.Clusters))
+		content.WriteString("\n" + countText)
+	}
+
+	// Mostrar sessões carregadas
+	if len(a.model.Sessions) > 0 {
+		sessionsText := fmt.Sprintf("💾 %d sessões salvas carregadas", len(a.model.Sessions))
+		content.WriteString("\n" + successStyle.Render(sessionsText))
+	}
+
+	// Instruções
+	help := a.renderClusterDiscoveryHelp()
+	content.WriteString("\n\n" + help)
+
+	return content.String()
+}
+
+// renderClusterList renderiza a lista de clusters
+func (a *App) renderClusterList() string {
+	var items []string
+
+	for i, cluster := range a.model.Clusters {
+		var item string
+
+		// Checkbox
+		checkbox := "☐"
+		if cluster.Selected {
+			checkbox = "☑"
+		}
+
+		// Status
+		status := cluster.Status.String()
+
+		// Construir item
+		itemText := fmt.Sprintf("%s %s (%s)", checkbox, cluster.Name, status)
+
+		// Aplicar estilo baseado na seleção
+		if i == a.model.SelectedIndex {
+			item = selectedStyle.Render(itemText)
+		} else {
+			item = normalStyle.Render(itemText)
+		}
+
+		items = append(items, item)
+	}
+
+	boxContent := strings.Join(items, "\n")
+	return boxStyle.Render("Clusters Encontrados\n\n" + boxContent)
+}
+
+// renderClusterDiscoveryHelp renderiza a ajuda para descoberta de clusters
+func (a *App) renderClusterDiscoveryHelp() string {
+	help := "💡 ↑↓ navegar  SPACE/ENTER selecionar cluster  [Ctrl+S] Sessões Salvas  [R] Refresh"
+	return helpStyle.Render(help)
+}
+
+// renderNamespaceSelection renderiza a tela de seleção de namespaces
+func (a *App) renderNamespaceSelection() string {
+	var content strings.Builder
+
+	title := titleStyle.Render("📂 Seleção de Namespaces")
+	content.WriteString(title + "\n\n")
+
+	// Agrupar namespaces por cluster
+	clusterNamespaces := make(map[string][]models.Namespace)
+	for _, ns := range a.model.Namespaces {
+		clusterNamespaces[ns.Cluster] = append(clusterNamespaces[ns.Cluster], ns)
+	}
+
+	// Renderizar por cluster
+	for _, cluster := range a.model.Clusters {
+		if !cluster.Selected {
+			continue
+		}
+
+		content.WriteString(a.renderClusterNamespaces(cluster.Name, clusterNamespaces[cluster.Name]))
+		content.WriteString("\n")
+	}
+
+	// Contador de selecionados
+	selectedCount := 0
+	clusterCount := 0
+	for _, ns := range a.model.Namespaces {
+		if ns.Selected {
+			selectedCount++
+		}
+	}
+	for _, cluster := range a.model.Clusters {
+		if cluster.Selected {
+			clusterCount++
+		}
+	}
+
+	// Mostrar cluster selecionado
+	selectedCluster := ""
+	for _, cluster := range a.model.Clusters {
+		if cluster.Selected {
+			selectedCluster = cluster.Name
+			break
+		}
+	}
+	countText := fmt.Sprintf("📊 Cluster: %s (%d namespaces)", selectedCluster, len(a.model.Namespaces))
+	content.WriteString("\n" + countText)
+
+	// Instruções
+	systemStatus := "ocultados"
+	if a.model.ShowSystemNamespaces {
+		systemStatus = "visíveis"
+	}
+	help := fmt.Sprintf("💡 ↑↓ navegar, SPACE/ENTER selecionar, f filtrar HPAs, s toggle system (%s)", systemStatus)
+	content.WriteString("\n\n" + helpStyle.Render(help))
+
+	return content.String()
+}
+
+// renderClusterNamespaces renderiza namespaces de um cluster específico
+func (a *App) renderClusterNamespaces(clusterName string, namespaces []models.Namespace) string {
+	var items []string
+
+	// Header do cluster
+	status := "✅ Concluído"
+	if a.model.Loading {
+		status = "🔄 Carregando..."
+	}
+
+	header := fmt.Sprintf("📂 %s                          %s", clusterName, status)
+
+	// Lista de namespaces
+	if len(namespaces) > 0 {
+		globalIndex := 0
+		// Encontrar o índice global do primeiro namespace deste cluster
+		for i, ns := range a.model.Namespaces {
+			if ns.Cluster == clusterName {
+				globalIndex = i
+				break
+			}
+		}
+
+		for localIndex, ns := range namespaces {
+			currentGlobalIndex := globalIndex + localIndex
+			
+			checkbox := "☐"
+			if ns.Selected {
+				checkbox = "☑"
+			}
+
+			hpaText := fmt.Sprintf("(%d HPAs)", ns.HPACount)
+			if ns.HPACount == 0 {
+				hpaText = warningStyle.Render("(0 HPAs)")
+			}
+
+			item := fmt.Sprintf("%s %s %s", checkbox, ns.Name, hpaText)
+			
+			// Destacar item atualmente selecionado
+			if currentGlobalIndex == a.model.SelectedIndex {
+				item = selectedStyle.Render("▶ " + item)
+			} else {
+				item = normalStyle.Render("  " + item)
+			}
+			
+			items = append(items, item)
+		}
+	} else {
+		items = append(items, normalStyle.Render("  Carregando..."))
+	}
+
+	boxContent := header + "\n" + strings.Join(items, "\n")
+	return boxStyle.Render(boxContent)
+}
+
+// renderHPAManagement renderiza a tela de gerenciamento de HPAs
+func (a *App) renderHPAManagement() string {
+	var content strings.Builder
+
+	title := titleStyle.Render("🎯 Gerenciamento de HPAs")
+	content.WriteString(title + "\n\n")
+
+	// Agrupar HPAs por cluster/namespace
+	hpaGroups := make(map[string][]models.HPA)
+	for _, hpa := range a.model.HPAs {
+		key := fmt.Sprintf("%s/%s", hpa.Cluster, hpa.Namespace)
+		hpaGroups[key] = append(hpaGroups[key], hpa)
+	}
+
+	// Renderizar por grupo com índice global
+	globalIndex := 0
+	for key, hpas := range hpaGroups {
+		content.WriteString(a.renderHPAGroupWithIndex(key, hpas, globalIndex))
+		content.WriteString("\n")
+		globalIndex += len(hpas)
+	}
+
+	// Ações disponíveis
+	content.WriteString(a.renderHPAActions())
+
+	// Contador de selecionados
+	selectedCount := 0
+	modifiedCount := 0
+	for _, hpa := range a.model.HPAs {
+		if hpa.Selected {
+			selectedCount++
+		}
+		if hpa.Modified {
+			modifiedCount++
+		}
+	}
+
+	status := fmt.Sprintf("💡 %d HPAs selecionados", selectedCount)
+	if modifiedCount > 0 {
+		status += fmt.Sprintf(" | %d modificados", modifiedCount)
+	}
+	status += " | ENTER editar, R rollout, S salvar"
+
+	content.WriteString("\n" + helpStyle.Render(status))
+
+	return content.String()
+}
+
+// renderHPAGroupWithIndex renderiza um grupo de HPAs com índice global correto
+func (a *App) renderHPAGroupWithIndex(groupKey string, hpas []models.HPA, startIndex int) string {
+	var items []string
+
+	header := fmt.Sprintf("🎯 %s", groupKey)
+
+	for i, hpa := range hpas {
+		globalIndex := startIndex + i
+		
+		checkbox := "☐"
+		if hpa.Selected {
+			checkbox = "☑"
+		}
+
+		// Indicador de modificação
+		modified := ""
+		if hpa.Modified {
+			modified = " ✨"
+		}
+
+		values := fmt.Sprintf("Min: %d  Max: %d  Current: %d",
+			getIntValue(hpa.MinReplicas), hpa.MaxReplicas, hpa.CurrentReplicas)
+
+		item := fmt.Sprintf("%s %s %s%s", checkbox, hpa.Name, values, modified)
+
+		// Usar o índice global para comparar com SelectedIndex
+		if globalIndex == a.model.SelectedIndex {
+			items = append(items, selectedStyle.Render("▶ "+item))
+		} else {
+			items = append(items, normalStyle.Render("  "+item))
+		}
+	}
+
+	boxContent := header + "\n" + strings.Join(items, "\n")
+	return boxStyle.Render(boxContent)
+}
+
+// renderHPAGroup renderiza um grupo de HPAs (função legada)
+func (a *App) renderHPAGroup(groupKey string, hpas []models.HPA) string {
+	var items []string
+
+	header := fmt.Sprintf("🎯 %s", groupKey)
+
+	for i, hpa := range hpas {
+		checkbox := "☐"
+		if hpa.Selected {
+			checkbox = "☑"
+		}
+
+		// Indicador de modificação
+		modified := ""
+		if hpa.Modified {
+			modified = " ✨"
+		}
+
+		values := fmt.Sprintf("Min: %d  Max: %d  Current: %d",
+			getIntValue(hpa.MinReplicas), hpa.MaxReplicas, hpa.CurrentReplicas)
+
+		item := fmt.Sprintf("%s %s %s%s", checkbox, hpa.Name, values, modified)
+
+		if i == a.model.SelectedIndex {
+			items = append(items, selectedStyle.Render("  "+item))
+		} else {
+			items = append(items, normalStyle.Render("  "+item))
+		}
+	}
+
+	boxContent := header + "\n" + strings.Join(items, "\n")
+	return boxStyle.Render(boxContent)
+}
+
+// renderHPAActions renderiza as ações disponíveis para HPAs
+func (a *App) renderHPAActions() string {
+	actions := []string{
+		"[Ctrl+E] Editar Selecionados",
+		"[Ctrl+U] Aplicar Mudanças",
+		"[Ctrl+R] Rollout",
+		"[Ctrl+S] Salvar Sessão",
+	}
+
+	content := strings.Join(actions, "  ")
+	return boxStyle.Render("Ações\n\n" + content)
+}
+
+// renderHPAEditing renderiza o modal de edição de HPA
+func (a *App) renderHPAEditing() string {
+	if a.model.EditingHPA == nil {
+		return "No HPA being edited"
+	}
+
+	hpa := a.model.EditingHPA
+	var content strings.Builder
+
+	title := fmt.Sprintf("✏️  Editando HPA: %s/%s", hpa.Namespace, hpa.Name)
+	content.WriteString(titleStyle.Render(title) + "\n\n")
+
+	// Informações do cluster
+	info := fmt.Sprintf("📍 Cluster: %s", hpa.Cluster)
+	content.WriteString(successStyle.Render(info) + "\n\n")
+
+	// Formulário de edição
+	content.WriteString(a.renderHPAEditForm(hpa))
+
+	// Instruções
+	help := "[TAB] Próximo Campo  [ENTER] Aplicar  [ESC] Cancelar"
+	content.WriteString("\n\n" + helpStyle.Render(help))
+
+	// Aviso de mudanças
+	if hpa.Modified {
+		warning := "⚠️  Mudanças detectadas - serão salvas na sessão"
+		content.WriteString("\n" + warningStyle.Render(warning))
+	}
+
+	return content.String()
+}
+
+// renderHPAEditForm renderiza o formulário de edição
+func (a *App) renderHPAEditForm(hpa *models.HPA) string {
+	var content strings.Builder
+
+	// Configurações editáveis
+	content.WriteString(headerStyle.Render("Configurações (TAB para navegar)") + "\n\n")
+
+	// Helper para renderizar campo editável
+	renderField := func(fieldKey, label, unit string, originalValue int) {
+		currentValue := a.model.FormFields[fieldKey]
+		if currentValue == "" {
+			currentValue = fmt.Sprintf("%d", originalValue)
+		}
+
+		// Estilo baseado se é o campo ativo
+		var fieldStyle lipgloss.Style
+		var cursor string
+		if a.model.ActiveField == fieldKey {
+			fieldStyle = selectedStyle
+			cursor = "▶ "
+		} else {
+			fieldStyle = normalStyle
+			cursor = "  "
+		}
+
+		// Verificar se foi modificado
+		var modifiedIndicator string
+		if currentVal, err := strconv.Atoi(currentValue); err == nil && currentVal != originalValue {
+			modifiedIndicator = " " + successStyle.Render("✨")
+		}
+
+		fieldText := fmt.Sprintf("%s%-15s [%-8s]%s%s  ← Original: %d", 
+			cursor, label+":", currentValue+unit, modifiedIndicator, "", originalValue)
+		
+		content.WriteString(fieldStyle.Render(fieldText) + "\n")
+	}
+
+	// Renderizar campos editáveis
+	renderField(models.FieldMinReplicas, "Min Replicas", "", int(getIntValue(hpa.OriginalValues.MinReplicas)))
+	renderField(models.FieldMaxReplicas, "Max Replicas", "", int(hpa.OriginalValues.MaxReplicas))
+	renderField(models.FieldTargetCPU, "Target CPU", "%", int(getIntValue(hpa.OriginalValues.TargetCPU)))
+	renderField(models.FieldTargetMemory, "Target Memory", "%", int(getIntValue(hpa.OriginalValues.TargetMemory)))
+	
+	// Renderizar campo de rollout (checkbox)
+	var rolloutStyle lipgloss.Style
+	var rolloutCursor string
+	if a.model.ActiveField == models.FieldRollout {
+		rolloutStyle = selectedStyle
+		rolloutCursor = "▶ "
+	} else {
+		rolloutStyle = normalStyle
+		rolloutCursor = "  "
+	}
+	
+	var checkbox string
+	if a.model.PerformRollout {
+		checkbox = "[✓]"
+	} else {
+		checkbox = "[ ]"
+	}
+	
+	rolloutText := fmt.Sprintf("%sRollout após aplicar: %s (SPACE para alternar)", rolloutCursor, checkbox)
+	content.WriteString(rolloutStyle.Render(rolloutText) + "\n")
+
+	content.WriteString("\n")
+	
+	// Current replicas (read-only)
+	content.WriteString(fmt.Sprintf("Current:        %d replicas (read-only)\n", hpa.CurrentReplicas))
+
+	return boxStyle.Render(content.String())
+}
+
+// renderSessionManager renderiza o gerenciador de sessões
+func (a *App) renderSessionManager() string {
+	var content strings.Builder
+
+	var title string
+	if a.model.PreviousState == models.StateClusterDiscovery {
+		title = titleStyle.Render("💾 Carregar Sessão Salva")
+	} else {
+		title = titleStyle.Render("💾 Gerenciador de Sessões")
+	}
+	content.WriteString(title + "\n\n")
+
+	// Sessão atual
+	if a.model.CurrentSession != nil {
+		currentInfo := fmt.Sprintf("💾 Sessão Atual: \"%s\"", a.model.CurrentSession.Name)
+		content.WriteString(currentInfo + "\n\n")
+	}
+
+	// Mudanças pendentes
+	if len(a.model.HPAs) > 0 {
+		content.WriteString(a.renderPendingChanges())
+		content.WriteString("\n")
+	}
+
+	// Sessões salvas
+	content.WriteString(a.renderSavedSessions())
+
+	// Campo de nome da sessão
+	sessionName := a.model.SessionName
+	var nameField string
+	var help string
+	
+	if a.model.EnteringSessionName {
+		// Modo de entrada de texto
+		if sessionName == "" {
+			nameField = "Digite o nome: [                    ]"
+		} else {
+			nameField = fmt.Sprintf("Digite o nome: [%-20s]", sessionName)
+		}
+		help = "[ENTER] Salvar  [ESC] Cancelar  [BACKSPACE] Apagar"
+	} else {
+		// Modo normal
+		if sessionName == "" {
+			sessionName = "nova-sessao"
+		}
+		nameField = fmt.Sprintf("Nome da Sessão: [%-20s]", sessionName)
+		help = "↑↓ navegar  [ENTER/Ctrl+L] Carregar  [Ctrl+N] Nova  [Ctrl+W] Salvar  [Ctrl+D] Deletar  [ESC] Voltar"
+	}
+	
+	content.WriteString("\n" + nameField + "\n\n")
+
+	// Instruções
+	content.WriteString(helpStyle.Render(help))
+
+	return content.String()
+}
+
+// renderPendingChanges renderiza as mudanças pendentes
+func (a *App) renderPendingChanges() string {
+	var items []string
+
+	for _, hpa := range a.model.HPAs {
+		if hpa.Modified {
+			var changes []string
+
+			minOrig := getIntValue(hpa.OriginalValues.MinReplicas)
+			minCurr := getIntValue(hpa.MinReplicas)
+			if minOrig != minCurr {
+				changes = append(changes, fmt.Sprintf("Min: %d→%d", minOrig, minCurr))
+			}
+
+			maxOrig := hpa.OriginalValues.MaxReplicas
+			maxCurr := hpa.MaxReplicas
+			if maxOrig != maxCurr {
+				changes = append(changes, fmt.Sprintf("Max: %d→%d", maxOrig, maxCurr))
+			}
+
+			if len(changes) > 0 {
+				changeText := strings.Join(changes, ", ")
+				item := fmt.Sprintf("✨ %s (%s/%s)      %s",
+					hpa.Name, hpa.Cluster, hpa.Namespace, changeText)
+				items = append(items, normalStyle.Render("  "+item))
+			}
+		}
+	}
+
+	if len(items) == 0 {
+		items = append(items, normalStyle.Render("  Nenhuma mudança pendente"))
+	}
+
+	boxContent := "Mudanças Pendentes\n\n" + strings.Join(items, "\n")
+	return boxStyle.Render(boxContent)
+}
+
+// renderSavedSessions renderiza as sessões salvas com navegação
+func (a *App) renderSavedSessions() string {
+	var items []string
+
+	if len(a.model.Sessions) > 0 {
+		for i, session := range a.model.Sessions {
+			age := "hoje"
+			if !session.CreatedAt.IsZero() {
+				// Calcular idade da sessão de forma simples
+				hours := int(session.CreatedAt.Sub(session.CreatedAt).Hours())
+				if hours > 24 {
+					age = fmt.Sprintf("%d dias", hours/24)
+				} else if hours > 1 {
+					age = fmt.Sprintf("%dh atrás", hours)
+				}
+			}
+
+			hpaCount := len(session.Changes)
+			clusterCount := 1
+			if session.Metadata != nil {
+				clusterCount = len(session.Metadata.ClustersAffected)
+			}
+
+			// Cursor e estilo baseado na seleção
+			var cursor string
+			var itemStyle lipgloss.Style
+			if i == a.model.SelectedIndex {
+				cursor = "▶ "
+				itemStyle = selectedStyle
+			} else {
+				cursor = "  "
+				itemStyle = normalStyle
+			}
+
+			item := fmt.Sprintf("%s📋 %s    %s", cursor, session.Name, age)
+			details := fmt.Sprintf("     └─ %d HPAs | %d clusters", hpaCount, clusterCount)
+
+			items = append(items, itemStyle.Render(item))
+			items = append(items, normalStyle.Render(details))
+			items = append(items, "") // Linha em branco
+		}
+	} else {
+		items = append(items, normalStyle.Render("  Nenhuma sessão salva"))
+	}
+
+	boxContent := "Sessões Salvas\n\n" + strings.Join(items, "\n")
+	return boxStyle.Render(boxContent)
+}
+
+// renderOperationProgress renderiza o progresso das operações
+func (a *App) renderOperationProgress() string {
+	var content strings.Builder
+
+	title := titleStyle.Render("🚀 Aplicando Mudanças")
+	content.WriteString(title + "\n\n")
+
+	// Progresso geral
+	total := len(a.model.Operations)
+	completed := 0
+	failed := 0
+
+	for _, op := range a.model.Operations {
+		switch op.Status {
+		case models.OpCompleted:
+			completed++
+		case models.OpFailed:
+			failed++
+		}
+	}
+
+	progressText := fmt.Sprintf("🚀 Progresso: %d/%d operações processadas", completed+failed, total)
+	if failed > 0 {
+		progressText += fmt.Sprintf(" (%d falhas)", failed)
+	}
+	content.WriteString(progressText + "\n\n")
+
+	// Log de operações
+	content.WriteString(a.renderOperationLog())
+
+	// Status por HPA
+	content.WriteString(a.renderOperationStatus())
+
+	// Instruções
+	if completed+failed < total {
+		help := "[ESC] Cancelar operações restantes"
+		content.WriteString("\n" + helpStyle.Render(help))
+	} else {
+		help := "[ENTER] Continuar  [ESC] Voltar"
+		content.WriteString("\n" + helpStyle.Render(help))
+	}
+
+	return content.String()
+}
+
+// renderOperationLog renderiza o log de operações
+func (a *App) renderOperationLog() string {
+	var items []string
+
+	for _, op := range a.model.Operations {
+		var statusIcon string
+		var style lipgloss.Style = normalStyle
+
+		switch op.Status {
+		case models.OpCompleted:
+			statusIcon = "✅"
+			style = successStyle
+		case models.OpFailed:
+			statusIcon = "❌"
+			style = errorStyle
+		case models.OpInProgress:
+			statusIcon = "⏳"
+			style = warningStyle
+		case models.OpPending:
+			statusIcon = "📋"
+		case models.OpCancelled:
+			statusIcon = "🚫"
+			style = warningStyle
+		}
+
+		message := op.Message
+		if op.Error != "" {
+			message = op.Error
+		}
+
+		item := fmt.Sprintf("%s %s", statusIcon, message)
+		items = append(items, style.Render("  "+item))
+	}
+
+	if len(items) == 0 {
+		items = append(items, normalStyle.Render("  Nenhuma operação"))
+	}
+
+	boxContent := "Log de Operações\n\n" + strings.Join(items, "\n")
+	return boxStyle.Render(boxContent)
+}
+
+// renderOperationStatus renderiza o status por HPA
+func (a *App) renderOperationStatus() string {
+	var items []string
+
+	// Agrupar operações por HPA
+	hpaOps := make(map[string][]models.Operation)
+	for _, op := range a.model.Operations {
+		hpaOps[op.Target] = append(hpaOps[op.Target], op)
+	}
+
+	for target, ops := range hpaOps {
+		// Determinar status geral do HPA
+		var status string
+		var style lipgloss.Style = normalStyle
+
+		allCompleted := true
+		hasFailure := false
+		inProgress := false
+
+		for _, op := range ops {
+			switch op.Status {
+			case models.OpFailed:
+				hasFailure = true
+				allCompleted = false
+			case models.OpInProgress:
+				inProgress = true
+				allCompleted = false
+			case models.OpPending:
+				allCompleted = false
+			}
+		}
+
+		if hasFailure {
+			status = "❌ Failed"
+			style = errorStyle
+		} else if inProgress {
+			status = "🔄 In Progress..."
+			style = warningStyle
+		} else if allCompleted {
+			status = "✅ Applied + Rolled out"
+			style = successStyle
+		} else {
+			status = "⏳ Pending"
+		}
+
+		// Extrair nome do HPA do target
+		parts := strings.Split(target, "/")
+		hpaName := target
+		if len(parts) >= 3 {
+			hpaName = parts[2] // cluster/namespace/hpa
+		}
+
+		item := fmt.Sprintf("%-20s %s", hpaName, status)
+		items = append(items, style.Render("  "+item))
+	}
+
+	if len(items) == 0 {
+		items = append(items, normalStyle.Render("  Nenhuma operação"))
+	}
+
+	boxContent := "Status por HPA\n\n" + strings.Join(items, "\n")
+	return boxStyle.Render(boxContent)
+}
+
+// Funções utilitárias
+
+// getIntValue retorna o valor de um ponteiro int32 ou 0 se for nil
+func getIntValue(val *int32) int32 {
+	if val == nil {
+		return 0
+	}
+	return *val
+}
+
+// truncateString trunca uma string para o tamanho especificado
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
+}
+
+// formatDuration formata uma duração de forma legível
+func formatDuration(hours int) string {
+	if hours < 1 {
+		return "agora"
+	}
+	if hours < 24 {
+		return fmt.Sprintf("%dh atrás", hours)
+	}
+	days := hours / 24
+	if days == 1 {
+		return "1 dia atrás"
+	}
+	if days < 7 {
+		return fmt.Sprintf("%d dias atrás", days)
+	}
+	weeks := days / 7
+	if weeks == 1 {
+		return "1 semana atrás"
+	}
+	return fmt.Sprintf("%d semanas atrás", weeks)
+}

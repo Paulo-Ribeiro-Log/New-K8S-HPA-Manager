@@ -3,9 +3,9 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"k8s-hpa-manager/internal/models"
 	"k8s-hpa-manager/internal/kubernetes"
+	"k8s-hpa-manager/internal/models"
+	"strconv"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -27,40 +27,40 @@ func (a *App) handleClusterSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if a.model.SelectedIndex < len(a.model.Clusters) && len(a.model.Clusters) > 0 {
-		//Memorizar posição atual antes da seleção
+			//Memorizar posição atual antes da seleção
 			a.model.MemorizeCurrentPosition("enter")
-		//Selecionar cluster
+			//Selecionar cluster
 			cluster := &a.model.Clusters[a.model.SelectedIndex]
 			a.model.SelectedCluster = cluster
 
-		//Atualizar nome da aba com o cluster selecionado
+			//Atualizar nome da aba com o cluster selecionado
 			a.updateTabName()
 
-		//Limpar seleções anteriores
+			//Limpar seleções anteriores
 			a.model.SelectedNamespaces = make([]models.Namespace, 0)
 			a.model.SelectedHPAs = make([]models.HPA, 0)
 			a.model.SelectedIndex = 0
 			a.model.ActivePanel = models.PanelNamespaces
 			a.model.LoadedSessionName = "" // Limpar nome da sessão carregada
 
-		//Transição para seleção de namespaces
+			//Transição para seleção de namespaces
 			a.model.State = models.StateNamespaceSelection
 
-		//Configurar cluster (contexto kubectl + Azure subscription) e carregar namespaces
+			//Configurar cluster (contexto kubectl + Azure subscription) e carregar namespaces
 			return a, tea.Batch(tea.ClearScreen, a.setupClusterAndLoadNamespaces())
 		}
 	case "ctrl+l":
-	//Carregar sessão - ir para seleção de pastas primeiro
+		//Carregar sessão - ir para seleção de pastas primeiro
 		a.model.State = models.StateSessionFolderSelection
 		a.model.SelectedFolderIdx = 0
 		a.model.SavingToFolder = false
 		return a, a.loadSessionFolders()
 	case "f5", "r":
-	//Recarregar clusters
+		//Recarregar clusters
 		a.model.Loading = true
 		a.model.SelectedIndex = 0
 		return a, tea.Batch(tea.ClearScreen, a.discoverClusters())
-	// F7 agora é tratado globalmente em app.go (adiciona cluster na seleção, gerencia recursos em outros estados)
+		// F7 agora é tratado globalmente em app.go (adiciona cluster na seleção, gerencia recursos em outros estados)
 	}
 	return a, nil
 }
@@ -71,34 +71,34 @@ func (a *App) handleSessionSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.model.RenamingSession {
 		switch msg.String() {
 		case "enter":
-		//Confirmar renome
-		if a.model.NewSessionName != "" && a.model.NewSessionName != a.model.RenamingSessionName {
+			//Confirmar renome
+			if a.model.NewSessionName != "" && a.model.NewSessionName != a.model.RenamingSessionName {
 				oldName := a.model.RenamingSessionName
 				newName := a.model.NewSessionName
 				currentFolder := a.model.CurrentFolder
-			a.model.RenamingSession = false
-			a.model.RenamingSessionName = ""
-			a.model.NewSessionName = ""
-			return a, a.renameSessionInFolder(oldName, newName, currentFolder)
-		}
-		//Se nomes iguais ou nome vazio, cancelar
+				a.model.RenamingSession = false
+				a.model.RenamingSessionName = ""
+				a.model.NewSessionName = ""
+				return a, a.renameSessionInFolder(oldName, newName, currentFolder)
+			}
+			//Se nomes iguais ou nome vazio, cancelar
 			a.model.RenamingSession = false
 			a.model.RenamingSessionName = ""
 			a.model.NewSessionName = ""
 		case "ctrl+c", "esc":
-		//Cancelar renome
+			//Cancelar renome
 			a.model.RenamingSession = false
 			a.model.RenamingSessionName = ""
 			a.model.NewSessionName = ""
 		default:
-		//Usar função auxiliar para processar edição de texto
+			//Usar função auxiliar para processar edição de texto
 			var continueEditing bool
 			a.model.NewSessionName, a.model.CursorPosition, continueEditing = a.handleTextEditingKeys(msg, a.model.NewSessionName, nil, nil)
 
-		if continueEditing {
-			//Validar posição do cursor
+			if continueEditing {
+				//Validar posição do cursor
 				a.validateCursorPosition(a.model.NewSessionName)
-		}
+			}
 		}
 		return a, nil
 	}
@@ -107,14 +107,14 @@ func (a *App) handleSessionSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.model.ConfirmingDeletion {
 		switch msg.String() {
 		case "y", "Y":
-		//Confirmar deleção
+			//Confirmar deleção
 			sessionName := a.model.DeletingSessionName
 			currentFolder := a.model.CurrentFolder
 			a.model.ConfirmingDeletion = false
 			a.model.DeletingSessionName = ""
 			return a, a.deleteSessionFromFolder(sessionName, currentFolder)
 		case "n", "N", "esc":
-		//Cancelar deleção
+			//Cancelar deleção
 			a.model.ConfirmingDeletion = false
 			a.model.DeletingSessionName = ""
 		}
@@ -132,32 +132,32 @@ func (a *App) handleSessionSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if a.model.SelectedSessionIdx < len(a.model.LoadedSessions) && len(a.model.LoadedSessions) > 0 {
-		//Salvar estado antes da seleção
+			//Salvar estado antes da seleção
 			a.saveCurrentPanelState()
 
-		// Memorizar a posição da sessão selecionada nesta pasta
-		if a.model.CurrentFolder != "" {
-			a.model.FolderSessionMemory[a.model.CurrentFolder] = a.model.SelectedSessionIdx
-		}
+			// Memorizar a posição da sessão selecionada nesta pasta
+			if a.model.CurrentFolder != "" {
+				a.model.FolderSessionMemory[a.model.CurrentFolder] = a.model.SelectedSessionIdx
+			}
 
-		//Carregar a sessão selecionada e restaurar estado
+			//Carregar a sessão selecionada e restaurar estado
 			session := a.model.LoadedSessions[a.model.SelectedSessionIdx]
 			return a, a.loadSessionState(&session)
 		}
 	case "ctrl+r":
-	//Iniciar confirmação de deleção da sessão
+		//Iniciar confirmação de deleção da sessão
 		if a.model.SelectedSessionIdx < len(a.model.LoadedSessions) && len(a.model.LoadedSessions) > 0 {
 			session := a.model.LoadedSessions[a.model.SelectedSessionIdx]
 			a.model.ConfirmingDeletion = true
 			a.model.DeletingSessionName = session.Name
 		}
 	case "ctrl+n", "f2":
-	//Iniciar renome da sessão
+		//Iniciar renome da sessão
 		if a.model.SelectedSessionIdx < len(a.model.LoadedSessions) && len(a.model.LoadedSessions) > 0 {
 			session := a.model.LoadedSessions[a.model.SelectedSessionIdx]
 			a.model.RenamingSession = true
 			a.model.RenamingSessionName = session.Name
-			a.model.NewSessionName = session.Name // Começar com o nome atual
+			a.model.NewSessionName = session.Name              // Começar com o nome atual
 			a.model.CursorPosition = len([]rune(session.Name)) // Cursor no final
 		}
 	}
@@ -177,50 +177,50 @@ func (a *App) handleSessionFolderSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.C
 		}
 	case "enter":
 		if a.model.SelectedFolderIdx < len(a.model.SessionFolders) && len(a.model.SessionFolders) > 0 {
-		//Salvar estado antes da seleção
+			//Salvar estado antes da seleção
 			a.saveCurrentPanelState()
 
-		// Memorizar a pasta selecionada
-		a.model.LastSelectedFolderIdx = a.model.SelectedFolderIdx
+			// Memorizar a pasta selecionada
+			a.model.LastSelectedFolderIdx = a.model.SelectedFolderIdx
 
-		//Se estamos salvando, usar a pasta selecionada para salvar
-		if a.model.SavingToFolder {
+			//Se estamos salvando, usar a pasta selecionada para salvar
+			if a.model.SavingToFolder {
 				selectedFolder := a.model.SessionFolders[a.model.SelectedFolderIdx]
-			a.model.CurrentFolder = selectedFolder
-			a.model.SavingToFolder = false
-			a.model.EnteringSessionName = true
-			a.model.SessionName = ""
+				a.model.CurrentFolder = selectedFolder
+				a.model.SavingToFolder = false
+				a.model.EnteringSessionName = true
+				a.model.SessionName = ""
 
-			// Determinar o estado correto baseado no tipo de sessão sendo salva
-			if len(a.model.SelectedNodePools) > 0 && len(a.model.SelectedHPAs) == 0 {
-				// Sessão apenas de node pools
-				a.model.State = models.StateNodeSelection
-			} else if len(a.model.SelectedHPAs) > 0 && len(a.model.SelectedNodePools) == 0 {
-				// Sessão apenas de HPAs
-				a.model.State = models.StateHPASelection
-			} else if len(a.model.SelectedHPAs) > 0 && len(a.model.SelectedNodePools) > 0 {
-				// Sessão mista
-				a.model.State = models.StateMixedSession
+				// Determinar o estado correto baseado no tipo de sessão sendo salva
+				if len(a.model.SelectedNodePools) > 0 && len(a.model.SelectedHPAs) == 0 {
+					// Sessão apenas de node pools
+					a.model.State = models.StateNodeSelection
+				} else if len(a.model.SelectedHPAs) > 0 && len(a.model.SelectedNodePools) == 0 {
+					// Sessão apenas de HPAs
+					a.model.State = models.StateHPASelection
+				} else if len(a.model.SelectedHPAs) > 0 && len(a.model.SelectedNodePools) > 0 {
+					// Sessão mista
+					a.model.State = models.StateMixedSession
+				} else {
+					// Fallback para HPA selection
+					a.model.State = models.StateHPASelection
+				}
+				return a, nil
 			} else {
-				// Fallback para HPA selection
-				a.model.State = models.StateHPASelection
-			}
-			return a, nil
-		} else {
-			//Carregando sessões da pasta selecionada
+				//Carregando sessões da pasta selecionada
 				selectedFolder := a.model.SessionFolders[a.model.SelectedFolderIdx]
-			a.model.CurrentFolder = selectedFolder
-			a.model.State = models.StateSessionSelection
+				a.model.CurrentFolder = selectedFolder
+				a.model.State = models.StateSessionSelection
 
-			// Restaurar última posição de sessão nesta pasta (se existir)
-			if lastIdx, exists := a.model.FolderSessionMemory[selectedFolder]; exists {
-				a.model.SelectedSessionIdx = lastIdx
-			} else {
-				a.model.SelectedSessionIdx = 0
+				// Restaurar última posição de sessão nesta pasta (se existir)
+				if lastIdx, exists := a.model.FolderSessionMemory[selectedFolder]; exists {
+					a.model.SelectedSessionIdx = lastIdx
+				} else {
+					a.model.SelectedSessionIdx = 0
+				}
+
+				return a, a.loadSessionsFromFolder(selectedFolder)
 			}
-
-			return a, a.loadSessionsFromFolder(selectedFolder)
-		}
 		}
 	case "esc":
 		// Tentar restaurar posição anterior primeiro
@@ -260,123 +260,123 @@ func (a *App) handleNamespaceSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 
 	case "up", "k":
 		if a.model.ActivePanel == models.PanelNamespaces {
-		if a.model.SelectedIndex > 0 {
-			a.model.SelectedIndex--
-			a.adjustNamespaceScrollToKeepItemVisible()
-		}
+			if a.model.SelectedIndex > 0 {
+				a.model.SelectedIndex--
+				a.adjustNamespaceScrollToKeepItemVisible()
+			}
 		} else if a.model.ActivePanel == models.PanelSelectedNamespaces {
-		if a.model.CurrentNamespaceIdx > 0 {
-			a.model.CurrentNamespaceIdx--
-		}
+			if a.model.CurrentNamespaceIdx > 0 {
+				a.model.CurrentNamespaceIdx--
+			}
 		}
 
 	case "down", "j":
 		if a.model.ActivePanel == models.PanelNamespaces {
-		if a.model.SelectedIndex < len(a.model.Namespaces)-1 {
-			a.model.SelectedIndex++
-			a.adjustNamespaceScrollToKeepItemVisible()
-		}
+			if a.model.SelectedIndex < len(a.model.Namespaces)-1 {
+				a.model.SelectedIndex++
+				a.adjustNamespaceScrollToKeepItemVisible()
+			}
 		} else if a.model.ActivePanel == models.PanelSelectedNamespaces {
-		if a.model.CurrentNamespaceIdx < len(a.model.SelectedNamespaces)-1 {
-			a.model.CurrentNamespaceIdx++
-		}
+			if a.model.CurrentNamespaceIdx < len(a.model.SelectedNamespaces)-1 {
+				a.model.CurrentNamespaceIdx++
+			}
 		}
 
 	case " ":
-	//Selecionar/deselecionar namespace
+		//Selecionar/deselecionar namespace
 		if a.model.ActivePanel == models.PanelNamespaces && a.model.SelectedIndex < len(a.model.Namespaces) && len(a.model.Namespaces) > 0 {
 			ns := &a.model.Namespaces[a.model.SelectedIndex]
 
-		if ns.Selected {
-			//Remover da lista de selecionados
+			if ns.Selected {
+				//Remover da lista de selecionados
 				ns.Selected = false
 				for i, selected := range a.model.SelectedNamespaces {
-				if selected.Name == ns.Name && selected.Cluster == ns.Cluster {
-					a.model.SelectedNamespaces = append(a.model.SelectedNamespaces[:i], a.model.SelectedNamespaces[i+1:]...)
+					if selected.Name == ns.Name && selected.Cluster == ns.Cluster {
+						a.model.SelectedNamespaces = append(a.model.SelectedNamespaces[:i], a.model.SelectedNamespaces[i+1:]...)
 						break
+					}
 				}
-			}
-		} else {
-			//Adicionar à lista de selecionados
+			} else {
+				//Adicionar à lista de selecionados
 				ns.Selected = true
-			a.model.SelectedNamespaces = append(a.model.SelectedNamespaces, *ns)
-		}
+				a.model.SelectedNamespaces = append(a.model.SelectedNamespaces, *ns)
+			}
 		}
 
 	case "ctrl+r":
-	//Remover namespace da lista de selecionados
+		//Remover namespace da lista de selecionados
 		if a.model.ActivePanel == models.PanelSelectedNamespaces && a.model.CurrentNamespaceIdx < len(a.model.SelectedNamespaces) && len(a.model.SelectedNamespaces) > 0 {
 			selectedNamespace := a.model.SelectedNamespaces[a.model.CurrentNamespaceIdx]
-			
-		//Marcar como não selecionado na lista principal
+
+			//Marcar como não selecionado na lista principal
 			for i := range a.model.Namespaces {
-			if a.model.Namespaces[i].Name == selectedNamespace.Name && 
-				   a.model.Namespaces[i].Cluster == selectedNamespace.Cluster {
-				a.model.Namespaces[i].Selected = false
+				if a.model.Namespaces[i].Name == selectedNamespace.Name &&
+					a.model.Namespaces[i].Cluster == selectedNamespace.Cluster {
+					a.model.Namespaces[i].Selected = false
 					break
+				}
 			}
-		}
-			
-		//Remover da lista de selecionados
+
+			//Remover da lista de selecionados
 			a.model.SelectedNamespaces = append(a.model.SelectedNamespaces[:a.model.CurrentNamespaceIdx], a.model.SelectedNamespaces[a.model.CurrentNamespaceIdx+1:]...)
-			
-		//Ajustar índice se necessário
-		if a.model.CurrentNamespaceIdx >= len(a.model.SelectedNamespaces) && len(a.model.SelectedNamespaces) > 0 {
-			a.model.CurrentNamespaceIdx = len(a.model.SelectedNamespaces) - 1
-		}
+
+			//Ajustar índice se necessário
+			if a.model.CurrentNamespaceIdx >= len(a.model.SelectedNamespaces) && len(a.model.SelectedNamespaces) > 0 {
+				a.model.CurrentNamespaceIdx = len(a.model.SelectedNamespaces) - 1
+			}
 		}
 
 	case "enter":
-	//Continuar para seleção de HPAs se há namespaces selecionados
+		//Continuar para seleção de HPAs se há namespaces selecionados
 		if len(a.model.SelectedNamespaces) > 0 {
-		//Salvar estado antes da navegação
+			//Salvar estado antes da navegação
 			a.saveCurrentPanelState()
-		if a.model.ActivePanel == models.PanelSelectedNamespaces {
-			//Carregar HPAs do namespace atual
-			a.model.State = models.StateHPASelection
-			a.model.ActivePanel = models.PanelHPAs
-			a.model.SelectedIndex = 0
-			return a, a.loadHPAs()
-		} else {
-			//Mover para o primeiro namespace selecionado
-			a.model.State = models.StateHPASelection
-			a.model.ActivePanel = models.PanelHPAs
-			a.model.SelectedIndex = 0
-			a.model.CurrentNamespaceIdx = 0
-			return a, a.loadHPAs()
-		}
+			if a.model.ActivePanel == models.PanelSelectedNamespaces {
+				//Carregar HPAs do namespace atual
+				a.model.State = models.StateHPASelection
+				a.model.ActivePanel = models.PanelHPAs
+				a.model.SelectedIndex = 0
+				return a, a.loadHPAs()
+			} else {
+				//Mover para o primeiro namespace selecionado
+				a.model.State = models.StateHPASelection
+				a.model.ActivePanel = models.PanelHPAs
+				a.model.SelectedIndex = 0
+				a.model.CurrentNamespaceIdx = 0
+				return a, a.loadHPAs()
+			}
 		}
 	case "s":
-	//Alternar exibição de namespaces de sistema
+		//Alternar exibição de namespaces de sistema
 		a.model.ShowSystemNamespaces = !a.model.ShowSystemNamespaces
-	//Limpar seleções anteriores quando mudar filtro
+		//Limpar seleções anteriores quando mudar filtro
 		a.model.SelectedNamespaces = make([]models.Namespace, 0)
 		for i := range a.model.Namespaces {
 			a.model.Namespaces[i].Selected = false
 		}
-	//Recarregar namespaces com novo filtro
+		//Recarregar namespaces com novo filtro
 		return a, a.loadNamespaces()
 
 	case "ctrl+n":
-	//Gerenciar node pools - o contexto do cluster já está ativo
+		//Gerenciar node pools - o contexto do cluster já está ativo
 		if a.model.SelectedCluster != nil {
-		//Limpar seleções anteriores de node pools
+			//Limpar seleções anteriores de node pools
 			a.model.NodePools = make([]models.NodePool, 0)
 			a.model.SelectedNodePools = make([]models.NodePool, 0)
 			a.model.SelectedIndex = 0
 			a.model.ActivePanel = models.PanelNodePools
 
-		//Transição para gerenciamento de node pools
+			//Transição para gerenciamento de node pools
 			a.model.State = models.StateNodeSelection
 
-		//Carregar node pools do cluster
+			//Carregar node pools do cluster
 			return a, a.loadNodePools()
 		}
 
 	case "ctrl+m":
-	//Criar sessão mista (HPAs + Node Pools) - precisa ter cluster selecionado
+		//Criar sessão mista (HPAs + Node Pools) - precisa ter cluster selecionado
 		if a.model.SelectedCluster != nil {
-		//Limpar estados anteriores
+			//Limpar estados anteriores
 			a.model.SelectedNamespaces = make([]models.Namespace, 0)
 			a.model.SelectedHPAs = make([]models.HPA, 0)
 			a.model.NodePools = make([]models.NodePool, 0)
@@ -384,17 +384,17 @@ func (a *App) handleNamespaceSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			a.model.SelectedIndex = 0
 			a.model.ActivePanel = models.PanelNamespaces
 
-		//Transição para modo de sessão mista
+			//Transição para modo de sessão mista
 			a.model.State = models.StateMixedSession
 
-		//Inicializar nova sessão
+			//Inicializar nova sessão
 			a.model.CurrentSession = &models.Session{
 				Name:            "",
 				Changes:         make([]models.HPAChange, 0),
 				NodePoolChanges: make([]models.NodePoolChange, 0),
-		}
+			}
 
-		//Carregar namespaces para começar
+			//Carregar namespaces para começar
 			return a, a.loadNamespaces()
 		}
 	}
@@ -405,15 +405,15 @@ func (a *App) handleNamespaceSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 func (a *App) handleHPASelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Se estamos digitando nome da sessão, usar as funções auxiliares de edição
 	if a.model.EnteringSessionName {
-	//Definir callbacks para salvar e cancelar
+		//Definir callbacks para salvar e cancelar
 		onSave := func(value string) {
-		if value != "" {
-			a.debugLog("💾 Saving session '%s' to folder '%s'", value, a.model.CurrentFolder)
-			a.model.EnteringSessionName = false
-			//Criar uma sessão com os HPAs selecionados
+			if value != "" {
+				a.debugLog("💾 Saving session '%s' to folder '%s'", value, a.model.CurrentFolder)
+				a.model.EnteringSessionName = false
+				//Criar uma sessão com os HPAs selecionados
 				session := &models.Session{
 					Name: value,
-			}
+				}
 				a.debugLog("📊 Selected HPAs count: %d", len(a.model.SelectedHPAs))
 				// Debug: Show state of each selected HPA
 				for i, hpa := range a.model.SelectedHPAs {
@@ -431,8 +431,8 @@ func (a *App) handleHPASelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				} else {
 					a.debugLog("❌ Session save command is nil")
 				}
-			a.model.SessionName = ""
-		}
+				a.model.SessionName = ""
+			}
 		}
 
 		onCancel := func() {
@@ -440,12 +440,12 @@ func (a *App) handleHPASelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.SessionName = ""
 		}
 
-	//Usar função auxiliar para processar edição
+		//Usar função auxiliar para processar edição
 		var continueEditing bool
 		a.model.SessionName, a.model.CursorPosition, continueEditing = a.handleTextEditingKeys(msg, a.model.SessionName, onSave, onCancel)
 
 		if continueEditing {
-		//Validar posição do cursor
+			//Validar posição do cursor
 			a.validateCursorPosition(a.model.SessionName)
 		}
 		return a, nil
@@ -453,7 +453,7 @@ func (a *App) handleHPASelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Navegação padrão
 	switch msg.String() {
-		case "ctrl+s":
+	case "ctrl+s":
 		//Salvar sessão de HPAs - sempre permitir salvar (mesmo sem modificações, para rollback)
 		if len(a.model.SelectedHPAs) > 0 {
 			a.model.State = models.StateSessionFolderSelection
@@ -461,72 +461,72 @@ func (a *App) handleHPASelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.SavingToFolder = true
 			return a, a.loadSessionFolders()
 		}
-		// Silencioso se não houver HPAs - não faz nada
-		case "ctrl+u":
+	// Silencioso se não houver HPAs - não faz nada
+	case "ctrl+u":
 		//Aplicar todos os HPAs selecionados (independente de modificação)
-			if len(a.model.SelectedHPAs) > 0 {
-				// Mostrar modal de confirmação
-				a.model.ShowConfirmModal = true
-				a.model.ConfirmModalMessage = "Aplicar alterações em TODOS os HPAs selecionados"
-				a.model.ConfirmModalCallback = "apply_batch_hpa"
-				a.model.ConfirmModalItemCount = len(a.model.SelectedHPAs)
-				return a, nil
-			}
-		case "ctrl+l":
+		if len(a.model.SelectedHPAs) > 0 {
+			// Mostrar modal de confirmação
+			a.model.ShowConfirmModal = true
+			a.model.ConfirmModalMessage = "Aplicar alterações em TODOS os HPAs selecionados"
+			a.model.ConfirmModalCallback = "apply_batch_hpa"
+			a.model.ConfirmModalItemCount = len(a.model.SelectedHPAs)
+			return a, nil
+		}
+	case "ctrl+l":
 		//Carregar sessão
-			a.model.State = models.StateSessionFolderSelection
-			a.model.SelectedIndex = 0
+		a.model.State = models.StateSessionFolderSelection
+		a.model.SelectedIndex = 0
 		//Carregar pastas de sessão
 		//Definir pastas de sessão disponíveis
-			a.model.SessionFolders = []string{"HPA-Upscale", "HPA-Downscale", "Node-Upscale", "Node-Downscale"}
-			a.model.SelectedFolderIdx = 0
-			a.model.CurrentFolder = ""
-			return a, tea.ClearScreen
-		case "esc":
+		a.model.SessionFolders = []string{"HPA-Upscale", "HPA-Downscale", "Node-Upscale", "Node-Downscale", "Rollback"}
+		a.model.SelectedFolderIdx = 0
+		a.model.CurrentFolder = ""
+		return a, tea.ClearScreen
+	case "esc":
 		//Voltar para seleção de namespaces
-			a.model.State = models.StateNamespaceSelection
-			a.model.SelectedIndex = 0
-			return a, tea.ClearScreen
-		case "f4":
+		a.model.State = models.StateNamespaceSelection
+		a.model.SelectedIndex = 0
+		return a, tea.ClearScreen
+	case "f4":
 		//Sair da aplicação
-			return a, tea.Quit
-		case "shift+up":
+		return a, tea.Quit
+	case "shift+up":
 		// Scroll up baseado no painel ativo - prioriza painel de status se focado
-			// TODO: Implementar IsFocused e ScrollUp no StatusContainer
-			// if a.model.StatusContainer.IsFocused() {
-			//	a.model.StatusContainer.ScrollUp()
-			if false { // Temporário
-			} else if a.model.ActivePanel == models.PanelSelectedHPAs {
-				if a.model.HPASelectedScrollOffset > 0 {
-					a.model.HPASelectedScrollOffset--
-					a.debugLog("⬆️ Manual scroll UP - HPASelectedScrollOffset: %d", a.model.HPASelectedScrollOffset)
-				}
-			} else if a.model.ActivePanel == models.PanelSelectedNodePools {
-				if a.model.NodePoolSelectedScrollOffset > 0 {
-					a.model.NodePoolSelectedScrollOffset--
-				}
+		// TODO: Implementar IsFocused e ScrollUp no StatusContainer
+		// if a.model.StatusContainer.IsFocused() {
+		//	a.model.StatusContainer.ScrollUp()
+		if false { // Temporário
+		} else if a.model.ActivePanel == models.PanelSelectedHPAs {
+			if a.model.HPASelectedScrollOffset > 0 {
+				a.model.HPASelectedScrollOffset--
+				a.debugLog("⬆️ Manual scroll UP - HPASelectedScrollOffset: %d", a.model.HPASelectedScrollOffset)
 			}
-			return a, nil
-		case "shift+down":
+		} else if a.model.ActivePanel == models.PanelSelectedNodePools {
+			if a.model.NodePoolSelectedScrollOffset > 0 {
+				a.model.NodePoolSelectedScrollOffset--
+			}
+		}
+		return a, nil
+	case "shift+down":
 		// Scroll down baseado no painel ativo - prioriza painel de status se focado
-			// TODO: Implementar IsFocused e ScrollDown no StatusContainer
-			// if a.model.StatusContainer.IsFocused() {
-			//	a.model.StatusContainer.ScrollDown()
-			if false { // Temporário
-			} else if a.model.ActivePanel == models.PanelSelectedHPAs {
-				a.model.HPASelectedScrollOffset++
-				a.debugLog("⬇️ Manual scroll DOWN - HPASelectedScrollOffset: %d", a.model.HPASelectedScrollOffset)
-			} else if a.model.ActivePanel == models.PanelSelectedNodePools {
-				a.model.NodePoolSelectedScrollOffset++
-			}
-			return a, nil
-		case "?":
+		// TODO: Implementar IsFocused e ScrollDown no StatusContainer
+		// if a.model.StatusContainer.IsFocused() {
+		//	a.model.StatusContainer.ScrollDown()
+		if false { // Temporário
+		} else if a.model.ActivePanel == models.PanelSelectedHPAs {
+			a.model.HPASelectedScrollOffset++
+			a.debugLog("⬇️ Manual scroll DOWN - HPASelectedScrollOffset: %d", a.model.HPASelectedScrollOffset)
+		} else if a.model.ActivePanel == models.PanelSelectedNodePools {
+			a.model.NodePoolSelectedScrollOffset++
+		}
+		return a, nil
+	case "?":
 		//Mostrar ajuda
-			a.model.PreviousState = a.model.State
-			a.model.SaveHelpSnapshot() // Salvar snapshot completo do estado
-			a.model.State = models.StateHelp
-			a.model.HelpScrollOffset = 0
-			return a, tea.ClearScreen
+		a.model.PreviousState = a.model.State
+		a.model.SaveHelpSnapshot() // Salvar snapshot completo do estado
+		a.model.State = models.StateHelp
+		a.model.HelpScrollOffset = 0
+		return a, tea.ClearScreen
 
 	case " ":
 		//Selecionar/deselecionar HPA
@@ -673,34 +673,34 @@ func (a *App) handleHPAEditingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.EditingHPA.PerformStatefulSetRollout = !a.model.EditingHPA.PerformStatefulSetRollout
 			a.model.EditingHPA.Modified = true
 		}
-	//Atualizar também na lista de HPAs selecionados
+		//Atualizar também na lista de HPAs selecionados
 		for i := range a.model.SelectedHPAs {
-		if a.model.SelectedHPAs[i].Name == a.model.EditingHPA.Name &&
-			a.model.SelectedHPAs[i].Namespace == a.model.EditingHPA.Namespace &&
-			a.model.SelectedHPAs[i].Cluster == a.model.EditingHPA.Cluster {
-			a.model.SelectedHPAs[i] = *a.model.EditingHPA
+			if a.model.SelectedHPAs[i].Name == a.model.EditingHPA.Name &&
+				a.model.SelectedHPAs[i].Namespace == a.model.EditingHPA.Namespace &&
+				a.model.SelectedHPAs[i].Cluster == a.model.EditingHPA.Cluster {
+				a.model.SelectedHPAs[i] = *a.model.EditingHPA
 				break
-		}
+			}
 		}
 		return a, nil
 	}
 
 	// Se estamos editando um campo específico, usar as funções auxiliares de edição
 	if a.model.EditingField {
-	//Definir callbacks para salvar e cancelar
+		//Definir callbacks para salvar e cancelar
 		onSave := func(value string) {
-		if err := a.applyFieldValue(a.model.ActiveField, value); err == nil {
-			a.model.EditingHPA.Modified = true
-			//Atualizar também na lista de HPAs selecionados
+			if err := a.applyFieldValue(a.model.ActiveField, value); err == nil {
+				a.model.EditingHPA.Modified = true
+				//Atualizar também na lista de HPAs selecionados
 				for i := range a.model.SelectedHPAs {
-				if a.model.SelectedHPAs[i].Name == a.model.EditingHPA.Name &&
-					a.model.SelectedHPAs[i].Namespace == a.model.EditingHPA.Namespace &&
-					a.model.SelectedHPAs[i].Cluster == a.model.EditingHPA.Cluster {
-					a.model.SelectedHPAs[i] = *a.model.EditingHPA
+					if a.model.SelectedHPAs[i].Name == a.model.EditingHPA.Name &&
+						a.model.SelectedHPAs[i].Namespace == a.model.EditingHPA.Namespace &&
+						a.model.SelectedHPAs[i].Cluster == a.model.EditingHPA.Cluster {
+						a.model.SelectedHPAs[i] = *a.model.EditingHPA
 						break
+					}
 				}
 			}
-		}
 			a.model.EditingField = false
 			a.model.EditingValue = ""
 			a.model.CursorPosition = 0
@@ -712,12 +712,12 @@ func (a *App) handleHPAEditingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.CursorPosition = 0
 		}
 
-	//Usar função auxiliar para processar edição
+		//Usar função auxiliar para processar edição
 		var continueEditing bool
 		a.model.EditingValue, a.model.CursorPosition, continueEditing = a.handleTextEditingKeys(msg, a.model.EditingValue, onSave, onCancel)
 
 		if continueEditing {
-		//Validar posição do cursor
+			//Validar posição do cursor
 			a.validateCursorPosition(a.model.EditingValue)
 		}
 		return a, nil
@@ -725,7 +725,7 @@ func (a *App) handleHPAEditingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Campos do painel principal (HPA)
 	mainFields := []string{"min_replicas", "max_replicas", "target_cpu", "target_memory", "rollout", "daemonset_rollout", "statefulset_rollout"}
-	
+
 	// Campos do painel de recursos
 	resourceFields := []string{"deployment_cpu_request", "deployment_cpu_limit", "deployment_memory_request", "deployment_memory_limit"}
 
@@ -746,7 +746,7 @@ func (a *App) handleHPAEditingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Salvar estado antes de alternar entre painéis
 		a.saveStateOnTabSwitch()
 
-	//Alternar entre painéis
+		//Alternar entre painéis
 		if a.model.ActivePanel == models.PanelHPAMain {
 			a.model.ActivePanel = models.PanelHPAResources
 			a.model.ActiveField = resourceFields[0] // Primeiro campo do painel de recursos
@@ -755,16 +755,16 @@ func (a *App) handleHPAEditingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.ActiveField = mainFields[0] // Primeiro campo do painel principal
 		}
 	case "enter":
-	//Iniciar edição do campo atual (exceto rollouts que usam Space)
+		//Iniciar edição do campo atual (exceto rollouts que usam Space)
 		if a.model.EditingHPA != nil && a.model.ActiveField != "rollout" &&
-		   a.model.ActiveField != "daemonset_rollout" && a.model.ActiveField != "statefulset_rollout" {
+			a.model.ActiveField != "daemonset_rollout" && a.model.ActiveField != "statefulset_rollout" {
 			a.model.EditingField = true
-		//Definir valor inicial baseado no campo atual
+			//Definir valor inicial baseado no campo atual
 			a.model.EditingValue = a.getCurrentFieldValue(a.model.ActiveField)
 			a.model.CursorPosition = len(a.model.EditingValue) // Cursor no final
 		}
 	case "ctrl+s":
-	//Salvar mudanças e voltar
+		//Salvar mudanças e voltar
 		if a.model.EditingHPA != nil {
 			a.model.EditingHPA.Modified = true
 			a.model.State = models.StateHPASelection
@@ -779,15 +779,15 @@ func (a *App) handleHPAEditingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Se estamos digitando nome da sessão, usar as funções auxiliares de edição
 	if a.model.EnteringSessionName {
-	//Definir callbacks para salvar e cancelar
+		//Definir callbacks para salvar e cancelar
 		onSave := func(value string) {
-		if value != "" {
-			a.debugLog("💾 Saving node pool session '%s' to folder '%s'", value, a.model.CurrentFolder)
-			a.model.EnteringSessionName = false
-			//Criar uma sessão com os node pools selecionados
+			if value != "" {
+				a.debugLog("💾 Saving node pool session '%s' to folder '%s'", value, a.model.CurrentFolder)
+				a.model.EnteringSessionName = false
+				//Criar uma sessão com os node pools selecionados
 				session := &models.Session{
 					Name: value,
-			}
+				}
 				a.debugLog("📊 Selected NodePools count: %d", len(a.model.SelectedNodePools))
 				// Debug: Show state of each selected node pool
 				for i, pool := range a.model.SelectedNodePools {
@@ -805,8 +805,8 @@ func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				} else {
 					a.debugLog("❌ Node pool session save command is nil")
 				}
-			a.model.SessionName = ""
-		}
+				a.model.SessionName = ""
+			}
 		}
 
 		onCancel := func() {
@@ -814,12 +814,12 @@ func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.SessionName = ""
 		}
 
-	//Usar função auxiliar para processar edição
+		//Usar função auxiliar para processar edição
 		var continueEditing bool
 		a.model.SessionName, a.model.CursorPosition, continueEditing = a.handleTextEditingKeys(msg, a.model.SessionName, onSave, onCancel)
 
 		if continueEditing {
-		//Validar posição do cursor
+			//Validar posição do cursor
 			a.validateCursorPosition(a.model.SessionName)
 		}
 		return a, nil
@@ -849,29 +849,29 @@ func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case " ":
-	//Selecionar/deselecionar node pool
+		//Selecionar/deselecionar node pool
 		if a.model.ActivePanel == models.PanelNodePools && a.model.SelectedIndex < len(a.model.NodePools) && len(a.model.NodePools) > 0 {
 			pool := &a.model.NodePools[a.model.SelectedIndex]
 			pool.Selected = !pool.Selected
-			
-		if pool.Selected {
-			//Adicionar à lista de selecionados
-			a.model.SelectedNodePools = append(a.model.SelectedNodePools, *pool)
-		} else {
-			//Remover da lista de selecionados
+
+			if pool.Selected {
+				//Adicionar à lista de selecionados
+				a.model.SelectedNodePools = append(a.model.SelectedNodePools, *pool)
+			} else {
+				//Remover da lista de selecionados
 				for i, selectedPool := range a.model.SelectedNodePools {
-				if selectedPool.Name == pool.Name {
-					a.model.SelectedNodePools = append(a.model.SelectedNodePools[:i], a.model.SelectedNodePools[i+1:]...)
+					if selectedPool.Name == pool.Name {
+						a.model.SelectedNodePools = append(a.model.SelectedNodePools[:i], a.model.SelectedNodePools[i+1:]...)
 						break
+					}
 				}
 			}
-		}
 		}
 	case "tab":
 		// Salvar estado antes de alternar entre painéis
 		a.saveStateOnTabSwitch()
 
-	//Alternar entre painéis
+		//Alternar entre painéis
 		if a.model.ActivePanel == models.PanelNodePools {
 			a.model.ActivePanel = models.PanelSelectedNodePools
 			a.model.SelectedIndex = 0
@@ -880,28 +880,28 @@ func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.SelectedIndex = 0
 		}
 	case "ctrl+r":
-	//Remover node pool da lista de selecionados
+		//Remover node pool da lista de selecionados
 		if a.model.ActivePanel == models.PanelSelectedNodePools && a.model.SelectedIndex < len(a.model.SelectedNodePools) && len(a.model.SelectedNodePools) > 0 {
 			selectedPool := a.model.SelectedNodePools[a.model.SelectedIndex]
-			
-		//Marcar como não selecionado na lista principal
+
+			//Marcar como não selecionado na lista principal
 			for i := range a.model.NodePools {
-			if a.model.NodePools[i].Name == selectedPool.Name {
-				a.model.NodePools[i].Selected = false
+				if a.model.NodePools[i].Name == selectedPool.Name {
+					a.model.NodePools[i].Selected = false
 					break
+				}
+			}
+
+			//Remover da lista de selecionados
+			a.model.SelectedNodePools = append(a.model.SelectedNodePools[:a.model.SelectedIndex], a.model.SelectedNodePools[a.model.SelectedIndex+1:]...)
+
+			//Ajustar índice se necessário
+			if a.model.SelectedIndex >= len(a.model.SelectedNodePools) && len(a.model.SelectedNodePools) > 0 {
+				a.model.SelectedIndex = len(a.model.SelectedNodePools) - 1
 			}
 		}
-			
-		//Remover da lista de selecionados
-			a.model.SelectedNodePools = append(a.model.SelectedNodePools[:a.model.SelectedIndex], a.model.SelectedNodePools[a.model.SelectedIndex+1:]...)
-			
-		//Ajustar índice se necessário
-		if a.model.SelectedIndex >= len(a.model.SelectedNodePools) && len(a.model.SelectedNodePools) > 0 {
-			a.model.SelectedIndex = len(a.model.SelectedNodePools) - 1
-		}
-		}
 	case "ctrl+d":
-	//Aplicar mudanças dos node pools modificados
+		//Aplicar mudanças dos node pools modificados
 		// Verificar se há execução sequencial marcada
 		var firstPool, secondPool *models.NodePool
 		for i := range a.model.SelectedNodePools {
@@ -944,7 +944,7 @@ func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.model.ConfirmModalItemCount = itemCount
 		return a, nil
 	case "ctrl+u":
-	//Aplicar todas as mudanças dos node pools modificados (mesmo que ctrl+d para node pools)
+		//Aplicar todas as mudanças dos node pools modificados (mesmo que ctrl+d para node pools)
 		// Verificar se há execução sequencial marcada
 		var firstPool, secondPool *models.NodePool
 		for i := range a.model.SelectedNodePools {
@@ -994,23 +994,23 @@ func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 	case "enter":
-	//Editar node pool selecionado
+		//Editar node pool selecionado
 		if a.model.ActivePanel == models.PanelSelectedNodePools && a.model.SelectedIndex < len(a.model.SelectedNodePools) && len(a.model.SelectedNodePools) > 0 {
 			pool := a.model.SelectedNodePools[a.model.SelectedIndex]
 			a.model.EditingNodePool = &pool
 			a.model.State = models.StateNodeEditing
 			a.model.ActiveField = "autoscaling_enabled"
 			a.model.EditingField = false
-			
-		//Inicializar campos do formulário com valores atuais
-		if a.model.FormFields == nil {
-			a.model.FormFields = make(map[string]string)
-		}
-		//Não sobrescrever os valores - deixar vazios para usar os padrões
-		//Os valores padrão são puxados diretamente do pool na renderização
+
+			//Inicializar campos do formulário com valores atuais
+			if a.model.FormFields == nil {
+				a.model.FormFields = make(map[string]string)
+			}
+			//Não sobrescrever os valores - deixar vazios para usar os padrões
+			//Os valores padrão são puxados diretamente do pool na renderização
 		}
 	case "ctrl+s":
-	//Salvar sessão de node pools - sempre permitir salvar (mesmo sem modificações)
+		//Salvar sessão de node pools - sempre permitir salvar (mesmo sem modificações)
 		if len(a.model.SelectedNodePools) > 0 {
 			a.model.State = models.StateSessionFolderSelection
 			a.model.SelectedFolderIdx = 0
@@ -1023,7 +1023,7 @@ func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// if a.model.StatusContainer.IsFocused() {
 		//	a.model.StatusContainer.ScrollUp()
 		if false { // Temporário
-			
+
 		}
 		return a, nil
 	case "shift+down":
@@ -1031,11 +1031,11 @@ func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// if a.model.StatusContainer.IsFocused() {
 		//	a.model.StatusContainer.ScrollDown()
 		if false { // Temporário
-			
+
 		}
 		return a, nil
 	case "esc":
-	//Voltar para seleção de clusters
+		//Voltar para seleção de clusters
 		a.model.State = models.StateClusterSelection
 		a.model.SelectedIndex = 0
 		return a, tea.ClearScreen
@@ -1047,18 +1047,18 @@ func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a *App) handleNodePoolEditingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Se estamos editando um campo específico, usar as funções auxiliares de edição
 	if a.model.EditingField {
-	//Definir callbacks para salvar e cancelar
+		//Definir callbacks para salvar e cancelar
 		onSave := func(value string) {
-		if err := a.applyNodePoolFieldValue(a.model.ActiveField, value); err == nil {
-			a.model.EditingNodePool.Modified = true
-			//Atualizar também na lista de node pools selecionados
+			if err := a.applyNodePoolFieldValue(a.model.ActiveField, value); err == nil {
+				a.model.EditingNodePool.Modified = true
+				//Atualizar também na lista de node pools selecionados
 				for i := range a.model.SelectedNodePools {
-				if a.model.SelectedNodePools[i].Name == a.model.EditingNodePool.Name {
-					a.model.SelectedNodePools[i] = *a.model.EditingNodePool
+					if a.model.SelectedNodePools[i].Name == a.model.EditingNodePool.Name {
+						a.model.SelectedNodePools[i] = *a.model.EditingNodePool
 						break
+					}
 				}
 			}
-		}
 			a.model.EditingField = false
 			a.model.EditingValue = ""
 			a.model.CursorPosition = 0
@@ -1070,17 +1070,16 @@ func (a *App) handleNodePoolEditingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.CursorPosition = 0
 		}
 
-	//Usar função auxiliar para processar edição
+		//Usar função auxiliar para processar edição
 		var continueEditing bool
 		a.model.EditingValue, a.model.CursorPosition, continueEditing = a.handleTextEditingKeys(msg, a.model.EditingValue, onSave, onCancel)
 
 		if continueEditing {
-		//Validar posição do cursor
+			//Validar posição do cursor
 			a.validateCursorPosition(a.model.EditingValue)
 		}
 		return a, nil
 	}
-
 
 	// Navegação normal
 	switch msg.String() {
@@ -1120,26 +1119,26 @@ func (a *App) handleNodePoolEditingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.model.CursorPosition = len([]rune(a.model.EditingValue)) // Cursor no final
 		}
 	case "esc":
-	//Voltar para seleção de node pools (sem salvar mudanças)
+		//Voltar para seleção de node pools (sem salvar mudanças)
 		a.model.State = models.StateNodeSelection
 		a.model.ActivePanel = models.PanelSelectedNodePools
 		a.model.EditingNodePool = nil
 		return a, tea.ClearScreen
 	case "ctrl+s":
-	//Salvar mudanças e voltar
+		//Salvar mudanças e voltar
 		if a.model.EditingNodePool != nil {
 			a.debugLog("💾 Saving changes for node pool %s\n", a.model.EditingNodePool.Name)
 			a.model.EditingNodePool.Modified = true
-			
-		//Atualizar também na lista de node pools selecionados
+
+			//Atualizar também na lista de node pools selecionados
 			for i := range a.model.SelectedNodePools {
-			if a.model.SelectedNodePools[i].Name == a.model.EditingNodePool.Name {
+				if a.model.SelectedNodePools[i].Name == a.model.EditingNodePool.Name {
 					a.debugLog("📝 Updating selected node pool %s to Modified=true\n", a.model.EditingNodePool.Name)
-				a.model.SelectedNodePools[i] = *a.model.EditingNodePool
+					a.model.SelectedNodePools[i] = *a.model.EditingNodePool
 					break
+				}
 			}
-		}
-			
+
 			a.model.State = models.StateNodeSelection
 			a.model.ActivePanel = models.PanelSelectedNodePools
 			a.model.EditingNodePool = nil
@@ -1209,7 +1208,7 @@ func (a *App) getCurrentNodePoolFieldValue(fieldName string) string {
 	if a.model.EditingNodePool == nil {
 		return ""
 	}
-	
+
 	pool := a.model.EditingNodePool
 	switch fieldName {
 	case "node_count":
@@ -1228,7 +1227,7 @@ func (a *App) applyNodePoolFieldValue(fieldName string, value string) error {
 	if a.model.EditingNodePool == nil {
 		return fmt.Errorf("no node pool being edited")
 	}
-	
+
 	pool := a.model.EditingNodePool
 	switch fieldName {
 	case "node_count":
@@ -1250,7 +1249,7 @@ func (a *App) applyNodePoolFieldValue(fieldName string, value string) error {
 		}
 		pool.MaxNodeCount = int32(val)
 	}
-	
+
 	return nil
 }
 
@@ -1261,15 +1260,15 @@ func (a *App) handleMixedSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Salvar estado antes de alternar entre painéis
 		a.saveStateOnTabSwitch()
 
-	//Alternar entre painéis: Namespaces/HPAs ↔ Node Pools
+		//Alternar entre painéis: Namespaces/HPAs ↔ Node Pools
 		switch a.model.ActivePanel {
 		case models.PanelNamespaces, models.PanelHPAs:
 			a.model.ActivePanel = models.PanelNodePools
 			a.model.SelectedIndex = 0
-		//Carregar node pools se ainda não carregados
-		if len(a.model.NodePools) == 0 {
-			return a, a.loadNodePools()
-		}
+			//Carregar node pools se ainda não carregados
+			if len(a.model.NodePools) == 0 {
+				return a, a.loadNodePools()
+			}
 		case models.PanelNodePools:
 			a.model.ActivePanel = models.PanelNamespaces
 			a.model.SelectedIndex = 0
@@ -1277,7 +1276,7 @@ func (a *App) handleMixedSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case "ctrl+s":
-	//Salvar sessão mista - sempre permitir salvar (mesmo sem modificações, para rollback)
+		//Salvar sessão mista - sempre permitir salvar (mesmo sem modificações, para rollback)
 		if a.model.CurrentSession != nil {
 			a.model.EnteringSessionName = true
 			a.model.SessionName = ""
@@ -1286,7 +1285,7 @@ func (a *App) handleMixedSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Silencioso se não houver sessão ativa - não faz nada
 
 	case "ctrl+d", "ctrl+u":
-	//Aplicar todas as mudanças da sessão mista
+		//Aplicar todas as mudanças da sessão mista
 		if a.model.CurrentSession != nil {
 			// Contar total de itens na sessão mista
 			totalItems := len(a.model.SelectedHPAs) + len(a.model.SelectedNodePools)
@@ -1300,64 +1299,64 @@ func (a *App) handleMixedSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "enter":
-	//Editar item selecionado dependendo do painel ativo
+		//Editar item selecionado dependendo do painel ativo
 		switch a.model.ActivePanel {
 		case models.PanelHPAs:
-		if a.model.SelectedIndex < len(a.model.SelectedHPAs) && len(a.model.SelectedHPAs) > 0 {
-			a.model.EditingHPA = &a.model.SelectedHPAs[a.model.SelectedIndex]
-			a.model.State = models.StateHPAEditing
-			a.model.ActiveField = "min_replicas"
-			a.model.ActivePanel = models.PanelHPAMain // Iniciar no painel principal
-			return a, nil
-		}
+			if a.model.SelectedIndex < len(a.model.SelectedHPAs) && len(a.model.SelectedHPAs) > 0 {
+				a.model.EditingHPA = &a.model.SelectedHPAs[a.model.SelectedIndex]
+				a.model.State = models.StateHPAEditing
+				a.model.ActiveField = "min_replicas"
+				a.model.ActivePanel = models.PanelHPAMain // Iniciar no painel principal
+				return a, nil
+			}
 		case models.PanelNodePools:
-		if a.model.SelectedIndex < len(a.model.SelectedNodePools) && len(a.model.SelectedNodePools) > 0 {
-			a.model.EditingNodePool = &a.model.SelectedNodePools[a.model.SelectedIndex]
-			a.model.State = models.StateNodeEditing
-			a.model.ActiveField = "min_nodes"
-			return a, nil
-		}
+			if a.model.SelectedIndex < len(a.model.SelectedNodePools) && len(a.model.SelectedNodePools) > 0 {
+				a.model.EditingNodePool = &a.model.SelectedNodePools[a.model.SelectedIndex]
+				a.model.State = models.StateNodeEditing
+				a.model.ActiveField = "min_nodes"
+				return a, nil
+			}
 		}
 
 	case "space":
 		// Memorizar posição atual antes da seleção
 		a.model.MemorizeCurrentPosition("space")
-	//Selecionar/desselecionar itens
+		//Selecionar/desselecionar itens
 		switch a.model.ActivePanel {
 		case models.PanelNamespaces:
-		if a.model.SelectedIndex < len(a.model.Namespaces) && len(a.model.Namespaces) > 0 {
+			if a.model.SelectedIndex < len(a.model.Namespaces) && len(a.model.Namespaces) > 0 {
 				namespace := &a.model.Namespaces[a.model.SelectedIndex]
 				namespace.Selected = !namespace.Selected
-				
-			if namespace.Selected {
-				a.model.SelectedNamespaces = append(a.model.SelectedNamespaces, *namespace)
-			} else {
-				//Remover da lista de selecionados
+
+				if namespace.Selected {
+					a.model.SelectedNamespaces = append(a.model.SelectedNamespaces, *namespace)
+				} else {
+					//Remover da lista de selecionados
 					for i, selected := range a.model.SelectedNamespaces {
-					if selected.Name == namespace.Name {
-						a.model.SelectedNamespaces = append(a.model.SelectedNamespaces[:i], a.model.SelectedNamespaces[i+1:]...)
+						if selected.Name == namespace.Name {
+							a.model.SelectedNamespaces = append(a.model.SelectedNamespaces[:i], a.model.SelectedNamespaces[i+1:]...)
 							break
+						}
 					}
 				}
 			}
-		}
 		case models.PanelNodePools:
-		if a.model.SelectedIndex < len(a.model.NodePools) && len(a.model.NodePools) > 0 {
+			if a.model.SelectedIndex < len(a.model.NodePools) && len(a.model.NodePools) > 0 {
 				nodePool := &a.model.NodePools[a.model.SelectedIndex]
 				nodePool.Selected = !nodePool.Selected
-				
-			if nodePool.Selected {
-				a.model.SelectedNodePools = append(a.model.SelectedNodePools, *nodePool)
-			} else {
-				//Remover da lista de selecionados
+
+				if nodePool.Selected {
+					a.model.SelectedNodePools = append(a.model.SelectedNodePools, *nodePool)
+				} else {
+					//Remover da lista de selecionados
 					for i, selected := range a.model.SelectedNodePools {
-					if selected.Name == nodePool.Name {
-						a.model.SelectedNodePools = append(a.model.SelectedNodePools[:i], a.model.SelectedNodePools[i+1:]...)
+						if selected.Name == nodePool.Name {
+							a.model.SelectedNodePools = append(a.model.SelectedNodePools[:i], a.model.SelectedNodePools[i+1:]...)
 							break
+						}
 					}
 				}
 			}
-		}
 		}
 
 	case "shift+up":
@@ -1365,7 +1364,7 @@ func (a *App) handleMixedSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// if a.model.StatusContainer.IsFocused() {
 		//	a.model.StatusContainer.ScrollUp()
 		if false { // Temporário
-			
+
 		}
 		return a, nil
 	case "shift+down":
@@ -1373,7 +1372,7 @@ func (a *App) handleMixedSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// if a.model.StatusContainer.IsFocused() {
 		//	a.model.StatusContainer.ScrollDown()
 		if false { // Temporário
-			
+
 		}
 		return a, nil
 	case "up", "k":
@@ -1401,28 +1400,28 @@ func (a *App) handleMixedSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a *App) enrichHPAWithDeploymentResources(hpa *models.HPA) tea.Cmd {
 	return func() tea.Msg {
 		clusterName := hpa.Cluster
-		
-	//Obter o client do Kubernetes para este cluster
+
+		//Obter o client do Kubernetes para este cluster
 		clientset, err := a.kubeManager.GetClient(clusterName)
 		if err != nil {
 			return hpaDeploymentResourcesEnrichedMsg{
 				hpa: hpa,
 				err: fmt.Errorf("failed to get client for cluster %s: %w", clusterName, err),
+			}
 		}
-		}
-		
+
 		client := kubernetes.NewClient(clientset, clusterName)
 		ctx := context.Background()
-		
-	//Enriquecer o HPA com informações do deployment
+
+		//Enriquecer o HPA com informações do deployment
 		err = client.EnrichHPAWithDeploymentResources(ctx, hpa)
 		if err != nil {
 			return hpaDeploymentResourcesEnrichedMsg{
 				hpa: hpa,
 				err: fmt.Errorf("failed to enrich HPA with deployment resources: %w", err),
+			}
 		}
-		}
-		
+
 		return hpaDeploymentResourcesEnrichedMsg{
 			hpa: hpa,
 			err: nil,

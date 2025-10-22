@@ -46,7 +46,8 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 	if !debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
-	router := gin.Default()
+	// gin.New() ao invés de gin.Default() para controle manual dos middlewares
+	router := gin.New()
 
 	server := &Server{
 		router:      router,
@@ -113,6 +114,14 @@ func (s *Server) setupRoutes() {
 	clusterHandler := handlers.NewClusterHandler(s.kubeManager)
 	api.GET("/clusters", clusterHandler.List)
 	api.GET("/clusters/:name/test", clusterHandler.Test)
+	api.GET("/clusters/:name/config", clusterHandler.GetClusterConfig)
+	api.POST("/clusters/:name/context", clusterHandler.SwitchToClusterContext)
+	api.POST("/clusters/switch-context", clusterHandler.SwitchContext)
+	api.GET("/clusters/info", clusterHandler.GetClusterInfo)
+
+	// Azure
+	azureHandler := handlers.NewAzureHandler()
+	api.POST("/azure/subscription", azureHandler.SetSubscription)
 
 	// Namespaces
 	namespaceHandler := handlers.NewNamespaceHandler(s.kubeManager)
@@ -127,44 +136,98 @@ func (s *Server) setupRoutes() {
 	// Node Pools
 	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager)
 	api.GET("/nodepools", nodePoolHandler.List)
+	api.PUT("/nodepools/:cluster/:resource_group/:name", nodePoolHandler.Update)
 	api.POST("/nodepools/apply-sequential", nodePoolHandler.ApplySequential)
+
+	// CronJobs
+	cronJobHandler := handlers.NewCronJobHandler(s.kubeManager)
+	api.GET("/cronjobs", cronJobHandler.List)
+	api.PUT("/cronjobs/:cluster/:namespace/:name", cronJobHandler.Update)
+
+	// Prometheus Stack
+	prometheusHandler := handlers.NewPrometheusHandler(s.kubeManager)
+	api.GET("/prometheus", prometheusHandler.List)
+	api.PUT("/prometheus/:cluster/:namespace/:type/:name", prometheusHandler.Update)
 
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()
 	api.GET("/validate", validationHandler.Validate)
+
+	// Sessions
+	sessionHandler := handlers.NewSessionsHandler()
+	api.GET("/sessions", sessionHandler.ListAllSessions)
+	api.GET("/sessions/folders", sessionHandler.ListSessionFolders)
+	api.GET("/sessions/folders/:folder", sessionHandler.ListSessionsInFolder)
+	api.GET("/sessions/:name", sessionHandler.GetSession)
+	api.POST("/sessions", sessionHandler.SaveSession)
+	api.PUT("/sessions/:name", sessionHandler.UpdateSession)
+	api.DELETE("/sessions/:name", sessionHandler.DeleteSession)
+	api.PUT("/sessions/:name/rename", sessionHandler.RenameSession)
+	api.GET("/sessions/templates", sessionHandler.GetSessionTemplates)
 }
 
 // setupStatic configura servir arquivos estáticos
 func (s *Server) setupStatic() {
-	// Servir arquivos estáticos do embed
+	// Criar filesystem com prefixo "static/"
 	staticFS, err := fs.Sub(staticFiles, "static")
 	if err != nil {
-		// Se não conseguir carregar do embed, criar handler vazio
 		s.router.GET("/", func(c *gin.Context) {
-			c.HTML(200, "index.html", nil)
+			c.String(500, "Failed to load static files")
 		})
 		return
 	}
 
-	s.router.StaticFS("/assets", http.FS(staticFS))
+	// Servir diretório assets (JS, CSS)
+	assetsFS, err := fs.Sub(staticFS, "assets")
+	if err != nil {
+		s.router.GET("/", func(c *gin.Context) {
+			c.String(500, "Failed to load assets")
+		})
+		return
+	}
+	s.router.StaticFS("/assets", http.FS(assetsFS))
 
-	// Rota raiz serve index.html
+	// Servir arquivos individuais na raiz
+	s.router.StaticFileFS("/favicon.ico", "favicon.ico", http.FS(staticFS))
+	s.router.StaticFileFS("/robots.txt", "robots.txt", http.FS(staticFS))
+	s.router.StaticFileFS("/placeholder.svg", "placeholder.svg", http.FS(staticFS))
+
+	// Rota raiz serve index.html (sem cache)
 	s.router.GET("/", func(c *gin.Context) {
 		data, err := staticFiles.ReadFile("static/index.html")
 		if err != nil {
 			c.String(404, "Frontend not found - run 'make web-build' first")
 			return
 		}
+		// Headers para prevenir cache
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		c.Header("Pragma", "no-cache")
+		c.Header("Expires", "0")
 		c.Data(200, "text/html; charset=utf-8", data)
 	})
 
 	// SPA fallback - todas as rotas não-API servem index.html
 	s.router.NoRoute(func(c *gin.Context) {
+		// Não interceptar requisições de assets
+		if len(c.Request.URL.Path) >= 7 && c.Request.URL.Path[:7] == "/assets" {
+			c.String(404, "Asset not found")
+			return
+		}
+		if len(c.Request.URL.Path) >= 4 && c.Request.URL.Path[:4] == "/api" {
+			c.String(404, "API endpoint not found")
+			return
+		}
+
+		// SPA fallback para outras rotas (sem cache)
 		data, err := staticFiles.ReadFile("static/index.html")
 		if err != nil {
 			c.String(404, "Not found")
 			return
 		}
+		// Headers para prevenir cache
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		c.Header("Pragma", "no-cache")
+		c.Header("Expires", "0")
 		c.Data(200, "text/html; charset=utf-8", data)
 	})
 }

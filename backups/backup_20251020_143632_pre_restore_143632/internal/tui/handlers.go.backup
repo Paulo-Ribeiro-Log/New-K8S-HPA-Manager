@@ -1,0 +1,1302 @@
+package tui
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"k8s-hpa-manager/internal/models"
+	"k8s-hpa-manager/internal/kubernetes"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// handleClusterSelectionKeys - Navegação na seleção de clusters
+func (a *App) handleClusterSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if a.model.SelectedIndex > 0 {
+			a.model.SelectedIndex--
+		}
+	case "down", "j":
+		if a.model.SelectedIndex < len(a.model.Clusters)-1 {
+			a.model.SelectedIndex++
+		}
+	case "enter":
+		if a.model.SelectedIndex < len(a.model.Clusters) && len(a.model.Clusters) > 0 {
+		//Selecionar cluster
+			cluster := &a.model.Clusters[a.model.SelectedIndex]
+			a.model.SelectedCluster = cluster
+
+		//Limpar seleções anteriores
+			a.model.SelectedNamespaces = make([]models.Namespace, 0)
+			a.model.SelectedHPAs = make([]models.HPA, 0)
+			a.model.SelectedIndex = 0
+			a.model.ActivePanel = models.PanelNamespaces
+			a.model.LoadedSessionName = "" // Limpar nome da sessão carregada
+
+		//Transição para seleção de namespaces
+			a.model.State = models.StateNamespaceSelection
+
+		//Configurar cluster (contexto kubectl + Azure subscription) e carregar namespaces
+			return a, tea.Batch(tea.ClearScreen, a.setupClusterAndLoadNamespaces())
+		}
+	case "ctrl+l":
+	//Carregar sessão - ir para seleção de pastas primeiro
+		a.model.State = models.StateSessionFolderSelection
+		a.model.SelectedFolderIdx = 0
+		a.model.SavingToFolder = false
+		return a, a.loadSessionFolders()
+	}
+	return a, nil
+}
+
+// handleSessionSelectionKeys - Navegação na seleção de sessões
+func (a *App) handleSessionSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Se estamos renomeando sessão, usar as funções auxiliares de edição
+	if a.model.RenamingSession {
+		switch msg.String() {
+		case "enter":
+		//Confirmar renome
+		ifa.model.NewSessionName != "" && a.model.NewSessionName != a.model.RenamingSessionName {
+				oldName := a.model.RenamingSessionName
+				newName := a.model.NewSessionName
+				currentFolder := a.model.CurrentFolder
+			a.model.RenamingSession = false
+			a.model.RenamingSessionName = ""
+			a.model.NewSessionName = ""
+			returna, a.renameSessionInFolder(oldName, newName, currentFolder)
+		}
+		//Se nomes iguais ou nome vazio, cancelar
+			a.model.RenamingSession = false
+			a.model.RenamingSessionName = ""
+			a.model.NewSessionName = ""
+		case "ctrl+c", "esc":
+		//Cancelar renome
+			a.model.RenamingSession = false
+			a.model.RenamingSessionName = ""
+			a.model.NewSessionName = ""
+		default:
+		//Usar função auxiliar para processar edição de texto
+			var continueEditing bool
+			a.model.NewSessionName, a.model.CursorPosition, continueEditing = a.handleTextEditingKeys(msg, a.model.NewSessionName, nil, nil)
+
+		ifcontinueEditing {
+			//Validar posição do cursor
+				a.validateCursorPosition(a.model.NewSessionName)
+		}
+		}
+		return a, nil
+	}
+
+	// Se estamos confirmando deleção, processar confirmação
+	if a.model.ConfirmingDeletion {
+		switch msg.String() {
+		case "y", "Y":
+		//Confirmar deleção
+			sessionName := a.model.DeletingSessionName
+			currentFolder := a.model.CurrentFolder
+			a.model.ConfirmingDeletion = false
+			a.model.DeletingSessionName = ""
+			return a, a.deleteSessionFromFolder(sessionName, currentFolder)
+		case "n", "N", "esc":
+		//Cancelar deleção
+			a.model.ConfirmingDeletion = false
+			a.model.DeletingSessionName = ""
+		}
+		return a, nil
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		if a.model.SelectedSessionIdx > 0 {
+			a.model.SelectedSessionIdx--
+		}
+	case "down", "j":
+		if a.model.SelectedSessionIdx < len(a.model.LoadedSessions)-1 {
+			a.model.SelectedSessionIdx++
+		}
+	case "enter":
+		if a.model.SelectedSessionIdx < len(a.model.LoadedSessions) && len(a.model.LoadedSessions) > 0 {
+		//Carregar a sessão selecionada e restaurar estado
+			session := a.model.LoadedSessions[a.model.SelectedSessionIdx]
+			return a, a.loadSessionState(&session)
+		}
+	case "ctrl+r":
+	//Iniciar confirmação de deleção da sessão
+		if a.model.SelectedSessionIdx < len(a.model.LoadedSessions) && len(a.model.LoadedSessions) > 0 {
+			session := a.model.LoadedSessions[a.model.SelectedSessionIdx]
+			a.model.ConfirmingDeletion = true
+			a.model.DeletingSessionName = session.Name
+		}
+	case "ctrl+n", "f2":
+	//Iniciar renome da sessão
+		if a.model.SelectedSessionIdx < len(a.model.LoadedSessions) && len(a.model.LoadedSessions) > 0 {
+			session := a.model.LoadedSessions[a.model.SelectedSessionIdx]
+			a.model.RenamingSession = true
+			a.model.RenamingSessionName = session.Name
+			a.model.NewSessionName = session.Name // Começar com o nome atual
+			a.model.CursorPosition = len([]rune(session.Name)) // Cursor no final
+		}
+	}
+	return a, nil
+}
+
+// handleSessionFolderSelectionKeys - Navegação na seleção de pastas de sessão
+func (a *App) handleSessionFolderSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if a.model.SelectedFolderIdx > 0 {
+			a.model.SelectedFolderIdx--
+		}
+	case "down", "j":
+		if a.model.SelectedFolderIdx < len(a.model.SessionFolders)-1 {
+			a.model.SelectedFolderIdx++
+		}
+	case "enter":
+		if a.model.SelectedFolderIdx < len(a.model.SessionFolders) && len(a.model.SessionFolders) > 0 {
+		//Se estamos salvando, usar a pasta selecionada para salvar
+		ifa.model.SavingToFolder {
+				selectedFolder := a.model.SessionFolders[a.model.SelectedFolderIdx]
+			a.model.CurrentFolder = selectedFolder
+			a.model.SavingToFolder = false
+			a.model.EnteringSessionName = true
+			a.model.SessionName = ""
+			a.model.State = models.StateHPASelection // Voltar para onde estava
+			returna, nil
+		} else {
+			//Carregando sessões da pasta selecionada
+				selectedFolder := a.model.SessionFolders[a.model.SelectedFolderIdx]
+			a.model.CurrentFolder = selectedFolder
+			a.model.State = models.StateSessionSelection
+			a.model.SelectedSessionIdx = 0
+			returna, a.loadSessionsFromFolder(selectedFolder)
+		}
+		}
+	case "esc":
+	//Voltar para a seleção de clusters
+		a.model.State = models.StateClusterSelection
+		a.model.SelectedIndex = 0
+		a.model.CurrentFolder = ""
+		a.model.SavingToFolder = false
+		return a, tea.ClearScreen
+	}
+	return a, nil
+}
+
+// handleNamespaceSelectionKeys - Navegação na seleção de namespaces
+func (a *App) handleNamespaceSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "tab":
+	//Alternar entre painéis
+		if a.model.ActivePanel == models.PanelNamespaces {
+			a.model.ActivePanel = models.PanelSelectedNamespaces
+			a.model.SelectedIndex = a.model.CurrentNamespaceIdx
+		} else {
+			a.model.ActivePanel = models.PanelNamespaces
+			a.model.CurrentNamespaceIdx = a.model.SelectedIndex
+			a.model.SelectedIndex = 0
+		}
+
+	case "up", "k":
+		if a.model.ActivePanel == models.PanelNamespaces {
+		ifa.model.SelectedIndex > 0 {
+			a.model.SelectedIndex--
+		}
+		} else if a.model.ActivePanel == models.PanelSelectedNamespaces {
+		ifa.model.CurrentNamespaceIdx > 0 {
+			a.model.CurrentNamespaceIdx--
+		}
+		}
+
+	case "down", "j":
+		if a.model.ActivePanel == models.PanelNamespaces {
+		ifa.model.SelectedIndex < len(a.model.Namespaces)-1 {
+			a.model.SelectedIndex++
+		}
+		} else if a.model.ActivePanel == models.PanelSelectedNamespaces {
+		ifa.model.CurrentNamespaceIdx < len(a.model.SelectedNamespaces)-1 {
+			a.model.CurrentNamespaceIdx++
+		}
+		}
+
+	case " ":
+	//Selecionar/deselecionar namespace
+		if a.model.ActivePanel == models.PanelNamespaces && a.model.SelectedIndex < len(a.model.Namespaces) && len(a.model.Namespaces) > 0 {
+			ns := &a.model.Namespaces[a.model.SelectedIndex]
+
+		ifns.Selected {
+			//Remover da lista de selecionados
+				ns.Selected = false
+				for i, selected := range a.model.SelectedNamespaces {
+				ifselected.Name == ns.Name && selected.Cluster == ns.Cluster {
+					a.model.SelectedNamespaces = append(a.model.SelectedNamespaces[:i], a.model.SelectedNamespaces[i+1:]...)
+						break
+				}
+			}
+		} else {
+			//Adicionar à lista de selecionados
+				ns.Selected = true
+			a.model.SelectedNamespaces = append(a.model.SelectedNamespaces, *ns)
+		}
+		}
+
+	case "ctrl+r":
+	//Remover namespace da lista de selecionados
+		if a.model.ActivePanel == models.PanelSelectedNamespaces && a.model.CurrentNamespaceIdx < len(a.model.SelectedNamespaces) && len(a.model.SelectedNamespaces) > 0 {
+			selectedNamespace := a.model.SelectedNamespaces[a.model.CurrentNamespaceIdx]
+			
+		//Marcar como não selecionado na lista principal
+			for i := range a.model.Namespaces {
+			ifa.model.Namespaces[i].Name == selectedNamespace.Name && 
+				   a.model.Namespaces[i].Cluster == selectedNamespace.Cluster {
+				a.model.Namespaces[i].Selected = false
+					break
+			}
+		}
+			
+		//Remover da lista de selecionados
+			a.model.SelectedNamespaces = append(a.model.SelectedNamespaces[:a.model.CurrentNamespaceIdx], a.model.SelectedNamespaces[a.model.CurrentNamespaceIdx+1:]...)
+			
+		//Ajustar índice se necessário
+		ifa.model.CurrentNamespaceIdx >= len(a.model.SelectedNamespaces) && len(a.model.SelectedNamespaces) > 0 {
+			a.model.CurrentNamespaceIdx = len(a.model.SelectedNamespaces) - 1
+		}
+		}
+
+	case "enter":
+	//Continuar para seleção de HPAs se há namespaces selecionados
+		if len(a.model.SelectedNamespaces) > 0 {
+		ifa.model.ActivePanel == models.PanelSelectedNamespaces {
+			//Carregar HPAs do namespace atual
+			a.model.State = models.StateHPASelection
+			a.model.ActivePanel = models.PanelHPAs
+			a.model.SelectedIndex = 0
+			returna, a.loadHPAs()
+		} else {
+			//Mover para o primeiro namespace selecionado
+			a.model.State = models.StateHPASelection
+			a.model.ActivePanel = models.PanelHPAs
+			a.model.SelectedIndex = 0
+			a.model.CurrentNamespaceIdx = 0
+			returna, a.loadHPAs()
+		}
+		}
+	case "s":
+	//Alternar exibição de namespaces de sistema
+		a.model.ShowSystemNamespaces = !a.model.ShowSystemNamespaces
+	//Limpar seleções anteriores quando mudar filtro
+		a.model.SelectedNamespaces = make([]models.Namespace, 0)
+		for i := range a.model.Namespaces {
+			a.model.Namespaces[i].Selected = false
+		}
+	//Recarregar namespaces com novo filtro
+		return a, a.loadNamespaces()
+
+	case "ctrl+n":
+	//Gerenciar node pools - o contexto do cluster já está ativo
+		if a.model.SelectedCluster != nil {
+		//Limpar seleções anteriores de node pools
+			a.model.NodePools = make([]models.NodePool, 0)
+			a.model.SelectedNodePools = make([]models.NodePool, 0)
+			a.model.SelectedIndex = 0
+			a.model.ActivePanel = models.PanelNodePools
+
+		//Transição para gerenciamento de node pools
+			a.model.State = models.StateNodeSelection
+
+		//Carregar node pools do cluster
+			return a, a.loadNodePools()
+		}
+
+	case "ctrl+m":
+	//Criar sessão mista (HPAs + Node Pools) - precisa ter cluster selecionado
+		if a.model.SelectedCluster != nil {
+		//Limpar estados anteriores
+			a.model.SelectedNamespaces = make([]models.Namespace, 0)
+			a.model.SelectedHPAs = make([]models.HPA, 0)
+			a.model.NodePools = make([]models.NodePool, 0)
+			a.model.SelectedNodePools = make([]models.NodePool, 0)
+			a.model.SelectedIndex = 0
+			a.model.ActivePanel = models.PanelNamespaces
+
+		//Transição para modo de sessão mista
+			a.model.State = models.StateMixedSession
+
+		//Inicializar nova sessão
+			a.model.CurrentSession = &models.Session{
+				Name:            "",
+				Changes:         make([]models.HPAChange, 0),
+				NodePoolChanges: make([]models.NodePoolChange, 0),
+		}
+
+		//Carregar namespaces para começar
+			return a, a.loadNamespaces()
+		}
+	}
+	return a, nil
+}
+
+// handleHPASelectionKeys - Navegação na seleção de HPAs
+func (a *App) handleHPASelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Se estamos digitando nome da sessão, usar as funções auxiliares de edição
+	if a.model.EnteringSessionName {
+	//Definir callbacks para salvar e cancelar
+		onSave := func(value string) {
+		ifvalue != "" {
+			a.model.EnteringSessionName = false
+			//Criar uma sessão com os HPAs selecionados
+				session := &models.Session{
+					Name: value,
+			}
+				go func() {
+					cmd := a.saveSession(session)
+				ifcmd != nil {
+					//Processar comando assíncronamente se necessário
+				}
+			}()
+			a.model.SessionName = ""
+		}
+		}
+
+		onCancel := func() {
+			a.model.EnteringSessionName = false
+			a.model.SessionName = ""
+		}
+
+	//Usar função auxiliar para processar edição
+		var continueEditing bool
+		a.model.SessionName, a.model.CursorPosition, continueEditing = a.handleTextEditingKeys(msg, a.model.SessionName, onSave, onCancel)
+
+		if continueEditing {
+		//Validar posição do cursor
+			a.validateCursorPosition(a.model.SessionName)
+		}
+		return a, nil
+	}
+
+	// Navegação padrão
+	switch msg.String() {
+	case "up", "k":
+		if a.model.SelectedIndex > 0 {
+			a.model.SelectedIndex--
+		}
+	case "down", "j":
+		if a.model.SelectedIndex < len(a.model.HPAs)-1 {
+			a.model.SelectedIndex++
+		}
+	case "enter":
+		//Editar HPA selecionado
+		ifa.model.SelectedIndex >= 0 && a.model.SelectedIndex < len(a.model.HPAs) {
+			a.model.EditingHPA = &a.model.HPAs[a.model.SelectedIndex]
+			a.model.State = models.StateHPAEditing
+			a.model.ActiveField = "min_replicas"
+			a.model.ActivePanel = models.PanelHPAMain
+			returna, tea.ClearScreen
+		}
+		case "ctrl+s":
+		//Salvar sessão de HPAs
+		iflen(a.model.SelectedHPAs) > 0 {
+			a.model.EnteringSessionName = true
+			a.model.SessionName = ""
+		}
+		case "ctrl+d":
+		//Aplicar mudanças individuais
+		ifa.model.SelectedIndex >= 0 && a.model.SelectedIndex < len(a.model.HPAs) {
+				hpa := &a.model.HPAs[a.model.SelectedIndex]
+			ifhpa.Modified {
+				returna, a.applyHPAChanges([]models.HPA{*hpa})
+			}
+		}
+		case "ctrl+u":
+		//Aplicar todas as mudanças
+			var modifiedHPAs []*models.HPA
+			for i := range a.model.HPAs {
+			ifa.model.HPAs[i].Modified {
+					modifiedHPAs = append(modifiedHPAs, &a.model.HPAs[i])
+			}
+		}
+		iflen(modifiedHPAs) > 0 {
+				var hpaSlice []models.HPA
+				for _, hpa := range modifiedHPAs {
+					hpaSlice = append(hpaSlice, *hpa)
+			}
+			returna, a.applyHPAChanges(hpaSlice)
+		}
+		case "ctrl+l":
+		//Carregar sessão
+			a.model.State = models.StateSessionFolderSelection
+			a.model.SelectedIndex = 0
+		//Carregar pastas de sessão
+		//Definir pastas de sessão disponíveis
+			a.model.SessionFolders = []string{"HPA-Upscale", "HPA-Downscale", "Node-Upscale", "Node-Downscale"}
+			a.model.SelectedFolderIdx = 0
+			a.model.CurrentFolder = ""
+			return a, tea.ClearScreen
+		case "esc":
+		//Voltar para seleção de namespaces
+			a.model.State = models.StateNamespaceSelection
+			a.model.SelectedIndex = 0
+			return a, tea.ClearScreen
+		case "f4":
+		//Sair da aplicação
+			return a, tea.Quit
+		case "?":
+		//Mostrar ajuda
+			a.model.PreviousState = a.model.State
+			a.model.State = models.StateHelp
+			a.model.HelpScrollOffset = 0
+			return a, tea.ClearScreen
+		}
+	}
+	return a, nil
+}
+
+// handleHPAEditingKeys - Navegação na edição de HPA (DISABLED - ORPHANED FUNCTION)
+/*
+func (a *App) handleHPAEditingKeys_ORPHANED(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Tratar Space para toggle do rollout primeiro, antes de outras verificações
+	if msg.String() == " " && a.model.ActiveField == "rollout" && !a.model.EditingField {
+		a.model.EditingHPA.PerformRollout = !a.model.EditingHPA.PerformRollout
+		a.model.EditingHPA.Modified = true
+	//Atualizar também na lista de HPAs selecionados
+		for i := range a.model.SelectedHPAs {
+		ifa.model.SelectedHPAs[i].Name == a.model.EditingHPA.Name &&
+			a.model.SelectedHPAs[i].Namespace == a.model.EditingHPA.Namespace &&
+			a.model.SelectedHPAs[i].Cluster == a.model.EditingHPA.Cluster {
+			a.model.SelectedHPAs[i] = *a.model.EditingHPA
+				break
+		}
+		}
+		return a, nil
+	}
+
+	// Se estamos editando um campo específico, usar as funções auxiliares de edição
+	if a.model.EditingField {
+	//Definir callbacks para salvar e cancelar
+		onSave := func(value string) {
+		iferr := a.applyFieldValue(a.model.ActiveField, value); err == nil {
+			a.model.EditingHPA.Modified = true
+			//Atualizar também na lista de HPAs selecionados
+				for i := range a.model.SelectedHPAs {
+				ifa.model.SelectedHPAs[i].Name == a.model.EditingHPA.Name &&
+					a.model.SelectedHPAs[i].Namespace == a.model.EditingHPA.Namespace &&
+					a.model.SelectedHPAs[i].Cluster == a.model.EditingHPA.Cluster {
+					a.model.SelectedHPAs[i] = *a.model.EditingHPA
+						break
+				}
+			}
+		}
+			a.model.EditingField = false
+			a.model.EditingValue = ""
+			a.model.CursorPosition = 0
+		}
+
+		onCancel := func() {
+			a.model.EditingField = false
+			a.model.EditingValue = ""
+			a.model.CursorPosition = 0
+		}
+
+	//Usar função auxiliar para processar edição
+		var continueEditing bool
+		a.model.EditingValue, a.model.CursorPosition, continueEditing = a.handleTextEditingKeys(msg, a.model.EditingValue, onSave, onCancel)
+
+		if continueEditing {
+		//Validar posição do cursor
+			a.validateCursorPosition(a.model.EditingValue)
+		}
+		return a, nil
+	}
+
+
+	switch msg.String() {
+	case "up", "k":
+		if a.model.ActivePanel == models.PanelHPAs {
+		ifa.model.SelectedIndex > 0 {
+			a.model.SelectedIndex--
+		}
+		} else if a.model.ActivePanel == models.PanelSelectedHPAs {
+		ifa.model.SelectedIndex > 0 {
+			a.model.SelectedIndex--
+		}
+		}
+
+	case "down", "j":
+		if a.model.ActivePanel == models.PanelHPAs {
+		ifa.model.SelectedIndex < len(a.model.HPAs)-1 {
+			a.model.SelectedIndex++
+		}
+		} else if a.model.ActivePanel == models.PanelSelectedHPAs {
+		ifa.model.SelectedIndex < len(a.model.SelectedHPAs)-1 {
+			a.model.SelectedIndex++
+		}
+		}
+
+	case " ":
+	//Selecionar/deselecionar HPA
+		if a.model.ActivePanel == models.PanelHPAs && a.model.SelectedIndex < len(a.model.HPAs) && len(a.model.HPAs) > 0 {
+			hpa := &a.model.HPAs[a.model.SelectedIndex]
+
+		ifhpa.Selected {
+			//Remover da lista de selecionados
+				hpa.Selected = false
+				for i, selected := range a.model.SelectedHPAs {
+				ifselected.Name == hpa.Name && selected.Namespace == hpa.Namespace && selected.Cluster == hpa.Cluster {
+					a.model.SelectedHPAs = append(a.model.SelectedHPAs[:i], a.model.SelectedHPAs[i+1:]...)
+						break
+				}
+			}
+		} else {
+			//Adicionar à lista de selecionados
+				hpa.Selected = true
+			a.model.SelectedHPAs = append(a.model.SelectedHPAs, *hpa)
+		}
+		}
+
+	case "enter":
+	//Editar HPA selecionado
+		if a.model.ActivePanel == models.PanelSelectedHPAs && a.model.SelectedIndex < len(a.model.SelectedHPAs) && len(a.model.SelectedHPAs) > 0 {
+			hpa := &a.model.SelectedHPAs[a.model.SelectedIndex]
+			a.model.EditingHPA = hpa
+			a.model.State = models.StateHPAEditing
+			a.model.ActiveField = "min_replicas"
+			a.model.ActivePanel = models.PanelHPAMain // Iniciar no painel principal
+
+		//Inicializar campos do formulário
+			a.model.FormFields = make(map[string]string)
+			
+		//Enriquecer HPA com informações do deployment
+			return a, a.enrichHPAWithDeploymentResources(hpa)
+		}
+
+	case "ctrl+d":
+	//Aplicar mudanças do HPA individual
+		if a.model.ActivePanel == models.PanelSelectedHPAs && a.model.SelectedIndex < len(a.model.SelectedHPAs) && len(a.model.SelectedHPAs) > 0 {
+			hpa := a.model.SelectedHPAs[a.model.SelectedIndex]
+		ifhpa.Modified {
+			returna, a.applyHPAChanges([]models.HPA{hpa})
+		}
+		}
+
+	case "ctrl+u":
+	//Aplicar todas as mudanças
+		var modifiedHPAs []models.HPA
+		for _, hpa := range a.model.SelectedHPAs {
+		ifhpa.Modified {
+				modifiedHPAs = append(modifiedHPAs, hpa)
+		}
+		}
+		if len(modifiedHPAs) > 0 {
+			return a, a.applyHPAChanges(modifiedHPAs)
+		}
+
+	case "ctrl+r":
+	//Remover HPA da lista de selecionados
+		if a.model.ActivePanel == models.PanelSelectedHPAs && a.model.SelectedIndex < len(a.model.SelectedHPAs) && len(a.model.SelectedHPAs) > 0 {
+			selectedHPA := a.model.SelectedHPAs[a.model.SelectedIndex]
+			
+		//Marcar como não selecionado na lista principal
+			for i := range a.model.HPAs {
+			ifa.model.HPAs[i].Name == selectedHPA.Name && 
+				   a.model.HPAs[i].Namespace == selectedHPA.Namespace && 
+				   a.model.HPAs[i].Cluster == selectedHPA.Cluster {
+				a.model.HPAs[i].Selected = false
+					break
+			}
+		}
+			
+		//Remover da lista de selecionados
+			a.model.SelectedHPAs = append(a.model.SelectedHPAs[:a.model.SelectedIndex], a.model.SelectedHPAs[a.model.SelectedIndex+1:]...)
+			
+		//Ajustar índice se necessário
+		ifa.model.SelectedIndex >= len(a.model.SelectedHPAs) && len(a.model.SelectedHPAs) > 0 {
+			a.model.SelectedIndex = len(a.model.SelectedHPAs) - 1
+		}
+		}
+
+	case "ctrl+s":
+	//Salvar sessão - ir para seleção de pasta primeiro
+		if len(a.model.SelectedHPAs) > 0 {
+			a.model.State = models.StateSessionFolderSelection
+			a.model.SelectedFolderIdx = 0
+			a.model.SavingToFolder = true
+			return a, a.loadSessionFolders()
+		}
+	}
+	return a, nil
+}
+*/
+
+// handleHPAEditingKeys - Navegação na edição de HPA
+func (a *App) handleHPAEditingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Tratar Space para toggle do rollout primeiro, antes de outras verificações
+	if msg.String() == " " && a.model.ActiveField == "rollout" && !a.model.EditingField {
+		a.model.EditingHPA.PerformRollout = !a.model.EditingHPA.PerformRollout
+		a.model.EditingHPA.Modified = true
+	//Atualizar também na lista de HPAs selecionados
+		for i := range a.model.SelectedHPAs {
+		ifa.model.SelectedHPAs[i].Name == a.model.EditingHPA.Name &&
+			a.model.SelectedHPAs[i].Namespace == a.model.EditingHPA.Namespace &&
+			a.model.SelectedHPAs[i].Cluster == a.model.EditingHPA.Cluster {
+			a.model.SelectedHPAs[i] = *a.model.EditingHPA
+				break
+		}
+		}
+		return a, nil
+	}
+
+	// Se estamos editando um campo específico, usar as funções auxiliares de edição
+	if a.model.EditingField {
+	//Definir callbacks para salvar e cancelar
+		onSave := func(value string) {
+		iferr := a.applyFieldValue(a.model.ActiveField, value); err == nil {
+			a.model.EditingHPA.Modified = true
+			//Atualizar também na lista de HPAs selecionados
+				for i := range a.model.SelectedHPAs {
+				ifa.model.SelectedHPAs[i].Name == a.model.EditingHPA.Name &&
+					a.model.SelectedHPAs[i].Namespace == a.model.EditingHPA.Namespace &&
+					a.model.SelectedHPAs[i].Cluster == a.model.EditingHPA.Cluster {
+					a.model.SelectedHPAs[i] = *a.model.EditingHPA
+						break
+				}
+			}
+		}
+			a.model.EditingField = false
+			a.model.EditingValue = ""
+			a.model.CursorPosition = 0
+		}
+
+		onCancel := func() {
+			a.model.EditingField = false
+			a.model.EditingValue = ""
+			a.model.CursorPosition = 0
+		}
+
+	//Usar função auxiliar para processar edição
+		var continueEditing bool
+		a.model.EditingValue, a.model.CursorPosition, continueEditing = a.handleTextEditingKeys(msg, a.model.EditingValue, onSave, onCancel)
+
+		if continueEditing {
+		//Validar posição do cursor
+			a.validateCursorPosition(a.model.EditingValue)
+		}
+		return a, nil
+	}
+
+	// Se estamos editando um campo de sessão, usar as funções auxiliares de edição
+	if a.model.EnteringSessionName {
+	//Definir callbacks para salvar e cancelar
+		onSave := func(value string) {
+		ifvalue != "" {
+			a.model.EnteringSessionName = false
+			//Criar uma sessão simples
+				session := &models.Session{
+					Name: value,
+			}
+				go func() {
+					cmd := a.saveSession(session)
+				ifcmd != nil {
+					//Processar comando assíncronamente se necessário
+				}
+			}()
+			a.model.SessionName = ""
+		}
+		}
+
+		onCancel := func() {
+			a.model.EnteringSessionName = false
+			a.model.SessionName = ""
+		}
+
+	//Usar função auxiliar para processar edição
+		var continueEditing bool
+		a.model.SessionName, a.model.CursorPosition, continueEditing = a.handleTextEditingKeys(msg, a.model.SessionName, onSave, onCancel)
+
+		if continueEditing {
+		//Validar posição do cursor
+			a.validateCursorPosition(a.model.SessionName)
+		}
+		return a, nil
+	}
+
+	// Campos do painel principal (HPA)
+	mainFields := []string{"min_replicas", "max_replicas", "target_cpu", "target_memory", "rollout"}
+	
+	// Campos do painel de recursos
+	resourceFields := []string{"deployment_cpu_request", "deployment_cpu_limit", "deployment_memory_request", "deployment_memory_limit"}
+
+	switch msg.String() {
+	case "up", "k":
+		if a.model.ActivePanel == models.PanelHPAMain {
+			a.navigateMainPanelUp(mainFields)
+		} else if a.model.ActivePanel == models.PanelHPAResources {
+			a.navigateResourcePanelUp(resourceFields)
+		}
+	case "down", "j":
+		if a.model.ActivePanel == models.PanelHPAMain {
+			a.navigateMainPanelDown(mainFields)
+		} else if a.model.ActivePanel == models.PanelHPAResources {
+			a.navigateResourcePanelDown(resourceFields)
+		}
+	case "tab":
+	//Alternar entre painéis
+		if a.model.ActivePanel == models.PanelHPAMain {
+			a.model.ActivePanel = models.PanelHPAResources
+			a.model.ActiveField = resourceFields[0] // Primeiro campo do painel de recursos
+		} else {
+			a.model.ActivePanel = models.PanelHPAMain
+			a.model.ActiveField = mainFields[0] // Primeiro campo do painel principal
+		}
+	case "enter":
+	//Iniciar edição do campo atual (exceto rollout que usa Space)
+		if a.model.EditingHPA != nil && a.model.ActiveField != "rollout" {
+			a.model.EditingField = true
+		//Definir valor inicial baseado no campo atual
+			a.model.EditingValue = a.getCurrentFieldValue(a.model.ActiveField)
+			a.model.CursorPosition = len(a.model.EditingValue) // Cursor no final
+		}
+	case "ctrl+s":
+	//Salvar mudanças e voltar
+		if a.model.EditingHPA != nil {
+			a.model.EditingHPA.Modified = true
+			a.model.State = models.StateHPASelection
+			a.model.ActivePanel = models.PanelSelectedHPAs
+			a.model.EditingHPA = nil
+		}
+	}
+	return a, nil
+}
+
+// handleNodePoolSelectionKeys - Navegação na seleção de node pools
+func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Se estamos digitando nome da sessão, usar as funções auxiliares de edição
+	if a.model.EnteringSessionName {
+	//Definir callbacks para salvar e cancelar
+		onSave := func(value string) {
+		ifvalue != "" {
+			a.model.EnteringSessionName = false
+			//Criar uma sessão com os node pools selecionados
+				session := &models.Session{
+					Name: value,
+			}
+				go func() {
+					cmd := a.saveNodePoolSession(session)
+				ifcmd != nil {
+					//Processar comando assíncronamente se necessário
+				}
+			}()
+			a.model.SessionName = ""
+		}
+		}
+
+		onCancel := func() {
+			a.model.EnteringSessionName = false
+			a.model.SessionName = ""
+		}
+
+	//Usar função auxiliar para processar edição
+		var continueEditing bool
+		a.model.SessionName, a.model.CursorPosition, continueEditing = a.handleTextEditingKeys(msg, a.model.SessionName, onSave, onCancel)
+
+		if continueEditing {
+		//Validar posição do cursor
+			a.validateCursorPosition(a.model.SessionName)
+		}
+		return a, nil
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		if a.model.SelectedIndex > 0 {
+			a.model.SelectedIndex--
+		}
+	case "down", "j":
+		maxIndex := 0
+		if a.model.ActivePanel == models.PanelNodePools {
+			maxIndex = len(a.model.NodePools) - 1
+		} else if a.model.ActivePanel == models.PanelSelectedNodePools {
+			maxIndex = len(a.model.SelectedNodePools) - 1
+		}
+		if a.model.SelectedIndex < maxIndex {
+			a.model.SelectedIndex++
+		}
+	case " ":
+	//Selecionar/deselecionar node pool
+		if a.model.ActivePanel == models.PanelNodePools && a.model.SelectedIndex < len(a.model.NodePools) && len(a.model.NodePools) > 0 {
+			pool := &a.model.NodePools[a.model.SelectedIndex]
+			pool.Selected = !pool.Selected
+			
+		ifpool.Selected {
+			//Adicionar à lista de selecionados
+			a.model.SelectedNodePools = append(a.model.SelectedNodePools, *pool)
+		} else {
+			//Remover da lista de selecionados
+				for i, selectedPool := range a.model.SelectedNodePools {
+				ifselectedPool.Name == pool.Name {
+					a.model.SelectedNodePools = append(a.model.SelectedNodePools[:i], a.model.SelectedNodePools[i+1:]...)
+						break
+				}
+			}
+		}
+		}
+	case "tab":
+	//Alternar entre painéis
+		if a.model.ActivePanel == models.PanelNodePools {
+			a.model.ActivePanel = models.PanelSelectedNodePools
+			a.model.SelectedIndex = 0
+		} else {
+			a.model.ActivePanel = models.PanelNodePools
+			a.model.SelectedIndex = 0
+		}
+	case "ctrl+r":
+	//Remover node pool da lista de selecionados
+		if a.model.ActivePanel == models.PanelSelectedNodePools && a.model.SelectedIndex < len(a.model.SelectedNodePools) && len(a.model.SelectedNodePools) > 0 {
+			selectedPool := a.model.SelectedNodePools[a.model.SelectedIndex]
+			
+		//Marcar como não selecionado na lista principal
+			for i := range a.model.NodePools {
+			ifa.model.NodePools[i].Name == selectedPool.Name {
+				a.model.NodePools[i].Selected = false
+					break
+			}
+		}
+			
+		//Remover da lista de selecionados
+			a.model.SelectedNodePools = append(a.model.SelectedNodePools[:a.model.SelectedIndex], a.model.SelectedNodePools[a.model.SelectedIndex+1:]...)
+			
+		//Ajustar índice se necessário
+		ifa.model.SelectedIndex >= len(a.model.SelectedNodePools) && len(a.model.SelectedNodePools) > 0 {
+			a.model.SelectedIndex = len(a.model.SelectedNodePools) - 1
+		}
+		}
+	case "ctrl+d":
+	//Aplicar mudanças dos node pools modificados
+		var modifiedNodePools []models.NodePool
+		a.debugLog("🔍 Checking %d selected node pools for modifications...\n", len(a.model.SelectedNodePools))
+		for _, pool := range a.model.SelectedNodePools {
+			a.debugLog("  - Pool %s: Modified=%v\n", pool.Name, pool.Modified)
+		ifpool.Modified {
+				modifiedNodePools = append(modifiedNodePools, pool)
+		}
+		}
+		a.debugLog("💡 Found %d modified node pools\n", len(modifiedNodePools))
+		if len(modifiedNodePools) > 0 {
+			return a, a.applyNodePoolChanges(modifiedNodePools)
+		}
+	case "ctrl+u":
+	//Aplicar todas as mudanças dos node pools modificados (mesmo que ctrl+d para node pools)
+		var modifiedNodePools []models.NodePool
+		a.debugLog("🔍 Ctrl+U: Checking %d selected node pools for modifications...\n", len(a.model.SelectedNodePools))
+		for _, pool := range a.model.SelectedNodePools {
+			a.debugLog("  - Pool %s: Modified=%v\n", pool.Name, pool.Modified)
+		ifpool.Modified {
+				modifiedNodePools = append(modifiedNodePools, pool)
+		}
+		}
+		a.debugLog("💡 Found %d modified node pools\n", len(modifiedNodePools))
+		if len(modifiedNodePools) > 0 {
+			return a, a.applyNodePoolChanges(modifiedNodePools)
+		}
+	case "enter":
+	//Editar node pool selecionado
+		if a.model.ActivePanel == models.PanelSelectedNodePools && a.model.SelectedIndex < len(a.model.SelectedNodePools) && len(a.model.SelectedNodePools) > 0 {
+			pool := a.model.SelectedNodePools[a.model.SelectedIndex]
+			a.model.EditingNodePool = &pool
+			a.model.State = models.StateNodeEditing
+			a.model.ActiveField = "node_count"
+			a.model.EditingField = false
+			
+		//Inicializar campos do formulário com valores atuais
+		ifa.model.FormFields == nil {
+			a.model.FormFields = make(map[string]string)
+		}
+		//Não sobrescrever os valores - deixar vazios para usar os padrões
+		//Os valores padrão são puxados diretamente do pool na renderização
+		}
+	case "ctrl+s":
+	//Salvar sessão de node pools
+		if len(a.model.SelectedNodePools) > 0 {
+			a.model.EnteringSessionName = true
+			a.model.SessionName = ""
+		}
+	case "esc":
+	//Voltar para seleção de clusters
+		a.model.State = models.StateClusterSelection
+		a.model.SelectedIndex = 0
+		return a, tea.ClearScreen
+	}
+	return a, nil
+}
+
+// handleNodePoolEditingKeys - Navegação na edição de node pools
+func (a *App) handleNodePoolEditingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Se estamos editando um campo específico, usar as funções auxiliares de edição
+	if a.model.EditingField {
+	//Definir callbacks para salvar e cancelar
+		onSave := func(value string) {
+		iferr := a.applyNodePoolFieldValue(a.model.ActiveField, value); err == nil {
+			a.model.EditingNodePool.Modified = true
+			//Atualizar também na lista de node pools selecionados
+				for i := range a.model.SelectedNodePools {
+				ifa.model.SelectedNodePools[i].Name == a.model.EditingNodePool.Name {
+					a.model.SelectedNodePools[i] = *a.model.EditingNodePool
+						break
+				}
+			}
+		}
+			a.model.EditingField = false
+			a.model.EditingValue = ""
+			a.model.CursorPosition = 0
+		}
+
+		onCancel := func() {
+			a.model.EditingField = false
+			a.model.EditingValue = ""
+			a.model.CursorPosition = 0
+		}
+
+	//Usar função auxiliar para processar edição
+		var continueEditing bool
+		a.model.EditingValue, a.model.CursorPosition, continueEditing = a.handleTextEditingKeys(msg, a.model.EditingValue, onSave, onCancel)
+
+		if continueEditing {
+		//Validar posição do cursor
+			a.validateCursorPosition(a.model.EditingValue)
+		}
+		return a, nil
+	}
+
+
+	// Navegação normal
+	switch msg.String() {
+	case "up", "k":
+		a.moveToPrevNodeField()
+	case "down", "j":
+		a.moveToNextNodeField()
+	case "tab":
+		a.moveToNextNodeField()
+	case "enter":
+	//Iniciar edição de campo
+		a.model.EditingField = true
+	//Definir valor inicial baseado no campo atual
+		a.model.EditingValue = a.getCurrentNodePoolFieldValue(a.model.ActiveField)
+		a.model.CursorPosition = len([]rune(a.model.EditingValue)) // Cursor no final
+	case "esc":
+	//Voltar para seleção de node pools (sem salvar mudanças)
+		a.model.State = models.StateNodeSelection
+		a.model.ActivePanel = models.PanelSelectedNodePools
+		a.model.EditingNodePool = nil
+		return a, tea.ClearScreen
+	case "ctrl+s":
+	//Salvar mudanças e voltar
+		if a.model.EditingNodePool != nil {
+			a.debugLog("💾 Saving changes for node pool %s\n", a.model.EditingNodePool.Name)
+			a.model.EditingNodePool.Modified = true
+			
+		//Atualizar também na lista de node pools selecionados
+			for i := range a.model.SelectedNodePools {
+			ifa.model.SelectedNodePools[i].Name == a.model.EditingNodePool.Name {
+					a.debugLog("📝 Updating selected node pool %s to Modified=true\n", a.model.EditingNodePool.Name)
+				a.model.SelectedNodePools[i] = *a.model.EditingNodePool
+					break
+			}
+		}
+			
+			a.model.State = models.StateNodeSelection
+			a.model.ActivePanel = models.PanelSelectedNodePools
+			a.model.EditingNodePool = nil
+		}
+	}
+	return a, nil
+}
+
+// moveToNextNodeField - Mover para próximo campo na edição de node pool
+func (a *App) moveToNextNodeField() {
+	fields := []string{"node_count", "min_nodes", "max_nodes"}
+	for i, field := range fields {
+		if a.model.ActiveField == field {
+		ifi < len(fields)-1 {
+			a.model.ActiveField = fields[i+1]
+		} else {
+			a.model.ActiveField = fields[0]
+		}
+			break
+		}
+	}
+}
+
+// moveToPrevNodeField - Mover para campo anterior na edição de node pool
+func (a *App) moveToPrevNodeField() {
+	fields := []string{"node_count", "min_nodes", "max_nodes"}
+	for i, field := range fields {
+		if a.model.ActiveField == field {
+		ifi > 0 {
+			a.model.ActiveField = fields[i-1]
+		} else {
+			a.model.ActiveField = fields[len(fields)-1]
+		}
+			break
+		}
+	}
+}
+
+// getCurrentNodePoolFieldValue retorna o valor atual do campo sendo editado
+func (a *App) getCurrentNodePoolFieldValue(fieldName string) string {
+	if a.model.EditingNodePool == nil {
+		return ""
+	}
+	
+	pool := a.model.EditingNodePool
+	switch fieldName {
+	case "node_count":
+		return fmt.Sprintf("%d", pool.NodeCount)
+	case "min_nodes":
+		return fmt.Sprintf("%d", pool.MinNodeCount)
+	case "max_nodes":
+		return fmt.Sprintf("%d", pool.MaxNodeCount)
+	default:
+		return ""
+	}
+}
+
+// applyNodePoolFieldValue aplica o valor editado ao campo do node pool
+func (a *App) applyNodePoolFieldValue(fieldName string, value string) error {
+	if a.model.EditingNodePool == nil {
+		return fmt.Errorf("no node pool being edited")
+	}
+	
+	pool := a.model.EditingNodePool
+	switch fieldName {
+	case "node_count":
+		val, err := strconv.ParseInt(value, 10, 32)
+		if err != nil {
+			return err
+		}
+		pool.NodeCount = int32(val)
+	case "min_nodes":
+		val, err := strconv.ParseInt(value, 10, 32)
+		if err != nil {
+			return err
+		}
+		pool.MinNodeCount = int32(val)
+	case "max_nodes":
+		val, err := strconv.ParseInt(value, 10, 32)
+		if err != nil {
+			return err
+		}
+		pool.MaxNodeCount = int32(val)
+	}
+	
+	return nil
+}
+
+// handleMixedSessionKeys - Navegação para sessões mistas (HPAs + Node Pools)
+func (a *App) handleMixedSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "tab":
+	//Alternar entre painéis: Namespaces/HPAs ↔ Node Pools
+		switch a.model.ActivePanel {
+		case models.PanelNamespaces, models.PanelHPAs:
+			a.model.ActivePanel = models.PanelNodePools
+			a.model.SelectedIndex = 0
+		//Carregar node pools se ainda não carregados
+		iflen(a.model.NodePools) == 0 {
+			returna, a.loadNodePools()
+		}
+		case models.PanelNodePools:
+			a.model.ActivePanel = models.PanelNamespaces
+			a.model.SelectedIndex = 0
+		}
+		return a, nil
+
+	case "ctrl+s":
+	//Salvar sessão mista
+		if a.model.CurrentSession != nil {
+		//Verificar se há mudanças para salvar
+		iflen(a.model.CurrentSession.Changes) > 0 || len(a.model.CurrentSession.NodePoolChanges) > 0 {
+			a.model.EnteringSessionName = true
+			a.model.SessionName = ""
+			returna, nil
+		}
+		}
+
+	case "ctrl+d", "ctrl+u":
+	//Aplicar todas as mudanças da sessão mista
+		if a.model.CurrentSession != nil {
+			return a, a.applyMixedSession()
+		}
+
+	case "enter":
+	//Editar item selecionado dependendo do painel ativo
+		switch a.model.ActivePanel {
+		case models.PanelHPAs:
+		ifa.model.SelectedIndex < len(a.model.SelectedHPAs) && len(a.model.SelectedHPAs) > 0 {
+			a.model.EditingHPA = &a.model.SelectedHPAs[a.model.SelectedIndex]
+			a.model.State = models.StateHPAEditing
+			a.model.ActiveField = "min_replicas"
+			returna, nil
+		}
+		case models.PanelNodePools:
+		ifa.model.SelectedIndex < len(a.model.SelectedNodePools) && len(a.model.SelectedNodePools) > 0 {
+			a.model.EditingNodePool = &a.model.SelectedNodePools[a.model.SelectedIndex]
+			a.model.State = models.StateNodeEditing
+			a.model.ActiveField = "min_nodes"
+			returna, nil
+		}
+		}
+
+	case "space":
+	//Selecionar/desselecionar itens
+		switch a.model.ActivePanel {
+		case models.PanelNamespaces:
+		ifa.model.SelectedIndex < len(a.model.Namespaces) && len(a.model.Namespaces) > 0 {
+				namespace := &a.model.Namespaces[a.model.SelectedIndex]
+				namespace.Selected = !namespace.Selected
+				
+			ifnamespace.Selected {
+				a.model.SelectedNamespaces = append(a.model.SelectedNamespaces, *namespace)
+			} else {
+				//Remover da lista de selecionados
+					for i, selected := range a.model.SelectedNamespaces {
+					ifselected.Name == namespace.Name {
+						a.model.SelectedNamespaces = append(a.model.SelectedNamespaces[:i], a.model.SelectedNamespaces[i+1:]...)
+							break
+					}
+				}
+			}
+		}
+		case models.PanelNodePools:
+		ifa.model.SelectedIndex < len(a.model.NodePools) && len(a.model.NodePools) > 0 {
+				nodePool := &a.model.NodePools[a.model.SelectedIndex]
+				nodePool.Selected = !nodePool.Selected
+				
+			ifnodePool.Selected {
+				a.model.SelectedNodePools = append(a.model.SelectedNodePools, *nodePool)
+			} else {
+				//Remover da lista de selecionados
+					for i, selected := range a.model.SelectedNodePools {
+					ifselected.Name == nodePool.Name {
+						a.model.SelectedNodePools = append(a.model.SelectedNodePools[:i], a.model.SelectedNodePools[i+1:]...)
+							break
+					}
+				}
+			}
+		}
+		}
+
+	case "up", "k":
+		if a.model.SelectedIndex > 0 {
+			a.model.SelectedIndex--
+		}
+	case "down", "j":
+		maxIndex := 0
+		switch a.model.ActivePanel {
+		case models.PanelNamespaces:
+			maxIndex = len(a.model.Namespaces) - 1
+		case models.PanelHPAs:
+			maxIndex = len(a.model.SelectedHPAs) - 1
+		case models.PanelNodePools:
+			maxIndex = len(a.model.NodePools) - 1
+		}
+		if a.model.SelectedIndex < maxIndex {
+			a.model.SelectedIndex++
+		}
+	}
+	return a, nil
+}
+
+// enrichHPAWithDeploymentResources enriquece o HPA com informações do deployment
+func (a *App) enrichHPAWithDeploymentResources(hpa *models.HPA) tea.Cmd {
+	return func() tea.Msg {
+		clusterName := hpa.Cluster
+		
+	//Obter o client do Kubernetes para este cluster
+		clientset, err := a.kubeManager.GetClient(clusterName)
+		if err != nil {
+			return hpaDeploymentResourcesEnrichedMsg{
+				hpa: hpa,
+				err: fmt.Errorf("failed to get client for cluster %s: %w", clusterName, err),
+		}
+		}
+		
+		client := kubernetes.NewClient(clientset, clusterName)
+		ctx := context.Background()
+		
+	//Enriquecer o HPA com informações do deployment
+		err = client.EnrichHPAWithDeploymentResources(ctx, hpa)
+		if err != nil {
+			return hpaDeploymentResourcesEnrichedMsg{
+				hpa: hpa,
+				err: fmt.Errorf("failed to enrich HPA with deployment resources: %w", err),
+		}
+		}
+		
+		return hpaDeploymentResourcesEnrichedMsg{
+			hpa: hpa,
+			err: nil,
+		}
+	}
+}
+
+// Mensagem para indicar que o HPA foi enriquecido com recursos do deployment
+type hpaDeploymentResourcesEnrichedMsg struct {
+	hpa *models.HPA
+	err error
+}
+
+// navigateMainPanelUp - Navegar para cima no painel principal
+func (a *App) navigateMainPanelUp(fields []string) {
+	currentIdx := 0
+	for i, field := range fields {
+		if a.model.ActiveField == field {
+			currentIdx = i
+			break
+		}
+	}
+	if currentIdx > 0 {
+		a.model.ActiveField = fields[currentIdx-1]
+	}
+}
+
+// navigateMainPanelDown - Navegar para baixo no painel principal
+func (a *App) navigateMainPanelDown(fields []string) {
+	currentIdx := 0
+	for i, field := range fields {
+		if a.model.ActiveField == field {
+			currentIdx = i
+			break
+		}
+	}
+	if currentIdx < len(fields)-1 {
+		a.model.ActiveField = fields[currentIdx+1]
+	}
+}
+
+// navigateResourcePanelUp - Navegar para cima no painel de recursos
+func (a *App) navigateResourcePanelUp(fields []string) {
+	currentIdx := 0
+	for i, field := range fields {
+		if a.model.ActiveField == field {
+			currentIdx = i
+			break
+		}
+	}
+	if currentIdx > 0 {
+		a.model.ActiveField = fields[currentIdx-1]
+	}
+}
+
+// navigateResourcePanelDown - Navegar para baixo no painel de recursos
+func (a *App) navigateResourcePanelDown(fields []string) {
+	currentIdx := 0
+	for i, field := range fields {
+		if a.model.ActiveField == field {
+			currentIdx = i
+			break
+		}
+	}
+	if currentIdx < len(fields)-1 {
+		a.model.ActiveField = fields[currentIdx+1]
+	}
+}
+

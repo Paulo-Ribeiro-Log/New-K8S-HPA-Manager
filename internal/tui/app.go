@@ -83,9 +83,9 @@ func NewApp(kubeconfigPath string, debug bool) *App {
 		CurrentNamespaceIdx: 0,
 		FormFields:          make(map[string]string),
 		// Inicializar Status Container (dimensões fixas 140x15)
-		StatusContainer:     components.NewStatusContainer(80, 10, "📊 Status e Informações"),
+		StatusContainer: components.NewStatusContainer(80, 10, "📊 Status e Informações"),
 		// Inicializar sistema de memorização de estado
-		StateMemory:         make(map[models.AppState]*models.PanelState),
+		StateMemory: make(map[models.AppState]*models.PanelState),
 		// Inicializar memorização de posições em pastas de sessão
 		FolderSessionMemory: make(map[string]int),
 	}
@@ -97,10 +97,10 @@ func NewApp(kubeconfigPath string, debug bool) *App {
 		ctx:            ctx,
 		cancel:         cancel,
 		// Inicializar com resolução mínima para garantir visibilidade
-		width:          layout.MinTerminalWidth,
-		height:         layout.MinTerminalHeight,
-		model:          initialModel,
-		tabManager:     models.NewTabManager(), // Inicializar TabManager
+		width:      layout.MinTerminalWidth,
+		height:     layout.MinTerminalHeight,
+		model:      initialModel,
+		tabManager: models.NewTabManager(), // Inicializar TabManager
 	}
 
 	// Criar primeira aba com o modelo inicial
@@ -858,7 +858,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			a.model.SuccessMsg = fmt.Sprintf("📚 Sessão de node pools '%s' carregada com sucesso. %d pool(s) modificado(s).",
 				msg.sessionName, len(a.model.SelectedNodePools))
-				
+
 		} else {
 			// É uma sessão de HPAs (código original)
 			// Criar cliente Kubernetes para o cluster se não existir
@@ -870,14 +870,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.model.State = models.StateClusterSelection
 					return a, nil
 				}
-				
+
 				clientSet, err := a.kubeManager.GetClient(a.model.SelectedCluster.Context)
 				if err != nil {
 					a.model.Error = fmt.Sprintf("Não foi possível conectar ao cluster %s: %v", clusterName, err)
 					a.model.State = models.StateClusterSelection
 					return a, nil
 				}
-				
+
 				newClient := kubernetes.NewClient(clientSet, clusterName)
 				a.clients[clusterName] = newClient
 			}
@@ -885,7 +885,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Restaurar namespaces selecionados
 			a.model.SelectedNamespaces = msg.namespaces
 			a.model.Namespaces = msg.namespaces // Definir namespaces disponíveis
-			
+
 			// Restaurar HPAs selecionados com modificações da sessão
 			a.model.SelectedHPAs = msg.hpas
 			a.model.HPAs = msg.hpas // Definir HPAs disponíveis
@@ -901,7 +901,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Enriquecer HPAs que não possuem dados de deployment
 			return a, a.enrichSessionHPAs()
 		}
-		
+
 		return a, nil
 
 	case azureAuthStartMsg:
@@ -1049,9 +1049,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 						// Atualizar valores originais para refletir o estado atual
 						a.model.SelectedNodePools[i].OriginalValues = models.NodePoolValues{
-							NodeCount:    appliedPool.NodeCount,
-							MinNodeCount: appliedPool.MinNodeCount,
-							MaxNodeCount: appliedPool.MaxNodeCount,
+							NodeCount:          appliedPool.NodeCount,
+							MinNodeCount:       appliedPool.MinNodeCount,
+							MaxNodeCount:       appliedPool.MaxNodeCount,
 							AutoscalingEnabled: appliedPool.AutoscalingEnabled,
 						}
 						break
@@ -1133,10 +1133,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case resourceChangeAppliedMsg:
 		return a.handleResourceChangeApplied(msg)
-		
+
 	case resourcesBatchAppliedMsg:
 		return a.handleResourcesBatchApplied(msg)
-		
+
 	case prometheusStackAppliedMsg:
 		return a.handlePrometheusStackApplied(msg)
 
@@ -1405,13 +1405,13 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 	}
-	
+
 	// Se há mensagem de sucesso, qualquer tecla limpa
 	if a.model.SuccessMsg != "" {
 		a.model.SuccessMsg = ""
 		return a, nil
 	}
-	
+
 	switch msg.String() {
 	case "ctrl+c", "f4":
 		a.cancel()
@@ -1476,7 +1476,7 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Em outros estados, F7 não faz nada
 		return a, nil
-		
+
 	case "f8":
 		// Gerenciar recursos Prometheus
 		// Se estamos na seleção de clusters, selecionar o cluster atual primeiro
@@ -1746,9 +1746,9 @@ func (a *App) runAutoDiscover() tea.Cmd {
 
 		// Retornar resultado
 		return autoDiscoverResultMsg{
-			success:      len(configs) > 0,
+			success:       len(configs) > 0,
 			clustersFound: len(configs),
-			errors:       errors,
+			errors:        errors,
 		}
 	}
 }
@@ -1820,36 +1820,36 @@ func (a *App) loadNamespacesInternal() tea.Msg {
 			}
 			return namespacesLoadedMsg{err: fmt.Errorf("cluster %s parece estar offline ou inacessível: %w", clusterName, err)}
 		}
-		
+
 		newClient := kubernetes.NewClient(clientSet, clusterName)
 		a.clients[clusterName] = newClient
 		client = newClient
 	}
-	
+
 	// Carregar namespaces com filtro de sistema baseado na configuração
 	namespaces, err := client.ListNamespaces(a.ctx, a.model.ShowSystemNamespaces)
 	if err != nil {
 		return namespacesLoadedMsg{err: err}
 	}
-	
+
 	// Adicionar cluster name aos namespaces
 	for i := range namespaces {
 		namespaces[i].Cluster = clusterName
 	}
-	
+
 	return namespacesLoadedMsg{namespaces: namespaces, err: nil}
 }
 
 // setKubectlContext configura o contexto do kubectl para o cluster especificado
 func (a *App) setKubectlContext(clusterName string) error {
 	a.debugLog("🔄 Setting kubectl context to: %s\n", clusterName)
-	
+
 	cmd := exec.Command("kubectl", "config", "use-context", clusterName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to set kubectl context '%s': %w - output: %s", clusterName, err, string(output))
 	}
-	
+
 	a.debugLog("✅ kubectl context set to: %s\n", clusterName)
 	return nil
 }
@@ -1885,19 +1885,19 @@ func (a *App) loadHPACounts() tea.Cmd {
 	if a.model.SelectedCluster == nil || len(a.model.Namespaces) == 0 {
 		return nil
 	}
-	
+
 	var cmds []tea.Cmd
 	clusterName := a.model.SelectedCluster.Name
 	client, exists := a.clients[clusterName]
 	if !exists {
 		return nil
 	}
-	
+
 	// Criar comandos para contar HPAs em cada namespace
 	for _, ns := range a.model.Namespaces {
 		cmds = append(cmds, a.countHPAsInNamespace(client, ns.Name))
 	}
-	
+
 	return tea.Batch(cmds...)
 }
 
@@ -1951,12 +1951,12 @@ func (a *App) loadHPAs() tea.Cmd {
 			}
 			return hpasLoadedMsg{err: err}
 		}
-		
+
 		// Adicionar informações do cluster aos HPAs
 		for i := range hpas {
 			hpas[i].Cluster = clusterName
 		}
-		
+
 		return hpasLoadedMsg{hpas: hpas, err: nil}
 	}
 }
@@ -2446,7 +2446,6 @@ func (a *App) clearStatusMessages() tea.Cmd {
 	})
 }
 
-
 // startAsyncNodePoolOperation - Inicia tracking de uma operação de node pool
 func (a *App) startAsyncNodePoolOperation(pool models.NodePool) {
 	// Determinar tipo de operação
@@ -2526,14 +2525,14 @@ func (a *App) applyNodePoolChanges(nodePools []models.NodePool) tea.Cmd {
 			err := a.updateNodePoolViaAzureCLI(pool)
 			if err != nil {
 				// Atualizar progress para falha
-a.updateNodePoolProgress(pool.Name, models.RolloutStatusFailed, 100, "Falha na aplicação", err.Error())
+				a.updateNodePoolProgress(pool.Name, models.RolloutStatusFailed, 100, "Falha na aplicação", err.Error())
 				a.model.StatusContainer.AddError("apply-nodepool", fmt.Sprintf("❌ Erro ao aplicar Node Pool %s: %v", pool.Name, err))
 				lastError = err
 				continue
 			}
 
 			// Node pool aplicado com sucesso
-a.updateNodePoolProgress(pool.Name, models.RolloutStatusCompleted, 100, "Operação concluída", "")
+			a.updateNodePoolProgress(pool.Name, models.RolloutStatusCompleted, 100, "Operação concluída", "")
 			a.model.StatusContainer.AddSuccess("apply-nodepool", fmt.Sprintf("✅ Node Pool aplicado: %s", pool.Name))
 
 			// Incrementar contador de aplicações
@@ -2572,9 +2571,9 @@ func (a *App) saveSession(sessionParam *models.Session) tea.Cmd {
 
 		// Criar sessão completa
 		fullSession := &models.Session{
-			Name:      sessionParam.Name,
-			CreatedAt: time.Now(),
-			CreatedBy: "k8s-hpa-manager",
+			Name:            sessionParam.Name,
+			CreatedAt:       time.Now(),
+			CreatedBy:       "k8s-hpa-manager",
 			Changes:         make([]models.HPAChange, 0),
 			NodePoolChanges: make([]models.NodePoolChange, 0),
 		}
@@ -2606,15 +2605,15 @@ func (a *App) saveSession(sessionParam *models.Session) tea.Cmd {
 			}
 
 			change := models.HPAChange{
-				Cluster:   hpa.Cluster,
-				Namespace: hpa.Namespace,
-				HPAName:   hpa.Name,
+				Cluster:        hpa.Cluster,
+				Namespace:      hpa.Namespace,
+				HPAName:        hpa.Name,
 				OriginalValues: originalValues,
 				NewValues: &models.HPAValues{
-					MinReplicas:     hpa.MinReplicas,
-					MaxReplicas:     hpa.MaxReplicas,
-					TargetCPU:       hpa.TargetCPU,
-					TargetMemory:    hpa.TargetMemory,
+					MinReplicas:  hpa.MinReplicas,
+					MaxReplicas:  hpa.MaxReplicas,
+					TargetCPU:    hpa.TargetCPU,
+					TargetMemory: hpa.TargetMemory,
 
 					// Rollout Options
 					PerformRollout:            hpa.PerformRollout,
@@ -2622,15 +2621,15 @@ func (a *App) saveSession(sessionParam *models.Session) tea.Cmd {
 					PerformStatefulSetRollout: hpa.PerformStatefulSetRollout,
 
 					// Recursos do deployment
-					DeploymentName:  hpa.DeploymentName,
-					CPURequest:      hpa.TargetCPURequest,
-					CPULimit:        hpa.TargetCPULimit,
-					MemoryRequest:   hpa.TargetMemoryRequest,
-					MemoryLimit:     hpa.TargetMemoryLimit,
+					DeploymentName: hpa.DeploymentName,
+					CPURequest:     hpa.TargetCPURequest,
+					CPULimit:       hpa.TargetCPULimit,
+					MemoryRequest:  hpa.TargetMemoryRequest,
+					MemoryLimit:    hpa.TargetMemoryLimit,
 				},
-				Applied:          false,
-				RolloutTriggered: hpa.PerformRollout,
-				DaemonSetRolloutTriggered:  hpa.PerformDaemonSetRollout,
+				Applied:                     false,
+				RolloutTriggered:            hpa.PerformRollout,
+				DaemonSetRolloutTriggered:   hpa.PerformDaemonSetRollout,
 				StatefulSetRolloutTriggered: hpa.PerformStatefulSetRollout,
 			}
 			fullSession.Changes = append(fullSession.Changes, change)
@@ -2671,15 +2670,15 @@ func (a *App) saveSession(sessionParam *models.Session) tea.Cmd {
 				}
 
 				change := models.NodePoolChange{
-					Cluster:       clusterName,
-					ResourceGroup: resourceGroup,
-					Subscription:  subscription,
-					NodePoolName:  pool.Name,
+					Cluster:        clusterName,
+					ResourceGroup:  resourceGroup,
+					Subscription:   subscription,
+					NodePoolName:   pool.Name,
 					OriginalValues: originalValues,
 					NewValues: models.NodePoolValues{
-						NodeCount:    pool.NodeCount,
-						MinNodeCount: pool.MinNodeCount,
-						MaxNodeCount: pool.MaxNodeCount,
+						NodeCount:          pool.NodeCount,
+						MinNodeCount:       pool.MinNodeCount,
+						MaxNodeCount:       pool.MaxNodeCount,
 						AutoscalingEnabled: pool.AutoscalingEnabled,
 					},
 					Applied: false,
@@ -2727,6 +2726,9 @@ func (a *App) saveSession(sessionParam *models.Session) tea.Cmd {
 			case "Node-Downscale":
 				folder = session.FolderNodeDownscale
 				a.debugLog("📁 Using folder: Node-Downscale")
+			case "Rollback":
+				folder = session.FolderRollback
+				a.debugLog("📁 Using folder: Rollback")
 			default:
 				a.debugLog("❌ Invalid folder name: %s", a.model.CurrentFolder)
 				return sessionSavedMsg{
@@ -2802,6 +2804,8 @@ func (a *App) deleteSessionFromFolder(sessionName, folderName string) tea.Cmd {
 				folder = session.FolderNodeUpscale
 			case "Node-Downscale":
 				folder = session.FolderNodeDownscale
+			case "Rollback":
+				folder = session.FolderRollback
 			default:
 				return sessionDeletedMsg{
 					sessionName: sessionName,
@@ -2848,6 +2852,8 @@ func (a *App) renameSessionInFolder(oldName, newName, folderName string) tea.Cmd
 				folder = session.FolderNodeUpscale
 			case "Node-Downscale":
 				folder = session.FolderNodeDownscale
+			case "Rollback":
+				folder = session.FolderRollback
 			default:
 				return sessionRenamedMsg{
 					oldName: oldName,
@@ -2911,6 +2917,8 @@ func (a *App) loadSessionsFromFolder(folderName string) tea.Cmd {
 			folder = session.FolderNodeUpscale
 		case "Node-Downscale":
 			folder = session.FolderNodeDownscale
+		case "Rollback":
+			folder = session.FolderRollback
 		default:
 			return sessionsLoadedMsg{err: fmt.Errorf("invalid folder name: %s", folderName)}
 		}
@@ -2959,13 +2967,13 @@ func (a *App) applySessionChanges(session *models.Session) tea.Cmd {
 					lastError = fmt.Errorf("kube manager not initialized")
 					continue
 				}
-				
+
 				clientSet, err := a.kubeManager.GetClient(change.Cluster)
 				if err != nil {
 					lastError = fmt.Errorf("failed to get client for cluster %s: %w", change.Cluster, err)
 					continue
 				}
-				
+
 				newClient := kubernetes.NewClient(clientSet, change.Cluster)
 				a.clients[change.Cluster] = newClient
 				client = newClient
@@ -3082,22 +3090,22 @@ func (a *App) loadHPASessionState(session *models.Session) tea.Msg {
 	// Converter as mudanças da sessão em HPAs com modificações
 	var sessionHPAs []models.HPA
 	namespacesMap := make(map[string]bool)
-	
+
 	for _, change := range session.Changes {
 		if change.Cluster != targetCluster {
 			continue // Por enquanto, só um cluster
 		}
-		
+
 		namespacesMap[change.Namespace] = true
-		
+
 		hpa := models.HPA{
-			Name:            change.HPAName,
-			Namespace:       change.Namespace,
-			Cluster:         change.Cluster,
-			MinReplicas:     change.NewValues.MinReplicas,
-			MaxReplicas:     change.NewValues.MaxReplicas,
-			TargetCPU:       change.NewValues.TargetCPU,
-			TargetMemory:    change.NewValues.TargetMemory,
+			Name:                      change.HPAName,
+			Namespace:                 change.Namespace,
+			Cluster:                   change.Cluster,
+			MinReplicas:               change.NewValues.MinReplicas,
+			MaxReplicas:               change.NewValues.MaxReplicas,
+			TargetCPU:                 change.NewValues.TargetCPU,
+			TargetMemory:              change.NewValues.TargetMemory,
 			PerformRollout:            change.RolloutTriggered,
 			PerformDaemonSetRollout:   change.DaemonSetRolloutTriggered,
 			PerformStatefulSetRollout: change.StatefulSetRolloutTriggered,
@@ -3106,23 +3114,23 @@ func (a *App) loadHPASessionState(session *models.Session) tea.Msg {
 			Modified:                  true, // Marcar como modificado
 
 			// Recursos do deployment da sessão
-			DeploymentName:        change.NewValues.DeploymentName,
-			TargetCPURequest:      change.NewValues.CPURequest,
-			TargetCPULimit:        change.NewValues.CPULimit,
-			TargetMemoryRequest:   change.NewValues.MemoryRequest,
-			TargetMemoryLimit:     change.NewValues.MemoryLimit,
-			ResourcesModified:     change.NewValues.CPURequest != "" || change.NewValues.CPULimit != "" || change.NewValues.MemoryRequest != "" || change.NewValues.MemoryLimit != "",
+			DeploymentName:      change.NewValues.DeploymentName,
+			TargetCPURequest:    change.NewValues.CPURequest,
+			TargetCPULimit:      change.NewValues.CPULimit,
+			TargetMemoryRequest: change.NewValues.MemoryRequest,
+			TargetMemoryLimit:   change.NewValues.MemoryLimit,
+			ResourcesModified:   change.NewValues.CPURequest != "" || change.NewValues.CPULimit != "" || change.NewValues.MemoryRequest != "" || change.NewValues.MemoryLimit != "",
 
 			// Valores originais dos recursos (se existirem)
-			CurrentCPURequest:     change.OriginalValues.CPURequest,
-			CurrentCPULimit:       change.OriginalValues.CPULimit,
-			CurrentMemoryRequest:  change.OriginalValues.MemoryRequest,
-			CurrentMemoryLimit:    change.OriginalValues.MemoryLimit,
+			CurrentCPURequest:    change.OriginalValues.CPURequest,
+			CurrentCPULimit:      change.OriginalValues.CPULimit,
+			CurrentMemoryRequest: change.OriginalValues.MemoryRequest,
+			CurrentMemoryLimit:   change.OriginalValues.MemoryLimit,
 		}
 
 		// Se não há dados de recursos na sessão, marcar para enriquecer posteriormente
 		if hpa.DeploymentName == "" && hpa.CurrentCPURequest == "" && hpa.CurrentCPULimit == "" &&
-		   hpa.CurrentMemoryRequest == "" && hpa.CurrentMemoryLimit == "" {
+			hpa.CurrentMemoryRequest == "" && hpa.CurrentMemoryLimit == "" {
 			hpa.NeedsEnrichment = true
 		}
 		sessionHPAs = append(sessionHPAs, hpa)
@@ -3246,14 +3254,14 @@ func (a *App) loadNodePoolSessionState(session *models.Session) tea.Msg {
 		if change.Cluster == targetCluster && !poolsInSession[change.NodePoolName] {
 			// Pool da sessão não existe mais no cluster - criar entrada histórica
 			historicalPool := models.NodePool{
-				Name:         change.NodePoolName,
-				NodeCount:    change.NewValues.NodeCount,
-				MinNodeCount: change.NewValues.MinNodeCount,
-				MaxNodeCount: change.NewValues.MaxNodeCount,
+				Name:               change.NodePoolName,
+				NodeCount:          change.NewValues.NodeCount,
+				MinNodeCount:       change.NewValues.MinNodeCount,
+				MaxNodeCount:       change.NewValues.MaxNodeCount,
 				AutoscalingEnabled: change.NewValues.AutoscalingEnabled,
-				Modified:     true,
-				Selected:     true,
-				Status:       "Historical", // Marcar como histórico
+				Modified:           true,
+				Selected:           true,
+				Status:             "Historical", // Marcar como histórico
 			}
 			sessionNodePools = append(sessionNodePools, historicalPool)
 			a.debugLog("⚠️ Pool '%s' da sessão não existe mais no cluster - adicionado como histórico\n", change.NodePoolName)
@@ -3287,7 +3295,7 @@ func (a *App) getCurrentFieldValue(fieldName string) string {
 	if a.model.EditingHPA == nil {
 		return ""
 	}
-	
+
 	hpa := a.model.EditingHPA
 	switch fieldName {
 	case "min_replicas":
@@ -3312,7 +3320,7 @@ func (a *App) getCurrentFieldValue(fieldName string) string {
 			return "true"
 		}
 		return "false"
-	
+
 	// Campos de recursos do deployment
 	case "deployment_cpu_request":
 		if hpa.TargetCPURequest != "" {
@@ -3334,7 +3342,7 @@ func (a *App) getCurrentFieldValue(fieldName string) string {
 			return hpa.TargetMemoryLimit
 		}
 		return hpa.CurrentMemoryLimit
-	
+
 	default:
 		return ""
 	}
@@ -3345,7 +3353,7 @@ func (a *App) applyFieldValue(fieldName, value string) error {
 	if a.model.EditingHPA == nil {
 		return fmt.Errorf("no HPA being edited")
 	}
-	
+
 	hpa := a.model.EditingHPA
 	switch fieldName {
 	case "min_replicas":
@@ -3390,7 +3398,7 @@ func (a *App) applyFieldValue(fieldName, value string) error {
 	case "rollout":
 		lowerValue := strings.ToLower(value)
 		hpa.PerformRollout = (lowerValue == "true" || lowerValue == "t" || lowerValue == "yes" || lowerValue == "y" || lowerValue == "1")
-	
+
 	// Campos de recursos do deployment
 	case "deployment_cpu_request":
 		hpa.TargetCPURequest = value
@@ -3405,7 +3413,7 @@ func (a *App) applyFieldValue(fieldName, value string) error {
 		hpa.TargetMemoryLimit = value
 		hpa.ResourcesModified = true
 	}
-	
+
 	return nil
 }
 
@@ -3568,7 +3576,6 @@ func (a *App) updateNodePoolViaAzureCLI(pool models.NodePool) error {
 		}
 	}
 
-
 	// Se não há comandos para executar, não há mudanças
 	if len(cmds) == 0 {
 		return nil
@@ -3582,7 +3589,7 @@ func (a *App) updateNodePoolViaAzureCLI(pool models.NodePool) error {
 		a.updateNodePoolProgress(pool.Name, models.RolloutStatusRunning, startProgress, fmt.Sprintf("Iniciando comando %d/%d...", i+1, totalCmds), "")
 
 		// Progresso durante execução
-		midProgress := 30 + ((i * 60 + 20) / totalCmds)
+		midProgress := 30 + ((i*60 + 20) / totalCmds)
 		a.updateNodePoolProgress(pool.Name, models.RolloutStatusRunning, midProgress, fmt.Sprintf("Executando comando %d/%d...", i+1, totalCmds), "")
 
 		err := a.executeAzureCommand(cmd)
@@ -3792,8 +3799,6 @@ func (a *App) processAzureOutput(output string) {
 	}
 }
 
-
-
 // renderMixedSession renderiza a interface de sessão mista (HPAs + Node Pools)
 func (a *App) renderMixedSession() string {
 	return a.getTabBar() + "🔄 Sessão Mista (HPAs + Node Pools) - Em Implementação\n\n" +
@@ -3857,29 +3862,29 @@ func (a *App) handleF7AllResources() (tea.Model, tea.Cmd) {
 		a.model.Error = "Selecione um cluster primeiro para gerenciar recursos"
 		return a, nil
 	}
-	
+
 	// Verificar se está em estado válido para F7
 	validStates := map[models.AppState]bool{
 		models.StateNamespaceSelection: true,
-		models.StateHPASelection:      true,
-		models.StateNodeSelection:     true,
-		models.StateMixedSession:      true,
+		models.StateHPASelection:       true,
+		models.StateNodeSelection:      true,
+		models.StateMixedSession:       true,
 	}
-	
+
 	if !validStates[a.model.State] {
 		a.model.Error = "F7 (Recursos) disponível apenas após seleção de cluster"
 		return a, nil
 	}
-	
+
 	// Configurar modo de recursos
 	a.model.PrometheusStackMode = false
 	a.model.ShowSystemResources = false
 	a.model.ResourceFilter = models.ResourceMonitoring // Filtro padrão
-	
+
 	// Ir para estado de descoberta de recursos
 	a.model.State = models.StateClusterResourceDiscovery
 	a.model.Loading = true
-	
+
 	return a, a.discoverClusterResources(false) // false = todos os recursos
 }
 
@@ -3895,25 +3900,25 @@ func (a *App) handleF8PrometheusResources() (tea.Model, tea.Cmd) {
 	validStates := map[models.AppState]bool{
 		models.StateClusterSelection:   true, // Permitir F8 na seleção de clusters
 		models.StateNamespaceSelection: true,
-		models.StateHPASelection:      true,
-		models.StateNodeSelection:     true,
-		models.StateMixedSession:      true,
+		models.StateHPASelection:       true,
+		models.StateNodeSelection:      true,
+		models.StateMixedSession:       true,
 	}
 
 	if !validStates[a.model.State] {
 		a.model.Error = "F8 (Prometheus) disponível apenas após seleção de cluster"
 		return a, nil
 	}
-	
+
 	// Configurar modo Prometheus
 	a.model.PrometheusStackMode = true
 	a.model.ShowSystemResources = true // Prometheus está em namespaces system
 	a.model.ResourceFilter = models.ResourceMonitoring
-	
+
 	// Ir para estado de descoberta de recursos Prometheus
 	a.model.State = models.StateClusterResourceDiscovery
 	a.model.Loading = true
-	
+
 	return a, a.discoverClusterResources(true) // true = apenas Prometheus
 }
 
@@ -3921,12 +3926,12 @@ func (a *App) handleF8PrometheusResources() (tea.Model, tea.Cmd) {
 func (a *App) handleMouseEvent(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// Verificar se estamos em uma tela que tem painel de status
 	validStates := map[models.AppState]bool{
-		models.StateHPASelection:    true,
-		models.StateNodeSelection:   true,
-		models.StateMixedSession:    true,
+		models.StateHPASelection:       true,
+		models.StateNodeSelection:      true,
+		models.StateMixedSession:       true,
 		models.StateNamespaceSelection: true,
-		models.StateHPAEditing:      true,
-		models.StateNodeEditing:     true,
+		models.StateHPAEditing:         true,
+		models.StateNodeEditing:        true,
 	}
 
 	if !validStates[a.model.State] {
@@ -4114,7 +4119,7 @@ func (a *App) discoverClusterResources(prometheusOnly bool) tea.Cmd {
 				err: fmt.Errorf("failed to get client for cluster %s: %w", clusterName, err),
 			}
 		}
-		
+
 		// Criar client wrapper (IMPORTANTE: passar contextName, não clusterName!)
 		client := kubernetes.NewClient(clientset, contextName)
 
@@ -4335,11 +4340,11 @@ func (a *App) loadCronJobsFromKubernetes(client k8sClientSet.Interface, clusterN
 		for _, cronJob := range cronJobList.Items {
 			// Converter para nosso modelo
 			modelCronJob := models.CronJob{
-				Name:      cronJob.Name,
-				Namespace: namespaceName,
-				Cluster:   clusterName,
-				Schedule:  cronJob.Spec.Schedule,
-				Suspend:   cronJob.Spec.Suspend,
+				Name:            cronJob.Name,
+				Namespace:       namespaceName,
+				Cluster:         clusterName,
+				Schedule:        cronJob.Spec.Schedule,
+				Suspend:         cronJob.Spec.Suspend,
 				OriginalSuspend: cronJob.Spec.Suspend,
 			}
 
@@ -4446,7 +4451,7 @@ func (a *App) extractJobFunction(command []string, args []string) string {
 
 	// Padrões comuns para extrair função
 	patterns := []struct {
-		pattern string
+		pattern     string
 		description string
 	}{
 		// kubectl rollout restart deployment X -n Y ou --namespace Y
@@ -4791,4 +4796,3 @@ func (a *App) checkForUpdatesInBackground() {
 		a.debugLog("🆕 Update disponível: %s → %s", info.CurrentVersion, info.LatestVersion)
 	}
 }
-

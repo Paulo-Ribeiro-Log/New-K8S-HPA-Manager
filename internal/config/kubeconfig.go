@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -292,9 +294,9 @@ func (k *KubeConfigManager) AutoDiscoverClusterConfig(clusterName string) (*Clus
 	}
 
 	return &ClusterConfig{
-		Name:           clusterName,
-		ResourceGroup:  resourceGroup,
-		Subscription:   subscription,
+		Name:          clusterName,
+		ResourceGroup: resourceGroup,
+		Subscription:  subscription,
 	}, nil
 }
 
@@ -402,7 +404,7 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 
 	for i, cluster := range clusters {
 		go func(idx int, clusterName string) {
-			semaphore <- struct{}{} // Adquirir slot
+			semaphore <- struct{}{}        // Adquirir slot
 			defer func() { <-semaphore }() // Liberar slot
 
 			config, err := k.AutoDiscoverClusterConfig(clusterName)
@@ -516,4 +518,270 @@ func (k *KubeConfigManager) GetPodMetrics(contextName, namespace, resourceName, 
 
 	// Buscar métricas
 	return client.GetPodMetrics(namespace, resourceName, workloadType)
+}
+
+// SwitchContext muda o contexto ativo do Kubernetes para o cluster especificado
+func (k *KubeConfigManager) SwitchContext(context string) error {
+	// Verificar se o contexto existe
+	if _, exists := k.config.Contexts[context]; !exists {
+		return fmt.Errorf("context %s not found in kubeconfig", context)
+	}
+
+	// Executar kubectl config use-context
+	cmd := exec.Command("kubectl", "config", "use-context", context)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to switch kubectl context to %s: %w, output: %s", context, err, string(output))
+	}
+
+	// Atualizar contexto atual na configuração em memória
+	k.config.CurrentContext = context
+
+	// Limpar cache de clientes para forçar recriação com novo contexto
+	k.clientMutex.Lock()
+	k.clients = make(map[string]kubernetes.Interface)
+	k.clientMutex.Unlock()
+
+	return nil
+}
+
+// SwitchAzureContext muda o contexto do Azure CLI para corresponder ao cluster Kubernetes
+func (k *KubeConfigManager) SwitchAzureContext(contextName string) error {
+	// Tentar descobrir a configuração do cluster automaticamente
+	clusterConfig, err := k.AutoDiscoverClusterConfig(contextName)
+	if err != nil {
+		// Se falhar a auto-descoberta, tentar usar configuração salva
+		configs := k.loadClustersFromConfig()
+		for _, cfg := range configs {
+			if cfg.Name == contextName {
+				clusterConfig = &cfg
+				break
+			}
+		}
+
+		if clusterConfig == nil {
+			return fmt.Errorf("could not find Azure configuration for cluster %s", contextName)
+		}
+	}
+
+	// Mudar para a subscription correta
+	cmd := exec.Command("az", "account", "set", "--subscription", clusterConfig.Subscription)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to switch Azure subscription to %s: %w, output: %s",
+			clusterConfig.Subscription, err, string(output))
+	}
+
+	return nil
+}
+
+// ClusterMetrics representa métricas do cluster
+type ClusterMetrics struct {
+	CPUUsagePercent    float64 `json:"cpuUsagePercent"`
+	MemoryUsagePercent float64 `json:"memoryUsagePercent"`
+	NodeCount          int     `json:"nodeCount"`
+	PodCount           int     `json:"podCount"`
+}
+
+// GetKubernetesVersion obtém a versão do Kubernetes do cluster
+func (k *KubeConfigManager) GetKubernetesVersion(clusterName string) (string, error) {
+	client, err := k.getClient(clusterName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get client for cluster %s: %w", clusterName, err)
+	}
+
+	// Obter informações do servidor
+	serverVersion, err := client.Discovery().ServerVersion()
+	if err != nil {
+		return "", fmt.Errorf("failed to get server version: %w", err)
+	}
+
+	return serverVersion.GitVersion, nil
+}
+
+// GetClusterMetrics obtém métricas básicas do cluster
+// Tenta usar Metrics Server para métricas reais, fallback para requests
+func (k *KubeConfigManager) GetClusterMetrics(clusterName string) (*ClusterMetrics, error) {
+	client, err := k.getClient(clusterName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get client for cluster %s: %w", clusterName, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Obter contagem de nodes
+	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	// Obter contagem de pods
+	pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	// Tentar obter métricas reais via Metrics Server primeiro
+	realMetrics, hasRealMetrics := k.getRealNodeMetrics(client, ctx, nodes.Items)
+
+	// Calcular métricas básicas de CPU e memória dos nodes
+	var totalCPUCapacity, totalCPUUsage int64
+	var totalMemoryCapacity, totalMemoryUsage int64
+
+	for _, node := range nodes.Items {
+		// Capacidade total
+		if cpu := node.Status.Capacity.Cpu(); cpu != nil {
+			totalCPUCapacity += cpu.MilliValue()
+		}
+		if memory := node.Status.Capacity.Memory(); memory != nil {
+			totalMemoryCapacity += memory.Value()
+		}
+
+		// Uso atual (pods alocados no node)
+		fieldSelector := fmt.Sprintf("spec.nodeName=%s", node.Name)
+		nodePods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+			FieldSelector: fieldSelector,
+		})
+		if err != nil {
+			continue // Skip este node se não conseguir obter pods
+		}
+
+		for _, pod := range nodePods.Items {
+			if pod.Status.Phase != "Running" {
+				continue
+			}
+
+			for _, container := range pod.Spec.Containers {
+				if cpu := container.Resources.Requests.Cpu(); cpu != nil {
+					totalCPUUsage += cpu.MilliValue()
+				}
+				if memory := container.Resources.Requests.Memory(); memory != nil {
+					totalMemoryUsage += memory.Value()
+				}
+			}
+		}
+	}
+
+	// Usar métricas reais se disponíveis, senão usar requests como fallback
+	var cpuPercent, memoryPercent float64
+	if hasRealMetrics {
+		cpuPercent = realMetrics.CPUUsagePercent
+		memoryPercent = realMetrics.MemoryUsagePercent
+	} else {
+		// Fallback para cálculo baseado em requests
+		if totalCPUCapacity > 0 {
+			cpuPercent = float64(totalCPUUsage) / float64(totalCPUCapacity) * 100
+		}
+		if totalMemoryCapacity > 0 {
+			memoryPercent = float64(totalMemoryUsage) / float64(totalMemoryCapacity) * 100
+		}
+	}
+
+	return &ClusterMetrics{
+		CPUUsagePercent:    cpuPercent,
+		MemoryUsagePercent: memoryPercent,
+		NodeCount:          len(nodes.Items),
+		PodCount:           len(pods.Items),
+	}, nil
+}
+
+// getRealNodeMetrics tenta obter métricas reais via Metrics Server
+func (k *KubeConfigManager) getRealNodeMetrics(client kubernetes.Interface, ctx context.Context, nodes []corev1.Node) (*ClusterMetrics, bool) {
+	// Tentar acessar Metrics Server API via Discovery client
+	discoveryClient := client.Discovery()
+
+	// Fazer request para /apis/metrics.k8s.io/v1beta1/nodes
+	result := discoveryClient.RESTClient().Get().
+		AbsPath("/apis/metrics.k8s.io/v1beta1/nodes").
+		Do(ctx)
+
+	rawData, err := result.Raw()
+	if err != nil {
+		return nil, false
+	}
+
+	// Parse da resposta JSON
+	var nodeMetrics struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Usage struct {
+				CPU    string `json:"cpu"`
+				Memory string `json:"memory"`
+			} `json:"usage"`
+		} `json:"items"`
+	}
+
+	if err := json.Unmarshal(rawData, &nodeMetrics); err != nil {
+		return nil, false
+	}
+
+	// Calcular totais de capacidade
+	var totalCPUCapacity, totalMemoryCapacity int64
+	for _, node := range nodes {
+		if cpu := node.Status.Capacity.Cpu(); cpu != nil {
+			totalCPUCapacity += cpu.MilliValue()
+		}
+		if memory := node.Status.Capacity.Memory(); memory != nil {
+			totalMemoryCapacity += memory.Value()
+		}
+	}
+
+	// Calcular totais de uso real
+	var totalCPUUsage, totalMemoryUsage int64
+	for _, metric := range nodeMetrics.Items {
+		// Parse CPU usage (formato: "123m" ou "1.5")
+		if cpuQuantity, err := resource.ParseQuantity(metric.Usage.CPU); err == nil {
+			totalCPUUsage += cpuQuantity.MilliValue()
+		}
+
+		// Parse Memory usage (formato: "1234567Ki")
+		if memoryQuantity, err := resource.ParseQuantity(metric.Usage.Memory); err == nil {
+			totalMemoryUsage += memoryQuantity.Value()
+		}
+	}
+
+	// Calcular percentuais
+	var cpuPercent, memoryPercent float64
+	if totalCPUCapacity > 0 {
+		cpuPercent = float64(totalCPUUsage) / float64(totalCPUCapacity) * 100
+	}
+	if totalMemoryCapacity > 0 {
+		memoryPercent = float64(totalMemoryUsage) / float64(totalMemoryCapacity) * 100
+	}
+
+	return &ClusterMetrics{
+		CPUUsagePercent:    cpuPercent,
+		MemoryUsagePercent: memoryPercent,
+	}, true
+}
+
+// GetClusterConfigFromFile retorna a configuração de um cluster do arquivo clusters-config.json
+func (k *KubeConfigManager) GetClusterConfigFromFile(clusterName string) (map[string]interface{}, error) {
+	configs := k.loadClustersFromConfig()
+
+	for _, cfg := range configs {
+		if cfg.Name == clusterName {
+			return map[string]interface{}{
+				"clusterName":   cfg.Name,
+				"resourceGroup": cfg.ResourceGroup,
+				"subscription":  cfg.Subscription,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("cluster configuration not found for: %s", clusterName)
+}
+
+// SwitchAzureSubscription muda para uma subscription específica do Azure
+func (k *KubeConfigManager) SwitchAzureSubscription(subscription string) error {
+	cmd := exec.Command("az", "account", "set", "--subscription", subscription)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to switch Azure subscription to %s: %w, output: %s",
+			subscription, err, string(output))
+	}
+	return nil
 }

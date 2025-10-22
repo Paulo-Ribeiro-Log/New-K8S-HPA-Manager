@@ -48,3 +48,10 @@ apoio.txt
 # Log files
 Logs/
 *.log
+
+# Web frontend
+new-web-page/
+internal/web/static/*
+!internal/web/static/.gitkeep
+internal/web/frontend/node_modules/
+internal/web/frontend/dist/

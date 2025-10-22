@@ -1,0 +1,1012 @@
+package kubernetes
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+
+	"k8s-hpa-manager/internal/models"
+)
+
+// systemNamespaces lista os namespaces de sistema que devem ser filtrados
+var systemNamespaces = map[string]bool{
+	"default":                       true,
+	"kube-system":                   true,
+	"kube-public":                   true,
+	"kube-node-lease":               true,
+	"keycloak":                      true,
+	"gatekeeper-system":             true,
+	"istio-system":                  true,
+	"istio-injection":               true,
+	"cert-manager":                  true,
+	"monitoring":                    true,
+	"prometheus":                    true,
+	"grafana":                       true,
+	"elastic-system":                true,
+	"logging":                       true,
+	"dynatrace":                     true,
+	"flux-system":                   true,
+	"argocd":                        true,
+	"guardicore":                    true,
+	"guardicore-orch":               true,
+	"cattle-system":                 true,
+	"longhorn-system":               true,
+	"metallb-system":                true,
+	"calico-system":                 true,
+	"tigera-operator":               true,
+	"azure-arc":                     true,
+	"cluster-baseline-pod-security": true,
+	"dsv":                           true,
+	"velero":                        true,
+	"calico-apiserver":              true,
+	"rbac-manager":                  true,
+	"spinnaker":                     true,
+	"aks-command":                   true,
+	"dsv-system":                    true,
+}
+
+// isSystemNamespace verifica se um namespace é de sistema e deve ser filtrado
+func isSystemNamespace(namespace string) bool {
+	return systemNamespaces[namespace]
+}
+
+// Client encapsula as operações do Kubernetes
+type Client struct {
+	clientset kubernetes.Interface
+	cluster   string
+}
+
+// NewClient cria um novo cliente Kubernetes
+func NewClient(clientset kubernetes.Interface, clusterName string) *Client {
+	return &Client{
+		clientset: clientset,
+		cluster:   clusterName,
+	}
+}
+
+// ListNamespaces lista todos os namespaces do cluster
+func (c *Client) ListNamespaces(ctx context.Context, showSystemNamespaces bool) ([]models.Namespace, error) {
+	namespaces, err := c.clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list namespaces in cluster %s: %w", c.cluster, err)
+	}
+
+	var result []models.Namespace
+	for _, ns := range namespaces.Items {
+		// Filtrar namespaces de sistema se showSystemNamespaces for false
+		if !showSystemNamespaces && isSystemNamespace(ns.Name) {
+			continue
+		}
+
+		namespace := models.Namespace{
+			Name:     ns.Name,
+			Cluster:  c.cluster,
+			HPACount: -1, // -1 indica "carregando", será contado assincronamente depois
+		}
+		result = append(result, namespace)
+	}
+
+	return result, nil
+}
+
+// CountHPAs conta o número de HPAs em um namespace
+func (c *Client) CountHPAs(ctx context.Context, namespace string) (int, error) {
+	hpas, err := c.clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("failed to count HPAs in namespace %s/%s: %w", c.cluster, namespace, err)
+	}
+	return len(hpas.Items), nil
+}
+
+// UpdateHPA aplica mudanças em um HPA específico
+func (c *Client) UpdateHPA(ctx context.Context, hpa models.HPA) error {
+	// Obter o HPA atual do cluster
+	currentHPA, err := c.clientset.AutoscalingV2().HorizontalPodAutoscalers(hpa.Namespace).Get(ctx, hpa.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get HPA %s/%s in cluster %s: %w", hpa.Namespace, hpa.Name, c.cluster, err)
+	}
+
+	// Aplicar mudanças
+	if hpa.MinReplicas != nil {
+		currentHPA.Spec.MinReplicas = hpa.MinReplicas
+	}
+	currentHPA.Spec.MaxReplicas = hpa.MaxReplicas
+
+	// Aplicar mudanças de CPU target se especificado
+	if hpa.TargetCPU != nil {
+		// Encontrar ou criar métrica de CPU
+		found := false
+		for i, metric := range currentHPA.Spec.Metrics {
+			if metric.Type == autoscalingv2.ResourceMetricSourceType &&
+				metric.Resource != nil &&
+				metric.Resource.Name == "cpu" {
+				currentHPA.Spec.Metrics[i].Resource.Target.AverageUtilization = hpa.TargetCPU
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Adicionar métrica de CPU se não existir
+			cpuMetric := autoscalingv2.MetricSpec{
+				Type: autoscalingv2.ResourceMetricSourceType,
+				Resource: &autoscalingv2.ResourceMetricSource{
+					Name: "cpu",
+					Target: autoscalingv2.MetricTarget{
+						Type:               autoscalingv2.UtilizationMetricType,
+						AverageUtilization: hpa.TargetCPU,
+					},
+				},
+			}
+			currentHPA.Spec.Metrics = append(currentHPA.Spec.Metrics, cpuMetric)
+		}
+	}
+
+	// Aplicar mudanças de Memory target se especificado
+	if hpa.TargetMemory != nil {
+		// Encontrar ou criar métrica de Memory
+		found := false
+		for i, metric := range currentHPA.Spec.Metrics {
+			if metric.Type == autoscalingv2.ResourceMetricSourceType &&
+				metric.Resource != nil &&
+				metric.Resource.Name == "memory" {
+				currentHPA.Spec.Metrics[i].Resource.Target.AverageUtilization = hpa.TargetMemory
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Adicionar métrica de Memory se não existir
+			memoryMetric := autoscalingv2.MetricSpec{
+				Type: autoscalingv2.ResourceMetricSourceType,
+				Resource: &autoscalingv2.ResourceMetricSource{
+					Name: "memory",
+					Target: autoscalingv2.MetricTarget{
+						Type:               autoscalingv2.UtilizationMetricType,
+						AverageUtilization: hpa.TargetMemory,
+					},
+				},
+			}
+			currentHPA.Spec.Metrics = append(currentHPA.Spec.Metrics, memoryMetric)
+		}
+	}
+
+	// Aplicar as mudanças no cluster
+	_, err = c.clientset.AutoscalingV2().HorizontalPodAutoscalers(hpa.Namespace).Update(ctx, currentHPA, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to update HPA %s/%s in cluster %s: %w", hpa.Namespace, hpa.Name, c.cluster, err)
+	}
+
+	return nil
+}
+
+// TriggerRollout executa rollout de um deployment (se PerformRollout for true)
+func (c *Client) TriggerRollout(ctx context.Context, hpa models.HPA) error {
+	if !hpa.PerformRollout {
+		return nil // Não executar rollout se não solicitado
+	}
+
+	// Obter o target do HPA para encontrar o deployment
+	hpaObj, err := c.clientset.AutoscalingV2().HorizontalPodAutoscalers(hpa.Namespace).Get(ctx, hpa.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get HPA %s/%s: %w", hpa.Namespace, hpa.Name, err)
+	}
+
+	// Verificar se o target é um Deployment
+	if hpaObj.Spec.ScaleTargetRef.Kind != "Deployment" {
+		return fmt.Errorf("rollout only supported for Deployment targets, found %s", hpaObj.Spec.ScaleTargetRef.Kind)
+	}
+
+	deploymentName := hpaObj.Spec.ScaleTargetRef.Name
+
+	// Obter o deployment atual
+	deployment, err := c.clientset.AppsV1().Deployments(hpa.Namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get deployment %s/%s: %w", hpa.Namespace, deploymentName, err)
+	}
+
+	// Forçar rollout adicionando/atualizando annotation
+	if deployment.Spec.Template.Annotations == nil {
+		deployment.Spec.Template.Annotations = make(map[string]string)
+	}
+	deployment.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = metav1.Now().Format("2006-01-02T15:04:05Z")
+
+	// Aplicar o rollout
+	_, err = c.clientset.AppsV1().Deployments(hpa.Namespace).Update(ctx, deployment, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to trigger rollout for deployment %s/%s: %w", hpa.Namespace, deploymentName, err)
+	}
+
+	return nil
+}
+
+// ListHPAs lista todos os HPAs em um namespace
+func (c *Client) ListHPAs(ctx context.Context, namespace string) ([]models.HPA, error) {
+	hpas, err := c.clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list HPAs in namespace %s/%s: %w", c.cluster, namespace, err)
+	}
+
+	var result []models.HPA
+	for _, hpa := range hpas.Items {
+		modelHPA := c.convertHPAToModel(&hpa)
+
+		// Enriquecer com dados de recursos do deployment
+		if err := c.EnrichHPAWithDeploymentResources(ctx, &modelHPA); err != nil {
+			// Log do erro mas continue processando outros HPAs
+			fmt.Printf("Warning: failed to load deployment resources for HPA %s/%s: %v\n", modelHPA.Namespace, modelHPA.Name, err)
+		}
+
+		result = append(result, modelHPA)
+	}
+
+	return result, nil
+}
+
+// UpdateHPA atualiza um HPA
+
+// RolloutDeployment executa rollout restart em um deployment
+func (c *Client) RolloutDeployment(ctx context.Context, namespace, deploymentName string) error {
+	// Obter deployment
+	deployment, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get deployment %s/%s/%s: %w", c.cluster, namespace, deploymentName, err)
+	}
+
+	// Adicionar annotation para forçar rollout
+	if deployment.Spec.Template.Annotations == nil {
+		deployment.Spec.Template.Annotations = make(map[string]string)
+	}
+	deployment.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+
+	// Atualizar deployment
+	_, err = c.clientset.AppsV1().Deployments(namespace).Update(ctx, deployment, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to rollout deployment %s/%s/%s: %w", c.cluster, namespace, deploymentName, err)
+	}
+
+	return nil
+}
+
+// GetDeploymentFromHPA obtém o nome do deployment associado ao HPA
+func (c *Client) GetDeploymentFromHPA(ctx context.Context, namespace, hpaName string) (string, error) {
+	hpa, err := c.clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).Get(ctx, hpaName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get HPA %s/%s/%s: %w", c.cluster, namespace, hpaName, err)
+	}
+
+	// Verificar se o target é um Deployment
+	if hpa.Spec.ScaleTargetRef.Kind == "Deployment" {
+		return hpa.Spec.ScaleTargetRef.Name, nil
+	}
+
+	return "", fmt.Errorf("HPA %s does not target a Deployment (targets %s)", hpaName, hpa.Spec.ScaleTargetRef.Kind)
+}
+
+// TestConnection testa a conectividade com o cluster
+func (c *Client) TestConnection(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	_, err := c.clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{Limit: 1})
+	return err
+}
+
+// CountHPAs conta o número de HPAs em um namespace
+// convertHPAToModel converte um HPA do Kubernetes para o modelo interno
+func (c *Client) convertHPAToModel(hpa *autoscalingv2.HorizontalPodAutoscaler) models.HPA {
+	modelHPA := models.HPA{
+		Name:            hpa.Name,
+		Namespace:       hpa.Namespace,
+		Cluster:         c.cluster,
+		MinReplicas:     hpa.Spec.MinReplicas,
+		MaxReplicas:     hpa.Spec.MaxReplicas,
+		CurrentReplicas: hpa.Status.CurrentReplicas,
+		LastUpdated:     time.Now(), // HPA doesn't have LastUpdateTime field
+	}
+
+	// Extrair métricas de CPU e Memory
+	for _, metric := range hpa.Spec.Metrics {
+		if metric.Type == autoscalingv2.ResourceMetricSourceType && metric.Resource != nil {
+			switch metric.Resource.Name {
+			case corev1.ResourceCPU:
+				if metric.Resource.Target.AverageUtilization != nil {
+					modelHPA.TargetCPU = metric.Resource.Target.AverageUtilization
+				}
+			case corev1.ResourceMemory:
+				if metric.Resource.Target.AverageUtilization != nil {
+					modelHPA.TargetMemory = metric.Resource.Target.AverageUtilization
+				}
+			}
+		}
+	}
+
+	// Salvar valores originais
+	modelHPA.OriginalValues = &models.HPAValues{
+		MinReplicas:  modelHPA.MinReplicas,
+		MaxReplicas:  modelHPA.MaxReplicas,
+		TargetCPU:    modelHPA.TargetCPU,
+		TargetMemory: modelHPA.TargetMemory,
+	}
+
+	return modelHPA
+}
+
+// updateHPAMetrics atualiza as métricas de um HPA
+func (c *Client) updateHPAMetrics(hpa *autoscalingv2.HorizontalPodAutoscaler, model *models.HPA) {
+	// Atualizar ou criar métricas
+	for i, metric := range hpa.Spec.Metrics {
+		if metric.Type == autoscalingv2.ResourceMetricSourceType && metric.Resource != nil {
+			switch metric.Resource.Name {
+			case corev1.ResourceCPU:
+				if model.TargetCPU != nil {
+					hpa.Spec.Metrics[i].Resource.Target.AverageUtilization = model.TargetCPU
+				}
+			case corev1.ResourceMemory:
+				if model.TargetMemory != nil {
+					hpa.Spec.Metrics[i].Resource.Target.AverageUtilization = model.TargetMemory
+				}
+			}
+		}
+	}
+
+	// Se não existem métricas, criar novas
+	if len(hpa.Spec.Metrics) == 0 {
+		if model.TargetCPU != nil {
+			cpuMetric := autoscalingv2.MetricSpec{
+				Type: autoscalingv2.ResourceMetricSourceType,
+				Resource: &autoscalingv2.ResourceMetricSource{
+					Name: corev1.ResourceCPU,
+					Target: autoscalingv2.MetricTarget{
+						Type:               autoscalingv2.UtilizationMetricType,
+						AverageUtilization: model.TargetCPU,
+					},
+				},
+			}
+			hpa.Spec.Metrics = append(hpa.Spec.Metrics, cpuMetric)
+		}
+
+		if model.TargetMemory != nil {
+			memoryMetric := autoscalingv2.MetricSpec{
+				Type: autoscalingv2.ResourceMetricSourceType,
+				Resource: &autoscalingv2.ResourceMetricSource{
+					Name: corev1.ResourceMemory,
+					Target: autoscalingv2.MetricTarget{
+						Type:               autoscalingv2.UtilizationMetricType,
+						AverageUtilization: model.TargetMemory,
+					},
+				},
+			}
+			hpa.Spec.Metrics = append(hpa.Spec.Metrics, memoryMetric)
+		}
+	}
+}
+
+// DiscoverClusterResources descobre recursos do cluster em todos os namespaces
+func (c *Client) DiscoverClusterResources(showSystemResources bool, prometheusOnly bool) ([]models.ClusterResource, error) {
+	var resources []models.ClusterResource
+	
+	// Listar todos os namespaces
+	namespaces, err := c.clientset.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list namespaces: %w", err)
+	}
+	
+	for _, ns := range namespaces.Items {
+		// Filtrar namespaces de sistema se necessário
+		if !showSystemResources && isSystemNamespace(ns.Name) {
+			continue
+		}
+		
+		// Descobrir Deployments
+		deployments, err := c.clientset.AppsV1().Deployments(ns.Name).List(context.Background(), metav1.ListOptions{})
+		if err != nil {
+			continue // Continue mesmo com erro em um namespace
+		}
+		
+		for _, deployment := range deployments.Items {
+			resource := c.createResourceFromDeployment(&deployment)
+			
+			// Se prometheusOnly, filtrar apenas recursos relacionados ao Prometheus
+			if prometheusOnly && !isPrometheusRelated(resource.Name, resource.Namespace) {
+				continue
+			}
+			
+			resources = append(resources, resource)
+		}
+		
+		// Descobrir StatefulSets
+		statefulSets, err := c.clientset.AppsV1().StatefulSets(ns.Name).List(context.Background(), metav1.ListOptions{})
+		if err != nil {
+			continue
+		}
+		
+		for _, sts := range statefulSets.Items {
+			resource := c.createResourceFromStatefulSet(&sts)
+			
+			if prometheusOnly && !isPrometheusRelated(resource.Name, resource.Namespace) {
+				continue
+			}
+			
+			resources = append(resources, resource)
+		}
+		
+		// Descobrir DaemonSets
+		daemonSets, err := c.clientset.AppsV1().DaemonSets(ns.Name).List(context.Background(), metav1.ListOptions{})
+		if err != nil {
+			continue
+		}
+		
+		for _, ds := range daemonSets.Items {
+			resource := c.createResourceFromDaemonSet(&ds)
+			
+			if prometheusOnly && !isPrometheusRelated(resource.Name, resource.Namespace) {
+				continue
+			}
+			
+			resources = append(resources, resource)
+		}
+	}
+	
+	return resources, nil
+}
+
+// createResourceFromDeployment cria um ClusterResource a partir de um Deployment
+func (c *Client) createResourceFromDeployment(deployment *appsv1.Deployment) models.ClusterResource {
+	resource := models.ClusterResource{
+		Name:         deployment.Name,
+		Namespace:    deployment.Namespace,
+		WorkloadType: "Deployment",
+		Cluster:      c.cluster,
+		Type:         determineResourceType(deployment.Name, deployment.Namespace),
+		Component:    extractComponent(deployment.Name),
+		Status:       models.ResourceHealthy,
+		Replicas:     *deployment.Spec.Replicas,
+		Modified:     false,
+		Selected:     false,
+		LastUpdated:  time.Now(),
+	}
+	
+	// Extrair recursos dos containers
+	if len(deployment.Spec.Template.Spec.Containers) > 0 {
+		container := deployment.Spec.Template.Spec.Containers[0] // Pegar o primeiro container
+		
+		// Extrair requests
+		if container.Resources.Requests != nil {
+			if cpu := container.Resources.Requests[corev1.ResourceCPU]; !cpu.IsZero() {
+				resource.CurrentCPURequest = cpu.String()
+			}
+			if memory := container.Resources.Requests[corev1.ResourceMemory]; !memory.IsZero() {
+				resource.CurrentMemoryRequest = memory.String()
+			}
+		}
+		
+		// Extrair limits
+		if container.Resources.Limits != nil {
+			if cpu := container.Resources.Limits[corev1.ResourceCPU]; !cpu.IsZero() {
+				resource.CurrentCPULimit = cpu.String()
+			}
+			if memory := container.Resources.Limits[corev1.ResourceMemory]; !memory.IsZero() {
+				resource.CurrentMemoryLimit = memory.String()
+			}
+		}
+		
+		// Armazenar valores originais
+		resource.OriginalValues = &models.ResourceValues{
+			CPURequest:    resource.CurrentCPURequest,
+			MemoryRequest: resource.CurrentMemoryRequest,
+			CPULimit:      resource.CurrentCPULimit,
+			MemoryLimit:   resource.CurrentMemoryLimit,
+			Replicas:      resource.Replicas,
+		}
+	}
+	
+	return resource
+}
+
+// createResourceFromStatefulSet cria um ClusterResource a partir de um StatefulSet
+func (c *Client) createResourceFromStatefulSet(sts *appsv1.StatefulSet) models.ClusterResource {
+	resource := models.ClusterResource{
+		Name:         sts.Name,
+		Namespace:    sts.Namespace,
+		WorkloadType: "StatefulSet",
+		Cluster:      c.cluster,
+		Type:         determineResourceType(sts.Name, sts.Namespace),
+		Component:    extractComponent(sts.Name),
+		Status:       models.ResourceHealthy,
+		Replicas:     *sts.Spec.Replicas,
+		Modified:     false,
+		Selected:     false,
+		LastUpdated:  time.Now(),
+	}
+	
+	// Extrair recursos dos containers
+	if len(sts.Spec.Template.Spec.Containers) > 0 {
+		container := sts.Spec.Template.Spec.Containers[0]
+		
+		// Extrair requests
+		if container.Resources.Requests != nil {
+			if cpu := container.Resources.Requests[corev1.ResourceCPU]; !cpu.IsZero() {
+				resource.CurrentCPURequest = cpu.String()
+			}
+			if memory := container.Resources.Requests[corev1.ResourceMemory]; !memory.IsZero() {
+				resource.CurrentMemoryRequest = memory.String()
+			}
+		}
+		
+		// Extrair limits
+		if container.Resources.Limits != nil {
+			if cpu := container.Resources.Limits[corev1.ResourceCPU]; !cpu.IsZero() {
+				resource.CurrentCPULimit = cpu.String()
+			}
+			if memory := container.Resources.Limits[corev1.ResourceMemory]; !memory.IsZero() {
+				resource.CurrentMemoryLimit = memory.String()
+			}
+		}
+		
+		// Armazenar valores originais
+		resource.OriginalValues = &models.ResourceValues{
+			CPURequest:    resource.CurrentCPURequest,
+			MemoryRequest: resource.CurrentMemoryRequest,
+			CPULimit:      resource.CurrentCPULimit,
+			MemoryLimit:   resource.CurrentMemoryLimit,
+			Replicas:      resource.Replicas,
+		}
+	}
+	
+	// Para StatefulSets, verificar se tem storage
+	if len(sts.Spec.VolumeClaimTemplates) > 0 {
+		pvc := sts.Spec.VolumeClaimTemplates[0]
+		if storage := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; !storage.IsZero() {
+			resource.StorageSize = storage.String()
+			resource.OriginalValues.StorageSize = storage.String()
+		}
+	}
+	
+	return resource
+}
+
+// createResourceFromDaemonSet cria um ClusterResource a partir de um DaemonSet
+func (c *Client) createResourceFromDaemonSet(ds *appsv1.DaemonSet) models.ClusterResource {
+	resource := models.ClusterResource{
+		Name:         ds.Name,
+		Namespace:    ds.Namespace,
+		WorkloadType: "DaemonSet",
+		Cluster:      c.cluster,
+		Type:         determineResourceType(ds.Name, ds.Namespace),
+		Component:    extractComponent(ds.Name),
+		Status:       models.ResourceHealthy,
+		Replicas:     1, // DaemonSets não têm replicas fixas, mas indicar 1 para UI
+		Modified:     false,
+		Selected:     false,
+		LastUpdated:  time.Now(),
+	}
+	
+	// Extrair recursos dos containers
+	if len(ds.Spec.Template.Spec.Containers) > 0 {
+		container := ds.Spec.Template.Spec.Containers[0]
+		
+		// Extrair requests
+		if container.Resources.Requests != nil {
+			if cpu := container.Resources.Requests[corev1.ResourceCPU]; !cpu.IsZero() {
+				resource.CurrentCPURequest = cpu.String()
+			}
+			if memory := container.Resources.Requests[corev1.ResourceMemory]; !memory.IsZero() {
+				resource.CurrentMemoryRequest = memory.String()
+			}
+		}
+		
+		// Extrair limits
+		if container.Resources.Limits != nil {
+			if cpu := container.Resources.Limits[corev1.ResourceCPU]; !cpu.IsZero() {
+				resource.CurrentCPULimit = cpu.String()
+			}
+			if memory := container.Resources.Limits[corev1.ResourceMemory]; !memory.IsZero() {
+				resource.CurrentMemoryLimit = memory.String()
+			}
+		}
+		
+		// Armazenar valores originais
+		resource.OriginalValues = &models.ResourceValues{
+			CPURequest:    resource.CurrentCPURequest,
+			MemoryRequest: resource.CurrentMemoryRequest,
+			CPULimit:      resource.CurrentCPULimit,
+			MemoryLimit:   resource.CurrentMemoryLimit,
+			Replicas:      resource.Replicas,
+		}
+	}
+	
+	return resource
+}
+
+// determineResourceType determina o tipo do recurso baseado no nome e namespace
+func determineResourceType(name, namespace string) models.ResourceType {
+	name = strings.ToLower(name)
+	namespace = strings.ToLower(namespace)
+	
+	// Monitoring
+	if strings.Contains(name, "prometheus") || strings.Contains(name, "grafana") ||
+		strings.Contains(name, "alertmanager") || namespace == "monitoring" {
+		return models.ResourceMonitoring
+	}
+	
+	// Ingress
+	if strings.Contains(name, "nginx") || strings.Contains(name, "ingress") ||
+		strings.Contains(name, "istio") || strings.Contains(namespace, "ingress") {
+		return models.ResourceIngress
+	}
+	
+	// Security
+	if strings.Contains(name, "cert-manager") || strings.Contains(name, "gatekeeper") ||
+		namespace == "cert-manager" || namespace == "gatekeeper-system" {
+		return models.ResourceSecurity
+	}
+	
+	// Storage
+	if strings.Contains(name, "longhorn") || strings.Contains(name, "storage") ||
+		namespace == "longhorn-system" {
+		return models.ResourceStorage
+	}
+	
+	// Networking
+	if strings.Contains(name, "calico") || strings.Contains(name, "metallb") ||
+		strings.Contains(name, "cilium") || namespace == "calico-system" ||
+		namespace == "metallb-system" {
+		return models.ResourceNetworking
+	}
+	
+	// Logging
+	if strings.Contains(name, "elastic") || strings.Contains(name, "fluentd") ||
+		strings.Contains(name, "logstash") || namespace == "logging" ||
+		namespace == "elastic-system" {
+		return models.ResourceLogging
+	}
+	
+	return models.ResourceCustom
+}
+
+// extractComponent extrai o componente principal do nome do recurso
+func extractComponent(name string) string {
+	name = strings.ToLower(name)
+	
+	if strings.Contains(name, "prometheus-server") {
+		return "prometheus-server"
+	} else if strings.Contains(name, "prometheus") {
+		return "prometheus"
+	} else if strings.Contains(name, "grafana") {
+		return "grafana"
+	} else if strings.Contains(name, "alertmanager") {
+		return "alertmanager"
+	} else if strings.Contains(name, "node-exporter") {
+		return "node-exporter"
+	}
+	
+	return name
+}
+
+// isPrometheusRelated verifica se um recurso está relacionado ao Prometheus
+func isPrometheusRelated(name, namespace string) bool {
+	name = strings.ToLower(name)
+	namespace = strings.ToLower(namespace)
+	
+	prometheusKeywords := []string{
+		"prometheus", "grafana", "alertmanager", "pushgateway",
+		"blackbox", "node-exporter", "kube-state-metrics",
+	}
+	
+	for _, keyword := range prometheusKeywords {
+		if strings.Contains(name, keyword) {
+			return true
+		}
+	}
+	
+	return namespace == "monitoring" || namespace == "prometheus"
+}
+
+// ApplyResourceChanges aplica mudanças nos recursos do cluster
+func (c *Client) ApplyResourceChanges(resource *models.ClusterResource) error {
+	switch resource.WorkloadType {
+	case "Deployment":
+		return c.updateDeploymentResources(resource)
+	case "StatefulSet":
+		return c.updateStatefulSetResources(resource)
+	case "DaemonSet":
+		return c.updateDaemonSetResources(resource)
+	default:
+		return fmt.Errorf("unsupported workload type: %s", resource.WorkloadType)
+	}
+}
+
+// updateDeploymentResources atualiza recursos de um Deployment
+func (c *Client) updateDeploymentResources(clusterResource *models.ClusterResource) error {
+	deployment, err := c.clientset.AppsV1().Deployments(clusterResource.Namespace).Get(
+		context.Background(), clusterResource.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get deployment %s: %w", clusterResource.Name, err)
+	}
+	
+	// Atualizar replicas se especificado
+	if clusterResource.TargetReplicas != nil {
+		deployment.Spec.Replicas = clusterResource.TargetReplicas
+	}
+	
+	// Atualizar recursos do container principal
+	if len(deployment.Spec.Template.Spec.Containers) > 0 {
+		container := &deployment.Spec.Template.Spec.Containers[0]
+		
+		if container.Resources.Requests == nil {
+			container.Resources.Requests = make(corev1.ResourceList)
+		}
+		if container.Resources.Limits == nil {
+			container.Resources.Limits = make(corev1.ResourceList)
+		}
+		
+		// Atualizar CPU Request
+		if clusterResource.TargetCPURequest != "" {
+			if cpu, err := resource.ParseQuantity(clusterResource.TargetCPURequest); err == nil {
+				container.Resources.Requests[corev1.ResourceCPU] = cpu
+			}
+		}
+		
+		// Atualizar Memory Request
+		if clusterResource.TargetMemoryRequest != "" {
+			if memory, err := resource.ParseQuantity(clusterResource.TargetMemoryRequest); err == nil {
+				container.Resources.Requests[corev1.ResourceMemory] = memory
+			}
+		}
+		
+		// Atualizar CPU Limit
+		if clusterResource.TargetCPULimit != "" {
+			if cpu, err := resource.ParseQuantity(clusterResource.TargetCPULimit); err == nil {
+				container.Resources.Limits[corev1.ResourceCPU] = cpu
+			}
+		}
+		
+		// Atualizar Memory Limit
+		if clusterResource.TargetMemoryLimit != "" {
+			if memory, err := resource.ParseQuantity(clusterResource.TargetMemoryLimit); err == nil {
+				container.Resources.Limits[corev1.ResourceMemory] = memory
+			}
+		}
+	}
+	
+	_, err = c.clientset.AppsV1().Deployments(clusterResource.Namespace).Update(
+		context.Background(), deployment, metav1.UpdateOptions{})
+	return err
+}
+
+// updateStatefulSetResources atualiza recursos de um StatefulSet
+func (c *Client) updateStatefulSetResources(clusterResource *models.ClusterResource) error {
+	sts, err := c.clientset.AppsV1().StatefulSets(clusterResource.Namespace).Get(
+		context.Background(), clusterResource.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get statefulset %s: %w", clusterResource.Name, err)
+	}
+	
+	// Atualizar replicas se especificado
+	if clusterResource.TargetReplicas != nil {
+		sts.Spec.Replicas = clusterResource.TargetReplicas
+	}
+	
+	// Atualizar recursos do container principal
+	if len(sts.Spec.Template.Spec.Containers) > 0 {
+		container := &sts.Spec.Template.Spec.Containers[0]
+		
+		if container.Resources.Requests == nil {
+			container.Resources.Requests = make(corev1.ResourceList)
+		}
+		if container.Resources.Limits == nil {
+			container.Resources.Limits = make(corev1.ResourceList)
+		}
+		
+		// Atualizar CPU Request
+		if clusterResource.TargetCPURequest != "" {
+			if cpu, err := resource.ParseQuantity(clusterResource.TargetCPURequest); err == nil {
+				container.Resources.Requests[corev1.ResourceCPU] = cpu
+			}
+		}
+		
+		// Atualizar Memory Request
+		if clusterResource.TargetMemoryRequest != "" {
+			if memory, err := resource.ParseQuantity(clusterResource.TargetMemoryRequest); err == nil {
+				container.Resources.Requests[corev1.ResourceMemory] = memory
+			}
+		}
+		
+		// Atualizar CPU Limit
+		if clusterResource.TargetCPULimit != "" {
+			if cpu, err := resource.ParseQuantity(clusterResource.TargetCPULimit); err == nil {
+				container.Resources.Limits[corev1.ResourceCPU] = cpu
+			}
+		}
+		
+		// Atualizar Memory Limit
+		if clusterResource.TargetMemoryLimit != "" {
+			if memory, err := resource.ParseQuantity(clusterResource.TargetMemoryLimit); err == nil {
+				container.Resources.Limits[corev1.ResourceMemory] = memory
+			}
+		}
+	}
+	
+	_, err = c.clientset.AppsV1().StatefulSets(clusterResource.Namespace).Update(
+		context.Background(), sts, metav1.UpdateOptions{})
+	return err
+}
+
+// updateDaemonSetResources atualiza recursos de um DaemonSet
+func (c *Client) updateDaemonSetResources(clusterResource *models.ClusterResource) error {
+	ds, err := c.clientset.AppsV1().DaemonSets(clusterResource.Namespace).Get(
+		context.Background(), clusterResource.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get daemonset %s: %w", clusterResource.Name, err)
+	}
+	
+	// Atualizar recursos do container principal
+	if len(ds.Spec.Template.Spec.Containers) > 0 {
+		container := &ds.Spec.Template.Spec.Containers[0]
+		
+		if container.Resources.Requests == nil {
+			container.Resources.Requests = make(corev1.ResourceList)
+		}
+		if container.Resources.Limits == nil {
+			container.Resources.Limits = make(corev1.ResourceList)
+		}
+		
+		// Atualizar CPU Request
+		if clusterResource.TargetCPURequest != "" {
+			if cpu, err := resource.ParseQuantity(clusterResource.TargetCPURequest); err == nil {
+				container.Resources.Requests[corev1.ResourceCPU] = cpu
+			}
+		}
+		
+		// Atualizar Memory Request
+		if clusterResource.TargetMemoryRequest != "" {
+			if memory, err := resource.ParseQuantity(clusterResource.TargetMemoryRequest); err == nil {
+				container.Resources.Requests[corev1.ResourceMemory] = memory
+			}
+		}
+		
+		// Atualizar CPU Limit
+		if clusterResource.TargetCPULimit != "" {
+			if cpu, err := resource.ParseQuantity(clusterResource.TargetCPULimit); err == nil {
+				container.Resources.Limits[corev1.ResourceCPU] = cpu
+			}
+		}
+		
+		// Atualizar Memory Limit
+		if clusterResource.TargetMemoryLimit != "" {
+			if memory, err := resource.ParseQuantity(clusterResource.TargetMemoryLimit); err == nil {
+				container.Resources.Limits[corev1.ResourceMemory] = memory
+			}
+		}
+	}
+	
+	_, err = c.clientset.AppsV1().DaemonSets(clusterResource.Namespace).Update(
+		context.Background(), ds, metav1.UpdateOptions{})
+	return err
+}
+
+// EnrichHPAWithDeploymentResources enriquece o HPA com informações de recursos do deployment
+func (c *Client) EnrichHPAWithDeploymentResources(ctx context.Context, hpa *models.HPA) error {
+	// Obter o deployment associado ao HPA
+	deploymentName, err := c.GetDeploymentFromHPA(ctx, hpa.Namespace, hpa.Name)
+	if err != nil {
+		return fmt.Errorf("failed to get deployment for HPA %s: %w", hpa.Name, err)
+	}
+	
+	// Obter informações do deployment
+	deployment, err := c.clientset.AppsV1().Deployments(hpa.Namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get deployment %s: %w", deploymentName, err)
+	}
+	
+	hpa.DeploymentName = deploymentName
+	
+	// Extrair recursos do primeiro container
+	if len(deployment.Spec.Template.Spec.Containers) > 0 {
+		container := deployment.Spec.Template.Spec.Containers[0]
+		
+		// CPU Request
+		if cpuReq, exists := container.Resources.Requests[corev1.ResourceCPU]; exists {
+			hpa.CurrentCPURequest = cpuReq.String()
+		}
+		
+		// CPU Limit
+		if cpuLimit, exists := container.Resources.Limits[corev1.ResourceCPU]; exists {
+			hpa.CurrentCPULimit = cpuLimit.String()
+		}
+		
+		// Memory Request
+		if memReq, exists := container.Resources.Requests[corev1.ResourceMemory]; exists {
+			hpa.CurrentMemoryRequest = memReq.String()
+		}
+		
+		// Memory Limit
+		if memLimit, exists := container.Resources.Limits[corev1.ResourceMemory]; exists {
+			hpa.CurrentMemoryLimit = memLimit.String()
+		}
+	}
+	
+	// Atualizar valores originais para incluir recursos do deployment
+	if hpa.OriginalValues != nil {
+		hpa.OriginalValues.DeploymentName = hpa.DeploymentName
+		hpa.OriginalValues.CPURequest = hpa.CurrentCPURequest
+		hpa.OriginalValues.CPULimit = hpa.CurrentCPULimit
+		hpa.OriginalValues.MemoryRequest = hpa.CurrentMemoryRequest
+		hpa.OriginalValues.MemoryLimit = hpa.CurrentMemoryLimit
+	}
+	
+	return nil
+}
+
+// ApplyHPADeploymentResourceChanges aplica mudanças de recursos no deployment do HPA
+func (c *Client) ApplyHPADeploymentResourceChanges(ctx context.Context, hpa *models.HPA) error {
+	if hpa.DeploymentName == "" {
+		return fmt.Errorf("deployment name not set for HPA %s", hpa.Name)
+	}
+	
+	// Obter o deployment
+	deployment, err := c.clientset.AppsV1().Deployments(hpa.Namespace).Get(ctx, hpa.DeploymentName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get deployment %s: %w", hpa.DeploymentName, err)
+	}
+	
+	// Atualizar recursos do primeiro container
+	if len(deployment.Spec.Template.Spec.Containers) > 0 {
+		container := &deployment.Spec.Template.Spec.Containers[0]
+		
+		if container.Resources.Requests == nil {
+			container.Resources.Requests = make(corev1.ResourceList)
+		}
+		if container.Resources.Limits == nil {
+			container.Resources.Limits = make(corev1.ResourceList)
+		}
+		
+		// Aplicar CPU Request
+		if hpa.TargetCPURequest != "" {
+			if cpu, err := resource.ParseQuantity(hpa.TargetCPURequest); err == nil {
+				container.Resources.Requests[corev1.ResourceCPU] = cpu
+			}
+		}
+		
+		// Aplicar CPU Limit
+		if hpa.TargetCPULimit != "" {
+			if cpu, err := resource.ParseQuantity(hpa.TargetCPULimit); err == nil {
+				container.Resources.Limits[corev1.ResourceCPU] = cpu
+			}
+		}
+		
+		// Aplicar Memory Request
+		if hpa.TargetMemoryRequest != "" {
+			if memory, err := resource.ParseQuantity(hpa.TargetMemoryRequest); err == nil {
+				container.Resources.Requests[corev1.ResourceMemory] = memory
+			}
+		}
+		
+		// Aplicar Memory Limit
+		if hpa.TargetMemoryLimit != "" {
+			if memory, err := resource.ParseQuantity(hpa.TargetMemoryLimit); err == nil {
+				container.Resources.Limits[corev1.ResourceMemory] = memory
+			}
+		}
+	}
+	
+	// Aplicar mudanças
+	_, err = c.clientset.AppsV1().Deployments(hpa.Namespace).Update(ctx, deployment, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to update deployment %s: %w", hpa.DeploymentName, err)
+	}
+	
+	// Marcar como não modificado
+	hpa.ResourcesModified = false
+	
+	return nil
+}
+

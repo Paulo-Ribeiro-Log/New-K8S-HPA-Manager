@@ -1,0 +1,21 @@
+import { createRoot } from "react-dom/client";
+import "./index.css";
+
+const SimpleApp = () => {
+  return (
+    <div style={{ padding: '20px', fontFamily: 'Arial' }}>
+      <h1>✅ React Funcionando!</h1>
+      <p>Teste básico de React - se você vê isso, o React está funcionando.</p>
+      <button onClick={() => alert('JavaScript funcionando!')}>
+        Testar JS
+      </button>
+    </div>
+  );
+};
+
+const rootElement = document.getElementById("root");
+if (rootElement) {
+  createRoot(rootElement).render(<SimpleApp />);
+} else {
+  console.error("Elemento root não encontrado!");
+}
