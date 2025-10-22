@@ -11,12 +11,16 @@ import { apiClient } from "./lib/api/client";
 import { StagingProvider } from "./contexts/StagingContext";
 import { TabProvider } from "./contexts/TabContext";
 import { ThemeProvider } from "@/components/theme-provider";
+import { useHeartbeat } from "./hooks/useHeartbeat";
 
 const queryClient = new QueryClient();
 
 const App = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isChecking, setIsChecking] = useState(true);
+
+  // Ativar heartbeat para manter servidor vivo
+  useHeartbeat();
 
   useEffect(() => {
     // Check if token exists in localStorage

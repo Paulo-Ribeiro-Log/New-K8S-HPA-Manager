@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -20,10 +22,13 @@ var staticFiles embed.FS
 
 // Server representa o servidor HTTP
 type Server struct {
-	router      *gin.Engine
-	kubeManager *config.KubeConfigManager
-	port        int
-	token       string
+	router         *gin.Engine
+	kubeManager    *config.KubeConfigManager
+	port           int
+	token          string
+	lastHeartbeat  time.Time
+	heartbeatMutex sync.RWMutex
+	shutdownTimer  *time.Timer
 }
 
 // NewServer cria uma nova instância do servidor web
@@ -50,15 +55,17 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 	router := gin.New()
 
 	server := &Server{
-		router:      router,
-		kubeManager: kubeManager,
-		port:        port,
-		token:       token,
+		router:        router,
+		kubeManager:   kubeManager,
+		port:          port,
+		token:         token,
+		lastHeartbeat: time.Now(),
 	}
 
 	server.setupMiddleware()
 	server.setupRoutes()
 	server.setupStatic()
+	server.startInactivityMonitor()
 
 	return server, nil
 }
@@ -89,6 +96,24 @@ func (s *Server) setupRoutes() {
 			"status":  "ok",
 			"version": "1.0.0-poc",
 			"mode":    "web",
+		})
+	})
+
+	// Heartbeat endpoint (sem auth) - frontend envia a cada 5 minutos
+	s.router.POST("/heartbeat", func(c *gin.Context) {
+		s.heartbeatMutex.Lock()
+		s.lastHeartbeat = time.Now()
+		s.heartbeatMutex.Unlock()
+
+		// Resetar timer de shutdown
+		if s.shutdownTimer != nil {
+			s.shutdownTimer.Stop()
+		}
+		s.shutdownTimer = time.AfterFunc(20*time.Minute, s.autoShutdown)
+
+		c.JSON(200, gin.H{
+			"status":         "alive",
+			"last_heartbeat": s.lastHeartbeat,
 		})
 	})
 
@@ -232,6 +257,36 @@ func (s *Server) setupStatic() {
 	})
 }
 
+// startInactivityMonitor inicia o monitoramento de inatividade
+func (s *Server) startInactivityMonitor() {
+	// Timer inicial de 20 minutos
+	s.shutdownTimer = time.AfterFunc(20*time.Minute, s.autoShutdown)
+
+	fmt.Println("⏰ Monitor de inatividade ativado:")
+	fmt.Println("   - Frontend deve enviar heartbeat a cada 5 minutos")
+	fmt.Println("   - Servidor desligará após 20 minutos sem heartbeat")
+}
+
+// autoShutdown desliga o servidor automaticamente por inatividade
+func (s *Server) autoShutdown() {
+	s.heartbeatMutex.RLock()
+	lastHeartbeat := s.lastHeartbeat
+	s.heartbeatMutex.RUnlock()
+
+	timeSinceLastHeartbeat := time.Since(lastHeartbeat)
+
+	fmt.Println("\n╔════════════════════════════════════════════════════════════╗")
+	fmt.Println("║             AUTO-SHUTDOWN POR INATIVIDADE                 ║")
+	fmt.Println("╚════════════════════════════════════════════════════════════╝")
+	fmt.Printf("⏰ Último heartbeat: %s (há %.0f minutos)\n",
+		lastHeartbeat.Format("15:04:05"),
+		timeSinceLastHeartbeat.Minutes())
+	fmt.Println("🛑 Nenhuma página web conectada por mais de 20 minutos")
+	fmt.Println("✅ Servidor sendo encerrado...")
+
+	os.Exit(0)
+}
+
 // Start inicia o servidor HTTP
 func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%d", s.port)
@@ -244,6 +299,7 @@ func (s *Server) Start() error {
 	fmt.Printf("📍 API Endpoint:  http://localhost%s/api/v1\n", addr)
 	fmt.Printf("🔐 Auth Token:    %s\n", s.token)
 	fmt.Printf("❤️  Health Check: http://localhost%s/health\n", addr)
+	fmt.Printf("💓 Heartbeat:     POST http://localhost%s/heartbeat\n", addr)
 	fmt.Printf("\n")
 	fmt.Println("📝 Exemplo de uso:")
 	fmt.Printf("   curl -H 'Authorization: Bearer %s' http://localhost%s/api/v1/clusters\n", s.token, addr)

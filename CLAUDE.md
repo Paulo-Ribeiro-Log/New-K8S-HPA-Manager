@@ -1679,7 +1679,292 @@ const memoryThresholds = { warning: 80, danger: 95 };
 
 ---
 
-## 🚨 SESSÃO ATUAL: SNAPSHOT DE CLUSTER PARA ROLLBACK
+## 🚨 SESSÃO ATUAL: SISTEMA DE HEARTBEAT E AUTO-SHUTDOWN
+
+### Objetivo:
+Servidor web deve desligar automaticamente após 20 minutos de inatividade (sem nenhuma página conectada) para economizar recursos quando rodando em background.
+
+### Implementação Completa:
+
+**1. Backend - Monitoramento de Inatividade:**
+
+**internal/web/server.go** - Estrutura do servidor com heartbeat:
+```go
+type Server struct {
+    // ... campos existentes ...
+    lastHeartbeat  time.Time      // Timestamp do último heartbeat recebido
+    heartbeatMutex sync.RWMutex   // Mutex para acesso thread-safe
+    shutdownTimer  *time.Timer    // Timer de 20 minutos para auto-shutdown
+}
+
+// Inicialização no NewServer():
+lastHeartbeat: time.Now(),
+
+// Iniciar monitor ao startar servidor:
+server.startInactivityMonitor()
+```
+
+**2. Endpoint de Heartbeat:**
+
+```go
+// POST /heartbeat - Recebe sinal de vida do frontend
+s.router.POST("/heartbeat", func(c *gin.Context) {
+    // Atualizar timestamp (thread-safe)
+    s.heartbeatMutex.Lock()
+    s.lastHeartbeat = time.Now()
+    s.heartbeatMutex.Unlock()
+    
+    // Resetar timer de 20 minutos
+    if s.shutdownTimer != nil {
+        s.shutdownTimer.Stop()
+    }
+    s.shutdownTimer = time.AfterFunc(20*time.Minute, s.autoShutdown)
+    
+    // Responder com status
+    c.JSON(200, gin.H{
+        "status":         "alive",
+        "last_heartbeat": s.lastHeartbeat,
+    })
+})
+```
+
+**3. Monitor de Inatividade:**
+
+```go
+// startInactivityMonitor inicia o monitoramento de inatividade
+func (s *Server) startInactivityMonitor() {
+    // Timer inicial de 20 minutos
+    s.shutdownTimer = time.AfterFunc(20*time.Minute, s.autoShutdown)
+    
+    fmt.Println("⏰ Monitor de inatividade ativado:")
+    fmt.Println("   - Frontend deve enviar heartbeat a cada 5 minutos")
+    fmt.Println("   - Servidor desligará após 20 minutos sem heartbeat")
+}
+```
+
+**4. Auto-Shutdown:**
+
+```go
+// autoShutdown desliga o servidor automaticamente por inatividade
+func (s *Server) autoShutdown() {
+    s.heartbeatMutex.RLock()
+    lastHeartbeat := s.lastHeartbeat
+    s.heartbeatMutex.RUnlock()
+
+    timeSinceLastHeartbeat := time.Since(lastHeartbeat)
+    
+    fmt.Println("\n╔════════════════════════════════════════════════════════════╗")
+    fmt.Println("║             AUTO-SHUTDOWN POR INATIVIDADE                 ║")
+    fmt.Println("╚════════════════════════════════════════════════════════════╝")
+    fmt.Printf("⏰ Último heartbeat: %s (há %.0f minutos)\n", 
+        lastHeartbeat.Format("15:04:05"), 
+        timeSinceLastHeartbeat.Minutes())
+    fmt.Println("🛑 Nenhuma página web conectada por mais de 20 minutos")
+    fmt.Println("✅ Servidor sendo encerrado...")
+    
+    os.Exit(0)
+}
+```
+
+**5. Frontend - Hook de Heartbeat:**
+
+**internal/web/frontend/src/hooks/useHeartbeat.ts**:
+```typescript
+import { useEffect, useRef } from 'react';
+
+export const useHeartbeat = () => {
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isActiveRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    // Função para enviar heartbeat
+    const sendHeartbeat = async () => {
+      try {
+        const response = await fetch('/heartbeat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          console.log('💓 Heartbeat enviado:', data.last_heartbeat);
+        } else {
+          console.warn('⚠️  Heartbeat falhou:', response.status);
+        }
+      } catch (error) {
+        console.error('❌ Erro ao enviar heartbeat:', error);
+      }
+    };
+
+    // Enviar heartbeat imediatamente ao montar
+    sendHeartbeat();
+
+    // Configurar intervalo de 5 minutos (300000ms)
+    intervalRef.current = setInterval(() => {
+      if (isActiveRef.current) {
+        sendHeartbeat();
+      }
+    }, 5 * 60 * 1000); // 5 minutos
+
+    console.log('⏰ Heartbeat iniciado (intervalo: 5 minutos)');
+
+    // Cleanup ao desmontar
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      isActiveRef.current = false;
+      console.log('🛑 Heartbeat parado');
+    };
+  }, []); // Executa apenas uma vez ao montar
+
+  return null;
+};
+```
+
+**6. Integração no App.tsx:**
+
+```typescript
+import { useHeartbeat } from "./hooks/useHeartbeat";
+
+const App = () => {
+  // ... outros hooks ...
+  
+  // Ativar heartbeat para manter servidor vivo
+  useHeartbeat();
+  
+  // ... resto do componente ...
+}
+```
+
+### Fluxo de Funcionamento:
+
+1. **Servidor inicia:** Timer de 20 minutos é ativado
+2. **Usuário abre página:** Frontend executa `useHeartbeat()`
+3. **Heartbeat imediato:** POST /heartbeat é enviado ao montar
+4. **Heartbeats periódicos:** Novo POST a cada 5 minutos
+5. **Backend recebe heartbeat:** Reseta timer para 20 minutos
+6. **Usuário fecha página:** Hook desmonta, heartbeats param
+7. **Após 20 minutos sem heartbeat:** `autoShutdown()` é chamado
+8. **Servidor desliga:** Exit(0) com mensagem informativa
+
+### Benefícios:
+
+- ✅ **Eficiência de recursos:** Servidor não fica rodando indefinidamente
+- ✅ **Modo background seguro:** Auto-desliga quando não há uso
+- ✅ **Thread-safe:** RWMutex protege acesso ao timestamp
+- ✅ **Múltiplas abas:** Qualquer aba mantém servidor vivo
+- ✅ **Intervalo seguro:** 5 minutos (heartbeat) << 20 minutos (timeout)
+- ✅ **Logging claro:** Console mostra quando/por que desligou
+- ✅ **Sem autenticação:** /heartbeat é público (não precisa token)
+
+### Mensagens do Servidor:
+
+**Ao iniciar:**
+```
+⏰ Monitor de inatividade ativado:
+   - Frontend deve enviar heartbeat a cada 5 minutos
+   - Servidor desligará após 20 minutos sem heartbeat
+💓 Heartbeat:     POST http://localhost:8080/heartbeat
+```
+
+**Ao desligar por inatividade:**
+```
+╔════════════════════════════════════════════════════════════╗
+║             AUTO-SHUTDOWN POR INATIVIDADE                 ║
+╚════════════════════════════════════════════════════════════╝
+⏰ Último heartbeat: 14:35:22 (há 20 minutos)
+🛑 Nenhuma página web conectada por mais de 20 minutos
+✅ Servidor sendo encerrado...
+```
+
+### Correções Implementadas (Outubro 22, 2025):
+
+**Problema:** Modo background não funcionava - processo iniciava mas morria imediatamente.
+
+**Causa Raiz:** 
+- `exec.LookPath("k8s-hpa-manager")` encontrava binário antigo do sistema sem flag `--foreground`
+- Processo filho recebia flag desconhecida e morria com erro
+- Stdout/stderr redirecionados para nil ocultavam o erro
+
+**Solução:**
+
+**cmd/web.go** - Correções no modo background:
+```go
+// 1. Usar executável atual ao invés de buscar no PATH
+func runInBackground() error {
+    // ❌ ANTES: exec.LookPath("k8s-hpa-manager") - pegava binário antigo
+    // ✅ DEPOIS: os.Executable() - usa binário atual
+    executable, err := os.Executable()
+    if err != nil {
+        return fmt.Errorf("could not get current executable path: %w", err)
+    }
+    
+    // 2. Criar arquivo de log para debug
+    logFile := filepath.Join(os.TempDir(), 
+        fmt.Sprintf("k8s-hpa-manager-web-%d.log", time.Now().Unix()))
+    outFile, err := os.Create(logFile)
+    if err != nil {
+        fmt.Printf("⚠️  Could not create log file: %v\n", err)
+    } else {
+        cmd.Stdout = outFile
+        cmd.Stderr = outFile
+        defer outFile.Close()
+    }
+    
+    // 3. Salvar PID antes de Release()
+    if err := cmd.Start(); err != nil {
+        return fmt.Errorf("failed to start background process: %w", err)
+    }
+    
+    pid := cmd.Process.Pid  // ✅ Salva PID antes do Release
+    
+    if err := cmd.Process.Release(); err != nil {
+        return fmt.Errorf("failed to release background process: %w", err)
+    }
+    
+    fmt.Printf("✅ k8s-hpa-manager web server started in background (PID: %d)\n", pid)
+    fmt.Printf("🌐 Access at: http://localhost:%d\n", webPort)
+    fmt.Printf("📋 Logs: %s\n", logFile)
+}
+```
+
+**Imports adicionados:**
+```go
+import (
+    "os"              // Para os.Executable() e os.Create()
+    "path/filepath"   // Para filepath.Join()
+)
+```
+
+**Resultado:**
+- ✅ Servidor inicia corretamente em background
+- ✅ PID válido é exibido
+- ✅ Processo persiste após parent terminar
+- ✅ Logs em `/tmp/k8s-hpa-manager-web-*.log` para debug
+- ✅ Comando `kill <PID>` mostra PID correto
+
+### Testes Realizados:
+
+- ✅ Build passa sem erros
+- ✅ Servidor inicia com monitor ativo
+- ✅ Endpoint /heartbeat responde corretamente
+- ✅ Timer reseta a cada heartbeat
+- ✅ Auto-shutdown funciona após 20min sem heartbeat
+- ✅ Frontend envia heartbeats a cada 5 minutos
+- ✅ Múltiplas abas mantêm servidor vivo
+- ✅ Fecha todas abas → servidor desliga em 20min
+- ✅ Modo background funciona corretamente com `./build/k8s-hpa-manager web`
+- ✅ Modo foreground funciona com `-f` flag
+- ✅ Processo background persiste após terminal fechar
+- ✅ Logs salvos em /tmp para troubleshooting
+
+---
+
+## 🚨 FEATURE ANTERIOR: SNAPSHOT DE CLUSTER PARA ROLLBACK
 
 ### Problema Resolvido:
 Feature de "Capturar Snapshot" estava salvando valores zeros porque usava dados do cache (staging context) ao invés de buscar dados frescos do cluster.
