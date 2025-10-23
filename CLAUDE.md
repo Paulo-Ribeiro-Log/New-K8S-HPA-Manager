@@ -170,6 +170,51 @@ make test                     # Run all tests with verbose output
 make test-coverage            # Run tests with coverage (generates coverage.html)
 ```
 
+### Safe Deploy (Deploy Seguro)
+
+**Script automatizado para deploy seguro de dev2 → main com validações completas:**
+
+```bash
+./safe-deploy.sh              # Deploy completo (interativo com confirmações)
+./safe-deploy.sh --dry-run    # Simular deploy sem executar (teste)
+./safe-deploy.sh --yes        # Deploy automático sem confirmações
+./safe-deploy.sh --skip-tests # Pular execução de testes (não recomendado)
+./safe-deploy.sh --skip-build # Pular build (não recomendado)
+./safe-deploy.sh --help       # Ver todas as opções
+```
+
+**O que o script faz:**
+1. ✅ **Validações iniciais**: Working tree limpo, branches existem
+2. ✅ **Testes**: Executa `make test` (pode pular com --skip-tests)
+3. ✅ **Build**: Compila TUI e Web (pode pular com --skip-build)
+4. ✅ **Backup**: Cria branch de backup automático (backup-TIMESTAMP-pre-deploy)
+5. ✅ **Merge**: dev2 → main com detecção de conflitos
+6. ✅ **Sync**: Rebase com origin/main
+7. ✅ **Tags**: Opção de atualizar tags (ex: v1.2.0)
+8. ✅ **Push**: Branch main e tags para GitHub
+9. ✅ **Sync dev2**: Opção de sincronizar dev2 com main após deploy
+
+**Workflow recomendado:**
+```bash
+# 1. Testar primeiro (dry-run)
+./safe-deploy.sh --dry-run
+
+# 2. Deploy real após validar
+./safe-deploy.sh
+
+# 3. Ou deploy automático (CI/CD)
+./safe-deploy.sh --yes
+```
+
+**Vantagens:**
+- 🛡️ Previne quebra da branch main
+- 🔄 Backup automático antes de qualquer alteração
+- ✅ Validações completas (testes, build, working tree)
+- 📊 Resumo claro do que será feito
+- 🎯 Modo dry-run para testes seguros
+
+**Nota:** O script `safe-deploy.sh` está no `.gitignore` e não é versionado (uso local apenas).
+
 ### Installation
 
 ```bash
