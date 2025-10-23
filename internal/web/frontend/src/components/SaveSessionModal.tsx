@@ -214,24 +214,24 @@ export function SaveSessionModal({ open, onOpenChange, onSuccess }: SaveSessionM
         namespace: hpa.namespace,
         hpa_name: hpa.name,
         original_values: {
-          min_replicas: hpa.min_replicas,
+          min_replicas: hpa.min_replicas ?? undefined,
           max_replicas: hpa.max_replicas,
-          target_cpu: hpa.target_cpu_percent,
-          target_memory: hpa.target_memory_percent,
-          cpu_request: hpa.cpu_request,
-          cpu_limit: hpa.cpu_limit,
-          memory_request: hpa.memory_request,
-          memory_limit: hpa.memory_limit,
+          target_cpu: hpa.target_cpu ?? undefined,
+          target_memory: hpa.target_memory ?? undefined,
+          cpu_request: hpa.target_cpu_request,
+          cpu_limit: hpa.target_cpu_limit,
+          memory_request: hpa.target_memory_request,
+          memory_limit: hpa.target_memory_limit,
         },
         new_values: {
-          min_replicas: hpa.min_replicas,
+          min_replicas: hpa.min_replicas ?? undefined,
           max_replicas: hpa.max_replicas,
-          target_cpu: hpa.target_cpu_percent,
-          target_memory: hpa.target_memory_percent,
-          cpu_request: hpa.cpu_request,
-          cpu_limit: hpa.cpu_limit,
-          memory_request: hpa.memory_request,
-          memory_limit: hpa.memory_limit,
+          target_cpu: hpa.target_cpu ?? undefined,
+          target_memory: hpa.target_memory ?? undefined,
+          cpu_request: hpa.target_cpu_request,
+          cpu_limit: hpa.target_cpu_limit,
+          memory_request: hpa.target_memory_request,
+          memory_limit: hpa.target_memory_limit,
           perform_rollout: false,
           perform_daemonset_rollout: false,
           perform_statefulset_rollout: false,
@@ -240,20 +240,21 @@ export function SaveSessionModal({ open, onOpenChange, onSuccess }: SaveSessionM
 
       // Transformar Node Pools para formato de sessão
       const nodePoolChanges = nodePools.map(nodePool => ({
-        cluster: nodePool.cluster,
+        cluster: nodePool.cluster_name,
         node_pool_name: nodePool.name,
-        resource_group: nodePool.resource_group || '',
+        resource_group: nodePool.resource_group,
+        subscription: nodePool.subscription,
         original_values: {
           node_count: nodePool.node_count,
-          autoscaling_enabled: nodePool.autoscaling?.enabled || false,
-          min_node_count: nodePool.autoscaling?.min_count || 0,
-          max_node_count: nodePool.autoscaling?.max_count || 0,
+          autoscaling_enabled: nodePool.autoscaling_enabled,
+          min_node_count: nodePool.min_node_count,
+          max_node_count: nodePool.max_node_count,
         },
         new_values: {
           node_count: nodePool.node_count,
-          autoscaling_enabled: nodePool.autoscaling?.enabled || false,
-          min_node_count: nodePool.autoscaling?.min_count || 0,
-          max_node_count: nodePool.autoscaling?.max_count || 0,
+          autoscaling_enabled: nodePool.autoscaling_enabled,
+          min_node_count: nodePool.min_node_count,
+          max_node_count: nodePool.max_node_count,
         },
       }));
 
@@ -321,7 +322,7 @@ export function SaveSessionModal({ open, onOpenChange, onSuccess }: SaveSessionM
         <div className="space-y-4">
           {/* ✅ MANTER: Preview das alterações que serão salvas */}
           {changesPreview && (
-            <Alert className="bg-green-50">
+            <Alert className="bg-muted/50 dark:bg-muted/20 border-primary/20">
               <AlertDescription>
                 <strong>📋 Alterações Pendentes:</strong><br/>
                 {changesPreview.changes.length > 0 && (
