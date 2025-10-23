@@ -74,6 +74,7 @@ Permite gerenciar HPAs e Node Pools de forma interativa e segura, com sessões r
 
 ### 🚀 Features Avançadas (2025)
 
+#### TUI (Terminal Interface)
 - ✅ **CronJob Management** (F9) - Enable/disable com status visual
 - ✅ **Prometheus Stack** (F8) - Gerenciamento de recursos do stack Prometheus
 - ✅ **VPN Validation** - Verifica conectividade K8s antes de operações
@@ -82,16 +83,34 @@ Permite gerenciar HPAs e Node Pools de forma interativa e segura, com sessões r
 - ✅ **Navegação Sequencial** - Ctrl+←/→ entre tabs com wrap-around
 - ✅ **Log Detalhado** - Todas alterações mostradas (antes → depois)
 
+#### 🌐 Web Interface (Outubro 2025)
+- ✅ **Interface Web Completa** - React + TypeScript + shadcn/ui
+- ✅ **Dashboard Moderno** - Grid 2x2 com métricas reais (CPU/Memory allocation)
+- ✅ **HPAs/Node Pools/CronJobs** - CRUD completo com editores funcionais
+- ✅ **Prometheus Stack** - Resource management + **Rollout individual**
+- ✅ **Sistema de Sessões** - Save/Load/Rename/Delete/Edit (compatível TUI)
+- ✅ **Staging Area** - Preview de alterações antes de aplicar
+- ✅ **Aplicar Agora** - Botões para aplicação individual (HPAs e Node Pools)
+- ✅ **Snapshot de Cluster** - Captura estado atual para rollback
+- ✅ **Heartbeat System** - Auto-shutdown em 20min de inatividade
+- ✅ **Standalone Binary** - Frontend embedado (não precisa Node.js em runtime)
+
 ---
 
 ## 🚀 Instalação
 
 ### Pré-requisitos
 
-- **Go 1.23+** (para compilação)
+#### Runtime (Execução)
 - **kubectl** configurado com acesso aos clusters
 - **Azure CLI** (opcional - apenas para node pools)
-- **Terminal** com suporte a cores (recomendado: 80x24 ou maior)
+- **Terminal** com suporte a cores (recomendado: 80x24 ou maior) - apenas para TUI
+
+#### Build (Compilação)
+- **Go 1.23+** (toolchain 1.24.7)
+- **Node.js 18+** e **npm** (apenas para compilar web interface)
+- ⚠️ **Importante**: Node.js é **dependência de build**, NÃO de runtime
+- O binário final é standalone (não precisa Node.js para rodar)
 
 ### Instalação Rápida
 
@@ -172,6 +191,31 @@ k8s-hpa-manager
 # ✅ *1 executa → *2 inicia automaticamente
 ```
 
+### 4️⃣ Web Interface - Modo Browser
+
+```bash
+# Iniciar servidor web (background por padrão)
+k8s-hpa-manager web
+
+# Ou foreground para ver logs
+k8s-hpa-manager web -f
+
+# Custom port
+k8s-hpa-manager web --port 8080
+
+# Acesse no browser
+# http://localhost:8080
+# Token: poc-token-123 (padrão POC)
+
+# Features disponíveis:
+# - Dashboard com métricas reais do cluster
+# - Edição de HPAs com botão "Aplicar Agora"
+# - Edição de Node Pools com botão "Aplicar Agora"
+# - Rollout individual de recursos Prometheus
+# - Sistema de sessões (save/load/edit/delete)
+# - Staging area com preview de alterações
+```
+
 ---
 
 ## 📟 Comandos CLI
@@ -179,8 +223,18 @@ k8s-hpa-manager
 ### Comandos Principais
 
 ```bash
-# Iniciar interface interativa
+# Iniciar interface interativa (TUI)
 k8s-hpa-manager
+
+# Iniciar interface web (background por padrão)
+k8s-hpa-manager web
+
+# Iniciar interface web em foreground (ver logs)
+k8s-hpa-manager web -f
+k8s-hpa-manager web --foreground
+
+# Interface web com porta customizada
+k8s-hpa-manager web --port 8080
 
 # Mostrar versão e verificar updates
 k8s-hpa-manager version
@@ -204,13 +258,20 @@ k8s-hpa-manager --check-updates=false
 ### Comandos de Desenvolvimento
 
 ```bash
-# Build
+# Build TUI
 make build                    # → ./build/k8s-hpa-manager
 make build-all                # Multi-platform builds
 
+# Build Web Interface
+make web-install              # Instalar dependências frontend (primeira vez)
+make web-build                # Build frontend → internal/web/static/
+make build-web                # Build completo (frontend + backend)
+./rebuild-web.sh -b           # Rebuild completo (limpa cache)
+
 # Run
-make run                      # Build + run
-make run-dev                  # Run com debug
+make run                      # Build + run TUI
+make run-dev                  # Run TUI com debug
+make web-dev                  # Dev server frontend (hot reload)
 
 # Test
 make test                     # Run tests
@@ -545,6 +606,7 @@ k8s-hpa-manager/
 
 ### Tech Stack
 
+#### Backend (Go)
 | Tecnologia | Versão | Uso |
 |------------|--------|-----|
 | **Go** | 1.23+ (toolchain 1.24.7) | Linguagem principal |
@@ -553,6 +615,19 @@ k8s-hpa-manager/
 | **Cobra** | v1.10.1 | CLI commands |
 | **client-go** | v0.31.4 | Kubernetes client oficial |
 | **Azure SDK** | Latest | Azure AKS management |
+| **Gin** | v1.9+ | Web framework (REST API) |
+
+#### Frontend (Web Interface)
+| Tecnologia | Versão | Uso |
+|------------|--------|-----|
+| **React** | 18.3 | UI framework |
+| **TypeScript** | 5.8 | Type safety |
+| **Vite** | 5.4 | Build tool + dev server |
+| **Tailwind CSS** | 3.4 | Styling |
+| **shadcn/ui** | Latest | Component library |
+| **React Query** | (TanStack) | State management |
+| **React Router** | Latest | Navegação |
+| **Lucide React** | Latest | Ícones |
 
 ### Padrões de Código
 
@@ -609,6 +684,17 @@ k8s-hpa-manager/
 | **Node pools não carregam** | Execute `k8s-hpa-manager autodiscover` |
 | **"clusters-config.json not found"** | Execute autodiscover para gerar o arquivo |
 | **Azure auth failed** | Execute `az login` manualmente |
+
+#### Interface Web
+
+| Problema | Solução |
+|----------|---------|
+| **Frontend não carrega** | Execute `make web-build` antes de `make build` |
+| **"Frontend not found"** | Rode `make build-web` para build completo |
+| **Mudanças não aparecem** | Use `./rebuild-web.sh -b` para limpar cache |
+| **Dropdown não visível** | Hard refresh no browser (Ctrl+Shift+R) |
+| **API retorna 404** | Verifique se servidor está rodando em background |
+| **Heartbeat falha** | Servidor desligou por inatividade (20min), reinicie |
 
 ### Debug Mode
 
@@ -710,6 +796,51 @@ k8s-hpa-manager
 # ✅ Interface livre para editar HPAs durante execução
 ```
 
+### 🌐 Cenário 5: Gerenciamento via Web Interface
+
+```bash
+# Iniciar servidor web
+k8s-hpa-manager web
+
+# Acessar no browser: http://localhost:8080
+
+# WORKFLOW 1: Editar HPAs e aplicar
+# 1. Selecionar cluster no dropdown
+# 2. Aba "HPAs" → Click no HPA desejado
+# 3. Editar valores (min/max replicas, targets, resources)
+# 4. Click "Aplicar Agora" → HPA atualizado imediatamente
+# ✅ Ou click "Salvar (Staging)" para aplicar múltiplos depois
+
+# WORKFLOW 2: Rollout de Prometheus Stack
+# 1. Aba "Prometheus" → Lista de recursos
+# 2. Click "Rollout" no deployment/statefulset/daemonset
+# 3. Aguardar 2s → Lista atualiza automaticamente
+# ✅ Rollout executado sem interromper serviço
+
+# WORKFLOW 3: Node Pools com aplicação individual
+# 1. Aba "Node Pools" → Click no pool desejado
+# 2. Editor abre no painel direito
+# 3. Ajustar node count, autoscaling, min/max
+# 4. Click "Aplicar Agora" → Azure CLI executa em background
+# ✅ Alteração aplicada sem staging
+
+# WORKFLOW 4: Snapshot para Rollback
+# 1. Click "Salvar Sessão"
+# 2. Modo "Capturar Snapshot" (sem modificações pendentes)
+# 3. Pasta: "Rollback"
+# 4. Nome: "pre-deploy-2025-10-23"
+# 5. Click "Capturar Snapshot"
+# ✅ Estado atual do cluster salvo para rollback futuro
+
+# WORKFLOW 5: Editar sessão salva
+# 1. Click "Load Session" → Escolher pasta
+# 2. Click menu (⋮) → "Editar Conteúdo"
+# 3. Tabs "HPAs" / "Node Pools" → Click para expandir
+# 4. Modificar valores incorretos
+# 5. Click "Salvar Alterações"
+# ✅ Sessão atualizada (arquivo JSON modificado)
+```
+
 ---
 
 ## 🤝 Contribuição
@@ -740,14 +871,28 @@ Este projeto está sob a licença MIT. Veja [LICENSE](LICENSE) para detalhes.
 
 ---
 
+## 📚 Documentação Adicional
+
+### Interface Web
+- **Docs/README_WEB.md** - Documentação completa da interface web
+- **Docs/WEB_INTERFACE_DESIGN.md** - Arquitetura e design system
+- **Docs/WEB_SESSIONS_PLAN.md** - Sistema de sessões (planejamento)
+- **internal/web/frontend/README.md** - Guia do desenvolvedor frontend
+
+### CLAUDE.md
+- **CLAUDE.md** - Instruções para Claude Code (contexto completo do projeto)
+
+---
+
 ## 📞 Suporte
 
 ### Precisa de Ajuda?
 
-1. **Help Contextual**: Pressione `?` na aplicação
-2. **Troubleshooting**: Consulte seção acima
-3. **Debug Mode**: Execute com `--debug`
-4. **Issues**: [Abra uma issue](https://github.com/Paulo-Ribeiro-Log/Scale_HPA/issues)
+1. **Help Contextual**: Pressione `?` na aplicação TUI
+2. **Docs Web**: Consulte `Docs/README_WEB.md` para interface web
+3. **Troubleshooting**: Consulte seção acima
+4. **Debug Mode**: Execute com `--debug`
+5. **Issues**: [Abra uma issue](https://github.com/Paulo-Ribeiro-Log/Scale_HPA/issues)
 
 ---
 
@@ -755,7 +900,9 @@ Este projeto está sob a licença MIT. Veja [LICENSE](LICENSE) para detalhes.
 
 **🎯 Desenvolvido para simplificar o gerenciamento de HPAs e Node Pools**
 
-⚡ **Interface rápida, intuitiva e poderosa** | 💾 **Sessões que preservam seu trabalho**
+⚡ **TUI rápida e intuitiva** | 🌐 **Interface Web moderna** | 💾 **Sessões que preservam seu trabalho**
+
+🚀 **Rollouts individuais** | 📊 **Dashboard com métricas reais** | 🔄 **Snapshot para rollback**
 
 [![⭐ Star no GitHub](https://img.shields.io/github/stars/Paulo-Ribeiro-Log/Scale_HPA?style=social)](https://github.com/Paulo-Ribeiro-Log/Scale_HPA)
 
