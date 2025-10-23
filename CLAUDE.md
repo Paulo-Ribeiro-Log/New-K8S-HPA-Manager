@@ -54,6 +54,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ Snapshot de cluster para rollback
 - ✅ Sistema de heartbeat e auto-shutdown (20min inatividade)
 - ✅ ApplyAllModal com progress tracking e rollout simulation
+- ✅ **Rollout individual para Prometheus Stack** (Deployment/StatefulSet/DaemonSet) - Outubro 2025
+- ✅ **Aplicar Agora para Node Pools** - Aplicação individual sem staging - Outubro 2025
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -397,10 +399,10 @@ func (s *Server) handleHeartbeat(c *gin.Context) {
 
 | Feature | Status | Descrição |
 |---------|--------|-----------|
-| **HPAs** | ✅ 100% | CRUD completo com edição de recursos (CPU/Memory Request/Limit) |
-| **Node Pools** | ✅ 100% | Editor funcional (autoscaling, node count, min/max) |
+| **HPAs** | ✅ 100% | CRUD completo com edição de recursos (CPU/Memory Request/Limit) + Aplicar Agora |
+| **Node Pools** | ✅ 100% | Editor funcional (autoscaling, node count, min/max) + **Botão "Aplicar Agora"** |
 | **CronJobs** | ✅ 100% | Suspend/Resume |
-| **Prometheus Stack** | ✅ 100% | Resource management |
+| **Prometheus Stack** | ✅ 100% | Resource management + **Rollout individual (Deployment/StatefulSet/DaemonSet)** |
 | **Sessions** | ✅ 100% | Save/Load/Rename/Delete/Edit (compatível TUI) |
 | **Staging Area** | ✅ 100% | Preview de alterações antes de aplicar |
 | **ApplyAllModal** | ✅ 100% | Progress tracking com rollout simulation |
@@ -471,7 +473,7 @@ func (s *Server) handleHeartbeat(c *gin.Context) {
 | `/hpas?cluster=X&namespace=Y` | GET | Lista HPAs |
 | `/hpas/:cluster/:namespace/:name` | PUT | Atualiza HPA |
 | `/nodepools?cluster=X` | GET | Lista node pools |
-| `/nodepools/:cluster/:name` | PUT | Atualiza node pool |
+| `/nodepools/:cluster/:rg/:name` | PUT | Atualiza node pool |
 | `/sessions` | GET | Lista sessões salvas |
 | `/sessions` | POST | Salva nova sessão |
 | `/sessions/:name` | DELETE | Remove sessão |
@@ -479,6 +481,7 @@ func (s *Server) handleHeartbeat(c *gin.Context) {
 | `/sessions/:name` | PUT | Atualiza conteúdo da sessão |
 | `/cronjobs?cluster=X&namespace=Y` | GET | Lista CronJobs |
 | `/prometheus?cluster=X` | GET | Lista recursos Prometheus |
+| `/prometheus/:cluster/:namespace/:type/:name/rollout` | POST | **Rollout de recurso Prometheus (deployment/statefulset/daemonset)** |
 | `/heartbeat` | POST | Heartbeat (mantém servidor vivo) |
 
 ---
@@ -892,6 +895,75 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Rollout Individual para Prometheus Stack (Outubro 2025) ✅
+
+**Feature:** Botões individuais de rollout para cada recurso do Prometheus Stack (Deployment/StatefulSet/DaemonSet).
+
+**Implementação:**
+- **Backend**:
+  - Funções genéricas de rollout em `internal/kubernetes/client.go`:
+    - `RolloutDeployment()` (já existia)
+    - `RolloutStatefulSet()` (NOVO - linhas 1368-1389)
+    - `RolloutDaemonSet()` (NOVO - linhas 1391-1412)
+  - Handler `Rollout()` em `internal/web/handlers/prometheus.go` (linhas 506-562)
+  - Rota API: `POST /api/v1/prometheus/:cluster/:namespace/:type/:name/rollout`
+
+- **Frontend**:
+  - Botão "Rollout" individual para cada recurso no card
+  - Estado de loading com spinner durante execução
+  - Auto-refresh da lista após 2 segundos
+  - Toast notifications de sucesso/erro
+
+**Workflow:**
+1. Usuário acessa página "Prometheus"
+2. Cada card tem botões "Rollout" e "Editar"
+3. Click em "Rollout" adiciona annotation `kubectl.kubernetes.io/restartedAt` com timestamp
+4. Pods do recurso são reiniciados (rolling restart)
+
+**Arquivos modificados:**
+- `internal/kubernetes/client.go` - Funções de rollout genéricas
+- `internal/web/handlers/prometheus.go` - Handler Rollout()
+- `internal/web/server.go` - Rota POST rollout
+- `internal/web/frontend/src/pages/PrometheusPage.tsx` - UI com botões
+
+### Aplicar Agora para Node Pools (Outubro 2025) ✅
+
+**Feature:** Botão "Aplicar Agora" no Node Pool Editor que aplica alterações diretamente no cluster sem passar pelo staging.
+
+**Implementação:**
+- Botão verde "✅ Aplicar Agora" ao lado de "💾 Salvar (Staging)"
+- Layout idêntico ao HPA Editor (3 botões na mesma linha)
+- Estado de loading com spinner ("Aplicando...")
+- Logs detalhados no console (before → after)
+- Toast notifications de sucesso/erro
+- Chama diretamente `apiClient.updateNodePool()` para aplicação imediata
+
+**Diferença entre botões:**
+- **💾 Salvar (Staging)**: Adiciona ao staging para aplicar em lote depois
+- **✅ Aplicar Agora**: Aplica imediatamente no cluster (Azure API)
+- **Cancelar**: Volta aos valores originais
+
+**Workflow:**
+1. Usuário seleciona Node Pool → Editor abre
+2. Modifica valores (Node Count, Autoscaling, Min/Max)
+3. Clica "Aplicar Agora"
+4. API chama Azure CLI para update
+5. Toast de sucesso/erro
+6. Editor reseta para novo estado
+
+**Arquivos modificados:**
+- `internal/web/frontend/src/components/NodePoolEditor.tsx`:
+  - Import: `Loader2`, `Zap`, `apiClient`, `toast`
+  - Estado: `isApplying`
+  - Função: `handleApplyNow()` (linhas 110-162)
+  - UI: Layout de botões reorganizado (linhas 368-406)
+
+**Correção de Layout:**
+- Removido `sticky bottom-0` que causava efeito flutuante
+- Removido `p-4 overflow-y-auto h-full` do container
+- Container simples `space-y-4` como no HPAEditor
+- Botões fixados no flow normal do documento
 
 ### Race Condition em Testes de Cluster (Outubro 2025) ✅
 

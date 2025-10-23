@@ -1364,3 +1364,49 @@ func (c *Client) GetPodMetrics(namespace, resourceName, workloadType string) (cp
 
 	return cpuUsage, memUsage
 }
+
+// RolloutStatefulSet executa rollout de um StatefulSet genérico
+func (c *Client) RolloutStatefulSet(ctx context.Context, namespace, statefulSetName string) error {
+	// Obter statefulset
+	statefulSet, err := c.clientset.AppsV1().StatefulSets(namespace).Get(ctx, statefulSetName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get statefulset %s/%s/%s: %w", c.cluster, namespace, statefulSetName, err)
+	}
+
+	// Adicionar annotation para forçar rollout
+	if statefulSet.Spec.Template.Annotations == nil {
+		statefulSet.Spec.Template.Annotations = make(map[string]string)
+	}
+	statefulSet.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+
+	// Atualizar statefulset
+	_, err = c.clientset.AppsV1().StatefulSets(namespace).Update(ctx, statefulSet, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to rollout statefulset %s/%s/%s: %w", c.cluster, namespace, statefulSetName, err)
+	}
+
+	return nil
+}
+
+// RolloutDaemonSet executa rollout de um DaemonSet genérico
+func (c *Client) RolloutDaemonSet(ctx context.Context, namespace, daemonSetName string) error {
+	// Obter daemonset
+	daemonSet, err := c.clientset.AppsV1().DaemonSets(namespace).Get(ctx, daemonSetName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get daemonset %s/%s/%s: %w", c.cluster, namespace, daemonSetName, err)
+	}
+
+	// Adicionar annotation para forçar rollout
+	if daemonSet.Spec.Template.Annotations == nil {
+		daemonSet.Spec.Template.Annotations = make(map[string]string)
+	}
+	daemonSet.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+
+	// Atualizar daemonset
+	_, err = c.clientset.AppsV1().DaemonSets(namespace).Update(ctx, daemonSet, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to rollout daemonset %s/%s/%s: %w", c.cluster, namespace, daemonSetName, err)
+	}
+
+	return nil
+}

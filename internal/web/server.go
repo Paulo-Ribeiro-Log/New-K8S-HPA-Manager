@@ -173,6 +173,7 @@ func (s *Server) setupRoutes() {
 	prometheusHandler := handlers.NewPrometheusHandler(s.kubeManager)
 	api.GET("/prometheus", prometheusHandler.List)
 	api.PUT("/prometheus/:cluster/:namespace/:type/:name", prometheusHandler.Update)
+	api.POST("/prometheus/:cluster/:namespace/:type/:name/rollout", prometheusHandler.Rollout)
 
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()
