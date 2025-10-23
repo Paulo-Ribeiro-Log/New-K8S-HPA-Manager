@@ -3,9 +3,11 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/kubernetes"
 
 	"github.com/gin-gonic/gin"
 	appsv1 "k8s.io/api/apps/v1"
@@ -500,4 +502,64 @@ func updateContainerResources(container *corev1.Container, cpuReq, memReq, cpuLi
 			container.Resources.Limits[corev1.ResourceMemory] = qty
 		}
 	}
+}
+
+// Rollout executa rollout de um recurso Prometheus específico (Deployment, StatefulSet ou DaemonSet)
+func (h *PrometheusHandler) Rollout(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	resourceType := c.Param("type") // deployment, statefulset, daemonset
+	name := c.Param("name")
+
+	if cluster == "" || namespace == "" || resourceType == "" || name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "cluster, namespace, type e name são obrigatórios",
+		})
+		return
+	}
+
+	// Obter client K8s padrão
+	clientSet, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("failed to get kubernetes client: %v", err),
+		})
+		return
+	}
+
+	// Criar nosso wrapper personalizado com métodos de rollout
+	client := kubernetes.NewClient(clientSet, cluster)
+
+	ctx := context.Background()
+
+	// Executar rollout com base no tipo de recurso
+	switch strings.ToLower(resourceType) {
+	case "deployment":
+		err = client.RolloutDeployment(ctx, namespace, name)
+	case "statefulset":
+		err = client.RolloutStatefulSet(ctx, namespace, name)
+	case "daemonset":
+		err = client.RolloutDaemonSet(ctx, namespace, name)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("tipo de recurso inválido: %s (use deployment, statefulset ou daemonset)", resourceType),
+		})
+		return
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("failed to rollout %s: %v", resourceType, err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Rollout de %s/%s iniciado com sucesso", resourceType, name),
+	})
 }

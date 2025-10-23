@@ -8,8 +8,10 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { NodePool } from "@/lib/api/types";
-import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp } from "lucide-react";
+import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
+import { apiClient } from "@/lib/api/client";
+import { toast } from "sonner";
 
 interface NodePoolEditorProps {
   nodePool: NodePool | null;
@@ -29,6 +31,9 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
 
   // Track if values have changed
   const [hasChanges, setHasChanges] = useState(false);
+
+  // Track if applying changes
+  const [isApplying, setIsApplying] = useState(false);
 
   // Initialize form when nodePool changes
   useEffect(() => {
@@ -102,6 +107,60 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
     onApplied?.();
   };
 
+  const handleApplyNow = async () => {
+    if (!nodePool) return;
+
+    setIsApplying(true);
+
+    try {
+      // Prepare updated node pool data
+      const updatedNodePool: NodePool = {
+        ...nodePool,
+        node_count: nodeCount,
+        min_node_count: minNodeCount,
+        max_node_count: maxNodeCount,
+        autoscaling_enabled: autoscalingEnabled,
+      };
+
+      // Log changes
+      console.log('⚙️ Applying Node Pool changes:', {
+        name: nodePool.name,
+        cluster: nodePool.cluster_name,
+        changes: {
+          node_count: nodePool.node_count !== nodeCount ? `${nodePool.node_count} → ${nodeCount}` : 'unchanged',
+          min_node_count: nodePool.min_node_count !== minNodeCount ? `${nodePool.min_node_count} → ${minNodeCount}` : 'unchanged',
+          max_node_count: nodePool.max_node_count !== maxNodeCount ? `${nodePool.max_node_count} → ${maxNodeCount}` : 'unchanged',
+          autoscaling_enabled: nodePool.autoscaling_enabled !== autoscalingEnabled ? `${nodePool.autoscaling_enabled} → ${autoscalingEnabled}` : 'unchanged',
+        }
+      });
+
+      // Call API to update node pool
+      await apiClient.updateNodePool(
+        nodePool.cluster_name,
+        nodePool.resource_group,
+        nodePool.name,
+        {
+          node_count: nodeCount,
+          min_node_count: minNodeCount,
+          max_node_count: maxNodeCount,
+          autoscaling_enabled: autoscalingEnabled,
+        }
+      );
+
+      toast.success(`✅ Node Pool ${nodePool.name} aplicado com sucesso`);
+      setHasChanges(false);
+
+      // Call optional callback
+      onApplied?.();
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Erro desconhecido";
+      console.error('❌ Error applying node pool:', errorMessage);
+      toast.error(`❌ Erro ao aplicar ${nodePool.name}: ${errorMessage}`);
+    } finally {
+      setIsApplying(false);
+    }
+  };
+
   if (!nodePool) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted-foreground p-8">
@@ -113,7 +172,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   }
 
   return (
-    <div className="space-y-4 p-4 overflow-y-auto h-full">
+    <div className="space-y-4">
       {/* Header */}
       <div>
         <div className="flex items-center gap-2 mb-2">
@@ -306,23 +365,43 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
       )}
 
       {/* Action Buttons */}
-      <div className="flex gap-2 sticky bottom-0 bg-background pt-4 pb-2">
+      <div className="flex gap-3 pt-3 border-t border-border">
         <Button
-          variant="outline"
-          className="flex-1"
-          onClick={handleReset}
-          disabled={!hasChanges}
-        >
-          <RotateCcw className="w-4 h-4 mr-2" />
-          Reset
-        </Button>
-        <Button
-          className="flex-1"
           onClick={handleApply}
-          disabled={!hasChanges}
+          disabled={!hasChanges || isApplying}
+          className="flex-1 bg-gradient-primary h-9"
         >
           <Save className="w-4 h-4 mr-2" />
-          Add to Staging
+          💾 Salvar (Staging)
+        </Button>
+
+        <Button
+          onClick={handleApplyNow}
+          variant="default"
+          disabled={!hasChanges || isApplying}
+          className="flex-1 bg-success hover:bg-success/90 h-9"
+        >
+          {isApplying ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              Aplicando...
+            </>
+          ) : (
+            <>
+              <Zap className="w-4 h-4 mr-2" />
+              ✅ Aplicar Agora
+            </>
+          )}
+        </Button>
+
+        <Button
+          onClick={handleReset}
+          disabled={!hasChanges || isApplying}
+          variant="outline"
+          className="h-9"
+        >
+          <RotateCcw className="w-4 h-4 mr-2" />
+          Cancelar
         </Button>
       </div>
     </div>

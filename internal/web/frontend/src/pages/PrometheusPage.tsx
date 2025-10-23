@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Loader2, Activity, Server, Edit, AlertTriangle, Save, X } from 'lucide-react';
+import { Loader2, Activity, Server, Edit, AlertTriangle, Save, X, RefreshCcw } from 'lucide-react';
 import { usePrometheusResources, useUpdatePrometheusResource } from '@/hooks/useAPI';
 import type { PrometheusResource } from '@/lib/api/types';
 
@@ -32,6 +32,7 @@ export function PrometheusPage({ selectedCluster }: PrometheusPageProps) {
   const [selectedResources, setSelectedResources] = useState<Set<string>>(new Set());
   const [editingResource, setEditingResource] = useState<EditingResource | null>(null);
   const [isEditing, setIsEditing] = useState(false);
+  const [rollingOutResource, setRollingOutResource] = useState<string | null>(null);
 
   const { data: resources = [], isLoading, error, refetch } = usePrometheusResources(selectedCluster);
   const updateResourceMutation = useUpdatePrometheusResource();
@@ -133,11 +134,47 @@ export function PrometheusPage({ selectedCluster }: PrometheusPageProps) {
           replicas: editingResource.replicas,
         }
       });
-      
+
       setIsEditing(false);
       setEditingResource(null);
     } catch (error) {
       console.error('Error updating resource:', error);
+    }
+  };
+
+  const handleRollout = async (resource: PrometheusResource) => {
+    const key = `${resource.type}/${resource.name}`;
+    setRollingOutResource(key);
+
+    try {
+      const response = await fetch(
+        `/api/v1/prometheus/${encodeURIComponent(selectedCluster)}/${encodeURIComponent(resource.namespace)}/${encodeURIComponent(resource.type.toLowerCase())}/${encodeURIComponent(resource.name)}/rollout`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer poc-token-123',
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Erro ao executar rollout');
+      }
+
+      const data = await response.json();
+      console.log('Rollout success:', data);
+
+      // Aguardar um pouco e recarregar recursos para mostrar nova timestamp
+      setTimeout(() => {
+        refetch();
+      }, 2000);
+    } catch (error) {
+      console.error('Error rolling out resource:', error);
+      alert(`Erro ao executar rollout: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
+    } finally {
+      setRollingOutResource(null);
     }
   };
 
@@ -232,18 +269,41 @@ export function PrometheusPage({ selectedCluster }: PrometheusPageProps) {
                       <Badge variant="outline">{resource.type}</Badge>
                     </div>
                   </div>
-                  
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleEditResource(resource);
-                    }}
-                  >
-                    <Edit className="h-4 w-4 mr-1" />
-                    Editar
-                  </Button>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRollout(resource);
+                      }}
+                      disabled={rollingOutResource === key}
+                    >
+                      {rollingOutResource === key ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                          Executando...
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCcw className="h-4 w-4 mr-1" />
+                          Rollout
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleEditResource(resource);
+                      }}
+                    >
+                      <Edit className="h-4 w-4 mr-1" />
+                      Editar
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               
