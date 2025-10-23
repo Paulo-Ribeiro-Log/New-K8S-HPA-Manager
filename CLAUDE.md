@@ -32,6 +32,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Estado Atual (Outubro 2025)
 
+**Versão Atual:** v1.2.0 (Release: 23 de outubro de 2025)
+**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.2.0
+
 **TUI (Terminal Interface):**
 - ✅ Interface responsiva (adapta-se ao tamanho real do terminal - mínimo 80x24)
 - ✅ Execução sequencial de node pools para stress tests (F12)
@@ -44,6 +47,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ Log detalhado de alterações (antes → depois) no StatusContainer
 - ✅ Sistema de Logs completo (F3) - visualizador com scroll, copiar, limpar
 - ✅ Race condition corrigida (Mutex RWLock para testes paralelos de cluster)
+- ✅ **Sistema de updates automático** - Detecção 1x por dia com notificação
 
 **Web Interface:**
 - ✅ Interface web completa (99% funcional)
@@ -724,6 +728,64 @@ sudo ifconfig <vpn-interface> down
 # ✅ Servidor sendo encerrado...
 ```
 
+### Testing Update System
+
+**Teste 1: Detecção de Updates**
+```bash
+./build/k8s-hpa-manager version
+
+# Esperado (se houver update disponível):
+# k8s-hpa-manager versão 1.1.0
+# 🔍 Verificando updates...
+# 🆕 Nova versão disponível: 1.1.0 → 1.2.0
+# 📦 Download: https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.2.0
+# 📝 Release Notes (preview): ...
+```
+
+**Teste 2: Auto-Update Check**
+```bash
+~/.k8s-hpa-manager/scripts/auto-update.sh --check
+
+# Esperado:
+# Status da Instalação
+# ℹ️  Versão atual: 1.1.0
+# ℹ️  Localização: /usr/local/bin/k8s-hpa-manager
+# ⚠️  Nova versão disponível: 1.1.0 → 1.2.0
+```
+
+**Teste 3: Auto-Update Dry-Run**
+```bash
+~/.k8s-hpa-manager/scripts/auto-update.sh --dry-run --yes
+
+# Esperado:
+# ⚠️  MODO DRY RUN - Nenhuma alteração será feita
+# ℹ️  Auto-confirmação ativada (--yes)
+# [DRY RUN] Simulando download e instalação...
+# ✅ Simulação concluída! (modo dry-run)
+```
+
+**Teste 4: Cache de Verificação**
+```bash
+# Verificar cache
+ls -lh ~/.k8s-hpa-manager/.update-check
+cat ~/.k8s-hpa-manager/.update-check
+
+# Forçar nova verificação
+rm ~/.k8s-hpa-manager/.update-check
+./build/k8s-hpa-manager version
+```
+
+**Teste 5: Instalação do Zero**
+```bash
+# Em máquina limpa ou container
+curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/Scale_HPA/main/install-from-github.sh | bash
+
+# Esperado:
+# ✅ Instalação concluída com sucesso!
+# Versão instalada: 1.2.0
+# Binário: /usr/local/bin/k8s-hpa-manager
+```
+
 ---
 
 ## 🔧 Troubleshooting
@@ -749,6 +811,17 @@ sudo ifconfig <vpn-interface> down
 | **Azure timeout** | Validar `az login` e subscription ativa |
 | **Race condition** | Atualizar para versão com mutex fix (v1.6.0+) |
 | **Node pools não carregam** | Executar `k8s-hpa-manager autodiscover` |
+
+### Problemas Comuns - Sistema de Updates
+
+| Problema | Solução |
+|----------|---------|
+| **Updates não detectados** | Remover cache: `rm ~/.k8s-hpa-manager/.update-check` e executar `k8s-hpa-manager version` |
+| **GitHub API rate limit** | Configurar token: `export GITHUB_TOKEN=ghp_...` antes de executar |
+| **Versão mostra "dev"** | Recompilar com `make build` (injeta versão via git tags) |
+| **Cache não expira** | TTL de 24h - forçar com `rm ~/.k8s-hpa-manager/.update-check` |
+| **Auto-update falha** | Verificar conexão, permissões sudo e requisitos (Go, Git, kubectl) |
+| **Scripts não instalados** | Executar `curl ... install-from-github.sh | bash` novamente |
 
 ### Debug Mode
 
@@ -793,6 +866,9 @@ k8s-hpa-manager --debug
 ```
 Projeto: Terminal-based Kubernetes HPA + Azure AKS Node Pool management tool
 
+Versão Atual: v1.2.0 (Outubro 2025)
+Release: https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.2.0
+
 Tech Stack:
 - Go 1.23+ (toolchain 1.24.7)
 - TUI: Bubble Tea + Lipgloss
@@ -807,10 +883,12 @@ Estado Atual (Outubro 2025):
 ✅ Snapshot de cluster para rollback
 ✅ Race condition corrigida (mutex RWLock)
 ✅ Compatibilidade TUI ↔ Web para sessões
+✅ Sistema completo de instalação e updates (v1.2.0)
 
 Build TUI: make build
 Build Web: ./rebuild-web.sh -b
 Binary: ./build/k8s-hpa-manager
+Instalação: curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/Scale_HPA/main/install-from-github.sh | bash
 ```
 
 ### File Structure Quick Reference
@@ -855,6 +933,14 @@ make web-dev                  # Vite dev server
 # Testing
 make test                     # Unit tests
 make test-coverage            # Coverage report
+
+# Installation & Updates
+curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/Scale_HPA/main/install-from-github.sh | bash
+k8s-hpa-manager version       # Check version and updates
+~/.k8s-hpa-manager/scripts/auto-update.sh              # Interactive update
+~/.k8s-hpa-manager/scripts/auto-update.sh --yes        # Auto-confirm (for cron)
+~/.k8s-hpa-manager/scripts/auto-update.sh --check      # Check status
+~/.k8s-hpa-manager/scripts/auto-update.sh --dry-run    # Simulate
 
 # Cluster setup
 k8s-hpa-manager autodiscover  # Auto-descobre clusters
@@ -930,6 +1016,9 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 
 ### Sistema Completo de Instalação e Updates (Outubro 2025) ✅
 
+**Release:** v1.2.0 (publicada em 23 de outubro de 2025)
+**GitHub:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.2.0
+
 **Feature:** Scripts automatizados de instalação, atualização e gerenciamento.
 
 **Implementação:**
@@ -957,6 +1046,16 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
   - Comparação semântica (MAJOR.MINOR.PATCH)
   - Verificação via GitHub API (`/repos/.../releases/latest`)
   - Suporte a GitHub token (rate limiting)
+
+**Testes realizados (v1.2.0):**
+- ✅ Detecção de updates (1.1.0 → 1.2.0)
+- ✅ Comando `version` com preview de release notes
+- ✅ Auto-update `--dry-run` (simulação sem alterações)
+- ✅ Auto-update `--check` (status e versão disponível)
+- ✅ Auto-update `--yes` (auto-confirmação)
+- ✅ Cache de verificação (24h TTL)
+- ✅ Link de download correto
+- ✅ Binário instalado em `/usr/local/bin/`
 
 **Arquivos criados:**
 - `install-from-github.sh` - Instalador completo
