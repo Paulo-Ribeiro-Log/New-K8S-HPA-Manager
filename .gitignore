@@ -42,6 +42,9 @@ Thumbs.db
 *~
 apoio.txt
 
+# Scripts de deploy/manutenção (não versionar)
+safe-deploy.sh
+
 # Session data (opcional - remova se quiser versionar sessões)
 # .k8s-hpa-manager/
 
