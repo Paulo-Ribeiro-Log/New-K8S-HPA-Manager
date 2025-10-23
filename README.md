@@ -99,55 +99,127 @@ Permite gerenciar HPAs e Node Pools de forma interativa e segura, com sessões r
 
 ## 🚀 Instalação
 
-### Pré-requisitos
+### ⚡ Instalação em 1 Comando (Recomendado)
 
-#### Runtime (Execução)
-- **kubectl** configurado com acesso aos clusters
-- **Azure CLI** (opcional - apenas para node pools)
-- **Terminal** com suporte a cores (recomendado: 80x24 ou maior) - apenas para TUI
+```bash
+# Clone, compile e instala automaticamente
+curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/Scale_HPA/main/install-from-github.sh | bash
+```
 
-#### Build (Compilação)
-- **Go 1.23+** (toolchain 1.24.7)
-- **Node.js 18+** e **npm** (apenas para compilar web interface)
-- ⚠️ **Importante**: Node.js é **dependência de build**, NÃO de runtime
-- O binário final é standalone (não precisa Node.js para rodar)
+**O que este comando faz:**
+- ✅ Verifica requisitos (Go, Git, kubectl, Azure CLI)
+- ✅ Clona o repositório automaticamente
+- ✅ Compila com injeção de versão
+- ✅ Instala em `/usr/local/bin/k8s-hpa-manager`
+- ✅ Copia scripts utilitários para `~/.k8s-hpa-manager/scripts/`
+- ✅ Cria atalho `k8s-hpa-web` para servidor web
+- ✅ Testa instalação automaticamente
 
-### Instalação Rápida
+📚 **Guia completo:** [INSTALL_GUIDE.md](INSTALL_GUIDE.md) | [QUICK_INSTALL.md](QUICK_INSTALL.md)
+
+---
+
+### 📋 Pré-requisitos
+
+#### Obrigatórios
+- **Go 1.23+** - Para compilação
+- **Git** - Para clonar repositório
+- **kubectl** - Cliente Kubernetes configurado
+
+#### Opcionais
+- **Azure CLI** - Para operações de Node Pools AKS
+- **Terminal colorido** - Para melhor visualização (TUI)
+
+---
+
+### 🔄 Outras Formas de Instalação
+
+<details>
+<summary><b>📦 Download de Release (Quando Disponível)</b></summary>
+
+```bash
+# Download do binário pré-compilado
+wget https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/download/v1.1.0/k8s-hpa-manager-linux-amd64
+
+# Instalar
+chmod +x k8s-hpa-manager-linux-amd64
+sudo mv k8s-hpa-manager-linux-amd64 /usr/local/bin/k8s-hpa-manager
+
+# Verificar
+k8s-hpa-manager version
+```
+
+</details>
+
+<details>
+<summary><b>🔨 Instalação Manual (Clone Local)</b></summary>
 
 ```bash
 # Clone o repositório
 git clone https://github.com/Paulo-Ribeiro-Log/Scale_HPA.git
 cd Scale_HPA
 
-# Instale automaticamente
+# Método 1: Com script de instalação
 ./install.sh
 
-# Verifique a instalação
-k8s-hpa-manager version
-```
-
-### Instalação Manual
-
-```bash
-# Compile
+# Método 2: Manual
 make build
-
-# Instale globalmente
 sudo cp build/k8s-hpa-manager /usr/local/bin/
 sudo chmod +x /usr/local/bin/k8s-hpa-manager
 
-# Verifique
-k8s-hpa-manager --help
+# Verificar
+k8s-hpa-manager version
 ```
 
-### Desinstalação
+</details>
+
+---
+
+### 🔄 Sistema de Atualizações
+
+A aplicação verifica automaticamente por updates **1x por dia** ao iniciar.
+
+#### Verificar Manualmente
 
 ```bash
-# Automática (com opção de remover dados de sessão)
-./uninstall.sh
+# Ver versão atual e verificar updates
+k8s-hpa-manager version
+
+# Output se houver update disponível:
+# 🆕 Nova versão disponível: 1.1.0 → 1.2.0
+# 📦 Download: https://github.com/.../v1.2.0
+```
+
+#### Atualizar Automaticamente
+
+```bash
+# Script de auto-update (copia durante instalação)
+~/.k8s-hpa-manager/scripts/auto-update.sh
+
+# Ou com auto-confirmação (para scripts/cron)
+~/.k8s-hpa-manager/scripts/auto-update.sh --yes
+
+# Apenas verificar sem instalar
+~/.k8s-hpa-manager/scripts/auto-update.sh --check
+
+# Simular atualização (teste)
+~/.k8s-hpa-manager/scripts/auto-update.sh --dry-run
+```
+
+📚 **Documentação completa:** [UPDATE_BEHAVIOR.md](UPDATE_BEHAVIOR.md) | [AUTO_UPDATE_EXAMPLES.md](AUTO_UPDATE_EXAMPLES.md)
+
+---
+
+### 🗑️ Desinstalação
+
+```bash
+# Script automatizado (com opção de preservar dados)
+~/.k8s-hpa-manager/scripts/uninstall.sh
 
 # Manual
 sudo rm /usr/local/bin/k8s-hpa-manager
+sudo rm /usr/local/bin/k8s-hpa-web  # Se criado
+rm -rf ~/.k8s-hpa-manager/           # Remover dados (opcional)
 ```
 
 ---
@@ -247,6 +319,38 @@ k8s-hpa-manager --demo
 
 # Debug mode
 k8s-hpa-manager --debug
+
+# Desabilitar verificação de updates
+k8s-hpa-manager --check-updates=false
+```
+
+### Scripts Utilitários
+
+Após instalação via `install-from-github.sh`, os scripts ficam em `~/.k8s-hpa-manager/scripts/`:
+
+```bash
+# Gerenciar servidor web (via atalho)
+k8s-hpa-web start          # Iniciar servidor
+k8s-hpa-web stop           # Parar servidor
+k8s-hpa-web status         # Ver status
+k8s-hpa-web logs           # Ver logs em tempo real
+k8s-hpa-web restart        # Reiniciar
+
+# Auto-update (verificar e atualizar)
+~/.k8s-hpa-manager/scripts/auto-update.sh          # Interativo
+~/.k8s-hpa-manager/scripts/auto-update.sh --yes    # Auto-confirmar
+~/.k8s-hpa-manager/scripts/auto-update.sh --check  # Apenas verificar
+~/.k8s-hpa-manager/scripts/auto-update.sh --dry-run # Simular
+
+# Desinstalar
+~/.k8s-hpa-manager/scripts/uninstall.sh
+
+# Backup/Restore (para desenvolvimento)
+~/.k8s-hpa-manager/scripts/backup.sh "descrição"
+~/.k8s-hpa-manager/scripts/restore.sh
+
+# Rebuild web interface (para desenvolvimento)
+~/.k8s-hpa-manager/scripts/rebuild-web.sh -b
 
 # Custom kubeconfig
 k8s-hpa-manager --kubeconfig /path/to/config
