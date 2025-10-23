@@ -94,6 +94,38 @@ A aplicação usa **EXATAMENTE o tamanho do seu terminal** - sem forçar dimens�
 - **Azure timeout**: 5 segundos para evitar travamentos DNS
 - **Mensagens claras**: Exibidas no StatusContainer com soluções (F5 para retry)
 
+### Installation and Updates
+
+```bash
+# Instalação completa em 1 comando (clone + build + install)
+curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/Scale_HPA/main/install-from-github.sh | bash
+
+# O que faz:
+# - Clona repositório
+# - Compila com injeção de versão
+# - Instala em /usr/local/bin/
+# - Copia scripts utilitários para ~/.k8s-hpa-manager/scripts/
+# - Cria atalho k8s-hpa-web
+
+# Sistema de updates automático
+k8s-hpa-manager version       # Verificar versão e updates disponíveis
+~/.k8s-hpa-manager/scripts/auto-update.sh             # Auto-update interativo
+~/.k8s-hpa-manager/scripts/auto-update.sh --yes       # Auto-update sem confirmação
+~/.k8s-hpa-manager/scripts/auto-update.sh --check     # Apenas verificar
+~/.k8s-hpa-manager/scripts/auto-update.sh --dry-run   # Simular
+
+# Scripts utilitários instalados
+k8s-hpa-web start/stop/status/logs/restart            # Gerenciar servidor web
+~/.k8s-hpa-manager/scripts/uninstall.sh              # Desinstalar
+~/.k8s-hpa-manager/scripts/backup.sh                 # Backup (dev)
+~/.k8s-hpa-manager/scripts/restore.sh                # Restore (dev)
+```
+
+📚 **Documentação:**
+- `INSTALL_GUIDE.md` - Guia completo de instalação
+- `UPDATE_BEHAVIOR.md` - Como funciona o sistema de updates
+- `AUTO_UPDATE_EXAMPLES.md` - Exemplos de uso do auto-update
+
 ### Building and Running (TUI)
 
 ```bash
@@ -895,6 +927,93 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Sistema Completo de Instalação e Updates (Outubro 2025) ✅
+
+**Feature:** Scripts automatizados de instalação, atualização e gerenciamento.
+
+**Implementação:**
+- **install-from-github.sh** - Instalador completo:
+  - Clona repositório automaticamente
+  - Verifica requisitos (Go, Git, kubectl, Azure CLI)
+  - Compila com injeção de versão via git tags
+  - Instala em `/usr/local/bin/k8s-hpa-manager`
+  - Copia scripts utilitários para `~/.k8s-hpa-manager/scripts/`
+  - Cria atalho `k8s-hpa-web` para servidor web
+  - Testa instalação automaticamente
+
+- **auto-update.sh** - Sistema de atualização automática:
+  - `--yes` / `-y` - Auto-confirmação (para scripts/cron)
+  - `--dry-run` / `-d` - Modo simulação (testes)
+  - `--check` / `-c` - Apenas verificar status
+  - `--force` / `-f` - Forçar reinstalação
+  - Verificação automática 1x por dia (TUI startup)
+  - Notificação no StatusContainer (TUI) ou comando `version`
+  - Cache em `~/.k8s-hpa-manager/.update-check` (24h TTL)
+
+- **Sistema de versionamento**:
+  - Versão injetada via `-ldflags` durante build
+  - Detecção automática via `git describe --tags`
+  - Comparação semântica (MAJOR.MINOR.PATCH)
+  - Verificação via GitHub API (`/repos/.../releases/latest`)
+  - Suporte a GitHub token (rate limiting)
+
+**Arquivos criados:**
+- `install-from-github.sh` - Instalador completo
+- `auto-update.sh` - Script de auto-update com flags
+- `INSTALL_GUIDE.md` - Guia completo de instalação
+- `QUICK_INSTALL.md` - Instalação rápida
+- `UPDATE_BEHAVIOR.md` - Documentação do sistema de updates
+- `AUTO_UPDATE_EXAMPLES.md` - Exemplos de uso (cron, scripts, CI/CD)
+- `INSTRUCTIONS_RELEASE.md` - Como publicar releases
+- `create_release.sh` - Script de criação de releases
+
+**Workflow de uso:**
+```bash
+# Instalação
+curl -fsSL https://raw.githubusercontent.com/.../install-from-github.sh | bash
+
+# Verificar updates
+k8s-hpa-manager version
+
+# Auto-update interativo
+~/.k8s-hpa-manager/scripts/auto-update.sh
+
+# Auto-update automático (cron)
+~/.k8s-hpa-manager/scripts/auto-update.sh --yes
+
+# Simular antes de aplicar
+~/.k8s-hpa-manager/scripts/auto-update.sh --dry-run
+```
+
+**Scripts utilitários copiados:**
+- `web-server.sh` - Gerenciar servidor web (com atalho `k8s-hpa-web`)
+- `uninstall.sh` - Desinstalar aplicação
+- `auto-update.sh` - Auto-update com flags `--yes` e `--dry-run`
+- `backup.sh` / `restore.sh` - Backup/restore para desenvolvimento
+- `rebuild-web.sh` - Rebuild interface web
+
+**Benefícios:**
+- ✅ Instalação em 1 comando (clone + build + install)
+- ✅ Updates automáticos com notificação
+- ✅ Versionamento semântico via Git tags
+- ✅ Scripts utilitários sempre disponíveis
+- ✅ Fácil gerenciamento do servidor web
+- ✅ Auto-update seguro com confirmação (ou `--yes` para automação)
+- ✅ Dry-run para testes antes de aplicar
+- ✅ Desinstalação limpa e simples
+
+**Arquivos modificados:**
+- `cmd/root.go` - Flags `--check-updates`, função `checkForUpdatesAsync()`
+- `cmd/version.go` - Comando `version` com verificação de updates
+- `internal/updater/` (NOVO) - Sistema completo de versionamento
+  - `version.go` - Versão injetada via ldflags, comparação semântica
+  - `github.go` - Cliente GitHub API para releases
+  - `checker.go` - Lógica de verificação (cache 24h)
+- `internal/tui/app.go` - Notificação no StatusContainer (após 3s)
+- `makefile` - LDFLAGS com injeção de versão, targets `version` e `release`
+- `README.md` - Seção de instalação e updates atualizada
+- `CLAUDE.md` - Documentação atualizada com instalação e updates
 
 ### Rollout Individual para Prometheus Stack (Outubro 2025) ✅
 
