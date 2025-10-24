@@ -5,6 +5,28 @@
 
 set -e
 
+# Parse arguments
+AUTO_YES=false
+for arg in "$@"; do
+    case $arg in
+        --yes|-y)
+            AUTO_YES=true
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --yes, -y     Auto-confirm all prompts (for non-interactive installation)"
+            echo "  --help, -h    Show this help message"
+            echo ""
+            echo "Example:"
+            echo "  curl -fsSL https://raw.githubusercontent.com/.../install-from-github.sh | bash -s -- --yes"
+            exit 0
+            ;;
+    esac
+done
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -163,11 +185,16 @@ install_binary() {
     if command -v $BINARY_NAME &> /dev/null; then
         EXISTING_VERSION=$($BINARY_NAME version 2>/dev/null | head -1 || echo "versão desconhecida")
         print_warning "$BINARY_NAME já instalado: $EXISTING_VERSION"
-        read -p "Deseja substituir a instalação existente? [y/N]: " -n 1 -r
-        echo ""
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Instalação cancelada pelo usuário"
-            exit 0
+
+        if [ "$AUTO_YES" = true ]; then
+            print_info "Auto-confirmando substituição (--yes)"
+        else
+            read -p "Deseja substituir a instalação existente? [y/N]: " -n 1 -r
+            echo ""
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                print_info "Instalação cancelada pelo usuário"
+                exit 0
+            fi
         fi
     fi
 
@@ -360,12 +387,16 @@ main() {
     echo "  5. Copiar scripts utilitários para $SCRIPTS_DIR"
     echo ""
 
-    read -p "Deseja continuar? [Y/n]: " -n 1 -r
-    echo ""
+    if [ "$AUTO_YES" = true ]; then
+        print_info "Auto-confirmando instalação (--yes)"
+    else
+        read -p "Deseja continuar? [Y/n]: " -n 1 -r
+        echo ""
 
-    if [[ $REPLY =~ ^[Nn]$ ]]; then
-        print_info "Instalação cancelada pelo usuário"
-        exit 0
+        if [[ $REPLY =~ ^[Nn]$ ]]; then
+            print_info "Instalação cancelada pelo usuário"
+            exit 0
+        fi
     fi
 
     # Execute installation steps
