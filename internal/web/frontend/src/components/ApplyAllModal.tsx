@@ -10,7 +10,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { CheckCircle, XCircle, ArrowRight, Loader2, AlertCircle, Trash2 } from "lucide-react";
+import { CheckCircle, XCircle, ArrowRight, Loader2, AlertCircle, Trash2, MoreVertical } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import type { HPA } from "@/lib/api/types";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -42,11 +49,22 @@ export const ApplyAllModal = ({
   const [isApplying, setIsApplying] = useState(false);
   const [applyingIndividual, setApplyingIndividual] = useState<string | null>(null);
   const [hpaStates, setHpaStates] = useState<Record<string, HPAApplyState>>({});
+  const [removedKeys, setRemovedKeys] = useState<Set<string>>(new Set());
+
+  const handleRemoveIndividual = (key: string, current: HPA) => {
+    // Remove from staging
+    staging?.removeHPAFromStaging(current.cluster, current.namespace, current.name);
+
+    // Add to removed set
+    setRemovedKeys(prev => new Set(prev).add(key));
+
+    toast.info(`HPA ${current.name} removido da lista`);
+  };
 
   const handleApplyIndividual = async (key: string, current: HPA) => {
     setApplyingIndividual(key);
     setHpaStates(prev => ({ ...prev, [key]: { status: 'applying' } }));
-    
+
     try {
       // Adicionar sufixo -admin ao nome do cluster para a API
       const clusterWithAdmin = current.cluster.endsWith('-admin') 
@@ -254,13 +272,15 @@ export const ApplyAllModal = ({
 
         <ScrollArea className="max-h-[50vh] pr-4">
           <div className="space-y-4">
-            {modifiedHPAs.map(({ key, current, original }) => {
+            {modifiedHPAs
+              .filter(({ key }) => !removedKeys.has(key))
+              .map(({ key, current, original }) => {
               const changes = renderHPAChanges(current, original);
-              
+
               // Se não há mudanças visíveis, mostrar uma mensagem mínima mas não esconder o HPA
               const hpaState = hpaStates[key];
               const hasBeenApplied = hpaState && (hpaState.status === 'success' || hpaState.status === 'error' || hpaState.status === 'warning');
-              
+
               return (
                 <div key={key} className="border rounded-lg p-4 space-y-2">
                   <div className="flex items-center justify-between gap-2">
@@ -282,25 +302,45 @@ export const ApplyAllModal = ({
                         </div>
                       )}
                     </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleApplyIndividual(key, current)}
-                      disabled={isApplying || applyingIndividual !== null}
-                      className="shrink-0"
-                    >
-                      {applyingIndividual === key ? (
-                        <>
-                          <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                          Aplicando...
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle className="w-3 h-3 mr-1" />
-                          {hasBeenApplied ? 'Re-aplicar' : 'Aplicar'}
-                        </>
-                      )}
-                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={isApplying || applyingIndividual !== null}
+                          className="h-8 w-8 p-0"
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={() => handleApplyIndividual(key, current)}
+                          disabled={applyingIndividual !== null}
+                        >
+                          {applyingIndividual === key ? (
+                            <>
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              Aplicando...
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle className="h-4 w-4 mr-2" />
+                              {hasBeenApplied ? 'Re-aplicar' : 'Aplicar Agora'}
+                            </>
+                          )}
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => handleRemoveIndividual(key, current)}
+                          disabled={isApplying || applyingIndividual !== null}
+                          className="text-destructive focus:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Remover da Lista
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                   <Separator />
                   <div className="space-y-1">
@@ -338,7 +378,7 @@ export const ApplyAllModal = ({
               </Button>
               <Button
                 onClick={handleApplyAll}
-                disabled={isApplying || applyingIndividual !== null}
+                disabled={isApplying || applyingIndividual !== null || modifiedHPAs.filter(({ key }) => !removedKeys.has(key)).length === 0}
                 className="bg-success hover:bg-success/90"
               >
                 {isApplying ? (
@@ -347,7 +387,7 @@ export const ApplyAllModal = ({
                     Aplicando todos...
                   </>
                 ) : (
-                  `✅ Aplicar Todos (${modifiedHPAs.length})`
+                  `✅ Aplicar Todos (${modifiedHPAs.filter(({ key }) => !removedKeys.has(key)).length})`
                 )}
               </Button>
             </div>
