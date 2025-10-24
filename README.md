@@ -102,7 +102,10 @@ Permite gerenciar HPAs e Node Pools de forma interativa e segura, com sessões r
 ### ⚡ Instalação em 1 Comando (Recomendado)
 
 ```bash
-# Clone, compile e instala automaticamente
+# Clone, compile e instala automaticamente (auto-confirma com --yes)
+curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/Scale_HPA/main/install-from-github.sh | bash -s -- --yes
+
+# Ou modo interativo (pede confirmação)
 curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/Scale_HPA/main/install-from-github.sh | bash
 ```
 
