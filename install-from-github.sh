@@ -127,7 +127,7 @@ clone_repository() {
 
     # Clone repository
     print_info "Clonando de $REPO_URL..."
-    if git clone "$REPO_URL" "$TEMP_DIR" 2>&1 | grep -v "Cloning into"; then
+    if git clone "$REPO_URL" "$TEMP_DIR" 2>&1; then
         print_success "Repositório clonado com sucesso"
     else
         print_error "Falha ao clonar repositório"
