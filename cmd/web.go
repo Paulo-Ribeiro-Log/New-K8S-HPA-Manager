@@ -47,6 +47,9 @@ func runInBackground() error {
 	// Start process in background
 	cmd := exec.Command(executable, args...)
 
+	// Set environment variable to signal browser was already opened
+	cmd.Env = append(os.Environ(), "K8S_HPA_BROWSER_OPENED=1")
+
 	// Create log file for background process output
 	logFile := filepath.Join(os.TempDir(), fmt.Sprintf("k8s-hpa-manager-web-%d.log", time.Now().Unix()))
 	outFile, err := os.Create(logFile)
@@ -203,8 +206,8 @@ API Endpoints:
 			return fmt.Errorf("failed to create web server: %w", err)
 		}
 
-		// Abrir browser automaticamente (após delay para servidor iniciar)
-		if !noBrowser {
+		// Abrir browser automaticamente (apenas se não foi aberto pelo processo pai)
+		if !noBrowser && os.Getenv("K8S_HPA_BROWSER_OPENED") != "1" {
 			go func() {
 				time.Sleep(1 * time.Second)
 				url := fmt.Sprintf("http://localhost:%d", webPort)
