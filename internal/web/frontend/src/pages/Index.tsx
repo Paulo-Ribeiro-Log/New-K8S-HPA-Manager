@@ -12,6 +12,7 @@ import { NodePoolEditor } from "@/components/NodePoolEditor";
 import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
+import { StagingPanel } from "@/components/StagingPanel";
 import { CronJobsPage } from "./CronJobsPage";
 import { PrometheusPage } from "./PrometheusPage";
 import {
@@ -22,7 +23,8 @@ import {
   Activity,
   Layers,
   Package,
-  Database
+  Database,
+  FileText
 } from "lucide-react";
 import { useClusters, useNamespaces, useHPAs, useNodePools } from "@/hooks/useAPI";
 import type { HPA, NodePool } from "@/lib/api/types";
@@ -139,6 +141,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "hpas", label: "HPAs", icon: Scale },
     { id: "nodepools", label: "Node Pools", icon: Server },
+    { id: "staging", label: "Staging", icon: FileText, badge: staging.getChangesCount().total },
     { id: "cronjobs", label: "CronJobs", icon: Clock },
     { id: "prometheus", label: "Prometheus", icon: Activity },
   ];
@@ -240,24 +243,31 @@ const Index = ({ onLogout }: IndexProps) => {
           />
         );
       
+      case "staging":
+        return (
+          <div className="flex-1 overflow-auto p-4">
+            <StagingPanel />
+          </div>
+        );
+
       case "cronjobs":
         return (
           <div className="flex-1 overflow-auto p-4">
-            <CronJobsPage 
+            <CronJobsPage
               selectedCluster={selectedCluster}
             />
           </div>
         );
-      
+
       case "prometheus":
         return (
           <div className="flex-1 overflow-auto p-4">
-            <PrometheusPage 
-              selectedCluster={selectedCluster} 
+            <PrometheusPage
+              selectedCluster={selectedCluster}
             />
           </div>
         );
-      
+
       default:
         return null;
     }
