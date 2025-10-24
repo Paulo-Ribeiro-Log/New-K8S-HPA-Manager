@@ -6,22 +6,16 @@
 set -e
 
 # Parse arguments
-AUTO_YES=false
 for arg in "$@"; do
     case $arg in
-        --yes|-y)
-            AUTO_YES=true
-            shift
-            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --yes, -y     Auto-confirm all prompts (for non-interactive installation)"
             echo "  --help, -h    Show this help message"
             echo ""
             echo "Example:"
-            echo "  curl -fsSL https://raw.githubusercontent.com/.../install-from-github.sh | bash -s -- --yes"
+            echo "  curl -fsSL https://raw.githubusercontent.com/.../install-from-github.sh | bash"
             exit 0
             ;;
     esac
@@ -127,10 +121,14 @@ clone_repository() {
 
     # Clone repository
     print_info "Clonando de $REPO_URL..."
-    if git clone "$REPO_URL" "$TEMP_DIR" 2>&1; then
+    CLONE_OUTPUT=$(git clone "$REPO_URL" "$TEMP_DIR" 2>&1)
+    CLONE_STATUS=$?
+
+    if [ $CLONE_STATUS -eq 0 ]; then
         print_success "Repositório clonado com sucesso"
     else
         print_error "Falha ao clonar repositório"
+        echo "$CLONE_OUTPUT"
         exit 1
     fi
 
@@ -184,18 +182,8 @@ install_binary() {
     # Check if binary already exists
     if command -v $BINARY_NAME &> /dev/null; then
         EXISTING_VERSION=$($BINARY_NAME version 2>/dev/null | head -1 || echo "versão desconhecida")
-        print_warning "$BINARY_NAME já instalado: $EXISTING_VERSION"
-
-        if [ "$AUTO_YES" = true ]; then
-            print_info "Auto-confirmando substituição (--yes)"
-        else
-            read -p "Deseja substituir a instalação existente? [y/N]: " -n 1 -r
-            echo ""
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                print_info "Instalação cancelada pelo usuário"
-                exit 0
-            fi
-        fi
+        print_info "$BINARY_NAME já instalado: $EXISTING_VERSION"
+        print_info "Substituindo com nova versão..."
     fi
 
     # Check if we need sudo
@@ -386,18 +374,8 @@ main() {
     echo "  4. Instalar globalmente em $INSTALL_PATH"
     echo "  5. Copiar scripts utilitários para $SCRIPTS_DIR"
     echo ""
-
-    if [ "$AUTO_YES" = true ]; then
-        print_info "Auto-confirmando instalação (--yes)"
-    else
-        read -p "Deseja continuar? [Y/n]: " -n 1 -r
-        echo ""
-
-        if [[ $REPLY =~ ^[Nn]$ ]]; then
-            print_info "Instalação cancelada pelo usuário"
-            exit 0
-        fi
-    fi
+    echo "Iniciando instalação..."
+    echo ""
 
     # Execute installation steps
     check_requirements
