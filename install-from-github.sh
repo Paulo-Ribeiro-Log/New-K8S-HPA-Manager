@@ -134,15 +134,9 @@ clone_repository() {
 
     cd "$TEMP_DIR"
 
-    # Get latest version tag
-    LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev")
-    print_info "Versão detectada: $LATEST_TAG"
-
-    # Checkout latest tag if available
-    if [ "$LATEST_TAG" != "dev" ]; then
-        print_info "Fazendo checkout da tag $LATEST_TAG..."
-        git checkout "$LATEST_TAG" 2>/dev/null || print_warning "Usando branch principal"
-    fi
+    # Use main branch (always latest code)
+    # Note: Tags will be used in future releases after v1.2.1
+    print_info "Usando branch principal (main)"
 }
 
 # Build binary
