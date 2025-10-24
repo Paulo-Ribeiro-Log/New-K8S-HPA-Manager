@@ -178,12 +178,12 @@ export function EditSessionModal({ session, open, onOpenChange, onSave }: EditSe
 
   const renderHPAEditor = (change: HPAChange, index: number) => {
     const isSelected = selectedHPAIndex === index;
-    
+
     return (
       <div
         key={index}
         className={`p-4 border rounded-lg transition-colors ${
-          isSelected ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
+          isSelected ? 'border-blue-500 bg-blue-50 dark:bg-blue-950' : 'border-gray-200 dark:border-gray-700'
         }`}
       >
         <div className="flex items-start justify-between">
@@ -346,12 +346,12 @@ export function EditSessionModal({ session, open, onOpenChange, onSave }: EditSe
 
   const renderNodePoolEditor = (change: NodePoolChange, index: number) => {
     const isSelected = selectedNodePoolIndex === index;
-    
+
     return (
       <div
         key={index}
         className={`p-4 border rounded-lg transition-colors ${
-          isSelected ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
+          isSelected ? 'border-blue-500 bg-blue-50 dark:bg-blue-950' : 'border-gray-200 dark:border-gray-700'
         }`}
       >
         <div className="flex items-start justify-between">
@@ -504,7 +504,7 @@ export function EditSessionModal({ session, open, onOpenChange, onSave }: EditSe
           <TabsContent value="hpas" className="flex-1 overflow-hidden">
             <ScrollArea className="h-[500px] pr-4">
               {hpaCount === 0 ? (
-                <div className="text-center py-8 text-gray-500">
+                <div className="text-center py-8 text-muted-foreground">
                   Nenhum HPA nesta sessão
                 </div>
               ) : (
@@ -518,7 +518,7 @@ export function EditSessionModal({ session, open, onOpenChange, onSave }: EditSe
           <TabsContent value="nodepools" className="flex-1 overflow-hidden">
             <ScrollArea className="h-[500px] pr-4">
               {nodePoolCount === 0 ? (
-                <div className="text-center py-8 text-gray-500">
+                <div className="text-center py-8 text-muted-foreground">
                   Nenhum Node Pool nesta sessão
                 </div>
               ) : (

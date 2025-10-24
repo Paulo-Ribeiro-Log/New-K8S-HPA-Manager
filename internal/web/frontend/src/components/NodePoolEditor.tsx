@@ -251,7 +251,10 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                 type="number"
                 min={0}
                 value={nodeCount}
-                onChange={(e) => setNodeCount(parseInt(e.target.value) || 0)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setNodeCount(val === "" ? 0 : parseInt(val));
+                }}
                 className="w-full"
               />
               <p className="text-xs text-muted-foreground">
@@ -272,7 +275,10 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                     min={0}
                     max={maxNodeCount}
                     value={minNodeCount}
-                    onChange={(e) => setMinNodeCount(parseInt(e.target.value) || 0)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setMinNodeCount(val === "" ? 0 : parseInt(val));
+                    }}
                   />
                 </div>
                 <div className="space-y-2">
@@ -282,7 +288,10 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                     type="number"
                     min={minNodeCount}
                     value={maxNodeCount}
-                    onChange={(e) => setMaxNodeCount(parseInt(e.target.value) || 1)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setMaxNodeCount(val === "" ? 1 : parseInt(val));
+                    }}
                   />
                 </div>
               </div>

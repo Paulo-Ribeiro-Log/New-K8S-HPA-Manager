@@ -187,7 +187,10 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
             type="number"
             min={0}
             value={minReplicas}
-            onChange={(e) => setMinReplicas(parseInt(e.target.value) || 0)}
+            onChange={(e) => {
+              const val = e.target.value;
+              setMinReplicas(val === "" ? 0 : parseInt(val));
+            }}
             className="bg-background h-9"
           />
         </div>
@@ -199,7 +202,10 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
             type="number"
             min={1}
             value={maxReplicas}
-            onChange={(e) => setMaxReplicas(parseInt(e.target.value) || 1)}
+            onChange={(e) => {
+              const val = e.target.value;
+              setMaxReplicas(val === "" ? 1 : parseInt(val));
+            }}
             className="bg-background h-9"
           />
         </div>
@@ -211,8 +217,11 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
             type="number"
             min={1}
             max={100}
-            value={targetCPU || ""}
-            onChange={(e) => setTargetCPU(parseInt(e.target.value) || undefined)}
+            value={targetCPU ?? ""}
+            onChange={(e) => {
+              const val = e.target.value;
+              setTargetCPU(val === "" ? undefined : parseInt(val));
+            }}
             placeholder="Não configurado"
             className="bg-background h-9"
           />
@@ -225,8 +234,11 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
             type="number"
             min={1}
             max={100}
-            value={targetMemory || ""}
-            onChange={(e) => setTargetMemory(parseInt(e.target.value) || undefined)}
+            value={targetMemory ?? ""}
+            onChange={(e) => {
+              const val = e.target.value;
+              setTargetMemory(val === "" ? undefined : parseInt(val));
+            }}
             placeholder="Não configurado"
             className="bg-background h-9"
           />

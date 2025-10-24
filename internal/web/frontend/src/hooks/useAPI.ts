@@ -240,7 +240,7 @@ export function useCronJobs(cluster?: string) {
 
 export function useUpdateCronJob() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: ({ cluster, namespace, name, data }: {
       cluster: string;
@@ -249,9 +249,9 @@ export function useUpdateCronJob() {
       data: { suspend: boolean };
     }) => apiClient.updateCronJob(cluster, namespace, name, data),
     onSuccess: (data, variables) => {
-      // Invalidar cache dos CronJobs
-      queryClient.invalidateQueries({ 
-        queryKey: ['cronjobs', variables.cluster, variables.namespace] 
+      // Invalidar cache dos CronJobs (query key: ['cronjobs', cluster])
+      queryClient.invalidateQueries({
+        queryKey: ['cronjobs', variables.cluster]
       });
     },
   });

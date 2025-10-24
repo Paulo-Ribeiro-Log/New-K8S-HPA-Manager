@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,12 +82,20 @@ func runInBackground() error {
 	}
 
 	if !noBrowser {
-		fmt.Println("🔗 Opening browser...")
+		// Aguardar servidor iniciar completamente
 		time.Sleep(2 * time.Second)
+
+		// Verificar se já existe uma página aberta (via heartbeat check)
 		url := fmt.Sprintf("http://localhost:%d", webPort)
-		if err := openBrowser(url); err != nil {
-			fmt.Printf("⚠️  Could not open browser automatically: %v\n", err)
-			fmt.Printf("   Please open manually: %s\n", url)
+		if !isPageAlreadyOpen(url) {
+			fmt.Println("🔗 Opening browser...")
+			if err := openBrowser(url); err != nil {
+				fmt.Printf("⚠️  Could not open browser automatically: %v\n", err)
+				fmt.Printf("   Please open manually: %s\n", url)
+			}
+		} else {
+			fmt.Println("ℹ️  Browser already open, skipping auto-open")
+			fmt.Printf("🌐 Access at: %s\n", url)
 		}
 	}
 
@@ -94,6 +104,28 @@ func runInBackground() error {
 	fmt.Printf("   kill %d\n", pid)
 
 	return nil
+}
+
+// isPageAlreadyOpen verifica se já existe uma página aberta através do heartbeat
+func isPageAlreadyOpen(baseURL string) bool {
+	// Tentar fazer requisição ao endpoint /health
+	client := &http.Client{
+		Timeout: 500 * time.Millisecond,
+	}
+
+	resp, err := client.Get(baseURL + "/health")
+	if err != nil {
+		// Servidor não está rodando ou não respondeu
+		return false
+	}
+	defer resp.Body.Close()
+
+	// Descartar corpo da resposta
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	// Se servidor respondeu, considerar que pode ter página aberta
+	// (heartbeat é enviado a cada 5min, então pode ter sessão ativa)
+	return resp.StatusCode == 200
 }
 
 // openBrowser opens the default browser at the given URL
@@ -171,16 +203,25 @@ API Endpoints:
 			return fmt.Errorf("failed to create web server: %w", err)
 		}
 
-		// Abrir browser automaticamente (após um pequeno delay para garantir que o servidor iniciou)
+		// Abrir browser automaticamente (após delay para servidor iniciar)
 		if !noBrowser {
 			go func() {
 				time.Sleep(1 * time.Second)
 				url := fmt.Sprintf("http://localhost:%d", webPort)
-				if err := openBrowser(url); err != nil {
-					fmt.Printf("Could not open browser automatically: %v\n", err)
-					fmt.Printf("Please open manually: %s\n", url)
+
+				// Aguardar mais 2 segundos para garantir servidor pronto
+				time.Sleep(2 * time.Second)
+
+				// Verificar se já existe uma página aberta
+				if !isPageAlreadyOpen(url) {
+					if err := openBrowser(url); err != nil {
+						fmt.Printf("Could not open browser automatically: %v\n", err)
+						fmt.Printf("Please open manually: %s\n", url)
+					} else {
+						fmt.Printf("Opening browser at %s\n", url)
+					}
 				} else {
-					fmt.Printf("Opening browser at %s\n", url)
+					fmt.Println("ℹ️  Browser already open, skipping auto-open")
 				}
 			}()
 		}
