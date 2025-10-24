@@ -178,6 +178,15 @@ install_binary() {
         EXISTING_VERSION=$($BINARY_NAME version 2>/dev/null | head -1 || echo "versão desconhecida")
         print_info "$BINARY_NAME já instalado: $EXISTING_VERSION"
         print_info "Substituindo com nova versão..."
+
+        # Check if web server is running and stop it
+        if lsof -ti:8080 &> /dev/null; then
+            print_warning "Servidor web rodando na porta 8080"
+            print_info "Parando servidor antes de atualizar..."
+            lsof -ti:8080 | xargs -r kill -9 2>/dev/null
+            sleep 2
+            print_success "Servidor parado"
+        fi
     fi
 
     # Check if we need sudo
