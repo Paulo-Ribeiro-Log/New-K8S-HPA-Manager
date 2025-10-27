@@ -29,6 +29,8 @@ type Server struct {
 	lastHeartbeat  time.Time
 	heartbeatMutex sync.RWMutex
 	shutdownTimer  *time.Timer
+	timerMutex     sync.Mutex // Protege operações no timer
+	logBuffer      *handlers.LogBuffer
 }
 
 // NewServer cria uma nova instância do servidor web
@@ -54,12 +56,16 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 	// gin.New() ao invés de gin.Default() para controle manual dos middlewares
 	router := gin.New()
 
+	// Criar buffer de logs (mantém últimos 1000 logs em memória)
+	logBuffer := handlers.NewLogBuffer(1000)
+
 	server := &Server{
 		router:        router,
 		kubeManager:   kubeManager,
 		port:          port,
 		token:         token,
 		lastHeartbeat: time.Now(),
+		logBuffer:     logBuffer,
 	}
 
 	server.setupMiddleware()
@@ -81,11 +87,45 @@ func (s *Server) setupMiddleware() {
 		AllowCredentials: true,
 	}))
 
-	// Logging
+	// Custom logging middleware que captura logs no buffer
+	s.router.Use(s.loggingMiddleware())
+
+	// Logging padrão do Gin (console)
 	s.router.Use(gin.Logger())
 
 	// Recovery
 	s.router.Use(gin.Recovery())
+}
+
+// loggingMiddleware captura logs de todas as requisições HTTP
+func (s *Server) loggingMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Timestamp de início
+		start := time.Now()
+		path := c.Request.URL.Path
+		method := c.Request.Method
+
+		// Processar requisição
+		c.Next()
+
+		// Calcular latência
+		latency := time.Since(start)
+		statusCode := c.Writer.Status()
+
+		// Criar entrada de log
+		logEntry := fmt.Sprintf("[%s] %s %s | Status: %d | Latency: %v",
+			start.Format("2006/01/02 15:04:05"),
+			method,
+			path,
+			statusCode,
+			latency,
+		)
+
+		// Adicionar ao buffer (skip health checks para não encher o log)
+		if path != "/health" && path != "/heartbeat" {
+			s.logBuffer.Add(logEntry)
+		}
+	}
 }
 
 // setupRoutes configura as rotas da API
@@ -101,15 +141,24 @@ func (s *Server) setupRoutes() {
 
 	// Heartbeat endpoint (sem auth) - frontend envia a cada 5 minutos
 	s.router.POST("/heartbeat", func(c *gin.Context) {
+		now := time.Now()
+
 		s.heartbeatMutex.Lock()
-		s.lastHeartbeat = time.Now()
+		s.lastHeartbeat = now
 		s.heartbeatMutex.Unlock()
 
-		// Resetar timer de shutdown
+		// Resetar timer de shutdown (thread-safe)
+		s.timerMutex.Lock()
 		if s.shutdownTimer != nil {
 			s.shutdownTimer.Stop()
 		}
 		s.shutdownTimer = time.AfterFunc(20*time.Minute, s.autoShutdown)
+		s.timerMutex.Unlock()
+
+		// Log para debugging
+		fmt.Printf("💓 Heartbeat recebido: %s | Próximo shutdown em: %s\n",
+			now.Format("15:04:05"),
+			now.Add(20*time.Minute).Format("15:04:05"))
 
 		c.JSON(200, gin.H{
 			"status":         "alive",
@@ -190,6 +239,11 @@ func (s *Server) setupRoutes() {
 	api.DELETE("/sessions/:name", sessionHandler.DeleteSession)
 	api.PUT("/sessions/:name/rename", sessionHandler.RenameSession)
 	api.GET("/sessions/templates", sessionHandler.GetSessionTemplates)
+
+	// Logs
+	logsHandler := handlers.NewLogsHandler(s.logBuffer)
+	api.GET("/logs", logsHandler.GetLogs)
+	api.DELETE("/logs", logsHandler.ClearLogs)
 }
 
 // setupStatic configura servir arquivos estáticos
@@ -260,12 +314,16 @@ func (s *Server) setupStatic() {
 
 // startInactivityMonitor inicia o monitoramento de inatividade
 func (s *Server) startInactivityMonitor() {
-	// Timer inicial de 20 minutos
-	s.shutdownTimer = time.AfterFunc(20*time.Minute, s.autoShutdown)
+	// Timer inicial de 30 minutos (mais tempo que o normal para dar tempo do primeiro heartbeat)
+	// O primeiro heartbeat do frontend vai resetar para 20 minutos
+	s.timerMutex.Lock()
+	s.shutdownTimer = time.AfterFunc(30*time.Minute, s.autoShutdown)
+	s.timerMutex.Unlock()
 
 	fmt.Println("⏰ Monitor de inatividade ativado:")
 	fmt.Println("   - Frontend deve enviar heartbeat a cada 5 minutos")
 	fmt.Println("   - Servidor desligará após 20 minutos sem heartbeat")
+	fmt.Println("   - Timer inicial: 30 minutos (aguardando primeiro heartbeat)")
 }
 
 // autoShutdown desliga o servidor automaticamente por inatividade

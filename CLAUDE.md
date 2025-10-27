@@ -32,8 +32,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Estado Atual (Outubro 2025)
 
-**Versão Atual:** v1.2.0 (Release: 23 de outubro de 2025)
-**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.2.0
+**Versão Atual:** v1.2.1 (Release: 24 de outubro de 2025)
+**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.2.1
 
 **TUI (Terminal Interface):**
 - ✅ Interface responsiva (adapta-se ao tamanho real do terminal - mínimo 80x24)
@@ -60,6 +60,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ ApplyAllModal com progress tracking e rollout simulation
 - ✅ **Rollout individual para Prometheus Stack** (Deployment/StatefulSet/DaemonSet) - Outubro 2025
 - ✅ **Aplicar Agora para Node Pools** - Aplicação individual sem staging - Outubro 2025
+- ✅ **Campo de busca inteligente** - HPAs (nome/namespace) e Node Pools (nome/cluster) - v1.2.1
+- ✅ **Modal de edição inline** - Edição completa de HPAs no ApplyAllModal - v1.2.1
+- ✅ **Sistema de eventos** - Refetch sem reload para estabilidade - v1.2.1
+- ✅ **Sistema de Log Viewer** - Modal com captura em tempo real, auto-refresh, exportar CSV - v1.2.1
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -436,11 +440,13 @@ make build-web                                # Build frontend + Go binary (embe
 
 **Problema resolvido:** Servidor web rodando em background consome recursos indefinidamente mesmo sem uso.
 
+**⚠️ CORREÇÃO CRÍTICA (Outubro 2025):** Dois bugs críticos foram corrigidos no sistema de heartbeat que causavam shutdown prematuro. Ver detalhes completos na seção [Histórico de Correções](#correção-crítica-sistema-de-heartbeatauto-shutdown-outubro-2025-).
+
 **Solução:**
 - **Frontend**: Hook `useHeartbeat` envia POST `/heartbeat` a cada 5 minutos
-- **Backend**: Reseta timer de 20 minutos ao receber heartbeat
+- **Backend**: Reseta timer de 20 minutos (ou 30min inicial) ao receber heartbeat
 - **Auto-shutdown**: Servidor desliga automaticamente se nenhuma página conectada por 20min
-- **Thread-safe**: `sync.RWMutex` protege timestamp de heartbeat
+- **Thread-safe**: `sync.RWMutex` protege timestamp de heartbeat + `sync.Mutex` protege timer (corrigido em Oct/2025)
 
 **Implementação:**
 
@@ -490,6 +496,7 @@ func (s *Server) handleHeartbeat(c *gin.Context) {
 | **Dashboard** | ✅ 100% | Grid 2x2 com métricas reais (CPU/Memory allocation) |
 | **Snapshot Cluster** | ✅ 100% | Captura estado atual para rollback |
 | **Heartbeat System** | ✅ 100% | Auto-shutdown em 20min inatividade |
+| **Log Viewer** | ✅ 100% | Modal com logs em tempo real (app + servidor), auto-refresh, copiar, exportar CSV, limpar |
 
 ### Workflow Session Management (Web)
 
@@ -563,6 +570,8 @@ func (s *Server) handleHeartbeat(c *gin.Context) {
 | `/cronjobs?cluster=X&namespace=Y` | GET | Lista CronJobs |
 | `/prometheus?cluster=X` | GET | Lista recursos Prometheus |
 | `/prometheus/:cluster/:namespace/:type/:name/rollout` | POST | **Rollout de recurso Prometheus (deployment/statefulset/daemonset)** |
+| `/logs` | GET | Retorna logs da aplicação e servidor (buffer + arquivos) |
+| `/logs` | DELETE | Limpa buffer de logs da aplicação |
 | `/heartbeat` | POST | Heartbeat (mantém servidor vivo) |
 
 ---
@@ -1058,6 +1067,209 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Correção de Cross-Compilation para Windows/macOS (Outubro 2025) ✅
+
+**Commit:** b84461c (27 de outubro de 2025)
+
+**Problema identificado:** Build multi-plataforma falhava durante `make release` com erro de compilação.
+
+**Erro:**
+```
+Error: cmd/root.go:239:59: undefined: unix.TCGETS
+```
+
+**Causa:**
+- Função `isatty()` não utilizada no código usava `unix.IoctlGetTermios()` e `unix.TCGETS`
+- `golang.org/x/sys/unix` é específico do Linux/Unix
+- Cross-compilation para Windows e macOS falhava no GitHub Actions
+
+**Solução:**
+- ❌ Removido import `golang.org/x/sys/unix`
+- ❌ Removida função `isatty()` não utilizada (código morto)
+- ✅ Código agora é cross-platform compatível
+
+**Nota técnica:** O projeto já possui `github.com/mattn/go-isatty` como dependência (via Gin framework), que é cross-platform. Se precisar verificar TTY no futuro, usar essa biblioteca ao invés de `unix.IoctlGetTermios()`.
+
+**Testes realizados:**
+- ✅ `make release` compila para todas as plataformas:
+  - Linux amd64:        82M ✓
+  - macOS amd64 (Intel): 82M ✓
+  - macOS arm64 (Apple): 80M ✓
+  - Windows amd64:       82M ✓
+
+**Arquivos modificados:**
+- `cmd/root.go` (-7 linhas)
+  - Removido import `golang.org/x/sys/unix`
+  - Removida função `isatty()` (linhas 237-241)
+
+**Impacto:**
+- ✅ GitHub Actions CI/CD agora compila binários para todas as plataformas
+- ✅ Releases automatizadas funcionando corretamente
+- ✅ Sem perda de funcionalidade (código removido não era usado)
+
+---
+
+### Sistema de Log Viewer para Interface Web (Outubro 2025) ✅
+
+**Feature:** Sistema completo de visualização de logs com captura em tempo real, auto-refresh, exportação CSV e limpeza.
+
+**Implementação:**
+- **Backend** (`internal/web/handlers/logs.go`):
+  - `LogBuffer` - Buffer circular thread-safe (RWMutex) com 1000 logs em memória
+  - `LogsHandler` - Handler com métodos `GetLogs()` e `ClearLogs()`
+  - Múltiplas fontes de logs:
+    - Buffer em memória (logs da aplicação)
+    - Arquivos de log (`/tmp/k8s-hpa-manager-web-*.log`)
+    - Sistema (journalctl - opcional, comentado)
+
+- **Middleware de Logging** (`internal/web/server.go`):
+  - `loggingMiddleware()` - Captura TODAS as requisições HTTP
+  - Formato: `[timestamp] METHOD path | Status: XXX | Latency: XXXms`
+  - Filtro inteligente: Ignora `/health` e `/heartbeat` para não poluir logs
+  - Thread-safe com acesso protegido ao buffer
+
+- **Frontend** (`internal/web/frontend/src/components/LogViewer.tsx`):
+  - Modal responsivo (max-w-6xl, h-85vh)
+  - **Auto-refresh** - Toggle on/off, atualiza a cada 3 segundos
+  - **Copiar** - Copia logs para clipboard
+  - **Exportar CSV** - Parsing inteligente de logs estruturados
+  - **Limpar** - Limpa buffer com confirmação
+  - **Estatísticas** - Badges de total/errors/warnings/info
+
+- **Integração no Header** (`internal/web/frontend/src/components/Header.tsx`):
+  - Botão discreto com ícone 📄 (FileText)
+  - Tooltip "View System Logs"
+
+**API Routes:**
+- `GET /api/v1/logs` - Buscar logs (buffer + arquivos)
+- `DELETE /api/v1/logs` - Limpar buffer
+
+**Workflow:**
+1. Usuário clica no ícone 📄 no header
+2. Modal abre com logs divididos por fonte:
+   - **Application Logs (In-Memory)** - Requisições HTTP capturadas
+   - **Web Server Logs** - Logs do arquivo do servidor
+3. Auto-refresh mantém logs atualizados automaticamente
+4. Exportar CSV para análise offline
+5. Limpar buffer quando necessário
+
+**Testes realizados:**
+- ✅ Captura de requisições HTTP em tempo real
+- ✅ Auto-refresh funcionando (3s)
+- ✅ Copiar para clipboard
+- ✅ Exportar CSV com parsing correto
+- ✅ Limpar buffer com confirmação
+- ✅ Estatísticas de logs (total, errors, warnings)
+- ✅ Thread-safe (RWMutex)
+
+**Arquivos criados:**
+- `internal/web/handlers/logs.go` (NOVO)
+- `internal/web/frontend/src/components/LogViewer.tsx` (NOVO)
+
+**Arquivos modificados:**
+- `internal/web/server.go` - Middleware + rotas de logs
+- `internal/web/frontend/src/components/Header.tsx` - Botão de logs
+- `internal/web/frontend/src/pages/Index.tsx` - Integração do modal
+
+**Benefícios:**
+- ✅ Debugging facilitado com logs em tempo real
+- ✅ Investigação de erros sem acesso ao servidor
+- ✅ Exportação para análise offline (CSV)
+- ✅ Auto-refresh elimina necessidade de recarregar manualmente
+- ✅ Filtros inteligentes (ignora health/heartbeat)
+
+---
+
+### Correção Crítica: Sistema de Heartbeat/Auto-Shutdown (Outubro 2025) ✅
+
+**Commit:** 7e38820 (24 de outubro de 2025)
+
+**Problema identificado:** Servidor web desligava prematuramente mesmo com heartbeats sendo enviados.
+
+**Bug 1: Race Condition no Timer**
+- **Problema:** O `shutdownTimer` não tinha proteção mutex, permitindo race conditions entre múltiplos heartbeats simultâneos ou durante o disparo do timer
+- **Solução:** Adicionado `timerMutex sync.Mutex` na struct Server para proteger todas as operações de Stop() e AfterFunc()
+- **Impacto:** Previne desligamentos inesperados durante operações concorrentes
+
+**Bug 2: Timer Inicial Prematuro**
+- **Problema:** Timer de 20 minutos começava a contar imediatamente quando servidor iniciava, NÃO quando frontend conectava
+- **Cenário que causava o bug:**
+  1. Servidor inicia às 14:15 (cria timer para 14:35)
+  2. Frontend envia primeiro heartbeat às 14:25 (cria novo timer para 14:45)
+  3. Heartbeats subsequentes em 14:30, 14:35...
+  4. **MAS**: Timer original das 14:35 ainda estava ativo e disparava!
+- **Solução:** Timer inicial aumentado para 30 minutos (tempo de graça), primeiro heartbeat do frontend reseta para 20 minutos normais
+- **Impacto:** Garante que servidor não desligue antes do frontend conectar
+
+**Melhorias de Logging:**
+```
+💓 Heartbeat recebido: 15:44:49 | Próximo shutdown em: 16:04:49
+```
+- Log detalhado em cada heartbeat mostrando timestamp recebido e próximo shutdown
+- Mensagem clara sobre timer inicial de 30 minutos
+- Facilita debugging e monitoramento do sistema
+
+**Testes realizados:**
+- ✅ Múltiplos heartbeats recebidos e processados corretamente
+- ✅ Timer resetado a cada heartbeat (verificado via logs)
+- ✅ Servidor permanece ativo com página aberta
+- ✅ Múltiplas abas abertas simultaneamente (cada uma envia heartbeat)
+
+**Arquivos modificados:**
+- `internal/web/server.go` (+18 linhas, -4 linhas)
+  - Adicionado `timerMutex sync.Mutex`
+  - Protegido todas as operações no timer com mutex
+  - Timer inicial aumentado de 20min → 30min
+  - Log detalhado em cada heartbeat
+
+**Impacto:** Sistema de auto-shutdown agora funciona corretamente sem desligar prematuramente.
+
+---
+
+### Campo de Busca e Edição Inline na Interface Web (Outubro 2025) ✅
+
+**Release:** v1.2.1 (publicada em 24 de outubro de 2025)
+**GitHub:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.2.1
+
+**Features:** Campo de busca inteligente, edição inline de HPAs, e correções críticas de estabilidade.
+
+**Implementação:**
+- **Campo de Busca Inteligente**:
+  - Campo de busca no painel "Available HPAs" (busca por nome e namespace)
+  - Campo de busca no painel "Available Node Pools" (busca por nome e cluster)
+  - Interface consistente com ícone de lupa
+  - Busca case-insensitive em tempo real
+  - Feedback visual quando nenhum item é encontrado
+
+- **Modal de Edição Inline (ApplyAllModal)**:
+  - Edição completa de HPAs sem sair do modal de confirmação
+  - Dropdown menu (⋮) com opções "Editar Conteúdo" e "Remover da Lista"
+  - Validação de campos (Min/Max Replicas, Target CPU/Memory 1-100%)
+  - Suporte a edição de recursos (CPU/Memory Request/Limit)
+  - Checkboxes de rollout (Deployment, DaemonSet, StatefulSet)
+  - Atualização em staging após edição
+
+- **Correções de Bugs Críticos**:
+  - Remove `window.location.reload()` que causava restart da página
+  - Implementa sistema de eventos customizados (`rescanNodePools`)
+  - Adiciona listener no hook `useNodePools` para refetch automático
+  - Previne perda de dados durante operações de Node Pools
+  - Mantém estado e contexto durante operações longas
+
+**Arquivos modificados:**
+- `internal/web/frontend/src/pages/Index.tsx` (+129 linhas)
+- `internal/web/frontend/src/hooks/useAPI.ts` (+32 linhas)
+- `internal/web/frontend/src/components/ApplyAllModal.tsx` (+355 linhas)
+- `internal/web/static/` (rebuild frontend)
+
+**Benefícios:**
+- ✅ Produtividade aumentada com busca rápida (70+ HPAs/Node Pools)
+- ✅ Correção de erros sem interromper fluxo de trabalho
+- ✅ Estabilidade em operações longas (sem restart)
+- ✅ Experiência de usuário consistente e previsível
+
+---
 
 ### Sistema Completo de Instalação e Updates (Outubro 2025) ✅
 

@@ -12,6 +12,7 @@ import { NodePoolEditor } from "@/components/NodePoolEditor";
 import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
+import { LogViewer } from "@/components/LogViewer";
 import { StagingPanel } from "@/components/StagingPanel";
 import { CronJobsPage } from "./CronJobsPage";
 import { PrometheusPage } from "./PrometheusPage";
@@ -24,8 +25,10 @@ import {
   Layers,
   Package,
   Database,
-  FileText
+  FileText,
+  Search
 } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { useClusters, useNamespaces, useHPAs, useNodePools } from "@/hooks/useAPI";
 import type { HPA, NodePool } from "@/lib/api/types";
 import { useStaging } from "@/contexts/StagingContext";
@@ -49,7 +52,12 @@ const Index = ({ onLogout }: IndexProps) => {
   const [nodePoolsToApply, setNodePoolsToApply] = useState<Array<{ key: string; current: NodePool; original: NodePool }>>([]);
   const [showSaveSessionModal, setShowSaveSessionModal] = useState(false);
   const [showLoadSessionModal, setShowLoadSessionModal] = useState(false);
+  const [showLogViewer, setShowLogViewer] = useState(false);
   const [isContextSwitching, setIsContextSwitching] = useState(false);
+
+  // Search filters
+  const [hpaSearchQuery, setHpaSearchQuery] = useState("");
+  const [nodePoolSearchQuery, setNodePoolSearchQuery] = useState("");
   
   // TabManager para sincronizar estado com abas
   const { updateActiveTabState } = useTabManager();
@@ -146,6 +154,25 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "prometheus", label: "Prometheus", icon: Activity },
   ];
 
+  // Filter functions
+  const filteredHPAs = hpas.filter(hpa => {
+    if (!hpaSearchQuery) return true;
+    const query = hpaSearchQuery.toLowerCase();
+    return (
+      hpa.name.toLowerCase().includes(query) ||
+      hpa.namespace.toLowerCase().includes(query)
+    );
+  });
+
+  const filteredNodePools = nodePools.filter(pool => {
+    if (!nodePoolSearchQuery) return true;
+    const query = nodePoolSearchQuery.toLowerCase();
+    return (
+      pool.name.toLowerCase().includes(query) ||
+      pool.cluster_name.toLowerCase().includes(query)
+    );
+  });
+
   // Handler para aplicar HPA individual (via "Aplicar Agora")
   const handleApplySingle = (current: HPA, original: HPA) => {
     const key = `${current.cluster}/${current.namespace}/${current.name}`;
@@ -174,22 +201,43 @@ const Index = ({ onLogout }: IndexProps) => {
                     : "Select a cluster to view HPAs"}
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {hpas.map((hpa) => (
-                    <HPAListItem
-                      key={`${hpa.cluster}-${hpa.namespace}-${hpa.name}`}
-                      name={hpa.name}
-                      namespace={hpa.namespace}
-                      currentReplicas={hpa.current_replicas ?? 0}
-                      minReplicas={hpa.min_replicas ?? 0}
-                      maxReplicas={hpa.max_replicas ?? 1}
-                      isSelected={
-                        selectedHPA?.name === hpa.name &&
-                        selectedHPA?.namespace === hpa.namespace
-                      }
-                      onClick={() => setSelectedHPA(hpa)}
+                <div className="space-y-3">
+                  {/* Search input */}
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      type="text"
+                      placeholder="Buscar por nome ou namespace..."
+                      value={hpaSearchQuery}
+                      onChange={(e) => setHpaSearchQuery(e.target.value)}
+                      className="pl-10"
                     />
-                  ))}
+                  </div>
+
+                  {/* HPAs list */}
+                  <div className="space-y-2">
+                    {filteredHPAs.length === 0 ? (
+                      <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+                        Nenhum HPA encontrado
+                      </div>
+                    ) : (
+                      filteredHPAs.map((hpa) => (
+                        <HPAListItem
+                          key={`${hpa.cluster}-${hpa.namespace}-${hpa.name}`}
+                          name={hpa.name}
+                          namespace={hpa.namespace}
+                          currentReplicas={hpa.current_replicas ?? 0}
+                          minReplicas={hpa.min_replicas ?? 0}
+                          maxReplicas={hpa.max_replicas ?? 1}
+                          isSelected={
+                            selectedHPA?.name === hpa.name &&
+                            selectedHPA?.namespace === hpa.namespace
+                          }
+                          onClick={() => setSelectedHPA(hpa)}
+                        />
+                      ))
+                    )}
+                  </div>
                 </div>
               ),
             }}
@@ -221,18 +269,39 @@ const Index = ({ onLogout }: IndexProps) => {
                     : "Select a cluster to view node pools"}
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {nodePools.map((pool) => (
-                    <NodePoolListItem
-                      key={`${pool.cluster_name}-${pool.name}`}
-                      nodePool={pool}
-                      isSelected={
-                        selectedNodePool?.name === pool.name &&
-                        selectedNodePool?.cluster_name === pool.cluster_name
-                      }
-                      onClick={() => setSelectedNodePool(pool)}
+                <div className="space-y-3">
+                  {/* Search input */}
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      type="text"
+                      placeholder="Buscar por nome ou cluster..."
+                      value={nodePoolSearchQuery}
+                      onChange={(e) => setNodePoolSearchQuery(e.target.value)}
+                      className="pl-10"
                     />
-                  ))}
+                  </div>
+
+                  {/* Node Pools list */}
+                  <div className="space-y-2">
+                    {filteredNodePools.length === 0 ? (
+                      <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+                        Nenhum Node Pool encontrado
+                      </div>
+                    ) : (
+                      filteredNodePools.map((pool) => (
+                        <NodePoolListItem
+                          key={`${pool.cluster_name}-${pool.name}`}
+                          nodePool={pool}
+                          isSelected={
+                            selectedNodePool?.name === pool.name &&
+                            selectedNodePool?.cluster_name === pool.cluster_name
+                          }
+                          onClick={() => setSelectedNodePool(pool)}
+                        />
+                      ))
+                    )}
+                  </div>
                 </div>
               ),
             }}
@@ -317,6 +386,7 @@ const Index = ({ onLogout }: IndexProps) => {
         }}
         onSaveSession={() => setShowSaveSessionModal(true)}
         onLoadSession={() => setShowLoadSessionModal(true)}
+        onViewLogs={() => setShowLogViewer(true)}
         userInfo="admin@k8s.local"
         onLogout={onLogout || (() => console.log("Logout"))}
       />
@@ -379,8 +449,12 @@ const Index = ({ onLogout }: IndexProps) => {
         onOpenChange={setShowNodePoolApplyModal}
         modifiedNodePools={nodePoolsToApply}
         onApplied={() => {
-          // Refresh node pools após aplicação
-          window.location.reload();
+          // Disparar evento global de rescan para recarregar Node Pools do cluster correto
+          if (typeof window !== "undefined" && selectedCluster) {
+            window.dispatchEvent(new CustomEvent("rescanNodePools", {
+              detail: { cluster: selectedCluster }
+            }));
+          }
         }}
         onClear={() => {
           // Limpar staging area
@@ -410,6 +484,12 @@ const Index = ({ onLogout }: IndexProps) => {
             setSelectedCluster(`${clusterName}-admin`); // Depois troca o cluster
           }
         }}
+      />
+
+      {/* Modal de Visualização de Logs */}
+      <LogViewer
+        open={showLogViewer}
+        onOpenChange={setShowLogViewer}
       />
     </div>
   );

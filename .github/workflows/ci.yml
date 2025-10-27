@@ -44,6 +44,9 @@ jobs:
       - name: Check version detection
         run: make version
 
+      - name: Test cross-compilation
+        run: make release
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:

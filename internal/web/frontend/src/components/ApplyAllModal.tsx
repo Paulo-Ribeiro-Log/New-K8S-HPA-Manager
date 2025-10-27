@@ -10,7 +10,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { CheckCircle, XCircle, ArrowRight, Loader2, AlertCircle, Trash2, MoreVertical } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { CheckCircle, XCircle, ArrowRight, Loader2, AlertCircle, Trash2, MoreVertical, Edit } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -50,6 +53,82 @@ export const ApplyAllModal = ({
   const [applyingIndividual, setApplyingIndividual] = useState<string | null>(null);
   const [hpaStates, setHpaStates] = useState<Record<string, HPAApplyState>>({});
   const [removedKeys, setRemovedKeys] = useState<Set<string>>(new Set());
+
+  // Edit modal state
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editMinReplicas, setEditMinReplicas] = useState(0);
+  const [editMaxReplicas, setEditMaxReplicas] = useState(1);
+  const [editTargetCPU, setEditTargetCPU] = useState<number | undefined>(undefined);
+  const [editTargetMemory, setEditTargetMemory] = useState<number | undefined>(undefined);
+  const [editTargetCpuRequest, setEditTargetCpuRequest] = useState("");
+  const [editTargetCpuLimit, setEditTargetCpuLimit] = useState("");
+  const [editTargetMemoryRequest, setEditTargetMemoryRequest] = useState("");
+  const [editTargetMemoryLimit, setEditTargetMemoryLimit] = useState("");
+  const [editPerformRollout, setEditPerformRollout] = useState(false);
+  const [editPerformDaemonSetRollout, setEditPerformDaemonSetRollout] = useState(false);
+  const [editPerformStatefulSetRollout, setEditPerformStatefulSetRollout] = useState(false);
+
+  const handleOpenEdit = (key: string, current: HPA) => {
+    setEditingKey(key);
+    setEditMinReplicas(current.min_replicas ?? 0);
+    setEditMaxReplicas(current.max_replicas ?? 1);
+    setEditTargetCPU(current.target_cpu ?? undefined);
+    setEditTargetMemory(current.target_memory ?? undefined);
+    setEditTargetCpuRequest(current.target_cpu_request ?? "");
+    setEditTargetCpuLimit(current.target_cpu_limit ?? "");
+    setEditTargetMemoryRequest(current.target_memory_request ?? "");
+    setEditTargetMemoryLimit(current.target_memory_limit ?? "");
+    setEditPerformRollout(current.perform_rollout ?? false);
+    setEditPerformDaemonSetRollout(current.perform_daemonset_rollout ?? false);
+    setEditPerformStatefulSetRollout(current.perform_statefulset_rollout ?? false);
+  };
+
+  const handleSaveEdit = () => {
+    if (!editingKey) return;
+
+    // Validate
+    if (editMinReplicas > editMaxReplicas) {
+      toast.error("Min Replicas não pode ser maior que Max Replicas");
+      return;
+    }
+    if (editTargetCPU !== undefined && (editTargetCPU < 1 || editTargetCPU > 100)) {
+      toast.error("Target CPU deve estar entre 1 e 100%");
+      return;
+    }
+    if (editTargetMemory !== undefined && (editTargetMemory < 1 || editTargetMemory > 100)) {
+      toast.error("Target Memory deve estar entre 1 e 100%");
+      return;
+    }
+
+    // Find the HPA being edited
+    const hpaToEdit = modifiedHPAs.find(({ key }) => key === editingKey);
+    if (!hpaToEdit) return;
+
+    // Update in staging
+    const updates: Partial<HPA> = {
+      min_replicas: editMinReplicas,
+      max_replicas: editMaxReplicas,
+      target_cpu: editTargetCPU ?? null,
+      target_memory: editTargetMemory ?? null,
+      target_cpu_request: editTargetCpuRequest || undefined,
+      target_cpu_limit: editTargetCpuLimit || undefined,
+      target_memory_request: editTargetMemoryRequest || undefined,
+      target_memory_limit: editTargetMemoryLimit || undefined,
+      perform_rollout: editPerformRollout,
+      perform_daemonset_rollout: editPerformDaemonSetRollout,
+      perform_statefulset_rollout: editPerformStatefulSetRollout,
+    };
+
+    staging?.updateHPAInStaging(
+      hpaToEdit.current.cluster,
+      hpaToEdit.current.namespace,
+      hpaToEdit.current.name,
+      updates
+    );
+
+    toast.success(`HPA ${hpaToEdit.current.name} atualizado`);
+    setEditingKey(null);
+  };
 
   const handleRemoveIndividual = (key: string, current: HPA) => {
     // Remove from staging
@@ -302,45 +381,57 @@ export const ApplyAllModal = ({
                         </div>
                       )}
                     </div>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={isApplying || applyingIndividual !== null}
-                          className="h-8 w-8 p-0"
-                        >
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={() => handleApplyIndividual(key, current)}
-                          disabled={applyingIndividual !== null}
-                        >
-                          {applyingIndividual === key ? (
-                            <>
-                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                              Aplicando...
-                            </>
-                          ) : (
-                            <>
-                              <CheckCircle className="h-4 w-4 mr-2" />
-                              {hasBeenApplied ? 'Re-aplicar' : 'Aplicar Agora'}
-                            </>
-                          )}
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          onClick={() => handleRemoveIndividual(key, current)}
-                          disabled={isApplying || applyingIndividual !== null}
-                          className="text-destructive focus:text-destructive"
-                        >
-                          <Trash2 className="h-4 w-4 mr-2" />
-                          Remover da Lista
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="default"
+                        onClick={() => handleApplyIndividual(key, current)}
+                        disabled={isApplying || applyingIndividual !== null}
+                        className="h-8"
+                      >
+                        {applyingIndividual === key ? (
+                          <>
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            Aplicando...
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle className="h-4 w-4 mr-2" />
+                            {hasBeenApplied ? 'Re-aplicar' : 'Aplicar'}
+                          </>
+                        )}
+                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={isApplying || applyingIndividual !== null}
+                            className="h-8 w-8 p-0"
+                          >
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => handleOpenEdit(key, current)}
+                            disabled={isApplying || applyingIndividual !== null}
+                          >
+                            <Edit className="h-4 w-4 mr-2" />
+                            Editar Conteúdo
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => handleRemoveIndividual(key, current)}
+                            disabled={isApplying || applyingIndividual !== null}
+                            className="text-destructive focus:text-destructive"
+                          >
+                            <Trash2 className="h-4 w-4 mr-2" />
+                            Remover da Lista
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
                   </div>
                   <Separator />
                   <div className="space-y-1">
@@ -394,6 +485,190 @@ export const ApplyAllModal = ({
           </div>
         </DialogFooter>
       </DialogContent>
+
+      {/* Edit HPA Modal */}
+      <Dialog open={editingKey !== null} onOpenChange={(open) => !open && setEditingKey(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Editar HPA</DialogTitle>
+            <DialogDescription>
+              Modifique os valores do HPA {modifiedHPAs.find(({ key }) => key === editingKey)?.current.name}
+            </DialogDescription>
+          </DialogHeader>
+
+          <ScrollArea className="max-h-[60vh] pr-4">
+            <div className="space-y-6">
+              {/* HPA Config */}
+              <div className="space-y-4">
+                <h3 className="text-sm font-semibold">Configuração HPA</h3>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="edit-min-replicas">Min Replicas</Label>
+                    <Input
+                      id="edit-min-replicas"
+                      type="number"
+                      value={editMinReplicas}
+                      onChange={(e) => setEditMinReplicas(parseInt(e.target.value) || 0)}
+                      min="0"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="edit-max-replicas">Max Replicas</Label>
+                    <Input
+                      id="edit-max-replicas"
+                      type="number"
+                      value={editMaxReplicas}
+                      onChange={(e) => setEditMaxReplicas(parseInt(e.target.value) || 1)}
+                      min="1"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="edit-target-cpu">Target CPU (%)</Label>
+                    <Input
+                      id="edit-target-cpu"
+                      type="number"
+                      value={editTargetCPU ?? ""}
+                      onChange={(e) => setEditTargetCPU(e.target.value ? parseInt(e.target.value) : undefined)}
+                      placeholder="Ex: 80"
+                      min="1"
+                      max="100"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="edit-target-memory">Target Memory (%)</Label>
+                    <Input
+                      id="edit-target-memory"
+                      type="number"
+                      value={editTargetMemory ?? ""}
+                      onChange={(e) => setEditTargetMemory(e.target.value ? parseInt(e.target.value) : undefined)}
+                      placeholder="Ex: 80"
+                      min="1"
+                      max="100"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Resources */}
+              <div className="space-y-4">
+                <h3 className="text-sm font-semibold">Recursos (Target Deployment)</h3>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="edit-cpu-request">CPU Request</Label>
+                    <Input
+                      id="edit-cpu-request"
+                      type="text"
+                      value={editTargetCpuRequest}
+                      onChange={(e) => setEditTargetCpuRequest(e.target.value)}
+                      placeholder="Ex: 100m"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="edit-cpu-limit">CPU Limit</Label>
+                    <Input
+                      id="edit-cpu-limit"
+                      type="text"
+                      value={editTargetCpuLimit}
+                      onChange={(e) => setEditTargetCpuLimit(e.target.value)}
+                      placeholder="Ex: 200m"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="edit-memory-request">Memory Request</Label>
+                    <Input
+                      id="edit-memory-request"
+                      type="text"
+                      value={editTargetMemoryRequest}
+                      onChange={(e) => setEditTargetMemoryRequest(e.target.value)}
+                      placeholder="Ex: 128Mi"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="edit-memory-limit">Memory Limit</Label>
+                    <Input
+                      id="edit-memory-limit"
+                      type="text"
+                      value={editTargetMemoryLimit}
+                      onChange={(e) => setEditTargetMemoryLimit(e.target.value)}
+                      placeholder="Ex: 256Mi"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Rollout Options */}
+              <div className="space-y-4">
+                <h3 className="text-sm font-semibold">Opções de Rollout</h3>
+                <p className="text-xs text-muted-foreground">
+                  Reinicia os pods do workload ao aplicar as alterações de recursos
+                </p>
+
+                <div className="space-y-3">
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="edit-rollout-deployment"
+                      checked={editPerformRollout}
+                      onCheckedChange={(checked) => setEditPerformRollout(checked as boolean)}
+                    />
+                    <Label
+                      htmlFor="edit-rollout-deployment"
+                      className="text-sm font-normal cursor-pointer"
+                    >
+                      Rollout Deployment
+                    </Label>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="edit-rollout-daemonset"
+                      checked={editPerformDaemonSetRollout}
+                      onCheckedChange={(checked) => setEditPerformDaemonSetRollout(checked as boolean)}
+                    />
+                    <Label
+                      htmlFor="edit-rollout-daemonset"
+                      className="text-sm font-normal cursor-pointer"
+                    >
+                      Rollout DaemonSet
+                    </Label>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="edit-rollout-statefulset"
+                      checked={editPerformStatefulSetRollout}
+                      onCheckedChange={(checked) => setEditPerformStatefulSetRollout(checked as boolean)}
+                    />
+                    <Label
+                      htmlFor="edit-rollout-statefulset"
+                      className="text-sm font-normal cursor-pointer"
+                    >
+                      Rollout StatefulSet
+                    </Label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </ScrollArea>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingKey(null)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleSaveEdit}>
+              <CheckCircle className="h-4 w-4 mr-2" />
+              Salvar Alterações
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 };

@@ -186,8 +186,8 @@ A aplicação verifica automaticamente por updates **1x por dia** ao iniciar.
 k8s-hpa-manager version
 
 # Output se houver update disponível:
-# 🆕 Nova versão disponível: 1.1.0 → 1.2.0
-# 📦 Download: https://github.com/.../v1.2.0
+# 🆕 Nova versão disponível: 1.2.0 → 1.2.1
+# 📦 Download: https://github.com/.../v1.2.1
 ```
 
 #### Atualizar Automaticamente

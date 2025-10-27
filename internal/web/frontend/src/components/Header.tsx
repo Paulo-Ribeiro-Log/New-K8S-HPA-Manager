@@ -6,7 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { LogOut, CheckCircle, Zap, Save, FolderOpen } from "lucide-react";
+import { LogOut, CheckCircle, Zap, Save, FolderOpen, FileText } from "lucide-react";
 import { ModeToggle } from "@/components/mode-toggle";
 
 interface HeaderProps {
@@ -18,6 +18,7 @@ interface HeaderProps {
   onApplySequential?: () => void;
   onSaveSession?: () => void;
   onLoadSession?: () => void;
+  onViewLogs?: () => void;
   userInfo: string;
   onLogout: () => void;
 }
@@ -31,6 +32,7 @@ export const Header = ({
   onApplySequential,
   onSaveSession,
   onLoadSession,
+  onViewLogs,
   userInfo,
   onLogout,
 }: HeaderProps) => {
@@ -107,10 +109,22 @@ export const Header = ({
           </Button>
         )}
         
+        {onViewLogs && (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="bg-white/20 hover:bg-white/30 text-white border-white/30"
+            onClick={onViewLogs}
+            title="View System Logs"
+          >
+            <FileText className="w-4 h-4" />
+          </Button>
+        )}
+
         <span className="text-white/90 text-sm">{userInfo}</span>
-        
+
         <ModeToggle />
-        
+
         <Button
           variant="secondary"
           size="sm"

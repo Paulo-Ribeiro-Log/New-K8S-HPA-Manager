@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"time"
-	"golang.org/x/sys/unix"
 
 	"k8s-hpa-manager/internal/tui"
 	"k8s-hpa-manager/internal/updater"
@@ -232,10 +231,4 @@ func init() {
 	if home, exists := os.LookupEnv("HOME"); exists && kubeconfig == "" {
 		kubeconfig = fmt.Sprintf("%s/.kube/config", home)
 	}
-}
-
-// isatty checks if we have a TTY available
-func isatty() bool {
-	_, err := unix.IoctlGetTermios(int(os.Stdout.Fd()), unix.TCGETS)
-	return err == nil
 }

@@ -219,6 +219,38 @@ export function useNodePools(cluster?: string) {
     fetchNodePools();
   }, [cluster]);
 
+  // Listen for rescan events
+  useEffect(() => {
+    const handleRescan = (event: Event) => {
+      const customEvent = event as CustomEvent<{ cluster?: string }>;
+      const targetCluster = customEvent.detail?.cluster;
+
+      console.log(`[useNodePools] Rescan event received - Event cluster: "${targetCluster}", Hook cluster: "${cluster}"`);
+
+      // Se o evento não especificou cluster, recarrega todos
+      // Se especificou, só recarrega se for o mesmo cluster
+      if (targetCluster && targetCluster !== cluster) {
+        console.log(`[useNodePools] Ignoring rescan - cluster mismatch`);
+        return;
+      }
+
+      console.log(`[useNodePools] Rescanning node pools for cluster: ${cluster}`);
+      fetchNodePools().catch((err) => {
+        console.error("[useNodePools] Error during rescan:", err);
+      });
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("rescanNodePools", handleRescan as EventListener);
+    }
+
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("rescanNodePools", handleRescan as EventListener);
+      }
+    };
+  }, [cluster]);
+
   return {
     nodePools,
     loading,
