@@ -40,6 +40,13 @@ jobs:
           npm ci
           npm run build
 
+      - name: Verify static files exist
+        run: |
+          echo "=== Checking static files ==="
+          ls -lah internal/web/static/
+          ls -lah internal/web/static/assets/
+          echo "=== Static files verified ==="
+
       - name: Build binaries for all platforms
         run: make release
 
