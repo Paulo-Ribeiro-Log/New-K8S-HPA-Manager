@@ -17,7 +17,7 @@ import (
 	"k8s-hpa-manager/internal/web/middleware"
 )
 
-//go:embed static/*
+//go:embed all:static
 var staticFiles embed.FS
 
 // Server representa o servidor HTTP
