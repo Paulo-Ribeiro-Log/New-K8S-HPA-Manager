@@ -54,7 +54,6 @@ Logs/
 
 # Web frontend
 new-web-page/
-internal/web/static/*
-!internal/web/static/.gitkeep
+# Note: internal/web/static/ deve ser commitado para go:embed funcionar
 internal/web/frontend/node_modules/
 internal/web/frontend/dist/
