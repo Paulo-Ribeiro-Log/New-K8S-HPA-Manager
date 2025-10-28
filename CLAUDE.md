@@ -32,8 +32,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Estado Atual (Outubro 2025)
 
-**Versão Atual:** v1.2.1 (Release: 24 de outubro de 2025)
-**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.2.1
+**Versão Atual:** v1.2.6 (Release: 28 de outubro de 2025)
+**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.2.6
 
 **TUI (Terminal Interface):**
 - ✅ Interface responsiva (adapta-se ao tamanho real do terminal - mínimo 80x24)
@@ -1067,6 +1067,59 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Correção de Assets Não Embeddados - go:embed (Outubro 2025) ✅
+
+**Release:** v1.2.6 (28 de outubro de 2025)
+**Commit:** 0f05463
+
+**Problema identificado:** Webpage em branco em qualquer computador após instalação da release.
+
+**Root Cause:**
+- `go:embed` **APENAS** embeda arquivos versionados no Git
+- `internal/web/static/*` estava no `.gitignore`
+- GitHub Actions gerava os arquivos, mas `go:embed` não os encontrava
+- Resultado: Binário compilado sem assets embeddados → webpage em branco
+
+**Solução:**
+1. ✅ Removido `internal/web/static/*` do `.gitignore`
+2. ✅ Commitados arquivos de build no repositório:
+   - `internal/web/static/assets/index-CW0HINYd.css` (76 KB)
+   - `internal/web/static/assets/index-QahD77AR.js` (577 KB)
+   - `internal/web/static/index.html`, `favicon.ico`
+3. ✅ Release v1.2.6 criada com assets embeddados
+
+**Validação:**
+```bash
+curl http://localhost:8080/assets/index-QahD77AR.js  # ✅ 200 OK (590.689 bytes)
+curl http://localhost:8080/assets/index-CW0HINYd.css # ✅ 200 OK (76 KB)
+```
+
+**Lição aprendida:**
+- `go:embed` requer arquivos commitados no Git
+- Arquivos gerados em build-time devem ser versionados **OU** copiados para local não-ignorado
+- Usar `all:` prefix para incluir subdiretórios (`//go:embed all:static`)
+
+---
+
+### Correção web-server.sh - Detecção de Porta Real (Outubro 2025) ✅
+
+**Problema identificado:** Comando `status` sempre mostrava porta 8080, mesmo quando servidor rodava em porta diferente.
+
+**Solução:**
+- Script agora extrai porta real do processo em execução via `ps aux`
+- Usa regex para encontrar flag `--port` na linha de comando
+- Fallback para 8080 se não encontrar porta especificada
+
+**Testes:**
+```bash
+./web-server.sh 9000 start  # Inicia na porta 9000
+./web-server.sh status      # ✅ Mostra "📍 URL: http://localhost:9000"
+```
+
+**Arquivo modificado:** `web-server.sh` (linhas 114-140)
+
+---
 
 ### Correção de Cross-Compilation para Windows/macOS (Outubro 2025) ✅
 
