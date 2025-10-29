@@ -43,22 +43,32 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
   useEffect(() => {
     if (hpa) {
       console.log('[HPAEditor] Resetting form with HPA:', hpa.name);
-      setMinReplicas(hpa.min_replicas ?? 0);
-      setMaxReplicas(hpa.max_replicas ?? 1);
-      setTargetCPU(hpa.target_cpu ?? undefined);
-      setTargetMemory(hpa.target_memory ?? undefined);
+
+      // 🔧 FIX: Check if HPA exists in staging - use staging values as base reference
+      const stagedHPA = staging.stagedHPAs.find(
+        h => h.cluster === hpa.cluster && h.namespace === hpa.namespace && h.name === hpa.name
+      );
+
+      // Use staged values if available, otherwise use original HPA props
+      const baseHPA = stagedHPA || hpa;
+      console.log('[HPAEditor] Using base HPA:', stagedHPA ? 'FROM STAGING' : 'FROM PROPS', baseHPA);
+
+      setMinReplicas(baseHPA.min_replicas ?? 0);
+      setMaxReplicas(baseHPA.max_replicas ?? 1);
+      setTargetCPU(baseHPA.target_cpu ?? undefined);
+      setTargetMemory(baseHPA.target_memory ?? undefined);
 
       // Initialize target values from original_values (current deployment values)
-      setTargetCpuRequest(hpa.target_cpu_request ?? hpa.original_values?.cpu_request ?? "");
-      setTargetCpuLimit(hpa.target_cpu_limit ?? hpa.original_values?.cpu_limit ?? "");
-      setTargetMemoryRequest(hpa.target_memory_request ?? hpa.original_values?.memory_request ?? "");
-      setTargetMemoryLimit(hpa.target_memory_limit ?? hpa.original_values?.memory_limit ?? "");
+      setTargetCpuRequest(baseHPA.target_cpu_request ?? baseHPA.original_values?.cpu_request ?? "");
+      setTargetCpuLimit(baseHPA.target_cpu_limit ?? baseHPA.original_values?.cpu_limit ?? "");
+      setTargetMemoryRequest(baseHPA.target_memory_request ?? baseHPA.original_values?.memory_request ?? "");
+      setTargetMemoryLimit(baseHPA.target_memory_limit ?? baseHPA.original_values?.memory_limit ?? "");
 
-      setPerformRollout(false);
-      setPerformDaemonSetRollout(false);
-      setPerformStatefulSetRollout(false);
+      setPerformRollout(baseHPA.perform_rollout ?? false);
+      setPerformDaemonSetRollout(baseHPA.perform_daemonset_rollout ?? false);
+      setPerformStatefulSetRollout(baseHPA.perform_statefulset_rollout ?? false);
     }
-  }, [hpa, hpa?.min_replicas, hpa?.max_replicas, hpa?.target_cpu, hpa?.target_memory]);
+  }, [hpa, hpa?.min_replicas, hpa?.max_replicas, hpa?.target_cpu, hpa?.target_memory, staging.stagedHPAs]);
 
   if (!hpa) {
     return (
@@ -140,32 +150,44 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
   };
 
   const handleReset = () => {
-    setMinReplicas(hpa.min_replicas ?? 0);
-    setMaxReplicas(hpa.max_replicas ?? 1);
-    setTargetCPU(hpa.target_cpu ?? undefined);
-    setTargetMemory(hpa.target_memory ?? undefined);
-    setTargetCpuRequest(hpa.target_cpu_request ?? hpa.original_values?.cpu_request ?? "");
-    setTargetCpuLimit(hpa.target_cpu_limit ?? hpa.original_values?.cpu_limit ?? "");
-    setTargetMemoryRequest(hpa.target_memory_request ?? hpa.original_values?.memory_request ?? "");
-    setTargetMemoryLimit(hpa.target_memory_limit ?? hpa.original_values?.memory_limit ?? "");
-    setPerformRollout(false);
-    setPerformDaemonSetRollout(false);
-    setPerformStatefulSetRollout(false);
+    // 🔧 FIX: Reset to staged values if exists, otherwise to original props
+    const stagedHPA = staging.stagedHPAs.find(
+      h => h.cluster === hpa.cluster && h.namespace === hpa.namespace && h.name === hpa.name
+    );
+    const baseHPA = stagedHPA || hpa;
+
+    setMinReplicas(baseHPA.min_replicas ?? 0);
+    setMaxReplicas(baseHPA.max_replicas ?? 1);
+    setTargetCPU(baseHPA.target_cpu ?? undefined);
+    setTargetMemory(baseHPA.target_memory ?? undefined);
+    setTargetCpuRequest(baseHPA.target_cpu_request ?? baseHPA.original_values?.cpu_request ?? "");
+    setTargetCpuLimit(baseHPA.target_cpu_limit ?? baseHPA.original_values?.cpu_limit ?? "");
+    setTargetMemoryRequest(baseHPA.target_memory_request ?? baseHPA.original_values?.memory_request ?? "");
+    setTargetMemoryLimit(baseHPA.target_memory_limit ?? baseHPA.original_values?.memory_limit ?? "");
+    setPerformRollout(baseHPA.perform_rollout ?? false);
+    setPerformDaemonSetRollout(baseHPA.perform_daemonset_rollout ?? false);
+    setPerformStatefulSetRollout(baseHPA.perform_statefulset_rollout ?? false);
     toast.info("Alterações descartadas");
   };
 
+  // 🔧 FIX: Use staged HPA as base for comparison if it exists
+  const stagedHPA = staging.stagedHPAs.find(
+    h => h.cluster === hpa.cluster && h.namespace === hpa.namespace && h.name === hpa.name
+  );
+  const baseHPA = stagedHPA || hpa;
+
   const isModified =
-    minReplicas !== (hpa.min_replicas ?? 0) ||
-    maxReplicas !== (hpa.max_replicas ?? 1) ||
-    targetCPU !== (hpa.target_cpu ?? undefined) ||
-    targetMemory !== (hpa.target_memory ?? undefined) ||
-    targetCpuRequest !== (hpa.target_cpu_request ?? hpa.original_values?.cpu_request ?? "") ||
-    targetCpuLimit !== (hpa.target_cpu_limit ?? hpa.original_values?.cpu_limit ?? "") ||
-    targetMemoryRequest !== (hpa.target_memory_request ?? hpa.original_values?.memory_request ?? "") ||
-    targetMemoryLimit !== (hpa.target_memory_limit ?? hpa.original_values?.memory_limit ?? "") ||
-    performRollout !== false ||
-    performDaemonSetRollout !== false ||
-    performStatefulSetRollout !== false;
+    minReplicas !== (baseHPA.min_replicas ?? 0) ||
+    maxReplicas !== (baseHPA.max_replicas ?? 1) ||
+    targetCPU !== (baseHPA.target_cpu ?? undefined) ||
+    targetMemory !== (baseHPA.target_memory ?? undefined) ||
+    targetCpuRequest !== (baseHPA.target_cpu_request ?? baseHPA.original_values?.cpu_request ?? "") ||
+    targetCpuLimit !== (baseHPA.target_cpu_limit ?? baseHPA.original_values?.cpu_limit ?? "") ||
+    targetMemoryRequest !== (baseHPA.target_memory_request ?? baseHPA.original_values?.memory_request ?? "") ||
+    targetMemoryLimit !== (baseHPA.target_memory_limit ?? baseHPA.original_values?.memory_limit ?? "") ||
+    performRollout !== (baseHPA.perform_rollout ?? false) ||
+    performDaemonSetRollout !== (baseHPA.perform_daemonset_rollout ?? false) ||
+    performStatefulSetRollout !== (baseHPA.perform_statefulset_rollout ?? false);
 
   return (
     <div className="space-y-4 animate-fade-in">
