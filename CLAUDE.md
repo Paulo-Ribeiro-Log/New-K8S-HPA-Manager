@@ -717,6 +717,7 @@ make test-coverage            # Coverage report → coverage.html
 - [ ] Heartbeat: Abrir tab → fechar → servidor desliga em 20min
 - [ ] Snapshot: Capturar estado do cluster para rollback
 - [ ] Dashboard: Métricas reais (CPU/Memory allocation)
+- [ ] **Recovery Mode**: Seleção granular de itens, validação de cluster, progress tracking, resumo final
 
 **Logs:**
 ```bash
@@ -1067,6 +1068,69 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Melhorias no Sistema de Recovery (Snapshot) - Outubro 2025 ✅
+
+**Data:** 29 de outubro de 2025
+
+**Problema identificado:** Sistema de recovery (Apply Directly) não validava cluster, não mostrava progresso individual e não tinha resumo final de estatísticas.
+
+**Melhorias implementadas:**
+
+**1️⃣ Validação de Cluster Automática**
+- Detecta clusters dos itens selecionados
+- Valida se há apenas 1 cluster (recovery multi-cluster não suportado)
+- Troca contexto Kubernetes automaticamente (`cluster-admin`)
+- Configura subscription Azure se necessário
+- Exibe mensagem de erro clara se VPN desconectada
+
+**2️⃣ Feedback de Progresso Individual**
+- Progress bar visual durante execução
+- Contador de progresso: `[3/10] Restaurando HPA: namespace/name...`
+- Estatísticas em tempo real: `✅ 5 OK | ❌ 2 Erros`
+- Estado visual atualizado dinamicamente
+
+**3️⃣ Resumo Final com Estatísticas**
+- Toast notification com resumo completo:
+  - ✅ **100% sucesso**: `Recovery 100% concluído: 10 itens restaurados`
+  - ⚠️ **Parcial**: `Recovery parcial: 8 OK, 2 falhas | Itens falhados: HPA: ns/name1, Node Pool: pool2`
+  - ❌ **Falha total**: `Recovery falhou: 10 erros | Verifique conectividade e logs`
+- Logs detalhados no console (`[Recovery] ✅ HPA restaurado (3/5): namespace/name`)
+- Modal fecha automaticamente após 2s se houver sucesso
+
+**4️⃣ Tratamento de Erros Robusto**
+- Continua execução mesmo com erros individuais
+- Lista de itens falhados para troubleshooting
+- Previne fechamento de modal se todos os itens falharem
+- Mensagens de erro específicas (VPN, cluster não encontrado, timeout)
+
+**Arquivos modificados:**
+- `internal/web/frontend/src/components/LoadSessionModal.tsx`:
+  - Estados de progresso: `currentProcessing`, `recoveryProgress`
+  - Função `handleApplyDirectly()` reescrita (linhas 260-519)
+  - Progress bar visual (linhas 1104-1140)
+- Build: Frontend v1.2.7-dirty (assets atualizados)
+
+**Workflow completo:**
+```
+1. Usuário seleciona sessão de rollback
+2. Marca/desmarca HPAs e Node Pools (checkboxes)
+3. Clica "Apply Directly (Recovery)"
+4. Sistema valida cluster e troca contexto
+5. Progress bar mostra progresso individual
+6. Estatísticas em tempo real (OK/Erros)
+7. Resumo final com toast notification
+8. Modal fecha automaticamente (se sucesso)
+```
+
+**Benefícios:**
+- ✅ Recovery mais confiável com validação de cluster
+- ✅ Visibilidade completa do progresso
+- ✅ Troubleshooting facilitado com logs e lista de falhas
+- ✅ UX melhorada com feedback em tempo real
+- ✅ Prevenção de erros (multi-cluster, VPN desconectada)
+
+---
 
 ### Correção de Assets Não Embeddados - go:embed (Outubro 2025) ✅
 
