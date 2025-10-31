@@ -1113,6 +1113,90 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 
 ## 📜 Histórico de Correções (Principais)
 
+### Correção Crítica: Input Fields e Modal Auto-Update (Outubro 2025) ✅
+
+**Data:** 31 de outubro de 2025
+
+**Problema 1 identificado:** Campos de input numéricos na interface web não podiam ser limpos completamente, sempre retinham pelo menos um dígito.
+
+**Cenário que causava bug:**
+- Usuário tenta deletar valor "4" → Campo deveria ficar vazio → Digita "25" → Deveria mostrar "25"
+- **Comportamento errado**: Delete "4" → Campo mostra "1" → Digita "25" → Campo mostra "125"
+
+**Solução aplicada:**
+1. **Mudança de tipo de input**: `type="number"` → `type="text"` com validação regex `/^\d+$/`
+2. **Estados de string**: Mudado de `number` → `string` para permitir campo vazio
+3. **Removido onBlur**: Handler que restaurava valores default foi removido
+4. **UX melhorada**: Adicionado `select()` em `onClick` e `onFocus` para selecionar todo texto
+
+**Arquivos modificados:**
+- `HPAEditor.tsx` - Campos Min/Max Replicas, Target CPU/Memory, Resources
+- `NodePoolEditor.tsx` - Campos Node Count, Min/Max Nodes
+
+---
+
+**Problema 2 identificado:** Modal de confirmação (ApplyAllModal) não refletia alterações feitas no editor inline, exigindo fechar e reabrir o modal para ver mudanças.
+
+**Cenário que causava bug:**
+1. Carregar sessão no staging
+2. Abrir modal de confirmação
+3. Clicar "Editar Conteúdo" (⋮ menu)
+4. Alterar valores (ex: Max Replicas 11 → 10)
+5. Salvar
+6. **Bug**: Modal não atualizava, usuário tinha que fechar e reabrir
+
+**Root Cause:**
+- Modal renderizava dados da **prop** `modifiedHPAs` (fixa e imutável)
+- Staging era atualizado corretamente, mas React não detectava mudança
+- `refreshCounter` existia mas não forçava re-render dos dados
+
+**Solução aplicada:**
+1. **Criado `freshModifiedHPAs` com `useMemo`**: Deriva dados frescos do staging a cada render
+2. **Substituído `modifiedHPAs` por `freshModifiedHPAs`**: Modal agora renderiza dados dinâmicos
+3. **`refreshCounter` nas dependências do useMemo**: Força recálculo quando incrementado
+
+**Código implementado:**
+```typescript
+// Deriva dados frescos do staging
+const freshModifiedHPAs = useMemo(() => {
+  return modifiedHPAs.map(({ key, original }) => {
+    const freshHPA = staging?.stagedHPAs.find(
+      h => h.cluster === original.cluster &&
+           h.namespace === original.namespace &&
+           h.name === original.name
+    );
+
+    return {
+      key,
+      current: freshHPA || original, // Dados frescos do staging
+      original
+    };
+  });
+}, [modifiedHPAs, staging?.stagedHPAs, refreshCounter]);
+
+// Renderiza usando dados frescos
+{freshModifiedHPAs.map(...)}
+```
+
+**Arquivos modificados:**
+- `ApplyAllModal.tsx` - Import useMemo, freshModifiedHPAs, rendering atualizado
+
+**Workflow completo agora:**
+1. Usuário edita HPA no modal "Editar Conteúdo"
+2. Salva → `staging.updateHPAInStaging()` atualiza dados
+3. `setRefreshCounter(prev => prev + 1)` incrementa contador
+4. `useMemo` detecta mudança e busca dados frescos do staging
+5. React detecta mudança em `freshModifiedHPAs`
+6. **Modal atualiza automaticamente** sem fechar/reabrir
+
+**Benefícios:**
+- ✅ Input fields podem ser limpos completamente (ex: "4" → "" → "25" = "25")
+- ✅ Modal reflete alterações instantaneamente após edição
+- ✅ Workflow mais fluido sem passos desnecessários
+- ✅ Dados sempre sincronizados com staging
+
+---
+
 ### Melhorias no Sistema de Recovery (Snapshot) - Outubro 2025 ✅
 
 **Data:** 29 de outubro de 2025

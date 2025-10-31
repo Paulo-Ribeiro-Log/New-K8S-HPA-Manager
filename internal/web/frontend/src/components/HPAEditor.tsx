@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -18,11 +18,17 @@ interface HPAEditorProps {
 export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
   const staging = useStaging();
 
-  // Form state - HPA Config
-  const [minReplicas, setMinReplicas] = useState(0);
-  const [maxReplicas, setMaxReplicas] = useState(1);
-  const [targetCPU, setTargetCPU] = useState<number | undefined>(undefined);
-  const [targetMemory, setTargetMemory] = useState<number | undefined>(undefined);
+  // Refs for input fields to enable select-all behavior
+  const minReplicasRef = useRef<HTMLInputElement>(null);
+  const maxReplicasRef = useRef<HTMLInputElement>(null);
+  const targetCPURef = useRef<HTMLInputElement>(null);
+  const targetMemoryRef = useRef<HTMLInputElement>(null);
+
+  // Form state - HPA Config (usando string para permitir campo vazio)
+  const [minReplicas, setMinReplicas] = useState<string>("0");
+  const [maxReplicas, setMaxReplicas] = useState<string>("1");
+  const [targetCPU, setTargetCPU] = useState<string>("");
+  const [targetMemory, setTargetMemory] = useState<string>("");
 
   // Form state - Resources (target values - editable)
   const [targetCpuRequest, setTargetCpuRequest] = useState("");
@@ -53,10 +59,10 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
       const baseHPA = stagedHPA || hpa;
       console.log('[HPAEditor] Using base HPA:', stagedHPA ? 'FROM STAGING' : 'FROM PROPS', baseHPA);
 
-      setMinReplicas(baseHPA.min_replicas ?? 0);
-      setMaxReplicas(baseHPA.max_replicas ?? 1);
-      setTargetCPU(baseHPA.target_cpu ?? undefined);
-      setTargetMemory(baseHPA.target_memory ?? undefined);
+      setMinReplicas(String(baseHPA.min_replicas ?? 0));
+      setMaxReplicas(String(baseHPA.max_replicas ?? 1));
+      setTargetCPU(baseHPA.target_cpu !== null && baseHPA.target_cpu !== undefined ? String(baseHPA.target_cpu) : "");
+      setTargetMemory(baseHPA.target_memory !== null && baseHPA.target_memory !== undefined ? String(baseHPA.target_memory) : "");
 
       // Initialize target values from original_values (current deployment values)
       setTargetCpuRequest(baseHPA.target_cpu_request ?? baseHPA.original_values?.cpu_request ?? "");
@@ -79,16 +85,22 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
   }
 
   const handleSave = () => {
+    // Parse string values to numbers
+    const minReplicasNum = parseInt(minReplicas) || 0;
+    const maxReplicasNum = parseInt(maxReplicas) || 1;
+    const targetCPUNum = targetCPU ? parseInt(targetCPU) : undefined;
+    const targetMemoryNum = targetMemory ? parseInt(targetMemory) : undefined;
+
     // Validate
-    if (minReplicas > maxReplicas) {
+    if (minReplicasNum > maxReplicasNum) {
       toast.error("Min Replicas não pode ser maior que Max Replicas");
       return;
     }
-    if (targetCPU !== undefined && (targetCPU < 1 || targetCPU > 100)) {
+    if (targetCPUNum !== undefined && (targetCPUNum < 1 || targetCPUNum > 100)) {
       toast.error("Target CPU deve estar entre 1 e 100%");
       return;
     }
-    if (targetMemory !== undefined && (targetMemory < 1 || targetMemory > 100)) {
+    if (targetMemoryNum !== undefined && (targetMemoryNum < 1 || targetMemoryNum > 100)) {
       toast.error("Target Memory deve estar entre 1 e 100%");
       return;
     }
@@ -100,10 +112,10 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
 
     // Then update with modified values
     const updates: Partial<HPA> = {
-      min_replicas: minReplicas,
-      max_replicas: maxReplicas,
-      target_cpu: targetCPU ?? null,
-      target_memory: targetMemory ?? null,
+      min_replicas: minReplicasNum,
+      max_replicas: maxReplicasNum,
+      target_cpu: targetCPUNum ?? null,
+      target_memory: targetMemoryNum ?? null,
       target_cpu_request: targetCpuRequest || undefined,
       target_cpu_limit: targetCpuLimit || undefined,
       target_memory_request: targetMemoryRequest || undefined,
@@ -121,8 +133,14 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
   };
 
   const handleApply = () => {
+    // Parse string values to numbers
+    const minReplicasNum = parseInt(minReplicas) || 0;
+    const maxReplicasNum = parseInt(maxReplicas) || 1;
+    const targetCPUNum = targetCPU ? parseInt(targetCPU) : undefined;
+    const targetMemoryNum = targetMemory ? parseInt(targetMemory) : undefined;
+
     // Validate
-    if (minReplicas > maxReplicas) {
+    if (minReplicasNum > maxReplicasNum) {
       toast.error("Min Replicas não pode ser maior que Max Replicas");
       return;
     }
@@ -130,10 +148,10 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
     // Create modified HPA
     const modifiedHPA: HPA = {
       ...hpa,
-      min_replicas: minReplicas,
-      max_replicas: maxReplicas,
-      target_cpu: targetCPU ?? null,
-      target_memory: targetMemory ?? null,
+      min_replicas: minReplicasNum,
+      max_replicas: maxReplicasNum,
+      target_cpu: targetCPUNum ?? null,
+      target_memory: targetMemoryNum ?? null,
       target_cpu_request: targetCpuRequest || undefined,
       target_cpu_limit: targetCpuLimit || undefined,
       target_memory_request: targetMemoryRequest || undefined,
@@ -156,10 +174,10 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
     );
     const baseHPA = stagedHPA || hpa;
 
-    setMinReplicas(baseHPA.min_replicas ?? 0);
-    setMaxReplicas(baseHPA.max_replicas ?? 1);
-    setTargetCPU(baseHPA.target_cpu ?? undefined);
-    setTargetMemory(baseHPA.target_memory ?? undefined);
+    setMinReplicas(String(baseHPA.min_replicas ?? 0));
+    setMaxReplicas(String(baseHPA.max_replicas ?? 1));
+    setTargetCPU(baseHPA.target_cpu !== null && baseHPA.target_cpu !== undefined ? String(baseHPA.target_cpu) : "");
+    setTargetMemory(baseHPA.target_memory !== null && baseHPA.target_memory !== undefined ? String(baseHPA.target_memory) : "");
     setTargetCpuRequest(baseHPA.target_cpu_request ?? baseHPA.original_values?.cpu_request ?? "");
     setTargetCpuLimit(baseHPA.target_cpu_limit ?? baseHPA.original_values?.cpu_limit ?? "");
     setTargetMemoryRequest(baseHPA.target_memory_request ?? baseHPA.original_values?.memory_request ?? "");
@@ -177,10 +195,10 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
   const baseHPA = stagedHPA || hpa;
 
   const isModified =
-    minReplicas !== (baseHPA.min_replicas ?? 0) ||
-    maxReplicas !== (baseHPA.max_replicas ?? 1) ||
-    targetCPU !== (baseHPA.target_cpu ?? undefined) ||
-    targetMemory !== (baseHPA.target_memory ?? undefined) ||
+    (parseInt(minReplicas) || 0) !== (baseHPA.min_replicas ?? 0) ||
+    (parseInt(maxReplicas) || 1) !== (baseHPA.max_replicas ?? 1) ||
+    (targetCPU ? parseInt(targetCPU) : undefined) !== (baseHPA.target_cpu ?? undefined) ||
+    (targetMemory ? parseInt(targetMemory) : undefined) !== (baseHPA.target_memory ?? undefined) ||
     targetCpuRequest !== (baseHPA.target_cpu_request ?? baseHPA.original_values?.cpu_request ?? "") ||
     targetCpuLimit !== (baseHPA.target_cpu_limit ?? baseHPA.original_values?.cpu_limit ?? "") ||
     targetMemoryRequest !== (baseHPA.target_memory_request ?? baseHPA.original_values?.memory_request ?? "") ||
@@ -205,14 +223,19 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
         <div className="space-y-1.5">
           <Label htmlFor="minReplicas" className="text-sm">Minimum Replicas</Label>
           <Input
+            ref={minReplicasRef}
             id="minReplicas"
-            type="number"
-            min={0}
+            type="text"
             value={minReplicas}
             onChange={(e) => {
               const val = e.target.value;
-              setMinReplicas(val === "" ? 0 : parseInt(val));
+              // Allow empty or digits only
+              if (val === "" || /^\d+$/.test(val)) {
+                setMinReplicas(val);
+              }
             }}
+            onClick={() => minReplicasRef.current?.select()}
+            onFocus={() => minReplicasRef.current?.select()}
             className="bg-background h-9"
           />
         </div>
@@ -220,14 +243,19 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
         <div className="space-y-1.5">
           <Label htmlFor="maxReplicas" className="text-sm">Maximum Replicas</Label>
           <Input
+            ref={maxReplicasRef}
             id="maxReplicas"
-            type="number"
-            min={1}
+            type="text"
             value={maxReplicas}
             onChange={(e) => {
               const val = e.target.value;
-              setMaxReplicas(val === "" ? 1 : parseInt(val));
+              // Allow empty or digits only
+              if (val === "" || /^\d+$/.test(val)) {
+                setMaxReplicas(val);
+              }
             }}
+            onClick={() => maxReplicasRef.current?.select()}
+            onFocus={() => maxReplicasRef.current?.select()}
             className="bg-background h-9"
           />
         </div>
@@ -235,15 +263,19 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
         <div className="space-y-1.5">
           <Label htmlFor="targetCPU" className="text-sm">Target CPU (%)</Label>
           <Input
+            ref={targetCPURef}
             id="targetCPU"
-            type="number"
-            min={1}
-            max={100}
-            value={targetCPU ?? ""}
+            type="text"
+            value={targetCPU}
             onChange={(e) => {
               const val = e.target.value;
-              setTargetCPU(val === "" ? undefined : parseInt(val));
+              // Allow empty or digits only (no default on empty for optional fields)
+              if (val === "" || /^\d+$/.test(val)) {
+                setTargetCPU(val);
+              }
             }}
+            onClick={() => targetCPURef.current?.select()}
+            onFocus={() => targetCPURef.current?.select()}
             placeholder="Não configurado"
             className="bg-background h-9"
           />
@@ -252,15 +284,19 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
         <div className="space-y-1.5">
           <Label htmlFor="targetMemory" className="text-sm">Target Memory (%)</Label>
           <Input
+            ref={targetMemoryRef}
             id="targetMemory"
-            type="number"
-            min={1}
-            max={100}
-            value={targetMemory ?? ""}
+            type="text"
+            value={targetMemory}
             onChange={(e) => {
               const val = e.target.value;
-              setTargetMemory(val === "" ? undefined : parseInt(val));
+              // Allow empty or digits only (no default on empty for optional fields)
+              if (val === "" || /^\d+$/.test(val)) {
+                setTargetMemory(val);
+              }
             }}
+            onClick={() => targetMemoryRef.current?.select()}
+            onFocus={() => targetMemoryRef.current?.select()}
             placeholder="Não configurado"
             className="bg-background h-9"
           />

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -22,10 +22,15 @@ interface NodePoolEditorProps {
 export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorProps) => {
   const staging = useStaging();
 
-  // State for editable fields
-  const [nodeCount, setNodeCount] = useState<number>(0);
-  const [minNodeCount, setMinNodeCount] = useState<number>(0);
-  const [maxNodeCount, setMaxNodeCount] = useState<number>(1);
+  // Refs for input fields to enable select-all behavior
+  const nodeCountRef = useRef<HTMLInputElement>(null);
+  const minNodeCountRef = useRef<HTMLInputElement>(null);
+  const maxNodeCountRef = useRef<HTMLInputElement>(null);
+
+  // State for editable fields (usando string para permitir campo vazio)
+  const [nodeCount, setNodeCount] = useState<string>("0");
+  const [minNodeCount, setMinNodeCount] = useState<string>("0");
+  const [maxNodeCount, setMaxNodeCount] = useState<string>("1");
   const [autoscalingEnabled, setAutoscalingEnabled] = useState<boolean>(false);
   const [sequenceOrder, setSequenceOrder] = useState<string>("none");
 
@@ -38,9 +43,9 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   // Initialize form when nodePool changes
   useEffect(() => {
     if (nodePool) {
-      setNodeCount(nodePool.node_count);
-      setMinNodeCount(nodePool.min_node_count);
-      setMaxNodeCount(nodePool.max_node_count);
+      setNodeCount(String(nodePool.node_count));
+      setMinNodeCount(String(nodePool.min_node_count));
+      setMaxNodeCount(String(nodePool.max_node_count));
       setAutoscalingEnabled(nodePool.autoscaling_enabled);
 
       // Check if this pool is already in staging
@@ -63,9 +68,9 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
     if (!nodePool) return;
 
     const changed =
-      nodeCount !== nodePool.node_count ||
-      minNodeCount !== nodePool.min_node_count ||
-      maxNodeCount !== nodePool.max_node_count ||
+      (parseInt(nodeCount) || 0) !== nodePool.node_count ||
+      (parseInt(minNodeCount) || 0) !== nodePool.min_node_count ||
+      (parseInt(maxNodeCount) || 1) !== nodePool.max_node_count ||
       autoscalingEnabled !== nodePool.autoscaling_enabled;
 
     setHasChanges(changed);
@@ -73,9 +78,9 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
 
   const handleReset = () => {
     if (nodePool) {
-      setNodeCount(nodePool.node_count);
-      setMinNodeCount(nodePool.min_node_count);
-      setMaxNodeCount(nodePool.max_node_count);
+      setNodeCount(String(nodePool.node_count));
+      setMinNodeCount(String(nodePool.min_node_count));
+      setMaxNodeCount(String(nodePool.max_node_count));
       setAutoscalingEnabled(nodePool.autoscaling_enabled);
       setHasChanges(false);
     }
@@ -84,14 +89,19 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const handleApply = () => {
     if (!nodePool) return;
 
+    // Parse string values to numbers
+    const nodeCountNum = parseInt(nodeCount) || 0;
+    const minNodeCountNum = parseInt(minNodeCount) || 0;
+    const maxNodeCountNum = parseInt(maxNodeCount) || 1;
+
     // First add to staging if not already there
     staging.addNodePoolToStaging(nodePool);
 
     // Then update with new values
     const updates: Partial<NodePool> = {
-      node_count: nodeCount,
-      min_node_count: minNodeCount,
-      max_node_count: maxNodeCount,
+      node_count: nodeCountNum,
+      min_node_count: minNodeCountNum,
+      max_node_count: maxNodeCountNum,
       autoscaling_enabled: autoscalingEnabled,
     };
 
@@ -110,15 +120,20 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const handleApplyNow = async () => {
     if (!nodePool) return;
 
+    // Parse string values to numbers
+    const nodeCountNum = parseInt(nodeCount) || 0;
+    const minNodeCountNum = parseInt(minNodeCount) || 0;
+    const maxNodeCountNum = parseInt(maxNodeCount) || 1;
+
     setIsApplying(true);
 
     try {
       // Prepare updated node pool data
       const updatedNodePool: NodePool = {
         ...nodePool,
-        node_count: nodeCount,
-        min_node_count: minNodeCount,
-        max_node_count: maxNodeCount,
+        node_count: nodeCountNum,
+        min_node_count: minNodeCountNum,
+        max_node_count: maxNodeCountNum,
         autoscaling_enabled: autoscalingEnabled,
       };
 
@@ -127,9 +142,9 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         name: nodePool.name,
         cluster: nodePool.cluster_name,
         changes: {
-          node_count: nodePool.node_count !== nodeCount ? `${nodePool.node_count} → ${nodeCount}` : 'unchanged',
-          min_node_count: nodePool.min_node_count !== minNodeCount ? `${nodePool.min_node_count} → ${minNodeCount}` : 'unchanged',
-          max_node_count: nodePool.max_node_count !== maxNodeCount ? `${nodePool.max_node_count} → ${maxNodeCount}` : 'unchanged',
+          node_count: nodePool.node_count !== nodeCountNum ? `${nodePool.node_count} → ${nodeCountNum}` : 'unchanged',
+          min_node_count: nodePool.min_node_count !== minNodeCountNum ? `${nodePool.min_node_count} → ${minNodeCountNum}` : 'unchanged',
+          max_node_count: nodePool.max_node_count !== maxNodeCountNum ? `${nodePool.max_node_count} → ${maxNodeCountNum}` : 'unchanged',
           autoscaling_enabled: nodePool.autoscaling_enabled !== autoscalingEnabled ? `${nodePool.autoscaling_enabled} → ${autoscalingEnabled}` : 'unchanged',
         }
       });
@@ -140,9 +155,9 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         nodePool.resource_group,
         nodePool.name,
         {
-          node_count: nodeCount,
-          min_node_count: minNodeCount,
-          max_node_count: maxNodeCount,
+          node_count: nodeCountNum,
+          min_node_count: minNodeCountNum,
+          max_node_count: maxNodeCountNum,
           autoscaling_enabled: autoscalingEnabled,
         }
       );
@@ -247,14 +262,19 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             <div className="space-y-2">
               <Label htmlFor="nodeCount">Node Count</Label>
               <Input
+                ref={nodeCountRef}
                 id="nodeCount"
-                type="number"
-                min={0}
+                type="text"
                 value={nodeCount}
                 onChange={(e) => {
                   const val = e.target.value;
-                  setNodeCount(val === "" ? 0 : parseInt(val));
+                  // Allow empty or digits only
+                  if (val === "" || /^\d+$/.test(val)) {
+                    setNodeCount(val);
+                  }
                 }}
+                onClick={() => nodeCountRef.current?.select()}
+                onFocus={() => nodeCountRef.current?.select()}
                 className="w-full"
               />
               <p className="text-xs text-muted-foreground">
@@ -270,28 +290,37 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                 <div className="space-y-2">
                   <Label htmlFor="minNodes">Min Nodes</Label>
                   <Input
+                    ref={minNodeCountRef}
                     id="minNodes"
-                    type="number"
-                    min={0}
-                    max={maxNodeCount}
+                    type="text"
                     value={minNodeCount}
                     onChange={(e) => {
                       const val = e.target.value;
-                      setMinNodeCount(val === "" ? 0 : parseInt(val));
+                      // Allow empty or digits only
+                      if (val === "" || /^\d+$/.test(val)) {
+                        setMinNodeCount(val);
+                      }
                     }}
+                    onClick={() => minNodeCountRef.current?.select()}
+                    onFocus={() => minNodeCountRef.current?.select()}
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="maxNodes">Max Nodes</Label>
                   <Input
+                    ref={maxNodeCountRef}
                     id="maxNodes"
-                    type="number"
-                    min={minNodeCount}
+                    type="text"
                     value={maxNodeCount}
                     onChange={(e) => {
                       const val = e.target.value;
-                      setMaxNodeCount(val === "" ? 1 : parseInt(val));
+                      // Allow empty or digits only
+                      if (val === "" || /^\d+$/.test(val)) {
+                        setMaxNodeCount(val);
+                      }
                     }}
+                    onClick={() => maxNodeCountRef.current?.select()}
+                    onFocus={() => maxNodeCountRef.current?.select()}
                   />
                 </div>
               </div>
@@ -343,19 +372,19 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             <CardTitle className="text-sm">Original Values</CardTitle>
           </CardHeader>
           <CardContent className="space-y-1 text-sm">
-            {nodeCount !== nodePool.node_count && (
+            {(parseInt(nodeCount) || 0) !== nodePool.node_count && (
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Node Count:</span>
                 <span className="line-through">{nodePool.node_count}</span>
               </div>
             )}
-            {minNodeCount !== nodePool.min_node_count && (
+            {(parseInt(minNodeCount) || 0) !== nodePool.min_node_count && (
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Min Nodes:</span>
                 <span className="line-through">{nodePool.min_node_count}</span>
               </div>
             )}
-            {maxNodeCount !== nodePool.max_node_count && (
+            {(parseInt(maxNodeCount) || 1) !== nodePool.max_node_count && (
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Max Nodes:</span>
                 <span className="line-through">{nodePool.max_node_count}</span>

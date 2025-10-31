@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -53,13 +53,32 @@ export const ApplyAllModal = ({
   const [applyingIndividual, setApplyingIndividual] = useState<string | null>(null);
   const [hpaStates, setHpaStates] = useState<Record<string, HPAApplyState>>({});
   const [removedKeys, setRemovedKeys] = useState<Set<string>>(new Set());
+  const [refreshCounter, setRefreshCounter] = useState(0); // Force re-render after edit
 
-  // Edit modal state
+  // Derive fresh HPA data from staging instead of using stale prop
+  const freshModifiedHPAs = useMemo(() => {
+    return modifiedHPAs.map(({ key, original }) => {
+      // Get fresh data from staging
+      const freshHPA = staging?.stagedHPAs.find(
+        h => h.cluster === original.cluster &&
+             h.namespace === original.namespace &&
+             h.name === original.name
+      );
+
+      return {
+        key,
+        current: freshHPA || original, // Fallback to original if not in staging
+        original
+      };
+    });
+  }, [modifiedHPAs, staging?.stagedHPAs, refreshCounter]);
+
+  // Edit modal state - ALWAYS use string for input values
   const [editingKey, setEditingKey] = useState<string | null>(null);
-  const [editMinReplicas, setEditMinReplicas] = useState(0);
-  const [editMaxReplicas, setEditMaxReplicas] = useState(1);
-  const [editTargetCPU, setEditTargetCPU] = useState<number | undefined>(undefined);
-  const [editTargetMemory, setEditTargetMemory] = useState<number | undefined>(undefined);
+  const [editMinReplicas, setEditMinReplicas] = useState<string>("0");
+  const [editMaxReplicas, setEditMaxReplicas] = useState<string>("1");
+  const [editTargetCPU, setEditTargetCPU] = useState<string>("");
+  const [editTargetMemory, setEditTargetMemory] = useState<string>("");
   const [editTargetCpuRequest, setEditTargetCpuRequest] = useState("");
   const [editTargetCpuLimit, setEditTargetCpuLimit] = useState("");
   const [editTargetMemoryRequest, setEditTargetMemoryRequest] = useState("");
@@ -68,12 +87,19 @@ export const ApplyAllModal = ({
   const [editPerformDaemonSetRollout, setEditPerformDaemonSetRollout] = useState(false);
   const [editPerformStatefulSetRollout, setEditPerformStatefulSetRollout] = useState(false);
 
+  // Refs for input elements
+  const minReplicasRef = useRef<HTMLInputElement>(null);
+  const maxReplicasRef = useRef<HTMLInputElement>(null);
+  const targetCPURef = useRef<HTMLInputElement>(null);
+  const targetMemoryRef = useRef<HTMLInputElement>(null);
+
   const handleOpenEdit = (key: string, current: HPA) => {
     setEditingKey(key);
-    setEditMinReplicas(current.min_replicas ?? 0);
-    setEditMaxReplicas(current.max_replicas ?? 1);
-    setEditTargetCPU(current.target_cpu ?? undefined);
-    setEditTargetMemory(current.target_memory ?? undefined);
+    // Convert to string immediately for text inputs
+    setEditMinReplicas(String(current.min_replicas ?? 0));
+    setEditMaxReplicas(String(current.max_replicas ?? 1));
+    setEditTargetCPU(current.target_cpu !== null && current.target_cpu !== undefined ? String(current.target_cpu) : "");
+    setEditTargetMemory(current.target_memory !== null && current.target_memory !== undefined ? String(current.target_memory) : "");
     setEditTargetCpuRequest(current.target_cpu_request ?? "");
     setEditTargetCpuLimit(current.target_cpu_limit ?? "");
     setEditTargetMemoryRequest(current.target_memory_request ?? "");
@@ -86,18 +112,36 @@ export const ApplyAllModal = ({
   const handleSaveEdit = () => {
     if (!editingKey) return;
 
-    // Validate
-    if (editMinReplicas > editMaxReplicas) {
+    // Parse values from strings
+    const minRep = editMinReplicas === '' ? 0 : parseInt(editMinReplicas);
+    const maxRep = editMaxReplicas === '' ? 1 : parseInt(editMaxReplicas);
+
+    // Validate min/max
+    if (minRep > maxRep) {
       toast.error("Min Replicas não pode ser maior que Max Replicas");
       return;
     }
-    if (editTargetCPU !== undefined && (editTargetCPU < 1 || editTargetCPU > 100)) {
-      toast.error("Target CPU deve estar entre 1 e 100%");
-      return;
+
+    // Parse and validate CPU/Memory
+    let targetCPU: number | undefined = undefined;
+    let targetMem: number | undefined = undefined;
+
+    if (editTargetCPU !== '') {
+      const cpu = parseInt(editTargetCPU);
+      if (isNaN(cpu) || cpu < 1 || cpu > 100) {
+        toast.error("Target CPU deve estar entre 1 e 100%");
+        return;
+      }
+      targetCPU = cpu;
     }
-    if (editTargetMemory !== undefined && (editTargetMemory < 1 || editTargetMemory > 100)) {
-      toast.error("Target Memory deve estar entre 1 e 100%");
-      return;
+
+    if (editTargetMemory !== '') {
+      const mem = parseInt(editTargetMemory);
+      if (isNaN(mem) || mem < 1 || mem > 100) {
+        toast.error("Target Memory deve estar entre 1 e 100%");
+        return;
+      }
+      targetMem = mem;
     }
 
     // Find the HPA being edited
@@ -106,10 +150,10 @@ export const ApplyAllModal = ({
 
     // Update in staging
     const updates: Partial<HPA> = {
-      min_replicas: editMinReplicas,
-      max_replicas: editMaxReplicas,
-      target_cpu: editTargetCPU ?? null,
-      target_memory: editTargetMemory ?? null,
+      min_replicas: minRep,
+      max_replicas: maxRep,
+      target_cpu: targetCPU ?? null,
+      target_memory: targetMem ?? null,
       target_cpu_request: editTargetCpuRequest || undefined,
       target_cpu_limit: editTargetCpuLimit || undefined,
       target_memory_request: editTargetMemoryRequest || undefined,
@@ -128,13 +172,9 @@ export const ApplyAllModal = ({
 
     toast.success(`HPA ${hpaToEdit.current.name} atualizado no staging`);
 
-    // Close modal - parent component will re-render with updated staging data
+    // Close edit modal and trigger refresh via counter
     setEditingKey(null);
-
-    // Force parent to refresh modified HPAs list
-    // This triggers a re-render with the new staging data
-    onOpenChange(false);
-    setTimeout(() => onOpenChange(true), 50);
+    setRefreshCounter(prev => prev + 1); // Trigger useMemo to fetch fresh data from staging
   };
 
   const handleRemoveIndividual = (key: string, current: HPA) => {
@@ -358,7 +398,7 @@ export const ApplyAllModal = ({
 
         <ScrollArea className="max-h-[50vh] pr-4">
           <div className="space-y-4">
-            {modifiedHPAs
+            {freshModifiedHPAs
               .filter(({ key }) => !removedKeys.has(key))
               .map(({ key, current, original }) => {
               const changes = renderHPAChanges(current, original);
@@ -368,7 +408,7 @@ export const ApplyAllModal = ({
               const hasBeenApplied = hpaState && (hpaState.status === 'success' || hpaState.status === 'error' || hpaState.status === 'warning');
 
               return (
-                <div key={key} className="border rounded-lg p-4 space-y-2">
+                <div key={`${key}-${refreshCounter}`} className="border rounded-lg p-4 space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-3">
                       <div className="flex items-center gap-2">
@@ -513,35 +553,39 @@ export const ApplyAllModal = ({
                   <div>
                     <Label htmlFor="edit-min-replicas">Min Replicas</Label>
                     <Input
+                      ref={minReplicasRef}
                       id="edit-min-replicas"
-                      type="number"
+                      type="text"
                       value={editMinReplicas}
                       onChange={(e) => {
                         const val = e.target.value;
-                        if (val === "") {
-                          setEditMinReplicas(0);
-                        } else {
-                          setEditMinReplicas(parseInt(val));
+                        // Allow digits only
+                        if (/^\d*$/.test(val)) {
+                          setEditMinReplicas(val || "0");
                         }
                       }}
-                      min="0"
+                      onClick={() => minReplicasRef.current?.select()}
+                      onFocus={() => minReplicasRef.current?.select()}
+                      placeholder="0"
                     />
                   </div>
                   <div>
                     <Label htmlFor="edit-max-replicas">Max Replicas</Label>
                     <Input
+                      ref={maxReplicasRef}
                       id="edit-max-replicas"
-                      type="number"
+                      type="text"
                       value={editMaxReplicas}
                       onChange={(e) => {
                         const val = e.target.value;
-                        if (val === "") {
-                          setEditMaxReplicas(1);
-                        } else {
-                          setEditMaxReplicas(parseInt(val));
+                        // Allow digits only
+                        if (/^\d*$/.test(val)) {
+                          setEditMaxReplicas(val || "1");
                         }
                       }}
-                      min="1"
+                      onClick={() => maxReplicasRef.current?.select()}
+                      onFocus={() => maxReplicasRef.current?.select()}
+                      placeholder="1"
                     />
                   </div>
                 </div>
@@ -550,39 +594,39 @@ export const ApplyAllModal = ({
                   <div>
                     <Label htmlFor="edit-target-cpu">Target CPU (%)</Label>
                     <Input
+                      ref={targetCPURef}
                       id="edit-target-cpu"
-                      type="number"
-                      value={editTargetCPU ?? ""}
+                      type="text"
+                      value={editTargetCPU}
                       onChange={(e) => {
                         const val = e.target.value;
-                        if (val === "") {
-                          setEditTargetCPU(undefined);
-                        } else {
-                          setEditTargetCPU(parseInt(val));
+                        // Allow digits only (empty means not set)
+                        if (/^\d*$/.test(val)) {
+                          setEditTargetCPU(val);
                         }
                       }}
+                      onClick={() => targetCPURef.current?.select()}
+                      onFocus={() => targetCPURef.current?.select()}
                       placeholder="Ex: 80"
-                      min="1"
-                      max="100"
                     />
                   </div>
                   <div>
                     <Label htmlFor="edit-target-memory">Target Memory (%)</Label>
                     <Input
+                      ref={targetMemoryRef}
                       id="edit-target-memory"
-                      type="number"
-                      value={editTargetMemory ?? ""}
+                      type="text"
+                      value={editTargetMemory}
                       onChange={(e) => {
                         const val = e.target.value;
-                        if (val === "") {
-                          setEditTargetMemory(undefined);
-                        } else {
-                          setEditTargetMemory(parseInt(val));
+                        // Allow digits only (empty means not set)
+                        if (/^\d*$/.test(val)) {
+                          setEditTargetMemory(val);
                         }
                       }}
+                      onClick={() => targetMemoryRef.current?.select()}
+                      onFocus={() => targetMemoryRef.current?.select()}
                       placeholder="Ex: 80"
-                      min="1"
-                      max="100"
                     />
                   </div>
                 </div>
