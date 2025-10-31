@@ -97,10 +97,11 @@ class APIClient {
   }
 
   // HPAs
-  async getHPAs(cluster?: string, namespace?: string, bypassCache: boolean = false): Promise<HPA[]> {
+  async getHPAs(cluster?: string, namespace?: string, bypassCache: boolean = false, showSystem: boolean = false): Promise<HPA[]> {
     const params = new URLSearchParams();
     if (cluster) params.append("cluster", cluster);
     if (namespace) params.append("namespace", namespace);
+    if (showSystem) params.append("showSystem", "true");
     if (bypassCache) params.append("_t", Date.now().toString());
     const query = params.toString() ? `?${params.toString()}` : "";
 

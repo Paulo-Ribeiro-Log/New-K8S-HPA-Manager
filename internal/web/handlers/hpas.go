@@ -24,6 +24,7 @@ func NewHPAHandler(km *config.KubeConfigManager) *HPAHandler {
 func (h *HPAHandler) List(c *gin.Context) {
 	cluster := c.Query("cluster")
 	namespace := c.Query("namespace") // Opcional
+	showSystemStr := c.Query("showSystem") // Opcional: "true" para mostrar namespaces de sistema
 
 	if cluster == "" {
 		c.JSON(400, gin.H{
@@ -34,6 +35,12 @@ func (h *HPAHandler) List(c *gin.Context) {
 			},
 		})
 		return
+	}
+
+	// Parse showSystem parameter (default: false)
+	showSystem := false
+	if showSystemStr == "true" {
+		showSystem = true
 	}
 
 	// Obter client do cluster
@@ -56,7 +63,7 @@ func (h *HPAHandler) List(c *gin.Context) {
 	// Se namespace não especificado, listar de TODOS os namespaces
 	if namespace == "" {
 		// Primeiro listar todos os namespaces
-		namespaces, err := kubeClient.ListNamespaces(c.Request.Context(), false)
+		namespaces, err := kubeClient.ListNamespaces(c.Request.Context(), showSystem)
 		if err != nil {
 			c.JSON(500, gin.H{
 				"success": false,

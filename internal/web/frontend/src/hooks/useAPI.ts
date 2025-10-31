@@ -69,7 +69,7 @@ export function useNamespaces(cluster?: string) {
   return { namespaces, loading, error, refetch: fetchNamespaces };
 }
 
-export function useHPAs(cluster?: string, namespace?: string) {
+export function useHPAs(cluster?: string, namespace?: string, showSystem: boolean = false) {
   const [hpas, setHPAs] = useState<HPA[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -83,13 +83,13 @@ export function useHPAs(cluster?: string, namespace?: string) {
     // Se overrideNamespace for null, ignora o namespace (busca todos)
     // Se for undefined, usa o namespace da prop
     const nsToUse = overrideNamespace === null ? undefined : (overrideNamespace !== undefined ? overrideNamespace : namespace);
-    
-    console.log(`[useHPAs.fetchHPAs] Fetching - cluster: "${cluster}", namespace: "${nsToUse || 'all'}", bypassCache: ${bypassCache}`);
+
+    console.log(`[useHPAs.fetchHPAs] Fetching - cluster: "${cluster}", namespace: "${nsToUse || 'all'}", bypassCache: ${bypassCache}, showSystem: ${showSystem}`);
 
     try {
       setLoading(true);
       setError(null);
-      const data = await apiClient.getHPAs(cluster, nsToUse, bypassCache);
+      const data = await apiClient.getHPAs(cluster, nsToUse, bypassCache, showSystem);
       console.log(`[useHPAs.fetchHPAs] Received ${data.length} HPAs`);
       setHPAs(data);
     } catch (err) {
@@ -141,7 +141,7 @@ export function useHPAs(cluster?: string, namespace?: string) {
 
   useEffect(() => {
     fetchHPAs();
-  }, [cluster, namespace]);
+  }, [cluster, namespace, showSystem]);
 
   useEffect(() => {
     const handleRescan = (event: Event) => {

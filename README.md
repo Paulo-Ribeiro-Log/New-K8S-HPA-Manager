@@ -93,6 +93,7 @@ Permite gerenciar HPAs e Node Pools de forma interativa e segura, com sessões r
 - ✅ **Aplicar Agora** - Botões para aplicação individual (HPAs e Node Pools)
 - ✅ **Snapshot de Cluster** - Captura estado atual para rollback
 - ✅ **Heartbeat System** - Auto-shutdown em 20min de inatividade
+- ✅ **System Namespaces Toggle** - Filtro de namespaces de sistema (kube-*, monitoring, etc.)
 - ✅ **Standalone Binary** - Frontend embedado (não precisa Node.js em runtime)
 
 ---

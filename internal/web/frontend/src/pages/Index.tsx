@@ -26,9 +26,12 @@ import {
   Package,
   Database,
   FileText,
-  Search
+  Search,
+  Eye,
+  EyeOff
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { useClusters, useNamespaces, useHPAs, useNodePools } from "@/hooks/useAPI";
 import type { HPA, NodePool } from "@/lib/api/types";
 import { useStaging } from "@/contexts/StagingContext";
@@ -58,7 +61,10 @@ const Index = ({ onLogout }: IndexProps) => {
   // Search filters
   const [hpaSearchQuery, setHpaSearchQuery] = useState("");
   const [nodePoolSearchQuery, setNodePoolSearchQuery] = useState("");
-  
+
+  // Toggle para mostrar namespaces de sistema (default: false)
+  const [showSystemNamespaces, setShowSystemNamespaces] = useState(false);
+
   // TabManager para sincronizar estado com abas
   const { updateActiveTabState } = useTabManager();
 
@@ -68,7 +74,8 @@ const Index = ({ onLogout }: IndexProps) => {
   // API Hooks
   const { clusters, loading: clustersLoading } = useClusters();
   const { namespaces, loading: namespacesLoading } = useNamespaces(selectedCluster);
-  const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, selectedNamespace);
+  // Para HPAs: sempre buscar de TODOS os namespaces (passar undefined ao invés de selectedNamespace)
+  const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, undefined, showSystemNamespaces);
   const { nodePools, loading: nodePoolsLoading } = useNodePools(selectedCluster);
 
   // Auto-select first cluster (using context instead of name)
@@ -190,6 +197,34 @@ const Index = ({ onLogout }: IndexProps) => {
           <SplitView
             leftPanel={{
               title: "Available HPAs",
+              titleAction: (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={`${
+                    showSystemNamespaces
+                      ? "bg-primary/10 border-primary/30 text-primary"
+                      : "bg-muted/50 border-muted-foreground/20"
+                  } transition-colors`}
+                  onClick={() => {
+                    console.log('[Toggle] Atual:', showSystemNamespaces, '→ Novo:', !showSystemNamespaces);
+                    setShowSystemNamespaces(!showSystemNamespaces);
+                  }}
+                  title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
+                >
+                  {showSystemNamespaces ? (
+                    <>
+                      <Eye className="w-4 h-4 mr-2" />
+                      Sistema: ON
+                    </>
+                  ) : (
+                    <>
+                      <EyeOff className="w-4 h-4 mr-2" />
+                      Sistema: OFF
+                    </>
+                  )}
+                </Button>
+              ),
               content: hpasLoading ? (
                 <div className="flex items-center justify-center h-64 text-muted-foreground">
                   Loading HPAs...

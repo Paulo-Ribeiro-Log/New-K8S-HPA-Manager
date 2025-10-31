@@ -64,6 +64,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Modal de edição inline** - Edição completa de HPAs no ApplyAllModal - v1.2.1
 - ✅ **Sistema de eventos** - Refetch sem reload para estabilidade - v1.2.1
 - ✅ **Sistema de Log Viewer** - Modal com captura em tempo real, auto-refresh, exportar CSV - v1.2.1
+- ✅ **Toggle de Namespaces de Sistema** - Exibe/oculta namespaces de sistema (kube-system, monitoring, etc.) - Outubro 2025
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -497,6 +498,7 @@ func (s *Server) handleHeartbeat(c *gin.Context) {
 | **Snapshot Cluster** | ✅ 100% | Captura estado atual para rollback |
 | **Heartbeat System** | ✅ 100% | Auto-shutdown em 20min inatividade |
 | **Log Viewer** | ✅ 100% | Modal com logs em tempo real (app + servidor), auto-refresh, copiar, exportar CSV, limpar |
+| **System Namespaces Toggle** | ✅ 100% | Filtro de namespaces de sistema (kube-*, monitoring, etc.) com botão toggle |
 
 ### Workflow Session Management (Web)
 
@@ -530,6 +532,48 @@ func (s *Server) handleHeartbeat(c *gin.Context) {
 5. Salva em folder "Rollback" ou custom
 6. Para restaurar: Load session → Apply
 ```
+
+### Toggle de Namespaces de Sistema
+
+**Feature NOVA (Outubro 2025):**
+- Filtro inteligente de namespaces de sistema (kube-system, kube-public, monitoring, etc.)
+- Botão toggle na mesma linha do título "Available HPAs"
+- Estados visuais distintos: ON (azul/primary) e OFF (cinza/muted)
+- Default: desabilitado (namespaces de sistema ocultos)
+
+**Implementação:**
+- **Backend**: Query parameter `showSystem=true` em `/api/v1/hpas`
+- **Frontend**: Estado React com ícones Eye/EyeOff
+- **Filtro**: Lista de 53+ namespaces de sistema em `internal/kubernetes/client.go`
+- **Posicionamento**: Propriedade `titleAction` no componente `SplitView`
+
+**Workflow:**
+```
+1. Usuário acessa página de HPAs
+2. Por padrão, namespaces de sistema estão ocultos (botão OFF - cinza)
+3. Clicar no botão toggle:
+   - ON (Eye + azul): Mostra namespaces de sistema
+   - OFF (EyeOff + cinza): Oculta namespaces de sistema
+4. Backend filtra usando isSystemNamespace()
+5. Lista de HPAs atualizada automaticamente via useEffect
+```
+
+**Namespaces de sistema filtrados:**
+- Kubernetes core: `kube-system`, `kube-public`, `kube-node-lease`, `default`
+- Monitoring: `monitoring`, `prometheus`, `grafana`, `kube-prometheus-stack`
+- Networking: `calico-system`, `tigera-operator`, `istio-system`, `linkerd`
+- Storage: `rook-ceph`, `longhorn-system`, `openebs`
+- CI/CD: `argocd`, `flux-system`, `tekton-pipelines`
+- Logging: `logging`, `elastic-system`, `loki`
+- Security: `cert-manager`, `vault`, `gatekeeper-system`
+- E mais 30+ namespaces...
+
+**Arquivos modificados:**
+- `internal/web/handlers/hpas.go` - Parse query parameter `showSystem`
+- `internal/web/frontend/src/lib/api/client.ts` - Parâmetro `showSystem` em `getHPAs()`
+- `internal/web/frontend/src/hooks/useAPI.ts` - Hook `useHPAs` com `showSystem`
+- `internal/web/frontend/src/components/SplitView.tsx` - Suporte a `titleAction`
+- `internal/web/frontend/src/pages/Index.tsx` - Estado e botão toggle
 
 ### Rebuild Web Obrigatório
 
