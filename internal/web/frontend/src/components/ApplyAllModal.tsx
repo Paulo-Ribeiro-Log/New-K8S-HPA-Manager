@@ -126,8 +126,15 @@ export const ApplyAllModal = ({
       updates
     );
 
-    toast.success(`HPA ${hpaToEdit.current.name} atualizado`);
+    toast.success(`HPA ${hpaToEdit.current.name} atualizado no staging`);
+
+    // Close modal - parent component will re-render with updated staging data
     setEditingKey(null);
+
+    // Force parent to refresh modified HPAs list
+    // This triggers a re-render with the new staging data
+    onOpenChange(false);
+    setTimeout(() => onOpenChange(true), 50);
   };
 
   const handleRemoveIndividual = (key: string, current: HPA) => {
@@ -509,7 +516,14 @@ export const ApplyAllModal = ({
                       id="edit-min-replicas"
                       type="number"
                       value={editMinReplicas}
-                      onChange={(e) => setEditMinReplicas(parseInt(e.target.value) || 0)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === "") {
+                          setEditMinReplicas(0);
+                        } else {
+                          setEditMinReplicas(parseInt(val));
+                        }
+                      }}
                       min="0"
                     />
                   </div>
@@ -519,7 +533,14 @@ export const ApplyAllModal = ({
                       id="edit-max-replicas"
                       type="number"
                       value={editMaxReplicas}
-                      onChange={(e) => setEditMaxReplicas(parseInt(e.target.value) || 1)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === "") {
+                          setEditMaxReplicas(1);
+                        } else {
+                          setEditMaxReplicas(parseInt(val));
+                        }
+                      }}
                       min="1"
                     />
                   </div>
@@ -532,7 +553,14 @@ export const ApplyAllModal = ({
                       id="edit-target-cpu"
                       type="number"
                       value={editTargetCPU ?? ""}
-                      onChange={(e) => setEditTargetCPU(e.target.value ? parseInt(e.target.value) : undefined)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === "") {
+                          setEditTargetCPU(undefined);
+                        } else {
+                          setEditTargetCPU(parseInt(val));
+                        }
+                      }}
                       placeholder="Ex: 80"
                       min="1"
                       max="100"
@@ -544,7 +572,14 @@ export const ApplyAllModal = ({
                       id="edit-target-memory"
                       type="number"
                       value={editTargetMemory ?? ""}
-                      onChange={(e) => setEditTargetMemory(e.target.value ? parseInt(e.target.value) : undefined)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === "") {
+                          setEditTargetMemory(undefined);
+                        } else {
+                          setEditTargetMemory(parseInt(val));
+                        }
+                      }}
                       placeholder="Ex: 80"
                       min="1"
                       max="100"
