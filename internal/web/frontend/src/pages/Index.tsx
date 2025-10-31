@@ -287,7 +287,7 @@ const Index = ({ onLogout }: IndexProps) => {
             }}
           />
         );
-      
+
       case "nodepools":
         return (
           <SplitView
