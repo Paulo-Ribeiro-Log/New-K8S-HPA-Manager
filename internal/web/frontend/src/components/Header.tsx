@@ -1,13 +1,21 @@
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { LogOut, CheckCircle, Zap, Save, FolderOpen, FileText } from "lucide-react";
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { LogOut, CheckCircle, Zap, Save, FolderOpen, FileText, ChevronsUpDown, Check } from "lucide-react";
 import { ModeToggle } from "@/components/mode-toggle";
+import { cn } from "@/lib/utils";
 
 interface HeaderProps {
   selectedCluster: string;
@@ -36,24 +44,58 @@ export const Header = ({
   userInfo,
   onLogout,
 }: HeaderProps) => {
+  const [open, setOpen] = useState(false);
   return (
     <header className="h-16 bg-gradient-primary flex items-center justify-between px-6 shadow-lg flex-shrink-0">
-      <div className="flex items-center gap-6">
+      <div className="flex items-center gap-4">
         <h1 className="text-xl font-semibold text-white tracking-tight">
           k8s-hpa-manager
         </h1>
-        <Select value={selectedCluster} onValueChange={onClusterChange}>
-          <SelectTrigger className="w-[280px] bg-white/20 border-white/30 text-white hover:bg-white/25 transition-colors">
-            <SelectValue placeholder="Select a cluster..." />
-          </SelectTrigger>
-          <SelectContent>
-            {clusters.map((cluster) => (
-              <SelectItem key={cluster} value={cluster}>
-                {cluster}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+
+        {/* Combobox de cluster com busca integrada */}
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              role="combobox"
+              aria-expanded={open}
+              className="w-[400px] justify-between bg-white/20 border-white/30 text-white hover:bg-white/25 hover:text-white"
+            >
+              {selectedCluster
+                ? clusters.find((cluster) => cluster === selectedCluster)
+                : "Selecione ou busque um cluster..."}
+              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[400px] p-0">
+            <Command>
+              <CommandInput placeholder="Buscar cluster..." />
+              <CommandList>
+                <CommandEmpty>Nenhum cluster encontrado.</CommandEmpty>
+                <CommandGroup>
+                  {clusters.map((cluster) => (
+                    <CommandItem
+                      key={cluster}
+                      value={cluster}
+                      onSelect={(currentValue) => {
+                        onClusterChange(currentValue === selectedCluster ? "" : currentValue);
+                        setOpen(false);
+                      }}
+                    >
+                      <Check
+                        className={cn(
+                          "mr-2 h-4 w-4",
+                          selectedCluster === cluster ? "opacity-100" : "opacity-0"
+                        )}
+                      />
+                      {cluster}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
       </div>
       
       <div className="flex items-center gap-3">

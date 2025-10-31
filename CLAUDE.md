@@ -32,8 +32,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Estado Atual (Outubro 2025)
 
-**Versão Atual:** v1.3.1 (Release: 31 de outubro de 2025)
-**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.1
+**Versão Atual:** v1.3.2 (Release: 31 de outubro de 2025)
+**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.2
 
 **TUI (Terminal Interface):**
 - ✅ Interface responsiva (adapta-se ao tamanho real do terminal - mínimo 80x24)
@@ -65,6 +65,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Sistema de eventos** - Refetch sem reload para estabilidade - v1.2.1
 - ✅ **Sistema de Log Viewer** - Modal com captura em tempo real, auto-refresh, exportar CSV - v1.2.1
 - ✅ **Toggle de Namespaces de Sistema** - Exibe/oculta namespaces de sistema (kube-system, monitoring, etc.) - Outubro 2025
+- ✅ **Combobox de Cluster no Header** - Busca integrada com filtro em tempo real, keyboard navigation - v1.3.2
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -1112,6 +1113,73 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Feature: Combobox de Busca de Clusters no Header (Outubro 2025) ✅
+
+**Data:** 31 de outubro de 2025
+
+**Feature implementada:** Combobox com busca integrada para seleção de clusters no header da interface web.
+
+**Problema anterior:**
+- Select dropdown simples sem busca
+- Usuário tinha que rolar lista completa de clusters (70+ clusters)
+- Difícil encontrar cluster específico rapidamente
+
+**Solução implementada:**
+- ✅ **Combobox completo** usando componentes shadcn/ui (Command + Popover)
+- ✅ **Busca integrada** - Campo de busca dentro do dropdown
+- ✅ **Filtragem em tempo real** - CommandInput filtra automaticamente
+- ✅ **Keyboard navigation** - Setas, Enter, Esc funcionam nativamente
+- ✅ **Check visual** - Ícone ✓ mostra cluster selecionado
+- ✅ **Auto-close** - Dropdown fecha automaticamente após seleção
+- ✅ **Acessibilidade** - role="combobox" e ARIA attributes corretos
+
+**Componentes utilizados:**
+```typescript
+<Popover>
+  <PopoverTrigger>
+    <Button role="combobox">
+      {selectedCluster || "Selecione ou busque um cluster..."}
+      <ChevronsUpDown />
+    </Button>
+  </PopoverTrigger>
+  <PopoverContent>
+    <Command>
+      <CommandInput placeholder="Buscar cluster..." />
+      <CommandList>
+        <CommandEmpty>Nenhum cluster encontrado.</CommandEmpty>
+        <CommandGroup>
+          {clusters.map((cluster) => (
+            <CommandItem onSelect={handleSelect}>
+              <Check /> {cluster}
+            </CommandItem>
+          ))}
+        </CommandGroup>
+      </CommandList>
+    </Command>
+  </PopoverContent>
+</Popover>
+```
+
+**Arquivos modificados:**
+- `Header.tsx` - Substituído Select por Combobox completo
+- Removido `ClusterSelectorForTab.tsx` modificações (não é usado no header)
+
+**Benefícios:**
+- ✅ **Busca rápida**: Digite parte do nome e encontre instantaneamente
+- ✅ **UX melhorada**: Um componente unificado ao invés de dois separados
+- ✅ **Escalável**: Funciona perfeitamente com 70+ clusters
+- ✅ **Keyboard-friendly**: Navegação completa via teclado
+- ✅ **Feedback visual**: Check mark no item selecionado
+
+**Exemplos de uso:**
+- Digite "hlg" → Filtra todos os clusters de homologação
+- Digite "faturamento" → Mostra `akspriv-faturamento-hlg-admin`
+- Setas ↑↓ → Navega entre clusters filtrados
+- Enter → Seleciona e fecha dropdown
+- Esc → Fecha sem selecionar
+
+---
 
 ### Correção Crítica: Input Fields e Modal Auto-Update (Outubro 2025) ✅
 
