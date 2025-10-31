@@ -194,16 +194,16 @@ k8s-hpa-manager version
 #### Atualizar Automaticamente
 
 ```bash
-# Script de auto-update (copia durante instalação)
+# Via binário instalado (forma recomendada)
+k8s-hpa-manager --auto-update                    # Interativo
+k8s-hpa-manager --auto-update --yes              # Auto-confirmação (para scripts/cron)
+k8s-hpa-manager --auto-update --check            # Apenas verificar sem instalar
+k8s-hpa-manager --auto-update --dry-run          # Simular atualização (teste)
+
+# Ou diretamente via script (após instalação)
 ~/.k8s-hpa-manager/scripts/auto-update.sh
-
-# Ou com auto-confirmação (para scripts/cron)
 ~/.k8s-hpa-manager/scripts/auto-update.sh --yes
-
-# Apenas verificar sem instalar
 ~/.k8s-hpa-manager/scripts/auto-update.sh --check
-
-# Simular atualização (teste)
 ~/.k8s-hpa-manager/scripts/auto-update.sh --dry-run
 ```
 
@@ -327,37 +327,34 @@ k8s-hpa-manager --check-updates=false
 
 ### Scripts Utilitários
 
-Após instalação via `install-from-github.sh`, os scripts ficam em `~/.k8s-hpa-manager/scripts/`:
+Scripts instalados em `~/.k8s-hpa-manager/scripts/` (após `install-from-github.sh`):
 
 ```bash
-# Gerenciar servidor web (via atalho)
-k8s-hpa-web start          # Iniciar servidor
-k8s-hpa-web stop           # Parar servidor
-k8s-hpa-web status         # Ver status
-k8s-hpa-web logs           # Ver logs em tempo real
-k8s-hpa-web restart        # Reiniciar
+# Gerenciar servidor web
+~/.k8s-hpa-manager/scripts/web-server.sh start      # Iniciar servidor
+~/.k8s-hpa-manager/scripts/web-server.sh stop       # Parar servidor
+~/.k8s-hpa-manager/scripts/web-server.sh status     # Ver status
+~/.k8s-hpa-manager/scripts/web-server.sh logs       # Ver logs em tempo real
+~/.k8s-hpa-manager/scripts/web-server.sh restart    # Reiniciar
 
-# Auto-update (verificar e atualizar)
-~/.k8s-hpa-manager/scripts/auto-update.sh          # Interativo
-~/.k8s-hpa-manager/scripts/auto-update.sh --yes    # Auto-confirmar
-~/.k8s-hpa-manager/scripts/auto-update.sh --check  # Apenas verificar
-~/.k8s-hpa-manager/scripts/auto-update.sh --dry-run # Simular
+# Desenvolvimento (copiados para ~/.k8s-hpa-manager/scripts/)
+~/.k8s-hpa-manager/scripts/rebuild-web.sh -b        # Rebuild web interface
+~/.k8s-hpa-manager/scripts/backup.sh "descrição"    # Criar backup
+~/.k8s-hpa-manager/scripts/restore.sh               # Restaurar backup
+~/.k8s-hpa-manager/scripts/uninstall.sh             # Desinstalar
+```
 
-# Desinstalar
-~/.k8s-hpa-manager/scripts/uninstall.sh
+**Nota:** O script `auto-update.sh` está disponível apenas no diretório do projeto (não é copiado durante instalação). Use `k8s-hpa-manager version` para verificar updates.
 
-# Backup/Restore (para desenvolvimento)
-~/.k8s-hpa-manager/scripts/backup.sh "descrição"
-~/.k8s-hpa-manager/scripts/restore.sh
+Comandos do binário:
 
-# Rebuild web interface (para desenvolvimento)
-~/.k8s-hpa-manager/scripts/rebuild-web.sh -b
+```bash
+# Verificar versão e updates
+k8s-hpa-manager version
 
-# Custom kubeconfig
-k8s-hpa-manager --kubeconfig /path/to/config
-
-# Desabilitar verificação de updates
-k8s-hpa-manager --check-updates=false
+# Opções avançadas
+k8s-hpa-manager --kubeconfig /path/to/config    # Custom kubeconfig
+k8s-hpa-manager --check-updates=false           # Desabilitar verificação de updates
 ```
 
 ### Comandos de Desenvolvimento

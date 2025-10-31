@@ -19,6 +19,7 @@ var (
 	debug        bool
 	demo         bool
 	checkUpdates bool
+	autoUpdate   bool
 )
 
 var rootCmd = &cobra.Command{
@@ -226,6 +227,8 @@ func init() {
 		"Run in demo mode (show implementation status)")
 	rootCmd.PersistentFlags().BoolVar(&checkUpdates, "check-updates", true,
 		"Check for updates on startup (default: true)")
+	rootCmd.PersistentFlags().BoolVar(&autoUpdate, "auto-update", false,
+		"Run auto-update script (supports --yes, --dry-run, --check, --force)")
 
 	// Set default kubeconfig path
 	if home, exists := os.LookupEnv("HOME"); exists && kubeconfig == "" {

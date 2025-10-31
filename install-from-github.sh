@@ -226,7 +226,7 @@ copy_scripts() {
     mkdir -p "$SCRIPTS_DIR"
 
     # List of scripts to copy
-    local scripts=("web-server.sh" "uninstall.sh" "backup.sh" "restore.sh" "rebuild-web.sh")
+    local scripts=("web-server.sh" "auto-update.sh" "uninstall.sh" "backup.sh" "restore.sh" "rebuild-web.sh")
     local copied_count=0
 
     for script in "${scripts[@]}"; do
