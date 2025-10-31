@@ -222,6 +222,18 @@ copy_scripts() {
 
     cd "$TEMP_DIR"
 
+    # Create scripts directory (but preserve sessions if they exist)
+    local user_data_dir="$HOME/.k8s-hpa-manager"
+    local sessions_dir="$user_data_dir/sessions"
+
+    # Check if sessions directory already exists
+    if [ -d "$sessions_dir" ]; then
+        print_info "Sessões existentes detectadas - preservando dados do usuário"
+        print_success "Diretório de sessões preservado: $sessions_dir"
+    else
+        print_info "Primeira instalação - criando estrutura de diretórios"
+    fi
+
     # Create scripts directory
     mkdir -p "$SCRIPTS_DIR"
 

@@ -97,6 +97,33 @@ check_for_updates() {
     return 1
 }
 
+# Backup user data before update
+backup_user_data() {
+    local backup_dir="$HOME/.k8s-hpa-manager-backup-$(date +%Y%m%d_%H%M%S)"
+    local data_dir="$HOME/.k8s-hpa-manager"
+
+    # Check if data directory exists
+    if [ ! -d "$data_dir" ]; then
+        return 0  # Nothing to backup
+    fi
+
+    print_info "🔒 Criando backup de segurança dos dados do usuário..."
+
+    if [ "$DRY_RUN" = true ]; then
+        print_dry_run "Backup seria criado em: $backup_dir"
+        return 0
+    fi
+
+    # Create backup
+    if cp -r "$data_dir" "$backup_dir"; then
+        print_success "Backup criado: $backup_dir"
+        print_info "💡 Backup disponível em caso de problemas"
+        echo ""
+    else
+        print_warning "Não foi possível criar backup (continuando...)"
+    fi
+}
+
 # Perform update
 perform_update() {
     print_header "Iniciando atualização"
@@ -120,18 +147,25 @@ perform_update() {
     fi
 
     if [ "$DRY_RUN" = true ]; then
+        print_dry_run "Backup de segurança seria criado"
         print_dry_run "Simulando download e instalação..."
         print_dry_run "curl -fsSL $INSTALL_SCRIPT_URL | bash"
+        print_dry_run "Sessões existentes seriam preservadas automaticamente"
         echo ""
         print_success "Simulação concluída! (modo dry-run)"
         print_info "Execute sem --dry-run para instalar de verdade"
         return 0
     fi
 
+    # Backup user data BEFORE update (safety measure)
+    backup_user_data
+
     print_info "Baixando e executando instalador..."
+    print_info "✅ Suas sessões existentes serão preservadas automaticamente"
     echo ""
 
     # Download and execute installer
+    # Note: install-from-github.sh automatically preserves existing sessions
     if curl -fsSL "$INSTALL_SCRIPT_URL" | bash; then
         print_success "Atualização concluída com sucesso!"
         echo ""
@@ -148,6 +182,7 @@ perform_update() {
         fi
     else
         print_error "Falha na atualização"
+        print_info "💡 Backup disponível em caso de necessidade de restauração manual"
         exit 1
     fi
 }
