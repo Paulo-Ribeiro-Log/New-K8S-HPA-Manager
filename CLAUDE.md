@@ -32,8 +32,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Estado Atual (Novembro 2025)
 
-**Versão Atual:** v1.3.3 (Release: 01 de novembro de 2025)
-**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.3
+**Versão Atual:** v1.3.4 (Release: 01 de novembro de 2025)
+**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.4
 
 **TUI (Terminal Interface):**
 - ✅ Interface responsiva (adapta-se ao tamanho real do terminal - mínimo 80x24)
@@ -67,6 +67,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Sistema de Log Viewer** - Modal com captura em tempo real, auto-refresh, exportar CSV - v1.2.1
 - ✅ **Toggle de Namespaces de Sistema** - Exibe/oculta namespaces de sistema (kube-system, monitoring, etc.) - Outubro 2025
 - ✅ **Combobox de Cluster no Header** - Busca integrada com filtro em tempo real, keyboard navigation - v1.3.2
+- ✅ **Redesign CronJobs e Prometheus Pages** - SplitView layout, auto-refresh, controles compactos - v1.3.4
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -1114,6 +1115,82 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Redesign Completo: CronJobs e Prometheus Pages (Novembro 2025) ✅
+
+**Data:** 01 de novembro de 2025
+
+**Feature implementada:** Redesign completo das páginas de CronJobs e Prometheus Stack para alinhar com o padrão visual das páginas de HPAs e Node Pools.
+
+**Problema anterior:**
+- Layout desalinhado com resto da aplicação
+- Controles dispersos e pouco intuitivos
+- Sem busca integrada
+- Estado não atualizava em tempo real após alterações
+
+**Solução implementada:**
+
+**1️⃣ SplitView Layout (2/5 + 3/5)**
+- Painel esquerdo: Lista de recursos com busca
+- Painel direito: Editor com formulários de edição
+- Padrão consistente com HPAs e Node Pools
+
+**2️⃣ Componentes criados:**
+```typescript
+// Lista compacta com badges de status
+CronJobListItem.tsx
+PrometheusListItem.tsx
+
+// Editores com aplicação direta (sem staging)
+CronJobEditor.tsx    → Suspend/Resume compacto (grid 2 botões)
+PrometheusEditor.tsx → Edição de recursos + Rollout
+```
+
+**3️⃣ Auto-refresh após alterações:**
+```typescript
+// Pattern implementado em ambas as páginas
+React.useEffect(() => {
+  if (selectedItem && items.length > 0) {
+    const updated = items.find(item => item.name === selectedItem.name);
+    if (updated) setSelectedItem(updated);
+  }
+}, [items]);
+```
+
+**4️⃣ UI compacta e intuitiva:**
+- **CronJobEditor**: 2 botões lado a lado (Ativar/Suspender)
+  - Variant styling mostra estado ativo
+  - Botão disabled quando já no estado desejado
+- **PrometheusEditor**: Rollout movido para topo direito (seguro)
+  - Botão "Editar Recursos" expande formulário inline
+  - Salvamento direto no cluster (sem staging)
+  - Botão Cancelar apenas no modo de edição
+
+**5️⃣ Busca integrada:**
+- CronJobs: Busca por nome e namespace
+- Prometheus: Busca por nome, namespace e componente
+
+**Arquivos criados:**
+- `internal/web/frontend/src/components/CronJobListItem.tsx`
+- `internal/web/frontend/src/components/PrometheusListItem.tsx`
+- `internal/web/frontend/src/components/CronJobEditor.tsx`
+- `internal/web/frontend/src/components/PrometheusEditor.tsx`
+
+**Arquivos refatorados:**
+- `internal/web/frontend/src/pages/CronJobsPage.tsx`
+- `internal/web/frontend/src/pages/PrometheusPage.tsx`
+
+**Build artifacts:**
+- Frontend: `index-Ds3wDSKs.js` (628.21 kB)
+
+**Benefícios:**
+- ✅ UI consistente em toda a aplicação
+- ✅ Busca rápida em listas longas
+- ✅ Feedback visual imediato após alterações
+- ✅ Controles compactos e seguros
+- ✅ Salvamento direto no cluster (CronJobs e Prometheus não usam staging)
+
+---
 
 ### Correção Crítica: Métricas de Dashboard + Gauge de Dois Anéis (Novembro 2025) ✅
 

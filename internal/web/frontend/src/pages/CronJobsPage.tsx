@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
+import { Input } from '@/components/ui/input';
+import { Loader2, Calendar, Search } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Loader2, Clock, Play, Pause, Calendar, AlertTriangle } from 'lucide-react';
-import { useCronJobs, useUpdateCronJob } from '@/hooks/useAPI';
+import { Button } from '@/components/ui/button';
+import { SplitView } from '@/components/SplitView';
+import { CronJobListItem } from '@/components/CronJobListItem';
+import { CronJobEditor } from '@/components/CronJobEditor';
+import { useCronJobs } from '@/hooks/useAPI';
 import type { CronJob } from '@/lib/api/types';
 
 interface CronJobsPageProps {
@@ -13,11 +14,28 @@ interface CronJobsPageProps {
 }
 
 export function CronJobsPage({ selectedCluster }: CronJobsPageProps) {
-  const [selectedJobs, setSelectedJobs] = useState<Set<string>>(new Set());
-  const [applying, setApplying] = useState<Set<string>>(new Set());
+  const [selectedCronJob, setSelectedCronJob] = useState<CronJob | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const { data: cronJobs = [], isLoading, error, refetch } = useCronJobs(selectedCluster);
-  const updateCronJobMutation = useUpdateCronJob();
+
+  // Atualizar selectedCronJob quando cronJobs mudar (após refetch)
+  React.useEffect(() => {
+    if (selectedCronJob && cronJobs.length > 0) {
+      const updated = cronJobs.find(
+        job => job.name === selectedCronJob.name && job.namespace === selectedCronJob.namespace
+      );
+      if (updated) {
+        setSelectedCronJob(updated);
+      }
+    }
+  }, [cronJobs]);
+
+  // Filter CronJobs based on search query
+  const filteredJobs = cronJobs.filter(job =>
+    job.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    job.namespace.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   if (!selectedCluster) {
     return (
@@ -30,223 +48,91 @@ export function CronJobsPage({ selectedCluster }: CronJobsPageProps) {
     );
   }
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin" />
-        <span className="ml-2">Carregando CronJobs...</span>
-      </div>
-    );
-  }
-
   if (error) {
     return (
-      <Alert variant="destructive">
-        <AlertTriangle className="h-4 w-4" />
-        <AlertDescription>
-          Erro ao carregar CronJobs: {String(error)}
-          <Button variant="outline" size="sm" className="ml-2" onClick={() => refetch()}>
-            Tentar novamente
-          </Button>
-        </AlertDescription>
-      </Alert>
-    );
-  }
-
-  if (cronJobs.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-center">
-          <Calendar className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-          <p className="text-muted-foreground">Nenhum CronJob encontrado no cluster</p>
-        </div>
+      <div className="p-4">
+        <Alert variant="destructive">
+          <Calendar className="h-4 w-4" />
+          <AlertDescription>
+            Erro ao carregar CronJobs: {String(error)}
+            <Button variant="outline" size="sm" className="ml-2" onClick={() => refetch()}>
+              Tentar novamente
+            </Button>
+          </AlertDescription>
+        </Alert>
       </div>
     );
   }
-
-  const handleToggleJob = (job: CronJob) => {
-    const key = `${job.namespace}/${job.name}`;
-    setSelectedJobs(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(key)) {
-        newSet.delete(key);
-      } else {
-        newSet.add(key);
-      }
-      return newSet;
-    });
-  };
-
-  const handleUpdateJob = async (job: CronJob, suspend: boolean) => {
-    const key = `${job.namespace}/${job.name}`;
-    setApplying(prev => new Set(prev).add(key));
-
-    try {
-      await updateCronJobMutation.mutateAsync({
-        cluster: selectedCluster,
-        namespace: job.namespace,
-        name: job.name,
-        data: { suspend }
-      });
-    } catch (error) {
-      console.error('Error updating CronJob:', error);
-      // Error handling is done by the mutation hook
-    } finally {
-      setApplying(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(key);
-        return newSet;
-      });
-    }
-  };
-
-  const handleBatchUpdate = async (suspend: boolean) => {
-    const selectedJobsList = cronJobs.filter(job => 
-      selectedJobs.has(`${job.namespace}/${job.name}`)
-    );
-
-    for (const job of selectedJobsList) {
-      await handleUpdateJob(job, suspend);
-    }
-
-    setSelectedJobs(new Set());
-  };
-
-  const getStatusBadge = (job: CronJob) => {
-    if (job.suspend === true) {
-      return <Badge variant="secondary" className="bg-red-100 text-red-800">🔴 Suspenso</Badge>;
-    }
-    if (job.active_jobs > 0) {
-      return <Badge variant="default" className="bg-blue-100 text-blue-800">🔵 Executando</Badge>;
-    }
-    if (job.failed_jobs > 0) {
-      return <Badge variant="destructive" className="bg-yellow-100 text-yellow-800">🟡 Falhou</Badge>;
-    }
-    return <Badge variant="default" className="bg-green-100 text-green-800">🟢 Ativo</Badge>;
-  };
-
-  const selectedJobsCount = selectedJobs.size;
 
   return (
-    <div className="space-y-4">
-      {/* Header com ações em lote */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold">CronJobs</h2>
-          <p className="text-muted-foreground">
-            {cronJobs.length} CronJobs encontrados no cluster <strong>{selectedCluster}</strong>
-          </p>
-        </div>
-        
-        {selectedJobsCount > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">
-              {selectedJobsCount} selecionados
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleBatchUpdate(false)}
-              disabled={updateCronJobMutation.isPending}
-            >
-              <Play className="h-4 w-4 mr-1" />
-              Ativar
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleBatchUpdate(true)}
-              disabled={updateCronJobMutation.isPending}
-            >
-              <Pause className="h-4 w-4 mr-1" />
-              Suspender
-            </Button>
+    <SplitView
+      leftPanel={{
+        title: "Available CronJobs",
+        content: isLoading ? (
+          <div className="flex items-center justify-center h-64 text-muted-foreground">
+            <Loader2 className="h-8 w-8 animate-spin mr-2" />
+            Loading CronJobs...
           </div>
-        )}
-      </div>
+        ) : cronJobs.length === 0 ? (
+          <div className="flex items-center justify-center h-64 text-muted-foreground">
+            <div className="text-center">
+              <Calendar className="h-12 w-12 mx-auto mb-4 opacity-20" />
+              <p className="text-sm">Nenhum CronJob encontrado no cluster</p>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {/* Search input */}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                type="text"
+                placeholder="Buscar por nome ou namespace..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-10"
+              />
+            </div>
 
-      {/* Lista de CronJobs */}
-      <div className="grid gap-4">
-        {cronJobs.map((job) => {
-          const key = `${job.namespace}/${job.name}`;
-          const isSelected = selectedJobs.has(key);
-          const isApplying = applying.has(key);
-
-          return (
-            <Card 
-              key={key}
-              className={`cursor-pointer transition-colors ${
-                isSelected ? 'border-primary bg-accent' : 'hover:bg-accent/50'
-              }`}
-              onClick={() => handleToggleJob(job)}
-            >
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <div className="flex items-center space-x-2">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => handleToggleJob(job)}
-                        className="h-4 w-4"
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                      <CardTitle className="text-lg">{job.name}</CardTitle>
-                    </div>
-                    {getStatusBadge(job)}
-                  </div>
-                  
-                  <div className="flex items-center space-x-2">
-                    <Switch
-                      checked={job.suspend !== true}
-                      disabled={isApplying}
-                      onCheckedChange={(checked) => handleUpdateJob(job, !checked)}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                    {isApplying && <Loader2 className="h-4 w-4 animate-spin" />}
-                  </div>
+            {/* CronJobs list */}
+            <div className="space-y-2">
+              {filteredJobs.length === 0 ? (
+                <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+                  Nenhum CronJob encontrado para "{searchQuery}"
                 </div>
-              </CardHeader>
-              
-              <CardContent>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                  <div>
-                    <div className="flex items-center text-muted-foreground mb-1">
-                      <Clock className="h-3 w-3 mr-1" />
-                      Schedule
-                    </div>
-                    <div className="font-mono text-xs">{job.schedule}</div>
-                    <div className="text-xs text-muted-foreground">{job.schedule_description}</div>
-                  </div>
-                  
-                  <div>
-                    <div className="text-muted-foreground mb-1">Jobs Ativos</div>
-                    <div className="font-semibold">{job.active_jobs}</div>
-                  </div>
-                  
-                  <div>
-                    <div className="text-muted-foreground mb-1">Sucessos</div>
-                    <div className="font-semibold text-green-600">{job.successful_jobs}</div>
-                  </div>
-                  
-                  <div>
-                    <div className="text-muted-foreground mb-1">Falhas</div>
-                    <div className="font-semibold text-red-600">{job.failed_jobs}</div>
-                  </div>
-                </div>
-                
-                {job.last_schedule_time && (
-                  <div className="mt-3 pt-3 border-t">
-                    <div className="text-xs text-muted-foreground">
-                      Última execução: {new Date(job.last_schedule_time).toLocaleString('pt-BR')}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
-    </div>
+              ) : (
+                filteredJobs.map((job) => (
+                  <CronJobListItem
+                    key={`${job.namespace}-${job.name}`}
+                    name={job.name}
+                    namespace={job.namespace}
+                    schedule={job.schedule}
+                    suspend={job.suspend === true}
+                    activeJobs={job.active_jobs}
+                    successfulJobs={job.successful_jobs}
+                    failedJobs={job.failed_jobs}
+                    isSelected={
+                      selectedCronJob?.name === job.name &&
+                      selectedCronJob?.namespace === job.namespace
+                    }
+                    onClick={() => setSelectedCronJob(job)}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+        ),
+      }}
+      rightPanel={{
+        title: "CronJob Editor",
+        content: (
+          <CronJobEditor
+            cronJob={selectedCronJob}
+            selectedCluster={selectedCluster}
+            onRefetch={refetch}
+          />
+        ),
+      }}
+    />
   );
 }

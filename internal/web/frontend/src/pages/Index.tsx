@@ -356,20 +356,20 @@ const Index = ({ onLogout }: IndexProps) => {
 
       case "cronjobs":
         return (
-          <div className="flex-1 overflow-auto p-4">
-            <CronJobsPage
-              selectedCluster={selectedCluster}
-            />
-          </div>
+          <CronJobsPage
+            selectedCluster={selectedCluster}
+            onClusterChange={handleClusterChange}
+            clusters={clusters}
+          />
         );
 
       case "prometheus":
         return (
-          <div className="flex-1 overflow-auto p-4">
-            <PrometheusPage
-              selectedCluster={selectedCluster}
-            />
-          </div>
+          <PrometheusPage
+            selectedCluster={selectedCluster}
+            onClusterChange={handleClusterChange}
+            clusters={clusters}
+          />
         );
 
       default:
