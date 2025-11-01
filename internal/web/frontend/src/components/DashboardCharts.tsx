@@ -127,20 +127,10 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
 
   return (
     <div className="p-6 h-full bg-gradient-to-br from-slate-50 to-blue-50 dark:from-slate-900 dark:to-slate-800 animate-in fade-in duration-500 overflow-y-auto">
-      {/* Header Section */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-slate-800 dark:text-slate-100 mb-2">
-          Dashboard do Cluster
-        </h1>
-        <p className="text-slate-600 dark:text-slate-400">
-          Monitoramento em tempo real dos recursos do Kubernetes
-        </p>
-      </div>
-
       {/* Cluster Info Card */}
       <Card className="mb-6 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-700/60 shadow-lg hover:shadow-xl transition-all duration-300">
         <div className="p-6">
-          <div className="flex items-center gap-3 mb-6">
+          <div className="flex items-center gap-3 mb-2">
             <div className="p-3 bg-gradient-to-r from-blue-500 to-purple-600 rounded-xl shadow-lg">
               <Server className="w-6 h-6 text-white" />
             </div>
@@ -149,12 +139,12 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
                 Informações do Cluster
               </h2>
               <p className="text-sm text-slate-600 dark:text-slate-400">
-                Detalhes de configuração e status
+                Monitoramento em tempo real dos recursos do Kubernetes
               </p>
             </div>
           </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mt-6">
             <div className="bg-slate-50 dark:bg-slate-700/50 rounded-lg p-4 border border-slate-200/60 dark:border-slate-600/40 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors duration-200">
               <div className="flex items-center gap-2 mb-2">
                 <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
@@ -216,15 +206,17 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
           icon={Cpu}
           label="CPU Usage"
           value={clusterInfo?.cpuUsagePercent || 0}
+          capacityPercent={clusterInfo?.cpuCapacityPercent || 0}
           unit="%"
           warningThreshold={70}
           dangerThreshold={90}
         />
-        
+
         <MetricsGauge
           icon={HardDrive}
           label="Memory Usage"
           value={clusterInfo?.memoryUsagePercent || 0}
+          capacityPercent={clusterInfo?.memoryCapacityPercent || 0}
           unit="%"
           warningThreshold={70}
           dangerThreshold={90}

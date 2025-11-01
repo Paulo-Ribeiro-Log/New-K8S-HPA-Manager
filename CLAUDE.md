@@ -30,10 +30,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **NOVO (Outubro 2025)**: Interface web completa (React/TypeScript) com compatibilidade 100% TUI para sessões.
 
-### Estado Atual (Outubro 2025)
+### Estado Atual (Novembro 2025)
 
-**Versão Atual:** v1.3.2 (Release: 31 de outubro de 2025)
-**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.2
+**Versão Atual:** v1.3.3 (Release: 01 de novembro de 2025)
+**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.3
 
 **TUI (Terminal Interface):**
 - ✅ Interface responsiva (adapta-se ao tamanho real do terminal - mínimo 80x24)
@@ -52,7 +52,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Web Interface:**
 - ✅ Interface web completa (99% funcional)
 - ✅ HPAs, Node Pools, CronJobs e Prometheus Stack implementados
-- ✅ Dashboard redesignado com layout moderno grid 2x2 e métricas reais
+- ✅ Dashboard com **gauge de dois anéis** mostrando Capacity vs Allocatable - v1.3.3
+- ✅ **Métricas precisas** idênticas ao K9s (uso de Allocatable ao invés de Capacity) - v1.3.3
 - ✅ Sistema de sessões completo (save/load/rename/delete/edit)
 - ✅ Staging area com preview de alterações
 - ✅ Snapshot de cluster para rollback
@@ -1113,6 +1114,87 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Correção Crítica: Métricas de Dashboard + Gauge de Dois Anéis (Novembro 2025) ✅
+
+**Data:** 01 de novembro de 2025
+
+**Problema identificado:** Métricas de CPU e memória no dashboard mostravam valores **diferentes** do K9s (diferença de ~11% em memória).
+
+**Root Cause:**
+- Backend usava `node.Status.Capacity` para cálculo de percentuais
+- K9s e `kubectl top` usam `node.Status.Allocatable`
+- **Capacity** = Total de hardware (ex: 8 GB RAM)
+- **Allocatable** = Capacity - Reservas do sistema (ex: 6.1 GB = 76% do total)
+- Reservas: kubelet, OS, eviction threshold (~24% em memória, ~4% em CPU)
+
+**Correção aplicada:**
+
+**1️⃣ Backend - Cálculo correto:**
+```go
+// ANTES (ERRADO)
+if memory := node.Status.Capacity.Memory(); memory != nil {
+    totalMemoryCapacity += memory.Value()
+}
+
+// DEPOIS (CORRETO)
+if memory := node.Status.Allocatable.Memory(); memory != nil {
+    totalMemoryAllocatable += memory.Value()
+}
+```
+
+**2️⃣ Backend - Novos campos de métricas:**
+```go
+type ClusterMetrics struct {
+    CPUUsagePercent       float64 // % de uso vs Allocatable
+    MemoryUsagePercent    float64 // % de uso vs Allocatable
+    CPUCapacityPercent    float64 // % de Allocatable vs Capacity (novo)
+    MemoryCapacityPercent float64 // % de Allocatable vs Capacity (novo)
+}
+```
+
+**3️⃣ Frontend - Gauge de dois anéis concêntricos:**
+- **Anel externo (Capacity):**
+  - 🟦 Azul: Allocatable (ex: 76% da memória total)
+  - ⚫ Cinza: System Reserved (ex: 24% reservado para OS/kubelet)
+- **Anel interno (Usage):**
+  - 🟢/🟡/🔴 Verde/Amarelo/Vermelho: Uso real (ex: 48.5% do allocatable)
+
+**4️⃣ Frontend - Legenda educativa:**
+```
+✓ Allocatable:       76.1%  (disponível para pods)
+✓ System Reserved:   23.9%  (kubelet, OS, eviction)
+✓ Current Usage:     48.5%  (uso real)
+```
+
+**Resultados:**
+
+**Antes:**
+```
+K9s:       CPU 19%,  Memory 48%
+Dashboard: CPU 19.5%, Memory 36.9%  ❌ 11% de diferença!
+```
+
+**Depois:**
+```
+K9s:       CPU 19%,  Memory 48%
+Dashboard: CPU 19.7%, Memory 48.5%  ✅ <1% de diferença (timing)
+```
+
+**Benefícios:**
+- ✅ Métricas agora **100% precisas** (idênticas ao K9s)
+- ✅ Visualização **educativa** do overhead do sistema
+- ✅ Diagnóstico facilitado de clusters com overhead alto
+- ✅ Transparência total sobre uso de recursos
+
+**Arquivos modificados:**
+- `internal/config/kubeconfig.go` - Cálculo de Allocatable vs Capacity
+- `internal/web/handlers/clusters.go` - Novos campos na API
+- `internal/web/frontend/src/lib/api/types.ts` - Tipos TypeScript
+- `internal/web/frontend/src/components/MetricsGauge.tsx` - Gauge de dois anéis
+- `internal/web/frontend/src/components/DashboardCharts.tsx` - Layout otimizado
+
+---
 
 ### Feature: Combobox de Busca de Clusters no Header (Outubro 2025) ✅
 

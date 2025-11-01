@@ -577,10 +577,12 @@ func (k *KubeConfigManager) SwitchAzureContext(contextName string) error {
 
 // ClusterMetrics representa métricas do cluster
 type ClusterMetrics struct {
-	CPUUsagePercent    float64 `json:"cpuUsagePercent"`
-	MemoryUsagePercent float64 `json:"memoryUsagePercent"`
-	NodeCount          int     `json:"nodeCount"`
-	PodCount           int     `json:"podCount"`
+	CPUUsagePercent       float64 `json:"cpuUsagePercent"`
+	MemoryUsagePercent    float64 `json:"memoryUsagePercent"`
+	CPUCapacityPercent    float64 `json:"cpuCapacityPercent"`    // % de Allocatable em relação ao Capacity
+	MemoryCapacityPercent float64 `json:"memoryCapacityPercent"` // % de Allocatable em relação ao Capacity
+	NodeCount             int     `json:"nodeCount"`
+	PodCount              int     `json:"podCount"`
 }
 
 // GetKubernetesVersion obtém a versão do Kubernetes do cluster
@@ -622,15 +624,12 @@ func (k *KubeConfigManager) GetClusterMetrics(clusterName string) (*ClusterMetri
 		return nil, fmt.Errorf("failed to list pods: %w", err)
 	}
 
-	// Tentar obter métricas reais via Metrics Server primeiro
-	realMetrics, hasRealMetrics := k.getRealNodeMetrics(client, ctx, nodes.Items)
-
-	// Calcular métricas básicas de CPU e memória dos nodes
-	var totalCPUCapacity, totalCPUUsage int64
-	var totalMemoryCapacity, totalMemoryUsage int64
+	// Calcular totais de Capacity e Allocatable
+	var totalCPUCapacity, totalCPUAllocatable, totalCPUUsage int64
+	var totalMemoryCapacity, totalMemoryAllocatable, totalMemoryUsage int64
 
 	for _, node := range nodes.Items {
-		// Capacidade total
+		// Capacity (hardware total)
 		if cpu := node.Status.Capacity.Cpu(); cpu != nil {
 			totalCPUCapacity += cpu.MilliValue()
 		}
@@ -638,20 +637,27 @@ func (k *KubeConfigManager) GetClusterMetrics(clusterName string) (*ClusterMetri
 			totalMemoryCapacity += memory.Value()
 		}
 
-		// Uso atual (pods alocados no node)
+		// Allocatable (disponível para pods)
+		if cpu := node.Status.Allocatable.Cpu(); cpu != nil {
+			totalCPUAllocatable += cpu.MilliValue()
+		}
+		if memory := node.Status.Allocatable.Memory(); memory != nil {
+			totalMemoryAllocatable += memory.Value()
+		}
+
+		// Uso atual (pods alocados no node) - apenas para fallback
 		fieldSelector := fmt.Sprintf("spec.nodeName=%s", node.Name)
 		nodePods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
 			FieldSelector: fieldSelector,
 		})
 		if err != nil {
-			continue // Skip este node se não conseguir obter pods
+			continue
 		}
 
 		for _, pod := range nodePods.Items {
 			if pod.Status.Phase != "Running" {
 				continue
 			}
-
 			for _, container := range pod.Spec.Containers {
 				if cpu := container.Resources.Requests.Cpu(); cpu != nil {
 					totalCPUUsage += cpu.MilliValue()
@@ -663,31 +669,45 @@ func (k *KubeConfigManager) GetClusterMetrics(clusterName string) (*ClusterMetri
 		}
 	}
 
+	// Tentar obter métricas reais via Metrics Server
+	realMetrics, hasRealMetrics := k.getRealNodeMetrics(client, ctx, nodes.Items, totalCPUAllocatable, totalMemoryAllocatable)
+
 	// Usar métricas reais se disponíveis, senão usar requests como fallback
 	var cpuPercent, memoryPercent float64
 	if hasRealMetrics {
 		cpuPercent = realMetrics.CPUUsagePercent
 		memoryPercent = realMetrics.MemoryUsagePercent
 	} else {
-		// Fallback para cálculo baseado em requests
-		if totalCPUCapacity > 0 {
-			cpuPercent = float64(totalCPUUsage) / float64(totalCPUCapacity) * 100
+		// Fallback: calcular baseado em requests vs allocatable
+		if totalCPUAllocatable > 0 {
+			cpuPercent = float64(totalCPUUsage) / float64(totalCPUAllocatable) * 100
 		}
-		if totalMemoryCapacity > 0 {
-			memoryPercent = float64(totalMemoryUsage) / float64(totalMemoryCapacity) * 100
+		if totalMemoryAllocatable > 0 {
+			memoryPercent = float64(totalMemoryUsage) / float64(totalMemoryAllocatable) * 100
 		}
 	}
 
+	// Calcular % de Allocatable em relação ao Capacity (overhead do sistema)
+	var cpuCapacityPercent, memoryCapacityPercent float64
+	if totalCPUCapacity > 0 {
+		cpuCapacityPercent = float64(totalCPUAllocatable) / float64(totalCPUCapacity) * 100
+	}
+	if totalMemoryCapacity > 0 {
+		memoryCapacityPercent = float64(totalMemoryAllocatable) / float64(totalMemoryCapacity) * 100
+	}
+
 	return &ClusterMetrics{
-		CPUUsagePercent:    cpuPercent,
-		MemoryUsagePercent: memoryPercent,
-		NodeCount:          len(nodes.Items),
-		PodCount:           len(pods.Items),
+		CPUUsagePercent:       cpuPercent,
+		MemoryUsagePercent:    memoryPercent,
+		CPUCapacityPercent:    cpuCapacityPercent,
+		MemoryCapacityPercent: memoryCapacityPercent,
+		NodeCount:             len(nodes.Items),
+		PodCount:              len(pods.Items),
 	}, nil
 }
 
 // getRealNodeMetrics tenta obter métricas reais via Metrics Server
-func (k *KubeConfigManager) getRealNodeMetrics(client kubernetes.Interface, ctx context.Context, nodes []corev1.Node) (*ClusterMetrics, bool) {
+func (k *KubeConfigManager) getRealNodeMetrics(client kubernetes.Interface, ctx context.Context, nodes []corev1.Node, totalCPUAllocatable, totalMemoryAllocatable int64) (*ClusterMetrics, bool) {
 	// Tentar acessar Metrics Server API via Discovery client
 	discoveryClient := client.Discovery()
 
@@ -718,17 +738,6 @@ func (k *KubeConfigManager) getRealNodeMetrics(client kubernetes.Interface, ctx 
 		return nil, false
 	}
 
-	// Calcular totais de capacidade
-	var totalCPUCapacity, totalMemoryCapacity int64
-	for _, node := range nodes {
-		if cpu := node.Status.Capacity.Cpu(); cpu != nil {
-			totalCPUCapacity += cpu.MilliValue()
-		}
-		if memory := node.Status.Capacity.Memory(); memory != nil {
-			totalMemoryCapacity += memory.Value()
-		}
-	}
-
 	// Calcular totais de uso real
 	var totalCPUUsage, totalMemoryUsage int64
 	for _, metric := range nodeMetrics.Items {
@@ -743,13 +752,13 @@ func (k *KubeConfigManager) getRealNodeMetrics(client kubernetes.Interface, ctx 
 		}
 	}
 
-	// Calcular percentuais
+	// Calcular percentuais baseado no Allocatable
 	var cpuPercent, memoryPercent float64
-	if totalCPUCapacity > 0 {
-		cpuPercent = float64(totalCPUUsage) / float64(totalCPUCapacity) * 100
+	if totalCPUAllocatable > 0 {
+		cpuPercent = float64(totalCPUUsage) / float64(totalCPUAllocatable) * 100
 	}
-	if totalMemoryCapacity > 0 {
-		memoryPercent = float64(totalMemoryUsage) / float64(totalMemoryCapacity) * 100
+	if totalMemoryAllocatable > 0 {
+		memoryPercent = float64(totalMemoryUsage) / float64(totalMemoryAllocatable) * 100
 	}
 
 	return &ClusterMetrics{

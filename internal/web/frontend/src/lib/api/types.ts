@@ -17,6 +17,8 @@ export interface ClusterInfo {
   kubernetesVersion: string;
   cpuUsagePercent: number;
   memoryUsagePercent: number;
+  cpuCapacityPercent: number;    // % de Allocatable em relação ao Capacity
+  memoryCapacityPercent: number; // % de Allocatable em relação ao Capacity
   nodeCount: number;
   podCount: number;
 }

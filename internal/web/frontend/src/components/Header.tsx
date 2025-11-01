@@ -97,7 +97,7 @@ export const Header = ({
           </PopoverContent>
         </Popover>
       </div>
-      
+
       <div className="flex items-center gap-3">
         {/* Session Management Buttons */}
         {onLoadSession && (

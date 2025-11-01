@@ -140,15 +140,17 @@ func (h *ClusterHandler) GetClusterInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"cluster":            clusterInfo.Name,
-			"context":            clusterInfo.Context,
-			"server":             clusterInfo.Server,
-			"namespace":          clusterInfo.Namespace,
-			"kubernetesVersion":  kubernetesVersion,
-			"cpuUsagePercent":    metrics.CPUUsagePercent,
-			"memoryUsagePercent": metrics.MemoryUsagePercent,
-			"nodeCount":          metrics.NodeCount,
-			"podCount":           metrics.PodCount,
+			"cluster":               clusterInfo.Name,
+			"context":               clusterInfo.Context,
+			"server":                clusterInfo.Server,
+			"namespace":             clusterInfo.Namespace,
+			"kubernetesVersion":     kubernetesVersion,
+			"cpuUsagePercent":       metrics.CPUUsagePercent,
+			"memoryUsagePercent":    metrics.MemoryUsagePercent,
+			"cpuCapacityPercent":    metrics.CPUCapacityPercent,
+			"memoryCapacityPercent": metrics.MemoryCapacityPercent,
+			"nodeCount":             metrics.NodeCount,
+			"podCount":              metrics.PodCount,
 		},
 	})
 }
