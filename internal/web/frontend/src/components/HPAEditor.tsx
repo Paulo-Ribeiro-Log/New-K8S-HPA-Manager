@@ -3,11 +3,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Save, CheckCircle, RotateCcw } from "lucide-react";
+import { Save, CheckCircle, RotateCcw, AlertCircle } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import type { HPA } from "@/lib/api/types";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
+import { validateHPAUpdate, formatValidationErrors, type ValidationError } from "@/lib/validation";
 
 interface HPAEditorProps {
   hpa: HPA | null;
@@ -43,6 +44,9 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
 
   // Loading states
   const [isSaving, setIsSaving] = useState(false);
+
+  // Validation state
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
 
   // Initialize form when HPA changes
   // Use a combination of hpa reference + key fields to detect updates
@@ -91,20 +95,39 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
     const targetCPUNum = targetCPU ? parseInt(targetCPU) : undefined;
     const targetMemoryNum = targetMemory ? parseInt(targetMemory) : undefined;
 
-    // Validate
-    if (minReplicasNum > maxReplicasNum) {
-      toast.error("Min Replicas não pode ser maior que Max Replicas");
-      return;
-    }
-    if (targetCPUNum !== undefined && (targetCPUNum < 1 || targetCPUNum > 100)) {
-      toast.error("Target CPU deve estar entre 1 e 100%");
-      return;
-    }
-    if (targetMemoryNum !== undefined && (targetMemoryNum < 1 || targetMemoryNum > 100)) {
-      toast.error("Target Memory deve estar entre 1 e 100%");
+    // Validate using comprehensive validation
+    const validationResult = validateHPAUpdate({
+      minReplicas: minReplicasNum,
+      maxReplicas: maxReplicasNum,
+      targetCPU: targetCPUNum,
+      targetMemory: targetMemoryNum,
+      cpuRequest: targetCpuRequest,
+      memoryRequest: targetMemoryRequest,
+      cpuLimit: targetCpuLimit,
+      memoryLimit: targetMemoryLimit,
+    });
+
+    if (!validationResult.valid) {
+      // Build error map for visual feedback
+      const errorMap: Record<string, string> = {};
+      validationResult.errors.forEach(err => {
+        errorMap[err.field] = err.message;
+      });
+      setValidationErrors(errorMap);
+
+      toast.error("Erro de validação", {
+        description: formatValidationErrors(validationResult.errors),
+        style: {
+          background: '#fee2e2',
+          border: '1px solid #fca5a5',
+          color: '#991b1b',
+        },
+      });
       return;
     }
 
+    // Clear validation errors on success
+    setValidationErrors({});
     setIsSaving(true);
 
     // First add to staging if not already there
@@ -128,7 +151,13 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
     staging.updateHPAInStaging(hpa.cluster, hpa.namespace, hpa.name, updates);
 
     const changesCount = staging.getChangesCount();
-    toast.success(`HPA salvo no staging (${changesCount.total} alteraç${changesCount.total === 1 ? 'ão' : 'ões'} pendente${changesCount.total === 1 ? '' : 's'})`);
+    toast.success(`HPA salvo no staging (${changesCount.total} alteraç${changesCount.total === 1 ? 'ão' : 'ões'} pendente${changesCount.total === 1 ? '' : 's'})`, {
+      style: {
+        background: '#dcfce7',
+        border: '1px solid #86efac',
+        color: '#166534',
+      },
+    });
     setIsSaving(false);
   };
 
@@ -139,11 +168,39 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
     const targetCPUNum = targetCPU ? parseInt(targetCPU) : undefined;
     const targetMemoryNum = targetMemory ? parseInt(targetMemory) : undefined;
 
-    // Validate
-    if (minReplicasNum > maxReplicasNum) {
-      toast.error("Min Replicas não pode ser maior que Max Replicas");
+    // Validate using comprehensive validation
+    const validationResult = validateHPAUpdate({
+      minReplicas: minReplicasNum,
+      maxReplicas: maxReplicasNum,
+      targetCPU: targetCPUNum,
+      targetMemory: targetMemoryNum,
+      cpuRequest: targetCpuRequest,
+      memoryRequest: targetMemoryRequest,
+      cpuLimit: targetCpuLimit,
+      memoryLimit: targetMemoryLimit,
+    });
+
+    if (!validationResult.valid) {
+      // Build error map for visual feedback
+      const errorMap: Record<string, string> = {};
+      validationResult.errors.forEach(err => {
+        errorMap[err.field] = err.message;
+      });
+      setValidationErrors(errorMap);
+
+      toast.error("Erro de validação", {
+        description: formatValidationErrors(validationResult.errors),
+        style: {
+          background: '#fee2e2',
+          border: '1px solid #fca5a5',
+          color: '#991b1b',
+        },
+      });
       return;
     }
+
+    // Clear validation errors on success
+    setValidationErrors({});
 
     // Create modified HPA
     const modifiedHPA: HPA = {
@@ -185,7 +242,13 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
     setPerformRollout(baseHPA.perform_rollout ?? false);
     setPerformDaemonSetRollout(baseHPA.perform_daemonset_rollout ?? false);
     setPerformStatefulSetRollout(baseHPA.perform_statefulset_rollout ?? false);
-    toast.info("Alterações descartadas");
+    toast.info("Alterações descartadas", {
+      style: {
+        background: '#dbeafe',
+        border: '1px solid #93c5fd',
+        color: '#1e40af',
+      },
+    });
   };
 
   // 🔧 FIX: Use staged HPA as base for comparison if it exists
@@ -232,12 +295,24 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
               // Allow empty or digits only
               if (val === "" || /^\d+$/.test(val)) {
                 setMinReplicas(val);
+                // Clear validation error when user types
+                if (validationErrors.min_replicas) {
+                  const newErrors = { ...validationErrors };
+                  delete newErrors.min_replicas;
+                  setValidationErrors(newErrors);
+                }
               }
             }}
             onClick={() => minReplicasRef.current?.select()}
             onFocus={() => minReplicasRef.current?.select()}
-            className="bg-background h-9"
+            className={`bg-background h-9 ${validationErrors.min_replicas ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
           />
+          {validationErrors.min_replicas && (
+            <p className="text-xs text-red-500 flex items-center gap-1">
+              <AlertCircle className="w-3 h-3" />
+              {validationErrors.min_replicas}
+            </p>
+          )}
         </div>
 
         <div className="space-y-1.5">
@@ -252,12 +327,24 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
               // Allow empty or digits only
               if (val === "" || /^\d+$/.test(val)) {
                 setMaxReplicas(val);
+                // Clear validation error when user types
+                if (validationErrors.max_replicas) {
+                  const newErrors = { ...validationErrors };
+                  delete newErrors.max_replicas;
+                  setValidationErrors(newErrors);
+                }
               }
             }}
             onClick={() => maxReplicasRef.current?.select()}
             onFocus={() => maxReplicasRef.current?.select()}
-            className="bg-background h-9"
+            className={`bg-background h-9 ${validationErrors.max_replicas ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
           />
+          {validationErrors.max_replicas && (
+            <p className="text-xs text-red-500 flex items-center gap-1">
+              <AlertCircle className="w-3 h-3" />
+              {validationErrors.max_replicas}
+            </p>
+          )}
         </div>
 
         <div className="space-y-1.5">
@@ -272,13 +359,25 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
               // Allow empty or digits only (no default on empty for optional fields)
               if (val === "" || /^\d+$/.test(val)) {
                 setTargetCPU(val);
+                // Clear validation error when user types
+                if (validationErrors.target_cpu) {
+                  const newErrors = { ...validationErrors };
+                  delete newErrors.target_cpu;
+                  setValidationErrors(newErrors);
+                }
               }
             }}
             onClick={() => targetCPURef.current?.select()}
             onFocus={() => targetCPURef.current?.select()}
             placeholder="Não configurado"
-            className="bg-background h-9"
+            className={`bg-background h-9 ${validationErrors.target_cpu ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
           />
+          {validationErrors.target_cpu && (
+            <p className="text-xs text-red-500 flex items-center gap-1">
+              <AlertCircle className="w-3 h-3" />
+              {validationErrors.target_cpu}
+            </p>
+          )}
         </div>
 
         <div className="space-y-1.5">
@@ -293,13 +392,25 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
               // Allow empty or digits only (no default on empty for optional fields)
               if (val === "" || /^\d+$/.test(val)) {
                 setTargetMemory(val);
+                // Clear validation error when user types
+                if (validationErrors.target_memory) {
+                  const newErrors = { ...validationErrors };
+                  delete newErrors.target_memory;
+                  setValidationErrors(newErrors);
+                }
               }
             }}
             onClick={() => targetMemoryRef.current?.select()}
             onFocus={() => targetMemoryRef.current?.select()}
             placeholder="Não configurado"
-            className="bg-background h-9"
+            className={`bg-background h-9 ${validationErrors.target_memory ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
           />
+          {validationErrors.target_memory && (
+            <p className="text-xs text-red-500 flex items-center gap-1">
+              <AlertCircle className="w-3 h-3" />
+              {validationErrors.target_memory}
+            </p>
+          )}
         </div>
 
         <div className="space-y-1.5">
@@ -326,10 +437,24 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
               id="cpuRequest"
               type="text"
               value={targetCpuRequest}
-              onChange={(e) => setTargetCpuRequest(e.target.value)}
+              onChange={(e) => {
+                setTargetCpuRequest(e.target.value);
+                // Clear validation error when user types
+                if (validationErrors.cpu_request) {
+                  const newErrors = { ...validationErrors };
+                  delete newErrors.cpu_request;
+                  setValidationErrors(newErrors);
+                }
+              }}
               placeholder="ex: 100m, 0.5, 1"
-              className="bg-background h-9"
+              className={`bg-background h-9 ${validationErrors.cpu_request ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
             />
+            {validationErrors.cpu_request && (
+              <p className="text-xs text-red-500 flex items-center gap-1">
+                <AlertCircle className="w-3 h-3" />
+                {validationErrors.cpu_request}
+              </p>
+            )}
           </div>
 
           <div className="space-y-1.5">
@@ -338,10 +463,24 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
               id="cpuLimit"
               type="text"
               value={targetCpuLimit}
-              onChange={(e) => setTargetCpuLimit(e.target.value)}
+              onChange={(e) => {
+                setTargetCpuLimit(e.target.value);
+                // Clear validation error when user types
+                if (validationErrors.cpu_limit) {
+                  const newErrors = { ...validationErrors };
+                  delete newErrors.cpu_limit;
+                  setValidationErrors(newErrors);
+                }
+              }}
               placeholder="ex: 200m, 1, 2"
-              className="bg-background h-9"
+              className={`bg-background h-9 ${validationErrors.cpu_limit ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
             />
+            {validationErrors.cpu_limit && (
+              <p className="text-xs text-red-500 flex items-center gap-1">
+                <AlertCircle className="w-3 h-3" />
+                {validationErrors.cpu_limit}
+              </p>
+            )}
           </div>
 
           <div className="space-y-1.5">
@@ -350,10 +489,24 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
               id="memoryRequest"
               type="text"
               value={targetMemoryRequest}
-              onChange={(e) => setTargetMemoryRequest(e.target.value)}
+              onChange={(e) => {
+                setTargetMemoryRequest(e.target.value);
+                // Clear validation error when user types
+                if (validationErrors.memory_request) {
+                  const newErrors = { ...validationErrors };
+                  delete newErrors.memory_request;
+                  setValidationErrors(newErrors);
+                }
+              }}
               placeholder="ex: 128Mi, 256Mi, 1Gi"
-              className="bg-background h-9"
+              className={`bg-background h-9 ${validationErrors.memory_request ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
             />
+            {validationErrors.memory_request && (
+              <p className="text-xs text-red-500 flex items-center gap-1">
+                <AlertCircle className="w-3 h-3" />
+                {validationErrors.memory_request}
+              </p>
+            )}
           </div>
 
           <div className="space-y-1.5">
@@ -362,10 +515,24 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
               id="memoryLimit"
               type="text"
               value={targetMemoryLimit}
-              onChange={(e) => setTargetMemoryLimit(e.target.value)}
+              onChange={(e) => {
+                setTargetMemoryLimit(e.target.value);
+                // Clear validation error when user types
+                if (validationErrors.memory_limit) {
+                  const newErrors = { ...validationErrors };
+                  delete newErrors.memory_limit;
+                  setValidationErrors(newErrors);
+                }
+              }}
               placeholder="ex: 512Mi, 1Gi, 2Gi"
-              className="bg-background h-9"
+              className={`bg-background h-9 ${validationErrors.memory_limit ? 'border-red-500 focus-visible:ring-red-500' : ''}`}
             />
+            {validationErrors.memory_limit && (
+              <p className="text-xs text-red-500 flex items-center gap-1">
+                <AlertCircle className="w-3 h-3" />
+                {validationErrors.memory_limit}
+              </p>
+            )}
           </div>
         </div>
       </div>

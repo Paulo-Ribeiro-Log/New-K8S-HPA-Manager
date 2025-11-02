@@ -13,7 +13,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { LogOut, CheckCircle, Zap, Save, FolderOpen, FileText, ChevronsUpDown, Check } from "lucide-react";
+import { LogOut, CheckCircle, Zap, Save, FolderOpen, FileText, ChevronsUpDown, Check, History } from "lucide-react";
 import { ModeToggle } from "@/components/mode-toggle";
 import { cn } from "@/lib/utils";
 
@@ -27,6 +27,7 @@ interface HeaderProps {
   onSaveSession?: () => void;
   onLoadSession?: () => void;
   onViewLogs?: () => void;
+  onViewHistory?: () => void;
   userInfo: string;
   onLogout: () => void;
 }
@@ -41,6 +42,7 @@ export const Header = ({
   onSaveSession,
   onLoadSession,
   onViewLogs,
+  onViewHistory,
   userInfo,
   onLogout,
 }: HeaderProps) => {
@@ -160,6 +162,18 @@ export const Header = ({
             title="View System Logs"
           >
             <FileText className="w-4 h-4" />
+          </Button>
+        )}
+
+        {onViewHistory && (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="bg-white/20 hover:bg-white/30 text-white border-white/30"
+            onClick={onViewHistory}
+            title="View Change History"
+          >
+            <History className="w-4 h-4" />
           </Button>
         )}
 

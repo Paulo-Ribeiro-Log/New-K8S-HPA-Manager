@@ -144,8 +144,8 @@ export const ApplyAllModal = ({
       targetMem = mem;
     }
 
-    // Find the HPA being edited
-    const hpaToEdit = modifiedHPAs.find(({ key }) => key === editingKey);
+    // Find the HPA being edited (use freshModifiedHPAs for latest data)
+    const hpaToEdit = freshModifiedHPAs.find(({ key }) => key === editingKey);
     if (!hpaToEdit) return;
 
     // Update in staging
@@ -225,7 +225,7 @@ export const ApplyAllModal = ({
   const handleApplyAll = async () => {
     setIsApplying(true);
 
-    for (const { key, current } of modifiedHPAs) {
+    for (const { key, current } of freshModifiedHPAs) {
       setHpaStates(prev => ({ ...prev, [key]: { status: 'applying' } }));
       
       try {
@@ -539,7 +539,7 @@ export const ApplyAllModal = ({
           <DialogHeader>
             <DialogTitle>Editar HPA</DialogTitle>
             <DialogDescription>
-              Modifique os valores do HPA {modifiedHPAs.find(({ key }) => key === editingKey)?.current.name}
+              Modifique os valores do HPA {freshModifiedHPAs.find(({ key }) => key === editingKey)?.current.name}
             </DialogDescription>
           </DialogHeader>
 

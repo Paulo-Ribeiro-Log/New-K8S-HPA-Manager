@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"fmt"
+	"time"
 
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
 
@@ -12,12 +14,16 @@ import (
 
 // HPAHandler gerencia requisições relacionadas a HPAs
 type HPAHandler struct {
-	kubeManager *config.KubeConfigManager
+	kubeManager    *config.KubeConfigManager
+	historyTracker *history.HistoryTracker
 }
 
 // NewHPAHandler cria um novo handler de HPAs
-func NewHPAHandler(km *config.KubeConfigManager) *HPAHandler {
-	return &HPAHandler{kubeManager: km}
+func NewHPAHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *HPAHandler {
+	return &HPAHandler{
+		kubeManager:    km,
+		historyTracker: ht,
+	}
 }
 
 // List retorna todos os HPAs de um namespace ou de todos os namespaces
@@ -167,6 +173,9 @@ func (h *HPAHandler) Update(c *gin.Context) {
 	namespace := c.Param("namespace")
 	name := c.Param("name")
 
+	// Timestamp de início para medir duração
+	startTime := time.Now()
+
 	var hpa models.HPA
 	if err := c.ShouldBindJSON(&hpa); err != nil {
 		fmt.Printf("❌ Error parsing JSON: %v\n", err)
@@ -220,12 +229,43 @@ func (h *HPAHandler) Update(c *gin.Context) {
 
 	kubeClient := kubeclient.NewClient(client, cluster)
 
+	// Capturar estado ANTES da alteração (para history)
+	beforeHPA, err := kubeClient.GetHPA(c.Request.Context(), namespace, name)
+	var beforeState map[string]interface{}
+	if err == nil {
+		beforeState = map[string]interface{}{
+			"min_replicas":    beforeHPA.MinReplicas,
+			"max_replicas":    beforeHPA.MaxReplicas,
+			"target_cpu":      beforeHPA.TargetCPU,
+			"target_memory":   beforeHPA.TargetMemory,
+			"cpu_request":     beforeHPA.TargetCPURequest,     // Use Target* (configuração do deployment)
+			"memory_request":  beforeHPA.TargetMemoryRequest,  // Use Target* (configuração do deployment)
+			"cpu_limit":       beforeHPA.TargetCPULimit,       // Use Target* (configuração do deployment)
+			"memory_limit":    beforeHPA.TargetMemoryLimit,    // Use Target* (configuração do deployment)
+		}
+	}
+
 	// Aplicar mudanças (reutilizar código existente)
 	hpa.Name = name
 	hpa.Namespace = namespace
 	hpa.Cluster = cluster
 
 	if err := kubeClient.UpdateHPA(c.Request.Context(), hpa); err != nil {
+		// Log falha no history
+		if h.historyTracker != nil && beforeState != nil {
+			duration := time.Since(startTime).Milliseconds()
+			h.historyTracker.Log(history.HistoryEntry{
+				Action:   history.ActionUpdateHPA,
+				Resource: fmt.Sprintf("%s/%s", namespace, name),
+				Cluster:  cluster,
+				Before:   beforeState,
+				After:    nil,
+				Status:   history.StatusFailed,
+				ErrorMsg: err.Error(),
+				Duration: duration,
+			})
+		}
+
 		c.JSON(500, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -244,6 +284,32 @@ func (h *HPAHandler) Update(c *gin.Context) {
 			"message": fmt.Sprintf("HPA %s/%s updated successfully", namespace, name),
 		})
 		return
+	}
+
+	// Capturar estado DEPOIS da alteração
+	afterState := map[string]interface{}{
+		"min_replicas":   updatedHPA.MinReplicas,
+		"max_replicas":   updatedHPA.MaxReplicas,
+		"target_cpu":     updatedHPA.TargetCPU,
+		"target_memory":  updatedHPA.TargetMemory,
+		"cpu_request":    updatedHPA.TargetCPURequest,     // Use Target* (configuração do deployment)
+		"memory_request": updatedHPA.TargetMemoryRequest,  // Use Target* (configuração do deployment)
+		"cpu_limit":      updatedHPA.TargetCPULimit,       // Use Target* (configuração do deployment)
+		"memory_limit":   updatedHPA.TargetMemoryLimit,    // Use Target* (configuração do deployment)
+	}
+
+	// Log sucesso no history
+	if h.historyTracker != nil {
+		duration := time.Since(startTime).Milliseconds()
+		h.historyTracker.Log(history.HistoryEntry{
+			Action:   history.ActionUpdateHPA,
+			Resource: fmt.Sprintf("%s/%s", namespace, name),
+			Cluster:  cluster,
+			Before:   beforeState,
+			After:    afterState,
+			Status:   history.StatusSuccess,
+			Duration: duration,
+		})
 	}
 
 	c.JSON(200, gin.H{

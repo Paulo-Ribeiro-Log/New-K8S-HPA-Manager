@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/web/handlers"
 	"k8s-hpa-manager/internal/web/middleware"
 )
@@ -22,15 +24,16 @@ var staticFiles embed.FS
 
 // Server representa o servidor HTTP
 type Server struct {
-	router         *gin.Engine
-	kubeManager    *config.KubeConfigManager
-	port           int
-	token          string
-	lastHeartbeat  time.Time
-	heartbeatMutex sync.RWMutex
-	shutdownTimer  *time.Timer
-	timerMutex     sync.Mutex // Protege operações no timer
-	logBuffer      *handlers.LogBuffer
+	router          *gin.Engine
+	kubeManager     *config.KubeConfigManager
+	port            int
+	token           string
+	lastHeartbeat   time.Time
+	heartbeatMutex  sync.RWMutex
+	shutdownTimer   *time.Timer
+	timerMutex      sync.Mutex // Protege operações no timer
+	logBuffer       *handlers.LogBuffer
+	historyTracker  *history.HistoryTracker
 }
 
 // NewServer cria uma nova instância do servidor web
@@ -59,13 +62,25 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 	// Criar buffer de logs (mantém últimos 1000 logs em memória)
 	logBuffer := handlers.NewLogBuffer(1000)
 
+	// Criar history tracker
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home directory: %w", err)
+	}
+	baseDir := filepath.Join(homeDir, ".k8s-hpa-manager")
+	historyTracker, err := history.NewHistoryTracker(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create history tracker: %w", err)
+	}
+
 	server := &Server{
-		router:        router,
-		kubeManager:   kubeManager,
-		port:          port,
-		token:         token,
-		lastHeartbeat: time.Now(),
-		logBuffer:     logBuffer,
+		router:         router,
+		kubeManager:    kubeManager,
+		port:           port,
+		token:          token,
+		lastHeartbeat:  time.Now(),
+		logBuffer:      logBuffer,
+		historyTracker: historyTracker,
 	}
 
 	server.setupMiddleware()
@@ -202,7 +217,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/namespaces", namespaceHandler.List)
 
 	// HPAs
-	hpaHandler := handlers.NewHPAHandler(s.kubeManager)
+	hpaHandler := handlers.NewHPAHandler(s.kubeManager, s.historyTracker)
 	api.GET("/hpas", hpaHandler.List)
 	api.GET("/hpas/:cluster/:namespace/:name", hpaHandler.Get)
 	api.PUT("/hpas/:cluster/:namespace/:name", hpaHandler.Update)
@@ -244,6 +259,13 @@ func (s *Server) setupRoutes() {
 	logsHandler := handlers.NewLogsHandler(s.logBuffer)
 	api.GET("/logs", logsHandler.GetLogs)
 	api.DELETE("/logs", logsHandler.ClearLogs)
+
+	// History
+	historyHandler := handlers.NewHistoryHandler(s.historyTracker)
+	api.GET("/history", historyHandler.GetHistory)
+	api.GET("/history/stats", historyHandler.GetHistoryStats)
+	api.GET("/history/:id", historyHandler.GetHistoryEntry)
+	api.DELETE("/history", historyHandler.ClearHistory)
 }
 
 // setupStatic configura servir arquivos estáticos

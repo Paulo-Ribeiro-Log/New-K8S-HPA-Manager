@@ -1116,6 +1116,243 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 
 ## 📜 Histórico de Correções (Principais)
 
+### Correção: ApplyAllModal Não Atualiza Após Edição (Novembro 2025) ✅
+
+**Data:** 02 de novembro de 2025
+
+**Problema identificado:** Valores editados no modal "Confirmar Alterações" não refrescavam para mostrar as alterações mais recentes.
+
+**Root Cause:**
+- ApplyAllModal usava `modifiedHPAs` (dados stale do prop) ao invés de `freshModifiedHPAs` (dados frescos do staging)
+- `freshModifiedHPAs` é derivado do staging via `useMemo` e sincroniza com mudanças em tempo real
+- Três locais críticos estavam usando dados stale:
+  1. Linha 148: `hpaToEdit` busca HPA para edição inline
+  2. Linha 228: `handleApplyAll` itera sobre HPAs para aplicar
+  3. Linha 542: Nome do HPA no modal de edição
+
+**Solução implementada:**
+
+**Arquivo**: `internal/web/frontend/src/components/ApplyAllModal.tsx`
+
+```typescript
+// Linha 148 - Modal de edição inline
+// ❌ ANTES:
+const hpaToEdit = modifiedHPAs.find(({ key }) => key === editingKey);
+// ✅ DEPOIS:
+const hpaToEdit = freshModifiedHPAs.find(({ key }) => key === editingKey);
+
+// Linha 228 - Aplicação em lote
+// ❌ ANTES:
+for (const { key, current } of modifiedHPAs) {
+// ✅ DEPOIS:
+for (const { key, current } of freshModifiedHPAs) {
+
+// Linha 542 - Nome no modal de edição
+// ❌ ANTES:
+{modifiedHPAs.find(({ key }) => key === editingKey)?.current.name}
+// ✅ DEPOIS:
+{freshModifiedHPAs.find(({ key }) => key === editingKey)?.current.name}
+```
+
+**Contexto técnico:**
+```typescript
+// freshModifiedHPAs sincroniza com staging em tempo real
+const freshModifiedHPAs = useMemo(() => {
+  return modifiedHPAs.map(({ key, original }) => {
+    const freshHPA = staging?.stagedHPAs.find(
+      h => h.cluster === original.cluster &&
+           h.namespace === original.namespace &&
+           h.name === original.name
+    );
+    return {
+      key,
+      current: freshHPA || original, // Sempre pega valor ATUAL do staging
+      original
+    };
+  });
+}, [modifiedHPAs, staging?.stagedHPAs, refreshCounter]);
+```
+
+**Benefícios:**
+- ✅ Edições inline refletem imediatamente na lista
+- ✅ Valores aplicados são sempre os mais recentes
+- ✅ Preview de alterações 100% preciso
+- ✅ Consistência entre modal de edição e visualização
+
+---
+
+### Correção: "Nenhuma mudança visível" Após Editar Valores (Novembro 2025) ✅
+
+**Data:** 02 de novembro de 2025
+
+**Problema identificado:** Ao editar um HPA no modal inline (ex: Min Replicas 2 → 5) e salvar, a mensagem "Nenhuma mudança visível (valores idênticos)" ainda aparecia.
+
+**Root Cause:**
+
+**Arquivo**: `internal/web/frontend/src/pages/Index.tsx` (linha 405)
+
+O objeto `original` estava sendo criado incorretamente, misturando valores atuais com valores originais:
+
+```typescript
+// ❌ ANTES (ERRADO):
+original: { ...hpa, ...hpa.originalValues } as HPA,
+```
+
+**O que causava o bug:**
+
+1. `{ ...hpa, ...hpa.originalValues }` cria um objeto:
+   - Primeiro: Copia TODOS os campos de `hpa` (valores ATUAIS modificados)
+   - Depois: Sobrescreve apenas com campos que existem em `hpa.originalValues`
+
+2. `originalValues` é um objeto **parcial**, não contém todos os campos
+
+3. Resultado: `original` ficava com mix de valores atuais + alguns valores originais
+
+4. Exemplo prático:
+   ```typescript
+   // Estado quando você edita Min Replicas: 2 → 5
+   hpa.originalValues = { min_replicas: 2, max_replicas: 10, target_cpu: 80 }
+   hpa (atual) = { min_replicas: 5, max_replicas: 10, target_cpu: 80, target_memory: 90 }
+
+   // Com { ...hpa, ...hpa.originalValues }:
+   original = {
+     min_replicas: 2,        // De originalValues ✅
+     max_replicas: 10,       // De originalValues ✅
+     target_cpu: 80,         // De originalValues ✅
+     target_memory: 90,      // De hpa (ATUAL) ❌ BUG!
+     // ... outros campos de hpa (atual)
+   }
+
+   // Comparação current vs original:
+   // - min_replicas: 5 vs 2 → Mostra diferença ✅
+   // - target_memory: 90 vs 90 → NÃO mostra diferença ❌ (ambos iguais!)
+   ```
+
+5. `renderChange()` retorna `null` para campos iguais, array `changes` ficava vazio → mensagem "Nenhuma mudança visível"
+
+**Solução implementada:**
+
+```typescript
+// ✅ DEPOIS (CORRETO):
+original: hpa.originalValues as HPA,
+```
+
+Agora `original` contém **APENAS** os valores originais puros salvos no staging, sem contaminação de valores atuais.
+
+**Benefícios:**
+- ✅ Comparação precisa entre valores originais e modificados
+- ✅ Todas as edições aparecem corretamente no preview de mudanças
+- ✅ Mensagem "Nenhuma mudança visível" só aparece quando realmente não há mudanças
+- ✅ Diff completo e preciso para todas as alterações
+
+---
+
+### Correção: History Tracker com Campos Vazios (Novembro 2025) ✅
+
+**Data:** 02 de novembro de 2025
+
+**Problema identificado:** History Tracker salvava campos de recursos vazios (`cpu_request`, `memory_request`, `cpu_limit`, `memory_limit`) impossibilitando comparação completa "Antes vs Depois".
+
+**Root Cause:**
+- Handler `hpas.go` usava campos **errados** para capturar recursos do deployment
+- ❌ **Antes**: Usava `Current*` fields (métricas de uso real - ainda não implementadas)
+- ✅ **Correção**: Usar `Target*` fields (configuração do deployment - implementados em `EnrichHPAWithDeploymentResources`)
+
+**Explicação técnica:**
+```go
+// internal/kubernetes/client.go (linha 1168-1223)
+func EnrichHPAWithDeploymentResources(ctx context.Context, hpa *models.HPA) error {
+    // Preenche Target* fields com configuração do deployment
+    hpa.TargetCPURequest = cpuReq.String()      // ✅ Configuração real
+    hpa.TargetMemoryRequest = memReq.String()   // ✅ Configuração real
+    // ...
+
+    // Current* fields são para métricas de USO REAL (TODO via Metrics Server)
+    // hpa.CurrentCPURequest = ...  // ❌ Ainda não implementado
+}
+```
+
+**Solução implementada:**
+
+**Arquivo**: `internal/web/handlers/hpas.go`
+
+**1️⃣ Estado ANTES da alteração (linha 232-246):**
+```go
+// ANTES (ERRADO)
+beforeState = map[string]interface{}{
+    "cpu_request":     beforeHPA.CurrentCPURequest,    // ❌ Vazio
+    "memory_request":  beforeHPA.CurrentMemoryRequest, // ❌ Vazio
+    "cpu_limit":       beforeHPA.CurrentCPULimit,      // ❌ Vazio
+    "memory_limit":    beforeHPA.CurrentMemoryLimit,   // ❌ Vazio
+}
+
+// DEPOIS (CORRETO)
+beforeState = map[string]interface{}{
+    "cpu_request":     beforeHPA.TargetCPURequest,     // ✅ Configurado
+    "memory_request":  beforeHPA.TargetMemoryRequest,  // ✅ Configurado
+    "cpu_limit":       beforeHPA.TargetCPULimit,       // ✅ Configurado
+    "memory_limit":    beforeHPA.TargetMemoryLimit,    // ✅ Configurado
+}
+```
+
+**2️⃣ Estado DEPOIS da alteração (linha 289-299):**
+```go
+// ANTES (ERRADO)
+afterState = map[string]interface{}{
+    "cpu_request":    updatedHPA.CurrentCPURequest,    // ❌ Vazio
+    "memory_request": updatedHPA.CurrentMemoryRequest, // ❌ Vazio
+    "cpu_limit":      updatedHPA.CurrentCPULimit,      // ❌ Vazio
+    "memory_limit":   updatedHPA.CurrentMemoryLimit,   // ❌ Vazio
+}
+
+// DEPOIS (CORRETO)
+afterState = map[string]interface{}{
+    "cpu_request":    updatedHPA.TargetCPURequest,     // ✅ Configurado
+    "memory_request": updatedHPA.TargetMemoryRequest,  // ✅ Configurado
+    "cpu_limit":      updatedHPA.TargetCPULimit,       // ✅ Configurado
+    "memory_limit":   updatedHPA.TargetMemoryLimit,    // ✅ Configurado
+}
+```
+
+**Fluxo de dados corrigido:**
+1. `GetHPA()` busca HPA do Kubernetes (linha 233)
+2. `EnrichHPAWithDeploymentResources()` preenche `Target*` com recursos do deployment (linha 284)
+3. Captura BEFORE state com `Target*` fields (linha 236-245)
+4. `UpdateHPA()` aplica mudanças no HPA e deployment (linha 253)
+5. `GetHPA()` busca HPA atualizado (linha 279)
+6. Captura AFTER state com `Target*` fields (linha 290-299)
+7. `historyTracker.Log()` salva comparação completa (linha 302-313)
+
+**Resultado:**
+```json
+// ANTES (campos vazios)
+{
+  "cpu_limit": "",
+  "cpu_request": "",
+  "memory_limit": "",
+  "memory_request": ""
+}
+
+// DEPOIS (campos preenchidos)
+{
+  "cpu_limit": "2",
+  "cpu_request": "500m",
+  "memory_limit": "4Gi",
+  "memory_request": "2Gi"
+}
+```
+
+**Arquivos modificados:**
+- `internal/web/handlers/hpas.go` (linhas 241-244, 295-298)
+
+**Benefícios:**
+- ✅ History Viewer mostra comparação completa "Antes vs Depois"
+- ✅ Rastreabilidade completa de mudanças de recursos
+- ✅ Compliance e auditoria melhorados
+- ✅ Troubleshooting facilitado com histórico detalhado
+
+---
+
 ### Redesign Completo: CronJobs e Prometheus Pages (Novembro 2025) ✅
 
 **Data:** 01 de novembro de 2025

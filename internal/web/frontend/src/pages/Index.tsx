@@ -13,6 +13,7 @@ import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
 import { LogViewer } from "@/components/LogViewer";
+import { HistoryViewer } from "@/components/HistoryViewer";
 import { StagingPanel } from "@/components/StagingPanel";
 import { CronJobsPage } from "./CronJobsPage";
 import { PrometheusPage } from "./PrometheusPage";
@@ -56,6 +57,7 @@ const Index = ({ onLogout }: IndexProps) => {
   const [showSaveSessionModal, setShowSaveSessionModal] = useState(false);
   const [showLoadSessionModal, setShowLoadSessionModal] = useState(false);
   const [showLogViewer, setShowLogViewer] = useState(false);
+  const [showHistoryViewer, setShowHistoryViewer] = useState(false);
   const [isContextSwitching, setIsContextSwitching] = useState(false);
 
   // Search filters
@@ -400,7 +402,7 @@ const Index = ({ onLogout }: IndexProps) => {
               .map(hpa => ({
                 key: `${hpa.cluster}/${hpa.namespace}/${hpa.name}`,
                 current: hpa,
-                original: { ...hpa, ...hpa.originalValues } as HPA,
+                original: hpa.originalValues as HPA,
               }));
             setHpasToApply(modifiedHPAs);
             setShowApplyModal(true);
@@ -422,6 +424,7 @@ const Index = ({ onLogout }: IndexProps) => {
         onSaveSession={() => setShowSaveSessionModal(true)}
         onLoadSession={() => setShowLoadSessionModal(true)}
         onViewLogs={() => setShowLogViewer(true)}
+        onViewHistory={() => setShowHistoryViewer(true)}
         userInfo="admin@k8s.local"
         onLogout={onLogout || (() => console.log("Logout"))}
       />
@@ -525,6 +528,11 @@ const Index = ({ onLogout }: IndexProps) => {
       <LogViewer
         open={showLogViewer}
         onOpenChange={setShowLogViewer}
+      />
+
+      <HistoryViewer
+        open={showHistoryViewer}
+        onOpenChange={setShowHistoryViewer}
       />
     </div>
   );
