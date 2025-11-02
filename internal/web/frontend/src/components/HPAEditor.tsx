@@ -218,9 +218,29 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
       perform_statefulset_rollout: performStatefulSetRollout,
     };
 
-    // Call the callback to open modal
+    // 🔧 FIX: Reconstruir valores originais do cluster a partir de original_values
+    // Isso garante que o modal de confirmação sempre compare com o estado atual do cluster,
+    // independente de já ter sido salvo no staging antes
+
+    const actualValuesHPA: HPA = {
+      ...hpa,
+      // Se original_values existe, usar ele; senão, usar valores atuais do HPA (fallback)
+      min_replicas: hpa.original_values?.min_replicas ?? hpa.min_replicas,
+      max_replicas: hpa.original_values?.max_replicas ?? hpa.max_replicas,
+      target_cpu: hpa.original_values?.target_cpu ?? hpa.target_cpu,
+      target_memory: hpa.original_values?.target_memory ?? hpa.target_memory,
+      target_cpu_request: hpa.original_values?.cpu_request ?? hpa.target_cpu_request,
+      target_cpu_limit: hpa.original_values?.cpu_limit ?? hpa.target_cpu_limit,
+      target_memory_request: hpa.original_values?.memory_request ?? hpa.target_memory_request,
+      target_memory_limit: hpa.original_values?.memory_limit ?? hpa.target_memory_limit,
+      perform_rollout: hpa.original_values?.perform_rollout ?? false,
+      perform_daemonset_rollout: hpa.original_values?.perform_daemonset_rollout ?? false,
+      perform_statefulset_rollout: hpa.original_values?.perform_statefulset_rollout ?? false,
+    };
+
+    // Call the callback to open modal with correct original values
     if (onApply) {
-      onApply(modifiedHPA, hpa);
+      onApply(modifiedHPA, actualValuesHPA);
     }
   };
 

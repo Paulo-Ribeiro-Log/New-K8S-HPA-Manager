@@ -1116,6 +1116,132 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 
 ## 📜 Histórico de Correções (Principais)
 
+### Sistema de Temp Staging para "Aplicar Agora" (Novembro 2025) ✅
+
+**Data:** 02 de novembro de 2025
+
+**Problema identificado:** No fluxo "Aplicar Agora", quando o usuário editava valores no modal de confirmação, as alterações não apareciam porque o sistema buscava valores do staging normal (que estava vazio para esse fluxo).
+
+**Root Cause:**
+- Fluxo "Aplicar Agora" passava valores diretamente via props para ApplyAllModal
+- Quando usuário editava no modal, `handleSaveEdit()` salvava no staging normal via `updateHPAInStaging()`
+- MAS o HPA não existia no staging normal (apenas foi passado via props)
+- `freshModifiedHPAs` não encontrava o HPA no staging → usava valores stale das props
+- Resultado: Edições no modal não apareciam
+
+**Solução Implementada: "Temp Staging"**
+
+Criado sistema de staging temporário exclusivo para fluxo "Aplicar Agora":
+
+**1️⃣ StagingContext** (`internal/web/frontend/src/contexts/StagingContext.tsx`):
+- **Estado**: `tempHPA: { current: HPA; original: HPA } | null`
+- **Métodos**:
+  - `setTempHPA(current, original)` - Salva HPA no temp staging
+  - `updateTempHPA(updates)` - Atualiza valores (usado pela edição no modal)
+  - `clearTempHPA()` - Limpa temp staging (ao fechar modal)
+  - `getTempHPA()` - Retorna HPA temporário
+
+**2️⃣ Index.tsx** (`internal/web/frontend/src/pages/Index.tsx`):
+```typescript
+const handleApplySingle = (current: HPA, original: HPA) => {
+  // Salvar no temp staging para permitir edição no modal
+  staging?.setTempHPA(current, original);
+
+  const key = `${current.cluster}/${current.namespace}/${current.name}`;
+  setHpasToApply([{ key, current, original }]);
+  setShowApplyModal(true);
+};
+```
+
+**3️⃣ ApplyAllModal** (`internal/web/frontend/src/components/ApplyAllModal.tsx`):
+
+**a) freshModifiedHPAs - Busca do temp staging primeiro:**
+```typescript
+const freshModifiedHPAs = useMemo(() => {
+  return modifiedHPAs.map(({ key, current, original }) => {
+    // 1. Tentar buscar do temp staging (para "Aplicar Agora")
+    const tempHPA = staging?.tempHPA;
+    if (tempHPA && /* match cluster/namespace/name */) {
+      return { key, current: tempHPA.current, original: tempHPA.original };
+    }
+
+    // 2. Tentar buscar do staging normal (para "Aplicar Todas")
+    const freshHPA = staging?.stagedHPAs.find(/* ... */);
+    return { key, current: freshHPA || current || original, original };
+  });
+}, [modifiedHPAs, staging?.stagedHPAs, staging?.tempHPA, refreshCounter]);
+```
+
+**b) handleSaveEdit - Detecta origem e atualiza corretamente:**
+```typescript
+const handleSaveEdit = () => {
+  // ... validações ...
+
+  const isFromTempStaging = /* verifica se HPA está no tempHPA */;
+
+  if (isFromTempStaging) {
+    staging?.updateTempHPA(updates);  // Atualiza temp staging
+    toast.success(`HPA ${name} atualizado (Aplicar Agora)`);
+  } else {
+    staging?.updateHPAInStaging(/* ... */, updates);  // Atualiza staging normal
+    toast.success(`HPA ${name} atualizado no staging`);
+  }
+
+  setRefreshCounter(prev => prev + 1);  // Force refresh do useMemo
+};
+```
+
+**c) useEffect - Limpa temp staging ao fechar modal:**
+```typescript
+useEffect(() => {
+  if (!open) {
+    staging?.clearTempHPA();
+  }
+}, [open, staging]);
+```
+
+**Fluxos após correção:**
+
+**Fluxo "Aplicar Agora":**
+1. Usuário edita HPA → Clica "Aplicar Agora"
+2. `handleApplySingle()` salva no **temp staging**
+3. ApplyAllModal abre → `freshModifiedHPAs` busca do temp staging
+4. ✅ Modal mostra alterações (cluster → editado)
+5. Usuário edita no modal → `updateTempHPA()` atualiza temp staging
+6. `refreshCounter++` → `useMemo` re-executa → busca valores atualizados
+7. ✅ Modal reflete edições (cluster → editado → editado no modal)
+8. Modal fecha → `clearTempHPA()` limpa
+
+**Fluxo "Aplicar Todas"** (inalterado):
+1. Usuário adiciona HPAs ao staging normal
+2. `freshModifiedHPAs` busca do staging normal
+3. Edições no modal atualizam staging normal
+4. ✅ Funciona como antes
+
+**Arquivos modificados:**
+- `internal/web/frontend/src/contexts/StagingContext.tsx` (+40 linhas)
+  - Interface `StagingContextType` com métodos temp staging
+  - Estado `tempHPA` e funções (`setTempHPA`, `updateTempHPA`, etc)
+  - Adicionado ao `value` do Provider
+
+- `internal/web/frontend/src/pages/Index.tsx` (+3 linhas)
+  - `handleApplySingle()` chama `staging.setTempHPA()`
+
+- `internal/web/frontend/src/components/ApplyAllModal.tsx` (+50 linhas, -10 linhas)
+  - `freshModifiedHPAs`: Busca temp staging primeiro
+  - `handleSaveEdit()`: Detecta origem e usa método correto
+  - `useEffect`: Limpa temp staging ao fechar modal
+  - Import `useEffect`
+
+**Benefícios:**
+- ✅ Edições no modal "Aplicar Agora" agora funcionam corretamente
+- ✅ Separação clara entre fluxos "Aplicar Agora" e "Aplicar Todas"
+- ✅ Staging normal preservado para aplicações em lote
+- ✅ Limpeza automática de temp staging ao fechar modal
+- ✅ Toasts informativos indicam qual staging foi atualizado
+
+---
+
 ### Correção: ApplyAllModal Não Atualiza Após Edição (Novembro 2025) ✅
 
 **Data:** 02 de novembro de 2025

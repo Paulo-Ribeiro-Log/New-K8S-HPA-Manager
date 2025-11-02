@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -55,10 +55,31 @@ export const ApplyAllModal = ({
   const [removedKeys, setRemovedKeys] = useState<Set<string>>(new Set());
   const [refreshCounter, setRefreshCounter] = useState(0); // Force re-render after edit
 
-  // Derive fresh HPA data from staging instead of using stale prop
+  // Limpar temp staging quando modal fechar
+  useEffect(() => {
+    if (!open) {
+      staging?.clearTempHPA();
+    }
+  }, [open, staging]);
+
+  // 🔧 FIX: Buscar do temp staging primeiro (para "Aplicar Agora" editado no modal)
+  // Depois buscar do staging normal (para "Aplicar Todas")
   const freshModifiedHPAs = useMemo(() => {
-    return modifiedHPAs.map(({ key, original }) => {
-      // Get fresh data from staging
+    return modifiedHPAs.map(({ key, current, original }) => {
+      // 1. Tentar buscar do temp staging (para "Aplicar Agora" com edições no modal)
+      const tempHPA = staging?.tempHPA;
+      if (tempHPA &&
+          tempHPA.original.cluster === original.cluster &&
+          tempHPA.original.namespace === original.namespace &&
+          tempHPA.original.name === original.name) {
+        return {
+          key,
+          current: tempHPA.current,
+          original: tempHPA.original
+        };
+      }
+
+      // 2. Tentar buscar do staging normal (para "Aplicar Todas")
       const freshHPA = staging?.stagedHPAs.find(
         h => h.cluster === original.cluster &&
              h.namespace === original.namespace &&
@@ -67,11 +88,14 @@ export const ApplyAllModal = ({
 
       return {
         key,
-        current: freshHPA || original, // Fallback to original if not in staging
+        // Se encontrou no staging, usar ele
+        // Senão, usar current passado
+        // Fallback final: original
+        current: freshHPA || current || original,
         original
       };
     });
-  }, [modifiedHPAs, staging?.stagedHPAs, refreshCounter]);
+  }, [modifiedHPAs, staging?.stagedHPAs, staging?.tempHPA, refreshCounter]);
 
   // Edit modal state - ALWAYS use string for input values
   const [editingKey, setEditingKey] = useState<string | null>(null);
@@ -148,7 +172,7 @@ export const ApplyAllModal = ({
     const hpaToEdit = freshModifiedHPAs.find(({ key }) => key === editingKey);
     if (!hpaToEdit) return;
 
-    // Update in staging
+    // Build updates
     const updates: Partial<HPA> = {
       min_replicas: minRep,
       max_replicas: maxRep,
@@ -163,18 +187,31 @@ export const ApplyAllModal = ({
       perform_statefulset_rollout: editPerformStatefulSetRollout,
     };
 
-    staging?.updateHPAInStaging(
-      hpaToEdit.current.cluster,
-      hpaToEdit.current.namespace,
-      hpaToEdit.current.name,
-      updates
-    );
+    // Verificar se é do temp staging (Aplicar Agora)
+    const tempHPA = staging?.tempHPA;
+    const isFromTempStaging = tempHPA &&
+      tempHPA.original.cluster === hpaToEdit.original.cluster &&
+      tempHPA.original.namespace === hpaToEdit.original.namespace &&
+      tempHPA.original.name === hpaToEdit.original.name;
 
-    toast.success(`HPA ${hpaToEdit.current.name} atualizado no staging`);
+    if (isFromTempStaging) {
+      // Atualizar temp staging
+      staging?.updateTempHPA(updates);
+      toast.success(`HPA ${hpaToEdit.current.name} atualizado (Aplicar Agora)`);
+    } else {
+      // Atualizar staging normal
+      staging?.updateHPAInStaging(
+        hpaToEdit.current.cluster,
+        hpaToEdit.current.namespace,
+        hpaToEdit.current.name,
+        updates
+      );
+      toast.success(`HPA ${hpaToEdit.current.name} atualizado no staging`);
+    }
 
     // Close edit modal and trigger refresh via counter
     setEditingKey(null);
-    setRefreshCounter(prev => prev + 1); // Trigger useMemo to fetch fresh data from staging
+    setRefreshCounter(prev => prev + 1); // Trigger useMemo to fetch fresh data
   };
 
   const handleRemoveIndividual = (key: string, current: HPA) => {

@@ -22,23 +22,30 @@ interface StagingContextType {
   stagedHPAs: StagingHPA[];
   stagedNodePools: StagingNodePool[];
   loadedSessionInfo: LoadedSessionInfo | null;
-  
+
+  // Temp Staging (para "Aplicar Agora")
+  tempHPA: { current: HPA; original: HPA } | null;
+  setTempHPA: (current: HPA, original: HPA) => void;
+  updateTempHPA: (updates: Partial<HPA>) => void;
+  clearTempHPA: () => void;
+  getTempHPA: () => { current: HPA; original: HPA } | null;
+
   // Métodos para HPAs
   addHPAToStaging: (hpa: HPA) => void;
   updateHPAInStaging: (cluster: string, namespace: string, name: string, updates: Partial<HPA>) => void;
   removeHPAFromStaging: (cluster: string, namespace: string, name: string) => void;
-  
+
   // Métodos para Node Pools
   addNodePoolToStaging: (nodePool: NodePool) => void;
   updateNodePoolInStaging: (cluster: string, name: string, updates: Partial<NodePool>) => void;
   removeNodePoolFromStaging: (cluster: string, name: string) => void;
-  
+
   // Métodos gerais
   clearStaging: () => void;
   loadFromSession: (session: Session) => void;
   hasChanges: () => boolean;
   getChangesCount: () => { hpas: number; nodePools: number; total: number };
-  
+
   // Preview de alterações para salvar
   getSessionData: () => {
     changes: any[];
@@ -70,6 +77,30 @@ export function StagingProvider({ children }: StagingProviderProps) {
   const [stagedHPAs, setStagedHPAs] = useState<StagingHPA[]>([]);
   const [stagedNodePools, setStagedNodePools] = useState<StagingNodePool[]>([]);
   const [loadedSessionInfo, setLoadedSessionInfo] = useState<LoadedSessionInfo | null>(null);
+  const [tempHPA, setTempHPAState] = useState<{ current: HPA; original: HPA } | null>(null);
+
+  // Temp Staging Methods
+  const setTempHPA = useCallback((current: HPA, original: HPA) => {
+    setTempHPAState({ current, original });
+  }, []);
+
+  const updateTempHPA = useCallback((updates: Partial<HPA>) => {
+    setTempHPAState(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        current: { ...prev.current, ...updates }
+      };
+    });
+  }, []);
+
+  const clearTempHPA = useCallback(() => {
+    setTempHPAState(null);
+  }, []);
+
+  const getTempHPA = useCallback(() => {
+    return tempHPA;
+  }, [tempHPA]);
 
   // HPAs
   const addHPAToStaging = useCallback((hpa: HPA) => {
@@ -354,6 +385,11 @@ export function StagingProvider({ children }: StagingProviderProps) {
     stagedHPAs,
     stagedNodePools,
     loadedSessionInfo,
+    tempHPA,
+    setTempHPA,
+    updateTempHPA,
+    clearTempHPA,
+    getTempHPA,
     addHPAToStaging,
     updateHPAInStaging,
     removeHPAFromStaging,

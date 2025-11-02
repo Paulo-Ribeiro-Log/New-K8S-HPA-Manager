@@ -184,6 +184,9 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // Handler para aplicar HPA individual (via "Aplicar Agora")
   const handleApplySingle = (current: HPA, original: HPA) => {
+    // Salvar no temp staging para permitir edição no modal
+    staging?.setTempHPA(current, original);
+
     const key = `${current.cluster}/${current.namespace}/${current.name}`;
     setHpasToApply([{ key, current, original }]);
     setShowApplyModal(true);
