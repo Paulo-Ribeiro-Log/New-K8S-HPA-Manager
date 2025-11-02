@@ -16,9 +16,12 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchClusterInfo = async () => {
+  const fetchClusterInfo = async (isRefresh: boolean = false) => {
     try {
-      setLoading(true);
+      // Apenas mostrar loading na primeira carga, não em refreshes
+      if (!isRefresh) {
+        setLoading(true);
+      }
       setError(null);
       const info = await apiClient.getClusterInfo(selectedCluster);
       setClusterInfo(info);
@@ -26,16 +29,19 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
       console.error('Error fetching cluster info:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch cluster info');
     } finally {
-      setLoading(false);
+      if (!isRefresh) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    fetchClusterInfo();
-    
-    // Atualizar a cada 30 segundos
-    const interval = setInterval(fetchClusterInfo, 30000);
-    
+    // Primeira carga - mostrar loading
+    fetchClusterInfo(false);
+
+    // Atualizar a cada 30 segundos - refresh silencioso
+    const interval = setInterval(() => fetchClusterInfo(true), 30000);
+
     return () => clearInterval(interval);
   }, [selectedCluster]); // Reagir quando o cluster selecionado mudar
 

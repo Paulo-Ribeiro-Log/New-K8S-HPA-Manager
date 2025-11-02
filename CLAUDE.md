@@ -1108,9 +1108,9 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 
 **Advanced:**
 9. ⏳ Git integration for config tracking
-10. ⏳ Notification system for failures
+10. ⏳ **Alertmanager integration (proactive alerts + recommendations)** - [Ver plano detalhado](./ALERTMANAGER_INTEGRATION_PLAN.md)
 11. ✅ RESTful API for external tools
-12. ⏳ Prometheus/Grafana integration
+12. ⏳ Prometheus/Grafana integration (parcial - apenas Prometheus Stack management)
 
 ---
 
