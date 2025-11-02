@@ -1094,23 +1094,23 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 
 ### Potential Next Features
 
-**High Priority:**
-1. Field validation (CPU/memory formats, replica ranges)
-2. Undo/Redo functionality (Web)
-3. Search/Filter within HPA/namespace lists (both)
-4. Export sessions to YAML/JSON (both)
+**High Priority - TODAS IMPLEMENTADAS! ✅**
+1. ✅ Field validation (CPU/memory formats, replica ranges)
+2. ✅ Undo/Redo functionality (via staging + menu de edição)
+3. ✅ Search/Filter within HPA/namespace lists (campos de busca implementados)
+4. ✅ Export sessions to YAML/JSON (save/load session)
 
 **Medium Priority:**
-5. User-configurable templates
-6. Metrics integration (current usage alongside targets)
-7. History tracking with timestamps
-8. Plugin system for custom validation
+5. ⏳ User-configurable templates (parcial - folders existem)
+6. ⏳ **Metrics integration (current usage alongside targets)** - [Ver plano detalhado](./Docs/METRICS_INTEGRATION_PLAN.md)
+7. ✅ History tracking with timestamps
+8. ⏳ Plugin system for custom validation
 
 **Advanced:**
-9. Git integration for config tracking
-10. Notification system for failures
-11. RESTful API for external tools (já existe para Web)
-12. Prometheus/Grafana integration
+9. ⏳ Git integration for config tracking
+10. ⏳ Notification system for failures
+11. ✅ RESTful API for external tools
+12. ⏳ Prometheus/Grafana integration
 
 ---
 
