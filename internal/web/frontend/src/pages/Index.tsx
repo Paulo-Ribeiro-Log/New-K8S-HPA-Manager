@@ -353,11 +353,7 @@ const Index = ({ onLogout }: IndexProps) => {
         );
       
       case "staging":
-        return (
-          <div className="flex-1 overflow-auto p-4">
-            <StagingPanel />
-          </div>
-        );
+        return <StagingPanel />;
 
       case "cronjobs":
         return (

@@ -12,8 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Loader2, FolderOpen, Calendar, User, Info, FileText, Folder, Edit2, Trash2, MoreVertical, CheckCircle } from 'lucide-react';
+import { Loader2, FolderOpen, Calendar, User, Info, FileText, Folder, Edit2, Trash2, MoreVertical } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -128,17 +127,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
   const [isDeleting, setIsDeleting] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
 
-  // 🆕 Estados para recovery mode com seleção granular
-  const [selectedHPAs, setSelectedHPAs] = useState<Set<string>>(new Set());
-  const [selectedNodePools, setSelectedNodePools] = useState<Set<string>>(new Set());
-  const [applyingDirectly, setApplyingDirectly] = useState(false);
-  const [currentProcessing, setCurrentProcessing] = useState<string>('');
-  const [recoveryProgress, setRecoveryProgress] = useState<{
-    total: number;
-    current: number;
-    successes: number;
-    failures: number;
-  }>({ total: 0, current: 0, successes: 0, failures: 0 });
+  // Estados removidos: selectedHPAs, selectedNodePools, applyingDirectly, currentProcessing, recoveryProgress (Apply Directly feature removida)
 
   const staging = useStaging();
 
@@ -148,33 +137,8 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
       loadSessions();
       setSelectedSession(null);
       setSelectedSessionDetails(null);
-      setSelectedHPAs(new Set());
-      setSelectedNodePools(new Set());
-      setCurrentProcessing('');
-      setRecoveryProgress({ total: 0, current: 0, successes: 0, failures: 0 });
     }
   }, [open, selectedFolder]);
-
-  // 🆕 Inicializar seleções quando detalhes da sessão forem carregados (todos marcados por padrão)
-  useEffect(() => {
-    if (selectedSessionDetails) {
-      // Marcar todos os HPAs por padrão
-      const hpaKeys = new Set(
-        selectedSessionDetails.changes?.map(change =>
-          `${change.cluster}::${change.namespace}::${change.hpa_name}`
-        ) || []
-      );
-      setSelectedHPAs(hpaKeys);
-
-      // Marcar todos os Node Pools por padrão
-      const nodePoolKeys = new Set(
-        selectedSessionDetails.node_pool_changes?.map(change =>
-          `${change.cluster}::${change.node_pool_name}`
-        ) || []
-      );
-      setSelectedNodePools(nodePoolKeys);
-    }
-  }, [selectedSessionDetails]);
 
   // Carregar detalhes completos da sessão selecionada
   const loadSessionDetails = async (sessionName: string, folder: string) => {
@@ -257,266 +221,6 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
     }
   };
 
-  // 🆕 Handler para aplicar diretamente (recovery mode) - MELHORADO
-  const handleApplyDirectly = async () => {
-    if (!selectedSessionDetails) return;
-
-    // Validar se há itens selecionados
-    if (selectedHPAs.size === 0 && selectedNodePools.size === 0) {
-      toast.error('Selecione pelo menos um item para restaurar');
-      return;
-    }
-
-    setApplyingDirectly(true);
-    setError(null);
-
-    try {
-      // 1️⃣ VALIDAÇÃO DE CLUSTER - Verificar e trocar contexto se necessário
-      const clusters = new Set<string>();
-      selectedSessionDetails.changes?.forEach(change => {
-        if (change.cluster) clusters.add(change.cluster);
-      });
-      selectedSessionDetails.node_pool_changes?.forEach(change => {
-        if (change.cluster) clusters.add(change.cluster);
-      });
-
-      if (clusters.size > 1) {
-        toast.error('⚠️ Recovery multi-cluster não suportado. Selecione itens de um único cluster.');
-        setApplyingDirectly(false);
-        return;
-      }
-
-      if (clusters.size > 0) {
-        const clusterName = Array.from(clusters)[0];
-        const contextName = `${clusterName}-admin`;
-
-        setCurrentProcessing(`Validando cluster: ${clusterName}...`);
-
-        try {
-          // Buscar configuração do cluster
-          const clusterConfigResponse = await fetch(`/api/v1/clusters/${encodeURIComponent(clusterName)}/config`, {
-            headers: {
-              'Authorization': `Bearer poc-token-123`,
-              'Content-Type': 'application/json',
-            },
-          });
-
-          if (clusterConfigResponse.ok) {
-            const clusterConfig = await clusterConfigResponse.json();
-
-            // Trocar subscription do Azure se necessário
-            if (clusterConfig.subscription) {
-              setCurrentProcessing(`Configurando subscription: ${clusterConfig.subscription}...`);
-              await fetch(`/api/v1/azure/subscription`, {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer poc-token-123`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ subscription: clusterConfig.subscription }),
-              });
-            }
-
-            // Trocar contexto do Kubernetes
-            setCurrentProcessing(`Trocando contexto para: ${contextName}...`);
-            await fetch(`/api/v1/clusters/switch-context`, {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer poc-token-123`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ context: contextName }),
-            });
-
-            console.log(`[Recovery] ✅ Cluster validado: ${clusterName}`);
-          } else {
-            throw new Error('Cluster não encontrado ou inacessível');
-          }
-        } catch (contextErr) {
-          console.error('[Recovery] Erro ao validar cluster:', contextErr);
-          toast.error(`❌ Erro ao conectar no cluster ${clusterName}. Verifique a VPN.`);
-          setApplyingDirectly(false);
-          setCurrentProcessing('');
-          return;
-        }
-      }
-
-      // 2️⃣ FILTRAR ITENS SELECIONADOS
-      const filteredHPAs = selectedSessionDetails.changes?.filter(change => {
-        const key = `${change.cluster}::${change.namespace}::${change.hpa_name}`;
-        return selectedHPAs.has(key);
-      }) || [];
-
-      const filteredNodePools = selectedSessionDetails.node_pool_changes?.filter(change => {
-        const key = `${change.cluster}::${change.node_pool_name}`;
-        return selectedNodePools.has(key);
-      }) || [];
-
-      const totalItems = filteredHPAs.length + filteredNodePools.length;
-      let successCount = 0;
-      let failureCount = 0;
-      const failedItems: string[] = [];
-
-      // 3️⃣ INICIALIZAR PROGRESS
-      setRecoveryProgress({
-        total: totalItems,
-        current: 0,
-        successes: 0,
-        failures: 0,
-      });
-
-      console.log('[Recovery] Iniciando aplicação:', {
-        hpas: filteredHPAs.length,
-        nodePools: filteredNodePools.length,
-        total: totalItems,
-      });
-
-      // 4️⃣ APLICAR HPAs COM FEEDBACK
-      for (let i = 0; i < filteredHPAs.length; i++) {
-        const hpaChange = filteredHPAs[i];
-        const itemName = `${hpaChange.namespace}/${hpaChange.hpa_name}`;
-
-        setCurrentProcessing(`[${i + 1}/${totalItems}] Restaurando HPA: ${itemName}...`);
-
-        try {
-          await apiClient.updateHPA(
-            hpaChange.cluster,
-            hpaChange.namespace,
-            hpaChange.hpa_name,
-            {
-              min_replicas: hpaChange.new_values.min_replicas,
-              max_replicas: hpaChange.new_values.max_replicas,
-              target_cpu: hpaChange.new_values.target_cpu,
-              target_memory: hpaChange.new_values.target_memory,
-              target_cpu_request: hpaChange.new_values.cpu_request,
-              target_cpu_limit: hpaChange.new_values.cpu_limit,
-              target_memory_request: hpaChange.new_values.memory_request,
-              target_memory_limit: hpaChange.new_values.memory_limit,
-              perform_rollout: hpaChange.new_values.perform_rollout,
-              perform_daemonset_rollout: hpaChange.new_values.perform_daemonset_rollout,
-              perform_statefulset_rollout: hpaChange.new_values.perform_statefulset_rollout,
-            }
-          );
-
-          successCount++;
-          console.log(`[Recovery] ✅ HPA restaurado (${i + 1}/${filteredHPAs.length}): ${itemName}`);
-
-          setRecoveryProgress(prev => ({
-            ...prev,
-            current: prev.current + 1,
-            successes: prev.successes + 1,
-          }));
-
-        } catch (hpaError) {
-          failureCount++;
-          failedItems.push(`HPA: ${itemName}`);
-          console.error(`[Recovery] ❌ Erro ao restaurar HPA ${itemName}:`, hpaError);
-
-          setRecoveryProgress(prev => ({
-            ...prev,
-            current: prev.current + 1,
-            failures: prev.failures + 1,
-          }));
-        }
-      }
-
-      // 5️⃣ APLICAR NODE POOLS COM FEEDBACK (respeitando sequenciamento)
-      const sortedNodePools = [...filteredNodePools].sort((a, b) => {
-        const seqA = a.sequence_order || 0;
-        const seqB = b.sequence_order || 0;
-        return seqA - seqB;
-      });
-
-      for (let i = 0; i < sortedNodePools.length; i++) {
-        const npChange = sortedNodePools[i];
-        const itemName = npChange.node_pool_name;
-        const currentItem = filteredHPAs.length + i + 1;
-
-        setCurrentProcessing(`[${currentItem}/${totalItems}] Restaurando Node Pool: ${itemName}...`);
-
-        try {
-          await apiClient.updateNodePool(
-            npChange.cluster,
-            npChange.resource_group,
-            npChange.node_pool_name,
-            {
-              node_count: npChange.new_values.node_count,
-              autoscaling_enabled: npChange.new_values.autoscaling_enabled,
-              min_node_count: npChange.new_values.min_node_count,
-              max_node_count: npChange.new_values.max_node_count,
-            }
-          );
-
-          successCount++;
-          console.log(`[Recovery] ✅ Node Pool restaurado (${i + 1}/${sortedNodePools.length}): ${itemName}`);
-
-          setRecoveryProgress(prev => ({
-            ...prev,
-            current: prev.current + 1,
-            successes: prev.successes + 1,
-          }));
-
-        } catch (npError) {
-          failureCount++;
-          failedItems.push(`Node Pool: ${itemName}`);
-          console.error(`[Recovery] ❌ Erro ao restaurar Node Pool ${itemName}:`, npError);
-
-          setRecoveryProgress(prev => ({
-            ...prev,
-            current: prev.current + 1,
-            failures: prev.failures + 1,
-          }));
-        }
-      }
-
-      // 6️⃣ RESUMO FINAL COM ESTATÍSTICAS
-      setCurrentProcessing('Recovery concluído!');
-
-      console.log('[Recovery] Resumo Final:', {
-        total: totalItems,
-        successes: successCount,
-        failures: failureCount,
-        failedItems,
-      });
-
-      if (failureCount === 0) {
-        toast.success(`✅ Recovery 100% concluído: ${successCount} itens restaurados`, {
-          duration: 5000,
-        });
-      } else if (successCount > 0) {
-        toast.warning(
-          `⚠️ Recovery parcial: ${successCount} OK, ${failureCount} falhas\n` +
-          `Itens falhados: ${failedItems.join(', ')}`,
-          { duration: 8000 }
-        );
-      } else {
-        toast.error(
-          `❌ Recovery falhou: ${failureCount} erros\n` +
-          `Verifique a conectividade e logs`,
-          { duration: 8000 }
-        );
-      }
-
-      // Fechar modal apenas se tudo ocorreu bem ou parcialmente
-      if (successCount > 0) {
-        setTimeout(() => {
-          onOpenChange(false);
-          setSelectedSession(null);
-          setSelectedSessionDetails(null);
-          setSelectedHPAs(new Set());
-          setSelectedNodePools(new Set());
-        }, 2000);
-      }
-
-    } catch (err) {
-      console.error('[Recovery] Erro crítico ao aplicar diretamente:', err);
-      setError(`Erro crítico no recovery: ${err instanceof Error ? err.message : 'Erro desconhecido'}`);
-      toast.error('❌ Erro crítico durante recovery. Verifique os logs.');
-    } finally {
-      setApplyingDirectly(false);
-      setCurrentProcessing('');
-    }
-  };
 
   const handleLoadSession = async () => {
     if (!selectedSessionDetails) return;
@@ -949,137 +653,53 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
                   {/* HPAs */}
                   {selectedSessionDetails.changes && selectedSessionDetails.changes.length > 0 && (
                     <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <h5 className="text-sm font-medium">📊 HPAs ({selectedHPAs.size}/{selectedSessionDetails.changes.length})</h5>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            if (selectedHPAs.size === selectedSessionDetails.changes!.length) {
-                              setSelectedHPAs(new Set());
-                            } else {
-                              const allKeys = new Set(
-                                selectedSessionDetails.changes!.map(change =>
-                                  `${change.cluster}::${change.namespace}::${change.hpa_name}`
-                                )
-                              );
-                              setSelectedHPAs(allKeys);
-                            }
-                          }}
-                          className="h-7 text-xs"
-                        >
-                          {selectedHPAs.size === selectedSessionDetails.changes!.length ? 'Desmarcar Todos' : 'Marcar Todos'}
-                        </Button>
-                      </div>
-                      {selectedSessionDetails.changes.map((change, index) => {
-                        const key = `${change.cluster}::${change.namespace}::${change.hpa_name}`;
-                        const isSelected = selectedHPAs.has(key);
-                        return (
-                          <div key={index} className={`p-3 rounded-md text-xs space-y-1 border-2 transition-colors ${isSelected ? 'bg-blue-50 dark:bg-blue-950 border-blue-300 dark:border-blue-700' : 'bg-muted border-transparent'}`}>
-                            <div className="flex items-start gap-2">
-                              <Checkbox
-                                checked={isSelected}
-                                onCheckedChange={(checked) => {
-                                  const newSet = new Set(selectedHPAs);
-                                  if (checked) {
-                                    newSet.add(key);
-                                  } else {
-                                    newSet.delete(key);
-                                  }
-                                  setSelectedHPAs(newSet);
-                                }}
-                                className="mt-1"
-                              />
-                              <div className="flex-1">
-                                <div className="font-medium text-sm">{change.namespace}/{change.hpa_name}</div>
-                                <div className="text-muted-foreground space-y-0.5 mt-1">
-                                  <div>🔹 Min Replicas: <span className="text-red-500">{change.original_values?.min_replicas}</span> → <span className="text-green-500">{change.new_values?.min_replicas}</span></div>
-                                  <div>🔹 Max Replicas: <span className="text-red-500">{change.original_values?.max_replicas}</span> → <span className="text-green-500">{change.new_values?.max_replicas}</span></div>
-                                  {change.new_values?.target_cpu && (
-                                    <div>🔹 Target CPU: <span className="text-red-500">{change.original_values?.target_cpu}%</span> → <span className="text-green-500">{change.new_values?.target_cpu}%</span></div>
-                                  )}
-                                  {change.new_values?.target_memory && (
-                                    <div>🔹 Target Memory: <span className="text-red-500">{change.original_values?.target_memory}%</span> → <span className="text-green-500">{change.new_values?.target_memory}%</span></div>
-                                  )}
-                                  {(change.new_values?.perform_rollout || change.new_values?.perform_daemonset_rollout || change.new_values?.perform_statefulset_rollout) && (
-                                    <div className="text-orange-600 font-medium mt-1">
-                                      🔄 Rollout: {[
-                                        change.new_values?.perform_rollout && 'Deployment',
-                                        change.new_values?.perform_daemonset_rollout && 'DaemonSet',
-                                        change.new_values?.perform_statefulset_rollout && 'StatefulSet'
-                                      ].filter(Boolean).join(', ')}
-                                    </div>
-                                  )}
-                                </div>
+                      <h5 className="text-sm font-medium">📊 HPAs ({selectedSessionDetails.changes.length})</h5>
+                      {selectedSessionDetails.changes.map((change, index) => (
+                        <div key={index} className="p-3 rounded-md text-xs space-y-1 bg-muted border">
+                          <div className="font-medium text-sm">{change.namespace}/{change.hpa_name}</div>
+                          <div className="text-muted-foreground space-y-0.5 mt-1">
+                            <div>🔹 Min Replicas: <span className="text-red-500">{change.original_values?.min_replicas}</span> → <span className="text-green-500">{change.new_values?.min_replicas}</span></div>
+                            <div>🔹 Max Replicas: <span className="text-red-500">{change.original_values?.max_replicas}</span> → <span className="text-green-500">{change.new_values?.max_replicas}</span></div>
+                            {change.new_values?.target_cpu && (
+                              <div>🔹 Target CPU: <span className="text-red-500">{change.original_values?.target_cpu}%</span> → <span className="text-green-500">{change.new_values?.target_cpu}%</span></div>
+                            )}
+                            {change.new_values?.target_memory && (
+                              <div>🔹 Target Memory: <span className="text-red-500">{change.original_values?.target_memory}%</span> → <span className="text-green-500">{change.new_values?.target_memory}%</span></div>
+                            )}
+                            {(change.new_values?.perform_rollout || change.new_values?.perform_daemonset_rollout || change.new_values?.perform_statefulset_rollout) && (
+                              <div className="text-orange-600 font-medium mt-1">
+                                🔄 Rollout: {[
+                                  change.new_values?.perform_rollout && 'Deployment',
+                                  change.new_values?.perform_daemonset_rollout && 'DaemonSet',
+                                  change.new_values?.perform_statefulset_rollout && 'StatefulSet'
+                                ].filter(Boolean).join(', ')}
                               </div>
-                            </div>
+                            )}
                           </div>
-                        );
-                      })}
+                        </div>
+                      ))}
                     </div>
                   )}
 
                   {/* Node Pools */}
                   {selectedSessionDetails.node_pool_changes && selectedSessionDetails.node_pool_changes.length > 0 && (
                     <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <h5 className="text-sm font-medium">🛠️ Node Pools ({selectedNodePools.size}/{selectedSessionDetails.node_pool_changes.length})</h5>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            if (selectedNodePools.size === selectedSessionDetails.node_pool_changes!.length) {
-                              setSelectedNodePools(new Set());
-                            } else {
-                              const allKeys = new Set(
-                                selectedSessionDetails.node_pool_changes!.map(change =>
-                                  `${change.cluster}::${change.node_pool_name}`
-                                )
-                              );
-                              setSelectedNodePools(allKeys);
-                            }
-                          }}
-                          className="h-7 text-xs"
-                        >
-                          {selectedNodePools.size === selectedSessionDetails.node_pool_changes!.length ? 'Desmarcar Todos' : 'Marcar Todos'}
-                        </Button>
-                      </div>
-                      {selectedSessionDetails.node_pool_changes.map((change, index) => {
-                        const key = `${change.cluster}::${change.node_pool_name}`;
-                        const isSelected = selectedNodePools.has(key);
-                        return (
-                          <div key={index} className={`p-3 rounded-md text-xs space-y-1 border-2 transition-colors ${isSelected ? 'bg-blue-50 dark:bg-blue-950 border-blue-300 dark:border-blue-700' : 'bg-muted border-transparent'}`}>
-                            <div className="flex items-start gap-2">
-                              <Checkbox
-                                checked={isSelected}
-                                onCheckedChange={(checked) => {
-                                  const newSet = new Set(selectedNodePools);
-                                  if (checked) {
-                                    newSet.add(key);
-                                  } else {
-                                    newSet.delete(key);
-                                  }
-                                  setSelectedNodePools(newSet);
-                                }}
-                                className="mt-1"
-                              />
-                              <div className="flex-1">
-                                <div className="font-medium text-sm">{change.node_pool_name}</div>
-                                <div className="text-muted-foreground space-y-0.5 mt-1">
-                                  <div>🔹 Node Count: <span className="text-red-500">{change.original_values.node_count}</span> → <span className="text-green-500">{change.new_values.node_count}</span></div>
-                                  <div>🔹 Autoscaling: <span className="text-red-500">{change.original_values.autoscaling_enabled ? 'ON' : 'OFF'}</span> → <span className="text-green-500">{change.new_values.autoscaling_enabled ? 'ON' : 'OFF'}</span></div>
-                                  {change.new_values.autoscaling_enabled && (
-                                    <div>🔹 Min/Max: <span className="text-green-500">{change.new_values.min_node_count}/{change.new_values.max_node_count}</span></div>
-                                  )}
-                                  {change.sequence_order && change.sequence_order > 0 && (
-                                    <div className="text-blue-600 font-medium">🔢 Sequence Order: {change.sequence_order}</div>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
+                      <h5 className="text-sm font-medium">🛠️ Node Pools ({selectedSessionDetails.node_pool_changes.length})</h5>
+                      {selectedSessionDetails.node_pool_changes.map((change, index) => (
+                        <div key={index} className="p-3 rounded-md text-xs space-y-1 bg-muted border">
+                          <div className="font-medium text-sm">{change.node_pool_name}</div>
+                          <div className="text-muted-foreground space-y-0.5 mt-1">
+                            <div>🔹 Node Count: <span className="text-red-500">{change.original_values.node_count}</span> → <span className="text-green-500">{change.new_values.node_count}</span></div>
+                            <div>🔹 Autoscaling: <span className="text-red-500">{change.original_values.autoscaling_enabled ? 'ON' : 'OFF'}</span> → <span className="text-green-500">{change.new_values.autoscaling_enabled ? 'ON' : 'OFF'}</span></div>
+                            {change.new_values.autoscaling_enabled && (
+                              <div>🔹 Min/Max: <span className="text-green-500">{change.new_values.min_node_count}/{change.new_values.max_node_count}</span></div>
+                            )}
+                            {change.sequence_order && change.sequence_order > 0 && (
+                              <div className="text-blue-600 font-medium">🔢 Sequence Order: {change.sequence_order}</div>
+                            )}
                           </div>
-                        );
-                      })}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -1101,67 +721,19 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
           </Alert>
         )}
 
-        {/* 🆕 Progress Indicator durante Recovery */}
-        {applyingDirectly && (
-          <div className="space-y-2 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-            <div className="flex items-center justify-between text-sm">
-              <span className="font-medium text-blue-900 dark:text-blue-100">
-                {currentProcessing || 'Processando...'}
-              </span>
-              <span className="text-blue-700 dark:text-blue-300 font-semibold">
-                {recoveryProgress.current}/{recoveryProgress.total}
-              </span>
-            </div>
+        {/* Progress Indicator removido (Apply Directly feature removida) */}
 
-            {/* Progress Bar */}
-            <div className="w-full bg-blue-200 dark:bg-blue-900 rounded-full h-2.5">
-              <div
-                className="bg-gradient-to-r from-blue-500 to-blue-600 h-2.5 rounded-full transition-all duration-300"
-                style={{
-                  width: `${recoveryProgress.total > 0 ? (recoveryProgress.current / recoveryProgress.total) * 100 : 0}%`
-                }}
-              />
-            </div>
-
-            {/* Estatísticas */}
-            {recoveryProgress.total > 0 && (
-              <div className="flex gap-4 text-xs">
-                <div className="flex items-center gap-1">
-                  <span className="text-green-600 dark:text-green-400 font-semibold">✅ {recoveryProgress.successes} OK</span>
-                </div>
-                {recoveryProgress.failures > 0 && (
-                  <div className="flex items-center gap-1">
-                    <span className="text-red-600 dark:text-red-400 font-semibold">❌ {recoveryProgress.failures} Erros</span>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        <DialogFooter className="flex-col sm:flex-row gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loadingSession || applyingDirectly}>
+        <DialogFooter className="flex gap-2">
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loadingSession}>
             Cancelar
           </Button>
-          <div className="flex gap-2 flex-1 justify-end">
-            <Button
-              onClick={handleLoadSession}
-              disabled={!selectedSessionDetails || loadingSession || loadingDetails || applyingDirectly}
-              variant="secondary"
-            >
-              {loadingSession && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              💾 Carregar no Staging
-            </Button>
-            <Button
-              onClick={handleApplyDirectly}
-              disabled={!selectedSessionDetails || loadingSession || loadingDetails || applyingDirectly || (selectedHPAs.size === 0 && selectedNodePools.size === 0)}
-              className="bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 text-white"
-            >
-              {applyingDirectly && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              <CheckCircle className="mr-2 h-4 w-4" />
-              🔄 Apply Directly (Recovery)
-            </Button>
-          </div>
+          <Button
+            onClick={handleLoadSession}
+            disabled={!selectedSessionDetails || loadingSession || loadingDetails}
+          >
+            {loadingSession && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            💾 Carregar no Staging
+          </Button>
         </DialogFooter>
       </DialogContent>
       

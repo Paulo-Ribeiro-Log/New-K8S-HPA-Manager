@@ -32,8 +32,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Estado Atual (Novembro 2025)
 
-**Versão Atual:** v1.3.7 (Release: 02 de novembro de 2025)
-**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.7
+**Versão Atual:** v1.3.8 (Release: 02 de novembro de 2025)
+**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.8
 
 **TUI (Terminal Interface):**
 - ✅ Interface responsiva (adapta-se ao tamanho real do terminal - mínimo 80x24)
@@ -69,6 +69,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Combobox de Cluster no Header** - Busca integrada com filtro em tempo real, keyboard navigation - v1.3.2
 - ✅ **Redesign CronJobs e Prometheus Pages** - SplitView layout, auto-refresh, controles compactos - v1.3.4
 - ✅ **Redesign Staging Page** - SplitView layout (2/5 + 3/5), busca integrada, editor inline - v1.3.7
+- ✅ **Load Session Modal Simplificado** - Removido "Apply Directly", scroll independente por painel - v1.3.8
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -1116,6 +1117,47 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Simplificação Load Session Modal + Correção Scroll Staging (Novembro 2025) ✅
+
+**Data:** 02 de novembro de 2025
+
+**Problemas identificados:**
+1. Botão "Apply Directly (Recovery)" podia levar a erros de operação
+2. Scroll no painel de itens do Staging movia o painel do editor junto
+3. Página ficava em branco ao clicar em "Carregar no Staging" após remoção do Apply Directly
+
+**Soluções implementadas:**
+
+**1️⃣ Remoção do "Apply Directly"**
+- Removida função `handleApplyDirectly()` completa (~260 linhas)
+- Removidos estados: `selectedHPAs`, `selectedNodePools`, `applyingDirectly`, `currentProcessing`, `recoveryProgress`
+- Removidos checkboxes de seleção granular de itens
+- Removido botão "Apply Directly (Recovery)" do footer
+- Removido progress indicator overlay
+- Interface simplificada: Apenas visualização + "Carregar no Staging"
+
+**2️⃣ Correção Scroll Independente**
+- Removido `overflow-auto` e `p-4` do container da aba Staging em Index.tsx
+- SplitView agora gerencia scroll independente para cada painel
+- Scroll no painel esquerdo não afeta painel direito
+
+**3️⃣ Bug Fix: Página em Branco**
+- Root cause: Estados removidos ainda eram referenciados em `useEffect()`
+- Removidos 2 `useEffect()` que tentavam usar estados inexistentes
+- Limpeza completa de referências a `setSelectedHPAs`, `setSelectedNodePools`, etc.
+
+**Arquivos modificados:**
+- `internal/web/frontend/src/components/LoadSessionModal.tsx` (-290 linhas)
+- `internal/web/frontend/src/pages/Index.tsx` (linha 355-356)
+
+**Benefícios:**
+- ✅ Interface mais simples e segura (sem Apply Directly)
+- ✅ Scroll independente por painel (UX melhorada)
+- ✅ Código limpo sem estados órfãos
+- ✅ Bundle reduzido (~8KB menor)
+
+---
 
 ### Redesign Completo: Staging Page (Novembro 2025) ✅
 
