@@ -10,6 +10,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Loader2,
   AlertTriangle,
@@ -18,13 +21,23 @@ import {
   TrendingUp,
   TrendingDown,
   Trash2,
-  ArrowRight
+  ArrowRight,
+  MoreVertical,
+  Edit
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { apiClient } from "@/lib/api/client";
 import type { NodePool } from "@/lib/api/types";
 import { toast } from "sonner";
 import { useStaging } from "@/contexts/StagingContext";
+import { guardVPNOperation } from "@/lib/vpnGuard";
 
 interface NodePoolApplyModalProps {
   open: boolean;
@@ -37,6 +50,7 @@ interface NodePoolApplyModalProps {
   }>;
   onApplied?: () => void;
   onClear?: () => void;
+  checkVPN?: () => Promise<boolean>; // Função de validação VPN (opcional)
 }
 
 type NodePoolStatus = 'idle' | 'applying' | 'success' | 'error';
@@ -52,11 +66,21 @@ export const NodePoolApplyModal = ({
   modifiedNodePools,
   onApplied,
   onClear,
+  checkVPN,
 }: NodePoolApplyModalProps) => {
   const staging = useStaging();
   const [isApplying, setIsApplying] = useState(false);
   const [applyingIndividual, setApplyingIndividual] = useState<string | null>(null);
   const [nodePoolStates, setNodePoolStates] = useState<Record<string, NodePoolApplyState>>({});
+  const [removedKeys, setRemovedKeys] = useState<Set<string>>(new Set());
+  const [refreshCounter, setRefreshCounter] = useState(0);
+
+  // Estados para edição inline
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editNodeCount, setEditNodeCount] = useState("");
+  const [editMinNodes, setEditMinNodes] = useState("");
+  const [editMaxNodes, setEditMaxNodes] = useState("");
+  const [editAutoscaling, setEditAutoscaling] = useState(false);
 
   // Detectar se há node pools com ordem sequencial
   const hasSequentialPools = modifiedNodePools.some((np) => np.order !== undefined);
@@ -100,7 +124,85 @@ export const NodePoolApplyModal = ({
     }
   };
 
+  const handleOpenEdit = (key: string, current: NodePool) => {
+    setEditingKey(key);
+    setEditNodeCount(String(current.node_count ?? 0));
+    setEditMinNodes(String(current.min_node_count ?? 0));
+    setEditMaxNodes(String(current.max_node_count ?? 1));
+    setEditAutoscaling(current.autoscaling_enabled ?? false);
+  };
+
+  const handleSaveEdit = () => {
+    // Validar campos
+    const nodeCount = parseInt(editNodeCount);
+    const minNodes = parseInt(editMinNodes);
+    const maxNodes = parseInt(editMaxNodes);
+
+    if (isNaN(nodeCount) || nodeCount < 0) {
+      toast.error("Node Count deve ser um número válido");
+      return;
+    }
+
+    if (editAutoscaling) {
+      if (isNaN(minNodes) || minNodes < 0) {
+        toast.error("Min Nodes deve ser um número válido");
+        return;
+      }
+      if (isNaN(maxNodes) || maxNodes < minNodes) {
+        toast.error("Max Nodes deve ser maior ou igual a Min Nodes");
+        return;
+      }
+    }
+
+    // Encontrar o node pool sendo editado
+    const nodePoolToEdit = modifiedNodePools.find(({ key }) => key === editingKey);
+    if (!nodePoolToEdit) return;
+
+    const { current } = nodePoolToEdit;
+
+    // Atualizar no staging
+    const updates: Partial<NodePool> = {
+      node_count: nodeCount,
+      min_node_count: minNodes,
+      max_node_count: maxNodes,
+      autoscaling_enabled: editAutoscaling,
+    };
+
+    staging?.updateNodePoolInStaging(
+      current.cluster_name,
+      current.name,
+      updates
+    );
+
+    toast.success(`Node Pool ${current.name} atualizado no staging`);
+
+    // Fechar modal de edição e forçar refresh
+    setEditingKey(null);
+    setRefreshCounter(prev => prev + 1);
+  };
+
+  const handleRemoveIndividual = (key: string, current: NodePool) => {
+    // Remover do staging
+    staging?.removeNodePoolFromStaging(
+      current.cluster_name,
+      current.name
+    );
+
+    // Adicionar ao set de removidos
+    setRemovedKeys(prev => new Set(prev).add(key));
+
+    toast.info(`Node Pool ${current.name} removido da lista`);
+  };
+
   const handleApplyAll = async () => {
+    // Validar VPN antes de aplicar (se função fornecida)
+    if (checkVPN) {
+      const vpnOk = await guardVPNOperation(checkVPN, 'Aplicar Alterações de Node Pools');
+      if (!vpnOk) {
+        return; // Bloquear operação se VPN desconectada
+      }
+    }
+
     setIsApplying(true);
 
     try {
@@ -328,25 +430,57 @@ export const NodePoolApplyModal = ({
                         </div>
                       )}
                     </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleApplyIndividual(key, current)}
-                      disabled={isApplying || applyingIndividual !== null}
-                      className="shrink-0"
-                    >
-                      {applyingIndividual === key ? (
-                        <>
-                          <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                          Aplicando...
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle2 className="w-3 h-3 mr-1" />
-                          {hasBeenApplied ? 'Re-aplicar' : 'Aplicar'}
-                        </>
-                      )}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleApplyIndividual(key, current)}
+                        disabled={isApplying || applyingIndividual !== null}
+                        className="shrink-0"
+                      >
+                        {applyingIndividual === key ? (
+                          <>
+                            <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                            Aplicando...
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="w-3 h-3 mr-1" />
+                            {hasBeenApplied ? 'Re-aplicar' : 'Aplicar'}
+                          </>
+                        )}
+                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={isApplying || applyingIndividual !== null}
+                            className="h-8 w-8 p-0"
+                          >
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => handleOpenEdit(key, current)}
+                            disabled={isApplying || applyingIndividual !== null}
+                          >
+                            <Edit className="h-4 w-4 mr-2" />
+                            Editar Conteúdo
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => handleRemoveIndividual(key, current)}
+                            disabled={isApplying || applyingIndividual !== null}
+                            className="text-destructive focus:text-destructive"
+                          >
+                            <Trash2 className="h-4 w-4 mr-2" />
+                            Remover da Lista
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
                   </div>
 
                   <p className="text-sm text-muted-foreground">
@@ -439,6 +573,93 @@ export const NodePoolApplyModal = ({
           </div>
         </DialogFooter>
       </DialogContent>
+
+      {/* Modal de Edição Inline */}
+      {editingKey && (() => {
+        const nodePoolToEdit = modifiedNodePools.find(({ key }) => key === editingKey);
+        if (!nodePoolToEdit) return null;
+        const { current } = nodePoolToEdit;
+
+        return (
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Editar Node Pool</DialogTitle>
+              <DialogDescription>
+                Editando: {current.name} ({current.cluster_name})
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-4">
+              {/* Autoscaling Toggle */}
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="edit-autoscaling"
+                  checked={editAutoscaling}
+                  onCheckedChange={(checked) => setEditAutoscaling(checked === true)}
+                />
+                <Label htmlFor="edit-autoscaling" className="cursor-pointer">
+                  Autoscaling Habilitado
+                </Label>
+              </div>
+
+              {/* Node Count (Manual Mode) */}
+              {!editAutoscaling && (
+                <div className="space-y-2">
+                  <Label htmlFor="edit-node-count">Node Count</Label>
+                  <Input
+                    id="edit-node-count"
+                    type="text"
+                    value={editNodeCount}
+                    onChange={(e) => setEditNodeCount(e.target.value)}
+                    onClick={(e) => e.currentTarget.select()}
+                    onFocus={(e) => e.currentTarget.select()}
+                  />
+                </div>
+              )}
+
+              {/* Min/Max Nodes (Autoscaling Mode) */}
+              {editAutoscaling && (
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-min-nodes">Min Nodes</Label>
+                    <Input
+                      id="edit-min-nodes"
+                      type="text"
+                      value={editMinNodes}
+                      onChange={(e) => setEditMinNodes(e.target.value)}
+                      onClick={(e) => e.currentTarget.select()}
+                      onFocus={(e) => e.currentTarget.select()}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-max-nodes">Max Nodes</Label>
+                    <Input
+                      id="edit-max-nodes"
+                      type="text"
+                      value={editMaxNodes}
+                      onChange={(e) => setEditMaxNodes(e.target.value)}
+                      onClick={(e) => e.currentTarget.select()}
+                      onFocus={(e) => e.currentTarget.select()}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setEditingKey(null)}
+              >
+                Cancelar
+              </Button>
+              <Button onClick={handleSaveEdit}>
+                Salvar Alterações
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        );
+      })()}
     </Dialog>
   );
 };

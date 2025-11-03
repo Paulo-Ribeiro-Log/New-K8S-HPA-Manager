@@ -248,12 +248,10 @@ export function StagingPanel() {
           ) : selectedItem.type === 'hpa' ? (
             <HPAEditor
               hpa={selectedItem.item as HPA}
-              onApplied={() => setSelectedItem(null)}
             />
           ) : (
             <NodePoolEditor
               nodePool={selectedItem.item as NodePool}
-              onApplied={() => setSelectedItem(null)}
             />
           ),
         }}

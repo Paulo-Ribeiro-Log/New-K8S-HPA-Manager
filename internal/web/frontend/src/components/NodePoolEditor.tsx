@@ -40,22 +40,26 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   // Track if applying changes
   const [isApplying, setIsApplying] = useState(false);
 
-  // Initialize form when nodePool changes
+  // Initialize form when nodePool changes or staging updates
   useEffect(() => {
     if (nodePool) {
-      setNodeCount(String(nodePool.node_count));
-      setMinNodeCount(String(nodePool.min_node_count));
-      setMaxNodeCount(String(nodePool.max_node_count));
-      setAutoscalingEnabled(nodePool.autoscaling_enabled);
-
-      // Check if this pool is already in staging
+      // Check if this pool is already in staging - use staged values if available
       const stagedPool = staging.stagedNodePools.find(
         np => np.cluster_name === nodePool.cluster_name && np.name === nodePool.name
       );
-      
-      if (stagedPool?.sequence_order) {
-        setSequenceOrder(stagedPool.sequence_order.toString());
+
+      // Use staged values if available, otherwise use original nodePool values
+      if (stagedPool) {
+        setNodeCount(String(stagedPool.node_count));
+        setMinNodeCount(String(stagedPool.min_node_count));
+        setMaxNodeCount(String(stagedPool.max_node_count));
+        setAutoscalingEnabled(stagedPool.autoscaling_enabled);
+        setSequenceOrder(stagedPool.sequence_order && stagedPool.sequence_order > 0 ? stagedPool.sequence_order.toString() : "none");
       } else {
+        setNodeCount(String(nodePool.node_count));
+        setMinNodeCount(String(nodePool.min_node_count));
+        setMaxNodeCount(String(nodePool.max_node_count));
+        setAutoscalingEnabled(nodePool.autoscaling_enabled);
         setSequenceOrder("none");
       }
 
@@ -67,21 +71,60 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   useEffect(() => {
     if (!nodePool) return;
 
-    const changed =
-      (parseInt(nodeCount) || 0) !== nodePool.node_count ||
-      (parseInt(minNodeCount) || 0) !== nodePool.min_node_count ||
-      (parseInt(maxNodeCount) || 1) !== nodePool.max_node_count ||
-      autoscalingEnabled !== nodePool.autoscaling_enabled;
+    const stagedPool = staging.stagedNodePools.find(
+      np => np.cluster_name === nodePool.cluster_name && np.name === nodePool.name
+    );
 
-    setHasChanges(changed);
-  }, [nodeCount, minNodeCount, maxNodeCount, autoscalingEnabled, nodePool]);
+    const currentNodeCount = nodeCount === "" ? 0 : parseInt(nodeCount);
+    const currentMinNodeCount = minNodeCount === "" ? 0 : parseInt(minNodeCount);
+    const currentMaxNodeCount = maxNodeCount === "" ? 0 : parseInt(maxNodeCount);
+
+    if (stagedPool) {
+      // Compare against staged values
+      const changed =
+        currentNodeCount !== stagedPool.node_count ||
+        currentMinNodeCount !== stagedPool.min_node_count ||
+        currentMaxNodeCount !== stagedPool.max_node_count ||
+        autoscalingEnabled !== stagedPool.autoscaling_enabled ||
+        sequenceOrder !== (stagedPool.sequence_order && stagedPool.sequence_order > 0 ? stagedPool.sequence_order.toString() : "none");
+
+      setHasChanges(changed);
+    } else {
+      // Compare against original nodePool
+      const changed =
+        currentNodeCount !== nodePool.node_count ||
+        currentMinNodeCount !== nodePool.min_node_count ||
+        currentMaxNodeCount !== nodePool.max_node_count ||
+        autoscalingEnabled !== nodePool.autoscaling_enabled ||
+        sequenceOrder !== "none";
+
+      setHasChanges(changed);
+    }
+  }, [nodeCount, minNodeCount, maxNodeCount, autoscalingEnabled, sequenceOrder, nodePool, staging.stagedNodePools]);
 
   const handleReset = () => {
     if (nodePool) {
-      setNodeCount(String(nodePool.node_count));
-      setMinNodeCount(String(nodePool.min_node_count));
-      setMaxNodeCount(String(nodePool.max_node_count));
-      setAutoscalingEnabled(nodePool.autoscaling_enabled);
+      // Check if this pool is in staging - reset to staged values if available
+      const stagedPool = staging.stagedNodePools.find(
+        np => np.cluster_name === nodePool.cluster_name && np.name === nodePool.name
+      );
+
+      if (stagedPool) {
+        // Reset to staged values
+        setNodeCount(String(stagedPool.node_count));
+        setMinNodeCount(String(stagedPool.min_node_count));
+        setMaxNodeCount(String(stagedPool.max_node_count));
+        setAutoscalingEnabled(stagedPool.autoscaling_enabled);
+        setSequenceOrder(stagedPool.sequence_order ? stagedPool.sequence_order.toString() : "none");
+      } else {
+        // Reset to original nodePool values
+        setNodeCount(String(nodePool.node_count));
+        setMinNodeCount(String(nodePool.min_node_count));
+        setMaxNodeCount(String(nodePool.max_node_count));
+        setAutoscalingEnabled(nodePool.autoscaling_enabled);
+        setSequenceOrder("none");
+      }
+
       setHasChanges(false);
     }
   };
@@ -89,10 +132,10 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const handleApply = () => {
     if (!nodePool) return;
 
-    // Parse string values to numbers
-    const nodeCountNum = parseInt(nodeCount) || 0;
-    const minNodeCountNum = parseInt(minNodeCount) || 0;
-    const maxNodeCountNum = parseInt(maxNodeCount) || 1;
+    // Parse string values to numbers - handle empty strings
+    const nodeCountNum = nodeCount === "" ? 0 : parseInt(nodeCount);
+    const minNodeCountNum = minNodeCount === "" ? 0 : parseInt(minNodeCount);
+    const maxNodeCountNum = maxNodeCount === "" ? 0 : parseInt(maxNodeCount);
 
     // First add to staging if not already there
     staging.addNodePoolToStaging(nodePool);
@@ -103,12 +146,8 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
       min_node_count: minNodeCountNum,
       max_node_count: maxNodeCountNum,
       autoscaling_enabled: autoscalingEnabled,
+      sequence_order: sequenceOrder !== "none" ? parseInt(sequenceOrder) : 0,
     };
-
-    // Add sequence order if specified
-    if (sequenceOrder !== "none") {
-      updates.sequence_order = parseInt(sequenceOrder);
-    }
 
     staging.updateNodePoolInStaging(nodePool.cluster_name, nodePool.name, updates);
     setHasChanges(false);
@@ -120,10 +159,10 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const handleApplyNow = async () => {
     if (!nodePool) return;
 
-    // Parse string values to numbers
-    const nodeCountNum = parseInt(nodeCount) || 0;
-    const minNodeCountNum = parseInt(minNodeCount) || 0;
-    const maxNodeCountNum = parseInt(maxNodeCount) || 1;
+    // Parse string values to numbers - handle empty strings
+    const nodeCountNum = nodeCount === "" ? 0 : parseInt(nodeCount);
+    const minNodeCountNum = minNodeCount === "" ? 0 : parseInt(minNodeCount);
+    const maxNodeCountNum = maxNodeCount === "" ? 0 : parseInt(maxNodeCount);
 
     setIsApplying(true);
 
@@ -372,32 +411,44 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             <CardTitle className="text-sm">Original Values</CardTitle>
           </CardHeader>
           <CardContent className="space-y-1 text-sm">
-            {(parseInt(nodeCount) || 0) !== nodePool.node_count && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Node Count:</span>
-                <span className="line-through">{nodePool.node_count}</span>
-              </div>
-            )}
-            {(parseInt(minNodeCount) || 0) !== nodePool.min_node_count && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Min Nodes:</span>
-                <span className="line-through">{nodePool.min_node_count}</span>
-              </div>
-            )}
-            {(parseInt(maxNodeCount) || 1) !== nodePool.max_node_count && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Max Nodes:</span>
-                <span className="line-through">{nodePool.max_node_count}</span>
-              </div>
-            )}
-            {autoscalingEnabled !== nodePool.autoscaling_enabled && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Autoscaling:</span>
-                <span className="line-through">
-                  {nodePool.autoscaling_enabled ? "Enabled" : "Disabled"}
-                </span>
-              </div>
-            )}
+            {(() => {
+              // Get reference values (staged if exists, otherwise original)
+              const stagedPool = staging.stagedNodePools.find(
+                np => np.cluster_name === nodePool.cluster_name && np.name === nodePool.name
+              );
+              const refPool = stagedPool || nodePool;
+
+              return (
+                <>
+                  {(nodeCount === "" ? 0 : parseInt(nodeCount)) !== refPool.node_count && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Node Count:</span>
+                      <span className="line-through">{refPool.node_count}</span>
+                    </div>
+                  )}
+                  {(minNodeCount === "" ? 0 : parseInt(minNodeCount)) !== refPool.min_node_count && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Min Nodes:</span>
+                      <span className="line-through">{refPool.min_node_count}</span>
+                    </div>
+                  )}
+                  {(maxNodeCount === "" ? 0 : parseInt(maxNodeCount)) !== refPool.max_node_count && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Max Nodes:</span>
+                      <span className="line-through">{refPool.max_node_count}</span>
+                    </div>
+                  )}
+                  {autoscalingEnabled !== refPool.autoscaling_enabled && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Autoscaling:</span>
+                      <span className="line-through">
+                        {refPool.autoscaling_enabled ? "Enabled" : "Disabled"}
+                      </span>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </CardContent>
         </Card>
       )}

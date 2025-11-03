@@ -380,6 +380,11 @@ export function EditSessionModal({ session, open, onOpenChange, onSave }: EditSe
                 Nodes: {change.new_values.node_count}
                 {change.new_values.autoscaling_enabled && ` | Autoscaling: ${change.new_values.min_node_count}-${change.new_values.max_node_count}`}
                 {!change.new_values.autoscaling_enabled && ' | Autoscaling: Desabilitado'}
+                {change.sequence_order && change.sequence_order > 0 && (
+                  <span className="ml-2 font-semibold text-blue-600 dark:text-blue-400">
+                    | *{change.sequence_order}
+                  </span>
+                )}
               </div>
             )}
 
@@ -434,6 +439,26 @@ export function EditSessionModal({ session, open, onOpenChange, onSave }: EditSe
                     </div>
                   </div>
                 )}
+
+                {/* Execution Order (Sequential Execution) */}
+                <div>
+                  <Label htmlFor={`sequence-order-${index}`}>Execution Order (Sequential)</Label>
+                  <select
+                    id={`sequence-order-${index}`}
+                    value={change.sequence_order || 0}
+                    onChange={(e) => updateNodePoolChange(index, 'sequence_order', parseInt(e.target.value))}
+                    className="w-full h-10 px-3 py-2 text-sm border rounded-md bg-background"
+                  >
+                    <option value="0">No sequencing (parallel)</option>
+                    <option value="1">*1 (Execute first)</option>
+                    <option value="2">*2 (Execute after *1)</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {change.sequence_order === 1 && "This pool will be executed first in sequential mode"}
+                    {change.sequence_order === 2 && "This pool will be executed after *1 completes"}
+                    {(!change.sequence_order || change.sequence_order === 0) && "This pool will be executed in parallel with others"}
+                  </p>
+                </div>
 
                 <div className="flex justify-end items-center">
                   <Button

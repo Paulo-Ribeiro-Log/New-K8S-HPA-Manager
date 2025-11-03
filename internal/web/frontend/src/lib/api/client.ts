@@ -345,6 +345,15 @@ class APIClient {
   async validateEnvironment(): Promise<ValidationStatus> {
     return this.request("/validate");
   }
+
+  // VPN Status Check
+  async checkVPNStatus(): Promise<{
+    connected: boolean;
+    message: string;
+    timestamp: number;
+  }> {
+    return this.request("/vpn/status");
+  }
 }
 
 // Singleton instance

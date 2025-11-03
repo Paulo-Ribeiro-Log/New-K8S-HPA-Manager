@@ -39,6 +39,7 @@ import { useStaging } from "@/contexts/StagingContext";
 import { useTabManager } from "@/contexts/TabContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
+import { useVPNMonitor } from "@/hooks/useVPNMonitor";
 
 interface IndexProps {
   onLogout?: () => void;
@@ -72,6 +73,13 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // Staging context
   const staging = useStaging();
+
+  // VPN Monitor - polling a cada 2 minutos
+  const { isConnected: vpnConnected, checkVPN } = useVPNMonitor({
+    pollingInterval: 120000, // 2 minutos
+    showToastOnDisconnect: true,
+    checkOnMount: true,
+  });
 
   // API Hooks
   const { clusters, loading: clustersLoading } = useClusters();
@@ -261,21 +269,29 @@ const Index = ({ onLogout }: IndexProps) => {
                         Nenhum HPA encontrado
                       </div>
                     ) : (
-                      filteredHPAs.map((hpa) => (
-                        <HPAListItem
-                          key={`${hpa.cluster}-${hpa.namespace}-${hpa.name}`}
-                          name={hpa.name}
-                          namespace={hpa.namespace}
-                          currentReplicas={hpa.current_replicas ?? 0}
-                          minReplicas={hpa.min_replicas ?? 0}
-                          maxReplicas={hpa.max_replicas ?? 1}
-                          isSelected={
-                            selectedHPA?.name === hpa.name &&
-                            selectedHPA?.namespace === hpa.namespace
-                          }
-                          onClick={() => setSelectedHPA(hpa)}
-                        />
-                      ))
+                      filteredHPAs.map((hpa) => {
+                        // 🔧 FIX: Buscar versão do staging se existir
+                        const stagedHPA = staging?.stagedHPAs.find(
+                          h => h.cluster === hpa.cluster && h.namespace === hpa.namespace && h.name === hpa.name
+                        );
+                        const displayHPA = stagedHPA || hpa;
+
+                        return (
+                          <HPAListItem
+                            key={`${hpa.cluster}-${hpa.namespace}-${hpa.name}`}
+                            name={displayHPA.name}
+                            namespace={displayHPA.namespace}
+                            currentReplicas={displayHPA.current_replicas ?? 0}
+                            minReplicas={displayHPA.min_replicas ?? 0}
+                            maxReplicas={displayHPA.max_replicas ?? 1}
+                            isSelected={
+                              selectedHPA?.name === hpa.name &&
+                              selectedHPA?.namespace === hpa.namespace
+                            }
+                            onClick={() => setSelectedHPA(displayHPA)}
+                          />
+                        );
+                      })
                     )}
                   </div>
                 </div>
@@ -329,17 +345,25 @@ const Index = ({ onLogout }: IndexProps) => {
                         Nenhum Node Pool encontrado
                       </div>
                     ) : (
-                      filteredNodePools.map((pool) => (
-                        <NodePoolListItem
-                          key={`${pool.cluster_name}-${pool.name}`}
-                          nodePool={pool}
-                          isSelected={
-                            selectedNodePool?.name === pool.name &&
-                            selectedNodePool?.cluster_name === pool.cluster_name
-                          }
-                          onClick={() => setSelectedNodePool(pool)}
-                        />
-                      ))
+                      filteredNodePools.map((pool) => {
+                        // 🔧 FIX: Buscar versão do staging se existir
+                        const stagedPool = staging?.stagedNodePools.find(
+                          np => np.cluster_name === pool.cluster_name && np.name === pool.name
+                        );
+                        const displayPool = stagedPool || pool;
+
+                        return (
+                          <NodePoolListItem
+                            key={`${pool.cluster_name}-${pool.name}`}
+                            nodePool={displayPool}
+                            isSelected={
+                              selectedNodePool?.name === pool.name &&
+                              selectedNodePool?.cluster_name === pool.cluster_name
+                            }
+                            onClick={() => setSelectedNodePool(displayPool)}
+                          />
+                        );
+                      })
                     )}
                   </div>
                 </div>
@@ -466,6 +490,7 @@ const Index = ({ onLogout }: IndexProps) => {
         open={showApplyModal}
         onOpenChange={setShowApplyModal}
         modifiedHPAs={hpasToApply}
+        checkVPN={checkVPN} // Passar função de validação VPN
         onApplied={() => {
           // Disparar evento global de rescan para recarregar HPAs do cluster correto
           if (typeof window !== "undefined" && selectedCluster) {
@@ -485,6 +510,7 @@ const Index = ({ onLogout }: IndexProps) => {
         open={showNodePoolApplyModal}
         onOpenChange={setShowNodePoolApplyModal}
         modifiedNodePools={nodePoolsToApply}
+        checkVPN={checkVPN} // Passar função de validação VPN
         onApplied={() => {
           // Disparar evento global de rescan para recarregar Node Pools do cluster correto
           if (typeof window !== "undefined" && selectedCluster) {

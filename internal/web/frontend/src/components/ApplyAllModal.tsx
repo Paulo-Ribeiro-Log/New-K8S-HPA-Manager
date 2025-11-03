@@ -25,6 +25,7 @@ import type { HPA } from "@/lib/api/types";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import { useStaging } from "@/contexts/StagingContext";
+import { guardVPNOperation } from "@/lib/vpnGuard";
 
 interface ApplyAllModalProps {
   open: boolean;
@@ -32,6 +33,7 @@ interface ApplyAllModalProps {
   modifiedHPAs: Array<{ key: string; current: HPA; original: HPA }>;
   onApplied: () => void;
   onClear: () => void;
+  checkVPN?: () => Promise<boolean>; // Função de validação VPN (opcional)
 }
 
 type HPAStatus = 'idle' | 'applying' | 'success' | 'error' | 'warning';
@@ -47,6 +49,7 @@ export const ApplyAllModal = ({
   modifiedHPAs,
   onApplied,
   onClear,
+  checkVPN,
 }: ApplyAllModalProps) => {
   const staging = useStaging();
   const [isApplying, setIsApplying] = useState(false);
@@ -260,6 +263,14 @@ export const ApplyAllModal = ({
   };
 
   const handleApplyAll = async () => {
+    // Validar VPN antes de aplicar (se função fornecida)
+    if (checkVPN) {
+      const vpnOk = await guardVPNOperation(checkVPN, 'Aplicar Alterações de HPAs');
+      if (!vpnOk) {
+        return; // Bloquear operação se VPN desconectada
+      }
+    }
+
     setIsApplying(true);
 
     for (const { key, current } of freshModifiedHPAs) {

@@ -32,8 +32,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Estado Atual (Novembro 2025)
 
-**Versão Atual:** v1.3.8 (Release: 02 de novembro de 2025)
-**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.8
+**Versão Atual:** v1.3.9 (Release: 03 de novembro de 2025)
+**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.9
 
 **TUI (Terminal Interface):**
 - ✅ Interface responsiva (adapta-se ao tamanho real do terminal - mínimo 80x24)
@@ -70,6 +70,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Redesign CronJobs e Prometheus Pages** - SplitView layout, auto-refresh, controles compactos - v1.3.4
 - ✅ **Redesign Staging Page** - SplitView layout (2/5 + 3/5), busca integrada, editor inline - v1.3.7
 - ✅ **Load Session Modal Simplificado** - Removido "Apply Directly", scroll independente por painel - v1.3.8
+- ✅ **Edição Inline de Node Pools no ApplyAllModal** - Menu ⋮ com opções "Editar Conteúdo" e "Remover da Lista" - v1.3.9
+- ✅ **Editor não fecha após salvar** - Correção em StagingPanel para HPAs e Node Pools - v1.3.9
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -1117,6 +1119,65 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Edição Inline de Node Pools + Correção Editor Staging (Novembro 2025) ✅
+
+**Data:** 03 de novembro de 2025
+
+**Feature implementada:** Menu de edição inline para Node Pools no modal "Confirmar Alterações" (NodePoolApplyModal), idêntico ao já existente para HPAs.
+
+**Problema anterior:**
+- HPAs tinham menu ⋮ com opções "Editar Conteúdo" e "Remover da Lista"
+- Node Pools só tinham botão "Aplicar" sem possibilidade de edição inline
+- Editor no StagingPanel fechava automaticamente após salvar (tanto HPAs quanto Node Pools)
+
+**Solução implementada:**
+
+**1️⃣ Menu Dropdown com 3 pontos (⋮)**
+- Adicionado ao lado do botão "Aplicar" em cada Node Pool
+- Opções disponíveis:
+  - **Editar Conteúdo**: Abre modal inline para edição
+  - **Remover da Lista**: Remove Node Pool da lista de alterações
+
+**2️⃣ Modal de Edição Inline**
+- Checkbox "Autoscaling Habilitado"
+- **Modo Manual**: Campo "Node Count"
+- **Modo Autoscaling**: Campos "Min Nodes" e "Max Nodes"
+- Validações:
+  - Node Count ≥ 0
+  - Min Nodes ≥ 0
+  - Max Nodes ≥ Min Nodes
+- Botões "Cancelar" e "Salvar Alterações"
+
+**3️⃣ Funções Implementadas**
+```typescript
+handleOpenEdit()        // Abre modal com valores atuais
+handleSaveEdit()        // Valida e salva no staging
+handleRemoveIndividual() // Remove do staging e adiciona ao removedKeys
+```
+
+**4️⃣ Correção: Editor não fecha após salvar**
+- **Problema**: `onApplied` callback em `StagingPanel.tsx` executava `setSelectedItem(null)`
+- **Solução**: Removido callback `onApplied` de HPAEditor e NodePoolEditor (linhas 251 e 255)
+- **Resultado**: Editor permanece aberto após salvar, permitindo múltiplas edições sequenciais
+
+**Arquivos modificados:**
+- `internal/web/frontend/src/components/NodePoolApplyModal.tsx` (+93 linhas)
+  - Imports: `DropdownMenu`, `MoreVertical`, `Edit`, `Input`, `Label`, `Checkbox`
+  - Estados: `editingKey`, `editNodeCount`, `editMinNodes`, `editMaxNodes`, `editAutoscaling`, `removedKeys`, `refreshCounter`
+  - Handlers: `handleOpenEdit()`, `handleSaveEdit()`, `handleRemoveIndividual()`
+  - UI: DropdownMenu após botão "Aplicar" + Modal de edição inline
+- `internal/web/frontend/src/components/StagingPanel.tsx` (-2 linhas)
+  - Removido `onApplied={() => setSelectedItem(null)}` (HPAEditor e NodePoolEditor)
+
+**Benefícios:**
+- ✅ Paridade completa entre HPAs e Node Pools no ApplyAllModal
+- ✅ Edição inline sem sair do modal de confirmação
+- ✅ Validação de campos antes de salvar
+- ✅ Editor permanece aberto para múltiplas edições
+- ✅ UX consistente em toda aplicação
+
+---
 
 ### Simplificação Load Session Modal + Correção Scroll Staging (Novembro 2025) ✅
 
@@ -2480,3 +2541,4 @@ k8s-hpa-manager version
 ---
 
 **Happy coding!** 🚀
+- "Não faça over-enginnering"

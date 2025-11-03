@@ -243,6 +243,9 @@ func (s *Server) setupRoutes() {
 	validationHandler := handlers.NewValidationHandler()
 	api.GET("/validate", validationHandler.Validate)
 
+	// VPN Status Check (sem auth para polling leve)
+	s.router.GET("/api/v1/vpn/status", handlers.CheckVPNConnection)
+
 	// Sessions
 	sessionHandler := handlers.NewSessionsHandler()
 	api.GET("/sessions", sessionHandler.ListAllSessions)
