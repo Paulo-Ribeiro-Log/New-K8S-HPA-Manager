@@ -32,8 +32,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Estado Atual (Novembro 2025)
 
-**Versão Atual:** v1.3.4 (Release: 01 de novembro de 2025)
-**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.4
+**Versão Atual:** v1.3.7 (Release: 02 de novembro de 2025)
+**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.7
 
 **TUI (Terminal Interface):**
 - ✅ Interface responsiva (adapta-se ao tamanho real do terminal - mínimo 80x24)
@@ -68,6 +68,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Toggle de Namespaces de Sistema** - Exibe/oculta namespaces de sistema (kube-system, monitoring, etc.) - Outubro 2025
 - ✅ **Combobox de Cluster no Header** - Busca integrada com filtro em tempo real, keyboard navigation - v1.3.2
 - ✅ **Redesign CronJobs e Prometheus Pages** - SplitView layout, auto-refresh, controles compactos - v1.3.4
+- ✅ **Redesign Staging Page** - SplitView layout (2/5 + 3/5), busca integrada, editor inline - v1.3.7
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -1115,6 +1116,63 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Redesign Completo: Staging Page (Novembro 2025) ✅
+
+**Data:** 02 de novembro de 2025
+
+**Feature implementada:** Redesign completo da página Staging para alinhar com o padrão visual das páginas CronJobs e Prometheus.
+
+**Problema anterior:**
+- Layout diferente das outras páginas (não usava SplitView)
+- Sem busca integrada
+- Edição em modais ao invés de painel inline
+- Inconsistência visual com resto da aplicação
+
+**Solução implementada:**
+
+**1️⃣ SplitView Layout (2/5 + 3/5)**
+- Painel esquerdo: Lista unificada de HPAs + Node Pools com busca
+- Painel direito: Editor inline (HPAEditor/NodePoolEditor)
+- Padrão consistente com CronJobs e Prometheus
+
+**2️⃣ Lista unificada com badges:**
+```typescript
+// Combinar HPAs e Node Pools em uma lista única
+const allItems = [
+  ...staging.stagedHPAs.map(hpa => ({ type: 'hpa' as const, item: hpa })),
+  ...staging.stagedNodePools.map(np => ({ type: 'nodepool' as const, item: np }))
+];
+```
+
+**3️⃣ Busca integrada:**
+- Filtra por nome, namespace (HPA) ou cluster
+- Case-insensitive
+- Feedback visual quando nenhum item encontrado
+
+**4️⃣ UI compacta e consistente:**
+- Cards clicáveis para seleção (border-primary quando selecionado)
+- Badges visuais: HPA (azul) e Node Pool (verde)
+- Badge "Modified" quando há alterações
+- Preview inline das mudanças (ex: "Min: 2 → 5 | Max: 10 → 12")
+- Botão trash inline para remover item
+
+**5️⃣ Editor inline no painel direito:**
+- Sem modais (edição direta no painel)
+- Título dinâmico mostra item selecionado
+- Empty state quando nenhum item selecionado
+
+**Arquivos modificados:**
+- `internal/web/frontend/src/components/StagingPanel.tsx` - Refatoração completa
+
+**Benefícios:**
+- ✅ UI 100% consistente com CronJobs e Prometheus
+- ✅ Busca rápida em listas longas (HPAs + Node Pools misturados)
+- ✅ Edição mais fluida (inline ao invés de modais)
+- ✅ Workflow KISS (filosofia mantida)
+- ✅ Padrão SplitView facilita futuras manutenções
+
+---
 
 ### Sistema de Temp Staging para "Aplicar Agora" (Novembro 2025) ✅
 
