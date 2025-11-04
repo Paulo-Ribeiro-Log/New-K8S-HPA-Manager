@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -15,6 +16,10 @@ import (
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
+	"k8s-hpa-manager/internal/monitoring/analyzer"
+	"k8s-hpa-manager/internal/monitoring/engine"
+	"k8s-hpa-manager/internal/monitoring/models"
+	"k8s-hpa-manager/internal/monitoring/scanner"
 	"k8s-hpa-manager/internal/web/handlers"
 	"k8s-hpa-manager/internal/web/middleware"
 )
@@ -34,6 +39,14 @@ type Server struct {
 	timerMutex      sync.Mutex // Protege operações no timer
 	logBuffer       *handlers.LogBuffer
 	historyTracker  *history.HistoryTracker
+
+	// Monitoring engine (NOVO)
+	monitoringEngine *engine.ScanEngine
+	snapshotChan     chan *models.HPASnapshot
+	anomalyChan      chan analyzer.Anomaly
+	stressResultChan chan *models.StressTestMetrics
+	monitoringCtx    context.Context
+	monitoringCancel context.CancelFunc
 }
 
 // NewServer cria uma nova instância do servidor web
@@ -73,14 +86,43 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 		return nil, fmt.Errorf("failed to create history tracker: %w", err)
 	}
 
+	// Criar canais para monitoring engine
+	snapshotChan := make(chan *models.HPASnapshot, 100)
+	anomalyChan := make(chan analyzer.Anomaly, 100)
+	stressResultChan := make(chan *models.StressTestMetrics, 10)
+
+	// Criar contexto para monitoring
+	monitoringCtx, monitoringCancel := context.WithCancel(context.Background())
+
+	// Configuração simplificada do monitoring (desabilita SQLite e port-forward)
+	scanConfig := &scanner.ScanConfig{
+		Mode:        scanner.ScanModeIndividual,
+		Targets:     []scanner.ScanTarget{}, // Será populado dinamicamente
+		Interval:    1 * time.Minute,        // Scan a cada 1 minuto (mais rápido que os 5min padrão)
+		Duration:    0,                      // Infinito
+		AutoStart:   false,                  // Não inicia automaticamente
+		Name:        "Web Monitoring",
+		Description: "Monitoring engine para interface web",
+		CreatedAt:   time.Now(),
+	}
+
+	// Criar monitoring engine (DESABILITADO inicialmente - será iniciado sob demanda)
+	monitoringEngine := engine.New(scanConfig, snapshotChan, anomalyChan, stressResultChan)
+
 	server := &Server{
-		router:         router,
-		kubeManager:    kubeManager,
-		port:           port,
-		token:          token,
-		lastHeartbeat:  time.Now(),
-		logBuffer:      logBuffer,
-		historyTracker: historyTracker,
+		router:           router,
+		kubeManager:      kubeManager,
+		port:             port,
+		token:            token,
+		lastHeartbeat:    time.Now(),
+		logBuffer:        logBuffer,
+		historyTracker:   historyTracker,
+		monitoringEngine: monitoringEngine,
+		snapshotChan:     snapshotChan,
+		anomalyChan:      anomalyChan,
+		stressResultChan: stressResultChan,
+		monitoringCtx:    monitoringCtx,
+		monitoringCancel: monitoringCancel,
 	}
 
 	server.setupMiddleware()
@@ -262,6 +304,18 @@ func (s *Server) setupRoutes() {
 	logsHandler := handlers.NewLogsHandler(s.logBuffer)
 	api.GET("/logs", logsHandler.GetLogs)
 	api.DELETE("/logs", logsHandler.ClearLogs)
+
+	// Monitoring (NOVO)
+	monitoringHandler := handlers.NewMonitoringHandler(s.monitoringEngine)
+	monitoring := api.Group("/monitoring")
+	{
+		monitoring.GET("/metrics/:cluster/:namespace/:hpaName", monitoringHandler.GetMetrics)
+		monitoring.GET("/anomalies", monitoringHandler.GetAnomalies)
+		monitoring.GET("/health/:cluster/:namespace/:hpaName", monitoringHandler.GetHealth)
+		monitoring.GET("/status", monitoringHandler.GetStatus)
+		monitoring.POST("/start", monitoringHandler.Start)
+		monitoring.POST("/stop", monitoringHandler.Stop)
+	}
 
 	// History
 	historyHandler := handlers.NewHistoryHandler(s.historyTracker)
