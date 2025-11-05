@@ -30,7 +30,7 @@ func DefaultPersistenceConfig() *PersistenceConfig {
 	return &PersistenceConfig{
 		Enabled:     true,
 		DBPath:      dbPath,
-		MaxAge:      24 * time.Hour,
+		MaxAge:      72 * time.Hour, // 3 dias de histórico para análise de stress test
 		BatchSize:   100,
 		AutoCleanup: true,
 	}

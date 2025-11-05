@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -94,20 +95,43 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 	// Criar contexto para monitoring
 	monitoringCtx, monitoringCancel := context.WithCancel(context.Background())
 
-	// Configuração simplificada do monitoring (desabilita SQLite e port-forward)
+	// Carregar targets salvos (se existirem)
+	targetsFile := filepath.Join(baseDir, "monitoring-targets.json")
+	savedTargets, err := loadTargetsFromFile(targetsFile)
+	if err != nil {
+		fmt.Printf("⚠️  Não foi possível carregar targets salvos: %v\n", err)
+		savedTargets = []scanner.ScanTarget{}
+	} else if len(savedTargets) > 0 {
+		fmt.Printf("📂 %d target(s) restaurado(s) do arquivo\n", len(savedTargets))
+	}
+
+	// Configuração do monitoring engine com targets restaurados
 	scanConfig := &scanner.ScanConfig{
 		Mode:        scanner.ScanModeIndividual,
-		Targets:     []scanner.ScanTarget{}, // Será populado dinamicamente
-		Interval:    1 * time.Minute,        // Scan a cada 1 minuto (mais rápido que os 5min padrão)
-		Duration:    0,                      // Infinito
-		AutoStart:   false,                  // Não inicia automaticamente
+		Targets:     savedTargets, // Restaura targets salvos
+		Interval:    1 * time.Minute,
+		Duration:    0,
+		AutoStart:   len(savedTargets) > 0, // Inicia automaticamente se houver targets salvos
 		Name:        "Web Monitoring",
 		Description: "Monitoring engine para interface web",
 		CreatedAt:   time.Now(),
 	}
 
-	// Criar monitoring engine (DESABILITADO inicialmente - será iniciado sob demanda)
+	// Criar monitoring engine
 	monitoringEngine := engine.New(scanConfig, snapshotChan, anomalyChan, stressResultChan)
+
+	// Iniciar engine automaticamente se houver targets
+	if len(savedTargets) > 0 {
+		fmt.Printf("🚀 Iniciando monitoring engine com %d cluster(s)...\n", len(savedTargets))
+		go func() {
+			time.Sleep(2 * time.Second) // Aguarda servidor estabilizar
+			if err := monitoringEngine.Start(); err != nil {
+				fmt.Printf("❌ Erro ao iniciar monitoring engine: %v\n", err)
+			} else {
+				fmt.Printf("✅ Monitoring engine iniciado automaticamente\n")
+			}
+		}()
+	}
 
 	server := &Server{
 		router:           router,
@@ -129,6 +153,9 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 	server.setupRoutes()
 	server.setupStatic()
 	server.startInactivityMonitor()
+
+	// Iniciar persistência de targets em background
+	go server.startTargetsPersistence(targetsFile, 30*time.Second)
 
 	return server, nil
 }
@@ -306,7 +333,7 @@ func (s *Server) setupRoutes() {
 	api.DELETE("/logs", logsHandler.ClearLogs)
 
 	// Monitoring (NOVO)
-	monitoringHandler := handlers.NewMonitoringHandler(s.monitoringEngine)
+	monitoringHandler := handlers.NewMonitoringHandler(s.monitoringEngine, s.anomalyChan, s.snapshotChan)
 	monitoring := api.Group("/monitoring")
 	{
 		monitoring.GET("/metrics/:cluster/:namespace/:hpaName", monitoringHandler.GetMetrics)
@@ -315,6 +342,12 @@ func (s *Server) setupRoutes() {
 		monitoring.GET("/status", monitoringHandler.GetStatus)
 		monitoring.POST("/start", monitoringHandler.Start)
 		monitoring.POST("/stop", monitoringHandler.Stop)
+
+		// Target management (NOVO)
+		monitoring.GET("/targets", monitoringHandler.GetTargets)
+		monitoring.POST("/targets", monitoringHandler.AddTarget)
+		monitoring.POST("/hpa", monitoringHandler.AddHPA) // Adicionar HPA individual
+		monitoring.DELETE("/targets/:cluster", monitoringHandler.RemoveTarget)
 	}
 
 	// History
@@ -446,4 +479,67 @@ func (s *Server) Start() error {
 	fmt.Printf("\n")
 
 	return s.router.Run(addr)
+}
+
+// saveTargetsToFile salva targets em arquivo JSON
+func saveTargetsToFile(filename string, targets []scanner.ScanTarget) error {
+	data, err := json.Marshal(targets)
+	if err != nil {
+		return fmt.Errorf("failed to marshal targets: %w", err)
+	}
+
+	// Criar diretório se não existir
+	dir := filepath.Dir(filename)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	if err := os.WriteFile(filename, data, 0644); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return nil
+}
+
+// loadTargetsFromFile carrega targets de arquivo JSON
+func loadTargetsFromFile(filename string) ([]scanner.ScanTarget, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []scanner.ScanTarget{}, nil // Arquivo não existe = sem targets
+		}
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	var targets []scanner.ScanTarget
+	if err := json.Unmarshal(data, &targets); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal targets: %w", err)
+	}
+
+	return targets, nil
+}
+
+// startTargetsPersistence persiste targets periodicamente em arquivo
+func (s *Server) startTargetsPersistence(filename string, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Buscar targets atuais do engine
+			targets := s.monitoringEngine.GetTargets()
+
+			// Salvar em arquivo
+			if err := saveTargetsToFile(filename, targets); err != nil {
+				fmt.Printf("⚠️  Erro ao salvar targets: %v\n", err)
+			}
+
+		case <-s.monitoringCtx.Done():
+			// Servidor sendo encerrado, salvar uma última vez
+			targets := s.monitoringEngine.GetTargets()
+			saveTargetsToFile(filename, targets)
+			return
+		}
+	}
 }

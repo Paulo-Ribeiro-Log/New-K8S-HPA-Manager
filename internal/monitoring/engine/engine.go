@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -216,6 +217,83 @@ func (e *ScanEngine) GetCache() *storage.TimeSeriesCache {
 	return e.cache
 }
 
+// AddTarget adiciona um target dinamicamente ao scan
+func (e *ScanEngine) AddTarget(target scanner.ScanTarget) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Verifica se target já existe
+	for _, t := range e.config.Targets {
+		if t.Cluster == target.Cluster {
+			// Atualiza target existente
+			t.Namespaces = target.Namespaces
+			t.Deployments = target.Deployments
+			t.HPAs = target.HPAs
+			log.Info().
+				Str("cluster", target.Cluster).
+				Msg("Target atualizado")
+			return
+		}
+	}
+
+	// Adiciona novo target
+	e.config.Targets = append(e.config.Targets, target)
+	log.Info().
+		Str("cluster", target.Cluster).
+		Int("namespaces", len(target.Namespaces)).
+		Int("hpas", len(target.HPAs)).
+		Msg("Target adicionado")
+
+	// Se engine está rodando, inicia port-forward para novo cluster
+	if e.running {
+		if err := e.pfManager.Start(target.Cluster); err != nil {
+			log.Error().
+				Err(err).
+				Str("cluster", target.Cluster).
+				Msg("Falha ao iniciar port-forward para novo target")
+		}
+	}
+}
+
+// RemoveTarget remove um target do scan
+func (e *ScanEngine) RemoveTarget(cluster string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	newTargets := make([]scanner.ScanTarget, 0)
+	for _, t := range e.config.Targets {
+		if t.Cluster != cluster {
+			newTargets = append(newTargets, t)
+		}
+	}
+
+	e.config.Targets = newTargets
+	log.Info().
+		Str("cluster", cluster).
+		Msg("Target removido")
+
+	// Para port-forward do cluster removido
+	if e.running {
+		if err := e.pfManager.Stop(cluster); err != nil {
+			log.Error().
+				Err(err).
+				Str("cluster", cluster).
+				Msg("Erro ao parar port-forward")
+		}
+	}
+}
+
+// GetTargets retorna lista de targets ativos
+func (e *ScanEngine) GetTargets() []scanner.ScanTarget {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	// Retorna cópia para evitar modificações externas
+	targets := make([]scanner.ScanTarget, len(e.config.Targets))
+	copy(targets, e.config.Targets)
+	return targets
+}
+
 // scanLoop loop principal de scan
 func (e *ScanEngine) scanLoop() {
 	defer e.wg.Done()
@@ -306,9 +384,15 @@ func (e *ScanEngine) runScan() {
 		}
 
 		// Cria ClusterInfo
+		// Context precisa do sufixo -admin
+		context := target.Cluster
+		if !strings.HasSuffix(target.Cluster, "-admin") {
+			context = target.Cluster + "-admin"
+		}
+
 		clusterInfo := &models.ClusterInfo{
 			Name:    target.Cluster,
-			Context: target.Cluster, // Assumindo que cluster name = context name
+			Context: context,
 		}
 
 		// Cria collector para este cluster

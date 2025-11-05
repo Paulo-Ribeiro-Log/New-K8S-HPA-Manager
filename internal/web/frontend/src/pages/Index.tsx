@@ -17,6 +17,8 @@ import { HistoryViewer } from "@/components/HistoryViewer";
 import { StagingPanel } from "@/components/StagingPanel";
 import { CronJobsPage } from "./CronJobsPage";
 import { PrometheusPage } from "./PrometheusPage";
+import { MetricsPanel } from "@/components/MetricsPanel";
+import { AlertsPanel } from "@/components/AlertsPanel";
 import {
   LayoutDashboard,
   Scale,
@@ -29,7 +31,8 @@ import {
   FileText,
   Search,
   Eye,
-  EyeOff
+  EyeOff,
+  BarChart3
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -67,6 +70,9 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // Toggle para mostrar namespaces de sistema (default: false)
   const [showSystemNamespaces, setShowSystemNamespaces] = useState(false);
+
+  // Estado para monitoramento (HPA selecionado)
+  const [monitoringHPA, setMonitoringHPA] = useState<{ cluster: string; namespace: string; name: string } | null>(null);
 
   // TabManager para sincronizar estado com abas
   const { updateActiveTabState } = useTabManager();
@@ -169,6 +175,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "staging", label: "Staging", icon: FileText, badge: staging.getChangesCount().total },
     { id: "cronjobs", label: "CronJobs", icon: Clock },
     { id: "prometheus", label: "Prometheus", icon: Activity },
+    { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
   ];
 
   // Filter functions
@@ -281,6 +288,7 @@ const Index = ({ onLogout }: IndexProps) => {
                             key={`${hpa.cluster}-${hpa.namespace}-${hpa.name}`}
                             name={displayHPA.name}
                             namespace={displayHPA.namespace}
+                            cluster={displayHPA.cluster}
                             currentReplicas={displayHPA.current_replicas ?? 0}
                             minReplicas={displayHPA.min_replicas ?? 0}
                             maxReplicas={displayHPA.max_replicas ?? 1}
@@ -289,6 +297,15 @@ const Index = ({ onLogout }: IndexProps) => {
                               selectedHPA?.namespace === hpa.namespace
                             }
                             onClick={() => setSelectedHPA(displayHPA)}
+                            onMonitor={() => {
+                              setMonitoringHPA({
+                                cluster: displayHPA.cluster,
+                                namespace: displayHPA.namespace,
+                                name: displayHPA.name,
+                              });
+                              setActiveTab("monitoring");
+                            }}
+                            isModified={!!stagedHPA}
                           />
                         );
                       })
@@ -395,6 +412,50 @@ const Index = ({ onLogout }: IndexProps) => {
             onClusterChange={handleClusterChange}
             clusters={clusters}
           />
+        );
+
+      case "monitoring":
+        return (
+          <div className="h-full p-6 space-y-6 overflow-auto">
+            {/* Seletor de HPA */}
+            {!monitoringHPA ? (
+              <div className="flex flex-col items-center justify-center h-64 space-y-4">
+                <BarChart3 className="h-16 w-16 text-muted-foreground" />
+                <h2 className="text-2xl font-semibold">Monitoramento de HPAs</h2>
+                <p className="text-muted-foreground text-center max-w-md">
+                  Selecione um HPA na aba "HPAs" e clique em "Monitorar" para visualizar métricas detalhadas e análise de anomalias
+                </p>
+              </div>
+            ) : (
+              <>
+                {/* Header com informações do HPA sendo monitorado */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-semibold">Monitoramento - {monitoringHPA.name}</h2>
+                    <p className="text-sm text-muted-foreground">
+                      {monitoringHPA.cluster} / {monitoringHPA.namespace}
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() => setMonitoringHPA(null)}
+                  >
+                    Voltar à seleção
+                  </Button>
+                </div>
+
+                {/* Painel de Métricas */}
+                <MetricsPanel
+                  cluster={monitoringHPA.cluster}
+                  namespace={monitoringHPA.namespace}
+                  hpaName={monitoringHPA.name}
+                />
+
+                {/* Painel de Anomalias */}
+                <AlertsPanel cluster={monitoringHPA.cluster} />
+              </>
+            )}
+          </div>
         );
 
       default:

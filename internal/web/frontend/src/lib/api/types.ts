@@ -277,3 +277,72 @@ export interface SessionTemplate {
   variables: string[];
   example: string;
 }
+
+// Monitoring Types
+export interface MonitoringStatus {
+  running: boolean;
+  mode: string;
+  interval: string;
+  clusters: number;
+  last_scan: string | null;
+  total_scans: number;
+}
+
+export interface HPASnapshot {
+  cluster: string;
+  namespace: string;
+  hpa_name: string;
+  timestamp: string;
+  cpu_current: number;
+  cpu_target: number;
+  memory_current: number;
+  memory_target: number;
+  replicas_current: number;
+  replicas_desired: number;
+  replicas_min: number;
+  replicas_max: number;
+}
+
+export interface HPAMetrics {
+  cluster: string;
+  namespace: string;
+  hpa_name: string;
+  duration: string;
+  snapshots: HPASnapshot[];
+  count: number;
+  message?: string;
+}
+
+export interface Anomaly {
+  id: string;
+  cluster: string;
+  namespace: string;
+  hpa_name: string;
+  type: string;
+  severity: "low" | "medium" | "high" | "critical";
+  detected_at: string;
+  duration_seconds: number;
+  message: string;
+  details: Record<string, any>;
+  resolved: boolean;
+  resolved_at?: string;
+}
+
+export interface Anomalies {
+  cluster?: string;
+  severity: string;
+  anomalies: Anomaly[];
+  count: number;
+  message?: string;
+}
+
+export interface HPAHealth {
+  cluster: string;
+  namespace: string;
+  hpa_name: string;
+  status: "healthy" | "warning" | "critical";
+  anomalies: Anomaly[];
+  message?: string;
+  score?: number; // 0-100
+  recommendations?: string[];
+}

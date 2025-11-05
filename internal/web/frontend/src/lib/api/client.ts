@@ -14,6 +14,10 @@ import type {
   Session,
   SessionFolder,
   SessionTemplate,
+  MonitoringStatus,
+  HPAMetrics,
+  Anomalies,
+  HPAHealth,
 } from "./types";
 
 const API_BASE_URL = "/api/v1";
@@ -353,6 +357,65 @@ class APIClient {
     timestamp: number;
   }> {
     return this.request("/vpn/status");
+  }
+
+  // Monitoring Endpoints
+  async getMonitoringStatus(): Promise<MonitoringStatus> {
+    return this.request<MonitoringStatus>("/monitoring/status");
+  }
+
+  async getHPAMetrics(
+    cluster: string,
+    namespace: string,
+    hpaName: string,
+    duration: string = "5m"
+  ): Promise<HPAMetrics> {
+    const params = new URLSearchParams({ duration });
+    return this.request<HPAMetrics>(
+      `/monitoring/metrics/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(hpaName)}?${params}`
+    );
+  }
+
+  async getAnomalies(
+    cluster?: string,
+    severity?: string
+  ): Promise<Anomalies> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (severity) params.append("severity", severity);
+
+    const queryString = params.toString();
+    return this.request<Anomalies>(
+      `/monitoring/anomalies${queryString ? `?${queryString}` : ""}`
+    );
+  }
+
+  async getHPAHealth(
+    cluster: string,
+    namespace: string,
+    hpaName: string
+  ): Promise<HPAHealth> {
+    return this.request<HPAHealth>(
+      `/monitoring/health/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(hpaName)}`
+    );
+  }
+
+  async startMonitoring(): Promise<{ status: string; message: string }> {
+    return this.request<{ status: string; message: string }>(
+      "/monitoring/start",
+      {
+        method: "POST",
+      }
+    );
+  }
+
+  async stopMonitoring(): Promise<{ status: string; message: string }> {
+    return this.request<{ status: string; message: string }>(
+      "/monitoring/stop",
+      {
+        method: "POST",
+      }
+    );
   }
 }
 

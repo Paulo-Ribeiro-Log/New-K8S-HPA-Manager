@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -112,7 +113,7 @@ func (pf *PortForward) Stop() error {
 // waitForReady aguarda port-forward estar pronto
 func (pf *PortForward) waitForReady() error {
 	url := fmt.Sprintf("http://localhost:%d/-/ready", pf.localPort)
-	timeout := time.After(10 * time.Second)
+	timeout := time.After(30 * time.Second) // Aumentado para 30s (clusters Azure AKS remotos)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -194,11 +195,17 @@ func (m *PortForwardManager) discoverPrometheusService(cluster string) string {
 			Str("service", serviceName).
 			Msg("Tentando descobrir serviço Prometheus")
 
+		// Context precisa do sufixo -admin
+		context := cluster
+		if !strings.HasSuffix(cluster, "-admin") {
+			context = cluster + "-admin"
+		}
+
 		// Testa se serviço existe
 		cmd := exec.Command("kubectl",
 			"get", "svc", serviceName,
 			"-n", "monitoring",
-			"--context", cluster,
+			"--context", context,
 			"--no-headers",
 		)
 
@@ -276,8 +283,14 @@ func (m *PortForwardManager) Start(cluster string) error {
 		Int("port", port).
 		Msg("Iniciando port-forward com porta compartilhada")
 
+	// Context precisa do sufixo -admin
+	context := cluster
+	if !strings.HasSuffix(cluster, "-admin") {
+		context = cluster + "-admin"
+	}
+
 	pf := New(Config{
-		Cluster:   cluster,
+		Cluster:   context,
 		Service:   serviceName,
 		LocalPort: port,
 	})
