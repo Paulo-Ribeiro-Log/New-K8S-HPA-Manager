@@ -38,6 +38,7 @@ type App struct {
 	kubeManager    *config.KubeConfigManager
 	sessionManager *session.Manager
 	clients        map[string]*kubernetes.Client
+	clientsMutex   sync.RWMutex                 // Protege acesso concorrente aos clients
 	tabManager     *models.TabManager // Gerenciador de abas
 
 	// Estado da aplicação
@@ -51,8 +52,6 @@ type App struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// Thread safety para rollouts
-	rolloutMutex sync.RWMutex
 }
 
 // debugLog imprime mensagens apenas quando debug está habilitado
@@ -66,6 +65,28 @@ func (a *App) debugLog(format string, args ...interface{}) {
 			file.Close()
 		}
 	}
+}
+
+// getClient retorna um cliente existente de forma thread-safe
+func (a *App) getClient(clusterName string) (*kubernetes.Client, bool) {
+	a.clientsMutex.RLock()
+	defer a.clientsMutex.RUnlock()
+	client, exists := a.clients[clusterName]
+	return client, exists
+}
+
+// setClient adiciona ou atualiza um cliente de forma thread-safe
+func (a *App) setClient(clusterName string, client *kubernetes.Client) {
+	a.clientsMutex.Lock()
+	defer a.clientsMutex.Unlock()
+	a.clients[clusterName] = client
+}
+
+// deleteClient remove um cliente de forma thread-safe
+func (a *App) deleteClient(clusterName string) {
+	a.clientsMutex.Lock()
+	defer a.clientsMutex.Unlock()
+	delete(a.clients, clusterName)
 }
 
 // NewApp cria uma nova instância da aplicação
@@ -863,7 +884,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// É uma sessão de HPAs (código original)
 			// Criar cliente Kubernetes para o cluster se não existir
 			clusterName := a.model.SelectedCluster.Name
-			_, exists := a.clients[clusterName]
+			_, exists := a.getClient(clusterName)
 			if !exists {
 				if a.kubeManager == nil {
 					a.model.Error = "Kube manager not initialized"
@@ -879,7 +900,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				newClient := kubernetes.NewClient(clientSet, clusterName)
-				a.clients[clusterName] = newClient
+				a.setClient(clusterName, newClient)
 			}
 
 			// Restaurar namespaces selecionados
@@ -1800,7 +1821,7 @@ func (a *App) loadNamespacesInternal() tea.Msg {
 
 	// Obter cliente do cluster selecionado
 	clusterName := a.model.SelectedCluster.Name
-	client, exists := a.clients[clusterName]
+	client, exists := a.getClient(clusterName)
 	if !exists {
 		// Criar cliente se não existir
 		if a.kubeManager == nil {
@@ -1822,7 +1843,7 @@ func (a *App) loadNamespacesInternal() tea.Msg {
 		}
 
 		newClient := kubernetes.NewClient(clientSet, clusterName)
-		a.clients[clusterName] = newClient
+		a.setClient(clusterName, newClient)
 		client = newClient
 	}
 
@@ -1888,7 +1909,7 @@ func (a *App) loadHPACounts() tea.Cmd {
 
 	var cmds []tea.Cmd
 	clusterName := a.model.SelectedCluster.Name
-	client, exists := a.clients[clusterName]
+	client, exists := a.getClient(clusterName)
 	if !exists {
 		return nil
 	}
@@ -1932,7 +1953,7 @@ func (a *App) loadHPAs() tea.Cmd {
 
 		// Obter cliente do cluster selecionado
 		clusterName := a.model.SelectedCluster.Name
-		client, exists := a.clients[clusterName]
+		client, exists := a.getClient(clusterName)
 		if !exists {
 			return hpasLoadedMsg{err: fmt.Errorf("client not found for cluster %s", clusterName)}
 		}
@@ -1974,7 +1995,7 @@ func (a *App) applyHPAChanges(hpas []models.HPA) tea.Cmd {
 		// Aplicar mudanças em cada HPA
 		for _, hpa := range hpas {
 			// Obter cliente do cluster
-			client, exists := a.clients[hpa.Cluster]
+			client, exists := a.getClient(hpa.Cluster)
 			if !exists {
 				lastError = fmt.Errorf("client not found for cluster %s", hpa.Cluster)
 				continue
@@ -2057,7 +2078,7 @@ func (a *App) applyHPAChangesAsync(hpas []models.HPA) tea.Cmd {
 		// Aplicar mudanças em cada HPA
 		for _, hpa := range hpas {
 			// Obter cliente do cluster
-			client, exists := a.clients[hpa.Cluster]
+			client, exists := a.getClient(hpa.Cluster)
 			if !exists {
 				lastError = fmt.Errorf("client not found for cluster %s", hpa.Cluster)
 				continue
@@ -2960,7 +2981,7 @@ func (a *App) applySessionChanges(session *models.Session) tea.Cmd {
 		// Aplicar mudanças de cada HPA na sessão
 		for _, change := range session.Changes {
 			// Obter cliente do cluster
-			client, exists := a.clients[change.Cluster]
+			client, exists := a.getClient(change.Cluster)
 			if !exists {
 				// Tentar criar cliente se não existir
 				if a.kubeManager == nil {
@@ -2975,7 +2996,7 @@ func (a *App) applySessionChanges(session *models.Session) tea.Cmd {
 				}
 
 				newClient := kubernetes.NewClient(clientSet, change.Cluster)
-				a.clients[change.Cluster] = newClient
+				a.setClient(change.Cluster, newClient)
 				client = newClient
 			}
 
@@ -3942,72 +3963,34 @@ func (a *App) handleMouseEvent(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.Type {
 	case tea.MouseLeft:
-		// Debug log da posição do clique
+		// Mouse click - Feature não implementada
+		// TODO: Implementar StatusContainer.HandleMouseClick() quando necessário
 		if a.debug {
-			a.debugLog(fmt.Sprintf("Mouse click at X:%d Y:%d", msg.X, msg.Y))
-		}
-
-		// O painel de status fica aproximadamente nas últimas 15 linhas da tela (altura fixa)
-		// termHeight := 42
-		// statusPanelY := termHeight - 15 // Não utilizada temporariamente
-
-		// TODO: Implementar mouse click no StatusContainer
-		// clicked := a.model.StatusContainer.HandleMouseClick(msg.X, msg.Y, 0, statusPanelY)
-		clicked := false // Temporário
-
-		if clicked {
-			// Clique no painel - já foi focado pelo HandleMouseClick
-			if a.debug {
-				a.debugLog(fmt.Sprintf("Status panel focused: click at Y:%d", msg.Y))
-			}
-			a.model.StatusContainer.AddInfo("mouse", "📱 Painel focado - use ↑/↓ ou mouse wheel para scroll")
-		} else {
-			// Clique fora do painel - já foi desfocado pelo HandleMouseClick
-			if a.debug {
-				a.debugLog("Status panel unfocused: click outside")
-			}
+			a.debugLog("Mouse click at X:%d Y:%d (feature disabled)", msg.X, msg.Y)
 		}
 		return a, nil
 
 	case tea.MouseWheelUp:
-		// Usar método ScrollUp do StatusPanelModule (já verifica se está focado)
-		// TODO: Implementar IsFocused no StatusContainer
-		// if a.model.StatusContainer.IsFocused() {
-		if false { // Temporário
-			a.model.StatusContainer.ScrollUp()
-			if a.debug {
-				a.debugLog("Mouse wheel up: Status panel scrolled up")
+		// Mouse wheel scroll - Apenas para painéis de lista (não StatusContainer)
+		// TODO: Implementar StatusContainer.IsFocused() para scroll no status panel
+		if a.model.ActivePanel == models.PanelSelectedHPAs {
+			if a.model.HPASelectedScrollOffset > 0 {
+				a.model.HPASelectedScrollOffset--
 			}
-		} else {
-			// Scroll nos outros painéis responsivos baseado no painel ativo
-			if a.model.ActivePanel == models.PanelSelectedHPAs {
-				if a.model.HPASelectedScrollOffset > 0 {
-					a.model.HPASelectedScrollOffset--
-				}
-			} else if a.model.ActivePanel == models.PanelSelectedNodePools {
-				if a.model.NodePoolSelectedScrollOffset > 0 {
-					a.model.NodePoolSelectedScrollOffset--
-				}
+		} else if a.model.ActivePanel == models.PanelSelectedNodePools {
+			if a.model.NodePoolSelectedScrollOffset > 0 {
+				a.model.NodePoolSelectedScrollOffset--
 			}
 		}
 		return a, nil
 
 	case tea.MouseWheelDown:
-		// Usar método ScrollDown do StatusPanelModule (já verifica se está focado)
-		// TODO: Implementar IsFocused no StatusContainer
-		// if a.model.StatusContainer.IsFocused() {
-		if false { // Temporário
-			a.model.StatusContainer.ScrollDown()
-			if a.debug {
-				a.debugLog("Mouse wheel down: Status panel scrolled down")
-			}
-		} else {
-			// Scroll nos outros painéis responsivos baseado no painel ativo
-			if a.model.ActivePanel == models.PanelSelectedHPAs {
-				a.model.HPASelectedScrollOffset++
-			} else if a.model.ActivePanel == models.PanelSelectedNodePools {
-				a.model.NodePoolSelectedScrollOffset++
-			}
+		// Mouse wheel scroll - Apenas para painéis de lista (não StatusContainer)
+		// TODO: Implementar StatusContainer.IsFocused() para scroll no status panel
+		if a.model.ActivePanel == models.PanelSelectedHPAs {
+			a.model.HPASelectedScrollOffset++
+		} else if a.model.ActivePanel == models.PanelSelectedNodePools {
+			a.model.NodePoolSelectedScrollOffset++
 		}
 		return a, nil
 	}
@@ -4204,8 +4187,8 @@ func (a *App) fetchMetricsAsync() {
 			}
 
 			// Debug log
-			a.debugLog(fmt.Sprintf("[DEBUG fetchMetricsAsync] Atualizado %s/%s - CPU: %s, MEM: %s",
-				resource.Namespace, resource.Name, cpuUsage, memUsage))
+			a.debugLog("[DEBUG fetchMetricsAsync] Atualizado %s/%s - CPU: %s, MEM: %s",
+			resource.Namespace, resource.Name, cpuUsage, memUsage)
 		}
 	}
 }
