@@ -270,11 +270,15 @@ func (e *ScanEngine) AddTarget(target scanner.ScanTarget) {
 			Int("slots", e.timeSlotManager.totalSlots).
 			Msg("TimeSlotManager atualizado após adicionar cluster")
 
-		// PHASE 2: Baseline será coletado automaticamente no próximo scan
-		// quando o TimeSlotManager alocar o cluster em um slot
+		// PHASE 2: Inicia coleta de baseline em background imediatamente
+		// Usa port-forward temporário para não depender do slot timing
 		log.Info().
 			Str("cluster", target.Cluster).
-			Msg("Baseline será coletado no próximo scan do cluster")
+			Int("hpas", len(target.HPAs)).
+			Msg("Iniciando coleta de baseline para novo cluster")
+		
+		e.wg.Add(1)
+		go e.collectHistoricalBaselineAsync(target)
 	}
 }
 
@@ -512,6 +516,132 @@ func (e *ScanEngine) markHPABaselineReady(hpaKey string, baseline *models.HPABas
 			Str("hpa", hpaKey).
 			Msg("HPA marcado como baseline_ready")
 	}
+}
+
+// collectHistoricalBaselineAsync coleta baseline de forma assíncrona com port-forward próprio
+// Usado quando adiciona cluster dinamicamente (não depende do slot timing)
+func (e *ScanEngine) collectHistoricalBaselineAsync(target scanner.ScanTarget) {
+	defer e.wg.Done()
+
+	log.Info().
+		Str("cluster", target.Cluster).
+		Int("hpas", len(target.HPAs)).
+		Msg("Coleta de baseline assíncrona iniciada")
+
+	// Cria contexto com timeout de 10 minutos
+	ctx, cancel := context.WithTimeout(e.ctx, 10*time.Minute)
+	defer cancel()
+
+	// Inicia port-forward temporário exclusivo para baseline
+	if err := e.pfManager.Start(target.Cluster); err != nil {
+		log.Error().
+			Err(err).
+			Str("cluster", target.Cluster).
+			Msg("Falha ao iniciar port-forward para coleta de baseline")
+		return
+	}
+
+	// Aguarda port-forward estabilizar
+	time.Sleep(2 * time.Second)
+
+	// Obtém URL do Prometheus
+	promEndpoint := e.pfManager.GetURL(target.Cluster)
+	if promEndpoint == "" {
+		log.Error().
+			Str("cluster", target.Cluster).
+			Msg("Port-forward não disponível após Start()")
+		return
+	}
+
+	log.Info().
+		Str("cluster", target.Cluster).
+		Str("endpoint", promEndpoint).
+		Msg("Port-forward ativo, iniciando coleta de baseline")
+
+	// Cria ClusterInfo
+	context := target.Cluster
+	if !strings.HasSuffix(target.Cluster, "-admin") {
+		context = target.Cluster + "-admin"
+	}
+
+	clusterInfo := &models.ClusterInfo{
+		Name:    target.Cluster,
+		Context: context,
+	}
+
+	// Cria collector temporário
+	collector, err := monitor.NewCollector(clusterInfo, promEndpoint, &monitor.CollectorConfig{
+		ScanInterval:      e.config.Interval,
+		ExcludeNamespaces: []string{},
+		EnablePrometheus:  true,
+	})
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("cluster", target.Cluster).
+			Msg("Falha ao criar collector para baseline")
+		return
+	}
+
+	// Cria baseline collector
+	baselineCollector := monitor.NewBaselineCollector(
+		collector.GetPrometheusClient(),
+		collector.GetK8sClient(),
+	)
+
+	// Coleta baseline de 3 dias (72 horas)
+	baselineDuration := 72 * time.Hour
+
+	log.Info().
+		Str("cluster", target.Cluster).
+		Dur("duration", baselineDuration).
+		Msg("Coletando baseline histórico do Prometheus")
+
+	baseline, err := baselineCollector.CaptureBaseline(ctx, baselineDuration)
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("cluster", target.Cluster).
+			Msg("Falha ao coletar baseline histórico")
+		return
+	}
+
+	// Valida cobertura mínima de 70%
+	if !e.validateBaselineCoverage(baseline, 0.7) {
+		log.Warn().
+			Str("cluster", target.Cluster).
+			Int("hpas_with_data", len(baseline.HPABaselines)).
+			Msg("Cobertura de baseline < 70%, continuando mesmo assim")
+	}
+
+	// Salva baseline no cache para cada HPA
+	for hpaKey, hpaBaseline := range baseline.HPABaselines {
+		e.markHPABaselineReady(hpaKey, hpaBaseline)
+	}
+
+	// Salva baseline completo no SQLite
+	if e.persistence != nil {
+		baselineID := fmt.Sprintf("baseline_%s_%d", target.Cluster, time.Now().Unix())
+		if err := e.persistence.SaveBaseline(baselineID, baseline); err != nil {
+			log.Warn().
+				Err(err).
+				Str("cluster", target.Cluster).
+				Msg("Falha ao salvar baseline no SQLite")
+		} else {
+			log.Info().
+				Str("baseline_id", baselineID).
+				Str("cluster", target.Cluster).
+				Msg("Baseline salvo no SQLite")
+		}
+	}
+
+	log.Info().
+		Str("cluster", target.Cluster).
+		Int("hpas_ready", len(baseline.HPABaselines)).
+		Int("total_hpas", baseline.TotalHPAs).
+		Float64("cpu_avg", baseline.CPUAvg).
+		Float64("memory_avg", baseline.MemoryAvg).
+		Msg("Baseline assíncrono coletado com sucesso")
 }
 
 // shouldStartBaselineCollection verifica se deve iniciar coleta de baseline para um HPA
