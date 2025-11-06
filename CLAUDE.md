@@ -72,6 +72,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Load Session Modal Simplificado** - Removido "Apply Directly", scroll independente por painel - v1.3.8
 - ✅ **Edição Inline de Node Pools no ApplyAllModal** - Menu ⋮ com opções "Editar Conteúdo" e "Remover da Lista" - v1.3.9
 - ✅ **Editor não fecha após salvar** - Correção em StagingPanel para HPAs e Node Pools - v1.3.9
+- ✅ **Página de Monitoring HPA-Watchdog** - Sidebar retrátil, integração com engine de monitoramento, métricas em tempo real - Novembro 2025
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -1119,6 +1120,220 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Página de Monitoring + Integração HPA-Watchdog (Novembro 2025) ✅
+
+**Data:** 05 de novembro de 2025
+
+**Feature implementada:** Página de monitoramento em tempo real integrada com o HPA-Watchdog engine, com sidebar retrátil e coleta automática de métricas via Prometheus.
+
+**Componentes implementados:**
+
+**1️⃣ MonitoringPage com Sidebar Retrátil**
+- Sidebar 320px com lista de HPAs monitorados (agrupados por cluster)
+- Botão toggle para esconder/mostrar sidebar (maximiza área de gráficos)
+- Animação suave de transição (300ms)
+- Badge de status do engine (🟢 Ativo / ⚫ Parado) com atualização a cada 10s
+
+**2️⃣ Integração Backend - Monitoring Engine**
+- Handler `AddHPA` com normalização automática de cluster name (remove `-admin`)
+- Sistema de persistência automática de targets em `~/.k8s-hpa-manager/monitoring-targets.json`
+- Port-forward automático por scan (start → scan → stop) para cada cluster
+- Compatibilidade com múltiplos clusters simultâneos
+
+**3️⃣ Correção Crítica: Normalização de Cluster Name**
+- **Problema**: Frontend enviava `akspriv-prod-admin`, mas port-forward precisava de `akspriv-prod`
+- **Solução**: Handler `AddHPA` remove sufixo `-admin` automaticamente (linha 485)
+```go
+clusterName := strings.TrimSuffix(req.Cluster, "-admin")
+```
+
+**4️⃣ API Client - Novos Métodos**
+```typescript
+addHPAToMonitoring(cluster, namespace, hpa)  // POST /monitoring/hpa
+getMonitoringStatus()                         // GET /monitoring/status
+startMonitoring()                             // POST /monitoring/start
+```
+
+**5️⃣ Workflow Completo**
+1. Usuário seleciona HPA e clica "Monitorar"
+2. Frontend chama `addHPAToMonitoring()` com cluster normalizado
+3. Backend adiciona target ao engine (sem `-admin`)
+4. Engine inicia automaticamente se parado
+5. Port-forward é criado por scan: `kubectl port-forward svc/prometheus-k8s -n monitoring --context akspriv-prod-admin`
+6. Métricas coletadas via Prometheus e salvas no cache
+7. Frontend exibe métricas em tempo real na sidebar
+
+**Arquivos modificados:**
+- `internal/web/frontend/src/pages/MonitoringPage.tsx` - Sidebar retrátil + badge status
+- `internal/web/frontend/src/lib/api/client.ts` - Métodos de monitoring (removida duplicata)
+- `internal/web/handlers/monitoring.go` - Normalização de cluster + logs detalhados
+- `internal/monitoring/engine/engine.go` - Port-forward por scan (já existia)
+- `internal/web/frontend/src/pages/Index.tsx` - Handler onMonitor com auto-start
+
+**Problemas Identificados e Soluções:**
+- ❌ **Targets antigos com `-admin`**: Salvos antes da correção, quebravam port-forward
+  - ✅ Solução: Remover via API ou limpar arquivo `monitoring-targets.json`
+- ❌ **localStorage com HPAs antigos**: Dados obsoletos no browser
+  - ✅ Solução: `localStorage.removeItem("monitored_hpas")` + reload
+
+**Benefícios:**
+- ✅ Monitoramento em tempo real de múltiplos clusters
+- ✅ Sidebar retrátil maximiza área de gráficos
+- ✅ Auto-start do engine quando HPA é adicionado
+- ✅ Persistência de targets entre reinicializações
+- ✅ Port-forward automático e isolado por scan
+
+**⚠️ PROBLEMA IDENTIFICADO (Novembro 2025):**
+
+Após análise detalhada do fluxo de monitoramento, foi identificado que a **implementação atual está ERRADA**:
+
+**Problemas críticos:**
+1. **Port-forward efêmero**: Porta é criada e destruída a cada scan (engine.go:373-389)
+2. **Sem baseline histórica**: Monitoring inicia sem dados de comparação
+3. **Sem fila de portas**: Não há gerenciamento de duas portas simultâneas
+4. **Cleanup inadequado**: Portas podem ficar órfãs se servidor crashar
+
+**Fluxo CORRETO (conforme explicado pelo usuário):**
+
+> "o fluxo deve iniciar com o portfoward do prometheus no namespace 'monitoring' na porta 9090, e seguir com a coleta historica dos dados do prometheus dos ultimos 3 dias do hpa selecionado, isso feito os dados serão salvos no sqlite e a partir dai o hpa começa a ser monitorado de fato, pois já temos a base para iniciar a comparação e analise. isso é extremamente importante pois sem essa parte nada temos como comparativo."
+
+**Arquitetura correta:**
+1. **Port-forward persistente**: Vive durante toda execução do servidor (não por scan)
+2. **Coleta histórica PRIMEIRO**: 3 dias de dados via Prometheus range queries → SQLite
+3. **Baseline obrigatória**: Só inicia monitoring após coletar histórico
+4. **Duas portas simultâneas**: 55553 e 55554 abertas ao mesmo tempo
+5. **Fila alternada**: Leitura alternada entre portas (load balancing)
+6. **Cleanup garantido**: Destruição apenas no shutdown do servidor
+
+**Documento de refatoração criado:**
+- `/home/paulo/Scripts/Scripts GO/Scale_HPA/Scale_HPA/MONITORING_IMPLEMENTATION_TODO.md`
+- Contém 4 fases de implementação detalhadas
+- Inclui código de exemplo e planos de teste
+
+**✅ IMPLEMENTAÇÃO CONCLUÍDA (06 nov 2025) - Fases 1-2:**
+
+### Fase 1: Port-Forward Persistente ✅
+
+**Correção aplicada em `engine.go`:**
+- ❌ **Removido**: Criação/destruição de port-forward dentro do `runScan()` (linhas 373-389)
+- ✅ **Corrigido**: Port-forward criado UMA VEZ no `Start()` e mantido até `Stop()`
+- ✅ **Logs detalhados**: Documentação clara de port-forwards persistentes
+
+**Código key (engine.go:105-130):**
+```go
+// FASE 1: Inicia port-forwards PERSISTENTES para todos os clusters
+// Port-forwards são criados UMA VEZ e mantidos até Stop()
+log.Info().Int("clusters", len(e.config.Targets)).
+    Msg("Iniciando port-forwards persistentes para Prometheus")
+
+for _, target := range e.config.Targets {
+    if err := e.pfManager.Start(target.Cluster); err != nil {
+        log.Error().Err(err).Str("cluster", target.Cluster).
+            Msg("Falha ao iniciar port-forward, pulando cluster")
+        continue
+    }
+    log.Info().Str("cluster", target.Cluster).
+        Str("url", e.pfManager.GetURL(target.Cluster)).
+        Msg("Port-forward persistente ativo")
+}
+```
+
+### Fase 2: Coleta Histórica com Sistema de Queries Prometheus ✅
+
+**Refatoração completa de `historical.go`:**
+- ✅ **16 queries Prometheus** (vs 3 anteriores hardcoded!)
+- ✅ Usa sistema existente `prometheus.GetAllTemplates()`
+- ✅ **Coleta em paralelo** (goroutines) para performance
+- ✅ **Filtro inteligente** `isApplicable()` - skip queries sem service name
+- ✅ **Timeout por query** (1 minuto cada)
+- ✅ **Validação de cobertura** (mínimo 70% de dados)
+
+**Métricas coletadas (16 total):**
+
+| Core (4) | Extended (13) |
+|----------|---------------|
+| CPU Usage | CPU Raw, CPU Throttling |
+| Memory Usage | Memory Raw, Memory OOM |
+| Current Replicas | HPA Replica Delta |
+| Desired Replicas | Network RX/TX Bytes |
+| | Request Rate, Error Rate |
+| | **P95 Latency, P99 Latency** ⭐ |
+| | Pod Restart Count, Pod Ready Count |
+
+**Schema SQLite expandido:**
+```sql
+CREATE TABLE hpa_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cluster, namespace, hpa_name, timestamp,
+    cpu_current, cpu_target,
+    memory_current, memory_target,
+    current_replicas, desired_replicas, min_replicas, max_replicas,
+    metrics_json TEXT,  -- ⭐ Métricas adicionais (P95/P99, throttling, OOM, etc)
+    created_at, UNIQUE(cluster, namespace, hpa_name, timestamp)
+);
+```
+
+**Struct HPASnapshot atualizada (models/types.go:57):**
+```go
+type HPASnapshot struct {
+    ...
+    // ⭐ NOVO campo para métricas extensíveis
+    AdditionalMetrics map[string]interface{} `json:"additional_metrics,omitempty"`
+    ...
+}
+```
+
+**Componentes criados:**
+- `internal/monitoring/collector/historical.go` (NOVO - 387 linhas)
+  - `CollectBaseline()` - Coleta 3 dias com TODAS as queries
+  - `isApplicable()` - Filtro de queries (ex: P95 requer service name)
+  - `buildQuery()` - Usa QueryBuilder do sistema existente
+  - `mergeAllMetrics()` - Combina 16 métricas em snapshots
+  - `buildAdditionalMetrics()` - Serializa em JSON para persistência
+
+**Persistência atualizada (storage/persistence.go:745-825):**
+- `SaveHistoricalBaseline()` - Salva com metrics_json
+- Batch insert com transação SQLite
+- JSON serialization automática de AdditionalMetrics
+
+**Comparação: Antes vs Depois:**
+
+| Aspecto | Antes | Depois |
+|---------|-------|--------|
+| **Queries** | 3 hardcoded | 16 via templates |
+| **P95/P99** | ❌ Não coletado | ✅ Coletado |
+| **Paralelismo** | ❌ Sequencial | ✅ Goroutines paralelas |
+| **Filtro** | ❌ Sem filtro | ✅ `isApplicable()` |
+| **Extensível** | ❌ Requer código | ✅ Adicionar template |
+| **JSON Storage** | ❌ Não suportado | ✅ `metrics_json` field |
+
+**Documentação criada:**
+- `PROMETHEUS_METRICS_PLAN.md` - Análise completa do sistema de queries
+- `DOCS_COMPARISON.md` - Comparativo entre TODOs de implementação
+
+**Arquivos modificados:**
+- `internal/monitoring/engine/engine.go` - Port-forward persistente
+- `internal/monitoring/collector/historical.go` - Refatoração completa
+- `internal/monitoring/models/types.go` - Campo AdditionalMetrics
+- `internal/monitoring/storage/persistence.go` - Schema + SaveHistoricalBaseline
+
+**Benefícios:**
+- ✅ Port-forwards persistentes (não recriados a cada scan)
+- ✅ Baseline histórico 5x mais rico (16 métricas vs 3)
+- ✅ P95/P99 latency disponível para análise
+- ✅ Sistema extensível (adicionar novas queries sem modificar código)
+- ✅ Performance otimizada (coleta paralela)
+- ✅ Troubleshooting facilitado (13 métricas adicionais em JSON)
+
+**Próximos passos (TODO):**
+1. ⏳ Integrar coleta histórica no `AddTarget()` do engine
+2. ⏳ Executar baseline async quando HPA for adicionado
+3. ⏳ Flag `baseline_ready` para controlar início do monitoramento
+4. ⏳ Implementar Phase 3: Port Queue Management (time slots)
+5. ⏳ Implementar Phase 4: Guaranteed Cleanup (signal handling)
+
+---
 
 ### Edição Inline de Node Pools + Correção Editor Staging (Novembro 2025) ✅
 

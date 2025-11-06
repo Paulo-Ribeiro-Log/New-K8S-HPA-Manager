@@ -417,6 +417,24 @@ class APIClient {
       }
     );
   }
+
+  async addHPAToMonitoring(
+    cluster: string,
+    namespace: string,
+    hpa: string
+  ): Promise<{ status: string; message: string; target?: any }> {
+    return this.request<{ status: string; message: string; target?: any }>(
+      "/monitoring/hpa",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          cluster,
+          namespace,
+          hpa,
+        }),
+      }
+    );
+  }
 }
 
 // Singleton instance

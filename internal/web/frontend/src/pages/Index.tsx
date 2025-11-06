@@ -293,26 +293,49 @@ const Index = ({ onLogout }: IndexProps) => {
                               selectedHPA?.namespace === hpa.namespace
                             }
                             onClick={() => setSelectedHPA(displayHPA)}
-                            onMonitor={() => {
-                              // Salvar HPA no localStorage para monitoring
-                              const stored = localStorage.getItem("monitored_hpas");
-                              const current = stored ? JSON.parse(stored) : [];
+                            onMonitor={async () => {
+                              try {
+                                // Verificar se já existe no localStorage
+                                const stored = localStorage.getItem("monitored_hpas");
+                                const current = stored ? JSON.parse(stored) : [];
 
-                              console.log("[onMonitor] Current stored:", current);
-                              console.log("[onMonitor] Adding HPA:", {
-                                cluster: displayHPA.cluster,
-                                namespace: displayHPA.namespace,
-                                name: displayHPA.name,
-                              });
+                                const exists = current.some((h: any) =>
+                                  h.cluster === displayHPA.cluster &&
+                                  h.namespace === displayHPA.namespace &&
+                                  h.name === displayHPA.name
+                                );
 
-                              // Verificar se já existe
-                              const exists = current.some((h: any) =>
-                                h.cluster === displayHPA.cluster &&
-                                h.namespace === displayHPA.namespace &&
-                                h.name === displayHPA.name
-                              );
+                                if (exists) {
+                                  toast.info(`HPA ${displayHPA.name} já está sendo monitorado`);
+                                  setActiveTab("monitoring");
+                                  return;
+                                }
 
-                              if (!exists) {
+                                // 1. Adicionar HPA ao monitoring engine (backend)
+                                console.log("[onMonitor] Adding HPA to monitoring engine:", {
+                                  cluster: displayHPA.cluster,
+                                  namespace: displayHPA.namespace,
+                                  name: displayHPA.name,
+                                });
+
+                                await apiClient.addHPAToMonitoring(
+                                  displayHPA.cluster,
+                                  displayHPA.namespace,
+                                  displayHPA.name
+                                );
+
+                                // 2. Verificar se monitoring engine está rodando
+                                const status = await apiClient.getMonitoringStatus();
+                                console.log("[onMonitor] Monitoring status:", status);
+
+                                // 3. Iniciar monitoring engine se não estiver rodando
+                                if (!status.running) {
+                                  console.log("[onMonitor] Starting monitoring engine...");
+                                  await apiClient.startMonitoring();
+                                  toast.success("Monitoring engine iniciado");
+                                }
+
+                                // 4. Salvar no localStorage (para UI)
                                 current.push({
                                   cluster: displayHPA.cluster,
                                   namespace: displayHPA.namespace,
@@ -320,13 +343,17 @@ const Index = ({ onLogout }: IndexProps) => {
                                   hpa: displayHPA
                                 });
                                 localStorage.setItem("monitored_hpas", JSON.stringify(current));
-                                console.log("[onMonitor] Saved to localStorage:", current);
-                                toast.success(`HPA ${displayHPA.name} adicionado ao monitoramento`);
-                              } else {
-                                toast.info(`HPA ${displayHPA.name} já está sendo monitorado`);
-                              }
 
-                              setActiveTab("monitoring");
+                                toast.success(`HPA ${displayHPA.name} adicionado ao monitoramento`);
+                                setActiveTab("monitoring");
+                              } catch (error) {
+                                console.error("[onMonitor] Error:", error);
+                                toast.error(
+                                  `Erro ao adicionar HPA ao monitoramento: ${
+                                    error instanceof Error ? error.message : "Erro desconhecido"
+                                  }`
+                                );
+                              }
                             }}
                             isModified={!!stagedHPA}
                           />

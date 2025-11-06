@@ -51,6 +51,11 @@ type HPASnapshot struct {
 	NetworkRxBytes float64 // Network RX (bytes/s)
 	NetworkTxBytes float64 // Network TX (bytes/s)
 
+	// Additional Metrics (JSON blob) - Fase 2: Historical Baseline
+	// Armazena métricas adicionais coletadas do Prometheus que não tem campo dedicado
+	// Exemplo: cpu_throttling, memory_oom, pod_restart_count, etc.
+	AdditionalMetrics map[string]interface{} `json:"additional_metrics,omitempty"`
+
 	// Metadata
 	DataSource DataSource // Indica se veio de Prometheus ou Metrics-Server
 }

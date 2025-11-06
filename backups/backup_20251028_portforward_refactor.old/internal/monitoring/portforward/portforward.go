@@ -159,11 +159,11 @@ func (pf *PortForward) IsRunning() bool {
 
 // PortForwardManager gerencia múltiplos port-forwards
 type PortForwardManager struct {
-	forwards     map[string]*PortForward
-	portOdd      int            // Porta para clusters ímpares (default: 55553)
-	portEven     int            // Porta para clusters pares (default: 55554)
-	oddBusy      bool           // Porta ímpar está em uso
-	evenBusy     bool           // Porta par está em uso
+	forwards    map[string]*PortForward
+	portOdd     int  // Porta para clusters ímpares (default: 55553)
+	portEven    int  // Porta para clusters pares (default: 55554)
+	oddBusy     bool // Porta ímpar está em uso
+	evenBusy    bool // Porta par está em uso
 	clusterIndex map[string]int // Mapeia cluster -> índice
 }
 
@@ -181,11 +181,11 @@ func NewManager() *PortForwardManager {
 func (m *PortForwardManager) discoverPrometheusService(cluster string) string {
 	// Lista de nomes comuns do Prometheus
 	commonNames := []string{
-		"prometheus-prometheus", // Prometheus Operator
-		"prometheus-k8s",        // Kube-Prometheus
-		"prometheus-server",     // Helm Chart comum
-		"prometheus",            // Nome simples
-		"prometheus-operated",   // Prometheus Operator (statefulset)
+		"prometheus-prometheus",  // Prometheus Operator
+		"prometheus-k8s",         // Kube-Prometheus
+		"prometheus-server",      // Helm Chart comum
+		"prometheus",             // Nome simples
+		"prometheus-operated",    // Prometheus Operator (statefulset)
 	}
 
 	// Tenta cada nome

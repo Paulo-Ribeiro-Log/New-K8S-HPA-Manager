@@ -7,14 +7,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/rs/zerolog/log"
 	"k8s-hpa-manager/internal/monitoring/analyzer"
 	"k8s-hpa-manager/internal/monitoring/models"
 	"k8s-hpa-manager/internal/monitoring/monitor"
 	"k8s-hpa-manager/internal/monitoring/portforward"
 	"k8s-hpa-manager/internal/monitoring/scanner"
 	"k8s-hpa-manager/internal/monitoring/storage"
+	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 )
 
 // ScanEngine orquestra coleta, análise e detecção
@@ -102,31 +102,15 @@ func (e *ScanEngine) Start() error {
 		Dur("duration", e.config.Duration).
 		Msg("Iniciando scan engine")
 
-	// FASE 1: Inicia port-forwards PERSISTENTES para todos os clusters
-	// Port-forwards são criados UMA VEZ e mantidos até Stop()
-	// Não são recriados a cada scan (correção da implementação anterior)
-	log.Info().
-		Int("clusters", len(e.config.Targets)).
-		Msg("Iniciando port-forwards persistentes para Prometheus")
-
+	// Inicia port-forwards para todos os clusters
 	for _, target := range e.config.Targets {
-		log.Info().
-			Str("cluster", target.Cluster).
-			Msg("Iniciando port-forward persistente")
-
 		if err := e.pfManager.Start(target.Cluster); err != nil {
 			log.Error().
 				Err(err).
 				Str("cluster", target.Cluster).
-				Msg("Falha ao iniciar port-forward, pulando cluster")
+				Msg("Falha ao iniciar port-forward")
 			// Continua com outros clusters
-			continue
 		}
-
-		log.Info().
-			Str("cluster", target.Cluster).
-			Str("url", e.pfManager.GetURL(target.Cluster)).
-			Msg("Port-forward persistente ativo")
 	}
 
 	// Se modo stress test, captura baseline antes de iniciar
@@ -386,20 +370,16 @@ func (e *ScanEngine) runScan() {
 			Strs("namespaces", target.Namespaces).
 			Msg("Escaneando cluster")
 
-		// FASE 1: Port-forward PERSISTENTE
-		// Port-forward é criado no Start() e mantido até Stop()
-		// Não recriamos aqui - apenas verificamos se está ativo
-
 		// Cria contexto com timeout para o scan
 		ctx, cancel := context.WithTimeout(e.ctx, 2*time.Minute)
-		defer cancel()
 
-		// Obtém URL do Prometheus (port-forward persistente)
+		// Obtém URL do Prometheus (port-forward)
 		promEndpoint := e.pfManager.GetURL(target.Cluster)
 		if promEndpoint == "" {
 			log.Warn().
 				Str("cluster", target.Cluster).
 				Msg("Port-forward não disponível, pulando cluster")
+			cancel()
 			continue
 		}
 
@@ -426,6 +406,7 @@ func (e *ScanEngine) runScan() {
 				Err(err).
 				Str("cluster", target.Cluster).
 				Msg("Falha ao criar collector")
+			cancel()
 			continue
 		}
 
@@ -436,6 +417,7 @@ func (e *ScanEngine) runScan() {
 				Err(err).
 				Str("cluster", target.Cluster).
 				Msg("Falha ao executar scan")
+			cancel()
 			continue
 		}
 
@@ -484,6 +466,8 @@ func (e *ScanEngine) runScan() {
 			Int("anomalies", len(result.Anomalies)).
 			Int("errors", len(result.Errors)).
 			Msg("Cluster escaneado com sucesso")
+
+		cancel()
 	}
 
 	scanDuration := time.Since(scanStart)
@@ -509,95 +493,70 @@ func (e *ScanEngine) captureBaseline() error {
 
 	// Para cada target, captura baseline
 	for _, target := range e.config.Targets {
-		if err := e.pfManager.Start(target.Cluster); err != nil {
+		promEndpoint := e.pfManager.GetURL(target.Cluster)
+		if promEndpoint == "" {
+			log.Warn().
+				Str("cluster", target.Cluster).
+				Msg("Port-forward não disponível, pulando baseline deste cluster")
+			continue
+		}
+
+		// Cria ClusterInfo
+		clusterInfo := &models.ClusterInfo{
+			Name:    target.Cluster,
+			Context: target.Cluster,
+		}
+
+		// Cria collector temporário para baseline
+		collector, err := monitor.NewCollector(clusterInfo, promEndpoint, &monitor.CollectorConfig{
+			ScanInterval:      e.config.Interval,
+			ExcludeNamespaces: []string{},
+			EnablePrometheus:  true,
+		})
+		if err != nil {
 			log.Warn().
 				Err(err).
 				Str("cluster", target.Cluster).
-				Msg("Não foi possível iniciar port-forward para baseline, pulando cluster")
+				Msg("Falha ao criar collector para baseline")
 			continue
 		}
 
-		success := func() bool {
-			defer func() {
-				if err := e.pfManager.Stop(target.Cluster); err != nil {
-					log.Warn().
-						Err(err).
-						Str("cluster", target.Cluster).
-						Msg("Falha ao parar port-forward após baseline")
-				}
-			}()
+		// Cria baseline collector
+		e.baselineCollector = monitor.NewBaselineCollector(
+			collector.GetPrometheusClient(),
+			collector.GetK8sClient(),
+		)
 
-			promEndpoint := e.pfManager.GetURL(target.Cluster)
-			if promEndpoint == "" {
-				log.Warn().
-					Str("cluster", target.Cluster).
-					Msg("Port-forward não disponível para baseline")
-				return false
-			}
+		// Captura baseline (últimos 30min)
+		ctx, cancel := context.WithTimeout(e.ctx, 5*time.Minute)
+		baseline, err := e.baselineCollector.CaptureBaseline(ctx, 30*time.Minute)
+		cancel()
 
-			// Cria ClusterInfo
-			clusterInfo := &models.ClusterInfo{
-				Name:    target.Cluster,
-				Context: target.Cluster,
-			}
-
-			// Cria collector temporário para baseline
-			collector, err := monitor.NewCollector(clusterInfo, promEndpoint, &monitor.CollectorConfig{
-				ScanInterval:      e.config.Interval,
-				ExcludeNamespaces: []string{},
-				EnablePrometheus:  true,
-			})
-			if err != nil {
-				log.Warn().
-					Err(err).
-					Str("cluster", target.Cluster).
-					Msg("Falha ao criar collector para baseline")
-				return false
-			}
-
-			// Cria baseline collector
-			e.baselineCollector = monitor.NewBaselineCollector(
-				collector.GetPrometheusClient(),
-				collector.GetK8sClient(),
-			)
-
-			// Captura baseline (últimos 30min)
-			ctx, cancel := context.WithTimeout(e.ctx, 5*time.Minute)
-			defer cancel()
-
-			baseline, err := e.baselineCollector.CaptureBaseline(ctx, 30*time.Minute)
-			if err != nil {
-				log.Error().
-					Err(err).
-					Str("cluster", target.Cluster).
-					Msg("Falha ao capturar baseline")
-				return false
-			}
-
-			// Salva baseline (primeiro cluster ou merge se múltiplos)
-			if e.baseline == nil {
-				e.baseline = baseline
-			} else {
-				// Merge baselines de múltiplos clusters
-				e.baseline.TotalHPAs += baseline.TotalHPAs
-				e.baseline.TotalReplicas += baseline.TotalReplicas
-				for key, hpaBaseline := range baseline.HPABaselines {
-					e.baseline.HPABaselines[key] = hpaBaseline
-				}
-			}
-
-			log.Info().
+		if err != nil {
+			log.Error().
+				Err(err).
 				Str("cluster", target.Cluster).
-				Int("hpas", baseline.TotalHPAs).
-				Int("replicas", baseline.TotalReplicas).
-				Msg("Baseline capturado com sucesso")
-
-			return true
-		}()
-
-		if !success {
+				Msg("Falha ao capturar baseline")
 			continue
 		}
+
+		// Salva baseline (primeiro cluster ou merge se múltiplos)
+		if e.baseline == nil {
+			e.baseline = baseline
+		} else {
+			// Merge baselines de múltiplos clusters
+			e.baseline.TotalHPAs += baseline.TotalHPAs
+			e.baseline.TotalReplicas += baseline.TotalReplicas
+			for key, hpaBaseline := range baseline.HPABaselines {
+				e.baseline.HPABaselines[key] = hpaBaseline
+			}
+		}
+
+		log.Info().
+			Str("cluster", target.Cluster).
+			Int("hpas", baseline.TotalHPAs).
+			Int("replicas", baseline.TotalReplicas).
+			Msg("Baseline capturado com sucesso")
 	}
 
 	if e.baseline == nil {

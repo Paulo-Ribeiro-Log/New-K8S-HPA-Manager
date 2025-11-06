@@ -116,6 +116,37 @@ func (p *Persistence) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_snapshots_cleanup
 		ON snapshots(timestamp);
 
+	-- Tabela otimizada para baseline histórico (Fase 2)
+	CREATE TABLE IF NOT EXISTS hpa_snapshots (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		cluster TEXT NOT NULL,
+		namespace TEXT NOT NULL,
+		hpa_name TEXT NOT NULL,
+		timestamp DATETIME NOT NULL,
+
+		-- Métricas core
+		cpu_current REAL,
+		cpu_target INTEGER,
+		memory_current REAL,
+		memory_target INTEGER,
+		current_replicas INTEGER,
+		desired_replicas INTEGER,
+		min_replicas INTEGER,
+		max_replicas INTEGER,
+
+		-- Métricas adicionais em JSON (P95/P99, network, etc)
+		metrics_json TEXT,
+
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(cluster, namespace, hpa_name, timestamp)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_hpa_snapshots_lookup
+		ON hpa_snapshots(cluster, namespace, hpa_name, timestamp DESC);
+
+	CREATE INDEX IF NOT EXISTS idx_hpa_snapshots_cleanup
+		ON hpa_snapshots(timestamp);
+
 	CREATE TABLE IF NOT EXISTS metadata (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL,
@@ -740,4 +771,100 @@ func (p *Persistence) ListStressTests() ([]map[string]interface{}, error) {
 	}
 
 	return tests, nil
+}
+
+// SaveHistoricalBaseline salva snapshots históricos como baseline (Fase 2)
+func (p *Persistence) SaveHistoricalBaseline(snapshots []*models.HPASnapshot) (int, error) {
+	if !p.config.Enabled || p.db == nil {
+		log.Warn().Msg("Persistence not enabled, skipping baseline save")
+		return 0, nil
+	}
+
+	if len(snapshots) == 0 {
+		return 0, nil
+	}
+
+	log.Info().
+		Int("snapshots", len(snapshots)).
+		Msg("Salvando baseline histórico no SQLite")
+
+	// Inicia transação para batch insert
+	tx, err := p.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Prepara statement de insert (com metrics_json)
+	stmt, err := tx.Prepare(`
+		INSERT OR IGNORE INTO hpa_snapshots (
+			cluster, namespace, hpa_name, timestamp,
+			cpu_current, cpu_target,
+			memory_current, memory_target,
+			current_replicas, desired_replicas, min_replicas, max_replicas,
+			metrics_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	// Insere snapshots em batch
+	saved := 0
+	for _, snapshot := range snapshots {
+		// Serializa métricas adicionais em JSON
+		metricsJSON := "{}"
+		if len(snapshot.AdditionalMetrics) > 0 {
+			jsonData, err := json.Marshal(snapshot.AdditionalMetrics)
+			if err != nil {
+				log.Warn().
+					Err(err).
+					Str("hpa", snapshot.Name).
+					Msg("Falha ao serializar AdditionalMetrics, usando JSON vazio")
+			} else {
+				metricsJSON = string(jsonData)
+			}
+		}
+
+		_, err := stmt.Exec(
+			snapshot.Cluster,
+			snapshot.Namespace,
+			snapshot.Name,
+			snapshot.Timestamp,
+			snapshot.CPUCurrent,
+			snapshot.CPUTarget,
+			snapshot.MemoryCurrent,
+			snapshot.MemoryTarget,
+			snapshot.CurrentReplicas,
+			snapshot.DesiredReplicas,
+			snapshot.MinReplicas,
+			snapshot.MaxReplicas,
+			metricsJSON,
+		)
+		if err != nil {
+			log.Warn().
+				Err(err).
+				Str("cluster", snapshot.Cluster).
+				Str("namespace", snapshot.Namespace).
+				Str("hpa", snapshot.Name).
+				Time("timestamp", snapshot.Timestamp).
+				Msg("Falha ao inserir snapshot (provavelmente duplicado)")
+			continue
+		}
+		saved++
+	}
+
+	// Commit transação
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	log.Info().
+		Int("saved", saved).
+		Int("total", len(snapshots)).
+		Float64("success_rate", float64(saved)/float64(len(snapshots))*100).
+		Msg("Baseline histórico salvo com sucesso")
+
+	return saved, nil
 }

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 
 	"k8s-hpa-manager/internal/monitoring/analyzer"
 	"k8s-hpa-manager/internal/monitoring/engine"
@@ -480,9 +481,20 @@ func (h *MonitoringHandler) AddHPA(c *gin.Context) {
 		return
 	}
 
+	// IMPORTANTE: Remove sufixo -admin do cluster para o scanner/portforward
+	// O frontend envia "akspriv-prod-admin", mas o scanner precisa de "akspriv-prod"
+	clusterName := strings.TrimSuffix(req.Cluster, "-admin")
+
+	log.Info().
+		Str("cluster_received", req.Cluster).
+		Str("cluster_normalized", clusterName).
+		Str("namespace", req.Namespace).
+		Str("hpa", req.HPA).
+		Msg("Adicionando HPA ao monitoramento")
+
 	// Criar target com HPA específico
 	target := scanner.ScanTarget{
-		Cluster:    req.Cluster,
+		Cluster:    clusterName,
 		Namespaces: []string{req.Namespace},
 		HPAs:       []string{req.HPA},
 	}
@@ -493,7 +505,7 @@ func (h *MonitoringHandler) AddHPA(c *gin.Context) {
 		"status":  "success",
 		"message": "HPA added to monitoring successfully",
 		"target": gin.H{
-			"cluster":   target.Cluster,
+			"cluster":   clusterName,
 			"namespace": req.Namespace,
 			"hpa":       req.HPA,
 		},
