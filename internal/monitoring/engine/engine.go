@@ -270,10 +270,11 @@ func (e *ScanEngine) AddTarget(target scanner.ScanTarget) {
 			Int("slots", e.timeSlotManager.totalSlots).
 			Msg("TimeSlotManager atualizado após adicionar cluster")
 
-		// PHASE 2: Inicia coleta de baseline histórico (3 dias) async
-		// Baseline é executado em background para não bloquear AddTarget()
-		e.wg.Add(1)
-		go e.collectHistoricalBaseline(target)
+		// PHASE 2: Baseline será coletado automaticamente no próximo scan
+		// quando o TimeSlotManager alocar o cluster em um slot
+		log.Info().
+			Str("cluster", target.Cluster).
+			Msg("Baseline será coletado no próximo scan do cluster")
 	}
 }
 
@@ -511,6 +512,143 @@ func (e *ScanEngine) markHPABaselineReady(hpaKey string, baseline *models.HPABas
 			Str("hpa", hpaKey).
 			Msg("HPA marcado como baseline_ready")
 	}
+}
+
+// shouldStartBaselineCollection verifica se deve iniciar coleta de baseline para um HPA
+// Retorna true se o HPA não tem baseline e ainda não está coletando
+func (e *ScanEngine) shouldStartBaselineCollection(hpaKey string, snapshot *models.HPASnapshot) bool {
+	// Verifica se já tem baseline_ready no cache
+	ts := e.cache.Get(snapshot.Cluster, snapshot.Namespace, snapshot.Name)
+	if ts != nil {
+		latest := ts.GetLatest()
+		if latest != nil && latest.BaselineReady {
+			return false // Já tem baseline
+		}
+		// Verifica se já está coletando (tem BaselineStart mas não BaselineComplete)
+		if latest != nil && !latest.BaselineStart.IsZero() && latest.BaselineComplete.IsZero() {
+			return false // Já está coletando
+		}
+	}
+
+	// Marca como "em coleta" para evitar múltiplas coletas simultâneas
+	if ts == nil {
+		// Cria entrada no cache com BaselineStart preenchido
+		initialSnapshot := &models.HPASnapshot{
+			Timestamp:        time.Now(),
+			Cluster:          snapshot.Cluster,
+			Namespace:        snapshot.Namespace,
+			Name:             snapshot.Name,
+			MinReplicas:      snapshot.MinReplicas,
+			MaxReplicas:      snapshot.MaxReplicas,
+			CPUTarget:        snapshot.CPUTarget,
+			CurrentReplicas:  snapshot.CurrentReplicas,
+			BaselineReady:    false,
+			BaselineStart:    time.Now(), // Marca início da coleta
+			BaselineComplete: time.Time{}, // Ainda não completou
+			DataSource:       models.DataSourcePrometheus,
+		}
+		e.cache.Add(initialSnapshot)
+	} else {
+		// Atualiza snapshot existente
+		latest := ts.GetLatest()
+		if latest != nil {
+			latest.BaselineStart = time.Now()
+			e.cache.Add(latest)
+		}
+	}
+
+	return true
+}
+
+// collectBaselineForHPA coleta baseline histórico para um HPA específico
+func (e *ScanEngine) collectBaselineForHPA(target scanner.ScanTarget, namespace string, hpaName string) {
+	defer e.wg.Done()
+
+	hpaKey := fmt.Sprintf("%s/%s/%s", target.Cluster, namespace, hpaName)
+
+	log.Info().
+		Str("cluster", target.Cluster).
+		Str("namespace", namespace).
+		Str("hpa", hpaName).
+		Msg("Iniciando coleta de baseline histórico para HPA")
+
+	// Cria contexto com timeout de 5 minutos
+	ctx, cancel := context.WithTimeout(e.ctx, 5*time.Minute)
+	defer cancel()
+
+	// Obtém URL do Prometheus (port-forward deve estar ativo do scan atual)
+	promEndpoint := e.pfManager.GetURL(target.Cluster)
+	if promEndpoint == "" {
+		log.Warn().
+			Str("cluster", target.Cluster).
+			Str("hpa", hpaKey).
+			Msg("Port-forward não disponível para coleta de baseline, tentará no próximo scan")
+		return
+	}
+
+	// Cria ClusterInfo
+	context := target.Cluster
+	if !strings.HasSuffix(target.Cluster, "-admin") {
+		context = target.Cluster + "-admin"
+	}
+
+	clusterInfo := &models.ClusterInfo{
+		Name:    target.Cluster,
+		Context: context,
+	}
+
+	// Cria collector temporário
+	collector, err := monitor.NewCollector(clusterInfo, promEndpoint, &monitor.CollectorConfig{
+		ScanInterval:      e.config.Interval,
+		ExcludeNamespaces: []string{},
+		EnablePrometheus:  true,
+	})
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("hpa", hpaKey).
+			Msg("Falha ao criar collector para baseline")
+		return
+	}
+
+	// Cria baseline collector
+	baselineCollector := monitor.NewBaselineCollector(
+		collector.GetPrometheusClient(),
+		collector.GetK8sClient(),
+	)
+
+	// Coleta baseline de 3 dias apenas para este HPA
+	baselineDuration := 72 * time.Hour
+
+	// Filtra apenas o namespace e HPA específico
+	// TODO: BaselineCollector precisa suportar filtro por HPA específico
+	// Por enquanto, coleta todo o namespace e filtra depois
+	baseline, err := baselineCollector.CaptureBaseline(ctx, baselineDuration)
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("hpa", hpaKey).
+			Msg("Falha ao coletar baseline histórico")
+		return
+	}
+
+	// Busca baseline do HPA específico
+	hpaBaseline, found := baseline.HPABaselines[hpaKey]
+	if !found {
+		log.Warn().
+			Str("hpa", hpaKey).
+			Msg("HPA não encontrado no baseline coletado")
+		return
+	}
+
+	// Marca HPA como baseline_ready
+	e.markHPABaselineReady(hpaKey, hpaBaseline)
+
+	log.Info().
+		Str("hpa", hpaKey).
+		Float64("cpu_avg", hpaBaseline.CPUAvg).
+		Float64("memory_avg", hpaBaseline.MemoryAvg).
+		Msg("Baseline coletado com sucesso para HPA")
 }
 
 // timeSlotScanLoop executa scans baseado em janelas temporais (PHASE 3)
@@ -798,6 +936,19 @@ func (e *ScanEngine) runScanForTarget(target scanner.ScanTarget) {
 					Str("namespace", latest.Namespace).
 					Str("hpa", latest.Name).
 					Msg("HPA sem baseline pronto, aguardando coleta histórica")
+
+				// PHASE 2: Inicia coleta de baseline em background se ainda não iniciou
+				hpaKey := fmt.Sprintf("%s/%s/%s", latest.Cluster, latest.Namespace, latest.Name)
+				if e.shouldStartBaselineCollection(hpaKey, latest) {
+					log.Info().
+						Str("cluster", latest.Cluster).
+						Str("namespace", latest.Namespace).
+						Str("hpa", latest.Name).
+						Msg("Iniciando coleta de baseline histórico em background")
+					
+					e.wg.Add(1)
+					go e.collectBaselineForHPA(target, latest.Namespace, latest.Name)
+				}
 
 				// Adiciona ao cache mesmo sem baseline (para exibição na UI)
 				e.cache.Add(latest)
