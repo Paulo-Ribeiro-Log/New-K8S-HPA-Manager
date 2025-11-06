@@ -56,6 +56,11 @@ type HPASnapshot struct {
 	// Exemplo: cpu_throttling, memory_oom, pod_restart_count, etc.
 	AdditionalMetrics map[string]interface{} `json:"additional_metrics,omitempty"`
 
+	// Baseline Control - Phase 2
+	BaselineReady    bool      // Indica se baseline histórico foi coletado e HPA está pronto para monitoramento
+	BaselineStart    time.Time // Quando iniciou coleta de baseline
+	BaselineComplete time.Time // Quando completou baseline (zero se não completou)
+
 	// Metadata
 	DataSource DataSource // Indica se veio de Prometheus ou Metrics-Server
 }

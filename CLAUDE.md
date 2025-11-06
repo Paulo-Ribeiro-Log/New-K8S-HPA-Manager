@@ -1211,127 +1211,140 @@ Após análise detalhada do fluxo de monitoramento, foi identificado que a **imp
 - Contém 4 fases de implementação detalhadas
 - Inclui código de exemplo e planos de teste
 
-**✅ IMPLEMENTAÇÃO CONCLUÍDA (06 nov 2025) - Fases 1-2:**
+**✅ IMPLEMENTAÇÃO CONCLUÍDA (06 nov 2025) - Fases 1-4 REFATORADAS:**
 
-### Fase 1: Port-Forward Persistente ✅
+### Refatoração Completa: Time-Slot Based Scanning ✅
+
+**Problema original:** Port-forwards persistentes (1 por cluster) não escalavam para >2 clusters (só 2 portas disponíveis: 55553, 55554).
+
+**Solução final:** Sistema de rotação temporal com time slots para scanning paralelo.
+
+### Fase 1: Port-Forward Manager (Dual Port) ✅
+- ✅ PortForwardManager com 2 portas simultâneas (55553, 55554)
+- ✅ Sistema de ocupação (oddBusy/evenBusy flags)
+- ✅ Auto-descoberta de Prometheus service (5 nomes comuns)
+- ✅ Release de porta ao parar port-forward
+
+### Fase 2: Baseline Collection System ✅
+- ✅ 3 dias (72h) de coleta histórica via Prometheus
+- ✅ 16 métricas coletadas (CPU, Memory, P95/P99, Throttling, OOM, etc.)
+- ✅ Validação de cobertura (mínimo 70% de dados)
+- ✅ SQLite persistence com `metrics_json` field
+- ✅ Flag `baseline_ready` controla início do monitoring
+- ✅ Coleta async ao adicionar target (não bloqueia AddTarget)
+
+### Fase 3: TimeSlotManager + Port Queue ✅
+
+**Arquitetura de Time Slots:**
+```go
+// internal/monitoring/engine/timeslot.go (NOVO)
+type TimeSlotManager struct {
+    clusters []string
+    totalSlots int // (len(clusters) + 1) / 2
+    slotDuration time.Duration // 30s (2 clusters), 20s (4), 15s (6+)
+    currentSlot int
+    slotStart time.Time
+}
+
+// Exemplo: 4 clusters → 2 slots de 20s cada
+// Slot 0 (0-20s):  cluster[0] (55553) + cluster[1] (55554)
+// Slot 1 (20-40s): cluster[2] (55553) + cluster[3] (55554)
+// Slot 0 (40-60s): repete...
+```
 
 **Correção aplicada em `engine.go`:**
-- ❌ **Removido**: Criação/destruição de port-forward dentro do `runScan()` (linhas 373-389)
-- ✅ **Corrigido**: Port-forward criado UMA VEZ no `Start()` e mantido até `Stop()`
-- ✅ **Logs detalhados**: Documentação clara de port-forwards persistentes
+- ❌ **Removido**: Port-forwards persistentes no `Start()` (1 por cluster)
+- ❌ **Removido**: scanLoop() que gerenciava scans sequenciais
+- ❌ **Removido**: runScan() com código duplicado
+- ✅ **Novo**: TimeSlotManager com rotação circular
+- ✅ **Novo**: timeSlotScanLoop() - Verifica slot atual a cada 2s
+- ✅ **Novo**: executeSlotScan() - Executa 2 clusters em paralelo
+- ✅ **Novo**: scanClusterInSlot() - Scan individual com port-forward temporário
+- ✅ **Novo**: runScanForTarget() - Lógica de scan extraída para reuso
 
-**Código key (engine.go:105-130):**
+**Código key (engine.go):**
 ```go
-// FASE 1: Inicia port-forwards PERSISTENTES para todos os clusters
-// Port-forwards são criados UMA VEZ e mantidos até Stop()
-log.Info().Int("clusters", len(e.config.Targets)).
-    Msg("Iniciando port-forwards persistentes para Prometheus")
+// Start() - Inicializa TimeSlotManager
+clusterNames := extractClusterNames(e.config.Targets)
+e.timeSlotManager = NewTimeSlotManager(clusterNames)
+log.Info().
+    Int("clusters", len(clusterNames)).
+    Int("slots", e.timeSlotManager.totalSlots).
+    Dur("slot_duration", e.timeSlotManager.slotDuration).
+    Msg("TimeSlotManager configurado")
 
-for _, target := range e.config.Targets {
-    if err := e.pfManager.Start(target.Cluster); err != nil {
-        log.Error().Err(err).Str("cluster", target.Cluster).
-            Msg("Falha ao iniciar port-forward, pulando cluster")
-        continue
+go e.timeSlotScanLoop() // Loop de slots
+
+// timeSlotScanLoop() - Verifica slot a cada 2s
+ticker := time.NewTicker(2 * time.Second)
+for {
+    select {
+    case <-ticker.C:
+        assignment := e.timeSlotManager.GetCurrentAssignment()
+        if assignment.SlotIndex != lastSlot {
+            e.executeSlotScan(assignment)
+            lastSlot = assignment.SlotIndex
+        }
     }
-    log.Info().Str("cluster", target.Cluster).
-        Str("url", e.pfManager.GetURL(target.Cluster)).
-        Msg("Port-forward persistente ativo")
 }
+
+// executeSlotScan() - 2 clusters em paralelo
+var wg sync.WaitGroup
+wg.Add(2)
+go e.scanClusterInSlot(assignment.Port55553Cluster, 55553, &wg)
+go e.scanClusterInSlot(assignment.Port55554Cluster, 55554, &wg)
+wg.Wait()
 ```
 
-### Fase 2: Coleta Histórica com Sistema de Queries Prometheus ✅
+### Fase 4: Dynamic Cluster Management ✅
 
-**Refatoração completa de `historical.go`:**
-- ✅ **16 queries Prometheus** (vs 3 anteriores hardcoded!)
-- ✅ Usa sistema existente `prometheus.GetAllTemplates()`
-- ✅ **Coleta em paralelo** (goroutines) para performance
-- ✅ **Filtro inteligente** `isApplicable()` - skip queries sem service name
-- ✅ **Timeout por query** (1 minuto cada)
-- ✅ **Validação de cobertura** (mínimo 70% de dados)
-
-**Métricas coletadas (16 total):**
-
-| Core (4) | Extended (13) |
-|----------|---------------|
-| CPU Usage | CPU Raw, CPU Throttling |
-| Memory Usage | Memory Raw, Memory OOM |
-| Current Replicas | HPA Replica Delta |
-| Desired Replicas | Network RX/TX Bytes |
-| | Request Rate, Error Rate |
-| | **P95 Latency, P99 Latency** ⭐ |
-| | Pod Restart Count, Pod Ready Count |
-
-**Schema SQLite expandido:**
-```sql
-CREATE TABLE hpa_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    cluster, namespace, hpa_name, timestamp,
-    cpu_current, cpu_target,
-    memory_current, memory_target,
-    current_replicas, desired_replicas, min_replicas, max_replicas,
-    metrics_json TEXT,  -- ⭐ Métricas adicionais (P95/P99, throttling, OOM, etc)
-    created_at, UNIQUE(cluster, namespace, hpa_name, timestamp)
-);
-```
-
-**Struct HPASnapshot atualizada (models/types.go:57):**
+**AddTarget/RemoveTarget integrados:**
 ```go
-type HPASnapshot struct {
-    ...
-    // ⭐ NOVO campo para métricas extensíveis
-    AdditionalMetrics map[string]interface{} `json:"additional_metrics,omitempty"`
-    ...
+// AddTarget() - Atualiza TimeSlotManager ao adicionar cluster
+if e.running && e.timeSlotManager != nil {
+    clusterNames := extractClusterNames(e.config.Targets)
+    e.timeSlotManager.UpdateClusters(clusterNames)
+    log.Info().
+        Int("clusters", len(clusterNames)).
+        Int("slots", e.timeSlotManager.totalSlots).
+        Msg("TimeSlotManager atualizado após adicionar cluster")
+    
+    // Baseline async (não bloqueia)
+    e.wg.Add(1)
+    go e.collectHistoricalBaseline(target)
+}
+
+// RemoveTarget() - Recalcula slots após remoção
+if e.running && e.timeSlotManager != nil {
+    clusterNames := extractClusterNames(e.config.Targets)
+    e.timeSlotManager.UpdateClusters(clusterNames)
+    log.Info().
+        Int("clusters", len(clusterNames)).
+        Int("slots", e.timeSlotManager.totalSlots).
+        Msg("TimeSlotManager atualizado após remover cluster")
 }
 ```
 
-**Componentes criados:**
-- `internal/monitoring/collector/historical.go` (NOVO - 387 linhas)
-  - `CollectBaseline()` - Coleta 3 dias com TODAS as queries
-  - `isApplicable()` - Filtro de queries (ex: P95 requer service name)
-  - `buildQuery()` - Usa QueryBuilder do sistema existente
-  - `mergeAllMetrics()` - Combina 16 métricas em snapshots
-  - `buildAdditionalMetrics()` - Serializa em JSON para persistência
+**Benefícios da arquitetura final:**
+- ✅ **Escalabilidade ilimitada**: Suporta 2, 4, 10, 100+ clusters
+- ✅ **Uso eficiente de recursos**: Apenas 2 portas para N clusters
+- ✅ **Scanning paralelo**: 2 clusters simultâneos por slot
+- ✅ **Rotação justa**: Todos clusters escaneados em ciclos regulares
+- ✅ **Port-forward temporário**: Criado/destruído por scan (não persistente)
+- ✅ **Baseline obrigatória**: Só monitora após 3 dias de coleta
+- ✅ **Dinâmico**: Adicionar/remover clusters recalcula slots automaticamente
+- ✅ **Performance**: Duração de slot adapta-se ao número de clusters
 
-**Persistência atualizada (storage/persistence.go:745-825):**
-- `SaveHistoricalBaseline()` - Salva com metrics_json
-- Batch insert com transação SQLite
-- JSON serialization automática de AdditionalMetrics
+**Arquivos criados:**
+- `internal/monitoring/engine/timeslot.go` (NOVO - 220+ linhas)
 
-**Comparação: Antes vs Depois:**
+**Arquivos refatorados:**
+- `internal/monitoring/engine/engine.go` (1267 → 1126 linhas após cleanup)
 
-| Aspecto | Antes | Depois |
-|---------|-------|--------|
-| **Queries** | 3 hardcoded | 16 via templates |
-| **P95/P99** | ❌ Não coletado | ✅ Coletado |
-| **Paralelismo** | ❌ Sequencial | ✅ Goroutines paralelas |
-| **Filtro** | ❌ Sem filtro | ✅ `isApplicable()` |
-| **Extensível** | ❌ Requer código | ✅ Adicionar template |
-| **JSON Storage** | ❌ Não suportado | ✅ `metrics_json` field |
-
-**Documentação criada:**
-- `PROMETHEUS_METRICS_PLAN.md` - Análise completa do sistema de queries
-- `DOCS_COMPARISON.md` - Comparativo entre TODOs de implementação
-
-**Arquivos modificados:**
-- `internal/monitoring/engine/engine.go` - Port-forward persistente
-- `internal/monitoring/collector/historical.go` - Refatoração completa
-- `internal/monitoring/models/types.go` - Campo AdditionalMetrics
-- `internal/monitoring/storage/persistence.go` - Schema + SaveHistoricalBaseline
-
-**Benefícios:**
-- ✅ Port-forwards persistentes (não recriados a cada scan)
-- ✅ Baseline histórico 5x mais rico (16 métricas vs 3)
-- ✅ P95/P99 latency disponível para análise
-- ✅ Sistema extensível (adicionar novas queries sem modificar código)
-- ✅ Performance otimizada (coleta paralela)
-- ✅ Troubleshooting facilitado (13 métricas adicionais em JSON)
-
-**Próximos passos (TODO):**
-1. ⏳ Integrar coleta histórica no `AddTarget()` do engine
-2. ⏳ Executar baseline async quando HPA for adicionado
-3. ⏳ Flag `baseline_ready` para controlar início do monitoramento
-4. ⏳ Implementar Phase 3: Port Queue Management (time slots)
-5. ⏳ Implementar Phase 4: Guaranteed Cleanup (signal handling)
+**TODO (Fase 5 - Signal Handling):**
+- ⏳ SIGINT/SIGTERM handlers para cleanup garantido
+- ⏳ Graceful shutdown de port-forwards ativos
+- ⏳ Flush de SQLite antes de terminar
 
 ---
 
