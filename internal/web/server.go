@@ -481,6 +481,59 @@ func (s *Server) Start() error {
 	return s.router.Run(addr)
 }
 
+// Shutdown encerra gracefully o servidor e componentes
+func (s *Server) Shutdown() error {
+	fmt.Println("\n╔════════════════════════════════════════════════════════════╗")
+	fmt.Println("║              GRACEFUL SHUTDOWN INICIADO                   ║")
+	fmt.Println("╚════════════════════════════════════════════════════════════╝")
+
+	// 1. Parar timer de auto-shutdown
+	s.timerMutex.Lock()
+	if s.shutdownTimer != nil {
+		s.shutdownTimer.Stop()
+		fmt.Println("✓ Timer de auto-shutdown parado")
+	}
+	s.timerMutex.Unlock()
+
+	// 2. Cancelar contexto de monitoring
+	if s.monitoringCancel != nil {
+		s.monitoringCancel()
+		fmt.Println("✓ Contexto de monitoring cancelado")
+	}
+
+	// 3. Parar monitoring engine (fecha port-forwards e SQLite)
+	if s.monitoringEngine != nil {
+		fmt.Println("⏳ Parando monitoring engine...")
+		if err := s.monitoringEngine.Stop(); err != nil {
+			fmt.Printf("⚠️  Erro ao parar engine: %v\n", err)
+		} else {
+			fmt.Println("✓ Monitoring engine parado")
+		}
+	}
+
+	// 4. Salvar targets uma última vez
+	homeDir, _ := os.UserHomeDir()
+	baseDir := filepath.Join(homeDir, ".k8s-hpa-manager")
+	targetsFile := filepath.Join(baseDir, "monitoring-targets.json")
+	if s.monitoringEngine != nil {
+		targets := s.monitoringEngine.GetTargets()
+		if err := saveTargetsToFile(targetsFile, targets); err != nil {
+			fmt.Printf("⚠️  Erro ao salvar targets: %v\n", err)
+		} else {
+			fmt.Println("✓ Targets salvos")
+		}
+	}
+
+	// 5. Fechar canais
+	close(s.snapshotChan)
+	close(s.anomalyChan)
+	close(s.stressResultChan)
+	fmt.Println("✓ Canais fechados")
+
+	fmt.Println("\n✅ Shutdown concluído com sucesso!")
+	return nil
+}
+
 // saveTargetsToFile salva targets em arquivo JSON
 func saveTargetsToFile(filename string, targets []scanner.ScanTarget) error {
 	data, err := json.Marshal(targets)

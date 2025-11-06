@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"time"
 
 	"k8s-hpa-manager/internal/web"
@@ -206,6 +208,10 @@ API Endpoints:
 			return fmt.Errorf("failed to create web server: %w", err)
 		}
 
+		// Setup signal handling para graceful shutdown
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
 		// Abrir browser automaticamente (apenas se não foi aberto pelo processo pai)
 		if !noBrowser && os.Getenv("K8S_HPA_BROWSER_OPENED") != "1" {
 			go func() {
@@ -229,7 +235,21 @@ API Endpoints:
 			}()
 		}
 
-		// Iniciar servidor
+		// Goroutine para capturar sinais e fazer graceful shutdown
+		go func() {
+			sig := <-sigChan
+			fmt.Printf("\n⚠️  Recebido sinal: %v\n", sig)
+			
+			// Fazer graceful shutdown
+			if err := server.Shutdown(); err != nil {
+				fmt.Printf("❌ Erro durante shutdown: %v\n", err)
+				os.Exit(1)
+			}
+			
+			os.Exit(0)
+		}()
+
+		// Iniciar servidor (bloqueante)
 		return server.Start()
 	},
 }

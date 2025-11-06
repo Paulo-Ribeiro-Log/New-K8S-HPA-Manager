@@ -144,16 +144,27 @@ func (e *ScanEngine) Stop() error {
 
 	log.Info().Msg("Parando scan engine")
 
-	// Cancela contexto
+	// Cancela contexto (sinaliza todas as goroutines para pararem)
 	e.cancel()
 
-	// Para port-forwards
+	// Para port-forwards imediatamente
 	if err := e.pfManager.StopAll(); err != nil {
 		log.Error().Err(err).Msg("Erro ao parar port-forwards")
 	}
 
-	// Aguarda goroutines
-	e.wg.Wait()
+	// Aguarda goroutines com timeout de 10 segundos
+	done := make(chan struct{})
+	go func() {
+		e.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Info().Msg("Todas as goroutines finalizadas")
+	case <-time.After(10 * time.Second):
+		log.Warn().Msg("Timeout aguardando goroutines - forçando shutdown")
+	}
 
 	// Se modo stress test, finaliza e salva resultado
 	if e.config.Mode == scanner.ScanModeStressTest {
@@ -584,6 +595,14 @@ func (e *ScanEngine) executeSlotScan(assignment SlotAssignment) {
 
 // scanClusterInSlot executa scan de um cluster específico em sua janela
 func (e *ScanEngine) scanClusterInSlot(cluster string, expectedPort int) {
+	// Verifica se contexto foi cancelado antes de iniciar
+	select {
+	case <-e.ctx.Done():
+		log.Debug().Str("cluster", cluster).Msg("Scan cancelado (contexto encerrado)")
+		return
+	default:
+	}
+
 	log.Debug().
 		Str("cluster", cluster).
 		Int("expected_port", expectedPort).
@@ -605,6 +624,14 @@ func (e *ScanEngine) scanClusterInSlot(cluster string, expectedPort int) {
 			Str("cluster", cluster).
 			Msg("Cluster não encontrado nos targets configurados")
 		return
+	}
+
+	// Verifica novamente antes de iniciar port-forward
+	select {
+	case <-e.ctx.Done():
+		log.Debug().Str("cluster", cluster).Msg("Scan cancelado antes de port-forward")
+		return
+	default:
 	}
 
 	// Inicia/verifica port-forward para este cluster na porta esperada
