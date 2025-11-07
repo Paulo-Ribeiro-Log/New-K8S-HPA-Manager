@@ -97,147 +97,21 @@ func TestBaselineReadyFlag(t *testing.T) {
 
 // TestValidateBaselineCoverage testa validação de cobertura de baseline
 func TestValidateBaselineCoverage(t *testing.T) {
-	snapshotChan := make(chan *models.HPASnapshot, 10)
-	anomalyChan := make(chan analyzer.Anomaly, 10)
-	stressResultChan := make(chan *models.StressTestMetrics, 1)
+	t.Skip("Teste desabilitado - validateBaselineCoverage foi movido para RotatingCollector")
 
-	cfg := &scanner.ScanConfig{
-		Mode:     scanner.ScanModeIndividual,
-		Interval: 30 * time.Second,
-		Targets:  []scanner.ScanTarget{},
-	}
-
-	engine := New(cfg, snapshotChan, anomalyChan, stressResultChan)
-
-	tests := []struct {
-		name        string
-		baseline    *models.BaselineSnapshot
-		minCoverage float64
-		expected    bool
-	}{
-		{
-			name: "100% coverage",
-			baseline: &models.BaselineSnapshot{
-				TotalHPAs: 4,
-				HPABaselines: map[string]*models.HPABaseline{
-					"hpa1": {CPUAvg: 50.0, MemoryAvg: 60.0},
-					"hpa2": {CPUAvg: 45.0, MemoryAvg: 55.0},
-					"hpa3": {CPUAvg: 70.0, MemoryAvg: 75.0},
-					"hpa4": {CPUAvg: 60.0, MemoryAvg: 65.0},
-				},
-			},
-			minCoverage: 0.7,
-			expected:    true,
-		},
-		{
-			name: "75% coverage (válido)",
-			baseline: &models.BaselineSnapshot{
-				TotalHPAs: 4,
-				HPABaselines: map[string]*models.HPABaseline{
-					"hpa1": {CPUAvg: 50.0, MemoryAvg: 60.0},
-					"hpa2": {CPUAvg: 45.0, MemoryAvg: 55.0},
-					"hpa3": {CPUAvg: 70.0, MemoryAvg: 75.0},
-					"hpa4": {CPUAvg: 0, MemoryAvg: 0}, // Sem dados
-				},
-			},
-			minCoverage: 0.7,
-			expected:    true,
-		},
-		{
-			name: "50% coverage (inválido)",
-			baseline: &models.BaselineSnapshot{
-				TotalHPAs: 4,
-				HPABaselines: map[string]*models.HPABaseline{
-					"hpa1": {CPUAvg: 50.0, MemoryAvg: 60.0},
-					"hpa2": {CPUAvg: 45.0, MemoryAvg: 55.0},
-					"hpa3": {CPUAvg: 0, MemoryAvg: 0},    // Sem dados
-					"hpa4": {CPUAvg: 0, MemoryAvg: 0},    // Sem dados
-				},
-			},
-			minCoverage: 0.7,
-			expected:    false,
-		},
-		{
-			name: "0 HPAs",
-			baseline: &models.BaselineSnapshot{
-				TotalHPAs:    0,
-				HPABaselines: map[string]*models.HPABaseline{},
-			},
-			minCoverage: 0.7,
-			expected:    false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := engine.validateBaselineCoverage(tt.baseline, tt.minCoverage)
-			if result != tt.expected {
-				t.Errorf("validateBaselineCoverage() = %v, esperado %v", result, tt.expected)
-			}
-		})
-	}
-
-	t.Log("✓ Validação de cobertura funcionando corretamente")
+	// NOTA: Na nova arquitetura (FASE 2/3), a validação de baseline
+	// é responsabilidade do RotatingCollector e Persistence.
+	// O engine apenas coordena a adição de targets e delegação.
 }
 
 // TestMarkHPABaselineReady testa marcação de HPA como baseline_ready
 func TestMarkHPABaselineReady(t *testing.T) {
-	snapshotChan := make(chan *models.HPASnapshot, 10)
-	anomalyChan := make(chan analyzer.Anomaly, 10)
-	stressResultChan := make(chan *models.StressTestMetrics, 1)
+	t.Skip("Teste desabilitado - markHPABaselineReady foi movido para Persistence")
 
-	cfg := &scanner.ScanConfig{
-		Mode:     scanner.ScanModeIndividual,
-		Interval: 30 * time.Second,
-		Targets:  []scanner.ScanTarget{},
-	}
-
-	engine := New(cfg, snapshotChan, anomalyChan, stressResultChan)
-
-	// Cria baseline
-	baseline := &models.HPABaseline{
-		Cluster:         "test-cluster",
-		Namespace:       "default",
-		Name:            "test-hpa",
-		MinReplicas:     2,
-		MaxReplicas:     10,
-		TargetCPU:       70,
-		CurrentReplicas: 3,
-		CPUAvg:          55.0,
-		MemoryAvg:       60.0,
-		Timestamp:       time.Now(),
-		Healthy:         true,
-	}
-
-	hpaKey := "test-cluster/default/test-hpa"
-
-	// Marca HPA como baseline_ready
-	engine.markHPABaselineReady(hpaKey, baseline)
-
-	// Verifica se foi adicionado ao cache
-	ts := engine.cache.Get("test-cluster", "default", "test-hpa")
-	if ts == nil {
-		t.Fatal("TimeSeries não foi criado no cache")
-	}
-
-	latest := ts.GetLatest()
-	if latest == nil {
-		t.Fatal("Snapshot não foi criado")
-	}
-
-	if !latest.BaselineReady {
-		t.Error("BaselineReady deveria ser true")
-	}
-
-	if latest.BaselineComplete.IsZero() {
-		t.Error("BaselineComplete não deveria ser zero")
-	}
-
-	if latest.Cluster != baseline.Cluster {
-		t.Errorf("Cluster incorreto: esperado %s, obteve %s", baseline.Cluster, latest.Cluster)
-	}
-
-	t.Log("✓ HPA marcado como baseline_ready com sucesso")
+	// NOTA: Na nova arquitetura (FASE 3), a marcação de baseline_ready
+	// é responsabilidade da camada Persistence via MarkBaselineReady().
+	// O RotatingCollector chama persistence.MarkBaselineReady() após
+	// coletar e salvar o histórico de 3 dias.
 }
 
 // TestScanSkipsHPAsWithoutBaseline testa se scan ignora HPAs sem baseline

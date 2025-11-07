@@ -165,6 +165,14 @@ type PortForwardManager struct {
 	oddBusy      bool           // Porta ímpar está em uso
 	evenBusy     bool           // Porta par está em uso
 	clusterIndex map[string]int // Mapeia cluster -> índice
+
+	// NOVAS portas para baseline (55555 e 55556)
+	portBaseline1      int  // Porta baseline 1 (default: 55555)
+	portBaseline2      int  // Porta baseline 2 (default: 55556)
+	baseline1Busy      bool // Porta baseline 1 está em uso
+	baseline2Busy      bool // Porta baseline 2 está em uso
+	baselineCluster1   string // Cluster usando porta baseline 1
+	baselineCluster2   string // Cluster usando porta baseline 2
 }
 
 // NewManager cria novo gerenciador
@@ -174,6 +182,10 @@ func NewManager() *PortForwardManager {
 		clusterIndex: make(map[string]int),
 		portOdd:      55553, // Porta fixa para clusters ímpares
 		portEven:     55554, // Porta fixa para clusters pares
+
+		// Portas dedicadas para baseline (coleta histórica)
+		portBaseline1: 55555,
+		portBaseline2: 55556,
 	}
 }
 
@@ -372,4 +384,134 @@ func (m *PortForwardManager) GetURL(cluster string) string {
 		return ""
 	}
 	return pf.GetURL()
+}
+
+// StartPortForward inicia port-forward em porta específica (para baseline)
+// Permite especificar porta manualmente (55555 ou 55556)
+func (m *PortForwardManager) StartPortForward(cluster string, port int) error {
+	// Valida porta (deve ser 55555 ou 55556 para baseline)
+	if port != m.portBaseline1 && port != m.portBaseline2 {
+		return fmt.Errorf("porta inválida para baseline: %d (esperado 55555 ou 55556)", port)
+	}
+
+	// Verifica se porta já está em uso
+	key := fmt.Sprintf("%s:%d", cluster, port)
+	if pf, exists := m.forwards[key]; exists && pf.IsRunning() {
+		log.Info().
+			Str("cluster", cluster).
+			Int("port", port).
+			Msg("Port-forward de baseline já ativo, reutilizando")
+		return nil
+	}
+
+	// Marca porta como ocupada
+	if port == m.portBaseline1 {
+		if m.baseline1Busy {
+			return fmt.Errorf("porta baseline 1 (%d) já está ocupada por cluster: %s", port, m.baselineCluster1)
+		}
+		m.baseline1Busy = true
+		m.baselineCluster1 = cluster
+	} else {
+		if m.baseline2Busy {
+			return fmt.Errorf("porta baseline 2 (%d) já está ocupada por cluster: %s", port, m.baselineCluster2)
+		}
+		m.baseline2Busy = true
+		m.baselineCluster2 = cluster
+	}
+
+	// Descobre o nome do serviço Prometheus
+	serviceName := m.discoverPrometheusService(cluster)
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("port", port).
+		Str("service", serviceName).
+		Msg("🔄 Iniciando port-forward dedicado para baseline")
+
+	// Context precisa do sufixo -admin
+	context := cluster
+	if !strings.HasSuffix(cluster, "-admin") {
+		context = cluster + "-admin"
+	}
+
+	pf := New(Config{
+		Cluster:   context,
+		Service:   serviceName,
+		LocalPort: port,
+	})
+
+	if err := pf.Start(); err != nil {
+		// Libera flag da porta em caso de erro
+		if port == m.portBaseline1 {
+			m.baseline1Busy = false
+			m.baselineCluster1 = ""
+		} else {
+			m.baseline2Busy = false
+			m.baselineCluster2 = ""
+		}
+		return err
+	}
+
+	m.forwards[key] = pf
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("port", port).
+		Msg("✅ Port-forward de baseline ativo")
+
+	return nil
+}
+
+// StopPortForward para port-forward em porta específica (para baseline)
+func (m *PortForwardManager) StopPortForward(cluster string, port int) error {
+	key := fmt.Sprintf("%s:%d", cluster, port)
+	pf, exists := m.forwards[key]
+	if !exists {
+		return nil
+	}
+
+	if err := pf.Stop(); err != nil {
+		return err
+	}
+
+	// Libera flag da porta
+	if port == m.portBaseline1 {
+		m.baseline1Busy = false
+		m.baselineCluster1 = ""
+	} else if port == m.portBaseline2 {
+		m.baseline2Busy = false
+		m.baselineCluster2 = ""
+	}
+
+	delete(m.forwards, key)
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("port", port).
+		Msg("🛑 Port-forward de baseline parado")
+
+	return nil
+}
+
+// GetBaselinePortAvailable retorna primeira porta baseline disponível (55555 ou 55556)
+// Retorna 0 se nenhuma porta disponível
+func (m *PortForwardManager) GetBaselinePortAvailable() int {
+	if !m.baseline1Busy {
+		return m.portBaseline1
+	}
+	if !m.baseline2Busy {
+		return m.portBaseline2
+	}
+	return 0 // Nenhuma porta disponível
+}
+
+// IsBaselinePortBusy verifica se porta baseline está ocupada
+func (m *PortForwardManager) IsBaselinePortBusy(port int) bool {
+	if port == m.portBaseline1 {
+		return m.baseline1Busy
+	}
+	if port == m.portBaseline2 {
+		return m.baseline2Busy
+	}
+	return false
 }

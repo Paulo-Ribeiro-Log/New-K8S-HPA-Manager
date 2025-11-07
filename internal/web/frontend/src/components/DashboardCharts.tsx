@@ -17,16 +17,25 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
   const [error, setError] = useState<string | null>(null);
 
   const fetchClusterInfo = async (isRefresh: boolean = false) => {
+    // ✅ FIX: Não buscar se selectedCluster estiver vazio (aguardando auto-select)
+    if (!selectedCluster) {
+      console.log('[DashboardCharts] Aguardando seleção de cluster...');
+      setLoading(false);
+      return;
+    }
+
     try {
+      console.log('[DashboardCharts] Fetching cluster info for:', selectedCluster);
       // Apenas mostrar loading na primeira carga, não em refreshes
       if (!isRefresh) {
         setLoading(true);
       }
       setError(null);
       const info = await apiClient.getClusterInfo(selectedCluster);
+      console.log('[DashboardCharts] Cluster info recebido:', info.cluster, '(contexto:', info.context, ')');
       setClusterInfo(info);
     } catch (err) {
-      console.error('Error fetching cluster info:', err);
+      console.error('[DashboardCharts] Error fetching cluster info:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch cluster info');
     } finally {
       if (!isRefresh) {
@@ -36,6 +45,15 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
   };
 
   useEffect(() => {
+    console.log('[DashboardCharts] useEffect triggered - selectedCluster:', selectedCluster);
+
+    // ✅ FIX: Só buscar se selectedCluster estiver definido
+    if (!selectedCluster) {
+      console.log('[DashboardCharts] selectedCluster vazio, pulando fetch');
+      setLoading(false);
+      return;
+    }
+
     // Primeira carga - mostrar loading
     fetchClusterInfo(false);
 

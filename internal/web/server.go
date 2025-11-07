@@ -446,6 +446,14 @@ func (s *Server) autoShutdown() {
 
 	timeSinceLastHeartbeat := time.Since(lastHeartbeat)
 
+	// IMPORTANTE: Verificar se realmente passaram 20 minutos
+	// (proteção contra race conditions ou timers duplicados)
+	if timeSinceLastHeartbeat < 20*time.Minute {
+		fmt.Printf("⚠️  Timer de shutdown disparou prematuramente (apenas %.1f minutos)\n", timeSinceLastHeartbeat.Minutes())
+		fmt.Println("✅ Heartbeat ainda ativo, shutdown cancelado")
+		return
+	}
+
 	fmt.Println("\n╔════════════════════════════════════════════════════════════╗")
 	fmt.Println("║             AUTO-SHUTDOWN POR INATIVIDADE                 ║")
 	fmt.Println("╚════════════════════════════════════════════════════════════╝")

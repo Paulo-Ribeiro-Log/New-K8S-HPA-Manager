@@ -25,7 +25,7 @@ type PersistenceConfig struct {
 // DefaultPersistenceConfig retorna configuração padrão
 func DefaultPersistenceConfig() *PersistenceConfig {
 	homeDir, _ := os.UserHomeDir()
-	dbPath := filepath.Join(homeDir, ".hpa-watchdog", "snapshots.db")
+	dbPath := filepath.Join(homeDir, ".k8s-hpa-manager", "monitoring.db")
 
 	return &PersistenceConfig{
 		Enabled:     true,
@@ -137,6 +137,10 @@ func (p *Persistence) initSchema() error {
 		-- Métricas adicionais em JSON (P95/P99, network, etc)
 		metrics_json TEXT,
 
+		-- Fase 6: Campos para baseline histórico (3 dias)
+		baseline_ready INTEGER DEFAULT 0,  -- Flag: 0=baseline pendente, 1=baseline completo
+		last_baseline_scan DATETIME,       -- Timestamp da última coleta de baseline
+
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(cluster, namespace, hpa_name, timestamp)
 	);
@@ -146,6 +150,10 @@ func (p *Persistence) initSchema() error {
 
 	CREATE INDEX IF NOT EXISTS idx_hpa_snapshots_cleanup
 		ON hpa_snapshots(timestamp);
+
+	-- Índice para verificação de baseline
+	CREATE INDEX IF NOT EXISTS idx_hpa_snapshots_baseline
+		ON hpa_snapshots(cluster, namespace, hpa_name, baseline_ready, last_baseline_scan);
 
 	CREATE TABLE IF NOT EXISTS metadata (
 		key TEXT PRIMARY KEY,
@@ -314,10 +322,37 @@ func (p *Persistence) initSchema() error {
 		return fmt.Errorf("failed to create schema: %w", err)
 	}
 
+	// FASE 6: Migration para adicionar campos de baseline se não existirem
+	// Verifica se colunas já existem antes de adicionar
+	var columnExists int
+	err = p.db.QueryRow(`
+		SELECT COUNT(*) FROM pragma_table_info('hpa_snapshots')
+		WHERE name = 'baseline_ready'
+	`).Scan(&columnExists)
+
+	if err == nil && columnExists == 0 {
+		// Adiciona colunas de baseline
+		_, err = p.db.Exec(`
+			ALTER TABLE hpa_snapshots ADD COLUMN baseline_ready INTEGER DEFAULT 0;
+			ALTER TABLE hpa_snapshots ADD COLUMN last_baseline_scan DATETIME;
+		`)
+		if err != nil {
+			log.Warn().Err(err).Msg("Falha ao adicionar colunas de baseline (pode já existir)")
+		} else {
+			log.Info().Msg("Colunas de baseline adicionadas com sucesso")
+
+			// Cria índice para baseline
+			_, _ = p.db.Exec(`
+				CREATE INDEX IF NOT EXISTS idx_hpa_snapshots_baseline
+				ON hpa_snapshots(cluster, namespace, hpa_name, baseline_ready, last_baseline_scan)
+			`)
+		}
+	}
+
 	// Salva versão do schema
 	_, err = p.db.Exec(`
 		INSERT OR REPLACE INTO metadata (key, value, updated_at)
-		VALUES ('schema_version', '2', CURRENT_TIMESTAMP)
+		VALUES ('schema_version', '3', CURRENT_TIMESTAMP)
 	`)
 
 	log.Info().Msg("Schema initialized (with stress test tables)")
@@ -867,4 +902,178 @@ func (p *Persistence) SaveHistoricalBaseline(snapshots []*models.HPASnapshot) (i
 		Msg("Baseline histórico salvo com sucesso")
 
 	return saved, nil
+}
+
+// --- FASE 6: Métodos para gerenciar baseline histórico (3 dias) ---
+
+// SaveBaselineMetrics salva métricas de baseline histórico (3 dias) no SQLite
+func (p *Persistence) SaveBaselineMetrics(cluster, namespace, hpaName string, metrics []map[string]interface{}) error {
+	if !p.config.Enabled || p.db == nil {
+		return nil
+	}
+
+	tx, err := p.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO hpa_snapshots (
+			cluster, namespace, hpa_name, timestamp,
+			cpu_current, cpu_target, memory_current, memory_target,
+			current_replicas, desired_replicas, min_replicas, max_replicas,
+			metrics_json, baseline_ready, last_baseline_scan
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(cluster, namespace, hpa_name, timestamp) DO UPDATE SET
+			cpu_current = excluded.cpu_current,
+			cpu_target = excluded.cpu_target,
+			memory_current = excluded.memory_current,
+			memory_target = excluded.memory_target,
+			metrics_json = excluded.metrics_json,
+			baseline_ready = excluded.baseline_ready,
+			last_baseline_scan = excluded.last_baseline_scan
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	now := time.Now()
+	saved := 0
+
+	for _, metric := range metrics {
+		timestamp := metric["timestamp"].(time.Time)
+
+		// Serializa métricas adicionais em JSON
+		metricsJSON, _ := json.Marshal(metric)
+
+		_, err := stmt.Exec(
+			cluster, namespace, hpaName, timestamp,
+			metric["cpu_current"], metric["cpu_target"],
+			metric["memory_current"], metric["memory_target"],
+			metric["current_replicas"], metric["desired_replicas"],
+			metric["min_replicas"], metric["max_replicas"],
+			string(metricsJSON),
+			0,   // baseline_ready = 0 (será marcado como 1 após validação)
+			now, // last_baseline_scan = now
+		)
+
+		if err != nil {
+			log.Warn().
+				Err(err).
+				Str("cluster", cluster).
+				Str("namespace", namespace).
+				Str("hpa", hpaName).
+				Time("timestamp", timestamp).
+				Msg("Falha ao salvar métrica de baseline")
+			continue
+		}
+
+		saved++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	log.Info().
+		Str("cluster", cluster).
+		Str("namespace", namespace).
+		Str("hpa", hpaName).
+		Int("saved", saved).
+		Int("total", len(metrics)).
+		Msg("Métricas de baseline salvas no SQLite")
+
+	return nil
+}
+
+// MarkBaselineReady marca baseline como pronto (baseline_ready = 1)
+func (p *Persistence) MarkBaselineReady(cluster, namespace, hpaName string) error {
+	if !p.config.Enabled || p.db == nil {
+		return nil
+	}
+
+	query := `
+		UPDATE hpa_snapshots
+		SET baseline_ready = 1
+		WHERE cluster = ? AND namespace = ? AND hpa_name = ?
+	`
+
+	result, err := p.db.Exec(query, cluster, namespace, hpaName)
+	if err != nil {
+		return fmt.Errorf("failed to mark baseline ready: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+
+	log.Info().
+		Str("cluster", cluster).
+		Str("namespace", namespace).
+		Str("hpa", hpaName).
+		Int64("rows_updated", rows).
+		Msg("✅ Baseline marcado como pronto")
+
+	return nil
+}
+
+// GetLastBaselineScan retorna timestamp da última coleta de baseline
+func (p *Persistence) GetLastBaselineScan(cluster, namespace, hpaName string) (time.Time, error) {
+	if !p.config.Enabled || p.db == nil {
+		return time.Time{}, nil
+	}
+
+	query := `
+		SELECT last_baseline_scan
+		FROM hpa_snapshots
+		WHERE cluster = ? AND namespace = ? AND hpa_name = ?
+		ORDER BY last_baseline_scan DESC
+		LIMIT 1
+	`
+
+	var lastScan sql.NullTime
+	err := p.db.QueryRow(query, cluster, namespace, hpaName).Scan(&lastScan)
+
+	if err == sql.ErrNoRows {
+		// HPA nunca teve baseline coletado
+		return time.Time{}, nil
+	}
+
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to get last baseline scan: %w", err)
+	}
+
+	if !lastScan.Valid {
+		return time.Time{}, nil
+	}
+
+	return lastScan.Time, nil
+}
+
+// IsBaselineReady verifica se baseline está pronto
+func (p *Persistence) IsBaselineReady(cluster, namespace, hpaName string) (bool, error) {
+	if !p.config.Enabled || p.db == nil {
+		return false, nil
+	}
+
+	query := `
+		SELECT baseline_ready
+		FROM hpa_snapshots
+		WHERE cluster = ? AND namespace = ? AND hpa_name = ?
+		ORDER BY last_baseline_scan DESC
+		LIMIT 1
+	`
+
+	var ready int
+	err := p.db.QueryRow(query, cluster, namespace, hpaName).Scan(&ready)
+
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("failed to check baseline ready: %w", err)
+	}
+
+	return ready == 1, nil
 }

@@ -3,13 +3,16 @@ package engine
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/monitoring/analyzer"
+	"k8s-hpa-manager/internal/monitoring/collector"
 	"k8s-hpa-manager/internal/monitoring/models"
 	"k8s-hpa-manager/internal/monitoring/monitor"
 	"k8s-hpa-manager/internal/monitoring/portforward"
@@ -22,11 +25,11 @@ type ScanEngine struct {
 	config *scanner.ScanConfig
 
 	// Componentes
-	pfManager       *portforward.PortForwardManager
-	cache           *storage.TimeSeriesCache
-	persistence     *storage.Persistence
-	detector        *analyzer.Detector
-	timeSlotManager *TimeSlotManager // Phase 3: Gerenciamento de time slots
+	pfManager         *portforward.PortForwardManager
+	cache             *storage.TimeSeriesCache
+	persistence       *storage.Persistence
+	detector          *analyzer.Detector
+	rotatingCollector *collector.RotatingCollector // FASE 2: Sistema de rotação
 
 	// Stress Test (apenas em ScanModeStressTest)
 	baselineCollector *monitor.BaselineCollector
@@ -71,18 +74,43 @@ func New(cfg *scanner.ScanConfig, snapshotChan chan *models.HPASnapshot, anomaly
 
 	detector := analyzer.NewDetector(cache, nil)
 
+	// Cria KubeConfigManager
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		home, _ := os.UserHomeDir()
+		kubeconfigPath = fmt.Sprintf("%s/.kube/config", home)
+	}
+	kubeManager, err := config.NewKubeConfigManager(kubeconfigPath)
+	if err != nil {
+		log.Warn().Err(err).Msg("Falha ao criar KubeConfigManager")
+		kubeManager = nil
+	}
+
+	// Cria PortForwardManager
+	pfManager := portforward.NewManager()
+
+	// FASE 2: Cria RotatingCollector
+	var rotatingCollector *collector.RotatingCollector
+	if persistence != nil && kubeManager != nil {
+		rotatingCollector = collector.NewRotatingCollector(persistence, pfManager, kubeManager)
+		log.Info().Msg("RotatingCollector criado")
+	} else {
+		log.Warn().Msg("RotatingCollector não criado (dependências ausentes)")
+	}
+
 	return &ScanEngine{
-		config:           cfg,
-		pfManager:        portforward.NewManager(),
-		cache:            cache,
-		persistence:      persistence,
-		detector:         detector,
-		snapshotChan:     snapshotChan,
-		anomalyChan:      anomalyChan,
-		stressResultChan: stressResultChan,
-		ctx:              ctx,
-		cancel:           cancel,
-		stopChan:         make(chan struct{}),
+		config:            cfg,
+		pfManager:         pfManager,
+		cache:             cache,
+		persistence:       persistence,
+		detector:          detector,
+		rotatingCollector: rotatingCollector,
+		snapshotChan:      snapshotChan,
+		anomalyChan:       anomalyChan,
+		stressResultChan:  stressResultChan,
+		ctx:               ctx,
+		cancel:            cancel,
+		stopChan:          make(chan struct{}),
 	}
 }
 
@@ -103,19 +131,6 @@ func (e *ScanEngine) Start() error {
 		Dur("duration", e.config.Duration).
 		Msg("Iniciando scan engine")
 
-	// PHASE 3: Inicializa TimeSlotManager
-	clusterNames := make([]string, 0, len(e.config.Targets))
-	for _, target := range e.config.Targets {
-		clusterNames = append(clusterNames, target.Cluster)
-	}
-	e.timeSlotManager = NewTimeSlotManager(clusterNames)
-
-	log.Info().
-		Strs("clusters", clusterNames).
-		Int("total_slots", e.timeSlotManager.totalSlots).
-		Dur("slot_duration", e.timeSlotManager.slotDuration).
-		Msg("TimeSlotManager configurado")
-
 	// Se modo stress test, captura baseline antes de iniciar
 	if e.config.Mode == scanner.ScanModeStressTest {
 		if err := e.captureBaseline(); err != nil {
@@ -125,9 +140,21 @@ func (e *ScanEngine) Start() error {
 		}
 	}
 
-	// Inicia loop de scan baseado em time slots
-	e.wg.Add(1)
-	go e.timeSlotScanLoop()
+	// FASE 2: Inicia RotatingCollector
+	if e.rotatingCollector != nil {
+		// Adiciona targets iniciais ao collector
+		for _, target := range e.config.Targets {
+			e.rotatingCollector.AddTarget(target)
+		}
+
+		// Inicia rotação
+		if err := e.rotatingCollector.Start(); err != nil {
+			log.Error().
+				Err(err).
+				Msg("Falha ao iniciar RotatingCollector")
+			return err
+		}
+	}
 
 	return nil
 }
@@ -143,6 +170,11 @@ func (e *ScanEngine) Stop() error {
 	e.mu.Unlock()
 
 	log.Info().Msg("Parando scan engine")
+
+	// FASE 2: Para RotatingCollector
+	if e.rotatingCollector != nil {
+		e.rotatingCollector.Stop()
+	}
 
 	// Cancela contexto (sinaliza todas as goroutines para pararem)
 	e.cancel()
@@ -236,50 +268,81 @@ func (e *ScanEngine) AddTarget(target scanner.ScanTarget) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	clusterExists := false
 	// Verifica se target já existe
 	for _, t := range e.config.Targets {
 		if t.Cluster == target.Cluster {
-			// Atualiza target existente
-			t.Namespaces = target.Namespaces
-			t.Deployments = target.Deployments
-			t.HPAs = target.HPAs
+			// Atualiza target existente (mescla HPAs e namespaces)
+			clusterExists = true
+
+			// Mescla namespaces (evita duplicatas)
+			nsMap := make(map[string]bool)
+			for _, ns := range t.Namespaces {
+				nsMap[ns] = true
+			}
+			for _, ns := range target.Namespaces {
+				nsMap[ns] = true
+			}
+			t.Namespaces = make([]string, 0, len(nsMap))
+			for ns := range nsMap {
+				t.Namespaces = append(t.Namespaces, ns)
+			}
+
+			// Mescla HPAs (evita duplicatas)
+			hpaMap := make(map[string]bool)
+			for _, hpa := range t.HPAs {
+				hpaMap[hpa] = true
+			}
+			for _, hpa := range target.HPAs {
+				hpaMap[hpa] = true
+			}
+			t.HPAs = make([]string, 0, len(hpaMap))
+			for hpa := range hpaMap {
+				t.HPAs = append(t.HPAs, hpa)
+			}
+
 			log.Info().
 				Str("cluster", target.Cluster).
-				Msg("Target atualizado")
-			return
+				Int("total_namespaces", len(t.Namespaces)).
+				Int("total_hpas", len(t.HPAs)).
+				Msg("Target atualizado com novos HPAs - serão coletados no próximo scan")
+			break
 		}
 	}
 
-	// Adiciona novo target
-	e.config.Targets = append(e.config.Targets, target)
-	log.Info().
-		Str("cluster", target.Cluster).
-		Int("namespaces", len(target.Namespaces)).
-		Int("hpas", len(target.HPAs)).
-		Msg("Target adicionado")
-
-	// PHASE 3: Atualiza TimeSlotManager com nova lista de clusters
-	if e.running && e.timeSlotManager != nil {
-		clusterNames := make([]string, 0, len(e.config.Targets))
-		for _, t := range e.config.Targets {
-			clusterNames = append(clusterNames, t.Cluster)
-		}
-		e.timeSlotManager.UpdateClusters(clusterNames)
-		log.Info().
-			Int("clusters", len(clusterNames)).
-			Int("slots", e.timeSlotManager.totalSlots).
-			Msg("TimeSlotManager atualizado após adicionar cluster")
-
-		// PHASE 2: Inicia coleta de baseline em background imediatamente
-		// Usa port-forward temporário para não depender do slot timing
+	// Se cluster não existe, adiciona novo target
+	if !clusterExists {
+		e.config.Targets = append(e.config.Targets, target)
 		log.Info().
 			Str("cluster", target.Cluster).
+			Int("namespaces", len(target.Namespaces)).
 			Int("hpas", len(target.HPAs)).
-			Msg("Iniciando coleta de baseline para novo cluster")
-		
-		e.wg.Add(1)
-		go e.collectHistoricalBaselineAsync(target)
+			Msg("Novo cluster adicionado")
+
+		// FASE 2: Adiciona ao RotatingCollector
+		if e.running && e.rotatingCollector != nil {
+			e.rotatingCollector.AddTarget(target)
+		}
+	} else {
+		// FASE 2: Atualiza target existente no collector
+		if e.running && e.rotatingCollector != nil {
+			e.rotatingCollector.AddTarget(target)
+		}
 	}
+
+	// FASE 3: Inicia coleta de baseline para novos HPAs
+	if e.running && e.rotatingCollector != nil {
+		for _, ns := range target.Namespaces {
+			for _, hpaName := range target.HPAs {
+				e.rotatingCollector.CollectBaseline(target.Cluster, ns, hpaName)
+			}
+		}
+	}
+
+	log.Info().
+		Str("cluster", target.Cluster).
+		Int("hpas", len(target.HPAs)).
+		Msg("HPAs adicionados ao monitoramento")
 }
 
 // RemoveTarget remove um target do scan
@@ -299,17 +362,9 @@ func (e *ScanEngine) RemoveTarget(cluster string) {
 		Str("cluster", cluster).
 		Msg("Target removido")
 
-	// PHASE 3: Atualiza TimeSlotManager com nova lista de clusters
-	if e.running && e.timeSlotManager != nil {
-		clusterNames := make([]string, 0, len(e.config.Targets))
-		for _, t := range e.config.Targets {
-			clusterNames = append(clusterNames, t.Cluster)
-		}
-		e.timeSlotManager.UpdateClusters(clusterNames)
-		log.Info().
-			Int("clusters", len(clusterNames)).
-			Int("slots", e.timeSlotManager.totalSlots).
-			Msg("TimeSlotManager atualizado após remover cluster")
+	// FASE 2: Remove do RotatingCollector
+	if e.running && e.rotatingCollector != nil {
+		e.rotatingCollector.RemoveTarget(cluster)
 	}
 
 	// Para port-forward do cluster removido (se houver)
@@ -334,587 +389,7 @@ func (e *ScanEngine) GetTargets() []scanner.ScanTarget {
 	return targets
 }
 
-// collectHistoricalBaseline coleta baseline histórico de 3 dias para um target
-func (e *ScanEngine) collectHistoricalBaseline(target scanner.ScanTarget) {
-	defer e.wg.Done()
-
-	log.Info().
-		Str("cluster", target.Cluster).
-		Int("hpas", len(target.HPAs)).
-		Msg("Iniciando coleta de baseline histórico (3 dias)")
-
-	// Cria contexto com timeout de 10 minutos para toda coleta
-	ctx, cancel := context.WithTimeout(e.ctx, 10*time.Minute)
-	defer cancel()
-
-	// Obtém URL do Prometheus (port-forward deve estar ativo)
-	promEndpoint := e.pfManager.GetURL(target.Cluster)
-	if promEndpoint == "" {
-		log.Error().
-			Str("cluster", target.Cluster).
-			Msg("Port-forward não disponível para coleta de baseline")
-		return
-	}
-
-	// Cria ClusterInfo
-	context := target.Cluster
-	if !strings.HasSuffix(target.Cluster, "-admin") {
-		context = target.Cluster + "-admin"
-	}
-
-	clusterInfo := &models.ClusterInfo{
-		Name:    target.Cluster,
-		Context: context,
-	}
-
-	// Cria collector temporário para baseline
-	collector, err := monitor.NewCollector(clusterInfo, promEndpoint, &monitor.CollectorConfig{
-		ScanInterval:      e.config.Interval,
-		ExcludeNamespaces: []string{},
-		EnablePrometheus:  true,
-	})
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("cluster", target.Cluster).
-			Msg("Falha ao criar collector para baseline histórico")
-		return
-	}
-
-	// Cria baseline collector
-	baselineCollector := monitor.NewBaselineCollector(
-		collector.GetPrometheusClient(),
-		collector.GetK8sClient(),
-	)
-
-	// Coleta baseline de 3 dias (72 horas)
-	baselineDuration := 72 * time.Hour
-
-	log.Info().
-		Str("cluster", target.Cluster).
-		Dur("duration", baselineDuration).
-		Msg("Coletando baseline histórico do Prometheus")
-
-	baseline, err := baselineCollector.CaptureBaseline(ctx, baselineDuration)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("cluster", target.Cluster).
-			Msg("Falha ao coletar baseline histórico")
-		return
-	}
-
-	// Valida cobertura mínima de 70%
-	if !e.validateBaselineCoverage(baseline, 0.7) {
-		log.Warn().
-			Str("cluster", target.Cluster).
-			Int("hpas_with_data", len(baseline.HPABaselines)).
-			Int("expected_hpas", len(target.HPAs)).
-			Msg("Cobertura de baseline < 70%, continuando mesmo assim")
-	}
-
-	// Salva baseline no cache/persistence para cada HPA
-	for hpaKey, hpaBaseline := range baseline.HPABaselines {
-		// Marca HPA como baseline_ready no cache
-		e.markHPABaselineReady(hpaKey, hpaBaseline)
-	}
-
-	// Salva baseline completo no SQLite
-	if e.persistence != nil {
-		// Gera ID único para o baseline
-		baselineID := fmt.Sprintf("baseline_%s_%d", target.Cluster, time.Now().Unix())
-		if err := e.persistence.SaveBaseline(baselineID, baseline); err != nil {
-			log.Warn().
-				Err(err).
-				Str("cluster", target.Cluster).
-				Msg("Falha ao salvar baseline no SQLite")
-		} else {
-			log.Info().
-				Str("baseline_id", baselineID).
-				Str("cluster", target.Cluster).
-				Msg("Baseline salvo no SQLite")
-		}
-	}
-
-	log.Info().
-		Str("cluster", target.Cluster).
-		Int("hpas_ready", len(baseline.HPABaselines)).
-		Int("total_hpas", baseline.TotalHPAs).
-		Int("total_replicas", baseline.TotalReplicas).
-		Float64("cpu_avg", baseline.CPUAvg).
-		Float64("memory_avg", baseline.MemoryAvg).
-		Msg("Baseline histórico coletado com sucesso")
-}
-
-// validateBaselineCoverage valida se baseline tem cobertura mínima de dados
-func (e *ScanEngine) validateBaselineCoverage(baseline *models.BaselineSnapshot, minCoverage float64) bool {
-	if baseline.TotalHPAs == 0 {
-		return false
-	}
-
-	// Conta quantos HPAs tem dados válidos
-	validHPAs := 0
-	for _, hpaBaseline := range baseline.HPABaselines {
-		// Considera válido se tem pelo menos dados de CPU ou Memory
-		if hpaBaseline.CPUAvg > 0 || hpaBaseline.MemoryAvg > 0 {
-			validHPAs++
-		}
-	}
-
-	coverage := float64(validHPAs) / float64(baseline.TotalHPAs)
-
-	log.Info().
-		Int("valid_hpas", validHPAs).
-		Int("total_hpas", baseline.TotalHPAs).
-		Float64("coverage", coverage).
-		Float64("min_coverage", minCoverage).
-		Msg("Validando cobertura de baseline")
-
-	return coverage >= minCoverage
-}
-
-// markHPABaselineReady marca HPA como pronto para monitoramento (baseline completo)
-func (e *ScanEngine) markHPABaselineReady(hpaKey string, baseline *models.HPABaseline) {
-	// Busca TimeSeries no cache
-	ts := e.cache.Get(baseline.Cluster, baseline.Namespace, baseline.Name)
-	if ts == nil {
-		log.Debug().
-			Str("hpa_key", hpaKey).
-			Msg("HPA não encontrado no cache, criando entrada")
-
-		// Cria snapshot inicial com baseline_ready = true
-		initialSnapshot := &models.HPASnapshot{
-			Timestamp:        time.Now(),
-			Cluster:          baseline.Cluster,
-			Namespace:        baseline.Namespace,
-			Name:             baseline.Name,
-			MinReplicas:      baseline.MinReplicas,
-			MaxReplicas:      baseline.MaxReplicas,
-			CPUTarget:        baseline.TargetCPU,
-			CurrentReplicas:  baseline.CurrentReplicas,
-			BaselineReady:    true,
-			BaselineStart:    time.Now().Add(-72 * time.Hour), // 3 dias atrás
-			BaselineComplete: time.Now(),
-			DataSource:       models.DataSourcePrometheus,
-		}
-
-		e.cache.Add(initialSnapshot)
-		return
-	}
-
-	// Atualiza snapshot mais recente com baseline_ready = true
-	latest := ts.GetLatest()
-	if latest != nil {
-		latest.BaselineReady = true
-		latest.BaselineStart = time.Now().Add(-72 * time.Hour)
-		latest.BaselineComplete = time.Now()
-
-		// Re-adiciona ao cache para persistir mudanças
-		e.cache.Add(latest)
-
-		log.Info().
-			Str("hpa", hpaKey).
-			Msg("HPA marcado como baseline_ready")
-	}
-}
-
-// collectHistoricalBaselineAsync coleta baseline de forma assíncrona com port-forward próprio
-// Usado quando adiciona cluster dinamicamente (não depende do slot timing)
-func (e *ScanEngine) collectHistoricalBaselineAsync(target scanner.ScanTarget) {
-	defer e.wg.Done()
-
-	log.Info().
-		Str("cluster", target.Cluster).
-		Int("hpas", len(target.HPAs)).
-		Msg("Coleta de baseline assíncrona iniciada")
-
-	// Cria contexto com timeout de 10 minutos
-	ctx, cancel := context.WithTimeout(e.ctx, 10*time.Minute)
-	defer cancel()
-
-	// Inicia port-forward temporário exclusivo para baseline
-	if err := e.pfManager.Start(target.Cluster); err != nil {
-		log.Error().
-			Err(err).
-			Str("cluster", target.Cluster).
-			Msg("Falha ao iniciar port-forward para coleta de baseline")
-		return
-	}
-
-	// Aguarda port-forward estabilizar
-	time.Sleep(2 * time.Second)
-
-	// Obtém URL do Prometheus
-	promEndpoint := e.pfManager.GetURL(target.Cluster)
-	if promEndpoint == "" {
-		log.Error().
-			Str("cluster", target.Cluster).
-			Msg("Port-forward não disponível após Start()")
-		return
-	}
-
-	log.Info().
-		Str("cluster", target.Cluster).
-		Str("endpoint", promEndpoint).
-		Msg("Port-forward ativo, iniciando coleta de baseline")
-
-	// Cria ClusterInfo
-	context := target.Cluster
-	if !strings.HasSuffix(target.Cluster, "-admin") {
-		context = target.Cluster + "-admin"
-	}
-
-	clusterInfo := &models.ClusterInfo{
-		Name:    target.Cluster,
-		Context: context,
-	}
-
-	// Cria collector temporário
-	collector, err := monitor.NewCollector(clusterInfo, promEndpoint, &monitor.CollectorConfig{
-		ScanInterval:      e.config.Interval,
-		ExcludeNamespaces: []string{},
-		EnablePrometheus:  true,
-	})
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("cluster", target.Cluster).
-			Msg("Falha ao criar collector para baseline")
-		return
-	}
-
-	// Cria baseline collector
-	baselineCollector := monitor.NewBaselineCollector(
-		collector.GetPrometheusClient(),
-		collector.GetK8sClient(),
-	)
-
-	// Coleta baseline de 3 dias (72 horas)
-	baselineDuration := 72 * time.Hour
-
-	log.Info().
-		Str("cluster", target.Cluster).
-		Dur("duration", baselineDuration).
-		Msg("Coletando baseline histórico do Prometheus")
-
-	baseline, err := baselineCollector.CaptureBaseline(ctx, baselineDuration)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("cluster", target.Cluster).
-			Msg("Falha ao coletar baseline histórico")
-		return
-	}
-
-	// Valida cobertura mínima de 70%
-	if !e.validateBaselineCoverage(baseline, 0.7) {
-		log.Warn().
-			Str("cluster", target.Cluster).
-			Int("hpas_with_data", len(baseline.HPABaselines)).
-			Msg("Cobertura de baseline < 70%, continuando mesmo assim")
-	}
-
-	// Salva baseline no cache para cada HPA
-	for hpaKey, hpaBaseline := range baseline.HPABaselines {
-		e.markHPABaselineReady(hpaKey, hpaBaseline)
-	}
-
-	// Salva baseline completo no SQLite
-	if e.persistence != nil {
-		baselineID := fmt.Sprintf("baseline_%s_%d", target.Cluster, time.Now().Unix())
-		if err := e.persistence.SaveBaseline(baselineID, baseline); err != nil {
-			log.Warn().
-				Err(err).
-				Str("cluster", target.Cluster).
-				Msg("Falha ao salvar baseline no SQLite")
-		} else {
-			log.Info().
-				Str("baseline_id", baselineID).
-				Str("cluster", target.Cluster).
-				Msg("Baseline salvo no SQLite")
-		}
-	}
-
-	log.Info().
-		Str("cluster", target.Cluster).
-		Int("hpas_ready", len(baseline.HPABaselines)).
-		Int("total_hpas", baseline.TotalHPAs).
-		Float64("cpu_avg", baseline.CPUAvg).
-		Float64("memory_avg", baseline.MemoryAvg).
-		Msg("Baseline assíncrono coletado com sucesso")
-}
-
-// shouldStartBaselineCollection verifica se deve iniciar coleta de baseline para um HPA
-// Retorna true se o HPA não tem baseline e ainda não está coletando
-func (e *ScanEngine) shouldStartBaselineCollection(hpaKey string, snapshot *models.HPASnapshot) bool {
-	// Verifica se já tem baseline_ready no cache
-	ts := e.cache.Get(snapshot.Cluster, snapshot.Namespace, snapshot.Name)
-	if ts != nil {
-		latest := ts.GetLatest()
-		if latest != nil && latest.BaselineReady {
-			return false // Já tem baseline
-		}
-		// Verifica se já está coletando (tem BaselineStart mas não BaselineComplete)
-		if latest != nil && !latest.BaselineStart.IsZero() && latest.BaselineComplete.IsZero() {
-			return false // Já está coletando
-		}
-	}
-
-	// Marca como "em coleta" para evitar múltiplas coletas simultâneas
-	if ts == nil {
-		// Cria entrada no cache com BaselineStart preenchido
-		initialSnapshot := &models.HPASnapshot{
-			Timestamp:        time.Now(),
-			Cluster:          snapshot.Cluster,
-			Namespace:        snapshot.Namespace,
-			Name:             snapshot.Name,
-			MinReplicas:      snapshot.MinReplicas,
-			MaxReplicas:      snapshot.MaxReplicas,
-			CPUTarget:        snapshot.CPUTarget,
-			CurrentReplicas:  snapshot.CurrentReplicas,
-			BaselineReady:    false,
-			BaselineStart:    time.Now(), // Marca início da coleta
-			BaselineComplete: time.Time{}, // Ainda não completou
-			DataSource:       models.DataSourcePrometheus,
-		}
-		e.cache.Add(initialSnapshot)
-	} else {
-		// Atualiza snapshot existente
-		latest := ts.GetLatest()
-		if latest != nil {
-			latest.BaselineStart = time.Now()
-			e.cache.Add(latest)
-		}
-	}
-
-	return true
-}
-
-// collectBaselineForHPA coleta baseline histórico para um HPA específico
-func (e *ScanEngine) collectBaselineForHPA(target scanner.ScanTarget, namespace string, hpaName string) {
-	defer e.wg.Done()
-
-	hpaKey := fmt.Sprintf("%s/%s/%s", target.Cluster, namespace, hpaName)
-
-	log.Info().
-		Str("cluster", target.Cluster).
-		Str("namespace", namespace).
-		Str("hpa", hpaName).
-		Msg("Iniciando coleta de baseline histórico para HPA")
-
-	// Cria contexto com timeout de 5 minutos
-	ctx, cancel := context.WithTimeout(e.ctx, 5*time.Minute)
-	defer cancel()
-
-	// Obtém URL do Prometheus (port-forward deve estar ativo do scan atual)
-	promEndpoint := e.pfManager.GetURL(target.Cluster)
-	if promEndpoint == "" {
-		log.Warn().
-			Str("cluster", target.Cluster).
-			Str("hpa", hpaKey).
-			Msg("Port-forward não disponível para coleta de baseline, tentará no próximo scan")
-		return
-	}
-
-	// Cria ClusterInfo
-	context := target.Cluster
-	if !strings.HasSuffix(target.Cluster, "-admin") {
-		context = target.Cluster + "-admin"
-	}
-
-	clusterInfo := &models.ClusterInfo{
-		Name:    target.Cluster,
-		Context: context,
-	}
-
-	// Cria collector temporário
-	collector, err := monitor.NewCollector(clusterInfo, promEndpoint, &monitor.CollectorConfig{
-		ScanInterval:      e.config.Interval,
-		ExcludeNamespaces: []string{},
-		EnablePrometheus:  true,
-	})
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("hpa", hpaKey).
-			Msg("Falha ao criar collector para baseline")
-		return
-	}
-
-	// Cria baseline collector
-	baselineCollector := monitor.NewBaselineCollector(
-		collector.GetPrometheusClient(),
-		collector.GetK8sClient(),
-	)
-
-	// Coleta baseline de 3 dias apenas para este HPA
-	baselineDuration := 72 * time.Hour
-
-	// Filtra apenas o namespace e HPA específico
-	// TODO: BaselineCollector precisa suportar filtro por HPA específico
-	// Por enquanto, coleta todo o namespace e filtra depois
-	baseline, err := baselineCollector.CaptureBaseline(ctx, baselineDuration)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("hpa", hpaKey).
-			Msg("Falha ao coletar baseline histórico")
-		return
-	}
-
-	// Busca baseline do HPA específico
-	hpaBaseline, found := baseline.HPABaselines[hpaKey]
-	if !found {
-		log.Warn().
-			Str("hpa", hpaKey).
-			Msg("HPA não encontrado no baseline coletado")
-		return
-	}
-
-	// Marca HPA como baseline_ready
-	e.markHPABaselineReady(hpaKey, hpaBaseline)
-
-	log.Info().
-		Str("hpa", hpaKey).
-		Float64("cpu_avg", hpaBaseline.CPUAvg).
-		Float64("memory_avg", hpaBaseline.MemoryAvg).
-		Msg("Baseline coletado com sucesso para HPA")
-}
-
 // timeSlotScanLoop executa scans baseado em janelas temporais (PHASE 3)
-func (e *ScanEngine) timeSlotScanLoop() {
-	defer e.wg.Done()
-
-	log.Info().Msg("Time slot scan loop iniciado")
-
-	// Ticker para verificar mudanças de slot
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	var lastSlotIndex = -1
-
-	for {
-		select {
-		case <-e.ctx.Done():
-			log.Info().Msg("Time slot scan loop encerrado (context cancelled)")
-			return
-
-		case <-ticker.C:
-			// Verifica se pausado
-			e.mu.RLock()
-			paused := e.paused
-			e.mu.RUnlock()
-
-			if paused {
-				continue
-			}
-
-			// Verifica slot atual
-			assignment := e.timeSlotManager.GetCurrentAssignment()
-
-			// Se mudou de slot, executa scan dos clusters da nova janela
-			if assignment.SlotIndex != lastSlotIndex {
-				lastSlotIndex = assignment.SlotIndex
-				e.executeSlotScan(assignment)
-			}
-		}
-	}
-}
-
-// executeSlotScan executa scan dos clusters ativos na janela atual
-func (e *ScanEngine) executeSlotScan(assignment SlotAssignment) {
-	log.Info().
-		Int("slot_index", assignment.SlotIndex).
-		Str("port_55553_cluster", assignment.Port55553Cluster).
-		Str("port_55554_cluster", assignment.Port55554Cluster).
-		Time("slot_end", assignment.EndTime).
-		Msg("Executando scan da janela temporal")
-
-	// Scan paralelo dos 2 clusters (se ambos existem)
-	var wg sync.WaitGroup
-
-	// Cluster da porta 55553
-	if assignment.Port55553Cluster != "" {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			e.scanClusterInSlot(assignment.Port55553Cluster, 55553)
-		}()
-	}
-
-	// Cluster da porta 55554 (se existe)
-	if assignment.Port55554Cluster != "" {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			e.scanClusterInSlot(assignment.Port55554Cluster, 55554)
-		}()
-	}
-
-	// Aguarda ambos os scans terminarem
-	wg.Wait()
-
-	timeUntilNext := e.timeSlotManager.GetTimeUntilNextSlot()
-	log.Info().
-		Int("slot_index", assignment.SlotIndex).
-		Dur("time_until_next", timeUntilNext).
-		Msg("Scan da janela temporal concluído")
-}
-
-// scanClusterInSlot executa scan de um cluster específico em sua janela
-func (e *ScanEngine) scanClusterInSlot(cluster string, expectedPort int) {
-	// Verifica se contexto foi cancelado antes de iniciar
-	select {
-	case <-e.ctx.Done():
-		log.Debug().Str("cluster", cluster).Msg("Scan cancelado (contexto encerrado)")
-		return
-	default:
-	}
-
-	log.Debug().
-		Str("cluster", cluster).
-		Int("expected_port", expectedPort).
-		Msg("Iniciando scan do cluster no time slot")
-
-	// Encontra target configurado para este cluster
-	var target scanner.ScanTarget
-	var found bool
-	for _, t := range e.config.Targets {
-		if t.Cluster == cluster {
-			target = t
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		log.Warn().
-			Str("cluster", cluster).
-			Msg("Cluster não encontrado nos targets configurados")
-		return
-	}
-
-	// Verifica novamente antes de iniciar port-forward
-	select {
-	case <-e.ctx.Done():
-		log.Debug().Str("cluster", cluster).Msg("Scan cancelado antes de port-forward")
-		return
-	default:
-	}
-
-	// Inicia/verifica port-forward para este cluster na porta esperada
-	if err := e.pfManager.Start(cluster); err != nil {
-		log.Error().
-			Err(err).
-			Str("cluster", cluster).
-			Int("port", expectedPort).
-			Msg("Falha ao iniciar port-forward para cluster no slot")
-		return
-	}
-
-	// Executa scan do cluster (reutiliza lógica existente)
-	e.runScanForTarget(target)
-}
 
 // scanLoop loop principal de scan (DEPRECATED - mantido para compatibilidade)
 func (e *ScanEngine) scanLoop() {
@@ -1058,27 +533,16 @@ func (e *ScanEngine) runScanForTarget(target scanner.ScanTarget) {
 				}
 			}
 
-			// Só monitora HPAs com baseline_ready = true
+			// FASE 6: Baseline é coletado pelos workers dedicados (portas 55555/55556)
+			// Não precisa coletar baseline aqui no scan loop
+			// AddTarget() já adiciona HPAs à fila de baseline automaticamente
 			if !baselineReady {
 				skippedCount++
 				log.Debug().
 					Str("cluster", target.Cluster).
 					Str("namespace", latest.Namespace).
 					Str("hpa", latest.Name).
-					Msg("HPA sem baseline pronto, aguardando coleta histórica")
-
-				// PHASE 2: Inicia coleta de baseline em background se ainda não iniciou
-				hpaKey := fmt.Sprintf("%s/%s/%s", latest.Cluster, latest.Namespace, latest.Name)
-				if e.shouldStartBaselineCollection(hpaKey, latest) {
-					log.Info().
-						Str("cluster", latest.Cluster).
-						Str("namespace", latest.Namespace).
-						Str("hpa", latest.Name).
-						Msg("Iniciando coleta de baseline histórico em background")
-					
-					e.wg.Add(1)
-					go e.collectBaselineForHPA(target, latest.Namespace, latest.Name)
-				}
+					Msg("HPA sem baseline pronto, aguardando coleta pelos workers")
 
 				// Adiciona ao cache mesmo sem baseline (para exibição na UI)
 				e.cache.Add(latest)
