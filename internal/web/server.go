@@ -332,8 +332,9 @@ func (s *Server) setupRoutes() {
 	api.GET("/logs", logsHandler.GetLogs)
 	api.DELETE("/logs", logsHandler.ClearLogs)
 
-	// Monitoring (NOVO)
-	monitoringHandler := handlers.NewMonitoringHandler(s.monitoringEngine, s.anomalyChan, s.snapshotChan)
+	// Monitoring (NOVO - FASE 4: Passa persistence para query SQLite direto)
+	persistence := s.monitoringEngine.GetPersistence()
+	monitoringHandler := handlers.NewMonitoringHandler(s.monitoringEngine, persistence, s.anomalyChan, s.snapshotChan)
 	monitoring := api.Group("/monitoring")
 	{
 		monitoring.GET("/metrics/:cluster/:namespace/:hpaName", monitoringHandler.GetMetrics)

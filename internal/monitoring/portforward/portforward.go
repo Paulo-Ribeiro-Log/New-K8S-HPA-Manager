@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -159,6 +160,7 @@ func (pf *PortForward) IsRunning() bool {
 
 // PortForwardManager gerencia múltiplos port-forwards
 type PortForwardManager struct {
+	mu           sync.RWMutex   // CORREÇÃO: Protege acesso concorrente aos maps
 	forwards     map[string]*PortForward
 	portOdd      int            // Porta para clusters ímpares (default: 55553)
 	portEven     int            // Porta para clusters pares (default: 55554)
@@ -239,6 +241,9 @@ func (m *PortForwardManager) discoverPrometheusService(cluster string) string {
 
 // Start inicia port-forward para um cluster
 func (m *PortForwardManager) Start(cluster string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	// Se já existe, retorna
 	if pf, exists := m.forwards[cluster]; exists && pf.IsRunning() {
 		log.Info().Str("cluster", cluster).Msg("Port-forward já ativo, reutilizando")
@@ -338,6 +343,9 @@ func (m *PortForwardManager) releasePortForCluster(port int) {
 
 // Stop para port-forward de um cluster
 func (m *PortForwardManager) Stop(cluster string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	pf, exists := m.forwards[cluster]
 	if !exists {
 		return nil
@@ -362,6 +370,9 @@ func (m *PortForwardManager) Stop(cluster string) error {
 
 // StopAll para todos os port-forwards
 func (m *PortForwardManager) StopAll() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	for cluster, pf := range m.forwards {
 		if err := pf.Stop(); err != nil {
 			log.Error().
@@ -379,6 +390,9 @@ func (m *PortForwardManager) StopAll() error {
 
 // GetURL retorna URL do Prometheus para um cluster
 func (m *PortForwardManager) GetURL(cluster string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	pf, exists := m.forwards[cluster]
 	if !exists {
 		return ""
@@ -464,6 +478,9 @@ func (m *PortForwardManager) StartPortForward(cluster string, port int) error {
 
 // StopPortForward para port-forward em porta específica (para baseline)
 func (m *PortForwardManager) StopPortForward(cluster string, port int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	key := fmt.Sprintf("%s:%d", cluster, port)
 	pf, exists := m.forwards[key]
 	if !exists {

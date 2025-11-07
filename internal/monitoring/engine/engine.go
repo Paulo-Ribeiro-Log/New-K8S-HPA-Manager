@@ -263,6 +263,11 @@ func (e *ScanEngine) GetCache() *storage.TimeSeriesCache {
 	return e.cache
 }
 
+// GetPersistence retorna o persistence (FASE 4: Para handler GetMetrics)
+func (e *ScanEngine) GetPersistence() *storage.Persistence {
+	return e.persistence
+}
+
 // AddTarget adiciona um target dinamicamente ao scan
 func (e *ScanEngine) AddTarget(target scanner.ScanTarget) {
 	e.mu.Lock()

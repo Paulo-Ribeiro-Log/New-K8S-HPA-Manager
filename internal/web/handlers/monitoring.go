@@ -11,11 +11,13 @@ import (
 	"k8s-hpa-manager/internal/monitoring/engine"
 	"k8s-hpa-manager/internal/monitoring/models"
 	"k8s-hpa-manager/internal/monitoring/scanner"
+	"k8s-hpa-manager/internal/monitoring/storage"
 )
 
 // MonitoringHandler gerencia endpoints de monitoramento
 type MonitoringHandler struct {
 	engine       *engine.ScanEngine
+	persistence  *storage.Persistence // FASE 4: Query SQLite direto
 	anomalyChan  chan analyzer.Anomaly
 	snapshotChan chan *models.HPASnapshot
 
@@ -24,9 +26,10 @@ type MonitoringHandler struct {
 }
 
 // NewMonitoringHandler cria novo handler de monitoramento
-func NewMonitoringHandler(eng *engine.ScanEngine, anomalyChan chan analyzer.Anomaly, snapshotChan chan *models.HPASnapshot) *MonitoringHandler {
+func NewMonitoringHandler(eng *engine.ScanEngine, persistence *storage.Persistence, anomalyChan chan analyzer.Anomaly, snapshotChan chan *models.HPASnapshot) *MonitoringHandler {
 	h := &MonitoringHandler{
 		engine:       eng,
+		persistence:  persistence, // FASE 4: Referência ao SQLite
 		anomalyChan:  anomalyChan,
 		snapshotChan: snapshotChan,
 		anomalies:    make([]analyzer.Anomaly, 0),
@@ -49,17 +52,17 @@ func (h *MonitoringHandler) collectAnomalies() {
 	}
 }
 
-// GetMetrics retorna métricas históricas de um HPA
+// GetMetrics retorna métricas históricas de um HPA (FASE 4: Query SQLite direto)
 // GET /api/v1/monitoring/metrics/:cluster/:namespace/:hpaName?duration=5m
 func (h *MonitoringHandler) GetMetrics(c *gin.Context) {
 	cluster := c.Param("cluster")
 	namespace := c.Param("namespace")
 	hpaName := c.Param("hpaName")
-	duration := c.DefaultQuery("duration", "5m")
+	duration := c.DefaultQuery("duration", "1h") // Default 1h (mais útil que 5m)
 
-	// Remove sufixo -admin do cluster para buscar no cache
-	// O cache usa o nome sem -admin, mas o frontend envia com -admin
-	cacheCluster := strings.TrimSuffix(cluster, "-admin")
+	// Remove sufixo -admin do cluster para buscar no SQLite
+	// O frontend envia "akspriv-prod-admin", mas o SQLite salva "akspriv-prod"
+	normalizedCluster := strings.TrimSuffix(cluster, "-admin")
 
 	// Parse duration
 	dur, err := time.ParseDuration(duration)
@@ -70,53 +73,60 @@ func (h *MonitoringHandler) GetMetrics(c *gin.Context) {
 		return
 	}
 
-	// Buscar time series data do cache
-	cache := h.engine.GetCache()
-	if cache == nil {
+	// FASE 4: Query SQLite direto (SEM cache em memória)
+	if h.persistence == nil {
 		c.JSON(500, gin.H{
-			"error": "Cache not available",
+			"error": "Persistence not available",
 		})
 		return
 	}
 
-	tsData := cache.Get(cacheCluster, namespace, hpaName)
-	if tsData == nil {
-		c.JSON(200, gin.H{
-			"cluster":   cluster,
-			"namespace": namespace,
-			"hpa_name":  hpaName,
-			"duration":  duration,
-			"snapshots": []gin.H{},
-			"count":     0,
-			"message":   "No data available for this HPA. Start monitoring to collect metrics.",
-		})
-		return
-	}
-
-	// Filtrar snapshots pelos últimos X minutos
+	// Calcular janela de tempo
 	since := time.Now().Add(-dur)
-	apiSnapshots := make([]gin.H, 0)
 
-	tsData.RLock()
-	for _, snap := range tsData.Snapshots {
-		if snap.Timestamp.After(since) {
-			apiSnapshots = append(apiSnapshots, gin.H{
-				"cluster":           snap.Cluster,
-				"namespace":         snap.Namespace,
-				"hpa_name":          snap.Name,
-				"timestamp":         snap.Timestamp.Format(time.RFC3339),
-				"cpu_current":       snap.CPUCurrent,
-				"cpu_target":        snap.CPUTarget,
-				"memory_current":    snap.MemoryCurrent,
-				"memory_target":     snap.MemoryTarget,
-				"replicas_current":  snap.CurrentReplicas,
-				"replicas_desired":  snap.DesiredReplicas,
-				"replicas_min":      snap.MinReplicas,
-				"replicas_max":      snap.MaxReplicas,
-			})
-		}
+	// Buscar snapshots do SQLite
+	snapshots, err := h.persistence.LoadSnapshots(normalizedCluster, namespace, hpaName, since)
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("cluster", normalizedCluster).
+			Str("namespace", namespace).
+			Str("hpa", hpaName).
+			Msg("Erro ao buscar snapshots do SQLite")
+
+		c.JSON(500, gin.H{
+			"error": "Failed to load snapshots from database",
+		})
+		return
 	}
-	tsData.RUnlock()
+
+	// Converter para formato API
+	apiSnapshots := make([]gin.H, 0, len(snapshots))
+	for _, snap := range snapshots {
+		apiSnapshots = append(apiSnapshots, gin.H{
+			"cluster":           snap.Cluster,
+			"namespace":         snap.Namespace,
+			"hpa_name":          snap.Name,
+			"timestamp":         snap.Timestamp.Format(time.RFC3339),
+			"cpu_current":       snap.CPUCurrent,
+			"cpu_target":        snap.CPUTarget,
+			"memory_current":    snap.MemoryCurrent,
+			"memory_target":     snap.MemoryTarget,
+			"replicas_current":  snap.CurrentReplicas,
+			"replicas_desired":  snap.DesiredReplicas,
+			"replicas_min":      snap.MinReplicas,
+			"replicas_max":      snap.MaxReplicas,
+		})
+	}
+
+	// Log para debug
+	log.Debug().
+		Str("cluster", normalizedCluster).
+		Str("namespace", namespace).
+		Str("hpa", hpaName).
+		Dur("duration", dur).
+		Int("count", len(snapshots)).
+		Msg("Métricas retornadas do SQLite")
 
 	c.JSON(200, gin.H{
 		"cluster":   cluster,
