@@ -25,11 +25,11 @@ type ScanEngine struct {
 	config *scanner.ScanConfig
 
 	// Componentes
-	pfManager         *portforward.PortForwardManager
-	cache             *storage.TimeSeriesCache
-	persistence       *storage.Persistence
-	detector          *analyzer.Detector
-	rotatingCollector *collector.RotatingCollector // FASE 2: Sistema de rotação
+	pfManager       *portforward.PortForwardManager
+	cache           *storage.TimeSeriesCache
+	persistence     *storage.Persistence
+	detector        *analyzer.Detector
+	simpleCollector *collector.SimpleCollector // NOVA ARQUITETURA: Sistema simplificado
 
 	// Stress Test (apenas em ScanModeStressTest)
 	baselineCollector *monitor.BaselineCollector
@@ -89,28 +89,28 @@ func New(cfg *scanner.ScanConfig, snapshotChan chan *models.HPASnapshot, anomaly
 	// Cria PortForwardManager
 	pfManager := portforward.NewManager()
 
-	// FASE 2: Cria RotatingCollector
-	var rotatingCollector *collector.RotatingCollector
+	// NOVA ARQUITETURA: Cria SimpleCollector
+	var simpleCollector *collector.SimpleCollector
 	if persistence != nil && kubeManager != nil {
-		rotatingCollector = collector.NewRotatingCollector(persistence, pfManager, kubeManager)
-		log.Info().Msg("RotatingCollector criado")
+		simpleCollector = collector.NewSimpleCollector(persistence, pfManager, kubeManager)
+		log.Info().Msg("SimpleCollector criado")
 	} else {
-		log.Warn().Msg("RotatingCollector não criado (dependências ausentes)")
+		log.Warn().Msg("SimpleCollector não criado (dependências ausentes)")
 	}
 
 	return &ScanEngine{
-		config:            cfg,
-		pfManager:         pfManager,
-		cache:             cache,
-		persistence:       persistence,
-		detector:          detector,
-		rotatingCollector: rotatingCollector,
-		snapshotChan:      snapshotChan,
-		anomalyChan:       anomalyChan,
-		stressResultChan:  stressResultChan,
-		ctx:               ctx,
-		cancel:            cancel,
-		stopChan:          make(chan struct{}),
+		config:           cfg,
+		pfManager:        pfManager,
+		cache:            cache,
+		persistence:      persistence,
+		detector:         detector,
+		simpleCollector:  simpleCollector,
+		snapshotChan:     snapshotChan,
+		anomalyChan:      anomalyChan,
+		stressResultChan: stressResultChan,
+		ctx:              ctx,
+		cancel:           cancel,
+		stopChan:         make(chan struct{}),
 	}
 }
 
@@ -140,18 +140,18 @@ func (e *ScanEngine) Start() error {
 		}
 	}
 
-	// FASE 2: Inicia RotatingCollector
-	if e.rotatingCollector != nil {
+	// NOVA ARQUITETURA: Inicia SimpleCollector
+	if e.simpleCollector != nil {
 		// Adiciona targets iniciais ao collector
 		for _, target := range e.config.Targets {
-			e.rotatingCollector.AddTarget(target)
+			e.simpleCollector.AddTarget(target)
 		}
 
-		// Inicia rotação
-		if err := e.rotatingCollector.Start(); err != nil {
+		// Inicia coleta
+		if err := e.simpleCollector.Start(); err != nil {
 			log.Error().
 				Err(err).
-				Msg("Falha ao iniciar RotatingCollector")
+				Msg("Falha ao iniciar SimpleCollector")
 			return err
 		}
 	}
@@ -171,9 +171,9 @@ func (e *ScanEngine) Stop() error {
 
 	log.Info().Msg("Parando scan engine")
 
-	// FASE 2: Para RotatingCollector
-	if e.rotatingCollector != nil {
-		e.rotatingCollector.Stop()
+	// NOVA ARQUITETURA: Para SimpleCollector
+	if e.simpleCollector != nil {
+		e.simpleCollector.Stop()
 	}
 
 	// Cancela contexto (sinaliza todas as goroutines para pararem)
@@ -324,25 +324,19 @@ func (e *ScanEngine) AddTarget(target scanner.ScanTarget) {
 			Int("hpas", len(target.HPAs)).
 			Msg("Novo cluster adicionado")
 
-		// FASE 2: Adiciona ao RotatingCollector
-		if e.running && e.rotatingCollector != nil {
-			e.rotatingCollector.AddTarget(target)
+		// NOVA ARQUITETURA: Adiciona ao SimpleCollector
+		if e.running && e.simpleCollector != nil {
+			e.simpleCollector.AddTarget(target)
 		}
 	} else {
-		// FASE 2: Atualiza target existente no collector
-		if e.running && e.rotatingCollector != nil {
-			e.rotatingCollector.AddTarget(target)
+		// NOVA ARQUITETURA: Atualiza target existente no collector
+		if e.running && e.simpleCollector != nil {
+			e.simpleCollector.AddTarget(target)
 		}
 	}
 
-	// FASE 3: Inicia coleta de baseline para novos HPAs
-	if e.running && e.rotatingCollector != nil {
-		for _, ns := range target.Namespaces {
-			for _, hpaName := range target.HPAs {
-				e.rotatingCollector.CollectBaseline(target.Cluster, ns, hpaName)
-			}
-		}
-	}
+	// NOTA: SimpleCollector já verifica baseline automaticamente via requestBaselineIfNeeded()
+	// Não precisa chamar CollectBaseline() manualmente
 
 	log.Info().
 		Str("cluster", target.Cluster).
@@ -367,9 +361,9 @@ func (e *ScanEngine) RemoveTarget(cluster string) {
 		Str("cluster", cluster).
 		Msg("Target removido")
 
-	// FASE 2: Remove do RotatingCollector
-	if e.running && e.rotatingCollector != nil {
-		e.rotatingCollector.RemoveTarget(cluster)
+	// NOVA ARQUITETURA: Remove do SimpleCollector
+	if e.running && e.simpleCollector != nil {
+		e.simpleCollector.RemoveTarget(cluster)
 	}
 
 	// Para port-forward do cluster removido (se houver)

@@ -519,7 +519,7 @@ export function MetricsPanel({
                     <YAxis
                       tick={{ fontSize: 12 }}
                       label={{ value: "CPU (%)", angle: -90, position: "insideLeft", fontSize: 12 }}
-                      domain={[0, 150]}
+                      domain={[0, 120]}
                     />
                     <Tooltip content={<CustomTooltip />} />
                     <Legend />
@@ -530,17 +530,19 @@ export function MetricsPanel({
                       label={{ value: `Target: ${chartData[0]?.cpuTarget || 0}%`, position: "right", fontSize: 11, fill: "#10b981" }}
                     />
                     {/* Linhas tracejadas de Request e Limit (como no Grafana) */}
+                    {/* Request sempre em 100% porque o gráfico é normalizado por Request */}
                     {snapshotWithResources?.cpu_request && (
                       <ReferenceLine
-                        y={absoluteToPercent(snapshotWithResources.cpu_request, snapshotWithResources.cpu_limit || snapshotWithResources.cpu_request) || 0}
+                        y={100}
                         stroke="#f97316"
                         strokeDasharray="3 3"
                         label={{ value: `Request: ${snapshotWithResources.cpu_request}`, position: "right", fontSize: 11, fill: "#f97316" }}
                       />
                     )}
-                    {snapshotWithResources?.cpu_limit && (
+                    {/* Limit calculado como % do Request (ex: se Limit=2x Request, linha em 200%) */}
+                    {snapshotWithResources?.cpu_limit && snapshotWithResources?.cpu_request && (
                       <ReferenceLine
-                        y={100}
+                        y={absoluteToPercent(snapshotWithResources.cpu_limit, snapshotWithResources.cpu_request) || 0}
                         stroke="#ef4444"
                         strokeDasharray="3 3"
                         label={{ value: `Limit: ${snapshotWithResources.cpu_limit}`, position: "right", fontSize: 11, fill: "#ef4444" }}
@@ -683,7 +685,7 @@ export function MetricsPanel({
                     <YAxis
                       tick={{ fontSize: 12 }}
                       label={{ value: "Memória (%)", angle: -90, position: "insideLeft", fontSize: 12 }}
-                      domain={[0, 150]}
+                      domain={[0, 120]}
                     />
                     <Tooltip content={<CustomTooltip />} />
                     <Legend />
@@ -694,17 +696,19 @@ export function MetricsPanel({
                       label={{ value: `Target: ${chartData[0]?.memoryTarget || 0}%`, position: "right", fontSize: 11, fill: "#10b981" }}
                     />
                     {/* Linhas tracejadas de Request e Limit (como no Grafana) */}
+                    {/* Request sempre em 100% porque o gráfico é normalizado por Request */}
                     {snapshotWithResources?.memory_request && (
                       <ReferenceLine
-                        y={absoluteToPercent(snapshotWithResources.memory_request, snapshotWithResources.memory_limit || snapshotWithResources.memory_request) || 0}
+                        y={100}
                         stroke="#f97316"
                         strokeDasharray="3 3"
                         label={{ value: `Request: ${snapshotWithResources.memory_request}`, position: "right", fontSize: 11, fill: "#f97316" }}
                       />
                     )}
-                    {snapshotWithResources?.memory_limit && (
+                    {/* Limit calculado como % do Request (ex: se Limit=2x Request, linha em 200%) */}
+                    {snapshotWithResources?.memory_limit && snapshotWithResources?.memory_request && (
                       <ReferenceLine
-                        y={100}
+                        y={absoluteToPercent(snapshotWithResources.memory_limit, snapshotWithResources.memory_request) || 0}
                         stroke="#ef4444"
                         strokeDasharray="3 3"
                         label={{ value: `Limit: ${snapshotWithResources.memory_limit}`, position: "right", fontSize: 11, fill: "#ef4444" }}
