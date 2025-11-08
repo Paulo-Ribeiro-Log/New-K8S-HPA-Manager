@@ -1122,6 +1122,98 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 
 ## 📜 Histórico de Correções (Principais)
 
+### Nova Arquitetura: SimpleCollector (Novembro 2025) ✅
+
+**Data:** 08 de novembro de 2025
+
+**Motivação:** Sistema de rotação de portas (RotatingCollector) era complexo e não estava funcionando corretamente. Port-forwards não eram criados para todos os clusters e baseline não era carregado do SQLite.
+
+**Problema anterior:**
+- Rotação de portas (55551-55556) entre múltiplos clusters não escalava
+- Port-forward temporário durante scans (criado e destruído rapidamente)
+- Baseline era recriado toda vez ao invés de carregar do SQLite
+- Sistema complexo com slots e duração calculada dinamicamente
+
+**Solução: SimpleCollector - Arquitetura Simplificada**
+
+**Novo modelo:**
+1. **Scans normais**: 1 porta por cluster, port-forward criado durante scan e destruído após
+2. **Baseline**: Porta dedicada (55557) separada dos scans
+3. **Lógica inteligente de baseline**:
+   - Verifica primeiro se baseline existe no SQLite via `IsBaselineReady()`
+   - Só coleta baseline se não existir ou estiver desatualizado
+   - Porta 55557 criada sob demanda, destruída após coleta
+
+**Componentes implementados:**
+
+**1️⃣ SimpleCollector** (`internal/monitoring/collector/simple_collector.go`):
+```go
+type SimpleCollector struct {
+    targets       map[string]*SimpleTarget // Cluster → Target mapping
+    scanPorts     []int                    // [55551-55556] para scans normais
+    baselinePort  int                      // 55557 para baseline
+    baselineQueue chan BaselineRequest     // Fila de baselines pendentes
+}
+```
+
+**2️⃣ Fluxos principais:**
+
+**Scan normal (30s interval):**
+```
+1. executeScan() → scanCluster(cluster)
+2. Criar port-forward temporário
+3. Aguardar 2s para port-forward estar pronto
+4. Coletar métricas via Prometheus (CPU, Memory, Replicas)
+5. Enriquecer snapshot com K8s API (se disponível)
+6. Salvar snapshots no SQLite (batch)
+7. Destruir port-forward
+```
+
+**Baseline (sob demanda):**
+```
+1. AddTarget() → requestBaselineIfNeeded()
+2. Verificar se baseline existe: persistence.IsBaselineReady()
+3. Se não existe ou desatualizado → addToBaselineQueue()
+4. baselineWorker() processa fila
+5. Criar port-forward na porta 55557
+6. collectHistoricalData() busca 3 dias via QueryRange
+7. Salvar ~4320 snapshots no SQLite
+8. Marcar baseline como pronto: MarkBaselineReady()
+9. Destruir port-forward (libera porta)
+```
+
+**3️⃣ Verificação de baseline:**
+```go
+func (c *SimpleCollector) requestBaselineIfNeeded(cluster, namespace, hpaName string) {
+    // Verifica se baseline já existe e está atualizado
+    ready, err := c.persistence.IsBaselineReady(cluster, namespace, hpaName)
+
+    if ready {
+        log.Debug().Msg("Baseline já existe e está atualizado")
+        return
+    }
+
+    // Baseline não existe ou está desatualizado, adiciona à fila
+    c.addToBaselineQueue(cluster, namespace, hpaName)
+}
+```
+
+**Benefícios:**
+- ✅ **Simplicidade**: 1 arquivo ao invés de sistema complexo de rotação
+- ✅ **Escalabilidade**: Suporta N clusters (scan sequencial)
+- ✅ **Separação de responsabilidades**: Scans e baseline não interferem entre si
+- ✅ **Baseline inteligente**: Carrega do SQLite primeiro, só recria se necessário
+- ✅ **Port-forward eficiente**: Criado sob demanda, destruído após uso
+- ✅ **Fila de baseline**: Processa HPAs sequencialmente sem sobrecarga
+
+**Arquivos criados:**
+- `internal/monitoring/collector/simple_collector.go` (NOVO - ~665 linhas)
+
+**Próximo passo:**
+- Integrar SimpleCollector no `internal/monitoring/engine/engine.go` (substituir RotatingCollector)
+
+---
+
 ### Correção: Linhas de Referência nos Gráficos de Métricas (Novembro 2025) ✅
 
 **Data:** 08 de novembro de 2025
