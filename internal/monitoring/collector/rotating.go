@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -324,6 +325,11 @@ func (c *RotatingCollector) collectCluster(cluster string, port int) error {
 	}
 	defer c.pfManager.Stop(cluster)
 
+	// FASE 4: Aguarda port-forward estar realmente pronto (grace period)
+	// O waitForReady() interno do PortForward já valida, mas damos mais 2s de margem
+	// para garantir que Prometheus está respondendo antes de criar o client
+	time.Sleep(2 * time.Second)
+
 	// 2. Busca target deste cluster
 	c.mu.RLock()
 	target, exists := c.targets[cluster]
@@ -334,7 +340,15 @@ func (c *RotatingCollector) collectCluster(cluster string, port int) error {
 	}
 
 	// 3. FASE 3: Coletar métricas via Prometheus
-	promEndpoint := fmt.Sprintf("http://localhost:%d", port)
+	// FASE 4: Usar URL real do PortForwardManager (porta dinâmica 55553 ou 55554)
+	promEndpoint := c.pfManager.GetURL(cluster)
+	if promEndpoint == "" {
+		log.Warn().
+			Str("cluster", cluster).
+			Msg("Port-forward não ativo, pulando coleta")
+		return nil // Não é erro fatal, apenas pula este cluster
+	}
+
 	promClient, err := prometheus.NewClient(cluster, promEndpoint)
 	if err != nil {
 		log.Warn().
@@ -344,9 +358,26 @@ func (c *RotatingCollector) collectCluster(cluster string, port int) error {
 		return nil // Não é erro fatal, apenas pula este cluster
 	}
 
-	// Coleta métricas de cada HPA
+	// 4. Cria K8s clientset para coletar dados do K8s API
+	// Nota: clusters no kubeconfig têm sufixo "-admin"
+	clusterContext := cluster
+	if !strings.HasSuffix(cluster, "-admin") {
+		clusterContext = cluster + "-admin"
+	}
+
+	clientset, err := c.kubeManager.GetClient(clusterContext)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("cluster", cluster).
+			Str("context", clusterContext).
+			Msg("Failed to get K8s client, snapshots will have no Request/Limit data")
+		// Não é erro fatal, continua sem dados do K8s
+		clientset = nil
+	}
+
+	// 5. Coleta métricas de cada HPA
 	snapshots := make([]*models.HPASnapshot, 0)
-	now := time.Now()
 
 	for _, ns := range target.Namespaces {
 		for _, hpaName := range target.HPAs {
@@ -355,7 +386,12 @@ func (c *RotatingCollector) collectCluster(cluster string, port int) error {
 				Cluster:   cluster,
 				Namespace: ns,
 				Name:      hpaName,
-				Timestamp: now,
+				Timestamp: time.Now(),
+			}
+
+			// Enriquece com dados do K8s API se clientset disponível
+			if clientset != nil {
+				c.enrichSnapshotWithK8sData(ctx, clientset, snapshot)
 			}
 
 			// Enriquece snapshot com métricas do Prometheus
@@ -365,7 +401,7 @@ func (c *RotatingCollector) collectCluster(cluster string, port int) error {
 					Str("cluster", cluster).
 					Str("namespace", ns).
 					Str("hpa", hpaName).
-					Msg("Falha ao enriquecer snapshot (pode ser normal se Prometheus não tem dados)")
+					Msg("Falha ao enriquecer snapshot com Prometheus (pode ser normal se não tem dados)")
 			}
 
 			snapshots = append(snapshots, snapshot)

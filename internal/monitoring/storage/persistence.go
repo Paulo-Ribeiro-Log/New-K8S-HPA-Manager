@@ -488,6 +488,65 @@ func (p *Persistence) LoadSnapshots(cluster, namespace, name string, since time.
 	return snapshots, nil
 }
 
+// LoadSnapshotsYesterday busca dados de ontem no mesmo período de tempo
+// Para comparação D-1 (yesterday vs today)
+// Exemplo: se duration = 5m, busca snapshots de ontem no intervalo [agora-24h-5m, agora-24h]
+func (p *Persistence) LoadSnapshotsYesterday(cluster, namespace, name string, duration time.Duration) ([]models.HPASnapshot, error) {
+	if !p.config.Enabled || p.db == nil {
+		return nil, nil
+	}
+
+	// Calcular janela de tempo de ontem
+	// Ex: agora = 10:30, duration = 5m
+	// Busca: [ontem 10:25, ontem 10:30]
+	now := time.Now()
+	yesterdayEnd := now.Add(-24 * time.Hour)         // 24h atrás
+	yesterdayStart := yesterdayEnd.Add(-duration)    // 24h + duration atrás
+
+	rows, err := p.db.Query(`
+		SELECT data FROM snapshots
+		WHERE cluster = ? AND namespace = ? AND hpa_name = ?
+		  AND timestamp >= ? AND timestamp <= ?
+		ORDER BY timestamp ASC
+	`, cluster, namespace, name, yesterdayStart, yesterdayEnd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query yesterday snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	snapshots := make([]models.HPASnapshot, 0)
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			log.Warn().Err(err).Msg("Failed to scan snapshot")
+			continue
+		}
+
+		var snapshot models.HPASnapshot
+		if err := json.Unmarshal([]byte(data), &snapshot); err != nil {
+			log.Warn().Err(err).Msg("Failed to unmarshal snapshot")
+			continue
+		}
+
+		snapshots = append(snapshots, snapshot)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating snapshots: %w", err)
+	}
+
+	log.Debug().
+		Str("cluster", cluster).
+		Str("namespace", namespace).
+		Str("hpa", name).
+		Time("yesterday_start", yesterdayStart).
+		Time("yesterday_end", yesterdayEnd).
+		Int("count", len(snapshots)).
+		Msg("Loaded yesterday snapshots for comparison")
+
+	return snapshots, nil
+}
+
 // LoadAll carrega todos os snapshots recentes (últimos MaxAge)
 func (p *Persistence) LoadAll(since time.Time) (map[string][]models.HPASnapshot, error) {
 	if !p.config.Enabled || p.db == nil {

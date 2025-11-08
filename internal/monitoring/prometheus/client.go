@@ -21,7 +21,8 @@ type Client struct {
 	connected bool
 }
 
-// NewClient cria um novo client Prometheus
+// NewClient cria um novo client Prometheus (sem teste de conexão)
+// FASE 4: Lazy connection - client inicia desconectado, primeira query testa
 func NewClient(cluster, endpoint string) (*Client, error) {
 	// Cria client da API Prometheus
 	apiClient, err := api.NewClient(api.Config{
@@ -32,32 +33,17 @@ func NewClient(cluster, endpoint string) (*Client, error) {
 	}
 
 	client := &Client{
-		api:      v1.NewAPI(apiClient),
-		cluster:  cluster,
-		endpoint: endpoint,
-		timeout:  10 * time.Second,
+		api:       v1.NewAPI(apiClient),
+		cluster:   cluster,
+		endpoint:  endpoint,
+		timeout:   10 * time.Second,
+		connected: false, // Inicia desconectado, lazy connection na primeira query
 	}
 
-	// Testa conexão
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := client.TestConnection(ctx); err != nil {
-		log.Warn().
-			Err(err).
-			Str("cluster", cluster).
-			Str("endpoint", endpoint).
-			Msg("Failed to connect to Prometheus (will retry)")
-		client.connected = false
-	} else {
-		client.connected = true
-	}
-
-	log.Info().
+	log.Debug().
 		Str("cluster", cluster).
 		Str("endpoint", endpoint).
-		Bool("connected", client.connected).
-		Msg("Prometheus client created")
+		Msg("Prometheus client created (lazy connection)")
 
 	return client, nil
 }
@@ -255,12 +241,26 @@ func (c *Client) GetP95Latency(ctx context.Context, namespace, service string) (
 }
 
 // EnrichSnapshot enriquece um snapshot com métricas do Prometheus
+// FASE 4: Lazy connection - tenta conectar se ainda não conectado
 func (c *Client) EnrichSnapshot(ctx context.Context, snapshot *models.HPASnapshot) error {
+	// Lazy connection: tenta conectar na primeira vez
 	if !c.connected {
 		log.Debug().
 			Str("cluster", c.cluster).
-			Msg("Prometheus not connected, skipping enrichment")
-		return nil
+			Msg("Attempting lazy connection to Prometheus...")
+
+		if err := c.TestConnection(ctx); err != nil {
+			log.Debug().
+				Err(err).
+				Str("cluster", c.cluster).
+				Msg("Prometheus connection failed, skipping enrichment (will retry next scan)")
+			return nil // Não é erro fatal, retenta no próximo scan
+		}
+
+		log.Info().
+			Str("cluster", c.cluster).
+			Str("endpoint", c.endpoint).
+			Msg("✅ Prometheus lazy connection established")
 	}
 
 	// CPU atual

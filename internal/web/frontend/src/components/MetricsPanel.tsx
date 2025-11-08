@@ -69,24 +69,88 @@ export function MetricsPanel({
     duration
   );
 
+  // Helper para converter valores K8s (ex: "500m", "2Gi") para números
+  // CPU: millicores (ex: "500m" -> 500)
+  // Memory: MiB (ex: "256Mi" -> 256)
+  const parseResourceValue = (value: string): number | null => {
+    if (!value) return null;
+
+    // CPU: millicores (ex: "500m" -> 500, "1" -> 1000)
+    if (value.endsWith('m')) {
+      return parseInt(value.slice(0, -1), 10);
+    }
+
+    // Memory: MiB (ex: "256Mi" -> 256, "1Gi" -> 1024)
+    if (value.endsWith('Mi')) {
+      return parseInt(value.slice(0, -2), 10);
+    }
+    if (value.endsWith('Gi')) {
+      return parseInt(value.slice(0, -2), 10) * 1024;
+    }
+
+    // Fallback: tentar parsear como número puro
+    return parseFloat(value) || null;
+  };
+
+  // Encontrar snapshot com Request/Limit (para usar nas ReferenceLine)
+  const snapshotWithResources = useMemo(() => {
+    if (!metrics?.snapshots || metrics.snapshots.length === 0) {
+      console.log('[MetricsPanel] Nenhum snapshot disponível');
+      return null;
+    }
+
+    // Encontrar snapshot que tenha TODOS os 4 campos não-vazios (Request E Limit para CPU e Memory)
+    const found = metrics.snapshots.find(s =>
+      (s.cpu_request && s.cpu_request.trim() !== '') &&
+      (s.cpu_limit && s.cpu_limit.trim() !== '') &&
+      (s.memory_request && s.memory_request.trim() !== '') &&
+      (s.memory_limit && s.memory_limit.trim() !== '')
+    ) || metrics.snapshots[0];
+
+    console.log('[MetricsPanel] Snapshot com recursos:', {
+      cpu_request: found?.cpu_request,
+      cpu_limit: found?.cpu_limit,
+      memory_request: found?.memory_request,
+      memory_limit: found?.memory_limit
+    });
+
+    return found;
+  }, [metrics]);
+
   // Preparar dados para os gráficos
   const chartData = useMemo(() => {
     if (!metrics || !metrics.snapshots || metrics.snapshots.length === 0) {
       return [];
     }
 
-    return metrics.snapshots.map((snapshot: HPASnapshot) => ({
-      timestamp: new Date(snapshot.timestamp).getTime(),
-      time: format(new Date(snapshot.timestamp), "HH:mm:ss", { locale: ptBR }),
-      cpuCurrent: snapshot.cpu_current,
-      cpuTarget: snapshot.cpu_target,
-      memoryCurrent: snapshot.memory_current,
-      memoryTarget: snapshot.memory_target,
-      replicasCurrent: snapshot.replicas_current,
-      replicasDesired: snapshot.replicas_desired,
-      replicasMin: snapshot.replicas_min,
-      replicasMax: snapshot.replicas_max,
-    }));
+    return metrics.snapshots.map((snapshot: HPASnapshot, index: number) => {
+      // Buscar dado correspondente de ontem (mesmo índice)
+      const yesterdaySnapshot = metrics.snapshots_yesterday?.[index];
+
+      // Extrair valores de Request/Limit
+      const cpuRequest = snapshot.cpu_request ? parseResourceValue(snapshot.cpu_request) : null;
+      const cpuLimit = snapshot.cpu_limit ? parseResourceValue(snapshot.cpu_limit) : null;
+
+      return {
+        timestamp: new Date(snapshot.timestamp).getTime(),
+        time: format(new Date(snapshot.timestamp), "HH:mm:ss", { locale: ptBR }),
+        cpuCurrent: snapshot.cpu_current,
+        cpuTarget: snapshot.cpu_target,
+        cpuRequest: cpuRequest,
+        cpuLimit: cpuLimit,
+        cpuYesterday: yesterdaySnapshot?.cpu_current || null,
+        memoryCurrent: snapshot.memory_current,
+        memoryTarget: snapshot.memory_target,
+        memoryRequest: snapshot.memory_request,
+        memoryLimit: snapshot.memory_limit,
+        memoryYesterday: yesterdaySnapshot?.memory_current || null,
+        replicasCurrent: snapshot.replicas_current,
+        replicasDesired: snapshot.replicas_desired,
+        replicasMin: snapshot.replicas_min,
+        replicasMax: snapshot.replicas_max,
+        replicasYesterday: yesterdaySnapshot?.replicas_current || null,
+      };
+    });
   }, [metrics]);
 
   // Calcular estatísticas
@@ -175,20 +239,115 @@ export function MetricsPanel({
     );
   };
 
-  // Custom Tooltip
+  // Helper para converter percentual em valor absoluto baseado no limit
+  const percentToAbsolute = (percent: number, limit: string, isCpu: boolean): string => {
+    if (!limit) return '';
+
+    const limitValue = parseResourceValue(limit);
+    if (limitValue === null) return '';
+
+    const absolute = (percent / 100) * limitValue;
+
+    if (isCpu) {
+      // CPU: retorna em millicores
+      return `${absolute.toFixed(2)}m`;
+    } else {
+      // Memory: retorna em MiB ou GiB
+      if (absolute >= 1024) {
+        return `${(absolute / 1024).toFixed(2)}Gi`;
+      }
+      return `${absolute.toFixed(0)}Mi`;
+    }
+  };
+
+  // Helper para converter valor absoluto em percentual do limit (para linhas de referência)
+  const absoluteToPercent = (absoluteValue: string, limit: string): number | null => {
+    if (!absoluteValue || !limit) return null;
+
+    const absVal = parseResourceValue(absoluteValue);
+    const limitVal = parseResourceValue(limit);
+
+    if (absVal === null || limitVal === null || limitVal === 0) return null;
+
+    const percent = (absVal / limitVal) * 100;
+    console.log(`[absoluteToPercent] ${absoluteValue} / ${limit} = ${absVal} / ${limitVal} = ${percent}%`);
+    return percent;
+  };
+
+  // Custom Tooltip com valores absolutos completos
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (!active || !payload || !payload.length) return null;
 
+    // Determinar se é gráfico de CPU ou Memory pelo primeiro payload
+    const firstDataKey = payload[0]?.dataKey || '';
+    const isCpuChart = firstDataKey.includes('cpu');
+
     return (
-      <div className="bg-background border rounded-lg shadow-lg p-3 space-y-2">
-        <p className="text-sm font-semibold">{label}</p>
-        {payload.map((entry: any, index: number) => (
-          <div key={index} className="flex items-center gap-2 text-xs">
-            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: entry.color }} />
-            <span className="text-muted-foreground">{entry.name}:</span>
-            <span className="font-semibold">{entry.value.toFixed(1)}{entry.unit || "%"}</span>
-          </div>
-        ))}
+      <div className="bg-background border rounded-lg shadow-lg p-3 space-y-1.5">
+        <p className="text-sm font-semibold mb-2">{label}</p>
+        {payload.map((entry: any, index: number) => {
+          const dataKey = entry.dataKey || '';
+          const name = entry.name || '';
+
+          // Calcular valor absoluto
+          let limit = '';
+          let absoluteValue = '';
+
+          if (isCpuChart && snapshotWithResources?.cpu_limit) {
+            limit = snapshotWithResources.cpu_limit;
+            absoluteValue = percentToAbsolute(entry.value, limit, true);
+          } else if (!isCpuChart && snapshotWithResources?.memory_limit) {
+            limit = snapshotWithResources.memory_limit;
+            absoluteValue = percentToAbsolute(entry.value, limit, false);
+          }
+
+          return (
+            <div key={index} className="flex items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: entry.color }} />
+                <span className="text-muted-foreground truncate">{entry.name}</span>
+              </div>
+              <span className="font-semibold whitespace-nowrap">
+                {absoluteValue && limit
+                  ? `${absoluteValue} (${entry.value.toFixed(1)}% de ${limit})`
+                  : `${entry.value.toFixed(1)}%`
+                }
+              </span>
+            </div>
+          );
+        })}
+
+        {/* Adicionar Request e Limit no tooltip */}
+        {snapshotWithResources && (
+          <>
+            <div className="border-t pt-2 mt-2 space-y-1">
+              {isCpuChart && snapshotWithResources.cpu_request && (
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="text-muted-foreground">CPU Request:</span>
+                  <span className="font-semibold">{snapshotWithResources.cpu_request}</span>
+                </div>
+              )}
+              {isCpuChart && snapshotWithResources.cpu_limit && (
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="text-muted-foreground">CPU Limit:</span>
+                  <span className="font-semibold">{snapshotWithResources.cpu_limit}</span>
+                </div>
+              )}
+              {!isCpuChart && snapshotWithResources.memory_request && (
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="text-muted-foreground">Memory Request:</span>
+                  <span className="font-semibold">{snapshotWithResources.memory_request}</span>
+                </div>
+              )}
+              {!isCpuChart && snapshotWithResources.memory_limit && (
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="text-muted-foreground">Memory Limit:</span>
+                  <span className="font-semibold">{snapshotWithResources.memory_limit}</span>
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </div>
     );
   };
@@ -277,11 +436,11 @@ export function MetricsPanel({
 
             {/* CPU Analysis */}
             <TabsContent value="cpu" className="space-y-6">
-              {/* Estatísticas */}
+              {/* Estatísticas - Linha 1: Métricas de uso */}
               <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                 <StatCard
                   icon={Activity}
-                  label="Atual"
+                  label="CPU Atual"
                   value={cpuStats.current}
                   unit="%"
                   trend={cpuStats.trend}
@@ -322,12 +481,27 @@ export function MetricsPanel({
                 />
               </div>
 
+
               {/* Gráfico de CPU */}
               <div className="border rounded-lg p-4 bg-card">
-                <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
-                  <Cpu className="h-4 w-4" />
-                  Uso de CPU ao longo do tempo
-                </h3>
+                <div className="mb-4 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold flex items-center gap-2">
+                    <Cpu className="h-4 w-4" />
+                    Uso de CPU ao longo do tempo
+                  </h3>
+                  <div className="flex items-center gap-4 text-xs">
+                    {snapshotWithResources?.cpu_request && (
+                      <span className="text-orange-600">
+                        CPU Request: <strong>{snapshotWithResources.cpu_request}</strong>
+                      </span>
+                    )}
+                    {snapshotWithResources?.cpu_limit && (
+                      <span className="text-red-600">
+                        CPU Limit: <strong>{snapshotWithResources.cpu_limit}</strong>
+                      </span>
+                    )}
+                  </div>
+                </div>
                 <ResponsiveContainer width="100%" height={300}>
                   <AreaChart data={chartData}>
                     <defs>
@@ -345,6 +519,7 @@ export function MetricsPanel({
                     <YAxis
                       tick={{ fontSize: 12 }}
                       label={{ value: "CPU (%)", angle: -90, position: "insideLeft", fontSize: 12 }}
+                      domain={[0, 150]}
                     />
                     <Tooltip content={<CustomTooltip />} />
                     <Legend />
@@ -352,8 +527,25 @@ export function MetricsPanel({
                       y={chartData[0]?.cpuTarget || 0}
                       stroke="#10b981"
                       strokeDasharray="5 5"
-                      label={{ value: "Target", position: "right", fontSize: 12 }}
+                      label={{ value: `Target: ${chartData[0]?.cpuTarget || 0}%`, position: "right", fontSize: 11, fill: "#10b981" }}
                     />
+                    {/* Linhas tracejadas de Request e Limit (como no Grafana) */}
+                    {snapshotWithResources?.cpu_request && (
+                      <ReferenceLine
+                        y={absoluteToPercent(snapshotWithResources.cpu_request, snapshotWithResources.cpu_limit || snapshotWithResources.cpu_request) || 0}
+                        stroke="#f97316"
+                        strokeDasharray="3 3"
+                        label={{ value: `Request: ${snapshotWithResources.cpu_request}`, position: "right", fontSize: 11, fill: "#f97316" }}
+                      />
+                    )}
+                    {snapshotWithResources?.cpu_limit && (
+                      <ReferenceLine
+                        y={100}
+                        stroke="#ef4444"
+                        strokeDasharray="3 3"
+                        label={{ value: `Limit: ${snapshotWithResources.cpu_limit}`, position: "right", fontSize: 11, fill: "#ef4444" }}
+                      />
+                    )}
                     <ReferenceArea
                       y1={90}
                       y2={100}
@@ -377,6 +569,20 @@ export function MetricsPanel({
                       fill="url(#cpuGradient)"
                       unit="%"
                     />
+                    {/* Linha de ontem (D-1) */}
+                    {chartData.some(d => d.cpuYesterday !== null) && (
+                      <Line
+                        type="monotone"
+                        dataKey="cpuYesterday"
+                        name="CPU Ontem (D-1)"
+                        stroke="#9ca3af"
+                        strokeWidth={1.5}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        unit="%"
+                        connectNulls
+                      />
+                    )}
                     <Line
                       type="monotone"
                       dataKey="cpuTarget"
@@ -394,11 +600,11 @@ export function MetricsPanel({
 
             {/* Memory Analysis */}
             <TabsContent value="memory" className="space-y-6">
-              {/* Estatísticas */}
+              {/* Estatísticas - Linha 1: Métricas de uso */}
               <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                 <StatCard
                   icon={Activity}
-                  label="Atual"
+                  label="Memória Atual"
                   value={memoryStats.current}
                   unit="%"
                   trend={memoryStats.trend}
@@ -439,12 +645,27 @@ export function MetricsPanel({
                 />
               </div>
 
+
               {/* Gráfico de Memória */}
               <div className="border rounded-lg p-4 bg-card">
-                <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
-                  <MemoryStick className="h-4 w-4" />
-                  Uso de Memória ao longo do tempo
-                </h3>
+                <div className="mb-4 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold flex items-center gap-2">
+                    <MemoryStick className="h-4 w-4" />
+                    Uso de Memória ao longo do tempo
+                  </h3>
+                  <div className="flex items-center gap-4 text-xs">
+                    {snapshotWithResources?.memory_request && (
+                      <span className="text-orange-600">
+                        Memory Request: <strong>{snapshotWithResources.memory_request}</strong>
+                      </span>
+                    )}
+                    {snapshotWithResources?.memory_limit && (
+                      <span className="text-red-600">
+                        Memory Limit: <strong>{snapshotWithResources.memory_limit}</strong>
+                      </span>
+                    )}
+                  </div>
+                </div>
                 <ResponsiveContainer width="100%" height={300}>
                   <AreaChart data={chartData}>
                     <defs>
@@ -462,6 +683,7 @@ export function MetricsPanel({
                     <YAxis
                       tick={{ fontSize: 12 }}
                       label={{ value: "Memória (%)", angle: -90, position: "insideLeft", fontSize: 12 }}
+                      domain={[0, 150]}
                     />
                     <Tooltip content={<CustomTooltip />} />
                     <Legend />
@@ -469,8 +691,25 @@ export function MetricsPanel({
                       y={chartData[0]?.memoryTarget || 0}
                       stroke="#10b981"
                       strokeDasharray="5 5"
-                      label={{ value: "Target", position: "right", fontSize: 12 }}
+                      label={{ value: `Target: ${chartData[0]?.memoryTarget || 0}%`, position: "right", fontSize: 11, fill: "#10b981" }}
                     />
+                    {/* Linhas tracejadas de Request e Limit (como no Grafana) */}
+                    {snapshotWithResources?.memory_request && (
+                      <ReferenceLine
+                        y={absoluteToPercent(snapshotWithResources.memory_request, snapshotWithResources.memory_limit || snapshotWithResources.memory_request) || 0}
+                        stroke="#f97316"
+                        strokeDasharray="3 3"
+                        label={{ value: `Request: ${snapshotWithResources.memory_request}`, position: "right", fontSize: 11, fill: "#f97316" }}
+                      />
+                    )}
+                    {snapshotWithResources?.memory_limit && (
+                      <ReferenceLine
+                        y={100}
+                        stroke="#ef4444"
+                        strokeDasharray="3 3"
+                        label={{ value: `Limit: ${snapshotWithResources.memory_limit}`, position: "right", fontSize: 11, fill: "#ef4444" }}
+                      />
+                    )}
                     <ReferenceArea
                       y1={90}
                       y2={100}
@@ -494,6 +733,20 @@ export function MetricsPanel({
                       fill="url(#memoryGradient)"
                       unit="%"
                     />
+                    {/* Linha de ontem (D-1) */}
+                    {chartData.some(d => d.memoryYesterday !== null) && (
+                      <Line
+                        type="monotone"
+                        dataKey="memoryYesterday"
+                        name="Memória Ontem (D-1)"
+                        stroke="#9ca3af"
+                        strokeWidth={1.5}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        unit="%"
+                        connectNulls
+                      />
+                    )}
                     <Line
                       type="monotone"
                       dataKey="memoryTarget"

@@ -1122,6 +1122,34 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 
 ## 📜 Histórico de Correções (Principais)
 
+### Correção: Linhas de Referência nos Gráficos de Métricas (Novembro 2025) ✅
+
+**Data:** 08 de novembro de 2025
+
+**Problema:** Linhas tracejadas de CPU Request e CPU Limit não apareciam no gráfico de CPU da página de Monitoring, apesar de funcionarem corretamente no gráfico de Memory.
+
+**Root Cause:** O eixo Y do gráfico de CPU estava com escala automática baseada apenas nos valores de uso (0.8% a 3.6%), mas as ReferenceLine estavam posicionadas em 75% (Request) e 100% (Limit), ficando **fora da escala visível do gráfico**.
+
+**Solução implementada:**
+1. **Domain fixo no YAxis**: Forçado `domain={[0, 150]}` para garantir que linhas até 100% sejam sempre visíveis
+2. **Label completo no Target**: Adicionado valor percentual no label da linha verde (`Target: 60%`)
+3. **Aplicado em ambos os gráficos**: CPU e Memory agora têm comportamento consistente
+
+**Arquivos modificados:**
+- `internal/web/frontend/src/components/MetricsPanel.tsx`:
+  - Linha 522: `domain={[0, 150]}` no YAxis de CPU
+  - Linha 530: Label `Target: ${cpuTarget}%` com cor verde
+  - Linha 686: `domain={[0, 150]}` no YAxis de Memory
+  - Linha 694: Label `Target: ${memoryTarget}%` com cor verde
+
+**Resultado:**
+- ✅ Linhas tracejadas de Request (laranja) e Limit (vermelha) agora aparecem corretamente
+- ✅ Linha Target (verde) com label descritivo
+- ✅ Escala do gráfico vai até 150% para acomodar picos acima do limit
+- ✅ Consistência visual entre gráficos de CPU e Memory
+
+---
+
 ### Refatoração Completa: Sistema de Monitoramento RotatingCollector (Novembro 2025) ✅
 
 **Data:** 07 de novembro de 2025

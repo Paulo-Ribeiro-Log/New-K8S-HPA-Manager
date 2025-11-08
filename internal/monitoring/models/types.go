@@ -24,10 +24,10 @@ type HPASnapshot struct {
 	MemoryTarget int32 // % (ex: 80)
 
 	// Deployment Resources (K8s API)
-	CPURequest    string // Ex: "500m"
-	CPULimit      string // Ex: "1000m"
-	MemoryRequest string // Ex: "512Mi"
-	MemoryLimit   string // Ex: "1Gi"
+	CPURequest    string `json:"cpu_request"`    // Ex: "500m"
+	CPULimit      string `json:"cpu_limit"`      // Ex: "1000m"
+	MemoryRequest string `json:"memory_request"` // Ex: "512Mi"
+	MemoryLimit   string `json:"memory_limit"`   // Ex: "1Gi"
 
 	// Status
 	Ready         bool

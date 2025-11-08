@@ -301,6 +301,11 @@ export interface HPASnapshot {
   replicas_desired: number;
   replicas_min: number;
   replicas_max: number;
+  // Resource Request/Limit do deployment (vem do K8s API)
+  cpu_request?: string;
+  cpu_limit?: string;
+  memory_request?: string;
+  memory_limit?: string;
 }
 
 export interface HPAMetrics {

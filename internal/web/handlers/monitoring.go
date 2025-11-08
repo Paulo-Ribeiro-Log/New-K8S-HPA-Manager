@@ -84,7 +84,7 @@ func (h *MonitoringHandler) GetMetrics(c *gin.Context) {
 	// Calcular janela de tempo
 	since := time.Now().Add(-dur)
 
-	// Buscar snapshots do SQLite
+	// Buscar snapshots do SQLite (dados atuais)
 	snapshots, err := h.persistence.LoadSnapshots(normalizedCluster, namespace, hpaName, since)
 	if err != nil {
 		log.Error().
@@ -98,6 +98,19 @@ func (h *MonitoringHandler) GetMetrics(c *gin.Context) {
 			"error": "Failed to load snapshots from database",
 		})
 		return
+	}
+
+	// Buscar dados de ontem (comparison D-1)
+	snapshotsYesterday, err := h.persistence.LoadSnapshotsYesterday(normalizedCluster, namespace, hpaName, dur)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("cluster", normalizedCluster).
+			Str("namespace", namespace).
+			Str("hpa", hpaName).
+			Msg("Falha ao buscar snapshots de ontem (continuando sem comparação)")
+		// Não é erro fatal, continua sem dados de ontem
+		snapshotsYesterday = []models.HPASnapshot{}
 	}
 
 	// Converter para formato API
@@ -116,6 +129,25 @@ func (h *MonitoringHandler) GetMetrics(c *gin.Context) {
 			"replicas_desired":  snap.DesiredReplicas,
 			"replicas_min":      snap.MinReplicas,
 			"replicas_max":      snap.MaxReplicas,
+			// Recursos do Deployment (K8s API) - NOVO
+			"cpu_request":       snap.CPURequest,
+			"cpu_limit":         snap.CPULimit,
+			"memory_request":    snap.MemoryRequest,
+			"memory_limit":      snap.MemoryLimit,
+		})
+	}
+
+	// Converter dados de ontem para formato API
+	apiSnapshotsYesterday := make([]gin.H, 0, len(snapshotsYesterday))
+	for _, snap := range snapshotsYesterday {
+		apiSnapshotsYesterday = append(apiSnapshotsYesterday, gin.H{
+			"cluster":          snap.Cluster,
+			"namespace":        snap.Namespace,
+			"hpa_name":         snap.Name,
+			"timestamp":        snap.Timestamp.Format(time.RFC3339),
+			"cpu_current":      snap.CPUCurrent,
+			"memory_current":   snap.MemoryCurrent,
+			"replicas_current": snap.CurrentReplicas,
 		})
 	}
 
@@ -126,15 +158,18 @@ func (h *MonitoringHandler) GetMetrics(c *gin.Context) {
 		Str("hpa", hpaName).
 		Dur("duration", dur).
 		Int("count", len(snapshots)).
-		Msg("Métricas retornadas do SQLite")
+		Int("count_yesterday", len(snapshotsYesterday)).
+		Msg("Métricas retornadas do SQLite (com comparação D-1)")
 
 	c.JSON(200, gin.H{
-		"cluster":   cluster,
-		"namespace": namespace,
-		"hpa_name":  hpaName,
-		"duration":  duration,
-		"snapshots": apiSnapshots,
-		"count":     len(apiSnapshots),
+		"cluster":            cluster,
+		"namespace":          namespace,
+		"hpa_name":           hpaName,
+		"duration":           duration,
+		"snapshots":          apiSnapshots,
+		"snapshots_yesterday": apiSnapshotsYesterday,
+		"count":              len(apiSnapshots),
+		"count_yesterday":    len(apiSnapshotsYesterday),
 	})
 }
 
