@@ -435,6 +435,19 @@ class APIClient {
       }
     );
   }
+
+  // Sincronizar lista completa de HPAs monitorados (reconciliação)
+  async syncMonitoredHPAs(
+    hpas: Array<{ cluster: string; namespace: string; hpa: string }>
+  ): Promise<{ status: string; added: number; removed: number; total: number }> {
+    return this.request<{ status: string; added: number; removed: number; total: number }>(
+      "/monitoring/sync",
+      {
+        method: "POST",
+        body: JSON.stringify({ hpas }),
+      }
+    );
+  }
 }
 
 // Singleton instance

@@ -20,8 +20,8 @@ type HPASnapshot struct {
 	DesiredReplicas int32
 
 	// Targets
-	CPUTarget    int32 // % (ex: 70)
-	MemoryTarget int32 // % (ex: 80)
+	CPUTarget    int32 `json:"cpu_target"`    // % (ex: 70)
+	MemoryTarget int32 `json:"memory_target"` // % (ex: 80)
 
 	// Deployment Resources (K8s API)
 	CPURequest    string `json:"cpu_request"`    // Ex: "500m"

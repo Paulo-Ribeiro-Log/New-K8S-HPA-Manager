@@ -347,7 +347,8 @@ func (s *Server) setupRoutes() {
 		// Target management (NOVO)
 		monitoring.GET("/targets", monitoringHandler.GetTargets)
 		monitoring.POST("/targets", monitoringHandler.AddTarget)
-		monitoring.POST("/hpa", monitoringHandler.AddHPA) // Adicionar HPA individual
+		monitoring.POST("/hpa", monitoringHandler.AddHPA)           // Adicionar HPA individual
+		monitoring.POST("/sync", monitoringHandler.SyncMonitoredHPAs) // Sincronizar lista completa (reconciliação)
 		monitoring.DELETE("/targets/:cluster", monitoringHandler.RemoveTarget)
 	}
 

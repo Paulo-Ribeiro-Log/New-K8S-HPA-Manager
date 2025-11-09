@@ -314,7 +314,9 @@ export interface HPAMetrics {
   hpa_name: string;
   duration: string;
   snapshots: HPASnapshot[];
+  snapshots_yesterday?: HPASnapshot[];  // Dados de ontem para comparação D-1
   count: number;
+  count_yesterday?: number;             // Contagem de snapshots de ontem
   message?: string;
 }
 

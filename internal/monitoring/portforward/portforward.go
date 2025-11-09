@@ -532,3 +532,183 @@ func (m *PortForwardManager) IsBaselinePortBusy(port int) bool {
 	}
 	return false
 }
+
+// StartWithPort inicia port-forward DEDICADO PERSISTENTE em porta específica
+// Para HPAs prioritários - pool de 6 portas [55551-55556]
+func (m *PortForwardManager) StartWithPort(cluster string, port int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Verifica se já existe
+	key := fmt.Sprintf("%s:%d", cluster, port)
+	if pf, exists := m.forwards[key]; exists && pf.IsRunning() {
+		log.Info().
+			Str("cluster", cluster).
+			Int("port", port).
+			Msg("Port-forward dedicado já ativo, reutilizando")
+		return nil
+	}
+
+	serviceName := m.discoverPrometheusService(cluster)
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("port", port).
+		Str("service", serviceName).
+		Msg("🔄 Criando port-forward DEDICADO PERSISTENTE")
+
+	context := cluster
+	if !strings.HasSuffix(cluster, "-admin") {
+		context = cluster + "-admin"
+	}
+
+	pf := New(Config{
+		Cluster:   context,
+		Service:   serviceName,
+		LocalPort: port,
+	})
+
+	if err := pf.Start(); err != nil {
+		return fmt.Errorf("falha ao criar port-forward dedicado: %w", err)
+	}
+
+	m.forwards[key] = pf
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("port", port).
+		Msg("✅ Port-forward DEDICADO criado e PERSISTENTE")
+
+	return nil
+}
+
+// StopWithPort para port-forward dedicado
+func (m *PortForwardManager) StopWithPort(cluster string, port int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	key := fmt.Sprintf("%s:%d", cluster, port)
+	pf, exists := m.forwards[key]
+	if !exists {
+		return nil
+	}
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("port", port).
+		Msg("🛑 Parando port-forward dedicado")
+
+	if err := pf.Stop(); err != nil {
+		return err
+	}
+
+	delete(m.forwards, key)
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("port", port).
+		Msg("✅ Port-forward dedicado destruído e porta liberada")
+
+	return nil
+}
+
+// StartBaselinePort inicia port-forward TEMPORÁRIO para baseline
+// Pool de 2 portas [55557, 55558] - sob demanda
+func (m *PortForwardManager) StartBaselinePort(cluster string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Aloca primeira porta disponível
+	var port int
+	if !m.baseline1Busy {
+		port = 55557
+		m.baseline1Busy = true
+		m.baselineCluster1 = cluster
+	} else if !m.baseline2Busy {
+		port = 55558
+		m.baseline2Busy = true
+		m.baselineCluster2 = cluster
+	} else {
+		return 0, fmt.Errorf("nenhuma porta de baseline disponível (máximo 2 coletas simultâneas)")
+	}
+
+	serviceName := m.discoverPrometheusService(cluster)
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("port", port).
+		Str("service", serviceName).
+		Msg("🔄 Criando port-forward TEMPORÁRIO para baseline")
+
+	context := cluster
+	if !strings.HasSuffix(cluster, "-admin") {
+		context = cluster + "-admin"
+	}
+
+	pf := New(Config{
+		Cluster:   context,
+		Service:   serviceName,
+		LocalPort: port,
+	})
+
+	if err := pf.Start(); err != nil {
+		// Libera porta em caso de erro
+		if port == 55557 {
+			m.baseline1Busy = false
+			m.baselineCluster1 = ""
+		} else {
+			m.baseline2Busy = false
+			m.baselineCluster2 = ""
+		}
+		return 0, fmt.Errorf("falha ao criar port-forward de baseline: %w", err)
+	}
+
+	key := fmt.Sprintf("baseline:%s:%d", cluster, port)
+	m.forwards[key] = pf
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("port", port).
+		Msg("✅ Port-forward de baseline ativo (temporário)")
+
+	return port, nil
+}
+
+// StopBaselinePort para port-forward de baseline e libera porta
+func (m *PortForwardManager) StopBaselinePort(cluster string, port int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	key := fmt.Sprintf("baseline:%s:%d", cluster, port)
+	pf, exists := m.forwards[key]
+	if !exists {
+		return nil
+	}
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("port", port).
+		Msg("🛑 Parando port-forward de baseline")
+
+	if err := pf.Stop(); err != nil {
+		return err
+	}
+
+	// Libera porta
+	if port == 55557 {
+		m.baseline1Busy = false
+		m.baselineCluster1 = ""
+	} else if port == 55558 {
+		m.baseline2Busy = false
+		m.baselineCluster2 = ""
+	}
+
+	delete(m.forwards, key)
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("port", port).
+		Msg("✅ Port-forward de baseline destruído e porta liberada")
+
+	return nil
+}

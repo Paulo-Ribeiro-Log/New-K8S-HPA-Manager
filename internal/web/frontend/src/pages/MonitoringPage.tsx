@@ -38,11 +38,49 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
         // Auto-expandir todos os clusters ao carregar
         const clusters = new Set<string>(parsed.map((h) => h.cluster));
         setExpandedClusters(clusters);
+
+        // Sincronizar com backend imediatamente
+        syncWithBackend(parsed);
       } catch (e) {
         console.error("Failed to parse monitored HPAs:", e);
       }
     }
   }, []);
+
+  // Sistema de reconciliação: Sincroniza lista do frontend com backend
+  const syncWithBackend = async (hpas: MonitoredHPA[]) => {
+    try {
+      const hpaList = hpas.map((h) => ({
+        cluster: h.cluster,
+        namespace: h.namespace,
+        hpa: h.name,
+      }));
+
+      console.log("[MonitoringPage] Sincronizando com backend:", hpaList);
+      const result = await apiClient.syncMonitoredHPAs(hpaList);
+      console.log("[MonitoringPage] Resultado da sincronização:", result);
+
+      if (result.added > 0 || result.removed > 0) {
+        console.log(
+          `[MonitoringPage] ✅ Reconciliação: ${result.added} adicionados, ${result.removed} removidos, ${result.total} total`
+        );
+      }
+    } catch (error) {
+      console.error("[MonitoringPage] Erro na sincronização:", error);
+    }
+  };
+
+  // Reconciliação periódica a cada 30 segundos
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (monitoredHPAs.length > 0) {
+        console.log("[MonitoringPage] Reconciliação periódica...");
+        syncWithBackend(monitoredHPAs);
+      }
+    }, 30000); // 30 segundos
+
+    return () => clearInterval(interval);
+  }, [monitoredHPAs]);
 
   // Buscar status do monitoring engine periodicamente
   useEffect(() => {

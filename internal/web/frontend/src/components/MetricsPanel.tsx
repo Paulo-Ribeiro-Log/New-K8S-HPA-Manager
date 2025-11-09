@@ -123,9 +123,46 @@ export function MetricsPanel({
       return [];
     }
 
-    return metrics.snapshots.map((snapshot: HPASnapshot, index: number) => {
-      // Buscar dado correspondente de ontem (mesmo índice)
-      const yesterdaySnapshot = metrics.snapshots_yesterday?.[index];
+    // Criar mapa de snapshots de ontem por minuto relativo
+    // Ex: timestamp de hoje 18:52:30 → busca ontem no mesmo minuto (18:52:XX qualquer segundo)
+    const yesterdayMap = new Map<number, HPASnapshot>();
+    if (metrics.snapshots_yesterday && metrics.snapshots_yesterday.length > 0) {
+      console.log('[DEBUG] Dados de ontem:', {
+        count: metrics.snapshots_yesterday.length,
+        first: metrics.snapshots_yesterday[0],
+        last: metrics.snapshots_yesterday[metrics.snapshots_yesterday.length - 1]
+      });
+
+      // Agrupar por minuto (chave = minuto absoluto dentro da janela de 1h)
+      metrics.snapshots_yesterday.forEach((snap: HPASnapshot) => {
+        const date = new Date(snap.timestamp);
+        const minuteKey = date.getMinutes(); // Apenas minuto (0-59)
+        // Se já existe snapshot neste minuto, guarda o mais próximo do segundo 30
+        if (!yesterdayMap.has(minuteKey) || Math.abs(date.getSeconds() - 30) < Math.abs(new Date(yesterdayMap.get(minuteKey)!.timestamp).getSeconds() - 30)) {
+          yesterdayMap.set(minuteKey, snap);
+        }
+      });
+
+      console.log('[DEBUG] yesterdayMap criado com', yesterdayMap.size, 'entradas (agrupado por minuto)');
+    } else {
+      console.log('[DEBUG] Nenhum dado de ontem disponível');
+    }
+
+    const result = metrics.snapshots.map((snapshot: HPASnapshot, index: number) => {
+      // Buscar dado correspondente de ontem pelo mesmo minuto
+      const todayDate = new Date(snapshot.timestamp);
+      const minuteKey = todayDate.getMinutes(); // Apenas minuto
+      const yesterdaySnapshot = yesterdayMap.get(minuteKey);
+
+      if (index === 0) {
+        console.log('[DEBUG] Primeiro snapshot de hoje:', {
+          timestamp: snapshot.timestamp,
+          minute: minuteKey,
+          hasMatch: !!yesterdaySnapshot,
+          yesterdayValue: yesterdaySnapshot?.cpu_current,
+          yesterdayTimestamp: yesterdaySnapshot?.timestamp
+        });
+      }
 
       // Extrair valores de Request/Limit
       const cpuRequest = snapshot.cpu_request ? parseResourceValue(snapshot.cpu_request) : null;
@@ -138,19 +175,28 @@ export function MetricsPanel({
         cpuTarget: snapshot.cpu_target,
         cpuRequest: cpuRequest,
         cpuLimit: cpuLimit,
-        cpuYesterday: yesterdaySnapshot?.cpu_current || null,
+        cpuYesterday: yesterdaySnapshot?.cpu_current ?? null,
         memoryCurrent: snapshot.memory_current,
         memoryTarget: snapshot.memory_target,
         memoryRequest: snapshot.memory_request,
         memoryLimit: snapshot.memory_limit,
-        memoryYesterday: yesterdaySnapshot?.memory_current || null,
+        memoryYesterday: yesterdaySnapshot?.memory_current ?? null,
         replicasCurrent: snapshot.replicas_current,
         replicasDesired: snapshot.replicas_desired,
         replicasMin: snapshot.replicas_min,
         replicasMax: snapshot.replicas_max,
-        replicasYesterday: yesterdaySnapshot?.replicas_current || null,
+        replicasYesterday: yesterdaySnapshot?.replicas_current ?? null,
       };
     });
+
+    const hasYesterdayData = result.some(d => d.cpuYesterday !== null);
+    console.log('[DEBUG] chartData criado:', {
+      totalPoints: result.length,
+      hasYesterdayData,
+      yesterdayPoints: result.filter(d => d.cpuYesterday !== null).length
+    });
+
+    return result;
   }, [metrics]);
 
   // Calcular estatísticas
@@ -196,6 +242,32 @@ export function MetricsPanel({
 
     return { current, average, peak, min, p95, trend, trendPercent };
   }, [chartData]);
+
+  // Extrair targets para usar nas ReferenceLine (valores fixos, não mudam ao longo do tempo)
+  // Busca em QUALQUER snapshot até encontrar valor válido (não apenas primeiro)
+  const cpuTarget = useMemo(() => {
+    if (!metrics?.snapshots || metrics.snapshots.length === 0) return 0;
+
+    // Buscar primeiro snapshot com cpu_target válido (não-zero)
+    for (const snap of metrics.snapshots) {
+      if (snap.cpu_target && snap.cpu_target > 0) {
+        return snap.cpu_target;
+      }
+    }
+    return 0;
+  }, [metrics]);
+
+  const memoryTarget = useMemo(() => {
+    if (!metrics?.snapshots || metrics.snapshots.length === 0) return 0;
+
+    // Buscar primeiro snapshot com memory_target válido (não-zero)
+    for (const snap of metrics.snapshots) {
+      if (snap.memory_target && snap.memory_target > 0) {
+        return snap.memory_target;
+      }
+    }
+    return 0;
+  }, [metrics]);
 
   // Componente de Estatística
   const StatCard = ({
@@ -317,31 +389,67 @@ export function MetricsPanel({
           );
         })}
 
-        {/* Adicionar Request e Limit no tooltip */}
+        {/* Adicionar Request, Limit, Target e D-1 no tooltip */}
         {snapshotWithResources && (
           <>
             <div className="border-t pt-2 mt-2 space-y-1">
+              {/* CPU Target */}
+              {isCpuChart && snapshotWithResources.cpu_target && (
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#10b981' }} />
+                    <span className="text-muted-foreground">CPU Target:</span>
+                  </div>
+                  <span className="font-semibold">{snapshotWithResources.cpu_target}%</span>
+                </div>
+              )}
+              {/* CPU Request */}
               {isCpuChart && snapshotWithResources.cpu_request && (
                 <div className="flex items-center justify-between gap-3 text-xs">
-                  <span className="text-muted-foreground">CPU Request:</span>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#f97316' }} />
+                    <span className="text-muted-foreground">CPU Request:</span>
+                  </div>
                   <span className="font-semibold">{snapshotWithResources.cpu_request}</span>
                 </div>
               )}
+              {/* CPU Limit */}
               {isCpuChart && snapshotWithResources.cpu_limit && (
                 <div className="flex items-center justify-between gap-3 text-xs">
-                  <span className="text-muted-foreground">CPU Limit:</span>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#ef4444' }} />
+                    <span className="text-muted-foreground">CPU Limit:</span>
+                  </div>
                   <span className="font-semibold">{snapshotWithResources.cpu_limit}</span>
                 </div>
               )}
+              {/* Memory Target */}
+              {!isCpuChart && snapshotWithResources.memory_target && (
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#10b981' }} />
+                    <span className="text-muted-foreground">Memory Target:</span>
+                  </div>
+                  <span className="font-semibold">{snapshotWithResources.memory_target}%</span>
+                </div>
+              )}
+              {/* Memory Request */}
               {!isCpuChart && snapshotWithResources.memory_request && (
                 <div className="flex items-center justify-between gap-3 text-xs">
-                  <span className="text-muted-foreground">Memory Request:</span>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#f97316' }} />
+                    <span className="text-muted-foreground">Memory Request:</span>
+                  </div>
                   <span className="font-semibold">{snapshotWithResources.memory_request}</span>
                 </div>
               )}
+              {/* Memory Limit */}
               {!isCpuChart && snapshotWithResources.memory_limit && (
                 <div className="flex items-center justify-between gap-3 text-xs">
-                  <span className="text-muted-foreground">Memory Limit:</span>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: '#ef4444' }} />
+                    <span className="text-muted-foreground">Memory Limit:</span>
+                  </div>
                   <span className="font-semibold">{snapshotWithResources.memory_limit}</span>
                 </div>
               )}
@@ -519,30 +627,22 @@ export function MetricsPanel({
                     <YAxis
                       tick={{ fontSize: 12 }}
                       label={{ value: "CPU (%)", angle: -90, position: "insideLeft", fontSize: 12 }}
-                      domain={[0, 120]}
+                      domain={[0, 150]}
                     />
                     <Tooltip content={<CustomTooltip />} />
                     <Legend />
-                    <ReferenceLine
-                      y={chartData[0]?.cpuTarget || 0}
-                      stroke="#10b981"
-                      strokeDasharray="5 5"
-                      label={{ value: `Target: ${chartData[0]?.cpuTarget || 0}%`, position: "right", fontSize: 11, fill: "#10b981" }}
-                    />
                     {/* Linhas tracejadas de Request e Limit (como no Grafana) */}
-                    {/* Request sempre em 100% porque o gráfico é normalizado por Request */}
                     {snapshotWithResources?.cpu_request && (
                       <ReferenceLine
-                        y={100}
+                        y={absoluteToPercent(snapshotWithResources.cpu_request, snapshotWithResources.cpu_limit || snapshotWithResources.cpu_request) || 0}
                         stroke="#f97316"
                         strokeDasharray="3 3"
                         label={{ value: `Request: ${snapshotWithResources.cpu_request}`, position: "right", fontSize: 11, fill: "#f97316" }}
                       />
                     )}
-                    {/* Limit calculado como % do Request (ex: se Limit=2x Request, linha em 200%) */}
-                    {snapshotWithResources?.cpu_limit && snapshotWithResources?.cpu_request && (
+                    {snapshotWithResources?.cpu_limit && (
                       <ReferenceLine
-                        y={absoluteToPercent(snapshotWithResources.cpu_limit, snapshotWithResources.cpu_request) || 0}
+                        y={100}
                         stroke="#ef4444"
                         strokeDasharray="3 3"
                         label={{ value: `Limit: ${snapshotWithResources.cpu_limit}`, position: "right", fontSize: 11, fill: "#ef4444" }}
@@ -562,6 +662,27 @@ export function MetricsPanel({
                       fillOpacity={0.1}
                       label={{ value: "Zona de Alerta", position: "insideTopRight", fontSize: 11 }}
                     />
+                    {/* Linha verde - CPU Target (Reference Line) - PRIMEIRO */}
+                    <ReferenceLine
+                      y={cpuTarget}
+                      stroke="#10b981"
+                      strokeWidth={2}
+                      strokeDasharray="5 5"
+                      label={{ value: `Target: ${cpuTarget}%`, fill: '#10b981', position: 'insideTopRight' }}
+                    />
+                    {/* Linha de ontem (D-1) - ANTES da Area para ficar por cima */}
+                    <Line
+                      type="monotone"
+                      dataKey="cpuYesterday"
+                      name="CPU D-1"
+                      stroke="#9ca3af"
+                      strokeWidth={2}
+                      strokeDasharray="8 4"
+                      dot={false}
+                      unit="%"
+                      connectNulls
+                      isAnimationActive={false}
+                    />
                     <Area
                       type="monotone"
                       dataKey="cpuCurrent"
@@ -569,30 +690,6 @@ export function MetricsPanel({
                       stroke="#3b82f6"
                       strokeWidth={2}
                       fill="url(#cpuGradient)"
-                      unit="%"
-                    />
-                    {/* Linha de ontem (D-1) */}
-                    {chartData.some(d => d.cpuYesterday !== null) && (
-                      <Line
-                        type="monotone"
-                        dataKey="cpuYesterday"
-                        name="CPU Ontem (D-1)"
-                        stroke="#9ca3af"
-                        strokeWidth={1.5}
-                        strokeDasharray="3 3"
-                        dot={false}
-                        unit="%"
-                        connectNulls
-                      />
-                    )}
-                    <Line
-                      type="monotone"
-                      dataKey="cpuTarget"
-                      name="CPU Target"
-                      stroke="#10b981"
-                      strokeWidth={2}
-                      strokeDasharray="5 5"
-                      dot={false}
                       unit="%"
                     />
                   </AreaChart>
@@ -685,30 +782,22 @@ export function MetricsPanel({
                     <YAxis
                       tick={{ fontSize: 12 }}
                       label={{ value: "Memória (%)", angle: -90, position: "insideLeft", fontSize: 12 }}
-                      domain={[0, 120]}
+                      domain={[0, 150]}
                     />
                     <Tooltip content={<CustomTooltip />} />
                     <Legend />
-                    <ReferenceLine
-                      y={chartData[0]?.memoryTarget || 0}
-                      stroke="#10b981"
-                      strokeDasharray="5 5"
-                      label={{ value: `Target: ${chartData[0]?.memoryTarget || 0}%`, position: "right", fontSize: 11, fill: "#10b981" }}
-                    />
                     {/* Linhas tracejadas de Request e Limit (como no Grafana) */}
-                    {/* Request sempre em 100% porque o gráfico é normalizado por Request */}
                     {snapshotWithResources?.memory_request && (
                       <ReferenceLine
-                        y={100}
+                        y={absoluteToPercent(snapshotWithResources.memory_request, snapshotWithResources.memory_limit || snapshotWithResources.memory_request) || 0}
                         stroke="#f97316"
                         strokeDasharray="3 3"
                         label={{ value: `Request: ${snapshotWithResources.memory_request}`, position: "right", fontSize: 11, fill: "#f97316" }}
                       />
                     )}
-                    {/* Limit calculado como % do Request (ex: se Limit=2x Request, linha em 200%) */}
-                    {snapshotWithResources?.memory_limit && snapshotWithResources?.memory_request && (
+                    {snapshotWithResources?.memory_limit && (
                       <ReferenceLine
-                        y={absoluteToPercent(snapshotWithResources.memory_limit, snapshotWithResources.memory_request) || 0}
+                        y={100}
                         stroke="#ef4444"
                         strokeDasharray="3 3"
                         label={{ value: `Limit: ${snapshotWithResources.memory_limit}`, position: "right", fontSize: 11, fill: "#ef4444" }}
@@ -728,6 +817,27 @@ export function MetricsPanel({
                       fillOpacity={0.1}
                       label={{ value: "Zona de Alerta", position: "insideTopRight", fontSize: 11 }}
                     />
+                    {/* Linha verde - Memory Target (Reference Line) - PRIMEIRO */}
+                    <ReferenceLine
+                      y={memoryTarget}
+                      stroke="#10b981"
+                      strokeWidth={2}
+                      strokeDasharray="5 5"
+                      label={{ value: `Target: ${memoryTarget}%`, fill: '#10b981', position: 'insideTopRight' }}
+                    />
+                    {/* Linha de ontem (D-1) - ANTES da Area para ficar por cima */}
+                    <Line
+                      type="monotone"
+                      dataKey="memoryYesterday"
+                      name="Memória D-1"
+                      stroke="#9ca3af"
+                      strokeWidth={2}
+                      strokeDasharray="8 4"
+                      dot={false}
+                      unit="%"
+                      connectNulls
+                      isAnimationActive={false}
+                    />
                     <Area
                       type="monotone"
                       dataKey="memoryCurrent"
@@ -735,30 +845,6 @@ export function MetricsPanel({
                       stroke="#8b5cf6"
                       strokeWidth={2}
                       fill="url(#memoryGradient)"
-                      unit="%"
-                    />
-                    {/* Linha de ontem (D-1) */}
-                    {chartData.some(d => d.memoryYesterday !== null) && (
-                      <Line
-                        type="monotone"
-                        dataKey="memoryYesterday"
-                        name="Memória Ontem (D-1)"
-                        stroke="#9ca3af"
-                        strokeWidth={1.5}
-                        strokeDasharray="3 3"
-                        dot={false}
-                        unit="%"
-                        connectNulls
-                      />
-                    )}
-                    <Line
-                      type="monotone"
-                      dataKey="memoryTarget"
-                      name="Memória Target"
-                      stroke="#10b981"
-                      strokeWidth={2}
-                      strokeDasharray="5 5"
-                      dot={false}
                       unit="%"
                     />
                   </AreaChart>

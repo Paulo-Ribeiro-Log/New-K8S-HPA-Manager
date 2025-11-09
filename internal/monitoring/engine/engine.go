@@ -25,11 +25,11 @@ type ScanEngine struct {
 	config *scanner.ScanConfig
 
 	// Componentes
-	pfManager       *portforward.PortForwardManager
-	cache           *storage.TimeSeriesCache
-	persistence     *storage.Persistence
-	detector        *analyzer.Detector
-	simpleCollector *collector.SimpleCollector // NOVA ARQUITETURA: Sistema simplificado
+	pfManager         *portforward.PortForwardManager
+	cache             *storage.TimeSeriesCache
+	persistence       *storage.Persistence
+	detector          *analyzer.Detector
+	priorityCollector *collector.PriorityCollector // Sistema com prioridades para HPAs escolhidos
 
 	// Stress Test (apenas em ScanModeStressTest)
 	baselineCollector *monitor.BaselineCollector
@@ -89,22 +89,22 @@ func New(cfg *scanner.ScanConfig, snapshotChan chan *models.HPASnapshot, anomaly
 	// Cria PortForwardManager
 	pfManager := portforward.NewManager()
 
-	// NOVA ARQUITETURA: Cria SimpleCollector
-	var simpleCollector *collector.SimpleCollector
+	// NOVA ARQUITETURA: Cria PriorityCollector
+	var priorityCollector *collector.PriorityCollector
 	if persistence != nil && kubeManager != nil {
-		simpleCollector = collector.NewSimpleCollector(persistence, pfManager, kubeManager)
-		log.Info().Msg("SimpleCollector criado")
+		priorityCollector = collector.NewPriorityCollector(persistence, pfManager, kubeManager)
+		log.Info().Msg("PriorityCollector criado com sistema de prioridades")
 	} else {
-		log.Warn().Msg("SimpleCollector não criado (dependências ausentes)")
+		log.Warn().Msg("PriorityCollector não criado (dependências ausentes)")
 	}
 
 	return &ScanEngine{
-		config:           cfg,
-		pfManager:        pfManager,
-		cache:            cache,
-		persistence:      persistence,
-		detector:         detector,
-		simpleCollector:  simpleCollector,
+		config:            cfg,
+		pfManager:         pfManager,
+		cache:             cache,
+		persistence:       persistence,
+		detector:          detector,
+		priorityCollector: priorityCollector,
 		snapshotChan:     snapshotChan,
 		anomalyChan:      anomalyChan,
 		stressResultChan: stressResultChan,
@@ -140,20 +140,17 @@ func (e *ScanEngine) Start() error {
 		}
 	}
 
-	// NOVA ARQUITETURA: Inicia SimpleCollector
-	if e.simpleCollector != nil {
-		// Adiciona targets iniciais ao collector
-		for _, target := range e.config.Targets {
-			e.simpleCollector.AddTarget(target)
-		}
-
+	// NOVA ARQUITETURA: Inicia PriorityCollector
+	if e.priorityCollector != nil {
 		// Inicia coleta
-		if err := e.simpleCollector.Start(); err != nil {
+		if err := e.priorityCollector.Start(); err != nil {
 			log.Error().
 				Err(err).
-				Msg("Falha ao iniciar SimpleCollector")
+				Msg("Falha ao iniciar PriorityCollector")
 			return err
 		}
+
+		log.Info().Msg("✅ PriorityCollector iniciado - aguardando HPAs serem adicionados via web interface")
 	}
 
 	return nil
@@ -171,9 +168,9 @@ func (e *ScanEngine) Stop() error {
 
 	log.Info().Msg("Parando scan engine")
 
-	// NOVA ARQUITETURA: Para SimpleCollector
-	if e.simpleCollector != nil {
-		e.simpleCollector.Stop()
+	// NOVA ARQUITETURA: Para PriorityCollector
+	if e.priorityCollector != nil {
+		e.priorityCollector.Stop()
 	}
 
 	// Cancela contexto (sinaliza todas as goroutines para pararem)
@@ -324,24 +321,34 @@ func (e *ScanEngine) AddTarget(target scanner.ScanTarget) {
 			Int("hpas", len(target.HPAs)).
 			Msg("Novo cluster adicionado")
 
-		// NOVA ARQUITETURA: Adiciona ao SimpleCollector
-		if e.running && e.simpleCollector != nil {
-			e.simpleCollector.AddTarget(target)
-		}
-	} else {
-		// NOVA ARQUITETURA: Atualiza target existente no collector
-		if e.running && e.simpleCollector != nil {
-			e.simpleCollector.AddTarget(target)
-		}
+		log.Info().
+			Str("cluster", target.Cluster).
+			Int("namespaces", len(target.Namespaces)).
+			Int("hpas", len(target.HPAs)).
+			Msg("Novo cluster adicionado ao monitoramento")
 	}
 
-	// NOTA: SimpleCollector já verifica baseline automaticamente via requestBaselineIfNeeded()
-	// Não precisa chamar CollectBaseline() manualmente
+	// NOVA ARQUITETURA: Adiciona HPAs ao PriorityCollector
+	// Cada HPA é adicionado individualmente com PRIORIDADE MÁXIMA
+	if e.running && e.priorityCollector != nil {
+		for _, ns := range target.Namespaces {
+			for _, hpa := range target.HPAs {
+				if err := e.priorityCollector.AddPriorityHPA(target.Cluster, ns, hpa); err != nil {
+					log.Error().
+						Err(err).
+						Str("cluster", target.Cluster).
+						Str("namespace", ns).
+						Str("hpa", hpa).
+						Msg("Erro ao adicionar HPA prioritário")
+				}
+			}
+		}
+	}
 
 	log.Info().
 		Str("cluster", target.Cluster).
 		Int("hpas", len(target.HPAs)).
-		Msg("HPAs adicionados ao monitoramento")
+		Msg("✅ HPAs adicionados com PRIORIDADE MÁXIMA")
 }
 
 // RemoveTarget remove um target do scan
@@ -361,9 +368,9 @@ func (e *ScanEngine) RemoveTarget(cluster string) {
 		Str("cluster", cluster).
 		Msg("Target removido")
 
-	// NOVA ARQUITETURA: Remove do SimpleCollector
-	if e.running && e.simpleCollector != nil {
-		e.simpleCollector.RemoveTarget(cluster)
+	// NOVA ARQUITETURA: Remove do PriorityCollector
+	if e.running && e.priorityCollector != nil {
+		e.priorityCollector.RemoveTarget(cluster)
 	}
 
 	// Para port-forward do cluster removido (se houver)

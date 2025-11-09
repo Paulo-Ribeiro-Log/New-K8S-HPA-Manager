@@ -141,13 +141,23 @@ func (h *MonitoringHandler) GetMetrics(c *gin.Context) {
 	apiSnapshotsYesterday := make([]gin.H, 0, len(snapshotsYesterday))
 	for _, snap := range snapshotsYesterday {
 		apiSnapshotsYesterday = append(apiSnapshotsYesterday, gin.H{
-			"cluster":          snap.Cluster,
-			"namespace":        snap.Namespace,
-			"hpa_name":         snap.Name,
-			"timestamp":        snap.Timestamp.Format(time.RFC3339),
-			"cpu_current":      snap.CPUCurrent,
-			"memory_current":   snap.MemoryCurrent,
-			"replicas_current": snap.CurrentReplicas,
+			"cluster":           snap.Cluster,
+			"namespace":         snap.Namespace,
+			"hpa_name":          snap.Name,
+			"timestamp":         snap.Timestamp.Format(time.RFC3339),
+			"cpu_current":       snap.CPUCurrent,
+			"cpu_target":        snap.CPUTarget,
+			"memory_current":    snap.MemoryCurrent,
+			"memory_target":     snap.MemoryTarget,
+			"replicas_current":  snap.CurrentReplicas,
+			"replicas_desired":  snap.DesiredReplicas,
+			"replicas_min":      snap.MinReplicas,
+			"replicas_max":      snap.MaxReplicas,
+			// Recursos do Deployment (K8s API) - NOVO
+			"cpu_request":       snap.CPURequest,
+			"cpu_limit":         snap.CPULimit,
+			"memory_request":    snap.MemoryRequest,
+			"memory_limit":      snap.MemoryLimit,
 		})
 	}
 
@@ -576,5 +586,113 @@ func (h *MonitoringHandler) RemoveTarget(c *gin.Context) {
 		"status":  "success",
 		"message": "Target removed successfully",
 		"cluster": cluster,
+	})
+}
+
+// SyncMonitoredHPAs sincroniza lista completa de HPAs monitorados (reconciliação)
+// POST /api/v1/monitoring/sync
+func (h *MonitoringHandler) SyncMonitoredHPAs(c *gin.Context) {
+	var req struct {
+		HPAs []struct {
+			Cluster   string `json:"cluster"`
+			Namespace string `json:"namespace"`
+			HPA       string `json:"hpa"`
+		} `json:"hpas"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	log.Info().
+		Int("hpas_count", len(req.HPAs)).
+		Msg("🔄 Iniciando reconciliação de HPAs monitorados")
+
+	// Construir mapa de HPAs desejados (frontend)
+	// Normalizar cluster name removendo sufixo -admin para comparação consistente
+	desiredHPAs := make(map[string]bool)
+	for _, hpa := range req.HPAs {
+		// Normalizar cluster name (remover -admin se presente)
+		clusterName := strings.TrimSuffix(hpa.Cluster, "-admin")
+		key := clusterName + "/" + hpa.Namespace + "/" + hpa.HPA
+		desiredHPAs[key] = true
+	}
+
+	// Obter lista atual de targets do engine
+	currentTargets := h.engine.GetTargets()
+
+	// Construir mapa de HPAs atuais (backend)
+	currentHPAs := make(map[string]bool)
+	for _, target := range currentTargets {
+		for _, ns := range target.Namespaces {
+			for _, hpaName := range target.HPAs {
+				key := target.Cluster + "/" + ns + "/" + hpaName
+				currentHPAs[key] = true
+			}
+		}
+	}
+
+	// Calcular diferenças
+	added := 0
+	removed := 0
+
+	// Adicionar HPAs que estão no frontend mas não no backend
+	for _, hpa := range req.HPAs {
+		// Normalizar cluster name (já normalizado no mapa desiredHPAs)
+		clusterName := strings.TrimSuffix(hpa.Cluster, "-admin")
+		key := clusterName + "/" + hpa.Namespace + "/" + hpa.HPA
+		if !currentHPAs[key] {
+
+			log.Info().
+				Str("cluster", clusterName).
+				Str("namespace", hpa.Namespace).
+				Str("hpa", hpa.HPA).
+				Msg("➕ Adicionando HPA ao monitoramento (reconciliação)")
+
+			target := scanner.ScanTarget{
+				Cluster:    clusterName,
+				Namespaces: []string{hpa.Namespace},
+				HPAs:       []string{hpa.HPA},
+			}
+
+			h.engine.AddTarget(target)
+			added++
+		}
+	}
+
+	// Remover HPAs que estão no backend mas não no frontend
+	for key := range currentHPAs {
+		if !desiredHPAs[key] {
+			parts := strings.Split(key, "/")
+			if len(parts) == 3 {
+				cluster := parts[0]
+
+				log.Info().
+					Str("cluster", cluster).
+					Str("key", key).
+					Msg("➖ Removendo HPA do monitoramento (reconciliação)")
+
+				// Remove todo o cluster se não há mais HPAs
+				// TODO: Implementar remoção granular de HPA individual
+				h.engine.RemoveTarget(cluster)
+				removed++
+			}
+		}
+	}
+
+	total := len(desiredHPAs)
+
+	log.Info().
+		Int("added", added).
+		Int("removed", removed).
+		Int("total", total).
+		Msg("✅ Reconciliação concluída")
+
+	c.JSON(200, gin.H{
+		"status":  "success",
+		"added":   added,
+		"removed": removed,
+		"total":   total,
 	})
 }

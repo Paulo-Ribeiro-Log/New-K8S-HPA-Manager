@@ -134,6 +134,12 @@ func (p *Persistence) initSchema() error {
 		min_replicas INTEGER,
 		max_replicas INTEGER,
 
+		-- Deployment Resources (K8s API) - CRÍTICO para linhas de referência
+		cpu_request TEXT,
+		cpu_limit TEXT,
+		memory_request TEXT,
+		memory_limit TEXT,
+
 		-- Métricas adicionais em JSON (P95/P99, network, etc)
 		metrics_json TEXT,
 
@@ -403,8 +409,27 @@ func (p *Persistence) SaveSnapshots(snapshots []*models.HPASnapshot) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`
-		INSERT OR IGNORE INTO snapshots (cluster, namespace, hpa_name, timestamp, data)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO hpa_snapshots (
+			cluster, namespace, hpa_name, timestamp,
+			cpu_current, cpu_target, memory_current, memory_target,
+			current_replicas, desired_replicas, min_replicas, max_replicas,
+			cpu_request, cpu_limit, memory_request, memory_limit,
+			metrics_json, baseline_ready, last_baseline_scan
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(cluster, namespace, hpa_name, timestamp) DO UPDATE SET
+			cpu_current = excluded.cpu_current,
+			cpu_target = excluded.cpu_target,
+			memory_current = excluded.memory_current,
+			memory_target = excluded.memory_target,
+			cpu_request = excluded.cpu_request,
+			cpu_limit = excluded.cpu_limit,
+			memory_request = excluded.memory_request,
+			memory_limit = excluded.memory_limit,
+			current_replicas = excluded.current_replicas,
+			desired_replicas = excluded.desired_replicas,
+			min_replicas = excluded.min_replicas,
+			max_replicas = excluded.max_replicas,
+			metrics_json = excluded.metrics_json
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare statement: %w", err)
@@ -412,21 +437,28 @@ func (p *Persistence) SaveSnapshots(snapshots []*models.HPASnapshot) error {
 	defer stmt.Close()
 
 	for _, snapshot := range snapshots {
-		data, err := json.Marshal(snapshot)
-		if err != nil {
-			log.Warn().
-				Err(err).
-				Str("hpa", snapshot.Name).
-				Msg("Failed to marshal snapshot, skipping")
-			continue
-		}
+		data, _ := json.Marshal(snapshot)
 
 		_, err = stmt.Exec(
 			snapshot.Cluster,
 			snapshot.Namespace,
 			snapshot.Name,
 			snapshot.Timestamp,
+			snapshot.CPUCurrent,
+			snapshot.CPUTarget,
+			snapshot.MemoryCurrent,
+			snapshot.MemoryTarget,
+			snapshot.CurrentReplicas,
+			snapshot.DesiredReplicas,
+			snapshot.MinReplicas,
+			snapshot.MaxReplicas,
+			snapshot.CPURequest,
+			snapshot.CPULimit,
+			snapshot.MemoryRequest,
+			snapshot.MemoryLimit,
 			string(data),
+			0,              // baseline_ready (será marcado depois)
+			time.Now(),     // last_baseline_scan
 		)
 		if err != nil {
 			log.Warn().
@@ -454,7 +486,12 @@ func (p *Persistence) LoadSnapshots(cluster, namespace, name string, since time.
 	}
 
 	rows, err := p.db.Query(`
-		SELECT data FROM snapshots
+		SELECT cluster, namespace, hpa_name, timestamp,
+			cpu_current, cpu_target, memory_current, memory_target,
+			current_replicas, desired_replicas, min_replicas, max_replicas,
+			cpu_request, cpu_limit, memory_request, memory_limit,
+			metrics_json
+		FROM hpa_snapshots
 		WHERE cluster = ? AND namespace = ? AND hpa_name = ?
 		  AND timestamp >= ?
 		ORDER BY timestamp ASC
@@ -466,15 +503,29 @@ func (p *Persistence) LoadSnapshots(cluster, namespace, name string, since time.
 
 	snapshots := make([]models.HPASnapshot, 0)
 	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			log.Warn().Err(err).Msg("Failed to scan snapshot")
-			continue
-		}
-
 		var snapshot models.HPASnapshot
-		if err := json.Unmarshal([]byte(data), &snapshot); err != nil {
-			log.Warn().Err(err).Msg("Failed to unmarshal snapshot")
+		var metricsJSON string
+
+		if err := rows.Scan(
+			&snapshot.Cluster,
+			&snapshot.Namespace,
+			&snapshot.Name,
+			&snapshot.Timestamp,
+			&snapshot.CPUCurrent,
+			&snapshot.CPUTarget,
+			&snapshot.MemoryCurrent,
+			&snapshot.MemoryTarget,
+			&snapshot.CurrentReplicas,
+			&snapshot.DesiredReplicas,
+			&snapshot.MinReplicas,
+			&snapshot.MaxReplicas,
+			&snapshot.CPURequest,
+			&snapshot.CPULimit,
+			&snapshot.MemoryRequest,
+			&snapshot.MemoryLimit,
+			&metricsJSON,
+		); err != nil {
+			log.Warn().Err(err).Msg("Failed to scan snapshot")
 			continue
 		}
 
@@ -504,7 +555,12 @@ func (p *Persistence) LoadSnapshotsYesterday(cluster, namespace, name string, du
 	yesterdayStart := yesterdayEnd.Add(-duration)    // 24h + duration atrás
 
 	rows, err := p.db.Query(`
-		SELECT data FROM snapshots
+		SELECT cluster, namespace, hpa_name, timestamp,
+			cpu_current, cpu_target, memory_current, memory_target,
+			current_replicas, desired_replicas, min_replicas, max_replicas,
+			cpu_request, cpu_limit, memory_request, memory_limit,
+			metrics_json
+		FROM hpa_snapshots
 		WHERE cluster = ? AND namespace = ? AND hpa_name = ?
 		  AND timestamp >= ? AND timestamp <= ?
 		ORDER BY timestamp ASC
@@ -516,15 +572,29 @@ func (p *Persistence) LoadSnapshotsYesterday(cluster, namespace, name string, du
 
 	snapshots := make([]models.HPASnapshot, 0)
 	for rows.Next() {
-		var data string
-		if err := rows.Scan(&data); err != nil {
-			log.Warn().Err(err).Msg("Failed to scan snapshot")
-			continue
-		}
-
 		var snapshot models.HPASnapshot
-		if err := json.Unmarshal([]byte(data), &snapshot); err != nil {
-			log.Warn().Err(err).Msg("Failed to unmarshal snapshot")
+		var metricsJSON string
+
+		if err := rows.Scan(
+			&snapshot.Cluster,
+			&snapshot.Namespace,
+			&snapshot.Name,
+			&snapshot.Timestamp,
+			&snapshot.CPUCurrent,
+			&snapshot.CPUTarget,
+			&snapshot.MemoryCurrent,
+			&snapshot.MemoryTarget,
+			&snapshot.CurrentReplicas,
+			&snapshot.DesiredReplicas,
+			&snapshot.MinReplicas,
+			&snapshot.MaxReplicas,
+			&snapshot.CPURequest,
+			&snapshot.CPULimit,
+			&snapshot.MemoryRequest,
+			&snapshot.MemoryLimit,
+			&metricsJSON,
+		); err != nil {
+			log.Warn().Err(err).Msg("Failed to scan snapshot")
 			continue
 		}
 
@@ -982,13 +1052,18 @@ func (p *Persistence) SaveBaselineMetrics(cluster, namespace, hpaName string, me
 			cluster, namespace, hpa_name, timestamp,
 			cpu_current, cpu_target, memory_current, memory_target,
 			current_replicas, desired_replicas, min_replicas, max_replicas,
+			cpu_request, cpu_limit, memory_request, memory_limit,
 			metrics_json, baseline_ready, last_baseline_scan
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(cluster, namespace, hpa_name, timestamp) DO UPDATE SET
 			cpu_current = excluded.cpu_current,
 			cpu_target = excluded.cpu_target,
 			memory_current = excluded.memory_current,
 			memory_target = excluded.memory_target,
+			cpu_request = excluded.cpu_request,
+			cpu_limit = excluded.cpu_limit,
+			memory_request = excluded.memory_request,
+			memory_limit = excluded.memory_limit,
 			metrics_json = excluded.metrics_json,
 			baseline_ready = excluded.baseline_ready,
 			last_baseline_scan = excluded.last_baseline_scan
