@@ -5,7 +5,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Activity,
   TrendingUp,
@@ -22,8 +21,6 @@ import {
   Line,
   AreaChart,
   Area,
-  BarChart,
-  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -62,7 +59,6 @@ export function MetricsPanel({
   className = "",
 }: MetricsPanelProps) {
   const [duration, setDuration] = useState<string>("1h");
-  const [activeTab, setActiveTab] = useState<string>("cpu"); // Estado para controlar aba ativa
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(0); // 0 = desabilitado
   const { metrics, loading, error, refetch } = useHPAMetrics(
     cluster,
@@ -552,24 +548,9 @@ export function MetricsPanel({
         )}
 
         {!loading && !error && chartData.length > 0 && (
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-            <TabsList className="grid w-full grid-cols-3">
-              <TabsTrigger value="cpu" className="gap-2">
-                <Cpu className="h-4 w-4" />
-                CPU
-              </TabsTrigger>
-              <TabsTrigger value="memory" className="gap-2">
-                <MemoryStick className="h-4 w-4" />
-                Memória
-              </TabsTrigger>
-              <TabsTrigger value="replicas" className="gap-2">
-                <Users className="h-4 w-4" />
-                Réplicas
-              </TabsTrigger>
-            </TabsList>
-
-            {/* CPU Analysis */}
-            <TabsContent value="cpu" className="space-y-6">
+          <div className="space-y-6">
+            {/* CPU Analysis - Largura total */}
+            <div className="space-y-6">
               {/* Estatísticas - Linha 1: Métricas de uso */}
               <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                 <StatCard
@@ -721,56 +702,12 @@ export function MetricsPanel({
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
-            </TabsContent>
+            </div>
 
-            {/* Memory Analysis */}
-            <TabsContent value="memory" className="space-y-6">
-              {/* Estatísticas - Linha 1: Métricas de uso */}
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                <StatCard
-                  icon={Activity}
-                  label="Memória Atual"
-                  value={memoryStats.current}
-                  unit="%"
-                  trend={memoryStats.trend}
-                  trendPercent={memoryStats.trendPercent}
-                />
-                <StatCard
-                  icon={TrendingUp}
-                  label="Média"
-                  value={memoryStats.average}
-                  unit="%"
-                  trend="stable"
-                  trendPercent={0}
-                />
-                <StatCard
-                  icon={AlertCircle}
-                  label="Pico"
-                  value={memoryStats.peak}
-                  unit="%"
-                  trend="up"
-                  trendPercent={0}
-                  className="border-orange-200 bg-orange-50"
-                />
-                <StatCard
-                  icon={TrendingDown}
-                  label="Mínimo"
-                  value={memoryStats.min}
-                  unit="%"
-                  trend="down"
-                  trendPercent={0}
-                />
-                <StatCard
-                  icon={BarChart3}
-                  label="P95"
-                  value={memoryStats.p95}
-                  unit="%"
-                  trend="stable"
-                  trendPercent={0}
-                />
-              </div>
-
-
+            {/* Memory e Replicas lado a lado - Grid 2 colunas */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Memory Analysis */}
+              <div className="space-y-4">
               {/* Gráfico de Memória */}
               <div className="border rounded-lg p-4 bg-card">
                 <div className="mb-4 flex items-center justify-between">
@@ -875,11 +812,36 @@ export function MetricsPanel({
                     />
                   </AreaChart>
                 </ResponsiveContainer>
-              </div>
-            </TabsContent>
 
-            {/* Replicas Timeline */}
-            <TabsContent value="replicas" className="space-y-6">
+                {/* Labels de estatísticas abaixo do gráfico */}
+                <div className="mt-4 pt-3 border-t flex items-center justify-around text-xs">
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Atual</div>
+                    <div className="font-semibold text-sm">{memoryStats.current.toFixed(1)}%</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Média</div>
+                    <div className="font-semibold text-sm">{memoryStats.average.toFixed(1)}%</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Pico</div>
+                    <div className="font-semibold text-sm text-orange-600">{memoryStats.peak.toFixed(1)}%</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Mínimo</div>
+                    <div className="font-semibold text-sm">{memoryStats.min.toFixed(1)}%</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-muted-foreground">P95</div>
+                    <div className="font-semibold text-sm">{memoryStats.p95.toFixed(1)}%</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+              {/* Replicas Analysis */}
+              <div className="space-y-4">
+              {/* Gráfico de Réplicas */}
               <div className="border rounded-lg p-4 bg-card">
                 <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
                   <Users className="h-4 w-4" />
@@ -903,14 +865,16 @@ export function MetricsPanel({
                     <ReferenceLine
                       y={chartData[0]?.replicasMin || 0}
                       stroke="#f59e0b"
+                      strokeWidth={2}
                       strokeDasharray="5 5"
-                      label={{ value: "Min", position: "right", fontSize: 12 }}
+                      label={{ value: `Min: ${chartData[0]?.replicasMin || 0}`, position: "left", fill: "#f59e0b", fontSize: 12 }}
                     />
                     <ReferenceLine
                       y={chartData[0]?.replicasMax || 0}
                       stroke="#ef4444"
+                      strokeWidth={2}
                       strokeDasharray="5 5"
-                      label={{ value: "Max", position: "right", fontSize: 12 }}
+                      label={{ value: `Max: ${chartData[0]?.replicasMax || 0}`, position: "right", fill: "#ef4444", fontSize: 12 }}
                     />
                     <Line
                       type="stepAfter"
@@ -918,24 +882,32 @@ export function MetricsPanel({
                       name="Réplicas Atuais"
                       stroke="#3b82f6"
                       strokeWidth={2}
-                      dot={{ r: 4 }}
+                      dot={false}
                       unit=""
-                    />
-                    <Line
-                      type="stepAfter"
-                      dataKey="replicasDesired"
-                      name="Réplicas Desejadas"
-                      stroke="#10b981"
-                      strokeWidth={2}
-                      strokeDasharray="5 5"
-                      dot={{ r: 3 }}
-                      unit=""
+                      connectNulls
                     />
                   </LineChart>
                 </ResponsiveContainer>
+
+                {/* Labels de informações do HPA */}
+                <div className="mt-4 pt-3 border-t flex items-center justify-around text-xs">
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Min (HPA)</div>
+                    <div className="font-semibold text-sm text-amber-600">{chartData[0]?.replicasMin || 0}</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Atual</div>
+                    <div className="font-semibold text-sm text-blue-600">{chartData[chartData.length - 1]?.replicasCurrent || 0}</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Max (HPA)</div>
+                    <div className="font-semibold text-sm text-red-600">{chartData[0]?.replicasMax || 0}</div>
+                  </div>
+                </div>
               </div>
-            </TabsContent>
-          </Tabs>
+            </div>
+          </div>
+        </div>
         )}
       </CardContent>
     </Card>

@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { MetricsPanel } from "@/components/MetricsPanel";
-import { AlertsPanel } from "@/components/AlertsPanel";
 import { apiClient } from "@/lib/api/client";
 import type { HPA, MonitoringStatus } from "@/lib/api/types";
 
@@ -232,7 +231,7 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
                             <Card
                               key={`${hpa.namespace}/${hpa.name}`}
                               className={`
-                                group flex items-center gap-3 px-3 py-2 cursor-pointer transition-all duration-200 border
+                                group flex items-center gap-2.5 px-2.5 py-1.5 cursor-pointer transition-all duration-200 border
                                 ${
                                   isSelected
                                     ? "border-primary bg-primary/10 shadow-sm"
@@ -242,26 +241,26 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
                               onClick={() => setSelectedHPA(hpa)}
                             >
                               <Activity
-                                className={`w-4 h-4 flex-shrink-0 ${
+                                className={`w-3.5 h-3.5 flex-shrink-0 ${
                                   isSelected ? "text-primary" : "text-muted-foreground"
                                 }`}
                               />
                               <div className="flex-1 min-w-0">
                                 <div
-                                  className={`text-xs font-semibold truncate ${
+                                  className={`text-[11px] font-semibold truncate ${
                                     isSelected ? "text-primary" : "text-foreground"
                                   }`}
                                 >
                                   {hpa.name}
                                 </div>
-                                <div className="text-[11px] text-muted-foreground truncate">
+                                <div className="text-[10px] text-muted-foreground truncate">
                                   {hpa.namespace}
                                 </div>
                               </div>
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                className={`h-7 w-7 rounded-full transition-opacity ${
+                                className={`h-6 w-6 rounded-full transition-opacity ${
                                   isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"
                                 } hover:bg-destructive/10 hover:text-destructive`}
                                 onClick={(e) => {
@@ -270,7 +269,7 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
                                 }}
                                 title="Remover do monitoramento"
                               >
-                                <Trash2 className="h-3.5 w-3.5" />
+                                <Trash2 className="h-3 w-3" />
                               </Button>
                             </Card>
                           );
@@ -323,7 +322,6 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
                 namespace={selectedHPA.namespace}
                 hpaName={selectedHPA.name}
               />
-              <AlertsPanel cluster={selectedHPA.cluster} />
             </div>
           ) : (
             <div className="flex h-full items-center justify-center text-muted-foreground">

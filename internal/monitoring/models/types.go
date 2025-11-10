@@ -14,10 +14,10 @@ type HPASnapshot struct {
 
 	// === K8s API Data (Config & State) ===
 	// HPA Config
-	MinReplicas     int32
-	MaxReplicas     int32
-	CurrentReplicas int32
-	DesiredReplicas int32
+	MinReplicas     int32 `json:"replicas_min"`
+	MaxReplicas     int32 `json:"replicas_max"`
+	CurrentReplicas int32 `json:"replicas_current"`
+	DesiredReplicas int32 `json:"replicas_desired"`
 
 	// Targets
 	CPUTarget    int32 `json:"cpu_target"`    // % (ex: 70)
