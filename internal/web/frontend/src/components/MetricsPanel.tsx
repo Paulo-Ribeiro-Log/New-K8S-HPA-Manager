@@ -1,6 +1,6 @@
 // MetricsPanel - Painel de visualização profissional de métricas
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -62,12 +62,26 @@ export function MetricsPanel({
   className = "",
 }: MetricsPanelProps) {
   const [duration, setDuration] = useState<string>("1h");
+  const [activeTab, setActiveTab] = useState<string>("cpu"); // Estado para controlar aba ativa
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(0); // 0 = desabilitado
   const { metrics, loading, error, refetch } = useHPAMetrics(
     cluster,
     namespace,
     hpaName,
     duration
   );
+
+  // Auto-refresh com intervalo configurável
+  useEffect(() => {
+    if (autoRefreshInterval === 0) return; // Auto-refresh desabilitado
+
+    const intervalId = setInterval(() => {
+      console.log(`[MetricsPanel] Auto-refresh (${autoRefreshInterval}min)`);
+      refetch();
+    }, autoRefreshInterval * 60 * 1000); // Converter minutos para ms
+
+    return () => clearInterval(intervalId);
+  }, [autoRefreshInterval, refetch]);
 
   // Helper para converter valores K8s (ex: "500m", "2Gi") para números
   // CPU: millicores (ex: "500m" -> 500)
@@ -489,6 +503,18 @@ export function MetricsPanel({
                 <SelectItem value="24h">24 horas</SelectItem>
               </SelectContent>
             </Select>
+            <Select value={autoRefreshInterval.toString()} onValueChange={(v) => setAutoRefreshInterval(parseInt(v))}>
+              <SelectTrigger className="w-32">
+                <SelectValue placeholder="Auto-refresh" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="0">Desabilitado</SelectItem>
+                <SelectItem value="1">1 min</SelectItem>
+                <SelectItem value="5">5 min</SelectItem>
+                <SelectItem value="10">10 min</SelectItem>
+                <SelectItem value="15">15 min</SelectItem>
+              </SelectContent>
+            </Select>
             <Button
               variant="outline"
               size="icon"
@@ -526,7 +552,7 @@ export function MetricsPanel({
         )}
 
         {!loading && !error && chartData.length > 0 && (
-          <Tabs defaultValue="cpu" className="space-y-6">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
             <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="cpu" className="gap-2">
                 <Cpu className="h-4 w-4" />

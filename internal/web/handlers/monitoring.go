@@ -547,18 +547,41 @@ func (h *MonitoringHandler) AddHPA(c *gin.Context) {
 		Str("hpa", req.HPA).
 		Msg("Adicionando HPA ao monitoramento")
 
-	// Criar target com HPA específico
-	target := scanner.ScanTarget{
-		Cluster:    clusterName,
-		Namespaces: []string{req.Namespace},
-		HPAs:       []string{req.HPA},
+	// Adiciona HPA ao PriorityCollector (com port-forward dedicado)
+	priorityCollector := h.engine.GetPriorityCollector()
+	if priorityCollector == nil {
+		c.JSON(500, gin.H{
+			"status":  "error",
+			"message": "PriorityCollector not available",
+		})
+		return
 	}
 
-	h.engine.AddTarget(target)
+	if err := priorityCollector.AddPriorityHPA(clusterName, req.Namespace, req.HPA); err != nil {
+		log.Error().
+			Err(err).
+			Str("cluster", clusterName).
+			Str("namespace", req.Namespace).
+			Str("hpa", req.HPA).
+			Msg("Falha ao adicionar HPA ao PriorityCollector")
+
+		c.JSON(500, gin.H{
+			"status":  "error",
+			"message": "Failed to add HPA to priority monitoring",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	log.Info().
+		Str("cluster", clusterName).
+		Str("namespace", req.Namespace).
+		Str("hpa", req.HPA).
+		Msg("✅ HPA adicionado ao monitoramento prioritário")
 
 	c.JSON(200, gin.H{
 		"status":  "success",
-		"message": "HPA added to monitoring successfully",
+		"message": "HPA added to priority monitoring successfully",
 		"target": gin.H{
 			"cluster":   clusterName,
 			"namespace": req.Namespace,
@@ -650,14 +673,18 @@ func (h *MonitoringHandler) SyncMonitoredHPAs(c *gin.Context) {
 				Str("hpa", hpa.HPA).
 				Msg("➕ Adicionando HPA ao monitoramento (reconciliação)")
 
-			target := scanner.ScanTarget{
-				Cluster:    clusterName,
-				Namespaces: []string{hpa.Namespace},
-				HPAs:       []string{hpa.HPA},
+			// CORREÇÃO: Adiciona diretamente ao PriorityCollector
+			// Cada HPA monitorado DEVE ter port-forward dedicado + baseline
+			if err := h.engine.GetPriorityCollector().AddPriorityHPA(clusterName, hpa.Namespace, hpa.HPA); err != nil {
+				log.Error().
+					Err(err).
+					Str("cluster", clusterName).
+					Str("namespace", hpa.Namespace).
+					Str("hpa", hpa.HPA).
+					Msg("❌ Erro ao adicionar HPA prioritário (reconciliação)")
+			} else {
+				added++
 			}
-
-			h.engine.AddTarget(target)
-			added++
 		}
 	}
 
