@@ -518,28 +518,31 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-6 py-3 flex-shrink-0">
-        <StatsCard
-          icon={Layers}
-          value={clustersLoading ? "..." : String(stats.clusters)}
-          label="Clusters"
-        />
-        <StatsCard
-          icon={Package}
-          value={namespacesLoading ? "..." : String(stats.namespaces)}
-          label="Namespaces"
-        />
-        <StatsCard
-          icon={Scale}
-          value={hpasLoading ? "..." : String(stats.hpas)}
-          label="HPAs"
-        />
-        <StatsCard
-          icon={Database}
-          value={nodePoolsLoading ? "..." : String(stats.nodePools)}
-          label="Node Pools"
-        />
-      </div>
+      {/* Ocultar cards de estatísticas APENAS na aba Monitoramento */}
+      {activeTab !== "monitoring" && (
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-6 py-3 flex-shrink-0">
+          <StatsCard
+            icon={Layers}
+            value={clustersLoading ? "..." : String(stats.clusters)}
+            label="Clusters"
+          />
+          <StatsCard
+            icon={Package}
+            value={namespacesLoading ? "..." : String(stats.namespaces)}
+            label="Namespaces"
+          />
+          <StatsCard
+            icon={Scale}
+            value={hpasLoading ? "..." : String(stats.hpas)}
+            label="HPAs"
+          />
+          <StatsCard
+            icon={Database}
+            value={nodePoolsLoading ? "..." : String(stats.nodePools)}
+            label="Node Pools"
+          />
+        </div>
+      )}
 
       <TabNavigation
         tabs={tabs}

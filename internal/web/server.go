@@ -95,23 +95,17 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 	// Criar contexto para monitoring
 	monitoringCtx, monitoringCancel := context.WithCancel(context.Background())
 
-	// Carregar targets salvos (se existirem)
-	targetsFile := filepath.Join(baseDir, "monitoring-targets.json")
-	savedTargets, err := loadTargetsFromFile(targetsFile)
-	if err != nil {
-		fmt.Printf("⚠️  Não foi possível carregar targets salvos: %v\n", err)
-		savedTargets = []scanner.ScanTarget{}
-	} else if len(savedTargets) > 0 {
-		fmt.Printf("📂 %d target(s) restaurado(s) do arquivo\n", len(savedTargets))
-	}
+	// ❌ REMOVIDO: Não carregar targets salvos do arquivo
+	// Source of truth: localStorage do frontend (escolha do operador)
+	// Backend inicia SEM HPAs e aguarda reconciliação do frontend
 
-	// Configuração do monitoring engine com targets restaurados
+	// Configuração do monitoring engine SEM targets
 	scanConfig := &scanner.ScanConfig{
 		Mode:        scanner.ScanModeIndividual,
-		Targets:     savedTargets, // Restaura targets salvos
+		Targets:     []scanner.ScanTarget{}, // Inicia VAZIO - HPAs adicionados via reconciliação
 		Interval:    1 * time.Minute,
 		Duration:    0,
-		AutoStart:   len(savedTargets) > 0, // Inicia automaticamente se houver targets salvos
+		AutoStart:   false, // NÃO inicia automaticamente - aguarda frontend
 		Name:        "Web Monitoring",
 		Description: "Monitoring engine para interface web",
 		CreatedAt:   time.Now(),
@@ -120,18 +114,8 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 	// Criar monitoring engine
 	monitoringEngine := engine.New(scanConfig, snapshotChan, anomalyChan, stressResultChan)
 
-	// Iniciar engine automaticamente se houver targets
-	if len(savedTargets) > 0 {
-		fmt.Printf("🚀 Iniciando monitoring engine com %d cluster(s)...\n", len(savedTargets))
-		go func() {
-			time.Sleep(2 * time.Second) // Aguarda servidor estabilizar
-			if err := monitoringEngine.Start(); err != nil {
-				fmt.Printf("❌ Erro ao iniciar monitoring engine: %v\n", err)
-			} else {
-				fmt.Printf("✅ Monitoring engine iniciado automaticamente\n")
-			}
-		}()
-	}
+	fmt.Println("⏳ Monitoring engine criado - aguardando escolha do operador (frontend)")
+	fmt.Println("💡 HPAs serão adicionados via reconciliação quando operador clicar 'Monitorar'")
 
 	server := &Server{
 		router:           router,
@@ -154,8 +138,8 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 	server.setupStatic()
 	server.startInactivityMonitor()
 
-	// Iniciar persistência de targets em background
-	go server.startTargetsPersistence(targetsFile, 30*time.Second)
+	// ❌ REMOVIDO: Persistência de targets em arquivo
+	// Source of truth: localStorage do frontend (reconciliação)
 
 	return server, nil
 }

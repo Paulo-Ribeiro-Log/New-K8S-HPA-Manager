@@ -265,6 +265,11 @@ func (e *ScanEngine) GetPersistence() *storage.Persistence {
 	return e.persistence
 }
 
+// GetPriorityCollector retorna o PriorityCollector para acesso direto
+func (e *ScanEngine) GetPriorityCollector() *collector.PriorityCollector {
+	return e.priorityCollector
+}
+
 // AddTarget adiciona um target dinamicamente ao scan
 func (e *ScanEngine) AddTarget(target scanner.ScanTarget) {
 	e.mu.Lock()
@@ -328,22 +333,9 @@ func (e *ScanEngine) AddTarget(target scanner.ScanTarget) {
 			Msg("Novo cluster adicionado ao monitoramento")
 	}
 
-	// NOVA ARQUITETURA: Adiciona HPAs ao PriorityCollector
-	// Cada HPA é adicionado individualmente com PRIORIDADE MÁXIMA
-	if e.running && e.priorityCollector != nil {
-		for _, ns := range target.Namespaces {
-			for _, hpa := range target.HPAs {
-				if err := e.priorityCollector.AddPriorityHPA(target.Cluster, ns, hpa); err != nil {
-					log.Error().
-						Err(err).
-						Str("cluster", target.Cluster).
-						Str("namespace", ns).
-						Str("hpa", hpa).
-						Msg("Erro ao adicionar HPA prioritário")
-				}
-			}
-		}
-	}
+	// REMOVIDO: AddTarget agora NÃO adiciona ao PriorityCollector
+	// Isso deve ser feito explicitamente pelos handlers (AddHPA e SyncMonitoredHPAs)
+	// para evitar duplicação e dar controle total ao operador
 
 	log.Info().
 		Str("cluster", target.Cluster).
