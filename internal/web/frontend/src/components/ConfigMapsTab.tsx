@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -41,6 +41,7 @@ export const ConfigMapsTab = ({
   const [isValidating, setIsValidating] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
   const { configMaps, loading, error, refetch } = useConfigMaps(
@@ -403,13 +404,8 @@ export const ConfigMapsTab = ({
     );
   };
 
-  return (
-    <SplitView
-      leftPanel={{
-        title: "ConfigMaps",
-        titleAction: leftTitleAction,
-        content: (
-          <div className="space-y-3">
+  const leftContent = (
+    <div className="space-y-3">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
@@ -422,7 +418,61 @@ export const ConfigMapsTab = ({
 
             {renderConfigMapList()}
           </div>
+  );
+
+  const collapseButton = (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+      title={isSidebarCollapsed ? "Mostrar painel de ConfigMaps" : "Ocultar painel de ConfigMaps"}
+    >
+      {isSidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+    </Button>
+  );
+
+  if (isSidebarCollapsed) {
+    return (
+      <div className="p-4 h-full">
+        <div className="grid grid-cols-1 h-full">
+          <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
+            <div className="flex items-center justify-between mb-3 pb-2 border-b-2 border-primary">
+              <div className="flex items-center gap-2">
+                {collapseButton}
+                <p className="text-base font-semibold text-primary">Visualização</p>
+              </div>
+              {rightTitleAction}
+            </div>
+            <div className="flex-1 overflow-auto min-h-0">
+              {renderManifestPanel()}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <SplitView
+      leftPanel={{
+        title: "ConfigMaps",
+        titleAction: (
+          <div className="flex items-center gap-2">
+            {collapseButton}
+            <Button
+              variant={showSystemNamespaces ? "secondary" : "outline"}
+              size="sm"
+              onClick={onToggleSystemNamespaces}
+              title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
+            >
+              {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
+            </Button>
+            <Button variant="outline" size="sm" onClick={refreshConfigMaps} disabled={!cluster || loading}>
+              <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
+            </Button>
+          </div>
         ),
+        content: leftContent,
       }}
       rightPanel={{
         title: "Visualização",
