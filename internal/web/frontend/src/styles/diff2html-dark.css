@@ -1,55 +1,46 @@
-.diff2html-theme .d2h-wrapper {
+.diff2html-vscode .d2h-wrapper {
   background-color: #1e1e1e;
   color: #d4d4d4;
   border-radius: 0.5rem;
   overflow: hidden;
-  border: 1px solid #2a2a2a;
+  border: 1px solid #2d2d2d;
 }
-
-.diff2html-theme .d2h-file-header,
-.diff2html-theme .d2h-file-list-header,
-.diff2html-theme .d2h-file-list-title {
+.diff2html-vscode .d2h-file-header,
+.diff2html-vscode .d2h-file-list-header {
   background-color: #252526;
   color: #f3f3f3;
-  border-bottom: 1px solid #2a2a2a;
+  border-bottom: 1px solid #3c3c3c;
 }
-
-.diff2html-theme .d2h-file-list-title,
-.diff2html-theme .d2h-file-list-line a {
-  color: #d4d4d4;
-}
-
-.diff2html-theme .d2h-file-side-diff,
-.diff2html-theme .d2h-code-side-line,
-.diff2html-theme .d2h-code-line {
+.diff2html-vscode .d2h-file-wrapper,
+.diff2html-vscode .d2h-file-side-diff,
+.diff2html-vscode .d2h-code-side-line,
+.diff2html-vscode .d2h-code-line {
   background-color: #1e1e1e;
   color: #d4d4d4;
 }
-
-.diff2html-theme .d2h-code-line del {
-  background-color: rgba(255, 0, 0, 0.18);
-  color: #f2b8b5;
-}
-
-.diff2html-theme .d2h-code-line ins {
-  background-color: rgba(19, 161, 14, 0.2);
-  color: #b7e3a1;
-}
-
-.diff2html-theme .d2h-code-line-prefix {
-  color: #858585;
-}
-
-.diff2html-theme .d2h-file-diff {
-  border: 1px solid #2a2a2a;
-}
-
-.diff2html-theme .d2h-file-list-wrapper {
-  border-bottom: 1px solid #2a2a2a;
-}
-
-.diff2html-theme .d2h-code-side-line-number,
-.diff2html-theme .d2h-code-line-ctn {
-  font-family: "Fira Code", "JetBrains Mono", Consolas, "Courier New", monospace;
+.diff2html-vscode .d2h-code-line-ctn,
+.diff2html-vscode .d2h-code-side-line-number,
+.diff2html-vscode .d2h-code-linenumber {
+  font-family: "Cascadia Code", "Fira Code", Consolas, "Courier New", monospace;
   font-size: 0.85rem;
+}
+.diff2html-vscode .d2h-code-line ins,
+.diff2html-vscode .d2h-code-side-line ins {
+  background-color: rgba(22, 163, 74, 0.25);
+  color: #b9f6ca;
+}
+.diff2html-vscode .d2h-code-line del,
+.diff2html-vscode .d2h-code-side-line del {
+  background-color: rgba(239, 83, 80, 0.25);
+  color: #ffb4a9;
+}
+.diff2html-vscode .d2h-code-line-prefix {
+  color: #808080;
+}
+.diff2html-vscode .d2h-file-diff {
+  border: 1px solid #3c3c3c;
+}
+.diff2html-vscode .d2h-file-list-title,
+.diff2html-vscode .d2h-file-list-line a {
+  color: #d4d4d4;
 }

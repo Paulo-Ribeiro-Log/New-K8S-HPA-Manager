@@ -571,7 +571,7 @@ export const ConfigMapsTab = ({
           </DialogHeader>
           <ScrollArea className="h-[65vh]">
             {diffHtml ? (
-              <div className="diff2html-theme" dangerouslySetInnerHTML={{ __html: diffHtml }} />
+              <div className="diff2html-theme diff2html-vscode" dangerouslySetInnerHTML={{ __html: diffHtml }} />
             ) : (
               <p className="text-sm text-muted-foreground">Nenhum diff disponível.</p>
             )}
