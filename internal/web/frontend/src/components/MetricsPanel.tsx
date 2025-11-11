@@ -859,8 +859,30 @@ export function MetricsPanel({
                       tick={{ fontSize: 12 }}
                       label={{ value: "Réplicas", angle: -90, position: "insideLeft", fontSize: 12 }}
                       allowDecimals={false}
+                      domain={[0, (dataMax: number) => {
+                        const maxReplicas = chartData[0]?.replicasMax || dataMax;
+                        return Math.max(dataMax, maxReplicas * 1.5); // 50% margem acima (replicas_max + 50%)
+                      }]}
                     />
-                    <Tooltip content={<CustomTooltip />} />
+                    <Tooltip content={(props) => {
+                      if (!props.active || !props.payload || !props.payload.length) return null;
+                      return (
+                        <div className="bg-background border rounded-lg shadow-lg p-3 space-y-1.5">
+                          <p className="text-sm font-semibold mb-2">{props.label}</p>
+                          {props.payload.map((entry: any, index: number) => (
+                            <div key={index} className="flex items-center justify-between gap-3 text-xs">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: entry.color }} />
+                                <span className="text-muted-foreground truncate">{entry.name}</span>
+                              </div>
+                              <span className="font-semibold whitespace-nowrap">
+                                {entry.value}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    }} />
                     <Legend />
                     <ReferenceLine
                       y={chartData[0]?.replicasMin || 0}

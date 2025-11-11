@@ -506,19 +506,23 @@ func (p *Persistence) LoadSnapshots(cluster, namespace, name string, since time.
 		var snapshot models.HPASnapshot
 		var metricsJSON string
 
+		// Usar sql.Null* para aceitar valores NULL do SQLite
+		var currentReplicas, desiredReplicas, minReplicas, maxReplicas sql.NullInt32
+		var cpuTarget, memoryTarget sql.NullInt32
+
 		if err := rows.Scan(
 			&snapshot.Cluster,
 			&snapshot.Namespace,
 			&snapshot.Name,
 			&snapshot.Timestamp,
 			&snapshot.CPUCurrent,
-			&snapshot.CPUTarget,
+			&cpuTarget,
 			&snapshot.MemoryCurrent,
-			&snapshot.MemoryTarget,
-			&snapshot.CurrentReplicas,
-			&snapshot.DesiredReplicas,
-			&snapshot.MinReplicas,
-			&snapshot.MaxReplicas,
+			&memoryTarget,
+			&currentReplicas,
+			&desiredReplicas,
+			&minReplicas,
+			&maxReplicas,
 			&snapshot.CPURequest,
 			&snapshot.CPULimit,
 			&snapshot.MemoryRequest,
@@ -527,6 +531,41 @@ func (p *Persistence) LoadSnapshots(cluster, namespace, name string, since time.
 		); err != nil {
 			log.Warn().Err(err).Msg("Failed to scan snapshot")
 			continue
+		}
+
+		// Converter sql.Null* para int32 (0 se NULL)
+		if currentReplicas.Valid {
+			snapshot.CurrentReplicas = currentReplicas.Int32
+		}
+		if desiredReplicas.Valid {
+			snapshot.DesiredReplicas = desiredReplicas.Int32
+		}
+		if minReplicas.Valid {
+			snapshot.MinReplicas = minReplicas.Int32
+		}
+		if maxReplicas.Valid {
+			snapshot.MaxReplicas = maxReplicas.Int32
+		}
+		if cpuTarget.Valid {
+			snapshot.CPUTarget = cpuTarget.Int32
+		}
+		if memoryTarget.Valid {
+			snapshot.MemoryTarget = memoryTarget.Int32
+		}
+
+		// DEBUG: Log primeiro snapshot para diagnóstico
+		if len(snapshots) == 0 {
+			log.Debug().
+				Str("cluster", snapshot.Cluster).
+				Str("namespace", snapshot.Namespace).
+				Str("hpa", snapshot.Name).
+				Int32("min_replicas", snapshot.MinReplicas).
+				Int32("max_replicas", snapshot.MaxReplicas).
+				Int32("current_replicas", snapshot.CurrentReplicas).
+				Int32("desired_replicas", snapshot.DesiredReplicas).
+				Bool("min_valid", minReplicas.Valid).
+				Bool("max_valid", maxReplicas.Valid).
+				Msg("[DEBUG] First snapshot loaded from DB")
 		}
 
 		snapshots = append(snapshots, snapshot)
@@ -575,19 +614,23 @@ func (p *Persistence) LoadSnapshotsYesterday(cluster, namespace, name string, du
 		var snapshot models.HPASnapshot
 		var metricsJSON string
 
+		// Usar sql.Null* para aceitar valores NULL do SQLite
+		var currentReplicas, desiredReplicas, minReplicas, maxReplicas sql.NullInt32
+		var cpuTarget, memoryTarget sql.NullInt32
+
 		if err := rows.Scan(
 			&snapshot.Cluster,
 			&snapshot.Namespace,
 			&snapshot.Name,
 			&snapshot.Timestamp,
 			&snapshot.CPUCurrent,
-			&snapshot.CPUTarget,
+			&cpuTarget,
 			&snapshot.MemoryCurrent,
-			&snapshot.MemoryTarget,
-			&snapshot.CurrentReplicas,
-			&snapshot.DesiredReplicas,
-			&snapshot.MinReplicas,
-			&snapshot.MaxReplicas,
+			&memoryTarget,
+			&currentReplicas,
+			&desiredReplicas,
+			&minReplicas,
+			&maxReplicas,
 			&snapshot.CPURequest,
 			&snapshot.CPULimit,
 			&snapshot.MemoryRequest,
@@ -596,6 +639,26 @@ func (p *Persistence) LoadSnapshotsYesterday(cluster, namespace, name string, du
 		); err != nil {
 			log.Warn().Err(err).Msg("Failed to scan snapshot")
 			continue
+		}
+
+		// Converter sql.Null* para int32 (0 se NULL)
+		if currentReplicas.Valid {
+			snapshot.CurrentReplicas = currentReplicas.Int32
+		}
+		if desiredReplicas.Valid {
+			snapshot.DesiredReplicas = desiredReplicas.Int32
+		}
+		if minReplicas.Valid {
+			snapshot.MinReplicas = minReplicas.Int32
+		}
+		if maxReplicas.Valid {
+			snapshot.MaxReplicas = maxReplicas.Int32
+		}
+		if cpuTarget.Valid {
+			snapshot.CPUTarget = cpuTarget.Int32
+		}
+		if memoryTarget.Valid {
+			snapshot.MemoryTarget = memoryTarget.Int32
 		}
 
 		snapshots = append(snapshots, snapshot)
