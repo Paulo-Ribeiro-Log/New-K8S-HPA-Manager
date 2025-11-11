@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/kylelemons/godebug/diff"
+	"github.com/pmezard/go-difflib/difflib"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/yaml"
@@ -149,12 +149,23 @@ func (h *ConfigMapHandler) Diff(c *gin.Context) {
 		return
 	}
 
-	diffText := diff.Diff(req.Original, req.Updated)
+	ud := difflib.UnifiedDiff{
+		A:        difflib.SplitLines(req.Original),
+		B:        difflib.SplitLines(req.Updated),
+		FromFile: "original",
+		ToFile:   "edited",
+		Context:  3,
+	}
+	text, err := difflib.GetUnifiedDiffString(ud)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("DIFF_ERROR", err.Error()))
+		return
+	}
 	response := gin.H{
 		"success": true,
 		"data": gin.H{
-			"unifiedDiff": diffText,
-			"hasChanges":  strings.TrimSpace(diffText) != "",
+			"unifiedDiff": text,
+			"hasChanges":  strings.TrimSpace(text) != "",
 		},
 	}
 	c.JSON(http.StatusOK, response)
