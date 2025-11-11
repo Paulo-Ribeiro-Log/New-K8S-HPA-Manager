@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2 } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2 } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -51,6 +51,10 @@ export const ConfigMapsTab = ({
   const [diffHtml, setDiffHtml] = useState("");
   const [isDiffLoading, setIsDiffLoading] = useState(false);
 
+  // Undo/Redo history
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
   const { configMaps, loading, error, refetch } = useConfigMaps(
     cluster,
@@ -73,6 +77,8 @@ export const ConfigMapsTab = ({
     setOriginalYaml("");
     setShowLabels(true);
     setViewMode("editor");
+    setHistory([]);
+    setHistoryIndex(-1);
   }, [cluster, selectedNamespace]);
 
   const filteredConfigMaps = useMemo(() => {
@@ -101,10 +107,14 @@ export const ConfigMapsTab = ({
         summary.name
       );
       setManifest(detail);
-      setEditorValue(detail.yaml || "");
-      setOriginalYaml(detail.yaml || "");
+      const initialYaml = detail.yaml || "";
+      setEditorValue(initialYaml);
+      setOriginalYaml(initialYaml);
       setShowLabels(true);
       setViewMode("editor");
+      // Inicializar histórico com valor inicial
+      setHistory([initialYaml]);
+      setHistoryIndex(0);
     } catch (err) {
       toast.error("Erro ao carregar manifesto", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -113,6 +123,45 @@ export const ConfigMapsTab = ({
       setManifestLoading(false);
     }
   };
+
+  // Atualizar histórico quando o editor muda
+  const handleEditorChange = useCallback((value: string) => {
+    setEditorValue(value);
+
+    // Adicionar ao histórico (remover itens futuros se estamos no meio do histórico)
+    setHistory((prev) => {
+      const newHistory = prev.slice(0, historyIndex + 1);
+      newHistory.push(value);
+      // Limitar histórico a 50 itens
+      if (newHistory.length > 50) {
+        newHistory.shift();
+        return newHistory;
+      }
+      return newHistory;
+    });
+    setHistoryIndex((prev) => Math.min(prev + 1, 49));
+  }, [historyIndex]);
+
+  // Undo
+  const handleUndo = useCallback(() => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      setHistoryIndex(newIndex);
+      setEditorValue(history[newIndex]);
+    }
+  }, [history, historyIndex]);
+
+  // Redo
+  const handleRedo = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1;
+      setHistoryIndex(newIndex);
+      setEditorValue(history[newIndex]);
+    }
+  }, [history, historyIndex]);
+
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex < history.length - 1;
 
   const refreshConfigMaps = () => {
     if (!cluster) return;
@@ -378,6 +427,30 @@ export const ConfigMapsTab = ({
                 <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
                   <button
                     type="button"
+                    onClick={handleUndo}
+                    disabled={!canUndo}
+                    className={`px-2 py-1 text-xs font-medium ${
+                      canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                    }`}
+                    title="Desfazer (Ctrl+Z)"
+                  >
+                    <Undo2 className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRedo}
+                    disabled={!canRedo}
+                    className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                      canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                    }`}
+                    title="Refazer (Ctrl+Y)"
+                  >
+                    <Redo2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                  <button
+                    type="button"
                     onClick={() => handleToggleView("editor")}
                     className={`px-3 py-1 text-xs font-medium ${
                       viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
@@ -401,7 +474,7 @@ export const ConfigMapsTab = ({
             {viewMode === "editor" && (
               <MonacoYamlEditor
                 value={editorValue}
-                onChange={setEditorValue}
+                onChange={handleEditorChange}
                 height={360}
               />
             )}
