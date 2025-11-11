@@ -25,23 +25,52 @@ type StatusContainerInterface interface {
 	ClearProgressBars()
 }
 
+// ConfigMapSummary descreve informações resumidas de um ConfigMap
+type ConfigMapSummary struct {
+	Cluster         string            `json:"cluster"`
+	Namespace       string            `json:"namespace"`
+	Name            string            `json:"name"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	DataKeys        []string          `json:"dataKeys"`
+	BinaryKeys      []string          `json:"binaryKeys"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	UpdatedAt       time.Time         `json:"updatedAt"`
+}
+
+// ConfigMapMetadata consolida metadados relevantes do ConfigMap
+type ConfigMapMetadata struct {
+	UID             string            `json:"uid,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Annotations     map[string]string `json:"annotations,omitempty"`
+}
+
+// ConfigMapManifest contém o YAML bruto e metadados para edição
+type ConfigMapManifest struct {
+	Cluster   string            `json:"cluster"`
+	Namespace string            `json:"namespace"`
+	Name      string            `json:"name"`
+	YAML      string            `json:"yaml"`
+	Metadata  ConfigMapMetadata `json:"metadata"`
+}
+
 // Tab representa uma aba individual com seu próprio contexto
 type Tab struct {
-	ID              string       // ID único da aba
-	Name            string       // Nome exibido na aba (ex: "akspriv-prod")
-	ClusterContext  string       // Contexto do cluster Kubernetes
-	Model           *AppModel    // Estado completo da aba (isolado)
-	Active          bool         // Se é a aba ativa
-	CreatedAt       time.Time    // Quando foi criada
-	LastAccessedAt  time.Time    // Último acesso
-	Modified        bool         // Se tem modificações não salvas
+	ID             string    // ID único da aba
+	Name           string    // Nome exibido na aba (ex: "akspriv-prod")
+	ClusterContext string    // Contexto do cluster Kubernetes
+	Model          *AppModel // Estado completo da aba (isolado)
+	Active         bool      // Se é a aba ativa
+	CreatedAt      time.Time // Quando foi criada
+	LastAccessedAt time.Time // Último acesso
+	Modified       bool      // Se tem modificações não salvas
 }
 
 // TabManager gerencia múltiplas abas
 type TabManager struct {
-	Tabs      []*Tab  // Lista de abas (máximo 10)
-	ActiveIdx int     // Índice da aba ativa (0-9)
-	MaxTabs   int     // Máximo de abas permitidas (10)
+	Tabs      []*Tab // Lista de abas (máximo 10)
+	ActiveIdx int    // Índice da aba ativa (0-9)
+	MaxTabs   int    // Máximo de abas permitidas (10)
 }
 
 // NewTabManager cria um novo gerenciador de abas
@@ -137,48 +166,48 @@ func (tm *TabManager) CanAddTab() bool {
 type AppState int
 
 const (
-	StateClusterSelection AppState = iota
-	StateSessionFolderSelection  // Seleção de pasta para sessões
+	StateClusterSelection       AppState = iota
+	StateSessionFolderSelection          // Seleção de pasta para sessões
 	StateSessionSelection
-	StateSessionFolderSave      // Seleção de pasta para salvar
+	StateSessionFolderSave // Seleção de pasta para salvar
 	StateNamespaceSelection
 	StateHPASelection
 	StateHPAEditing
 	StateNodeSelection
 	StateNodeEditing
-	StateMixedSession  // Novo estado para sessões mistas
+	StateMixedSession              // Novo estado para sessões mistas
 	StateClusterResourceDiscovery  // F7/F8 - Loading resources
 	StateClusterResourceSelection  // Selecionando recursos
 	StateClusterResourceEditing    // Editando recurso específico
 	StatePrometheusStackManagement // F8 - Gestão específica Prometheus
 	StateCronJobSelection          // F9 - Seleção de CronJobs
-	StateCronJobEditing           // Editando CronJob específico
-	StateAddingCluster            // F7 - Adicionando novo cluster
-	StateLogViewer                // F3 - Visualização de logs
+	StateCronJobEditing            // Editando CronJob específico
+	StateAddingCluster             // F7 - Adicionando novo cluster
+	StateLogViewer                 // F3 - Visualização de logs
 	StateHelp
 )
 
 // Campos editáveis de HPA
 const (
-	FieldMinReplicas         = "min_replicas"
-	FieldMaxReplicas         = "max_replicas"
-	FieldTargetCPU           = "target_cpu"
-	FieldTargetMemory        = "target_memory"
-	FieldRollout             = "rollout"
-	FieldDaemonSetRollout    = "daemonset_rollout"
-	FieldStatefulSetRollout  = "statefulset_rollout"
-	FieldDeploymentCPUReq    = "deployment_cpu_request"
-	FieldDeploymentCPULimit  = "deployment_cpu_limit"
-	FieldDeploymentMemReq    = "deployment_memory_request"
-	FieldDeploymentMemLimit  = "deployment_memory_limit"
+	FieldMinReplicas        = "min_replicas"
+	FieldMaxReplicas        = "max_replicas"
+	FieldTargetCPU          = "target_cpu"
+	FieldTargetMemory       = "target_memory"
+	FieldRollout            = "rollout"
+	FieldDaemonSetRollout   = "daemonset_rollout"
+	FieldStatefulSetRollout = "statefulset_rollout"
+	FieldDeploymentCPUReq   = "deployment_cpu_request"
+	FieldDeploymentCPULimit = "deployment_cpu_limit"
+	FieldDeploymentMemReq   = "deployment_memory_request"
+	FieldDeploymentMemLimit = "deployment_memory_limit"
 )
 
 // Campos editáveis de Node Pool
 const (
-	FieldNodeCount    = "node_count"
-	FieldMinNodes     = "min_nodes"
-	FieldMaxNodes     = "max_nodes"
-	FieldAutoscaling  = "autoscaling_enabled"
+	FieldNodeCount   = "node_count"
+	FieldMinNodes    = "min_nodes"
+	FieldMaxNodes    = "max_nodes"
+	FieldAutoscaling = "autoscaling_enabled"
 )
 
 // Campos editáveis de Cluster Resources
@@ -191,15 +220,14 @@ const (
 	FieldStorageSize   = "storage_size"
 )
 
-
 // GlobalPositionMemory gerencia a memorização de posições globalmente
 type GlobalPositionMemory struct {
-	PreviousState     *PanelState `json:"previous_state"`      // Estado anterior para ESC
-	TabMemory         *PanelState `json:"tab_memory"`          // Memorização específica do TAB
-	SpaceMemory       *PanelState `json:"space_memory"`        // Memorização específica do SPACE
-	EnterMemory       *PanelState `json:"enter_memory"`        // Memorização específica do ENTER
-	LastAction        string      `json:"last_action"`         // Última ação executada
-	LastActionTime    time.Time   `json:"last_action_time"`    // Quando foi a última ação
+	PreviousState  *PanelState `json:"previous_state"`   // Estado anterior para ESC
+	TabMemory      *PanelState `json:"tab_memory"`       // Memorização específica do TAB
+	SpaceMemory    *PanelState `json:"space_memory"`     // Memorização específica do SPACE
+	EnterMemory    *PanelState `json:"enter_memory"`     // Memorização específica do ENTER
+	LastAction     string      `json:"last_action"`      // Última ação executada
+	LastActionTime time.Time   `json:"last_action_time"` // Quando foi a última ação
 }
 
 // Cluster representa um cluster Kubernetes
@@ -244,46 +272,46 @@ type Namespace struct {
 
 // HPA representa um Horizontal Pod Autoscaler
 type HPA struct {
-	Name            string     `json:"name"`
-	Namespace       string     `json:"namespace"`
-	Cluster         string     `json:"cluster"`
-	MinReplicas     *int32     `json:"min_replicas"`
-	MaxReplicas     int32      `json:"max_replicas"`
-	CurrentReplicas int32      `json:"current_replicas"`
-	TargetCPU       *int32     `json:"target_cpu,omitempty"`
-	TargetMemory    *int32     `json:"target_memory,omitempty"`
-	PerformRollout  bool       `json:"perform_rollout"`
-	PerformDaemonSetRollout  bool       `json:"perform_daemonset_rollout"`
-	PerformStatefulSetRollout bool      `json:"perform_statefulset_rollout"`
-	Selected        bool       `json:"selected"`
-	Modified        bool       `json:"modified"`
-	OriginalValues  *HPAValues `json:"original_values"`
-	LastUpdated     time.Time  `json:"last_updated"`
+	Name                      string     `json:"name"`
+	Namespace                 string     `json:"namespace"`
+	Cluster                   string     `json:"cluster"`
+	MinReplicas               *int32     `json:"min_replicas"`
+	MaxReplicas               int32      `json:"max_replicas"`
+	CurrentReplicas           int32      `json:"current_replicas"`
+	TargetCPU                 *int32     `json:"target_cpu,omitempty"`
+	TargetMemory              *int32     `json:"target_memory,omitempty"`
+	PerformRollout            bool       `json:"perform_rollout"`
+	PerformDaemonSetRollout   bool       `json:"perform_daemonset_rollout"`
+	PerformStatefulSetRollout bool       `json:"perform_statefulset_rollout"`
+	Selected                  bool       `json:"selected"`
+	Modified                  bool       `json:"modified"`
+	OriginalValues            *HPAValues `json:"original_values"`
+	LastUpdated               time.Time  `json:"last_updated"`
 
 	// Application Tracking (not saved in session JSON)
-	AppliedCount    int        `json:"-"` // Contador de aplicações na sessão atual
-	LastAppliedAt   *time.Time `json:"-"` // Última vez que foi aplicado na sessão
+	AppliedCount  int        `json:"-"` // Contador de aplicações na sessão atual
+	LastAppliedAt *time.Time `json:"-"` // Última vez que foi aplicado na sessão
 
 	// Deployment Resource Information
-	DeploymentName          string `json:"deployment_name,omitempty"`
-	CurrentCPURequest       string `json:"current_cpu_request,omitempty"`
-	CurrentCPULimit         string `json:"current_cpu_limit,omitempty"`
-	CurrentMemoryRequest    string `json:"current_memory_request,omitempty"`
-	CurrentMemoryLimit      string `json:"current_memory_limit,omitempty"`
-	TargetCPURequest        string `json:"target_cpu_request,omitempty"`
-	TargetCPULimit          string `json:"target_cpu_limit,omitempty"`
-	TargetMemoryRequest     string `json:"target_memory_request,omitempty"`
-	TargetMemoryLimit       string `json:"target_memory_limit,omitempty"`
-	ResourcesModified       bool   `json:"resources_modified"`
-	NeedsEnrichment         bool   `json:"-"` // Campo interno, não salvar no JSON
+	DeploymentName       string `json:"deployment_name,omitempty"`
+	CurrentCPURequest    string `json:"current_cpu_request,omitempty"`
+	CurrentCPULimit      string `json:"current_cpu_limit,omitempty"`
+	CurrentMemoryRequest string `json:"current_memory_request,omitempty"`
+	CurrentMemoryLimit   string `json:"current_memory_limit,omitempty"`
+	TargetCPURequest     string `json:"target_cpu_request,omitempty"`
+	TargetCPULimit       string `json:"target_cpu_limit,omitempty"`
+	TargetMemoryRequest  string `json:"target_memory_request,omitempty"`
+	TargetMemoryLimit    string `json:"target_memory_limit,omitempty"`
+	ResourcesModified    bool   `json:"resources_modified"`
+	NeedsEnrichment      bool   `json:"-"` // Campo interno, não salvar no JSON
 }
 
 // HPAValues armazena os valores de configuração de um HPA
 type HPAValues struct {
-	MinReplicas         *int32 `json:"min_replicas"`
-	MaxReplicas         int32  `json:"max_replicas"`
-	TargetCPU           *int32 `json:"target_cpu,omitempty"`
-	TargetMemory        *int32 `json:"target_memory,omitempty"`
+	MinReplicas  *int32 `json:"min_replicas"`
+	MaxReplicas  int32  `json:"max_replicas"`
+	TargetCPU    *int32 `json:"target_cpu,omitempty"`
+	TargetMemory *int32 `json:"target_memory,omitempty"`
 
 	// Rollout Options
 	PerformRollout            bool `json:"perform_rollout"`
@@ -291,25 +319,25 @@ type HPAValues struct {
 	PerformStatefulSetRollout bool `json:"perform_statefulset_rollout"`
 
 	// Deployment Resources
-	DeploymentName      string `json:"deployment_name,omitempty"`
-	CPURequest          string `json:"cpu_request,omitempty"`
-	CPULimit            string `json:"cpu_limit,omitempty"`
-	MemoryRequest       string `json:"memory_request,omitempty"`
-	MemoryLimit         string `json:"memory_limit,omitempty"`
+	DeploymentName string `json:"deployment_name,omitempty"`
+	CPURequest     string `json:"cpu_request,omitempty"`
+	CPULimit       string `json:"cpu_limit,omitempty"`
+	MemoryRequest  string `json:"memory_request,omitempty"`
+	MemoryLimit    string `json:"memory_limit,omitempty"`
 }
 
 // HPAChange representa uma mudança em um HPA
 type HPAChange struct {
-	Cluster          string     `json:"cluster"`
-	Namespace        string     `json:"namespace"`
-	HPAName          string     `json:"hpa_name"`
-	OriginalValues   *HPAValues `json:"original_values"`
-	NewValues        *HPAValues `json:"new_values"`
-	Applied          bool       `json:"applied"`
-	AppliedAt        *time.Time `json:"applied_at,omitempty"`
-	RolloutTriggered bool       `json:"rollout_triggered"`
-	DaemonSetRolloutTriggered  bool `json:"daemonset_rollout_triggered"`
-	StatefulSetRolloutTriggered bool `json:"statefulset_rollout_triggered"`
+	Cluster                     string     `json:"cluster"`
+	Namespace                   string     `json:"namespace"`
+	HPAName                     string     `json:"hpa_name"`
+	OriginalValues              *HPAValues `json:"original_values"`
+	NewValues                   *HPAValues `json:"new_values"`
+	Applied                     bool       `json:"applied"`
+	AppliedAt                   *time.Time `json:"applied_at,omitempty"`
+	RolloutTriggered            bool       `json:"rollout_triggered"`
+	DaemonSetRolloutTriggered   bool       `json:"daemonset_rollout_triggered"`
+	StatefulSetRolloutTriggered bool       `json:"statefulset_rollout_triggered"`
 }
 
 // HelpStateSnapshot armazena o estado completo antes de entrar no Help
@@ -388,16 +416,16 @@ func (m *AppModel) RestoreHelpSnapshot() {
 
 // Session representa uma sessão salva de modificações
 type Session struct {
-	Name         string           `json:"name"`
-	CreatedAt    time.Time        `json:"created_at"`
-	CreatedBy    string           `json:"created_by"`
-	Description  string           `json:"description,omitempty"`
-	TemplateUsed string           `json:"template_used"`
-	Metadata     *SessionMetadata `json:"metadata"`
-	Changes          []HPAChange          `json:"changes"`
-	NodePoolChanges  []NodePoolChange     `json:"node_pool_changes"`
-	ResourceChanges  []ClusterResourceChange `json:"resource_changes"`
-	RollbackData     *RollbackData        `json:"rollback_data"`
+	Name            string                  `json:"name"`
+	CreatedAt       time.Time               `json:"created_at"`
+	CreatedBy       string                  `json:"created_by"`
+	Description     string                  `json:"description,omitempty"`
+	TemplateUsed    string                  `json:"template_used"`
+	Metadata        *SessionMetadata        `json:"metadata"`
+	Changes         []HPAChange             `json:"changes"`
+	NodePoolChanges []NodePoolChange        `json:"node_pool_changes"`
+	ResourceChanges []ClusterResourceChange `json:"resource_changes"`
+	RollbackData    *RollbackData           `json:"rollback_data"`
 }
 
 // SessionMetadata contém metadados da sessão
@@ -476,8 +504,8 @@ const (
 	PanelSelectedHPAs
 	PanelNodePools
 	PanelSelectedNodePools
-	PanelHPAMain           // Painel principal do HPA (min/max replicas, targets, rollout)
-	PanelHPAResources      // Painel de recursos do deployment
+	PanelHPAMain      // Painel principal do HPA (min/max replicas, targets, rollout)
+	PanelHPAResources // Painel de recursos do deployment
 )
 
 // AppModel representa o modelo principal da aplicação
@@ -550,51 +578,51 @@ type AppModel struct {
 	NewSessionName      string // Novo nome sendo digitado
 
 	// Session Folder Management
-	SessionFolders        []string        // Lista de pastas disponíveis
-	SelectedFolderIdx     int             // Índice da pasta selecionada
-	LastSelectedFolderIdx int             // Última pasta selecionada (memorização ao voltar)
-	CurrentFolder         string          // Pasta atualmente navegada
-	SavingToFolder        bool            // Se está no processo de salvar em pasta
-	FolderSessionMemory   map[string]int  // Memoriza última sessão selecionada por pasta
+	SessionFolders        []string       // Lista de pastas disponíveis
+	SelectedFolderIdx     int            // Índice da pasta selecionada
+	LastSelectedFolderIdx int            // Última pasta selecionada (memorização ao voltar)
+	CurrentFolder         string         // Pasta atualmente navegada
+	SavingToFolder        bool           // Se está no processo de salvar em pasta
+	FolderSessionMemory   map[string]int // Memoriza última sessão selecionada por pasta
 
 	// Global Position Memory System
 	PositionMemory *GlobalPositionMemory // Sistema de memorização de posições
 
 	// Current Context
 	SelectedCluster *Cluster
-	
+
 	// Filters
 	ShowSystemNamespaces bool
-	
+
 	// Node Pool Management
 	NodePools         []NodePool
 	SelectedNodePools []NodePool
 	EditingNodePool   *NodePool
-	
+
 	// Azure Authentication
 	IsAzureAuthenticated bool
-	
+
 	// Cluster Resource Management
-	ClusterResources        []ClusterResource
-	SelectedResources       []ClusterResource
-	EditingResource         *ClusterResource
-	ResourceFilter          ResourceType
-	PrometheusStackMode     bool               // F8 mode
-	ResourcePresetConfig    string             // "small", "medium", "large"
-	ShowSystemResources     bool               // Toggle para mostrar recursos de sistema
-	FetchingMetrics         bool               // Se está buscando métricas em background
-	
+	ClusterResources     []ClusterResource
+	SelectedResources    []ClusterResource
+	EditingResource      *ClusterResource
+	ResourceFilter       ResourceType
+	PrometheusStackMode  bool   // F8 mode
+	ResourcePresetConfig string // "small", "medium", "large"
+	ShowSystemResources  bool   // Toggle para mostrar recursos de sistema
+	FetchingMetrics      bool   // Se está buscando métricas em background
+
 	// Help Screen Navigation
 	HelpScrollOffset int
 
 	// Panel Navigation
-	HPASelectedScrollOffset         int
-	NodePoolSelectedScrollOffset    int
-	CronJobScrollOffset             int
-	ClusterScrollOffset             int
-	NamespaceScrollOffset           int
-	HPAListScrollOffset             int
-	PrometheusStackScrollOffset     int
+	HPASelectedScrollOffset      int
+	NodePoolSelectedScrollOffset int
+	CronJobScrollOffset          int
+	ClusterScrollOffset          int
+	NamespaceScrollOffset        int
+	HPAListScrollOffset          int
+	PrometheusStackScrollOffset  int
 
 	// Status Container - Container reutilizável usando interface para evitar importação circular
 	StatusContainer StatusContainerInterface // Container para painel de status
@@ -608,50 +636,50 @@ type AppModel struct {
 	EditingCronJob   *CronJob
 
 	// Add Cluster Form (F7)
-	AddingCluster         bool   // Se está no modo de adicionar cluster
+	AddingCluster         bool              // Se está no modo de adicionar cluster
 	AddClusterFormFields  map[string]string // Campos do formulário: "name", "resource_group", "subscription"
-	AddClusterActiveField string // Campo atualmente ativo no formulário
-	AddClusterFieldOrder  []string // Ordem dos campos para navegação
+	AddClusterActiveField string            // Campo atualmente ativo no formulário
+	AddClusterFieldOrder  []string          // Ordem dos campos para navegação
 
 	// Log Viewer (F3)
-	LogViewerLogs       []string // Logs carregados do arquivo
-	LogViewerScrollPos  int      // Posição de scroll no log viewer
-	LogViewerLoading    bool     // Se está carregando logs
-	LogViewerMessage    string   // Mensagem de status do log viewer
+	LogViewerLogs      []string // Logs carregados do arquivo
+	LogViewerScrollPos int      // Posição de scroll no log viewer
+	LogViewerLoading   bool     // Se está carregando logs
+	LogViewerMessage   string   // Mensagem de status do log viewer
 }
 
 // PanelState armazena o estado completo de um painel para memorização
 type PanelState struct {
-	State            AppState  `json:"state"`           // Estado da aplicação
-	SelectedIndex    int       `json:"selected_index"`  // Posição do cursor
-	ActivePanel      PanelType `json:"active_panel"`    // Tab ativo (para painéis multi-tab)
-	ScrollOffset     int       `json:"scroll_offset"`   // Posição do scroll
-	SubState         string    `json:"sub_state"`       // Estado adicional específico do painel
-	Timestamp        time.Time `json:"timestamp"`       // Quando foi salvo
-	ActionType       string    `json:"action_type"`     // "tab", "space", "enter", "esc"
+	State         AppState  `json:"state"`          // Estado da aplicação
+	SelectedIndex int       `json:"selected_index"` // Posição do cursor
+	ActivePanel   PanelType `json:"active_panel"`   // Tab ativo (para painéis multi-tab)
+	ScrollOffset  int       `json:"scroll_offset"`  // Posição do scroll
+	SubState      string    `json:"sub_state"`      // Estado adicional específico do painel
+	Timestamp     time.Time `json:"timestamp"`      // Quando foi salvo
+	ActionType    string    `json:"action_type"`    // "tab", "space", "enter", "esc"
 
 	// Memorização de itens selecionados com ENTER
-	SelectedCluster    string   `json:"selected_cluster"`     // Nome do cluster selecionado
-	SelectedNamespaces []string `json:"selected_namespaces"`  // Lista de namespaces selecionados
-	SelectedHPAs       []string `json:"selected_hpas"`        // Lista de HPAs selecionados (formato: "namespace/name")
-	SelectedNodePools  []string `json:"selected_node_pools"`  // Lista de node pools selecionados
-	SelectedCronJobs   []string `json:"selected_cronjobs"`    // Lista de cronjobs selecionados
-	EditingItem        string   `json:"editing_item"`         // Item sendo editado (nome do HPA/NodePool/CronJob)
+	SelectedCluster    string   `json:"selected_cluster"`    // Nome do cluster selecionado
+	SelectedNamespaces []string `json:"selected_namespaces"` // Lista de namespaces selecionados
+	SelectedHPAs       []string `json:"selected_hpas"`       // Lista de HPAs selecionados (formato: "namespace/name")
+	SelectedNodePools  []string `json:"selected_node_pools"` // Lista de node pools selecionados
+	SelectedCronJobs   []string `json:"selected_cronjobs"`   // Lista de cronjobs selecionados
+	EditingItem        string   `json:"editing_item"`        // Item sendo editado (nome do HPA/NodePool/CronJob)
 }
 
 // RolloutProgress representa o progresso de um rollout
 type RolloutProgress struct {
-	ID          string             `json:"id"`
-	HPAName     string             `json:"hpa_name"`
-	Namespace   string             `json:"namespace"`
-	Cluster     string             `json:"cluster"`
-	RolloutType string             `json:"rollout_type"` // "deployment", "daemonset", "statefulset"
-	Status      RolloutStatus      `json:"status"`
-	Progress    int                `json:"progress"`     // 0-100
-	Message     string             `json:"message"`
-	StartTime   time.Time          `json:"start_time"`
-	EndTime     *time.Time         `json:"end_time,omitempty"`
-	Error       string             `json:"error,omitempty"`
+	ID          string        `json:"id"`
+	HPAName     string        `json:"hpa_name"`
+	Namespace   string        `json:"namespace"`
+	Cluster     string        `json:"cluster"`
+	RolloutType string        `json:"rollout_type"` // "deployment", "daemonset", "statefulset"
+	Status      RolloutStatus `json:"status"`
+	Progress    int           `json:"progress"` // 0-100
+	Message     string        `json:"message"`
+	StartTime   time.Time     `json:"start_time"`
+	EndTime     *time.Time    `json:"end_time,omitempty"`
+	Error       string        `json:"error,omitempty"`
 }
 
 // RolloutStatus indica o status do rollout
@@ -684,16 +712,16 @@ func (s RolloutStatus) String() string {
 
 // NodePoolProgress representa o progresso de uma operação de node pool
 type NodePoolProgress struct {
-	ID          string             `json:"id"`
-	PoolName    string             `json:"pool_name"`
-	ClusterName string             `json:"cluster_name"`
-	Operation   string             `json:"operation"` // "scale", "autoscale", "update"
-	Status      RolloutStatus      `json:"status"`
-	Progress    int                `json:"progress"`     // 0-100
-	Message     string             `json:"message"`
-	StartTime   time.Time          `json:"start_time"`
-	EndTime     *time.Time         `json:"end_time,omitempty"`
-	Error       string             `json:"error,omitempty"`
+	ID          string        `json:"id"`
+	PoolName    string        `json:"pool_name"`
+	ClusterName string        `json:"cluster_name"`
+	Operation   string        `json:"operation"` // "scale", "autoscale", "update"
+	Status      RolloutStatus `json:"status"`
+	Progress    int           `json:"progress"` // 0-100
+	Message     string        `json:"message"`
+	StartTime   time.Time     `json:"start_time"`
+	EndTime     *time.Time    `json:"end_time,omitempty"`
+	Error       string        `json:"error,omitempty"`
 
 	// Detalhes da operação
 	FromNodeCount int32 `json:"from_node_count"`
@@ -706,17 +734,17 @@ type NodePoolProgress struct {
 
 // NodePool representa um node pool do Azure AKS
 type NodePool struct {
-	Name         string `json:"name"`
-	VMSize       string `json:"vm_size"`
-	NodeCount    int32  `json:"node_count"`
-	MinNodeCount int32  `json:"min_node_count"`
-	MaxNodeCount int32  `json:"max_node_count"`
-	AutoscalingEnabled bool `json:"autoscaling_enabled"`
-	Status       string `json:"status"`
-	IsSystemPool bool   `json:"is_system_pool"`
-	Modified     bool   `json:"modified"`
-	Selected     bool   `json:"selected"`
-	AppliedCount int    `json:"applied_count"` // Contador de quantas vezes foi aplicado
+	Name               string `json:"name"`
+	VMSize             string `json:"vm_size"`
+	NodeCount          int32  `json:"node_count"`
+	MinNodeCount       int32  `json:"min_node_count"`
+	MaxNodeCount       int32  `json:"max_node_count"`
+	AutoscalingEnabled bool   `json:"autoscaling_enabled"`
+	Status             string `json:"status"`
+	IsSystemPool       bool   `json:"is_system_pool"`
+	Modified           bool   `json:"modified"`
+	Selected           bool   `json:"selected"`
+	AppliedCount       int    `json:"applied_count"` // Contador de quantas vezes foi aplicado
 
 	// Sistema de execução sequencial para stress tests (máximo 2 nodes)
 	SequenceOrder  int    `json:"sequence_order"`  // 1 = primeiro, 2 = segundo, 0 = não marcado
@@ -733,23 +761,23 @@ type NodePool struct {
 
 // NodePoolValues valores originais do node pool
 type NodePoolValues struct {
-	NodeCount    int32  `json:"node_count"`
-	MinNodeCount int32  `json:"min_node_count"`
-	MaxNodeCount int32  `json:"max_node_count"`
-	AutoscalingEnabled bool `json:"autoscaling_enabled"`
+	NodeCount          int32 `json:"node_count"`
+	MinNodeCount       int32 `json:"min_node_count"`
+	MaxNodeCount       int32 `json:"max_node_count"`
+	AutoscalingEnabled bool  `json:"autoscaling_enabled"`
 }
 
 // NodePoolChange representa uma mudança em node pool
 type NodePoolChange struct {
-	Cluster       string          `json:"cluster"`
-	ResourceGroup string          `json:"resource_group"`
-	Subscription  string          `json:"subscription"`
-	NodePoolName  string          `json:"node_pool_name"`
+	Cluster        string         `json:"cluster"`
+	ResourceGroup  string         `json:"resource_group"`
+	Subscription   string         `json:"subscription"`
+	NodePoolName   string         `json:"node_pool_name"`
 	OriginalValues NodePoolValues `json:"original_values"`
 	NewValues      NodePoolValues `json:"new_values"`
-	Applied       bool            `json:"applied"`
-	AppliedAt     *time.Time      `json:"applied_at,omitempty"`
-	Error         string          `json:"error,omitempty"`
+	Applied        bool           `json:"applied"`
+	AppliedAt      *time.Time     `json:"applied_at,omitempty"`
+	Error          string         `json:"error,omitempty"`
 
 	// Campos de execução sequencial
 	SequenceOrder  int    `json:"sequence_order"`  // 1 = primeiro, 2 = segundo, 0 = não marcado
@@ -817,12 +845,12 @@ func (s ResourceStatus) String() string {
 
 // ClusterResource representa um recurso de sistema do cluster
 type ClusterResource struct {
-	Name         string        `json:"name"`
-	Namespace    string        `json:"namespace"`
-	Type         ResourceType  `json:"type"`
-	Component    string        `json:"component"`    // prometheus-server, grafana, etc.
-	WorkloadType string        `json:"workload_type"` // Deployment, DaemonSet, StatefulSet
-	
+	Name         string       `json:"name"`
+	Namespace    string       `json:"namespace"`
+	Type         ResourceType `json:"type"`
+	Component    string       `json:"component"`     // prometheus-server, grafana, etc.
+	WorkloadType string       `json:"workload_type"` // Deployment, DaemonSet, StatefulSet
+
 	// Recursos atuais (requests)
 	CurrentCPURequest    string `json:"current_cpu_request"`
 	CurrentMemoryRequest string `json:"current_memory_request"`
@@ -834,26 +862,26 @@ type ClusterResource struct {
 	// Campos para exibição com métricas de uso (não são editáveis)
 	DisplayCPURequest    string `json:"-"` // Ex: "1 (uso: 264m)" - apenas para visualização
 	DisplayMemoryRequest string `json:"-"` // Ex: "8Gi (uso: 3918Mi)" - apenas para visualização
-	
+
 	// Valores desejados (requests)
 	TargetCPURequest    string `json:"target_cpu_request,omitempty"`
 	TargetMemoryRequest string `json:"target_memory_request,omitempty"`
-	
+
 	// Valores desejados (limits)
 	TargetCPULimit    string `json:"target_cpu_limit,omitempty"`
 	TargetMemoryLimit string `json:"target_memory_limit,omitempty"`
-	
+
 	// Configuração
 	Replicas       int32  `json:"replicas"`
 	StorageSize    string `json:"storage_size,omitempty"`
 	TargetReplicas *int32 `json:"target_replicas,omitempty"`
-	
+
 	// Estado
-	Modified       bool           `json:"modified"`
-	Selected       bool           `json:"selected"`
-	Status         ResourceStatus `json:"status"`
-	Cluster        string         `json:"cluster"`
-	
+	Modified bool           `json:"modified"`
+	Selected bool           `json:"selected"`
+	Status   ResourceStatus `json:"status"`
+	Cluster  string         `json:"cluster"`
+
 	// Valores originais para rollback
 	OriginalValues *ResourceValues `json:"original_values"`
 	LastUpdated    time.Time       `json:"last_updated"`
@@ -892,21 +920,21 @@ type ClusterConfig struct {
 
 // CronJob representa um CronJob do Kubernetes
 type CronJob struct {
-	Name              string    `json:"name"`
-	Namespace         string    `json:"namespace"`
-	Cluster           string    `json:"cluster"`
-	Schedule          string    `json:"schedule"`
-	ScheduleDesc      string    `json:"schedule_description"` // Descrição legível do schedule
-	Suspend           *bool     `json:"suspend"`              // Se está suspenso (desabilitado)
-	LastScheduleTime  *time.Time `json:"last_schedule_time"`
-	LastRunStatus     string    `json:"last_run_status"`      // "Success", "Failed", "Unknown"
-	ActiveJobs        int       `json:"active_jobs"`
-	SuccessfulJobs    int32     `json:"successful_jobs"`
-	FailedJobs        int32     `json:"failed_jobs"`
-	JobTemplate       string    `json:"job_template"`         // Nome/descrição do template
-	Selected          bool      `json:"selected"`
-	Modified          bool      `json:"modified"`
-	OriginalSuspend   *bool     `json:"original_suspend"`     // Valor original para rollback
+	Name             string     `json:"name"`
+	Namespace        string     `json:"namespace"`
+	Cluster          string     `json:"cluster"`
+	Schedule         string     `json:"schedule"`
+	ScheduleDesc     string     `json:"schedule_description"` // Descrição legível do schedule
+	Suspend          *bool      `json:"suspend"`              // Se está suspenso (desabilitado)
+	LastScheduleTime *time.Time `json:"last_schedule_time"`
+	LastRunStatus    string     `json:"last_run_status"` // "Success", "Failed", "Unknown"
+	ActiveJobs       int        `json:"active_jobs"`
+	SuccessfulJobs   int32      `json:"successful_jobs"`
+	FailedJobs       int32      `json:"failed_jobs"`
+	JobTemplate      string     `json:"job_template"` // Nome/descrição do template
+	Selected         bool       `json:"selected"`
+	Modified         bool       `json:"modified"`
+	OriginalSuspend  *bool      `json:"original_suspend"` // Valor original para rollback
 }
 
 // CronJobStatus representa o status de execução de um CronJob
@@ -1038,10 +1066,10 @@ type StatusPanelModule struct {
 	title  string
 
 	// Mensagens e controle
-	messages    []StatusMessage
-	scrollPos   int  // Posição do scroll (primeira linha visível)
-	focused     bool // Se está focado para scroll
-	lastUpdate  time.Time
+	messages   []StatusMessage
+	scrollPos  int  // Posição do scroll (primeira linha visível)
+	focused    bool // Se está focado para scroll
+	lastUpdate time.Time
 
 	// Controle de exibição
 	maxVisibleLines int // 11 linhas visíveis (15 - 4 para bordas e título)
@@ -1171,7 +1199,7 @@ func (sp *StatusPanelModule) scrollToBottom() {
 func (sp *StatusPanelModule) HandleMouseClick(x, y int, panelX, panelY int) bool {
 	// Verificar se o clique está dentro da área do painel
 	if x >= panelX && x < panelX+sp.width &&
-	   y >= panelY && y < panelY+sp.height {
+		y >= panelY && y < panelY+sp.height {
 		sp.SetFocused(true)
 		return true // Clique capturado
 	}

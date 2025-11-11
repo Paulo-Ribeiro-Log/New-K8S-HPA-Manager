@@ -30,16 +30,16 @@ var staticFiles embed.FS
 
 // Server representa o servidor HTTP
 type Server struct {
-	router          *gin.Engine
-	kubeManager     *config.KubeConfigManager
-	port            int
-	token           string
-	lastHeartbeat   time.Time
-	heartbeatMutex  sync.RWMutex
-	shutdownTimer   *time.Timer
-	timerMutex      sync.Mutex // Protege operações no timer
-	logBuffer       *handlers.LogBuffer
-	historyTracker  *history.HistoryTracker
+	router         *gin.Engine
+	kubeManager    *config.KubeConfigManager
+	port           int
+	token          string
+	lastHeartbeat  time.Time
+	heartbeatMutex sync.RWMutex
+	shutdownTimer  *time.Timer
+	timerMutex     sync.Mutex // Protege operações no timer
+	logBuffer      *handlers.LogBuffer
+	historyTracker *history.HistoryTracker
 
 	// Monitoring engine (NOVO)
 	monitoringEngine *engine.ScanEngine
@@ -292,6 +292,17 @@ func (s *Server) setupRoutes() {
 	api.PUT("/prometheus/:cluster/:namespace/:type/:name", prometheusHandler.Update)
 	api.POST("/prometheus/:cluster/:namespace/:type/:name/rollout", prometheusHandler.Rollout)
 
+	// ConfigMaps
+	configMapHandler := handlers.NewConfigMapHandler(s.kubeManager, s.historyTracker)
+	configMaps := api.Group("/configmaps")
+	{
+		configMaps.GET("", configMapHandler.List)
+		configMaps.GET("/:cluster/:namespace/:name", configMapHandler.Get)
+		configMaps.POST("/diff", configMapHandler.Diff)
+		configMaps.POST("/validate", configMapHandler.Validate)
+		configMaps.PUT("/:cluster/:namespace/:name", configMapHandler.Apply)
+	}
+
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()
 	api.GET("/validate", validationHandler.Validate)
@@ -331,7 +342,7 @@ func (s *Server) setupRoutes() {
 		// Target management (NOVO)
 		monitoring.GET("/targets", monitoringHandler.GetTargets)
 		monitoring.POST("/targets", monitoringHandler.AddTarget)
-		monitoring.POST("/hpa", monitoringHandler.AddHPA)           // Adicionar HPA individual
+		monitoring.POST("/hpa", monitoringHandler.AddHPA)             // Adicionar HPA individual
 		monitoring.POST("/sync", monitoringHandler.SyncMonitoredHPAs) // Sincronizar lista completa (reconciliação)
 		monitoring.DELETE("/targets/:cluster", monitoringHandler.RemoveTarget)
 	}

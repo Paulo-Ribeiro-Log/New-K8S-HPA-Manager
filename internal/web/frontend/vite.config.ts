@@ -26,8 +26,8 @@ export default defineConfig(({ mode }) => ({
     },
   },
   build: {
-    // Build para ser embedado no Go binary
-    outDir: "../static",
+    // Build para ser embedado e copiado para o Go
+    outDir: "dist",
     emptyOutDir: true,
     // Gerar sourcemaps apenas em dev
     sourcemap: mode === "development",

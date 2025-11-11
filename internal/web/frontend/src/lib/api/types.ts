@@ -30,6 +30,52 @@ export interface Namespace {
   isSystem?: boolean;
 }
 
+export interface ConfigMapSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  labels?: Record<string, string>;
+  dataKeys: string[];
+  binaryKeys: string[];
+  resourceVersion?: string;
+  updatedAt: string;
+}
+
+export interface ConfigMapMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface ConfigMapManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  yaml: string;
+  metadata: ConfigMapMetadata;
+}
+
+export interface ConfigMapDiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface ConfigMapValidateResult {
+  name: string;
+  namespace: string;
+  resourceVersion?: string;
+}
+
+export interface ConfigMapApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  resourceVersion?: string;
+  dryRun?: boolean;
+  appliedAt?: string;
+}
+
 export interface HPA {
   name: string;
   namespace: string;

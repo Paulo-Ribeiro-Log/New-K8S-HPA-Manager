@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd:*)",
+      "Bash(./build/k8s-hpa-manager:*)",
+      "Read(//usr/local/bin/**)",
+      "Read(//home/paulo/Scripts/Scripts GO/HPA-Watchdog/**)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(tree:*)",
+      "Bash(go get:*)",
+      "Bash(go mod tidy)",
+      "Bash(go build -o build/k8s-hpa-manager)",
+      "Bash(curl:*)",
+      "Bash(cat:*)",
+      "Bash(cd /home/paulo/Scripts/Scripts\\ GO/Scale_HPA/Scale_HPA && go build:*)",
+      "Bash(go run -race ./cmd/k8s-hpa-manager version)",
+      "Bash(git checkout internal/tui/app.go)",
+      "Bash(cd /home/paulo/Scripts/Scripts\\ GO/Scale_HPA/Scale_HPA && go vet:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npm run build:*)",
+      "Bash(go build:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(make build:*)",
+      "Bash(chmod:*)",
+      "Bash(timeout 5 ./build/k8s-hpa-manager web -f)",
+      "Bash(pkill:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

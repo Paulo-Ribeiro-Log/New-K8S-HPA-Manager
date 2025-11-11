@@ -18,6 +18,11 @@ import type {
   HPAMetrics,
   Anomalies,
   HPAHealth,
+  ConfigMapSummary,
+  ConfigMapManifest,
+  ConfigMapDiffResult,
+  ConfigMapValidateResult,
+  ConfigMapApplyResult,
 } from "./types";
 
 const API_BASE_URL = "/api/v1";
@@ -147,6 +152,90 @@ class APIClient {
     );
     if (!response.data) {
       throw new Error("HPA not found");
+    }
+    return response.data;
+  }
+
+  // ConfigMaps
+  async getConfigMaps(
+    cluster?: string,
+    namespaces?: string[],
+    search?: string,
+    showSystem: boolean = false
+  ): Promise<ConfigMapSummary[]> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (namespaces && namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    if (search) params.append("search", search);
+    if (showSystem) params.append("showSystem", "true");
+
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const response = await this.request<APIResponse<ConfigMapSummary[]>>(
+      `/configmaps${query}`
+    );
+    return response.data || [];
+  }
+
+  async getConfigMap(cluster: string, namespace: string, name: string): Promise<ConfigMapManifest> {
+    const response = await this.request<APIResponse<ConfigMapManifest>>(
+      `/configmaps/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) {
+      throw new Error("ConfigMap not found");
+    }
+    return response.data;
+  }
+
+  async diffConfigMap(originalYaml: string, updatedYaml: string): Promise<ConfigMapDiffResult> {
+    const response = await this.request<APIResponse<ConfigMapDiffResult>>(
+      `/configmaps/diff`,
+      {
+        method: "POST",
+        body: JSON.stringify({ originalYaml, updatedYaml }),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Diff response inválida");
+    }
+    return response.data;
+  }
+
+  async validateConfigMap(payload: {
+    cluster: string;
+    namespace: string;
+    yaml: string;
+    fieldManager?: string;
+  }): Promise<ConfigMapValidateResult> {
+    const response = await this.request<APIResponse<ConfigMapValidateResult>>(
+      `/configmaps/validate`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Validação sem retorno");
+    }
+    return response.data;
+  }
+
+  async applyConfigMap(
+    cluster: string,
+    namespace: string,
+    name: string,
+    body: { yaml: string; fieldManager?: string; dryRun?: boolean }
+  ): Promise<ConfigMapApplyResult> {
+    const response = await this.request<APIResponse<ConfigMapApplyResult>>(
+      `/configmaps/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Aplicação sem retorno");
     }
     return response.data;
   }

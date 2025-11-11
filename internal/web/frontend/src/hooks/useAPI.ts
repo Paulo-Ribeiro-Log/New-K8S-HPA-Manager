@@ -9,6 +9,7 @@ import type {
   NodePool,
   CronJob,
   PrometheusResource,
+  ConfigMapSummary,
 } from "@/lib/api/types";
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
@@ -258,6 +259,38 @@ export function useNodePools(cluster?: string) {
     refetch: fetchNodePools,
     applySequential,
   };
+}
+
+export function useConfigMaps(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
+  const [configMaps, setConfigMaps] = useState<ConfigMapSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
+
+  const fetchConfigMaps = async () => {
+    if (!cluster) {
+      setConfigMaps([]);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await apiClient.getConfigMaps(cluster, namespaces, undefined, showSystem);
+      setConfigMaps(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch configmaps");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchConfigMaps();
+  }, [cluster, namespaceKey, showSystem]);
+
+  return { configMaps, loading, error, refetch: fetchConfigMaps };
 }
 
 // CronJobs hooks

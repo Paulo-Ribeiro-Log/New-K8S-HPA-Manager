@@ -74,6 +74,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Editor não fecha após salvar** - Correção em StagingPanel para HPAs e Node Pools - v1.3.9
 - ✅ **Página de Monitoring HPA-Watchdog** - Sidebar retrátil, integração com engine de monitoramento, métricas em tempo real - Novembro 2025
 - ✅ **Refatoração RotatingCollector** - Sistema de monitoramento simplificado, redução de 850 → 450 linhas, baseline automático de 3 dias - 07 nov 2025
+- ✅ **Aba ConfigMaps (Monaco Editor)** - Listagem completa com filtro por namespace, edição YAML com monaco-yaml, diff, dry-run e apply direto via backend Go; cards de estatísticas são ocultados apenas nesta aba para maximizar o espaço útil - Nov 2025
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)

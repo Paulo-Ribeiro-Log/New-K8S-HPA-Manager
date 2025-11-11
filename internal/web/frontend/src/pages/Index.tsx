@@ -10,6 +10,7 @@ import { ApplyAllModal } from "@/components/ApplyAllModal";
 import { NodePoolListItem } from "@/components/NodePoolListItem";
 import { NodePoolEditor } from "@/components/NodePoolEditor";
 import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
+import { ConfigMapsTab } from "@/components/ConfigMapsTab";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
 import { LogViewer } from "@/components/LogViewer";
@@ -31,7 +32,8 @@ import {
   Search,
   Eye,
   EyeOff,
-  BarChart3
+  BarChart3,
+  FileCode
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -172,6 +174,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "cronjobs", label: "CronJobs", icon: Clock },
     { id: "prometheus", label: "Prometheus", icon: Activity },
     { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
+    { id: "configmaps", label: "ConfigMaps", icon: FileCode },
   ];
 
   // Filter functions
@@ -375,7 +378,19 @@ const Index = ({ onLogout }: IndexProps) => {
             }}
           />
         );
-
+      
+      case "configmaps":
+        return (
+          <ConfigMapsTab
+            cluster={selectedCluster}
+            namespaces={namespaces}
+            selectedNamespace={selectedNamespace}
+            onNamespaceChange={setSelectedNamespace}
+            showSystemNamespaces={showSystemNamespaces}
+            onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+          />
+        );
+      
       case "nodepools":
         return (
           <SplitView
@@ -518,8 +533,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas APENAS na aba Monitoramento */}
-      {activeTab !== "monitoring" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento e ConfigMaps */}
+      {activeTab !== "monitoring" && activeTab !== "configmaps" && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-6 py-3 flex-shrink-0">
           <StatsCard
             icon={Layers}

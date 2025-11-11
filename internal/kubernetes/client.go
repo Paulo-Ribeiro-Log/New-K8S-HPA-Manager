@@ -2,8 +2,10 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,7 +14,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/yaml"
 
 	"k8s-hpa-manager/internal/models"
 )
@@ -97,6 +101,233 @@ func (c *Client) ListNamespaces(ctx context.Context, showSystemNamespaces bool) 
 	}
 
 	return result, nil
+}
+
+// ListConfigMaps retorna todos os ConfigMaps considerando filtros simples
+func (c *Client) ListConfigMaps(ctx context.Context, namespaces []string, search string, showSystemNamespaces bool) ([]models.ConfigMapSummary, error) {
+	var result []models.ConfigMapSummary
+	search = strings.ToLower(strings.TrimSpace(search))
+
+	listAllNamespaces := len(namespaces) == 0
+	uniqueNamespaces := make(map[string]struct{})
+	for _, ns := range namespaces {
+		ns = strings.TrimSpace(ns)
+		if ns == "" {
+			continue
+		}
+		uniqueNamespaces[ns] = struct{}{}
+	}
+
+	appendSummaries := func(items []corev1.ConfigMap) {
+		for _, cm := range items {
+			if !showSystemNamespaces && isSystemNamespace(cm.Namespace) {
+				continue
+			}
+			if search != "" && !matchesConfigMapSearch(&cm, search) {
+				continue
+			}
+			result = append(result, buildConfigMapSummary(c.cluster, &cm))
+		}
+	}
+
+	if listAllNamespaces {
+		cms, err := c.clientset.CoreV1().ConfigMaps("").List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list configmaps in cluster %s: %w", c.cluster, err)
+		}
+		appendSummaries(cms.Items)
+		return result, nil
+	}
+
+	for ns := range uniqueNamespaces {
+		cms, err := c.clientset.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list configmaps in %s/%s: %w", c.cluster, ns, err)
+		}
+		appendSummaries(cms.Items)
+	}
+
+	return result, nil
+}
+
+// GetConfigMap retorna o manifesto YAML completo do ConfigMap
+func (c *Client) GetConfigMap(ctx context.Context, namespace, name string) (*models.ConfigMapManifest, error) {
+	cm, err := c.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get configmap %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	yamlBytes, err := yaml.Marshal(cm)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal configmap %s/%s: %w", namespace, name, err)
+	}
+
+	manifest := &models.ConfigMapManifest{
+		Cluster:   c.cluster,
+		Namespace: namespace,
+		Name:      name,
+		YAML:      string(yamlBytes),
+		Metadata: models.ConfigMapMetadata{
+			UID:             string(cm.UID),
+			ResourceVersion: cm.ResourceVersion,
+			Labels:          copyStringMap(cm.Labels),
+			Annotations:     copyStringMap(cm.Annotations),
+		},
+	}
+
+	return manifest, nil
+}
+
+func matchesConfigMapSearch(cm *corev1.ConfigMap, search string) bool {
+	name := strings.ToLower(cm.Name)
+	if strings.Contains(name, search) {
+		return true
+	}
+	for k, v := range cm.Labels {
+		candidate := strings.ToLower(fmt.Sprintf("%s=%s", k, v))
+		if strings.Contains(candidate, search) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildConfigMapSummary(cluster string, cm *corev1.ConfigMap) models.ConfigMapSummary {
+	dataKeys := make([]string, 0, len(cm.Data))
+	for key := range cm.Data {
+		dataKeys = append(dataKeys, key)
+	}
+	sort.Strings(dataKeys)
+
+	binaryKeys := make([]string, 0, len(cm.BinaryData))
+	for key := range cm.BinaryData {
+		binaryKeys = append(binaryKeys, key)
+	}
+	sort.Strings(binaryKeys)
+
+	updatedAt := cm.CreationTimestamp.Time
+	return models.ConfigMapSummary{
+		Cluster:         cluster,
+		Namespace:       cm.Namespace,
+		Name:            cm.Name,
+		Labels:          copyStringMap(cm.Labels),
+		DataKeys:        dataKeys,
+		BinaryKeys:      binaryKeys,
+		ResourceVersion: cm.ResourceVersion,
+		UpdatedAt:       updatedAt,
+	}
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// ValidateConfigMap executa um server-side apply com dry-run
+func (c *Client) ValidateConfigMap(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*corev1.ConfigMap, error) {
+	return c.applyConfigMap(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+}
+
+// ApplyConfigMap aplica (ou dry-run opcionalmente) o ConfigMap no cluster
+func (c *Client) ApplyConfigMap(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*corev1.ConfigMap, error) {
+	return c.applyConfigMap(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+}
+
+func (c *Client) applyConfigMap(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*corev1.ConfigMap, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("configmap yaml content cannot be empty")
+	}
+	if fieldManager == "" {
+		fieldManager = "web-configmap-editor"
+	}
+
+	payload, namespace, name, err := prepareConfigMapApplyPayload(yamlContent, enforceNamespace, enforceName)
+	if err != nil {
+		return nil, err
+	}
+
+	options := metav1.PatchOptions{FieldManager: fieldManager}
+	if dryRun {
+		options.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.CoreV1().ConfigMaps(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply configmap %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	return result, nil
+}
+
+func prepareConfigMapApplyPayload(yamlContent, enforceNamespace, enforceName string) ([]byte, string, string, error) {
+	var cm map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &cm); err != nil {
+		return nil, "", "", fmt.Errorf("invalid configmap yaml: %w", err)
+	}
+
+	if len(cm) == 0 {
+		return nil, "", "", fmt.Errorf("configmap yaml cannot be empty")
+	}
+
+	apiVersion, _ := cm["apiVersion"].(string)
+	if strings.TrimSpace(apiVersion) == "" {
+		cm["apiVersion"] = "v1"
+	}
+	kind, _ := cm["kind"].(string)
+	if strings.TrimSpace(kind) == "" {
+		cm["kind"] = "ConfigMap"
+	} else if !strings.EqualFold(kind, "ConfigMap") {
+		return nil, "", "", fmt.Errorf("expected kind ConfigMap, got %s", kind)
+	}
+
+	metadata, _ := cm["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	name, _ := metadata["name"].(string)
+	name = strings.TrimSpace(name)
+	if enforceName != "" {
+		enforceName = strings.TrimSpace(enforceName)
+		if name == "" {
+			name = enforceName
+		}
+		if name != enforceName {
+			return nil, "", "", fmt.Errorf("configmap name mismatch: expected %s, got %s", enforceName, name)
+		}
+	}
+	if name == "" {
+		return nil, "", "", fmt.Errorf("configmap metadata.name is required")
+	}
+	metadata["name"] = name
+
+	namespace := strings.TrimSpace(enforceNamespace)
+	if nsRaw, ok := metadata["namespace"].(string); ok {
+		ns := strings.TrimSpace(nsRaw)
+		if namespace == "" {
+			namespace = ns
+		} else if ns != "" && ns != namespace {
+			return nil, "", "", fmt.Errorf("configmap namespace mismatch: expected %s, got %s", namespace, ns)
+		}
+	}
+	if namespace == "" {
+		return nil, "", "", fmt.Errorf("configmap metadata.namespace is required")
+	}
+	metadata["namespace"] = namespace
+	cm["metadata"] = metadata
+
+	jsonPayload, err := json.Marshal(cm)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to marshal configmap payload: %w", err)
+	}
+
+	return jsonPayload, namespace, name, nil
 }
 
 // CountHPAs conta o número de HPAs em um namespace

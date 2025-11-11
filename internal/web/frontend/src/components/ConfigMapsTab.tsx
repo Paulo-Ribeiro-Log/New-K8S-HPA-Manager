@@ -1,0 +1,457 @@
+import { useEffect, useMemo, useState } from "react";
+import { SplitView } from "@/components/SplitView";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert } from "lucide-react";
+import { toast } from "sonner";
+
+import type {
+  Namespace,
+  ConfigMapSummary,
+  ConfigMapManifest,
+} from "@/lib/api/types";
+import { useConfigMaps } from "@/hooks/useAPI";
+import { apiClient } from "@/lib/api/client";
+import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
+
+interface ConfigMapsTabProps {
+  cluster: string;
+  namespaces: Namespace[];
+  selectedNamespace: string;
+  onNamespaceChange: (namespace: string) => void;
+  showSystemNamespaces: boolean;
+  onToggleSystemNamespaces: () => void;
+}
+
+export const ConfigMapsTab = ({
+  cluster,
+  namespaces,
+  selectedNamespace,
+  onNamespaceChange,
+  showSystemNamespaces,
+  onToggleSystemNamespaces,
+}: ConfigMapsTabProps) => {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedConfigMap, setSelectedConfigMap] = useState<ConfigMapSummary | null>(null);
+  const [manifest, setManifest] = useState<ConfigMapManifest | null>(null);
+  const [manifestLoading, setManifestLoading] = useState(false);
+  const [editorValue, setEditorValue] = useState("");
+  const [originalYaml, setOriginalYaml] = useState("");
+  const [diffResult, setDiffResult] = useState<string | null>(null);
+  const [isDiffLoading, setIsDiffLoading] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
+  const [isApplying, setIsApplying] = useState(false);
+
+  const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
+  const { configMaps, loading, error, refetch } = useConfigMaps(
+    cluster,
+    namespaceFilter,
+    showSystemNamespaces
+  );
+
+  useEffect(() => {
+    if (error) {
+      toast.error("Erro ao carregar ConfigMaps", {
+        description: error,
+      });
+    }
+  }, [error]);
+
+  useEffect(() => {
+    setSelectedConfigMap(null);
+    setManifest(null);
+    setEditorValue("");
+    setOriginalYaml("");
+    setDiffResult(null);
+  }, [cluster, selectedNamespace]);
+
+  const filteredNamespaces = useMemo(() => {
+    if (showSystemNamespaces) return namespaces;
+    return namespaces.filter((ns) => !ns.isSystem);
+  }, [namespaces, showSystemNamespaces]);
+
+  const sortedNamespaces = useMemo(() => {
+    return [...filteredNamespaces].sort((a, b) => a.name.localeCompare(b.name));
+  }, [filteredNamespaces]);
+
+  const filteredConfigMaps = useMemo(() => {
+    if (!searchQuery) return configMaps;
+    const query = searchQuery.toLowerCase();
+    return configMaps.filter((cm) => {
+      return (
+        cm.name.toLowerCase().includes(query) ||
+        cm.namespace.toLowerCase().includes(query) ||
+        Object.entries(cm.labels || {}).some(([key, value]) =>
+          `${key}=${value}`.toLowerCase().includes(query)
+        )
+      );
+    });
+  }, [configMaps, searchQuery]);
+
+  const handleSelectConfigMap = async (summary: ConfigMapSummary) => {
+    setSelectedConfigMap(summary);
+    setManifestLoading(true);
+    setManifest(null);
+
+    try {
+      const detail = await apiClient.getConfigMap(
+        summary.cluster,
+        summary.namespace,
+        summary.name
+      );
+      setManifest(detail);
+      setEditorValue(detail.yaml || "");
+      setOriginalYaml(detail.yaml || "");
+      setDiffResult(null);
+    } catch (err) {
+      toast.error("Erro ao carregar manifesto", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setManifestLoading(false);
+    }
+  };
+
+  const handleNamespaceChange = (value: string) => {
+    if (value === "__all__") {
+      onNamespaceChange("");
+    } else {
+      onNamespaceChange(value);
+    }
+  };
+
+  const refreshConfigMaps = () => {
+    if (!cluster) return;
+    refetch();
+  };
+
+  const refreshManifest = () => {
+    if (selectedConfigMap) {
+      handleSelectConfigMap(selectedConfigMap);
+    }
+  };
+
+  const handleDiff = async () => {
+    if (!selectedConfigMap) return;
+    setIsDiffLoading(true);
+    try {
+      const result = await apiClient.diffConfigMap(originalYaml, editorValue);
+      setDiffResult(result.unifiedDiff || "Sem diferenças detectadas");
+      toast.success("Diff gerado", {
+        description: result.hasChanges ? "Alterações detectadas" : "Nenhuma alteração" ,
+      });
+    } catch (err) {
+      toast.error("Erro ao gerar diff", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsDiffLoading(false);
+    }
+  };
+
+  const handleValidate = async () => {
+    if (!selectedConfigMap) return;
+    setIsValidating(true);
+    try {
+      await apiClient.validateConfigMap({
+        cluster: selectedConfigMap.cluster,
+        namespace: selectedConfigMap.namespace,
+        yaml: editorValue,
+        fieldManager: "web-configmap-editor",
+      });
+      toast.success("Dry-run bem-sucedido", {
+        description: `${selectedConfigMap.namespace}/${selectedConfigMap.name}`,
+      });
+    } catch (err) {
+      toast.error("Dry-run falhou", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  const handleApply = async () => {
+    if (!selectedConfigMap) return;
+    const confirmed = window.confirm(
+      `Aplicar ConfigMap ${selectedConfigMap.namespace}/${selectedConfigMap.name}?`
+    );
+    if (!confirmed) return;
+
+    setIsApplying(true);
+    try {
+      await apiClient.applyConfigMap(
+        selectedConfigMap.cluster,
+        selectedConfigMap.namespace,
+        selectedConfigMap.name,
+        {
+          yaml: editorValue,
+          fieldManager: "web-configmap-editor",
+          dryRun: false,
+        }
+      );
+      toast.success("ConfigMap aplicado", {
+        description: `${selectedConfigMap.namespace}/${selectedConfigMap.name}`,
+      });
+      refreshManifest();
+    } catch (err) {
+      toast.error("Falha ao aplicar", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsApplying(false);
+    }
+  };
+
+  const leftTitleAction = (
+    <>
+      <Button
+        variant={showSystemNamespaces ? "secondary" : "outline"}
+        size="sm"
+        onClick={onToggleSystemNamespaces}
+        title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
+      >
+        {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
+      </Button>
+      <Button variant="outline" size="sm" onClick={refreshConfigMaps} disabled={!cluster || loading}>
+        <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
+      </Button>
+    </>
+  );
+
+  const rightTitleAction = (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={refreshManifest}
+      disabled={!selectedConfigMap || manifestLoading}
+    >
+      <RefreshCcw className="w-4 h-4 mr-2" />
+      Recarregar YAML
+    </Button>
+  );
+
+  const renderConfigMapList = () => {
+    if (!cluster) {
+      return (
+        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+          Selecione um cluster para listar ConfigMaps
+        </div>
+      );
+    }
+
+    if (loading) {
+      return (
+        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+          Carregando ConfigMaps...
+        </div>
+      );
+    }
+
+    if (filteredConfigMaps.length === 0) {
+      return (
+        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+          {configMaps.length === 0
+            ? "Nenhum ConfigMap encontrado"
+            : "Nenhum ConfigMap corresponde à busca"}
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-2">
+        {filteredConfigMaps.map((cm) => {
+          const isSelected =
+            selectedConfigMap?.name === cm.name &&
+            selectedConfigMap?.namespace === cm.namespace;
+          return (
+            <button
+              key={`${cm.cluster}-${cm.namespace}-${cm.name}`}
+              onClick={() => handleSelectConfigMap(cm)}
+              className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                isSelected
+                  ? "border-primary bg-primary/10 text-primary-foreground"
+                  : "border-border/60 hover:border-primary/40"
+              }`}
+            >
+              <div className="font-semibold text-sm">{cm.name}</div>
+              <div className="text-xs text-muted-foreground">{cm.namespace}</div>
+              <div className="text-[11px] text-muted-foreground mt-1">
+                {cm.dataKeys.length} keys • {cm.binaryKeys.length} binárias
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const hasChanges = editorValue !== originalYaml;
+
+  const renderManifestPanel = () => {
+    if (!cluster) {
+      return (
+        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+          Selecione um cluster para visualizar ConfigMaps
+        </div>
+      );
+    }
+
+    if (!selectedConfigMap) {
+      return (
+        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+          Escolha um ConfigMap para visualizar o manifesto
+        </div>
+      );
+    }
+
+    const updatedAt = selectedConfigMap.updatedAt
+      ? new Date(selectedConfigMap.updatedAt).toLocaleString()
+      : "--";
+
+    return (
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <p className="text-xs text-muted-foreground uppercase">Cluster</p>
+            <p className="font-medium break-all">{selectedConfigMap.cluster}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground uppercase">Namespace</p>
+            <p className="font-medium break-all">{selectedConfigMap.namespace}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground uppercase">ResourceVersion</p>
+            <p className="font-mono text-xs">{selectedConfigMap.resourceVersion || "--"}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground uppercase">Atualizado</p>
+            <p>{updatedAt}</p>
+          </div>
+        </div>
+
+        {selectedConfigMap.labels && Object.keys(selectedConfigMap.labels).length > 0 && (
+          <div className="text-xs">
+            <p className="text-muted-foreground mb-1">Labels</p>
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(selectedConfigMap.labels).map(([key, value]) => (
+                <span
+                  key={`${key}-${value}`}
+                  className="px-2 py-1 bg-secondary/60 rounded-md font-mono"
+                >
+                  {key}={value}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">Manifesto YAML</p>
+            {manifestLoading && (
+              <span className="text-xs text-muted-foreground">Carregando...</span>
+            )}
+          </div>
+          <MonacoYamlEditor
+            value={editorValue}
+            onChange={setEditorValue}
+            height={360}
+          />
+
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDiff}
+              disabled={!selectedConfigMap || isDiffLoading}
+            >
+              <RefreshCcw className="w-4 h-4 mr-2" /> Diff
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleValidate}
+              disabled={!selectedConfigMap || isValidating}
+            >
+              <CheckCircle2 className="w-4 h-4 mr-2" /> Validar (Dry-run)
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleApply}
+              disabled={!selectedConfigMap || isApplying || !hasChanges}
+            >
+              <TriangleAlert className="w-4 h-4 mr-2" /> Aplicar
+            </Button>
+          </div>
+
+          {diffResult && (
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Diff</p>
+              <pre className="bg-muted rounded-lg p-3 text-xs overflow-auto max-h-64 whitespace-pre-wrap">
+                {diffResult}
+              </pre>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <SplitView
+      leftPanel={{
+        title: "ConfigMaps",
+        titleAction: leftTitleAction,
+        content: (
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Namespace</label>
+              <Select
+                value={selectedNamespace || "__all__"}
+                onValueChange={handleNamespaceChange}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione um namespace" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">Todos os namespaces</SelectItem>
+                  {sortedNamespaces.map((ns) => (
+                    <SelectItem key={ns.name} value={ns.name}>
+                      {ns.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Buscar por nome ou label..."
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                className="pl-10"
+              />
+            </div>
+
+            {renderConfigMapList()}
+          </div>
+        ),
+      }}
+      rightPanel={{
+        title: "Visualização",
+        titleAction: rightTitleAction,
+        content: renderManifestPanel(),
+      }}
+    />
+  );
+};
