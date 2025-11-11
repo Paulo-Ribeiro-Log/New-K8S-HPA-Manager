@@ -511,19 +511,26 @@ export const ConfigMapsTab = ({
         </div>
 
         <Dialog open={diffModalOpen} onOpenChange={setDiffModalOpen}>
-          <DialogContent className="max-w-5xl max-h-[80vh]">
-            <DialogHeader>
-              <DialogTitle>Diff visual</DialogTitle>
-              <DialogDescription>
-                Comparação entre o YAML original e a versão editada.
+          <DialogContent className="max-w-6xl max-h-[85vh] bg-background border-border">
+            <DialogHeader className="border-b border-border pb-4">
+              <DialogTitle className="text-xl font-semibold text-primary">
+                Diff Visual
+              </DialogTitle>
+              <DialogDescription className="text-sm text-muted-foreground">
+                Comparação lado a lado entre o YAML original e a versão editada
+                {selectedConfigMap && ` • ${selectedConfigMap.namespace}/${selectedConfigMap.name}`}
               </DialogDescription>
             </DialogHeader>
-            <ScrollArea className="h-[65vh]">
-              {diffHtml ? (
-                <div className="diff2html-theme" dangerouslySetInnerHTML={{ __html: diffHtml }} />
-              ) : (
-                <p className="text-sm text-muted-foreground">Nenhum diff disponível.</p>
-              )}
+            <ScrollArea className="h-[calc(85vh-8rem)] w-full">
+              <div className="p-4">
+                {diffHtml ? (
+                  <div className="diff2html-dark" dangerouslySetInnerHTML={{ __html: diffHtml }} />
+                ) : (
+                  <div className="flex items-center justify-center h-32 text-muted-foreground">
+                    <p>Nenhum diff disponível.</p>
+                  </div>
+                )}
+              </div>
             </ScrollArea>
           </DialogContent>
         </Dialog>
@@ -562,19 +569,26 @@ export const ConfigMapsTab = ({
       />
 
       <Dialog open={diffModalOpen} onOpenChange={setDiffModalOpen}>
-        <DialogContent className="max-w-5xl max-h-[80vh]">
-          <DialogHeader>
-            <DialogTitle>Diff visual</DialogTitle>
-            <DialogDescription>
-              Comparação entre o YAML original e a versão editada.
+        <DialogContent className="max-w-6xl max-h-[85vh] bg-background border-border">
+          <DialogHeader className="border-b border-border pb-4">
+            <DialogTitle className="text-xl font-semibold text-primary">
+              Diff Visual
+            </DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">
+              Comparação lado a lado entre o YAML original e a versão editada
+              {selectedConfigMap && ` • ${selectedConfigMap.namespace}/${selectedConfigMap.name}`}
             </DialogDescription>
           </DialogHeader>
-          <ScrollArea className="h-[65vh]">
-            {diffHtml ? (
-              <div className="diff2html-theme diff2html-vscode" dangerouslySetInnerHTML={{ __html: diffHtml }} />
-            ) : (
-              <p className="text-sm text-muted-foreground">Nenhum diff disponível.</p>
-            )}
+          <ScrollArea className="h-[calc(85vh-8rem)] w-full">
+            <div className="p-4">
+              {diffHtml ? (
+                <div className="diff2html-dark" dangerouslySetInnerHTML={{ __html: diffHtml }} />
+              ) : (
+                <div className="flex items-center justify-center h-32 text-muted-foreground">
+                  <p>Nenhum diff disponível.</p>
+                </div>
+              )}
+            </div>
           </ScrollArea>
         </DialogContent>
       </Dialog>

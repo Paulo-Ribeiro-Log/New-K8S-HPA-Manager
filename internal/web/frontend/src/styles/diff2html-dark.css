@@ -1,46 +1,284 @@
-.diff2html-vscode .d2h-wrapper {
-  background-color: #1e1e1e;
-  color: #d4d4d4;
-  border-radius: 0.5rem;
+/* Diff2HTML Dark Theme - Integrado com aplicação */
+/* Cores base da aplicação: --background: 240 10% 8%; --foreground: 240 5% 96%; */
+
+.diff2html-dark {
+  /* Container principal do diff */
+  --diff-bg: hsl(240, 10%, 12%);
+  --diff-fg: hsl(240, 5%, 90%);
+  --diff-border: hsl(240, 8%, 25%);
+  --diff-header-bg: hsl(240, 10%, 10%);
+  --diff-header-fg: hsl(240, 5%, 96%);
+
+  /* Cores de mudanças - verde/vermelho mais suaves */
+  --diff-insert-bg: hsl(142, 45%, 12%);
+  --diff-insert-fg: hsl(142, 60%, 75%);
+  --diff-insert-border: hsl(142, 50%, 40%);
+
+  --diff-delete-bg: hsl(0, 45%, 12%);
+  --diff-delete-fg: hsl(0, 60%, 75%);
+  --diff-delete-border: hsl(0, 50%, 40%);
+
+  /* Número de linhas */
+  --diff-line-number-bg: hsl(240, 10%, 8%);
+  --diff-line-number-fg: hsl(240, 5%, 55%);
+
+  /* Hover states */
+  --diff-hover-bg: hsl(240, 8%, 15%);
+}
+
+/* Wrapper principal */
+.diff2html-dark .d2h-wrapper {
+  background-color: var(--diff-bg) !important;
+  color: var(--diff-fg) !important;
+  border-radius: 0.5rem !important;
+  overflow: hidden !important;
+  border: 1px solid var(--diff-border) !important;
+}
+
+/* Sobrescrever todos os backgrounds azuis padrão do diff2html */
+.diff2html-dark .d2h-file-wrapper,
+.diff2html-dark .d2h-files-diff,
+.diff2html-dark .d2h-file-diff,
+.diff2html-dark .d2h-diff-tbody,
+.diff2html-dark tbody {
+  background-color: var(--diff-bg) !important;
+}
+
+/* Cabeçalho do arquivo */
+.diff2html-dark .d2h-file-header {
+  background-color: var(--diff-header-bg) !important;
+  color: var(--diff-header-fg) !important;
+  border-bottom: 1px solid var(--diff-border) !important;
+  padding: 0.75rem 1rem !important;
+  font-weight: 600 !important;
+  font-size: 0.875rem !important;
+}
+
+.diff2html-dark .d2h-file-name {
+  color: hsl(250, 70%, 65%) !important; /* Primary color da aplicação */
+  font-family: "Cascadia Code", "Fira Code", Consolas, "Courier New", monospace !important;
+}
+
+.diff2html-dark .d2h-file-name-wrapper {
+  background-color: var(--diff-header-bg) !important;
+}
+
+/* Área de código */
+.diff2html-dark .d2h-file-wrapper {
+  background-color: var(--diff-bg);
+  border: none;
+}
+
+.diff2html-dark .d2h-file-diff {
+  border: 1px solid var(--diff-border);
+  border-radius: 0.375rem;
   overflow: hidden;
-  border: 1px solid #2d2d2d;
 }
-.diff2html-vscode .d2h-file-header,
-.diff2html-vscode .d2h-file-list-header {
-  background-color: #252526;
-  color: #f3f3f3;
-  border-bottom: 1px solid #3c3c3c;
+
+.diff2html-dark .d2h-diff-table {
+  background-color: var(--diff-bg);
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
 }
-.diff2html-vscode .d2h-file-wrapper,
-.diff2html-vscode .d2h-file-side-diff,
-.diff2html-vscode .d2h-code-side-line,
-.diff2html-vscode .d2h-code-line {
-  background-color: #1e1e1e;
-  color: #d4d4d4;
+
+/* Side-by-side layout */
+.diff2html-dark .d2h-file-side-diff {
+  background-color: var(--diff-bg);
+  width: 50%;
 }
-.diff2html-vscode .d2h-code-line-ctn,
-.diff2html-vscode .d2h-code-side-line-number,
-.diff2html-vscode .d2h-code-linenumber {
-  font-family: "Cascadia Code", "Fira Code", Consolas, "Courier New", monospace;
-  font-size: 0.85rem;
+
+.diff2html-dark .d2h-code-side-line {
+  background-color: var(--diff-bg);
+  color: var(--diff-fg);
+  padding: 0;
+  vertical-align: top;
 }
-.diff2html-vscode .d2h-code-line ins,
-.diff2html-vscode .d2h-code-side-line ins {
-  background-color: rgba(22, 163, 74, 0.25);
-  color: #b9f6ca;
+
+/* Números de linha */
+.diff2html-dark .d2h-code-linenumber,
+.diff2html-dark .d2h-code-side-linenumber {
+  background-color: var(--diff-line-number-bg) !important;
+  color: var(--diff-line-number-fg) !important;
+  border-right: 1px solid var(--diff-border) !important;
+  padding: 0.25rem 0.75rem !important;
+  text-align: right !important;
+  font-family: "Cascadia Code", "Fira Code", Consolas, "Courier New", monospace !important;
+  font-size: 0.75rem !important;
+  user-select: none !important;
+  min-width: 3rem !important;
+  vertical-align: top !important;
 }
-.diff2html-vscode .d2h-code-line del,
-.diff2html-vscode .d2h-code-side-line del {
-  background-color: rgba(239, 83, 80, 0.25);
-  color: #ffb4a9;
+
+/* Conteúdo do código */
+.diff2html-dark .d2h-code-line-ctn {
+  background-color: var(--diff-bg) !important;
+  color: var(--diff-fg) !important;
+  padding: 0.25rem 1rem !important;
+  font-family: "Cascadia Code", "Fira Code", Consolas, "Courier New", monospace !important;
+  font-size: 0.813rem !important;
+  line-height: 1.5 !important;
+  white-space: pre-wrap !important;
+  word-break: break-all !important;
+  vertical-align: top !important;
 }
-.diff2html-vscode .d2h-code-line-prefix {
-  color: #808080;
+
+/* Linhas de código (side-by-side) */
+.diff2html-dark .d2h-code-side-line {
+  background-color: var(--diff-bg) !important;
+  color: var(--diff-fg) !important;
 }
-.diff2html-vscode .d2h-file-diff {
-  border: 1px solid #3c3c3c;
+
+.diff2html-dark .d2h-code-line {
+  background-color: var(--diff-bg) !important;
+  color: var(--diff-fg) !important;
 }
-.diff2html-vscode .d2h-file-list-title,
-.diff2html-vscode .d2h-file-list-line a {
-  color: #d4d4d4;
+
+/* Linhas inseridas (adicionadas) */
+.diff2html-dark .d2h-ins {
+  background-color: var(--diff-insert-bg) !important;
+  border-left: 2px solid var(--diff-insert-border) !important;
+}
+
+.diff2html-dark .d2h-ins .d2h-code-linenumber,
+.diff2html-dark .d2h-ins .d2h-code-side-linenumber {
+  background-color: var(--diff-insert-bg) !important;
+  color: var(--diff-insert-fg) !important;
+  font-weight: 600 !important;
+}
+
+.diff2html-dark .d2h-ins .d2h-code-line-ctn {
+  background-color: var(--diff-insert-bg) !important;
+  color: var(--diff-insert-fg) !important;
+}
+
+.diff2html-dark .d2h-code-line ins,
+.diff2html-dark .d2h-code-side-line ins {
+  background-color: rgba(34, 197, 94, 0.35) !important;
+  color: hsl(142, 76%, 85%) !important;
+  text-decoration: none !important;
+  font-weight: 600 !important;
+  padding: 0.125rem 0.25rem !important;
+  border-radius: 0.25rem !important;
+}
+
+/* Linhas deletadas (removidas) */
+.diff2html-dark .d2h-del {
+  background-color: var(--diff-delete-bg) !important;
+  border-left: 2px solid var(--diff-delete-border) !important;
+}
+
+.diff2html-dark .d2h-del .d2h-code-linenumber,
+.diff2html-dark .d2h-del .d2h-code-side-linenumber {
+  background-color: var(--diff-delete-bg) !important;
+  color: var(--diff-delete-fg) !important;
+  font-weight: 600 !important;
+}
+
+.diff2html-dark .d2h-del .d2h-code-line-ctn {
+  background-color: var(--diff-delete-bg) !important;
+  color: var(--diff-delete-fg) !important;
+}
+
+.diff2html-dark .d2h-code-line del,
+.diff2html-dark .d2h-code-side-line del {
+  background-color: rgba(239, 68, 68, 0.35) !important;
+  color: hsl(0, 84%, 85%) !important;
+  text-decoration: line-through !important;
+  font-weight: 600 !important;
+  padding: 0.125rem 0.25rem !important;
+  border-radius: 0.25rem !important;
+}
+
+/* Linhas de contexto (sem mudanças) */
+.diff2html-dark .d2h-cntx {
+  background-color: var(--diff-bg) !important;
+}
+
+.diff2html-dark .d2h-cntx .d2h-code-linenumber,
+.diff2html-dark .d2h-cntx .d2h-code-side-linenumber {
+  background-color: var(--diff-line-number-bg) !important;
+}
+
+/* Prefixo das linhas (+/-) */
+.diff2html-dark .d2h-code-line-prefix {
+  color: hsl(240, 5%, 60%);
+  font-weight: 700;
+  padding-right: 0.5rem;
+}
+
+/* Info adicional */
+.diff2html-dark .d2h-info {
+  background-color: hsl(215, 90%, 20%);
+  color: hsl(215, 90%, 80%);
+  border-left: 2px solid hsl(215, 90%, 50%);
+}
+
+.diff2html-dark .d2h-info .d2h-code-linenumber {
+  background-color: hsl(215, 90%, 15%);
+  color: hsl(215, 90%, 70%);
+}
+
+/* Empty line */
+.diff2html-dark .d2h-emptyplaceholder {
+  background-color: hsl(240, 8%, 6%);
+  border-right: 1px solid var(--diff-border);
+}
+
+/* File list (se habilitado) */
+.diff2html-dark .d2h-file-list-header,
+.diff2html-dark .d2h-file-list-title {
+  background-color: var(--diff-header-bg);
+  color: var(--diff-header-fg);
+  border-bottom: 1px solid var(--diff-border);
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+}
+
+.diff2html-dark .d2h-file-list-line {
+  background-color: var(--diff-bg);
+  border-bottom: 1px solid var(--diff-border);
+}
+
+.diff2html-dark .d2h-file-list-line:hover {
+  background-color: var(--diff-hover-bg);
+}
+
+.diff2html-dark .d2h-file-list-line a {
+  color: hsl(250, 70%, 65%); /* Primary color */
+  text-decoration: none;
+}
+
+.diff2html-dark .d2h-file-list-line a:hover {
+  color: hsl(256, 60%, 55%); /* Primary-dark color */
+  text-decoration: underline;
+}
+
+/* Estatísticas de diff */
+.diff2html-dark .d2h-file-stats {
+  color: var(--diff-fg);
+  font-size: 0.75rem;
+}
+
+.diff2html-dark .d2h-lines-added {
+  color: var(--diff-insert-fg);
+  font-weight: 600;
+}
+
+.diff2html-dark .d2h-lines-deleted {
+  color: var(--diff-delete-fg);
+  font-weight: 600;
+}
+
+/* Responsividade para modais */
+@media (max-width: 768px) {
+  .diff2html-dark .d2h-code-line-ctn {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+  }
+
+  .diff2html-dark .d2h-code-linenumber {
+    padding: 0.25rem 0.5rem;
+    min-width: 2.5rem;
+  }
 }

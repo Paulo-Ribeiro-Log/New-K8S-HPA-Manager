@@ -3,6 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 **IMPORTANTE**: Responda sempre em português brasileiro (pt-br).
+**IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/k8s-hpa-manager` para executar a aplicação.
 **IMPORTANTE**: Interface **totalmente responsiva** - adapta-se a qualquer tamanho de terminal (recomendado: 80x24 ou maior).
@@ -75,6 +76,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Página de Monitoring HPA-Watchdog** - Sidebar retrátil, integração com engine de monitoramento, métricas em tempo real - Novembro 2025
 - ✅ **Refatoração RotatingCollector** - Sistema de monitoramento simplificado, redução de 850 → 450 linhas, baseline automático de 3 dias - 07 nov 2025
 - ✅ **Aba ConfigMaps (Monaco Editor)** - Listagem completa com filtro por namespace, edição YAML com monaco-yaml, diff, dry-run e apply direto via backend Go; cards de estatísticas são ocultados apenas nesta aba para maximizar o espaço útil - Nov 2025
+- ✅ **Diff visual com Diff2HTML** - Modal dedicado (side-by-side) usando tema VS Code dark, nomes reais de arquivos e mesma paleta do Monaco; backend gera unified diff via `difflib` - Nov 2025
+- ✅ **Melhorias de UX na aba ConfigMaps** - Toggle de Labels, botão para recolher o painel de ConfigMaps e botões “X” de limpeza em todos os campos de busca (HPAs, Node Pools, etc.) para liberar espaço no editor - Nov 2025
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
