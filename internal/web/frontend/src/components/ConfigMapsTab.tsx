@@ -44,12 +44,10 @@ export const ConfigMapsTab = ({
   const [manifestLoading, setManifestLoading] = useState(false);
   const [editorValue, setEditorValue] = useState("");
   const [originalYaml, setOriginalYaml] = useState("");
-  const [diffResult, setDiffResult] = useState<string | null>(null);
-  const [isDiffLoading, setIsDiffLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<"editor" | "diff">("editor");
   const [isValidating, setIsValidating] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
-  const [viewMode, setViewMode] = useState<"editor" | "diff">("editor");
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
   const { configMaps, loading, error, refetch } = useConfigMaps(
@@ -71,7 +69,6 @@ export const ConfigMapsTab = ({
     setManifest(null);
     setEditorValue("");
     setOriginalYaml("");
-    setDiffResult(null);
     setShowLabels(true);
     setViewMode("editor");
   }, [cluster, selectedNamespace]);
@@ -113,7 +110,6 @@ export const ConfigMapsTab = ({
       setManifest(detail);
       setEditorValue(detail.yaml || "");
       setOriginalYaml(detail.yaml || "");
-      setDiffResult(null);
       setShowLabels(true);
       setViewMode("editor");
     } catch (err) {
@@ -144,23 +140,12 @@ export const ConfigMapsTab = ({
     }
   };
 
-  const handleDiff = async () => {
-    if (!selectedConfigMap) return;
-    setIsDiffLoading(true);
-    try {
-      const result = await apiClient.diffConfigMap(originalYaml, editorValue);
-      setDiffResult(result.unifiedDiff || "Sem diferenças detectadas");
-      setViewMode("diff");
-      toast.success("Diff gerado", {
-        description: result.hasChanges ? "Alterações detectadas" : "Nenhuma alteração" ,
-      });
-    } catch (err) {
-      toast.error("Erro ao gerar diff", {
-        description: err instanceof Error ? err.message : "Erro desconhecido",
-      });
-    } finally {
-      setIsDiffLoading(false);
+  const handleToggleView = (mode: "editor" | "diff") => {
+    if (mode === "diff" && !hasChanges) {
+      toast.info("Nenhuma alteração para comparar");
+      return;
     }
+    setViewMode(mode);
   };
 
   const handleValidate = async () => {
@@ -380,7 +365,7 @@ export const ConfigMapsTab = ({
                 <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
                   <button
                     type="button"
-                    onClick={() => setViewMode("editor")}
+                    onClick={() => handleToggleView("editor")}
                     className={`px-3 py-1 text-xs font-medium ${
                       viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
                     }`}
@@ -389,11 +374,11 @@ export const ConfigMapsTab = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setViewMode("diff")}
+                    onClick={() => handleToggleView("diff")}
                     className={`px-3 py-1 text-xs font-medium ${
                       viewMode === "diff" ? "bg-primary text-white" : "bg-background text-muted-foreground"
-                    } ${diffResult ? "" : "opacity-50 cursor-not-allowed"}`}
-                    disabled={!diffResult}
+                    } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                    disabled={!hasChanges}
                   >
                     Diff
                   </button>
@@ -408,21 +393,17 @@ export const ConfigMapsTab = ({
               />
             )}
             {viewMode === "diff" && (
-              <pre className="bg-muted rounded-lg p-3 text-xs font-mono whitespace-pre-wrap overflow-auto min-h-[360px]">
-                {diffResult || "Gere um diff para visualizar as alterações"}
-              </pre>
+              <MonacoYamlEditor
+                mode="diff"
+                originalValue={originalYaml}
+                value={editorValue}
+                height={360}
+                readOnly
+              />
             )}
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleDiff}
-              disabled={!selectedConfigMap || isDiffLoading}
-            >
-              <RefreshCcw className="w-4 h-4 mr-2" /> Diff
-            </Button>
             <Button
               variant="secondary"
               size="sm"
