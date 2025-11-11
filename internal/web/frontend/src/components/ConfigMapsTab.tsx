@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -13,6 +13,10 @@ import type {
 import { useConfigMaps } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
+import { html as diff2html } from "diff2html";
+import "diff2html/bundles/css/diff2html.min.css";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface ConfigMapsTabProps {
   cluster: string;
@@ -42,6 +46,9 @@ export const ConfigMapsTab = ({
   const [isApplying, setIsApplying] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [diffModalOpen, setDiffModalOpen] = useState(false);
+  const [diffHtml, setDiffHtml] = useState("");
+  const [isDiffLoading, setIsDiffLoading] = useState(false);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
   const { configMaps, loading, error, refetch } = useConfigMaps(
@@ -123,6 +130,34 @@ export const ConfigMapsTab = ({
       return;
     }
     setViewMode(mode);
+  };
+
+  const handleShowDiffModal = async () => {
+    if (!selectedConfigMap) return;
+    if (!hasChanges) {
+      toast.info("Nenhuma alteração para comparar");
+      return;
+    }
+    setIsDiffLoading(true);
+    try {
+      const diffResponse = await apiClient.diffConfigMap(originalYaml, editorValue);
+      const unifiedDiff = diffResponse.unifiedDiff || "";
+      const html = diff2html(unifiedDiff, {
+        inputFormat: "diff",
+        drawFileList: false,
+        matching: "lines",
+        outputFormat: "side-by-side",
+        highlight: true,
+      });
+      setDiffHtml(html);
+      setDiffModalOpen(true);
+    } catch (error) {
+      toast.error("Erro ao gerar diff visual", {
+        description: error instanceof Error ? error.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsDiffLoading(false);
+    }
   };
 
   const handleValidate = async () => {
@@ -382,6 +417,19 @@ export const ConfigMapsTab = ({
 
           <div className="flex flex-wrap gap-2">
             <Button
+              variant="outline"
+              size="sm"
+              onClick={handleShowDiffModal}
+              disabled={!selectedConfigMap || !hasChanges || isDiffLoading}
+            >
+              {isDiffLoading ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <FileDiff className="w-4 h-4 mr-2" />
+              )}
+              Visualizar diff
+            </Button>
+            <Button
               variant="secondary"
               size="sm"
               onClick={handleValidate}
@@ -443,52 +491,92 @@ export const ConfigMapsTab = ({
 
   if (isSidebarCollapsed) {
     return (
-      <div className="p-4 h-full">
-        <div className="grid grid-cols-1 h-full">
-          <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
-            <div className="flex items-center justify-between mb-3 pb-2 border-b-2 border-primary">
-              <div className="flex items-center gap-2">
-                {collapseButton}
-                <p className="text-base font-semibold text-primary">Visualização</p>
+      <>
+        <div className="p-4 h-full">
+          <div className="grid grid-cols-1 h-full">
+            <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
+              <div className="flex items-center justify-between mb-3 pb-2 border-b-2 border-primary">
+                <div className="flex items-center gap-2">
+                  {collapseButton}
+                  <p className="text-base font-semibold text-primary">Visualização</p>
+                </div>
+                {rightTitleAction}
               </div>
-              {rightTitleAction}
-            </div>
-            <div className="flex-1 overflow-auto min-h-0">
-              {renderManifestPanel()}
+              <div className="flex-1 overflow-auto min-h-0">
+                {renderManifestPanel()}
+              </div>
             </div>
           </div>
         </div>
-      </div>
+
+        <Dialog open={diffModalOpen} onOpenChange={setDiffModalOpen}>
+          <DialogContent className="max-w-5xl max-h-[80vh]">
+            <DialogHeader>
+              <DialogTitle>Diff visual</DialogTitle>
+              <DialogDescription>
+                Comparação entre o YAML original e a versão editada.
+              </DialogDescription>
+            </DialogHeader>
+            <ScrollArea className="h-[65vh]">
+              {diffHtml ? (
+                <div className="diff2html-theme" dangerouslySetInnerHTML={{ __html: diffHtml }} />
+              ) : (
+                <p className="text-sm text-muted-foreground">Nenhum diff disponível.</p>
+              )}
+            </ScrollArea>
+          </DialogContent>
+        </Dialog>
+      </>
     );
   }
 
   return (
-    <SplitView
-      leftPanel={{
-        title: "ConfigMaps",
-        titleAction: (
-          <div className="flex items-center gap-2">
-            <Button
-              variant={showSystemNamespaces ? "secondary" : "outline"}
-              size="sm"
-              onClick={onToggleSystemNamespaces}
-              title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
-            >
-              {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
-            </Button>
-            <Button variant="outline" size="sm" onClick={refreshConfigMaps} disabled={!cluster || loading}>
-              <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
-            </Button>
-            {collapseButton}
-          </div>
-        ),
-        content: leftContent,
-      }}
-      rightPanel={{
-        title: "Visualização",
-        titleAction: rightTitleAction,
-        content: renderManifestPanel(),
-      }}
-    />
+    <>
+      <SplitView
+        leftPanel={{
+          title: "ConfigMaps",
+          titleAction: (
+            <div className="flex items-center gap-2">
+              <Button
+                variant={showSystemNamespaces ? "secondary" : "outline"}
+                size="sm"
+                onClick={onToggleSystemNamespaces}
+                title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
+              >
+                {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
+              </Button>
+              <Button variant="outline" size="sm" onClick={refreshConfigMaps} disabled={!cluster || loading}>
+                <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
+              </Button>
+              {collapseButton}
+            </div>
+          ),
+          content: leftContent,
+        }}
+        rightPanel={{
+          title: "Visualização",
+          titleAction: rightTitleAction,
+          content: renderManifestPanel(),
+        }}
+      />
+
+      <Dialog open={diffModalOpen} onOpenChange={setDiffModalOpen}>
+        <DialogContent className="max-w-5xl max-h-[80vh]">
+          <DialogHeader>
+            <DialogTitle>Diff visual</DialogTitle>
+            <DialogDescription>
+              Comparação entre o YAML original e a versão editada.
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="h-[65vh]">
+            {diffHtml ? (
+              <div className="diff2html-theme" dangerouslySetInnerHTML={{ __html: diffHtml }} />
+            ) : (
+              <p className="text-sm text-muted-foreground">Nenhum diff disponível.</p>
+            )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 };
