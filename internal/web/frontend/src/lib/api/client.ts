@@ -64,10 +64,26 @@ class APIClient {
     });
 
     if (!response.ok) {
-      const error: APIError = await response.json().catch(() => ({
+      const rawError = await response.json().catch(() => ({
         error: `HTTP ${response.status}: ${response.statusText}`,
       }));
-      throw new Error(error.error || `Request failed: ${response.status}`);
+
+      let message: string | undefined;
+      if (typeof rawError?.error === "string") {
+        message = rawError.error;
+      } else if (rawError?.error?.message) {
+        message = rawError.error.message;
+      } else if (rawError?.message) {
+        message = rawError.message;
+      } else if (rawError) {
+        try {
+          message = JSON.stringify(rawError);
+        } catch {
+          message = undefined;
+        }
+      }
+
+      throw new Error(message || `Request failed: ${response.status}`);
     }
 
     return response.json();
