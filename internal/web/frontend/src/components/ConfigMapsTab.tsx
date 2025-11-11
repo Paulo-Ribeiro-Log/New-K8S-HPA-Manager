@@ -345,10 +345,10 @@ export const ConfigMapsTab = ({
             <button
               type="button"
               onClick={() => setShowLabels((prev) => !prev)}
-              className="w-full flex items-center justify-between text-left text-muted-foreground mb-1"
+              className="flex items-center gap-2 text-left text-muted-foreground mb-1"
             >
-              <span>Labels</span>
               {showLabels ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+              <span>Labels</span>
             </button>
             {showLabels && (
               <div className="flex flex-wrap gap-2">
