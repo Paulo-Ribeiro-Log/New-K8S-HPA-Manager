@@ -39,15 +39,6 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
         },
       ],
     });
-
-    monacoInstance.editor.defineTheme("k8s-hpa-theme", {
-      base: "vs-dark",
-      inherit: true,
-      rules: [],
-      colors: {
-        "editor.background": "#0f172a",
-      },
-    });
   };
 
   const handleMount: OnMount = (editor, monacoInstance) => {
@@ -89,7 +80,7 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
           modified={value}
           onMount={() => setMounted(true)}
           beforeMount={handleBeforeMount}
-          theme="k8s-hpa-theme"
+          theme="vs-dark"
           options={{
             renderSideBySide: false,
             readOnly: true,
@@ -105,7 +96,7 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
           onMount={handleMount}
           beforeMount={handleBeforeMount}
           onChange={handleChange}
-          theme="k8s-hpa-theme"
+          theme="vs-dark"
           options={{
             minimap: { enabled: false },
             readOnly,
