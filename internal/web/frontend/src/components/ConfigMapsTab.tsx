@@ -2,13 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
@@ -73,15 +66,6 @@ export const ConfigMapsTab = ({
     setViewMode("editor");
   }, [cluster, selectedNamespace]);
 
-  const filteredNamespaces = useMemo(() => {
-    if (showSystemNamespaces) return namespaces;
-    return namespaces.filter((ns) => !ns.isSystem);
-  }, [namespaces, showSystemNamespaces]);
-
-  const sortedNamespaces = useMemo(() => {
-    return [...filteredNamespaces].sort((a, b) => a.name.localeCompare(b.name));
-  }, [filteredNamespaces]);
-
   const filteredConfigMaps = useMemo(() => {
     if (!searchQuery) return configMaps;
     const query = searchQuery.toLowerCase();
@@ -118,14 +102,6 @@ export const ConfigMapsTab = ({
       });
     } finally {
       setManifestLoading(false);
-    }
-  };
-
-  const handleNamespaceChange = (value: string) => {
-    if (value === "__all__") {
-      onNamespaceChange("");
-    } else {
-      onNamespaceChange(value);
     }
   };
 
@@ -434,26 +410,6 @@ export const ConfigMapsTab = ({
         titleAction: leftTitleAction,
         content: (
           <div className="space-y-3">
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Namespace</label>
-              <Select
-                value={selectedNamespace || "__all__"}
-                onValueChange={handleNamespaceChange}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione um namespace" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__all__">Todos os namespaces</SelectItem>
-                  {sortedNamespaces.map((ns) => (
-                    <SelectItem key={ns.name} value={ns.name}>
-                      {ns.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
