@@ -458,7 +458,6 @@ export const ConfigMapsTab = ({
         title: "ConfigMaps",
         titleAction: (
           <div className="flex items-center gap-2">
-            {collapseButton}
             <Button
               variant={showSystemNamespaces ? "secondary" : "outline"}
               size="sm"
@@ -470,6 +469,7 @@ export const ConfigMapsTab = ({
             <Button variant="outline" size="sm" onClick={refreshConfigMaps} disabled={!cluster || loading}>
               <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
             </Button>
+            {collapseButton}
           </div>
         ),
         content: leftContent,
