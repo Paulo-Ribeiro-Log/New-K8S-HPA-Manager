@@ -83,16 +83,26 @@ export function CronJobsPage({ selectedCluster }: CronJobsPageProps) {
         ) : (
           <div className="space-y-3">
             {/* Search input */}
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                type="text"
-                placeholder="Buscar por nome ou namespace..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10"
-              />
-            </div>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                aria-label="Limpar busca de CronJobs"
+              >
+                ×
+              </button>
+            )}
+            <Input
+              type="text"
+              placeholder="Buscar por nome ou namespace..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-10 pr-8"
+            />
+          </div>
 
             {/* CronJobs list */}
             <div className="space-y-2">

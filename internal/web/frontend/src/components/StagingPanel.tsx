@@ -199,15 +199,25 @@ export function StagingPanel() {
             <div className="space-y-3">
               {/* Search input */}
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  type="text"
-                  placeholder="Search by name, namespace, or cluster..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10"
-                />
-              </div>
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  aria-label="Limpar busca do staging"
+                >
+                  ×
+                </button>
+              )}
+              <Input
+                type="text"
+                placeholder="Search by name, namespace, or cluster..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-10 pr-8"
+              />
+            </div>
 
               {/* Stats badges */}
               <div className="flex items-center gap-2 flex-wrap">

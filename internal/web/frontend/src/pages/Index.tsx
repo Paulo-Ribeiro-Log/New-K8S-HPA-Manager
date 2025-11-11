@@ -259,12 +259,22 @@ const Index = ({ onLogout }: IndexProps) => {
                   {/* Search input */}
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    {hpaSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setHpaSearchQuery("")}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        aria-label="Limpar busca de HPAs"
+                      >
+                        ×
+                      </button>
+                    )}
                     <Input
                       type="text"
                       placeholder="Buscar por nome ou namespace..."
                       value={hpaSearchQuery}
                       onChange={(e) => setHpaSearchQuery(e.target.value)}
-                      className="pl-10"
+                      className="pl-10 pr-8"
                     />
                   </div>
 
@@ -411,12 +421,22 @@ const Index = ({ onLogout }: IndexProps) => {
                   {/* Search input */}
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    {nodePoolSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setNodePoolSearchQuery("")}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        aria-label="Limpar busca de Node Pools"
+                      >
+                        ×
+                      </button>
+                    )}
                     <Input
                       type="text"
                       placeholder="Buscar por nome ou cluster..."
                       value={nodePoolSearchQuery}
                       onChange={(e) => setNodePoolSearchQuery(e.target.value)}
-                      className="pl-10"
+                      className="pl-10 pr-8"
                     />
                   </div>
 

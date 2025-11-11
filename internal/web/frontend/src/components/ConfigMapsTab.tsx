@@ -406,15 +406,25 @@ export const ConfigMapsTab = ({
 
   const leftContent = (
     <div className="space-y-3">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Buscar por nome ou label..."
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                className="pl-10"
-              />
-            </div>
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        {searchQuery && (
+          <button
+            type="button"
+            onClick={() => setSearchQuery("")}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            aria-label="Limpar busca"
+          >
+            ×
+          </button>
+        )}
+        <Input
+          placeholder="Buscar por nome ou label..."
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          className="pl-10 pr-8"
+        />
+      </div>
 
             {renderConfigMapList()}
           </div>
