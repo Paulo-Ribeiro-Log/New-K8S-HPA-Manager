@@ -204,12 +204,12 @@ class APIClient {
     return response.data;
   }
 
-  async diffConfigMap(originalYaml: string, updatedYaml: string): Promise<ConfigMapDiffResult> {
+  async diffConfigMap(originalYaml: string, updatedYaml: string, fileName?: string): Promise<ConfigMapDiffResult> {
     const response = await this.request<APIResponse<ConfigMapDiffResult>>(
       `/configmaps/diff`,
       {
         method: "POST",
-        body: JSON.stringify({ originalYaml, updatedYaml }),
+        body: JSON.stringify({ originalYaml, updatedYaml, fileName }),
       }
     );
     if (!response.data) {

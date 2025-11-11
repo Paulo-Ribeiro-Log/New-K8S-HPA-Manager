@@ -15,6 +15,7 @@ import { apiClient } from "@/lib/api/client";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
+import "@/styles/diff2html-dark.css";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -140,7 +141,7 @@ export const ConfigMapsTab = ({
     }
     setIsDiffLoading(true);
     try {
-      const diffResponse = await apiClient.diffConfigMap(originalYaml, editorValue);
+      const diffResponse = await apiClient.diffConfigMap(originalYaml, editorValue, selectedConfigMap?.name);
       const unifiedDiff = diffResponse.unifiedDiff || "";
       const html = diff2html(unifiedDiff, {
         inputFormat: "diff",

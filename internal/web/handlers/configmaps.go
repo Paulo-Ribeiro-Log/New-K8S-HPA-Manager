@@ -149,11 +149,17 @@ func (h *ConfigMapHandler) Diff(c *gin.Context) {
 		return
 	}
 
+	fromFile := "original"
+	toFile := "edited"
+	if strings.TrimSpace(req.FileName) != "" {
+		fromFile = fmt.Sprintf("%s (original)", req.FileName)
+		toFile = fmt.Sprintf("%s (edit)", req.FileName)
+	}
 	ud := difflib.UnifiedDiff{
 		A:        difflib.SplitLines(req.Original),
 		B:        difflib.SplitLines(req.Updated),
-		FromFile: "original",
-		ToFile:   "edited",
+		FromFile: fromFile,
+		ToFile:   toFile,
 		Context:  3,
 	}
 	text, err := difflib.GetUnifiedDiffString(ud)
@@ -303,6 +309,7 @@ func (h *ConfigMapHandler) Apply(c *gin.Context) {
 type configMapDiffRequest struct {
 	Original string `json:"originalYaml"`
 	Updated  string `json:"updatedYaml"`
+	FileName string `json:"fileName"`
 }
 
 type configMapValidateRequest struct {
