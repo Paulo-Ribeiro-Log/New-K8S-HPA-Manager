@@ -49,6 +49,7 @@ export const ConfigMapsTab = ({
   const [isValidating, setIsValidating] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
+  const [viewMode, setViewMode] = useState<"editor" | "diff">("editor");
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
   const { configMaps, loading, error, refetch } = useConfigMaps(
@@ -72,6 +73,7 @@ export const ConfigMapsTab = ({
     setOriginalYaml("");
     setDiffResult(null);
     setShowLabels(true);
+    setViewMode("editor");
   }, [cluster, selectedNamespace]);
 
   const filteredNamespaces = useMemo(() => {
@@ -113,6 +115,7 @@ export const ConfigMapsTab = ({
       setOriginalYaml(detail.yaml || "");
       setDiffResult(null);
       setShowLabels(true);
+      setViewMode("editor");
     } catch (err) {
       toast.error("Erro ao carregar manifesto", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -147,6 +150,7 @@ export const ConfigMapsTab = ({
     try {
       const result = await apiClient.diffConfigMap(originalYaml, editorValue);
       setDiffResult(result.unifiedDiff || "Sem diferenças detectadas");
+      setViewMode("diff");
       toast.success("Diff gerado", {
         description: result.hasChanges ? "Alterações detectadas" : "Nenhuma alteração" ,
       });
@@ -366,17 +370,49 @@ export const ConfigMapsTab = ({
         )}
 
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-medium">Manifesto YAML</p>
-            {manifestLoading && (
-              <span className="text-xs text-muted-foreground">Carregando...</span>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium">Manifesto YAML</p>
+              <div className="flex items-center gap-2">
+                {manifestLoading && (
+                  <span className="text-xs text-muted-foreground">Carregando...</span>
+                )}
+                <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode("editor")}
+                    className={`px-3 py-1 text-xs font-medium ${
+                      viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                    }`}
+                  >
+                    Editor
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode("diff")}
+                    className={`px-3 py-1 text-xs font-medium ${
+                      viewMode === "diff" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                    } ${diffResult ? "" : "opacity-50 cursor-not-allowed"}`}
+                    disabled={!diffResult}
+                  >
+                    Diff
+                  </button>
+                </div>
+              </div>
+            </div>
+            {viewMode === "editor" && (
+              <MonacoYamlEditor
+                value={editorValue}
+                onChange={setEditorValue}
+                height={360}
+              />
+            )}
+            {viewMode === "diff" && (
+              <pre className="bg-muted rounded-lg p-3 text-xs font-mono whitespace-pre-wrap overflow-auto min-h-[360px]">
+                {diffResult || "Gere um diff para visualizar as alterações"}
+              </pre>
             )}
           </div>
-          <MonacoYamlEditor
-            value={editorValue}
-            onChange={setEditorValue}
-            height={360}
-          />
 
           <div className="flex flex-wrap gap-2">
             <Button
@@ -405,14 +441,6 @@ export const ConfigMapsTab = ({
             </Button>
           </div>
 
-          {diffResult && (
-            <div className="space-y-1">
-              <p className="text-sm font-medium">Diff</p>
-              <pre className="bg-muted rounded-lg p-3 text-xs overflow-auto max-h-64 whitespace-pre-wrap">
-                {diffResult}
-              </pre>
-            </div>
-          )}
         </div>
       </div>
     );
