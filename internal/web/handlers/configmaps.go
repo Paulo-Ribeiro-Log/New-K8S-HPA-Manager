@@ -10,6 +10,7 @@ import (
 	"github.com/kylelemons/godebug/diff"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"sigs.k8s.io/yaml"
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
@@ -179,7 +180,13 @@ func (h *ConfigMapHandler) Validate(c *gin.Context) {
 	}
 
 	kubeClient := kubeclient.NewClient(clientset, req.Cluster)
-	result, err := kubeClient.ValidateConfigMap(c.Request.Context(), req.YAML, req.FieldManager, req.Namespace)
+	sanitizedYAML, err := sanitizeConfigMapYAML(req.YAML)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_YAML", err.Error()))
+		return
+	}
+
+	result, err := kubeClient.ValidateConfigMap(c.Request.Context(), sanitizedYAML, req.FieldManager, req.Namespace)
 	if err != nil {
 		status := http.StatusInternalServerError
 		errorCode := "VALIDATION_ERROR"
@@ -236,7 +243,13 @@ func (h *ConfigMapHandler) Apply(c *gin.Context) {
 	}
 
 	start := time.Now()
-	result, err := kubeClient.ApplyConfigMap(ctx, req.YAML, req.FieldManager, namespace, name, req.DryRun)
+	sanitizedYAML, err := sanitizeConfigMapYAML(req.YAML)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_YAML", err.Error()))
+		return
+	}
+
+	result, err := kubeClient.ApplyConfigMap(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun)
 	if err != nil {
 		status := http.StatusInternalServerError
 		errorCode := "APPLY_ERROR"
@@ -292,6 +305,35 @@ type configMapApplyRequest struct {
 	YAML         string `json:"yaml"`
 	FieldManager string `json:"fieldManager"`
 	DryRun       bool   `json:"dryRun"`
+}
+
+func sanitizeConfigMapYAML(yamlContent string) (string, error) {
+	var obj map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &obj); err != nil {
+		return "", fmt.Errorf("invalid configmap yaml: %w", err)
+	}
+
+	metadata, _ := obj["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	delete(metadata, "managedFields")
+	delete(metadata, "resourceVersion")
+	delete(metadata, "uid")
+	delete(metadata, "generation")
+	delete(metadata, "creationTimestamp")
+	delete(metadata, "selfLink")
+	delete(metadata, "annotations.kubectl.kubernetes.io/last-applied-configuration")
+
+	obj["metadata"] = metadata
+
+	cleaned, err := yaml.Marshal(obj)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal sanitized configmap: %w", err)
+	}
+
+	return string(cleaned), nil
 }
 
 func errorResponse(code, message string) gin.H {
