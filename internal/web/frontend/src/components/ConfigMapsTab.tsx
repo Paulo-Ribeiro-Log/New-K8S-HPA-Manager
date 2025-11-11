@@ -142,7 +142,10 @@ export const ConfigMapsTab = ({
     try {
       const diffResponse = await apiClient.diffConfigMap(originalYaml, editorValue);
       const unifiedDiff = diffResponse.unifiedDiff || "";
-      const html = diff2html(unifiedDiff, {
+      const normalizedDiff = unifiedDiff
+        ? `--- original\n+++ updated\n${unifiedDiff}`
+        : "";
+      const html = diff2html(normalizedDiff, {
         inputFormat: "diff",
         drawFileList: false,
         matching: "lines",
