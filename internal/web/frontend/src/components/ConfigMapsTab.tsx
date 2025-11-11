@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -48,6 +48,7 @@ export const ConfigMapsTab = ({
   const [isDiffLoading, setIsDiffLoading] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
+  const [showLabels, setShowLabels] = useState(true);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
   const { configMaps, loading, error, refetch } = useConfigMaps(
@@ -70,6 +71,7 @@ export const ConfigMapsTab = ({
     setEditorValue("");
     setOriginalYaml("");
     setDiffResult(null);
+    setShowLabels(true);
   }, [cluster, selectedNamespace]);
 
   const filteredNamespaces = useMemo(() => {
@@ -110,6 +112,7 @@ export const ConfigMapsTab = ({
       setEditorValue(detail.yaml || "");
       setOriginalYaml(detail.yaml || "");
       setDiffResult(null);
+      setShowLabels(true);
     } catch (err) {
       toast.error("Erro ao carregar manifesto", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -339,17 +342,26 @@ export const ConfigMapsTab = ({
 
         {selectedConfigMap.labels && Object.keys(selectedConfigMap.labels).length > 0 && (
           <div className="text-xs">
-            <p className="text-muted-foreground mb-1">Labels</p>
-            <div className="flex flex-wrap gap-2">
-              {Object.entries(selectedConfigMap.labels).map(([key, value]) => (
-                <span
-                  key={`${key}-${value}`}
-                  className="px-2 py-1 bg-secondary/60 rounded-md font-mono"
-                >
-                  {key}={value}
-                </span>
-              ))}
-            </div>
+            <button
+              type="button"
+              onClick={() => setShowLabels((prev) => !prev)}
+              className="w-full flex items-center justify-between text-left text-muted-foreground mb-1"
+            >
+              <span>Labels</span>
+              {showLabels ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            </button>
+            {showLabels && (
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(selectedConfigMap.labels).map(([key, value]) => (
+                  <span
+                    key={`${key}-${value}`}
+                    className="px-2 py-1 bg-secondary/60 rounded-md font-mono"
+                  >
+                    {key}={value}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
