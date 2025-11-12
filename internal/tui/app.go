@@ -535,7 +535,7 @@ func (a *App) initializeManagers() tea.Cmd {
 
 // ensureClustersConfigInHome garante que clusters-config.json existe no diretório home
 func (a *App) ensureClustersConfigInHome() error {
-	homeConfigDir := filepath.Join(os.Getenv("HOME"), ".k8s-hpa-manager")
+	homeConfigDir := filepath.Join(os.Getenv("HOME"), ".new-k8s-hpa")
 	homeConfigPath := filepath.Join(homeConfigDir, "clusters-config.json")
 	localConfigPath := "clusters-config.json"
 
@@ -554,7 +554,7 @@ func (a *App) ensureClustersConfigInHome() error {
 		if err := os.WriteFile(homeConfigPath, data, 0644); err != nil {
 			return fmt.Errorf("failed to copy clusters-config.json to home: %w", err)
 		}
-		a.debugLog("✅ Copied clusters-config.json to ~/.k8s-hpa-manager/")
+		a.debugLog("✅ Copied clusters-config.json to ~/.new-k8s-hpa/")
 		return nil
 	}
 
@@ -569,7 +569,7 @@ func (a *App) ensureClustersConfigInHome() error {
 		return fmt.Errorf("failed to create empty clusters-config.json: %w", err)
 	}
 
-	a.debugLog("✅ Created empty clusters-config.json in ~/.k8s-hpa-manager/")
+	a.debugLog("✅ Created empty clusters-config.json in ~/.new-k8s-hpa/")
 	return nil
 }
 

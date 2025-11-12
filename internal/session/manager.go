@@ -37,7 +37,7 @@ func NewManager() (*Manager, error) {
 		return nil, fmt.Errorf("failed to get user home directory: %w", err)
 	}
 
-	sessionDir := filepath.Join(homeDir, ".k8s-hpa-manager", "sessions")
+	sessionDir := filepath.Join(homeDir, ".new-k8s-hpa", "sessions")
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create session directory: %w", err)
 	}

@@ -25,7 +25,7 @@ type PersistenceConfig struct {
 // DefaultPersistenceConfig retorna configuração padrão
 func DefaultPersistenceConfig() *PersistenceConfig {
 	homeDir, _ := os.UserHomeDir()
-	dbPath := filepath.Join(homeDir, ".k8s-hpa-manager", "monitoring.db")
+	dbPath := filepath.Join(homeDir, ".new-k8s-hpa", "monitoring.db")
 
 	return &PersistenceConfig{
 		Enabled:     true,

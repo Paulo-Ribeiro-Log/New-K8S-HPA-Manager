@@ -462,8 +462,8 @@ func isAzureCliAuthenticated() bool {
 
 // loadClusterConfig carrega a configuração de clusters do arquivo
 func loadClusterConfig() ([]models.ClusterConfig, error) {
-	// 1. Procurar primeiro no diretório padrão ~/.k8s-hpa-manager/ (onde autodiscover salva)
-	homeConfigPath := filepath.Join(os.Getenv("HOME"), ".k8s-hpa-manager", "clusters-config.json")
+	// 1. Procurar primeiro no diretório padrão ~/.new-k8s-hpa/ (onde autodiscover salva)
+	homeConfigPath := filepath.Join(os.Getenv("HOME"), ".new-k8s-hpa", "clusters-config.json")
 	configPath := homeConfigPath
 
 	// Se existir no diretório padrão, usar ele

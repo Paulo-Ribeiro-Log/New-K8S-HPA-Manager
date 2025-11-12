@@ -81,7 +81,7 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get home directory: %w", err)
 	}
-	baseDir := filepath.Join(homeDir, ".k8s-hpa-manager")
+	baseDir := filepath.Join(homeDir, ".new-k8s-hpa")
 	historyTracker, err := history.NewHistoryTracker(baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create history tracker: %w", err)
@@ -518,7 +518,7 @@ func (s *Server) Shutdown() error {
 
 	// 4. Salvar targets uma última vez
 	homeDir, _ := os.UserHomeDir()
-	baseDir := filepath.Join(homeDir, ".k8s-hpa-manager")
+	baseDir := filepath.Join(homeDir, ".new-k8s-hpa")
 	targetsFile := filepath.Join(baseDir, "monitoring-targets.json")
 	if s.monitoringEngine != nil {
 		targets := s.monitoringEngine.GetTargets()
