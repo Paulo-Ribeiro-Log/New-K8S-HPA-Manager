@@ -480,15 +480,44 @@ func generateAnomalyID(a analyzer.Anomaly) string {
 // GetTargets retorna lista de targets sendo monitorados
 // GET /api/v1/monitoring/targets
 func (h *MonitoringHandler) GetTargets(c *gin.Context) {
-	targets := h.engine.GetTargets()
+	// Buscar HPAs prioritários do PriorityCollector
+	priorityCollector := h.engine.GetPriorityCollector()
+	if priorityCollector == nil {
+		c.JSON(200, gin.H{
+			"targets": []gin.H{},
+			"count":   0,
+		})
+		return
+	}
 
+	priorityHPAs := priorityCollector.GetPriorityHPAs()
+
+	// Agrupar HPAs por cluster
+	clusterMap := make(map[string]map[string][]string) // cluster -> namespace -> []hpa
+	for _, hpa := range priorityHPAs {
+		if _, exists := clusterMap[hpa.Cluster]; !exists {
+			clusterMap[hpa.Cluster] = make(map[string][]string)
+		}
+		if _, exists := clusterMap[hpa.Cluster][hpa.Namespace]; !exists {
+			clusterMap[hpa.Cluster][hpa.Namespace] = []string{}
+		}
+		clusterMap[hpa.Cluster][hpa.Namespace] = append(clusterMap[hpa.Cluster][hpa.Namespace], hpa.Name)
+	}
+
+	// Converter para formato de resposta
 	apiTargets := make([]gin.H, 0)
-	for _, target := range targets {
+	for cluster, namespaces := range clusterMap {
+		var nsList []string
+		var hpaList []string
+		for ns, hpas := range namespaces {
+			nsList = append(nsList, ns)
+			hpaList = append(hpaList, hpas...)
+		}
+
 		apiTargets = append(apiTargets, gin.H{
-			"cluster":     target.Cluster,
-			"namespaces":  target.Namespaces,
-			"deployments": target.Deployments,
-			"hpas":        target.HPAs,
+			"cluster":    cluster,
+			"namespaces": nsList,
+			"hpas":       hpaList,
 		})
 	}
 
