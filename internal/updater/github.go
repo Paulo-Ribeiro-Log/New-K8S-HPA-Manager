@@ -65,16 +65,16 @@ func GetLatestRelease(owner, repo string) (*GitHubRelease, error) {
 }
 
 // getGitHubToken retorna token de acesso do GitHub (se configurado)
-// Busca em: GITHUB_TOKEN env var ou ~/.k8s-hpa-manager/.github-token
+// Busca em: GITHUB_TOKEN env var ou ~/.new-k8s-hpa/.github-token
 func getGitHubToken() string {
 	// 1. Tentar variável de ambiente
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
 		return token
 	}
 
-	// 2. Tentar arquivo ~/.k8s-hpa-manager/.github-token
+	// 2. Tentar arquivo ~/.new-k8s-hpa/.github-token
 	home := os.Getenv("HOME")
-	tokenPath := filepath.Join(home, ".k8s-hpa-manager", ".github-token")
+	tokenPath := filepath.Join(home, ".new-k8s-hpa", ".github-token")
 
 	data, err := os.ReadFile(tokenPath)
 	if err == nil {

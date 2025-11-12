@@ -13,7 +13,7 @@ func main() {
 	// Interceptar --auto-update ANTES do Cobra para permitir passar argumentos ao script
 	for i, arg := range os.Args {
 		if arg == "--auto-update" {
-			scriptPath := filepath.Join(os.Getenv("HOME"), ".k8s-hpa-manager", "scripts", "auto-update.sh")
+			scriptPath := filepath.Join(os.Getenv("HOME"), ".new-k8s-hpa", "scripts", "auto-update.sh")
 
 			// Verificar se o script existe
 			if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
