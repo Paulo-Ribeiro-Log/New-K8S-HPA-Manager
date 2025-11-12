@@ -1,6 +1,6 @@
 #!/bin/bash
-# Installer script for k8s-hpa-manager
-# This script builds and installs the k8s-hpa-manager binary globally
+# Installer script for new-k8s-hpa
+# This script builds and installs the new-k8s-hpa binary globally
 
 set -e
 
@@ -12,7 +12,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Project info
-BINARY_NAME="k8s-hpa-manager"
+BINARY_NAME="new-k8s-hpa"
 INSTALL_PATH="/usr/local/bin"
 
 echo -e "${BLUE}🏗️  K8s HPA Manager - Installer${NC}"

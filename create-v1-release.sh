@@ -30,7 +30,7 @@ make build
 
 # Renomear binário para new-k8s-hpa
 echo "📦 Preparando asset new-k8s-hpa..."
-cp build/k8s-hpa-manager build/new-k8s-hpa
+cp build/new-k8s-hpa build/new-k8s-hpa
 chmod +x build/new-k8s-hpa
 
 # Criar release notes

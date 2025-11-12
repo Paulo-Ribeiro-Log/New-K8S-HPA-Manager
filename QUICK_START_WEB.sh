@@ -5,7 +5,7 @@
 set -e
 
 echo "════════════════════════════════════════════════════════════"
-echo "  k8s-hpa-manager - Web Interface POC - Quick Start"
+echo "  new-k8s-hpa - Web Interface POC - Quick Start"
 echo "════════════════════════════════════════════════════════════"
 echo ""
 
@@ -79,7 +79,7 @@ echo -e "${BLUE}🔨 Compilando aplicação...${NC}"
 echo -e "${YELLOW}⏱️  Isso pode demorar 1-2 minutos...${NC}"
 echo ""
 
-if go build -o ./build/k8s-hpa-manager . ; then
+if go build -o ./build/new-k8s-hpa . ; then
     echo ""
     echo -e "${GREEN}✅ Build completo!${NC}"
     echo ""
@@ -88,19 +88,19 @@ else
     echo -e "${RED}❌ Build falhou!${NC}"
     echo ""
     echo -e "${YELLOW}💡 Tente estas alternativas:${NC}"
-    echo "   1. go clean -cache && go build -o ./build/k8s-hpa-manager ."
-    echo "   2. go build -gcflags=\"-N -l\" -o ./build/k8s-hpa-manager ."
-    echo "   3. go build -i -o ./build/k8s-hpa-manager ."
+    echo "   1. go clean -cache && go build -o ./build/new-k8s-hpa ."
+    echo "   2. go build -gcflags=\"-N -l\" -o ./build/new-k8s-hpa ."
+    echo "   3. go build -i -o ./build/new-k8s-hpa ."
     exit 1
 fi
 
 # Verificar binário
-if [ ! -f "./build/k8s-hpa-manager" ]; then
+if [ ! -f "./build/new-k8s-hpa" ]; then
     echo -e "${RED}❌ Binário não encontrado em ./build/${NC}"
     exit 1
 fi
 
-echo -e "${GREEN}📦 Binário gerado: ./build/k8s-hpa-manager${NC}"
+echo -e "${GREEN}📦 Binário gerado: ./build/new-k8s-hpa${NC}"
 echo ""
 
 # Instruções de uso
@@ -110,7 +110,7 @@ echo "════════════════════════�
 echo ""
 echo -e "${BLUE}🚀 Para iniciar o servidor web:${NC}"
 echo ""
-echo "   ./build/k8s-hpa-manager web --port 8080"
+echo "   ./build/new-k8s-hpa web --port 8080"
 echo ""
 echo -e "${BLUE}🔐 Token padrão (POC):${NC}"
 echo ""
@@ -145,7 +145,7 @@ echo "   - CONTINUE_AQUI.md       # Guia de continuidade"
 echo ""
 echo -e "${BLUE}📝 Modo TUI (existente):${NC}"
 echo ""
-echo "   ./build/k8s-hpa-manager"
+echo "   ./build/new-k8s-hpa"
 echo ""
 echo "════════════════════════════════════════════════════════════"
 echo ""

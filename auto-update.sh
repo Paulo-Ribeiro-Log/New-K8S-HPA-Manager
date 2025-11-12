@@ -1,5 +1,5 @@
 #!/bin/bash
-# Auto-update script for k8s-hpa-manager
+# Auto-update script for new-k8s-hpa
 # This script checks for updates and automatically installs the latest version
 
 set -e
@@ -11,7 +11,7 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-BINARY_NAME="k8s-hpa-manager"
+BINARY_NAME="new-k8s-hpa"
 INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/Paulo-Ribeiro-Log/Scale_HPA/main/install-from-github.sh"
 
 # Global flags
@@ -74,7 +74,7 @@ check_for_updates() {
 
     if [ "$DRY_RUN" = false ]; then
         # Force check by removing cache
-        rm -f ~/.k8s-hpa-manager/.update-check
+        rm -f ~/.new-k8s-hpa/.update-check
     else
         print_dry_run "Não removendo cache (dry run)"
     fi
@@ -99,8 +99,8 @@ check_for_updates() {
 
 # Backup user data before update
 backup_user_data() {
-    local backup_dir="$HOME/.k8s-hpa-manager-backup-$(date +%Y%m%d_%H%M%S)"
-    local data_dir="$HOME/.k8s-hpa-manager"
+    local backup_dir="$HOME/.new-k8s-hpa-backup-$(date +%Y%m%d_%H%M%S)"
+    local data_dir="$HOME/.new-k8s-hpa"
 
     # Check if data directory exists
     if [ ! -d "$data_dir" ]; then
@@ -178,7 +178,7 @@ perform_update() {
             print_success "Você está usando a versão mais recente!"
         else
             print_warning "Versão instalada ($NEW_VERSION) difere da esperada ($LATEST_VERSION)"
-            print_info "Execute 'k8s-hpa-manager version' para verificar"
+            print_info "Execute 'new-k8s-hpa version' para verificar"
         fi
     else
         print_error "Falha na atualização"
