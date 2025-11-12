@@ -184,36 +184,39 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
     }
   };
 
-  // Buscar informações de portas
+  // Copiar informações de portas para clipboard
   const handleShowPortInfo = async () => {
     try {
       // Buscar informações de portas do backend
       const status = await apiClient.getMonitoringStatus();
 
-      setPortInfo(status);
-
-      // Formatar descrição com mapeamento de portas
-      let description = `Engine ${status.running ? 'ativo' : 'parado'} | ${status.clusters || 0} clusters`;
+      // Formatar texto para clipboard
+      let clipboardText = `Monitoring Engine Status\n`;
+      clipboardText += `Status: ${status.running ? 'Ativo' : 'Parado'}\n`;
+      clipboardText += `Clusters: ${status.clusters || 0}\n`;
+      clipboardText += `\nPortas Alocadas:\n`;
 
       if (status.port_info && Object.keys(status.port_info).length > 0) {
-        const portList = Object.entries(status.port_info)
-          .map(([cluster, port]) => `${cluster}: ${port}`)
-          .join(", ");
-        description = `${description}\n\nPortas: ${portList}`;
+        Object.entries(status.port_info).forEach(([cluster, port]) => {
+          clipboardText += `  ${cluster}: ${port}\n`;
+        });
       } else {
-        description = `${description}\n\nNenhuma porta alocada (engine parado ou sem HPAs)`;
+        clipboardText += `  (nenhuma porta alocada)\n`;
       }
 
+      // Copiar para clipboard
+      await navigator.clipboard.writeText(clipboardText);
+
       toast({
-        title: "📊 Informações de Portas",
-        description,
-        duration: 8000, // 8 segundos para dar tempo de ler
+        title: "✅ Copiado para clipboard",
+        description: "Informações de portas copiadas com sucesso",
+        duration: 3000,
       });
     } catch (error) {
-      console.error("[MonitoringPage] Erro ao buscar port info:", error);
+      console.error("[MonitoringPage] Erro ao copiar port info:", error);
       toast({
         title: "❌ Erro",
-        description: "Falha ao buscar informações de portas",
+        description: "Falha ao copiar informações",
         variant: "destructive",
       });
     }
@@ -264,7 +267,7 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
                     </span>
                   </div>
                 </ContextMenuTrigger>
-                <ContextMenuContent className="w-64">
+                <ContextMenuContent className="w-80">
                   <ContextMenuLabel>Monitoring Engine</ContextMenuLabel>
                   <ContextMenuSeparator />
                   <ContextMenuItem onClick={handleRestartEngine}>
@@ -273,7 +276,7 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
                   </ContextMenuItem>
                   <ContextMenuItem onClick={handleShowPortInfo}>
                     <Info className="w-4 h-4 mr-2" />
-                    Informações de Portas
+                    Copiar Info para Clipboard
                   </ContextMenuItem>
                   <ContextMenuSeparator />
                   <ContextMenuLabel className="text-xs text-muted-foreground">
@@ -282,6 +285,38 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
                   <ContextMenuLabel className="text-xs text-muted-foreground">
                     Clusters: {monitoringStatus.clusters || 0}
                   </ContextMenuLabel>
+
+                  {/* Seção de Portas */}
+                  {monitoringStatus.port_info && Object.keys(monitoringStatus.port_info).length > 0 && (
+                    <>
+                      <ContextMenuSeparator />
+                      <ContextMenuLabel className="text-xs font-semibold">
+                        Portas Alocadas:
+                      </ContextMenuLabel>
+                      <div className="px-2 py-1 max-h-40 overflow-y-auto">
+                        {Object.entries(monitoringStatus.port_info).map(([cluster, port]) => (
+                          <div key={cluster} className="flex items-center justify-between py-1 text-xs">
+                            <span className="text-muted-foreground truncate flex-1" title={cluster}>
+                              {cluster}
+                            </span>
+                            <span className="font-mono font-semibold text-primary ml-2">
+                              :{port}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  {/* Mensagem quando não há portas */}
+                  {(!monitoringStatus.port_info || Object.keys(monitoringStatus.port_info).length === 0) && (
+                    <>
+                      <ContextMenuSeparator />
+                      <div className="px-2 py-2 text-xs text-muted-foreground text-center italic">
+                        Nenhuma porta alocada
+                      </div>
+                    </>
+                  )}
                 </ContextMenuContent>
               </ContextMenu>
             )}
