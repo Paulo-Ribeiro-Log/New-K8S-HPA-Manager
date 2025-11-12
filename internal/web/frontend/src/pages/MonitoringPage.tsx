@@ -1,11 +1,20 @@
 import { useState, useEffect } from "react";
-import { ChevronDown, ChevronRight, Activity, Trash2, Circle, PanelLeftClose, PanelLeft } from "lucide-react";
+import { ChevronDown, ChevronRight, Activity, Trash2, Circle, PanelLeftClose, PanelLeft, RotateCw, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { MetricsPanel } from "@/components/MetricsPanel";
 import { apiClient } from "@/lib/api/client";
 import type { HPA, MonitoringStatus } from "@/lib/api/types";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+  ContextMenuSeparator,
+  ContextMenuLabel,
+} from "@/components/ui/context-menu";
+import { useToast } from "@/components/ui/use-toast";
 
 interface MonitoredHPA {
   cluster: string;
@@ -24,6 +33,8 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
   const [monitoringStatus, setMonitoringStatus] = useState<MonitoringStatus | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [portInfo, setPortInfo] = useState<any>(null);
+  const { toast } = useToast();
 
   // Carregar HPAs monitorados do localStorage
   useEffect(() => {
@@ -136,6 +147,78 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
     }
   };
 
+  // Restart do monitoring engine
+  const handleRestartEngine = async () => {
+    try {
+      toast({
+        title: "Reiniciando engine...",
+        description: "Parando e iniciando o monitoring engine",
+      });
+
+      // Parar engine
+      await apiClient.stopMonitoring();
+
+      // Aguardar 1s
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Iniciar engine
+      await apiClient.startMonitoring();
+
+      // Aguardar 1s
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Resincronizar HPAs
+      await syncWithBackend(monitoredHPAs);
+
+      toast({
+        title: "✅ Engine reiniciado",
+        description: "Monitoring engine reiniciado com sucesso",
+      });
+    } catch (error) {
+      console.error("[MonitoringPage] Erro ao reiniciar engine:", error);
+      toast({
+        title: "❌ Erro ao reiniciar",
+        description: error instanceof Error ? error.message : "Erro desconhecido",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Buscar informações de portas
+  const handleShowPortInfo = async () => {
+    try {
+      // Buscar informações de portas do backend
+      const status = await apiClient.getMonitoringStatus();
+
+      setPortInfo(status);
+
+      // Formatar descrição com mapeamento de portas
+      let description = `Engine ${status.running ? 'ativo' : 'parado'} | ${status.clusters || 0} clusters`;
+
+      if (status.port_info && Object.keys(status.port_info).length > 0) {
+        const portList = Object.entries(status.port_info)
+          .map(([cluster, port]) => `${cluster}: ${port}`)
+          .join(", ");
+        description = `${description}\n\nPortas: ${portList}`;
+      } else {
+        description = `${description}\n\nNenhuma porta alocada (engine parado ou sem HPAs)`;
+      }
+
+      toast({
+        title: "📊 Informações de Portas",
+        description,
+        duration: 8000, // 8 segundos para dar tempo de ler
+      });
+    } catch (error) {
+      console.error("[MonitoringPage] Erro ao buscar port info:", error);
+      toast({
+        title: "❌ Erro",
+        description: "Falha ao buscar informações de portas",
+        variant: "destructive",
+      });
+    }
+  };
+
   console.log("[MonitoringPage] Rendering. HPAs count:", monitoredHPAs.length);
   console.log("[MonitoringPage] HPAs by cluster:", Object.keys(hpasByCluster));
 
@@ -162,22 +245,45 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
               </span>
             )}
             {monitoringStatus && (
-              <div className="flex items-center gap-1.5">
-                <Circle
-                  className={`w-2 h-2 ${
-                    monitoringStatus.running
-                      ? "fill-green-500 text-green-500 animate-pulse"
-                      : "fill-gray-400 text-gray-400"
-                  }`}
-                />
-                <span
-                  className={`text-xs font-medium ${
-                    monitoringStatus.running ? "text-green-600" : "text-muted-foreground"
-                  }`}
-                >
-                  {monitoringStatus.running ? "Ativo" : "Parado"}
-                </span>
-              </div>
+              <ContextMenu>
+                <ContextMenuTrigger>
+                  <div className="flex items-center gap-1.5 cursor-context-menu">
+                    <Circle
+                      className={`w-2 h-2 ${
+                        monitoringStatus.running
+                          ? "fill-green-500 text-green-500 animate-pulse"
+                          : "fill-gray-400 text-gray-400"
+                      }`}
+                    />
+                    <span
+                      className={`text-xs font-medium ${
+                        monitoringStatus.running ? "text-green-600" : "text-muted-foreground"
+                      }`}
+                    >
+                      {monitoringStatus.running ? "Ativo" : "Parado"}
+                    </span>
+                  </div>
+                </ContextMenuTrigger>
+                <ContextMenuContent className="w-64">
+                  <ContextMenuLabel>Monitoring Engine</ContextMenuLabel>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem onClick={handleRestartEngine}>
+                    <RotateCw className="w-4 h-4 mr-2" />
+                    Reiniciar Engine
+                  </ContextMenuItem>
+                  <ContextMenuItem onClick={handleShowPortInfo}>
+                    <Info className="w-4 h-4 mr-2" />
+                    Informações de Portas
+                  </ContextMenuItem>
+                  <ContextMenuSeparator />
+                  <ContextMenuLabel className="text-xs text-muted-foreground">
+                    Status: {monitoringStatus.running ? "🟢 Ativo" : "⚫ Parado"}
+                  </ContextMenuLabel>
+                  <ContextMenuLabel className="text-xs text-muted-foreground">
+                    Clusters: {monitoringStatus.clusters || 0}
+                  </ContextMenuLabel>
+                </ContextMenuContent>
+              </ContextMenu>
             )}
           </div>
         </div>

@@ -377,6 +377,13 @@ func (h *MonitoringHandler) GetStatus(c *gin.Context) {
 		}
 	}
 
+	// Buscar mapeamento de portas do PriorityCollector
+	portMapping := make(map[string]int)
+	priorityCollector := h.engine.GetPriorityCollector()
+	if priorityCollector != nil {
+		portMapping = priorityCollector.GetPortMapping()
+	}
+
 	c.JSON(200, gin.H{
 		"running":     running,
 		"status":      status,
@@ -385,6 +392,7 @@ func (h *MonitoringHandler) GetStatus(c *gin.Context) {
 		"clusters":    len(clustersMap),
 		"last_scan":   formatTime(lastScan),
 		"total_scans": totalSnapshots,
+		"port_info":   portMapping, // cluster -> porta
 	})
 }
 

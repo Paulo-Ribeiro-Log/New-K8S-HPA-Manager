@@ -332,6 +332,7 @@ export interface MonitoringStatus {
   clusters: number;
   last_scan: string | null;
   total_scans: number;
+  port_info?: Record<string, number>; // cluster -> porta
 }
 
 export interface HPASnapshot {

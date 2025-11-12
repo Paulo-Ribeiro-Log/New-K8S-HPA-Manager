@@ -772,6 +772,19 @@ func (c *PriorityCollector) GetStatus() map[string]interface{} {
 	}
 }
 
+// GetPortMapping retorna mapeamento cluster → porta
+func (c *PriorityCollector) GetPortMapping() map[string]int {
+	c.portMu.Lock()
+	defer c.portMu.Unlock()
+
+	// Cópia do map para evitar race conditions
+	mapping := make(map[string]int, len(c.portForwards))
+	for cluster, port := range c.portForwards {
+		mapping[cluster] = port
+	}
+	return mapping
+}
+
 // AddTarget adiciona target genérico (compatibilidade - IGNORADO)
 func (c *PriorityCollector) AddTarget(target scanner.ScanTarget) {
 	log.Debug().

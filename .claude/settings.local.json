@@ -25,7 +25,8 @@
       "Bash(make build:*)",
       "Bash(chmod:*)",
       "Bash(timeout 5 ./build/k8s-hpa-manager web -f)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(git push origin k8s-hpa-manager-cm-editor-dev)"
     ],
     "deny": [],
     "ask": []
