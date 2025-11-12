@@ -1126,6 +1126,111 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 
 ## 📜 Histórico de Correções (Principais)
 
+### Sistema de Reconciliação de Port-Forwards - PriorityCollector (Novembro 2025) ✅
+
+**Data:** 12 de novembro de 2025
+
+**Problema identificado:** Port-forwards dedicados podiam cair silenciosamente (VPN drop, timeout, reinicialização do Prometheus), fazendo com que o monitoramento parasse de funcionar sem logs claros.
+
+**Solução KISS implementada:**
+
+**Função `ensurePortForward()`** - Reconciliação antes de cada scan:
+1. **Testa conexão Prometheus** (timeout 3s)
+2. **Se OK**: Retorna imediatamente (caminho rápido)
+3. **Se falhar**:
+   - Para port-forward antigo
+   - Aguarda 1s (limpeza de recursos)
+   - Recria port-forward na mesma porta
+   - Aguarda 2s (tempo de startup)
+   - Testa novamente
+   - Log de sucesso ou erro
+
+**Código:**
+```go
+// scanPriorityHPA - linha 624
+// RECONCILIAÇÃO: Verifica se port-forward está ativo, recria se necessário
+if err := c.ensurePortForward(ctx, hpa); err != nil {
+    return fmt.Errorf("falha ao garantir port-forward: %w", err)
+}
+```
+
+**Benefícios:**
+- ✅ **Auto-recuperação**: Port-forwards caídos são recriados automaticamente
+- ✅ **Zero downtime**: Scan continua após recreação
+- ✅ **Logs claros**: `⚠️ Port-forward caiu, recriando...` e `✅ Port-forward recriado com sucesso`
+- ✅ **KISS**: Apenas 50 linhas, lógica simples (testa → falhou? → recria)
+- ✅ **Performance**: Teste rápido (3s timeout) não impacta scans normais
+
+**Arquivos modificados:**
+- `internal/monitoring/collector/priority_collector.go` (+50 linhas)
+  - Nova função `ensurePortForward()` (linhas 567-617)
+  - Chamada em `scanPriorityHPA()` (linha 624)
+
+---
+
+### UI Compacta + P95 de CPU/Memory (Novembro 2025) ✅
+
+**Data:** 12 de novembro de 2025
+
+**Problemas identificados:**
+1. Cards de métricas na página Monitoring ocupavam muito espaço vertical
+2. **P95 de CPU e Memory não estava visível** apesar de estar calculado no código
+3. Card de Latência P95/P99 HTTP aparecia mesmo sem dados (aplicações não instrumentadas)
+
+**Soluções implementadas:**
+
+**1️⃣ Cards de Métricas Compactos** (`MetricsPanel.tsx`):
+- **Antes**: Cards com padding `p-3`/`p-4`, texto `text-sm`/`text-2xl`, múltiplas linhas de informação
+- **Depois**: Cards com padding `px-2.5 py-2`, texto `text-base`, layout inline compacto
+- **Redução**: ~40% de altura por card
+- **Benefícios**:
+  - ✅ Mais cards visíveis na tela sem scroll
+  - ✅ Informação essencial preservada (valor + percentual + limite)
+  - ✅ Layout elegante e profissional
+
+**2️⃣ Card P95 de CPU Adicionado**:
+- Card dedicado mostrando `cpuStats.p95` (calculado estatisticamente no frontend)
+- P95 = percentil 95 dos valores de CPU coletados na janela de tempo
+- Mostra em millicores e percentual do limit configurado
+- Grid ajustado: `grid-cols-5` → `grid-cols-6`
+
+**3️⃣ Card de Latência HTTP Condicional**:
+- Latência P95/P99 agora **só aparece se houver dados** (`latencyStats.p95.current !== null`)
+- Evita confusão quando aplicações não exportam `http_request_duration_seconds_bucket`
+- Mantido para clusters que têm instrumentação Prometheus
+
+**4️⃣ Funções P99 de Latência HTTP Implementadas** (`prometheus/client.go`):
+```go
+// Função adicionada para completude (linha 243-255)
+func (c *Client) GetP99Latency(ctx context.Context, namespace, service string) (float64, error) {
+    query := fmt.Sprintf(`
+        histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace="%s",service="%s"}[5m])) by (le)) * 1000
+    `, namespace, service)
+    return extractSingleValue(result)
+}
+```
+
+**Diferença entre métricas:**
+- **CPU/Memory P95**: Calculado estatisticamente no frontend dos dados coletados ✅ SEMPRE DISPONÍVEL
+- **Latência P95/P99 HTTP**: Query do Prometheus `http_request_duration_seconds_bucket` ⚠️ Requer instrumentação
+
+**Arquivos modificados:**
+- `internal/web/frontend/src/components/MetricsPanel.tsx`:
+  - Cards compactos (padding reduzido)
+  - Card P95 de CPU adicionado
+  - Card de Latência HTTP condicional
+  - Grid ajustado para 6 colunas
+- `internal/monitoring/prometheus/client.go` - Funções P99 HTTP Latency
+
+**Benefícios:**
+- ✅ UI mais eficiente (40% menos espaço vertical)
+- ✅ **P95 de CPU agora visível** (era calculado mas não exibido)
+- ✅ Latência HTTP só aparece quando disponível (menos confusão)
+- ✅ Layout elegante e profissional
+- ✅ Melhor aproveitamento de espaço na tela
+
+---
+
 ### Nova Arquitetura: SimpleCollector (Novembro 2025) ✅
 
 **Data:** 08 de novembro de 2025

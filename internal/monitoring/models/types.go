@@ -48,6 +48,7 @@ type HPASnapshot struct {
 	RequestRate    float64 // Requests/sec (de http_requests_total)
 	ErrorRate      float64 // % errors (5xx de http_requests_total)
 	P95Latency     float64 // P95 latency (ms) de http_request_duration_seconds
+	P99Latency     float64 // P99 latency (ms) de http_request_duration_seconds
 	NetworkRxBytes float64 // Network RX (bytes/s)
 	NetworkTxBytes float64 // Network TX (bytes/s)
 
@@ -227,15 +228,15 @@ func (a AlertSource) String() string {
 type AnomalyType int
 
 const (
-	AnomalyReplicaSpike     AnomalyType = iota // Aumento abrupto de réplicas
-	AnomalyReplicaDrop                         // Queda abrupta de réplicas
-	AnomalyCPUSpike                            // CPU current > threshold
-	AnomalyMemorySpike                         // Memory current > threshold
-	AnomalyResourceChange                      // Mudança em requests/limits
-	AnomalyHPAConfigChange                     // Mudança em min/max replicas
-	AnomalyScalingStuck                        // HPA não consegue escalar
-	AnomalyTargetMiss                          // Current muito acima/abaixo do target
-	AnomalyReplicaOscillation                  // Réplicas mudando rapidamente
+	AnomalyReplicaSpike       AnomalyType = iota // Aumento abrupto de réplicas
+	AnomalyReplicaDrop                           // Queda abrupta de réplicas
+	AnomalyCPUSpike                              // CPU current > threshold
+	AnomalyMemorySpike                           // Memory current > threshold
+	AnomalyResourceChange                        // Mudança em requests/limits
+	AnomalyHPAConfigChange                       // Mudança em min/max replicas
+	AnomalyScalingStuck                          // HPA não consegue escalar
+	AnomalyTargetMiss                            // Current muito acima/abaixo do target
+	AnomalyReplicaOscillation                    // Réplicas mudando rapidamente
 )
 
 func (a AnomalyType) String() string {
@@ -267,7 +268,7 @@ func (a AnomalyType) String() string {
 type AlertSeverity int
 
 const (
-	SeverityInfo     AlertSeverity = iota
+	SeverityInfo AlertSeverity = iota
 	SeverityWarning
 	SeverityCritical
 )
@@ -309,9 +310,9 @@ type Thresholds struct {
 	ReplicaDeltaAbsolute int32   // Ex: 5 = alerta se réplicas mudam ±5
 
 	// CPU/Memory
-	CPUWarningPercent    int32 // Ex: 85% = warning
-	CPUCriticalPercent   int32 // Ex: 95% = critical
-	MemoryWarningPercent int32 // Ex: 85%
+	CPUWarningPercent     int32 // Ex: 85% = warning
+	CPUCriticalPercent    int32 // Ex: 95% = critical
+	MemoryWarningPercent  int32 // Ex: 85%
 	MemoryCriticalPercent int32 // Ex: 90%
 
 	// Target deviation
@@ -339,17 +340,17 @@ type WatchdogConfig struct {
 	HistoryRetentionMinutes int // Ex: 5 min de histórico
 
 	// Prometheus
-	PrometheusEnabled         bool
-	PrometheusAutoDiscover    bool
-	PrometheusEndpoints       map[string]string // cluster -> endpoint
-	PrometheusFallback        bool
+	PrometheusEnabled           bool
+	PrometheusAutoDiscover      bool
+	PrometheusEndpoints         map[string]string // cluster -> endpoint
+	PrometheusFallback          bool
 	PrometheusDiscoveryPatterns []string
 
 	// Alertmanager
-	AlertmanagerEnabled         bool
-	AlertmanagerAutoDiscover    bool
-	AlertmanagerEndpoints       map[string]string // cluster -> endpoint
-	AlertmanagerSyncInterval    int
+	AlertmanagerEnabled           bool
+	AlertmanagerAutoDiscover      bool
+	AlertmanagerEndpoints         map[string]string // cluster -> endpoint
+	AlertmanagerSyncInterval      int
 	AlertmanagerDiscoveryPatterns []string
 
 	// Clusters
@@ -362,12 +363,12 @@ type WatchdogConfig struct {
 	PersistencePath   string // Ex: ~/.hpa-watchdog/history.db
 
 	// Alerts
-	MaxActiveAlerts       int      // Máximo de alertas ativos (ex: 100)
-	AutoAckResolvedAlerts bool     // Auto-acknowledge alertas resolvidos
-	SourcePriority        []string // ["alertmanager", "watchdog"]
-	Deduplicate           bool
-	DedupeWindowMinutes   int
-	AutoCorrelate         bool
+	MaxActiveAlerts          int      // Máximo de alertas ativos (ex: 100)
+	AutoAckResolvedAlerts    bool     // Auto-acknowledge alertas resolvidos
+	SourcePriority           []string // ["alertmanager", "watchdog"]
+	Deduplicate              bool
+	DedupeWindowMinutes      int
+	AutoCorrelate            bool
 	CorrelationWindowMinutes int
 
 	// Thresholds

@@ -564,6 +564,58 @@ func (c *PriorityCollector) priorityScanLoop() {
 	}
 }
 
+// ensurePortForward garante que port-forward está ativo (reconciliação KISS)
+// Testa conexão Prometheus, recria port-forward se falhar
+func (c *PriorityCollector) ensurePortForward(ctx context.Context, hpa *PriorityHPA) error {
+	// Criar cliente temporário para testar conexão
+	promEndpoint := fmt.Sprintf("http://localhost:%d", hpa.Port)
+	testClient, err := prometheus.NewClient(hpa.Cluster, promEndpoint)
+	if err != nil {
+		return fmt.Errorf("falha ao criar cliente de teste: %w", err)
+	}
+
+	// Testar conexão com timeout curto (3s)
+	testCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	if err := testClient.TestConnection(testCtx); err == nil {
+		// Port-forward ativo, tudo OK
+		return nil
+	}
+
+	// Port-forward caiu, recriar
+	log.Warn().
+		Str("cluster", hpa.Cluster).
+		Int("port", hpa.Port).
+		Msg("⚠️ Port-forward caiu, recriando...")
+
+	// Para port-forward antigo (ignora erro se já estiver parado)
+	_ = c.pfManager.StopWithPort(hpa.Cluster, hpa.Port)
+
+	// Aguarda 1s antes de recriar (limpeza de recursos)
+	time.Sleep(1 * time.Second)
+
+	// Recria port-forward
+	if err := c.pfManager.StartWithPort(hpa.Cluster, hpa.Port); err != nil {
+		return fmt.Errorf("falha ao recriar port-forward: %w", err)
+	}
+
+	// Aguarda port-forward estar pronto
+	time.Sleep(2 * time.Second)
+
+	// Testa novamente
+	if err := testClient.TestConnection(ctx); err != nil {
+		return fmt.Errorf("port-forward recriado mas Prometheus ainda inacessível: %w", err)
+	}
+
+	log.Info().
+		Str("cluster", hpa.Cluster).
+		Int("port", hpa.Port).
+		Msg("✅ Port-forward recriado com sucesso")
+
+	return nil
+}
+
 // executePriorityScans executa scan de TODOS os HPAs prioritários
 func (c *PriorityCollector) executePriorityScans() {
 	c.priorityMu.RLock()
@@ -620,6 +672,11 @@ func (c *PriorityCollector) scanPriorityHPA(hpa *PriorityHPA) error {
 		Str("namespace", hpa.Namespace).
 		Str("hpa", hpa.Name).
 		Msg("Escaneando HPA prioritário...")
+
+	// RECONCILIAÇÃO: Verifica se port-forward está ativo, recria se necessário
+	if err := c.ensurePortForward(ctx, hpa); err != nil {
+		return fmt.Errorf("falha ao garantir port-forward: %w", err)
+	}
 
 	// Criar cliente Prometheus (port-forward já está ativo)
 	promEndpoint := fmt.Sprintf("http://localhost:%d", hpa.Port)

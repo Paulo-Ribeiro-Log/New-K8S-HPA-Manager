@@ -52,6 +52,41 @@ interface MetricStats {
   trendPercent: number;
 }
 
+interface LatencySeriesStats {
+  current: number | null;
+  previous: number | null;
+  timestamp: string | null;
+}
+
+interface LatencyStats {
+  p95: LatencySeriesStats;
+  p99: LatencySeriesStats;
+}
+
+interface ChartPoint {
+  timestamp: number;
+  time: string;
+  cpuCurrent: number;
+  cpuTarget?: number;
+  cpuRequest: number | null;
+  cpuLimit: number | null;
+  cpuYesterday: number | null;
+  memoryCurrent: number;
+  memoryTarget?: number;
+  memoryRequest?: string | null;
+  memoryLimit?: string | null;
+  memoryYesterday: number | null;
+  replicasCurrent: number;
+  replicasDesired: number;
+  replicasMin: number;
+  replicasMax: number;
+  replicasYesterday: number | null;
+  latencyP95: number | null;
+  latencyP99: number | null;
+  requestRate: number | null;
+  errorRate: number | null;
+}
+
 export function MetricsPanel({
   cluster,
   namespace,
@@ -60,6 +95,7 @@ export function MetricsPanel({
 }: MetricsPanelProps) {
   const [duration, setDuration] = useState<string>("1h");
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(0); // 0 = desabilitado
+  const [latencyView, setLatencyView] = useState<"p95" | "p99">("p95");
   const { metrics, loading, error, refetch } = useHPAMetrics(
     cluster,
     namespace,
@@ -79,18 +115,30 @@ export function MetricsPanel({
     return () => clearInterval(intervalId);
   }, [autoRefreshInterval, refetch]);
 
-  // Helper para converter valores K8s (ex: "500m", "2Gi") para números
-  // CPU: millicores (ex: "500m" -> 500)
-  // Memory: MiB (ex: "256Mi" -> 256)
+  // Helper para converter CPU (millicores)
+  const parseCpuValue = (value: string): number | null => {
+    if (!value) return null;
+    const trimmed = value.trim();
+
+    if (trimmed.endsWith('m')) {
+      return parseInt(trimmed.slice(0, -1), 10);
+    }
+
+    const numeric = parseFloat(trimmed);
+    if (Number.isNaN(numeric)) return null;
+
+    // Valores sem sufixo são expressos em cores → converter para millicores
+    return numeric * 1000;
+  };
+
+  // Helper para converter valores de memória (ex: "2Gi") para MiB
   const parseResourceValue = (value: string): number | null => {
     if (!value) return null;
 
-    // CPU: millicores (ex: "500m" -> 500, "1" -> 1000)
     if (value.endsWith('m')) {
       return parseInt(value.slice(0, -1), 10);
     }
 
-    // Memory: MiB (ex: "256Mi" -> 256, "1Gi" -> 1024)
     if (value.endsWith('Mi')) {
       return parseInt(value.slice(0, -2), 10);
     }
@@ -128,7 +176,7 @@ export function MetricsPanel({
   }, [metrics]);
 
   // Preparar dados para os gráficos
-  const chartData = useMemo(() => {
+  const chartData = useMemo<ChartPoint[]>(() => {
     if (!metrics || !metrics.snapshots || metrics.snapshots.length === 0) {
       return [];
     }
@@ -175,8 +223,8 @@ export function MetricsPanel({
       }
 
       // Extrair valores de Request/Limit
-      const cpuRequest = snapshot.cpu_request ? parseResourceValue(snapshot.cpu_request) : null;
-      const cpuLimit = snapshot.cpu_limit ? parseResourceValue(snapshot.cpu_limit) : null;
+      const cpuRequest = snapshot.cpu_request ? parseCpuValue(snapshot.cpu_request) : null;
+      const cpuLimit = snapshot.cpu_limit ? parseCpuValue(snapshot.cpu_limit) : null;
 
       return {
         timestamp: new Date(snapshot.timestamp).getTime(),
@@ -196,6 +244,10 @@ export function MetricsPanel({
         replicasMin: snapshot.replicas_min,
         replicasMax: snapshot.replicas_max,
         replicasYesterday: yesterdaySnapshot?.replicas_current ?? null,
+        latencyP95: snapshot.p95_latency ?? null,
+        latencyP99: snapshot.p99_latency ?? null,
+        requestRate: snapshot.request_rate ?? null,
+        errorRate: snapshot.error_rate ?? null,
       };
     });
 
@@ -253,6 +305,37 @@ export function MetricsPanel({
     return { current, average, peak, min, p95, trend, trendPercent };
   }, [chartData]);
 
+  const latencyStats = useMemo<LatencyStats>(() => {
+    const empty: LatencySeriesStats = { current: null, previous: null, timestamp: null };
+    if (chartData.length === 0) {
+      return { p95: empty, p99: empty };
+    }
+
+    const buildStats = (key: "latencyP95" | "latencyP99"): LatencySeriesStats => {
+      const entries = chartData
+        .filter(point => typeof point[key] === "number" && point[key] !== null)
+        .map(point => ({ value: point[key] as number, time: point.time }));
+
+      if (entries.length === 0) {
+        return { current: null, previous: null, timestamp: null };
+      }
+
+      const current = entries[entries.length - 1];
+      const previous = entries.length > 1 ? entries[entries.length - 2] : null;
+
+      return {
+        current: current.value,
+        previous: previous ? previous.value : null,
+        timestamp: current.time,
+      };
+    };
+
+    return {
+      p95: buildStats("latencyP95"),
+      p99: buildStats("latencyP99"),
+    };
+  }, [chartData]);
+
   // Extrair targets para usar nas ReferenceLine (valores fixos, não mudam ao longo do tempo)
   // Busca em QUALQUER snapshot até encontrar valor válido (não apenas primeiro)
   const cpuTarget = useMemo(() => {
@@ -279,43 +362,171 @@ export function MetricsPanel({
     return 0;
   }, [metrics]);
 
-  // Componente de Estatística
+  const formatCpuUsage = (millicores: number): string => {
+    if (!Number.isFinite(millicores)) {
+      return "--";
+    }
+
+    const absValue = Math.abs(millicores);
+    const cores = millicores / 1000;
+
+    if (absValue >= 1000) {
+      return `${cores.toFixed(1)} cores`;
+    }
+
+    if (absValue >= 1) {
+      return `${millicores.toFixed(0)}m`;
+    }
+
+    return `${millicores.toFixed(2)}m`;
+  };
+
+  // Helpers de exibição dos cards
+  const getCpuDisplayValues = (percentValue: number, limitValue?: string) => {
+    const sanitizedPercent = Number.isFinite(percentValue) ? percentValue : 0;
+
+    if (!limitValue) {
+      return {
+        primary: `${sanitizedPercent.toFixed(1)}%`,
+        percentLabel: `${sanitizedPercent.toFixed(1)}%`,
+        hasLimit: false,
+      };
+    }
+
+    const parsedLimit = parseCpuValue(limitValue);
+    if (parsedLimit === null || parsedLimit === 0) {
+      return {
+        primary: `${sanitizedPercent.toFixed(1)}%`,
+        percentLabel: `${sanitizedPercent.toFixed(1)}%`,
+        hasLimit: false,
+      };
+    }
+
+    const usageMillicores = (sanitizedPercent / 100) * parsedLimit;
+    const usageCores = usageMillicores / 1000;
+
+    return {
+      primary: formatCpuUsage(usageMillicores),
+      percentLabel: `${sanitizedPercent.toFixed(1)}%`,
+      hasLimit: true,
+    };
+  };
+
+  // Componente de Estatística - COMPACTO
   const StatCard = ({
     icon: Icon,
     label,
-    value,
-    unit,
-    trend,
-    trendPercent,
-    className: cardClassName = "",
+    percentValue,
+    limitValue,
   }: {
     icon: any;
     label: string;
-    value: number;
-    unit: string;
-    trend: "up" | "down" | "stable";
-    trendPercent: number;
-    className?: string;
+    percentValue: number;
+    limitValue?: string;
   }) => {
-    const TrendIcon = trend === "up" ? TrendingUp : trend === "down" ? TrendingDown : Activity;
-    const trendColor =
-      trend === "up" ? "text-red-600" : trend === "down" ? "text-green-600" : "text-muted-foreground";
+    const { primary, percentLabel, hasLimit } = getCpuDisplayValues(percentValue, limitValue);
 
     return (
-      <div className={`p-4 rounded-lg border bg-card ${cardClassName}`}>
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2">
-            <Icon className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">{label}</span>
+      <div className="px-2.5 py-2 rounded-lg border bg-card">
+        <div className="flex items-center gap-1.5 mb-1">
+          <Icon className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+          <span className="text-[11px] font-semibold leading-none">{label}</span>
+        </div>
+        <div className="text-base font-bold leading-none mb-0.5">{primary}</div>
+        <div className="text-[10px] text-muted-foreground leading-none">
+          {percentLabel} {hasLimit && limitValue ? `de ${limitValue}` : ''}
+        </div>
+      </div>
+    );
+  };
+
+  const formatLatencyValue = (value: number | null) => {
+    if (value === null || Number.isNaN(value)) {
+      return "--";
+    }
+
+    if (value >= 1000) {
+      return `${(value / 1000).toFixed(2)} s`;
+    }
+
+    if (value >= 1) {
+      return `${value.toFixed(1)} ms`;
+    }
+
+    return `${Math.max(value * 1000, 0).toFixed(0)} µs`;
+  };
+
+  const LatencyCard = ({
+    icon: Icon,
+    stats,
+    percentile,
+    onPercentileChange,
+  }: {
+    icon: any;
+    stats: LatencyStats;
+    percentile: "p95" | "p99";
+    onPercentileChange: (value: "p95" | "p99") => void;
+  }) => {
+    const current =
+      percentile === "p95" ? stats.p95.current : stats.p99.current;
+    const previous =
+      percentile === "p95" ? stats.p95.previous : stats.p99.previous;
+    const timestamp =
+      percentile === "p95" ? stats.p95.timestamp : stats.p99.timestamp;
+
+    const percentChange =
+      previous && previous !== 0 && current !== null
+        ? ((current - previous) / previous) * 100
+        : null;
+
+    const percentChangeLabel =
+      percentChange === null
+        ? "--"
+        : `${percentChange > 0 ? "+" : ""}${percentChange.toFixed(1)}%`;
+
+    const percentChangeColor =
+      percentChange === null
+        ? "text-muted-foreground"
+        : percentChange > 0
+        ? "text-red-600"
+        : "text-green-600";
+
+    return (
+      <div className="px-2.5 py-2 rounded-lg border bg-card">
+        <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center gap-1.5">
+            <Icon className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+            <span className="text-[11px] font-semibold leading-none">
+              Latência {percentile.toUpperCase()}
+            </span>
           </div>
-          <div className={`flex items-center gap-1 text-xs ${trendColor}`}>
-            <TrendIcon className="h-3 w-3" />
-            <span>{Math.abs(trendPercent).toFixed(1)}%</span>
+          <div className="inline-flex rounded-full border px-1 py-0.5 bg-background/60">
+            {(["p95", "p99"] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => onPercentileChange(option)}
+                className={`px-1.5 py-0.5 text-[10px] font-semibold rounded-full transition-colors ${
+                  percentile === option
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground"
+                }`}
+              >
+                {option.toUpperCase()}
+              </button>
+            ))}
           </div>
         </div>
-        <div className="text-2xl font-bold">
-          {value.toFixed(1)}
-          <span className="text-sm font-normal text-muted-foreground ml-1">{unit}</span>
+        <div className="text-base font-bold leading-none mb-0.5">
+          {formatLatencyValue(current)}
+        </div>
+        <div className="flex items-center justify-between text-[10px] leading-none">
+          <span className="text-muted-foreground">
+            {timestamp ? timestamp : "Sem dados"}
+          </span>
+          <span className={`font-semibold ${percentChangeColor}`}>
+            {percentChangeLabel}
+          </span>
         </div>
       </div>
     );
@@ -325,14 +536,13 @@ export function MetricsPanel({
   const percentToAbsolute = (percent: number, limit: string, isCpu: boolean): string => {
     if (!limit) return '';
 
-    const limitValue = parseResourceValue(limit);
+    const limitValue = isCpu ? parseCpuValue(limit) : parseResourceValue(limit);
     if (limitValue === null) return '';
 
     const absolute = (percent / 100) * limitValue;
 
     if (isCpu) {
-      // CPU: retorna em millicores
-      return `${absolute.toFixed(2)}m`;
+      return formatCpuUsage(absolute);
     } else {
       // Memory: retorna em MiB ou GiB
       if (absolute >= 1024) {
@@ -343,11 +553,11 @@ export function MetricsPanel({
   };
 
   // Helper para converter valor absoluto em percentual do limit (para linhas de referência)
-  const absoluteToPercent = (absoluteValue: string, limit: string): number | null => {
+  const absoluteToPercent = (absoluteValue: string, limit: string, isCpu: boolean): number | null => {
     if (!absoluteValue || !limit) return null;
 
-    const absVal = parseResourceValue(absoluteValue);
-    const limitVal = parseResourceValue(limit);
+    const absVal = isCpu ? parseCpuValue(absoluteValue) : parseResourceValue(absoluteValue);
+    const limitVal = isCpu ? parseCpuValue(limit) : parseResourceValue(limit);
 
     if (absVal === null || limitVal === null || limitVal === 0) return null;
 
@@ -552,48 +762,46 @@ export function MetricsPanel({
             {/* CPU Analysis - Largura total */}
             <div className="space-y-6">
               {/* Estatísticas - Linha 1: Métricas de uso */}
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+              <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
                 <StatCard
                   icon={Activity}
                   label="CPU Atual"
-                  value={cpuStats.current}
-                  unit="%"
-                  trend={cpuStats.trend}
-                  trendPercent={cpuStats.trendPercent}
+                  percentValue={cpuStats.current}
+                  limitValue={snapshotWithResources?.cpu_limit}
                 />
                 <StatCard
                   icon={TrendingUp}
                   label="Média"
-                  value={cpuStats.average}
-                  unit="%"
-                  trend="stable"
-                  trendPercent={0}
+                  percentValue={cpuStats.average}
+                  limitValue={snapshotWithResources?.cpu_limit}
                 />
                 <StatCard
                   icon={AlertCircle}
                   label="Pico"
-                  value={cpuStats.peak}
-                  unit="%"
-                  trend="up"
-                  trendPercent={0}
-                  className="border-orange-200 bg-orange-50"
+                  percentValue={cpuStats.peak}
+                  limitValue={snapshotWithResources?.cpu_limit}
                 />
                 <StatCard
                   icon={TrendingDown}
                   label="Mínimo"
-                  value={cpuStats.min}
-                  unit="%"
-                  trend="down"
-                  trendPercent={0}
+                  percentValue={cpuStats.min}
+                  limitValue={snapshotWithResources?.cpu_limit}
                 />
                 <StatCard
                   icon={BarChart3}
                   label="P95"
-                  value={cpuStats.p95}
-                  unit="%"
-                  trend="stable"
-                  trendPercent={0}
+                  percentValue={cpuStats.p95}
+                  limitValue={snapshotWithResources?.cpu_limit}
                 />
+                {/* Mostrar Latency card apenas se houver dados */}
+                {(latencyStats.p95.current !== null || latencyStats.p99.current !== null) && (
+                  <LatencyCard
+                    icon={BarChart3}
+                    stats={latencyStats}
+                    percentile={latencyView}
+                    onPercentileChange={setLatencyView}
+                  />
+                )}
               </div>
 
 
@@ -640,8 +848,8 @@ export function MetricsPanel({
                     <Legend />
                     {/* Linhas tracejadas de Request e Limit (como no Grafana) */}
                     {snapshotWithResources?.cpu_request && (
-                      <ReferenceLine
-                        y={absoluteToPercent(snapshotWithResources.cpu_request, snapshotWithResources.cpu_limit || snapshotWithResources.cpu_request) || 0}
+                    <ReferenceLine
+                      y={absoluteToPercent(snapshotWithResources.cpu_request, snapshotWithResources.cpu_limit || snapshotWithResources.cpu_request, true) || 0}
                         stroke="#f97316"
                         strokeDasharray="3 3"
                         label={{ value: `Request: ${snapshotWithResources.cpu_request}`, position: "right", fontSize: 11, fill: "#f97316" }}
@@ -751,8 +959,8 @@ export function MetricsPanel({
                     <Legend />
                     {/* Linhas tracejadas de Request e Limit (como no Grafana) */}
                     {snapshotWithResources?.memory_request && (
-                      <ReferenceLine
-                        y={absoluteToPercent(snapshotWithResources.memory_request, snapshotWithResources.memory_limit || snapshotWithResources.memory_request) || 0}
+                    <ReferenceLine
+                      y={absoluteToPercent(snapshotWithResources.memory_request, snapshotWithResources.memory_limit || snapshotWithResources.memory_request, false) || 0}
                         stroke="#f97316"
                         strokeDasharray="3 3"
                         label={{ value: `Request: ${snapshotWithResources.memory_request}`, position: "right", fontSize: 11, fill: "#f97316" }}

@@ -17,6 +17,9 @@ dist/
 coverage.html
 coverage.out
 
+# Go build cache
+.gocache/
+
 # Dependency directories
 vendor/
 

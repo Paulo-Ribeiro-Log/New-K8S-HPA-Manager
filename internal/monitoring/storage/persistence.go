@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"k8s-hpa-manager/internal/monitoring/models"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
+	"k8s-hpa-manager/internal/monitoring/models"
 )
 
 // PersistenceConfig configuração de persistência
@@ -457,8 +457,8 @@ func (p *Persistence) SaveSnapshots(snapshots []*models.HPASnapshot) error {
 			snapshot.MemoryRequest,
 			snapshot.MemoryLimit,
 			string(data),
-			0,              // baseline_ready (será marcado depois)
-			time.Now(),     // last_baseline_scan
+			0,          // baseline_ready (será marcado depois)
+			time.Now(), // last_baseline_scan
 		)
 		if err != nil {
 			log.Warn().
@@ -568,6 +568,8 @@ func (p *Persistence) LoadSnapshots(cluster, namespace, name string, since time.
 				Msg("[DEBUG] First snapshot loaded from DB")
 		}
 
+		hydrateSnapshotFromJSON(&snapshot, metricsJSON)
+
 		snapshots = append(snapshots, snapshot)
 	}
 
@@ -590,8 +592,8 @@ func (p *Persistence) LoadSnapshotsYesterday(cluster, namespace, name string, du
 	// Ex: agora = 10:30, duration = 5m
 	// Busca: [ontem 10:25, ontem 10:30]
 	now := time.Now()
-	yesterdayEnd := now.Add(-24 * time.Hour)         // 24h atrás
-	yesterdayStart := yesterdayEnd.Add(-duration)    // 24h + duration atrás
+	yesterdayEnd := now.Add(-24 * time.Hour)      // 24h atrás
+	yesterdayStart := yesterdayEnd.Add(-duration) // 24h + duration atrás
 
 	rows, err := p.db.Query(`
 		SELECT cluster, namespace, hpa_name, timestamp,
@@ -661,6 +663,8 @@ func (p *Persistence) LoadSnapshotsYesterday(cluster, namespace, name string, du
 			snapshot.MemoryTarget = memoryTarget.Int32
 		}
 
+		hydrateSnapshotFromJSON(&snapshot, metricsJSON)
+
 		snapshots = append(snapshots, snapshot)
 	}
 
@@ -678,6 +682,33 @@ func (p *Persistence) LoadSnapshotsYesterday(cluster, namespace, name string, du
 		Msg("Loaded yesterday snapshots for comparison")
 
 	return snapshots, nil
+}
+
+// hydrateSnapshotFromJSON preenche campos opcionais (RequestRate, latências, etc)
+func hydrateSnapshotFromJSON(snapshot *models.HPASnapshot, metricsJSON string) {
+	if metricsJSON == "" || metricsJSON == "{}" {
+		return
+	}
+
+	var extended models.HPASnapshot
+	if err := json.Unmarshal([]byte(metricsJSON), &extended); err != nil {
+		log.Debug().
+			Err(err).
+			Str("hpa", snapshot.Name).
+			Msg("Falha ao decodificar metrics_json, ignorando campos opcionais")
+		return
+	}
+
+	snapshot.RequestRate = extended.RequestRate
+	snapshot.ErrorRate = extended.ErrorRate
+	snapshot.P95Latency = extended.P95Latency
+	snapshot.P99Latency = extended.P99Latency
+	snapshot.NetworkRxBytes = extended.NetworkRxBytes
+	snapshot.NetworkTxBytes = extended.NetworkTxBytes
+
+	if len(extended.AdditionalMetrics) > 0 {
+		snapshot.AdditionalMetrics = extended.AdditionalMetrics
+	}
 }
 
 // LoadAll carrega todos os snapshots recentes (últimos MaxAge)

@@ -117,23 +117,30 @@ func (h *MonitoringHandler) GetMetrics(c *gin.Context) {
 	apiSnapshots := make([]gin.H, 0, len(snapshots))
 	for _, snap := range snapshots {
 		apiSnapshots = append(apiSnapshots, gin.H{
-			"cluster":           snap.Cluster,
-			"namespace":         snap.Namespace,
-			"hpa_name":          snap.Name,
-			"timestamp":         snap.Timestamp.Format(time.RFC3339),
-			"cpu_current":       snap.CPUCurrent,
-			"cpu_target":        snap.CPUTarget,
-			"memory_current":    snap.MemoryCurrent,
-			"memory_target":     snap.MemoryTarget,
-			"replicas_current":  snap.CurrentReplicas,
-			"replicas_desired":  snap.DesiredReplicas,
-			"replicas_min":      snap.MinReplicas,
-			"replicas_max":      snap.MaxReplicas,
+			"cluster":          snap.Cluster,
+			"namespace":        snap.Namespace,
+			"hpa_name":         snap.Name,
+			"timestamp":        snap.Timestamp.Format(time.RFC3339),
+			"cpu_current":      snap.CPUCurrent,
+			"cpu_target":       snap.CPUTarget,
+			"memory_current":   snap.MemoryCurrent,
+			"memory_target":    snap.MemoryTarget,
+			"replicas_current": snap.CurrentReplicas,
+			"replicas_desired": snap.DesiredReplicas,
+			"replicas_min":     snap.MinReplicas,
+			"replicas_max":     snap.MaxReplicas,
 			// Recursos do Deployment (K8s API) - NOVO
-			"cpu_request":       snap.CPURequest,
-			"cpu_limit":         snap.CPULimit,
-			"memory_request":    snap.MemoryRequest,
-			"memory_limit":      snap.MemoryLimit,
+			"cpu_request":    snap.CPURequest,
+			"cpu_limit":      snap.CPULimit,
+			"memory_request": snap.MemoryRequest,
+			"memory_limit":   snap.MemoryLimit,
+			// Extended metrics (Prometheus)
+			"request_rate":     snap.RequestRate,
+			"error_rate":       snap.ErrorRate,
+			"p95_latency":      snap.P95Latency,
+			"p99_latency":      snap.P99Latency,
+			"network_rx_bytes": snap.NetworkRxBytes,
+			"network_tx_bytes": snap.NetworkTxBytes,
 		})
 	}
 
@@ -141,23 +148,30 @@ func (h *MonitoringHandler) GetMetrics(c *gin.Context) {
 	apiSnapshotsYesterday := make([]gin.H, 0, len(snapshotsYesterday))
 	for _, snap := range snapshotsYesterday {
 		apiSnapshotsYesterday = append(apiSnapshotsYesterday, gin.H{
-			"cluster":           snap.Cluster,
-			"namespace":         snap.Namespace,
-			"hpa_name":          snap.Name,
-			"timestamp":         snap.Timestamp.Format(time.RFC3339),
-			"cpu_current":       snap.CPUCurrent,
-			"cpu_target":        snap.CPUTarget,
-			"memory_current":    snap.MemoryCurrent,
-			"memory_target":     snap.MemoryTarget,
-			"replicas_current":  snap.CurrentReplicas,
-			"replicas_desired":  snap.DesiredReplicas,
-			"replicas_min":      snap.MinReplicas,
-			"replicas_max":      snap.MaxReplicas,
+			"cluster":          snap.Cluster,
+			"namespace":        snap.Namespace,
+			"hpa_name":         snap.Name,
+			"timestamp":        snap.Timestamp.Format(time.RFC3339),
+			"cpu_current":      snap.CPUCurrent,
+			"cpu_target":       snap.CPUTarget,
+			"memory_current":   snap.MemoryCurrent,
+			"memory_target":    snap.MemoryTarget,
+			"replicas_current": snap.CurrentReplicas,
+			"replicas_desired": snap.DesiredReplicas,
+			"replicas_min":     snap.MinReplicas,
+			"replicas_max":     snap.MaxReplicas,
 			// Recursos do Deployment (K8s API) - NOVO
-			"cpu_request":       snap.CPURequest,
-			"cpu_limit":         snap.CPULimit,
-			"memory_request":    snap.MemoryRequest,
-			"memory_limit":      snap.MemoryLimit,
+			"cpu_request":    snap.CPURequest,
+			"cpu_limit":      snap.CPULimit,
+			"memory_request": snap.MemoryRequest,
+			"memory_limit":   snap.MemoryLimit,
+			// Extended metrics (Prometheus)
+			"request_rate":     snap.RequestRate,
+			"error_rate":       snap.ErrorRate,
+			"p95_latency":      snap.P95Latency,
+			"p99_latency":      snap.P99Latency,
+			"network_rx_bytes": snap.NetworkRxBytes,
+			"network_tx_bytes": snap.NetworkTxBytes,
 		})
 	}
 
@@ -172,14 +186,14 @@ func (h *MonitoringHandler) GetMetrics(c *gin.Context) {
 		Msg("Métricas retornadas do SQLite (com comparação D-1)")
 
 	c.JSON(200, gin.H{
-		"cluster":            cluster,
-		"namespace":          namespace,
-		"hpa_name":           hpaName,
-		"duration":           duration,
-		"snapshots":          apiSnapshots,
+		"cluster":             cluster,
+		"namespace":           namespace,
+		"hpa_name":            hpaName,
+		"duration":            duration,
+		"snapshots":           apiSnapshots,
 		"snapshots_yesterday": apiSnapshotsYesterday,
-		"count":              len(apiSnapshots),
-		"count_yesterday":    len(apiSnapshotsYesterday),
+		"count":               len(apiSnapshots),
+		"count_yesterday":     len(apiSnapshotsYesterday),
 	})
 }
 

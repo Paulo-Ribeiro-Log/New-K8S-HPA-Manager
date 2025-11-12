@@ -240,6 +240,20 @@ func (c *Client) GetP95Latency(ctx context.Context, namespace, service string) (
 	return extractSingleValue(result)
 }
 
+// GetP99Latency obtém P99 de latência (ms)
+func (c *Client) GetP99Latency(ctx context.Context, namespace, service string) (float64, error) {
+	query := fmt.Sprintf(`
+		histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace="%s",service="%s"}[5m])) by (le)) * 1000
+	`, namespace, service)
+
+	result, err := c.Query(ctx, query)
+	if err != nil {
+		return 0, err
+	}
+
+	return extractSingleValue(result)
+}
+
 // EnrichSnapshot enriquece um snapshot com métricas do Prometheus
 // FASE 4: Lazy connection - tenta conectar se ainda não conectado
 func (c *Client) EnrichSnapshot(ctx context.Context, snapshot *models.HPASnapshot) error {
@@ -310,12 +324,18 @@ func (c *Client) EnrichSnapshot(ctx context.Context, snapshot *models.HPASnapsho
 		snapshot.P95Latency = latency
 	}
 
+	if latency, err := c.GetP99Latency(ctx, snapshot.Namespace, service); err == nil {
+		snapshot.P99Latency = latency
+	}
+
 	log.Debug().
 		Str("cluster", c.cluster).
 		Str("namespace", snapshot.Namespace).
 		Str("hpa", snapshot.Name).
 		Float64("cpu_current", snapshot.CPUCurrent).
 		Float64("memory_current", snapshot.MemoryCurrent).
+		Float64("p95_latency", snapshot.P95Latency).
+		Float64("p99_latency", snapshot.P99Latency).
 		Msg("Snapshot enriched with Prometheus metrics")
 
 	return nil
@@ -413,6 +433,20 @@ func (c *Client) GetErrorRateHistory(ctx context.Context, namespace, service str
 func (c *Client) GetLatencyP95History(ctx context.Context, namespace, service string, start, end time.Time) ([]float64, error) {
 	query := fmt.Sprintf(`
 		histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace="%s",service="%s"}[5m])) by (le)) * 1000
+	`, namespace, service)
+
+	result, err := c.QueryRange(ctx, query, start, end, 1*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
+	return extractTimeSeriesFloat64(result)
+}
+
+// GetLatencyP99History obtém histórico de latência P99 (ms)
+func (c *Client) GetLatencyP99History(ctx context.Context, namespace, service string, start, end time.Time) ([]float64, error) {
+	query := fmt.Sprintf(`
+		histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace="%s",service="%s"}[5m])) by (le)) * 1000
 	`, namespace, service)
 
 	result, err := c.QueryRange(ctx, query, start, end, 1*time.Minute)

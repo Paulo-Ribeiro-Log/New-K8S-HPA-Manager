@@ -352,6 +352,14 @@ export interface HPASnapshot {
   cpu_limit?: string;
   memory_request?: string;
   memory_limit?: string;
+
+  // Extended metrics (Prometheus)
+  request_rate?: number;
+  error_rate?: number;
+  p95_latency?: number;
+  p99_latency?: number;
+  network_rx_bytes?: number;
+  network_tx_bytes?: number;
 }
 
 export interface HPAMetrics {
