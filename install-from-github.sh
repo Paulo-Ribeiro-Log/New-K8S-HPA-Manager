@@ -15,7 +15,7 @@ for arg in "$@"; do
             echo "  --help, -h    Show this help message"
             echo ""
             echo "Example:"
-            echo "  curl -fsSL https://raw.githubusercontent.com/.../install-from-github.sh | bash"
+            echo "  curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/main/install-from-github.sh | bash"
             exit 0
             ;;
     esac
@@ -29,11 +29,11 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Project info
-BINARY_NAME="k8s-hpa-manager"
-REPO_URL="https://github.com/Paulo-Ribeiro-Log/Scale_HPA.git"
+BINARY_NAME="new-k8s-hpa"
+REPO_URL="https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager.git"
 INSTALL_PATH="/usr/local/bin"
-SCRIPTS_DIR="$HOME/.k8s-hpa-manager/scripts"
-TEMP_DIR="/tmp/k8s-hpa-manager-install"
+SCRIPTS_DIR="$HOME/.new-k8s-hpa/scripts"
+TEMP_DIR="/tmp/new-k8s-hpa-install"
 
 # Function to print colored messages
 print_info() {
@@ -223,7 +223,7 @@ copy_scripts() {
     cd "$TEMP_DIR"
 
     # Create scripts directory (but preserve sessions if they exist)
-    local user_data_dir="$HOME/.k8s-hpa-manager"
+    local user_data_dir="$HOME/.new-k8s-hpa"
     local sessions_dir="$user_data_dir/sessions"
 
     # Check if sessions directory already exists
@@ -263,16 +263,16 @@ create_aliases() {
     # Create symbolic links for commonly used scripts
     local link_created=false
 
-    # web-server.sh -> k8s-hpa-web
+    # web-server.sh -> new-k8s-hpa-web
     if [ -f "$SCRIPTS_DIR/web-server.sh" ]; then
         if [[ ! -w "$INSTALL_PATH" ]]; then
-            if sudo ln -sf "$SCRIPTS_DIR/web-server.sh" "$INSTALL_PATH/k8s-hpa-web" 2>/dev/null; then
-                print_success "Atalho criado: k8s-hpa-web"
+            if sudo ln -sf "$SCRIPTS_DIR/web-server.sh" "$INSTALL_PATH/new-k8s-hpa-web" 2>/dev/null; then
+                print_success "Atalho criado: new-k8s-hpa-web"
                 link_created=true
             fi
         else
-            ln -sf "$SCRIPTS_DIR/web-server.sh" "$INSTALL_PATH/k8s-hpa-web" 2>/dev/null
-            print_success "Atalho criado: k8s-hpa-web"
+            ln -sf "$SCRIPTS_DIR/web-server.sh" "$INSTALL_PATH/new-k8s-hpa-web" 2>/dev/null
+            print_success "Atalho criado: new-k8s-hpa-web"
             link_created=true
         fi
     fi
@@ -335,11 +335,11 @@ print_usage() {
     echo ""
 
     echo -e "${BLUE}🌐 Servidor Web:${NC}"
-    if command -v k8s-hpa-web &> /dev/null; then
-        echo "  k8s-hpa-web start                 # Iniciar servidor (porta 8080)"
-        echo "  k8s-hpa-web stop                  # Parar servidor"
-        echo "  k8s-hpa-web status                # Ver status"
-        echo "  k8s-hpa-web logs                  # Ver logs em tempo real"
+    if command -v new-k8s-hpa-web &> /dev/null; then
+        echo "  new-k8s-hpa-web start             # Iniciar servidor (porta 8080)"
+        echo "  new-k8s-hpa-web stop              # Parar servidor"
+        echo "  new-k8s-hpa-web status            # Ver status"
+        echo "  new-k8s-hpa-web logs              # Ver logs em tempo real"
     else
         echo "  $SCRIPTS_DIR/web-server.sh start  # Iniciar servidor"
         echo "  $SCRIPTS_DIR/web-server.sh stop   # Parar servidor"
@@ -379,7 +379,7 @@ print_usage() {
 # Main installation flow
 main() {
     clear
-    print_header "🏗️  K8s HPA Manager - Instalador Completo"
+    print_header "🏗️  New K8s HPA Manager - Instalador Completo"
 
     echo ""
     echo "Este script irá:"
