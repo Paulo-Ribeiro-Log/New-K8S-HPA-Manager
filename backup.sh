@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script de backup automático para k8s-hpa-manager
+# Script de backup automático para new-k8s-hpa
 # Uso: ./backup.sh [descrição opcional]
 
 # Cores para output

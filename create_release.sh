@@ -10,7 +10,7 @@ if [ -z "$GITHUB_TOKEN" ]; then
     echo ""
     echo "Opções:"
     echo "1. Definir variável de ambiente: export GITHUB_TOKEN='seu_token_aqui'"
-    echo "2. Criar arquivo: echo 'seu_token_aqui' > ~/.k8s-hpa-manager/.github-token"
+    echo "2. Criar arquivo: echo 'seu_token_aqui' > ~/.new-k8s-hpa/.github-token"
     echo "3. Criar release manualmente via web:"
     echo "   https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/new?tag=v1.1.0"
     echo ""
@@ -55,8 +55,8 @@ UPLOAD_URL=$(echo "$RESPONSE" | jq -r '.upload_url' | sed 's/{?name,label}//')
 curl -s -X POST \
   -H "Authorization: Bearer $GITHUB_TOKEN" \
   -H "Content-Type: application/octet-stream" \
-  "${UPLOAD_URL}?name=k8s-hpa-manager-linux-amd64" \
-  --data-binary @./build/release/k8s-hpa-manager-linux-amd64 > /dev/null
+  "${UPLOAD_URL}?name=new-k8s-hpa-linux-amd64" \
+  --data-binary @./build/release/new-k8s-hpa-linux-amd64 > /dev/null
 
 echo "✅ Upload completo!"
 echo ""

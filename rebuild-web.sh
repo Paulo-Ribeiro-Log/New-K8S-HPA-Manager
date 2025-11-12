@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # rebuild-web.sh
-# Script para rebuild e restart do servidor web k8s-hpa-manager
+# Script para rebuild e restart do servidor web new-k8s-hpa
 # Autor: Gerado automaticamente
 # Uso: ./rebuild-web.sh [opções]
 
@@ -18,12 +18,12 @@ NC='\033[0m' # No Color
 PORT=${PORT:-8080}
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
-BINARY="$BUILD_DIR/k8s-hpa-manager"
+BINARY="$BUILD_DIR/new-k8s-hpa"
 
 # Funções
 print_header() {
     echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║     k8s-hpa-manager - Web Rebuild & Restart Script       ║${NC}"
+    echo -e "${BLUE}║     new-k8s-hpa - Web Rebuild & Restart Script       ║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 }

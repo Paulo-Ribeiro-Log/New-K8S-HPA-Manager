@@ -1,5 +1,5 @@
 #!/bin/bash
-# Uninstaller script for k8s-hpa-manager
+# Uninstaller script for new-k8s-hpa
 
 set -e
 
@@ -11,9 +11,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Project info
-BINARY_NAME="k8s-hpa-manager"
+BINARY_NAME="new-k8s-hpa"
 INSTALL_PATH="/usr/local/bin"
-SESSION_DIR="$HOME/.k8s-hpa-manager"
+SESSION_DIR="$HOME/.new-k8s-hpa"
 
 echo -e "${BLUE}🗑️  K8s HPA Manager - Uninstaller${NC}"
 echo "===================================="
@@ -92,4 +92,4 @@ echo ""
 echo -e "${GREEN}🎉 Uninstallation completed!${NC}"
 echo "===================================="
 echo ""
-echo "Thank you for using k8s-hpa-manager! 👋"
+echo "Thank you for using new-k8s-hpa! 👋"

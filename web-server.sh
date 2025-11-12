@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Script para gerenciar servidor web k8s-hpa-manager
+# Script para gerenciar servidor web new-k8s-hpa
 
-LOG_FILE="/tmp/k8s-hpa-web.log"
-BIN_PATH="/usr/local/bin/k8s-hpa-manager"
+LOG_FILE="/tmp/new-k8s-hpa-web.log"
+BIN_PATH="/usr/local/bin/new-k8s-hpa"
 
 # Função de ajuda
 show_help() {
@@ -69,7 +69,7 @@ case "$ACTION" in
         fi
 
         # Parar servidor se estiver rodando
-        killall k8s-hpa-manager 3>/dev/null
+        killall new-k8s-hpa 3>/dev/null
 
         # Iniciar servidor em background
         nohup $BIN_PATH web --port $PORT > $LOG_FILE 2>&1 &
@@ -90,13 +90,13 @@ case "$ACTION" in
 
     stop)
         echo "🛑 Parando servidor web..."
-        if pgrep -f "k8s-hpa-manager web" > /dev/null 2>&1; then
-            pkill -f "k8s-hpa-manager web" 2>/dev/null
+        if pgrep -f "new-k8s-hpa web" > /dev/null 2>&1; then
+            pkill -f "new-k8s-hpa web" 2>/dev/null
             sleep 1
             # Verificar se parou
-            if pgrep -f "k8s-hpa-manager web" > /dev/null 2>&1; then
+            if pgrep -f "new-k8s-hpa web" > /dev/null 2>&1; then
                 echo "⚠️  Forçando parada do processo..."
-                pkill -9 -f "k8s-hpa-manager web" 2>/dev/null
+                pkill -9 -f "new-k8s-hpa web" 2>/dev/null
             fi
             echo "✅ Servidor parado"
         else
@@ -112,11 +112,11 @@ case "$ACTION" in
         ;;
 
     status)
-        if pgrep -f "k8s-hpa-manager web" > /dev/null 2>&1; then
-            PID=$(pgrep -f "k8s-hpa-manager web")
+        if pgrep -f "new-k8s-hpa web" > /dev/null 2>&1; then
+            PID=$(pgrep -f "new-k8s-hpa web")
 
             # Detectar porta real do processo em execução
-            REAL_PORT=$(ps aux | grep "[k]8s-hpa-manager web" | grep -oP '\-\-port\s+\K[0-9]+' | head -1)
+            REAL_PORT=$(ps aux | grep "[n]ew-k8s-hpa web" | grep -oP '\-\-port\s+\K[0-9]+' | head -1)
             if [ -z "$REAL_PORT" ]; then
                 # Se não encontrou --port na linha de comando, usar porta padrão 8080
                 REAL_PORT=8080

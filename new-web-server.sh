@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script para gerenciar servidor web k8s-hpa-manager
+# Script para gerenciar servidor web new-k8s-hpa
 
 LOG_FILE="/tmp/new-k8s-hpa-web.log"
 BIN_PATH="./build/new-k8s-hpa"
@@ -112,8 +112,8 @@ case "$ACTION" in
         ;;
 
     status)
-        if pgrep -f "k8s-hpa-manager web" > /dev/null 2>&1; then
-            PID=$(pgrep -f "k8s-hpa-manager web")
+        if pgrep -f "new-k8s-hpa web" > /dev/null 2>&1; then
+            PID=$(pgrep -f "new-k8s-hpa web")
 
             # Detectar porta real do processo em execução
             REAL_PORT=$(ps aux | grep "new-k8s-hpa web" | grep -oP '\-\-port\s+\K[0-9]+' | head -1)

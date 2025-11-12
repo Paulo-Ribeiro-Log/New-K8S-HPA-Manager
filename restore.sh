@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script de restore para k8s-hpa-manager
+# Script de restore para new-k8s-hpa
 # Uso: ./restore.sh [nome_do_backup]
 
 # Cores para output
@@ -77,7 +77,7 @@ if [ $? -eq 0 ]; then
     echo -e "${GREEN}✅ Restauração concluída com sucesso!${NC}"
     echo ""
     echo "📍 Backup restaurado: $BACKUP_NAME"
-    echo "🔨 Binário recompilado em: ./build/k8s-hpa-manager"
+    echo "🔨 Binário recompilado em: ./build/new-k8s-hpa"
 else
     echo ""
     echo -e "${RED}❌ Erro durante a compilação${NC}"
