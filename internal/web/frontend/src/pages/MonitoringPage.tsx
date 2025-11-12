@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { ChevronDown, ChevronRight, Activity, Trash2, Circle, PanelLeftClose, PanelLeft, RotateCw, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -15,6 +15,7 @@ import {
   ContextMenuLabel,
 } from "@/components/ui/context-menu";
 import { useToast } from "@/components/ui/use-toast";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface MonitoredHPA {
   cluster: string;
@@ -224,6 +225,25 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
 
   console.log("[MonitoringPage] Rendering. HPAs count:", monitoredHPAs.length);
   console.log("[MonitoringPage] HPAs by cluster:", Object.keys(hpasByCluster));
+
+  const sidebarCollapsed = !sidebarOpen;
+
+  const hpaOptions = useMemo(() => {
+    return monitoredHPAs.map(hpa => ({
+      value: `${hpa.cluster}||${hpa.namespace}||${hpa.name}`,
+      label: `${hpa.cluster} · ${hpa.namespace} · ${hpa.name}`,
+    }));
+  }, [monitoredHPAs]);
+
+  const handleSelectChange = (value: string) => {
+    const [cluster, namespace, name] = value.split("||");
+    const matching = monitoredHPAs.find(
+      (hpa) => hpa.cluster === cluster && hpa.namespace === namespace && hpa.name === name
+    );
+    if (matching) {
+      setSelectedHPA(matching);
+    }
+  };
 
   return (
     <div className="h-full flex relative">
@@ -443,11 +463,34 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
                 <PanelLeft className="h-4 w-4" />
               )}
             </Button>
-            <h2 className="font-semibold text-sm">
-              {selectedHPA ? selectedHPA.name : "Selecione um HPA"}
-            </h2>
+            {sidebarCollapsed && hpaOptions.length > 0 ? (
+              <Select
+                value={
+                  selectedHPA
+                    ? `${selectedHPA.cluster}||${selectedHPA.namespace}||${selectedHPA.name}`
+                    : undefined
+                }
+                onValueChange={handleSelectChange}
+                disabled={hpaOptions.length === 0}
+              >
+                <SelectTrigger className="min-w-[250px]">
+                  <SelectValue placeholder="Selecione um HPA" />
+                </SelectTrigger>
+                <SelectContent className="max-h-72">
+                  {hpaOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <h2 className="font-semibold text-sm">
+                {selectedHPA ? selectedHPA.name : "Selecione um HPA"}
+              </h2>
+            )}
           </div>
-          {selectedHPA && (
+          {selectedHPA && sidebarOpen && (
             <span className="text-xs text-muted-foreground">
               {selectedHPA.cluster} · {selectedHPA.namespace}
             </span>

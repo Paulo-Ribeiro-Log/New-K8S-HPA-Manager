@@ -261,6 +261,32 @@ export function MetricsPanel({
     return result;
   }, [metrics]);
 
+  // Descobrir limites de réplicas usando o ponto mais recente válido (ignora snapshots antigos zerados)
+  const replicaBounds = useMemo(() => {
+    if (chartData.length === 0) {
+      return { min: 0, max: 0 };
+    }
+
+    const resolveBound = (key: "replicasMin" | "replicasMax") => {
+      // Procura do fim para o começo por um valor positivo (HPA não aceita <= 0)
+      for (let i = chartData.length - 1; i >= 0; i--) {
+        const value = chartData[i][key];
+        if (typeof value === "number" && value > 0) {
+          return value;
+        }
+      }
+
+      // Fallback: usa último snapshot mesmo que seja 0, para não quebrar comportamento anterior
+      const lastValue = chartData[chartData.length - 1]?.[key];
+      return typeof lastValue === "number" ? lastValue : 0;
+    };
+
+    return {
+      min: resolveBound("replicasMin"),
+      max: resolveBound("replicasMax"),
+    };
+  }, [chartData]);
+
   // Calcular estatísticas
   const cpuStats = useMemo((): MetricStats => {
     if (chartData.length === 0) {
@@ -1068,7 +1094,7 @@ export function MetricsPanel({
                       label={{ value: "Réplicas", angle: -90, position: "insideLeft", fontSize: 12 }}
                       allowDecimals={false}
                       domain={[0, (dataMax: number) => {
-                        const maxReplicas = chartData[0]?.replicasMax || dataMax;
+                        const maxReplicas = replicaBounds.max || dataMax;
                         return Math.max(dataMax, maxReplicas * 1.5); // 50% margem acima (replicas_max + 50%)
                       }]}
                     />
@@ -1093,18 +1119,18 @@ export function MetricsPanel({
                     }} />
                     <Legend />
                     <ReferenceLine
-                      y={chartData[0]?.replicasMin || 0}
+                      y={replicaBounds.min}
                       stroke="#f59e0b"
                       strokeWidth={2}
                       strokeDasharray="5 5"
-                      label={{ value: `Min: ${chartData[0]?.replicasMin || 0}`, position: "left", fill: "#f59e0b", fontSize: 12 }}
+                      label={{ value: `Min: ${replicaBounds.min}`, position: "left", fill: "#f59e0b", fontSize: 12 }}
                     />
                     <ReferenceLine
-                      y={chartData[0]?.replicasMax || 0}
+                      y={replicaBounds.max}
                       stroke="#ef4444"
                       strokeWidth={2}
                       strokeDasharray="5 5"
-                      label={{ value: `Max: ${chartData[0]?.replicasMax || 0}`, position: "right", fill: "#ef4444", fontSize: 12 }}
+                      label={{ value: `Max: ${replicaBounds.max}`, position: "right", fill: "#ef4444", fontSize: 12 }}
                     />
                     <Line
                       type="stepAfter"
@@ -1121,18 +1147,18 @@ export function MetricsPanel({
 
                 {/* Labels de informações do HPA */}
                 <div className="mt-4 pt-3 border-t flex items-center justify-around text-xs">
-                  <div className="text-center">
-                    <div className="text-muted-foreground">Min (HPA)</div>
-                    <div className="font-semibold text-sm text-amber-600">{chartData[0]?.replicasMin || 0}</div>
-                  </div>
+                    <div className="text-center">
+                      <div className="text-muted-foreground">Min (HPA)</div>
+                      <div className="font-semibold text-sm text-amber-600">{replicaBounds.min}</div>
+                    </div>
                   <div className="text-center">
                     <div className="text-muted-foreground">Atual</div>
                     <div className="font-semibold text-sm text-blue-600">{chartData[chartData.length - 1]?.replicasCurrent || 0}</div>
                   </div>
-                  <div className="text-center">
-                    <div className="text-muted-foreground">Max (HPA)</div>
-                    <div className="font-semibold text-sm text-red-600">{chartData[0]?.replicasMax || 0}</div>
-                  </div>
+                    <div className="text-center">
+                      <div className="text-muted-foreground">Max (HPA)</div>
+                      <div className="font-semibold text-sm text-red-600">{replicaBounds.max}</div>
+                    </div>
                 </div>
               </div>
             </div>

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2 } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2 } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -50,6 +50,8 @@ export const ConfigMapsTab = ({
   const [diffModalOpen, setDiffModalOpen] = useState(false);
   const [diffHtml, setDiffHtml] = useState("");
   const [isDiffLoading, setIsDiffLoading] = useState(false);
+  const [diffFullScreen, setDiffFullScreen] = useState(false);
+  const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
 
   // Undo/Redo history
   const [history, setHistory] = useState<string[]>([]);
@@ -182,7 +184,7 @@ export const ConfigMapsTab = ({
     setViewMode(mode);
   };
 
-  const handleShowDiffModal = async () => {
+  const handleShowDiffModal = async (options?: { fullscreen?: boolean }) => {
     if (!selectedConfigMap) return;
     if (!hasChanges) {
       toast.info("Nenhuma alteração para comparar");
@@ -200,6 +202,7 @@ export const ConfigMapsTab = ({
         highlight: true,
       });
       setDiffHtml(html);
+      setDiffFullScreen(!!options?.fullscreen);
       setDiffModalOpen(true);
     } catch (error) {
       toast.error("Erro ao gerar diff visual", {
@@ -208,6 +211,17 @@ export const ConfigMapsTab = ({
     } finally {
       setIsDiffLoading(false);
     }
+  };
+
+  const handleDiffModalChange = (open: boolean) => {
+    setDiffModalOpen(open);
+    if (!open) {
+      setDiffFullScreen(false);
+    }
+  };
+
+  const toggleDiffFullScreen = () => {
+    setDiffFullScreen((prev) => !prev);
   };
 
   const handleValidate = async () => {
@@ -234,11 +248,6 @@ export const ConfigMapsTab = ({
 
   const handleApply = async () => {
     if (!selectedConfigMap) return;
-    const confirmed = window.confirm(
-      `Aplicar ConfigMap ${selectedConfigMap.namespace}/${selectedConfigMap.name}?`
-    );
-    if (!confirmed) return;
-
     setIsApplying(true);
     try {
       await apiClient.applyConfigMap(
@@ -262,6 +271,20 @@ export const ConfigMapsTab = ({
     } finally {
       setIsApplying(false);
     }
+  };
+
+  const openApplyConfirm = () => {
+    if (!selectedConfigMap) return;
+    if (!hasChanges) {
+      toast.info("Nenhuma alteração para aplicar");
+      return;
+    }
+    setApplyConfirmOpen(true);
+  };
+
+  const confirmApplyChanges = async () => {
+    setApplyConfirmOpen(false);
+    await handleApply();
   };
 
   const leftTitleAction = (
@@ -504,6 +527,17 @@ export const ConfigMapsTab = ({
               Visualizar diff
             </Button>
             <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleShowDiffModal({ fullscreen: true })}
+              disabled={!selectedConfigMap || !hasChanges || isDiffLoading}
+              className="gap-2"
+              title="Abrir diff ocupando toda a tela"
+            >
+              <Maximize2 className="w-4 h-4" />
+              Tela cheia
+            </Button>
+            <Button
               variant="secondary"
               size="sm"
               onClick={handleValidate}
@@ -514,7 +548,7 @@ export const ConfigMapsTab = ({
             <Button
               variant="default"
               size="sm"
-              onClick={handleApply}
+              onClick={openApplyConfirm}
               disabled={!selectedConfigMap || isApplying || !hasChanges}
             >
               <TriangleAlert className="w-4 h-4 mr-2" /> Aplicar
@@ -563,6 +597,113 @@ export const ConfigMapsTab = ({
     </Button>
   );
 
+  const renderDiffDialog = () => {
+    const dialogSizeClass = diffFullScreen
+      ? "w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none"
+      : "max-w-6xl max-h-[85vh]";
+    const scrollAreaHeight = diffFullScreen ? "h-[calc(100vh-8rem)]" : "h-[calc(85vh-8rem)]";
+
+    return (
+      <Dialog open={diffModalOpen} onOpenChange={handleDiffModalChange}>
+        <DialogContent className={`bg-background border-border ${dialogSizeClass}`}>
+          <DialogHeader className="border-b border-border pb-4 pr-12">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <DialogTitle className="text-xl font-semibold text-primary">
+                  Diff Visual
+                </DialogTitle>
+                <DialogDescription className="text-sm text-muted-foreground">
+                  Comparação lado a lado entre o YAML original e a versão editada
+                  {selectedConfigMap && ` • ${selectedConfigMap.namespace}/${selectedConfigMap.name}`}
+                </DialogDescription>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={toggleDiffFullScreen}
+                title={diffFullScreen ? "Sair de tela cheia" : "Tela cheia"}
+                aria-label={diffFullScreen ? "Sair de tela cheia" : "Tela cheia"}
+                className="gap-2"
+              >
+                {diffFullScreen ? (
+                  <>
+                    <Minimize2 className="w-4 h-4" />
+                    <span>Sair de tela cheia</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-4 h-4" />
+                    <span>Tela cheia</span>
+                  </>
+                )}
+              </Button>
+            </div>
+          </DialogHeader>
+          <ScrollArea className={`${scrollAreaHeight} w-full`}>
+            <div className="p-4">
+              {diffHtml ? (
+                <div className="diff2html-dark" dangerouslySetInnerHTML={{ __html: diffHtml }} />
+              ) : (
+                <div className="flex items-center justify-center h-32 text-muted-foreground">
+                  <p>Nenhum diff disponível.</p>
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
+  const renderApplyConfirmDialog = () => {
+    if (!selectedConfigMap) return null;
+
+    return (
+      <Dialog open={applyConfirmOpen} onOpenChange={setApplyConfirmOpen}>
+        <DialogContent className="max-w-md bg-background border-border">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-semibold text-primary">
+              Confirmar aplicação
+            </DialogTitle>
+            <DialogDescription>
+              Essa ação vai aplicar o ConfigMap diretamente no cluster selecionado.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs">
+              <p><span className="text-muted-foreground">Cluster:</span> {selectedConfigMap.cluster}</p>
+              <p><span className="text-muted-foreground">Namespace:</span> {selectedConfigMap.namespace}</p>
+              <p><span className="text-muted-foreground">ConfigMap:</span> {selectedConfigMap.name}</p>
+            </div>
+            <p className="text-muted-foreground">
+              Certifique-se de que o diff foi revisado antes de confirmar. Esta operação não possui rollback automático.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button
+              variant="ghost"
+              onClick={() => setApplyConfirmOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirmApplyChanges}
+              disabled={isApplying}
+            >
+              {isApplying ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <TriangleAlert className="w-4 h-4 mr-2" />
+              )}
+              Confirmar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
   if (isSidebarCollapsed) {
     return (
       <>
@@ -583,30 +724,8 @@ export const ConfigMapsTab = ({
           </div>
         </div>
 
-        <Dialog open={diffModalOpen} onOpenChange={setDiffModalOpen}>
-          <DialogContent className="max-w-6xl max-h-[85vh] bg-background border-border">
-            <DialogHeader className="border-b border-border pb-4">
-              <DialogTitle className="text-xl font-semibold text-primary">
-                Diff Visual
-              </DialogTitle>
-              <DialogDescription className="text-sm text-muted-foreground">
-                Comparação lado a lado entre o YAML original e a versão editada
-                {selectedConfigMap && ` • ${selectedConfigMap.namespace}/${selectedConfigMap.name}`}
-              </DialogDescription>
-            </DialogHeader>
-            <ScrollArea className="h-[calc(85vh-8rem)] w-full">
-              <div className="p-4">
-                {diffHtml ? (
-                  <div className="diff2html-dark" dangerouslySetInnerHTML={{ __html: diffHtml }} />
-                ) : (
-                  <div className="flex items-center justify-center h-32 text-muted-foreground">
-                    <p>Nenhum diff disponível.</p>
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
-          </DialogContent>
-        </Dialog>
+        {renderDiffDialog()}
+        {renderApplyConfirmDialog()}
       </>
     );
   }
@@ -641,30 +760,8 @@ export const ConfigMapsTab = ({
         }}
       />
 
-      <Dialog open={diffModalOpen} onOpenChange={setDiffModalOpen}>
-        <DialogContent className="max-w-6xl max-h-[85vh] bg-background border-border">
-          <DialogHeader className="border-b border-border pb-4">
-            <DialogTitle className="text-xl font-semibold text-primary">
-              Diff Visual
-            </DialogTitle>
-            <DialogDescription className="text-sm text-muted-foreground">
-              Comparação lado a lado entre o YAML original e a versão editada
-              {selectedConfigMap && ` • ${selectedConfigMap.namespace}/${selectedConfigMap.name}`}
-            </DialogDescription>
-          </DialogHeader>
-          <ScrollArea className="h-[calc(85vh-8rem)] w-full">
-            <div className="p-4">
-              {diffHtml ? (
-                <div className="diff2html-dark" dangerouslySetInnerHTML={{ __html: diffHtml }} />
-              ) : (
-                <div className="flex items-center justify-center h-32 text-muted-foreground">
-                  <p>Nenhum diff disponível.</p>
-                </div>
-              )}
-            </div>
-          </ScrollArea>
-        </DialogContent>
-      </Dialog>
+      {renderDiffDialog()}
+      {renderApplyConfirmDialog()}
     </>
   );
 };
