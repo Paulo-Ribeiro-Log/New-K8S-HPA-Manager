@@ -33,13 +33,13 @@ Esta é a primeira release oficial do **New-K8S-HPA-Manager**, uma ferramenta co
 ## 🚀 Instalação Rápida
 
 ```bash
-# Download direto do binário
+# Método 1: Instalação automática (recomendado)
+curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/main/install-from-github.sh | bash
+
+# Método 2: Download direto do binário
 wget https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.0/new-k8s-hpa-v1.0.0
 chmod +x new-k8s-hpa-v1.0.0
 sudo mv new-k8s-hpa-v1.0.0 /usr/local/bin/new-k8s-hpa
-
-# Ou via script de instalação (em breve)
-curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/main/install-from-github.sh | bash
 ```
 
 ## 💻 Tech Stack
