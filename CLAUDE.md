@@ -1126,6 +1126,81 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 
 ## 📜 Histórico de Correções (Principais)
 
+### Menu de Contexto no Badge de Status do Monitoring Engine (Novembro 2025) ✅
+
+**Data:** 12 de novembro de 2025
+
+**Feature implementada:** Menu de contexto (botão direito do mouse) no badge de status "Ativo/Parado" da página Monitoring.
+
+**Funcionalidades:**
+
+**1️⃣ Menu de Contexto (ContextMenu)**:
+- Aparece ao clicar com **botão direito** no badge de status
+- **Opção "Reiniciar Engine"** (ícone RotateCw):
+  - Para monitoring engine
+  - Aguarda 1s
+  - Inicia monitoring engine
+  - Resincroniza HPAs monitorados
+  - Toast de confirmação
+- **Opção "Informações de Portas"** (ícone Info):
+  - Busca mapeamento cluster → porta do backend
+  - Mostra toast com lista completa (duration: 8s)
+  - Exemplo: `akspriv-prod: 55551, akspriv-hlg: 55552`
+- **Rodapé informativo**:
+  - Status: 🟢 Ativo ou ⚫ Parado
+  - Clusters: número de clusters monitorados
+
+**2️⃣ Backend - Mapeamento de Portas**:
+```go
+// priority_collector.go
+func (c *PriorityCollector) GetPortMapping() map[string]int {
+    c.portMu.Lock()
+    defer c.portMu.Unlock()
+
+    mapping := make(map[string]int)
+    for cluster, port := range c.portForwards {
+        mapping[cluster] = port
+    }
+    return mapping
+}
+```
+
+**3️⃣ API Response**:
+```json
+{
+  "running": true,
+  "status": "running",
+  "clusters": 2,
+  "port_info": {
+    "akspriv-prod": 55551,
+    "akspriv-hlg": 55552
+  }
+}
+```
+
+**Como usar:**
+1. Abrir aba "Monitoring"
+2. **Clicar com botão direito** no badge "Ativo" ou "Parado"
+3. Selecionar opção desejada no menu
+
+**Arquivos modificados:**
+- `internal/monitoring/collector/priority_collector.go` (+13 linhas)
+  - Nova função `GetPortMapping()`
+- `internal/web/handlers/monitoring.go` (+8 linhas)
+  - Campo `port_info` adicionado à resposta
+- `internal/web/frontend/src/lib/api/types.ts` (+1 linha)
+  - `MonitoringStatus` com `port_info?: Record<string, number>`
+- `internal/web/frontend/src/pages/MonitoringPage.tsx` (+100 linhas)
+  - ContextMenu wrapper, handlers, imports
+
+**Benefícios:**
+- ✅ Restart rápido sem sair da página
+- ✅ Visibilidade completa de portas alocadas
+- ✅ UX melhorada com toasts informativos
+- ✅ Thread-safe (mutex no GetPortMapping)
+
+---
+
 ### Sistema de Reconciliação de Port-Forwards - PriorityCollector (Novembro 2025) ✅
 
 **Data:** 12 de novembro de 2025
