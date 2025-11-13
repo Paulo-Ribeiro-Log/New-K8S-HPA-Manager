@@ -151,11 +151,15 @@ build_binary() {
 
     print_info "Compilando versão $VERSION_CLEAN..."
 
-    # Build with version injection
+    # Download dependencies to vendor
+    print_info "Baixando dependências..."
+    go mod vendor
+
+    # Build with version injection using vendor
     LDFLAGS="-X k8s-hpa-manager/internal/updater.Version=$VERSION_CLEAN"
 
     mkdir -p build
-    if go build -ldflags "$LDFLAGS" -o "build/$BINARY_NAME" . ; then
+    if go build -mod=vendor -ldflags "$LDFLAGS" -o "build/$BINARY_NAME" . ; then
         print_success "Compilação bem-sucedida"
     else
         print_error "Falha na compilação"
