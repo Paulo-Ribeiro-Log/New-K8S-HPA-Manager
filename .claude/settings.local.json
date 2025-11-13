@@ -27,7 +27,8 @@
       "Bash(timeout 5 ./build/k8s-hpa-manager web -f)",
       "Bash(pkill:*)",
       "Bash(git push origin k8s-hpa-manager-cm-editor-dev)",
-      "Bash(./create-v1-release.sh)"
+      "Bash(./create-v1-release.sh)",
+      "Bash(new-k8s-hpa-web start)"
     ],
     "deny": [],
     "ask": []
