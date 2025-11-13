@@ -21,7 +21,6 @@ coverage.out
 .gocache/
 
 # Dependency directories
-vendor/
 
 # Go workspace file
 go.work

@@ -151,11 +151,7 @@ build_binary() {
 
     print_info "Compilando versão $VERSION_CLEAN..."
 
-    # Download dependencies to vendor
-    print_info "Baixando dependências..."
-    go mod vendor
-
-    # Build with version injection using vendor
+    # Build with version injection using vendor (dependências já estão versionadas)
     LDFLAGS="-X k8s-hpa-manager/internal/updater.Version=$VERSION_CLEAN"
 
     mkdir -p build
