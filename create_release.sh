@@ -12,7 +12,7 @@ if [ -z "$GITHUB_TOKEN" ]; then
     echo "1. Definir variável de ambiente: export GITHUB_TOKEN='seu_token_aqui'"
     echo "2. Criar arquivo: echo 'seu_token_aqui' > ~/.new-k8s-hpa/.github-token"
     echo "3. Criar release manualmente via web:"
-    echo "   https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/new?tag=v1.1.0"
+    echo "   https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/new?tag=v1.1.0"
     echo ""
     exit 1
 fi
@@ -25,7 +25,7 @@ echo "📦 Criando release v1.1.0..."
 RESPONSE=$(curl -s -X POST \
   -H "Authorization: Bearer $GITHUB_TOKEN" \
   -H "Accept: application/vnd.github.v3+json" \
-  https://api.github.com/repos/Paulo-Ribeiro-Log/Scale_HPA/releases \
+  https://api.github.com/repos/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases \
   -d @- <<EOF
 {
   "tag_name": "v1.1.0",

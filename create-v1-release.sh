@@ -105,7 +105,7 @@ new-k8s-hpa web -f           # Foreground mode
 
 ---
 
-**Changelog completo**: Migração do repositório Scale_HPA com todas as features implementadas até novembro/2025.
+**Changelog completo**: Migração do repositório anterior com todas as features implementadas até novembro/2025.
 EOF
 )
 
