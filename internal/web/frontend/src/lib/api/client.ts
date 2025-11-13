@@ -23,6 +23,7 @@ import type {
   ConfigMapDiffResult,
   ConfigMapValidateResult,
   ConfigMapApplyResult,
+  VersionInfo,
 } from "./types";
 
 const API_BASE_URL = "/api/v1";
@@ -552,6 +553,15 @@ class APIClient {
         body: JSON.stringify({ hpas }),
       }
     );
+  }
+
+  // Version Info
+  async getVersion(): Promise<VersionInfo> {
+    const response = await fetch("/api/v1/version");
+    if (!response.ok) {
+      throw new Error("Failed to fetch version");
+    }
+    return response.json();
   }
 }
 
