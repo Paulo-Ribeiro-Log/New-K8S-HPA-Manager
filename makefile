@@ -1,5 +1,5 @@
 # Variáveis
-BINARY_NAME=k8s-hpa-manager
+BINARY_NAME=new-k8s-hpa
 MAIN_PACKAGE=.
 BUILD_DIR=build
 
