@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -13,9 +13,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { LogOut, CheckCircle, Zap, Save, FolderOpen, FileText, ChevronsUpDown, Check, History } from "lucide-react";
+import { LogOut, CheckCircle, Zap, Save, FolderOpen, FileText, ChevronsUpDown, Check, History, AlertCircle } from "lucide-react";
 import { ModeToggle } from "@/components/mode-toggle";
 import { cn } from "@/lib/utils";
+import { apiClient } from "@/lib/api/client";
+import type { VersionInfo } from "@/lib/api/types";
 
 interface HeaderProps {
   selectedCluster: string;
@@ -47,12 +49,40 @@ export const Header = ({
   onLogout,
 }: HeaderProps) => {
   const [open, setOpen] = useState(false);
+  const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
+
+  useEffect(() => {
+    // Buscar versão ao montar componente
+    apiClient.getVersion().then(setVersionInfo).catch(console.error);
+  }, []);
+
   return (
     <header className="h-16 bg-gradient-primary flex items-center justify-between px-6 shadow-lg flex-shrink-0">
       <div className="flex items-center gap-4">
-        <h1 className="text-xl font-semibold text-white tracking-tight">
-          k8s-hpa-manager
-        </h1>
+        <div className="flex flex-col">
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold text-white tracking-tight">
+              k8s-hpa-manager
+            </h1>
+            {versionInfo?.update_available && (
+              <a
+                href={versionInfo.download_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 px-2 py-0.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-medium rounded-full transition-colors"
+                title={`Nova versão disponível: ${versionInfo.latest_version}`}
+              >
+                <AlertCircle className="w-3 h-3" />
+                Update
+              </a>
+            )}
+          </div>
+          {versionInfo && (
+            <span className="text-xs text-white/60">
+              v{versionInfo.current_version}
+            </span>
+          )}
+        </div>
 
         {/* Combobox de cluster com busca integrada */}
         <Popover open={open} onOpenChange={setOpen}>

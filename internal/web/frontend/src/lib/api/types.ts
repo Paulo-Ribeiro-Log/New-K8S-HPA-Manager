@@ -1,5 +1,12 @@
 // API Types - matching Go backend structures
 
+export interface VersionInfo {
+  current_version: string;
+  update_available: boolean;
+  latest_version?: string;
+  download_url?: string;
+}
+
 export interface Cluster {
   name: string;
   context: string;

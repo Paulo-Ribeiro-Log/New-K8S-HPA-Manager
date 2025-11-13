@@ -248,6 +248,10 @@ func (s *Server) setupRoutes() {
 		}()
 	})
 
+	// Version (sem auth - informação pública)
+	versionHandler := handlers.NewVersionHandler()
+	s.router.GET("/api/v1/version", versionHandler.GetVersion)
+
 	// API v1 (com auth)
 	api := s.router.Group("/api/v1")
 	api.Use(middleware.AuthMiddleware(s.token))
