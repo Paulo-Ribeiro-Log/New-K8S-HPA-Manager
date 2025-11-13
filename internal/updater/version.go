@@ -12,7 +12,7 @@ var Version = "dev"
 
 const (
 	RepoOwner = "Paulo-Ribeiro-Log"
-	RepoName  = "Scale_HPA"
+	RepoName  = "New-K8S-HPA-Manager"
 )
 
 // SemanticVersion representa uma versão semântica
