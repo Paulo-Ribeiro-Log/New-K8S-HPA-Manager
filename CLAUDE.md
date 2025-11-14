@@ -151,6 +151,41 @@ k8s-hpa-web start/stop/status/logs/restart            # Gerenciar servidor web
 - `UPDATE_BEHAVIOR.md` - Como funciona o sistema de updates
 - `AUTO_UPDATE_EXAMPLES.md` - Exemplos de uso do auto-update
 
+### Creating GitHub Releases
+
+```bash
+# 1. Configurar GitHub token (apenas primeira vez)
+./setup-github-token.sh
+
+# 2. Criar RELEASE_NOTES_vX.X.X.md com descrição da versão
+
+# 3. Compilar binários para todas as plataformas
+make release
+
+# 4. Criar release no GitHub (método recomendado - script genérico)
+./create-release.sh 1.0.5
+
+# Ou deixar o script detectar versão via git tag
+git tag v1.0.5
+./create-release.sh
+
+# Script específico de versão (se existir)
+./create-release-v1.0.4.sh
+```
+
+**O script `create-release.sh`**:
+- ✅ Busca token automaticamente em múltiplas localizações
+- ✅ Funciona para qualquer versão (genérico e reutilizável)
+- ✅ Detecta versão via git tag ou argumento
+- ✅ Verifica se binários existem antes de criar release
+- ✅ Pede confirmação antes de publicar
+- ✅ Cria release no GitHub com release notes
+- ✅ Faz upload automático dos 4 binários (Linux, macOS Intel/ARM, Windows)
+
+📚 **Documentação de releases:**
+- `GITHUB_TOKEN_SETUP.md` - Guia completo de configuração de token
+- `.env.example` - Template para configuração de token
+
 ### Building and Running (TUI)
 
 ```bash

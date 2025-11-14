@@ -44,6 +44,14 @@ Thumbs.db
 *~
 apoio.txt
 
+# Environment variables e secrets (NUNCA commitar!)
+.env
+.env.local
+.env.*.local
+*.token
+github_token.txt
+secrets.sh
+
 # Scripts de deploy/manutenção (não versionar)
 safe-deploy.sh
 

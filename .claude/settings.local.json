@@ -28,7 +28,9 @@
       "Bash(pkill:*)",
       "Bash(git push origin k8s-hpa-manager-cm-editor-dev)",
       "Bash(./create-v1-release.sh)",
-      "Bash(new-k8s-hpa-web start)"
+      "Bash(new-k8s-hpa-web start)",
+      "Bash(git tag:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
