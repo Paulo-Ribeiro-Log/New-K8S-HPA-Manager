@@ -757,6 +757,18 @@ type NodePool struct {
 
 	// Valores originais para rollback
 	OriginalValues NodePoolValues `json:"original_values"`
+
+	// Cordon/Drain - Operações de transição entre node pools
+	PreDrainChanges  *NodePoolChanges `json:"pre_drain_changes,omitempty"`  // Mudanças ANTES do drain (scale UP destino)
+	PostDrainChanges *NodePoolChanges `json:"post_drain_changes,omitempty"` // Mudanças DEPOIS do drain (scale DOWN origem)
+	CordonEnabled    bool             `json:"cordon_enabled"`                // Se deve fazer cordon dos nodes
+	DrainEnabled     bool             `json:"drain_enabled"`                 // Se deve fazer drain dos nodes
+	DrainOptions     *DrainOptions    `json:"drain_options,omitempty"`       // Opções do kubectl drain
+
+	// Status de cordon/drain
+	CordonStatus string   `json:"cordon_status"` // idle, cordoning, cordoned, failed
+	DrainStatus  string   `json:"drain_status"`  // idle, draining, drained, failed
+	NodesInPool  []string `json:"nodes_in_pool"` // Lista de nodes deste node pool
 }
 
 // NodePoolValues valores originais do node pool
@@ -782,6 +794,67 @@ type NodePoolChange struct {
 	// Campos de execução sequencial
 	SequenceOrder  int    `json:"sequence_order"`  // 1 = primeiro, 2 = segundo, 0 = não marcado
 	SequenceStatus string `json:"sequence_status"` // pending, executing, completed, failed
+}
+
+// NodePoolChanges representa alterações de configuração de um node pool
+type NodePoolChanges struct {
+	Autoscaling bool  `json:"autoscaling"`
+	NodeCount   int32 `json:"node_count"`
+	MinNodes    int32 `json:"min_nodes"`
+	MaxNodes    int32 `json:"max_nodes"`
+}
+
+// DrainOptions contém todas as opções do kubectl drain
+type DrainOptions struct {
+	// Essenciais - flags mais comuns
+	IgnoreDaemonsets   bool   `json:"ignore_daemonsets"`    // --ignore-daemonsets
+	DeleteEmptyDirData bool   `json:"delete_emptydir_data"` // --delete-emptydir-data
+	Force              bool   `json:"force"`                // --force (cuidado!)
+	GracePeriod        int    `json:"grace_period"`         // --grace-period=N (segundos)
+	Timeout            string `json:"timeout"`              // --timeout=5m (formato: 5m, 300s, 1h)
+
+	// Avançadas - flags menos comuns
+	DisableEviction          bool   `json:"disable_eviction"`           // --disable-eviction
+	SkipWaitForDeleteTimeout int    `json:"skip_wait_for_delete_timeout"` // --skip-wait-for-delete-timeout=N (segundos)
+	PodSelector              string `json:"pod_selector"`               // --pod-selector=app=nginx
+	DryRun                   bool   `json:"dry_run"`                    // --dry-run
+	ChunkSize                int    `json:"chunk_size"`                 // Quantos nodes drenar em paralelo
+}
+
+// DefaultDrainOptions retorna opções de drain seguras e recomendadas
+func DefaultDrainOptions() *DrainOptions {
+	return &DrainOptions{
+		// Essenciais - configuração segura padrão
+		IgnoreDaemonsets:   true,  // Recomendado: DaemonSets devem continuar
+		DeleteEmptyDirData: true,  // Recomendado: Permite pods com volumes temporários
+		Force:              false, // Seguro: NÃO forçar por padrão
+		GracePeriod:        30,    // Padrão K8s: 30 segundos
+		Timeout:            "5m",  // 5 minutos (suficiente para maioria dos casos)
+
+		// Avançadas - defaults seguros
+		DisableEviction:          false, // Respeitar PodDisruptionBudgets
+		SkipWaitForDeleteTimeout: 20,    // 20 segundos de espera
+		PodSelector:              "",    // Sem filtro (todos os pods)
+		DryRun:                   false, // Executar de verdade
+		ChunkSize:                1,     // 1 node por vez (mais seguro)
+	}
+}
+
+// AggressiveDrainOptions retorna opções agressivas para situações de emergência (ex: Black Friday)
+func AggressiveDrainOptions() *DrainOptions {
+	return &DrainOptions{
+		IgnoreDaemonsets:         true,
+		DeleteEmptyDirData:       true,
+		Force:                    true,  // ⚠️ Forçar remoção
+		GracePeriod:              10,    // Reduzir para 10s
+		Timeout:                  "2m",  // Timeout agressivo
+
+		DisableEviction:          false, // Ainda respeitar PDBs
+		SkipWaitForDeleteTimeout: 10,    // Reduzir espera
+		PodSelector:              "",
+		DryRun:                   false,
+		ChunkSize:                2,     // 2 nodes em paralelo (mais rápido)
+	}
 }
 
 // ResourceType representa o tipo de recurso do cluster
