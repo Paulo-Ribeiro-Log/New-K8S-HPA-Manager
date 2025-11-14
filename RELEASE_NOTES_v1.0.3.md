@@ -17,21 +17,21 @@
 
 ### Linux (amd64)
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.3/k8s-hpa-manager-linux-amd64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.3/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
 
 ### macOS (Intel)
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.3/k8s-hpa-manager-darwin-amd64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.3/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
 
 ### macOS (Apple Silicon)
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.3/k8s-hpa-manager-darwin-arm64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.3/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
@@ -39,7 +39,7 @@ sudo mv new-k8s-hpa /usr/local/bin/
 ### Windows (amd64)
 ```powershell
 # Download do binário
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.3/k8s-hpa-manager-windows-amd64.exe -o new-k8s-hpa.exe
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.3/new-k8s-hpa-windows-amd64.exe -o new-k8s-hpa.exe
 # Adicionar ao PATH manualmente
 ```
 

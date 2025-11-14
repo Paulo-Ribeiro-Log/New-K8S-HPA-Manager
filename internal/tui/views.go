@@ -3090,8 +3090,8 @@ func (a *App) renderHelp() string {
 			{"Emoji alignment", "Variation selectors invisíveis (U+FE0F) removidos"},
 			{"Status borders", "Container status 80 colunas - alinhamento compacto"},
 			{"Azure timeout", "Validação não trava mais em problemas DNS/rede"},
-			{"Node Pool config", "Corrigido caminho clusters-config.json: ~/.new-k8s-hpa/"},
-			{"Autodiscover", "Config salvo em ~/.new-k8s-hpa/ (onde app busca)"},
+			{"Node Pool config", "Corrigido caminho clusters-config.json: ~/.k8s-hpa-manager/"},
+			{"Autodiscover", "Config salvo em ~/.k8s-hpa-manager/ (onde app busca)"},
 		}},
 		{"🎨 INDICADORES", [][]string{
 			{"✅", "Online/Ativo"},

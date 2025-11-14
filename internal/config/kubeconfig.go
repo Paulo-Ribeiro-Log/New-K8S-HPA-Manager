@@ -90,7 +90,7 @@ func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
 
 // loadClustersFromConfig carrega clusters do arquivo clusters-config.json no diretório home
 func (k *KubeConfigManager) loadClustersFromConfig() []ClusterConfig {
-	homeConfigPath := filepath.Join(os.Getenv("HOME"), ".new-k8s-hpa", "clusters-config.json")
+	homeConfigPath := filepath.Join(os.Getenv("HOME"), ".k8s-hpa-manager", "clusters-config.json")
 
 	data, err := os.ReadFile(homeConfigPath)
 	if err != nil {
@@ -453,7 +453,7 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 
 // SaveClusterConfigs salva as configurações descobertas no arquivo clusters-config.json
 func (k *KubeConfigManager) SaveClusterConfigs(configs []ClusterConfig, logFunc func(string)) error {
-	homeConfigPath := filepath.Join(os.Getenv("HOME"), ".new-k8s-hpa", "clusters-config.json")
+	homeConfigPath := filepath.Join(os.Getenv("HOME"), ".k8s-hpa-manager", "clusters-config.json")
 
 	// Criar diretório se não existir
 	dir := filepath.Dir(homeConfigPath)

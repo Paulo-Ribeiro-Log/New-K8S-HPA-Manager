@@ -10,7 +10,7 @@ if [ -z "$GITHUB_TOKEN" ]; then
     echo ""
     echo "Opções:"
     echo "1. Definir variável de ambiente: export GITHUB_TOKEN='seu_token_aqui'"
-    echo "2. Criar arquivo: echo 'seu_token_aqui' > ~/.new-k8s-hpa/.github-token"
+    echo "2. Criar arquivo: echo 'seu_token_aqui' > ~/.k8s-hpa-manager/.github-token"
     echo "3. Criar release manualmente via web:"
     echo "   https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/new?tag=v1.1.0"
     echo ""

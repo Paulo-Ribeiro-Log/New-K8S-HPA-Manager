@@ -13,7 +13,7 @@ var autodiscoverCmd = &cobra.Command{
 	Use:   "autodiscover",
 	Short: "Auto-descobre resource groups e subscriptions de todos os clusters",
 	Long: `Descobre automaticamente resource groups e subscriptions para todos os clusters
-no kubeconfig e salva em ~/.new-k8s-hpa/clusters-config.json.
+no kubeconfig e salva em ~/.k8s-hpa-manager/clusters-config.json.
 
 Esta funcionalidade:
 1. Lê todos os clusters 'akspriv-*' do kubeconfig
