@@ -284,6 +284,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools", nodePoolHandler.List)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", nodePoolHandler.Update)
 	api.POST("/nodepools/apply-sequential", nodePoolHandler.ApplySequential)
+	api.POST("/nodepools/sequence/execute", nodePoolHandler.ExecuteSequence) // NOVO: Cordon/Drain sequencing
 
 	// CronJobs
 	cronJobHandler := handlers.NewCronJobHandler(s.kubeManager)
