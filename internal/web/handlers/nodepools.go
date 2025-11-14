@@ -403,3 +403,150 @@ type AzureNodePool struct {
 	Mode              string `json:"mode"`              // "System" ou "User"
 	ProvisioningState string `json:"provisioningState"`
 }
+
+// SequenceExecuteRequest representa a requisição para executar sequenciamento com cordon/drain
+type SequenceExecuteRequest struct {
+	Cluster       string                   `json:"cluster"`
+	NodePools     []NodePoolSequenceConfig `json:"node_pools"`
+	CordonEnabled bool                     `json:"cordon_enabled"`
+	DrainEnabled  bool                     `json:"drain_enabled"`
+	DrainOptions  models.DrainOptions      `json:"drain_options"`
+}
+
+// NodePoolSequenceConfig representa um node pool no sequenciamento
+type NodePoolSequenceConfig struct {
+	Name             string                   `json:"name"`
+	ResourceGroup    string                   `json:"resource_group"`
+	Subscription     string                   `json:"subscription"`
+	SequenceOrder    int                      `json:"sequence_order"`    // 1 ou 2
+	PreDrainChanges  *models.NodePoolChanges  `json:"pre_drain_changes"`
+	PostDrainChanges *models.NodePoolChanges  `json:"post_drain_changes"`
+}
+
+// ExecuteSequence executa o sequenciamento de node pools com cordon/drain
+func (h *NodePoolHandler) ExecuteSequence(c *gin.Context) {
+	var req SequenceExecuteRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": "Invalid request body",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	// Validar que temos exatamente 2 node pools
+	if len(req.NodePools) != 2 {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_NODE_POOLS",
+				"message": "Sequencing requires exactly 2 node pools",
+			},
+		})
+		return
+	}
+
+	// Validar DrainOptions
+	if req.DrainEnabled {
+		// Validar usando função do kubernetes client
+		// (importar kubernetes package se necessário)
+		if err := validateDrainOptions(&req.DrainOptions); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "INVALID_DRAIN_OPTIONS",
+					"message": err.Error(),
+				},
+			})
+			return
+		}
+	}
+
+	// Drain requer Cordon
+	if req.DrainEnabled && !req.CordonEnabled {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "DRAIN_REQUIRES_CORDON",
+				"message": "Drain enabled requires Cordon to be enabled",
+			},
+		})
+		return
+	}
+
+	// Ordenar node pools por sequence_order
+	origin := req.NodePools[0]
+	dest := req.NodePools[1]
+	if origin.SequenceOrder == 2 {
+		origin, dest = dest, origin
+	}
+
+	// Obter cliente Kubernetes
+	client, err := h.kubeManager.GetClient(req.Cluster)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "KUBERNETES_CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get Kubernetes client: %v", err),
+			},
+		})
+		return
+	}
+
+	// Executar sequenciamento em goroutine para não bloquear
+	// TODO: Implementar progress tracking via WebSocket ou polling
+	go h.executeSequenceAsync(client, origin, dest, req)
+
+	// Retornar sucesso imediato (operação assíncrona)
+	c.JSON(202, gin.H{
+		"success": true,
+		"message": "Sequencing started",
+		"data": gin.H{
+			"cluster": req.Cluster,
+			"origin":  origin.Name,
+			"dest":    dest.Name,
+			"phases":  5,
+		},
+	})
+}
+
+// executeSequenceAsync executa o sequenciamento de forma assíncrona
+func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest NodePoolSequenceConfig, req SequenceExecuteRequest) {
+	// TODO: Implementar lógica completa de sequenciamento
+	// Este é um placeholder - a implementação real virá na integração completa
+
+	// FASE 1: PRE-DRAIN
+	// - Aplicar dest.PreDrainChanges
+	// - Aguardar 30s para nodes Ready
+
+	// FASE 2: CORDON
+	// - GetNodesInNodePool(origin.Name)
+	// - CordonNode() para cada node
+
+	// FASE 3: DRAIN
+	// - DrainNode() para cada node com req.DrainOptions
+
+	// FASE 4: POST-DRAIN
+	// - Aplicar origin.PostDrainChanges
+
+	// FASE 5: FINALIZAÇÃO
+	// - Logs e cleanup
+}
+
+// validateDrainOptions valida as opções de drain (placeholder)
+func validateDrainOptions(opts *models.DrainOptions) error {
+	// TODO: Chamar kubernetes.ValidateDrainOptions quando integrar
+	if opts.GracePeriod < 0 {
+		return fmt.Errorf("grace period must be >= 0")
+	}
+	if opts.ChunkSize < 1 {
+		return fmt.Errorf("chunk size must be >= 1")
+	}
+	return nil
+}
