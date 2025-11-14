@@ -65,14 +65,14 @@ func (a *App) saveNewCluster() tea.Cmd {
 		}
 
 		// Copiar para diretório home se não existir
-		homeConfigDir := filepath.Join(os.Getenv("HOME"), ".new-k8s-hpa")
+		homeConfigDir := filepath.Join(os.Getenv("HOME"), ".k8s-hpa-manager")
 		homeConfigPath := filepath.Join(homeConfigDir, "clusters-config.json")
 
 		// Criar diretório se não existir
 		if err := os.MkdirAll(homeConfigDir, 0755); err != nil {
 			return clusterSaveResultMsg{
 				success: false,
-				error:   fmt.Sprintf("Erro ao criar diretório ~/.new-k8s-hpa: %v", err),
+				error:   fmt.Sprintf("Erro ao criar diretório ~/.k8s-hpa-manager: %v", err),
 			}
 		}
 
@@ -80,7 +80,7 @@ func (a *App) saveNewCluster() tea.Cmd {
 		if err := os.WriteFile(homeConfigPath, data, 0644); err != nil {
 			return clusterSaveResultMsg{
 				success: false,
-				error:   fmt.Sprintf("Erro ao copiar para ~/.new-k8s-hpa: %v", err),
+				error:   fmt.Sprintf("Erro ao copiar para ~/.k8s-hpa-manager: %v", err),
 			}
 		}
 

@@ -32,7 +32,7 @@ NC='\033[0m' # No Color
 BINARY_NAME="new-k8s-hpa"
 REPO_URL="https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager.git"
 INSTALL_PATH="/usr/local/bin"
-SCRIPTS_DIR="$HOME/.new-k8s-hpa/scripts"
+SCRIPTS_DIR="$HOME/.k8s-hpa-manager/scripts"
 TEMP_DIR="/tmp/new-k8s-hpa-install"
 
 # Function to print colored messages
@@ -223,7 +223,7 @@ copy_scripts() {
     cd "$TEMP_DIR"
 
     # Create scripts directory (but preserve sessions if they exist)
-    local user_data_dir="$HOME/.new-k8s-hpa"
+    local user_data_dir="$HOME/.k8s-hpa-manager"
     local sessions_dir="$user_data_dir/sessions"
 
     # Check if sessions directory already exists

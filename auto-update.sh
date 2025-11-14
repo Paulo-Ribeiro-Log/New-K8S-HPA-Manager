@@ -74,7 +74,7 @@ check_for_updates() {
 
     if [ "$DRY_RUN" = false ]; then
         # Force check by removing cache
-        rm -f ~/.new-k8s-hpa/.update-check
+        rm -f ~/.k8s-hpa-manager/.update-check
     else
         print_dry_run "Não removendo cache (dry run)"
     fi
@@ -99,8 +99,8 @@ check_for_updates() {
 
 # Backup user data before update
 backup_user_data() {
-    local backup_dir="$HOME/.new-k8s-hpa-backup-$(date +%Y%m%d_%H%M%S)"
-    local data_dir="$HOME/.new-k8s-hpa"
+    local backup_dir="$HOME/.k8s-hpa-manager-backup-$(date +%Y%m%d_%H%M%S)"
+    local data_dir="$HOME/.k8s-hpa-manager"
 
     # Check if data directory exists
     if [ ! -d "$data_dir" ]; then

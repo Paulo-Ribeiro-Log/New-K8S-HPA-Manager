@@ -109,5 +109,5 @@ func MarkUpdateChecked() error {
 // getUpdateCachePath retorna o caminho do cache de update
 func getUpdateCachePath() string {
 	home := os.Getenv("HOME")
-	return filepath.Join(home, ".new-k8s-hpa", ".update-check")
+	return filepath.Join(home, ".k8s-hpa-manager", ".update-check")
 }
