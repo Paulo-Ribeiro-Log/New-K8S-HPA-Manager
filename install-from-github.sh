@@ -401,12 +401,51 @@ main() {
     create_aliases
 
     if test_installation; then
+        run_autodiscover
         cleanup
         print_usage
     else
         print_warning "Instalação concluída com avisos. Verifique as mensagens acima."
         cleanup
     fi
+}
+
+# Run autodiscover after installation
+run_autodiscover() {
+    print_header "Executando autodiscover de clusters"
+
+    # Check if kubeconfig exists
+    if [ ! -f "$HOME/.kube/config" ]; then
+        print_warning "Kubeconfig não encontrado ($HOME/.kube/config)"
+        print_info "Pule esta etapa se você não tem clusters configurados ainda"
+        echo ""
+        return
+    fi
+
+    # Check if kubectl is available
+    if ! command -v kubectl &> /dev/null; then
+        print_warning "kubectl não instalado - pulando autodiscover"
+        return
+    fi
+
+    print_info "Detectando clusters do kubeconfig..."
+
+    # Run autodiscover
+    if "$BINARY_NAME" autodiscover; then
+        print_success "Autodiscover concluído com sucesso"
+
+        # Show summary
+        local config_file="$HOME/.k8s-hpa-manager/clusters-config.json"
+        if [ -f "$config_file" ]; then
+            local cluster_count=$(jq '. | length' "$config_file" 2>/dev/null || echo "0")
+            print_success "Total de clusters configurados: $cluster_count"
+        fi
+    else
+        print_warning "Autodiscover falhou ou foi cancelado"
+        print_info "Você pode executar manualmente depois com: $BINARY_NAME autodiscover"
+    fi
+
+    echo ""
 }
 
 # Trap errors
