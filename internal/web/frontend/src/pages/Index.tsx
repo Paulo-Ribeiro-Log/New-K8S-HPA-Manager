@@ -16,6 +16,7 @@ import { LoadSessionModal } from "@/components/LoadSessionModal";
 import { LogViewer } from "@/components/LogViewer";
 import { HistoryViewer } from "@/components/HistoryViewer";
 import { StagingPanel } from "@/components/StagingPanel";
+import { VPNWarningBanner } from "@/components/VPNWarningBanner";
 import { CronJobsPage } from "./CronJobsPage";
 import { PrometheusPage } from "./PrometheusPage";
 import { MonitoringPage } from "./MonitoringPage";
@@ -64,6 +65,7 @@ const Index = ({ onLogout }: IndexProps) => {
   const [showLogViewer, setShowLogViewer] = useState(false);
   const [showHistoryViewer, setShowHistoryViewer] = useState(false);
   const [isContextSwitching, setIsContextSwitching] = useState(false);
+  const [showVPNWarning, setShowVPNWarning] = useState(false);
 
   // Search filters
   const [hpaSearchQuery, setHpaSearchQuery] = useState("");
@@ -81,9 +83,28 @@ const Index = ({ onLogout }: IndexProps) => {
   // VPN Monitor - polling a cada 2 minutos
   const { isConnected: vpnConnected, checkVPN } = useVPNMonitor({
     pollingInterval: 120000, // 2 minutos
-    showToastOnDisconnect: true,
+    showToastOnDisconnect: false, // Vamos usar banner ao invés de toast
     checkOnMount: true,
   });
+
+  // Mostrar/ocultar banner de VPN
+  useEffect(() => {
+    setShowVPNWarning(!vpnConnected);
+  }, [vpnConnected]);
+
+  // Wrapper para setActiveTab que dispara evento e verifica VPN
+  const handleTabChange = async (newTab: string) => {
+    // Disparar evento de mudança de tab
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event("tabChanged"));
+    }
+
+    // Verificar VPN ao mudar de tab
+    await checkVPN();
+
+    // Mudar tab
+    setActiveTab(newTab);
+  };
 
   // API Hooks
   const { clusters, loading: clustersLoading } = useClusters();
@@ -320,7 +341,7 @@ const Index = ({ onLogout }: IndexProps) => {
 
                                 if (exists) {
                                   toast.info(`HPA ${displayHPA.name} já está sendo monitorado`);
-                                  setActiveTab("monitoring");
+                                  handleTabChange("monitoring");
                                   return;
                                 }
 
@@ -358,7 +379,7 @@ const Index = ({ onLogout }: IndexProps) => {
                                 localStorage.setItem("monitored_hpas", JSON.stringify(current));
 
                                 toast.success(`HPA ${displayHPA.name} adicionado ao monitoramento`);
-                                setActiveTab("monitoring");
+                                handleTabChange("monitoring");
                               } catch (error) {
                                 console.error("[onMonitor] Error:", error);
                                 toast.error(
@@ -579,10 +600,15 @@ const Index = ({ onLogout }: IndexProps) => {
         </div>
       )}
 
+      {/* Banner de VPN desconectada */}
+      {showVPNWarning && (
+        <VPNWarningBanner onDismiss={() => setShowVPNWarning(false)} />
+      )}
+
       <TabNavigation
         tabs={tabs}
         activeTab={activeTab}
-        onTabChange={setActiveTab}
+        onTabChange={handleTabChange}
       />
 
       <div className="flex-1 min-h-0 overflow-auto">
