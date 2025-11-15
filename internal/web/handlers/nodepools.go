@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -19,12 +21,73 @@ import (
 
 // NodePoolHandler gerencia requisições relacionadas a Node Pools
 type NodePoolHandler struct {
-	kubeManager *config.KubeConfigManager
+	kubeManager     *config.KubeConfigManager
+	progressManager *SequenceProgressManager
 }
 
 // NewNodePoolHandler cria um novo handler de Node Pools
 func NewNodePoolHandler(km *config.KubeConfigManager) *NodePoolHandler {
-	return &NodePoolHandler{kubeManager: km}
+	return &NodePoolHandler{
+		kubeManager:     km,
+		progressManager: NewSequenceProgressManager(),
+	}
+}
+
+// ProgressEvent representa um evento de progresso
+type ProgressEvent struct {
+	Phase      int     `json:"phase"`       // 1-5
+	PhaseName  string  `json:"phase_name"`  // "PRE-DRAIN", "CORDON", etc
+	Status     string  `json:"status"`      // "running", "completed", "error"
+	Message    string  `json:"message"`     // Mensagem detalhada
+	Progress   float64 `json:"progress"`    // 0-100
+	NodeName   string  `json:"node_name"`   // Node sendo processado (se aplicável)
+	NodeIndex  int     `json:"node_index"`  // Índice do node (se aplicável)
+	NodeTotal  int     `json:"node_total"`  // Total de nodes (se aplicável)
+	Timestamp  string  `json:"timestamp"`   // ISO 8601
+	Error      string  `json:"error"`       // Mensagem de erro (se status == "error")
+}
+
+// SequenceProgressManager gerencia o progresso de múltiplas execuções
+type SequenceProgressManager struct {
+	mu       sync.RWMutex
+	sessions map[string]chan ProgressEvent // sessionID -> event channel
+}
+
+// NewSequenceProgressManager cria um novo gerenciador de progresso
+func NewSequenceProgressManager() *SequenceProgressManager {
+	return &SequenceProgressManager{
+		sessions: make(map[string]chan ProgressEvent),
+	}
+}
+
+// CreateSession cria uma nova sessão de progresso
+func (m *SequenceProgressManager) CreateSession(sessionID string) chan ProgressEvent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ch := make(chan ProgressEvent, 100) // Buffer de 100 eventos
+	m.sessions[sessionID] = ch
+	return ch
+}
+
+// GetSession retorna o canal de uma sessão existente
+func (m *SequenceProgressManager) GetSession(sessionID string) (chan ProgressEvent, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	ch, exists := m.sessions[sessionID]
+	return ch, exists
+}
+
+// CloseSession fecha e remove uma sessão
+func (m *SequenceProgressManager) CloseSession(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if ch, exists := m.sessions[sessionID]; exists {
+		close(ch)
+		delete(m.sessions, sessionID)
+	}
 }
 
 // NodePoolUpdateRequest representa o payload de atualização de um node pool
@@ -502,27 +565,134 @@ func (h *NodePoolHandler) ExecuteSequence(c *gin.Context) {
 		return
 	}
 
+	// Gerar sessionID único
+	sessionID := fmt.Sprintf("%s_%d", req.Cluster, time.Now().UnixNano())
+
+	// Criar sessão de progresso
+	progressCh := h.progressManager.CreateSession(sessionID)
+
 	// Executar sequenciamento em goroutine para não bloquear
-	// TODO: Implementar progress tracking via WebSocket ou polling
-	go h.executeSequenceAsync(client, origin, dest, req)
+	go h.executeSequenceAsync(client, origin, dest, req, sessionID, progressCh)
 
 	// Retornar sucesso imediato (operação assíncrona)
 	c.JSON(202, gin.H{
 		"success": true,
 		"message": "Sequencing started",
 		"data": gin.H{
-			"cluster": req.Cluster,
-			"origin":  origin.Name,
-			"dest":    dest.Name,
-			"phases":  5,
+			"cluster":    req.Cluster,
+			"origin":     origin.Name,
+			"dest":       dest.Name,
+			"phases":     5,
+			"session_id": sessionID,
 		},
 	})
 }
 
+// SequenceProgress retorna eventos de progresso via Server-Sent Events (SSE)
+func (h *NodePoolHandler) SequenceProgress(c *gin.Context) {
+	sessionID := c.Query("session_id")
+	if sessionID == "" {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Parameter 'session_id' is required",
+			},
+		})
+		return
+	}
+
+	// Buscar sessão de progresso
+	progressCh, exists := h.progressManager.GetSession(sessionID)
+	if !exists {
+		c.JSON(404, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "SESSION_NOT_FOUND",
+				"message": "Progress session not found",
+			},
+		})
+		return
+	}
+
+	// Configurar headers para SSE
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no") // Nginx compatibility
+
+	// Flusher para enviar dados imediatamente
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "SSE_NOT_SUPPORTED",
+				"message": "Streaming not supported",
+			},
+		})
+		return
+	}
+
+	// Canal de cancelamento do cliente
+	clientGone := c.Writer.CloseNotify()
+
+	// Loop de envio de eventos
+	for {
+		select {
+		case event, ok := <-progressCh:
+			if !ok {
+				// Canal fechado - sequenciamento completado
+				fmt.Fprintf(c.Writer, "event: close\ndata: {\"message\":\"Sequencing completed\"}\n\n")
+				flusher.Flush()
+				return
+			}
+
+			// Serializar evento para JSON
+			eventJSON, err := json.Marshal(event)
+			if err != nil {
+				fmt.Fprintf(c.Writer, "event: error\ndata: {\"error\":\"Failed to encode event\"}\n\n")
+				flusher.Flush()
+				continue
+			}
+
+			// Enviar evento SSE
+			fmt.Fprintf(c.Writer, "event: progress\ndata: %s\n\n", string(eventJSON))
+			flusher.Flush()
+
+		case <-clientGone:
+			// Cliente desconectou
+			return
+		}
+	}
+}
+
 // executeSequenceAsync executa o sequenciamento de forma assíncrona
-func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest NodePoolSequenceConfig, req SequenceExecuteRequest) {
+func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest NodePoolSequenceConfig, req SequenceExecuteRequest, sessionID string, progressCh chan ProgressEvent) {
 	ctx := context.Background()
 	startTime := time.Now()
+
+	// Garantir que o canal será fechado ao final
+	defer h.progressManager.CloseSession(sessionID)
+
+	// Helper para enviar eventos de progresso
+	sendProgress := func(phase int, phaseName, status, message string, progress float64, nodeName string, nodeIdx, nodeTotal int, err error) {
+		event := ProgressEvent{
+			Phase:     phase,
+			PhaseName: phaseName,
+			Status:    status,
+			Message:   message,
+			Progress:  progress,
+			NodeName:  nodeName,
+			NodeIndex: nodeIdx,
+			NodeTotal: nodeTotal,
+			Timestamp: time.Now().Format(time.RFC3339),
+		}
+		if err != nil {
+			event.Error = err.Error()
+		}
+		progressCh <- event
+	}
 
 	// Log início
 	fmt.Printf("\n")
@@ -533,13 +703,16 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 	fmt.Printf("🔹 Origin:  %s (sequence *1)\n", origin.Name)
 	fmt.Printf("🔹 Dest:    %s (sequence *2)\n", dest.Name)
 	fmt.Printf("🔹 Cordon:  %v | Drain: %v\n", req.CordonEnabled, req.DrainEnabled)
+	fmt.Printf("🔹 Session: %s\n", sessionID)
 	fmt.Printf("\n")
 
 	// FASE 1: PRE-DRAIN
+	sendProgress(1, "PRE-DRAIN", "running", "Starting PRE-DRAIN phase (scale UP destination)", 0, "", 0, 0, nil)
 	fmt.Printf("1️⃣  FASE PRE-DRAIN - Scale UP destination\n")
 	fmt.Printf("────────────────────────────────────────────────────────────────────\n")
 
 	if dest.PreDrainChanges != nil {
+		sendProgress(1, "PRE-DRAIN", "running", fmt.Sprintf("Applying changes to %s", dest.Name), 5, "", 0, 0, nil)
 		fmt.Printf("📤 Applying changes to %s:\n", dest.Name)
 		fmt.Printf("   Autoscaling: %v | NodeCount: %d | Min: %d | Max: %d\n",
 			dest.PreDrainChanges.Autoscaling,
@@ -549,38 +722,48 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 
 		// Aplicar mudanças via Azure CLI
 		if err := h.applyNodePoolChanges(dest.Name, dest.ResourceGroup, dest.Subscription, dest.PreDrainChanges); err != nil {
+			sendProgress(1, "PRE-DRAIN", "error", "Failed to apply PRE-DRAIN changes", 0, "", 0, 0, err)
 			fmt.Printf("❌ ERROR: Failed to apply PRE-DRAIN changes: %v\n", err)
 			return
 		}
+		sendProgress(1, "PRE-DRAIN", "running", "PRE-DRAIN changes applied successfully", 10, "", 0, 0, nil)
 		fmt.Printf("✅ PRE-DRAIN changes applied successfully\n")
 	} else {
+		sendProgress(1, "PRE-DRAIN", "running", fmt.Sprintf("No PRE-DRAIN changes configured for %s", dest.Name), 10, "", 0, 0, nil)
 		fmt.Printf("⏭️  No PRE-DRAIN changes configured for %s\n", dest.Name)
 	}
 
 	// Aguardar nodes Ready
+	sendProgress(1, "PRE-DRAIN", "running", "Waiting 30s for nodes to become Ready...", 15, "", 0, 0, nil)
 	fmt.Printf("\n⏳ Waiting 30s for nodes to become Ready...\n")
 	time.Sleep(30 * time.Second)
+	sendProgress(1, "PRE-DRAIN", "completed", "Nodes should be Ready now", 20, "", 0, 0, nil)
 	fmt.Printf("✅ Nodes should be Ready now\n\n")
 
 	// FASE 2: CORDON
 	if req.CordonEnabled {
+		sendProgress(2, "CORDON", "running", "Starting CORDON phase (mark origin nodes unschedulable)", 20, "", 0, 0, nil)
 		fmt.Printf("2️⃣  FASE CORDON - Mark origin nodes unschedulable\n")
 		fmt.Printf("────────────────────────────────────────────────────────────────────\n")
 
 		// Obter client Kubernetes (type assertion)
 		k8sClient, ok := client.(*kubernetes.Client)
 		if !ok {
+			sendProgress(2, "CORDON", "error", "Invalid Kubernetes client type", 0, "", 0, 0, fmt.Errorf("type assertion failed"))
 			fmt.Printf("❌ ERROR: Invalid Kubernetes client type\n")
 			return
 		}
 
 		// Listar nodes do node pool origem
+		sendProgress(2, "CORDON", "running", fmt.Sprintf("Listing nodes in %s", origin.Name), 22, "", 0, 0, nil)
 		nodes, err := k8sClient.GetNodesInNodePool(ctx, origin.Name)
 		if err != nil {
+			sendProgress(2, "CORDON", "error", fmt.Sprintf("Failed to get nodes from %s", origin.Name), 0, "", 0, 0, err)
 			fmt.Printf("❌ ERROR: Failed to get nodes from %s: %v\n", origin.Name, err)
 			return
 		}
 
+		sendProgress(2, "CORDON", "running", fmt.Sprintf("Found %d nodes in %s", len(nodes), origin.Name), 25, "", 0, len(nodes), nil)
 		fmt.Printf("📋 Found %d nodes in %s:\n", len(nodes), origin.Name)
 		for _, nodeName := range nodes {
 			fmt.Printf("   - %s\n", nodeName)
@@ -589,38 +772,49 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 		// Cordon cada node
 		fmt.Printf("\n🔒 Cordoning nodes...\n")
 		for i, nodeName := range nodes {
+			nodeProgress := 25 + float64(i+1)/float64(len(nodes))*15 // 25% → 40%
+			sendProgress(2, "CORDON", "running", fmt.Sprintf("Cordoning node %d/%d", i+1, len(nodes)), nodeProgress, nodeName, i+1, len(nodes), nil)
 			fmt.Printf("[%d/%d] Cordoning %s...", i+1, len(nodes), nodeName)
 			if err := k8sClient.CordonNode(ctx, nodeName); err != nil {
+				sendProgress(2, "CORDON", "error", fmt.Sprintf("Failed to cordon %s", nodeName), 0, nodeName, i+1, len(nodes), err)
 				fmt.Printf(" ❌ FAILED: %v\n", err)
 				return
 			}
 			fmt.Printf(" ✅\n")
 		}
+		sendProgress(2, "CORDON", "completed", fmt.Sprintf("All %d nodes cordoned successfully", len(nodes)), 40, "", 0, 0, nil)
 		fmt.Printf("✅ All %d nodes cordoned successfully\n\n", len(nodes))
 	} else {
+		sendProgress(2, "CORDON", "completed", "CORDON phase skipped (disabled)", 40, "", 0, 0, nil)
 		fmt.Printf("2️⃣  FASE CORDON - SKIPPED (disabled)\n\n")
 	}
 
 	// FASE 3: DRAIN
 	if req.DrainEnabled {
+		sendProgress(3, "DRAIN", "running", "Starting DRAIN phase (migrate pods from origin to destination)", 40, "", 0, 0, nil)
 		fmt.Printf("3️⃣  FASE DRAIN - Migrate pods from origin to destination\n")
 		fmt.Printf("────────────────────────────────────────────────────────────────────\n")
 
 		// Obter client Kubernetes
 		k8sClient, ok := client.(*kubernetes.Client)
 		if !ok {
+			sendProgress(3, "DRAIN", "error", "Invalid Kubernetes client type", 0, "", 0, 0, fmt.Errorf("type assertion failed"))
 			fmt.Printf("❌ ERROR: Invalid Kubernetes client type\n")
 			return
 		}
 
 		// Listar nodes novamente
+		sendProgress(3, "DRAIN", "running", fmt.Sprintf("Listing nodes in %s for draining", origin.Name), 42, "", 0, 0, nil)
 		nodes, err := k8sClient.GetNodesInNodePool(ctx, origin.Name)
 		if err != nil {
+			sendProgress(3, "DRAIN", "error", "Failed to get nodes", 0, "", 0, 0, err)
 			fmt.Printf("❌ ERROR: Failed to get nodes: %v\n", err)
 			return
 		}
 
 		// Mostrar flags que serão usadas
+		drainFlagsMsg := fmt.Sprintf("Drain options: grace=%ds, timeout=%s", req.DrainOptions.GracePeriod, req.DrainOptions.Timeout)
+		sendProgress(3, "DRAIN", "running", drainFlagsMsg, 45, "", 0, len(nodes), nil)
 		fmt.Printf("🔧 Drain options:\n")
 		if req.DrainOptions.IgnoreDaemonsets {
 			fmt.Printf("   ✓ --ignore-daemonsets\n")
@@ -639,10 +833,13 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 		fmt.Printf("\n🚀 Draining nodes...\n")
 		totalPodsMigrated := 0
 		for i, nodeName := range nodes {
+			nodeProgress := 45 + float64(i+1)/float64(len(nodes))*30 // 45% → 75%
+			sendProgress(3, "DRAIN", "running", fmt.Sprintf("Draining node %d/%d", i+1, len(nodes)), nodeProgress, nodeName, i+1, len(nodes), nil)
 			fmt.Printf("[%d/%d] Draining %s...\n", i+1, len(nodes), nodeName)
 
 			// Drain com opções
 			if err := k8sClient.DrainNode(ctx, nodeName, &req.DrainOptions); err != nil {
+				sendProgress(3, "DRAIN", "error", fmt.Sprintf("Failed to drain %s", nodeName), 0, nodeName, i+1, len(nodes), err)
 				fmt.Printf("   ❌ FAILED: %v\n", err)
 				return
 			}
@@ -650,24 +847,31 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 			// Verificar se está drained
 			isDrained, err := k8sClient.IsNodeDrained(ctx, nodeName)
 			if err != nil {
+				sendProgress(3, "DRAIN", "running", fmt.Sprintf("Could not verify drain status for %s", nodeName), nodeProgress, nodeName, i+1, len(nodes), err)
 				fmt.Printf("   ⚠️  WARNING: Could not verify drain status: %v\n", err)
 			} else if isDrained {
+				sendProgress(3, "DRAIN", "running", fmt.Sprintf("Node %s fully drained", nodeName), nodeProgress, nodeName, i+1, len(nodes), nil)
 				fmt.Printf("   ✅ Node fully drained (all pods migrated)\n")
 				totalPodsMigrated += 5 // Placeholder - seria o count real
 			} else {
+				sendProgress(3, "DRAIN", "running", fmt.Sprintf("Warning: Some pods may still be present on %s", nodeName), nodeProgress, nodeName, i+1, len(nodes), nil)
 				fmt.Printf("   ⚠️  WARNING: Some pods may still be present (DaemonSets?)\n")
 			}
 		}
+		sendProgress(3, "DRAIN", "completed", fmt.Sprintf("All %d nodes drained successfully (~%d pods migrated)", len(nodes), totalPodsMigrated), 75, "", 0, 0, nil)
 		fmt.Printf("✅ All %d nodes drained successfully (~%d pods migrated)\n\n", len(nodes), totalPodsMigrated)
 	} else {
+		sendProgress(3, "DRAIN", "completed", "DRAIN phase skipped (disabled)", 75, "", 0, 0, nil)
 		fmt.Printf("3️⃣  FASE DRAIN - SKIPPED (disabled)\n\n")
 	}
 
 	// FASE 4: POST-DRAIN
+	sendProgress(4, "POST-DRAIN", "running", "Starting POST-DRAIN phase (scale DOWN origin)", 75, "", 0, 0, nil)
 	fmt.Printf("4️⃣  FASE POST-DRAIN - Scale DOWN origin\n")
 	fmt.Printf("────────────────────────────────────────────────────────────────────\n")
 
 	if origin.PostDrainChanges != nil {
+		sendProgress(4, "POST-DRAIN", "running", fmt.Sprintf("Applying changes to %s", origin.Name), 80, "", 0, 0, nil)
 		fmt.Printf("📥 Applying changes to %s:\n", origin.Name)
 		fmt.Printf("   Autoscaling: %v | NodeCount: %d\n",
 			origin.PostDrainChanges.Autoscaling,
@@ -675,19 +879,24 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 
 		// Aplicar mudanças via Azure CLI
 		if err := h.applyNodePoolChanges(origin.Name, origin.ResourceGroup, origin.Subscription, origin.PostDrainChanges); err != nil {
+			sendProgress(4, "POST-DRAIN", "error", "Failed to apply POST-DRAIN changes", 0, "", 0, 0, err)
 			fmt.Printf("❌ ERROR: Failed to apply POST-DRAIN changes: %v\n", err)
 			return
 		}
+		sendProgress(4, "POST-DRAIN", "completed", "POST-DRAIN changes applied successfully", 90, "", 0, 0, nil)
 		fmt.Printf("✅ POST-DRAIN changes applied successfully\n")
 	} else {
+		sendProgress(4, "POST-DRAIN", "completed", fmt.Sprintf("No POST-DRAIN changes configured for %s", origin.Name), 90, "", 0, 0, nil)
 		fmt.Printf("⏭️  No POST-DRAIN changes configured for %s\n", origin.Name)
 	}
 
 	// FASE 5: FINALIZAÇÃO
+	sendProgress(5, "FINALIZAÇÃO", "running", "Cleanup and finalization", 90, "", 0, 0, nil)
 	fmt.Printf("\n5️⃣  FASE FINALIZAÇÃO - Cleanup\n")
 	fmt.Printf("────────────────────────────────────────────────────────────────────\n")
 
 	duration := time.Since(startTime)
+	sendProgress(5, "FINALIZAÇÃO", "completed", fmt.Sprintf("Sequencing completed successfully in %s", duration.Round(time.Second)), 100, "", 0, 0, nil)
 	fmt.Printf("⏱️  Total execution time: %s\n", duration.Round(time.Second))
 	fmt.Printf("✅ Sequencing completed successfully!\n")
 
