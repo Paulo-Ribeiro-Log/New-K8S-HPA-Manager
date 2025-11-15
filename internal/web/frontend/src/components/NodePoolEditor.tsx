@@ -7,11 +7,13 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
 import type { NodePool } from "@/lib/api/types";
-import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap } from "lucide-react";
+import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
+import CordonDrainConfigModal, { CordonDrainConfig } from "./CordonDrainConfigModal";
 
 interface NodePoolEditorProps {
   nodePool: NodePool | null;
@@ -39,6 +41,12 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
 
   // Track if applying changes
   const [isApplying, setIsApplying] = useState(false);
+
+  // Cordon/Drain configuration states
+  const [cordonDrainEnabled, setCordonDrainEnabled] = useState(false);
+  const [showCordonDrainModal, setShowCordonDrainModal] = useState(false);
+  const [cordonDrainConfig, setCordonDrainConfig] = useState<CordonDrainConfig | null>(null);
+  const [modalContext, setModalContext] = useState<'applyNow' | 'saveStaging'>('saveStaging');
 
   // Initialize form when nodePool changes or staging updates
   useEffect(() => {
@@ -132,6 +140,20 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const handleApply = () => {
     if (!nodePool) return;
 
+    // Se Cordon/Drain habilitado e sequenceOrder != "none", abrir modal
+    if (cordonDrainEnabled && sequenceOrder !== "none") {
+      setModalContext('saveStaging');
+      setShowCordonDrainModal(true);
+      return;
+    }
+
+    // Salvar normalmente no staging se Cordon/Drain desabilitado
+    executeSaveToStaging(null);
+  };
+
+  const executeSaveToStaging = (config: CordonDrainConfig | null) => {
+    if (!nodePool) return;
+
     // Parse string values to numbers - handle empty strings
     const nodeCountNum = nodeCount === "" ? 0 : parseInt(nodeCount);
     const minNodeCountNum = minNodeCount === "" ? 0 : parseInt(minNodeCount);
@@ -149,14 +171,44 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
       sequence_order: sequenceOrder !== "none" ? parseInt(sequenceOrder) : 0,
     };
 
+    // Se config foi fornecido, adicionar ao updates (será salvo no staging)
+    if (config) {
+      (updates as any).cordon_drain_config = {
+        cordon_enabled: config.cordonEnabled,
+        drain_enabled: config.drainEnabled,
+        grace_period: config.gracePeriod,
+        timeout: config.timeout,
+        force_delete: config.forceDelete,
+        ignore_daemonsets: config.ignoreDaemonSets,
+        delete_emptydir: config.deleteEmptyDir,
+        chunk_size: config.chunkSize,
+      };
+    }
+
     staging.updateNodePoolInStaging(nodePool.cluster_name, nodePool.name, updates);
     setHasChanges(false);
+
+    toast.success(`Node Pool ${nodePool.name} salvo no staging${config ? ' com Cordon/Drain config' : ''}`);
 
     // Call optional callback
     onApplied?.();
   };
 
   const handleApplyNow = async () => {
+    if (!nodePool) return;
+
+    // Se Cordon/Drain habilitado, abrir modal de configuração
+    if (cordonDrainEnabled) {
+      setModalContext('applyNow');
+      setShowCordonDrainModal(true);
+      return;
+    }
+
+    // Aplicar normalmente se Cordon/Drain desabilitado
+    await executeApplyNow(null);
+  };
+
+  const executeApplyNow = async (config: CordonDrainConfig | null) => {
     if (!nodePool) return;
 
     // Parse string values to numbers - handle empty strings
@@ -167,19 +219,11 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
     setIsApplying(true);
 
     try {
-      // Prepare updated node pool data
-      const updatedNodePool: NodePool = {
-        ...nodePool,
-        node_count: nodeCountNum,
-        min_node_count: minNodeCountNum,
-        max_node_count: maxNodeCountNum,
-        autoscaling_enabled: autoscalingEnabled,
-      };
-
       // Log changes
       console.log('⚙️ Applying Node Pool changes:', {
         name: nodePool.name,
         cluster: nodePool.cluster_name,
+        cordonDrainConfig: config,
         changes: {
           node_count: nodePool.node_count !== nodeCountNum ? `${nodePool.node_count} → ${nodeCountNum}` : 'unchanged',
           min_node_count: nodePool.min_node_count !== minNodeCountNum ? `${nodePool.min_node_count} → ${minNodeCountNum}` : 'unchanged',
@@ -188,7 +232,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         }
       });
 
-      // Call API to update node pool
+      // Call API to update node pool with optional cordon/drain config
       await apiClient.updateNodePool(
         nodePool.cluster_name,
         nodePool.resource_group,
@@ -198,7 +242,8 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           min_node_count: minNodeCountNum,
           max_node_count: maxNodeCountNum,
           autoscaling_enabled: autoscalingEnabled,
-        }
+        },
+        config || undefined
       );
 
       toast.success(`✅ Node Pool ${nodePool.name} aplicado com sucesso`);
@@ -212,6 +257,18 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
       toast.error(`❌ Erro ao aplicar ${nodePool.name}: ${errorMessage}`);
     } finally {
       setIsApplying(false);
+    }
+  };
+
+  const handleCordonDrainConfirm = (config: CordonDrainConfig) => {
+    setCordonDrainConfig(config);
+
+    // Verificar o contexto: "Aplicar Agora" ou "Salvar (Staging)"
+    if (modalContext === 'applyNow') {
+      executeApplyNow(config);
+    } else {
+      // Foi "Salvar (Staging)"
+      executeSaveToStaging(config);
     }
   };
 
@@ -382,7 +439,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             Mark this node pool for sequential execution during batch operations
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="sequenceOrder">Execution Order</Label>
             <Select value={sequenceOrder} onValueChange={setSequenceOrder}>
@@ -401,6 +458,45 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
               {sequenceOrder === "none" && "This pool will be executed normally (not sequentially)"}
             </p>
           </div>
+
+          {/* Cordon/Drain Config - só aparece quando sequenceOrder != "none" */}
+          {sequenceOrder !== "none" && (
+            <div className="pt-4 border-t space-y-3">
+              <div className="flex items-center gap-3">
+                <Checkbox
+                  id="cordon-drain-enabled"
+                  checked={cordonDrainEnabled}
+                  onCheckedChange={(checked) => setCordonDrainEnabled(checked as boolean)}
+                />
+                <div className="flex-1">
+                  <Label htmlFor="cordon-drain-enabled" className="cursor-pointer font-medium flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-orange-500" />
+                    Cordon/Drain Config
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {cordonDrainEnabled
+                      ? "Modal de configuração será exibido antes de salvar no staging"
+                      : "Aplicação será feita sem evacuação de nodes"}
+                  </p>
+                </div>
+              </div>
+
+              {cordonDrainEnabled && cordonDrainConfig && (
+                <div className="p-3 border rounded-md bg-muted/30 space-y-1 text-xs">
+                  <p className="font-semibold text-primary">Configuração atual:</p>
+                  {cordonDrainConfig.cordonEnabled && <p>✓ CORDON habilitado</p>}
+                  {cordonDrainConfig.drainEnabled && (
+                    <>
+                      <p>✓ DRAIN habilitado</p>
+                      <p className="text-muted-foreground ml-4">
+                        Grace Period: {cordonDrainConfig.gracePeriod}s | Timeout: {cordonDrainConfig.timeout}s
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -493,6 +589,14 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           Cancelar
         </Button>
       </div>
+
+      {/* Cordon/Drain Config Modal */}
+      <CordonDrainConfigModal
+        open={showCordonDrainModal}
+        onOpenChange={setShowCordonDrainModal}
+        onConfirm={handleCordonDrainConfirm}
+        nodePoolName={nodePool.name}
+      />
     </div>
   );
 };

@@ -10,6 +10,8 @@ import { ApplyAllModal } from "@/components/ApplyAllModal";
 import { NodePoolListItem } from "@/components/NodePoolListItem";
 import { NodePoolEditor } from "@/components/NodePoolEditor";
 import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
+import NodePoolSequencingModal from "@/components/NodePoolSequencingModal";
+import SequenceProgressModal from "@/components/SequenceProgressModal";
 import { ConfigMapsTab } from "@/components/ConfigMapsTab";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
@@ -34,7 +36,8 @@ import {
   Eye,
   EyeOff,
   BarChart3,
-  FileCode
+  FileCode,
+  Settings
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -60,6 +63,13 @@ const Index = ({ onLogout }: IndexProps) => {
   const [hpasToApply, setHpasToApply] = useState<Array<{ key: string; current: HPA; original: HPA }>>([]);
   const [showNodePoolApplyModal, setShowNodePoolApplyModal] = useState(false);
   const [nodePoolsToApply, setNodePoolsToApply] = useState<Array<{ key: string; current: NodePool; original: NodePool }>>([]);
+  const [showSequencingModal, setShowSequencingModal] = useState(false);
+  const [sequencedNodePools, setSequencedNodePools] = useState<NodePool[]>([]);
+  const [showProgressModal, setShowProgressModal] = useState(false);
+  const [progressSessionId, setProgressSessionId] = useState("");
+  const [progressCluster, setProgressCluster] = useState("");
+  const [progressOrigin, setProgressOrigin] = useState("");
+  const [progressDest, setProgressDest] = useState("");
   const [showSaveSessionModal, setShowSaveSessionModal] = useState(false);
   const [showLoadSessionModal, setShowLoadSessionModal] = useState(false);
   const [showLogViewer, setShowLogViewer] = useState(false);
@@ -423,10 +433,29 @@ const Index = ({ onLogout }: IndexProps) => {
         );
       
       case "nodepools":
+        const markedNodePools = staging?.stagedNodePools.filter(
+          np => np.sequence_order > 0
+        ) || [];
+
         return (
           <SplitView
             leftPanel={{
               title: "Available Node Pools",
+              titleAction: markedNodePools.length === 2 ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="bg-primary/10 border-primary/30 text-primary hover:bg-primary/20"
+                  onClick={() => {
+                    setSequencedNodePools(markedNodePools);
+                    setShowSequencingModal(true);
+                  }}
+                  title="Configurar cordon/drain para sequenciamento"
+                >
+                  <Settings className="h-4 w-4 mr-2" />
+                  Configure Sequencing ({markedNodePools.length})
+                </Button>
+              ) : null,
               content: nodePoolsLoading ? (
                 <div className="flex items-center justify-center h-64 text-muted-foreground">
                   Loading Node Pools...
@@ -655,6 +684,51 @@ const Index = ({ onLogout }: IndexProps) => {
         }}
       />
 
+      {/* Modal de Configuração de Sequenciamento - Cordon/Drain */}
+      <NodePoolSequencingModal
+        open={showSequencingModal}
+        onOpenChange={setShowSequencingModal}
+        nodePools={sequencedNodePools}
+        onConfirm={async (config) => {
+          try {
+            // Chamar API para executar sequenciamento
+            const response = await apiClient.executeNodePoolSequence(config);
+
+            // Fechar modal de configuração
+            setShowSequencingModal(false);
+
+            // Extrair informações para o modal de progresso
+            const sessionId = response.data?.session_id;
+            const origin = config.node_pools.find((np) => np.sequence_order === 1);
+            const dest = config.node_pools.find((np) => np.sequence_order === 2);
+
+            if (sessionId && origin && dest) {
+              // Configurar estados do modal de progresso
+              setProgressSessionId(sessionId);
+              setProgressCluster(config.cluster);
+              setProgressOrigin(origin.name);
+              setProgressDest(dest.name);
+
+              // Abrir modal de progresso
+              setShowProgressModal(true);
+
+              toast.success(response.message || "Sequenciamento iniciado com sucesso!");
+            } else {
+              toast.error("Resposta inválida do servidor - sessão não encontrada");
+            }
+
+            // Limpar seleção de node pools
+            setSequencedNodePools([]);
+          } catch (error: any) {
+            toast.error(error.message || "Erro ao executar sequenciamento");
+          }
+        }}
+        onCancel={() => {
+          setShowSequencingModal(false);
+          setSequencedNodePools([]);
+        }}
+      />
+
       {/* Modal de Salvar Sessão */}
       <SaveSessionModal
         open={showSaveSessionModal}
@@ -688,6 +762,16 @@ const Index = ({ onLogout }: IndexProps) => {
       <HistoryViewer
         open={showHistoryViewer}
         onOpenChange={setShowHistoryViewer}
+      />
+
+      {/* Sequence Progress Modal */}
+      <SequenceProgressModal
+        open={showProgressModal}
+        onOpenChange={setShowProgressModal}
+        sessionId={progressSessionId}
+        clusterName={progressCluster}
+        originName={progressOrigin}
+        destName={progressDest}
       />
     </div>
   );
