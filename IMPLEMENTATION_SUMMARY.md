@@ -244,23 +244,24 @@ curl -X POST http://localhost:8080/api/v1/nodepools/sequence/execute \
 ## 📋 Pendências (Fase 5 - Integração Final)
 
 ### Backend
-- [ ] Implementar `executeSequenceAsync()` completo
-- [ ] Integrar com Azure CLI para node pool updates
+- [x] Implementar `executeSequenceAsync()` completo (✅ Commit dd90a4f)
+- [x] Integrar com Azure CLI para node pool updates (✅ via applyNodePoolChanges)
 - [ ] Progress tracking via WebSocket ou polling
-- [ ] Logs detalhados por fase
+- [x] Logs detalhados por fase (✅ Console output formatado)
 
 ### TUI
-- [ ] Handler para abrir modal (tecla 'C')
-- [ ] Integrar com `executeSequentialNodePools()`
+- [x] Handler para abrir modal (tecla 'C') (✅ Commit 113caf7)
+- [x] Integrar com `executeSequentialNodePools()` (✅ via executeSequenceWithConfig)
 - [ ] Progress bars durante execução
-- [ ] Atualizar help text
+- [x] Atualizar help text (✅ Nova seção "CONFIGURAÇÃO CORDON/DRAIN")
 
 ### Web
+- [x] Atualizar tipos TypeScript em `api/types.ts` (✅ Commit 9ba19c3)
+- [x] Adicionar função API em `client.ts` (✅ executeNodePoolSequence)
 - [ ] Integrar modal em `Index.tsx`
 - [ ] Botão "Configure Sequencing"
 - [ ] Callback para API
 - [ ] Progress modal durante execução
-- [ ] Atualizar tipos TypeScript em `api/types.ts`
 
 ---
 
