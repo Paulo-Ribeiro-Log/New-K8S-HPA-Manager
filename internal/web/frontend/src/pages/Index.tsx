@@ -10,6 +10,7 @@ import { ApplyAllModal } from "@/components/ApplyAllModal";
 import { NodePoolListItem } from "@/components/NodePoolListItem";
 import { NodePoolEditor } from "@/components/NodePoolEditor";
 import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
+import NodePoolSequencingModal from "@/components/NodePoolSequencingModal";
 import { ConfigMapsTab } from "@/components/ConfigMapsTab";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
@@ -34,7 +35,8 @@ import {
   Eye,
   EyeOff,
   BarChart3,
-  FileCode
+  FileCode,
+  Settings
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -60,6 +62,8 @@ const Index = ({ onLogout }: IndexProps) => {
   const [hpasToApply, setHpasToApply] = useState<Array<{ key: string; current: HPA; original: HPA }>>([]);
   const [showNodePoolApplyModal, setShowNodePoolApplyModal] = useState(false);
   const [nodePoolsToApply, setNodePoolsToApply] = useState<Array<{ key: string; current: NodePool; original: NodePool }>>([]);
+  const [showSequencingModal, setShowSequencingModal] = useState(false);
+  const [sequencedNodePools, setSequencedNodePools] = useState<NodePool[]>([]);
   const [showSaveSessionModal, setShowSaveSessionModal] = useState(false);
   const [showLoadSessionModal, setShowLoadSessionModal] = useState(false);
   const [showLogViewer, setShowLogViewer] = useState(false);
@@ -423,10 +427,29 @@ const Index = ({ onLogout }: IndexProps) => {
         );
       
       case "nodepools":
+        const markedNodePools = staging?.stagedNodePools.filter(
+          np => np.sequence_order > 0
+        ) || [];
+
         return (
           <SplitView
             leftPanel={{
               title: "Available Node Pools",
+              titleAction: markedNodePools.length === 2 ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="bg-primary/10 border-primary/30 text-primary hover:bg-primary/20"
+                  onClick={() => {
+                    setSequencedNodePools(markedNodePools);
+                    setShowSequencingModal(true);
+                  }}
+                  title="Configurar cordon/drain para sequenciamento"
+                >
+                  <Settings className="h-4 w-4 mr-2" />
+                  Configure Sequencing ({markedNodePools.length})
+                </Button>
+              ) : null,
               content: nodePoolsLoading ? (
                 <div className="flex items-center justify-center h-64 text-muted-foreground">
                   Loading Node Pools...
@@ -652,6 +675,42 @@ const Index = ({ onLogout }: IndexProps) => {
         onClear={() => {
           // Limpar staging area
           staging.clearStaging();
+        }}
+      />
+
+      {/* Modal de Configuração de Sequenciamento - Cordon/Drain */}
+      <NodePoolSequencingModal
+        open={showSequencingModal}
+        onOpenChange={setShowSequencingModal}
+        nodePools={sequencedNodePools}
+        onConfirm={async (config) => {
+          try {
+            // Chamar API para executar sequenciamento
+            const response = await apiClient.executeNodePoolSequence(config);
+
+            toast.success(response.message || "Sequenciamento iniciado com sucesso!");
+
+            // Fechar modal
+            setShowSequencingModal(false);
+
+            // Limpar seleção
+            setSequencedNodePools([]);
+
+            // Opcional: Disparar evento de rescan após execução
+            if (typeof window !== "undefined" && selectedCluster) {
+              setTimeout(() => {
+                window.dispatchEvent(new CustomEvent("rescanNodePools", {
+                  detail: { cluster: selectedCluster }
+                }));
+              }, 2000);
+            }
+          } catch (error: any) {
+            toast.error(error.message || "Erro ao executar sequenciamento");
+          }
+        }}
+        onCancel={() => {
+          setShowSequencingModal(false);
+          setSequencedNodePools([]);
         }}
       />
 
