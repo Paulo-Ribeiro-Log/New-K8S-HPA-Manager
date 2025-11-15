@@ -61,16 +61,41 @@ curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manag
 - ✅ Copia scripts utilitários para `~/.new-k8s-hpa/scripts/`
 - ✅ Cria atalho `new-k8s-hpa-web` para servidor web
 
-### Método 2: Download Direto
+### Método 2: Download Direto de Binários Pré-Compilados
 
+**Linux (amd64)**
 ```bash
-# Download do binário
-wget https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/latest/download/new-k8s-hpa-v1.0.0
-
-# Instalar
-chmod +x new-k8s-hpa-v1.0.0
-sudo mv new-k8s-hpa-v1.0.0 /usr/local/bin/new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.6/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
+chmod +x new-k8s-hpa
+sudo mv new-k8s-hpa /usr/local/bin/
 ```
+
+**macOS (Intel)**
+```bash
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.6/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
+chmod +x new-k8s-hpa
+sudo mv new-k8s-hpa /usr/local/bin/
+```
+
+**macOS (Apple Silicon M1/M2)**
+```bash
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.6/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
+chmod +x new-k8s-hpa
+sudo mv new-k8s-hpa /usr/local/bin/
+```
+
+**Windows**
+⚠️ **Windows não é suportado via binários pré-compilados.**
+
+Use **WSL2** (Windows Subsystem for Linux) para funcionalidade completa:
+```bash
+# Dentro do WSL2 (Ubuntu)
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.6/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
+chmod +x new-k8s-hpa
+sudo mv new-k8s-hpa /usr/local/bin/
+```
+
+📖 Ver [WINDOWS_SUPPORT.md](WINDOWS_SUPPORT.md) para instruções detalhadas de instalação WSL2
 
 ---
 
@@ -171,9 +196,9 @@ new-k8s-hpa
 ## 📚 Documentação
 
 - **[CLAUDE.md](CLAUDE.md)** - Guia completo de desenvolvimento
-- **[INSTALL_GUIDE.md](INSTALL_GUIDE.md)** - Guia detalhado de instalação
-- **[UPDATE_BEHAVIOR.md](UPDATE_BEHAVIOR.md)** - Sistema de updates
-- **[RELEASE_NOTES_v1.0.0.md](RELEASE_NOTES_v1.0.0.md)** - Release notes
+- **[INSTRUCTIONS_RELEASE.md](INSTRUCTIONS_RELEASE.md)** - Como criar releases com binários pré-compilados
+- **[WINDOWS_SUPPORT.md](WINDOWS_SUPPORT.md)** - Limitações Windows e instalação via WSL2
+- **[RELEASE_NOTES_v1.0.6.md](RELEASE_NOTES_v1.0.6.md)** - Release notes da versão atual
 
 ---
 
@@ -194,12 +219,28 @@ Após instalação via script, os seguintes utilitários ficam disponíveis em `
 
 ## 📦 Releases
 
-### v1.0.0 (2025-01-12)
-- 🎉 Release inicial do novo repositório
-- ✅ Migração completa do Scale_HPA
-- ✅ Todas as features implementadas até novembro/2025
-- ✅ Script de instalação automática
-- ✅ Binário `new-k8s-hpa` para Linux AMD64
+### v1.0.6 (2025-11-15) - **Versão Atual**
+- 🎉 **Sistema de Cordon/Drain para Node Pools**
+  - ✅ Cordon automático antes de drain (isola nodes de novos pods)
+  - ✅ Drain com validação de pods e timeout configurável
+  - ✅ Feedback visual em tempo real durante operação
+
+- 🚀 **Sistema Completo de Releases**
+  - ✅ Script automatizado `create-release.sh` para publicar releases
+  - ✅ Suporte multi-plataforma (Linux amd64, macOS Intel, macOS ARM)
+  - ✅ Documentação completa em `INSTRUCTIONS_RELEASE.md`
+  - ✅ Detecção automática de versão via Git tags
+  - ✅ Upload automático de binários para GitHub
+
+- 📚 **Documentação Técnica**
+  - ✅ `WINDOWS_SUPPORT.md` - Explicação sobre limitações Windows e uso via WSL2
+  - ✅ `INSTRUCTIONS_RELEASE.md` - Guia completo para criar releases
+  - ✅ Templates de release notes com instruções de instalação
+
+- ⚙️ **Melhorias Técnicas**
+  - ✅ Injeção de versão via `-ldflags` durante build
+  - ✅ Sistema de versionamento semântico via Git tags
+  - ✅ Testes de integração desabilitados no CI/CD (requerem cluster real)
 
 [Ver todas as releases](https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases)
 
