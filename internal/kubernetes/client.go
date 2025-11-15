@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -1640,4 +1641,338 @@ func (c *Client) RolloutDaemonSet(ctx context.Context, namespace, daemonSetName 
 	}
 
 	return nil
+}
+
+// ===========================
+// Node Pool Cordon/Drain Operations
+// ===========================
+
+// GetNodesInNodePool retorna lista de nodes de um node pool específico
+func (c *Client) GetNodesInNodePool(ctx context.Context, nodePoolName string) ([]string, error) {
+	// Listar todos os nodes do cluster
+	nodes, err := c.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list nodes in cluster %s: %w", c.cluster, err)
+	}
+
+	// Filtrar nodes pelo label agentpool=<nodePoolName>
+	var nodeNames []string
+	for _, node := range nodes.Items {
+		if agentpool, ok := node.Labels["agentpool"]; ok && agentpool == nodePoolName {
+			nodeNames = append(nodeNames, node.Name)
+		}
+	}
+
+	if len(nodeNames) == 0 {
+		return nil, fmt.Errorf("no nodes found for node pool '%s' in cluster %s", nodePoolName, c.cluster)
+	}
+
+	return nodeNames, nil
+}
+
+// CordonNode marca um node como unschedulable (kubectl cordon)
+func (c *Client) CordonNode(ctx context.Context, nodeName string) error {
+	// Obter node atual
+	node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get node %s in cluster %s: %w", nodeName, c.cluster, err)
+	}
+
+	// Se já está cordoned, não fazer nada
+	if node.Spec.Unschedulable {
+		return nil // Já está cordoned
+	}
+
+	// Marcar como unschedulable
+	node.Spec.Unschedulable = true
+
+	// Atualizar node
+	_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to cordon node %s in cluster %s: %w", nodeName, c.cluster, err)
+	}
+
+	return nil
+}
+
+// UncordonNode marca um node como schedulable (kubectl uncordon)
+func (c *Client) UncordonNode(ctx context.Context, nodeName string) error {
+	// Obter node atual
+	node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get node %s in cluster %s: %w", nodeName, c.cluster, err)
+	}
+
+	// Se já está schedulable, não fazer nada
+	if !node.Spec.Unschedulable {
+		return nil // Já está uncordoned
+	}
+
+	// Marcar como schedulable
+	node.Spec.Unschedulable = false
+
+	// Atualizar node
+	_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to uncordon node %s in cluster %s: %w", nodeName, c.cluster, err)
+	}
+
+	return nil
+}
+
+// DrainNode remove todos os pods de um node (kubectl drain)
+func (c *Client) DrainNode(ctx context.Context, nodeName string, opts *models.DrainOptions) error {
+	if opts == nil {
+		opts = models.DefaultDrainOptions()
+	}
+
+	// Validar opções antes de executar
+	if err := ValidateDrainOptions(opts); err != nil {
+		return fmt.Errorf("invalid drain options: %w", err)
+	}
+
+	// Listar todos os pods no node
+	pods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
+	}
+
+	// Filtrar pods por selector (se fornecido)
+	podsToEvict := []corev1.Pod{}
+	for _, pod := range pods.Items {
+		// Pular DaemonSets se ignoreDaemonsets=true
+		if opts.IgnoreDaemonsets && isDaemonSetPod(pod) {
+			continue
+		}
+
+		// Filtrar por pod selector (se fornecido)
+		if opts.PodSelector != "" {
+			// TODO: Implementar label selector matching
+			// Por enquanto, incluir todos os pods
+		}
+
+		podsToEvict = append(podsToEvict, pod)
+	}
+
+	// Dry-run: apenas listar pods que seriam evicted
+	if opts.DryRun {
+		return nil // Não executar, apenas validar
+	}
+
+	// Evict pods em chunks
+	chunkSize := opts.ChunkSize
+	if chunkSize < 1 {
+		chunkSize = 1
+	}
+
+	for i := 0; i < len(podsToEvict); i += chunkSize {
+		end := i + chunkSize
+		if end > len(podsToEvict) {
+			end = len(podsToEvict)
+		}
+
+		// Evict chunk de pods
+		for _, pod := range podsToEvict[i:end] {
+			if err := c.evictPod(ctx, &pod, opts); err != nil {
+				return fmt.Errorf("failed to evict pod %s/%s: %w", pod.Namespace, pod.Name, err)
+			}
+		}
+
+		// Aguardar pods serem deletados (com timeout)
+		if err := c.waitForPodsDeleted(ctx, podsToEvict[i:end], opts); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// evictPod evict um único pod
+func (c *Client) evictPod(ctx context.Context, pod *corev1.Pod, opts *models.DrainOptions) error {
+	// Se --force=true e pod não tem controller, usar DELETE
+	if opts.Force && !hasController(pod) {
+		gracePeriod := int64(opts.GracePeriod)
+		deleteOptions := metav1.DeleteOptions{
+			GracePeriodSeconds: &gracePeriod,
+		}
+		return c.clientset.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, deleteOptions)
+	}
+
+	// Usar Eviction API (respeita PDBs)
+	if !opts.DisableEviction {
+		gracePeriod := int64(opts.GracePeriod)
+		eviction := &policyv1.Eviction{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pod.Name,
+				Namespace: pod.Namespace,
+			},
+			DeleteOptions: &metav1.DeleteOptions{
+				GracePeriodSeconds: &gracePeriod,
+			},
+		}
+		return c.clientset.PolicyV1().Evictions(pod.Namespace).Evict(ctx, eviction)
+	}
+
+	// Fallback: DELETE direto (não respeita PDBs)
+	gracePeriod := int64(opts.GracePeriod)
+	deleteOptions := metav1.DeleteOptions{
+		GracePeriodSeconds: &gracePeriod,
+	}
+	return c.clientset.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, deleteOptions)
+}
+
+// waitForPodsDeleted aguarda pods serem deletados
+func (c *Client) waitForPodsDeleted(ctx context.Context, pods []corev1.Pod, opts *models.DrainOptions) error {
+	timeout, err := parseDuration(opts.Timeout)
+	if err != nil {
+		return err
+	}
+
+	deadline := time.Now().Add(timeout)
+
+	for _, pod := range pods {
+		for {
+			// Verificar se ainda existe
+			_, err := c.clientset.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+			if err != nil {
+				// Pod não existe mais (deletado)
+				break
+			}
+
+			// Verificar timeout
+			if time.Now().After(deadline) {
+				return fmt.Errorf("timeout waiting for pod %s/%s to be deleted", pod.Namespace, pod.Name)
+			}
+
+			// Aguardar antes de verificar novamente
+			time.Sleep(2 * time.Second)
+		}
+	}
+
+	return nil
+}
+
+// IsNodeDrained verifica se um node está completamente drained (sem pods)
+func (c *Client) IsNodeDrained(ctx context.Context, nodeName string) (bool, error) {
+	// Listar pods no node
+	pods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
+	}
+
+	// Contar pods não-DaemonSet
+	nonDaemonSetPods := 0
+	for _, pod := range pods.Items {
+		if !isDaemonSetPod(pod) {
+			nonDaemonSetPods++
+		}
+	}
+
+	return nonDaemonSetPods == 0, nil
+}
+
+// ===========================
+// Validation Functions
+// ===========================
+
+// ValidateDrainOptions valida todas as opções de drain
+func ValidateDrainOptions(opts *models.DrainOptions) error {
+	if opts == nil {
+		return fmt.Errorf("drain options cannot be nil")
+	}
+
+	// Validar timeout
+	if err := ValidateTimeout(opts.Timeout); err != nil {
+		return err
+	}
+
+	// Validar grace period
+	if opts.GracePeriod < 0 {
+		return fmt.Errorf("grace period must be >= 0, got %d", opts.GracePeriod)
+	}
+
+	// Validar skip wait timeout
+	if opts.SkipWaitForDeleteTimeout < 0 {
+		return fmt.Errorf("skip wait timeout must be >= 0, got %d", opts.SkipWaitForDeleteTimeout)
+	}
+
+	// Validar chunk size
+	if opts.ChunkSize < 1 {
+		return fmt.Errorf("chunk size must be >= 1, got %d", opts.ChunkSize)
+	}
+
+	// Validar pod selector (se fornecido)
+	if opts.PodSelector != "" {
+		if err := ValidatePodSelector(opts.PodSelector); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ValidateTimeout valida formato de timeout (5m, 300s, 1h)
+func ValidateTimeout(timeout string) error {
+	if timeout == "" {
+		return fmt.Errorf("timeout cannot be empty")
+	}
+
+	// Tentar parsear
+	_, err := parseDuration(timeout)
+	if err != nil {
+		return fmt.Errorf("invalid timeout format '%s': expected formats like '5m', '300s', '1h'", timeout)
+	}
+
+	return nil
+}
+
+// ValidatePodSelector valida sintaxe de label selector
+func ValidatePodSelector(selector string) error {
+	if selector == "" {
+		return nil // Vazio é válido (sem filtro)
+	}
+
+	// Validação básica: verificar formato key=value ou key!=value
+	// Formato: app=nginx,tier!=frontend
+	pairs := strings.Split(selector, ",")
+	for _, pair := range pairs {
+		if !strings.Contains(pair, "=") && !strings.Contains(pair, "!=") {
+			return fmt.Errorf("invalid pod selector '%s': expected format 'key=value' or 'key!=value'", pair)
+		}
+	}
+
+	return nil
+}
+
+// ===========================
+// Helper Functions
+// ===========================
+
+// isDaemonSetPod verifica se um pod pertence a um DaemonSet
+func isDaemonSetPod(pod corev1.Pod) bool {
+	for _, owner := range pod.OwnerReferences {
+		if owner.Kind == "DaemonSet" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasController verifica se um pod tem um controller (Deployment, ReplicaSet, etc.)
+func hasController(pod *corev1.Pod) bool {
+	return len(pod.OwnerReferences) > 0
+}
+
+// parseDuration converte string de timeout para time.Duration
+func parseDuration(timeout string) (time.Duration, error) {
+	// Suportar formatos: 5m, 300s, 1h, 1h30m
+	duration, err := time.ParseDuration(timeout)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration '%s': %w", timeout, err)
+	}
+	return duration, nil
 }

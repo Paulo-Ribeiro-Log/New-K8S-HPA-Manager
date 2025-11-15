@@ -24,6 +24,7 @@ import type {
   ConfigMapValidateResult,
   ConfigMapApplyResult,
   VersionInfo,
+  SequenceExecuteRequest,
 } from "./types";
 
 const API_BASE_URL = "/api/v1";
@@ -301,15 +302,41 @@ class APIClient {
       min_node_count?: number;
       max_node_count?: number;
       autoscaling_enabled?: boolean;
+    },
+    cordonDrainConfig?: {
+      cordonEnabled: boolean;
+      drainEnabled: boolean;
+      gracePeriod: number;
+      timeout: number;
+      forceDelete: boolean;
+      ignoreDaemonSets: boolean;
+      deleteEmptyDir: boolean;
+      chunkSize: number;
     }
   ): Promise<NodePool> {
+    const payload = cordonDrainConfig
+      ? {
+          ...updates,
+          cordon_drain_config: {
+            cordon_enabled: cordonDrainConfig.cordonEnabled,
+            drain_enabled: cordonDrainConfig.drainEnabled,
+            grace_period: cordonDrainConfig.gracePeriod,
+            timeout: cordonDrainConfig.timeout,
+            force_delete: cordonDrainConfig.forceDelete,
+            ignore_daemonsets: cordonDrainConfig.ignoreDaemonSets,
+            delete_emptydir: cordonDrainConfig.deleteEmptyDir,
+            chunk_size: cordonDrainConfig.chunkSize,
+          },
+        }
+      : updates;
+
     return this.request(
       `/nodepools/${encodeURIComponent(cluster)}/${encodeURIComponent(
         resourceGroup
       )}/${encodeURIComponent(name)}`,
       {
         method: "PUT",
-        body: JSON.stringify(updates),
+        body: JSON.stringify(payload),
       }
     );
   }
@@ -562,6 +589,27 @@ class APIClient {
       throw new Error("Failed to fetch version");
     }
     return response.json();
+  }
+
+  // Node Pool Sequence Execution
+  async executeNodePoolSequence(
+    request: SequenceExecuteRequest
+  ): Promise<{ success: boolean; message: string; data?: any }> {
+    const response = await fetch("/api/v1/nodepools/sequence/execute", {
+      method: "POST",
+      headers: this.getHeaders(),
+      body: JSON.stringify(request),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data.error?.message || "Failed to execute node pool sequence"
+      );
+    }
+
+    return data;
   }
 }
 

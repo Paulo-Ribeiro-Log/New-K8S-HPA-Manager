@@ -81,6 +81,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Diff Visual com tela cheia + confirmação de Apply** - Botão “Tela cheia” (e toggle no cabeçalho) no modal de diff e diálogo de confirmação antes de aplicar YAML diretamente no cluster - Nov 2025
 - ✅ **Linhas de referência confiáveis no gráfico de réplicas** - Min/Max passam a considerar o snapshot válido mais recente, evitando referência 0/0 causada por dados antigos - Nov 2025
 - ✅ **Select compacto na aba Monitoramento** - Quando a sidebar está recolhida, o nome do HPA vira um select com todos os recursos monitorados para troca rápida sem reabrir o painel - Nov 2025
+- ✅ **Cordon/Drain Config para Node Pools** - Sistema completo de evacuação de nodes antes de aplicar mudanças, com modal de configuração (grace period, timeout, force delete, etc.) integrado ao fluxo de Sequential Execution - 15 nov 2025
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
@@ -1163,6 +1164,144 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Sistema de Cordon/Drain para Node Pools + Correção Makefile (Novembro 2025) ✅
+
+**Data:** 15 de novembro de 2025
+
+**Features implementadas:**
+
+**1️⃣ Sistema Completo de Cordon/Drain Config**:
+- **Localização**: Integrado ao card "Sequential Execution" do NodePoolEditor
+- **Condicional**: Só aparece quando `sequenceOrder != "none"` (requer 2+ nodes)
+- **Fluxos suportados**:
+  - **Salvar (Staging)**: Abre modal → salva config junto com node pool no staging
+  - **Aplicar Agora**: Abre modal → executa cordon/drain → aplica mudanças via Azure
+
+**2️⃣ CordonDrainConfigModal** (`internal/web/frontend/src/components/CordonDrainConfigModal.tsx` - 293 linhas):
+- Configurações de **CORDON**:
+  - Checkbox para habilitar
+  - Marca nodes como unschedulable
+- Configurações de **DRAIN**:
+  - Checkbox para habilitar (requer CORDON)
+  - Grace Period (segundos) - padrão: 300s
+  - Timeout (segundos) - padrão: 600s
+  - Chunk Size (pods simultâneos) - padrão: 5
+  - Opções avançadas:
+    - Ignore DaemonSets (checkbox)
+    - Delete EmptyDir volumes (checkbox)
+    - Force Delete - ⚠️ Ignora PodDisruptionBudget (checkbox)
+- Resumo da configuração ativa com preview
+
+**3️⃣ Backend - Execução de Cordon/Drain** (`internal/web/handlers/nodepools.go`):
+```go
+// Line 94-103: Estruturas de dados
+type CordonDrainConfig struct {
+    CordonEnabled    bool `json:"cordon_enabled"`
+    DrainEnabled     bool `json:"drain_enabled"`
+    GracePeriod      int  `json:"grace_period"`
+    Timeout          int  `json:"timeout"`
+    ForceDelete      bool `json:"force_delete"`
+    IgnoreDaemonSets bool `json:"ignore_daemonsets"`
+    DeleteEmptyDir   bool `json:"delete_emptydir"`
+    ChunkSize        int  `json:"chunk_size"`
+}
+
+// Lines 279-363: Execução ANTES de aplicar mudanças Azure
+if req.CordonDrainConfig != nil {
+    // 1. Obter client Kubernetes
+    k8sClient := getKubernetesClient(cluster)
+
+    // 2. Buscar nodes do node pool
+    nodes := k8sClient.GetNodesInNodePool(ctx, nodePoolName)
+
+    // 3. Fase CORDON (se habilitado)
+    if cfg.CordonEnabled {
+        for _, nodeName := range nodes {
+            k8sClient.CordonNode(ctx, nodeName)
+        }
+    }
+
+    // 4. Fase DRAIN (se habilitado)
+    if cfg.DrainEnabled {
+        drainOpts := &models.DrainOptions{
+            GracePeriod:        cfg.GracePeriod,
+            Timeout:            fmt.Sprintf("%ds", cfg.Timeout),
+            Force:              cfg.ForceDelete,
+            IgnoreDaemonsets:   cfg.IgnoreDaemonSets,
+            DeleteEmptyDirData: cfg.DeleteEmptyDir,
+            ChunkSize:          cfg.ChunkSize,
+        }
+        for _, nodeName := range nodes {
+            k8sClient.DrainNode(ctx, nodeName, drainOpts)
+        }
+    }
+}
+
+// 5. ENTÃO aplica mudanças via Azure CLI
+applyNodePoolChanges(clusterNameForAzure, resourceGroup, op)
+```
+
+**4️⃣ Correção Crítica: Makefile web-build** (`makefile`):
+
+**Problema identificado:**
+- `make web-build` compilava frontend para `dist/` mas **NÃO copiava** para `internal/web/static/`
+- Resultado: Assets desatualizados no binário Go embedado
+- Checkbox Cordon/Drain não aparecia no navegador apesar do código estar correto
+
+**Solução:**
+```makefile
+web-build:
+	@echo "Building frontend for production..."
+	@cd internal/web/frontend && npm run build
+	@echo "Cleaning old assets from internal/web/static/..."
+	@rm -rf internal/web/static/assets internal/web/static/index.html
+	@echo "Copying fresh build from dist to internal/web/static/..."
+	@cp -r internal/web/frontend/dist/* internal/web/static/
+	@echo "✅ Frontend built and copied to internal/web/static/"
+	@echo ""
+	@echo "📦 Assets verificados:"
+	@ls -lh internal/web/static/assets/ | grep -E "\.(js|css)$$" || true
+	@echo ""
+	@echo "📄 Index.html references:"
+	@grep -E "index-.*\.(js|css)" internal/web/static/index.html || true
+```
+
+**Benefícios:**
+- ✅ Remove assets antigos antes de copiar
+- ✅ Copia TODO o conteúdo do dist/ (incluindo index.html)
+- ✅ Feedback visual dos assets copiados
+- ✅ Verifica referências no index.html para garantir sincronia
+
+**Workflow completo:**
+1. Usuário seleciona Node Pool no editor
+2. Muda "Execution Order" para "*1" ou "*2"
+3. Checkbox "Cordon/Drain Config" aparece (integrado ao card)
+4. Usuário habilita checkbox e clica "Salvar (Staging)"
+5. Modal de configuração abre com todas as opções
+6. Usuário configura (CORDON + DRAIN com parâmetros)
+7. Confirma configuração
+8. Node Pool + Config salvos no staging com preview visual
+9. Na hora de "Apply All", backend executa:
+   - **CORDON** → marca nodes como unschedulable
+   - **DRAIN** → evacua pods com grace period/timeout configurado
+   - **APLICA** → mudanças no node pool via Azure CLI
+
+**Arquivos modificados:**
+- `internal/web/frontend/src/components/CordonDrainConfigModal.tsx` (NOVO - 293 linhas)
+- `internal/web/frontend/src/components/NodePoolEditor.tsx` (+120 linhas)
+  - Card Cordon/Drain integrado ao Sequential Execution
+  - Estados: cordonDrainEnabled, showCordonDrainModal, cordonDrainConfig, modalContext
+  - Handlers: handleApply, executeSaveToStaging, handleApplyNow, handleCordonDrainConfirm
+- `internal/web/frontend/src/lib/api/client.ts` (+30 linhas)
+  - Parâmetro opcional cordonDrainConfig em updateNodePool()
+- `internal/web/handlers/nodepools.go` (+85 linhas)
+  - Structs CordonDrainConfig e NodePoolUpdateRequest
+  - Lógica de execução antes de aplicar mudanças Azure
+- `makefile` (+9 linhas)
+  - Target web-build corrigido com limpeza, cópia e verificação
+
+---
 
 ### Menu de Contexto no Badge de Status do Monitoring Engine (Novembro 2025) ✅
 
