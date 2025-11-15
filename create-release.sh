@@ -107,7 +107,6 @@ BINARIES=(
     "build/release/new-k8s-hpa-linux-amd64"
     "build/release/new-k8s-hpa-darwin-amd64"
     "build/release/new-k8s-hpa-darwin-arm64"
-    "build/release/new-k8s-hpa-windows-amd64.exe"
 )
 
 missing_binaries=()
