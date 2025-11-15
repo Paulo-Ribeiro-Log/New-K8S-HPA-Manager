@@ -91,11 +91,23 @@ func (m *SequenceProgressManager) CloseSession(sessionID string) {
 }
 
 // NodePoolUpdateRequest representa o payload de atualização de um node pool
+type CordonDrainConfig struct {
+	CordonEnabled    bool `json:"cordon_enabled"`
+	DrainEnabled     bool `json:"drain_enabled"`
+	GracePeriod      int  `json:"grace_period"`
+	Timeout          int  `json:"timeout"`
+	ForceDelete      bool `json:"force_delete"`
+	IgnoreDaemonSets bool `json:"ignore_daemonsets"`
+	DeleteEmptyDir   bool `json:"delete_emptydir"`
+	ChunkSize        int  `json:"chunk_size"`
+}
+
 type NodePoolUpdateRequest struct {
-	NodeCount          *int32 `json:"node_count"`
-	MinNodeCount       *int32 `json:"min_node_count"`
-	MaxNodeCount       *int32 `json:"max_node_count"`
-	AutoscalingEnabled *bool  `json:"autoscaling_enabled"`
+	NodeCount          *int32             `json:"node_count"`
+	MinNodeCount       *int32             `json:"min_node_count"`
+	MaxNodeCount       *int32             `json:"max_node_count"`
+	AutoscalingEnabled *bool              `json:"autoscaling_enabled"`
+	CordonDrainConfig  *CordonDrainConfig `json:"cordon_drain_config,omitempty"`
 }
 
 // List retorna todos os node pools de um cluster
@@ -262,6 +274,107 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 	}
 	if req.MaxNodeCount != nil {
 		op.MaxNodeCount = *req.MaxNodeCount
+	}
+
+	// Se configuração de Cordon/Drain foi fornecida, executar ANTES de aplicar mudanças
+	if req.CordonDrainConfig != nil {
+		cfg := req.CordonDrainConfig
+
+		// Obter client Kubernetes para executar cordon/drain
+		kubeManager, err := config.NewKubeConfigManager("")
+		if err != nil {
+			c.JSON(500, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "KUBE_MANAGER_ERROR",
+					"message": fmt.Sprintf("Failed to create kube manager: %v", err),
+				},
+			})
+			return
+		}
+
+		clientInterface, err := kubeManager.GetClient(cluster)
+		if err != nil {
+			c.JSON(500, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "K8S_CLIENT_ERROR",
+					"message": fmt.Sprintf("Failed to get K8s client: %v", err),
+				},
+			})
+			return
+		}
+
+		// Type assertion para nosso wrapper Client
+		// Precisamos converter para interface{} primeiro para fazer o type assertion
+		var emptyInterface interface{} = clientInterface
+		k8sClient, ok := emptyInterface.(*kubernetes.Client)
+		if !ok {
+			c.JSON(500, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "CLIENT_TYPE_ERROR",
+					"message": "Invalid Kubernetes client type",
+				},
+			})
+			return
+		}
+
+		ctx := context.Background()
+
+		// Buscar nodes do node pool
+		nodes, err := k8sClient.GetNodesInNodePool(ctx, nodePoolName)
+		if err != nil {
+			c.JSON(500, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "GET_NODES_ERROR",
+					"message": fmt.Sprintf("Failed to get nodes: %v", err),
+				},
+			})
+			return
+		}
+
+		// Fase CORDON
+		if cfg.CordonEnabled {
+			for _, nodeName := range nodes {
+				if err := k8sClient.CordonNode(ctx, nodeName); err != nil {
+					c.JSON(500, gin.H{
+						"success": false,
+						"error": gin.H{
+							"code":    "CORDON_ERROR",
+							"message": fmt.Sprintf("Failed to cordon node %s: %v", nodeName, err),
+						},
+					})
+					return
+				}
+			}
+		}
+
+		// Fase DRAIN
+		if cfg.DrainEnabled {
+			drainOpts := &models.DrainOptions{
+				GracePeriod:        cfg.GracePeriod,
+				Timeout:            fmt.Sprintf("%ds", cfg.Timeout),
+				Force:              cfg.ForceDelete,
+				IgnoreDaemonsets:   cfg.IgnoreDaemonSets,
+				DeleteEmptyDirData: cfg.DeleteEmptyDir,
+				ChunkSize:          cfg.ChunkSize,
+			}
+
+			for _, nodeName := range nodes {
+				if err := k8sClient.DrainNode(ctx, nodeName, drainOpts); err != nil {
+					c.JSON(500, gin.H{
+						"success": false,
+						"error": gin.H{
+							"code":    "DRAIN_ERROR",
+							"message": fmt.Sprintf("Failed to drain node %s: %v", nodeName, err),
+						},
+					})
+					return
+				}
+			}
+		}
 	}
 
 	// Aplicar mudanças via Azure CLI (reutiliza função de sequential)

@@ -75,7 +75,17 @@ web-dev:
 web-build:
 	@echo "Building frontend for production..."
 	@cd internal/web/frontend && npm run build
-	@echo "✅ Frontend built to internal/web/static/"
+	@echo "Cleaning old assets from internal/web/static/..."
+	@rm -rf internal/web/static/assets internal/web/static/index.html
+	@echo "Copying fresh build from dist to internal/web/static/..."
+	@cp -r internal/web/frontend/dist/* internal/web/static/
+	@echo "✅ Frontend built and copied to internal/web/static/"
+	@echo ""
+	@echo "📦 Assets verificados:"
+	@ls -lh internal/web/static/assets/ | grep -E "\.(js|css)$$" || true
+	@echo ""
+	@echo "📄 Index.html references:"
+	@grep -E "index-.*\.(js|css)" internal/web/static/index.html || true
 
 .PHONY: web-clean
 web-clean:
