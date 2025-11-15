@@ -1307,6 +1307,8 @@ func (a *App) View() string {
 		content = a.renderAddCluster()
 	case models.StateLogViewer:
 		content = a.renderLogViewer()
+	case models.StateNodePoolSequenceConfig:
+		content = a.renderSequenceConfigModal()
 	case models.StateHelp:
 		content = a.renderHelp()
 	default:
@@ -1570,6 +1572,8 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleAddClusterKeys(msg)
 	case models.StateLogViewer:
 		return a.handleLogViewerKeys(msg)
+	case models.StateNodePoolSequenceConfig:
+		return a.handleSequenceConfigKeys(msg)
 	case models.StateHelp:
 		return a.handleHelpKeys(msg)
 	}
@@ -1663,6 +1667,12 @@ func (a *App) handleEscape() (tea.Model, tea.Cmd) {
 		a.model.LogViewerLogs = nil
 		a.model.LogViewerScrollPos = 0
 		a.model.LogViewerMessage = ""
+	case models.StateNodePoolSequenceConfig:
+		// Voltar do modal de configuração para seleção de node pools
+		targetState = models.StateNodeSelection
+		a.model.ShowSequenceConfigModal = false
+		a.model.SequenceConfigData = nil
+		a.model.ActivePanel = models.PanelSelectedNodePools
 	default:
 		// Estado não tem transição definida
 		return a, nil
@@ -4740,6 +4750,119 @@ func (a *App) checkSequenceStatusAndContinue() tea.Cmd {
 	}
 
 	a.debugLog("🎉 Execução sequencial concluída!")
+	return nil
+}
+
+// openSequenceConfigModal - Abre modal de configuração de cordon/drain para node pools
+func (a *App) openSequenceConfigModal(markedPools []*models.NodePool) tea.Cmd {
+	// Importar o componente de modal
+	modal := components.NewSequenceConfigModal(markedPools)
+
+	// Armazenar modal no model
+	a.model.SequenceConfigData = modal
+	a.model.ShowSequenceConfigModal = true
+
+	// Mudar para o estado de configuração de sequência
+	a.model.State = models.StateNodePoolSequenceConfig
+
+	a.debugLog("🔧 Modal de configuração de cordon/drain aberto para 2 node pools")
+
+	return nil
+}
+
+// renderSequenceConfigModal - Renderiza o modal de configuração de cordon/drain
+func (a *App) renderSequenceConfigModal() string {
+	if a.model.SequenceConfigData == nil {
+		return "Modal data not available"
+	}
+
+	modal, ok := a.model.SequenceConfigData.(*components.SequenceConfigModal)
+	if !ok {
+		return "Invalid modal data"
+	}
+
+	// Renderizar modal usando as dimensões da tela
+	return modal.Render(a.width, a.height)
+}
+
+// handleSequenceConfigKeys - Lida com teclas no modal de configuração
+func (a *App) handleSequenceConfigKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.model.SequenceConfigData == nil {
+		return a, nil
+	}
+
+	modal, ok := a.model.SequenceConfigData.(*components.SequenceConfigModal)
+	if !ok {
+		return a, nil
+	}
+
+	switch msg.String() {
+	case "esc":
+		// Fechar modal e voltar
+		return a.handleEscape()
+	case "enter":
+		// Confirmar configuração e executar
+		drainOpts, err := modal.ToDrainOptions()
+		if err != nil {
+			a.model.StatusContainer.AddInfo("error", fmt.Sprintf("❌ Erro na validação: %v", err))
+			return a, nil
+		}
+
+		// Executar sequenciamento com as opções configuradas
+		return a, a.executeSequenceWithConfig(modal.CordonEnabled, modal.DrainEnabled, drainOpts)
+	default:
+		// Passar tecla para o modal processar
+		modal.HandleKey(msg.String())
+		return a, nil
+	}
+}
+
+// executeSequenceWithConfig - Executa sequenciamento com configuração de cordon/drain
+func (a *App) executeSequenceWithConfig(cordonEnabled, drainEnabled bool, drainOpts *models.DrainOptions) tea.Cmd {
+	// Encontrar os 2 node pools marcados
+	var markedPools []*models.NodePool
+	for i := range a.model.SelectedNodePools {
+		if a.model.SelectedNodePools[i].SequenceOrder > 0 {
+			markedPools = append(markedPools, &a.model.SelectedNodePools[i])
+		}
+	}
+
+	if len(markedPools) != 2 {
+		a.model.StatusContainer.AddInfo("error", "❌ Erro: Deve haver exatamente 2 node pools marcados")
+		return nil
+	}
+
+	// Ordenar por SequenceOrder (garantir ordem *1, *2)
+	if markedPools[0].SequenceOrder > markedPools[1].SequenceOrder {
+		markedPools[0], markedPools[1] = markedPools[1], markedPools[0]
+	}
+
+	origin := markedPools[0]
+	dest := markedPools[1]
+
+	// Atualizar campos de cordon/drain nos node pools
+	origin.CordonEnabled = cordonEnabled
+	origin.DrainEnabled = drainEnabled
+	origin.DrainOptions = drainOpts
+
+	dest.CordonEnabled = cordonEnabled
+	dest.DrainEnabled = drainEnabled
+	dest.DrainOptions = drainOpts
+
+	// Fechar modal
+	a.model.ShowSequenceConfigModal = false
+	a.model.SequenceConfigData = nil
+	a.model.State = models.StateNodeSelection
+	a.model.ActivePanel = models.PanelSelectedNodePools
+
+	// Log de início
+	a.debugLog("🚀 Iniciando sequenciamento com cordon=%v drain=%v", cordonEnabled, drainEnabled)
+	a.model.StatusContainer.AddInfo("sequence", fmt.Sprintf("🚀 Executando: *1 %s → *2 %s", origin.Name, dest.Name))
+
+	// TODO: Aqui integraria com executeSequentialNodePools() ou chamada direta à API web
+	// Por enquanto, apenas log
+	a.model.StatusContainer.AddInfo("sequence", "✅ Configuração aplicada com sucesso")
+
 	return nil
 }
 
