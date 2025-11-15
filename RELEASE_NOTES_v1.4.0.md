@@ -1,4 +1,4 @@
-# Release 1.0.1 - Cordon/Drain + Sistema de Releases
+# Release 1.4.0 - Cordon/Drain + Sistema de Releases
 
 ## 🎉 Novidades
 
@@ -44,21 +44,21 @@
 
 ### Linux (amd64)
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.1/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.4.0/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
 
 ### macOS (Intel)
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.1/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.4.0/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
 
 ### macOS (Apple Silicon M1/M2)
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.1/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.4.0/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
@@ -69,7 +69,7 @@ sudo mv new-k8s-hpa /usr/local/bin/
 **Use WSL2** para funcionalidade completa:
 ```bash
 # Dentro do WSL2 (Ubuntu)
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.1/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.4.0/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
@@ -80,7 +80,7 @@ sudo mv new-k8s-hpa /usr/local/bin/
 
 ```bash
 new-k8s-hpa version
-# Saída esperada: new-k8s-hpa versão 1.0.1
+# Saída esperada: new-k8s-hpa versão 1.4.0
 ```
 
 ## 🚀 Uso Rápido
