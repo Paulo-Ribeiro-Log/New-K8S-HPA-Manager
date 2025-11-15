@@ -1,7 +1,6 @@
 #!/bin/bash
-# Complete installer script for k8s-hpa-manager
-# This script clones the repository, builds, and installs the application globally
-# It also copies utility scripts (web-server.sh, uninstall.sh) for easy management
+# Installer script for new-k8s-hpa
+# Downloads pre-compiled binary from GitHub releases
 
 set -e
 
@@ -30,10 +29,11 @@ NC='\033[0m' # No Color
 
 # Project info
 BINARY_NAME="new-k8s-hpa"
-REPO_URL="https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager.git"
+REPO_OWNER="Paulo-Ribeiro-Log"
+REPO_NAME="New-K8S-HPA-Manager"
+RELEASE_VERSION="v1.0.6"
 INSTALL_PATH="/usr/local/bin"
 SCRIPTS_DIR="$HOME/.k8s-hpa-manager/scripts"
-TEMP_DIR="/tmp/new-k8s-hpa-install"
 
 # Function to print colored messages
 print_info() {
@@ -58,126 +58,122 @@ print_header() {
     echo "=================================================="
 }
 
-# Check system requirements
+# Detect OS and architecture
+detect_platform() {
+    print_header "Detectando plataforma"
+
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    ARCH=$(uname -m)
+
+    case "$OS" in
+        linux)
+            OS_NAME="Linux"
+            case "$ARCH" in
+                x86_64|amd64)
+                    PLATFORM="linux-amd64"
+                    ;;
+                *)
+                    print_error "Arquitetura não suportada: $ARCH"
+                    print_info "Plataformas suportadas: Linux amd64, macOS Intel (amd64), macOS Apple Silicon (arm64)"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        darwin)
+            OS_NAME="macOS"
+            case "$ARCH" in
+                x86_64|amd64)
+                    PLATFORM="darwin-amd64"
+                    ;;
+                arm64)
+                    PLATFORM="darwin-arm64"
+                    ;;
+                *)
+                    print_error "Arquitetura não suportada: $ARCH"
+                    print_info "Plataformas suportadas: Linux amd64, macOS Intel (amd64), macOS Apple Silicon (arm64)"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        *)
+            print_error "Sistema operacional não suportado: $OS"
+            print_info "Plataformas suportadas: Linux, macOS"
+            print_warning "Para Windows, use WSL2 (Windows Subsystem for Linux)"
+            exit 1
+            ;;
+    esac
+
+    print_success "Plataforma detectada: $OS_NAME ($ARCH)"
+    print_info "Binário: $BINARY_NAME-$PLATFORM"
+}
+
+# Check basic requirements
 check_requirements() {
-    print_header "Verificando requisitos do sistema"
+    print_header "Verificando requisitos básicos"
 
-    local missing_deps=()
-
-    # Check Go
-    if ! command -v go &> /dev/null; then
-        missing_deps+=("Go 1.23+")
-        print_error "Go não encontrado"
+    # Check curl
+    if ! command -v curl &> /dev/null; then
+        print_error "curl não encontrado (necessário para download)"
+        exit 1
     else
-        GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
-        print_success "Go instalado: $GO_VERSION"
+        print_success "curl instalado"
     fi
 
-    # Check git
-    if ! command -v git &> /dev/null; then
-        missing_deps+=("git")
-        print_error "Git não encontrado"
-    else
-        print_success "Git instalado: $(git --version | awk '{print $3}')"
-    fi
-
-    # Check kubectl
+    # Check kubectl (optional but recommended)
     if ! command -v kubectl &> /dev/null; then
         print_warning "kubectl não encontrado (necessário para operações K8s)"
     else
-        print_success "kubectl instalado: $(kubectl version --client -o json 2>/dev/null | grep -o '"gitVersion":"[^"]*"' | head -1 | cut -d'"' -f4 || echo 'version unknown')"
+        print_success "kubectl instalado"
     fi
 
-    # Check Azure CLI
+    # Check Azure CLI (optional)
     if ! command -v az &> /dev/null; then
         print_warning "Azure CLI não encontrado (necessário para operações de node pools)"
     else
-        print_success "Azure CLI instalado: $(az version -o tsv 2>/dev/null | head -1 || echo 'version unknown')"
+        print_success "Azure CLI instalado"
     fi
 
-    # If missing critical dependencies, exit
-    if [ ${#missing_deps[@]} -gt 0 ]; then
-        print_error "Dependências obrigatórias faltando:"
-        for dep in "${missing_deps[@]}"; do
-            echo "  • $dep"
-        done
-        echo ""
-        echo "Por favor, instale as dependências e tente novamente."
-        exit 1
-    fi
-
-    print_success "Todos os requisitos obrigatórios satisfeitos"
+    print_success "Requisitos básicos satisfeitos"
 }
 
-# Clone or update repository
-clone_repository() {
-    print_header "Clonando repositório"
+# Download binary from GitHub release
+download_binary() {
+    print_header "Baixando binário da release $RELEASE_VERSION"
 
-    # Remove old temp directory if exists
-    if [ -d "$TEMP_DIR" ]; then
-        print_info "Removendo diretório temporário antigo..."
-        rm -rf "$TEMP_DIR"
-    fi
+    local download_url="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$RELEASE_VERSION/$BINARY_NAME-$PLATFORM"
+    local temp_file="/tmp/$BINARY_NAME-$PLATFORM"
 
-    # Clone repository
-    print_info "Clonando de $REPO_URL..."
-    CLONE_OUTPUT=$(git clone "$REPO_URL" "$TEMP_DIR" 2>&1)
-    CLONE_STATUS=$?
+    print_info "URL: $download_url"
+    print_info "Baixando..."
 
-    if [ $CLONE_STATUS -eq 0 ]; then
-        print_success "Repositório clonado com sucesso"
+    if curl -L -f -o "$temp_file" "$download_url"; then
+        print_success "Download concluído"
+
+        # Get file size
+        local file_size=$(du -h "$temp_file" | cut -f1)
+        print_info "Tamanho: $file_size"
+
+        # Make executable
+        chmod +x "$temp_file"
+
+        BINARY_PATH="$temp_file"
     else
-        print_error "Falha ao clonar repositório"
-        echo "$CLONE_OUTPUT"
+        print_error "Falha ao baixar binário"
+        print_info "Verifique se a release $RELEASE_VERSION existe em:"
+        print_info "  https://github.com/$REPO_OWNER/$REPO_NAME/releases/tag/$RELEASE_VERSION"
         exit 1
     fi
-
-    cd "$TEMP_DIR"
-
-    # Use main branch (always latest code)
-    # Note: Tags will be used in future releases after v1.2.1
-    print_info "Usando branch principal (main)"
-}
-
-# Build binary
-build_binary() {
-    print_header "Compilando aplicação"
-
-    cd "$TEMP_DIR"
-
-    # Detect version for build
-    VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-    VERSION_CLEAN=$(echo "$VERSION" | sed 's/^v//')
-
-    print_info "Compilando versão $VERSION_CLEAN..."
-
-    # Build with version injection using vendor (dependências já estão versionadas)
-    LDFLAGS="-X k8s-hpa-manager/internal/updater.Version=$VERSION_CLEAN"
-
-    mkdir -p build
-    if go build -mod=vendor -ldflags "$LDFLAGS" -o "build/$BINARY_NAME" . ; then
-        print_success "Compilação bem-sucedida"
-    else
-        print_error "Falha na compilação"
-        exit 1
-    fi
-
-    # Get binary info
-    BINARY_SIZE=$(du -h "build/$BINARY_NAME" | cut -f1)
-    print_info "Tamanho do binário: $BINARY_SIZE"
 }
 
 # Install binary globally
 install_binary() {
     print_header "Instalando aplicação globalmente"
 
-    cd "$TEMP_DIR"
-
     # Check if binary already exists
     if command -v $BINARY_NAME &> /dev/null; then
         EXISTING_VERSION=$($BINARY_NAME version 2>/dev/null | head -1 || echo "versão desconhecida")
         print_info "$BINARY_NAME já instalado: $EXISTING_VERSION"
-        print_info "Substituindo com nova versão..."
+        print_info "Substituindo com release $RELEASE_VERSION..."
 
         # Check if web server is running and stop it
         if lsof -ti:8080 &> /dev/null; then
@@ -194,8 +190,8 @@ install_binary() {
         print_info "Privilégios de administrador necessários para instalação em $INSTALL_PATH"
 
         # Copy binary
-        if sudo cp "build/$BINARY_NAME" "$INSTALL_PATH/"; then
-            print_success "Binário copiado para $INSTALL_PATH/"
+        if sudo cp "$BINARY_PATH" "$INSTALL_PATH/$BINARY_NAME"; then
+            print_success "Binário copiado para $INSTALL_PATH/$BINARY_NAME"
         else
             print_error "Falha ao copiar binário"
             exit 1
@@ -210,75 +206,9 @@ install_binary() {
         fi
     else
         # Direct copy (if user has write permissions)
-        cp "build/$BINARY_NAME" "$INSTALL_PATH/"
+        cp "$BINARY_PATH" "$INSTALL_PATH/$BINARY_NAME"
         chmod +x "$INSTALL_PATH/$BINARY_NAME"
         print_success "Binário instalado"
-    fi
-}
-
-# Copy utility scripts
-copy_scripts() {
-    print_header "Copiando scripts utilitários"
-
-    cd "$TEMP_DIR"
-
-    # Create scripts directory (but preserve sessions if they exist)
-    local user_data_dir="$HOME/.k8s-hpa-manager"
-    local sessions_dir="$user_data_dir/sessions"
-
-    # Check if sessions directory already exists
-    if [ -d "$sessions_dir" ]; then
-        print_info "Sessões existentes detectadas - preservando dados do usuário"
-        print_success "Diretório de sessões preservado: $sessions_dir"
-    else
-        print_info "Primeira instalação - criando estrutura de diretórios"
-    fi
-
-    # Create scripts directory
-    mkdir -p "$SCRIPTS_DIR"
-
-    # List of scripts to copy
-    local scripts=("web-server.sh" "auto-update.sh" "uninstall.sh" "backup.sh" "restore.sh" "rebuild-web.sh")
-    local copied_count=0
-
-    for script in "${scripts[@]}"; do
-        if [ -f "$script" ]; then
-            cp "$script" "$SCRIPTS_DIR/"
-            chmod +x "$SCRIPTS_DIR/$script"
-            print_success "Copiado: $script"
-            ((copied_count++))
-        else
-            print_warning "Script não encontrado: $script"
-        fi
-    done
-
-    print_info "Scripts copiados para: $SCRIPTS_DIR"
-    print_success "$copied_count scripts utilitários instalados"
-}
-
-# Create convenience aliases/links
-create_aliases() {
-    print_header "Criando atalhos convenientes"
-
-    # Create symbolic links for commonly used scripts
-    local link_created=false
-
-    # web-server.sh -> new-k8s-hpa-web
-    if [ -f "$SCRIPTS_DIR/web-server.sh" ]; then
-        if [[ ! -w "$INSTALL_PATH" ]]; then
-            if sudo ln -sf "$SCRIPTS_DIR/web-server.sh" "$INSTALL_PATH/new-k8s-hpa-web" 2>/dev/null; then
-                print_success "Atalho criado: new-k8s-hpa-web"
-                link_created=true
-            fi
-        else
-            ln -sf "$SCRIPTS_DIR/web-server.sh" "$INSTALL_PATH/new-k8s-hpa-web" 2>/dev/null
-            print_success "Atalho criado: new-k8s-hpa-web"
-            link_created=true
-        fi
-    fi
-
-    if [ "$link_created" = false ]; then
-        print_info "Nenhum atalho criado (você pode usar os scripts em $SCRIPTS_DIR diretamente)"
     fi
 }
 
@@ -314,9 +244,9 @@ test_installation() {
 cleanup() {
     print_header "Limpeza"
 
-    if [ -d "$TEMP_DIR" ]; then
-        print_info "Removendo diretório temporário..."
-        rm -rf "$TEMP_DIR"
+    if [ -f "$BINARY_PATH" ]; then
+        print_info "Removendo arquivo temporário..."
+        rm -f "$BINARY_PATH"
         print_success "Limpeza concluída"
     fi
 }
@@ -326,39 +256,26 @@ print_usage() {
     print_header "Instalação Concluída com Sucesso! 🎉"
 
     echo ""
+    echo -e "${GREEN}Versão instalada: $RELEASE_VERSION${NC}"
+    echo ""
     echo -e "${BLUE}📋 Comandos Principais:${NC}"
     echo "  $BINARY_NAME                      # Iniciar TUI"
     echo "  $BINARY_NAME web                  # Iniciar servidor web"
-    echo "  $BINARY_NAME version              # Ver versão e verificar updates"
+    echo "  $BINARY_NAME version              # Ver versão"
     echo "  $BINARY_NAME autodiscover         # Auto-descobrir clusters"
     echo "  $BINARY_NAME --help               # Ver ajuda completa"
     echo ""
 
     echo -e "${BLUE}🌐 Servidor Web:${NC}"
-    if command -v new-k8s-hpa-web &> /dev/null; then
-        echo "  new-k8s-hpa-web start             # Iniciar servidor (porta 8080)"
-        echo "  new-k8s-hpa-web stop              # Parar servidor"
-        echo "  new-k8s-hpa-web status            # Ver status"
-        echo "  new-k8s-hpa-web logs              # Ver logs em tempo real"
-    else
-        echo "  $SCRIPTS_DIR/web-server.sh start  # Iniciar servidor"
-        echo "  $SCRIPTS_DIR/web-server.sh stop   # Parar servidor"
-        echo "  $SCRIPTS_DIR/web-server.sh status # Ver status"
-    fi
-    echo ""
-
-    echo -e "${BLUE}🔧 Scripts Utilitários:${NC}"
-    echo "  Localização: $SCRIPTS_DIR"
-    echo "  • web-server.sh   - Gerenciar servidor web"
-    echo "  • uninstall.sh    - Desinstalar aplicação"
-    echo "  • backup.sh       - Fazer backup do código"
-    echo "  • restore.sh      - Restaurar backup"
-    echo "  • rebuild-web.sh  - Rebuild interface web"
+    echo "  $BINARY_NAME web                  # Background mode (default)"
+    echo "  $BINARY_NAME web -f               # Foreground mode (logs no terminal)"
+    echo "  $BINARY_NAME web --port 9000      # Custom port"
+    echo "  Interface: http://localhost:8080"
     echo ""
 
     echo -e "${BLUE}📚 Recursos:${NC}"
     echo "  • Interface TUI: Terminal interativo completo"
-    echo "  • Interface Web: http://localhost:8080 (após iniciar web-server)"
+    echo "  • Interface Web: Dashboard moderno React/TypeScript"
     echo "  • HPAs: Gerenciamento de Horizontal Pod Autoscalers"
     echo "  • Node Pools: Gerenciamento de Azure AKS node pools"
     echo "  • CronJobs: Gerenciamento de CronJobs (F9)"
@@ -373,41 +290,13 @@ print_usage() {
     echo "  4. Iniciar aplicação: $BINARY_NAME"
     echo ""
 
+    echo -e "${BLUE}📖 Documentação:${NC}"
+    echo "  • GitHub: https://github.com/$REPO_OWNER/$REPO_NAME"
+    echo "  • Releases: https://github.com/$REPO_OWNER/$REPO_NAME/releases"
+    echo "  • Windows (WSL2): https://github.com/$REPO_OWNER/$REPO_NAME/blob/main/WINDOWS_SUPPORT.md"
+    echo ""
+
     echo -e "${GREEN}🚀 Pronto para gerenciar seus recursos Kubernetes!${NC}"
-}
-
-# Main installation flow
-main() {
-    clear
-    print_header "🏗️  New K8s HPA Manager - Instalador Completo"
-
-    echo ""
-    echo "Este script irá:"
-    echo "  1. Verificar requisitos do sistema"
-    echo "  2. Clonar o repositório do GitHub"
-    echo "  3. Compilar a aplicação"
-    echo "  4. Instalar globalmente em $INSTALL_PATH"
-    echo "  5. Copiar scripts utilitários para $SCRIPTS_DIR"
-    echo ""
-    echo "Iniciando instalação..."
-    echo ""
-
-    # Execute installation steps
-    check_requirements
-    clone_repository
-    build_binary
-    install_binary
-    copy_scripts
-    create_aliases
-
-    if test_installation; then
-        run_autodiscover
-        cleanup
-        print_usage
-    else
-        print_warning "Instalação concluída com avisos. Verifique as mensagens acima."
-        cleanup
-    fi
 }
 
 # Run autodiscover after installation
@@ -446,6 +335,37 @@ run_autodiscover() {
     fi
 
     echo ""
+}
+
+# Main installation flow
+main() {
+    clear
+    print_header "🏗️  New K8s HPA Manager - Instalador"
+
+    echo ""
+    echo "Este script irá:"
+    echo "  1. Detectar plataforma (OS e arquitetura)"
+    echo "  2. Baixar binário pré-compilado da release $RELEASE_VERSION"
+    echo "  3. Instalar globalmente em $INSTALL_PATH"
+    echo "  4. Auto-descobrir clusters (se kubectl disponível)"
+    echo ""
+    echo "Iniciando instalação..."
+    echo ""
+
+    # Execute installation steps
+    detect_platform
+    check_requirements
+    download_binary
+    install_binary
+
+    if test_installation; then
+        run_autodiscover
+        cleanup
+        print_usage
+    else
+        print_warning "Instalação concluída com avisos. Verifique as mensagens acima."
+        cleanup
+    fi
 }
 
 # Trap errors

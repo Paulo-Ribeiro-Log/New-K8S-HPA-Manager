@@ -33,8 +33,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Estado Atual (Novembro 2025)
 
-**Versão Atual:** v1.3.9 (Release: 03 de novembro de 2025)
-**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/Scale_HPA/releases/tag/v1.3.9
+**Versão Atual:** v1.0.6 (Release: 15 de novembro de 2025)
+**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/tag/v1.0.6
 
 **TUI (Terminal Interface):**
 - ✅ Interface responsiva (adapta-se ao tamanho real do terminal - mínimo 80x24)
@@ -82,6 +82,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Linhas de referência confiáveis no gráfico de réplicas** - Min/Max passam a considerar o snapshot válido mais recente, evitando referência 0/0 causada por dados antigos - Nov 2025
 - ✅ **Select compacto na aba Monitoramento** - Quando a sidebar está recolhida, o nome do HPA vira um select com todos os recursos monitorados para troca rápida sem reabrir o painel - Nov 2025
 - ✅ **Cordon/Drain Config para Node Pools** - Sistema completo de evacuação de nodes antes de aplicar mudanças, com modal de configuração (grace period, timeout, force delete, etc.) integrado ao fluxo de Sequential Execution - 15 nov 2025
+
+**Sistema de Releases (v1.0.6 - Novembro 2025):**
+- ✅ **Sistema de Releases Automatizado** - Script `create-release.sh` com upload automático de binários para GitHub (Linux amd64, macOS Intel/ARM) - 15 nov 2025
+- ✅ **Documentação Completa de Releases** - `INSTRUCTIONS_RELEASE.md` com guia passo a passo para criar releases - 15 nov 2025
+- ✅ **Suporte Windows via WSL2** - `WINDOWS_SUPPORT.md` com instruções detalhadas de instalação via Windows Subsystem for Linux - 15 nov 2025
+- ✅ **Versionamento Semântico** - Injeção de versão via git tags durante build (`make release`) - 15 nov 2025
 
 ### Tech Stack
 - **Language**: Go 1.23+ (toolchain 1.24.7)
