@@ -51,6 +51,8 @@ apoio.txt
 *.token
 github_token.txt
 secrets.sh
+.gh-token
+**/.gh-token
 
 # Scripts de deploy/manutenção (não versionar)
 safe-deploy.sh
