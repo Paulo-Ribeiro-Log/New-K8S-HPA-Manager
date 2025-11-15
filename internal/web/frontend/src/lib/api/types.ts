@@ -296,6 +296,46 @@ export interface NodePoolValues {
   autoscaling_enabled: boolean;
 }
 
+// Node Pool Cordon/Drain Types
+export interface NodePoolChanges {
+  autoscaling: boolean;
+  node_count: number;
+  min_nodes: number;
+  max_nodes: number;
+}
+
+export interface DrainOptions {
+  // Essentials
+  ignore_daemonsets: boolean;
+  delete_emptydir_data: boolean;
+  force: boolean;
+  grace_period: number;
+  timeout: string;
+  // Advanced
+  disable_eviction: boolean;
+  skip_wait_for_delete_timeout: number;
+  pod_selector: string;
+  dry_run: boolean;
+  chunk_size: number;
+}
+
+export interface NodePoolSequenceConfig {
+  name: string;
+  resource_group: string;
+  subscription: string;
+  sequence_order: number; // 1 or 2
+  pre_drain_changes?: NodePoolChanges;
+  post_drain_changes?: NodePoolChanges;
+}
+
+export interface SequenceExecuteRequest {
+  cluster: string;
+  node_pools: NodePoolSequenceConfig[];
+  cordon_enabled: boolean;
+  drain_enabled: boolean;
+  drain_options: DrainOptions;
+}
+
 export interface ClusterResourceChange {
   cluster: string;
   namespace: string;
