@@ -182,8 +182,9 @@ const (
 	StatePrometheusStackManagement // F8 - Gestão específica Prometheus
 	StateCronJobSelection          // F9 - Seleção de CronJobs
 	StateCronJobEditing            // Editando CronJob específico
-	StateAddingCluster             // F7 - Adicionando novo cluster
-	StateLogViewer                 // F3 - Visualização de logs
+	StateAddingCluster              // F7 - Adicionando novo cluster
+	StateLogViewer                  // F3 - Visualização de logs
+	StateNodePoolSequenceConfig     // C - Configuração de cordon/drain para sequenciamento
 	StateHelp
 )
 
@@ -646,6 +647,10 @@ type AppModel struct {
 	LogViewerScrollPos int      // Posição de scroll no log viewer
 	LogViewerLoading   bool     // Se está carregando logs
 	LogViewerMessage   string   // Mensagem de status do log viewer
+
+	// Node Pool Sequence Configuration (C key)
+	ShowSequenceConfigModal bool        // Se está mostrando modal de configuração
+	SequenceConfigData      interface{} // Dados de configuração (será SequenceConfigModal)
 }
 
 // PanelState armazena o estado completo de um painel para memorização

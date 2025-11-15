@@ -993,6 +993,31 @@ func (a *App) handleNodePoolSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		return a, nil
+	case "c", "C":
+		// Abrir modal de configuração de cordon/drain (apenas se 2 node pools marcados para sequência)
+		if a.model.ActivePanel == models.PanelSelectedNodePools && len(a.model.SelectedNodePools) > 0 {
+			// Contar quantos node pools estão marcados para sequência
+			markedCount := 0
+			var markedPools []*models.NodePool
+			for i := range a.model.SelectedNodePools {
+				if a.model.SelectedNodePools[i].SequenceOrder > 0 {
+					markedCount++
+					markedPools = append(markedPools, &a.model.SelectedNodePools[i])
+				}
+			}
+
+			// Só abrir modal se exatamente 2 node pools marcados
+			if markedCount == 2 {
+				return a, a.openSequenceConfigModal(markedPools)
+			} else if markedCount == 0 {
+				a.model.StatusContainer.AddInfo("warning", "⚠️  Marque 2 node pools com F12 antes de configurar cordon/drain")
+			} else if markedCount == 1 {
+				a.model.StatusContainer.AddInfo("warning", "⚠️  Marque mais 1 node pool com F12 (total deve ser 2)")
+			} else {
+				a.model.StatusContainer.AddInfo("warning", "⚠️  Apenas 2 node pools podem ser marcados para sequenciamento")
+			}
+		}
+		return a, nil
 	case "enter":
 		//Editar node pool selecionado
 		if a.model.ActivePanel == models.PanelSelectedNodePools && a.model.SelectedIndex < len(a.model.SelectedNodePools) && len(a.model.SelectedNodePools) > 0 {
