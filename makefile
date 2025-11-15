@@ -32,7 +32,6 @@ build-all:
 	@GOOS=linux GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-linux-amd64 ${MAIN_PACKAGE}
 	@GOOS=darwin GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-darwin-amd64 ${MAIN_PACKAGE}
 	@GOOS=darwin GOARCH=arm64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-darwin-arm64 ${MAIN_PACKAGE}
-	@GOOS=windows GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-windows-amd64.exe ${MAIN_PACKAGE}
 
 .PHONY: run
 run: build
@@ -125,7 +124,7 @@ version:
 	@echo "Git tag: $(shell git describe --tags 2>/dev/null || echo 'nenhuma')"
 	@echo "Commit: $(shell git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 
-# Build para release (múltiplas plataformas)
+# Build para release (múltiplas plataformas - Linux e macOS apenas)
 .PHONY: release
 release:
 	@echo "Creating release v${VERSION_CLEAN}..."
@@ -133,6 +132,6 @@ release:
 	@GOOS=linux GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-linux-amd64 ${MAIN_PACKAGE}
 	@GOOS=darwin GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-darwin-amd64 ${MAIN_PACKAGE}
 	@GOOS=darwin GOARCH=arm64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-darwin-arm64 ${MAIN_PACKAGE}
-	@GOOS=windows GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-windows-amd64.exe ${MAIN_PACKAGE}
 	@echo "✅ Release builds complete (v${VERSION_CLEAN})"
+	@echo "📦 Plataformas: Linux amd64, macOS Intel, macOS ARM"
 	@ls -lh ${BUILD_DIR}/release/
