@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,46 @@ import (
 	"k8s-hpa-manager/internal/monitoring/client"
 	enginev2 "k8s-hpa-manager/internal/monitoring/engine"
 )
+
+// formatCPU converte CPU de cores (float string) para millicores (ex: "0.384" → "384m")
+func formatCPU(cpuStr string) string {
+	cpuFloat, err := strconv.ParseFloat(cpuStr, 64)
+	if err != nil {
+		log.Warn().Str("value", cpuStr).Msg("Falha ao parsear CPU para formatação")
+		return cpuStr // Retorna original se falhar
+	}
+
+	// Converter cores para millicores
+	millicores := cpuFloat * 1000
+
+	return fmt.Sprintf("%.0fm", millicores)
+}
+
+// formatMemory converte memória de bytes (string) para formato humanizado (Mi/Gi)
+func formatMemory(memoryStr string) string {
+	memoryFloat, err := strconv.ParseFloat(memoryStr, 64)
+	if err != nil {
+		log.Warn().Str("value", memoryStr).Msg("Falha ao parsear memória para formatação")
+		return memoryStr // Retorna original se falhar
+	}
+
+	const (
+		Ki = 1024
+		Mi = Ki * 1024
+		Gi = Mi * 1024
+	)
+
+	switch {
+	case memoryFloat >= Gi:
+		return fmt.Sprintf("%.0fGi", memoryFloat/Gi)
+	case memoryFloat >= Mi:
+		return fmt.Sprintf("%.0fMi", memoryFloat/Mi)
+	case memoryFloat >= Ki:
+		return fmt.Sprintf("%.0fKi", memoryFloat/Ki)
+	default:
+		return fmt.Sprintf("%.0f", memoryFloat)
+	}
+}
 
 // MonitoringHandlerV2 usa a nova MonitoringEngineV2 (sem port-forwards)
 type MonitoringHandlerV2 struct {
@@ -499,7 +540,7 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 				reqTimestamp := int64(reqPair[0].(float64))
 				if abs(reqTimestamp-timestamp) <= 30 {
 					reqStr := reqPair[1].(string)
-					snapshot["cpu_request"] = reqStr  // Manter como string
+					snapshot["cpu_request"] = formatCPU(reqStr)  // Formatar: "0.384" → "384m"
 					break
 				}
 			}
@@ -511,7 +552,7 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 				limTimestamp := int64(limPair[0].(float64))
 				if abs(limTimestamp-timestamp) <= 30 {
 					limStr := limPair[1].(string)
-					snapshot["cpu_limit"] = limStr  // Manter como string
+					snapshot["cpu_limit"] = formatCPU(limStr)  // Formatar: "0.512" → "512m"
 					break
 				}
 			}
@@ -523,7 +564,7 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 				reqTimestamp := int64(reqPair[0].(float64))
 				if abs(reqTimestamp-timestamp) <= 30 {
 					reqStr := reqPair[1].(string)
-					snapshot["memory_request"] = reqStr  // Manter como string
+					snapshot["memory_request"] = formatMemory(reqStr)  // Formatar: "268435456" → "256Mi"
 					break
 				}
 			}
@@ -535,7 +576,7 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 				limTimestamp := int64(limPair[0].(float64))
 				if abs(limTimestamp-timestamp) <= 30 {
 					limStr := limPair[1].(string)
-					snapshot["memory_limit"] = limStr  // Manter como string
+					snapshot["memory_limit"] = formatMemory(limStr)  // Formatar: "402653184" → "384Mi"
 					break
 				}
 			}

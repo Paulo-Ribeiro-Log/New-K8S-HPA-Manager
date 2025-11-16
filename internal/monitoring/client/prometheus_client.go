@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"k8s-hpa-manager/internal/monitoring/discovery"
@@ -43,6 +44,26 @@ type QueryRangeResult struct {
 			Values [][]interface{}   `json:"values"` // [[timestamp, "value"], ...]
 		} `json:"result"`
 	} `json:"data"`
+}
+
+// formatBytes converte bytes para formato humanizado (Mi/Gi)
+func formatBytes(bytes float64) string {
+	const (
+		Ki = 1024
+		Mi = Ki * 1024
+		Gi = Mi * 1024
+	)
+
+	switch {
+	case bytes >= Gi:
+		return fmt.Sprintf("%.0fGi", bytes/Gi)
+	case bytes >= Mi:
+		return fmt.Sprintf("%.0fMi", bytes/Mi)
+	case bytes >= Ki:
+		return fmt.Sprintf("%.0fKi", bytes/Ki)
+	default:
+		return fmt.Sprintf("%.0f", bytes)
+	}
 }
 
 // NewPrometheusClient cria um novo cliente Prometheus
@@ -257,55 +278,132 @@ func (c *PrometheusClient) GetHPAMetrics(ctx context.Context, namespace, hpaName
 		}
 	}
 
-	// Query para CPU Request (em millicores)
+	// Query para CPU Request POR POD (não soma de todos)
 	cpuRequestQuery := fmt.Sprintf(
-		`sum(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="cpu"}) * 1000`,
+		`max(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="cpu"})`,
 		namespace, hpaName,
 	)
 
 	result, err = c.Query(ctx, cpuRequestQuery)
 	if err == nil && len(result.Data.Result) > 0 {
 		if len(result.Data.Result[0].Value) > 1 {
-			metrics["cpu_request"] = result.Data.Result[0].Value[1]
+			// Prometheus retorna em cores (ex: 0.384), converter para millicores com sufixo
+			coresValue := result.Data.Result[0].Value[1]
+			var coresFloat float64
+			switch v := coresValue.(type) {
+			case float64:
+				coresFloat = v
+			case string:
+				var parseErr error
+				coresFloat, parseErr = strconv.ParseFloat(v, 64)
+				if parseErr != nil {
+					log.Warn().Str("value", v).Msg("Falha ao parsear CPU request")
+					return metrics, nil
+				}
+			default:
+				log.Warn().Interface("value", coresValue).Msg("Tipo não suportado para CPU request")
+				return metrics, nil
+			}
+			millicores := int(coresFloat * 1000)
+			metrics["cpu_request"] = fmt.Sprintf("%dm", millicores)
+			log.Info().
+				Float64("cores", coresFloat).
+				Int("millicores", millicores).
+				Str("formatted", metrics["cpu_request"].(string)).
+				Msg("CPU Request convertido")
 		}
 	}
 
-	// Query para CPU Limit (em millicores)
+	// Query para CPU Limit POR POD (não soma de todos)
 	cpuLimitQuery := fmt.Sprintf(
-		`sum(kube_pod_container_resource_limits{namespace="%s",pod=~"%s.*",resource="cpu"}) * 1000`,
+		`max(kube_pod_container_resource_limits{namespace="%s",pod=~"%s.*",resource="cpu"})`,
 		namespace, hpaName,
 	)
 
 	result, err = c.Query(ctx, cpuLimitQuery)
 	if err == nil && len(result.Data.Result) > 0 {
 		if len(result.Data.Result[0].Value) > 1 {
-			metrics["cpu_limit"] = result.Data.Result[0].Value[1]
+			// Prometheus retorna em cores (ex: 0.512), converter para millicores com sufixo
+			coresValue := result.Data.Result[0].Value[1]
+			var coresFloat float64
+			switch v := coresValue.(type) {
+			case float64:
+				coresFloat = v
+			case string:
+				var parseErr error
+				coresFloat, parseErr = strconv.ParseFloat(v, 64)
+				if parseErr != nil {
+					log.Warn().Str("value", v).Msg("Falha ao parsear CPU limit")
+					return metrics, nil
+				}
+			default:
+				log.Warn().Interface("value", coresValue).Msg("Tipo não suportado para CPU limit")
+				return metrics, nil
+			}
+			millicores := int(coresFloat * 1000)
+			metrics["cpu_limit"] = fmt.Sprintf("%dm", millicores)
 		}
 	}
 
 	// Query para Memory Request (em bytes)
 	memoryRequestQuery := fmt.Sprintf(
-		`sum(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"})`,
+		`max(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"})`,
 		namespace, hpaName,
 	)
 
 	result, err = c.Query(ctx, memoryRequestQuery)
 	if err == nil && len(result.Data.Result) > 0 {
 		if len(result.Data.Result[0].Value) > 1 {
-			metrics["memory_request"] = result.Data.Result[0].Value[1]
+			// Prometheus retorna em bytes, converter para Mi/Gi
+			memValue := result.Data.Result[0].Value[1]
+			var bytesFloat float64
+			switch v := memValue.(type) {
+			case float64:
+				bytesFloat = v
+			case string:
+				var parseErr error
+				bytesFloat, parseErr = strconv.ParseFloat(v, 64)
+				if parseErr != nil {
+					log.Warn().Str("value", v).Msg("Falha ao parsear Memory request")
+					return metrics, nil
+				}
+			default:
+				log.Warn().Interface("value", memValue).Msg("Tipo não suportado para Memory request")
+				return metrics, nil
+			}
+			// Converter bytes para Mi/Gi
+			metrics["memory_request"] = formatBytes(bytesFloat)
 		}
 	}
 
 	// Query para Memory Limit (em bytes)
 	memoryLimitQuery := fmt.Sprintf(
-		`sum(kube_pod_container_resource_limits{namespace="%s",pod=~"%s.*",resource="memory"})`,
+		`max(kube_pod_container_resource_limits{namespace="%s",pod=~"%s.*",resource="memory"})`,
 		namespace, hpaName,
 	)
 
 	result, err = c.Query(ctx, memoryLimitQuery)
 	if err == nil && len(result.Data.Result) > 0 {
 		if len(result.Data.Result[0].Value) > 1 {
-			metrics["memory_limit"] = result.Data.Result[0].Value[1]
+			// Prometheus retorna em bytes, converter para Mi/Gi
+			memValue := result.Data.Result[0].Value[1]
+			var bytesFloat float64
+			switch v := memValue.(type) {
+			case float64:
+				bytesFloat = v
+			case string:
+				var parseErr error
+				bytesFloat, parseErr = strconv.ParseFloat(v, 64)
+				if parseErr != nil {
+					log.Warn().Str("value", v).Msg("Falha ao parsear Memory limit")
+					return metrics, nil
+				}
+			default:
+				log.Warn().Interface("value", memValue).Msg("Tipo não suportado para Memory limit")
+				return metrics, nil
+			}
+			// Converter bytes para Mi/Gi
+			metrics["memory_limit"] = formatBytes(bytesFloat)
 		}
 	}
 
@@ -391,9 +489,9 @@ func (c *PrometheusClient) GetHPAHistoricalMetrics(ctx context.Context, namespac
 		historicalMetrics["memory"] = result
 	}
 
-	// CPU Request ao longo do tempo (em millicores)
+	// CPU Request ao longo do tempo (em cores - será convertido para millicores no processamento)
 	cpuRequestQuery := fmt.Sprintf(
-		`sum(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="cpu"}) * 1000`,
+		`max(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="cpu"})`,
 		namespace, hpaName,
 	)
 
@@ -402,9 +500,9 @@ func (c *PrometheusClient) GetHPAHistoricalMetrics(ctx context.Context, namespac
 		historicalMetrics["cpu_request"] = result
 	}
 
-	// CPU Limit ao longo do tempo (em millicores)
+	// CPU Limit ao longo do tempo (em cores - será convertido para millicores no processamento)
 	cpuLimitQuery := fmt.Sprintf(
-		`sum(kube_pod_container_resource_limits{namespace="%s",pod=~"%s.*",resource="cpu"}) * 1000`,
+		`max(kube_pod_container_resource_limits{namespace="%s",pod=~"%s.*",resource="cpu"})`,
 		namespace, hpaName,
 	)
 
@@ -415,7 +513,7 @@ func (c *PrometheusClient) GetHPAHistoricalMetrics(ctx context.Context, namespac
 
 	// Memory Request ao longo do tempo (em bytes)
 	memoryRequestQuery := fmt.Sprintf(
-		`sum(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"})`,
+		`max(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"})`,
 		namespace, hpaName,
 	)
 
@@ -426,7 +524,7 @@ func (c *PrometheusClient) GetHPAHistoricalMetrics(ctx context.Context, namespac
 
 	// Memory Limit ao longo do tempo (em bytes)
 	memoryLimitQuery := fmt.Sprintf(
-		`sum(kube_pod_container_resource_limits{namespace="%s",pod=~"%s.*",resource="memory"})`,
+		`max(kube_pod_container_resource_limits{namespace="%s",pod=~"%s.*",resource="memory"})`,
 		namespace, hpaName,
 	)
 
