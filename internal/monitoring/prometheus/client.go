@@ -226,13 +226,25 @@ func (c *Client) GetErrorRate(ctx context.Context, namespace, service string) (f
 	return extractSingleValue(result)
 }
 
-// GetP95Latency obtém P95 de latência (ms)
+// GetP95Latency obtém P95 de latência (ms) - tenta NGINX Ingress primeiro
 func (c *Client) GetP95Latency(ctx context.Context, namespace, service string) (float64, error) {
-	query := fmt.Sprintf(`
+	// Tenta 1: NGINX Ingress Controller (para ingress controllers)
+	nginxQuery := fmt.Sprintf(`
+		histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",ingress="%s"}[5m])) by (le)) * 1000
+	`, namespace, service)
+
+	if result, err := c.Query(ctx, nginxQuery); err == nil {
+		if value, err := extractSingleValue(result); err == nil && value > 0 {
+			return value, nil
+		}
+	}
+
+	// Tenta 2: HTTP request padrão (aplicações instrumentadas)
+	defaultQuery := fmt.Sprintf(`
 		histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace="%s",service="%s"}[5m])) by (le)) * 1000
 	`, namespace, service)
 
-	result, err := c.Query(ctx, query)
+	result, err := c.Query(ctx, defaultQuery)
 	if err != nil {
 		return 0, err
 	}
@@ -240,13 +252,25 @@ func (c *Client) GetP95Latency(ctx context.Context, namespace, service string) (
 	return extractSingleValue(result)
 }
 
-// GetP99Latency obtém P99 de latência (ms)
+// GetP99Latency obtém P99 de latência (ms) - tenta NGINX Ingress primeiro
 func (c *Client) GetP99Latency(ctx context.Context, namespace, service string) (float64, error) {
-	query := fmt.Sprintf(`
+	// Tenta 1: NGINX Ingress Controller (para ingress controllers)
+	nginxQuery := fmt.Sprintf(`
+		histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",ingress="%s"}[5m])) by (le)) * 1000
+	`, namespace, service)
+
+	if result, err := c.Query(ctx, nginxQuery); err == nil {
+		if value, err := extractSingleValue(result); err == nil && value > 0 {
+			return value, nil
+		}
+	}
+
+	// Tenta 2: HTTP request padrão (aplicações instrumentadas)
+	defaultQuery := fmt.Sprintf(`
 		histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace="%s",service="%s"}[5m])) by (le)) * 1000
 	`, namespace, service)
 
-	result, err := c.Query(ctx, query)
+	result, err := c.Query(ctx, defaultQuery)
 	if err != nil {
 		return 0, err
 	}

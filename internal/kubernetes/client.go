@@ -1417,14 +1417,16 @@ func (c *Client) EnrichHPAWithDeploymentResources(ctx context.Context, hpa *mode
 	if len(deployment.Spec.Template.Spec.Containers) > 0 {
 		container := deployment.Spec.Template.Spec.Containers[0]
 
-		// CPU Request (configurado no deployment)
+		// CPU Request (configurado no deployment) - converter para millicores
 		if cpuReq, exists := container.Resources.Requests[corev1.ResourceCPU]; exists {
-			hpa.TargetCPURequest = cpuReq.String()
+			milliValue := cpuReq.MilliValue()
+			hpa.TargetCPURequest = fmt.Sprintf("%dm", milliValue)
 		}
 
-		// CPU Limit (configurado no deployment)
+		// CPU Limit (configurado no deployment) - converter para millicores
 		if cpuLimit, exists := container.Resources.Limits[corev1.ResourceCPU]; exists {
-			hpa.TargetCPULimit = cpuLimit.String()
+			milliValue := cpuLimit.MilliValue()
+			hpa.TargetCPULimit = fmt.Sprintf("%dm", milliValue)
 		}
 
 		// Memory Request (configurado no deployment)

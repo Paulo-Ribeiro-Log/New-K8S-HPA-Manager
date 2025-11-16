@@ -77,11 +77,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Refatoração RotatingCollector** - Sistema de monitoramento simplificado, redução de 850 → 450 linhas, baseline automático de 3 dias - 07 nov 2025
 - ✅ **Aba ConfigMaps (Monaco Editor)** - Listagem completa com filtro por namespace, edição YAML com monaco-yaml, diff, dry-run e apply direto via backend Go; cards de estatísticas são ocultados apenas nesta aba para maximizar o espaço útil - Nov 2025
 - ✅ **Diff visual com Diff2HTML** - Modal dedicado (side-by-side) usando tema VS Code dark, nomes reais de arquivos e mesma paleta do Monaco; backend gera unified diff via `difflib` - Nov 2025
-- ✅ **Melhorias de UX na aba ConfigMaps** - Toggle de Labels, botão para recolher o painel de ConfigMaps e botões “X” de limpeza em todos os campos de busca (HPAs, Node Pools, etc.) para liberar espaço no editor - Nov 2025
-- ✅ **Diff Visual com tela cheia + confirmação de Apply** - Botão “Tela cheia” (e toggle no cabeçalho) no modal de diff e diálogo de confirmação antes de aplicar YAML diretamente no cluster - Nov 2025
+- ✅ **Melhorias de UX na aba ConfigMaps** - Toggle de Labels, botão para recolher o painel de ConfigMaps e botões "X" de limpeza em todos os campos de busca (HPAs, Node Pools, etc.) para liberar espaço no editor - Nov 2025
+- ✅ **Diff Visual com tela cheia + confirmação de Apply** - Botão "Tela cheia" (e toggle no cabeçalho) no modal de diff e diálogo de confirmação antes de aplicar YAML diretamente no cluster - Nov 2025
 - ✅ **Linhas de referência confiáveis no gráfico de réplicas** - Min/Max passam a considerar o snapshot válido mais recente, evitando referência 0/0 causada por dados antigos - Nov 2025
 - ✅ **Select compacto na aba Monitoramento** - Quando a sidebar está recolhida, o nome do HPA vira um select com todos os recursos monitorados para troca rápida sem reabrir o painel - Nov 2025
 - ✅ **Cordon/Drain Config para Node Pools** - Sistema completo de evacuação de nodes antes de aplicar mudanças, com modal de configuração (grace period, timeout, force delete, etc.) integrado ao fluxo de Sequential Execution - 15 nov 2025
+- ✅ **Destaque visual sutil em cards de métricas** - Background azul escuro (blue-950/30) com borda (blue-800/40) em cards de CPU e latência P95/P99 para melhor diferenciação visual do fundo dos gráficos - 16 nov 2025
 
 **Sistema de Monitoramento V2 (Novembro 2025):**
 - ✅ **MonitoringEngineV2 - Arquitetura sem Port-Forwards** - Sistema completo de monitoramento com acesso direto aos endpoints Prometheus (HTTPS público) sem necessidade de port-forwards ou VPN - 15 nov 2025
