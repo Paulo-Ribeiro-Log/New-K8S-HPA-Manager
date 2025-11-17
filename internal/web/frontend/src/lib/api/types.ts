@@ -131,6 +131,54 @@ export interface SecretApplyResult {
   appliedAt?: string;
 }
 
+// Deployment Types
+export interface DeploymentSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  labels?: Record<string, string>;
+  replicas: number;
+  readyReplicas: number;
+  availableReplicas: number;
+  resourceVersion?: string;
+  updatedAt: string;
+}
+
+export interface DeploymentMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface DeploymentManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  yaml: string;
+  metadata: DeploymentMetadata;
+}
+
+export interface DeploymentDiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface DeploymentValidateResult {
+  name: string;
+  namespace: string;
+  resourceVersion?: string;
+}
+
+export interface DeploymentApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  resourceVersion?: string;
+  dryRun?: boolean;
+  appliedAt?: string;
+}
+
 export interface HPA {
   name: string;
   namespace: string;

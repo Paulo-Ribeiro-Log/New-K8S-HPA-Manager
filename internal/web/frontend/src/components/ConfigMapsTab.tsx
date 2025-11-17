@@ -104,9 +104,27 @@ export const ConfigMapsTab = ({
   }, [cluster, selectedNamespace]);
 
   const filteredConfigMaps = useMemo(() => {
-    if (!searchQuery) return configMaps;
+    let filtered = configMaps;
+    
+    // Filtrar configmaps de sistema quando Sistema está desligado
+    // Este filtro é baseado no NOME do configmap, não no namespace
+    if (!showSystemNamespaces) {
+      filtered = filtered.filter((cm) => {
+        const name = cm.name.toLowerCase();
+        return !name.startsWith("istio-") &&
+               !name.startsWith("kube-") &&
+               !name.startsWith("udp-") &&
+               !name.startsWith("tcp-") &&
+               !name.startsWith("prometheus-") &&
+               !name.includes("istio") &&
+               !name.includes("prometheus");
+      });
+    }
+    
+    // Aplicar busca por query
+    if (!searchQuery) return filtered;
     const query = searchQuery.toLowerCase();
-    return configMaps.filter((cm) => {
+    return filtered.filter((cm) => {
       return (
         cm.name.toLowerCase().includes(query) ||
         cm.namespace.toLowerCase().includes(query) ||
@@ -115,7 +133,7 @@ export const ConfigMapsTab = ({
         )
       );
     });
-  }, [configMaps, searchQuery]);
+  }, [configMaps, searchQuery, showSystemNamespaces]);
 
   const handleSelectConfigMap = async (summary: ConfigMapSummary) => {
     setSelectedConfigMap(summary);
@@ -327,6 +345,17 @@ export const ConfigMapsTab = ({
     </Select>
   );
 
+  const collapseButton = (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+      title={isSidebarCollapsed ? "Mostrar painel de ConfigMaps" : "Ocultar painel de ConfigMaps"}
+    >
+      {isSidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+    </Button>
+  );
+
   const leftTitleAction = (
     <div className="flex items-center gap-2 flex-wrap">
       {namespaceSelector}
@@ -334,13 +363,14 @@ export const ConfigMapsTab = ({
         variant={showSystemNamespaces ? "secondary" : "outline"}
         size="sm"
         onClick={onToggleSystemNamespaces}
-        title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
+        title={showSystemNamespaces ? "Mostrar namespaces e configmaps de sistema (istio, kube, udp, tcp, prometheus)" : "Ocultar namespaces e configmaps de sistema (istio, kube, udp, tcp, prometheus)"}
       >
         {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
       </Button>
       <Button variant="outline" size="sm" onClick={refreshConfigMaps} disabled={!cluster || loading}>
         <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
       </Button>
+      {collapseButton}
     </div>
   );
 
@@ -625,17 +655,6 @@ export const ConfigMapsTab = ({
 
       {renderConfigMapList()}
     </div>
-  );
-
-  const collapseButton = (
-    <Button
-      variant="ghost"
-      size="icon"
-      onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-      title={isSidebarCollapsed ? "Mostrar painel de ConfigMaps" : "Ocultar painel de ConfigMaps"}
-    >
-      {isSidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
-    </Button>
   );
 
   const renderDiffDialog = () => {
