@@ -9,15 +9,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2 } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock } from "lucide-react";
 import { toast } from "sonner";
+import * as yaml from "js-yaml";
 
 import type {
   Namespace,
-  ConfigMapSummary,
-  ConfigMapManifest,
+  SecretSummary,
+  SecretManifest,
 } from "@/lib/api/types";
-import { useConfigMaps } from "@/hooks/useAPI";
+import { useSecrets } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { html as diff2html } from "diff2html";
@@ -26,7 +27,7 @@ import "@/styles/diff2html-dark.css";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
-interface ConfigMapsTabProps {
+interface SecretsTabProps {
   cluster: string;
   namespaces: Namespace[];
   selectedNamespace: string;
@@ -35,17 +36,17 @@ interface ConfigMapsTabProps {
   onToggleSystemNamespaces: () => void;
 }
 
-export const ConfigMapsTab = ({
+export const SecretsTab = ({
   cluster,
   namespaces,
   selectedNamespace,
   onNamespaceChange,
   showSystemNamespaces,
   onToggleSystemNamespaces,
-}: ConfigMapsTabProps) => {
+}: SecretsTabProps) => {
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedConfigMap, setSelectedConfigMap] = useState<ConfigMapSummary | null>(null);
-  const [manifest, setManifest] = useState<ConfigMapManifest | null>(null);
+  const [selectedSecret, setSelectedSecret] = useState<SecretSummary | null>(null);
+  const [manifest, setManifest] = useState<SecretManifest | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
   const [editorValue, setEditorValue] = useState("");
   const [originalYaml, setOriginalYaml] = useState("");
@@ -59,12 +60,14 @@ export const ConfigMapsTab = ({
   const [isDiffLoading, setIsDiffLoading] = useState(false);
   const [diffFullScreen, setDiffFullScreen] = useState(false);
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
+  const [isDecoded, setIsDecoded] = useState(false);
 
   // Undo/Redo history
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
 
   const filteredNamespaces = useMemo(() => {
+    if (!namespaces || !Array.isArray(namespaces)) return [];
     if (showSystemNamespaces) return namespaces;
     return namespaces.filter((ns) => !ns.isSystem);
   }, [namespaces, showSystemNamespaces]);
@@ -78,7 +81,7 @@ export const ConfigMapsTab = ({
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
-  const { configMaps, loading, error, refetch } = useConfigMaps(
+  const { secrets, loading, error, refetch } = useSecrets(
     cluster,
     namespaceFilter,
     showSystemNamespaces
@@ -86,14 +89,14 @@ export const ConfigMapsTab = ({
 
   useEffect(() => {
     if (error) {
-      toast.error("Erro ao carregar ConfigMaps", {
+      toast.error("Erro ao carregar Secrets", {
         description: error,
       });
     }
   }, [error]);
 
   useEffect(() => {
-    setSelectedConfigMap(null);
+    setSelectedSecret(null);
     setManifest(null);
     setEditorValue("");
     setOriginalYaml("");
@@ -101,12 +104,13 @@ export const ConfigMapsTab = ({
     setViewMode("editor");
     setHistory([]);
     setHistoryIndex(-1);
+    setIsDecoded(false);
   }, [cluster, selectedNamespace]);
 
-  const filteredConfigMaps = useMemo(() => {
-    if (!searchQuery) return configMaps;
+  const filteredSecrets = useMemo(() => {
+    if (!searchQuery) return secrets;
     const query = searchQuery.toLowerCase();
-    return configMaps.filter((cm) => {
+    return secrets.filter((cm) => {
       return (
         cm.name.toLowerCase().includes(query) ||
         cm.namespace.toLowerCase().includes(query) ||
@@ -115,15 +119,15 @@ export const ConfigMapsTab = ({
         )
       );
     });
-  }, [configMaps, searchQuery]);
+  }, [secrets, searchQuery]);
 
-  const handleSelectConfigMap = async (summary: ConfigMapSummary) => {
-    setSelectedConfigMap(summary);
+  const handleSelectSecret = async (summary: SecretSummary) => {
+    setSelectedSecret(summary);
     setManifestLoading(true);
     setManifest(null);
 
     try {
-      const detail = await apiClient.getConfigMap(
+      const detail = await apiClient.getSecret(
         summary.cluster,
         summary.namespace,
         summary.name
@@ -185,14 +189,14 @@ export const ConfigMapsTab = ({
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
 
-  const refreshConfigMaps = () => {
+  const refreshSecrets = () => {
     if (!cluster) return;
     refetch();
   };
 
   const refreshManifest = () => {
-    if (selectedConfigMap) {
-      handleSelectConfigMap(selectedConfigMap);
+    if (selectedSecret) {
+      handleSelectSecret(selectedSecret);
     }
   };
 
@@ -204,15 +208,75 @@ export const ConfigMapsTab = ({
     setViewMode(mode);
   };
 
+  const handleToggleDecode = () => {
+    // Guard: Verificar se há um Secret selecionado e se o editor tem conteúdo
+    if (!selectedSecret) {
+      toast.warning("Selecione um Secret primeiro");
+      return;
+    }
+
+    if (!editorValue || editorValue.trim() === '') {
+      toast.warning("Editor vazio - carregue um Secret primeiro");
+      return;
+    }
+
+    try {
+      const yamlObj = yaml.load(editorValue) as any;
+
+      if (!yamlObj || !yamlObj.data) {
+        toast.error("YAML inválido ou sem seção 'data'");
+        return;
+      }
+
+      const newData: Record<string, string> = {};
+
+      if (isDecoded) {
+        // RE-ENCODE: texto plano → Base64
+        for (const [key, value] of Object.entries(yamlObj.data)) {
+          if (typeof value === 'string') {
+            newData[key] = btoa(value); // Encode to Base64
+          } else {
+            newData[key] = value as string;
+          }
+        }
+        toast.success("Valores re-encodificados para Base64");
+      } else {
+        // DECODE: Base64 → texto plano
+        for (const [key, value] of Object.entries(yamlObj.data)) {
+          if (typeof value === 'string') {
+            try {
+              newData[key] = atob(value); // Decode from Base64
+            } catch {
+              // Se não for Base64 válido, mantém original
+              newData[key] = value as string;
+            }
+          } else {
+            newData[key] = value as string;
+          }
+        }
+        toast.success("Valores decodificados para texto plano");
+      }
+
+      yamlObj.data = newData;
+      const newYaml = yaml.dump(yamlObj, { lineWidth: -1 });
+      setEditorValue(newYaml);
+      setIsDecoded(!isDecoded);
+    } catch (err) {
+      toast.error("Erro ao processar YAML", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    }
+  };
+
   const handleShowDiffModal = async (options?: { fullscreen?: boolean }) => {
-    if (!selectedConfigMap) return;
+    if (!selectedSecret) return;
     if (!hasChanges) {
       toast.info("Nenhuma alteração para comparar");
       return;
     }
     setIsDiffLoading(true);
     try {
-      const diffResponse = await apiClient.diffConfigMap(originalYaml, editorValue, selectedConfigMap?.name);
+      const diffResponse = await apiClient.diffSecret(originalYaml, editorValue, selectedSecret?.name);
       const unifiedDiff = diffResponse.unifiedDiff || "";
       const html = diff2html(unifiedDiff, {
         inputFormat: "diff",
@@ -245,17 +309,17 @@ export const ConfigMapsTab = ({
   };
 
   const handleValidate = async () => {
-    if (!selectedConfigMap) return;
+    if (!selectedSecret) return;
     setIsValidating(true);
     try {
-      await apiClient.validateConfigMap({
-        cluster: selectedConfigMap.cluster,
-        namespace: selectedConfigMap.namespace,
+      await apiClient.validateSecret({
+        cluster: selectedSecret.cluster,
+        namespace: selectedSecret.namespace,
         yaml: editorValue,
         fieldManager: "web-configmap-editor",
       });
       toast.success("Dry-run bem-sucedido", {
-        description: `${selectedConfigMap.namespace}/${selectedConfigMap.name}`,
+        description: `${selectedSecret.namespace}/${selectedSecret.name}`,
       });
     } catch (err) {
       toast.error("Dry-run falhou", {
@@ -267,21 +331,30 @@ export const ConfigMapsTab = ({
   };
 
   const handleApply = async () => {
-    if (!selectedConfigMap) return;
+    if (!selectedSecret) return;
+
+    // VALIDAÇÃO: Previne aplicação com valores decodificados
+    if (isDecoded) {
+      toast.error("Não é possível aplicar com valores decodificados", {
+        description: "Clique no botão 'Encoded' para re-encodificar antes de aplicar",
+      });
+      return;
+    }
+
     setIsApplying(true);
     try {
-      await apiClient.applyConfigMap(
-        selectedConfigMap.cluster,
-        selectedConfigMap.namespace,
-        selectedConfigMap.name,
+      await apiClient.applySecret(
+        selectedSecret.cluster,
+        selectedSecret.namespace,
+        selectedSecret.name,
         {
           yaml: editorValue,
-          fieldManager: "web-configmap-editor",
+          fieldManager: "web-secret-editor",
           dryRun: false,
         }
       );
-      toast.success("ConfigMap aplicado", {
-        description: `${selectedConfigMap.namespace}/${selectedConfigMap.name}`,
+      toast.success("Secret aplicado", {
+        description: `${selectedSecret.namespace}/${selectedSecret.name}`,
       });
       refreshManifest();
     } catch (err) {
@@ -294,7 +367,7 @@ export const ConfigMapsTab = ({
   };
 
   const openApplyConfirm = () => {
-    if (!selectedConfigMap) return;
+    if (!selectedSecret) return;
     if (!hasChanges) {
       toast.info("Nenhuma alteração para aplicar");
       return;
@@ -338,7 +411,7 @@ export const ConfigMapsTab = ({
       >
         {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
       </Button>
-      <Button variant="outline" size="sm" onClick={refreshConfigMaps} disabled={!cluster || loading}>
+      <Button variant="outline" size="sm" onClick={refreshSecrets} disabled={!cluster || loading}>
         <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
       </Button>
     </div>
@@ -349,18 +422,18 @@ export const ConfigMapsTab = ({
       variant="outline"
       size="sm"
       onClick={refreshManifest}
-      disabled={!selectedConfigMap || manifestLoading}
+      disabled={!selectedSecret || manifestLoading}
     >
       <RefreshCcw className="w-4 h-4 mr-2" />
       Recarregar YAML
     </Button>
   );
 
-  const renderConfigMapList = () => {
+  const renderSecretList = () => {
     if (!cluster) {
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Selecione um cluster para listar ConfigMaps
+          Selecione um cluster para listar Secrets
         </div>
       );
     }
@@ -368,31 +441,31 @@ export const ConfigMapsTab = ({
     if (loading) {
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Carregando ConfigMaps...
+          Carregando Secrets...
         </div>
       );
     }
 
-    if (filteredConfigMaps.length === 0) {
+    if (filteredSecrets.length === 0) {
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          {configMaps.length === 0
-            ? "Nenhum ConfigMap encontrado"
-            : "Nenhum ConfigMap corresponde à busca"}
+          {secrets.length === 0
+            ? "Nenhum Secret encontrado"
+            : "Nenhum Secret corresponde à busca"}
         </div>
       );
     }
 
     return (
       <div className="space-y-2">
-        {filteredConfigMaps.map((cm) => {
+        {filteredSecrets.map((cm) => {
           const isSelected =
-            selectedConfigMap?.name === cm.name &&
-            selectedConfigMap?.namespace === cm.namespace;
+            selectedSecret?.name === cm.name &&
+            selectedSecret?.namespace === cm.namespace;
           return (
             <button
               key={`${cm.cluster}-${cm.namespace}-${cm.name}`}
-              onClick={() => handleSelectConfigMap(cm)}
+              onClick={() => handleSelectSecret(cm)}
               className={`w-full text-left p-3 rounded-lg border transition-colors ${
                 isSelected
                   ? "border-primary bg-primary/10 text-primary-foreground"
@@ -402,7 +475,7 @@ export const ConfigMapsTab = ({
               <div className="font-semibold text-sm">{cm.name}</div>
               <div className="text-xs text-muted-foreground">{cm.namespace}</div>
               <div className="text-[11px] text-muted-foreground mt-1">
-                {cm.dataKeys.length} keys • {cm.binaryKeys.length} binárias
+                {cm.dataKeys.length} {cm.dataKeys.length === 1 ? 'key' : 'keys'}
               </div>
             </button>
           );
@@ -417,21 +490,21 @@ export const ConfigMapsTab = ({
     if (!cluster) {
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Selecione um cluster para visualizar ConfigMaps
+          Selecione um cluster para visualizar Secrets
         </div>
       );
     }
 
-    if (!selectedConfigMap) {
+    if (!selectedSecret) {
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Escolha um ConfigMap para visualizar o manifesto
+          Escolha um Secret para visualizar o manifesto
         </div>
       );
     }
 
-    const updatedAt = selectedConfigMap.updatedAt
-      ? new Date(selectedConfigMap.updatedAt).toLocaleString()
+    const updatedAt = selectedSecret.updatedAt
+      ? new Date(selectedSecret.updatedAt).toLocaleString()
       : "--";
 
     return (
@@ -439,15 +512,15 @@ export const ConfigMapsTab = ({
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <p className="text-xs text-muted-foreground uppercase">Cluster</p>
-            <p className="font-medium break-all">{selectedConfigMap.cluster}</p>
+            <p className="font-medium break-all">{selectedSecret.cluster}</p>
           </div>
           <div>
             <p className="text-xs text-muted-foreground uppercase">Namespace</p>
-            <p className="font-medium break-all">{selectedConfigMap.namespace}</p>
+            <p className="font-medium break-all">{selectedSecret.namespace}</p>
           </div>
           <div>
             <p className="text-xs text-muted-foreground uppercase">ResourceVersion</p>
-            <p className="font-mono text-xs">{selectedConfigMap.resourceVersion || "--"}</p>
+            <p className="font-mono text-xs">{selectedSecret.resourceVersion || "--"}</p>
           </div>
           <div>
             <p className="text-xs text-muted-foreground uppercase">Atualizado</p>
@@ -455,7 +528,7 @@ export const ConfigMapsTab = ({
           </div>
         </div>
 
-        {selectedConfigMap.labels && Object.keys(selectedConfigMap.labels).length > 0 && (
+        {selectedSecret.labels && Object.keys(selectedSecret.labels).length > 0 && (
           <div className="text-xs">
             <button
               type="button"
@@ -467,7 +540,7 @@ export const ConfigMapsTab = ({
             </button>
             {showLabels && (
               <div className="flex flex-wrap gap-2">
-                {Object.entries(selectedConfigMap.labels).map(([key, value]) => (
+                {Object.entries(selectedSecret.labels).map(([key, value]) => (
                   <span
                     key={`${key}-${value}`}
                     className="px-2 py-1 bg-secondary/60 rounded-md font-mono"
@@ -533,6 +606,30 @@ export const ConfigMapsTab = ({
                     Diff
                   </button>
                 </div>
+                <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={handleToggleDecode}
+                    className={`px-3 py-1 text-xs font-medium flex items-center gap-1.5 ${
+                      isDecoded
+                        ? "bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 border-yellow-500/30"
+                        : "bg-green-500/20 text-green-600 dark:text-green-400 border-green-500/30"
+                    }`}
+                    title={isDecoded ? "Re-encodificar para Base64" : "Decodificar para texto plano"}
+                  >
+                    {isDecoded ? (
+                      <>
+                        <Unlock className="w-3.5 h-3.5" />
+                        Decoded
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="w-3.5 h-3.5" />
+                        Encoded
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
             {viewMode === "editor" && (
@@ -558,7 +655,7 @@ export const ConfigMapsTab = ({
               variant="outline"
               size="sm"
               onClick={handleShowDiffModal}
-              disabled={!selectedConfigMap || !hasChanges || isDiffLoading}
+              disabled={!selectedSecret || !hasChanges || isDiffLoading}
             >
               {isDiffLoading ? (
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -571,7 +668,7 @@ export const ConfigMapsTab = ({
               variant="outline"
               size="sm"
               onClick={() => handleShowDiffModal({ fullscreen: true })}
-              disabled={!selectedConfigMap || !hasChanges || isDiffLoading}
+              disabled={!selectedSecret || !hasChanges || isDiffLoading}
               className="gap-2"
               title="Abrir diff ocupando toda a tela"
             >
@@ -582,7 +679,7 @@ export const ConfigMapsTab = ({
               variant="secondary"
               size="sm"
               onClick={handleValidate}
-              disabled={!selectedConfigMap || isValidating}
+              disabled={!selectedSecret || isValidating}
             >
               <CheckCircle2 className="w-4 h-4 mr-2" /> Validar (Dry-run)
             </Button>
@@ -590,7 +687,7 @@ export const ConfigMapsTab = ({
               variant="default"
               size="sm"
               onClick={openApplyConfirm}
-              disabled={!selectedConfigMap || isApplying || !hasChanges}
+              disabled={!selectedSecret || isApplying || !hasChanges}
             >
               <TriangleAlert className="w-4 h-4 mr-2" /> Aplicar
             </Button>
@@ -623,7 +720,7 @@ export const ConfigMapsTab = ({
         />
       </div>
 
-      {renderConfigMapList()}
+      {renderSecretList()}
     </div>
   );
 
@@ -632,7 +729,7 @@ export const ConfigMapsTab = ({
       variant="ghost"
       size="icon"
       onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-      title={isSidebarCollapsed ? "Mostrar painel de ConfigMaps" : "Ocultar painel de ConfigMaps"}
+      title={isSidebarCollapsed ? "Mostrar painel de Secrets" : "Ocultar painel de Secrets"}
     >
       {isSidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
     </Button>
@@ -655,7 +752,7 @@ export const ConfigMapsTab = ({
                 </DialogTitle>
                 <DialogDescription className="text-sm text-muted-foreground">
                   Comparação lado a lado entre o YAML original e a versão editada
-                  {selectedConfigMap && ` • ${selectedConfigMap.namespace}/${selectedConfigMap.name}`}
+                  {selectedSecret && ` • ${selectedSecret.namespace}/${selectedSecret.name}`}
                 </DialogDescription>
               </div>
               <Button
@@ -697,7 +794,7 @@ export const ConfigMapsTab = ({
   };
 
   const renderApplyConfirmDialog = () => {
-    if (!selectedConfigMap) return null;
+    if (!selectedSecret) return null;
 
     return (
       <Dialog open={applyConfirmOpen} onOpenChange={setApplyConfirmOpen}>
@@ -707,14 +804,14 @@ export const ConfigMapsTab = ({
               Confirmar aplicação
             </DialogTitle>
             <DialogDescription>
-              Essa ação vai aplicar o ConfigMap diretamente no cluster selecionado.
+              Essa ação vai aplicar o Secret diretamente no cluster selecionado.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs">
-              <p><span className="text-muted-foreground">Cluster:</span> {selectedConfigMap.cluster}</p>
-              <p><span className="text-muted-foreground">Namespace:</span> {selectedConfigMap.namespace}</p>
-              <p><span className="text-muted-foreground">ConfigMap:</span> {selectedConfigMap.name}</p>
+              <p><span className="text-muted-foreground">Cluster:</span> {selectedSecret.cluster}</p>
+              <p><span className="text-muted-foreground">Namespace:</span> {selectedSecret.namespace}</p>
+              <p><span className="text-muted-foreground">Secret:</span> {selectedSecret.name}</p>
             </div>
             <p className="text-muted-foreground">
               Certifique-se de que o diff foi revisado antes de confirmar. Esta operação não possui rollback automático.
@@ -775,8 +872,24 @@ export const ConfigMapsTab = ({
     <>
       <SplitView
         leftPanel={{
-          title: "ConfigMaps",
-          titleAction: leftTitleAction,
+          title: "Secrets",
+          titleAction: (
+            <div className="flex items-center gap-2">
+              {namespaceSelector}
+              <Button
+                variant={showSystemNamespaces ? "secondary" : "outline"}
+                size="sm"
+                onClick={onToggleSystemNamespaces}
+                title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
+              >
+                {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
+              </Button>
+              <Button variant="outline" size="sm" onClick={refreshSecrets} disabled={!cluster || loading}>
+                <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
+              </Button>
+              {collapseButton}
+            </div>
+          ),
           content: leftContent,
         }}
         rightPanel={{

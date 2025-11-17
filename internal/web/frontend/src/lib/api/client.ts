@@ -23,6 +23,11 @@ import type {
   ConfigMapDiffResult,
   ConfigMapValidateResult,
   ConfigMapApplyResult,
+  SecretSummary,
+  SecretManifest,
+  SecretDiffResult,
+  SecretValidateResult,
+  SecretApplyResult,
   VersionInfo,
   SequenceExecuteRequest,
 } from "./types";
@@ -247,6 +252,85 @@ class APIClient {
   ): Promise<ConfigMapApplyResult> {
     const response = await this.request<APIResponse<ConfigMapApplyResult>>(
       `/configmaps/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Aplicação sem retorno");
+    }
+    return response.data;
+  }
+
+  // Secrets API Methods
+  async getSecrets(cluster: string, namespaces?: string[], showSystem?: boolean): Promise<SecretSummary[]> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (namespaces && namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    if (showSystem !== undefined) {
+      params.append("showSystem", showSystem.toString());
+    }
+
+    const response = await this.request<APIResponse<SecretSummary[]>>(
+      `/secrets?${params.toString()}`
+    );
+    return response.data || [];
+  }
+
+  async getSecret(cluster: string, namespace: string, name: string): Promise<SecretManifest> {
+    const response = await this.request<APIResponse<SecretManifest>>(
+      `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) {
+      throw new Error("Secret not found");
+    }
+    return response.data;
+  }
+
+  async diffSecret(originalYaml: string, updatedYaml: string, fileName?: string): Promise<SecretDiffResult> {
+    const response = await this.request<APIResponse<SecretDiffResult>>(
+      `/secrets/diff`,
+      {
+        method: "POST",
+        body: JSON.stringify({ originalYaml, updatedYaml, fileName }),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Diff response inválida");
+    }
+    return response.data;
+  }
+
+  async validateSecret(payload: {
+    cluster: string;
+    namespace: string;
+    yaml: string;
+    fieldManager?: string;
+  }): Promise<SecretValidateResult> {
+    const response = await this.request<APIResponse<SecretValidateResult>>(
+      `/secrets/validate`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Validação sem retorno");
+    }
+    return response.data;
+  }
+
+  async applySecret(
+    cluster: string,
+    namespace: string,
+    name: string,
+    body: { yaml: string; fieldManager?: string; dryRun?: boolean }
+  ): Promise<SecretApplyResult> {
+    const response = await this.request<APIResponse<SecretApplyResult>>(
+      `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
       {
         method: "PUT",
         body: JSON.stringify(body),
