@@ -331,6 +331,224 @@ func prepareConfigMapApplyPayload(yamlContent, enforceNamespace, enforceName str
 	return jsonPayload, namespace, name, nil
 }
 
+// ============================================================================
+// Deployments Methods
+// ============================================================================
+
+// ListDeployments lista deployments com filtros
+func (c *Client) ListDeployments(ctx context.Context, namespaces []string, search string, showSystemNamespaces bool) ([]models.DeploymentSummary, error) {
+	var result []models.DeploymentSummary
+	search = strings.ToLower(strings.TrimSpace(search))
+
+	listAllNamespaces := len(namespaces) == 0
+	uniqueNamespaces := make(map[string]struct{})
+	for _, ns := range namespaces {
+		ns = strings.TrimSpace(ns)
+		if ns == "" {
+			continue
+		}
+		uniqueNamespaces[ns] = struct{}{}
+	}
+
+	appendSummaries := func(items []appsv1.Deployment) {
+		for _, dep := range items {
+			if !showSystemNamespaces && isSystemNamespace(dep.Namespace) {
+				continue
+			}
+			if search != "" && !matchesDeploymentSearch(&dep, search) {
+				continue
+			}
+			result = append(result, buildDeploymentSummary(c.cluster, &dep))
+		}
+	}
+
+	if listAllNamespaces {
+		deps, err := c.clientset.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list deployments in cluster %s: %w", c.cluster, err)
+		}
+		appendSummaries(deps.Items)
+		return result, nil
+	}
+
+	for ns := range uniqueNamespaces {
+		deps, err := c.clientset.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list deployments in %s/%s: %w", c.cluster, ns, err)
+		}
+		appendSummaries(deps.Items)
+	}
+
+	return result, nil
+}
+
+// GetDeployment retorna o manifesto YAML completo do Deployment
+func (c *Client) GetDeployment(ctx context.Context, namespace, name string) (*models.DeploymentManifest, error) {
+	dep, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get deployment %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	yamlBytes, err := yaml.Marshal(dep)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal deployment %s/%s: %w", namespace, name, err)
+	}
+
+	manifest := &models.DeploymentManifest{
+		Cluster:   c.cluster,
+		Namespace: namespace,
+		Name:      name,
+		YAML:      string(yamlBytes),
+		Metadata: models.DeploymentMetadata{
+			UID:             string(dep.UID),
+			ResourceVersion: dep.ResourceVersion,
+			Labels:          copyStringMap(dep.Labels),
+			Annotations:     copyStringMap(dep.Annotations),
+		},
+	}
+
+	return manifest, nil
+}
+
+func matchesDeploymentSearch(dep *appsv1.Deployment, search string) bool {
+	name := strings.ToLower(dep.Name)
+	if strings.Contains(name, search) {
+		return true
+	}
+	for k, v := range dep.Labels {
+		candidate := strings.ToLower(fmt.Sprintf("%s=%s", k, v))
+		if strings.Contains(candidate, search) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildDeploymentSummary(cluster string, dep *appsv1.Deployment) models.DeploymentSummary {
+	replicas := int32(0)
+	if dep.Spec.Replicas != nil {
+		replicas = *dep.Spec.Replicas
+	}
+
+	updatedAt := dep.CreationTimestamp.Time
+	return models.DeploymentSummary{
+		Cluster:           cluster,
+		Namespace:         dep.Namespace,
+		Name:              dep.Name,
+		Labels:            copyStringMap(dep.Labels),
+		Replicas:          replicas,
+		ReadyReplicas:     dep.Status.ReadyReplicas,
+		AvailableReplicas: dep.Status.AvailableReplicas,
+		ResourceVersion:   dep.ResourceVersion,
+		UpdatedAt:         updatedAt,
+	}
+}
+
+// ValidateDeployment executa um server-side apply com dry-run
+func (c *Client) ValidateDeployment(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*appsv1.Deployment, error) {
+	return c.applyDeployment(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+}
+
+// ApplyDeployment aplica (ou dry-run opcionalmente) o Deployment no cluster
+func (c *Client) ApplyDeployment(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*appsv1.Deployment, error) {
+	return c.applyDeployment(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+}
+
+func (c *Client) applyDeployment(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*appsv1.Deployment, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("deployment yaml content cannot be empty")
+	}
+	if fieldManager == "" {
+		fieldManager = "web-deployment-editor"
+	}
+
+	payload, namespace, name, err := prepareDeploymentApplyPayload(yamlContent, enforceNamespace, enforceName)
+	if err != nil {
+		return nil, err
+	}
+
+	options := metav1.PatchOptions{FieldManager: fieldManager}
+	if dryRun {
+		options.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply deployment %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	return result, nil
+}
+
+func prepareDeploymentApplyPayload(yamlContent, enforceNamespace, enforceName string) ([]byte, string, string, error) {
+	var dep map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &dep); err != nil {
+		return nil, "", "", fmt.Errorf("invalid deployment yaml: %w", err)
+	}
+
+	if len(dep) == 0 {
+		return nil, "", "", fmt.Errorf("deployment yaml cannot be empty")
+	}
+
+	apiVersion, _ := dep["apiVersion"].(string)
+	if strings.TrimSpace(apiVersion) == "" {
+		dep["apiVersion"] = "apps/v1"
+	}
+	kind, _ := dep["kind"].(string)
+	if strings.TrimSpace(kind) == "" {
+		dep["kind"] = "Deployment"
+	} else if !strings.EqualFold(kind, "Deployment") {
+		return nil, "", "", fmt.Errorf("expected kind Deployment, got %s", kind)
+	}
+
+	metadata, _ := dep["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	name, _ := metadata["name"].(string)
+	name = strings.TrimSpace(name)
+	if enforceName != "" {
+		enforceName = strings.TrimSpace(enforceName)
+		if name == "" {
+			name = enforceName
+		}
+		if name != enforceName {
+			return nil, "", "", fmt.Errorf("deployment name mismatch: expected %s, got %s", enforceName, name)
+		}
+	}
+	if name == "" {
+		return nil, "", "", fmt.Errorf("deployment metadata.name is required")
+	}
+	metadata["name"] = name
+
+	namespace := strings.TrimSpace(enforceNamespace)
+	if nsRaw, ok := metadata["namespace"].(string); ok {
+		ns := strings.TrimSpace(nsRaw)
+		if namespace == "" {
+			namespace = ns
+		} else if ns != "" && ns != namespace {
+			return nil, "", "", fmt.Errorf("deployment namespace mismatch: expected %s, got %s", namespace, ns)
+		}
+	}
+	if namespace == "" {
+		return nil, "", "", fmt.Errorf("deployment metadata.namespace is required")
+	}
+	metadata["namespace"] = namespace
+	dep["metadata"] = metadata
+
+	jsonPayload, err := json.Marshal(dep)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to marshal deployment payload: %w", err)
+	}
+
+	return jsonPayload, namespace, name, nil
+}
+
+// ============================================================================
+// Secrets Methods
+// ============================================================================
+
 // ListSecrets lista secrets com filtros
 func (c *Client) ListSecrets(ctx context.Context, namespaces []string, search string, showSystemNamespaces bool) ([]models.SecretSummary, error) {
 	var result []models.SecretSummary

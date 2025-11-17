@@ -9,16 +9,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2 } from "lucide-react";
 import { toast } from "sonner";
-import * as yaml from "js-yaml";
 
 import type {
   Namespace,
-  SecretSummary,
-  SecretManifest,
+  DeploymentSummary,
+  DeploymentManifest,
 } from "@/lib/api/types";
-import { useSecrets } from "@/hooks/useAPI";
+import { useDeployments } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { html as diff2html } from "diff2html";
@@ -27,7 +26,7 @@ import "@/styles/diff2html-dark.css";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
-interface SecretsTabProps {
+interface DeploymentsTabProps {
   cluster: string;
   namespaces: Namespace[];
   selectedNamespace: string;
@@ -36,17 +35,17 @@ interface SecretsTabProps {
   onToggleSystemNamespaces: () => void;
 }
 
-export const SecretsTab = ({
+export const DeploymentsTab = ({
   cluster,
   namespaces,
   selectedNamespace,
   onNamespaceChange,
   showSystemNamespaces,
   onToggleSystemNamespaces,
-}: SecretsTabProps) => {
+}: DeploymentsTabProps) => {
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedSecret, setSelectedSecret] = useState<SecretSummary | null>(null);
-  const [manifest, setManifest] = useState<SecretManifest | null>(null);
+  const [selectedDeployment, setSelectedDeployment] = useState<DeploymentSummary | null>(null);
+  const [manifest, setManifest] = useState<DeploymentManifest | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
   const [editorValue, setEditorValue] = useState("");
   const [originalYaml, setOriginalYaml] = useState("");
@@ -60,14 +59,12 @@ export const SecretsTab = ({
   const [isDiffLoading, setIsDiffLoading] = useState(false);
   const [diffFullScreen, setDiffFullScreen] = useState(false);
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
-  const [isDecoded, setIsDecoded] = useState(false);
 
   // Undo/Redo history
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
 
   const filteredNamespaces = useMemo(() => {
-    if (!namespaces || !Array.isArray(namespaces)) return [];
     if (showSystemNamespaces) return namespaces;
     return namespaces.filter((ns) => !ns.isSystem);
   }, [namespaces, showSystemNamespaces]);
@@ -81,7 +78,7 @@ export const SecretsTab = ({
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
-  const { secrets, loading, error, refetch } = useSecrets(
+  const { deployments, loading, error, refetch } = useDeployments(
     cluster,
     namespaceFilter,
     showSystemNamespaces
@@ -89,14 +86,14 @@ export const SecretsTab = ({
 
   useEffect(() => {
     if (error) {
-      toast.error("Erro ao carregar Secrets", {
+      toast.error("Erro ao carregar Deployments", {
         description: error,
       });
     }
   }, [error]);
 
   useEffect(() => {
-    setSelectedSecret(null);
+    setSelectedDeployment(null);
     setManifest(null);
     setEditorValue("");
     setOriginalYaml("");
@@ -104,43 +101,29 @@ export const SecretsTab = ({
     setViewMode("editor");
     setHistory([]);
     setHistoryIndex(-1);
-    setIsDecoded(false);
   }, [cluster, selectedNamespace]);
 
-  const filteredSecrets = useMemo(() => {
-    let filtered = secrets;
-    
-    // Filtrar secrets de sistema quando Sistema está desligado
-    if (!showSystemNamespaces) {
-      filtered = filtered.filter((secret) => 
-        !secret.name.includes("sh.helm.release.") && 
-        !secret.name.startsWith("default-") &&
-        !secret.name.includes("alertmanager") &&
-        !secret.name.includes("prometheus")
-      );
-    }
-    
-    // Aplicar busca por query
-    if (!searchQuery) return filtered;
+  const filteredDeployments = useMemo(() => {
+    if (!searchQuery) return deployments;
     const query = searchQuery.toLowerCase();
-    return filtered.filter((cm) => {
+    return deployments.filter((dep) => {
       return (
-        cm.name.toLowerCase().includes(query) ||
-        cm.namespace.toLowerCase().includes(query) ||
-        Object.entries(cm.labels || {}).some(([key, value]) =>
+        dep.name.toLowerCase().includes(query) ||
+        dep.namespace.toLowerCase().includes(query) ||
+        Object.entries(dep.labels || {}).some(([key, value]) =>
           `${key}=${value}`.toLowerCase().includes(query)
         )
       );
     });
-  }, [secrets, searchQuery, showSystemNamespaces]);
+  }, [deployments, searchQuery]);
 
-  const handleSelectSecret = async (summary: SecretSummary) => {
-    setSelectedSecret(summary);
+  const handleSelectDeployment = async (summary: DeploymentSummary) => {
+    setSelectedDeployment(summary);
     setManifestLoading(true);
     setManifest(null);
 
     try {
-      const detail = await apiClient.getSecret(
+      const detail = await apiClient.getDeployment(
         summary.cluster,
         summary.namespace,
         summary.name
@@ -202,14 +185,14 @@ export const SecretsTab = ({
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
 
-  const refreshSecrets = () => {
+  const refreshDeployments = () => {
     if (!cluster) return;
     refetch();
   };
 
   const refreshManifest = () => {
-    if (selectedSecret) {
-      handleSelectSecret(selectedSecret);
+    if (selectedDeployment) {
+      handleSelectDeployment(selectedDeployment);
     }
   };
 
@@ -221,76 +204,15 @@ export const SecretsTab = ({
     setViewMode(mode);
   };
 
-  const handleToggleDecode = () => {
-    // Guard: Verificar se há um Secret selecionado e se o editor tem conteúdo
-    if (!selectedSecret) {
-      toast.warning("Selecione um Secret primeiro");
-      return;
-    }
-
-    if (!editorValue || editorValue.trim() === '') {
-      toast.warning("Editor vazio - carregue um Secret primeiro");
-      return;
-    }
-
-    try {
-      const yamlObj = yaml.load(editorValue) as any;
-
-      if (!yamlObj || !yamlObj.data) {
-        toast.error("YAML inválido ou sem seção 'data'");
-        return;
-      }
-
-      // Ao invés de recriar todo o YAML, fazer substituição linha por linha
-      // para preservar formatação original
-      let newYaml = editorValue;
-      
-      if (isDecoded) {
-        // RE-ENCODE: texto plano → Base64
-        for (const [key, value] of Object.entries(yamlObj.data)) {
-          if (typeof value === 'string') {
-            const encoded = btoa(value);
-            // Encontrar a linha com esse key e substituir o valor
-            const regex = new RegExp(`(\\s+${key}:\\s+)(.*)$`, 'gm');
-            newYaml = newYaml.replace(regex, `$1${encoded}`);
-          }
-        }
-        toast.success("Valores re-encodificados para Base64");
-      } else {
-        // DECODE: Base64 → texto plano
-        for (const [key, value] of Object.entries(yamlObj.data)) {
-          if (typeof value === 'string') {
-            try {
-              const decoded = atob(value);
-              // Encontrar a linha com esse key e substituir o valor
-              const regex = new RegExp(`(\\s+${key}:\\s+)(.*)$`, 'gm');
-              newYaml = newYaml.replace(regex, `$1${decoded}`);
-            } catch {
-              // Se não for Base64 válido, mantém original
-            }
-          }
-        }
-        toast.success("Valores decodificados para texto plano");
-      }
-
-      setEditorValue(newYaml);
-      setIsDecoded(!isDecoded);
-    } catch (err) {
-      toast.error("Erro ao processar YAML", {
-        description: err instanceof Error ? err.message : "Erro desconhecido",
-      });
-    }
-  };
-
   const handleShowDiffModal = async (options?: { fullscreen?: boolean }) => {
-    if (!selectedSecret) return;
+    if (!selectedDeployment) return;
     if (!hasChanges) {
       toast.info("Nenhuma alteração para comparar");
       return;
     }
     setIsDiffLoading(true);
     try {
-      const diffResponse = await apiClient.diffSecret(originalYaml, editorValue, selectedSecret?.name);
+      const diffResponse = await apiClient.diffDeployment(originalYaml, editorValue, selectedDeployment?.name);
       const unifiedDiff = diffResponse.unifiedDiff || "";
       const html = diff2html(unifiedDiff, {
         inputFormat: "diff",
@@ -323,17 +245,17 @@ export const SecretsTab = ({
   };
 
   const handleValidate = async () => {
-    if (!selectedSecret) return;
+    if (!selectedDeployment) return;
     setIsValidating(true);
     try {
-      await apiClient.validateSecret({
-        cluster: selectedSecret.cluster,
-        namespace: selectedSecret.namespace,
+      await apiClient.validateDeployment({
+        cluster: selectedDeployment.cluster,
+        namespace: selectedDeployment.namespace,
         yaml: editorValue,
-        fieldManager: "web-configmap-editor",
+        fieldManager: "web-deployment-editor",
       });
       toast.success("Dry-run bem-sucedido", {
-        description: `${selectedSecret.namespace}/${selectedSecret.name}`,
+        description: `${selectedDeployment.namespace}/${selectedDeployment.name}`,
       });
     } catch (err) {
       toast.error("Dry-run falhou", {
@@ -345,30 +267,21 @@ export const SecretsTab = ({
   };
 
   const handleApply = async () => {
-    if (!selectedSecret) return;
-
-    // VALIDAÇÃO: Previne aplicação com valores decodificados
-    if (isDecoded) {
-      toast.error("Não é possível aplicar com valores decodificados", {
-        description: "Clique no botão 'Encoded' para re-encodificar antes de aplicar",
-      });
-      return;
-    }
-
+    if (!selectedDeployment) return;
     setIsApplying(true);
     try {
-      await apiClient.applySecret(
-        selectedSecret.cluster,
-        selectedSecret.namespace,
-        selectedSecret.name,
+      await apiClient.applyDeployment(
+        selectedDeployment.cluster,
+        selectedDeployment.namespace,
+        selectedDeployment.name,
         {
           yaml: editorValue,
-          fieldManager: "web-secret-editor",
+          fieldManager: "web-deployment-editor",
           dryRun: false,
         }
       );
-      toast.success("Secret aplicado", {
-        description: `${selectedSecret.namespace}/${selectedSecret.name}`,
+      toast.success("Deployment aplicado", {
+        description: `${selectedDeployment.namespace}/${selectedDeployment.name}`,
       });
       refreshManifest();
     } catch (err) {
@@ -381,7 +294,7 @@ export const SecretsTab = ({
   };
 
   const openApplyConfirm = () => {
-    if (!selectedSecret) return;
+    if (!selectedDeployment) return;
     if (!hasChanges) {
       toast.info("Nenhuma alteração para aplicar");
       return;
@@ -393,6 +306,17 @@ export const SecretsTab = ({
     setApplyConfirmOpen(false);
     await handleApply();
   };
+
+  const collapseButton = (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+      title={isSidebarCollapsed ? "Mostrar painel de Deployments" : "Ocultar painel de Deployments"}
+    >
+      {isSidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+    </Button>
+  );
 
   const namespaceSelector = (
     <Select
@@ -421,13 +345,14 @@ export const SecretsTab = ({
         variant={showSystemNamespaces ? "secondary" : "outline"}
         size="sm"
         onClick={onToggleSystemNamespaces}
-        title={showSystemNamespaces ? "Mostrar namespaces e secrets de sistema (incluindo Helm)" : "Ocultar namespaces e secrets de sistema (incluindo Helm)"}
+        title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
       >
         {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
       </Button>
-      <Button variant="outline" size="sm" onClick={refreshSecrets} disabled={!cluster || loading}>
+      <Button variant="outline" size="sm" onClick={refreshDeployments} disabled={!cluster || loading}>
         <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
       </Button>
+      {collapseButton}
     </div>
   );
 
@@ -436,18 +361,18 @@ export const SecretsTab = ({
       variant="outline"
       size="sm"
       onClick={refreshManifest}
-      disabled={!selectedSecret || manifestLoading}
+      disabled={!selectedDeployment || manifestLoading}
     >
       <RefreshCcw className="w-4 h-4 mr-2" />
       Recarregar YAML
     </Button>
   );
 
-  const renderSecretList = () => {
+  const renderDeploymentList = () => {
     if (!cluster) {
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Selecione um cluster para listar Secrets
+          Selecione um cluster para listar Deployments
         </div>
       );
     }
@@ -455,41 +380,41 @@ export const SecretsTab = ({
     if (loading) {
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Carregando Secrets...
+          Carregando Deployments...
         </div>
       );
     }
 
-    if (filteredSecrets.length === 0) {
+    if (filteredDeployments.length === 0) {
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          {secrets.length === 0
-            ? "Nenhum Secret encontrado"
-            : "Nenhum Secret corresponde à busca"}
+          {deployments.length === 0
+            ? "Nenhum Deployment encontrado"
+            : "Nenhum Deployment corresponde à busca"}
         </div>
       );
     }
 
     return (
       <div className="space-y-2">
-        {filteredSecrets.map((cm) => {
+        {filteredDeployments.map((dep) => {
           const isSelected =
-            selectedSecret?.name === cm.name &&
-            selectedSecret?.namespace === cm.namespace;
+            selectedDeployment?.name === dep.name &&
+            selectedDeployment?.namespace === dep.namespace;
           return (
             <button
-              key={`${cm.cluster}-${cm.namespace}-${cm.name}`}
-              onClick={() => handleSelectSecret(cm)}
+              key={`${dep.cluster}-${dep.namespace}-${dep.name}`}
+              onClick={() => handleSelectDeployment(dep)}
               className={`w-full text-left p-3 rounded-lg border transition-colors ${
                 isSelected
                   ? "border-primary bg-primary/10 text-primary-foreground"
                   : "border-border/60 hover:border-primary/40"
               }`}
             >
-              <div className="font-semibold text-sm">{cm.name}</div>
-              <div className="text-xs text-muted-foreground">{cm.namespace}</div>
+              <div className="font-semibold text-sm">{dep.name}</div>
+              <div className="text-xs text-muted-foreground">{dep.namespace}</div>
               <div className="text-[11px] text-muted-foreground mt-1">
-                {cm.dataKeys.length} {cm.dataKeys.length === 1 ? 'key' : 'keys'}
+                {dep.replicas} / {dep.readyReplicas} ready • {dep.availableReplicas} available
               </div>
             </button>
           );
@@ -504,21 +429,21 @@ export const SecretsTab = ({
     if (!cluster) {
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Selecione um cluster para visualizar Secrets
+          Selecione um cluster para visualizar Deployments
         </div>
       );
     }
 
-    if (!selectedSecret) {
+    if (!selectedDeployment) {
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Escolha um Secret para visualizar o manifesto
+          Escolha um Deployment para visualizar o manifesto
         </div>
       );
     }
 
-    const updatedAt = selectedSecret.updatedAt
-      ? new Date(selectedSecret.updatedAt).toLocaleString()
+    const updatedAt = selectedDeployment.updatedAt
+      ? new Date(selectedDeployment.updatedAt).toLocaleString()
       : "--";
 
     return (
@@ -526,15 +451,17 @@ export const SecretsTab = ({
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <p className="text-xs text-muted-foreground uppercase">Cluster</p>
-            <p className="font-medium break-all">{selectedSecret.cluster}</p>
+            <p className="font-medium break-all">{selectedDeployment.cluster}</p>
           </div>
           <div>
             <p className="text-xs text-muted-foreground uppercase">Namespace</p>
-            <p className="font-medium break-all">{selectedSecret.namespace}</p>
+            <p className="font-medium break-all">{selectedDeployment.namespace}</p>
           </div>
           <div>
-            <p className="text-xs text-muted-foreground uppercase">ResourceVersion</p>
-            <p className="font-mono text-xs">{selectedSecret.resourceVersion || "--"}</p>
+            <p className="text-xs text-muted-foreground uppercase">Replicas</p>
+            <p className="font-mono text-xs">
+              {selectedDeployment.readyReplicas} / {selectedDeployment.replicas}
+            </p>
           </div>
           <div>
             <p className="text-xs text-muted-foreground uppercase">Atualizado</p>
@@ -542,7 +469,7 @@ export const SecretsTab = ({
           </div>
         </div>
 
-        {selectedSecret.labels && Object.keys(selectedSecret.labels).length > 0 && (
+        {selectedDeployment.labels && Object.keys(selectedDeployment.labels).length > 0 && (
           <div className="text-xs">
             <button
               type="button"
@@ -554,7 +481,7 @@ export const SecretsTab = ({
             </button>
             {showLabels && (
               <div className="flex flex-wrap gap-2">
-                {Object.entries(selectedSecret.labels).map(([key, value]) => (
+                {Object.entries(selectedDeployment.labels).map(([key, value]) => (
                   <span
                     key={`${key}-${value}`}
                     className="px-2 py-1 bg-secondary/60 rounded-md font-mono"
@@ -620,30 +547,6 @@ export const SecretsTab = ({
                     Diff
                   </button>
                 </div>
-                <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
-                  <button
-                    type="button"
-                    onClick={handleToggleDecode}
-                    className={`px-3 py-1 text-xs font-medium flex items-center gap-1.5 ${
-                      isDecoded
-                        ? "bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 border-yellow-500/30"
-                        : "bg-green-500/20 text-green-600 dark:text-green-400 border-green-500/30"
-                    }`}
-                    title={isDecoded ? "Re-encodificar para Base64" : "Decodificar para texto plano"}
-                  >
-                    {isDecoded ? (
-                      <>
-                        <Unlock className="w-3.5 h-3.5" />
-                        Decoded
-                      </>
-                    ) : (
-                      <>
-                        <Lock className="w-3.5 h-3.5" />
-                        Encoded
-                      </>
-                    )}
-                  </button>
-                </div>
               </div>
             </div>
             {viewMode === "editor" && (
@@ -669,7 +572,7 @@ export const SecretsTab = ({
               variant="outline"
               size="sm"
               onClick={handleShowDiffModal}
-              disabled={!selectedSecret || !hasChanges || isDiffLoading}
+              disabled={!selectedDeployment || !hasChanges || isDiffLoading}
             >
               {isDiffLoading ? (
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -682,7 +585,7 @@ export const SecretsTab = ({
               variant="outline"
               size="sm"
               onClick={() => handleShowDiffModal({ fullscreen: true })}
-              disabled={!selectedSecret || !hasChanges || isDiffLoading}
+              disabled={!selectedDeployment || !hasChanges || isDiffLoading}
               className="gap-2"
               title="Abrir diff ocupando toda a tela"
             >
@@ -693,7 +596,7 @@ export const SecretsTab = ({
               variant="secondary"
               size="sm"
               onClick={handleValidate}
-              disabled={!selectedSecret || isValidating}
+              disabled={!selectedDeployment || isValidating}
             >
               <CheckCircle2 className="w-4 h-4 mr-2" /> Validar (Dry-run)
             </Button>
@@ -701,7 +604,7 @@ export const SecretsTab = ({
               variant="default"
               size="sm"
               onClick={openApplyConfirm}
-              disabled={!selectedSecret || isApplying || !hasChanges}
+              disabled={!selectedDeployment || isApplying || !hasChanges}
             >
               <TriangleAlert className="w-4 h-4 mr-2" /> Aplicar
             </Button>
@@ -734,19 +637,8 @@ export const SecretsTab = ({
         />
       </div>
 
-      {renderSecretList()}
+      {renderDeploymentList()}
     </div>
-  );
-
-  const collapseButton = (
-    <Button
-      variant="ghost"
-      size="icon"
-      onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-      title={isSidebarCollapsed ? "Mostrar painel de Secrets" : "Ocultar painel de Secrets"}
-    >
-      {isSidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
-    </Button>
   );
 
   const renderDiffDialog = () => {
@@ -766,7 +658,7 @@ export const SecretsTab = ({
                 </DialogTitle>
                 <DialogDescription className="text-sm text-muted-foreground">
                   Comparação lado a lado entre o YAML original e a versão editada
-                  {selectedSecret && ` • ${selectedSecret.namespace}/${selectedSecret.name}`}
+                  {selectedDeployment && ` • ${selectedDeployment.namespace}/${selectedDeployment.name}`}
                 </DialogDescription>
               </div>
               <Button
@@ -808,7 +700,7 @@ export const SecretsTab = ({
   };
 
   const renderApplyConfirmDialog = () => {
-    if (!selectedSecret) return null;
+    if (!selectedDeployment) return null;
 
     return (
       <Dialog open={applyConfirmOpen} onOpenChange={setApplyConfirmOpen}>
@@ -818,14 +710,14 @@ export const SecretsTab = ({
               Confirmar aplicação
             </DialogTitle>
             <DialogDescription>
-              Essa ação vai aplicar o Secret diretamente no cluster selecionado.
+              Essa ação vai aplicar o Deployment diretamente no cluster selecionado.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs">
-              <p><span className="text-muted-foreground">Cluster:</span> {selectedSecret.cluster}</p>
-              <p><span className="text-muted-foreground">Namespace:</span> {selectedSecret.namespace}</p>
-              <p><span className="text-muted-foreground">Secret:</span> {selectedSecret.name}</p>
+              <p><span className="text-muted-foreground">Cluster:</span> {selectedDeployment.cluster}</p>
+              <p><span className="text-muted-foreground">Namespace:</span> {selectedDeployment.namespace}</p>
+              <p><span className="text-muted-foreground">Deployment:</span> {selectedDeployment.name}</p>
             </div>
             <p className="text-muted-foreground">
               Certifique-se de que o diff foi revisado antes de confirmar. Esta operação não possui rollback automático.
@@ -886,24 +778,8 @@ export const SecretsTab = ({
     <>
       <SplitView
         leftPanel={{
-          title: "Secrets",
-          titleAction: (
-            <div className="flex items-center gap-2">
-              {namespaceSelector}
-              <Button
-                variant={showSystemNamespaces ? "secondary" : "outline"}
-                size="sm"
-                onClick={onToggleSystemNamespaces}
-                title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
-              >
-                {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
-              </Button>
-              <Button variant="outline" size="sm" onClick={refreshSecrets} disabled={!cluster || loading}>
-                <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
-              </Button>
-              {collapseButton}
-            </div>
-          ),
+          title: "Deployments",
+          titleAction: leftTitleAction,
           content: leftContent,
         }}
         rightPanel={{

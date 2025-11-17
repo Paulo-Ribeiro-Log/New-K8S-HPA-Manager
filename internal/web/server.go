@@ -298,6 +298,17 @@ func (s *Server) setupRoutes() {
 		configMaps.PUT("/:cluster/:namespace/:name", configMapHandler.Apply)
 	}
 
+	// Deployments
+	deploymentHandler := handlers.NewDeploymentHandler(s.kubeManager, s.historyTracker)
+	deployments := api.Group("/deployments")
+	{
+		deployments.GET("", deploymentHandler.List)
+		deployments.GET("/:cluster/:namespace/:name", deploymentHandler.Get)
+		deployments.POST("/diff", deploymentHandler.Diff)
+		deployments.POST("/validate", deploymentHandler.Validate)
+		deployments.PUT("/:cluster/:namespace/:name", deploymentHandler.Apply)
+	}
+
 	// Secrets
 	secretHandler := handlers.NewSecretHandler(s.kubeManager, s.historyTracker)
 	secrets := api.Group("/secrets")

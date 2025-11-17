@@ -326,6 +326,38 @@ export function useSecrets(cluster?: string, namespaces?: string[], showSystem: 
   return { secrets, loading, error, refetch: fetchSecrets };
 }
 
+export function useDeployments(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
+  const [deployments, setDeployments] = useState<DeploymentSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
+
+  const fetchDeployments = async () => {
+    if (!cluster) {
+      setDeployments([]);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await apiClient.getDeployments(cluster, namespaces, undefined, showSystem);
+      setDeployments(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch deployments");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDeployments();
+  }, [cluster, namespaceKey, showSystem]);
+
+  return { deployments, loading, error, refetch: fetchDeployments };
+}
+
 // CronJobs hooks
 export function useCronJobs(cluster?: string) {
   return useQuery({

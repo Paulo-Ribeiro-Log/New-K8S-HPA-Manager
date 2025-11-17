@@ -14,6 +14,7 @@ import NodePoolSequencingModal from "@/components/NodePoolSequencingModal";
 import SequenceProgressModal from "@/components/SequenceProgressModal";
 import { ConfigMapsTab } from "@/components/ConfigMapsTab";
 import { SecretsTab } from "@/components/SecretsTab";
+import { DeploymentsTab } from "@/components/DeploymentsTab";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
@@ -197,6 +198,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
     { id: "configmaps", label: "ConfigMaps", icon: FileCode },
     { id: "secrets", label: "Secrets", icon: Key },
+    { id: "deployments", label: "Deployments", icon: Package },
   ];
 
   // Filter functions
@@ -437,6 +439,20 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
+      case "deployments":
+        return (
+          <ErrorBoundary componentName="Deployments Tab">
+            <DeploymentsTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
+        );
+
       case "nodepools":
         const markedNodePools = staging?.stagedNodePools.filter(
           np => np.sequence_order > 0
@@ -608,8 +624,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps e Secrets */}
-      {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps, Secrets e Deployments */}
+      {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-6 py-3 flex-shrink-0">
           <StatsCard
             icon={Layers}
