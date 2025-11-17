@@ -228,15 +228,18 @@ export const SecretsTab = ({
         return;
       }
 
-      const newData: Record<string, string> = {};
-
+      // Ao invés de recriar todo o YAML, fazer substituição linha por linha
+      // para preservar formatação original
+      let newYaml = editorValue;
+      
       if (isDecoded) {
         // RE-ENCODE: texto plano → Base64
         for (const [key, value] of Object.entries(yamlObj.data)) {
           if (typeof value === 'string') {
-            newData[key] = btoa(value); // Encode to Base64
-          } else {
-            newData[key] = value as string;
+            const encoded = btoa(value);
+            // Encontrar a linha com esse key e substituir o valor
+            const regex = new RegExp(`(\\s+${key}:\\s+)(.*)$`, 'gm');
+            newYaml = newYaml.replace(regex, `$1${encoded}`);
           }
         }
         toast.success("Valores re-encodificados para Base64");
@@ -245,20 +248,18 @@ export const SecretsTab = ({
         for (const [key, value] of Object.entries(yamlObj.data)) {
           if (typeof value === 'string') {
             try {
-              newData[key] = atob(value); // Decode from Base64
+              const decoded = atob(value);
+              // Encontrar a linha com esse key e substituir o valor
+              const regex = new RegExp(`(\\s+${key}:\\s+)(.*)$`, 'gm');
+              newYaml = newYaml.replace(regex, `$1${decoded}`);
             } catch {
               // Se não for Base64 válido, mantém original
-              newData[key] = value as string;
             }
-          } else {
-            newData[key] = value as string;
           }
         }
         toast.success("Valores decodificados para texto plano");
       }
 
-      yamlObj.data = newData;
-      const newYaml = yaml.dump(yamlObj, { lineWidth: -1 });
       setEditorValue(newYaml);
       setIsDecoded(!isDecoded);
     } catch (err) {
