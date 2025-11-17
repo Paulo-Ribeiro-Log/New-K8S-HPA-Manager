@@ -83,6 +83,54 @@ export interface ConfigMapApplyResult {
   appliedAt?: string;
 }
 
+// Secrets Types
+export interface SecretSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  type: string;
+  labels?: Record<string, string>;
+  dataKeys: string[];
+  resourceVersion?: string;
+  updatedAt: string;
+}
+
+export interface SecretMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface SecretManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  type: string;
+  yaml: string;
+  metadata: SecretMetadata;
+}
+
+export interface SecretDiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface SecretValidateResult {
+  name: string;
+  namespace: string;
+  resourceVersion?: string;
+}
+
+export interface SecretApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  resourceVersion?: string;
+  dryRun?: boolean;
+  appliedAt?: string;
+}
+
 export interface HPA {
   name: string;
   namespace: string;

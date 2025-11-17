@@ -13,6 +13,8 @@ import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
 import NodePoolSequencingModal from "@/components/NodePoolSequencingModal";
 import SequenceProgressModal from "@/components/SequenceProgressModal";
 import { ConfigMapsTab } from "@/components/ConfigMapsTab";
+import { SecretsTab } from "@/components/SecretsTab";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
 import { LogViewer } from "@/components/LogViewer";
@@ -37,7 +39,8 @@ import {
   EyeOff,
   BarChart3,
   FileCode,
-  Settings
+  Settings,
+  Key
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -176,19 +179,6 @@ const Index = ({ onLogout }: IndexProps) => {
     setSelectedNamespace("");
   }, [selectedCluster]);
 
-  // Auto-select first namespace for CronJobs and Prometheus
-  useEffect(() => {
-    if (namespaces.length > 0 && !selectedNamespace) {
-      // Filter out system namespaces and pick first non-system one
-      const nonSystemNamespaces = namespaces.filter(ns => !ns.isSystem);
-      if (nonSystemNamespaces.length > 0) {
-        setSelectedNamespace(nonSystemNamespaces[0].name);
-      } else if (namespaces.length > 0) {
-        setSelectedNamespace(namespaces[0].name);
-      }
-    }
-  }, [namespaces, selectedNamespace]);
-
   // Calculate stats
   const stats = {
     clusters: clusters.length,
@@ -206,6 +196,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "prometheus", label: "Prometheus", icon: Activity },
     { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
     { id: "configmaps", label: "ConfigMaps", icon: FileCode },
+    { id: "secrets", label: "Secrets", icon: Key },
   ];
 
   // Filter functions
@@ -431,7 +422,21 @@ const Index = ({ onLogout }: IndexProps) => {
             onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
           />
         );
-      
+
+      case "secrets":
+        return (
+          <ErrorBoundary componentName="Secrets Tab">
+            <SecretsTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
+        );
+
       case "nodepools":
         const markedNodePools = staging?.stagedNodePools.filter(
           np => np.sequence_order > 0
@@ -603,8 +608,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento e ConfigMaps */}
-      {activeTab !== "monitoring" && activeTab !== "configmaps" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps e Secrets */}
+      {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-6 py-3 flex-shrink-0">
           <StatsCard
             icon={Layers}

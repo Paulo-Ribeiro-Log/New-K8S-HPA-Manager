@@ -331,6 +331,219 @@ func prepareConfigMapApplyPayload(yamlContent, enforceNamespace, enforceName str
 	return jsonPayload, namespace, name, nil
 }
 
+// ListSecrets lista secrets com filtros
+func (c *Client) ListSecrets(ctx context.Context, namespaces []string, search string, showSystemNamespaces bool) ([]models.SecretSummary, error) {
+	var result []models.SecretSummary
+	search = strings.ToLower(strings.TrimSpace(search))
+
+	listAllNamespaces := len(namespaces) == 0
+	uniqueNamespaces := make(map[string]struct{})
+	for _, ns := range namespaces {
+		ns = strings.TrimSpace(ns)
+		if ns == "" {
+			continue
+		}
+		uniqueNamespaces[ns] = struct{}{}
+	}
+
+	appendSummaries := func(items []corev1.Secret) {
+		for _, secret := range items {
+			if !showSystemNamespaces && isSystemNamespace(secret.Namespace) {
+				continue
+			}
+			if search != "" && !matchesSecretSearch(&secret, search) {
+				continue
+			}
+			result = append(result, buildSecretSummary(c.cluster, &secret))
+		}
+	}
+
+	if listAllNamespaces {
+		secrets, err := c.clientset.CoreV1().Secrets("").List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list secrets in cluster %s: %w", c.cluster, err)
+		}
+		appendSummaries(secrets.Items)
+		return result, nil
+	}
+
+	for ns := range uniqueNamespaces {
+		secrets, err := c.clientset.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list secrets in %s/%s: %w", c.cluster, ns, err)
+		}
+		appendSummaries(secrets.Items)
+	}
+
+	return result, nil
+}
+
+// GetSecret retorna o manifesto YAML completo do Secret
+func (c *Client) GetSecret(ctx context.Context, namespace, name string) (*models.SecretManifest, error) {
+	secret, err := c.clientset.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secret %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	yamlBytes, err := yaml.Marshal(secret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal secret %s/%s: %w", namespace, name, err)
+	}
+
+	manifest := &models.SecretManifest{
+		Cluster:   c.cluster,
+		Namespace: namespace,
+		Name:      name,
+		Type:      string(secret.Type),
+		YAML:      string(yamlBytes),
+		Metadata: models.SecretMetadata{
+			UID:             string(secret.UID),
+			ResourceVersion: secret.ResourceVersion,
+			Labels:          copyStringMap(secret.Labels),
+			Annotations:     copyStringMap(secret.Annotations),
+		},
+	}
+
+	return manifest, nil
+}
+
+func matchesSecretSearch(secret *corev1.Secret, search string) bool {
+	name := strings.ToLower(secret.Name)
+	if strings.Contains(name, search) {
+		return true
+	}
+	for k, v := range secret.Labels {
+		candidate := strings.ToLower(fmt.Sprintf("%s=%s", k, v))
+		if strings.Contains(candidate, search) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildSecretSummary(cluster string, secret *corev1.Secret) models.SecretSummary {
+	dataKeys := make([]string, 0, len(secret.Data))
+	for key := range secret.Data {
+		dataKeys = append(dataKeys, key)
+	}
+	sort.Strings(dataKeys)
+
+	updatedAt := secret.CreationTimestamp.Time
+	return models.SecretSummary{
+		Cluster:         cluster,
+		Namespace:       secret.Namespace,
+		Name:            secret.Name,
+		Type:            string(secret.Type),
+		Labels:          copyStringMap(secret.Labels),
+		DataKeys:        dataKeys,
+		ResourceVersion: secret.ResourceVersion,
+		UpdatedAt:       updatedAt,
+	}
+}
+
+// ValidateSecret executa um server-side apply com dry-run
+func (c *Client) ValidateSecret(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*corev1.Secret, error) {
+	return c.applySecret(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+}
+
+// ApplySecret aplica (ou dry-run opcionalmente) o Secret no cluster
+func (c *Client) ApplySecret(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*corev1.Secret, error) {
+	return c.applySecret(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+}
+
+func (c *Client) applySecret(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*corev1.Secret, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("secret yaml content cannot be empty")
+	}
+	if fieldManager == "" {
+		fieldManager = "web-secret-editor"
+	}
+
+	payload, namespace, name, err := prepareSecretApplyPayload(yamlContent, enforceNamespace, enforceName)
+	if err != nil {
+		return nil, err
+	}
+
+	options := metav1.PatchOptions{FieldManager: fieldManager}
+	if dryRun {
+		options.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.CoreV1().Secrets(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply secret %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	return result, nil
+}
+
+func prepareSecretApplyPayload(yamlContent, enforceNamespace, enforceName string) ([]byte, string, string, error) {
+	var secret map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &secret); err != nil {
+		return nil, "", "", fmt.Errorf("invalid secret yaml: %w", err)
+	}
+
+	if len(secret) == 0 {
+		return nil, "", "", fmt.Errorf("secret yaml cannot be empty")
+	}
+
+	apiVersion, _ := secret["apiVersion"].(string)
+	if strings.TrimSpace(apiVersion) == "" {
+		secret["apiVersion"] = "v1"
+	}
+	kind, _ := secret["kind"].(string)
+	if strings.TrimSpace(kind) == "" {
+		secret["kind"] = "Secret"
+	} else if !strings.EqualFold(kind, "Secret") {
+		return nil, "", "", fmt.Errorf("expected kind Secret, got %s", kind)
+	}
+
+	metadata, _ := secret["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	name, _ := metadata["name"].(string)
+	name = strings.TrimSpace(name)
+	if enforceName != "" {
+		enforceName = strings.TrimSpace(enforceName)
+		if name == "" {
+			name = enforceName
+		}
+		if name != enforceName {
+			return nil, "", "", fmt.Errorf("secret name mismatch: expected %s, got %s", enforceName, name)
+		}
+	}
+	if name == "" {
+		return nil, "", "", fmt.Errorf("secret metadata.name is required")
+	}
+	metadata["name"] = name
+
+	namespace, _ := metadata["namespace"].(string)
+	namespace = strings.TrimSpace(namespace)
+	if enforceNamespace != "" {
+		enforceNamespace = strings.TrimSpace(enforceNamespace)
+		if namespace == "" {
+			namespace = enforceNamespace
+		}
+		if namespace != enforceNamespace {
+			return nil, "", "", fmt.Errorf("secret namespace mismatch: expected %s, got %s", enforceNamespace, namespace)
+		}
+	}
+	if namespace == "" {
+		return nil, "", "", fmt.Errorf("secret metadata.namespace is required")
+	}
+	metadata["namespace"] = namespace
+	secret["metadata"] = metadata
+
+	jsonPayload, err := json.Marshal(secret)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to marshal secret payload: %w", err)
+	}
+
+	return jsonPayload, namespace, name, nil
+}
+
 // CountHPAs conta o número de HPAs em um namespace
 func (c *Client) CountHPAs(ctx context.Context, namespace string) (int, error) {
 	hpas, err := c.clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).List(ctx, metav1.ListOptions{})

@@ -298,6 +298,17 @@ func (s *Server) setupRoutes() {
 		configMaps.PUT("/:cluster/:namespace/:name", configMapHandler.Apply)
 	}
 
+	// Secrets
+	secretHandler := handlers.NewSecretHandler(s.kubeManager, s.historyTracker)
+	secrets := api.Group("/secrets")
+	{
+		secrets.GET("", secretHandler.List)
+		secrets.GET("/:cluster/:namespace/:name", secretHandler.Get)
+		secrets.POST("/diff", secretHandler.Diff)
+		secrets.POST("/validate", secretHandler.Validate)
+		secrets.PUT("/:cluster/:namespace/:name", secretHandler.Apply)
+	}
+
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()
 	api.GET("/validate", validationHandler.Validate)
