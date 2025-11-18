@@ -1,11 +1,19 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Header } from "@/components/Header";
 import { StatsCard } from "@/components/StatsCard";
 import { TabNavigation } from "@/components/TabNavigation";
 import { DashboardCharts } from "@/components/DashboardCharts";
 import { SplitView } from "@/components/SplitView";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { HPAListItem } from "@/components/HPAListItem";
 import { HPAEditor } from "@/components/HPAEditor";
+import { HPATableView } from "@/components/HPATableView";
 import { ApplyAllModal } from "@/components/ApplyAllModal";
 import { NodePoolListItem } from "@/components/NodePoolListItem";
 import { NodePoolEditor } from "@/components/NodePoolEditor";
@@ -41,7 +49,8 @@ import {
   BarChart3,
   FileCode,
   Settings,
-  Key
+  Key,
+  X
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -201,8 +210,20 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "deployments", label: "Deployments", icon: Package },
   ];
 
+  // Filtrar namespaces
+  const filteredNamespaces = useMemo(() => {
+    if (showSystemNamespaces) return namespaces;
+    return namespaces.filter((ns) => !ns.isSystem);
+  }, [namespaces, showSystemNamespaces]);
+
   // Filter functions
   const filteredHPAs = hpas.filter(hpa => {
+    // Filtro por namespace selecionado
+    if (selectedNamespace && hpa.namespace !== selectedNamespace) {
+      return false;
+    }
+    
+    // Filtro por busca
     if (!hpaSearchQuery) return true;
     const query = hpaSearchQuery.toLowerCase();
     return (
@@ -241,32 +262,49 @@ const Index = ({ onLogout }: IndexProps) => {
             leftPanel={{
               title: "Available HPAs",
               titleAction: (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className={`${
-                    showSystemNamespaces
-                      ? "bg-primary/10 border-primary/30 text-primary"
-                      : "bg-muted/50 border-muted-foreground/20"
-                  } transition-colors`}
-                  onClick={() => {
-                    console.log('[Toggle] Atual:', showSystemNamespaces, '→ Novo:', !showSystemNamespaces);
-                    setShowSystemNamespaces(!showSystemNamespaces);
-                  }}
-                  title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
-                >
-                  {showSystemNamespaces ? (
-                    <>
-                      <Eye className="w-4 h-4 mr-2" />
-                      Sistema: ON
-                    </>
-                  ) : (
-                    <>
-                      <EyeOff className="w-4 h-4 mr-2" />
-                      Sistema: OFF
-                    </>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {selectedHPA && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSelectedHPA(null)}
+                      title="Desmarcar HPA selecionado"
+                    >
+                      <X className="w-4 h-4 mr-1" />
+                      Desmarcar
+                    </Button>
                   )}
-                </Button>
+                  <Select
+                    value={selectedNamespace || "__all__"}
+                    onValueChange={(value) => setSelectedNamespace(value === "__all__" ? "" : value)}
+                    disabled={!selectedCluster || filteredNamespaces.length === 0}
+                  >
+                    <SelectTrigger className="w-[140px]">
+                      <SelectValue>
+                        {selectedNamespace ? filteredNamespaces.find(ns => ns.name === selectedNamespace)?.name : "Todos"}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">Todos</SelectItem>
+                      {filteredNamespaces.map((ns) => (
+                        <SelectItem key={ns.name} value={ns.name}>
+                          {ns.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    variant={showSystemNamespaces ? "secondary" : "outline"}
+                    size="sm"
+                    onClick={() => {
+                      console.log('[Toggle] Atual:', showSystemNamespaces, '→ Novo:', !showSystemNamespaces);
+                      setShowSystemNamespaces(!showSystemNamespaces);
+                    }}
+                    title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
+                  >
+                    {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
+                  </Button>
+                </div>
               ),
               content: hpasLoading ? (
                 <div className="flex items-center justify-center h-64 text-muted-foreground">
@@ -329,7 +367,14 @@ const Index = ({ onLogout }: IndexProps) => {
                               selectedHPA?.name === hpa.name &&
                               selectedHPA?.namespace === hpa.namespace
                             }
-                            onClick={() => setSelectedHPA(displayHPA)}
+                            onClick={() => {
+                              // Toggle: se clicar no item já selecionado, desmarca
+                              if (selectedHPA?.name === hpa.name && selectedHPA?.namespace === hpa.namespace) {
+                                setSelectedHPA(null);
+                              } else {
+                                setSelectedHPA(displayHPA);
+                              }
+                            }}
                             onMonitor={async () => {
                               try {
                                 // Verificar se já existe no localStorage
@@ -403,11 +448,20 @@ const Index = ({ onLogout }: IndexProps) => {
             }}
             rightPanel={{
               title: "HPA Editor",
-              content: (
-                <HPAEditor
-                  hpa={selectedHPA}
-                  onApply={handleApplySingle}
-                />
+              content: selectedHPA ? (
+                <div className="h-full overflow-auto">
+                  <HPAEditor
+                    hpa={selectedHPA}
+                    onApply={handleApplySingle}
+                  />
+                </div>
+              ) : (
+                <div className="p-4 overflow-auto">
+                  <HPATableView
+                    hpas={filteredHPAs}
+                    onSelectHPA={(hpa) => setSelectedHPA(hpa)}
+                  />
+                </div>
               ),
             }}
           />
