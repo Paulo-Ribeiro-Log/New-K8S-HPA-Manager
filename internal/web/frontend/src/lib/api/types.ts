@@ -83,6 +83,102 @@ export interface ConfigMapApplyResult {
   appliedAt?: string;
 }
 
+// Secrets Types
+export interface SecretSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  type: string;
+  labels?: Record<string, string>;
+  dataKeys: string[];
+  resourceVersion?: string;
+  updatedAt: string;
+}
+
+export interface SecretMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface SecretManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  type: string;
+  yaml: string;
+  metadata: SecretMetadata;
+}
+
+export interface SecretDiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface SecretValidateResult {
+  name: string;
+  namespace: string;
+  resourceVersion?: string;
+}
+
+export interface SecretApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  resourceVersion?: string;
+  dryRun?: boolean;
+  appliedAt?: string;
+}
+
+// Deployment Types
+export interface DeploymentSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  labels?: Record<string, string>;
+  replicas: number;
+  readyReplicas: number;
+  availableReplicas: number;
+  resourceVersion?: string;
+  updatedAt: string;
+}
+
+export interface DeploymentMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface DeploymentManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  yaml: string;
+  metadata: DeploymentMetadata;
+}
+
+export interface DeploymentDiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface DeploymentValidateResult {
+  name: string;
+  namespace: string;
+  resourceVersion?: string;
+}
+
+export interface DeploymentApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  resourceVersion?: string;
+  dryRun?: boolean;
+  appliedAt?: string;
+}
+
 export interface HPA {
   name: string;
   namespace: string;

@@ -2,6 +2,13 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -57,6 +64,19 @@ export const ConfigMapsTab = ({
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
 
+  const filteredNamespaces = useMemo(() => {
+    if (showSystemNamespaces) return namespaces;
+    return namespaces.filter((ns) => !ns.isSystem);
+  }, [namespaces, showSystemNamespaces]);
+
+  useEffect(() => {
+    if (!selectedNamespace) return;
+    const exists = filteredNamespaces.some((ns) => ns.name === selectedNamespace);
+    if (!exists) {
+      onNamespaceChange("");
+    }
+  }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
+
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
   const { configMaps, loading, error, refetch } = useConfigMaps(
     cluster,
@@ -84,9 +104,27 @@ export const ConfigMapsTab = ({
   }, [cluster, selectedNamespace]);
 
   const filteredConfigMaps = useMemo(() => {
-    if (!searchQuery) return configMaps;
+    let filtered = configMaps;
+    
+    // Filtrar configmaps de sistema quando Sistema está desligado
+    // Este filtro é baseado no NOME do configmap, não no namespace
+    if (!showSystemNamespaces) {
+      filtered = filtered.filter((cm) => {
+        const name = cm.name.toLowerCase();
+        return !name.startsWith("istio-") &&
+               !name.startsWith("kube-") &&
+               !name.startsWith("udp-") &&
+               !name.startsWith("tcp-") &&
+               !name.startsWith("prometheus-") &&
+               !name.includes("istio") &&
+               !name.includes("prometheus");
+      });
+    }
+    
+    // Aplicar busca por query
+    if (!searchQuery) return filtered;
     const query = searchQuery.toLowerCase();
-    return configMaps.filter((cm) => {
+    return filtered.filter((cm) => {
       return (
         cm.name.toLowerCase().includes(query) ||
         cm.namespace.toLowerCase().includes(query) ||
@@ -95,7 +133,7 @@ export const ConfigMapsTab = ({
         )
       );
     });
-  }, [configMaps, searchQuery]);
+  }, [configMaps, searchQuery, showSystemNamespaces]);
 
   const handleSelectConfigMap = async (summary: ConfigMapSummary) => {
     setSelectedConfigMap(summary);
@@ -131,18 +169,20 @@ export const ConfigMapsTab = ({
     setEditorValue(value);
 
     // Adicionar ao histórico (remover itens futuros se estamos no meio do histórico)
-    setHistory((prev) => {
-      const newHistory = prev.slice(0, historyIndex + 1);
-      newHistory.push(value);
-      // Limitar histórico a 50 itens
-      if (newHistory.length > 50) {
-        newHistory.shift();
+    setHistoryIndex((currentIndex) => {
+      setHistory((prev) => {
+        const newHistory = prev.slice(0, currentIndex + 1);
+        newHistory.push(value);
+        // Limitar histórico a 50 itens
+        if (newHistory.length > 50) {
+          newHistory.shift();
+          return newHistory;
+        }
         return newHistory;
-      }
-      return newHistory;
+      });
+      return Math.min(currentIndex + 1, 49);
     });
-    setHistoryIndex((prev) => Math.min(prev + 1, 49));
-  }, [historyIndex]);
+  }, []);
 
   // Undo
   const handleUndo = useCallback(() => {
@@ -184,7 +224,7 @@ export const ConfigMapsTab = ({
     setViewMode(mode);
   };
 
-  const handleShowDiffModal = async (options?: { fullscreen?: boolean }) => {
+  const handleShowDiffModal = async (fullscreen = false) => {
     if (!selectedConfigMap) return;
     if (!hasChanges) {
       toast.info("Nenhuma alteração para comparar");
@@ -195,14 +235,12 @@ export const ConfigMapsTab = ({
       const diffResponse = await apiClient.diffConfigMap(originalYaml, editorValue, selectedConfigMap?.name);
       const unifiedDiff = diffResponse.unifiedDiff || "";
       const html = diff2html(unifiedDiff, {
-        inputFormat: "diff",
         drawFileList: false,
         matching: "lines",
         outputFormat: "side-by-side",
-        highlight: true,
       });
       setDiffHtml(html);
-      setDiffFullScreen(!!options?.fullscreen);
+      setDiffFullScreen(fullscreen);
       setDiffModalOpen(true);
     } catch (error) {
       toast.error("Erro ao gerar diff visual", {
@@ -287,20 +325,53 @@ export const ConfigMapsTab = ({
     await handleApply();
   };
 
+  const namespaceSelector = (
+    <Select
+      value={selectedNamespace || "__all__"}
+      onValueChange={(value) => onNamespaceChange(value === "__all__" ? "" : value)}
+      disabled={!cluster || filteredNamespaces.length === 0}
+    >
+      <SelectTrigger className="w-[140px]">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="__all__">Todos</SelectItem>
+        {filteredNamespaces.map((ns) => (
+          <SelectItem key={ns.name} value={ns.name}>
+            {ns.name}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+
+  const collapseButton = (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+      title={isSidebarCollapsed ? "Mostrar painel de ConfigMaps" : "Ocultar painel de ConfigMaps"}
+    >
+      {isSidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+    </Button>
+  );
+
   const leftTitleAction = (
-    <>
+    <div className="flex items-center gap-2 flex-wrap">
+      {namespaceSelector}
       <Button
         variant={showSystemNamespaces ? "secondary" : "outline"}
         size="sm"
         onClick={onToggleSystemNamespaces}
-        title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
+        title={showSystemNamespaces ? "Mostrar namespaces e configmaps de sistema (istio, kube, udp, tcp, prometheus)" : "Ocultar namespaces e configmaps de sistema (istio, kube, udp, tcp, prometheus)"}
       >
         {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
       </Button>
       <Button variant="outline" size="sm" onClick={refreshConfigMaps} disabled={!cluster || loading}>
         <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
       </Button>
-    </>
+      {collapseButton}
+    </div>
   );
 
   const rightTitleAction = (
@@ -516,7 +587,7 @@ export const ConfigMapsTab = ({
             <Button
               variant="outline"
               size="sm"
-              onClick={handleShowDiffModal}
+              onClick={() => handleShowDiffModal(false)}
               disabled={!selectedConfigMap || !hasChanges || isDiffLoading}
             >
               {isDiffLoading ? (
@@ -529,7 +600,7 @@ export const ConfigMapsTab = ({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => handleShowDiffModal({ fullscreen: true })}
+              onClick={() => handleShowDiffModal(true)}
               disabled={!selectedConfigMap || !hasChanges || isDiffLoading}
               className="gap-2"
               title="Abrir diff ocupando toda a tela"
@@ -582,19 +653,8 @@ export const ConfigMapsTab = ({
         />
       </div>
 
-            {renderConfigMapList()}
-          </div>
-  );
-
-  const collapseButton = (
-    <Button
-      variant="ghost"
-      size="icon"
-      onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-      title={isSidebarCollapsed ? "Mostrar painel de ConfigMaps" : "Ocultar painel de ConfigMaps"}
-    >
-      {isSidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
-    </Button>
+      {renderConfigMapList()}
+    </div>
   );
 
   const renderDiffDialog = () => {
@@ -711,7 +771,7 @@ export const ConfigMapsTab = ({
           <div className="grid grid-cols-1 h-full">
             <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
               <div className="flex items-center justify-between mb-3 pb-2 border-b-2 border-primary">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-3 flex-wrap">
                   {collapseButton}
                   <p className="text-base font-semibold text-primary">Visualização</p>
                 </div>
@@ -735,22 +795,7 @@ export const ConfigMapsTab = ({
       <SplitView
         leftPanel={{
           title: "ConfigMaps",
-          titleAction: (
-            <div className="flex items-center gap-2">
-              <Button
-                variant={showSystemNamespaces ? "secondary" : "outline"}
-                size="sm"
-                onClick={onToggleSystemNamespaces}
-                title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
-              >
-                {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
-              </Button>
-              <Button variant="outline" size="sm" onClick={refreshConfigMaps} disabled={!cluster || loading}>
-                <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
-              </Button>
-              {collapseButton}
-            </div>
-          ),
+          titleAction: leftTitleAction,
           content: leftContent,
         }}
         rightPanel={{
