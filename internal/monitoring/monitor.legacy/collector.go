@@ -6,10 +6,11 @@ import (
 	"sync"
 	"time"
 
-	"k8s-hpa-manager/internal/monitoring/analyzer"
+	// "k8s-hpa-manager/internal/monitoring/analyzer" // Package not available - legacy code
 	"k8s-hpa-manager/internal/monitoring/models"
 	"k8s-hpa-manager/internal/monitoring/prometheus"
 	"k8s-hpa-manager/internal/monitoring/storage"
+
 	"github.com/rs/zerolog/log"
 )
 
@@ -18,10 +19,10 @@ type Collector struct {
 	k8sClient  *K8sClient
 	promClient *prometheus.Client
 	cache      *storage.TimeSeriesCache
-	detector   *analyzer.Detector
-	cluster    *models.ClusterInfo
-	config     *CollectorConfig
-	mu         sync.RWMutex
+	// detector   *analyzer.Detector // Package not available - legacy code
+	cluster *models.ClusterInfo
+	config  *CollectorConfig
+	mu      sync.RWMutex
 }
 
 // CollectorConfig configuração do collector
@@ -29,8 +30,8 @@ type CollectorConfig struct {
 	ScanInterval      time.Duration // Intervalo entre scans (default: 30s)
 	ExcludeNamespaces []string      // Namespaces to exclude
 	EnablePrometheus  bool          // Enable Prometheus enrichment
-	DetectorConfig    *analyzer.DetectorConfig
-	CacheConfig       *storage.CacheConfig
+	// DetectorConfig    *analyzer.DetectorConfig // Package not available - legacy code
+	CacheConfig *storage.CacheConfig
 }
 
 // DefaultCollectorConfig retorna configuração padrão
@@ -39,8 +40,8 @@ func DefaultCollectorConfig() *CollectorConfig {
 		ScanInterval:      30 * time.Second,
 		ExcludeNamespaces: []string{},
 		EnablePrometheus:  true,
-		DetectorConfig:    analyzer.DefaultDetectorConfig(),
-		CacheConfig:       nil, // usa default do cache
+		// DetectorConfig:    analyzer.DefaultDetectorConfig(), // Package not available - legacy code
+		CacheConfig: nil, // usa default do cache
 	}
 }
 
@@ -68,14 +69,14 @@ func NewCollector(cluster *models.ClusterInfo, prometheusEndpoint string, config
 	cache := storage.NewTimeSeriesCache(config.CacheConfig)
 
 	// Cria detector
-	detector := analyzer.NewDetector(cache, config.DetectorConfig)
+	// detector := analyzer.NewDetector(cache, config.DetectorConfig) // Package not available - legacy code
 
 	collector := &Collector{
 		k8sClient: k8sClient,
 		cache:     cache,
-		detector:  detector,
-		cluster:   cluster,
-		config:    config,
+		// detector:  detector, // Package not available - legacy code
+		cluster: cluster,
+		config:  config,
 	}
 
 	// Cria Prometheus client se habilitado
@@ -103,12 +104,12 @@ func NewCollector(cluster *models.ClusterInfo, prometheusEndpoint string, config
 
 // ScanResult resultado de um scan
 type ScanResult struct {
-	Cluster       string
-	Timestamp     time.Time
+	Cluster        string
+	Timestamp      time.Time
 	SnapshotsCount int
-	Anomalies     []analyzer.Anomaly
-	Duration      time.Duration
-	Errors        []error
+	// Anomalies     []analyzer.Anomaly // Package not available - legacy code
+	Duration time.Duration
+	Errors   []error
 }
 
 // Scan executa um scan completo do cluster
@@ -192,15 +193,15 @@ func (c *Collector) Scan(ctx context.Context) (*ScanResult, error) {
 	}
 
 	// 6. Detecta anomalias
-	detectionResult := c.detector.Detect()
-	result.Anomalies = detectionResult.Anomalies
+	// detectionResult := c.detector.Detect() // Package not available - legacy code
+	// result.Anomalies = detectionResult.Anomalies // Package not available - legacy code
 
 	result.Duration = time.Since(startTime)
 
 	log.Info().
 		Str("cluster", c.cluster.Name).
 		Int("snapshots", result.SnapshotsCount).
-		Int("anomalies", len(result.Anomalies)).
+		// Int("anomalies", len(result.Anomalies)). // Package not available - legacy code
 		Int("errors", len(result.Errors)).
 		Dur("duration", result.Duration).
 		Msg("Cluster scan completed")
@@ -273,9 +274,9 @@ func (c *Collector) GetCache() *storage.TimeSeriesCache {
 }
 
 // GetDetector retorna o detector para acesso externo
-func (c *Collector) GetDetector() *analyzer.Detector {
-	return c.detector
-}
+// func (c *Collector) GetDetector() *analyzer.Detector {
+// 	return c.detector
+// } // Package not available - legacy code
 
 // GetCluster retorna informações do cluster
 func (c *Collector) GetCluster() *models.ClusterInfo {
@@ -308,11 +309,11 @@ func (c *Collector) GetStats() *CollectorStats {
 	cacheStats := c.cache.Stats()
 
 	return &CollectorStats{
-		Cluster:           c.cluster.Name,
-		TotalHPAs:         cacheStats.TotalHPAs,
-		TotalSnapshots:    cacheStats.TotalSnapshots,
-		MemoryUsage:       c.cache.MemoryUsage(),
-		PrometheusEnabled: c.promClient != nil,
+		Cluster:             c.cluster.Name,
+		TotalHPAs:           cacheStats.TotalHPAs,
+		TotalSnapshots:      cacheStats.TotalSnapshots,
+		MemoryUsage:         c.cache.MemoryUsage(),
+		PrometheusEnabled:   c.promClient != nil,
 		PrometheusConnected: c.IsPrometheusConnected(),
 	}
 }

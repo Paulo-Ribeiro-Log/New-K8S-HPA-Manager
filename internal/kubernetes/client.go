@@ -1848,6 +1848,19 @@ func (c *Client) EnrichHPAWithDeploymentResources(ctx context.Context, hpa *mode
 	if len(deployment.Spec.Template.Spec.Containers) > 0 {
 		container := deployment.Spec.Template.Spec.Containers[0]
 
+		// Extrair versão da imagem (tag ou digest)
+		if container.Image != "" {
+			// Formato: registry/image:tag ou registry/image@sha256:digest
+			image := container.Image
+			if idx := strings.LastIndex(image, ":"); idx != -1 {
+				hpa.ImageVersion = image[idx+1:]
+			} else if idx := strings.LastIndex(image, "@"); idx != -1 {
+				hpa.ImageVersion = image[idx+1:]
+			} else {
+				hpa.ImageVersion = "latest"
+			}
+		}
+
 		// CPU Request (configurado no deployment) - converter para millicores
 		if cpuReq, exists := container.Resources.Requests[corev1.ResourceCPU]; exists {
 			milliValue := cpuReq.MilliValue()

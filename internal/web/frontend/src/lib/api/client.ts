@@ -678,7 +678,7 @@ class APIClient {
   ): Promise<HPAMetrics> {
     const params = new URLSearchParams({ duration });
     return this.request<HPAMetrics>(
-      `/monitoring/metrics/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(hpaName)}?${params}`
+      `/monitoring/v2/metrics/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(hpaName)}?${params}`
     );
   }
 

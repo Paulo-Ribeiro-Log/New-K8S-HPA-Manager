@@ -421,6 +421,16 @@ func (c *PrometheusClient) GetHPAHistoricalMetrics(ctx context.Context, namespac
 	end := time.Now()
 	start := end.Add(-duration)
 
+	log.Info().
+		Str("namespace", namespace).
+		Str("hpa", hpaName).
+		Time("start", start).
+		Time("end", end).
+		Dur("duration", duration).
+		Dur("step", step).
+		Str("url", c.endpoint.URL).
+		Msg("Iniciando busca de métricas históricas no Prometheus")
+
 	historicalMetrics := make(map[string]*QueryRangeResult)
 
 	// Réplicas atuais ao longo do tempo
@@ -533,13 +543,25 @@ func (c *PrometheusClient) GetHPAHistoricalMetrics(ctx context.Context, namespac
 		historicalMetrics["memory_limit"] = result
 	}
 
-	log.Info().
+	// Log detalhado dos dados retornados
+	logger := log.Info().
 		Str("namespace", namespace).
 		Str("hpa", hpaName).
 		Dur("duration", duration).
 		Dur("step", step).
-		Int("metrics_count", len(historicalMetrics)).
-		Msg("Métricas históricas coletadas")
+		Int("metrics_count", len(historicalMetrics))
+
+	// Mostrar primeiro e último timestamp das réplicas (se disponível)
+	if replicasResult, ok := historicalMetrics["replicas"]; ok && len(replicasResult.Data.Result) > 0 && len(replicasResult.Data.Result[0].Values) > 0 {
+		firstTs := replicasResult.Data.Result[0].Values[0][0].(float64)
+		lastTs := replicasResult.Data.Result[0].Values[len(replicasResult.Data.Result[0].Values)-1][0].(float64)
+		logger = logger.
+			Time("first_timestamp", time.Unix(int64(firstTs), 0)).
+			Time("last_timestamp", time.Unix(int64(lastTs), 0)).
+			Int("data_points", len(replicasResult.Data.Result[0].Values))
+	}
+
+	logger.Msg("Métricas históricas coletadas do Prometheus")
 
 	return historicalMetrics, nil
 }

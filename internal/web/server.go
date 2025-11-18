@@ -17,6 +17,7 @@ import (
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
+
 	// TODO: Remover após migração completa para V2
 	// "k8s-hpa-manager/internal/monitoring/analyzer"
 	// "k8s-hpa-manager/internal/monitoring/engine"
@@ -105,13 +106,13 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 	fmt.Println("✅ Monitoring Engine V2 criado (sem port-forwards - acesso direto ao Prometheus)")
 
 	server := &Server{
-		router:             router,
-		kubeManager:        kubeManager,
-		port:               port,
-		token:              token,
-		lastHeartbeat:      time.Now(),
-		logBuffer:          logBuffer,
-		historyTracker:     historyTracker,
+		router:         router,
+		kubeManager:    kubeManager,
+		port:           port,
+		token:          token,
+		lastHeartbeat:  time.Now(),
+		logBuffer:      logBuffer,
+		historyTracker: historyTracker,
 		// TODO: Remover após migração completa para V2
 		// monitoringEngine:   monitoringEngine,
 		// snapshotChan:       snapshotChan,
@@ -273,7 +274,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools", nodePoolHandler.List)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", nodePoolHandler.Update)
 	api.POST("/nodepools/apply-sequential", nodePoolHandler.ApplySequential)
-	api.POST("/nodepools/sequence/execute", nodePoolHandler.ExecuteSequence)   // NOVO: Cordon/Drain sequencing
+	api.POST("/nodepools/sequence/execute", nodePoolHandler.ExecuteSequence)  // NOVO: Cordon/Drain sequencing
 	api.GET("/nodepools/sequence/progress", nodePoolHandler.SequenceProgress) // NOVO: SSE progress tracking
 
 	// CronJobs
@@ -353,10 +354,10 @@ func (s *Server) setupRoutes() {
 		monitoring.GET("/status", monitoringHandlerV2.GetStatus)
 		monitoring.POST("/start", monitoringHandlerV2.Start)
 		monitoring.POST("/stop", monitoringHandlerV2.Stop)
-		monitoring.POST("/hpa", monitoringHandlerV2.AddHPA)  // Adicionar HPA individual
-		monitoring.GET("/metrics/:cluster/:namespace/:hpaName", monitoringHandlerV2.GetMetrics)  // Métricas históricas
-		monitoring.GET("/current/:cluster/:namespace/:hpaName", monitoringHandlerV2.GetCurrentMetrics)  // Snapshot atual
-		monitoring.DELETE("/cache/:cluster/:namespace/:hpaName", monitoringHandlerV2.ClearCache)  // Limpar cache
+		monitoring.POST("/hpa", monitoringHandlerV2.AddHPA)                                            // Adicionar HPA individual
+		monitoring.GET("/metrics/:cluster/:namespace/:hpaName", monitoringHandlerV2.GetMetrics)        // Métricas históricas
+		monitoring.GET("/current/:cluster/:namespace/:hpaName", monitoringHandlerV2.GetCurrentMetrics) // Snapshot atual
+		monitoring.DELETE("/cache/:cluster/:namespace/:hpaName", monitoringHandlerV2.ClearCache)       // Limpar cache
 
 		// Rotas que o frontend chama mas não existem em V2 - retornar 200 com placeholder
 		monitoring.POST("/sync", func(c *gin.Context) {
@@ -370,13 +371,13 @@ func (s *Server) setupRoutes() {
 	// Rotas V2 (diretas)
 	monitoringV2 := api.Group("/monitoring/v2")
 	{
-		monitoringV2.GET("/metrics/:cluster/:namespace/:hpaName", monitoringHandlerV2.GetMetrics)           // Métricas históricas
-		monitoringV2.GET("/current/:cluster/:namespace/:hpaName", monitoringHandlerV2.GetCurrentMetrics)   // Snapshot atual
-		monitoringV2.GET("/status", monitoringHandlerV2.GetStatus)                                          // Status da engine
-		monitoringV2.POST("/start", monitoringHandlerV2.Start)                                              // Iniciar engine
-		monitoringV2.POST("/stop", monitoringHandlerV2.Stop)                                                // Parar engine
-		monitoringV2.POST("/hpa", monitoringHandlerV2.AddHPA)                                               // Adicionar HPA (apenas cache)
-		monitoringV2.DELETE("/cache/:cluster/:namespace/:hpaName", monitoringHandlerV2.ClearCache)          // Limpar cache
+		monitoringV2.GET("/metrics/:cluster/:namespace/:hpaName", monitoringHandlerV2.GetMetrics)        // Métricas históricas
+		monitoringV2.GET("/current/:cluster/:namespace/:hpaName", monitoringHandlerV2.GetCurrentMetrics) // Snapshot atual
+		monitoringV2.GET("/status", monitoringHandlerV2.GetStatus)                                       // Status da engine
+		monitoringV2.POST("/start", monitoringHandlerV2.Start)                                           // Iniciar engine
+		monitoringV2.POST("/stop", monitoringHandlerV2.Stop)                                             // Parar engine
+		monitoringV2.POST("/hpa", monitoringHandlerV2.AddHPA)                                            // Adicionar HPA (apenas cache)
+		monitoringV2.DELETE("/cache/:cluster/:namespace/:hpaName", monitoringHandlerV2.ClearCache)       // Limpar cache
 	}
 
 	// History
@@ -499,6 +500,14 @@ func (s *Server) autoShutdown() {
 func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%d", s.port)
 
+	// Iniciar Monitoring Engine V2
+	if err := s.monitoringEngineV2.Start(); err != nil {
+		fmt.Printf("⚠️  Aviso: Falha ao iniciar Monitoring Engine V2: %v\n", err)
+		fmt.Println("   Continuando sem monitoramento...")
+	} else {
+		fmt.Println("✅ Monitoring Engine V2 iniciado com sucesso")
+	}
+
 	fmt.Println("╔════════════════════════════════════════════════════════════╗")
 	fmt.Println("║       k8s-hpa-manager - Web Interface (POC)              ║")
 	fmt.Println("╚════════════════════════════════════════════════════════════╝")
@@ -531,6 +540,15 @@ func (s *Server) Shutdown() error {
 		fmt.Println("✓ Timer de auto-shutdown parado")
 	}
 	s.timerMutex.Unlock()
+
+	// 2. Parar Monitoring Engine V2
+	if s.monitoringEngineV2 != nil && s.monitoringEngineV2.IsRunning() {
+		if err := s.monitoringEngineV2.Stop(); err != nil {
+			fmt.Printf("⚠️  Erro ao parar Monitoring Engine V2: %v\n", err)
+		} else {
+			fmt.Println("✓ Monitoring Engine V2 parado")
+		}
+	}
 
 	// TODO: Remover após migração completa para V2
 	// if s.monitoringCancel != nil { s.monitoringCancel() }
