@@ -836,12 +836,6 @@ export const SecretsTab = ({
         } else if ((e.key === 'y') || (e.key === 'z' && e.shiftKey)) {
           e.preventDefault();
           handleRedo();
-        } else if (e.key === 's') {
-          e.preventDefault();
-          if (hasChanges && !isApplying) {
-            openApplyConfirm();
-            setEditorFullScreen(false);
-          }
         }
       } else if (e.key === 'Escape') {
         handleCancel();
