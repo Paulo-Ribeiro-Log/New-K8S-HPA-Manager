@@ -61,6 +61,7 @@ export const SecretsTab = ({
   const [diffFullScreen, setDiffFullScreen] = useState(false);
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
   const [isDecoded, setIsDecoded] = useState(false);
+  const [editorFullScreen, setEditorFullScreen] = useState(false);
 
   // Undo/Redo history
   const [history, setHistory] = useState<string[]>([]);
@@ -243,51 +244,38 @@ export const SecretsTab = ({
         return;
       }
 
+      // Preservar formatação original alterando apenas os valores
+      let newYaml = editorValue;
+
       if (isDecoded) {
         // RE-ENCODE: texto plano → Base64
-        const newData: Record<string, string> = {};
         for (const [key, value] of Object.entries(yamlObj.data)) {
           if (typeof value === 'string') {
-            newData[key] = btoa(value);
-          } else {
-            newData[key] = value as string;
+            const encoded = btoa(value);
+            // Substituir apenas o valor deste campo específico, mantendo formatação
+            const regex = new RegExp(`(\\s+${key}:\\s+)(?:"[^"]*"|'[^']*'|[^\\n]+)`, 'g');
+            newYaml = newYaml.replace(regex, `$1${encoded}`);
           }
         }
-        yamlObj.data = newData;
-        const newYaml = yaml.dump(yamlObj, {
-          indent: 2,
-          lineWidth: -1,
-          noRefs: true,
-          sortKeys: false
-        });
-        setEditorValue(newYaml);
         toast.success("Valores re-encodificados para Base64");
       } else {
         // DECODE: Base64 → texto plano
-        const newData: Record<string, string> = {};
         for (const [key, value] of Object.entries(yamlObj.data)) {
           if (typeof value === 'string') {
             try {
-              newData[key] = atob(value);
+              const decoded = atob(value);
+              // Substituir apenas o valor deste campo específico, mantendo formatação
+              const regex = new RegExp(`(\\s+${key}:\\s+)(?:"[^"]*"|'[^']*'|[^\\n]+)`, 'g');
+              newYaml = newYaml.replace(regex, `$1${decoded}`);
             } catch {
               // Se não for Base64 válido, mantém original
-              newData[key] = value;
             }
-          } else {
-            newData[key] = value as string;
           }
         }
-        yamlObj.data = newData;
-        const newYaml = yaml.dump(yamlObj, {
-          indent: 2,
-          lineWidth: -1,
-          noRefs: true,
-          sortKeys: false
-        });
-        setEditorValue(newYaml);
         toast.success("Valores decodificados para texto plano");
       }
 
+      setEditorValue(newYaml);
       setIsDecoded(!isDecoded);
     } catch (err) {
       toast.error("Erro ao processar YAML", {
@@ -534,50 +522,49 @@ export const SecretsTab = ({
       : "--";
 
     return (
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-4 text-sm">
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Cluster</p>
-            <p className="font-medium break-all">{selectedSecret.cluster}</p>
+      <div className="space-y-3">
+        <div className="flex items-start gap-4 text-xs border-b border-border/50 pb-2">
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Cluster</span>
+            <span className="font-medium">{selectedSecret.cluster}</span>
           </div>
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Namespace</p>
-            <p className="font-medium break-all">{selectedSecret.namespace}</p>
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Namespace</span>
+            <span className="font-medium">{selectedSecret.namespace}</span>
           </div>
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">ResourceVersion</p>
-            <p className="font-mono text-xs">{selectedSecret.resourceVersion || "--"}</p>
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">ResourceVersion</span>
+            <span className="font-mono">{selectedSecret.resourceVersion || "--"}</span>
           </div>
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Atualizado</p>
-            <p>{updatedAt}</p>
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Atualizado</span>
+            <span className="font-medium">{updatedAt}</span>
           </div>
+          {selectedSecret.labels && Object.keys(selectedSecret.labels).length > 0 && (
+            <div className="flex flex-col">
+              <button
+                type="button"
+                onClick={() => setShowLabels((prev) => !prev)}
+                className="flex items-center gap-1 text-muted-foreground uppercase mb-0.5 hover:text-foreground"
+              >
+                {showLabels ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                <span>Labels</span>
+              </button>
+              {showLabels && (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {Object.entries(selectedSecret.labels).map(([key, value]) => (
+                    <span
+                      key={`${key}-${value}`}
+                      className="px-1.5 py-0.5 bg-secondary/60 rounded text-[10px] font-mono"
+                    >
+                      {key}={value}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
-
-        {selectedSecret.labels && Object.keys(selectedSecret.labels).length > 0 && (
-          <div className="text-xs">
-            <button
-              type="button"
-              onClick={() => setShowLabels((prev) => !prev)}
-              className="flex items-center gap-2 text-left text-muted-foreground mb-1"
-            >
-              {showLabels ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-              <span>Labels</span>
-            </button>
-            {showLabels && (
-              <div className="flex flex-wrap gap-2">
-                {Object.entries(selectedSecret.labels).map(([key, value]) => (
-                  <span
-                    key={`${key}-${value}`}
-                    className="px-2 py-1 bg-secondary/60 rounded-md font-mono"
-                  >
-                    {key}={value}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
 
         <div className="space-y-3">
           <div className="flex flex-col gap-2">
@@ -656,13 +643,22 @@ export const SecretsTab = ({
                     )}
                   </button>
                 </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditorFullScreen(true)}
+                  title="Abrir editor em tela cheia"
+                  disabled={!selectedSecret}
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                </Button>
               </div>
             </div>
             {viewMode === "editor" && (
               <MonacoYamlEditor
                 value={editorValue}
                 onChange={handleEditorChange}
-                height={360}
+                height={520}
               />
             )}
             {viewMode === "diff" && (
@@ -670,7 +666,7 @@ export const SecretsTab = ({
                 mode="diff"
                 originalValue={originalYaml}
                 value={editorValue}
-                height={360}
+                height={520}
                 readOnly
               />
             )}
@@ -819,6 +815,194 @@ export const SecretsTab = ({
     );
   };
 
+  const renderEditorFullScreen = () => {
+    if (!selectedSecret) return null;
+
+    const handleCancel = () => {
+      // Restaurar o YAML original, descartando alterações
+      setEditorValue(originalYaml);
+      setIsDecoded(false);
+      setViewMode("editor");
+      setEditorFullScreen(false);
+      toast.info("Alterações descartadas");
+    };
+
+    // Keyboard shortcuts
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+        } else if ((e.key === 'y') || (e.key === 'z' && e.shiftKey)) {
+          e.preventDefault();
+          handleRedo();
+        } else if (e.key === 's') {
+          e.preventDefault();
+          if (hasChanges && !isApplying) {
+            openApplyConfirm();
+            setEditorFullScreen(false);
+          }
+        }
+      } else if (e.key === 'Escape') {
+        handleCancel();
+      }
+    };
+
+    return (
+      <Dialog open={editorFullScreen} onOpenChange={setEditorFullScreen}>
+        <DialogContent 
+          className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none p-0"
+          onKeyDown={handleKeyDown}
+        >
+          <div className="h-full flex flex-col">
+            <DialogHeader className="border-b border-border px-6 py-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <DialogTitle className="text-xl font-semibold text-primary">
+                    Editor YAML - Tela Cheia
+                  </DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
+                    {selectedSecret.namespace}/{selectedSecret.name}
+                  </DialogDescription>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={handleUndo}
+                      disabled={!canUndo}
+                      className={`px-2 py-1 text-xs font-medium ${
+                        canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Desfazer (Ctrl+Z)"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRedo}
+                      disabled={!canRedo}
+                      className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                        canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Refazer (Ctrl+Y)"
+                    >
+                      <Redo2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("editor")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      }`}
+                    >
+                      Editor
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("diff")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "diff" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                      disabled={!hasChanges}
+                    >
+                      Diff
+                    </button>
+                  </div>
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={handleToggleDecode}
+                      className={`px-3 py-1 text-xs font-medium flex items-center gap-1.5 ${
+                        isDecoded
+                          ? "bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 border-yellow-500/30"
+                          : "bg-green-500/20 text-green-600 dark:text-green-400 border-green-500/30"
+                      }`}
+                      title={isDecoded ? "Re-encodificar para Base64" : "Decodificar para texto plano"}
+                    >
+                      {isDecoded ? (
+                        <>
+                          <Unlock className="w-3.5 h-3.5" />
+                          Decoded
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="w-3.5 h-3.5" />
+                          Encoded
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleValidate}
+                    disabled={!selectedSecret || isValidating}
+                  >
+                    {isValidating ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4 mr-2" />
+                    )}
+                    Dry-run
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCancel}
+                    title="Descartar alterações e sair (Esc)"
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => {
+                      openApplyConfirm();
+                      setEditorFullScreen(false);
+                    }}
+                    disabled={!selectedSecret || isApplying || !hasChanges}
+                  >
+                    <TriangleAlert className="w-4 h-4 mr-2" />
+                    Aplicar
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditorFullScreen(false)}
+                    title="Minimizar tela cheia (Esc)"
+                  >
+                    <Minimize2 className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            </DialogHeader>
+            <div className="flex-1 p-4">
+              {viewMode === "editor" && (
+                <MonacoYamlEditor
+                  value={editorValue}
+                  onChange={handleEditorChange}
+                  height="calc(100vh - 140px)"
+                />
+              )}
+              {viewMode === "diff" && (
+                <MonacoYamlEditor
+                  mode="diff"
+                  originalValue={originalYaml}
+                  value={editorValue}
+                  height="calc(100vh - 140px)"
+                  readOnly
+                />
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
   const renderApplyConfirmDialog = () => {
     if (!selectedSecret) return null;
 
@@ -889,6 +1073,7 @@ export const SecretsTab = ({
         </div>
 
         {renderDiffDialog()}
+        {renderEditorFullScreen()}
         {renderApplyConfirmDialog()}
       </>
     );
@@ -926,6 +1111,7 @@ export const SecretsTab = ({
       />
 
       {renderDiffDialog()}
+      {renderEditorFullScreen()}
       {renderApplyConfirmDialog()}
     </>
   );
