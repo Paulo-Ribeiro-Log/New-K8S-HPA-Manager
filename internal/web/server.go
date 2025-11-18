@@ -1,7 +1,7 @@
 package web
 
 import (
-	"context"
+	// "context"  // TODO: Remover após migração completa para V2
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -17,9 +17,11 @@ import (
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
-	"k8s-hpa-manager/internal/monitoring/analyzer"
-	"k8s-hpa-manager/internal/monitoring/engine"
-	"k8s-hpa-manager/internal/monitoring/models"
+	// TODO: Remover após migração completa para V2
+	// "k8s-hpa-manager/internal/monitoring/analyzer"
+	// "k8s-hpa-manager/internal/monitoring/engine"
+	enginev2 "k8s-hpa-manager/internal/monitoring/engine"
+	// "k8s-hpa-manager/internal/monitoring/models"
 	"k8s-hpa-manager/internal/monitoring/scanner"
 	"k8s-hpa-manager/internal/web/handlers"
 	"k8s-hpa-manager/internal/web/middleware"
@@ -41,13 +43,16 @@ type Server struct {
 	logBuffer      *handlers.LogBuffer
 	historyTracker *history.HistoryTracker
 
-	// Monitoring engine (NOVO)
-	monitoringEngine *engine.ScanEngine
-	snapshotChan     chan *models.HPASnapshot
-	anomalyChan      chan analyzer.Anomaly
-	stressResultChan chan *models.StressTestMetrics
-	monitoringCtx    context.Context
-	monitoringCancel context.CancelFunc
+	// TODO: Remover após migração completa para V2
+	// monitoringEngine *engine.ScanEngine
+	// snapshotChan     chan *models.HPASnapshot
+	// anomalyChan      chan analyzer.Anomaly
+	// stressResultChan chan *models.StressTestMetrics
+	// monitoringCtx    context.Context
+	// monitoringCancel context.CancelFunc
+
+	// Monitoring Engine V2 (sem port-forwards)
+	monitoringEngineV2 *enginev2.MonitoringEngineV2
 }
 
 // NewServer cria uma nova instância do servidor web
@@ -87,50 +92,34 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 		return nil, fmt.Errorf("failed to create history tracker: %w", err)
 	}
 
-	// Criar canais para monitoring engine
-	snapshotChan := make(chan *models.HPASnapshot, 100)
-	anomalyChan := make(chan analyzer.Anomaly, 100)
-	stressResultChan := make(chan *models.StressTestMetrics, 10)
+	// TODO: Remover após migração completa para V2
+	// snapshotChan := make(chan *models.HPASnapshot, 100)
+	// anomalyChan := make(chan analyzer.Anomaly, 100)
+	// stressResultChan := make(chan *models.StressTestMetrics, 10)
+	// monitoringCtx, monitoringCancel := context.WithCancel(context.Background())
+	// scanConfig := &scanner.ScanConfig{...}
+	// monitoringEngine := engine.New(scanConfig, snapshotChan, anomalyChan, stressResultChan)
 
-	// Criar contexto para monitoring
-	monitoringCtx, monitoringCancel := context.WithCancel(context.Background())
-
-	// ❌ REMOVIDO: Não carregar targets salvos do arquivo
-	// Source of truth: localStorage do frontend (escolha do operador)
-	// Backend inicia SEM HPAs e aguarda reconciliação do frontend
-
-	// Configuração do monitoring engine SEM targets
-	scanConfig := &scanner.ScanConfig{
-		Mode:        scanner.ScanModeIndividual,
-		Targets:     []scanner.ScanTarget{}, // Inicia VAZIO - HPAs adicionados via reconciliação
-		Interval:    1 * time.Minute,
-		Duration:    0,
-		AutoStart:   false, // NÃO inicia automaticamente - aguarda frontend
-		Name:        "Web Monitoring",
-		Description: "Monitoring engine para interface web",
-		CreatedAt:   time.Now(),
-	}
-
-	// Criar monitoring engine
-	monitoringEngine := engine.New(scanConfig, snapshotChan, anomalyChan, stressResultChan)
-
-	fmt.Println("⏳ Monitoring engine criado - aguardando escolha do operador (frontend)")
-	fmt.Println("💡 HPAs serão adicionados via reconciliação quando operador clicar 'Monitorar'")
+	// Criar Monitoring Engine V2 (sem port-forwards, acesso direto ao Prometheus)
+	monitoringEngineV2 := enginev2.NewMonitoringEngineV2()
+	fmt.Println("✅ Monitoring Engine V2 criado (sem port-forwards - acesso direto ao Prometheus)")
 
 	server := &Server{
-		router:           router,
-		kubeManager:      kubeManager,
-		port:             port,
-		token:            token,
-		lastHeartbeat:    time.Now(),
-		logBuffer:        logBuffer,
-		historyTracker:   historyTracker,
-		monitoringEngine: monitoringEngine,
-		snapshotChan:     snapshotChan,
-		anomalyChan:      anomalyChan,
-		stressResultChan: stressResultChan,
-		monitoringCtx:    monitoringCtx,
-		monitoringCancel: monitoringCancel,
+		router:             router,
+		kubeManager:        kubeManager,
+		port:               port,
+		token:              token,
+		lastHeartbeat:      time.Now(),
+		logBuffer:          logBuffer,
+		historyTracker:     historyTracker,
+		// TODO: Remover após migração completa para V2
+		// monitoringEngine:   monitoringEngine,
+		// snapshotChan:       snapshotChan,
+		// anomalyChan:        anomalyChan,
+		// stressResultChan:   stressResultChan,
+		// monitoringCtx:      monitoringCtx,
+		// monitoringCancel:   monitoringCancel,
+		monitoringEngineV2: monitoringEngineV2,
 	}
 
 	server.setupMiddleware()
@@ -309,6 +298,28 @@ func (s *Server) setupRoutes() {
 		configMaps.PUT("/:cluster/:namespace/:name", configMapHandler.Apply)
 	}
 
+	// Deployments
+	deploymentHandler := handlers.NewDeploymentHandler(s.kubeManager, s.historyTracker)
+	deployments := api.Group("/deployments")
+	{
+		deployments.GET("", deploymentHandler.List)
+		deployments.GET("/:cluster/:namespace/:name", deploymentHandler.Get)
+		deployments.POST("/diff", deploymentHandler.Diff)
+		deployments.POST("/validate", deploymentHandler.Validate)
+		deployments.PUT("/:cluster/:namespace/:name", deploymentHandler.Apply)
+	}
+
+	// Secrets
+	secretHandler := handlers.NewSecretHandler(s.kubeManager, s.historyTracker)
+	secrets := api.Group("/secrets")
+	{
+		secrets.GET("", secretHandler.List)
+		secrets.GET("/:cluster/:namespace/:name", secretHandler.Get)
+		secrets.POST("/diff", secretHandler.Diff)
+		secrets.POST("/validate", secretHandler.Validate)
+		secrets.PUT("/:cluster/:namespace/:name", secretHandler.Apply)
+	}
+
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()
 	api.GET("/validate", validationHandler.Validate)
@@ -333,24 +344,39 @@ func (s *Server) setupRoutes() {
 	api.GET("/logs", logsHandler.GetLogs)
 	api.DELETE("/logs", logsHandler.ClearLogs)
 
-	// Monitoring (NOVO - FASE 4: Passa persistence para query SQLite direto)
-	persistence := s.monitoringEngine.GetPersistence()
-	monitoringHandler := handlers.NewMonitoringHandler(s.monitoringEngine, persistence, s.anomalyChan, s.snapshotChan)
+	// Monitoring V2 (NOVO - sem port-forwards, acesso direto ao Prometheus)
+	monitoringHandlerV2 := handlers.NewMonitoringHandlerV2(s.monitoringEngineV2, s.kubeManager)
+
+	// Rotas V1 (compatibilidade - redireciona para V2)
 	monitoring := api.Group("/monitoring")
 	{
-		monitoring.GET("/metrics/:cluster/:namespace/:hpaName", monitoringHandler.GetMetrics)
-		monitoring.GET("/anomalies", monitoringHandler.GetAnomalies)
-		monitoring.GET("/health/:cluster/:namespace/:hpaName", monitoringHandler.GetHealth)
-		monitoring.GET("/status", monitoringHandler.GetStatus)
-		monitoring.POST("/start", monitoringHandler.Start)
-		monitoring.POST("/stop", monitoringHandler.Stop)
+		monitoring.GET("/status", monitoringHandlerV2.GetStatus)
+		monitoring.POST("/start", monitoringHandlerV2.Start)
+		monitoring.POST("/stop", monitoringHandlerV2.Stop)
+		monitoring.POST("/hpa", monitoringHandlerV2.AddHPA)  // Adicionar HPA individual
+		monitoring.GET("/metrics/:cluster/:namespace/:hpaName", monitoringHandlerV2.GetMetrics)  // Métricas históricas
+		monitoring.GET("/current/:cluster/:namespace/:hpaName", monitoringHandlerV2.GetCurrentMetrics)  // Snapshot atual
+		monitoring.DELETE("/cache/:cluster/:namespace/:hpaName", monitoringHandlerV2.ClearCache)  // Limpar cache
 
-		// Target management (NOVO)
-		monitoring.GET("/targets", monitoringHandler.GetTargets)
-		monitoring.POST("/targets", monitoringHandler.AddTarget)
-		monitoring.POST("/hpa", monitoringHandler.AddHPA)             // Adicionar HPA individual
-		monitoring.POST("/sync", monitoringHandler.SyncMonitoredHPAs) // Sincronizar lista completa (reconciliação)
-		monitoring.DELETE("/targets/:cluster", monitoringHandler.RemoveTarget)
+		// Rotas que o frontend chama mas não existem em V2 - retornar 200 com placeholder
+		monitoring.POST("/sync", func(c *gin.Context) {
+			c.JSON(200, gin.H{"status": "ok", "message": "V2 não requer sync (cache on-demand)"})
+		})
+		monitoring.GET("/health/:cluster/:namespace/:hpaName", func(c *gin.Context) {
+			c.JSON(200, gin.H{"status": "healthy", "message": "V2 usa cache on-demand"})
+		})
+	}
+
+	// Rotas V2 (diretas)
+	monitoringV2 := api.Group("/monitoring/v2")
+	{
+		monitoringV2.GET("/metrics/:cluster/:namespace/:hpaName", monitoringHandlerV2.GetMetrics)           // Métricas históricas
+		monitoringV2.GET("/current/:cluster/:namespace/:hpaName", monitoringHandlerV2.GetCurrentMetrics)   // Snapshot atual
+		monitoringV2.GET("/status", monitoringHandlerV2.GetStatus)                                          // Status da engine
+		monitoringV2.POST("/start", monitoringHandlerV2.Start)                                              // Iniciar engine
+		monitoringV2.POST("/stop", monitoringHandlerV2.Stop)                                                // Parar engine
+		monitoringV2.POST("/hpa", monitoringHandlerV2.AddHPA)                                               // Adicionar HPA (apenas cache)
+		monitoringV2.DELETE("/cache/:cluster/:namespace/:hpaName", monitoringHandlerV2.ClearCache)          // Limpar cache
 	}
 
 	// History
@@ -506,40 +532,10 @@ func (s *Server) Shutdown() error {
 	}
 	s.timerMutex.Unlock()
 
-	// 2. Cancelar contexto de monitoring
-	if s.monitoringCancel != nil {
-		s.monitoringCancel()
-		fmt.Println("✓ Contexto de monitoring cancelado")
-	}
-
-	// 3. Parar monitoring engine (fecha port-forwards e SQLite)
-	if s.monitoringEngine != nil {
-		fmt.Println("⏳ Parando monitoring engine...")
-		if err := s.monitoringEngine.Stop(); err != nil {
-			fmt.Printf("⚠️  Erro ao parar engine: %v\n", err)
-		} else {
-			fmt.Println("✓ Monitoring engine parado")
-		}
-	}
-
-	// 4. Salvar targets uma última vez
-	homeDir, _ := os.UserHomeDir()
-	baseDir := filepath.Join(homeDir, ".k8s-hpa-manager")
-	targetsFile := filepath.Join(baseDir, "monitoring-targets.json")
-	if s.monitoringEngine != nil {
-		targets := s.monitoringEngine.GetTargets()
-		if err := saveTargetsToFile(targetsFile, targets); err != nil {
-			fmt.Printf("⚠️  Erro ao salvar targets: %v\n", err)
-		} else {
-			fmt.Println("✓ Targets salvos")
-		}
-	}
-
-	// 5. Fechar canais
-	close(s.snapshotChan)
-	close(s.anomalyChan)
-	close(s.stressResultChan)
-	fmt.Println("✓ Canais fechados")
+	// TODO: Remover após migração completa para V2
+	// if s.monitoringCancel != nil { s.monitoringCancel() }
+	// if s.monitoringEngine != nil { s.monitoringEngine.Stop() }
+	// Salvar targets, fechar canais, etc...
 
 	fmt.Println("\n✅ Shutdown concluído com sucesso!")
 	return nil
@@ -583,27 +579,5 @@ func loadTargetsFromFile(filename string) ([]scanner.ScanTarget, error) {
 	return targets, nil
 }
 
-// startTargetsPersistence persiste targets periodicamente em arquivo
-func (s *Server) startTargetsPersistence(filename string, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			// Buscar targets atuais do engine
-			targets := s.monitoringEngine.GetTargets()
-
-			// Salvar em arquivo
-			if err := saveTargetsToFile(filename, targets); err != nil {
-				fmt.Printf("⚠️  Erro ao salvar targets: %v\n", err)
-			}
-
-		case <-s.monitoringCtx.Done():
-			// Servidor sendo encerrado, salvar uma última vez
-			targets := s.monitoringEngine.GetTargets()
-			saveTargetsToFile(filename, targets)
-			return
-		}
-	}
-}
+// TODO: Remover após migração completa para V2
+// func (s *Server) startTargetsPersistence(filename string, interval time.Duration) { ... }

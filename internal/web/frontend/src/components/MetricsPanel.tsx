@@ -239,11 +239,11 @@ export function MetricsPanel({
         memoryRequest: snapshot.memory_request,
         memoryLimit: snapshot.memory_limit,
         memoryYesterday: yesterdaySnapshot?.memory_current ?? null,
-        replicasCurrent: snapshot.replicas_current,
+        replicasCurrent: snapshot.replicas,  // Backend envia "replicas" (não "replicas_current")
         replicasDesired: snapshot.replicas_desired,
         replicasMin: snapshot.replicas_min,
         replicasMax: snapshot.replicas_max,
-        replicasYesterday: yesterdaySnapshot?.replicas_current ?? null,
+        replicasYesterday: yesterdaySnapshot?.replicas ?? null,  // Backend envia "replicas" (não "replicas_current")
         latencyP95: snapshot.p95_latency ?? null,
         latencyP99: snapshot.p99_latency ?? null,
         requestRate: snapshot.request_rate ?? null,
@@ -394,17 +394,21 @@ export function MetricsPanel({
     }
 
     const absValue = Math.abs(millicores);
-    const cores = millicores / 1000;
 
+    // >= 1000 millicores = mostrar em vCores com 2 casas decimais
     if (absValue >= 1000) {
-      return `${cores.toFixed(1)} cores`;
+      const vCores = millicores / 1000;
+      return `${vCores.toFixed(2)} vCores`;
     }
 
+    // >= 1 millicore = mostrar em millicores com 2 casas decimais
     if (absValue >= 1) {
-      return `${millicores.toFixed(0)}m`;
+      return `${millicores.toFixed(2)}m`;
     }
 
-    return `${millicores.toFixed(2)}m`;
+    // < 1 millicore = mostrar em microcores (µ) com 2 casas decimais
+    const microcores = millicores * 1000;
+    return `${microcores.toFixed(2)}µ`;
   };
 
   // Helpers de exibição dos cards
@@ -413,8 +417,8 @@ export function MetricsPanel({
 
     if (!limitValue) {
       return {
-        primary: `${sanitizedPercent.toFixed(1)}%`,
-        percentLabel: `${sanitizedPercent.toFixed(1)}%`,
+        primary: `${sanitizedPercent.toFixed(2)}%`,
+        percentLabel: `${sanitizedPercent.toFixed(2)}%`,
         hasLimit: false,
       };
     }
@@ -422,18 +426,17 @@ export function MetricsPanel({
     const parsedLimit = parseCpuValue(limitValue);
     if (parsedLimit === null || parsedLimit === 0) {
       return {
-        primary: `${sanitizedPercent.toFixed(1)}%`,
-        percentLabel: `${sanitizedPercent.toFixed(1)}%`,
+        primary: `${sanitizedPercent.toFixed(2)}%`,
+        percentLabel: `${sanitizedPercent.toFixed(2)}%`,
         hasLimit: false,
       };
     }
 
     const usageMillicores = (sanitizedPercent / 100) * parsedLimit;
-    const usageCores = usageMillicores / 1000;
 
     return {
       primary: formatCpuUsage(usageMillicores),
-      percentLabel: `${sanitizedPercent.toFixed(1)}%`,
+      percentLabel: `${sanitizedPercent.toFixed(2)}%`,
       hasLimit: true,
     };
   };
@@ -453,9 +456,9 @@ export function MetricsPanel({
     const { primary, percentLabel, hasLimit } = getCpuDisplayValues(percentValue, limitValue);
 
     return (
-      <div className="px-2.5 py-2 rounded-lg border bg-card">
+      <div className="px-2.5 py-2 rounded-lg border bg-blue-950/30 border-blue-800/40">
         <div className="flex items-center gap-1.5 mb-1">
-          <Icon className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+          <Icon className="h-3 w-3 flex-shrink-0" />
           <span className="text-[11px] font-semibold leading-none">{label}</span>
         </div>
         <div className="text-base font-bold leading-none mb-0.5">{primary}</div>
@@ -471,15 +474,18 @@ export function MetricsPanel({
       return "--";
     }
 
+    // >= 1000ms = mostrar em segundos com 2 casas decimais
     if (value >= 1000) {
       return `${(value / 1000).toFixed(2)} s`;
     }
 
+    // >= 1ms = mostrar em milissegundos com 2 casas decimais
     if (value >= 1) {
-      return `${value.toFixed(1)} ms`;
+      return `${value.toFixed(2)} ms`;
     }
 
-    return `${Math.max(value * 1000, 0).toFixed(0)} µs`;
+    // < 1ms = mostrar em microssegundos (µs) com 2 casas decimais
+    return `${Math.max(value * 1000, 0).toFixed(2)} µs`;
   };
 
   const LatencyCard = ({
@@ -518,10 +524,10 @@ export function MetricsPanel({
         : "text-green-600";
 
     return (
-      <div className="px-2.5 py-2 rounded-lg border bg-card">
+      <div className="px-2.5 py-2 rounded-lg border bg-blue-950/30 border-blue-800/40">
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-center gap-1.5">
-            <Icon className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+            <Icon className="h-3 w-3 flex-shrink-0" />
             <span className="text-[11px] font-semibold leading-none">
               Latência {percentile.toUpperCase()}
             </span>
@@ -813,21 +819,13 @@ export function MetricsPanel({
                   percentValue={cpuStats.min}
                   limitValue={snapshotWithResources?.cpu_limit}
                 />
-                <StatCard
+                {/* Card de Latência P95/P99 (sempre visível, mesmo sem dados) */}
+                <LatencyCard
                   icon={BarChart3}
-                  label="P95"
-                  percentValue={cpuStats.p95}
-                  limitValue={snapshotWithResources?.cpu_limit}
+                  stats={latencyStats}
+                  percentile={latencyView}
+                  onPercentileChange={setLatencyView}
                 />
-                {/* Mostrar Latency card apenas se houver dados */}
-                {(latencyStats.p95.current !== null || latencyStats.p99.current !== null) && (
-                  <LatencyCard
-                    icon={BarChart3}
-                    stats={latencyStats}
-                    percentile={latencyView}
-                    onPercentileChange={setLatencyView}
-                  />
-                )}
               </div>
 
 
