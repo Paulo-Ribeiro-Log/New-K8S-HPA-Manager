@@ -243,39 +243,51 @@ export const SecretsTab = ({
         return;
       }
 
-      // Ao invés de recriar todo o YAML, fazer substituição linha por linha
-      // para preservar formatação original
-      let newYaml = editorValue;
-      
       if (isDecoded) {
         // RE-ENCODE: texto plano → Base64
+        const newData: Record<string, string> = {};
         for (const [key, value] of Object.entries(yamlObj.data)) {
           if (typeof value === 'string') {
-            const encoded = btoa(value);
-            // Encontrar a linha com esse key e substituir o valor
-            const regex = new RegExp(`(\\s+${key}:\\s+)(.*)$`, 'gm');
-            newYaml = newYaml.replace(regex, `$1${encoded}`);
+            newData[key] = btoa(value);
+          } else {
+            newData[key] = value as string;
           }
         }
+        yamlObj.data = newData;
+        const newYaml = yaml.dump(yamlObj, {
+          indent: 2,
+          lineWidth: -1,
+          noRefs: true,
+          sortKeys: false
+        });
+        setEditorValue(newYaml);
         toast.success("Valores re-encodificados para Base64");
       } else {
         // DECODE: Base64 → texto plano
+        const newData: Record<string, string> = {};
         for (const [key, value] of Object.entries(yamlObj.data)) {
           if (typeof value === 'string') {
             try {
-              const decoded = atob(value);
-              // Encontrar a linha com esse key e substituir o valor
-              const regex = new RegExp(`(\\s+${key}:\\s+)(.*)$`, 'gm');
-              newYaml = newYaml.replace(regex, `$1${decoded}`);
+              newData[key] = atob(value);
             } catch {
               // Se não for Base64 válido, mantém original
+              newData[key] = value;
             }
+          } else {
+            newData[key] = value as string;
           }
         }
+        yamlObj.data = newData;
+        const newYaml = yaml.dump(yamlObj, {
+          indent: 2,
+          lineWidth: -1,
+          noRefs: true,
+          sortKeys: false
+        });
+        setEditorValue(newYaml);
         toast.success("Valores decodificados para texto plano");
       }
 
-      setEditorValue(newYaml);
       setIsDecoded(!isDecoded);
     } catch (err) {
       toast.error("Erro ao processar YAML", {
