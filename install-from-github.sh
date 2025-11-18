@@ -31,9 +31,20 @@ NC='\033[0m' # No Color
 BINARY_NAME="new-k8s-hpa"
 REPO_OWNER="Paulo-Ribeiro-Log"
 REPO_NAME="New-K8S-HPA-Manager"
-RELEASE_VERSION="v1.0.6"
 INSTALL_PATH="/usr/local/bin"
 SCRIPTS_DIR="$HOME/.k8s-hpa-manager/scripts"
+
+# Fetch latest release version from GitHub API
+echo -e "${BLUE}ℹ️  Buscando última versão disponível no GitHub...${NC}"
+RELEASE_VERSION=$(curl -s https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+
+if [ -z "$RELEASE_VERSION" ]; then
+    echo -e "${RED}❌ Não foi possível detectar a última release${NC}"
+    echo -e "${BLUE}ℹ️  Usando versão fallback: v1.0.7${NC}"
+    RELEASE_VERSION="v1.0.7"
+else
+    echo -e "${GREEN}✅ Versão detectada: $RELEASE_VERSION${NC}"
+fi
 
 # Function to print colored messages
 print_info() {
