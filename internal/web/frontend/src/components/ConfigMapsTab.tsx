@@ -169,18 +169,20 @@ export const ConfigMapsTab = ({
     setEditorValue(value);
 
     // Adicionar ao histórico (remover itens futuros se estamos no meio do histórico)
-    setHistory((prev) => {
-      const newHistory = prev.slice(0, historyIndex + 1);
-      newHistory.push(value);
-      // Limitar histórico a 50 itens
-      if (newHistory.length > 50) {
-        newHistory.shift();
+    setHistoryIndex((currentIndex) => {
+      setHistory((prev) => {
+        const newHistory = prev.slice(0, currentIndex + 1);
+        newHistory.push(value);
+        // Limitar histórico a 50 itens
+        if (newHistory.length > 50) {
+          newHistory.shift();
+          return newHistory;
+        }
         return newHistory;
-      }
-      return newHistory;
+      });
+      return Math.min(currentIndex + 1, 49);
     });
-    setHistoryIndex((prev) => Math.min(prev + 1, 49));
-  }, [historyIndex]);
+  }, []);
 
   // Undo
   const handleUndo = useCallback(() => {
@@ -222,7 +224,7 @@ export const ConfigMapsTab = ({
     setViewMode(mode);
   };
 
-  const handleShowDiffModal = async (options?: { fullscreen?: boolean }) => {
+  const handleShowDiffModal = async (fullscreen = false) => {
     if (!selectedConfigMap) return;
     if (!hasChanges) {
       toast.info("Nenhuma alteração para comparar");
@@ -233,14 +235,12 @@ export const ConfigMapsTab = ({
       const diffResponse = await apiClient.diffConfigMap(originalYaml, editorValue, selectedConfigMap?.name);
       const unifiedDiff = diffResponse.unifiedDiff || "";
       const html = diff2html(unifiedDiff, {
-        inputFormat: "diff",
         drawFileList: false,
         matching: "lines",
         outputFormat: "side-by-side",
-        highlight: true,
       });
       setDiffHtml(html);
-      setDiffFullScreen(!!options?.fullscreen);
+      setDiffFullScreen(fullscreen);
       setDiffModalOpen(true);
     } catch (error) {
       toast.error("Erro ao gerar diff visual", {
@@ -587,7 +587,7 @@ export const ConfigMapsTab = ({
             <Button
               variant="outline"
               size="sm"
-              onClick={handleShowDiffModal}
+              onClick={() => handleShowDiffModal(false)}
               disabled={!selectedConfigMap || !hasChanges || isDiffLoading}
             >
               {isDiffLoading ? (
@@ -600,7 +600,7 @@ export const ConfigMapsTab = ({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => handleShowDiffModal({ fullscreen: true })}
+              onClick={() => handleShowDiffModal(true)}
               disabled={!selectedConfigMap || !hasChanges || isDiffLoading}
               className="gap-2"
               title="Abrir diff ocupando toda a tela"
