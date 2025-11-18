@@ -850,7 +850,7 @@ export function MetricsPanel({
                   </div>
                 </div>
                 <ResponsiveContainer width="100%" height={300}>
-                  <AreaChart data={chartData}>
+                  <AreaChart data={chartData} isAnimationActive={false}>
                     <defs>
                       <linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
@@ -928,6 +928,7 @@ export function MetricsPanel({
                       name="CPU Atual"
                       stroke="#3b82f6"
                       strokeWidth={2}
+                      isAnimationActive={false}
                       fill="url(#cpuGradient)"
                       unit="%"
                       isAnimationActive={false}
@@ -962,7 +963,7 @@ export function MetricsPanel({
                   </div>
                 </div>
                 <ResponsiveContainer width="100%" height={300}>
-                  <AreaChart data={chartData}>
+                  <AreaChart data={chartData} isAnimationActive={false}>
                     <defs>
                       <linearGradient id="memoryGradient" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
@@ -1082,7 +1083,7 @@ export function MetricsPanel({
                   Réplicas ao longo do tempo
                 </h3>
                 <ResponsiveContainer width="100%" height={300}>
-                  <LineChart data={chartData}>
+                  <LineChart data={chartData} isAnimationActive={false}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                     <XAxis
                       dataKey="time"
