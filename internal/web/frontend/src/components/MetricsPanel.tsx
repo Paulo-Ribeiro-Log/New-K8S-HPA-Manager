@@ -850,7 +850,7 @@ export function MetricsPanel({
                   </div>
                 </div>
                 <ResponsiveContainer width="100%" height={300}>
-                  <AreaChart data={chartData}>
+                  <AreaChart data={chartData} isAnimationActive={false}>
                     <defs>
                       <linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
