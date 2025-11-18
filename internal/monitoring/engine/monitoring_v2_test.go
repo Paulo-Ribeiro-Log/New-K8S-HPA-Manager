@@ -90,11 +90,11 @@ func TestGetPrometheusURL(t *testing.T) {
 	}{
 		{
 			cluster: "akspriv-faturamento-hlg-admin",
-			want:    "https://prometheus-faturamento-hlg.viavarejo.com.br/",
+			want:    "https://prometheus-akspriv-faturamento-hlg.viavarejo.com.br/",
 		},
 		{
 			cluster: "akspriv-checkout-prod-admin",
-			want:    "https://prometheus-checkout-prod.viavarejo.com.br/",
+			want:    "https://prometheus-akspriv-checkout-prod.viavarejo.com.br/",
 		},
 	}
 
