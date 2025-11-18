@@ -59,6 +59,7 @@ export const DeploymentsTab = ({
   const [isDiffLoading, setIsDiffLoading] = useState(false);
   const [diffFullScreen, setDiffFullScreen] = useState(false);
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
+  const [editorFullScreen, setEditorFullScreen] = useState(false);
 
   // Undo/Redo history
   const [history, setHistory] = useState<string[]>([]);
@@ -447,52 +448,51 @@ export const DeploymentsTab = ({
       : "--";
 
     return (
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-4 text-sm">
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Cluster</p>
-            <p className="font-medium break-all">{selectedDeployment.cluster}</p>
+      <div className="space-y-3">
+        <div className="flex items-start gap-4 text-xs border-b border-border/50 pb-2">
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Cluster</span>
+            <span className="font-medium">{selectedDeployment.cluster}</span>
           </div>
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Namespace</p>
-            <p className="font-medium break-all">{selectedDeployment.namespace}</p>
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Namespace</span>
+            <span className="font-medium">{selectedDeployment.namespace}</span>
           </div>
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Replicas</p>
-            <p className="font-mono text-xs">
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Replicas</span>
+            <span className="font-mono">
               {selectedDeployment.readyReplicas} / {selectedDeployment.replicas}
-            </p>
+            </span>
           </div>
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Atualizado</p>
-            <p>{updatedAt}</p>
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Atualizado</span>
+            <span className="font-medium">{updatedAt}</span>
           </div>
+          {selectedDeployment.labels && Object.keys(selectedDeployment.labels).length > 0 && (
+            <div className="flex flex-col">
+              <button
+                type="button"
+                onClick={() => setShowLabels((prev) => !prev)}
+                className="flex items-center gap-1 text-muted-foreground uppercase mb-0.5 hover:text-foreground"
+              >
+                {showLabels ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                <span>Labels</span>
+              </button>
+              {showLabels && (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {Object.entries(selectedDeployment.labels).map(([key, value]) => (
+                    <span
+                      key={`${key}-${value}`}
+                      className="px-1.5 py-0.5 bg-secondary/60 rounded text-[10px] font-mono"
+                    >
+                      {key}={value}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
-
-        {selectedDeployment.labels && Object.keys(selectedDeployment.labels).length > 0 && (
-          <div className="text-xs">
-            <button
-              type="button"
-              onClick={() => setShowLabels((prev) => !prev)}
-              className="flex items-center gap-2 text-left text-muted-foreground mb-1"
-            >
-              {showLabels ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-              <span>Labels</span>
-            </button>
-            {showLabels && (
-              <div className="flex flex-wrap gap-2">
-                {Object.entries(selectedDeployment.labels).map(([key, value]) => (
-                  <span
-                    key={`${key}-${value}`}
-                    className="px-2 py-1 bg-secondary/60 rounded-md font-mono"
-                  >
-                    {key}={value}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
 
         <div className="space-y-3">
           <div className="flex flex-col gap-2">
@@ -547,13 +547,22 @@ export const DeploymentsTab = ({
                     Diff
                   </button>
                 </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditorFullScreen(true)}
+                  title="Abrir editor em tela cheia"
+                  disabled={!selectedDeployment}
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                </Button>
               </div>
             </div>
             {viewMode === "editor" && (
               <MonacoYamlEditor
                 value={editorValue}
                 onChange={handleEditorChange}
-                height={360}
+                height={520}
               />
             )}
             {viewMode === "diff" && (
@@ -561,7 +570,7 @@ export const DeploymentsTab = ({
                 mode="diff"
                 originalValue={originalYaml}
                 value={editorValue}
-                height={360}
+                height={520}
                 readOnly
               />
             )}
@@ -699,6 +708,167 @@ export const DeploymentsTab = ({
     );
   };
 
+  const renderEditorFullScreen = () => {
+    if (!selectedDeployment) return null;
+
+    const handleCancel = () => {
+      setEditorValue(originalYaml);
+      setViewMode("editor");
+      setEditorFullScreen(false);
+      toast.info("Alterações descartadas");
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+        } else if ((e.key === 'y') || (e.key === 'z' && e.shiftKey)) {
+          e.preventDefault();
+          handleRedo();
+        } else if (e.key === 's') {
+          e.preventDefault();
+          if (hasChanges && !isApplying) {
+            openApplyConfirm();
+            setEditorFullScreen(false);
+          }
+        }
+      } else if (e.key === 'Escape') {
+        handleCancel();
+      }
+    };
+
+    return (
+      <Dialog open={editorFullScreen} onOpenChange={setEditorFullScreen}>
+        <DialogContent 
+          className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none p-0"
+          onKeyDown={handleKeyDown}
+        >
+          <div className="h-full flex flex-col">
+            <DialogHeader className="border-b border-border px-6 py-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <DialogTitle className="text-xl font-semibold text-primary">
+                    Editor YAML - Tela Cheia
+                  </DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
+                    {selectedDeployment.namespace}/{selectedDeployment.name}
+                  </DialogDescription>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={handleUndo}
+                      disabled={!canUndo}
+                      className={`px-2 py-1 text-xs font-medium ${
+                        canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Desfazer (Ctrl+Z)"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRedo}
+                      disabled={!canRedo}
+                      className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                        canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Refazer (Ctrl+Y)"
+                    >
+                      <Redo2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("editor")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      }`}
+                    >
+                      Editor
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("diff")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "diff" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                      disabled={!hasChanges}
+                    >
+                      Diff
+                    </button>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleValidate}
+                    disabled={!selectedDeployment || isValidating}
+                  >
+                    {isValidating ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4 mr-2" />
+                    )}
+                    Dry-run
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCancel}
+                    title="Descartar alterações e sair (Esc)"
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => {
+                      openApplyConfirm();
+                      setEditorFullScreen(false);
+                    }}
+                    disabled={!selectedDeployment || isApplying || !hasChanges}
+                  >
+                    <TriangleAlert className="w-4 h-4 mr-2" />
+                    Aplicar
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditorFullScreen(false)}
+                    title="Minimizar tela cheia (Esc)"
+                  >
+                    <Minimize2 className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            </DialogHeader>
+            <div className="flex-1 p-4">
+              {viewMode === "editor" && (
+                <MonacoYamlEditor
+                  value={editorValue}
+                  onChange={handleEditorChange}
+                  height="calc(100vh - 140px)"
+                />
+              )}
+              {viewMode === "diff" && (
+                <MonacoYamlEditor
+                  mode="diff"
+                  originalValue={originalYaml}
+                  value={editorValue}
+                  height="calc(100vh - 140px)"
+                  readOnly
+                />
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
   const renderApplyConfirmDialog = () => {
     if (!selectedDeployment) return null;
 
@@ -769,6 +939,7 @@ export const DeploymentsTab = ({
         </div>
 
         {renderDiffDialog()}
+        {renderEditorFullScreen()}
         {renderApplyConfirmDialog()}
       </>
     );
@@ -790,6 +961,7 @@ export const DeploymentsTab = ({
       />
 
       {renderDiffDialog()}
+      {renderEditorFullScreen()}
       {renderApplyConfirmDialog()}
     </>
   );
