@@ -242,9 +242,9 @@ const (
 	StatePrometheusStackManagement // F8 - Gestão específica Prometheus
 	StateCronJobSelection          // F9 - Seleção de CronJobs
 	StateCronJobEditing            // Editando CronJob específico
-	StateAddingCluster              // F7 - Adicionando novo cluster
-	StateLogViewer                  // F3 - Visualização de logs
-	StateNodePoolSequenceConfig     // C - Configuração de cordon/drain para sequenciamento
+	StateAddingCluster             // F7 - Adicionando novo cluster
+	StateLogViewer                 // F3 - Visualização de logs
+	StateNodePoolSequenceConfig    // C - Configuração de cordon/drain para sequenciamento
 	StateHelp
 )
 
@@ -355,6 +355,7 @@ type HPA struct {
 
 	// Deployment Resource Information
 	DeploymentName       string `json:"deployment_name,omitempty"`
+	ImageVersion         string `json:"image_version,omitempty"`
 	CurrentCPURequest    string `json:"current_cpu_request,omitempty"`
 	CurrentCPULimit      string `json:"current_cpu_limit,omitempty"`
 	CurrentMemoryRequest string `json:"current_memory_request,omitempty"`
@@ -826,9 +827,9 @@ type NodePool struct {
 	// Cordon/Drain - Operações de transição entre node pools
 	PreDrainChanges  *NodePoolChanges `json:"pre_drain_changes,omitempty"`  // Mudanças ANTES do drain (scale UP destino)
 	PostDrainChanges *NodePoolChanges `json:"post_drain_changes,omitempty"` // Mudanças DEPOIS do drain (scale DOWN origem)
-	CordonEnabled    bool             `json:"cordon_enabled"`                // Se deve fazer cordon dos nodes
-	DrainEnabled     bool             `json:"drain_enabled"`                 // Se deve fazer drain dos nodes
-	DrainOptions     *DrainOptions    `json:"drain_options,omitempty"`       // Opções do kubectl drain
+	CordonEnabled    bool             `json:"cordon_enabled"`               // Se deve fazer cordon dos nodes
+	DrainEnabled     bool             `json:"drain_enabled"`                // Se deve fazer drain dos nodes
+	DrainOptions     *DrainOptions    `json:"drain_options,omitempty"`      // Opções do kubectl drain
 
 	// Status de cordon/drain
 	CordonStatus string   `json:"cordon_status"` // idle, cordoning, cordoned, failed
@@ -879,11 +880,11 @@ type DrainOptions struct {
 	Timeout            string `json:"timeout"`              // --timeout=5m (formato: 5m, 300s, 1h)
 
 	// Avançadas - flags menos comuns
-	DisableEviction          bool   `json:"disable_eviction"`           // --disable-eviction
+	DisableEviction          bool   `json:"disable_eviction"`             // --disable-eviction
 	SkipWaitForDeleteTimeout int    `json:"skip_wait_for_delete_timeout"` // --skip-wait-for-delete-timeout=N (segundos)
-	PodSelector              string `json:"pod_selector"`               // --pod-selector=app=nginx
-	DryRun                   bool   `json:"dry_run"`                    // --dry-run
-	ChunkSize                int    `json:"chunk_size"`                 // Quantos nodes drenar em paralelo
+	PodSelector              string `json:"pod_selector"`                 // --pod-selector=app=nginx
+	DryRun                   bool   `json:"dry_run"`                      // --dry-run
+	ChunkSize                int    `json:"chunk_size"`                   // Quantos nodes drenar em paralelo
 }
 
 // DefaultDrainOptions retorna opções de drain seguras e recomendadas
@@ -908,17 +909,17 @@ func DefaultDrainOptions() *DrainOptions {
 // AggressiveDrainOptions retorna opções agressivas para situações de emergência (ex: Black Friday)
 func AggressiveDrainOptions() *DrainOptions {
 	return &DrainOptions{
-		IgnoreDaemonsets:         true,
-		DeleteEmptyDirData:       true,
-		Force:                    true,  // ⚠️ Forçar remoção
-		GracePeriod:              10,    // Reduzir para 10s
-		Timeout:                  "2m",  // Timeout agressivo
+		IgnoreDaemonsets:   true,
+		DeleteEmptyDirData: true,
+		Force:              true, // ⚠️ Forçar remoção
+		GracePeriod:        10,   // Reduzir para 10s
+		Timeout:            "2m", // Timeout agressivo
 
 		DisableEviction:          false, // Ainda respeitar PDBs
 		SkipWaitForDeleteTimeout: 10,    // Reduzir espera
 		PodSelector:              "",
 		DryRun:                   false,
-		ChunkSize:                2,     // 2 nodes em paralelo (mais rápido)
+		ChunkSize:                2, // 2 nodes em paralelo (mais rápido)
 	}
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -63,7 +63,8 @@ export const SecretsTab = ({
   const [isDecoded, setIsDecoded] = useState(false);
   const [editorFullScreen, setEditorFullScreen] = useState(false);
 
-  // Undo/Redo history
+  // Undo/Redo history with persistent cache
+  const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
 
@@ -136,6 +137,12 @@ export const SecretsTab = ({
   }, [secrets, searchQuery, showSystemNamespaces]);
 
   const handleSelectSecret = async (summary: SecretSummary) => {
+    // Salvar histórico atual no cache antes de trocar
+    if (selectedSecret && history.length > 0) {
+      const cacheKey = `${selectedSecret.namespace}/${selectedSecret.name}`;
+      historyCache.current.set(cacheKey, { history: [...history], index: historyIndex });
+    }
+
     setSelectedSecret(summary);
     setManifestLoading(true);
     setManifest(null);
@@ -152,9 +159,22 @@ export const SecretsTab = ({
       setOriginalYaml(initialYaml);
       setShowLabels(true);
       setViewMode("editor");
-      // Inicializar histórico com valor inicial
-      setHistory([initialYaml]);
-      setHistoryIndex(0);
+      
+      // Restaurar histórico do cache se existir
+      const cacheKey = `${summary.namespace}/${summary.name}`;
+      const cached = historyCache.current.get(cacheKey);
+      if (cached) {
+        setHistory(cached.history);
+        setHistoryIndex(cached.index);
+        // Atualizar editor com valor do histórico atual
+        if (cached.index >= 0 && cached.index < cached.history.length) {
+          setEditorValue(cached.history[cached.index]);
+        }
+      } else {
+        // Inicializar histórico com valor inicial
+        setHistory([initialYaml]);
+        setHistoryIndex(0);
+      }
     } catch (err) {
       toast.error("Erro ao carregar manifesto", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -249,29 +269,55 @@ export const SecretsTab = ({
 
       if (isDecoded) {
         // RE-ENCODE: texto plano → Base64
-        for (const [key, value] of Object.entries(yamlObj.data)) {
-          if (typeof value === 'string') {
-            const encoded = btoa(value);
-            // Substituir apenas o valor deste campo específico, mantendo formatação
-            const regex = new RegExp(`(\\s+${key}:\\s+)(?:"[^"]*"|'[^']*'|[^\\n]+)`, 'g');
-            newYaml = newYaml.replace(regex, `$1${encoded}`);
-          }
-        }
-        toast.success("Valores re-encodificados para Base64");
-      } else {
-        // DECODE: Base64 → texto plano
-        for (const [key, value] of Object.entries(yamlObj.data)) {
-          if (typeof value === 'string') {
-            try {
-              const decoded = atob(value);
-              // Substituir apenas o valor deste campo específico, mantendo formatação
-              const regex = new RegExp(`(\\s+${key}:\\s+)(?:"[^"]*"|'[^']*'|[^\\n]+)`, 'g');
-              newYaml = newYaml.replace(regex, `$1${decoded}`);
-            } catch {
-              // Se não for Base64 válido, mantém original
+        // Processar linha por linha para preservar valores exatos
+        const lines = newYaml.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Verificar se é uma linha de data: com valor decodificado
+          const match = line.match(/^(\s+)([^:]+):\s+(.+)$/);
+          if (match) {
+            const [, indent, key, value] = match;
+            // Verificar se essa key existe no yamlObj.data
+            if (yamlObj.data && key in yamlObj.data) {
+              // Pegar o valor atual da linha (pode ser texto plano)
+              const currentValue = value.trim();
+              try {
+                // Re-encodificar para Base64
+                const encoded = btoa(currentValue);
+                lines[i] = `${indent}${key}: ${encoded}`;
+              } catch {
+                // Se falhar, manter original
+              }
             }
           }
         }
+        newYaml = lines.join('\n');
+        toast.success("Valores re-encodificados para Base64");
+      } else {
+        // DECODE: Base64 → texto plano
+        // Processar linha por linha para preservar valores exatos
+        const lines = newYaml.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Verificar se é uma linha de data: com valor base64
+          const match = line.match(/^(\s+)([^:]+):\s+(.+)$/);
+          if (match) {
+            const [, indent, key, value] = match;
+            // Verificar se essa key existe no yamlObj.data
+            if (yamlObj.data && key in yamlObj.data) {
+              // Pegar o valor atual da linha (deve ser base64)
+              const currentValue = value.trim();
+              try {
+                // Decodificar de Base64 para texto plano
+                const decoded = atob(currentValue);
+                lines[i] = `${indent}${key}: ${decoded}`;
+              } catch {
+                // Se não for Base64 válido, mantém original
+              }
+            }
+          }
+        }
+        newYaml = lines.join('\n');
         toast.success("Valores decodificados para texto plano");
       }
 
@@ -342,6 +388,15 @@ export const SecretsTab = ({
     } finally {
       setIsValidating(false);
     }
+  };
+
+  const handleCancel = () => {
+    // Restaurar o YAML original, descartando alterações
+    setEditorValue(originalYaml);
+    setIsDecoded(false);
+    setViewMode("editor");
+    setEditorFullScreen(false);
+    toast.info("Alterações descartadas");
   };
 
   const handleApply = async () => {
@@ -521,8 +576,43 @@ export const SecretsTab = ({
       ? new Date(selectedSecret.updatedAt).toLocaleString()
       : "--";
 
+    // Keyboard shortcuts for normal editor
+    const handleEditorKeyDown = (e: React.KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+        } else if ((e.key === 'y') || (e.key === 'z' && e.shiftKey)) {
+          e.preventDefault();
+          handleRedo();
+        } else if (e.key === 's') {
+          e.preventDefault();
+          // Ctrl+S: Salvar checkpoint local (não aplica)
+          if (hasChanges) {
+            // Adicionar checkpoint ao histórico
+            setHistory((prev) => {
+              const newHistory = prev.slice(0, historyIndex + 1);
+              newHistory.push(editorValue);
+              return newHistory;
+            });
+            setHistoryIndex((prev) => prev + 1);
+            toast.success("Checkpoint salvo localmente", {
+              description: "Alterações mantidas no histórico local. Use 'Aplicar' para confirmar no cluster.",
+              style: {
+                background: '#dcfce7',
+                border: '1px solid #86efac',
+                color: '#166534',
+              },
+            });
+          }
+        }
+      } else if (e.key === 'Escape') {
+        handleCancel();
+      }
+    };
+
     return (
-      <div className="space-y-3">
+      <div className="space-y-3" onKeyDown={handleEditorKeyDown} tabIndex={-1}>
         <div className="flex items-start gap-4 text-xs border-b border-border/50 pb-2">
           <div className="flex flex-col">
             <span className="text-muted-foreground uppercase mb-0.5">Cluster</span>
@@ -818,15 +908,6 @@ export const SecretsTab = ({
   const renderEditorFullScreen = () => {
     if (!selectedSecret) return null;
 
-    const handleCancel = () => {
-      // Restaurar o YAML original, descartando alterações
-      setEditorValue(originalYaml);
-      setIsDecoded(false);
-      setViewMode("editor");
-      setEditorFullScreen(false);
-      toast.info("Alterações descartadas");
-    };
-
     // Keyboard shortcuts
     const handleKeyDown = (e: React.KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey) {
@@ -838,9 +919,23 @@ export const SecretsTab = ({
           handleRedo();
         } else if (e.key === 's') {
           e.preventDefault();
-          if (hasChanges && !isApplying) {
-            openApplyConfirm();
-            setEditorFullScreen(false);
+          // Ctrl+S: Salvar checkpoint local (não aplica)
+          if (hasChanges) {
+            // Adicionar checkpoint ao histórico
+            setHistory((prev) => {
+              const newHistory = prev.slice(0, historyIndex + 1);
+              newHistory.push(editorValue);
+              return newHistory;
+            });
+            setHistoryIndex((prev) => prev + 1);
+            toast.success("Checkpoint salvo localmente", {
+              description: "Alterações mantidas no histórico local. Use 'Aplicar' para confirmar no cluster.",
+              style: {
+                background: '#dcfce7',
+                border: '1px solid #86efac',
+                color: '#166534',
+              },
+            });
           }
         }
       } else if (e.key === 'Escape') {

@@ -1,5 +1,8 @@
 package analyzer
 
+// Package not available - legacy code - entire file disabled due to missing models.BaselineSnapshot type
+
+/*
 import (
 	"fmt"
 	"time"
@@ -349,3 +352,4 @@ func (cs *ComparisonSummary) String() string {
 		cs.TotalHPAs, cs.NormalCount, cs.DegradedCount, cs.CriticalCount, cs.HealthPercentage,
 	)
 }
+*/

@@ -58,6 +58,7 @@ export const HPATableView = ({ hpas, onSelectHPA }: HPATableViewProps) => {
               <TableHeader>
                 <TableRow className="bg-muted/50">
                   <TableHead className="font-semibold">Nome do HPA</TableHead>
+                  <TableHead className="text-center font-semibold w-[150px]">Versão</TableHead>
                   <TableHead className="text-center font-semibold w-[120px]">Min Replicas</TableHead>
                   <TableHead className="text-center font-semibold w-[120px]">Max Replicas</TableHead>
                   <TableHead className="text-center font-semibold w-[120px]">Replicas</TableHead>
@@ -73,6 +74,15 @@ export const HPATableView = ({ hpas, onSelectHPA }: HPATableViewProps) => {
                     onClick={() => onSelectHPA(hpa)}
                   >
                     <TableCell className="font-medium">{hpa.name}</TableCell>
+                    <TableCell className="text-center">
+                      {hpa.image_version ? (
+                        <code className="text-xs bg-muted px-2 py-1 rounded">
+                          {hpa.image_version}
+                        </code>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </TableCell>
                     <TableCell className="text-center">{hpa.min_replicas ?? 0}</TableCell>
                     <TableCell className="text-center">{hpa.max_replicas ?? 1}</TableCell>
                     <TableCell className="text-center font-semibold">{hpa.current_replicas ?? 0}</TableCell>

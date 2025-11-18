@@ -197,6 +197,7 @@ export interface HPA {
 
   // Deployment information
   deployment_name?: string;
+  image_version?: string;
 
   // Target values (editable)
   target_cpu_request?: string;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -61,7 +61,8 @@ export const ConfigMapsTab = ({
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
   const [editorFullScreen, setEditorFullScreen] = useState(false);
 
-  // Undo/Redo history
+  // Undo/Redo history with persistent cache
+  const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
 
@@ -137,6 +138,12 @@ export const ConfigMapsTab = ({
   }, [configMaps, searchQuery, showSystemNamespaces]);
 
   const handleSelectConfigMap = async (summary: ConfigMapSummary) => {
+    // Salvar histórico atual no cache antes de trocar
+    if (selectedConfigMap && history.length > 0) {
+      const cacheKey = `${selectedConfigMap.namespace}/${selectedConfigMap.name}`;
+      historyCache.current.set(cacheKey, { history: [...history], index: historyIndex });
+    }
+
     setSelectedConfigMap(summary);
     setManifestLoading(true);
     setManifest(null);
@@ -149,13 +156,26 @@ export const ConfigMapsTab = ({
       );
       setManifest(detail);
       const initialYaml = detail.yaml || "";
-      setEditorValue(initialYaml);
       setOriginalYaml(initialYaml);
       setShowLabels(true);
       setViewMode("editor");
-      // Inicializar histórico com valor inicial
-      setHistory([initialYaml]);
-      setHistoryIndex(0);
+      
+      // Restaurar histórico do cache se existir
+      const cacheKey = `${summary.namespace}/${summary.name}`;
+      const cached = historyCache.current.get(cacheKey);
+      if (cached) {
+        setHistory(cached.history);
+        setHistoryIndex(cached.index);
+        // Atualizar editor com valor do histórico atual
+        if (cached.index >= 0 && cached.index < cached.history.length) {
+          setEditorValue(cached.history[cached.index]);
+        }
+      } else {
+        // Inicializar histórico com valor inicial
+        setHistory([initialYaml]);
+        setHistoryIndex(0);
+        setEditorValue(initialYaml);
+      }
     } catch (err) {
       toast.error("Erro ao carregar manifesto", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -283,6 +303,14 @@ export const ConfigMapsTab = ({
     } finally {
       setIsValidating(false);
     }
+  };
+
+  const handleCancel = () => {
+    // Restaurar o YAML original, descartando alterações
+    setEditorValue(originalYaml);
+    setViewMode("editor");
+    setEditorFullScreen(false);
+    toast.info("Alterações descartadas");
   };
 
   const handleApply = async () => {
@@ -465,8 +493,43 @@ export const ConfigMapsTab = ({
       ? new Date(selectedConfigMap.updatedAt).toLocaleString()
       : "--";
 
+    // Keyboard shortcuts for normal editor
+    const handleEditorKeyDown = (e: React.KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+        } else if ((e.key === 'y') || (e.key === 'z' && e.shiftKey)) {
+          e.preventDefault();
+          handleRedo();
+        } else if (e.key === 's') {
+          e.preventDefault();
+          // Ctrl+S: Salvar checkpoint local (não aplica)
+          if (hasChanges) {
+            // Adicionar checkpoint ao histórico
+            setHistory((prev) => {
+              const newHistory = prev.slice(0, historyIndex + 1);
+              newHistory.push(editorValue);
+              return newHistory;
+            });
+            setHistoryIndex((prev) => prev + 1);
+            toast.success("Checkpoint salvo localmente", {
+              description: "Alterações mantidas no histórico local. Use 'Aplicar' para confirmar no cluster.",
+              style: {
+                background: '#dcfce7',
+                border: '1px solid #86efac',
+                color: '#166534',
+              },
+            });
+          }
+        }
+      } else if (e.key === 'Escape') {
+        handleCancel();
+      }
+    };
+
     return (
-      <div className="space-y-3">
+      <div className="space-y-3" onKeyDown={handleEditorKeyDown} tabIndex={-1}>
         <div className="flex items-start gap-4 text-xs border-b border-border/50 pb-2">
           <div className="flex flex-col">
             <span className="text-muted-foreground uppercase mb-0.5">Cluster</span>
@@ -727,13 +790,6 @@ export const ConfigMapsTab = ({
   const renderEditorFullScreen = () => {
     if (!selectedConfigMap) return null;
 
-    const handleCancel = () => {
-      setEditorValue(originalYaml);
-      setViewMode("editor");
-      setEditorFullScreen(false);
-      toast.info("Alterações descartadas");
-    };
-
     const handleKeyDown = (e: React.KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey) {
         if (e.key === 'z' && !e.shiftKey) {
@@ -744,9 +800,23 @@ export const ConfigMapsTab = ({
           handleRedo();
         } else if (e.key === 's') {
           e.preventDefault();
-          if (hasChanges && !isApplying) {
-            openApplyConfirm();
-            setEditorFullScreen(false);
+          // Ctrl+S: Salvar checkpoint local (não aplica)
+          if (hasChanges) {
+            // Adicionar checkpoint ao histórico
+            setHistory((prev) => {
+              const newHistory = prev.slice(0, historyIndex + 1);
+              newHistory.push(editorValue);
+              return newHistory;
+            });
+            setHistoryIndex((prev) => prev + 1);
+            toast.success("Checkpoint salvo localmente", {
+              description: "Alterações mantidas no histórico local. Use 'Aplicar' para confirmar no cluster.",
+              style: {
+                background: '#dcfce7',
+                border: '1px solid #86efac',
+                color: '#166534',
+              },
+            });
           }
         }
       } else if (e.key === 'Escape') {

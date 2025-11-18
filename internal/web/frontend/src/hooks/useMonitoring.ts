@@ -52,6 +52,7 @@ export function useHPAMetrics(
   const [metrics, setMetrics] = useState<HPAMetrics | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
 
   const fetchMetrics = useCallback(
     async (customDuration?: string) => {
@@ -61,7 +62,10 @@ export function useHPAMetrics(
       }
 
       try {
-        setLoading(true);
+        // Só mostra loading na primeira carga, não nos refreshes
+        if (isInitialLoad) {
+          setLoading(true);
+        }
         setError(null);
         const data = await apiClient.getHPAMetrics(
           cluster,
@@ -70,15 +74,18 @@ export function useHPAMetrics(
           customDuration || duration
         );
         setMetrics(data);
+        setIsInitialLoad(false);
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to fetch HPA metrics"
         );
       } finally {
-        setLoading(false);
+        if (isInitialLoad) {
+          setLoading(false);
+        }
       }
     },
-    [cluster, namespace, hpaName, duration]
+    [cluster, namespace, hpaName, duration, isInitialLoad]
   );
 
   useEffect(() => {

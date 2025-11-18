@@ -1,5 +1,8 @@
 package engine
 
+// Package not available - legacy code - entire file disabled due to missing packages
+
+/*
 import (
 	"context"
 	"fmt"
@@ -747,3 +750,4 @@ func (e *ScanEngine) finalizeStressTest() error {
 
 	return nil
 }
+*/
