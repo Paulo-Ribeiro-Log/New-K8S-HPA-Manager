@@ -92,6 +92,7 @@ k8s-hpa-manager/
 ✅ **Web Interface** - React/TypeScript com 99% das features
 ✅ **HPAs & Node Pools** - CRUD completo com staging area
 ✅ **Cordon/Drain** - Sistema de evacuação com progress em tempo real (SSE)
+✅ **Audit Log** - Rastreabilidade completa de operações Cordon/Drain com histórico persistente
 ✅ **Sessions** - Save/load/edit com compatibilidade TUI ↔ Web
 ✅ **Monitoring V2** - Sistema sem port-forwards, acesso direto Prometheus
 ✅ **Auto-Updates** - Sistema automático de detecção e instalação
@@ -110,6 +111,7 @@ Build: make build && make web-build
 Binary: ./build/k8s-hpa-manager
 
 Recent Updates:
+- Sistema de Audit Log para operações Cordon/Drain (19/Nov/2025)
 - Autodiscover otimizado com busca paralela de subscriptions (10x mais rápido)
 - Script de instalação a partir da branch main (para desenvolvimento)
 ```

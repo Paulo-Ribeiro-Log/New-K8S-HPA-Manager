@@ -3,6 +3,153 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Sistema de Audit Log para Operações de Infraestrutura (Novembro 2025) ✅
+
+**Data:** 19 de novembro de 2025
+
+**Motivação:** Necessidade de rastreabilidade completa de **todas as operações críticas de infraestrutura**, incluindo Cordon/Drain de node pools e Rollouts de Deployments/DaemonSets/StatefulSets, com informações sobre quais recursos foram afetados, quando, duração, e status (sucesso/falha).
+
+**Problema anterior:**
+- Sem histórico persistente de operações Cordon/Drain e Rollouts
+- Impossível saber quais nodes foram cordoned/drained e quando
+- Rollouts executados sem registro de quando/quem/qual deployment
+- Sem rastreamento de duração das operações
+- Falta de auditoria para troubleshooting
+- Sem estatísticas de operações realizadas
+
+**Solução implementada: Integração com HistoryTracker**
+
+**Novas Actions adicionadas:**
+1. `ActionCordonNode` - Registra quando um node é marcado como unschedulable
+2. `ActionDrainNode` - Registra quando pods são evacuados de um node
+3. `ActionNodePoolSequence` - Registra sequência completa (PRE-DRAIN → CORDON → DRAIN → POST-DRAIN)
+4. `ActionRolloutDeployment` - Registra rollout de Deployment executado
+5. `ActionRolloutDaemonSet` - Registra rollout de DaemonSet executado
+6. `ActionRolloutStatefulSet` - Registra rollout de StatefulSet executado
+
+**Componentes modificados:**
+
+| Arquivo | Modificação |
+|---------|-------------|
+| `internal/history/tracker.go` | +6 novas constantes de action (cordon/drain/sequence + rollouts) |
+| `internal/web/handlers/nodepools.go` | Logging em CORDON, DRAIN e Sequência (+~80 linhas) |
+| `internal/web/handlers/history.go` | Novo endpoint `GetCordonDrainHistory` (+110 linhas) |
+| `internal/web/server.go` | Rota `/history/cordon-drain` + configurar tracker (+2 linhas) |
+| `internal/kubernetes/client.go` | Audit log em TriggerRollout, TriggerDaemonSetRollout, TriggerStatefulSetRollout (+~90 linhas) |
+| `internal/config/kubeconfig.go` | GetK8sClient helper + SetHistoryTracker (+30 linhas) |
+
+**Dados registrados por operação:**
+
+**CORDON:**
+```json
+{
+  "action": "cordon_node",
+  "resource": "pool-name/node-name",
+  "cluster": "prod-cluster",
+  "status": "success",
+  "duration_ms": 245,
+  "before": { "schedulable": true },
+  "after": { "schedulable": false }
+}
+```
+
+**DRAIN:**
+```json
+{
+  "action": "drain_node",
+  "resource": "pool-name/node-name",
+  "cluster": "prod-cluster",
+  "status": "success",
+  "duration_ms": 12500,
+  "before": { "pods_count": 15, "drained": false },
+  "after": { "pods_count": 0, "drained": true }
+}
+```
+
+**SEQUENCE:**
+```json
+{
+  "action": "nodepool_sequence",
+  "resource": "origin-pool → dest-pool",
+  "cluster": "prod-cluster",
+  "status": "success",
+  "duration_ms": 425000,
+  "before": { "origin_pool": "pool-a", "dest_pool": "pool-b", "cordon": true, "drain": true },
+  "after": { "total_duration_ms": 425000, "session_id": "abc123" }
+}
+```
+
+**ROLLOUT DEPLOYMENT:**
+```json
+{
+  "action": "rollout_deployment",
+  "resource": "default/api-service",
+  "cluster": "prod-cluster",
+  "status": "success",
+  "duration_ms": 1250,
+  "before": { "hpa": "api-service-hpa", "perform_rollout": true },
+  "after": { "deployment": "api-service", "restarted_at": "2025-11-19T15:30:00Z" }
+}
+```
+
+**ROLLOUT DAEMONSET:**
+```json
+{
+  "action": "rollout_daemonset",
+  "resource": "kube-system/fluentd",
+  "cluster": "prod-cluster",
+  "status": "success",
+  "duration_ms": 2100,
+  "before": { "hpa": "fluentd-hpa", "perform_daemonset_rollout": true },
+  "after": { "daemonset": "fluentd", "restarted_at": "2025-11-19T15:30:05Z" }
+}
+```
+
+**ROLLOUT STATEFULSET:**
+```json
+{
+  "action": "rollout_statefulset",
+  "resource": "databases/redis-cluster",
+  "cluster": "prod-cluster",
+  "status": "success",
+  "duration_ms": 3500,
+  "before": { "hpa": "redis-hpa", "perform_statefulset_rollout": true },
+  "after": { "statefulset": "redis-cluster", "restarted_at": "2025-11-19T15:30:10Z" }
+}
+```
+
+**Novo endpoint especializado:**
+```bash
+GET /api/v1/history/cordon-drain?cluster=prod&start_date=2025-01-01
+```
+
+**Retorna:**
+- `cordon_operations[]` - Lista de operações de cordon
+- `drain_operations[]` - Lista de operações de drain
+- `sequence_operations[]` - Lista de sequências completas
+- `stats` - Estatísticas agregadas:
+  - total_cordon, total_drain, total_sequences
+  - cordon_success, cordon_failed
+  - drain_success, drain_failed
+  - sequence_success, sequence_failed
+  - total_duration_ms, avg_duration_ms
+
+**Armazenamento persistente:**
+- Arquivos JSON organizados por mês: `~/.k8s-hpa-manager/history/YYYY-MM/`
+- Nomes de arquivo: `YYYY-MM-DD-UUID.json`
+- Mantém últimos 3 meses em memória (até 1000 entradas)
+
+**Benefícios:**
+- ✅ Rastreabilidade completa de todas as operações de infraestrutura
+- ✅ Análise de performance (duração média de drain, rollouts)
+- ✅ Troubleshooting facilitado (descobrir quando node foi drained ou deployment teve rollout)
+- ✅ Auditoria de compliance para operações críticas
+- ✅ Estatísticas de taxa de sucesso/falha
+- ✅ Rastreamento de rollouts executados mesmo sem outras alterações no HPA
+- ✅ Histórico completo de quando cada workload foi reiniciado
+
+---
+
 ### Sistema de Progress Bar em Tempo Real via SSE (Novembro 2025) ✅
 
 **Data:** 18 de novembro de 2025

@@ -121,3 +121,114 @@ func (h *HistoryHandler) GetHistoryStats(c *gin.Context) {
 
 	c.JSON(http.StatusOK, stats)
 }
+
+// GetCordonDrainHistory retorna histórico de operações Cordon/Drain com estatísticas
+// GET /api/v1/history/cordon-drain?cluster=prod&start_date=2025-01-01
+func (h *HistoryHandler) GetCordonDrainHistory(c *gin.Context) {
+	// Parse filtros da query string
+	cluster := c.Query("cluster")
+
+	var startDate, endDate time.Time
+	if startDateStr := c.Query("start_date"); startDateStr != "" {
+		if t, err := time.Parse("2006-01-02", startDateStr); err == nil {
+			startDate = t
+		}
+	}
+	if endDateStr := c.Query("end_date"); endDateStr != "" {
+		if t, err := time.Parse("2006-01-02", endDateStr); err == nil {
+			endDate = t.Add(24 * time.Hour)
+		}
+	}
+
+	// Buscar todas as entradas do histórico
+	allEntries := h.tracker.GetAll()
+
+	// Estrutura de resposta
+	response := gin.H{
+		"cordon_operations":   []history.HistoryEntry{},
+		"drain_operations":    []history.HistoryEntry{},
+		"sequence_operations": []history.HistoryEntry{},
+		"stats": gin.H{
+			"total_cordon":    0,
+			"total_drain":     0,
+			"total_sequences": 0,
+			"cordon_success":  0,
+			"cordon_failed":   0,
+			"drain_success":   0,
+			"drain_failed":    0,
+			"sequence_success": 0,
+			"sequence_failed":  0,
+			"total_duration_ms": int64(0),
+			"avg_duration_ms":   int64(0),
+		},
+	}
+
+	cordonOps := []history.HistoryEntry{}
+	drainOps := []history.HistoryEntry{}
+	sequenceOps := []history.HistoryEntry{}
+	totalDuration := int64(0)
+	operationCount := 0
+
+	// Filtrar e processar entradas
+	for _, entry := range allEntries {
+		// Aplicar filtros
+		if cluster != "" && entry.Cluster != cluster {
+			continue
+		}
+		if !startDate.IsZero() && entry.Timestamp.Before(startDate) {
+			continue
+		}
+		if !endDate.IsZero() && entry.Timestamp.After(endDate) {
+			continue
+		}
+
+		// Classificar por tipo de operação
+		switch entry.Action {
+		case history.ActionCordonNode:
+			cordonOps = append(cordonOps, entry)
+			response["stats"].(gin.H)["total_cordon"] = response["stats"].(gin.H)["total_cordon"].(int) + 1
+			if entry.Status == history.StatusSuccess {
+				response["stats"].(gin.H)["cordon_success"] = response["stats"].(gin.H)["cordon_success"].(int) + 1
+			} else if entry.Status == history.StatusFailed {
+				response["stats"].(gin.H)["cordon_failed"] = response["stats"].(gin.H)["cordon_failed"].(int) + 1
+			}
+			totalDuration += entry.Duration
+			operationCount++
+
+		case history.ActionDrainNode:
+			drainOps = append(drainOps, entry)
+			response["stats"].(gin.H)["total_drain"] = response["stats"].(gin.H)["total_drain"].(int) + 1
+			if entry.Status == history.StatusSuccess {
+				response["stats"].(gin.H)["drain_success"] = response["stats"].(gin.H)["drain_success"].(int) + 1
+			} else if entry.Status == history.StatusFailed {
+				response["stats"].(gin.H)["drain_failed"] = response["stats"].(gin.H)["drain_failed"].(int) + 1
+			}
+			totalDuration += entry.Duration
+			operationCount++
+
+		case history.ActionNodePoolSequence:
+			sequenceOps = append(sequenceOps, entry)
+			response["stats"].(gin.H)["total_sequences"] = response["stats"].(gin.H)["total_sequences"].(int) + 1
+			if entry.Status == history.StatusSuccess {
+				response["stats"].(gin.H)["sequence_success"] = response["stats"].(gin.H)["sequence_success"].(int) + 1
+			} else if entry.Status == history.StatusFailed {
+				response["stats"].(gin.H)["sequence_failed"] = response["stats"].(gin.H)["sequence_failed"].(int) + 1
+			}
+			totalDuration += entry.Duration
+			operationCount++
+		}
+	}
+
+	// Calcular média de duração
+	if operationCount > 0 {
+		response["stats"].(gin.H)["avg_duration_ms"] = totalDuration / int64(operationCount)
+	}
+	response["stats"].(gin.H)["total_duration_ms"] = totalDuration
+
+	// Adicionar operações à resposta
+	response["cordon_operations"] = cordonOps
+	response["drain_operations"] = drainOps
+	response["sequence_operations"] = sequenceOps
+
+	c.JSON(http.StatusOK, response)
+}
