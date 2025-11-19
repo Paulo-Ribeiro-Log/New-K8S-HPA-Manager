@@ -106,15 +106,17 @@ k8s-hpa-manager/
 **Context Template Rápido:**
 ```
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
-Versão: v1.0.10 (Nov 2025)
+Versão: v1.1.1 (Nov 2025)
 Tech: Go 1.23 + Bubble Tea (TUI) + React 18.3 (Web)
 Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
-Recent Updates:
-- Sistema de Audit Log para operações Cordon/Drain (19/Nov/2025)
+Recent Updates (v1.1.1):
+- Sistema de Audit Log completo para operações de infraestrutura (Cordon/Drain/Rollouts)
+- CronJob Editor aprimorado com parser de cron e descrições legíveis em português
+- Suporte para edição de schedule via interface web
+- Interface simplificada e intuitiva para CronJobs
 - Autodiscover otimizado com busca paralela de subscriptions (10x mais rápido)
-- Script de instalação a partir da branch main (para desenvolvimento)
 ```
 
 **Ver documentação completa:**
