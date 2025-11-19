@@ -4,6 +4,9 @@
 
 set -e
 
+# Ignore SIGPIPE to prevent broken pipe errors from shell plugins (gitstatus, powerlevel10k, etc)
+trap '' PIPE 2>/dev/null || true
+
 # Parse arguments
 for arg in "$@"; do
     case $arg in
