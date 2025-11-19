@@ -7,12 +7,6 @@ import type { CronJob } from "@/lib/api/types";
 import { useUpdateCronJob } from "@/hooks/useAPI";
 import { toast } from "sonner";
 import { explainCronExpression, isValidCronExpression } from "@/lib/cronParser";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 
 interface CronJobEditorProps {
   cronJob: CronJob | null;
@@ -160,93 +154,6 @@ export const CronJobEditor = ({ cronJob, selectedCluster, onRefetch }: CronJobEd
               <p className="font-mono text-xs text-muted-foreground">
                 {cronJob.schedule}
               </p>
-
-              {/* Explicação de cada campo */}
-              {scheduleExplanation && (
-                <div className="mt-3 pt-3 border-t border-border/50 space-y-1.5">
-                  <div className="grid grid-cols-5 gap-2 text-xs">
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <div className="flex flex-col items-center p-1.5 bg-background/50 rounded">
-                            <span className="font-mono font-semibold text-foreground">
-                              {cronJob.schedule.split(' ')[0]}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground mt-0.5">min</span>
-                          </div>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p className="text-xs">{scheduleExplanation.parts.minute}</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <div className="flex flex-col items-center p-1.5 bg-background/50 rounded">
-                            <span className="font-mono font-semibold text-foreground">
-                              {cronJob.schedule.split(' ')[1]}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground mt-0.5">hora</span>
-                          </div>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p className="text-xs">{scheduleExplanation.parts.hour}</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <div className="flex flex-col items-center p-1.5 bg-background/50 rounded">
-                            <span className="font-mono font-semibold text-foreground">
-                              {cronJob.schedule.split(' ')[2]}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground mt-0.5">dia</span>
-                          </div>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p className="text-xs">{scheduleExplanation.parts.dayOfMonth}</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <div className="flex flex-col items-center p-1.5 bg-background/50 rounded">
-                            <span className="font-mono font-semibold text-foreground">
-                              {cronJob.schedule.split(' ')[3]}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground mt-0.5">mês</span>
-                          </div>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p className="text-xs">{scheduleExplanation.parts.month}</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <div className="flex flex-col items-center p-1.5 bg-background/50 rounded">
-                            <span className="font-mono font-semibold text-foreground">
-                              {cronJob.schedule.split(' ')[4]}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground mt-0.5">sem</span>
-                          </div>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p className="text-xs">{scheduleExplanation.parts.dayOfWeek}</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  </div>
-                </div>
-              )}
             </>
           ) : (
             /* Modo de edição */
