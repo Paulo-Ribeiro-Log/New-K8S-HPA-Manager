@@ -332,7 +332,7 @@ func (k *KubeConfigManager) extractResourceGroupFromKubeconfig(clusterName strin
 	return resourceGroup, nil
 }
 
-// discoverSubscriptionViaAzureCLI descobre a subscription buscando em todas as subscriptions disponíveis
+// discoverSubscriptionViaAzureCLI descobre a subscription buscando em todas as subscriptions disponíveis (paralelo)
 func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourceGroup string) (string, error) {
 	// 1. Listar todas as subscriptions disponíveis
 	cmd := exec.Command("az", "account", "list", "--query", "[].id", "-o", "tsv")
@@ -346,34 +346,62 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 		return "", fmt.Errorf("no subscriptions found")
 	}
 
-	// 2. Tentar encontrar o cluster em cada subscription
-	for _, subscriptionID := range subscriptions {
-		subscriptionID = strings.TrimSpace(subscriptionID)
-		if subscriptionID == "" {
-			continue
+	// Filtrar subscriptions vazias
+	var validSubscriptions []string
+	for _, subID := range subscriptions {
+		subID = strings.TrimSpace(subID)
+		if subID != "" {
+			validSubscriptions = append(validSubscriptions, subID)
 		}
+	}
 
-		// Tentar az aks show com subscription específica
-		cmd := exec.Command("az", "aks", "show",
-			"--name", clusterName,
-			"--resource-group", resourceGroup,
-			"--subscription", subscriptionID,
-			"--query", "id",
-			"-o", "tsv")
+	if len(validSubscriptions) == 0 {
+		return "", fmt.Errorf("no valid subscriptions found")
+	}
 
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			// Cluster não encontrado nesta subscription, tentar próxima
-			continue
-		}
+	// 2. Testar todas as subscriptions EM PARALELO
+	type result struct {
+		subscriptionID string
+		resourceID     string
+		err            error
+	}
 
-		resourceID := strings.TrimSpace(string(output))
-		if resourceID != "" {
+	resultChan := make(chan result, len(validSubscriptions))
+
+	// Disparar goroutine para cada subscription
+	for _, subscriptionID := range validSubscriptions {
+		go func(subID string) {
+			// Tentar az aks show com subscription específica
+			cmd := exec.Command("az", "aks", "show",
+				"--name", clusterName,
+				"--resource-group", resourceGroup,
+				"--subscription", subID,
+				"--query", "id",
+				"-o", "tsv")
+
+			output, err := cmd.CombinedOutput()
+
+			if err != nil {
+				// Cluster não encontrado nesta subscription
+				resultChan <- result{subscriptionID: subID, err: err}
+				return
+			}
+
+			resourceID := strings.TrimSpace(string(output))
+			resultChan <- result{subscriptionID: subID, resourceID: resourceID, err: nil}
+		}(subscriptionID)
+	}
+
+	// 3. Coletar resultados - retornar assim que encontrar a primeira match
+	for i := 0; i < len(validSubscriptions); i++ {
+		res := <-resultChan
+
+		if res.err == nil && res.resourceID != "" {
 			// Cluster encontrado! Extrair subscription do resource ID
-			parts := strings.Split(resourceID, "/")
-			for i, part := range parts {
-				if part == "subscriptions" && i+1 < len(parts) {
-					return parts[i+1], nil
+			parts := strings.Split(res.resourceID, "/")
+			for j, part := range parts {
+				if part == "subscriptions" && j+1 < len(parts) {
+					return parts[j+1], nil
 				}
 			}
 		}
