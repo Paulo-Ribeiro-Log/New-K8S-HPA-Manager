@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock, X } from "lucide-react";
 import { toast } from "sonner";
 import * as yaml from "js-yaml";
 
@@ -184,19 +184,26 @@ export const SecretsTab = ({
     }
   };
 
-  // Atualizar histórico quando o editor muda
+  // Atualizar histórico quando o editor muda (com debounce)
   const handleEditorChange = useCallback((value: string) => {
     setEditorValue(value);
+  }, []);
 
-    // Adicionar ao histórico (remover itens futuros se estamos no meio do histórico)
+  // Adicionar ao histórico manualmente quando necessário
+  const addToHistory = useCallback((value: string) => {
     setHistoryIndex((currentIndex) => {
       setHistory((prev) => {
+        // Remover itens futuros se estamos no meio do histórico
         const newHistory = prev.slice(0, currentIndex + 1);
-        newHistory.push(value);
-        // Limitar histórico a 50 itens
-        if (newHistory.length > 50) {
-          newHistory.shift();
-          return newHistory;
+        
+        // Só adicionar se for diferente do último item
+        if (newHistory.length === 0 || newHistory[newHistory.length - 1] !== value) {
+          newHistory.push(value);
+          // Limitar histórico a 50 itens
+          if (newHistory.length > 50) {
+            newHistory.shift();
+            return newHistory;
+          }
         }
         return newHistory;
       });
@@ -323,6 +330,8 @@ export const SecretsTab = ({
 
       setEditorValue(newYaml);
       setIsDecoded(!isDecoded);
+      // Adicionar ao histórico
+      addToHistory(newYaml);
     } catch (err) {
       toast.error("Erro ao processar YAML", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -590,12 +599,7 @@ export const SecretsTab = ({
           // Ctrl+S: Salvar checkpoint local (não aplica)
           if (hasChanges) {
             // Adicionar checkpoint ao histórico
-            setHistory((prev) => {
-              const newHistory = prev.slice(0, historyIndex + 1);
-              newHistory.push(editorValue);
-              return newHistory;
-            });
-            setHistoryIndex((prev) => prev + 1);
+            addToHistory(editorValue);
             toast.success("Checkpoint salvo localmente", {
               description: "Alterações mantidas no histórico local. Use 'Aplicar' para confirmar no cluster.",
               style: {
@@ -796,6 +800,14 @@ export const SecretsTab = ({
               <CheckCircle2 className="w-4 h-4 mr-2" /> Validar (Dry-run)
             </Button>
             <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCancel}
+              disabled={!selectedSecret || !hasChanges}
+            >
+              <X className="w-4 h-4 mr-2" /> Cancelar
+            </Button>
+            <Button
               variant="default"
               size="sm"
               onClick={openApplyConfirm}
@@ -922,12 +934,7 @@ export const SecretsTab = ({
           // Ctrl+S: Salvar checkpoint local (não aplica)
           if (hasChanges) {
             // Adicionar checkpoint ao histórico
-            setHistory((prev) => {
-              const newHistory = prev.slice(0, historyIndex + 1);
-              newHistory.push(editorValue);
-              return newHistory;
-            });
-            setHistoryIndex((prev) => prev + 1);
+            addToHistory(editorValue);
             toast.success("Checkpoint salvo localmente", {
               description: "Alterações mantidas no histórico local. Use 'Aplicar' para confirmar no cluster.",
               style: {
