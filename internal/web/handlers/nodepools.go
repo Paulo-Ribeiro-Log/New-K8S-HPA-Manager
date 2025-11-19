@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
@@ -346,6 +347,33 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 
 		totalNodes := len(nodes)
 
+		// Track de nodes que foram cordoned para rollback em caso de erro
+		cordonedNodes := make([]string, 0, totalNodes)
+
+		// Função de rollback para uncordon em caso de falha
+		rollbackCordon := func() {
+			if len(cordonedNodes) == 0 {
+				return
+			}
+
+			log.Warn().
+				Int("nodes_count", len(cordonedNodes)).
+				Msg("Executando rollback de cordon devido a erro")
+
+			for _, nodeName := range cordonedNodes {
+				if err := k8sClient.UncordonNode(ctx, nodeName); err != nil {
+					log.Error().
+						Err(err).
+						Str("node", nodeName).
+						Msg("Falha ao uncordon node durante rollback")
+				} else {
+					log.Info().
+						Str("node", nodeName).
+						Msg("Node uncordoned com sucesso durante rollback")
+				}
+			}
+		}
+
 		// Fase CORDON
 		if cfg.CordonEnabled {
 			reporter.SendCordonStarted(totalNodes)
@@ -353,15 +381,23 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 			for i, nodeName := range nodes {
 				if err := k8sClient.CordonNode(ctx, nodeName); err != nil {
 					reporter.SendError("cordon", fmt.Sprintf("Failed to cordon node %s: %v", nodeName, err))
+
+					// ROLLBACK: Uncordon nodes já processados
+					rollbackCordon()
+
 					c.JSON(500, gin.H{
 						"success": false,
 						"error": gin.H{
 							"code":    "CORDON_ERROR",
 							"message": fmt.Sprintf("Failed to cordon node %s: %v", nodeName, err),
+							"details": fmt.Sprintf("Rollback executado: %d nodes uncordoned", len(cordonedNodes)),
 						},
 					})
 					return
 				}
+
+				// Adicionar node à lista de cordoned (para rollback se necessário)
+				cordonedNodes = append(cordonedNodes, nodeName)
 				reporter.SendCordonProgress(nodeName, i+1, totalNodes)
 			}
 
@@ -388,11 +424,16 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 
 				if err := k8sClient.DrainNode(ctx, nodeName, drainOpts); err != nil {
 					reporter.SendError("drain", fmt.Sprintf("Failed to drain node %s: %v", nodeName, err))
+
+					// ROLLBACK: Uncordon todos os nodes em caso de falha no drain
+					rollbackCordon()
+
 					c.JSON(500, gin.H{
 						"success": false,
 						"error": gin.H{
 							"code":    "DRAIN_ERROR",
 							"message": fmt.Sprintf("Failed to drain node %s: %v", nodeName, err),
+							"details": fmt.Sprintf("Rollback executado: %d nodes uncordoned", len(cordonedNodes)),
 						},
 					})
 					return
