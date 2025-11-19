@@ -33,7 +33,7 @@ REPO_OWNER="Paulo-Ribeiro-Log"
 REPO_NAME="New-K8S-HPA-Manager"
 INSTALL_PATH="/usr/local/bin"
 CLONE_DIR="/tmp/new-k8s-hpa-install"
-PROJECT_SUBDIR="Scale_HPA"
+PROJECT_SUBDIR=""  # Arquivos estão na raiz do repositório
 
 # Function to print colored messages
 print_info() {
@@ -179,9 +179,9 @@ clone_repository() {
     if git clone --depth 1 --branch main "https://github.com/$REPO_OWNER/$REPO_NAME.git" "$CLONE_DIR"; then
         print_success "Repositório clonado com sucesso"
 
-        # Verify project directory exists
-        if [ ! -d "$CLONE_DIR/$PROJECT_SUBDIR" ]; then
-            print_error "Diretório do projeto não encontrado: $CLONE_DIR/$PROJECT_SUBDIR"
+        # Verify required files exist
+        if [ ! -f "$CLONE_DIR/go.mod" ] || [ ! -d "$CLONE_DIR/cmd" ]; then
+            print_error "Estrutura do projeto inválida - arquivos essenciais não encontrados"
             exit 1
         fi
 
@@ -196,7 +196,7 @@ clone_repository() {
 compile_binary() {
     print_header "Compilando binário"
 
-    local project_dir="$CLONE_DIR/$PROJECT_SUBDIR"
+    local project_dir="$CLONE_DIR"
 
     print_info "Diretório: $project_dir"
 
