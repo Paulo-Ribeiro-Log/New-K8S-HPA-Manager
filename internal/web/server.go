@@ -277,6 +277,10 @@ func (s *Server) setupRoutes() {
 	api.POST("/nodepools/sequence/execute", nodePoolHandler.ExecuteSequence)  // NOVO: Cordon/Drain sequencing
 	api.GET("/nodepools/sequence/progress", nodePoolHandler.SequenceProgress) // NOVO: SSE progress tracking
 
+	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
+	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)
+	s.router.GET("/api/v1/nodepools/progress/:operationId/status", handlers.HandleProgressStatus)
+
 	// CronJobs
 	cronJobHandler := handlers.NewCronJobHandler(s.kubeManager)
 	api.GET("/cronjobs", cronJobHandler.List)
