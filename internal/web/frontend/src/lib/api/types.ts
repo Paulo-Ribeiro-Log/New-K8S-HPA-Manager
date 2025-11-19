@@ -197,6 +197,7 @@ export interface HPA {
 
   // Deployment information
   deployment_name?: string;
+  image_version?: string;
 
   // Target values (editable)
   target_cpu_request?: string;
@@ -254,6 +255,7 @@ export interface NodePool {
     max_node_count: number;
     autoscaling_enabled: boolean;
   };
+  cordon_drain_config?: CordonDrainConfig; // Configuração de Cordon/Drain (opcional)
 }
 
 export interface CronJob {
@@ -383,6 +385,7 @@ export interface NodePoolChange {
   error?: string;
   sequence_order: number;
   sequence_status: string;
+  cordon_drain_config?: CordonDrainConfig; // Configuração de Cordon/Drain (opcional)
 }
 
 export interface NodePoolValues {
@@ -413,6 +416,18 @@ export interface DrainOptions {
   pod_selector: string;
   dry_run: boolean;
   chunk_size: number;
+}
+
+// Configuração de Cordon/Drain para Node Pools (salvável em sessões)
+export interface CordonDrainConfig {
+  cordon_enabled: boolean;      // Habilitar CORDON (marca nodes como unschedulable)
+  drain_enabled: boolean;        // Habilitar DRAIN (evacua pods dos nodes)
+  grace_period: number;          // Tempo de espera antes de forçar término (padrão: 300s)
+  timeout: number;               // Timeout máximo para drain (padrão: 600s)
+  force_delete: boolean;         // ⚠️ Ignora PodDisruptionBudget (perigoso!)
+  ignore_daemonsets: boolean;    // Ignora DaemonSets durante drain (padrão: true)
+  delete_emptydir: boolean;      // Deleta volumes EmptyDir durante drain
+  chunk_size: number;            // Pods evacuados simultaneamente (padrão: 5)
 }
 
 export interface NodePoolSequenceConfig {

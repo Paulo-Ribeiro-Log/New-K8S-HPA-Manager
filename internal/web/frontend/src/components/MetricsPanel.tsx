@@ -94,7 +94,7 @@ export function MetricsPanel({
   className = "",
 }: MetricsPanelProps) {
   const [duration, setDuration] = useState<string>("1h");
-  const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(0); // 0 = desabilitado
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(1); // 1 minuto
   const [latencyView, setLatencyView] = useState<"p95" | "p99">("p95");
   const { metrics, loading, error, refetch } = useHPAMetrics(
     cluster,
@@ -772,7 +772,7 @@ export function MetricsPanel({
           </div>
         )}
 
-        {loading && !error && (
+        {loading && !error && chartData.length === 0 && (
           <div className="text-center py-12 text-muted-foreground">
             <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-2" />
             <p>Carregando métricas...</p>
@@ -789,7 +789,7 @@ export function MetricsPanel({
           </div>
         )}
 
-        {!loading && !error && chartData.length > 0 && (
+        {!error && chartData.length > 0 && (
           <div className="space-y-6">
             {/* CPU Analysis - Largura total */}
             <div className="space-y-6">
@@ -850,7 +850,7 @@ export function MetricsPanel({
                   </div>
                 </div>
                 <ResponsiveContainer width="100%" height={300}>
-                  <AreaChart data={chartData}>
+                  <AreaChart data={chartData} isAnimationActive={false}>
                     <defs>
                       <linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
@@ -930,6 +930,7 @@ export function MetricsPanel({
                       strokeWidth={2}
                       fill="url(#cpuGradient)"
                       unit="%"
+                      isAnimationActive={false}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -961,7 +962,7 @@ export function MetricsPanel({
                   </div>
                 </div>
                 <ResponsiveContainer width="100%" height={300}>
-                  <AreaChart data={chartData}>
+                  <AreaChart data={chartData} isAnimationActive={false}>
                     <defs>
                       <linearGradient id="memoryGradient" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
@@ -1041,6 +1042,7 @@ export function MetricsPanel({
                       strokeWidth={2}
                       fill="url(#memoryGradient)"
                       unit="%"
+                      isAnimationActive={false}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -1080,7 +1082,7 @@ export function MetricsPanel({
                   Réplicas ao longo do tempo
                 </h3>
                 <ResponsiveContainer width="100%" height={300}>
-                  <LineChart data={chartData}>
+                  <LineChart data={chartData} isAnimationActive={false}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                     <XAxis
                       dataKey="time"
@@ -1139,6 +1141,7 @@ export function MetricsPanel({
                       dot={false}
                       unit=""
                       connectNulls
+                      isAnimationActive={false}
                     />
                   </LineChart>
                 </ResponsiveContainer>

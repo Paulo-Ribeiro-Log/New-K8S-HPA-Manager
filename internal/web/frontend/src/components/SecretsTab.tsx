@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock, X } from "lucide-react";
 import { toast } from "sonner";
 import * as yaml from "js-yaml";
 
@@ -61,8 +61,10 @@ export const SecretsTab = ({
   const [diffFullScreen, setDiffFullScreen] = useState(false);
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
   const [isDecoded, setIsDecoded] = useState(false);
+  const [editorFullScreen, setEditorFullScreen] = useState(false);
 
-  // Undo/Redo history
+  // Undo/Redo history with persistent cache
+  const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
 
@@ -135,6 +137,12 @@ export const SecretsTab = ({
   }, [secrets, searchQuery, showSystemNamespaces]);
 
   const handleSelectSecret = async (summary: SecretSummary) => {
+    // Salvar histórico atual no cache antes de trocar
+    if (selectedSecret && history.length > 0) {
+      const cacheKey = `${selectedSecret.namespace}/${selectedSecret.name}`;
+      historyCache.current.set(cacheKey, { history: [...history], index: historyIndex });
+    }
+
     setSelectedSecret(summary);
     setManifestLoading(true);
     setManifest(null);
@@ -151,9 +159,22 @@ export const SecretsTab = ({
       setOriginalYaml(initialYaml);
       setShowLabels(true);
       setViewMode("editor");
-      // Inicializar histórico com valor inicial
-      setHistory([initialYaml]);
-      setHistoryIndex(0);
+      
+      // Restaurar histórico do cache se existir
+      const cacheKey = `${summary.namespace}/${summary.name}`;
+      const cached = historyCache.current.get(cacheKey);
+      if (cached) {
+        setHistory(cached.history);
+        setHistoryIndex(cached.index);
+        // Atualizar editor com valor do histórico atual
+        if (cached.index >= 0 && cached.index < cached.history.length) {
+          setEditorValue(cached.history[cached.index]);
+        }
+      } else {
+        // Inicializar histórico com valor inicial
+        setHistory([initialYaml]);
+        setHistoryIndex(0);
+      }
     } catch (err) {
       toast.error("Erro ao carregar manifesto", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -163,19 +184,26 @@ export const SecretsTab = ({
     }
   };
 
-  // Atualizar histórico quando o editor muda
+  // Atualizar histórico quando o editor muda (com debounce)
   const handleEditorChange = useCallback((value: string) => {
     setEditorValue(value);
+  }, []);
 
-    // Adicionar ao histórico (remover itens futuros se estamos no meio do histórico)
+  // Adicionar ao histórico manualmente quando necessário
+  const addToHistory = useCallback((value: string) => {
     setHistoryIndex((currentIndex) => {
       setHistory((prev) => {
+        // Remover itens futuros se estamos no meio do histórico
         const newHistory = prev.slice(0, currentIndex + 1);
-        newHistory.push(value);
-        // Limitar histórico a 50 itens
-        if (newHistory.length > 50) {
-          newHistory.shift();
-          return newHistory;
+        
+        // Só adicionar se for diferente do último item
+        if (newHistory.length === 0 || newHistory[newHistory.length - 1] !== value) {
+          newHistory.push(value);
+          // Limitar histórico a 50 itens
+          if (newHistory.length > 50) {
+            newHistory.shift();
+            return newHistory;
+          }
         }
         return newHistory;
       });
@@ -243,40 +271,67 @@ export const SecretsTab = ({
         return;
       }
 
-      // Ao invés de recriar todo o YAML, fazer substituição linha por linha
-      // para preservar formatação original
+      // Preservar formatação original alterando apenas os valores
       let newYaml = editorValue;
-      
+
       if (isDecoded) {
         // RE-ENCODE: texto plano → Base64
-        for (const [key, value] of Object.entries(yamlObj.data)) {
-          if (typeof value === 'string') {
-            const encoded = btoa(value);
-            // Encontrar a linha com esse key e substituir o valor
-            const regex = new RegExp(`(\\s+${key}:\\s+)(.*)$`, 'gm');
-            newYaml = newYaml.replace(regex, `$1${encoded}`);
-          }
-        }
-        toast.success("Valores re-encodificados para Base64");
-      } else {
-        // DECODE: Base64 → texto plano
-        for (const [key, value] of Object.entries(yamlObj.data)) {
-          if (typeof value === 'string') {
-            try {
-              const decoded = atob(value);
-              // Encontrar a linha com esse key e substituir o valor
-              const regex = new RegExp(`(\\s+${key}:\\s+)(.*)$`, 'gm');
-              newYaml = newYaml.replace(regex, `$1${decoded}`);
-            } catch {
-              // Se não for Base64 válido, mantém original
+        // Processar linha por linha para preservar valores exatos
+        const lines = newYaml.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Verificar se é uma linha de data: com valor decodificado
+          const match = line.match(/^(\s+)([^:]+):\s+(.+)$/);
+          if (match) {
+            const [, indent, key, value] = match;
+            // Verificar se essa key existe no yamlObj.data
+            if (yamlObj.data && key in yamlObj.data) {
+              // Pegar o valor atual da linha (pode ser texto plano)
+              const currentValue = value.trim();
+              try {
+                // Re-encodificar para Base64
+                const encoded = btoa(currentValue);
+                lines[i] = `${indent}${key}: ${encoded}`;
+              } catch {
+                // Se falhar, manter original
+              }
             }
           }
         }
+        newYaml = lines.join('\n');
+        toast.success("Valores re-encodificados para Base64");
+      } else {
+        // DECODE: Base64 → texto plano
+        // Processar linha por linha para preservar valores exatos
+        const lines = newYaml.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Verificar se é uma linha de data: com valor base64
+          const match = line.match(/^(\s+)([^:]+):\s+(.+)$/);
+          if (match) {
+            const [, indent, key, value] = match;
+            // Verificar se essa key existe no yamlObj.data
+            if (yamlObj.data && key in yamlObj.data) {
+              // Pegar o valor atual da linha (deve ser base64)
+              const currentValue = value.trim();
+              try {
+                // Decodificar de Base64 para texto plano
+                const decoded = atob(currentValue);
+                lines[i] = `${indent}${key}: ${decoded}`;
+              } catch {
+                // Se não for Base64 válido, mantém original
+              }
+            }
+          }
+        }
+        newYaml = lines.join('\n');
         toast.success("Valores decodificados para texto plano");
       }
 
       setEditorValue(newYaml);
       setIsDecoded(!isDecoded);
+      // Adicionar ao histórico
+      addToHistory(newYaml);
     } catch (err) {
       toast.error("Erro ao processar YAML", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -342,6 +397,15 @@ export const SecretsTab = ({
     } finally {
       setIsValidating(false);
     }
+  };
+
+  const handleCancel = () => {
+    // Restaurar o YAML original, descartando alterações
+    setEditorValue(originalYaml);
+    setIsDecoded(false);
+    setViewMode("editor");
+    setEditorFullScreen(false);
+    toast.info("Alterações descartadas");
   };
 
   const handleApply = async () => {
@@ -521,51 +585,80 @@ export const SecretsTab = ({
       ? new Date(selectedSecret.updatedAt).toLocaleString()
       : "--";
 
-    return (
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-4 text-sm">
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Cluster</p>
-            <p className="font-medium break-all">{selectedSecret.cluster}</p>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Namespace</p>
-            <p className="font-medium break-all">{selectedSecret.namespace}</p>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">ResourceVersion</p>
-            <p className="font-mono text-xs">{selectedSecret.resourceVersion || "--"}</p>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Atualizado</p>
-            <p>{updatedAt}</p>
-          </div>
-        </div>
+    // Keyboard shortcuts for normal editor
+    const handleEditorKeyDown = (e: React.KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+        } else if ((e.key === 'y') || (e.key === 'z' && e.shiftKey)) {
+          e.preventDefault();
+          handleRedo();
+        } else if (e.key === 's') {
+          e.preventDefault();
+          // Ctrl+S: Salvar checkpoint local (não aplica)
+          if (hasChanges) {
+            // Adicionar checkpoint ao histórico
+            addToHistory(editorValue);
+            toast.success("Checkpoint salvo localmente", {
+              description: "Alterações mantidas no histórico local. Use 'Aplicar' para confirmar no cluster.",
+              style: {
+                background: '#dcfce7',
+                border: '1px solid #86efac',
+                color: '#166534',
+              },
+            });
+          }
+        }
+      } else if (e.key === 'Escape') {
+        handleCancel();
+      }
+    };
 
-        {selectedSecret.labels && Object.keys(selectedSecret.labels).length > 0 && (
-          <div className="text-xs">
-            <button
-              type="button"
-              onClick={() => setShowLabels((prev) => !prev)}
-              className="flex items-center gap-2 text-left text-muted-foreground mb-1"
-            >
-              {showLabels ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-              <span>Labels</span>
-            </button>
-            {showLabels && (
-              <div className="flex flex-wrap gap-2">
-                {Object.entries(selectedSecret.labels).map(([key, value]) => (
-                  <span
-                    key={`${key}-${value}`}
-                    className="px-2 py-1 bg-secondary/60 rounded-md font-mono"
-                  >
-                    {key}={value}
-                  </span>
-                ))}
-              </div>
-            )}
+    return (
+      <div className="space-y-3" onKeyDown={handleEditorKeyDown} tabIndex={-1}>
+        <div className="flex items-start gap-4 text-xs border-b border-border/50 pb-2">
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Cluster</span>
+            <span className="font-medium">{selectedSecret.cluster}</span>
           </div>
-        )}
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Namespace</span>
+            <span className="font-medium">{selectedSecret.namespace}</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">ResourceVersion</span>
+            <span className="font-mono">{selectedSecret.resourceVersion || "--"}</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Atualizado</span>
+            <span className="font-medium">{updatedAt}</span>
+          </div>
+          {selectedSecret.labels && Object.keys(selectedSecret.labels).length > 0 && (
+            <div className="flex flex-col">
+              <button
+                type="button"
+                onClick={() => setShowLabels((prev) => !prev)}
+                className="flex items-center gap-1 text-muted-foreground uppercase mb-0.5 hover:text-foreground"
+              >
+                {showLabels ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                <span>Labels</span>
+              </button>
+              {showLabels && (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {Object.entries(selectedSecret.labels).map(([key, value]) => (
+                    <span
+                      key={`${key}-${value}`}
+                      className="px-1.5 py-0.5 bg-secondary/60 rounded text-[10px] font-mono"
+                    >
+                      {key}={value}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         <div className="space-y-3">
           <div className="flex flex-col gap-2">
@@ -644,13 +737,22 @@ export const SecretsTab = ({
                     )}
                   </button>
                 </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditorFullScreen(true)}
+                  title="Abrir editor em tela cheia"
+                  disabled={!selectedSecret}
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                </Button>
               </div>
             </div>
             {viewMode === "editor" && (
               <MonacoYamlEditor
                 value={editorValue}
                 onChange={handleEditorChange}
-                height={360}
+                height={520}
               />
             )}
             {viewMode === "diff" && (
@@ -658,7 +760,7 @@ export const SecretsTab = ({
                 mode="diff"
                 originalValue={originalYaml}
                 value={editorValue}
-                height={360}
+                height={520}
                 readOnly
               />
             )}
@@ -696,6 +798,14 @@ export const SecretsTab = ({
               disabled={!selectedSecret || isValidating}
             >
               <CheckCircle2 className="w-4 h-4 mr-2" /> Validar (Dry-run)
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCancel}
+              disabled={!selectedSecret || !hasChanges}
+            >
+              <X className="w-4 h-4 mr-2" /> Cancelar
             </Button>
             <Button
               variant="default"
@@ -807,6 +917,194 @@ export const SecretsTab = ({
     );
   };
 
+  const renderEditorFullScreen = () => {
+    if (!selectedSecret) return null;
+
+    // Keyboard shortcuts
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+        } else if ((e.key === 'y') || (e.key === 'z' && e.shiftKey)) {
+          e.preventDefault();
+          handleRedo();
+        } else if (e.key === 's') {
+          e.preventDefault();
+          // Ctrl+S: Salvar checkpoint local (não aplica)
+          if (hasChanges) {
+            // Adicionar checkpoint ao histórico
+            addToHistory(editorValue);
+            toast.success("Checkpoint salvo localmente", {
+              description: "Alterações mantidas no histórico local. Use 'Aplicar' para confirmar no cluster.",
+              style: {
+                background: '#dcfce7',
+                border: '1px solid #86efac',
+                color: '#166534',
+              },
+            });
+          }
+        }
+      } else if (e.key === 'Escape') {
+        handleCancel();
+      }
+    };
+
+    return (
+      <Dialog open={editorFullScreen} onOpenChange={setEditorFullScreen}>
+        <DialogContent 
+          className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none p-0"
+          onKeyDown={handleKeyDown}
+        >
+          <div className="h-full flex flex-col">
+            <DialogHeader className="border-b border-border px-6 py-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <DialogTitle className="text-xl font-semibold text-primary">
+                    Editor YAML - Tela Cheia
+                  </DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
+                    {selectedSecret.namespace}/{selectedSecret.name}
+                  </DialogDescription>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={handleUndo}
+                      disabled={!canUndo}
+                      className={`px-2 py-1 text-xs font-medium ${
+                        canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Desfazer (Ctrl+Z)"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRedo}
+                      disabled={!canRedo}
+                      className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                        canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Refazer (Ctrl+Y)"
+                    >
+                      <Redo2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("editor")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      }`}
+                    >
+                      Editor
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("diff")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "diff" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                      disabled={!hasChanges}
+                    >
+                      Diff
+                    </button>
+                  </div>
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={handleToggleDecode}
+                      className={`px-3 py-1 text-xs font-medium flex items-center gap-1.5 ${
+                        isDecoded
+                          ? "bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 border-yellow-500/30"
+                          : "bg-green-500/20 text-green-600 dark:text-green-400 border-green-500/30"
+                      }`}
+                      title={isDecoded ? "Re-encodificar para Base64" : "Decodificar para texto plano"}
+                    >
+                      {isDecoded ? (
+                        <>
+                          <Unlock className="w-3.5 h-3.5" />
+                          Decoded
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="w-3.5 h-3.5" />
+                          Encoded
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleValidate}
+                    disabled={!selectedSecret || isValidating}
+                  >
+                    {isValidating ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4 mr-2" />
+                    )}
+                    Dry-run
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCancel}
+                    title="Descartar alterações e sair (Esc)"
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => {
+                      openApplyConfirm();
+                      setEditorFullScreen(false);
+                    }}
+                    disabled={!selectedSecret || isApplying || !hasChanges}
+                  >
+                    <TriangleAlert className="w-4 h-4 mr-2" />
+                    Aplicar
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditorFullScreen(false)}
+                    title="Minimizar tela cheia (Esc)"
+                  >
+                    <Minimize2 className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            </DialogHeader>
+            <div className="flex-1 p-4">
+              {viewMode === "editor" && (
+                <MonacoYamlEditor
+                  value={editorValue}
+                  onChange={handleEditorChange}
+                  height="calc(100vh - 140px)"
+                />
+              )}
+              {viewMode === "diff" && (
+                <MonacoYamlEditor
+                  mode="diff"
+                  originalValue={originalYaml}
+                  value={editorValue}
+                  height="calc(100vh - 140px)"
+                  readOnly
+                />
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
   const renderApplyConfirmDialog = () => {
     if (!selectedSecret) return null;
 
@@ -877,6 +1175,7 @@ export const SecretsTab = ({
         </div>
 
         {renderDiffDialog()}
+        {renderEditorFullScreen()}
         {renderApplyConfirmDialog()}
       </>
     );
@@ -914,6 +1213,7 @@ export const SecretsTab = ({
       />
 
       {renderDiffDialog()}
+      {renderEditorFullScreen()}
       {renderApplyConfirmDialog()}
     </>
   );

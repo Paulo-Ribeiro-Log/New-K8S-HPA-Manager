@@ -290,12 +290,47 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
     performDaemonSetRollout !== (baseHPA.perform_daemonset_rollout ?? false) ||
     performStatefulSetRollout !== (baseHPA.perform_statefulset_rollout ?? false);
 
+  // Keyboard shortcuts
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          // Ctrl+Shift+S: Apply directly
+          if (isModified && !isSaving) {
+            handleApply();
+          }
+        } else {
+          // Ctrl+S: Save to staging
+          if (isModified && !isSaving) {
+            handleSave();
+          }
+        }
+      } else if (e.key === 'z') {
+        e.preventDefault();
+        handleReset();
+      }
+    } else if (e.key === 'Escape') {
+      handleReset();
+    }
+  };
+
   return (
-    <div className="space-y-4 animate-fade-in">
+    <div className="space-y-4 animate-fade-in" onKeyDown={handleKeyDown} tabIndex={-1}>
       {/* Header */}
       <div className="space-y-1">
         <h4 className="font-semibold text-base text-foreground">{hpa.name}</h4>
-        <p className="text-xs text-muted-foreground">{hpa.namespace}</p>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>{hpa.namespace}</span>
+          {hpa.image_version && (
+            <>
+              <span>•</span>
+              <code className="bg-muted px-2 py-0.5 rounded text-xs">
+                {hpa.image_version}
+              </code>
+            </>
+          )}
+        </div>
         {isModified && (
           <p className="text-xs text-warning">⚠️ Modificado (não aplicado)</p>
         )}

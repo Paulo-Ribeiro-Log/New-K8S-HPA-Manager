@@ -6,15 +6,16 @@ import (
 	"time"
 
 	"k8s-hpa-manager/internal/monitoring/models"
+
 	"github.com/rs/zerolog/log"
 )
 
 // MonitoringSession representa uma sessão de monitoramento ativa
 type MonitoringSession struct {
-	k8sClients     map[string]*K8sClient // cluster -> client
-	portForwardMgr *PortForwardManager
-	ctx            context.Context
-	cancel         context.CancelFunc
+	k8sClients map[string]*K8sClient // cluster -> client
+	// portForwardMgr *PortForwardManager // Package not available - legacy code
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // NewMonitoringSession cria uma nova sessão de monitoramento
@@ -22,10 +23,10 @@ func NewMonitoringSession(clusters []*models.ClusterInfo) (*MonitoringSession, e
 	ctx, cancel := context.WithCancel(context.Background())
 
 	session := &MonitoringSession{
-		k8sClients:     make(map[string]*K8sClient),
-		portForwardMgr: NewPortForwardManager(DefaultLocalPort),
-		ctx:            ctx,
-		cancel:         cancel,
+		k8sClients: make(map[string]*K8sClient),
+		// portForwardMgr: NewPortForwardManager(DefaultLocalPort), // Package not available - legacy code
+		ctx:    ctx,
+		cancel: cancel,
 	}
 
 	// Inicializa clients para cada cluster
@@ -81,7 +82,7 @@ func (s *MonitoringSession) heartbeatLoop() {
 			return
 
 		case <-ticker.C:
-			s.portForwardMgr.Heartbeat()
+			// s.portForwardMgr.Heartbeat() // Package not available - legacy code
 		}
 	}
 }
@@ -152,6 +153,8 @@ func (s *MonitoringSession) CollectAllHPAs() ([]*models.HPASnapshot, error) {
 }
 
 // SetupPrometheusPortForward configura port-forward para Prometheus em um cluster
+// Package not available - legacy code
+/*
 func (s *MonitoringSession) SetupPrometheusPortForward(clusterName, namespace string, service string) (string, error) {
 	// Verifica se cluster existe
 	if _, exists := s.k8sClients[clusterName]; !exists {
@@ -171,11 +174,15 @@ func (s *MonitoringSession) SetupPrometheusPortForward(clusterName, namespace st
 
 	return endpoint, nil
 }
+*/
 
 // GetPortForwardStatus retorna status de todos os port-forwards ativos
+// Package not available - legacy code
+/*
 func (s *MonitoringSession) GetPortForwardStatus() map[string]interface{} {
 	return s.portForwardMgr.GetStatus()
 }
+*/
 
 // Shutdown encerra a sessão de monitoramento
 func (s *MonitoringSession) Shutdown() {
@@ -185,9 +192,9 @@ func (s *MonitoringSession) Shutdown() {
 	s.cancel()
 
 	// Shutdown port-forward manager
-	if s.portForwardMgr != nil {
-		s.portForwardMgr.Shutdown()
-	}
+	// if s.portForwardMgr != nil { // Package not available - legacy code
+	// 	s.portForwardMgr.Shutdown()
+	// }
 
 	log.Info().Msg("Monitoring session shutdown complete")
 }
