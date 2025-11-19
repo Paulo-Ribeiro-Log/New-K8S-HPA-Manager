@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Responda sempre em português brasileiro (pt-br).
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
-**IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/k8s-hpa-manager` para executar a aplicação.
+**IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Interface **totalmente responsiva** - adapta-se a qualquer tamanho de terminal (recomendado: 80x24 ou maior).
 
 ---
@@ -41,7 +41,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build e Run
 make build                    # Compilar backend Go
 make web-build                # Build frontend
-./build/k8s-hpa-manager web   # Iniciar servidor web
+./build/new-k8s-hpa web   # Iniciar servidor web
 
 # Development
 make run-dev                  # TUI com debug
@@ -109,7 +109,7 @@ Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
 Versão: v1.0.10 (Nov 2025)
 Tech: Go 1.23 + Bubble Tea (TUI) + React 18.3 (Web)
 Build: make build && make web-build
-Binary: ./build/k8s-hpa-manager
+Binary: ./build/new-k8s-hpa
 
 Recent Updates:
 - Sistema de Audit Log para operações Cordon/Drain (19/Nov/2025)
