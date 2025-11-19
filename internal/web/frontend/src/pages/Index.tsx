@@ -14,6 +14,7 @@ import {
 import { HPAListItem } from "@/components/HPAListItem";
 import { HPAEditor } from "@/components/HPAEditor";
 import { HPATableView } from "@/components/HPATableView";
+import { HPAExportButton } from "@/components/HPAExportButton";
 import { ApplyAllModal } from "@/components/ApplyAllModal";
 import { NodePoolListItem } from "@/components/NodePoolListItem";
 import { NodePoolEditor } from "@/components/NodePoolEditor";
@@ -448,6 +449,9 @@ const Index = ({ onLogout }: IndexProps) => {
             }}
             rightPanel={{
               title: "HPA Editor",
+              titleAction: !selectedHPA ? (
+                <HPAExportButton hpas={filteredHPAs} />
+              ) : undefined,
               content: selectedHPA ? (
                 <div className="h-full overflow-auto">
                   <HPAEditor
