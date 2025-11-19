@@ -376,7 +376,7 @@ export function useUpdateCronJob() {
       cluster: string;
       namespace: string;
       name: string;
-      data: { suspend: boolean };
+      data: { suspend?: boolean; schedule?: string };
     }) => apiClient.updateCronJob(cluster, namespace, name, data),
     onSuccess: (data, variables) => {
       // Invalidar cache dos CronJobs (query key: ['cronjobs', cluster])
