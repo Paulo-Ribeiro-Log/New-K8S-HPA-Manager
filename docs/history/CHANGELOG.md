@@ -3,6 +3,73 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Interface Aprimorada para CronJob Schedule Editor (Novembro 2025) ✅
+
+**Data:** 19 de novembro de 2025
+
+**Motivação:** Interface anterior do CronJob Editor exibia apenas a expressão cron bruta (ex: `0 5 * * *`) sem explicação legível, dificultando o entendimento e edição dos schedules.
+
+**Problema anterior:**
+- Schedule exibido apenas como expressão cron (`0 5 * * *`)
+- Sem descrição legível em português
+- Sem explicação de cada campo (minuto, hora, dia, mês, dia-da-semana)
+- Impossível editar schedule pela interface web
+- Usuários precisavam entender sintaxe cron para interpretar
+
+**Solução implementada: Parser de Cron + Editor Visual**
+
+**Novo utilitário criado: `cronParser.ts`**
+- Parse completo de expressões cron
+- Geração de descrição legível em português (ex: "Todos os dias às 05:00")
+- Explicação individual de cada campo
+- Validação de expressões cron
+- Suporte a ranges (`1-5`), listas (`1,3,5`), steps (`*/5`)
+
+**Melhorias no CronJob Editor:**
+
+1. **Visualização aprimorada:**
+   - Descrição legível em destaque: "Todos os dias às 05:00"
+   - Expressão cron original em fonte mono (menor)
+   - Grid visual dos 5 campos com tooltips explicativos
+   - Hover em cada campo mostra explicação detalhada
+
+2. **Editor visual integrado:**
+   - Botão "Editar" no painel de schedule
+   - Input com validação em tempo real
+   - Preview instantâneo da expressão digitada
+   - Feedback visual: verde (válido) / vermelho (inválido)
+   - Guia rápido com ranges válidos (0-59, 0-23, etc.)
+   - Botões Salvar/Cancelar
+
+3. **Exemplos de descrições geradas:**
+   - `0 5 * * *` → "Todos os dias às 05:00"
+   - `30 14 * * *` → "Todos os dias às 14:30"
+   - `0 9 * * 1` → "Todas as Segundas às 09:00"
+   - `0 8 1 * *` → "No dia 1 de cada mês às 08:00"
+   - `*/15 * * * *` → "A cada 15 minutos"
+
+**Componentes criados/modificados:**
+
+| Arquivo | Modificação |
+|---------|-------------|
+| `internal/web/frontend/src/lib/cronParser.ts` | Novo utilitário completo (+250 linhas) |
+| `internal/web/frontend/src/components/CronJobEditor.tsx` | Editor visual + integração parser (+200 linhas) |
+
+**Benefícios:**
+✅ **Usabilidade melhorada** - Usuários entendem schedules sem conhecer sintaxe cron
+✅ **Edição facilitada** - Interface visual com validação e preview
+✅ **Educacional** - Tooltips explicam cada campo do cron
+✅ **Feedback imediato** - Validação em tempo real ao digitar
+✅ **Guia integrado** - Ranges válidos exibidos no editor
+
+**Tecnologias utilizadas:**
+- TypeScript para type-safety
+- shadcn/ui Tooltip components
+- Validação robusta de expressões cron
+- Suporte completo ao formato cron padrão (5 campos)
+
+---
+
 ### Sistema de Audit Log para Operações de Infraestrutura (Novembro 2025) ✅
 
 **Data:** 19 de novembro de 2025

@@ -92,7 +92,8 @@ k8s-hpa-manager/
 ✅ **Web Interface** - React/TypeScript com 99% das features
 ✅ **HPAs & Node Pools** - CRUD completo com staging area
 ✅ **Cordon/Drain** - Sistema de evacuação com progress em tempo real (SSE)
-✅ **Audit Log** - Rastreabilidade completa de operações Cordon/Drain com histórico persistente
+✅ **Audit Log** - Rastreabilidade completa de operações Cordon/Drain e Rollouts com histórico persistente
+✅ **CronJob Editor Aprimorado** - Interface visual com parser de cron, descrições legíveis e validação em tempo real
 ✅ **Sessions** - Save/load/edit com compatibilidade TUI ↔ Web
 ✅ **Monitoring V2** - Sistema sem port-forwards, acesso direto Prometheus
 ✅ **Auto-Updates** - Sistema automático de detecção e instalação
