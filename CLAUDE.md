@@ -22,10 +22,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 7. [🔧 Troubleshooting](docs/guides/TROUBLESHOOTING.md) - Resolução de problemas comuns
 8. [🚀 Continuing Development](docs/guides/CONTINUING_DEV.md) - Context templates e best practices
 9. [⚡ Async Optimization Plan](docs/guides/ASYNC_OPTIMIZATION_PLAN.md) - Plano de otimização assíncrona da auto descoberta
+10. [📦 Installation Scripts](docs/guides/INSTALLATION_SCRIPTS.md) - Scripts de instalação (release vs main)
 
 ### 📚 Histórico e Referências
-10. [📜 Histórico de Correções](docs/history/CHANGELOG.md) - Correções e refatorações principais
-11. [🔍 Análise Cordon/Drain](ANALISE_NODEPOOL_CORDON_DRAIN.md) - Análise detalhada do sistema
+11. [📜 Histórico de Correções](docs/history/CHANGELOG.md) - Correções e refatorações principais
+12. [🔍 Análise Cordon/Drain](ANALISE_NODEPOOL_CORDON_DRAIN.md) - Análise detalhada do sistema
+
+### 🚀 Otimizações
+13. [⚡ Autodiscover Optimization](docs/optimization/AUTODISCOVER_OPTIMIZATION.md) - Paralelização da busca de subscriptions
 
 ---
 
@@ -44,8 +48,11 @@ make run-dev                  # TUI com debug
 make web-dev                  # Frontend dev server
 make test                     # Rodar testes
 
-# Installation
-curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/Scale_HPA/main/install-from-github.sh | bash
+# Installation (Release - Estável)
+curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/main/install-from-github.sh | bash
+
+# Installation (Main - Desenvolvimento)
+curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/main/install-from-main.sh | bash
 
 # Updates
 k8s-hpa-manager version       # Verificar versão
@@ -88,6 +95,7 @@ k8s-hpa-manager/
 ✅ **Sessions** - Save/load/edit com compatibilidade TUI ↔ Web
 ✅ **Monitoring V2** - Sistema sem port-forwards, acesso direto Prometheus
 ✅ **Auto-Updates** - Sistema automático de detecção e instalação
+✅ **Autodiscover Otimizado** - Busca paralela de subscriptions (10x mais rápido)
 
 ---
 
@@ -96,10 +104,14 @@ k8s-hpa-manager/
 **Context Template Rápido:**
 ```
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
-Versão: v1.0.6 (Nov 2025)
+Versão: v1.0.10 (Nov 2025)
 Tech: Go 1.23 + Bubble Tea (TUI) + React 18.3 (Web)
 Build: make build && make web-build
 Binary: ./build/k8s-hpa-manager
+
+Recent Updates:
+- Autodiscover otimizado com busca paralela de subscriptions (10x mais rápido)
+- Script de instalação a partir da branch main (para desenvolvimento)
 ```
 
 **Ver documentação completa:**
@@ -124,8 +136,9 @@ Cada arquivo contém um link "Voltar ao CLAUDE.md principal" no topo para fácil
 ## 🔗 Links Externos
 
 - **GitHub**: https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager
-- **Latest Release**: https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/tag/v1.0.6
+- **Latest Release**: https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/latest
 - **Análise Cordon/Drain**: [ANALISE_NODEPOOL_CORDON_DRAIN.md](ANALISE_NODEPOOL_CORDON_DRAIN.md)
+- **Plano Otimização Async**: [PLANO_OTIMIZACAO_ASYNC.md](PLANO_OTIMIZACAO_ASYNC.md)
 
 ---
 
