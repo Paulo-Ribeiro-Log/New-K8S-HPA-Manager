@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
 
+	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
 )
@@ -32,10 +33,11 @@ type ClusterConfig struct {
 
 // KubeConfigManager gerencia a configuração do Kubernetes
 type KubeConfigManager struct {
-	configPath  string
-	config      *api.Config
-	clients     map[string]kubernetes.Interface
-	clientMutex sync.RWMutex // Protege acesso concorrente aos clients
+	configPath     string
+	config         *api.Config
+	clients        map[string]kubernetes.Interface
+	clientMutex    sync.RWMutex // Protege acesso concorrente aos clients
+	historyTracker *history.HistoryTracker
 }
 
 // NewKubeConfigManager cria um novo gerenciador de kubeconfig
@@ -46,10 +48,33 @@ func NewKubeConfigManager(configPath string) (*KubeConfigManager, error) {
 	}
 
 	return &KubeConfigManager{
-		configPath: configPath,
-		config:     config,
-		clients:    make(map[string]kubernetes.Interface),
+		configPath:     configPath,
+		config:         config,
+		clients:        make(map[string]kubernetes.Interface),
+		historyTracker: nil, // Será configurado via SetHistoryTracker
 	}, nil
+}
+
+// SetHistoryTracker configura o historyTracker para audit logging
+func (k *KubeConfigManager) SetHistoryTracker(tracker *history.HistoryTracker) {
+	k.historyTracker = tracker
+}
+
+// GetK8sClient retorna um cliente wrapper *kubernetes.Client com historyTracker configurado
+func (k *KubeConfigManager) GetK8sClient(clusterName string) (*kubeclient.Client, error) {
+	clientset, err := k.GetClient(clusterName)
+	if err != nil {
+		return nil, err
+	}
+
+	client := kubeclient.NewClient(clientset, clusterName)
+
+	// Configurar historyTracker se disponível
+	if k.historyTracker != nil {
+		client.SetHistoryTracker(k.historyTracker)
+	}
+
+	return client, nil
 }
 
 // DiscoverClusters descobre clusters do kubeconfig que começam com "akspriv-" em ordem alfabética

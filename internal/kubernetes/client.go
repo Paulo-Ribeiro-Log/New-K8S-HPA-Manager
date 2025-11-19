@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/yaml"
 
+	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/models"
 )
 
@@ -67,16 +68,23 @@ func isSystemNamespace(namespace string) bool {
 
 // Client encapsula as operações do Kubernetes
 type Client struct {
-	clientset kubernetes.Interface
-	cluster   string
+	clientset      kubernetes.Interface
+	cluster        string
+	historyTracker *history.HistoryTracker
 }
 
 // NewClient cria um novo cliente Kubernetes
 func NewClient(clientset kubernetes.Interface, clusterName string) *Client {
 	return &Client{
-		clientset: clientset,
-		cluster:   clusterName,
+		clientset:      clientset,
+		cluster:        clusterName,
+		historyTracker: nil, // Será configurado via SetHistoryTracker se necessário
 	}
+}
+
+// SetHistoryTracker configura o historyTracker para audit logging
+func (c *Client) SetHistoryTracker(tracker *history.HistoryTracker) {
+	c.historyTracker = tracker
 }
 
 // ListNamespaces lista todos os namespaces do cluster
@@ -983,9 +991,40 @@ func (c *Client) TriggerRollout(ctx context.Context, hpa models.HPA) error {
 	deployment.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = metav1.Now().Format("2006-01-02T15:04:05Z")
 
 	// Aplicar o rollout
+	startTime := time.Now()
 	_, err = c.clientset.AppsV1().Deployments(hpa.Namespace).Update(ctx, deployment, metav1.UpdateOptions{})
 	if err != nil {
+		// Log failure no audit
+		if c.historyTracker != nil {
+			c.historyTracker.Log(history.HistoryEntry{
+				Action:   history.ActionRolloutDeployment,
+				Resource: fmt.Sprintf("%s/%s", hpa.Namespace, deploymentName),
+				Cluster:  c.cluster,
+				Status:   history.StatusFailed,
+				ErrorMsg: err.Error(),
+				Duration: time.Since(startTime).Milliseconds(),
+			})
+		}
 		return fmt.Errorf("failed to trigger rollout for deployment %s/%s: %w", hpa.Namespace, deploymentName, err)
+	}
+
+	// Log success no audit
+	if c.historyTracker != nil {
+		c.historyTracker.Log(history.HistoryEntry{
+			Action:   history.ActionRolloutDeployment,
+			Resource: fmt.Sprintf("%s/%s", hpa.Namespace, deploymentName),
+			Cluster:  c.cluster,
+			Status:   history.StatusSuccess,
+			Duration: time.Since(startTime).Milliseconds(),
+			Before: map[string]interface{}{
+				"hpa":                hpa.Name,
+				"perform_rollout":    hpa.PerformRollout,
+			},
+			After: map[string]interface{}{
+				"deployment":         deploymentName,
+				"restarted_at":       deployment.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"],
+			},
+		})
 	}
 
 	return nil
@@ -1024,9 +1063,40 @@ func (c *Client) TriggerDaemonSetRollout(ctx context.Context, hpa models.HPA) er
 	daemonSet.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = metav1.Now().Format("2006-01-02T15:04:05Z")
 
 	// Aplicar o rollout
+	startTime := time.Now()
 	_, err = c.clientset.AppsV1().DaemonSets(hpa.Namespace).Update(ctx, daemonSet, metav1.UpdateOptions{})
 	if err != nil {
+		// Log failure no audit
+		if c.historyTracker != nil {
+			c.historyTracker.Log(history.HistoryEntry{
+				Action:   history.ActionRolloutDaemonSet,
+				Resource: fmt.Sprintf("%s/%s", hpa.Namespace, targetName),
+				Cluster:  c.cluster,
+				Status:   history.StatusFailed,
+				ErrorMsg: err.Error(),
+				Duration: time.Since(startTime).Milliseconds(),
+			})
+		}
 		return fmt.Errorf("failed to trigger rollout for daemonset %s/%s: %w", hpa.Namespace, targetName, err)
+	}
+
+	// Log success no audit
+	if c.historyTracker != nil {
+		c.historyTracker.Log(history.HistoryEntry{
+			Action:   history.ActionRolloutDaemonSet,
+			Resource: fmt.Sprintf("%s/%s", hpa.Namespace, targetName),
+			Cluster:  c.cluster,
+			Status:   history.StatusSuccess,
+			Duration: time.Since(startTime).Milliseconds(),
+			Before: map[string]interface{}{
+				"hpa":                       hpa.Name,
+				"perform_daemonset_rollout": hpa.PerformDaemonSetRollout,
+			},
+			After: map[string]interface{}{
+				"daemonset":    targetName,
+				"restarted_at": daemonSet.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"],
+			},
+		})
 	}
 
 	fmt.Printf("✅ DaemonSet rollout triggered for %s/%s\n", hpa.Namespace, targetName)
@@ -1069,9 +1139,40 @@ func (c *Client) TriggerStatefulSetRollout(ctx context.Context, hpa models.HPA) 
 	statefulSet.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = metav1.Now().Format("2006-01-02T15:04:05Z")
 
 	// Aplicar o rollout
+	startTime := time.Now()
 	_, err = c.clientset.AppsV1().StatefulSets(hpa.Namespace).Update(ctx, statefulSet, metav1.UpdateOptions{})
 	if err != nil {
+		// Log failure no audit
+		if c.historyTracker != nil {
+			c.historyTracker.Log(history.HistoryEntry{
+				Action:   history.ActionRolloutStatefulSet,
+				Resource: fmt.Sprintf("%s/%s", hpa.Namespace, statefulSetName),
+				Cluster:  c.cluster,
+				Status:   history.StatusFailed,
+				ErrorMsg: err.Error(),
+				Duration: time.Since(startTime).Milliseconds(),
+			})
+		}
 		return fmt.Errorf("failed to trigger rollout for statefulset %s/%s: %w", hpa.Namespace, statefulSetName, err)
+	}
+
+	// Log success no audit
+	if c.historyTracker != nil {
+		c.historyTracker.Log(history.HistoryEntry{
+			Action:   history.ActionRolloutStatefulSet,
+			Resource: fmt.Sprintf("%s/%s", hpa.Namespace, statefulSetName),
+			Cluster:  c.cluster,
+			Status:   history.StatusSuccess,
+			Duration: time.Since(startTime).Milliseconds(),
+			Before: map[string]interface{}{
+				"hpa":                           hpa.Name,
+				"perform_statefulset_rollout":   hpa.PerformStatefulSetRollout,
+			},
+			After: map[string]interface{}{
+				"statefulset":  statefulSetName,
+				"restarted_at": statefulSet.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"],
+			},
+		})
 	}
 
 	fmt.Printf("✅ StatefulSet rollout triggered for %s/%s\n", hpa.Namespace, statefulSetName)

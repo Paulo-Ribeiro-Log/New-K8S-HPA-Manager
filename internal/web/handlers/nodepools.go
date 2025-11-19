@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
 	"k8s-hpa-manager/internal/web/sse"
@@ -25,13 +26,15 @@ import (
 type NodePoolHandler struct {
 	kubeManager     *config.KubeConfigManager
 	progressManager *SequenceProgressManager
+	historyTracker  *history.HistoryTracker
 }
 
 // NewNodePoolHandler cria um novo handler de Node Pools
-func NewNodePoolHandler(km *config.KubeConfigManager) *NodePoolHandler {
+func NewNodePoolHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *NodePoolHandler {
 	return &NodePoolHandler{
 		kubeManager:     km,
 		progressManager: NewSequenceProgressManager(),
+		historyTracker:  ht,
 	}
 }
 
@@ -1086,9 +1089,37 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 			if err := k8sClient.CordonNode(ctx, nodeName); err != nil {
 				sendProgress(2, "CORDON", "error", fmt.Sprintf("Failed to cordon %s", nodeName), 0, nodeName, i+1, len(nodes), err)
 				fmt.Printf(" ❌ FAILED: %v\n", err)
+				// Log failure no audit
+				if h.historyTracker != nil {
+					h.historyTracker.Log(history.HistoryEntry{
+						Action:   history.ActionCordonNode,
+						Resource: nodeName,
+						Cluster:  req.Cluster,
+						Status:   history.StatusFailed,
+						ErrorMsg: err.Error(),
+						Duration: time.Since(startTime).Milliseconds(),
+					})
+				}
 				return
 			}
 			fmt.Printf(" ✅\n")
+
+			// Log success no audit (por node)
+			if h.historyTracker != nil {
+				h.historyTracker.Log(history.HistoryEntry{
+					Action:   history.ActionCordonNode,
+					Resource: fmt.Sprintf("%s/%s", origin.Name, nodeName),
+					Cluster:  req.Cluster,
+					Status:   history.StatusSuccess,
+					Duration: time.Since(startTime).Milliseconds(),
+					Before: map[string]interface{}{
+						"schedulable": true,
+					},
+					After: map[string]interface{}{
+						"schedulable": false,
+					},
+				})
+			}
 		}
 		sendProgress(2, "CORDON", "completed", fmt.Sprintf("All %d nodes cordoned successfully", len(nodes)), 40, "", 0, 0, nil)
 		fmt.Printf("✅ All %d nodes cordoned successfully\n\n", len(nodes))
@@ -1141,6 +1172,7 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 		fmt.Printf("\n🚀 Draining nodes...\n")
 		totalPodsMigrated := 0
 		for i, nodeName := range nodes {
+			drainStartTime := time.Now()
 			nodeProgress := 45 + float64(i+1)/float64(len(nodes))*30 // 45% → 75%
 			sendProgress(3, "DRAIN", "running", fmt.Sprintf("Draining node %d/%d", i+1, len(nodes)), nodeProgress, nodeName, i+1, len(nodes), nil)
 			fmt.Printf("[%d/%d] Draining %s...\n", i+1, len(nodes), nodeName)
@@ -1149,6 +1181,17 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 			if err := k8sClient.DrainNode(ctx, nodeName, &req.DrainOptions); err != nil {
 				sendProgress(3, "DRAIN", "error", fmt.Sprintf("Failed to drain %s", nodeName), 0, nodeName, i+1, len(nodes), err)
 				fmt.Printf("   ❌ FAILED: %v\n", err)
+				// Log failure no audit
+				if h.historyTracker != nil {
+					h.historyTracker.Log(history.HistoryEntry{
+						Action:   history.ActionDrainNode,
+						Resource: fmt.Sprintf("%s/%s", origin.Name, nodeName),
+						Cluster:  req.Cluster,
+						Status:   history.StatusFailed,
+						ErrorMsg: err.Error(),
+						Duration: time.Since(drainStartTime).Milliseconds(),
+					})
+				}
 				return
 			}
 
@@ -1164,6 +1207,25 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 			} else {
 				sendProgress(3, "DRAIN", "running", fmt.Sprintf("Warning: Some pods may still be present on %s", nodeName), nodeProgress, nodeName, i+1, len(nodes), nil)
 				fmt.Printf("   ⚠️  WARNING: Some pods may still be present (DaemonSets?)\n")
+			}
+
+			// Log success no audit (por node)
+			if h.historyTracker != nil {
+				h.historyTracker.Log(history.HistoryEntry{
+					Action:   history.ActionDrainNode,
+					Resource: fmt.Sprintf("%s/%s", origin.Name, nodeName),
+					Cluster:  req.Cluster,
+					Status:   history.StatusSuccess,
+					Duration: time.Since(drainStartTime).Milliseconds(),
+					Before: map[string]interface{}{
+						"pods_count": totalPodsMigrated, // Approximate
+						"drained":    false,
+					},
+					After: map[string]interface{}{
+						"pods_count": 0,
+						"drained":    isDrained,
+					},
+				})
 			}
 		}
 		sendProgress(3, "DRAIN", "completed", fmt.Sprintf("All %d nodes drained successfully (~%d pods migrated)", len(nodes), totalPodsMigrated), 75, "", 0, 0, nil)
@@ -1207,6 +1269,28 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 	sendProgress(5, "FINALIZAÇÃO", "completed", fmt.Sprintf("Sequencing completed successfully in %s", duration.Round(time.Second)), 100, "", 0, 0, nil)
 	fmt.Printf("⏱️  Total execution time: %s\n", duration.Round(time.Second))
 	fmt.Printf("✅ Sequencing completed successfully!\n")
+
+	// Log da sequência completa no audit
+	if h.historyTracker != nil {
+		h.historyTracker.Log(history.HistoryEntry{
+			Action:   history.ActionNodePoolSequence,
+			Resource: fmt.Sprintf("%s → %s", origin.Name, dest.Name),
+			Cluster:  req.Cluster,
+			Status:   history.StatusSuccess,
+			Duration: duration.Milliseconds(),
+			Before: map[string]interface{}{
+				"origin_pool":  origin.Name,
+				"dest_pool":    dest.Name,
+				"cordon":       req.CordonEnabled,
+				"drain":        req.DrainEnabled,
+			},
+			After: map[string]interface{}{
+				"total_duration_ms": duration.Milliseconds(),
+				"total_duration":    duration.Round(time.Second).String(),
+				"session_id":        sessionID,
+			},
+		})
+	}
 
 	fmt.Printf("\n")
 	fmt.Printf("╔════════════════════════════════════════════════════════════════════╗\n")
