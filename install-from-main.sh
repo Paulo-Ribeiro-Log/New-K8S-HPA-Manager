@@ -218,7 +218,7 @@ compile_binary() {
 
     if go build -o "$CLONE_DIR/$BINARY_NAME" \
         -ldflags "-X main.Version=$VERSION -X main.BuildDate=$BUILD_DATE -X main.GitCommit=$GIT_COMMIT" \
-        ./cmd/k8s-hpa-manager 2>&1 | tee /tmp/compile.log; then
+        . 2>&1 | tee /tmp/compile.log; then
 
         print_success "Compilação concluída"
 
