@@ -332,7 +332,7 @@ func (k *KubeConfigManager) extractResourceGroupFromKubeconfig(clusterName strin
 	return resourceGroup, nil
 }
 
-// discoverSubscriptionViaAzureCLI descobre a subscription buscando em todas as subscriptions disponíveis (paralelo)
+// discoverSubscriptionViaAzureCLI descobre a subscription buscando em todas as subscriptions disponíveis (paralelo controlado)
 func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourceGroup string) (string, error) {
 	// 1. Listar todas as subscriptions disponíveis
 	cmd := exec.Command("az", "account", "list", "--query", "[].id", "-o", "tsv")
@@ -359,20 +359,41 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 		return "", fmt.Errorf("no valid subscriptions found")
 	}
 
-	// 2. Testar todas as subscriptions EM PARALELO
+	// 2. Testar subscriptions com paralelismo controlado (máximo 5 simultâneas)
 	type result struct {
 		subscriptionID string
 		resourceID     string
 		err            error
 	}
 
-	resultChan := make(chan result, len(validSubscriptions))
+	// Contexto com timeout para evitar goroutines órfãs
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 
-	// Disparar goroutine para cada subscription
+	resultChan := make(chan result, len(validSubscriptions))
+	semaphore := make(chan struct{}, 5) // Limitar a 5 processos az CLI simultâneos
+	var wg sync.WaitGroup
+
+	// Disparar goroutines controladas
 	for _, subscriptionID := range validSubscriptions {
+		wg.Add(1)
 		go func(subID string) {
-			// Tentar az aks show com subscription específica
-			cmd := exec.Command("az", "aks", "show",
+			defer wg.Done()
+
+			// Adquirir slot do semáforo
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				resultChan <- result{subscriptionID: subID, err: ctx.Err()}
+				return
+			}
+
+			// Criar comando com timeout
+			cmdCtx, cmdCancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cmdCancel()
+
+			cmd := exec.CommandContext(cmdCtx, "az", "aks", "show",
 				"--name", clusterName,
 				"--resource-group", resourceGroup,
 				"--subscription", subID,
@@ -382,7 +403,7 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 			output, err := cmd.CombinedOutput()
 
 			if err != nil {
-				// Cluster não encontrado nesta subscription
+				// Cluster não encontrado nesta subscription (esperado)
 				resultChan <- result{subscriptionID: subID, err: err}
 				return
 			}
@@ -392,19 +413,31 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 		}(subscriptionID)
 	}
 
-	// 3. Coletar resultados - retornar assim que encontrar a primeira match
-	for i := 0; i < len(validSubscriptions); i++ {
-		res := <-resultChan
+	// Goroutine para fechar canal quando todas goroutines terminarem
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
 
-		if res.err == nil && res.resourceID != "" {
+	// 3. Coletar resultados - retornar assim que encontrar a primeira match
+	// MAS continuar drenando o canal para evitar vazamento de goroutines
+	var foundSubscription string
+	for res := range resultChan {
+		if foundSubscription == "" && res.err == nil && res.resourceID != "" {
 			// Cluster encontrado! Extrair subscription do resource ID
 			parts := strings.Split(res.resourceID, "/")
 			for j, part := range parts {
 				if part == "subscriptions" && j+1 < len(parts) {
-					return parts[j+1], nil
+					foundSubscription = parts[j+1]
+					cancel() // Cancelar goroutines restantes
+					break
 				}
 			}
 		}
+	}
+
+	if foundSubscription != "" {
+		return foundSubscription, nil
 	}
 
 	return "", fmt.Errorf("cluster not found in any subscription or no access")
@@ -434,8 +467,9 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 	// WaitGroup para garantir que todas as goroutines terminem
 	var wg sync.WaitGroup
 
-	// Processar clusters em paralelo (máximo 10 simultaneamente)
-	semaphore := make(chan struct{}, 10)
+	// Processar clusters em paralelo (máximo 3 simultaneamente para não sobrecarregar Azure CLI)
+	// Cada cluster pode disparar até 5 processos az CLI internos, então 3×5 = 15 processos máx
+	semaphore := make(chan struct{}, 3)
 
 	for i, cluster := range clusters {
 		wg.Add(1)
