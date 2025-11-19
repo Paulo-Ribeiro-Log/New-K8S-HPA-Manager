@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2 } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -167,23 +167,32 @@ export const DeploymentsTab = ({
     }
   };
 
-  // Atualizar histórico quando o editor muda
+  // Atualizar histórico quando o editor muda (simples, sem adicionar ao histórico automaticamente)
   const handleEditorChange = useCallback((value: string) => {
     setEditorValue(value);
+  }, []);
 
-    // Adicionar ao histórico (remover itens futuros se estamos no meio do histórico)
-    setHistory((prev) => {
-      const newHistory = prev.slice(0, historyIndex + 1);
-      newHistory.push(value);
-      // Limitar histórico a 50 itens
-      if (newHistory.length > 50) {
-        newHistory.shift();
+  // Adicionar ao histórico manualmente quando necessário
+  const addToHistory = useCallback((value: string) => {
+    setHistoryIndex((currentIndex) => {
+      setHistory((prev) => {
+        // Remover itens futuros se estamos no meio do histórico
+        const newHistory = prev.slice(0, currentIndex + 1);
+        
+        // Só adicionar se for diferente do último item
+        if (newHistory.length === 0 || newHistory[newHistory.length - 1] !== value) {
+          newHistory.push(value);
+          // Limitar histórico a 50 itens
+          if (newHistory.length > 50) {
+            newHistory.shift();
+            return newHistory;
+          }
+        }
         return newHistory;
-      }
-      return newHistory;
+      });
+      return Math.min(currentIndex + 1, 49);
     });
-    setHistoryIndex((prev) => Math.min(prev + 1, 49));
-  }, [historyIndex]);
+  }, []);
 
   // Undo
   const handleUndo = useCallback(() => {
@@ -489,12 +498,7 @@ export const DeploymentsTab = ({
           // Ctrl+S: Salvar checkpoint local (não aplica)
           if (hasChanges) {
             // Adicionar checkpoint ao histórico
-            setHistory((prev) => {
-              const newHistory = prev.slice(0, historyIndex + 1);
-              newHistory.push(editorValue);
-              return newHistory;
-            });
-            setHistoryIndex((prev) => prev + 1);
+            addToHistory(editorValue);
             toast.success("Checkpoint salvo localmente", {
               description: "Alterações mantidas no histórico local. Use 'Aplicar' para confirmar no cluster.",
               style: {
@@ -673,6 +677,14 @@ export const DeploymentsTab = ({
               <CheckCircle2 className="w-4 h-4 mr-2" /> Validar (Dry-run)
             </Button>
             <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCancel}
+              disabled={!selectedDeployment || !hasChanges}
+            >
+              <X className="w-4 h-4 mr-2" /> Cancelar
+            </Button>
+            <Button
               variant="default"
               size="sm"
               onClick={openApplyConfirm}
@@ -787,12 +799,7 @@ export const DeploymentsTab = ({
           // Ctrl+S: Salvar checkpoint local (não aplica)
           if (hasChanges) {
             // Adicionar checkpoint ao histórico
-            setHistory((prev) => {
-              const newHistory = prev.slice(0, historyIndex + 1);
-              newHistory.push(editorValue);
-              return newHistory;
-            });
-            setHistoryIndex((prev) => prev + 1);
+            addToHistory(editorValue);
             toast.success("Checkpoint salvo localmente", {
               description: "Alterações mantidas no histórico local. Use 'Aplicar' para confirmar no cluster.",
               style: {

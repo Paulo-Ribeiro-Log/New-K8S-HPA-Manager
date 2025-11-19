@@ -928,7 +928,6 @@ export function MetricsPanel({
                       name="CPU Atual"
                       stroke="#3b82f6"
                       strokeWidth={2}
-                      isAnimationActive={false}
                       fill="url(#cpuGradient)"
                       unit="%"
                       isAnimationActive={false}
