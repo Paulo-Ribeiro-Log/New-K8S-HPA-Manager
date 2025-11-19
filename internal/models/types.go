@@ -860,6 +860,9 @@ type NodePoolChange struct {
 	// Campos de execução sequencial
 	SequenceOrder  int    `json:"sequence_order"`  // 1 = primeiro, 2 = segundo, 0 = não marcado
 	SequenceStatus string `json:"sequence_status"` // pending, executing, completed, failed
+
+	// Configuração de Cordon/Drain (opcional - só usado se SequenceOrder > 0)
+	CordonDrainConfig *CordonDrainConfig `json:"cordon_drain_config,omitempty"`
 }
 
 // NodePoolChanges representa alterações de configuração de um node pool
@@ -920,6 +923,33 @@ func AggressiveDrainOptions() *DrainOptions {
 		PodSelector:              "",
 		DryRun:                   false,
 		ChunkSize:                2, // 2 nodes em paralelo (mais rápido)
+	}
+}
+
+// CordonDrainConfig representa a configuração de Cordon/Drain para Node Pools
+// Usado tanto na interface web quanto nas sessões salvas
+type CordonDrainConfig struct {
+	CordonEnabled    bool `json:"cordon_enabled"`     // Habilitar CORDON (marca nodes como unschedulable)
+	DrainEnabled     bool `json:"drain_enabled"`      // Habilitar DRAIN (evacua pods dos nodes)
+	GracePeriod      int  `json:"grace_period"`       // Tempo de espera antes de forçar término (padrão: 300s)
+	Timeout          int  `json:"timeout"`            // Timeout máximo para drain (padrão: 600s)
+	ForceDelete      bool `json:"force_delete"`       // ⚠️ Ignora PodDisruptionBudget (perigoso!)
+	IgnoreDaemonSets bool `json:"ignore_daemonsets"`  // Ignora DaemonSets durante drain (padrão: true)
+	DeleteEmptyDir   bool `json:"delete_emptydir"`    // Deleta volumes EmptyDir durante drain
+	ChunkSize        int  `json:"chunk_size"`         // Pods evacuados simultaneamente (padrão: 5)
+}
+
+// DefaultCordonDrainConfig retorna configuração segura padrão
+func DefaultCordonDrainConfig() *CordonDrainConfig {
+	return &CordonDrainConfig{
+		CordonEnabled:    true,
+		DrainEnabled:     true,
+		GracePeriod:      300, // 5 minutos
+		Timeout:          600, // 10 minutos
+		ForceDelete:      false,
+		IgnoreDaemonSets: true,
+		DeleteEmptyDir:   false,
+		ChunkSize:        5,
 	}
 }
 

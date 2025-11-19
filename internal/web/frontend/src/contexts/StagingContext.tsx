@@ -260,6 +260,7 @@ export function StagingProvider({ children }: StagingProviderProps) {
       applied_count: 0,
       sequence_order: change.sequence_order,
       sequence_status: change.sequence_status,
+      cordon_drain_config: change.cordon_drain_config, // Carregar configuração de Cordon/Drain
       original_values: {
         node_count: change.original_values.node_count,
         min_node_count: change.original_values.min_node_count,
@@ -356,6 +357,7 @@ export function StagingProvider({ children }: StagingProviderProps) {
         applied: false,
         sequence_order: np.sequence_order,
         sequence_status: np.sequence_status,
+        cordon_drain_config: np.cordon_drain_config, // Incluir configuração de Cordon/Drain
       }));
 
     return { changes, node_pool_changes };
