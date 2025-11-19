@@ -406,6 +406,103 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 
 		// Fase DRAIN
 		if cfg.DrainEnabled {
+			// FASE 3: Validação de PDB ANTES de iniciar drain
+			log.Info().
+				Int("nodes_count", totalNodes).
+				Msg("Validando PodDisruptionBudgets antes de iniciar drain")
+
+			// Validar PDBs para todos os nodes
+			allPDBsValid := true
+			var pdbErrors []string
+			var pdbWarnings []string
+
+			for _, nodeName := range nodes {
+				pdbResult, err := k8sClient.ValidatePDBsForNode(ctx, nodeName)
+				if err != nil {
+					log.Error().
+						Err(err).
+						Str("node", nodeName).
+						Msg("Falha ao validar PDBs")
+
+					reporter.SendError("pdb_validation", fmt.Sprintf("Failed to validate PDBs for node %s: %v", nodeName, err))
+
+					// ROLLBACK: Uncordon nodes em caso de erro na validação
+					rollbackCordon()
+
+					c.JSON(500, gin.H{
+						"success": false,
+						"error": gin.H{
+							"code":    "PDB_VALIDATION_ERROR",
+							"message": fmt.Sprintf("Failed to validate PDBs for node %s: %v", nodeName, err),
+							"details": fmt.Sprintf("Rollback executado: %d nodes uncordoned", len(cordonedNodes)),
+						},
+					})
+					return
+				}
+
+				// Log resultado da validação
+				log.Info().
+					Str("node", nodeName).
+					Bool("can_proceed", pdbResult.CanProceed).
+					Int("total_pdbs", pdbResult.TotalPDBs).
+					Int("pods_protected", pdbResult.PodsProtected).
+					Int("blocking_pdbs", len(pdbResult.BlockingPDBs)).
+					Msg("Resultado da validação de PDBs")
+
+				// Se PDB bloqueia, adicionar aos erros
+				if !pdbResult.CanProceed {
+					allPDBsValid = false
+					for _, msg := range pdbResult.WarningMessages {
+						pdbErrors = append(pdbErrors, fmt.Sprintf("[%s] %s", nodeName, msg))
+					}
+				}
+
+				// Coletar warnings (mesmo se PDB permite)
+				if len(pdbResult.WarningMessages) > 0 {
+					for _, msg := range pdbResult.WarningMessages {
+						pdbWarnings = append(pdbWarnings, fmt.Sprintf("[%s] %s", nodeName, msg))
+					}
+				}
+			}
+
+			// Se algum PDB bloqueia, abortar e fazer rollback
+			if !allPDBsValid {
+				log.Warn().
+					Int("errors_count", len(pdbErrors)).
+					Msg("PDBs bloqueiam drain, abortando operação")
+
+				reporter.SendError("pdb_blocked", fmt.Sprintf("PDBs block drain: %s", strings.Join(pdbErrors, "; ")))
+
+				// ROLLBACK: Uncordon nodes
+				rollbackCordon()
+
+				c.JSON(409, gin.H{ // 409 Conflict
+					"success": false,
+					"error": gin.H{
+						"code":    "PDB_BLOCKS_DRAIN",
+						"message": "PodDisruptionBudgets block drain operation",
+						"details": gin.H{
+							"blocking_pdbs": pdbErrors,
+							"rollback":      fmt.Sprintf("%d nodes uncordoned", len(cordonedNodes)),
+						},
+					},
+				})
+				return
+			}
+
+			// Se há warnings mas PDBs permitem, logar e enviar via SSE
+			if len(pdbWarnings) > 0 {
+				log.Info().
+					Int("warnings_count", len(pdbWarnings)).
+					Msg("PDBs permitem drain mas com avisos")
+
+				// Enviar warnings via SSE (como evento informativo)
+				for _, warning := range pdbWarnings {
+					reporter.SendDrainProgress("PDB Validation", 0, totalNodes, 0)
+					log.Info().Str("warning", warning).Msg("PDB warning")
+				}
+			}
+
 			reporter.SendDrainStarted(totalNodes)
 
 			drainOpts := &models.DrainOptions{
