@@ -418,6 +418,10 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 		logFunc(fmt.Sprintf("🔍 Iniciando auto-descoberta paralela para %d clusters...", len(clusters)))
 	}
 
+	// Criar contexto com timeout de 5 minutos para toda a operação
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
 	// Canais para resultados
 	type result struct {
 		index  int
@@ -427,32 +431,58 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 
 	resultChan := make(chan result, len(clusters))
 
+	// WaitGroup para garantir que todas as goroutines terminem
+	var wg sync.WaitGroup
+
 	// Processar clusters em paralelo (máximo 10 simultaneamente)
 	semaphore := make(chan struct{}, 10)
 
 	for i, cluster := range clusters {
+		wg.Add(1)
 		go func(idx int, clusterName string) {
-			semaphore <- struct{}{}        // Adquirir slot
-			defer func() { <-semaphore }() // Liberar slot
+			defer wg.Done()
+
+			// Adquirir slot do semáforo com timeout
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }() // Liberar slot
+			case <-ctx.Done():
+				resultChan <- result{index: idx, config: nil, err: fmt.Errorf("timeout aguardando slot")}
+				return
+			}
+
+			// Verificar se contexto ainda está ativo
+			if ctx.Err() != nil {
+				resultChan <- result{index: idx, config: nil, err: ctx.Err()}
+				return
+			}
 
 			config, err := k.AutoDiscoverClusterConfig(clusterName)
 			resultChan <- result{index: idx, config: config, err: err}
 		}(i, cluster.Name)
 	}
 
+	// Goroutine para fechar o canal quando todas as goroutines terminarem
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
 	// Coletar resultados
 	results := make([]result, len(clusters))
-	for i := 0; i < len(clusters); i++ {
-		res := <-resultChan
+	count := 0
+
+	for res := range resultChan {
 		results[res.index] = res
+		count++
 
 		// Mostrar progresso
 		if logFunc != nil {
 			if res.err != nil {
-				logFunc(fmt.Sprintf("[%d/%d] ❌ %s: %v", i+1, len(clusters), clusters[res.index].Name, res.err))
+				logFunc(fmt.Sprintf("[%d/%d] ❌ %s: %v", count, len(clusters), clusters[res.index].Name, res.err))
 			} else {
 				logFunc(fmt.Sprintf("[%d/%d] ✅ %s - RG: %s, Sub: %s",
-					i+1, len(clusters),
+					count, len(clusters),
 					clusters[res.index].Name,
 					res.config.ResourceGroup,
 					res.config.Subscription[:8]+"...")) // Mostrar apenas início do UUID
@@ -467,7 +497,7 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 	for i, res := range results {
 		if res.err != nil {
 			errors = append(errors, fmt.Errorf("cluster %s: %w", clusters[i].Name, res.err))
-		} else {
+		} else if res.config != nil {
 			configs = append(configs, *res.config)
 		}
 	}
