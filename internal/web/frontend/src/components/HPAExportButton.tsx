@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -6,7 +6,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Download, FileText, FileSpreadsheet, FileImage } from "lucide-react";
+import { Download, FileText, FileSpreadsheet, FileImage, MousePointerClick, X } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import type { HPA } from "@/lib/api/types";
 import { toast } from "sonner";
 import jsPDF from "jspdf";
@@ -23,14 +24,36 @@ declare module "jspdf" {
 
 interface HPAExportButtonProps {
   hpas: HPA[];
+  selectionMode: boolean;
+  selectedHPAs: Set<string>;
+  onToggleSelectionMode: () => void;
+  onClearSelection: () => void;
 }
 
-export const HPAExportButton = ({ hpas }: HPAExportButtonProps) => {
+export const HPAExportButton = ({
+  hpas,
+  selectionMode,
+  selectedHPAs,
+  onToggleSelectionMode,
+  onClearSelection,
+}: HPAExportButtonProps) => {
+  // Filtrar HPAs baseado na seleção (se houver)
+  const hpasToExport = useMemo(() => {
+    if (selectedHPAs.size === 0) {
+      return hpas; // Se nada selecionado, exporta todos
+    }
+
+    return hpas.filter((hpa) => {
+      const hpaKey = `${hpa.cluster}-${hpa.namespace}-${hpa.name}`;
+      return selectedHPAs.has(hpaKey);
+    });
+  }, [hpas, selectedHPAs]);
+
   // Agrupar HPAs por namespace (mesma lógica do HPATableView)
   const hpasByNamespace = useMemo(() => {
     const grouped: Record<string, HPA[]> = {};
 
-    hpas.forEach((hpa) => {
+    hpasToExport.forEach((hpa) => {
       if (!grouped[hpa.namespace]) {
         grouped[hpa.namespace] = [];
       }
@@ -43,10 +66,10 @@ export const HPAExportButton = ({ hpas }: HPAExportButtonProps) => {
         namespace,
         hpas: grouped[namespace].sort((a, b) => a.name.localeCompare(b.name)),
       }));
-  }, [hpas]);
+  }, [hpasToExport]);
 
   const exportToCSV = () => {
-    if (hpas.length === 0) {
+    if (hpasToExport.length === 0) {
       toast.error("Nenhum HPA para exportar");
       return;
     }
@@ -84,18 +107,18 @@ export const HPAExportButton = ({ hpas }: HPAExportButtonProps) => {
     link.click();
     URL.revokeObjectURL(url);
 
-    toast.success(`CSV exportado: ${hpas.length} HPAs em ${hpasByNamespace.length} namespaces`);
+    toast.success(`CSV exportado: ${hpasToExport.length} HPAs em ${hpasByNamespace.length} namespaces`);
   };
 
   const exportToMarkdown = () => {
-    if (hpas.length === 0) {
+    if (hpasToExport.length === 0) {
       toast.error("Nenhum HPA para exportar");
       return;
     }
 
     let mdContent = "# HPA Export Report\n\n";
     mdContent += `**Data de exportação:** ${new Date().toLocaleString("pt-BR")}\n\n`;
-    mdContent += `**Total de HPAs:** ${hpas.length}\n`;
+    mdContent += `**Total de HPAs:** ${hpasToExport.length}\n`;
     mdContent += `**Namespaces:** ${hpasByNamespace.length}\n\n`;
     mdContent += "---\n\n";
 
@@ -124,11 +147,11 @@ export const HPAExportButton = ({ hpas }: HPAExportButtonProps) => {
     link.click();
     URL.revokeObjectURL(url);
 
-    toast.success(`Markdown exportado: ${hpas.length} HPAs em ${hpasByNamespace.length} namespaces`);
+    toast.success(`Markdown exportado: ${hpasToExport.length} HPAs em ${hpasByNamespace.length} namespaces`);
   };
 
   const exportToPDF = () => {
-    if (hpas.length === 0) {
+    if (hpasToExport.length === 0) {
       toast.error("Nenhum HPA para exportar");
       return;
     }
@@ -144,7 +167,7 @@ export const HPAExportButton = ({ hpas }: HPAExportButtonProps) => {
     doc.setFontSize(10);
     doc.setFont("helvetica", "normal");
     doc.text(`Data: ${new Date().toLocaleString("pt-BR")}`, 14, 30);
-    doc.text(`Total de HPAs: ${hpas.length}`, 14, 36);
+    doc.text(`Total de HPAs: ${hpasToExport.length}`, 14, 36);
     doc.text(`Namespaces: ${hpasByNamespace.length}`, 14, 42);
 
     let yPosition = 50;
@@ -198,31 +221,63 @@ export const HPAExportButton = ({ hpas }: HPAExportButtonProps) => {
     // Download
     doc.save(`hpa-export-${new Date().toISOString().split("T")[0]}.pdf`);
 
-    toast.success(`PDF exportado: ${hpas.length} HPAs em ${hpasByNamespace.length} namespaces`);
+    toast.success(`PDF exportado: ${hpasToExport.length} HPAs em ${hpasByNamespace.length} namespaces`);
   };
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" className="gap-2">
-          <Download className="w-4 h-4" />
-          Exportar
+    <div className="flex items-center gap-2">
+      {/* Botão Exportar */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm" className="gap-2">
+            <Download className="w-4 h-4" />
+            Exportar
+            {selectedHPAs.size > 0 && (
+              <Badge variant="secondary" className="ml-1">
+                {selectedHPAs.size}
+              </Badge>
+            )}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={exportToCSV}>
+            <FileSpreadsheet className="w-4 h-4 mr-2" />
+            Exportar como CSV
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={exportToMarkdown}>
+            <FileText className="w-4 h-4 mr-2" />
+            Exportar como Markdown
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={exportToPDF}>
+            <FileImage className="w-4 h-4 mr-2" />
+            Exportar como PDF
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      {/* Botão Selecionar */}
+      <Button
+        variant={selectionMode ? "default" : "outline"}
+        size="sm"
+        className="gap-2"
+        onClick={onToggleSelectionMode}
+      >
+        <MousePointerClick className="w-4 h-4" />
+        {selectionMode ? "Cancelar" : "Selecionar"}
+      </Button>
+
+      {/* Botão Limpar Seleção (aparece apenas quando há itens selecionados) */}
+      {selectedHPAs.size > 0 && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="gap-2"
+          onClick={onClearSelection}
+        >
+          <X className="w-4 h-4" />
+          Limpar
         </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem onClick={exportToCSV}>
-          <FileSpreadsheet className="w-4 h-4 mr-2" />
-          Exportar como CSV
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={exportToMarkdown}>
-          <FileText className="w-4 h-4 mr-2" />
-          Exportar como Markdown
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={exportToPDF}>
-          <FileImage className="w-4 h-4 mr-2" />
-          Exportar como PDF
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+      )}
+    </div>
   );
 };

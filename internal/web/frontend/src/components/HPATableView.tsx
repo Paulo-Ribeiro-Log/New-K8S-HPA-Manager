@@ -8,13 +8,23 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { CheckCircle2 } from "lucide-react";
 
 interface HPATableViewProps {
   hpas: HPA[];
   onSelectHPA: (hpa: HPA) => void;
+  selectionMode?: boolean;
+  selectedHPAs?: Set<string>;
+  onToggleSelection?: (hpa: HPA) => void;
 }
 
-export const HPATableView = ({ hpas, onSelectHPA }: HPATableViewProps) => {
+export const HPATableView = ({
+  hpas,
+  onSelectHPA,
+  selectionMode = false,
+  selectedHPAs = new Set(),
+  onToggleSelection,
+}: HPATableViewProps) => {
   // Agrupar HPAs por namespace
   const hpasByNamespace = useMemo(() => {
     const grouped: Record<string, HPA[]> = {};
@@ -67,33 +77,57 @@ export const HPATableView = ({ hpas, onSelectHPA }: HPATableViewProps) => {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {namespaceHPAs.map((hpa) => (
-                  <TableRow
-                    key={`${hpa.cluster}-${hpa.namespace}-${hpa.name}`}
-                    className="cursor-pointer hover:bg-primary/10 transition-colors"
-                    onClick={() => onSelectHPA(hpa)}
-                  >
-                    <TableCell className="font-medium">{hpa.name}</TableCell>
-                    <TableCell className="text-center">
-                      {hpa.image_version ? (
-                        <code className="text-xs bg-muted px-2 py-1 rounded">
-                          {hpa.image_version}
-                        </code>
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-center">{hpa.min_replicas ?? 0}</TableCell>
-                    <TableCell className="text-center">{hpa.max_replicas ?? 1}</TableCell>
-                    <TableCell className="text-center font-semibold">{hpa.current_replicas ?? 0}</TableCell>
-                    <TableCell className="text-center">
-                      {hpa.target_cpu !== null && hpa.target_cpu !== undefined ? `${hpa.target_cpu}%` : "-"}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {hpa.target_memory !== null && hpa.target_memory !== undefined ? `${hpa.target_memory}%` : "-"}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {namespaceHPAs.map((hpa) => {
+                  const hpaKey = `${hpa.cluster}-${hpa.namespace}-${hpa.name}`;
+                  const isSelected = selectedHPAs.has(hpaKey);
+
+                  return (
+                    <TableRow
+                      key={hpaKey}
+                      className={`cursor-pointer transition-all ${
+                        selectionMode
+                          ? isSelected
+                            ? "bg-primary/20 hover:bg-primary/30 border-l-4 border-primary"
+                            : "hover:bg-primary/5"
+                          : "hover:bg-primary/10"
+                      }`}
+                      onClick={() => {
+                        if (selectionMode && onToggleSelection) {
+                          onToggleSelection(hpa);
+                        } else {
+                          onSelectHPA(hpa);
+                        }
+                      }}
+                    >
+                      <TableCell className="font-medium">
+                        <div className="flex items-center gap-2">
+                          {selectionMode && isSelected && (
+                            <CheckCircle2 className="w-4 h-4 text-primary" />
+                          )}
+                          {hpa.name}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {hpa.image_version ? (
+                          <code className="text-xs bg-muted px-2 py-1 rounded">
+                            {hpa.image_version}
+                          </code>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-center">{hpa.min_replicas ?? 0}</TableCell>
+                      <TableCell className="text-center">{hpa.max_replicas ?? 1}</TableCell>
+                      <TableCell className="text-center font-semibold">{hpa.current_replicas ?? 0}</TableCell>
+                      <TableCell className="text-center">
+                        {hpa.target_cpu !== null && hpa.target_cpu !== undefined ? `${hpa.target_cpu}%` : "-"}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {hpa.target_memory !== null && hpa.target_memory !== undefined ? `${hpa.target_memory}%` : "-"}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </div>
