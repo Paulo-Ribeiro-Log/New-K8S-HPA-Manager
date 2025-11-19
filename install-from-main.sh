@@ -206,13 +206,21 @@ compile_binary() {
     # Change to project directory
     cd "$project_dir" || exit 1
 
-    # Get current commit info for versioning
+    # Get version from latest tag or use dev
+    GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
     GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
     BUILD_DATE=$(date -u '+%Y-%m-%d_%H:%M:%S')
-    VERSION="dev-$GIT_BRANCH-$GIT_COMMIT"
 
-    print_info "Versão: $VERSION"
+    # Use tag version if available, otherwise use dev version
+    if [ -n "$GIT_TAG" ]; then
+        VERSION="$GIT_TAG"
+        print_info "Usando versão da tag: $VERSION"
+    else
+        VERSION="dev-$GIT_BRANCH-$GIT_COMMIT"
+        print_info "Tag não encontrada, usando versão dev: $VERSION"
+    fi
+
     print_info "Commit: $GIT_COMMIT"
     print_info "Data: $BUILD_DATE"
 
@@ -220,8 +228,13 @@ compile_binary() {
     print_info "Compilando (isso pode demorar alguns minutos)..."
 
     if go build -o "$CLONE_DIR/$BINARY_NAME" \
+<<<<<<< HEAD
         -ldflags "-X main.Version=$VERSION -X main.BuildDate=$BUILD_DATE -X main.GitCommit=$GIT_COMMIT" \
         . 2>&1 | tee /tmp/compile.log; then
+=======
+        -ldflags "-X k8s-hpa-manager/internal/updater.Version=$VERSION" \
+        ./cmd/k8s-hpa-manager 2>&1 | tee /tmp/compile.log; then
+>>>>>>> 5a09613 (fix(install): corrige injeção de versão no script install-from-main.sh)
 
         print_success "Compilação concluída"
 
