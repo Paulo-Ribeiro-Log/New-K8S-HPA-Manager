@@ -21,10 +21,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 6. [🧪 Testing Strategy](docs/guides/TESTING.md) - Estratégias de teste e validação
 7. [🔧 Troubleshooting](docs/guides/TROUBLESHOOTING.md) - Resolução de problemas comuns
 8. [🚀 Continuing Development](docs/guides/CONTINUING_DEV.md) - Context templates e best practices
+9. [⚡ Async Optimization Plan](docs/guides/ASYNC_OPTIMIZATION_PLAN.md) - Plano de otimização assíncrona da auto descoberta
 
 ### 📚 Histórico e Referências
-9. [📜 Histórico de Correções](docs/history/CHANGELOG.md) - Correções e refatorações principais
-10. [🔍 Análise Cordon/Drain](ANALISE_NODEPOOL_CORDON_DRAIN.md) - Análise detalhada do sistema
+10. [📜 Histórico de Correções](docs/history/CHANGELOG.md) - Correções e refatorações principais
+11. [🔍 Análise Cordon/Drain](ANALISE_NODEPOOL_CORDON_DRAIN.md) - Análise detalhada do sistema
 
 ---
 
