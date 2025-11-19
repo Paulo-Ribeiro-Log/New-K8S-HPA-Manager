@@ -98,6 +98,10 @@ const Index = ({ onLogout }: IndexProps) => {
   // Toggle para mostrar namespaces de sistema (default: false)
   const [showSystemNamespaces, setShowSystemNamespaces] = useState(false);
 
+  // HPA Selection state
+  const [hpaSelectionMode, setHpaSelectionMode] = useState(false);
+  const [selectedHPAsForExport, setSelectedHPAsForExport] = useState<Set<string>>(new Set());
+
   // TabManager para sincronizar estado com abas
   const { updateActiveTabState } = useTabManager();
 
@@ -450,7 +454,19 @@ const Index = ({ onLogout }: IndexProps) => {
             rightPanel={{
               title: "HPA Editor",
               titleAction: !selectedHPA ? (
-                <HPAExportButton hpas={filteredHPAs} />
+                <HPAExportButton
+                  hpas={filteredHPAs}
+                  selectionMode={hpaSelectionMode}
+                  selectedHPAs={selectedHPAsForExport}
+                  onToggleSelectionMode={() => {
+                    setHpaSelectionMode(!hpaSelectionMode);
+                    // Limpar seleção ao sair do modo
+                    if (hpaSelectionMode) {
+                      setSelectedHPAsForExport(new Set());
+                    }
+                  }}
+                  onClearSelection={() => setSelectedHPAsForExport(new Set())}
+                />
               ) : undefined,
               content: selectedHPA ? (
                 <div className="h-full overflow-auto">
@@ -464,6 +480,20 @@ const Index = ({ onLogout }: IndexProps) => {
                   <HPATableView
                     hpas={filteredHPAs}
                     onSelectHPA={(hpa) => setSelectedHPA(hpa)}
+                    selectionMode={hpaSelectionMode}
+                    selectedHPAs={selectedHPAsForExport}
+                    onToggleSelection={(hpa) => {
+                      const hpaKey = `${hpa.cluster}-${hpa.namespace}-${hpa.name}`;
+                      const newSet = new Set(selectedHPAsForExport);
+
+                      if (newSet.has(hpaKey)) {
+                        newSet.delete(hpaKey);
+                      } else {
+                        newSet.add(hpaKey);
+                      }
+
+                      setSelectedHPAsForExport(newSet);
+                    }}
                   />
                 </div>
               ),
