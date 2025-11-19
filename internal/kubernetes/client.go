@@ -2269,6 +2269,29 @@ func (c *Client) evictPod(ctx context.Context, pod *corev1.Pod, opts *models.Dra
 	return c.clientset.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, deleteOptions)
 }
 
+// CountPodsOnNode conta quantos pods estão rodando em um node específico
+func (c *Client) CountPodsOnNode(ctx context.Context, nodeName string) (int, error) {
+	// Listar todos os pods no node
+	fieldSelector := fmt.Sprintf("spec.nodeName=%s", nodeName)
+	pods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: fieldSelector,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
+	}
+
+	// Filtrar pods que não devem ser contados (completed, failed, etc)
+	count := 0
+	for _, pod := range pods.Items {
+		// Contar apenas pods em Running ou Pending
+		if pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == corev1.PodPending {
+			count++
+		}
+	}
+
+	return count, nil
+}
+
 // waitForPodsDeleted aguarda pods serem deletados
 func (c *Client) waitForPodsDeleted(ctx context.Context, pods []corev1.Pod, opts *models.DrainOptions) error {
 	timeout, err := parseDuration(opts.Timeout)

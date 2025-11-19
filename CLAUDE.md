@@ -82,6 +82,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Linhas de referência confiáveis no gráfico de réplicas** - Min/Max passam a considerar o snapshot válido mais recente, evitando referência 0/0 causada por dados antigos - Nov 2025
 - ✅ **Select compacto na aba Monitoramento** - Quando a sidebar está recolhida, o nome do HPA vira um select com todos os recursos monitorados para troca rápida sem reabrir o painel - Nov 2025
 - ✅ **Cordon/Drain Config para Node Pools** - Sistema completo de evacuação de nodes antes de aplicar mudanças, com modal de configuração (grace period, timeout, force delete, etc.) integrado ao fluxo de Sequential Execution - 15 nov 2025
+- ✅ **Progress Bar em Tempo Real via SSE** - Sistema completo de feedback visual durante operações Cordon/Drain usando Server-Sent Events; progress bar com gradiente de cores por fase (Azul: CORDON 0-20%, Laranja: DRAIN 20-80%, Roxo: AZURE 80-95%, Verde: COMPLETE 100%); ícones animados; detalhes em tempo real (node name, pods count, timestamps) - 18 nov 2025
 - ✅ **Destaque visual sutil em cards de métricas** - Background azul escuro (blue-950/30) com borda (blue-800/40) em cards de CPU e latência P95/P99 para melhor diferenciação visual do fundo dos gráficos - 16 nov 2025
 
 **Sistema de Monitoramento V2 (Novembro 2025):**
@@ -1181,6 +1182,169 @@ k8s-hpa-manager autodiscover  # Auto-descobre clusters
 ---
 
 ## 📜 Histórico de Correções (Principais)
+
+### Sistema de Progress Bar em Tempo Real via SSE (Novembro 2025) ✅
+
+**Data:** 18 de novembro de 2025
+
+**Motivação:** Operações de Cordon/Drain em Node Pools podem levar 5-7 minutos e não forneciam feedback visual em tempo real, deixando o usuário sem saber o status da operação.
+
+**Problema anterior:**
+- Operações Cordon/Drain eram síncronas sem feedback intermediário
+- Usuário não sabia se operação estava em andamento ou travada
+- Impossível saber quantos nodes já foram processados
+- Sem informação sobre quantidade de pods evacuados
+- Timeout de operação causava confusão (success ou failure?)
+
+**Solução implementada: Server-Sent Events (SSE)**
+
+**Arquitetura SSE:**
+1. **Backend Go** - Streaming de eventos de progresso via HTTP
+2. **Frontend React** - Hook `useSSE` para receber eventos em tempo real
+3. **Progress Bar Visual** - Componente `CordonDrainProgress` com gradiente de cores
+4. **Thread-safe** - Mutex para múltiplos clientes SSE simultâneos
+
+**Componentes criados:**
+
+| Arquivo | Linhas | Descrição |
+|---------|--------|-----------|
+| `internal/web/sse/progress.go` | 367 | ProgressEvent, Client, ProgressTracker, ProgressReporter |
+| `internal/web/handlers/sse.go` | 107 | HandleProgressStream, HandleProgressStatus |
+| `internal/web/frontend/src/hooks/useSSE.ts` | 195 | Hook React para conexão SSE |
+| `internal/web/frontend/src/components/CordonDrainProgress.tsx` | 128 | Componente visual de progress bar |
+| **TOTAL CRIADO** | **~797 linhas** | **Sistema completo SSE** |
+
+**Componentes modificados:**
+
+| Arquivo | Modificação |
+|---------|-------------|
+| `internal/web/handlers/nodepools.go` | Integração ProgressReporter em Cordon/Drain (+120 linhas) |
+| `internal/kubernetes/client.go` | Nova função `CountPodsOnNode()` (+21 linhas) |
+| `internal/web/server.go` | Rotas SSE sem auth (+2 linhas) |
+
+**Fluxo de progresso implementado:**
+
+```
+CORDON: 0% → 20%
+├─ SendCordonStarted(totalNodes)
+├─ Para cada node:
+│  └─ SendCordonProgress(nodeName, current, total)
+└─ SendCordonCompleted(totalNodes)
+
+DRAIN: 20% → 80%
+├─ SendDrainStarted(totalNodes)
+├─ Para cada node:
+│  ├─ CountPodsOnNode() → podsBefore
+│  ├─ DrainNode()
+│  └─ SendDrainProgress(nodeName, current, total, podsBefore)
+└─ SendDrainCompleted(totalNodes, totalPodsEvicted)
+
+AZURE: 80% → 95%
+├─ SendAzureStarted()
+├─ applyNodePoolChanges()
+└─ SendAzureCompleted()
+
+COMPLETE: 100%
+└─ SendComplete()
+```
+
+**Rotas API SSE:**
+```
+GET  /api/v1/nodepools/progress/:operationId        - Stream SSE
+GET  /api/v1/nodepools/progress/:operationId/status - Status da operação
+```
+
+**Estrutura do evento SSE:**
+```typescript
+interface ProgressEvent {
+  id: string;                    // nodepool-cluster-name-timestamp
+  type: 'cordon' | 'drain' | 'azure' | 'complete' | 'error';
+  phase: 'started' | 'in_progress' | 'completed' | 'failed';
+  message: string;               // "DRAIN: 3/5 nodes"
+  progress: number;              // 0.0 - 1.0 (0-100%)
+  details?: string;              // "Node: aks-pool-1 | Pods evacuados: 12"
+  timestamp: string;             // ISO 8601
+  node_name?: string;            // Node sendo processado
+  pods_count?: number;           // Quantidade de pods
+  error?: string;                // Mensagem de erro
+}
+```
+
+**Features do componente CordonDrainProgress:**
+
+✅ **Progress bar com gradiente de cores**:
+- 🔵 Azul: CORDON (0-20%)
+- 🟠 Laranja: DRAIN (20-80%)
+- 🟣 Roxo: AZURE (80-95%)
+- 🟢 Verde: COMPLETE (100%)
+- 🔴 Vermelho: ERROR
+
+✅ **Ícones animados por fase**:
+- 🖥️ Server (CORDON - pulsando)
+- 💾 HardDrive (DRAIN - pulsando)
+- ☁️ Cloud (AZURE - pulsando)
+- ✅ CheckCircle (SUCCESS)
+- ❌ XCircle (ERROR)
+
+✅ **Detalhes em tempo real**:
+- Mensagem descritiva de cada fase
+- Nome do node sendo processado
+- Quantidade de pods evacuados
+- Timestamp de cada evento
+- Progresso percentual (0-100%)
+
+✅ **Thread-safe e resiliente**:
+- Mutex em ProgressTracker (múltiplos clientes)
+- Channel buffering (10 eventos)
+- Auto-cleanup de conexões
+- Reconexão automática via EventSource
+- Tratamento de erros graceful
+
+**Exemplo de uso:**
+```typescript
+import { CordonDrainProgress } from '@/components/CordonDrainProgress';
+
+function NodePoolEditor() {
+  const [operationId, setOperationId] = useState<string | null>(null);
+
+  const handleApply = async () => {
+    const response = await apiClient.updateNodePool(...);
+    setOperationId(response.operationId);
+  };
+
+  return (
+    <div>
+      {operationId && (
+        <CordonDrainProgress
+          operationId={operationId}
+          onComplete={() => toast.success('Concluído!')}
+          onError={(error) => toast.error(error)}
+        />
+      )}
+    </div>
+  );
+}
+```
+
+**Benefícios:**
+- ✅ Feedback visual em tempo real durante operações longas (5-7 min)
+- ✅ Usuário sabe exatamente em qual fase a operação está
+- ✅ Informação detalhada: nodes processados, pods evacuados
+- ✅ Transparência completa: nenhuma operação "escondida"
+- ✅ Debug facilitado: logs com timestamps precisos
+- ✅ UX profissional: igual a ferramentas enterprise
+
+**Arquivos modificados:**
+- `CLAUDE.md` - Documentação atualizada
+- `internal/web/sse/progress.go` (NOVO)
+- `internal/web/handlers/sse.go` (NOVO)
+- `internal/web/handlers/nodepools.go` (integração SSE)
+- `internal/kubernetes/client.go` (CountPodsOnNode)
+- `internal/web/server.go` (rotas SSE)
+- `internal/web/frontend/src/hooks/useSSE.ts` (NOVO)
+- `internal/web/frontend/src/components/CordonDrainProgress.tsx` (NOVO)
+
+---
 
 ### Refatoração Completa: Sistema de Monitoramento V2 sem Port-Forwards (Novembro 2025) ✅
 

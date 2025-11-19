@@ -16,6 +16,7 @@ import (
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
+	"k8s-hpa-manager/internal/web/sse"
 	"k8s-hpa-manager/internal/web/validators"
 )
 
@@ -276,6 +277,11 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 		op.MaxNodeCount = *req.MaxNodeCount
 	}
 
+	// Criar ProgressReporter para enviar eventos SSE
+	var reporter *sse.ProgressReporter
+	operationID := fmt.Sprintf("nodepool-%s-%s-%d", cluster, nodePoolName, time.Now().Unix())
+	reporter = sse.NewProgressReporter(operationID, GetProgressTracker())
+
 	// Se configuração de Cordon/Drain foi fornecida, executar ANTES de aplicar mudanças
 	if req.CordonDrainConfig != nil {
 		cfg := req.CordonDrainConfig
@@ -283,6 +289,7 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 		// Obter client Kubernetes para executar cordon/drain
 		kubeManager, err := config.NewKubeConfigManager("")
 		if err != nil {
+			reporter.SendError("cordon", fmt.Sprintf("Failed to create kube manager: %v", err))
 			c.JSON(500, gin.H{
 				"success": false,
 				"error": gin.H{
@@ -295,6 +302,7 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 
 		clientInterface, err := kubeManager.GetClient(cluster)
 		if err != nil {
+			reporter.SendError("cordon", fmt.Sprintf("Failed to get K8s client: %v", err))
 			c.JSON(500, gin.H{
 				"success": false,
 				"error": gin.H{
@@ -306,10 +314,10 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 		}
 
 		// Type assertion para nosso wrapper Client
-		// Precisamos converter para interface{} primeiro para fazer o type assertion
 		var emptyInterface interface{} = clientInterface
 		k8sClient, ok := emptyInterface.(*kubernetes.Client)
 		if !ok {
+			reporter.SendError("cordon", "Invalid Kubernetes client type")
 			c.JSON(500, gin.H{
 				"success": false,
 				"error": gin.H{
@@ -325,6 +333,7 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 		// Buscar nodes do node pool
 		nodes, err := k8sClient.GetNodesInNodePool(ctx, nodePoolName)
 		if err != nil {
+			reporter.SendError("cordon", fmt.Sprintf("Failed to get nodes: %v", err))
 			c.JSON(500, gin.H{
 				"success": false,
 				"error": gin.H{
@@ -335,10 +344,15 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 			return
 		}
 
+		totalNodes := len(nodes)
+
 		// Fase CORDON
 		if cfg.CordonEnabled {
-			for _, nodeName := range nodes {
+			reporter.SendCordonStarted(totalNodes)
+
+			for i, nodeName := range nodes {
 				if err := k8sClient.CordonNode(ctx, nodeName); err != nil {
+					reporter.SendError("cordon", fmt.Sprintf("Failed to cordon node %s: %v", nodeName, err))
 					c.JSON(500, gin.H{
 						"success": false,
 						"error": gin.H{
@@ -348,11 +362,16 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 					})
 					return
 				}
+				reporter.SendCordonProgress(nodeName, i+1, totalNodes)
 			}
+
+			reporter.SendCordonCompleted(totalNodes)
 		}
 
 		// Fase DRAIN
 		if cfg.DrainEnabled {
+			reporter.SendDrainStarted(totalNodes)
+
 			drainOpts := &models.DrainOptions{
 				GracePeriod:        cfg.GracePeriod,
 				Timeout:            fmt.Sprintf("%ds", cfg.Timeout),
@@ -362,8 +381,13 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 				ChunkSize:          cfg.ChunkSize,
 			}
 
-			for _, nodeName := range nodes {
+			totalPodsEvicted := 0
+			for i, nodeName := range nodes {
+				// Contar pods antes do drain
+				podsBefore, _ := k8sClient.CountPodsOnNode(ctx, nodeName)
+
 				if err := k8sClient.DrainNode(ctx, nodeName, drainOpts); err != nil {
+					reporter.SendError("drain", fmt.Sprintf("Failed to drain node %s: %v", nodeName, err))
 					c.JSON(500, gin.H{
 						"success": false,
 						"error": gin.H{
@@ -373,12 +397,30 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 					})
 					return
 				}
+
+				// Atualizar total de pods evacuados
+				totalPodsEvicted += podsBefore
+
+				reporter.SendDrainProgress(nodeName, i+1, totalNodes, podsBefore)
 			}
+
+			reporter.SendDrainCompleted(totalNodes, totalPodsEvicted)
 		}
+
+		// Enviar evento de início da operação Azure
+		reporter.SendAzureStarted()
 	}
 
 	// Aplicar mudanças via Azure CLI (reutiliza função de sequential)
+	// Enviar evento Azure Started se não foi enviado durante Cordon/Drain
+	if req.CordonDrainConfig == nil {
+		reporter.SendAzureStarted()
+	}
+
 	if err := applyNodePoolChanges(clusterNameForAzure, resourceGroup, op); err != nil {
+		if reporter != nil {
+			reporter.SendError("azure", fmt.Sprintf("Failed to update node pool: %v", err))
+		}
 		c.JSON(500, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -389,9 +431,16 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 		return
 	}
 
+	if reporter != nil {
+		reporter.SendAzureCompleted()
+	}
+
 	// Recarregar node pools para retornar o estado atualizado
 	nodePools, err := loadNodePoolsFromAzure(clusterNameForAzure, clusterConfig.ResourceGroup)
 	if err != nil {
+		if reporter != nil {
+			reporter.SendError("azure", fmt.Sprintf("Failed to reload node pools: %v", err))
+		}
 		c.JSON(500, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -412,6 +461,9 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 	}
 
 	if updatedPool == nil {
+		if reporter != nil {
+			reporter.SendError("azure", "Node pool not found after update")
+		}
 		c.JSON(404, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -420,6 +472,11 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 			},
 		})
 		return
+	}
+
+	// Enviar evento de conclusão se houve reporter
+	if reporter != nil {
+		reporter.SendComplete()
 	}
 
 	c.JSON(200, gin.H{
