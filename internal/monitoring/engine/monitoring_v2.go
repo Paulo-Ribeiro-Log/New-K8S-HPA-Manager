@@ -15,34 +15,34 @@ import (
 
 // HPAMetrics representa métricas de um HPA
 type HPAMetrics struct {
-	Cluster          string
-	Namespace        string
-	Name             string
-	Timestamp        time.Time
-	CurrentReplicas  float64
-	MinReplicas      int
-	MaxReplicas      int
-	DesiredReplicas  int
-	CPUCurrent       float64
-	CPUTarget        float64
-	CPURequest       string  // Formatado como string (ex: "2500m")
-	CPULimit         string  // Formatado como string (ex: "5000m")
-	MemoryCurrent    float64
-	MemoryTarget     float64
-	MemoryRequest    string  // Formatado como string (ex: "2684354560")
-	MemoryLimit      string  // Formatado como string (ex: "5368709120")
+	Cluster         string
+	Namespace       string
+	Name            string
+	Timestamp       time.Time
+	CurrentReplicas float64
+	MinReplicas     int
+	MaxReplicas     int
+	DesiredReplicas int
+	CPUCurrent      float64
+	CPUTarget       float64
+	CPURequest      string // Formatado como string (ex: "2500m")
+	CPULimit        string // Formatado como string (ex: "5000m")
+	MemoryCurrent   float64
+	MemoryTarget    float64
+	MemoryRequest   string // Formatado como string (ex: "2684354560")
+	MemoryLimit     string // Formatado como string (ex: "5368709120")
 }
 
 // MonitoringEngineV2 nova engine de monitoramento sem port-forwards
 type MonitoringEngineV2 struct {
-	cache         *cache.MemoryCache
-	clients       map[string]*client.PrometheusClient
-	clientsMutex  sync.RWMutex
-	running       bool
-	runningMutex  sync.RWMutex
-	stopCh        chan struct{}
-	ctx           context.Context
-	cancel        context.CancelFunc
+	cache        *cache.MemoryCache
+	clients      map[string]*client.PrometheusClient
+	clientsMutex sync.RWMutex
+	running      bool
+	runningMutex sync.RWMutex
+	stopCh       chan struct{}
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 // NewMonitoringEngineV2 cria nova engine de monitoramento
@@ -50,15 +50,15 @@ func NewMonitoringEngineV2() *MonitoringEngineV2 {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	engine := &MonitoringEngineV2{
-		cache:    cache.NewMemoryCache(1 * time.Hour), // TTL de 1 hora
-		clients:  make(map[string]*client.PrometheusClient),
-		running:  false,
-		stopCh:   make(chan struct{}),
-		ctx:      ctx,
-		cancel:   cancel,
+		cache:   cache.NewMemoryCache(30 * time.Second), // TTL de 30 segundos
+		clients: make(map[string]*client.PrometheusClient),
+		running: false,
+		stopCh:  make(chan struct{}),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 
-	log.Info().Msg("MonitoringEngineV2 criada")
+	log.Info().Msg("MonitoringEngineV2 criada com cache de 30 segundos")
 
 	return engine
 }
@@ -149,17 +149,24 @@ func (e *MonitoringEngineV2) getOrCreateClient(cluster string) (*client.Promethe
 	return newClient, nil
 }
 
-// GetHPAMetrics busca métricas de um HPA (com cache)
+// GetHPAMetrics busca métricas de um HPA (com cache de 30s)
 func (e *MonitoringEngineV2) GetHPAMetrics(cluster, namespace, hpaName string) (*HPAMetrics, error) {
-	cacheKey := fmt.Sprintf("hpa:%s:%s:%s", cluster, namespace, hpaName)
+	log.Info().
+		Str("cluster", cluster).
+		Str("namespace", namespace).
+		Str("hpa", hpaName).
+		Msg("Buscando snapshot atual do HPA")
 
-	// Tentar buscar do cache
-	if cached, exists := e.cache.Get(cacheKey); exists {
-		log.Debug().Str("key", cacheKey).Msg("Métricas do cache (HPA)")
+	// Tentar buscar do cache primeiro
+	cacheKey := fmt.Sprintf("hpa_metrics:%s:%s:%s", cluster, namespace, hpaName)
+	if cached, found := e.cache.Get(cacheKey); found {
+		log.Debug().Msg("Returning cached metrics")
 		return cached.(*HPAMetrics), nil
 	}
 
-	// Cache miss - buscar do Prometheus
+	log.Debug().Msg("Cache miss, fetching from Prometheus")
+
+	// Buscar do Prometheus
 	promClient, err := e.getOrCreateClient(cluster)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao obter cliente: %w", err)
@@ -219,39 +226,46 @@ func (e *MonitoringEngineV2) GetHPAMetrics(cluster, namespace, hpaName string) (
 		snapshot.MemoryLimit = memLimit // Mantém como string
 	}
 
-	// Adicionar ao cache
+	// Armazenar no cache
 	e.cache.Set(cacheKey, snapshot)
-
 	log.Info().
 		Str("cluster", cluster).
 		Str("namespace", namespace).
 		Str("hpa", hpaName).
-		Msg("Métricas HPA coletadas")
+		Float64("cpu", snapshot.CPUCurrent).
+		Float64("memory", snapshot.MemoryCurrent).
+		Str("cache_key", cacheKey).
+		Msg("Métricas HPA coletadas do Prometheus e armazenadas em cache")
 
 	return snapshot, nil
 }
 
-// GetHPAHistoricalMetrics busca métricas históricas de um HPA
+// GetHPAHistoricalMetrics busca métricas históricas de um HPA (com cache de 30s)
 func (e *MonitoringEngineV2) GetHPAHistoricalMetrics(cluster, namespace, hpaName string, duration time.Duration, step time.Duration) (map[string]interface{}, error) {
-	cacheKey := fmt.Sprintf("hpa_hist:%s:%s:%s:%s:%s", cluster, namespace, hpaName, duration, step)
+	log.Info().
+		Str("cluster", cluster).
+		Str("namespace", namespace).
+		Str("hpa", hpaName).
+		Dur("duration", duration).
+		Msg("Buscando métricas históricas do HPA")
 
-	// Usar GetOrSet do cache para evitar múltiplas queries simultâneas
-	result, err := e.cache.GetOrSet(cacheKey, func() (interface{}, error) {
-		promClient, err := e.getOrCreateClient(cluster)
-		if err != nil {
-			return nil, fmt.Errorf("erro ao obter cliente: %w", err)
-		}
+	// Tentar buscar do cache primeiro
+	cacheKey := fmt.Sprintf("hpa_historical:%s:%s:%s:%s", cluster, namespace, hpaName, duration)
+	if cached, found := e.cache.Get(cacheKey); found {
+		log.Debug().Msg("Returning cached historical metrics")
+		return cached.(map[string]interface{}), nil
+	}
 
-		historical, err := promClient.GetHPAHistoricalMetrics(e.ctx, namespace, hpaName, duration, step)
-		if err != nil {
-			return nil, fmt.Errorf("erro ao buscar histórico: %w", err)
-		}
+	log.Debug().Msg("Cache miss, fetching from Prometheus")
 
-		return historical, nil
-	})
-
+	promClient, err := e.getOrCreateClient(cluster)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("erro ao obter cliente: %w", err)
+	}
+
+	historicalData, err := promClient.GetHPAHistoricalMetrics(e.ctx, namespace, hpaName, duration, step)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao buscar histórico: %w", err)
 	}
 
 	log.Info().
@@ -259,19 +273,18 @@ func (e *MonitoringEngineV2) GetHPAHistoricalMetrics(cluster, namespace, hpaName
 		Str("namespace", namespace).
 		Str("hpa", hpaName).
 		Dur("duration", duration).
-		Msg("Métricas históricas coletadas")
-
-	// Type assertion correta para map[string]*client.QueryRangeResult
-	historicalData, ok := result.(map[string]*client.QueryRangeResult)
-	if !ok {
-		return nil, fmt.Errorf("tipo inesperado no cache: %T", result)
-	}
+		Int("metrics_count", len(historicalData)).
+		Msg("Métricas históricas coletadas do Prometheus")
 
 	// Converter para map[string]interface{} para retornar
 	converted := make(map[string]interface{})
 	for key, value := range historicalData {
 		converted[key] = value
 	}
+
+	// Armazenar no cache
+	e.cache.Set(cacheKey, converted)
+	log.Debug().Str("cache_key", cacheKey).Msg("Historical metrics cached successfully")
 
 	return converted, nil
 }

@@ -5,6 +5,10 @@
 *.so
 *.dylib
 
+# Binários principais (gerados no build)
+k8s-hpa-manager
+web-server
+
 # Build directory
 build/
 dist/
@@ -43,6 +47,12 @@ Thumbs.db
 *.swo
 *~
 apoio.txt
+debug.txt
+diagnostico.sh
+ler-banco.py
+*.png
+*.jpg
+*.jpeg
 
 # Environment variables e secrets (NUNCA commitar!)
 .env
@@ -56,6 +66,10 @@ secrets.sh
 
 # Scripts de deploy/manutenção (não versionar)
 safe-deploy.sh
+
+# Backups
+backups/
+backup_info.txt
 
 # Session data (opcional - remova se quiser versionar sessões)
 # .k8s-hpa-manager/

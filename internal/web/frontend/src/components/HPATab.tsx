@@ -9,6 +9,7 @@ import {
 import { SplitView } from "@/components/SplitView";
 import { HPAListItem } from "@/components/HPAListItem";
 import { HPAEditor } from "@/components/HPAEditor";
+import { HPATableView } from "@/components/HPATableView";
 import { useClusters, useNamespaces, useHPAs } from "@/hooks/useAPI";
 import type { HPA } from "@/lib/api/types";
 import { useStaging } from "@/contexts/StagingContext";
@@ -29,7 +30,8 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
   // API hooks - só executam quando cluster está selecionado
   const { clusters } = useClusters();
   const { namespaces } = useNamespaces(selectedCluster);
-  const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, selectedNamespace);
+  // Buscar TODOS os HPAs do cluster (sem filtro de namespace)
+  const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, undefined, false);
 
   // Auto-select first cluster
   useEffect(() => {
@@ -147,7 +149,7 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
           }}
           rightPanel={{
             title: "HPA Editor",
-            content: (
+            content: selectedHPA ? (
               <HPAEditor
                 hpa={selectedHPA}
                 onApply={handleApplySingle}
@@ -156,6 +158,13 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
                   onHPAModified?.();
                 }}
               />
+            ) : (
+              <div className="p-4 overflow-auto">
+                <HPATableView
+                  hpas={hpas}
+                  onSelectHPA={(hpa) => setSelectedHPA(hpa)}
+                />
+              </div>
             ),
           }}
         />

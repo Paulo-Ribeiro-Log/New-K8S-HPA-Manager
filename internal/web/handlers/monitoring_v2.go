@@ -105,13 +105,23 @@ func (h *MonitoringHandlerV2) GetMetrics(c *gin.Context) {
 			Str("cluster", normalizedCluster).
 			Str("namespace", namespace).
 			Str("hpa", hpaName).
+			Str("error_type", fmt.Sprintf("%T", err)).
 			Msg("Erro ao buscar métricas históricas do Prometheus")
 
 		c.JSON(500, gin.H{
-			"error": fmt.Sprintf("Failed to fetch metrics from Prometheus: %v", err),
+			"error":   fmt.Sprintf("Failed to fetch metrics from Prometheus: %v", err),
+			"cluster": normalizedCluster,
+			"details": err.Error(),
 		})
 		return
 	}
+
+	log.Info().
+		Str("cluster", normalizedCluster).
+		Str("namespace", namespace).
+		Str("hpa", hpaName).
+		Int("data_points", len(historicalData)).
+		Msg("Métricas históricas obtidas com sucesso")
 
 	// Buscar targets do HPA (uma vez, válido para todos os snapshots)
 	var cpuTarget, memoryTarget float64
@@ -160,10 +170,10 @@ func (h *MonitoringHandlerV2) GetStatus(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"running":        running,
-		"status":         status,
-		"mode":           "direct_prometheus", // Nova arquitetura
-		"cache_stats":    cacheStats,
+		"running":         running,
+		"status":          status,
+		"mode":            "direct_prometheus", // Nova arquitetura
+		"cache_stats":     cacheStats,
 		"port_forwarding": false, // V2 não usa port-forwards
 	})
 }
@@ -434,20 +444,23 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 		replicas := 0
 		fmt.Sscanf(replicasStr, "%d", &replicas)
 
+		// Converter timestamp Unix para ISO8601 string (compatível com JavaScript)
+		timestampISO := time.Unix(timestamp, 0).Format(time.RFC3339)
+
 		snapshot := gin.H{
-			"timestamp":         timestamp,
-			"replicas":          replicas,
-			"replicas_desired":  0,
-			"replicas_min":      0,
-			"replicas_max":      0,
-			"cpu_current":       0.0,
-			"cpu_target":        cpuTarget,
-			"cpu_request":       "",  // String vazia (será preenchida)
-			"cpu_limit":         "",  // String vazia (será preenchida)
-			"memory_current":    0.0,
-			"memory_target":     memoryTarget,
-			"memory_request":    "",  // String vazia (será preenchida)
-			"memory_limit":      "",  // String vazia (será preenchida)
+			"timestamp":        timestampISO, // ISO8601 string (ex: "2025-11-18T18:01:28-03:00")
+			"replicas":         replicas,
+			"replicas_desired": 0,
+			"replicas_min":     0,
+			"replicas_max":     0,
+			"cpu_current":      0.0,
+			"cpu_target":       cpuTarget,
+			"cpu_request":      "", // String vazia (será preenchida)
+			"cpu_limit":        "", // String vazia (será preenchida)
+			"memory_current":   0.0,
+			"memory_target":    memoryTarget,
+			"memory_request":   "", // String vazia (será preenchida)
+			"memory_limit":     "", // String vazia (será preenchida)
 		}
 
 		// Buscar CPU correspondente (timestamp matching com tolerância de ±30s)
@@ -540,7 +553,7 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 				reqTimestamp := int64(reqPair[0].(float64))
 				if abs(reqTimestamp-timestamp) <= 30 {
 					reqStr := reqPair[1].(string)
-					snapshot["cpu_request"] = formatCPU(reqStr)  // Formatar: "0.384" → "384m"
+					snapshot["cpu_request"] = formatCPU(reqStr) // Formatar: "0.384" → "384m"
 					break
 				}
 			}
@@ -552,7 +565,7 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 				limTimestamp := int64(limPair[0].(float64))
 				if abs(limTimestamp-timestamp) <= 30 {
 					limStr := limPair[1].(string)
-					snapshot["cpu_limit"] = formatCPU(limStr)  // Formatar: "0.512" → "512m"
+					snapshot["cpu_limit"] = formatCPU(limStr) // Formatar: "0.512" → "512m"
 					break
 				}
 			}
@@ -564,7 +577,7 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 				reqTimestamp := int64(reqPair[0].(float64))
 				if abs(reqTimestamp-timestamp) <= 30 {
 					reqStr := reqPair[1].(string)
-					snapshot["memory_request"] = formatMemory(reqStr)  // Formatar: "268435456" → "256Mi"
+					snapshot["memory_request"] = formatMemory(reqStr) // Formatar: "268435456" → "256Mi"
 					break
 				}
 			}
@@ -576,7 +589,7 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 				limTimestamp := int64(limPair[0].(float64))
 				if abs(limTimestamp-timestamp) <= 30 {
 					limStr := limPair[1].(string)
-					snapshot["memory_limit"] = formatMemory(limStr)  // Formatar: "402653184" → "384Mi"
+					snapshot["memory_limit"] = formatMemory(limStr) // Formatar: "402653184" → "384Mi"
 					break
 				}
 			}

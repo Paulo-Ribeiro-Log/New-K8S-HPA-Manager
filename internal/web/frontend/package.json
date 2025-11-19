@@ -50,6 +50,8 @@
     "embla-carousel-react": "^8.6.0",
     "input-otp": "^1.4.2",
     "js-yaml": "^4.1.1",
+    "jspdf": "^3.0.3",
+    "jspdf-autotable": "^5.0.2",
     "lucide-react": "^0.462.0",
     "monaco-editor": "^0.52.2",
     "monaco-yaml": "^5.4.0",

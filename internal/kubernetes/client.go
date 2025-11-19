@@ -1848,6 +1848,19 @@ func (c *Client) EnrichHPAWithDeploymentResources(ctx context.Context, hpa *mode
 	if len(deployment.Spec.Template.Spec.Containers) > 0 {
 		container := deployment.Spec.Template.Spec.Containers[0]
 
+		// Extrair versão da imagem (tag ou digest)
+		if container.Image != "" {
+			// Formato: registry/image:tag ou registry/image@sha256:digest
+			image := container.Image
+			if idx := strings.LastIndex(image, ":"); idx != -1 {
+				hpa.ImageVersion = image[idx+1:]
+			} else if idx := strings.LastIndex(image, "@"); idx != -1 {
+				hpa.ImageVersion = image[idx+1:]
+			} else {
+				hpa.ImageVersion = "latest"
+			}
+		}
+
 		// CPU Request (configurado no deployment) - converter para millicores
 		if cpuReq, exists := container.Resources.Requests[corev1.ResourceCPU]; exists {
 			milliValue := cpuReq.MilliValue()
@@ -2256,6 +2269,29 @@ func (c *Client) evictPod(ctx context.Context, pod *corev1.Pod, opts *models.Dra
 	return c.clientset.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, deleteOptions)
 }
 
+// CountPodsOnNode conta quantos pods estão rodando em um node específico
+func (c *Client) CountPodsOnNode(ctx context.Context, nodeName string) (int, error) {
+	// Listar todos os pods no node
+	fieldSelector := fmt.Sprintf("spec.nodeName=%s", nodeName)
+	pods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: fieldSelector,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
+	}
+
+	// Filtrar pods que não devem ser contados (completed, failed, etc)
+	count := 0
+	for _, pod := range pods.Items {
+		// Contar apenas pods em Running ou Pending
+		if pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == corev1.PodPending {
+			count++
+		}
+	}
+
+	return count, nil
+}
+
 // waitForPodsDeleted aguarda pods serem deletados
 func (c *Client) waitForPodsDeleted(ctx context.Context, pods []corev1.Pod, opts *models.DrainOptions) error {
 	timeout, err := parseDuration(opts.Timeout)
@@ -2408,4 +2444,159 @@ func parseDuration(timeout string) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid duration '%s': %w", timeout, err)
 	}
 	return duration, nil
+}
+
+// ===========================
+// PodDisruptionBudget Validation
+// ===========================
+
+// PDBValidationResult contém resultado da validação de PDB
+type PDBValidationResult struct {
+	CanProceed      bool
+	BlockingPDBs    []string
+	TotalPDBs       int
+	PodsProtected   int
+	WarningMessages []string
+}
+
+// ValidatePDBsForNode valida se PDBs permitem drain de um node
+func (c *Client) ValidatePDBsForNode(ctx context.Context, nodeName string) (*PDBValidationResult, error) {
+	result := &PDBValidationResult{
+		CanProceed:      true,
+		BlockingPDBs:    []string{},
+		WarningMessages: []string{},
+	}
+
+	// Listar todos os pods no node
+	pods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
+	}
+
+	// Listar todos os PDBs do cluster
+	pdbs, err := c.clientset.PolicyV1().PodDisruptionBudgets("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list PDBs: %w", err)
+	}
+
+	result.TotalPDBs = len(pdbs.Items)
+
+	// Para cada PDB, verificar se afeta pods no node
+	for _, pdb := range pdbs.Items {
+		affectedPods := c.getPodsAffectedByPDB(&pdb, pods.Items)
+
+		if len(affectedPods) == 0 {
+			continue // PDB não afeta este node
+		}
+
+		result.PodsProtected += len(affectedPods)
+
+		// Verificar se PDB permite disrupção
+		canDisrupt, reason := c.canDisruptPods(&pdb, affectedPods)
+
+		if !canDisrupt {
+			result.CanProceed = false
+			result.BlockingPDBs = append(result.BlockingPDBs, fmt.Sprintf("%s/%s", pdb.Namespace, pdb.Name))
+			result.WarningMessages = append(result.WarningMessages, reason)
+		} else if reason != "" {
+			// PDB permite mas com avisos
+			result.WarningMessages = append(result.WarningMessages, reason)
+		}
+	}
+
+	return result, nil
+}
+
+// getPodsAffectedByPDB retorna pods que são afetados por um PDB
+func (c *Client) getPodsAffectedByPDB(pdb *policyv1.PodDisruptionBudget, allPods []corev1.Pod) []corev1.Pod {
+	if pdb.Spec.Selector == nil {
+		return []corev1.Pod{}
+	}
+
+	affectedPods := []corev1.Pod{}
+
+	for _, pod := range allPods {
+		// Verificar se pod está no mesmo namespace que o PDB
+		if pod.Namespace != pdb.Namespace {
+			continue
+		}
+
+		// Verificar se labels do pod fazem match com selector do PDB
+		if c.podMatchesSelector(&pod, pdb.Spec.Selector) {
+			affectedPods = append(affectedPods, pod)
+		}
+	}
+
+	return affectedPods
+}
+
+// podMatchesSelector verifica se pod faz match com label selector
+func (c *Client) podMatchesSelector(pod *corev1.Pod, selector *metav1.LabelSelector) bool {
+	if selector == nil {
+		return false
+	}
+
+	// Verificar matchLabels
+	for key, value := range selector.MatchLabels {
+		podValue, exists := pod.Labels[key]
+		if !exists || podValue != value {
+			return false
+		}
+	}
+
+	// TODO: Verificar matchExpressions (in, notin, exists, doesnotexist)
+	// Por enquanto, apenas matchLabels
+
+	return true
+}
+
+// canDisruptPods verifica se PDB permite disrupção dos pods
+func (c *Client) canDisruptPods(pdb *policyv1.PodDisruptionBudget, affectedPods []corev1.Pod) (bool, string) {
+	// Contar pods running afetados pelo PDB
+	runningPods := 0
+	for _, pod := range affectedPods {
+		if pod.Status.Phase == corev1.PodRunning {
+			runningPods++
+		}
+	}
+
+	if runningPods == 0 {
+		return true, "" // Nenhum pod running, pode prosseguir
+	}
+
+	// Status do PDB
+	disruptionsAllowed := pdb.Status.DisruptionsAllowed
+	currentHealthy := pdb.Status.CurrentHealthy
+	desiredHealthy := pdb.Status.DesiredHealthy
+
+	// Se DisruptionsAllowed == 0, não pode evict nenhum pod
+	if disruptionsAllowed == 0 {
+		reason := fmt.Sprintf(
+			"PDB %s/%s blocks eviction: DisruptionsAllowed=0 (Current: %d, Desired: %d)",
+			pdb.Namespace, pdb.Name, currentHealthy, desiredHealthy,
+		)
+		return false, reason
+	}
+
+	// Se DisruptionsAllowed > 0 mas menor que número de pods no node
+	if int(disruptionsAllowed) < runningPods {
+		reason := fmt.Sprintf(
+			"PDB %s/%s allows only %d disruptions but node has %d pods (Current: %d, Desired: %d)",
+			pdb.Namespace, pdb.Name, disruptionsAllowed, runningPods, currentHealthy, desiredHealthy,
+		)
+		return false, reason
+	}
+
+	// PDB permite, mas adicionar warning informativo
+	if disruptionsAllowed > 0 {
+		warning := fmt.Sprintf(
+			"PDB %s/%s allows %d disruptions (%d pods on node)",
+			pdb.Namespace, pdb.Name, disruptionsAllowed, runningPods,
+		)
+		return true, warning
+	}
+
+	return true, ""
 }

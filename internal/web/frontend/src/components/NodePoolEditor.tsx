@@ -272,6 +272,31 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
     }
   };
 
+  // Keyboard shortcuts
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          // Ctrl+Shift+S: Apply directly
+          if (hasChanges && !isApplying) {
+            handleApply();
+          }
+        } else {
+          // Ctrl+S: Save to staging
+          if (hasChanges) {
+            handleSave();
+          }
+        }
+      } else if (e.key === 'z') {
+        e.preventDefault();
+        handleReset();
+      }
+    } else if (e.key === 'Escape') {
+      handleReset();
+    }
+  };
+
   if (!nodePool) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted-foreground p-8">
@@ -283,7 +308,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" onKeyDown={handleKeyDown} tabIndex={-1}>
       {/* Header */}
       <div>
         <div className="flex items-center gap-2 mb-2">

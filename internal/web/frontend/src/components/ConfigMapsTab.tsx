@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2 } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -59,8 +59,10 @@ export const ConfigMapsTab = ({
   const [isDiffLoading, setIsDiffLoading] = useState(false);
   const [diffFullScreen, setDiffFullScreen] = useState(false);
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
+  const [editorFullScreen, setEditorFullScreen] = useState(false);
 
-  // Undo/Redo history
+  // Undo/Redo history with persistent cache
+  const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
 
@@ -136,6 +138,12 @@ export const ConfigMapsTab = ({
   }, [configMaps, searchQuery, showSystemNamespaces]);
 
   const handleSelectConfigMap = async (summary: ConfigMapSummary) => {
+    // Salvar histórico atual no cache antes de trocar
+    if (selectedConfigMap && history.length > 0) {
+      const cacheKey = `${selectedConfigMap.namespace}/${selectedConfigMap.name}`;
+      historyCache.current.set(cacheKey, { history: [...history], index: historyIndex });
+    }
+
     setSelectedConfigMap(summary);
     setManifestLoading(true);
     setManifest(null);
@@ -148,13 +156,26 @@ export const ConfigMapsTab = ({
       );
       setManifest(detail);
       const initialYaml = detail.yaml || "";
-      setEditorValue(initialYaml);
       setOriginalYaml(initialYaml);
       setShowLabels(true);
       setViewMode("editor");
-      // Inicializar histórico com valor inicial
-      setHistory([initialYaml]);
-      setHistoryIndex(0);
+      
+      // Restaurar histórico do cache se existir
+      const cacheKey = `${summary.namespace}/${summary.name}`;
+      const cached = historyCache.current.get(cacheKey);
+      if (cached) {
+        setHistory(cached.history);
+        setHistoryIndex(cached.index);
+        // Atualizar editor com valor do histórico atual
+        if (cached.index >= 0 && cached.index < cached.history.length) {
+          setEditorValue(cached.history[cached.index]);
+        }
+      } else {
+        // Inicializar histórico com valor inicial
+        setHistory([initialYaml]);
+        setHistoryIndex(0);
+        setEditorValue(initialYaml);
+      }
     } catch (err) {
       toast.error("Erro ao carregar manifesto", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -164,19 +185,26 @@ export const ConfigMapsTab = ({
     }
   };
 
-  // Atualizar histórico quando o editor muda
+  // Atualizar histórico quando o editor muda (simples, sem adicionar ao histórico automaticamente)
   const handleEditorChange = useCallback((value: string) => {
     setEditorValue(value);
+  }, []);
 
-    // Adicionar ao histórico (remover itens futuros se estamos no meio do histórico)
+  // Adicionar ao histórico manualmente quando necessário
+  const addToHistory = useCallback((value: string) => {
     setHistoryIndex((currentIndex) => {
       setHistory((prev) => {
+        // Remover itens futuros se estamos no meio do histórico
         const newHistory = prev.slice(0, currentIndex + 1);
-        newHistory.push(value);
-        // Limitar histórico a 50 itens
-        if (newHistory.length > 50) {
-          newHistory.shift();
-          return newHistory;
+        
+        // Só adicionar se for diferente do último item
+        if (newHistory.length === 0 || newHistory[newHistory.length - 1] !== value) {
+          newHistory.push(value);
+          // Limitar histórico a 50 itens
+          if (newHistory.length > 50) {
+            newHistory.shift();
+            return newHistory;
+          }
         }
         return newHistory;
       });
@@ -282,6 +310,14 @@ export const ConfigMapsTab = ({
     } finally {
       setIsValidating(false);
     }
+  };
+
+  const handleCancel = () => {
+    // Restaurar o YAML original, descartando alterações
+    setEditorValue(originalYaml);
+    setViewMode("editor");
+    setEditorFullScreen(false);
+    toast.info("Alterações descartadas");
   };
 
   const handleApply = async () => {
@@ -464,51 +500,80 @@ export const ConfigMapsTab = ({
       ? new Date(selectedConfigMap.updatedAt).toLocaleString()
       : "--";
 
-    return (
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-4 text-sm">
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Cluster</p>
-            <p className="font-medium break-all">{selectedConfigMap.cluster}</p>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Namespace</p>
-            <p className="font-medium break-all">{selectedConfigMap.namespace}</p>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">ResourceVersion</p>
-            <p className="font-mono text-xs">{selectedConfigMap.resourceVersion || "--"}</p>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground uppercase">Atualizado</p>
-            <p>{updatedAt}</p>
-          </div>
-        </div>
+    // Keyboard shortcuts for normal editor
+    const handleEditorKeyDown = (e: React.KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+        } else if ((e.key === 'y') || (e.key === 'z' && e.shiftKey)) {
+          e.preventDefault();
+          handleRedo();
+        } else if (e.key === 's') {
+          e.preventDefault();
+          // Ctrl+S: Salvar checkpoint local (não aplica)
+          if (hasChanges) {
+            // Adicionar checkpoint ao histórico
+            addToHistory(editorValue);
+            toast.success("Checkpoint salvo localmente", {
+              description: "Alterações mantidas no histórico local. Use 'Aplicar' para confirmar no cluster.",
+              style: {
+                background: '#dcfce7',
+                border: '1px solid #86efac',
+                color: '#166534',
+              },
+            });
+          }
+        }
+      } else if (e.key === 'Escape') {
+        handleCancel();
+      }
+    };
 
-        {selectedConfigMap.labels && Object.keys(selectedConfigMap.labels).length > 0 && (
-          <div className="text-xs">
-            <button
-              type="button"
-              onClick={() => setShowLabels((prev) => !prev)}
-              className="flex items-center gap-2 text-left text-muted-foreground mb-1"
-            >
-              {showLabels ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-              <span>Labels</span>
-            </button>
-            {showLabels && (
-              <div className="flex flex-wrap gap-2">
-                {Object.entries(selectedConfigMap.labels).map(([key, value]) => (
-                  <span
-                    key={`${key}-${value}`}
-                    className="px-2 py-1 bg-secondary/60 rounded-md font-mono"
-                  >
-                    {key}={value}
-                  </span>
-                ))}
-              </div>
-            )}
+    return (
+      <div className="space-y-3" onKeyDown={handleEditorKeyDown} tabIndex={-1}>
+        <div className="flex items-start gap-4 text-xs border-b border-border/50 pb-2">
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Cluster</span>
+            <span className="font-medium">{selectedConfigMap.cluster}</span>
           </div>
-        )}
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Namespace</span>
+            <span className="font-medium">{selectedConfigMap.namespace}</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">ResourceVersion</span>
+            <span className="font-mono">{selectedConfigMap.resourceVersion || "--"}</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-muted-foreground uppercase mb-0.5">Atualizado</span>
+            <span className="font-medium">{updatedAt}</span>
+          </div>
+          {selectedConfigMap.labels && Object.keys(selectedConfigMap.labels).length > 0 && (
+            <div className="flex flex-col">
+              <button
+                type="button"
+                onClick={() => setShowLabels((prev) => !prev)}
+                className="flex items-center gap-1 text-muted-foreground uppercase mb-0.5 hover:text-foreground"
+              >
+                {showLabels ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                <span>Labels</span>
+              </button>
+              {showLabels && (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {Object.entries(selectedConfigMap.labels).map(([key, value]) => (
+                    <span
+                      key={`${key}-${value}`}
+                      className="px-1.5 py-0.5 bg-secondary/60 rounded text-[10px] font-mono"
+                    >
+                      {key}={value}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         <div className="space-y-3">
           <div className="flex flex-col gap-2">
@@ -563,13 +628,22 @@ export const ConfigMapsTab = ({
                     Diff
                   </button>
                 </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditorFullScreen(true)}
+                  title="Abrir editor em tela cheia"
+                  disabled={!selectedConfigMap}
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                </Button>
               </div>
             </div>
             {viewMode === "editor" && (
               <MonacoYamlEditor
                 value={editorValue}
                 onChange={handleEditorChange}
-                height={360}
+                height={520}
               />
             )}
             {viewMode === "diff" && (
@@ -577,7 +651,7 @@ export const ConfigMapsTab = ({
                 mode="diff"
                 originalValue={originalYaml}
                 value={editorValue}
-                height={360}
+                height={520}
                 readOnly
               />
             )}
@@ -615,6 +689,14 @@ export const ConfigMapsTab = ({
               disabled={!selectedConfigMap || isValidating}
             >
               <CheckCircle2 className="w-4 h-4 mr-2" /> Validar (Dry-run)
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCancel}
+              disabled={!selectedConfigMap || !hasChanges}
+            >
+              <X className="w-4 h-4 mr-2" /> Cancelar
             </Button>
             <Button
               variant="default"
@@ -715,6 +797,169 @@ export const ConfigMapsTab = ({
     );
   };
 
+  const renderEditorFullScreen = () => {
+    if (!selectedConfigMap) return null;
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+        } else if ((e.key === 'y') || (e.key === 'z' && e.shiftKey)) {
+          e.preventDefault();
+          handleRedo();
+        } else if (e.key === 's') {
+          e.preventDefault();
+          // Ctrl+S: Salvar checkpoint local (não aplica)
+          if (hasChanges) {
+            // Adicionar checkpoint ao histórico
+            addToHistory(editorValue);
+            toast.success("Checkpoint salvo localmente", {
+              description: "Alterações mantidas no histórico local. Use 'Aplicar' para confirmar no cluster.",
+              style: {
+                background: '#dcfce7',
+                border: '1px solid #86efac',
+                color: '#166534',
+              },
+            });
+          }
+        }
+      } else if (e.key === 'Escape') {
+        handleCancel();
+      }
+    };
+
+    return (
+      <Dialog open={editorFullScreen} onOpenChange={setEditorFullScreen}>
+        <DialogContent 
+          className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none p-0"
+          onKeyDown={handleKeyDown}
+        >
+          <div className="h-full flex flex-col">
+            <DialogHeader className="border-b border-border px-6 py-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <DialogTitle className="text-xl font-semibold text-primary">
+                    Editor YAML - Tela Cheia
+                  </DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
+                    {selectedConfigMap.namespace}/{selectedConfigMap.name}
+                  </DialogDescription>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={handleUndo}
+                      disabled={!canUndo}
+                      className={`px-2 py-1 text-xs font-medium ${
+                        canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Desfazer (Ctrl+Z)"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRedo}
+                      disabled={!canRedo}
+                      className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                        canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Refazer (Ctrl+Y)"
+                    >
+                      <Redo2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("editor")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      }`}
+                    >
+                      Editor
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("diff")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "diff" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                      disabled={!hasChanges}
+                    >
+                      Diff
+                    </button>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleValidate}
+                    disabled={!selectedConfigMap || isValidating}
+                  >
+                    {isValidating ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4 mr-2" />
+                    )}
+                    Dry-run
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCancel}
+                    title="Descartar alterações e sair (Esc)"
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => {
+                      openApplyConfirm();
+                      setEditorFullScreen(false);
+                    }}
+                    disabled={!selectedConfigMap || isApplying || !hasChanges}
+                  >
+                    <TriangleAlert className="w-4 h-4 mr-2" />
+                    Aplicar
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditorFullScreen(false)}
+                    title="Minimizar tela cheia (Esc)"
+                  >
+                    <Minimize2 className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            </DialogHeader>
+            <div className="flex-1 p-4">
+              {viewMode === "editor" && (
+                <MonacoYamlEditor
+                  value={editorValue}
+                  onChange={handleEditorChange}
+                  height="calc(100vh - 140px)"
+                />
+              )}
+              {viewMode === "diff" && (
+                <MonacoYamlEditor
+                  mode="diff"
+                  originalValue={originalYaml}
+                  value={editorValue}
+                  height="calc(100vh - 140px)"
+                  readOnly
+                />
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
   const renderApplyConfirmDialog = () => {
     if (!selectedConfigMap) return null;
 
@@ -785,6 +1030,7 @@ export const ConfigMapsTab = ({
         </div>
 
         {renderDiffDialog()}
+        {renderEditorFullScreen()}
         {renderApplyConfirmDialog()}
       </>
     );
@@ -806,6 +1052,7 @@ export const ConfigMapsTab = ({
       />
 
       {renderDiffDialog()}
+      {renderEditorFullScreen()}
       {renderApplyConfirmDialog()}
     </>
   );
