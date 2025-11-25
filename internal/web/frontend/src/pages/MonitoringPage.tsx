@@ -251,7 +251,7 @@ export const MonitoringPage = ({ onNavigateToHPA }: MonitoringPageProps) => {
       <div
         className={`
           h-full bg-background border-r border-border transition-all duration-300 ease-in-out
-          ${sidebarOpen ? "w-80" : "w-0"}
+          ${sidebarOpen ? "w-[352px]" : "w-0"}
           overflow-hidden flex flex-col
         `}
       >
@@ -381,7 +381,7 @@ export const MonitoringPage = ({ onNavigateToHPA }: MonitoringPageProps) => {
                     </button>
 
                     {expandedClusters.has(cluster) && (
-                      <div className="px-4 pb-3 space-y-2">
+                      <div className="px-3 pb-3 space-y-2">
                         {hpas.map((hpa) => {
                           const isSelected =
                             selectedHPA?.cluster === hpa.cluster &&
@@ -392,7 +392,7 @@ export const MonitoringPage = ({ onNavigateToHPA }: MonitoringPageProps) => {
                             <Card
                               key={`${hpa.namespace}/${hpa.name}`}
                               className={`
-                                group flex items-center gap-2.5 px-2.5 py-1.5 cursor-pointer transition-all duration-200 border
+                                group flex items-center gap-3 px-3 py-2 cursor-pointer transition-all duration-200 border
                                 ${
                                   isSelected
                                     ? "border-primary bg-primary/10 shadow-sm"
@@ -402,13 +402,13 @@ export const MonitoringPage = ({ onNavigateToHPA }: MonitoringPageProps) => {
                               onClick={() => setSelectedHPA(hpa)}
                             >
                               <Activity
-                                className={`w-3.5 h-3.5 flex-shrink-0 ${
+                                className={`w-4 h-4 flex-shrink-0 ${
                                   isSelected ? "text-primary" : "text-muted-foreground"
                                 }`}
                               />
                               <div className="flex-1 min-w-0">
                                 <div
-                                  className={`text-[11px] font-semibold truncate ${
+                                  className={`text-xs font-semibold truncate ${
                                     isSelected ? "text-primary" : "text-foreground"
                                   }`}
                                 >
