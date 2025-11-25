@@ -31,6 +31,7 @@ import { LogViewer } from "@/components/LogViewer";
 import { HistoryViewer } from "@/components/HistoryViewer";
 import { StagingPanel } from "@/components/StagingPanel";
 import { VPNWarningBanner } from "@/components/VPNWarningBanner";
+import { CriticalAlertsBanner } from "@/components/CriticalAlertsBanner";
 import { CronJobsPage } from "./CronJobsPage";
 import { PrometheusPage } from "./PrometheusPage";
 import { MonitoringPage } from "./MonitoringPage";
@@ -866,6 +867,11 @@ const Index = ({ onLogout }: IndexProps) => {
       {/* Banner de VPN desconectada */}
       {showVPNWarning && (
         <VPNWarningBanner onDismiss={() => setShowVPNWarning(false)} />
+      )}
+
+      {/* Banner de Alertas Críticos */}
+      {selectedCluster && (
+        <CriticalAlertsBanner cluster={selectedCluster} />
       )}
 
       <TabNavigation

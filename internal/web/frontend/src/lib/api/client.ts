@@ -784,6 +784,27 @@ class APIClient {
 
     return data;
   }
+
+  // Alerts - Prometheus Integration
+  async getHPAAlerts(cluster: string): Promise<any> {
+    return this.request(`/alerts/hpa?cluster=${cluster}`);
+  }
+
+  async getHPAAlertsByNamespace(cluster: string, namespace: string): Promise<any> {
+    return this.request(`/alerts/hpa/namespace?cluster=${cluster}&namespace=${namespace}`);
+  }
+
+  async getNodePoolAlerts(cluster: string): Promise<any> {
+    return this.request(`/alerts/nodepool?cluster=${cluster}`);
+  }
+
+  async getAlertSummary(cluster: string): Promise<any> {
+    return this.request(`/alerts/summary?cluster=${cluster}`);
+  }
+
+  async getAllAlerts(cluster: string): Promise<any> {
+    return this.request(`/alerts?cluster=${cluster}`);
+  }
 }
 
 // Singleton instance
