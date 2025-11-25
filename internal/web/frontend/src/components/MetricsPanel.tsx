@@ -16,7 +16,10 @@ import {
   MemoryStick,
   Users,
   Edit,
+  Bell,
 } from "lucide-react";
+import { useHPASpecificAlerts } from "@/hooks/useAlerts";
+import { AlertsDialog } from "@/components/AlertsDialog";
 import {
   LineChart,
   Line,
@@ -99,6 +102,13 @@ export function MetricsPanel({
   const [duration, setDuration] = useState<string>("1h");
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(1); // 1 minuto
   const [latencyView, setLatencyView] = useState<"p95" | "p99">("p95");
+  const [alertsDialogOpen, setAlertsDialogOpen] = useState(false);
+  
+  // Buscar alertas específicos deste HPA
+  const { data: alerts } = useHPASpecificAlerts(cluster, namespace, hpaName);
+  const alertsCount = alerts?.length || 0;
+  const criticalAlertsCount = alerts?.filter(a => a.severity === "critical").length || 0;
+  const hasAlerts = alertsCount > 0;
   const { metrics, loading, error, refetch } = useHPAMetrics(
     cluster,
     namespace,
@@ -717,20 +727,23 @@ export function MetricsPanel({
 
   return (
     <Card className={className}>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div>
-            <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="h-5 w-5" />
-              Análise de Métricas
-            </CardTitle>
-            <CardDescription>
+      <CardHeader className="pb-4">
+        <div className="flex items-start justify-between gap-4">
+          {/* Lado esquerdo: Título compacto com breadcrumb inline */}
+          <div className="min-w-0 flex-shrink">
+            <div className="flex items-center gap-2 mb-1">
+              <BarChart3 className="h-4 w-4 flex-shrink-0 text-primary" />
+              <h3 className="text-base font-semibold leading-none">Análise de Métricas</h3>
+            </div>
+            <p className="text-xs text-muted-foreground truncate">
               {cluster} / {namespace} / {hpaName}
-            </CardDescription>
+            </p>
           </div>
-          <div className="flex items-center gap-2">
+          
+          {/* Lado direito: Controles compactos em linha */}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
             <Select value={duration} onValueChange={setDuration}>
-              <SelectTrigger className="w-28">
+              <SelectTrigger className="h-8 w-24 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -745,11 +758,11 @@ export function MetricsPanel({
               </SelectContent>
             </Select>
             <Select value={autoRefreshInterval.toString()} onValueChange={(v) => setAutoRefreshInterval(parseInt(v))}>
-              <SelectTrigger className="w-32">
+              <SelectTrigger className="h-8 w-28 text-xs">
                 <SelectValue placeholder="Auto-refresh" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="0">Desabilitado</SelectItem>
+                <SelectItem value="0">Off</SelectItem>
                 <SelectItem value="1">1 min</SelectItem>
                 <SelectItem value="5">5 min</SelectItem>
                 <SelectItem value="10">10 min</SelectItem>
@@ -762,19 +775,21 @@ export function MetricsPanel({
               onClick={() => refetch(duration)}
               disabled={loading}
               title="Atualizar métricas"
+              className="h-8 w-8"
             >
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             </Button>
             {onEditHPA && (
               <Button
                 variant="default"
                 size="sm"
                 onClick={onEditHPA}
-                className="gap-2"
+                className="gap-1.5 h-8 text-xs"
                 title="Editar configurações deste HPA"
               >
-                <Edit className="h-4 w-4" />
-                Editar HPA
+                <Edit className="h-3.5 w-3.5" />
+                <span className="hidden xl:inline">Editar HPA</span>
+                <span className="xl:hidden">Editar</span>
               </Button>
             )}
           </div>
@@ -807,10 +822,8 @@ export function MetricsPanel({
 
         {!error && chartData.length > 0 && (
           <div className="space-y-6">
-            {/* CPU Analysis - Largura total */}
-            <div className="space-y-6">
-              {/* Estatísticas - Linha 1: Métricas de uso */}
-              <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+            {/* Estatísticas - Cards de métricas */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
                 <StatCard
                   icon={Activity}
                   label="CPU Atual"
@@ -842,9 +855,59 @@ export function MetricsPanel({
                   percentile={latencyView}
                   onPercentileChange={setLatencyView}
                 />
+                {/* Botão de Alertas */}
+                <div className="px-2.5 py-2 rounded-lg border bg-blue-950/30 border-blue-800/40">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <Bell className="h-3 w-3 flex-shrink-0" />
+                    <span className="text-[11px] font-semibold leading-none">Alertas</span>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Button
+                      variant={hasAlerts ? "destructive" : "outline"}
+                      size="sm"
+                      className={`w-full h-7 text-xs gap-1.5 ${
+                        hasAlerts
+                          ? criticalAlertsCount > 0
+                            ? "bg-red-600 hover:bg-red-700"
+                            : "bg-yellow-600 hover:bg-yellow-700"
+                          : ""
+                      }`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setAlertsDialogOpen(true);
+                      }}
+                    >
+                      {hasAlerts ? (
+                        <>
+                          <AlertCircle className="h-3 w-3" />
+                          <span>{alertsCount} Alerta{alertsCount > 1 ? "s" : ""}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Bell className="h-3 w-3" />
+                          <span>Sem Alertas</span>
+                        </>
+                      )}
+                    </Button>
+                    <div className="text-[10px] text-muted-foreground text-center leading-tight">
+                      {hasAlerts ? (
+                        criticalAlertsCount > 0 ? (
+                          <span className="text-red-400 font-semibold">
+                            {criticalAlertsCount} crítico{criticalAlertsCount > 1 ? "s" : ""}
+                          </span>
+                        ) : (
+                          <span className="text-yellow-400">Clique para detalhes</span>
+                        )
+                      ) : (
+                        <span>Tudo OK ✓</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
 
-
+            {/* Gráficos - Seção separada */}
+            <div className="space-y-6">
               {/* Gráfico de CPU */}
               <div className="border rounded-lg p-4 bg-card">
                 <div className="mb-4 flex items-center justify-between">
@@ -951,14 +1014,11 @@ export function MetricsPanel({
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
-            </div>
 
-            {/* Memory e Replicas lado a lado - Grid 2 colunas */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Memory Analysis */}
-              <div className="space-y-4">
-              {/* Gráfico de Memória */}
-              <div className="border rounded-lg p-4 bg-card">
+              {/* Memory e Replicas lado a lado - Grid 2 colunas */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Memory Analysis */}
+                <div className="border rounded-lg p-4 bg-card">
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="text-sm font-semibold flex items-center gap-2">
                     <MemoryStick className="h-4 w-4" />
@@ -1087,12 +1147,9 @@ export function MetricsPanel({
                   </div>
                 </div>
               </div>
-            </div>
 
-              {/* Replicas Analysis */}
-              <div className="space-y-4">
-              {/* Gráfico de Réplicas */}
-              <div className="border rounded-lg p-4 bg-card">
+                {/* Replicas Analysis */}
+                <div className="border rounded-lg p-4 bg-card">
                 <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
                   <Users className="h-4 w-4" />
                   Réplicas ao longo do tempo
@@ -1178,11 +1235,20 @@ export function MetricsPanel({
                     </div>
                 </div>
               </div>
+              </div>
             </div>
           </div>
-        </div>
         )}
       </CardContent>
+
+      {/* Dialog de Alertas - Renderizado fora do Card para evitar problemas de layout */}
+      <AlertsDialog
+        open={alertsDialogOpen}
+        onOpenChange={setAlertsDialogOpen}
+        cluster={cluster}
+        namespace={namespace}
+        hpaName={hpaName}
+      />
     </Card>
   );
 }

@@ -1,7 +1,7 @@
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { HealthBadge } from "@/components/HealthBadge";
+import { AlertHealthBadge } from "@/components/AlertHealthBadge";
 import { BarChart3 } from "lucide-react";
 
 interface HPAListItemProps {
@@ -77,7 +77,7 @@ export const HPAListItem = ({
           <span>Min: <span className="font-medium text-foreground">{minReplicas}</span></span>
           <span>Max: <span className="font-medium text-foreground">{maxReplicas}</span></span>
         </div>
-        <HealthBadge
+        <AlertHealthBadge
           cluster={cluster}
           namespace={namespace}
           hpaName={name}

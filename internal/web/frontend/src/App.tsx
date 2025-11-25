@@ -7,6 +7,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Index from "./pages/Index";
 import { Login } from "./pages/Login";
 import NotFound from "./pages/NotFound";
+import AlertsPage from "./pages/AlertsPage";
 import { apiClient } from "./lib/api/client";
 import { StagingProvider } from "./contexts/StagingContext";
 import { TabProvider } from "./contexts/TabContext";
@@ -74,6 +75,28 @@ const App = () => {
                 element={
                   isAuthenticated ? (
                     <Index onLogout={handleLogout} />
+                  ) : (
+                    <Navigate to="/login" replace />
+                  )
+                }
+              />
+              {/* Rota para página de alertas de cluster */}
+              <Route
+                path="/alerts/:cluster"
+                element={
+                  isAuthenticated ? (
+                    <AlertsPage />
+                  ) : (
+                    <Navigate to="/login" replace />
+                  )
+                }
+              />
+              {/* Rota para página de alertas específicos de HPA */}
+              <Route
+                path="/alerts/:cluster/:namespace/:hpaName"
+                element={
+                  isAuthenticated ? (
+                    <AlertsPage />
                   ) : (
                     <Navigate to="/login" replace />
                   )

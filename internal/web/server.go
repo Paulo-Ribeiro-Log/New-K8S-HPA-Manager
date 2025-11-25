@@ -332,6 +332,17 @@ func (s *Server) setupRoutes() {
 	validationHandler := handlers.NewValidationHandler()
 	api.GET("/validate", validationHandler.Validate)
 
+	// Alerts (Prometheus Alertmanager Integration)
+	alertsHandler := handlers.NewAlertsHandler()
+	alertsGroup := api.Group("/alerts")
+	{
+		alertsGroup.GET("", alertsHandler.GetAlerts)                           // GET /api/v1/alerts?cluster=X
+		alertsGroup.GET("/summary", alertsHandler.GetAlertsSummary)            // GET /api/v1/alerts/summary?cluster=X
+		alertsGroup.GET("/hpa", alertsHandler.GetHPAAlerts)                    // GET /api/v1/alerts/hpa?cluster=X
+		alertsGroup.GET("/hpa/namespace", alertsHandler.GetHPAAlertsByNamespace) // GET /api/v1/alerts/hpa/namespace?cluster=X&namespace=Y
+		alertsGroup.GET("/nodepool", alertsHandler.GetNodePoolAlerts)          // GET /api/v1/alerts/nodepool?cluster=X
+	}
+
 	// VPN Status Check (sem auth para polling leve)
 	s.router.GET("/api/v1/vpn/status", handlers.CheckVPNConnection)
 
