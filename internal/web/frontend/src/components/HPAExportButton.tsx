@@ -49,24 +49,39 @@ export const HPAExportButton = ({
     });
   }, [hpas, selectedHPAs]);
 
-  // Agrupar HPAs por namespace (mesma lógica do HPATableView)
-  const hpasByNamespace = useMemo(() => {
-    const grouped: Record<string, HPA[]> = {};
+  // Agrupar HPAs por cluster e depois por namespace
+  const hpasByClusterAndNamespace = useMemo(() => {
+    const grouped: Record<string, Record<string, HPA[]>> = {};
 
     hpasToExport.forEach((hpa) => {
-      if (!grouped[hpa.namespace]) {
-        grouped[hpa.namespace] = [];
+      const cluster = hpa.cluster || "unknown";
+      const namespace = hpa.namespace;
+
+      if (!grouped[cluster]) {
+        grouped[cluster] = {};
       }
-      grouped[hpa.namespace].push(hpa);
+      if (!grouped[cluster][namespace]) {
+        grouped[cluster][namespace] = [];
+      }
+      grouped[cluster][namespace].push(hpa);
     });
 
+    // Converter para array ordenado
     return Object.keys(grouped)
       .sort()
-      .map((namespace) => ({
-        namespace,
-        hpas: grouped[namespace].sort((a, b) => a.name.localeCompare(b.name)),
-      }));
+      .flatMap((cluster) =>
+        Object.keys(grouped[cluster])
+          .sort()
+          .map((namespace) => ({
+            cluster,
+            namespace,
+            hpas: grouped[cluster][namespace].sort((a, b) => a.name.localeCompare(b.name)),
+          }))
+      );
   }, [hpasToExport]);
+
+  // Manter compatibilidade com código antigo (alias)
+  const hpasByNamespace = hpasByClusterAndNamespace;
 
   const exportToCSV = () => {
     if (hpasToExport.length === 0) {
@@ -75,10 +90,11 @@ export const HPAExportButton = ({
     }
 
     let csvContent = "";
+    csvContent += `Data de exportação: ${new Date().toLocaleString("pt-BR")}\n`;
 
-    hpasByNamespace.forEach(({ namespace, hpas: namespaceHPAs }) => {
-      // Cabeçalho do namespace
-      csvContent += `\nNamespace: ${namespace}\n`;
+    hpasByNamespace.forEach(({ cluster, namespace, hpas: namespaceHPAs }) => {
+      // Cabeçalho com cluster e namespace
+      csvContent += `\nCluster: ${cluster} | Namespace: ${namespace}\n`;
 
       // Cabeçalho da tabela
       csvContent += "Nome do HPA,Versão,Min Replicas,Max Replicas,Replicas,CPU Target (%),Memory Target (%)\n";
@@ -122,8 +138,8 @@ export const HPAExportButton = ({
     mdContent += `**Namespaces:** ${hpasByNamespace.length}\n\n`;
     mdContent += "---\n\n";
 
-    hpasByNamespace.forEach(({ namespace, hpas: namespaceHPAs }) => {
-      mdContent += `## Namespace: ${namespace}\n\n`;
+    hpasByNamespace.forEach(({ cluster, namespace, hpas: namespaceHPAs }) => {
+      mdContent += `## Cluster: ${cluster} | Namespace: ${namespace}\n\n`;
 
       // Tabela em Markdown
       mdContent += "| Nome do HPA | Versão | Min Replicas | Max Replicas | Replicas | CPU Target (%) | Memory Target (%) |\n";
@@ -172,17 +188,17 @@ export const HPAExportButton = ({
 
     let yPosition = 50;
 
-    hpasByNamespace.forEach(({ namespace, hpas: namespaceHPAs }, index) => {
+    hpasByNamespace.forEach(({ cluster, namespace, hpas: namespaceHPAs }, index) => {
       // Adicionar nova página se necessário
       if (yPosition > 250) {
         doc.addPage();
         yPosition = 20;
       }
 
-      // Namespace header
+      // Namespace + Cluster header
       doc.setFontSize(12);
       doc.setFont("helvetica", "bold");
-      doc.text(`Namespace: ${namespace}`, 14, yPosition);
+      doc.text(`Cluster: ${cluster} | Namespace: ${namespace}`, 14, yPosition);
       yPosition += 8;
 
       // Tabela
