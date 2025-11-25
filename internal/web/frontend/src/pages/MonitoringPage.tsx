@@ -25,10 +25,10 @@ interface MonitoredHPA {
 }
 
 interface MonitoringPageProps {
-  // HPAs serão gerenciados via localStorage
+  onNavigateToHPA?: (cluster: string, namespace: string, hpaName: string) => void;
 }
 
-export const MonitoringPage = ({}: MonitoringPageProps) => {
+export const MonitoringPage = ({ onNavigateToHPA }: MonitoringPageProps) => {
   const [monitoredHPAs, setMonitoredHPAs] = useState<MonitoredHPA[]>([]);
   const [selectedHPA, setSelectedHPA] = useState<MonitoredHPA | null>(null);
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
@@ -505,6 +505,11 @@ export const MonitoringPage = ({}: MonitoringPageProps) => {
                 cluster={selectedHPA.cluster}
                 namespace={selectedHPA.namespace}
                 hpaName={selectedHPA.name}
+                onEditHPA={
+                  onNavigateToHPA
+                    ? () => onNavigateToHPA(selectedHPA.cluster, selectedHPA.namespace, selectedHPA.name)
+                    : undefined
+                }
               />
             </div>
           ) : (

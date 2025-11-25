@@ -96,6 +96,8 @@ k8s-hpa-manager/
 ✅ **Monitoring V2** - Sistema sem port-forwards, acesso direto Prometheus
 ✅ **Auto-Updates** - Sistema automático de detecção e instalação
 ✅ **Autodiscover Otimizado** - Busca paralela de subscriptions (10x mais rápido)
+✅ **Navegação Inteligente** - Navegação direta de Monitoramento → HPA Editor com 1 clique
+✅ **Métricas Corrigidas** - CPU/Memória agora calculam média correta (0-100%)
 
 ---
 
@@ -104,14 +106,16 @@ k8s-hpa-manager/
 **Context Template Rápido:**
 ```
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
-Versão: v1.0.10 (Nov 2025)
+Versão: v1.0.11 (Nov 2025)
 Tech: Go 1.23 + Bubble Tea (TUI) + React 18.3 (Web)
 Build: make build && make web-build
 Binary: ./build/k8s-hpa-manager
 
 Recent Updates:
+- Navegação inteligente: Monitoramento → HPA Editor com 1 clique (cluster/namespace/HPA automático)
+- Ícones de monitoramento atualizam instantaneamente ao adicionar HPA
+- Métricas Prometheus corrigidas: CPU/Memória agora usam avg() ao invés de sum() (0-100%)
 - Autodiscover otimizado com busca paralela de subscriptions (10x mais rápido)
-- Script de instalação a partir da branch main (para desenvolvimento)
 ```
 
 **Ver documentação completa:**
