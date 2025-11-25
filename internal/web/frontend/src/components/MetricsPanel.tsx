@@ -15,6 +15,7 @@ import {
   Cpu,
   MemoryStick,
   Users,
+  Edit,
 } from "lucide-react";
 import {
   LineChart,
@@ -40,6 +41,7 @@ interface MetricsPanelProps {
   namespace: string;
   hpaName: string;
   className?: string;
+  onEditHPA?: () => void;
 }
 
 interface MetricStats {
@@ -92,6 +94,7 @@ export function MetricsPanel({
   namespace,
   hpaName,
   className = "",
+  onEditHPA,
 }: MetricsPanelProps) {
   const [duration, setDuration] = useState<string>("1h");
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(1); // 1 minuto
@@ -758,9 +761,22 @@ export function MetricsPanel({
               size="icon"
               onClick={() => refetch(duration)}
               disabled={loading}
+              title="Atualizar métricas"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </Button>
+            {onEditHPA && (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={onEditHPA}
+                className="gap-2"
+                title="Editar configurações deste HPA"
+              >
+                <Edit className="h-4 w-4" />
+                Editar HPA
+              </Button>
+            )}
           </div>
         </div>
       </CardHeader>

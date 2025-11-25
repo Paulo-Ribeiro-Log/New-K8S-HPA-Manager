@@ -102,6 +102,16 @@ const Index = ({ onLogout }: IndexProps) => {
   const [hpaSelectionMode, setHpaSelectionMode] = useState(false);
   const [selectedHPAsForExport, setSelectedHPAsForExport] = useState<Set<string>>(new Set());
 
+  // Estado para forçar re-renderização quando HPAs monitorados mudam
+  const [monitoringRefreshKey, setMonitoringRefreshKey] = useState(0);
+
+  // Estado para navegação pendente de HPA (usado quando vindo do Monitoramento)
+  const [pendingHPANavigation, setPendingHPANavigation] = useState<{
+    cluster: string;
+    namespace: string;
+    hpaName: string;
+  } | null>(null);
+
   // TabManager para sincronizar estado com abas
   const { updateActiveTabState } = useTabManager();
 
@@ -189,10 +199,70 @@ const Index = ({ onLogout }: IndexProps) => {
     }
   };
 
-  // Reset namespace when cluster changes
+  // Reset namespace when cluster changes (exceto quando há navegação pendente)
   useEffect(() => {
-    setSelectedNamespace("");
-  }, [selectedCluster]);
+    if (!pendingHPANavigation) {
+      setSelectedNamespace("");
+    }
+  }, [selectedCluster, pendingHPANavigation]);
+
+  // 🔧 useEffect para processar navegação pendente de HPA
+  useEffect(() => {
+    // Não processar se não há navegação pendente
+    if (!pendingHPANavigation) return;
+
+    // Debug: sempre logar estado atual quando há navegação pendente
+    console.log("[PendingNavigation] Estado atual:", {
+      pendingNavigation: pendingHPANavigation,
+      hpasLoading,
+      hpasCount: hpas.length,
+      selectedCluster,
+      selectedNamespace,
+      clusterMatch: selectedCluster === pendingHPANavigation.cluster,
+      namespaceMatch: selectedNamespace === pendingHPANavigation.namespace,
+    });
+
+    // Verificar se todas as condições estão satisfeitas
+    const allConditionsMet =
+      !hpasLoading &&
+      hpas.length > 0 &&
+      selectedCluster === pendingHPANavigation.cluster &&
+      selectedNamespace === pendingHPANavigation.namespace;
+
+    if (!allConditionsMet) {
+      console.log("[PendingNavigation] ⏳ Aguardando condições serem satisfeitas...");
+      return;
+    }
+
+    console.log("[PendingNavigation] ✅ Todas as condições satisfeitas, processando navegação pendente:", pendingHPANavigation);
+
+    // Buscar o HPA específico
+    const targetHPA = hpas.find(
+      (h) =>
+        h.cluster === pendingHPANavigation.cluster &&
+        h.namespace === pendingHPANavigation.namespace &&
+        h.name === pendingHPANavigation.hpaName
+    );
+
+    if (targetHPA) {
+      console.log("[PendingNavigation] ✅ HPA encontrado, selecionando:", targetHPA.name);
+      setSelectedHPA(targetHPA);
+      toast.success(`HPA ${targetHPA.name} carregado para edição`);
+    } else {
+      const availableHPAs = hpas
+        .filter(h => h.cluster === pendingHPANavigation.cluster && h.namespace === pendingHPANavigation.namespace)
+        .map(h => h.name);
+      console.warn(
+        `[PendingNavigation] ❌ HPA "${pendingHPANavigation.hpaName}" não encontrado. HPAs disponíveis em ${pendingHPANavigation.namespace}:`,
+        availableHPAs.length > 0 ? availableHPAs : "nenhum"
+      );
+      toast.error(`HPA ${pendingHPANavigation.hpaName} não encontrado no namespace ${pendingHPANavigation.namespace}`);
+    }
+
+    // Limpar navegação pendente
+    console.log("[PendingNavigation] Limpando navegação pendente");
+    setPendingHPANavigation(null);
+  }, [pendingHPANavigation, hpas, hpasLoading, selectedCluster, selectedNamespace]);
 
   // Calculate stats
   const stats = {
@@ -359,9 +429,18 @@ const Index = ({ onLogout }: IndexProps) => {
                         );
                         const displayHPA = stagedHPA || hpa;
 
+                        // Verificar se HPA está sendo monitorado
+                        const stored = localStorage.getItem("monitored_hpas");
+                        const monitoredHPAs = stored ? JSON.parse(stored) : [];
+                        const isMonitored = monitoredHPAs.some((h: any) =>
+                          h.cluster === displayHPA.cluster &&
+                          h.namespace === displayHPA.namespace &&
+                          h.name === displayHPA.name
+                        );
+
                         return (
                           <HPAListItem
-                            key={`${hpa.cluster}-${hpa.namespace}-${hpa.name}`}
+                            key={`${hpa.cluster}-${hpa.namespace}-${hpa.name}-${monitoringRefreshKey}`}
                             name={displayHPA.name}
                             namespace={displayHPA.namespace}
                             cluster={displayHPA.cluster}
@@ -372,6 +451,7 @@ const Index = ({ onLogout }: IndexProps) => {
                               selectedHPA?.name === hpa.name &&
                               selectedHPA?.namespace === hpa.namespace
                             }
+                            isMonitored={isMonitored}
                             onClick={() => {
                               // Toggle: se clicar no item já selecionado, desmarca
                               if (selectedHPA?.name === hpa.name && selectedHPA?.namespace === hpa.namespace) {
@@ -392,8 +472,9 @@ const Index = ({ onLogout }: IndexProps) => {
                                   h.name === displayHPA.name
                                 );
 
+                                // Se já está sendo monitorado, apenas trocar para a aba de monitoramento
                                 if (exists) {
-                                  toast.info(`HPA ${displayHPA.name} já está sendo monitorado`);
+                                  toast.info(`Visualizando HPA ${displayHPA.name} no monitoramento`);
                                   handleTabChange("monitoring");
                                   return;
                                 }
@@ -431,8 +512,14 @@ const Index = ({ onLogout }: IndexProps) => {
                                 });
                                 localStorage.setItem("monitored_hpas", JSON.stringify(current));
 
+                                // 5. Forçar re-renderização para atualizar ícone imediatamente
+                                setMonitoringRefreshKey(prev => prev + 1);
+
                                 toast.success(`HPA ${displayHPA.name} adicionado ao monitoramento`);
-                                handleTabChange("monitoring");
+
+                                // 🔧 FIX: Não trocar de aba automaticamente ao adicionar novo HPA
+                                // O usuário pode continuar navegando e adicionando outros HPAs
+                                // Apenas trocar se clicar em HPA já monitorado (comportamento acima)
                               } catch (error) {
                                 console.error("[onMonitor] Error:", error);
                                 toast.error(
@@ -655,7 +742,45 @@ const Index = ({ onLogout }: IndexProps) => {
         );
 
       case "monitoring":
-        return <MonitoringPage />;
+        return (
+          <MonitoringPage
+            onNavigateToHPA={async (cluster, namespace, hpaName) => {
+              try {
+                console.log("[NavigateToHPA] Iniciando navegação:", { cluster, namespace, hpaName });
+
+                // 1. Toast informativo antes de iniciar
+                toast.info(`Carregando ${hpaName}...`);
+
+                // 2. Configurar navegação pendente PRIMEIRO (antes de qualquer mudança)
+                console.log("[NavigateToHPA] Configurando navegação pendente");
+                setPendingHPANavigation({ cluster, namespace, hpaName });
+
+                // 3. Trocar para o cluster correto (se necessário)
+                // Isso disparará o useHPAs automaticamente para buscar novos HPAs
+                if (cluster !== selectedCluster) {
+                  console.log("[NavigateToHPA] Trocando cluster de", selectedCluster, "para", cluster);
+                  await handleClusterChange(cluster);
+                  // Aguardar um pouco para o estado se estabilizar
+                  await new Promise(resolve => setTimeout(resolve, 100));
+                }
+
+                // 4. Selecionar o namespace correto
+                console.log("[NavigateToHPA] Selecionando namespace:", namespace);
+                setSelectedNamespace(namespace);
+
+                // 5. Trocar para a aba HPAs
+                console.log("[NavigateToHPA] Trocando para aba HPAs");
+                handleTabChange("hpas");
+
+                // O useEffect processará quando os HPAs do novo cluster/namespace forem carregados
+              } catch (error) {
+                console.error("[NavigateToHPA] Error:", error);
+                toast.error(`Erro ao navegar para o HPA: ${error instanceof Error ? error.message : "Erro desconhecido"}`);
+                setPendingHPANavigation(null); // Limpar navegação pendente em caso de erro
+              }
+            }}
+          />
+        );
 
       default:
         return null;

@@ -9,11 +9,12 @@ import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { NodePool } from "@/lib/api/types";
-import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield } from "lucide-react";
+import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import CordonDrainConfigModal, { CordonDrainConfig } from "./CordonDrainConfigModal";
+import { formatVMSpecs, getVMSpecs } from "@/lib/azure-vm-specs";
 
 interface NodePoolEditorProps {
   nodePool: NodePool | null;
@@ -335,7 +336,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             VM Configuration
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2">
+        <CardContent className="space-y-3">
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
               <Label className="text-muted-foreground">VM Size</Label>
@@ -346,6 +347,33 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
               <p className="font-medium">{nodePool.node_count}</p>
             </div>
           </div>
+
+          {/* VM Specs */}
+          {(() => {
+            const vmSpecs = getVMSpecs(nodePool.vm_size);
+            const specsFormatted = formatVMSpecs(nodePool.vm_size);
+
+            if (vmSpecs && specsFormatted) {
+              return (
+                <div className="pt-2 border-t">
+                  <div className="flex items-start gap-2 text-sm">
+                    <Info className="w-4 h-4 text-muted-foreground mt-0.5 flex-shrink-0" />
+                    <div>
+                      <p className="text-muted-foreground mb-1">Specifications</p>
+                      <p className="font-medium text-primary">{specsFormatted}</p>
+                      {vmSpecs.family && (
+                        <p className="text-xs text-muted-foreground mt-1">{vmSpecs.family}</p>
+                      )}
+                      {vmSpecs.description && (
+                        <p className="text-xs text-muted-foreground mt-1">{vmSpecs.description}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            return null;
+          })()}
         </CardContent>
       </Card>
 
