@@ -13,6 +13,7 @@ interface HPAListItemProps {
   maxReplicas: number;
   isSelected: boolean;
   isModified?: boolean;
+  isMonitored?: boolean;
   onClick: () => void;
   onMonitor?: () => void;
 }
@@ -26,6 +27,7 @@ export const HPAListItem = ({
   maxReplicas,
   isSelected,
   isModified,
+  isMonitored,
   onClick,
   onMonitor,
 }: HPAListItemProps) => {
@@ -55,16 +57,16 @@ export const HPAListItem = ({
           )}
           {onMonitor && (
             <Button
-              variant="ghost"
+              variant={isMonitored ? "default" : "ghost"}
               size="icon"
-              className="h-7 w-7"
+              className={`h-7 w-7 ${isMonitored ? "bg-primary/20 hover:bg-primary/30 text-primary" : ""}`}
               onClick={(e) => {
                 e.stopPropagation();
                 onMonitor();
               }}
-              title="Monitorar este HPA"
+              title={isMonitored ? "HPA sendo monitorado - clique para visualizar" : "Monitorar este HPA"}
             >
-              <BarChart3 className="h-4 w-4" />
+              <BarChart3 className={`h-4 w-4 ${isMonitored ? "fill-current" : ""}`} />
             </Button>
           )}
         </div>

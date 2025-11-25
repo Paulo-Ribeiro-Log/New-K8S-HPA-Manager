@@ -98,6 +98,9 @@ k8s-hpa-manager/
 ✅ **Monitoring V2** - Sistema sem port-forwards, acesso direto Prometheus
 ✅ **Auto-Updates** - Sistema automático de detecção e instalação
 ✅ **Autodiscover Otimizado** - Busca paralela de subscriptions (10x mais rápido)
+✅ **Navegação Inteligente** - Navegação direta de Monitoramento → HPA Editor com 1 clique
+✅ **Métricas Corrigidas** - CPU/Memória agora calculam média correta (0-100%)
+✅ **VM Specs Display** - Exibe vCPUs e memória de cada VM Size no Node Pool Editor
 
 ---
 
@@ -106,17 +109,17 @@ k8s-hpa-manager/
 **Context Template Rápido:**
 ```
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
-Versão: v1.1.1 (Nov 2025)
+
+Versão: v1.0.12 (Nov 2025)
 Tech: Go 1.23 + Bubble Tea (TUI) + React 18.3 (Web)
 Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
-Recent Updates (v1.1.1):
-- Sistema de Audit Log completo para operações de infraestrutura (Cordon/Drain/Rollouts)
-- CronJob Editor aprimorado com parser de cron e descrições legíveis em português
-- Suporte para edição de schedule via interface web
-- Interface simplificada e intuitiva para CronJobs
-- Autodiscover otimizado com busca paralela de subscriptions (10x mais rápido)
+Recent Updates:
+- VM Specs: Exibe vCPUs e memória no Node Pool Editor (150+ Azure VMs catalogadas)
+- Navegação inteligente: Monitoramento → HPA Editor com 1 clique (cluster/namespace/HPA automático)
+- Ícones de monitoramento atualizam instantaneamente ao adicionar HPA
+- Métricas Prometheus corrigidas: CPU/Memória agora usam avg() ao invés de sum() (0-100%)
 ```
 
 **Ver documentação completa:**

@@ -228,13 +228,10 @@ compile_binary() {
     print_info "Compilando (isso pode demorar alguns minutos)..."
 
     if go build -o "$CLONE_DIR/$BINARY_NAME" \
-<<<<<<< HEAD
+
         -ldflags "-X main.Version=$VERSION -X main.BuildDate=$BUILD_DATE -X main.GitCommit=$GIT_COMMIT" \
         . 2>&1 | tee /tmp/compile.log; then
-=======
-        -ldflags "-X k8s-hpa-manager/internal/updater.Version=$VERSION" \
-        ./cmd/k8s-hpa-manager 2>&1 | tee /tmp/compile.log; then
->>>>>>> 5a09613 (fix(install): corrige injeção de versão no script install-from-main.sh)
+
 
         print_success "Compilação concluída"
 

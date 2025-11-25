@@ -115,10 +115,17 @@ func (c *Client) QueryRange(ctx context.Context, query string, start, end time.T
 }
 
 // GetCPUUsage obtém o uso atual de CPU de um HPA
+// Calcula a média de utilização de CPU de todos os pods do HPA em relação aos requests
 func (c *Client) GetCPUUsage(ctx context.Context, namespace, hpaName string) (float64, error) {
+	// Query corrigida: calcula a média por pod (não soma total)
+	// Usa avg() ao invés de sum() para evitar valores > 100%
 	query := fmt.Sprintf(`
-		sum(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s.*"}[1m])) /
-		sum(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="cpu"}) * 100
+		avg(
+			rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s.*",container!="",container!="POD"}[1m])
+			/
+			on(pod,container) group_left()
+			kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="cpu"}
+		) * 100
 	`, namespace, hpaName, namespace, hpaName)
 
 	result, err := c.Query(ctx, query)
@@ -130,10 +137,17 @@ func (c *Client) GetCPUUsage(ctx context.Context, namespace, hpaName string) (fl
 }
 
 // GetMemoryUsage obtém o uso atual de memória de um HPA
+// Calcula a média de utilização de memória de todos os pods do HPA em relação aos requests
 func (c *Client) GetMemoryUsage(ctx context.Context, namespace, hpaName string) (float64, error) {
+	// Query corrigida: calcula a média por pod (não soma total)
+	// Usa avg() ao invés de sum() para evitar valores > 100%
 	query := fmt.Sprintf(`
-		sum(container_memory_working_set_bytes{namespace="%s",pod=~"%s.*"}) /
-		sum(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"}) * 100
+		avg(
+			container_memory_working_set_bytes{namespace="%s",pod=~"%s.*",container!="",container!="POD"}
+			/
+			on(pod,container) group_left()
+			kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"}
+		) * 100
 	`, namespace, hpaName, namespace, hpaName)
 
 	result, err := c.Query(ctx, query)
