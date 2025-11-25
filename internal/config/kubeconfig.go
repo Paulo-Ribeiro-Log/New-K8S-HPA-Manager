@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
 
+	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
 )
@@ -32,10 +33,11 @@ type ClusterConfig struct {
 
 // KubeConfigManager gerencia a configuração do Kubernetes
 type KubeConfigManager struct {
-	configPath  string
-	config      *api.Config
-	clients     map[string]kubernetes.Interface
-	clientMutex sync.RWMutex // Protege acesso concorrente aos clients
+	configPath     string
+	config         *api.Config
+	clients        map[string]kubernetes.Interface
+	clientMutex    sync.RWMutex // Protege acesso concorrente aos clients
+	historyTracker *history.HistoryTracker
 }
 
 // NewKubeConfigManager cria um novo gerenciador de kubeconfig
@@ -46,10 +48,33 @@ func NewKubeConfigManager(configPath string) (*KubeConfigManager, error) {
 	}
 
 	return &KubeConfigManager{
-		configPath: configPath,
-		config:     config,
-		clients:    make(map[string]kubernetes.Interface),
+		configPath:     configPath,
+		config:         config,
+		clients:        make(map[string]kubernetes.Interface),
+		historyTracker: nil, // Será configurado via SetHistoryTracker
 	}, nil
+}
+
+// SetHistoryTracker configura o historyTracker para audit logging
+func (k *KubeConfigManager) SetHistoryTracker(tracker *history.HistoryTracker) {
+	k.historyTracker = tracker
+}
+
+// GetK8sClient retorna um cliente wrapper *kubernetes.Client com historyTracker configurado
+func (k *KubeConfigManager) GetK8sClient(clusterName string) (*kubeclient.Client, error) {
+	clientset, err := k.GetClient(clusterName)
+	if err != nil {
+		return nil, err
+	}
+
+	client := kubeclient.NewClient(clientset, clusterName)
+
+	// Configurar historyTracker se disponível
+	if k.historyTracker != nil {
+		client.SetHistoryTracker(k.historyTracker)
+	}
+
+	return client, nil
 }
 
 // DiscoverClusters descobre clusters do kubeconfig que começam com "akspriv-" em ordem alfabética
@@ -332,7 +357,7 @@ func (k *KubeConfigManager) extractResourceGroupFromKubeconfig(clusterName strin
 	return resourceGroup, nil
 }
 
-// discoverSubscriptionViaAzureCLI descobre a subscription buscando em todas as subscriptions disponíveis (paralelo)
+// discoverSubscriptionViaAzureCLI descobre a subscription buscando em todas as subscriptions disponíveis (paralelo controlado)
 func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourceGroup string) (string, error) {
 	// 1. Listar todas as subscriptions disponíveis
 	cmd := exec.Command("az", "account", "list", "--query", "[].id", "-o", "tsv")
@@ -359,20 +384,41 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 		return "", fmt.Errorf("no valid subscriptions found")
 	}
 
-	// 2. Testar todas as subscriptions EM PARALELO
+	// 2. Testar subscriptions com paralelismo controlado (máximo 5 simultâneas)
 	type result struct {
 		subscriptionID string
 		resourceID     string
 		err            error
 	}
 
-	resultChan := make(chan result, len(validSubscriptions))
+	// Contexto com timeout para evitar goroutines órfãs
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 
-	// Disparar goroutine para cada subscription
+	resultChan := make(chan result, len(validSubscriptions))
+	semaphore := make(chan struct{}, 5) // Limitar a 5 processos az CLI simultâneos
+	var wg sync.WaitGroup
+
+	// Disparar goroutines controladas
 	for _, subscriptionID := range validSubscriptions {
+		wg.Add(1)
 		go func(subID string) {
-			// Tentar az aks show com subscription específica
-			cmd := exec.Command("az", "aks", "show",
+			defer wg.Done()
+
+			// Adquirir slot do semáforo
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				resultChan <- result{subscriptionID: subID, err: ctx.Err()}
+				return
+			}
+
+			// Criar comando com timeout
+			cmdCtx, cmdCancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cmdCancel()
+
+			cmd := exec.CommandContext(cmdCtx, "az", "aks", "show",
 				"--name", clusterName,
 				"--resource-group", resourceGroup,
 				"--subscription", subID,
@@ -382,7 +428,7 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 			output, err := cmd.CombinedOutput()
 
 			if err != nil {
-				// Cluster não encontrado nesta subscription
+				// Cluster não encontrado nesta subscription (esperado)
 				resultChan <- result{subscriptionID: subID, err: err}
 				return
 			}
@@ -392,19 +438,31 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 		}(subscriptionID)
 	}
 
-	// 3. Coletar resultados - retornar assim que encontrar a primeira match
-	for i := 0; i < len(validSubscriptions); i++ {
-		res := <-resultChan
+	// Goroutine para fechar canal quando todas goroutines terminarem
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
 
-		if res.err == nil && res.resourceID != "" {
+	// 3. Coletar resultados - retornar assim que encontrar a primeira match
+	// MAS continuar drenando o canal para evitar vazamento de goroutines
+	var foundSubscription string
+	for res := range resultChan {
+		if foundSubscription == "" && res.err == nil && res.resourceID != "" {
 			// Cluster encontrado! Extrair subscription do resource ID
 			parts := strings.Split(res.resourceID, "/")
 			for j, part := range parts {
 				if part == "subscriptions" && j+1 < len(parts) {
-					return parts[j+1], nil
+					foundSubscription = parts[j+1]
+					cancel() // Cancelar goroutines restantes
+					break
 				}
 			}
 		}
+	}
+
+	if foundSubscription != "" {
+		return foundSubscription, nil
 	}
 
 	return "", fmt.Errorf("cluster not found in any subscription or no access")
@@ -418,6 +476,10 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 		logFunc(fmt.Sprintf("🔍 Iniciando auto-descoberta paralela para %d clusters...", len(clusters)))
 	}
 
+	// Criar contexto com timeout de 5 minutos para toda a operação
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
 	// Canais para resultados
 	type result struct {
 		index  int
@@ -427,32 +489,59 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 
 	resultChan := make(chan result, len(clusters))
 
-	// Processar clusters em paralelo (máximo 10 simultaneamente)
-	semaphore := make(chan struct{}, 10)
+	// WaitGroup para garantir que todas as goroutines terminem
+	var wg sync.WaitGroup
+
+	// Processar clusters em paralelo (máximo 3 simultaneamente para não sobrecarregar Azure CLI)
+	// Cada cluster pode disparar até 5 processos az CLI internos, então 3×5 = 15 processos máx
+	semaphore := make(chan struct{}, 3)
 
 	for i, cluster := range clusters {
+		wg.Add(1)
 		go func(idx int, clusterName string) {
-			semaphore <- struct{}{}        // Adquirir slot
-			defer func() { <-semaphore }() // Liberar slot
+			defer wg.Done()
+
+			// Adquirir slot do semáforo com timeout
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }() // Liberar slot
+			case <-ctx.Done():
+				resultChan <- result{index: idx, config: nil, err: fmt.Errorf("timeout aguardando slot")}
+				return
+			}
+
+			// Verificar se contexto ainda está ativo
+			if ctx.Err() != nil {
+				resultChan <- result{index: idx, config: nil, err: ctx.Err()}
+				return
+			}
 
 			config, err := k.AutoDiscoverClusterConfig(clusterName)
 			resultChan <- result{index: idx, config: config, err: err}
 		}(i, cluster.Name)
 	}
 
+	// Goroutine para fechar o canal quando todas as goroutines terminarem
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
 	// Coletar resultados
 	results := make([]result, len(clusters))
-	for i := 0; i < len(clusters); i++ {
-		res := <-resultChan
+	count := 0
+
+	for res := range resultChan {
 		results[res.index] = res
+		count++
 
 		// Mostrar progresso
 		if logFunc != nil {
 			if res.err != nil {
-				logFunc(fmt.Sprintf("[%d/%d] ❌ %s: %v", i+1, len(clusters), clusters[res.index].Name, res.err))
+				logFunc(fmt.Sprintf("[%d/%d] ❌ %s: %v", count, len(clusters), clusters[res.index].Name, res.err))
 			} else {
 				logFunc(fmt.Sprintf("[%d/%d] ✅ %s - RG: %s, Sub: %s",
-					i+1, len(clusters),
+					count, len(clusters),
 					clusters[res.index].Name,
 					res.config.ResourceGroup,
 					res.config.Subscription[:8]+"...")) // Mostrar apenas início do UUID
@@ -467,7 +556,7 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 	for i, res := range results {
 		if res.err != nil {
 			errors = append(errors, fmt.Errorf("cluster %s: %w", clusters[i].Name, res.err))
-		} else {
+		} else if res.config != nil {
 			configs = append(configs, *res.config)
 		}
 	}

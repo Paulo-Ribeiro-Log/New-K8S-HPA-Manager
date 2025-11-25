@@ -3,6 +3,220 @@
 [Voltar ao CLAUDE.md principal](../../CLAUDE.md)
 
 
+### Interface Aprimorada para CronJob Schedule Editor (Novembro 2025) ✅
+
+**Data:** 19 de novembro de 2025
+
+**Motivação:** Interface anterior do CronJob Editor exibia apenas a expressão cron bruta (ex: `0 5 * * *`) sem explicação legível, dificultando o entendimento e edição dos schedules.
+
+**Problema anterior:**
+- Schedule exibido apenas como expressão cron (`0 5 * * *`)
+- Sem descrição legível em português
+- Sem explicação de cada campo (minuto, hora, dia, mês, dia-da-semana)
+- Impossível editar schedule pela interface web
+- Usuários precisavam entender sintaxe cron para interpretar
+
+**Solução implementada: Parser de Cron + Editor Visual**
+
+**Novo utilitário criado: `cronParser.ts`**
+- Parse completo de expressões cron
+- Geração de descrição legível em português (ex: "Todos os dias às 05:00")
+- Explicação individual de cada campo
+- Validação de expressões cron
+- Suporte a ranges (`1-5`), listas (`1,3,5`), steps (`*/5`)
+
+**Melhorias no CronJob Editor:**
+
+1. **Visualização aprimorada:**
+   - Descrição legível em destaque: "Todos os dias às 05:00"
+   - Expressão cron original em fonte mono (menor)
+   - Grid visual dos 5 campos com tooltips explicativos
+   - Hover em cada campo mostra explicação detalhada
+
+2. **Editor visual integrado:**
+   - Botão "Editar" no painel de schedule
+   - Input com validação em tempo real
+   - Preview instantâneo da expressão digitada
+   - Feedback visual: verde (válido) / vermelho (inválido)
+   - Guia rápido com ranges válidos (0-59, 0-23, etc.)
+   - Botões Salvar/Cancelar
+
+3. **Exemplos de descrições geradas:**
+   - `0 5 * * *` → "Todos os dias às 05:00"
+   - `30 14 * * *` → "Todos os dias às 14:30"
+   - `0 9 * * 1` → "Todas as Segundas às 09:00"
+   - `0 8 1 * *` → "No dia 1 de cada mês às 08:00"
+   - `*/15 * * * *` → "A cada 15 minutos"
+
+**Componentes criados/modificados:**
+
+| Arquivo | Modificação |
+|---------|-------------|
+| `internal/web/frontend/src/lib/cronParser.ts` | Novo utilitário completo (+250 linhas) |
+| `internal/web/frontend/src/components/CronJobEditor.tsx` | Editor visual + integração parser (+200 linhas) |
+
+**Benefícios:**
+✅ **Usabilidade melhorada** - Usuários entendem schedules sem conhecer sintaxe cron
+✅ **Edição facilitada** - Interface visual com validação e preview
+✅ **Educacional** - Tooltips explicam cada campo do cron
+✅ **Feedback imediato** - Validação em tempo real ao digitar
+✅ **Guia integrado** - Ranges válidos exibidos no editor
+
+**Tecnologias utilizadas:**
+- TypeScript para type-safety
+- shadcn/ui Tooltip components
+- Validação robusta de expressões cron
+- Suporte completo ao formato cron padrão (5 campos)
+
+---
+
+### Sistema de Audit Log para Operações de Infraestrutura (Novembro 2025) ✅
+
+**Data:** 19 de novembro de 2025
+
+**Motivação:** Necessidade de rastreabilidade completa de **todas as operações críticas de infraestrutura**, incluindo Cordon/Drain de node pools e Rollouts de Deployments/DaemonSets/StatefulSets, com informações sobre quais recursos foram afetados, quando, duração, e status (sucesso/falha).
+
+**Problema anterior:**
+- Sem histórico persistente de operações Cordon/Drain e Rollouts
+- Impossível saber quais nodes foram cordoned/drained e quando
+- Rollouts executados sem registro de quando/quem/qual deployment
+- Sem rastreamento de duração das operações
+- Falta de auditoria para troubleshooting
+- Sem estatísticas de operações realizadas
+
+**Solução implementada: Integração com HistoryTracker**
+
+**Novas Actions adicionadas:**
+1. `ActionCordonNode` - Registra quando um node é marcado como unschedulable
+2. `ActionDrainNode` - Registra quando pods são evacuados de um node
+3. `ActionNodePoolSequence` - Registra sequência completa (PRE-DRAIN → CORDON → DRAIN → POST-DRAIN)
+4. `ActionRolloutDeployment` - Registra rollout de Deployment executado
+5. `ActionRolloutDaemonSet` - Registra rollout de DaemonSet executado
+6. `ActionRolloutStatefulSet` - Registra rollout de StatefulSet executado
+
+**Componentes modificados:**
+
+| Arquivo | Modificação |
+|---------|-------------|
+| `internal/history/tracker.go` | +6 novas constantes de action (cordon/drain/sequence + rollouts) |
+| `internal/web/handlers/nodepools.go` | Logging em CORDON, DRAIN e Sequência (+~80 linhas) |
+| `internal/web/handlers/history.go` | Novo endpoint `GetCordonDrainHistory` (+110 linhas) |
+| `internal/web/server.go` | Rota `/history/cordon-drain` + configurar tracker (+2 linhas) |
+| `internal/kubernetes/client.go` | Audit log em TriggerRollout, TriggerDaemonSetRollout, TriggerStatefulSetRollout (+~90 linhas) |
+| `internal/config/kubeconfig.go` | GetK8sClient helper + SetHistoryTracker (+30 linhas) |
+
+**Dados registrados por operação:**
+
+**CORDON:**
+```json
+{
+  "action": "cordon_node",
+  "resource": "pool-name/node-name",
+  "cluster": "prod-cluster",
+  "status": "success",
+  "duration_ms": 245,
+  "before": { "schedulable": true },
+  "after": { "schedulable": false }
+}
+```
+
+**DRAIN:**
+```json
+{
+  "action": "drain_node",
+  "resource": "pool-name/node-name",
+  "cluster": "prod-cluster",
+  "status": "success",
+  "duration_ms": 12500,
+  "before": { "pods_count": 15, "drained": false },
+  "after": { "pods_count": 0, "drained": true }
+}
+```
+
+**SEQUENCE:**
+```json
+{
+  "action": "nodepool_sequence",
+  "resource": "origin-pool → dest-pool",
+  "cluster": "prod-cluster",
+  "status": "success",
+  "duration_ms": 425000,
+  "before": { "origin_pool": "pool-a", "dest_pool": "pool-b", "cordon": true, "drain": true },
+  "after": { "total_duration_ms": 425000, "session_id": "abc123" }
+}
+```
+
+**ROLLOUT DEPLOYMENT:**
+```json
+{
+  "action": "rollout_deployment",
+  "resource": "default/api-service",
+  "cluster": "prod-cluster",
+  "status": "success",
+  "duration_ms": 1250,
+  "before": { "hpa": "api-service-hpa", "perform_rollout": true },
+  "after": { "deployment": "api-service", "restarted_at": "2025-11-19T15:30:00Z" }
+}
+```
+
+**ROLLOUT DAEMONSET:**
+```json
+{
+  "action": "rollout_daemonset",
+  "resource": "kube-system/fluentd",
+  "cluster": "prod-cluster",
+  "status": "success",
+  "duration_ms": 2100,
+  "before": { "hpa": "fluentd-hpa", "perform_daemonset_rollout": true },
+  "after": { "daemonset": "fluentd", "restarted_at": "2025-11-19T15:30:05Z" }
+}
+```
+
+**ROLLOUT STATEFULSET:**
+```json
+{
+  "action": "rollout_statefulset",
+  "resource": "databases/redis-cluster",
+  "cluster": "prod-cluster",
+  "status": "success",
+  "duration_ms": 3500,
+  "before": { "hpa": "redis-hpa", "perform_statefulset_rollout": true },
+  "after": { "statefulset": "redis-cluster", "restarted_at": "2025-11-19T15:30:10Z" }
+}
+```
+
+**Novo endpoint especializado:**
+```bash
+GET /api/v1/history/cordon-drain?cluster=prod&start_date=2025-01-01
+```
+
+**Retorna:**
+- `cordon_operations[]` - Lista de operações de cordon
+- `drain_operations[]` - Lista de operações de drain
+- `sequence_operations[]` - Lista de sequências completas
+- `stats` - Estatísticas agregadas:
+  - total_cordon, total_drain, total_sequences
+  - cordon_success, cordon_failed
+  - drain_success, drain_failed
+  - sequence_success, sequence_failed
+  - total_duration_ms, avg_duration_ms
+
+**Armazenamento persistente:**
+- Arquivos JSON organizados por mês: `~/.k8s-hpa-manager/history/YYYY-MM/`
+- Nomes de arquivo: `YYYY-MM-DD-UUID.json`
+- Mantém últimos 3 meses em memória (até 1000 entradas)
+
+**Benefícios:**
+- ✅ Rastreabilidade completa de todas as operações de infraestrutura
+- ✅ Análise de performance (duração média de drain, rollouts)
+- ✅ Troubleshooting facilitado (descobrir quando node foi drained ou deployment teve rollout)
+- ✅ Auditoria de compliance para operações críticas
+- ✅ Estatísticas de taxa de sucesso/falha
+- ✅ Rastreamento de rollouts executados mesmo sem outras alterações no HPA
+- ✅ Histórico completo de quando cada workload foi reiniciado
+
+---
+
 ### Sistema de Progress Bar em Tempo Real via SSE (Novembro 2025) ✅
 
 **Data:** 18 de novembro de 2025

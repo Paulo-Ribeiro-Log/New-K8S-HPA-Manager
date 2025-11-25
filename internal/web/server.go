@@ -93,6 +93,9 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 		return nil, fmt.Errorf("failed to create history tracker: %w", err)
 	}
 
+	// Configurar historyTracker no kubeManager para audit logging de rollouts
+	kubeManager.SetHistoryTracker(historyTracker)
+
 	// TODO: Remover após migração completa para V2
 	// snapshotChan := make(chan *models.HPASnapshot, 100)
 	// anomalyChan := make(chan analyzer.Anomaly, 100)
@@ -270,7 +273,7 @@ func (s *Server) setupRoutes() {
 	api.PUT("/hpas/:cluster/:namespace/:name", hpaHandler.Update)
 
 	// Node Pools
-	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager)
+	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager, s.historyTracker)
 	api.GET("/nodepools", nodePoolHandler.List)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", nodePoolHandler.Update)
 	api.POST("/nodepools/apply-sequential", nodePoolHandler.ApplySequential)
@@ -388,6 +391,7 @@ func (s *Server) setupRoutes() {
 	historyHandler := handlers.NewHistoryHandler(s.historyTracker)
 	api.GET("/history", historyHandler.GetHistory)
 	api.GET("/history/stats", historyHandler.GetHistoryStats)
+	api.GET("/history/cordon-drain", historyHandler.GetCordonDrainHistory) // Endpoint específico para Cordon/Drain
 	api.GET("/history/:id", historyHandler.GetHistoryEntry)
 	api.DELETE("/history", historyHandler.ClearHistory)
 }

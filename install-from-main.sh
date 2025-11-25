@@ -4,6 +4,9 @@
 
 set -e
 
+# Ignore SIGPIPE to prevent broken pipe errors from shell plugins (gitstatus, powerlevel10k, etc)
+trap '' PIPE 2>/dev/null || true
+
 # Parse arguments
 for arg in "$@"; do
     case $arg in
@@ -33,7 +36,7 @@ REPO_OWNER="Paulo-Ribeiro-Log"
 REPO_NAME="New-K8S-HPA-Manager"
 INSTALL_PATH="/usr/local/bin"
 CLONE_DIR="/tmp/new-k8s-hpa-install"
-PROJECT_SUBDIR="Scale_HPA"
+PROJECT_SUBDIR=""  # Arquivos estão na raiz do repositório
 
 # Function to print colored messages
 print_info() {
@@ -123,15 +126,15 @@ check_requirements() {
     # Check Go
     if ! command -v go &> /dev/null; then
         print_error "Go não encontrado (necessário para compilar)"
-        print_info "Instale Go 1.23+ em: https://go.dev/dl/"
+        print_info "Instale Go 1.22+ em: https://go.dev/dl/"
         missing_requirements=1
     else
         GO_VERSION=$(go version | grep -oP 'go\d+\.\d+' | grep -oP '\d+\.\d+')
         GO_MAJOR=$(echo $GO_VERSION | cut -d. -f1)
         GO_MINOR=$(echo $GO_VERSION | cut -d. -f2)
 
-        if [ "$GO_MAJOR" -lt 1 ] || ([ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 23 ]); then
-            print_error "Go versão $GO_VERSION instalada (necessário 1.23+)"
+        if [ "$GO_MAJOR" -lt 1 ] || ([ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 22 ]); then
+            print_error "Go versão $GO_VERSION instalada (necessário 1.22+)"
             print_info "Atualize em: https://go.dev/dl/"
             missing_requirements=1
         else
@@ -179,9 +182,9 @@ clone_repository() {
     if git clone --depth 1 --branch main "https://github.com/$REPO_OWNER/$REPO_NAME.git" "$CLONE_DIR"; then
         print_success "Repositório clonado com sucesso"
 
-        # Verify project directory exists
-        if [ ! -d "$CLONE_DIR/$PROJECT_SUBDIR" ]; then
-            print_error "Diretório do projeto não encontrado: $CLONE_DIR/$PROJECT_SUBDIR"
+        # Verify required files exist
+        if [ ! -f "$CLONE_DIR/go.mod" ] || [ ! -d "$CLONE_DIR/cmd" ]; then
+            print_error "Estrutura do projeto inválida - arquivos essenciais não encontrados"
             exit 1
         fi
 
@@ -196,7 +199,7 @@ clone_repository() {
 compile_binary() {
     print_header "Compilando binário"
 
-    local project_dir="$CLONE_DIR/$PROJECT_SUBDIR"
+    local project_dir="$CLONE_DIR"
 
     print_info "Diretório: $project_dir"
 
@@ -225,8 +228,10 @@ compile_binary() {
     print_info "Compilando (isso pode demorar alguns minutos)..."
 
     if go build -o "$CLONE_DIR/$BINARY_NAME" \
-        -ldflags "-X k8s-hpa-manager/internal/updater.Version=$VERSION" \
-        ./cmd/k8s-hpa-manager 2>&1 | tee /tmp/compile.log; then
+
+        -ldflags "-X main.Version=$VERSION -X main.BuildDate=$BUILD_DATE -X main.GitCommit=$GIT_COMMIT" \
+        . 2>&1 | tee /tmp/compile.log; then
+
 
         print_success "Compilação concluída"
 

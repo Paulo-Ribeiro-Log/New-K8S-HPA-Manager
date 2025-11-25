@@ -288,6 +288,12 @@ const (
 	ActionDeleteSession     = "delete_session"
 	ActionApplyBatch        = "apply_batch"
 	ActionSnapshotCluster   = "snapshot_cluster"
+	ActionCordonNode           = "cordon_node"           // Node marcado como unschedulable
+	ActionDrainNode            = "drain_node"            // Pods evacuados do node
+	ActionNodePoolSequence     = "nodepool_sequence"     // Sequência completa PRE-DRAIN → CORDON → DRAIN → POST-DRAIN
+	ActionRolloutDeployment    = "rollout_deployment"    // Rollout de Deployment executado
+	ActionRolloutDaemonSet     = "rollout_daemonset"     // Rollout de DaemonSet executado
+	ActionRolloutStatefulSet   = "rollout_statefulset"   // Rollout de StatefulSet executado
 )
 
 // Status constants
