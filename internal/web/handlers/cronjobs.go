@@ -105,14 +105,15 @@ func (h *CronJobHandler) List(c *gin.Context) {
 	})
 }
 
-// Update atualiza o estado de suspend de um CronJob
+// Update atualiza o estado de suspend ou schedule de um CronJob
 func (h *CronJobHandler) Update(c *gin.Context) {
 	cluster := c.Param("cluster")
 	namespace := c.Param("namespace")
 	name := c.Param("name")
 
 	var req struct {
-		Suspend bool `json:"suspend"`
+		Suspend  *bool   `json:"suspend,omitempty"`
+		Schedule *string `json:"schedule,omitempty"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -121,6 +122,18 @@ func (h *CronJobHandler) Update(c *gin.Context) {
 			"error": gin.H{
 				"code":    "INVALID_REQUEST",
 				"message": fmt.Sprintf("Invalid request body: %v", err),
+			},
+		})
+		return
+	}
+
+	// Validar que pelo menos um campo foi fornecido
+	if req.Suspend == nil && req.Schedule == nil {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": "At least one of 'suspend' or 'schedule' must be provided",
 			},
 		})
 		return
@@ -152,8 +165,13 @@ func (h *CronJobHandler) Update(c *gin.Context) {
 		return
 	}
 
-	// Atualizar campo suspend
-	cronJob.Spec.Suspend = &req.Suspend
+	// Atualizar campos conforme fornecido
+	if req.Suspend != nil {
+		cronJob.Spec.Suspend = req.Suspend
+	}
+	if req.Schedule != nil {
+		cronJob.Spec.Schedule = *req.Schedule
+	}
 
 	// Aplicar atualização
 	updatedCronJob, err := client.BatchV1().CronJobs(namespace).Update(context.Background(), cronJob, metav1.UpdateOptions{})
