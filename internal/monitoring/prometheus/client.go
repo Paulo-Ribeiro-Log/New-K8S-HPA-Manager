@@ -198,9 +198,14 @@ func (c *Client) GetMemoryHistory(ctx context.Context, namespace, hpaName string
 	end := time.Now()
 	start := end.Add(-5 * time.Minute)
 
+	// Query corrigida: usa avg() ao invés de sum() para evitar valores > 100%
 	query := fmt.Sprintf(`
-		sum(container_memory_working_set_bytes{namespace="%s",pod=~"%s.*"}) /
-		sum(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"}) * 100
+		avg(
+			container_memory_working_set_bytes{namespace="%s",pod=~"%s.*",container!="",container!="POD"}
+			/
+			on(pod,container) group_left()
+			kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"}
+		) * 100
 	`, namespace, hpaName, namespace, hpaName)
 
 	result, err := c.QueryRange(ctx, query, start, end, 30*time.Second)
@@ -411,9 +416,14 @@ func (c *Client) GetCPUHistoryRange(ctx context.Context, namespace, hpaName stri
 
 // GetMemoryHistoryRange obtém histórico de memória com range customizável
 func (c *Client) GetMemoryHistoryRange(ctx context.Context, namespace, hpaName string, start, end time.Time) ([]float64, error) {
+	// Query corrigida: usa avg() ao invés de sum() para evitar valores > 100%
 	query := fmt.Sprintf(`
-		sum(container_memory_working_set_bytes{namespace="%s",pod=~"%s.*"}) /
-		sum(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"}) * 100
+		avg(
+			container_memory_working_set_bytes{namespace="%s",pod=~"%s.*",container!="",container!="POD"}
+			/
+			on(pod,container) group_left()
+			kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"}
+		) * 100
 	`, namespace, hpaName, namespace, hpaName)
 
 	result, err := c.QueryRange(ctx, query, start, end, 1*time.Minute)
