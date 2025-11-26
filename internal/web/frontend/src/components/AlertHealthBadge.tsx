@@ -143,10 +143,12 @@ export function AlertHealthBadge({
         className={cn(
           "gap-1 border",
           badgeColor,
-          isClickable && "cursor-pointer transition-all hover:scale-105",
+          isClickable && "cursor-pointer transition-all hover:scale-105 hover:shadow-md active:scale-95",
           className
         )}
         onClick={isClickable ? handleClick : undefined}
+        role={isClickable ? "button" : undefined}
+        tabIndex={isClickable ? 0 : undefined}
         title={
           totalAlerts > 0
             ? `${criticalCount} crítico(s), ${warningCount} aviso(s) - Clique para ver detalhes`
@@ -226,11 +228,13 @@ export function SimpleAlertBadge({
     <Badge
       variant="secondary"
       className={cn(
-        "gap-1 border cursor-pointer hover:scale-105 transition-all",
+        "gap-1 border cursor-pointer hover:scale-105 hover:shadow-md active:scale-95 transition-all",
         badgeColor,
         className
       )}
       onClick={onClick}
+      role="button"
+      tabIndex={0}
       title={`${criticalCount} crítico(s), ${warningCount} aviso(s), ${totalAlerts - criticalCount - warningCount} info - Clique para ver detalhes`}
     >
       {showIcon && <Icon className="h-3 w-3" />}
