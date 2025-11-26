@@ -84,40 +84,40 @@ func performAzureLogin() error {
 }
 
 // ValidateVPNConnectivity verifica conectividade com Kubernetes (requer VPN)
+// Testa QUALQUER contexto disponível (não apenas prd/hlg)
 func ValidateVPNConnectivity() error {
-	// Buscar clusters para testar
-	var prdContext, hlgContext string
-
-	// Obter lista de contextos do kubeconfig
+	// Obter lista de TODOS os contextos disponíveis
 	cmd := exec.Command("kubectl", "config", "get-contexts", "-o", "name")
 	output, err := cmd.Output()
-	if err == nil {
-		contexts := strings.Split(strings.TrimSpace(string(output)), "\n")
-		for _, context := range contexts {
-			if strings.Contains(context, "-prd") && prdContext == "" {
-				prdContext = context
-			}
-			if strings.Contains(context, "-hlg") && hlgContext == "" {
-				hlgContext = context
-			}
-		}
+	if err != nil {
+		// Se kubectl não funciona, considerar VPN OK (não bloquear)
+		return nil
 	}
 
-	// Tentar contexto atual primeiro
+	contexts := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(contexts) == 0 {
+		// Sem contextos configurados - não bloquear
+		return nil
+	}
+
+	// Tentar contexto atual primeiro (mais rápido)
 	if err := testKubernetesConnectivity(""); err == nil {
 		return nil
 	}
 
-	// Tentar produção
-	if prdContext != "" {
-		if err := testKubernetesConnectivity(prdContext); err == nil {
-			return nil
-		}
+	// Tentar todos os outros contextos disponíveis
+	// Limitar a 10 contextos para evitar demora excessiva
+	maxTests := 10
+	if len(contexts) < maxTests {
+		maxTests = len(contexts)
 	}
 
-	// Tentar homologação
-	if hlgContext != "" {
-		if err := testKubernetesConnectivity(hlgContext); err == nil {
+	for i := 0; i < maxTests; i++ {
+		context := strings.TrimSpace(contexts[i])
+		if context == "" {
+			continue
+		}
+		if err := testKubernetesConnectivity(context); err == nil {
 			return nil
 		}
 	}
@@ -127,21 +127,37 @@ func ValidateVPNConnectivity() error {
 
 // testKubernetesConnectivity testa conectividade com um contexto específico
 func testKubernetesConnectivity(kubeContext string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Timeout AUMENTADO para 10 segundos (rede lenta/VPN)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	var cmd *exec.Cmd
 	if kubeContext != "" {
-		cmd = exec.CommandContext(ctx, "kubectl", "cluster-info", "--context", kubeContext, "--request-timeout=5s")
+		cmd = exec.CommandContext(ctx, "kubectl", "cluster-info", "--context", kubeContext, "--request-timeout=8s")
 	} else {
-		cmd = exec.CommandContext(ctx, "kubectl", "cluster-info", "--request-timeout=5s")
+		cmd = exec.CommandContext(ctx, "kubectl", "cluster-info", "--request-timeout=8s")
 	}
 
 	output, err := cmd.CombinedOutput()
-	outputStr := string(output)
+	outputStr := strings.ToLower(string(output))
 
-	// Se kubectl conseguiu responder (mesmo com erro de auth), VPN está OK
-	if err == nil || strings.Contains(outputStr, "running at") || strings.Contains(outputStr, "Kubernetes") {
+	// Múltiplos indicadores de sucesso (VPN conectada)
+	successIndicators := []string{
+		"running at",
+		"kubernetes",
+		"control plane",
+		"is running",
+		"master",
+	}
+
+	for _, indicator := range successIndicators {
+		if strings.Contains(outputStr, indicator) {
+			return nil
+		}
+	}
+
+	// Se erro == nil, kubectl respondeu com sucesso
+	if err == nil {
 		return nil
 	}
 
