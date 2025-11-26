@@ -17,7 +17,9 @@ import { LogOut, CheckCircle, Zap, Save, FolderOpen, FileText, ChevronsUpDown, C
 import { ModeToggle } from "@/components/mode-toggle";
 import { NotificationBell } from "@/components/NotificationBell";
 import { NotificationDrawer } from "@/components/NotificationDrawer";
+import { AlertsDialog } from "@/components/AlertsDialog";
 import { useNotifications } from "@/hooks/useNotifications";
+import type { InAppNotification } from "@/hooks/useNotifications";
 import { cn } from "@/lib/utils";
 import { apiClient } from "@/lib/api/client";
 import type { VersionInfo } from "@/lib/api/types";
@@ -54,6 +56,12 @@ export const Header = ({
   const [open, setOpen] = useState(false);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
   const [notificationDrawerOpen, setNotificationDrawerOpen] = useState(false);
+  const [alertsDialogOpen, setAlertsDialogOpen] = useState(false);
+  const [alertsDialogContext, setAlertsDialogContext] = useState<{
+    cluster: string;
+    namespace?: string;
+    hpaName?: string;
+  } | null>(null);
 
   // Hook de notificações (polling a cada 10 segundos)
   const {
@@ -68,6 +76,23 @@ export const Header = ({
     // Buscar versão ao montar componente
     apiClient.getVersion().then(setVersionInfo).catch(console.error);
   }, []);
+
+  const handleNotificationClick = (notification: InAppNotification) => {
+    if (notification.cluster) {
+      // Configurar contexto do AlertsDialog
+      setAlertsDialogContext({
+        cluster: notification.cluster,
+        namespace: notification.namespace,
+        hpaName: notification.hpaName,
+      });
+
+      // Fechar drawer de notificações
+      setNotificationDrawerOpen(false);
+
+      // Abrir dialog de alertas
+      setAlertsDialogOpen(true);
+    }
+  };
 
   return (
     <header className="h-16 bg-gradient-primary flex items-center justify-between px-6 shadow-lg flex-shrink-0">
@@ -250,7 +275,19 @@ export const Header = ({
         onMarkAsRead={markAsRead}
         onMarkAllAsRead={markAllAsRead}
         onClearAll={clearAll}
+        onNotificationClick={handleNotificationClick}
       />
+
+      {/* Alerts Dialog */}
+      {alertsDialogContext && (
+        <AlertsDialog
+          open={alertsDialogOpen}
+          onOpenChange={setAlertsDialogOpen}
+          cluster={alertsDialogContext.cluster}
+          namespace={alertsDialogContext.namespace}
+          hpaName={alertsDialogContext.hpaName}
+        />
+      )}
     </header>
   );
 };
