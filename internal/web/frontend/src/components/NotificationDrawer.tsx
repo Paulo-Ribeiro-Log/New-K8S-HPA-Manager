@@ -22,6 +22,7 @@ interface NotificationDrawerProps {
   onMarkAsRead: (id: string) => void;
   onMarkAllAsRead: () => void;
   onClearAll: () => void;
+  onNotificationClick?: (notification: InAppNotification) => void;
 }
 
 function getSeverityIcon(severity: string) {
@@ -57,7 +58,20 @@ export function NotificationDrawer({
   onMarkAsRead,
   onMarkAllAsRead,
   onClearAll,
+  onNotificationClick,
 }: NotificationDrawerProps) {
+
+  const handleNotificationClick = (notification: InAppNotification) => {
+    // Marcar como lida automaticamente ao clicar
+    if (!notification.read) {
+      onMarkAsRead(notification.id);
+    }
+
+    // Chamar callback se existir e tiver metadados
+    if (onNotificationClick && notification.cluster) {
+      onNotificationClick(notification);
+    }
+  };
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full sm:max-w-md">
@@ -111,9 +125,11 @@ export function NotificationDrawer({
               {notifications.map((notification) => (
                 <div
                   key={notification.id}
+                  onClick={() => handleNotificationClick(notification)}
                   className={cn(
                     "border rounded-lg p-3 transition-all hover:shadow-md",
-                    !notification.read && "bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800"
+                    !notification.read && "bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800",
+                    notification.cluster && "cursor-pointer hover:scale-[1.01]"
                   )}
                 >
                   <div className="flex items-start gap-3">

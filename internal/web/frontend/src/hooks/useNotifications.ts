@@ -7,6 +7,9 @@ export interface InAppNotification {
   severity: "critical" | "warning" | "info";
   timestamp: string;
   read: boolean;
+  cluster?: string;
+  namespace?: string;
+  hpaName?: string;
 }
 
 export interface NotificationsResponse {

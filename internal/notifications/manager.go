@@ -68,7 +68,7 @@ func (m *NotificationManager) NotifyAlert(alertName, severity, cluster, namespac
 	fullMessage := fmt.Sprintf("Cluster: %s\nNamespace: %s\nHPA: %s\n\n%s",
 		cluster, namespace, hpaName, message)
 
-	if err := m.inAppNotifier.AddNotification(title, fullMessage, severity); err != nil {
+	if err := m.inAppNotifier.AddNotification(title, fullMessage, severity, cluster, namespace, hpaName); err != nil {
 		return fmt.Errorf("falha ao adicionar notificação in-app: %w", err)
 	}
 

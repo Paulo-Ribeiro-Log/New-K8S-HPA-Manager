@@ -24,6 +24,10 @@ type InAppNotification struct {
 	Severity  string    `json:"severity"`
 	Timestamp time.Time `json:"timestamp"`
 	Read      bool      `json:"read"`
+	// Metadados para navegação
+	Cluster   string `json:"cluster,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	HPAName   string `json:"hpaName,omitempty"`
 }
 
 // NewInAppNotifier cria um novo notificador in-app
@@ -35,7 +39,7 @@ func NewInAppNotifier() *InAppNotifier {
 }
 
 // AddNotification adiciona uma nova notificação ao buffer
-func (n *InAppNotifier) AddNotification(title, message, severity string) error {
+func (n *InAppNotifier) AddNotification(title, message, severity, cluster, namespace, hpaName string) error {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
 
@@ -46,6 +50,9 @@ func (n *InAppNotifier) AddNotification(title, message, severity string) error {
 		Severity:  severity,
 		Timestamp: time.Now(),
 		Read:      false,
+		Cluster:   cluster,
+		Namespace: namespace,
+		HPAName:   hpaName,
 	}
 
 	// Adicionar no início (mais recente primeiro)
@@ -108,7 +115,7 @@ func (n *InAppNotifier) MarkAllAsRead() error {
 	defer n.mutex.Unlock()
 
 	for i := range n.notifications {
-		n.notifications[i].Read = false
+		n.notifications[i].Read = true
 	}
 
 	return nil
