@@ -258,6 +258,11 @@ func (s *Server) setupRoutes() {
 	api.POST("/clusters/switch-context", clusterHandler.SwitchContext)
 	api.GET("/clusters/info", clusterHandler.GetClusterInfo)
 
+	// Auto-descoberta de clusters (SSE + Sync)
+	autoDiscoverHandler := handlers.NewAutoDiscoverHandler(s.kubeManager)
+	api.POST("/clusters/autodiscover", autoDiscoverHandler.HandleAutoDiscover)       // SSE com progress em tempo real
+	api.POST("/clusters/autodiscover-sync", autoDiscoverHandler.HandleAutoDiscoverSync) // Síncrono sem SSE
+
 	// Azure
 	azureHandler := handlers.NewAzureHandler()
 	api.POST("/azure/subscription", azureHandler.SetSubscription)

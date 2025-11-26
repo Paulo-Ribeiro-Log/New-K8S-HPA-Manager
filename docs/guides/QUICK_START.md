@@ -60,6 +60,7 @@
 - ✅ **Destaque visual sutil em cards de métricas** - Background azul escuro (blue-950/30) com borda (blue-800/40) em cards de CPU e latência P95/P99 para melhor diferenciação visual do fundo dos gráficos - 16 nov 2025
 - ✅ **AlertHealthBadge com Dialog de Alertas** - Badge de health/alertas nos HPAListItems agora sempre clicável, abrindo modal AlertsDialog com detalhes completos dos alertas do Prometheus; wrapper div com stopPropagation previne propagação de clique para o Card pai - 26 nov 2025
 - ✅ **Validação VPN Otimizada** - ValidateVPNConnectivity agora testa TODOS os contextos kubectl disponíveis (não apenas -prd/-hlg), timeout aumentado para 10s, múltiplos indicadores de sucesso, redução de falsos negativos - 26 nov 2025
+- ✅ **Auto-Descoberta Web** - Sistema completo de auto-descoberta de clusters via interface Web com SSE progress streaming em tempo real, modal com progress bar, logs detalhados e botão integrado no VPNWarningBanner; comportamento idêntico ao TUI `k8s-hpa-manager autodiscover` - 26 nov 2025
 
 **Sistema de Monitoramento V2 (Novembro 2025):**
 - ✅ **MonitoringEngineV2 - Arquitetura sem Port-Forwards** - Sistema completo de monitoramento com acesso direto aos endpoints Prometheus (HTTPS público) sem necessidade de port-forwards ou VPN - 15 nov 2025
