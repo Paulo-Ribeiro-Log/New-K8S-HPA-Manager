@@ -17,6 +17,7 @@ import (
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
+	"k8s-hpa-manager/internal/notifications"
 
 	// TODO: Remover após migração completa para V2
 	// "k8s-hpa-manager/internal/monitoring/analyzer"
@@ -54,6 +55,9 @@ type Server struct {
 
 	// Monitoring Engine V2 (sem port-forwards)
 	monitoringEngineV2 *enginev2.MonitoringEngineV2
+
+	// Notification Manager (Windows Toast via PowerShell)
+	notificationManager *notifications.NotificationManager
 }
 
 // NewServer cria uma nova instância do servidor web
@@ -93,6 +97,15 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 		return nil, fmt.Errorf("failed to create history tracker: %w", err)
 	}
 
+	// Criar notification manager (Windows Toast via PowerShell/WSL2)
+	notificationManager := notifications.NewNotificationManager()
+	fmt.Println("📢 Notification Manager inicializado")
+	if notificationManager.IsEnabled() {
+		fmt.Println("   ✅ Notificações Windows habilitadas (via PowerShell)")
+	} else {
+		fmt.Println("   ⚠️  Notificações desabilitadas (não está em WSL2)")
+	}
+
 	// Configurar historyTracker no kubeManager para audit logging de rollouts
 	kubeManager.SetHistoryTracker(historyTracker)
 
@@ -109,13 +122,14 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 	fmt.Println("✅ Monitoring Engine V2 criado (sem port-forwards - acesso direto ao Prometheus)")
 
 	server := &Server{
-		router:         router,
-		kubeManager:    kubeManager,
-		port:           port,
-		token:          token,
-		lastHeartbeat:  time.Now(),
-		logBuffer:      logBuffer,
-		historyTracker: historyTracker,
+		router:              router,
+		kubeManager:         kubeManager,
+		port:                port,
+		token:               token,
+		lastHeartbeat:       time.Now(),
+		logBuffer:           logBuffer,
+		historyTracker:      historyTracker,
+		notificationManager: notificationManager,
 		// TODO: Remover após migração completa para V2
 		// monitoringEngine:   monitoringEngine,
 		// snapshotChan:       snapshotChan,
@@ -410,6 +424,13 @@ func (s *Server) setupRoutes() {
 	api.GET("/history/cordon-drain", historyHandler.GetCordonDrainHistory) // Endpoint específico para Cordon/Drain
 	api.GET("/history/:id", historyHandler.GetHistoryEntry)
 	api.DELETE("/history", historyHandler.ClearHistory)
+
+	// Notifications (Windows Toast via PowerShell/WSL2) - KISS implementation
+	notificationHandler := handlers.NewNotificationHandler(s.notificationManager)
+	api.POST("/notifications/test", notificationHandler.TestNotification)
+	api.GET("/notifications/status", notificationHandler.GetStatus)
+	api.POST("/notifications/toggle", notificationHandler.ToggleNotifications)
+	api.POST("/notifications/alert", notificationHandler.NotifyAlert)
 }
 
 // setupStatic configura servir arquivos estáticos
