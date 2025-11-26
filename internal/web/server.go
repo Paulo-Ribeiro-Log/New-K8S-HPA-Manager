@@ -425,12 +425,19 @@ func (s *Server) setupRoutes() {
 	api.GET("/history/:id", historyHandler.GetHistoryEntry)
 	api.DELETE("/history", historyHandler.ClearHistory)
 
-	// Notifications (Windows Toast via PowerShell/WSL2) - KISS implementation
+	// Notifications - KISS implementation (in-app para ambientes corporativos)
 	notificationHandler := handlers.NewNotificationHandler(s.notificationManager)
 	api.POST("/notifications/test", notificationHandler.TestNotification)
 	api.GET("/notifications/status", notificationHandler.GetStatus)
 	api.POST("/notifications/toggle", notificationHandler.ToggleNotifications)
 	api.POST("/notifications/alert", notificationHandler.NotifyAlert)
+
+	// In-App Notifications (funciona sem restrições corporativas)
+	api.GET("/notifications/in-app", notificationHandler.GetInAppNotifications)
+	api.GET("/notifications/in-app/unread", notificationHandler.GetUnreadNotifications)
+	api.PUT("/notifications/in-app/:id/read", notificationHandler.MarkNotificationAsRead)
+	api.PUT("/notifications/in-app/read-all", notificationHandler.MarkAllNotificationsAsRead)
+	api.DELETE("/notifications/in-app", notificationHandler.ClearAllNotifications)
 }
 
 // setupStatic configura servir arquivos estáticos

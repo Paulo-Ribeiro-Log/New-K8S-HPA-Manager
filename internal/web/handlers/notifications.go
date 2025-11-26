@@ -99,3 +99,62 @@ func (h *NotificationHandler) NotifyAlert(c *gin.Context) {
 		"message": "Alert notification sent",
 	})
 }
+
+// GetInAppNotifications retorna todas as notificações in-app
+func (h *NotificationHandler) GetInAppNotifications(c *gin.Context) {
+	notifier := h.notificationManager.GetInAppNotifier()
+	notifications := notifier.GetAllNotifications()
+
+	c.JSON(200, gin.H{
+		"notifications": notifications,
+		"unreadCount":   notifier.GetUnreadCount(),
+	})
+}
+
+// GetUnreadNotifications retorna notificações não lidas
+func (h *NotificationHandler) GetUnreadNotifications(c *gin.Context) {
+	notifier := h.notificationManager.GetInAppNotifier()
+	notifications := notifier.GetUnreadNotifications()
+
+	c.JSON(200, gin.H{
+		"notifications": notifications,
+		"count":         len(notifications),
+	})
+}
+
+// MarkNotificationAsRead marca uma notificação como lida
+func (h *NotificationHandler) MarkNotificationAsRead(c *gin.Context) {
+	id := c.Param("id")
+	notifier := h.notificationManager.GetInAppNotifier()
+
+	if err := notifier.MarkAsRead(id); err != nil {
+		c.JSON(404, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"message": "Notification marked as read"})
+}
+
+// MarkAllNotificationsAsRead marca todas como lidas
+func (h *NotificationHandler) MarkAllNotificationsAsRead(c *gin.Context) {
+	notifier := h.notificationManager.GetInAppNotifier()
+
+	if err := notifier.MarkAllAsRead(); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"message": "All notifications marked as read"})
+}
+
+// ClearAllNotifications limpa todas as notificações
+func (h *NotificationHandler) ClearAllNotifications(c *gin.Context) {
+	notifier := h.notificationManager.GetInAppNotifier()
+
+	if err := notifier.ClearAll(); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"message": "All notifications cleared"})
+}

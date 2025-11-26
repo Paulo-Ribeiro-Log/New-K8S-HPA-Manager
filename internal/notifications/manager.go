@@ -9,6 +9,7 @@ import (
 // NotificationManager gerencia todas as notificações da aplicação
 type NotificationManager struct {
 	windowsNotifier *WindowsNotifier
+	inAppNotifier   *InAppNotifier
 	enabled         bool
 
 	// Deduplicação de alertas (evitar spam)
@@ -23,6 +24,7 @@ type NotificationManager struct {
 func NewNotificationManager() *NotificationManager {
 	return &NotificationManager{
 		windowsNotifier: NewWindowsNotifier(),
+		inAppNotifier:   NewInAppNotifier(),
 		enabled:         true,
 		alertCache:      make(map[string]time.Time),
 		cooldownPeriod:  5 * time.Minute, // 5 minutos entre alertas idênticos
@@ -58,10 +60,16 @@ func (m *NotificationManager) NotifyAlert(alertName, severity, cluster, namespac
 		return nil
 	}
 
-	// Enviar notificação
-	err := m.windowsNotifier.SendAlertNotification(alertName, severity, cluster, namespace, hpaName, message)
-	if err != nil {
-		return fmt.Errorf("falha ao enviar notificação de alerta: %w", err)
+	// Enviar notificação Windows (tentativa - pode falhar em ambientes restritos)
+	_ = m.windowsNotifier.SendAlertNotification(alertName, severity, cluster, namespace, hpaName, message)
+
+	// SEMPRE adicionar à fila in-app (funciona sempre, sem restrições corporativas)
+	title := fmt.Sprintf("%s: %s", getEmojiForSeverity(severity), alertName)
+	fullMessage := fmt.Sprintf("Cluster: %s\nNamespace: %s\nHPA: %s\n\n%s",
+		cluster, namespace, hpaName, message)
+
+	if err := m.inAppNotifier.AddNotification(title, fullMessage, severity); err != nil {
+		return fmt.Errorf("falha ao adicionar notificação in-app: %w", err)
 	}
 
 	// Atualizar cache
@@ -73,6 +81,18 @@ func (m *NotificationManager) NotifyAlert(alertName, severity, cluster, namespac
 	go m.cleanupAlertCache()
 
 	return nil
+}
+
+// getEmojiForSeverity retorna o emoji adequado para a severidade
+func getEmojiForSeverity(severity string) string {
+	switch severity {
+	case "critical":
+		return "🔴 CRÍTICO"
+	case "warning":
+		return "🟡 AVISO"
+	default:
+		return "ℹ️ INFO"
+	}
 }
 
 // NotifyCordonDrain envia notificação de operação Cordon/Drain
@@ -135,4 +155,9 @@ func (m *NotificationManager) GetAlertCacheSize() int {
 	m.cacheMutex.RLock()
 	defer m.cacheMutex.RUnlock()
 	return len(m.alertCache)
+}
+
+// GetInAppNotifier retorna o notificador in-app
+func (m *NotificationManager) GetInAppNotifier() *InAppNotifier {
+	return m.inAppNotifier
 }
