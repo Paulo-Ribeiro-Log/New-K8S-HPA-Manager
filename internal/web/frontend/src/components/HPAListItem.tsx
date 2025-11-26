@@ -77,13 +77,15 @@ export const HPAListItem = ({
           <span>Min: <span className="font-medium text-foreground">{minReplicas}</span></span>
           <span>Max: <span className="font-medium text-foreground">{maxReplicas}</span></span>
         </div>
-        <AlertHealthBadge
-          cluster={cluster}
-          namespace={namespace}
-          hpaName={name}
-          showIcon={true}
-          className="text-xs"
-        />
+        <div onClick={(e) => e.stopPropagation()}>
+          <AlertHealthBadge
+            cluster={cluster}
+            namespace={namespace}
+            hpaName={name}
+            showIcon={true}
+            className="text-xs"
+          />
+        </div>
       </div>
     </Card>
   );

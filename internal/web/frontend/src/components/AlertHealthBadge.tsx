@@ -128,13 +128,13 @@ export function AlertHealthBadge({
     e.stopPropagation();
     if (onClick) {
       onClick();
-    } else if (totalAlerts > 0) {
-      // Abrir dialog de alertas
+    } else {
+      // Sempre abrir dialog de alertas (mesmo sem alertas ativos)
       setAlertsDialogOpen(true);
     }
   };
 
-  const isClickable = onClick || totalAlerts > 0;
+  const isClickable = true; // Sempre clicável para abrir o dialog
 
   return (
     <>
