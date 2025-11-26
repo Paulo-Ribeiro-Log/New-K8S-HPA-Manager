@@ -7,8 +7,8 @@
 
 ## Estado Atual (Novembro 2025)
 
-**Versão Atual:** v1.0.6 (Release: 15 de novembro de 2025)
-**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/tag/v1.0.6
+**Versão Atual:** v1.0.7 (Release: 26 de novembro de 2025)
+**GitHub Release:** https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/tag/v1.0.7
 
 **TUI (Terminal Interface):**
 - ✅ Interface responsiva (adapta-se ao tamanho real do terminal - mínimo 80x24)
@@ -58,6 +58,8 @@
 - ✅ **Cordon/Drain Config para Node Pools** - Sistema completo de evacuação de nodes antes de aplicar mudanças, com modal de configuração (grace period, timeout, force delete, etc.) integrado ao fluxo de Sequential Execution - 15 nov 2025
 - ✅ **Progress Bar em Tempo Real via SSE** - Sistema completo de feedback visual durante operações Cordon/Drain usando Server-Sent Events; progress bar com gradiente de cores por fase (Azul: CORDON 0-20%, Laranja: DRAIN 20-80%, Roxo: AZURE 80-95%, Verde: COMPLETE 100%); ícones animados; detalhes em tempo real (node name, pods count, timestamps) - 18 nov 2025
 - ✅ **Destaque visual sutil em cards de métricas** - Background azul escuro (blue-950/30) com borda (blue-800/40) em cards de CPU e latência P95/P99 para melhor diferenciação visual do fundo dos gráficos - 16 nov 2025
+- ✅ **AlertHealthBadge com Dialog de Alertas** - Badge de health/alertas nos HPAListItems agora sempre clicável, abrindo modal AlertsDialog com detalhes completos dos alertas do Prometheus; wrapper div com stopPropagation previne propagação de clique para o Card pai - 26 nov 2025
+- ✅ **Validação VPN Otimizada** - ValidateVPNConnectivity agora testa TODOS os contextos kubectl disponíveis (não apenas -prd/-hlg), timeout aumentado para 10s, múltiplos indicadores de sucesso, redução de falsos negativos - 26 nov 2025
 
 **Sistema de Monitoramento V2 (Novembro 2025):**
 - ✅ **MonitoringEngineV2 - Arquitetura sem Port-Forwards** - Sistema completo de monitoramento com acesso direto aos endpoints Prometheus (HTTPS público) sem necessidade de port-forwards ou VPN - 15 nov 2025
