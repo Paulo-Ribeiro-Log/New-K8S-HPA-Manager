@@ -23,6 +23,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 8. [🚀 Continuing Development](docs/guides/CONTINUING_DEV.md) - Context templates e best practices
 9. [⚡ Async Optimization Plan](docs/guides/ASYNC_OPTIMIZATION_PLAN.md) - Plano de otimização assíncrona da auto descoberta
 10. [📦 Installation Scripts](docs/guides/INSTALLATION_SCRIPTS.md) - Scripts de instalação (release vs main)
+11. [🔔 Windows Notifications](docs/guides/WINDOWS_NOTIFICATIONS.md) - Sistema de notificações via PowerShell/WSL2
 
 ### 📚 Histórico e Referências
 11. [📜 Histórico de Correções](docs/history/CHANGELOG.md) - Correções e refatorações principais
