@@ -102,6 +102,7 @@ const Index = ({ onLogout }: IndexProps) => {
   // HPA Selection state
   const [hpaSelectionMode, setHpaSelectionMode] = useState(false);
   const [selectedHPAsForExport, setSelectedHPAsForExport] = useState<Set<string>>(new Set());
+  const [selectedHPAObjects, setSelectedHPAObjects] = useState<HPA[]>([]);
 
   // Estado para forçar re-renderização quando HPAs monitorados mudam
   const [monitoringRefreshKey, setMonitoringRefreshKey] = useState(0);
@@ -543,7 +544,7 @@ const Index = ({ onLogout }: IndexProps) => {
               title: "HPA Editor",
               titleAction: !selectedHPA ? (
                 <HPAExportButton
-                  hpas={filteredHPAs}
+                  hpas={selectedHPAsForExport.size > 0 ? selectedHPAObjects : filteredHPAs}
                   selectionMode={hpaSelectionMode}
                   selectedHPAs={selectedHPAsForExport}
                   onToggleSelectionMode={() => {
@@ -551,9 +552,13 @@ const Index = ({ onLogout }: IndexProps) => {
                     // Limpar seleção ao sair do modo
                     if (hpaSelectionMode) {
                       setSelectedHPAsForExport(new Set());
+                      setSelectedHPAObjects([]);
                     }
                   }}
-                  onClearSelection={() => setSelectedHPAsForExport(new Set())}
+                  onClearSelection={() => {
+                    setSelectedHPAsForExport(new Set());
+                    setSelectedHPAObjects([]);
+                  }}
                 />
               ) : undefined,
               content: selectedHPA ? (
@@ -576,8 +581,14 @@ const Index = ({ onLogout }: IndexProps) => {
 
                       if (newSet.has(hpaKey)) {
                         newSet.delete(hpaKey);
+                        // Remover do array de objetos
+                        setSelectedHPAObjects(prev => prev.filter(h => 
+                          `${h.cluster}-${h.namespace}-${h.name}` !== hpaKey
+                        ));
                       } else {
                         newSet.add(hpaKey);
+                        // Adicionar ao array de objetos
+                        setSelectedHPAObjects(prev => [...prev, hpa]);
                       }
 
                       setSelectedHPAsForExport(newSet);
