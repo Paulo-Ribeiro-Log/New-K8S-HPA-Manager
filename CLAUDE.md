@@ -117,6 +117,7 @@ k8s-hpa-manager/
 ✅ **Navegação Inteligente** - Navegação direta de Monitoramento → HPA Editor com 1 clique
 ✅ **Métricas Corrigidas** - CPU/Memória agora calculam média correta (0-100%)
 ✅ **VM Specs Display** - Exibe vCPUs e memória de cada VM Size no Node Pool Editor
+✅ **Notificações In-App Clicáveis** - Sistema de notificações web com navegação contextual para AlertsDialog
 
 ---
 
@@ -126,12 +127,13 @@ k8s-hpa-manager/
 ```
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
 
-Versão: v1.1.1+ (Nov 2025)
-Tech: Go 1.24 + Bubble Tea (TUI) + React 18.3 (Web)
+Versão: v1.1.4+ (Nov 2025)
+Tech: Go 1.23 + Bubble Tea (TUI) + React 18.3 (Web)
 Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
 Recent Updates:
+- Notificações In-App Clicáveis: Sistema web com navegação contextual para AlertsDialog
 - VM Specs: Exibe vCPUs e memória no Node Pool Editor (150+ Azure VMs catalogadas)
 - Navegação inteligente: Monitoramento → HPA Editor com 1 clique (cluster/namespace/HPA automático)
 - Ícones de monitoramento atualizam instantaneamente ao adicionar HPA
