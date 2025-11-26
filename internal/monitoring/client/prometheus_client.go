@@ -477,9 +477,9 @@ func (c *PrometheusClient) GetHPAHistoricalMetrics(ctx context.Context, namespac
 		historicalMetrics["max_replicas"] = result
 	}
 
-	// CPU usage ao longo do tempo
+	// CPU usage ao longo do tempo (usa avg() para evitar valores > 100%)
 	cpuQuery := fmt.Sprintf(
-		`sum(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s.*"}[1m])) / sum(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="cpu"}) * 100`,
+		`avg(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s.*",container!="",container!="POD"}[1m]) / on(pod,container) group_left() kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="cpu"}) * 100`,
 		namespace, hpaName, namespace, hpaName,
 	)
 
@@ -488,9 +488,9 @@ func (c *PrometheusClient) GetHPAHistoricalMetrics(ctx context.Context, namespac
 		historicalMetrics["cpu"] = result
 	}
 
-	// Memory usage ao longo do tempo
+	// Memory usage ao longo do tempo (usa avg() para evitar valores > 100%)
 	memoryQuery := fmt.Sprintf(
-		`sum(container_memory_working_set_bytes{namespace="%s",pod=~"%s.*"}) / sum(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"}) * 100`,
+		`avg(container_memory_working_set_bytes{namespace="%s",pod=~"%s.*",container!="",container!="POD"} / on(pod,container) group_left() kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"}) * 100`,
 		namespace, hpaName, namespace, hpaName,
 	)
 
