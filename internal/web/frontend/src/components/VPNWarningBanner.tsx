@@ -1,7 +1,8 @@
-import { AlertTriangle, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, RefreshCw, X, Search } from "lucide-react";
 import { useState, useEffect } from "react";
 import { Button } from "./ui/button";
 import { apiClient } from "@/lib/api/client";
+import { AutoDiscoverDialog } from "@/components/AutoDiscoverDialog";
 
 interface VPNWarningBannerProps {
   onDismiss?: () => void;
@@ -9,6 +10,7 @@ interface VPNWarningBannerProps {
 
 export function VPNWarningBanner({ onDismiss }: VPNWarningBannerProps) {
   const [isRetrying, setIsRetrying] = useState(false);
+  const [showAutoDiscover, setShowAutoDiscover] = useState(false);
 
   const handleRetry = async () => {
     setIsRetrying(true);
@@ -27,7 +29,17 @@ export function VPNWarningBanner({ onDismiss }: VPNWarningBannerProps) {
   };
 
   return (
-    <div className="bg-red-900/20 border-l-4 border-red-500 p-4 mb-4 rounded-r-lg">
+    <>
+      <AutoDiscoverDialog
+        open={showAutoDiscover}
+        onOpenChange={setShowAutoDiscover}
+        onComplete={() => {
+          // Após completar, tentar revalidar
+          handleRetry();
+        }}
+      />
+
+      <div className="bg-red-900/20 border-l-4 border-red-500 p-4 mb-4 rounded-r-lg">
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-start gap-3 flex-1">
           <AlertTriangle className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
@@ -46,7 +58,7 @@ export function VPNWarningBanner({ onDismiss }: VPNWarningBannerProps) {
               <div className="flex items-center gap-2">
                 <span className="text-red-400">•</span>
                 <span>
-                  Após conectar, execute:{" "}
+                  Após conectar, clique em "Auto-Descobrir Clusters" ou execute:{" "}
                   <code className="bg-muted px-1 py-0.5 rounded text-xs">
                     new-k8s-hpa autodiscover
                   </code>
@@ -61,6 +73,16 @@ export function VPNWarningBanner({ onDismiss }: VPNWarningBannerProps) {
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => setShowAutoDiscover(true)}
+            className="bg-blue-600 hover:bg-blue-700"
+          >
+            <Search className="w-4 h-4 mr-2" />
+            Auto-Descobrir Clusters
+          </Button>
+
           <Button
             variant="outline"
             size="sm"
@@ -94,5 +116,6 @@ export function VPNWarningBanner({ onDismiss }: VPNWarningBannerProps) {
         </div>
       </div>
     </div>
+    </>
   );
 }
