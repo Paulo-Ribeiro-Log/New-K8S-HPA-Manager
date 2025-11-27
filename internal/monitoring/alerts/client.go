@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -182,6 +183,10 @@ func (c *Client) GetHPAAlerts() ([]HPAAlert, error) {
 
 	var hpaAlerts []HPAAlert
 	for _, alert := range alerts {
+		// LOG: Mostrar todos os labels disponíveis para debug
+		fmt.Printf("[DEBUG] Alert '%s' labels: %+v\n", alert.Labels["alertname"], alert.Labels)
+		fmt.Printf("[DEBUG] Alert '%s' annotations: %+v\n", alert.Labels["alertname"], alert.Annotations)
+
 		hpaAlert := HPAAlert{
 			AlertName:   alert.Labels["alertname"],
 			Severity:    alert.Labels["severity"],
@@ -191,6 +196,25 @@ func (c *Client) GetHPAAlerts() ([]HPAAlert, error) {
 			Deployment:  alert.Labels["deployment"],
 			Pod:         alert.Labels["pod"],
 			Container:   alert.Labels["container"],
+		}
+
+		// Tentar extrair HPA name de diferentes labels
+		if hpaName := alert.Labels["horizontalpodautoscaler"]; hpaName != "" {
+			hpaAlert.HPAName = hpaName
+			fmt.Printf("[DEBUG] HPA name from 'horizontalpodautoscaler' label: %s\n", hpaName)
+		} else if hpaName := alert.Labels["hpa"]; hpaName != "" {
+			hpaAlert.HPAName = hpaName
+			fmt.Printf("[DEBUG] HPA name from 'hpa' label: %s\n", hpaName)
+		} else if deployment := alert.Labels["deployment"]; deployment != "" {
+			// Fallback: usar deployment name como HPA name (comum quando HPA gerencia deployment)
+			hpaAlert.HPAName = deployment
+			fmt.Printf("[DEBUG] HPA name from 'deployment' label: %s\n", deployment)
+		} else if pod := alert.Labels["pod"]; pod != "" {
+			// Fallback: extrair da primeira parte do pod name (ex: "app-name-abc123-xyz" → "app-name")
+			hpaAlert.HPAName = extractHPAFromPodName(pod)
+			fmt.Printf("[DEBUG] HPA name extracted from pod '%s': %s\n", pod, hpaAlert.HPAName)
+		} else {
+			fmt.Printf("[DEBUG] No HPA name found for alert '%s'\n", alert.Labels["alertname"])
 		}
 
 		if alert.ActiveAt != nil {
@@ -318,6 +342,25 @@ func (c *Client) getMitigationForHPAAlert(alertName string) *MitigationSuggestio
 		Priority:      "medium",
 		Steps:         []string{"Analisar alerta e contexto", "Definir ação apropriada"},
 	}
+}
+
+// extractHPAFromPodName extrai o nome base do HPA a partir do nome do pod
+// Exemplo: "app-name-abc123-xyz" → "app-name"
+func extractHPAFromPodName(podName string) string {
+	if podName == "" {
+		return ""
+	}
+
+	// Pods gerados por deployment/replicaset têm formato: <nome>-<hash>-<hash>
+	// Remover os 2 últimos segmentos (hashes)
+	parts := strings.Split(podName, "-")
+	if len(parts) <= 2 {
+		return podName // Retornar nome completo se não houver hashes
+	}
+
+	// Remover os 2 últimos segmentos
+	baseParts := parts[:len(parts)-2]
+	return strings.Join(baseParts, "-")
 }
 
 // getMitigationForNodeAlert retorna sugestão de mitigação para alertas de Node Pool

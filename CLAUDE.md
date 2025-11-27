@@ -115,9 +115,10 @@ k8s-hpa-manager/
 ✅ **Auto-Updates** - Sistema automático de detecção e instalação
 ✅ **Autodiscover Otimizado** - Busca paralela de subscriptions (10x mais rápido)
 ✅ **Navegação Inteligente** - Navegação direta de Monitoramento → HPA Editor com 1 clique
-✅ **Métricas Corrigidas** - CPU/Memória agora calculam média correta (0-100%)
+✅ **Métricas Corrigidas** - CPU/Memória agora calculam média correta (0-100%) com avg() ao invés de sum()
 ✅ **VM Specs Display** - Exibe vCPUs e memória de cada VM Size no Node Pool Editor
 ✅ **Notificações In-App Clicáveis** - Sistema de notificações web com navegação contextual para AlertsDialog
+✅ **AlertsDialog Aprimorado** - Card de contexto destacado com extração inteligente de HPA/Pod/Container/Deployment
 
 ---
 
@@ -133,13 +134,12 @@ Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
 Recent Updates:
+- Métricas Prometheus CORRIGIDAS: CPU/Memória histórica agora usam avg() ao invés de sum() (0-100%)
+- AlertsDialog Aprimorado: Card de contexto destacado com extração inteligente de HPA/Pod/Container
+- Card P95 de Latência removido (sem dados de latência disponíveis)
 - Notificações In-App Clicáveis: Sistema web com navegação contextual para AlertsDialog
 - VM Specs: Exibe vCPUs e memória no Node Pool Editor (150+ Azure VMs catalogadas)
 - Navegação inteligente: Monitoramento → HPA Editor com 1 clique (cluster/namespace/HPA automático)
-- Ícones de monitoramento atualizam instantaneamente ao adicionar HPA
-- Métricas Prometheus corrigidas: CPU/Memória agora usam avg() ao invés de sum() (0-100%)
-- Sistema Cordon/Drain com progress em tempo real via SSE
-- AlertManager integrado ao painel de monitoramento
 ```
 
 **Ver documentação completa:**

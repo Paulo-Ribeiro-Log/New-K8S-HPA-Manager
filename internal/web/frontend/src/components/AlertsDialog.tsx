@@ -301,21 +301,53 @@ function AlertCard({ alert, type }: AlertCardProps) {
                 </Badge>
               )}
             </div>
-            <p className="text-sm text-muted-foreground mb-2">{alert.description}</p>
-            <div className="flex items-center gap-4 text-xs text-muted-foreground">
-              <span className="flex items-center gap-1">
-                <Clock className="h-3 w-3" />
-                Ativo desde: {formattedDate}
-              </span>
-              {type === "hpa" && alert.namespace && (
-                <span>Namespace: {alert.namespace}</span>
-              )}
-              {type === "hpa" && alert.deployment && (
-                <span>Deployment: {alert.deployment}</span>
-              )}
-              {type === "nodepool" && alert.node && (
-                <span>Node: {alert.node}</span>
-              )}
+            <p className="text-sm text-muted-foreground mb-3">{alert.description}</p>
+
+            {/* Informações de contexto em um card destacado */}
+            <div className="bg-muted/30 rounded-md p-3 mb-3 border border-muted">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                  <span className="text-muted-foreground">Ativo desde:</span>
+                  <span className="font-medium">{formattedDate}</span>
+                </div>
+                {type === "hpa" && alert.namespace && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">Namespace:</span>
+                    <span className="font-medium">{alert.namespace}</span>
+                  </div>
+                )}
+                {type === "hpa" && alert.hpaName && (
+                  <div className="flex items-center gap-1.5 col-span-full">
+                    <span className="text-muted-foreground">HPA:</span>
+                    <span className="font-semibold text-primary">{alert.hpaName}</span>
+                  </div>
+                )}
+                {type === "hpa" && alert.deployment && (
+                  <div className="flex items-center gap-1.5 col-span-full">
+                    <span className="text-muted-foreground">Deployment:</span>
+                    <span className="font-semibold text-primary">{alert.deployment}</span>
+                  </div>
+                )}
+                {type === "hpa" && alert.pod && (
+                  <div className="flex items-center gap-1.5 col-span-full">
+                    <span className="text-muted-foreground">Pod:</span>
+                    <span className="font-medium font-mono text-xs">{alert.pod}</span>
+                  </div>
+                )}
+                {type === "hpa" && alert.container && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">Container:</span>
+                    <span className="font-medium">{alert.container}</span>
+                  </div>
+                )}
+                {type === "nodepool" && alert.node && (
+                  <div className="flex items-center gap-1.5 col-span-full">
+                    <span className="text-muted-foreground">Node:</span>
+                    <span className="font-medium font-mono text-xs">{alert.node}</span>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
