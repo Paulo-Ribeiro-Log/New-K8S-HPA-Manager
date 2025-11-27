@@ -848,13 +848,13 @@ export function MetricsPanel({
                   percentValue={cpuStats.min}
                   limitValue={snapshotWithResources?.cpu_limit}
                 />
-                {/* Card de Latência P95/P99 (sempre visível, mesmo sem dados) */}
-                <LatencyCard
+                {/* Card de Latência P95/P99 oculto - não é útil sem dados de latência */}
+                {/* <LatencyCard
                   icon={BarChart3}
                   stats={latencyStats}
                   percentile={latencyView}
                   onPercentileChange={setLatencyView}
-                />
+                /> */}
                 {/* Botão de Alertas */}
                 <div className="px-2.5 py-2 rounded-lg border bg-blue-950/30 border-blue-800/40">
                   <div className="flex items-center gap-1.5 mb-1">
@@ -1141,10 +1141,11 @@ export function MetricsPanel({
                     <div className="text-muted-foreground">Mínimo</div>
                     <div className="font-semibold text-sm">{memoryStats.min.toFixed(1)}%</div>
                   </div>
-                  <div className="text-center">
+                  {/* Card P95 oculto - não é útil para análise de memória */}
+                  {/* <div className="text-center">
                     <div className="text-muted-foreground">P95</div>
                     <div className="font-semibold text-sm">{memoryStats.p95.toFixed(1)}%</div>
-                  </div>
+                  </div> */}
                 </div>
               </div>
 
