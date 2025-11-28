@@ -449,7 +449,7 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 
 		snapshot := gin.H{
 			"timestamp":        timestampISO, // ISO8601 string (ex: "2025-11-18T18:01:28-03:00")
-			"replicas":         replicas,
+			"replicas_current": replicas,
 			"replicas_desired": 0,
 			"replicas_min":     0,
 			"replicas_max":     0,

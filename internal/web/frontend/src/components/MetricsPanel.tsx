@@ -116,8 +116,10 @@ export function MetricsPanel({
   const [alertsDialogOpen, setAlertsDialogOpen] = useState(false);
   const [expandedChart, setExpandedChart] = useState<"cpu" | "memory" | "replicas" | null>(null);
   const [zoomDomain, setZoomDomain] = useState<{ start: number; end: number } | null>(null);
-  const [refAreaLeft, setRefAreaLeft] = useState<string>("");
-  const [refAreaRight, setRefAreaRight] = useState<string>("");
+  const [selectedArea, setSelectedArea] = useState<{ start: number; end: number } | null>(null);
+  const [zoomLevel, setZoomLevel] = useState<number>(1); // 1 = sem zoom, maior = mais zoom
+  const [refAreaLeft, setRefAreaLeft] = useState<number | null>(null);
+  const [refAreaRight, setRefAreaRight] = useState<number | null>(null);
 
   // Buscar alertas específicos deste HPA filtrados pelo período selecionado
   const { data: alerts } = useHPASpecificAlertsWithDuration(cluster, namespace, hpaName, duration);
@@ -757,18 +759,51 @@ export function MetricsPanel({
     );
   };
 
-  const handleZoomIn = () => {
+  // Aplicar zoom baseado na área selecionada e no nível de zoom
+  const applyZoom = (level: number, area: { start: number; end: number } | null = null) => {
     if (chartData.length === 0) return;
-    
-    const current = zoomDomain || {
+
+    // Se temos uma área específica (seleção do usuário), usa ela
+    if (area) {
+      const center = (area.start + area.end) / 2;
+      const baseRange = area.end - area.start;
+      const zoomedRange = baseRange / level;
+
+      setZoomDomain({
+        start: center - zoomedRange / 2,
+        end: center + zoomedRange / 2
+      });
+      return;
+    }
+
+    // Senão, aplica zoom na região atual ou no gráfico completo
+    const currentDomain = zoomDomain || {
       start: chartData[0].timestamp,
       end: chartData[chartData.length - 1].timestamp
     };
-    
-    const range = current.end - current.start;
-    const newRange = range * 0.75; // Zoom in 25% (mais suave)
-    const center = (current.start + current.end) / 2;
-    
+
+    const center = (currentDomain.start + currentDomain.end) / 2;
+    const baseRange = currentDomain.end - currentDomain.start;
+    const zoomedRange = baseRange / level;
+
+    setZoomDomain({
+      start: center - zoomedRange / 2,
+      end: center + zoomedRange / 2
+    });
+  };
+
+  const handleZoomIn = () => {
+    if (chartData.length === 0) return;
+
+    const currentDomain = zoomDomain || {
+      start: chartData[0].timestamp,
+      end: chartData[chartData.length - 1].timestamp
+    };
+
+    const center = (currentDomain.start + currentDomain.end) / 2;
+    const currentRange = currentDomain.end - currentDomain.start;
+    const newRange = currentRange * 0.75; // Reduz 25% (zoom in)
+
     setZoomDomain({
       start: center - newRange / 2,
       end: center + newRange / 2
@@ -777,83 +812,116 @@ export function MetricsPanel({
 
   const handleZoomOut = () => {
     if (chartData.length === 0) return;
-    
-    const fullRange = {
-      start: chartData[0].timestamp,
-      end: chartData[chartData.length - 1].timestamp
-    };
-    
+
     if (!zoomDomain) {
-      // Já está no máximo
+      // Já está no zoom completo
       return;
     }
-    
-    const range = zoomDomain.end - zoomDomain.start;
-    const newRange = Math.min(range * 1.33, fullRange.end - fullRange.start); // Zoom out 33% (mais suave)
+
     const center = (zoomDomain.start + zoomDomain.end) / 2;
-    
-    const newStart = Math.max(fullRange.start, center - newRange / 2);
-    const newEnd = Math.min(fullRange.end, center + newRange / 2);
-    
-    // Se chegou ao range completo, resetar
-    if (newStart === fullRange.start && newEnd === fullRange.end) {
+    const currentRange = zoomDomain.end - zoomDomain.start;
+    const newRange = currentRange * 1.33; // Aumenta 33% (zoom out)
+
+    // Verificar se o novo range ultrapassa os limites dos dados
+    const fullStart = chartData[0].timestamp;
+    const fullEnd = chartData[chartData.length - 1].timestamp;
+    const fullRange = fullEnd - fullStart;
+
+    if (newRange >= fullRange) {
+      // Reset para visualização completa
       setZoomDomain(null);
+      setSelectedArea(null);
+      setZoomLevel(1);
     } else {
-      setZoomDomain({ start: newStart, end: newEnd });
+      setZoomDomain({
+        start: Math.max(fullStart, center - newRange / 2),
+        end: Math.min(fullEnd, center + newRange / 2)
+      });
     }
   };
 
   const handleZoomReset = () => {
     setZoomDomain(null);
-    setRefAreaLeft("");
-    setRefAreaRight("");
+    setSelectedArea(null);
+    setZoomLevel(1);
+    setRefAreaLeft(null);
+    setRefAreaRight(null);
   };
 
   // Funções para seleção de área (como no Grafana)
   const handleMouseDown = (e: any) => {
-    if (e && e.activeLabel) {
-      setRefAreaLeft(e.activeLabel);
-      setRefAreaRight(e.activeLabel);
+    if (e && e.activeTooltipIndex !== undefined) {
+      setRefAreaLeft(e.activeTooltipIndex);
+      setRefAreaRight(e.activeTooltipIndex);
     }
   };
 
   const handleMouseMove = (e: any) => {
-    if (refAreaLeft && e && e.activeLabel) {
-      setRefAreaRight(e.activeLabel);
+    if (refAreaLeft !== null && e && e.activeTooltipIndex !== undefined) {
+      setRefAreaRight(e.activeTooltipIndex);
     }
   };
 
   const handleMouseUp = () => {
-    if (refAreaLeft && refAreaRight && refAreaLeft !== refAreaRight) {
-      // Encontrar os índices correspondentes aos timestamps
-      const leftIndex = chartData.findIndex(d => d.time === refAreaLeft);
-      const rightIndex = chartData.findIndex(d => d.time === refAreaRight);
-      
-      if (leftIndex !== -1 && rightIndex !== -1) {
-        const startIndex = Math.min(leftIndex, rightIndex);
-        const endIndex = Math.max(leftIndex, rightIndex);
-        
-        const start = chartData[startIndex].timestamp;
-        const end = chartData[endIndex].timestamp;
-        
+    if (refAreaLeft !== null && refAreaRight !== null && refAreaLeft !== refAreaRight) {
+      // Usar índices diretos dos dados sendo exibidos
+      const displayedData = zoomDomain ? zoomedData : chartData;
+
+      if (refAreaLeft >= 0 && refAreaRight >= 0 &&
+          refAreaLeft < displayedData.length && refAreaRight < displayedData.length) {
+
+        const startIndex = Math.min(refAreaLeft, refAreaRight);
+        const endIndex = Math.max(refAreaLeft, refAreaRight);
+
+        const start = displayedData[startIndex].timestamp;
+        const end = displayedData[endIndex].timestamp;
+
+        // Define a área selecionada e aplica zoom
+        setSelectedArea({ start, end });
         setZoomDomain({ start, end });
+        setZoomLevel(1);
       }
+
+      // Limpar seleção visual
+      setRefAreaLeft(null);
+      setRefAreaRight(null);
+    } else {
+      setRefAreaLeft(null);
+      setRefAreaRight(null);
     }
-    
-    setRefAreaLeft("");
-    setRefAreaRight("");
   };
 
   // Reset zoom quando trocar de gráfico ou fechar modal
   useEffect(() => {
     if (expandedChart === null) {
       setZoomDomain(null);
-      setRefAreaLeft("");
-      setRefAreaRight("");
+      setSelectedArea(null);
+      setZoomLevel(1);
+      setRefAreaLeft(null);
+      setRefAreaRight(null);
     }
   }, [expandedChart]);
 
   const zoomedData = getZoomedData();
+
+  // Helper para converter índices em valores de time para o ReferenceArea
+  const getRefAreaValues = () => {
+    if (refAreaLeft === null || refAreaRight === null) return null;
+
+    const displayedData = zoomDomain ? zoomedData : chartData;
+
+    if (refAreaLeft >= 0 && refAreaRight >= 0 &&
+        refAreaLeft < displayedData.length && refAreaRight < displayedData.length) {
+      return {
+        x1: displayedData[refAreaLeft].time,
+        x2: displayedData[refAreaRight].time
+      };
+    }
+
+    return null;
+  };
+
+  const refAreaValues = getRefAreaValues();
 
   return (
     <Card className={className}>
@@ -1410,7 +1478,7 @@ export function MetricsPanel({
 
       {/* Dialog de Gráfico Expandido */}
       <Dialog open={expandedChart !== null} onOpenChange={(open) => !open && setExpandedChart(null)}>
-        <DialogContent className="max-w-[95vw] max-h-[95vh] p-6" hideCloseButton>
+        <DialogContent className="max-w-[95vw] max-h-[95vh] p-6">
           <DialogHeader>
             <div className="flex items-center justify-between gap-4">
               <DialogTitle className="flex items-center gap-2">
@@ -1503,14 +1571,6 @@ export function MetricsPanel({
                     <Minimize2 className="h-4 w-4" />
                   </Button>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setExpandedChart(null)}
-                  className="h-8 w-8"
-                >
-                  <X className="h-4 w-4" />
-                </Button>
               </div>
             </div>
           </DialogHeader>
@@ -1530,14 +1590,15 @@ export function MetricsPanel({
                     </span>
                   )}
                 </div>
-                <ResponsiveContainer width="100%" height={600}>
-                  <AreaChart 
-                    data={zoomedData} 
-                    isAnimationActive={false}
-                    onMouseDown={handleMouseDown}
-                    onMouseMove={handleMouseMove}
-                    onMouseUp={handleMouseUp}
-                  >
+                <div onMouseDown={(e) => e.preventDefault()}>
+                  <ResponsiveContainer width="100%" height={600}>
+                    <AreaChart 
+                      data={zoomedData} 
+                      isAnimationActive={false}
+                      onMouseDown={handleMouseDown}
+                      onMouseMove={handleMouseMove}
+                      onMouseUp={handleMouseUp}
+                    >
                     <defs>
                       <linearGradient id="cpuGradientExpanded" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
@@ -1580,10 +1641,10 @@ export function MetricsPanel({
                     />
                     <Line type="monotone" dataKey="cpuYesterday" name="CPU D-1" stroke="#9ca3af" strokeWidth={2} strokeDasharray="8 4" dot={false} unit="%" connectNulls isAnimationActive={false} />
                     <Area type="monotone" dataKey="cpuCurrent" name="CPU Atual" stroke="#3b82f6" strokeWidth={2} fill="url(#cpuGradientExpanded)" unit="%" isAnimationActive={false} />
-                    {refAreaLeft && refAreaRight && (
+                    {refAreaValues && (
                       <ReferenceArea
-                        x1={refAreaLeft}
-                        x2={refAreaRight}
+                        x1={refAreaValues.x1}
+                        x2={refAreaValues.x2}
                         strokeOpacity={0.3}
                         fill="#3b82f6"
                         fillOpacity={0.3}
@@ -1591,6 +1652,7 @@ export function MetricsPanel({
                     )}
                   </AreaChart>
                 </ResponsiveContainer>
+                </div>
               </div>
             )}
 
@@ -1609,7 +1671,8 @@ export function MetricsPanel({
                     </span>
                   )}
                 </div>
-                <ResponsiveContainer width="100%" height={600}>
+                <div onMouseDown={(e) => e.preventDefault()}>
+                  <ResponsiveContainer width="100%" height={600}>
                   <AreaChart 
                     data={zoomedData} 
                     isAnimationActive={false}
@@ -1659,17 +1722,18 @@ export function MetricsPanel({
                     />
                     <Line type="monotone" dataKey="memoryYesterday" name="Memória D-1" stroke="#9ca3af" strokeWidth={2} strokeDasharray="8 4" dot={false} unit="%" connectNulls isAnimationActive={false} />
                     <Area type="monotone" dataKey="memoryCurrent" name="Memória Atual" stroke="#8b5cf6" strokeWidth={2} fill="url(#memoryGradientExpanded)" unit="%" isAnimationActive={false} />
-                    {refAreaLeft && refAreaRight && (
+                    {refAreaValues && (
                       <ReferenceArea
-                        x1={refAreaLeft}
-                        x2={refAreaRight}
+                        x1={refAreaValues.x1}
+                        x2={refAreaValues.x2}
                         strokeOpacity={0.3}
                         fill="#8b5cf6"
                         fillOpacity={0.3}
                       />
                     )}
                   </AreaChart>
-                </ResponsiveContainer>
+                  </ResponsiveContainer>
+                </div>
                 <div className="mt-4 pt-3 border-t flex items-center justify-around text-sm">
                   <div className="text-center">
                     <div className="text-muted-foreground">Atual</div>
@@ -1694,6 +1758,7 @@ export function MetricsPanel({
             {/* Gráfico de Replicas Expandido */}
             {expandedChart === "replicas" && (
               <div>
+                <div onMouseDown={(e) => e.preventDefault()}>
                 <ResponsiveContainer width="100%" height={600}>
                   <LineChart 
                     data={zoomedData} 
@@ -1746,10 +1811,10 @@ export function MetricsPanel({
                       label={{ value: `Max: ${replicaBounds.max}`, position: "right", fill: "#ef4444", fontSize: 12 }}
                     />
                     <Line type="stepAfter" dataKey="replicasCurrent" name="Réplicas Atuais" stroke="#3b82f6" strokeWidth={2} dot={false} unit="" connectNulls isAnimationActive={false} />
-                    {refAreaLeft && refAreaRight && (
+                    {refAreaValues && (
                       <ReferenceArea
-                        x1={refAreaLeft}
-                        x2={refAreaRight}
+                        x1={refAreaValues.x1}
+                        x2={refAreaValues.x2}
                         strokeOpacity={0.3}
                         fill="#3b82f6"
                         fillOpacity={0.3}
@@ -1757,6 +1822,7 @@ export function MetricsPanel({
                     )}
                   </LineChart>
                 </ResponsiveContainer>
+                </div>
                 <div className="mt-4 pt-3 border-t flex items-center justify-around text-sm">
                   <div className="text-center">
                     <div className="text-muted-foreground">Min (HPA)</div>
