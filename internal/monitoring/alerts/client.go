@@ -159,21 +159,10 @@ func (c *Client) GetAlertSummary() (*AlertSummary, error) {
 
 // GetHPAAlerts busca alertas relevantes para HPAs
 func (c *Client) GetHPAAlerts() ([]HPAAlert, error) {
-	// Nomes de alertas relevantes para HPAs
-	hpaAlertNames := []string{
-		"KubeHpaMaxedOut",
-		"KubeHpaReplicasMismatch",
-		"CPUThrottlingHigh",
-		"Eventos OOMKilled",
-		"Eventos CrashLoopBackOff",
-		"KubePodCrashLooping",
-		"KubePodNotReady",
-		"KubeDeploymentReplicasMismatch",
-	}
-
+	// Buscar TODOS os alertas ativos, sem filtrar por nome
+	// Isso garante que nenhum alerta seja perdido
 	filter := AlertFilter{
-		AlertNames: hpaAlertNames,
-		State:      []string{"firing"},
+		State: []string{"firing"},
 	}
 
 	alerts, err := c.GetAlertsByFilter(filter)
@@ -232,29 +221,19 @@ func (c *Client) GetHPAAlerts() ([]HPAAlert, error) {
 
 // GetNodePoolAlerts busca alertas relevantes para Node Pools
 func (c *Client) GetNodePoolAlerts() ([]NodePoolAlert, error) {
-	// Nomes de alertas relevantes para Node Pools
-	nodeAlertNames := []string{
-		"KubeNodeNotReady",
-		"KubeNodeUnreachable",
-		"KubeletDown",
-		"KubeletTooManyPods",
-		"NodeFilesystemAlmostOutOfSpace",
-		"NodeFilesystemSpaceFillingUp",
-		"KubeNodeReadinessFlapping",
-		"KubeletPlegDurationHigh",
-		"KubeletPodStartUpLatencyHigh",
-		"NodeHighNumberConntrackEntriesUsed",
-		"NodeNetworkInterfaceFlapping",
-	}
-
-	filter := AlertFilter{
-		AlertNames: nodeAlertNames,
-		State:      []string{"firing"},
-	}
-
-	alerts, err := c.GetAlertsByFilter(filter)
+	// Buscar TODOS os alertas ativos relacionados a nodes
+	// Filtramos apenas por alertas que têm label 'node' para evitar misturar com HPA alerts
+	allAlerts, err := c.GetAlerts()
 	if err != nil {
 		return nil, err
+	}
+
+	// Filtrar alertas que tenham label 'node' e estejam firing
+	var alerts []Alert
+	for _, alert := range allAlerts {
+		if alert.State == "firing" && alert.Labels["node"] != "" {
+			alerts = append(alerts, alert)
+		}
 	}
 
 	var nodeAlerts []NodePoolAlert
@@ -335,7 +314,35 @@ func (c *Client) getMitigationForHPAAlert(alertName string) *MitigationSuggestio
 		return &mitigation
 	}
 
-	// Default para alertas desconhecidos
+	// Default inteligente baseado em padrões comuns
+	if strings.Contains(strings.ToLower(alertName), "oom") || strings.Contains(strings.ToLower(alertName), "memory") {
+		return &MitigationSuggestion{
+			AutoMitigable: true,
+			Action:        "Aumentar memory limit",
+			Priority:      "high",
+			Steps:         []string{"Analisar uso de memória", "Aumentar resources.limits.memory", "Aplicar mudança"},
+		}
+	}
+
+	if strings.Contains(strings.ToLower(alertName), "cpu") || strings.Contains(strings.ToLower(alertName), "throttl") {
+		return &MitigationSuggestion{
+			AutoMitigable: true,
+			Action:        "Aumentar CPU limit ou replicas",
+			Priority:      "medium",
+			Steps:         []string{"Analisar uso de CPU", "Aumentar resources.limits.cpu ou maxReplicas", "Aplicar mudança"},
+		}
+	}
+
+	if strings.Contains(strings.ToLower(alertName), "hpa") {
+		return &MitigationSuggestion{
+			AutoMitigable: true,
+			Action:        "Ajustar configuração do HPA",
+			Priority:      "medium",
+			Steps:         []string{"Revisar métricas do HPA", "Ajustar min/maxReplicas ou thresholds", "Aplicar mudança"},
+		}
+	}
+
+	// Default genérico para alertas desconhecidos
 	return &MitigationSuggestion{
 		AutoMitigable: false,
 		Action:        "Investigação manual necessária",
@@ -401,7 +408,35 @@ func (c *Client) getMitigationForNodeAlert(alertName string) *MitigationSuggesti
 		return &mitigation
 	}
 
-	// Default
+	// Default inteligente baseado em padrões comuns de node alerts
+	if strings.Contains(strings.ToLower(alertName), "disk") || strings.Contains(strings.ToLower(alertName), "filesystem") {
+		return &MitigationSuggestion{
+			AutoMitigable: false,
+			Action:        "Limpar disco ou aumentar disk size",
+			Priority:      "high",
+			Steps:         []string{"Verificar uso de disco", "Limpar imagens Docker antigas", "Ou aumentar osDiskSizeGB"},
+		}
+	}
+
+	if strings.Contains(strings.ToLower(alertName), "memory") {
+		return &MitigationSuggestion{
+			AutoMitigable: true,
+			Action:        "Aumentar count do Node Pool",
+			Priority:      "high",
+			Steps:         []string{"Verificar pressão de memória", "Aumentar node pool count", "Ou migrar para VM size maior"},
+		}
+	}
+
+	if strings.Contains(strings.ToLower(alertName), "pod") || strings.Contains(strings.ToLower(alertName), "capacity") {
+		return &MitigationSuggestion{
+			AutoMitigable: true,
+			Action:        "Aumentar count do Node Pool",
+			Priority:      "high",
+			Steps:         []string{"Verificar número de pods por node", "Aumentar node pool count"},
+		}
+	}
+
+	// Default genérico
 	return &MitigationSuggestion{
 		AutoMitigable: false,
 		Action:        "Investigação manual necessária",

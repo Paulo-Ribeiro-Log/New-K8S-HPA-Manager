@@ -155,3 +155,61 @@ export function useHasCriticalAlerts(cluster: string, enabled = true) {
   const count = useCriticalAlertsCount(cluster, enabled);
   return count > 0;
 }
+
+// Helper para converter duration string (ex: "1h", "30m") para milissegundos
+function parseDuration(duration: string): number {
+  const match = duration.match(/^(\d+)([mh])$/);
+  if (!match) return 3600000; // Default: 1 hora
+
+  const value = parseInt(match[1], 10);
+  const unit = match[2];
+
+  if (unit === 'm') {
+    return value * 60 * 1000; // minutos para ms
+  } else if (unit === 'h') {
+    return value * 60 * 60 * 1000; // horas para ms
+  }
+
+  return 3600000; // Fallback: 1 hora
+}
+
+// Hook para buscar alertas filtrados por período de tempo
+export function useHPASpecificAlertsWithDuration(
+  cluster: string,
+  namespace: string,
+  hpaName: string,
+  duration: string,
+  enabled = true
+) {
+  return useQuery<HPAAlert[]>({
+    queryKey: ["hpa-specific-alerts-duration", cluster, namespace, hpaName, duration],
+    queryFn: async () => {
+      const response: any = await api.getHPAAlertsByNamespace(cluster, namespace);
+      const allAlerts: HPAAlert[] = response.alerts || [];
+
+      // Filtrar alertas relacionados a este HPA específico
+      const hpaAlerts = allAlerts.filter(
+        (alert) =>
+          alert.hpaName === hpaName ||
+          alert.deployment === hpaName ||
+          alert.namespace === namespace
+      );
+
+      // Filtrar por período de tempo
+      const durationMs = parseDuration(duration);
+      const now = Date.now();
+      const cutoffTime = now - durationMs;
+
+      const filteredByTime = hpaAlerts.filter((alert) => {
+        if (!alert.activeAt) return false;
+        const alertTime = new Date(alert.activeAt).getTime();
+        return alertTime >= cutoffTime;
+      });
+
+      return filteredByTime;
+    },
+    enabled: enabled && !!cluster && !!namespace && !!hpaName,
+    refetchInterval: 30000,
+    staleTime: 25000,
+  });
+}
