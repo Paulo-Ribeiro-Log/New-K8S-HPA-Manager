@@ -114,11 +114,13 @@ k8s-hpa-manager/
 ✅ **Monitoring V2** - Sistema sem port-forwards, acesso direto Prometheus
 ✅ **Auto-Updates** - Sistema automático de detecção e instalação
 ✅ **Autodiscover Otimizado** - Busca paralela de subscriptions (10x mais rápido)
-✅ **Navegação Inteligente** - Navegação direta de Monitoramento → HPA Editor com 1 clique
+✅ **Navegação Inteligente** - Navegação bidirecional: HPAs ↔ Monitoramento com 1 clique
 ✅ **Métricas Corrigidas** - CPU/Memória agora calculam média correta (0-100%) com avg() ao invés de sum()
 ✅ **VM Specs Display** - Exibe vCPUs e memória de cada VM Size no Node Pool Editor
 ✅ **Notificações In-App Clicáveis** - Sistema de notificações web com navegação contextual para AlertsDialog
 ✅ **AlertsDialog Aprimorado** - Card de contexto destacado com extração inteligente de HPA/Pod/Container/Deployment
+✅ **Sistema de Alertas Completo** - Exibe TODOS os alertas ativos (sem filtros restritivos) com filtro por período de tempo
+✅ **Alertas Filtrados por Tempo** - Botão de alertas no painel "Análise de Métricas" respeita seletor de tempo (5min-24h)
 
 ---
 
@@ -134,12 +136,14 @@ Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
 Recent Updates:
+- Sistema de Alertas Completo: Exibe TODOS os alertas ativos (removido filtro restritivo de nomes)
+- Alertas Filtrados por Tempo: Botão de alertas respeita seletor de tempo no painel "Análise de Métricas"
+- Navegação Bidirecional: HPAs ↔ Monitoramento com 1 clique (⚙️ monitora HPA, "Edit HPA" edita)
+- Prometheus URL Fix: Corrigido erro HTTP 500 em endpoints de alertas (remoção de sufixo -admin)
 - Métricas Prometheus CORRIGIDAS: CPU/Memória histórica agora usam avg() ao invés de sum() (0-100%)
 - AlertsDialog Aprimorado: Card de contexto destacado com extração inteligente de HPA/Pod/Container
-- Card P95 de Latência removido (sem dados de latência disponíveis)
-- Notificações In-App Clicáveis: Sistema web com navegação contextual para AlertsDialog
 - VM Specs: Exibe vCPUs e memória no Node Pool Editor (150+ Azure VMs catalogadas)
-- Navegação inteligente: Monitoramento → HPA Editor com 1 clique (cluster/namespace/HPA automático)
+- Notificações In-App Clicáveis: Sistema web com navegação contextual para AlertsDialog
 ```
 
 **Ver documentação completa:**
