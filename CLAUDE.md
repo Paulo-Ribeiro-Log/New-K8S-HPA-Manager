@@ -121,6 +121,7 @@ k8s-hpa-manager/
 ✅ **AlertsDialog Aprimorado** - Card de contexto destacado com extração inteligente de HPA/Pod/Container/Deployment
 ✅ **Sistema de Alertas Completo** - Exibe TODOS os alertas ativos (sem filtros restritivos) com filtro por período de tempo
 ✅ **Alertas Filtrados por Tempo** - Botão de alertas no painel "Análise de Métricas" respeita seletor de tempo (5min-24h)
+✅ **Gráfico de Réplicas Corrigido** - Backend agora retorna `replicas_current` corretamente (era `replicas`)
 
 ---
 
@@ -136,6 +137,7 @@ Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
 Recent Updates:
+- Gráfico de Réplicas Corrigido: Backend retorna `replicas_current` corretamente (monitoring_v2.go:452)
 - Sistema de Alertas Completo: Exibe TODOS os alertas ativos (removido filtro restritivo de nomes)
 - Alertas Filtrados por Tempo: Botão de alertas respeita seletor de tempo no painel "Análise de Métricas"
 - Navegação Bidirecional: HPAs ↔ Monitoramento com 1 clique (⚙️ monitora HPA, "Edit HPA" edita)

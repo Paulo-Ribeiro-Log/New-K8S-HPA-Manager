@@ -20,6 +20,7 @@ import {
   Info,
   Clock,
   X,
+  ExternalLink,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
@@ -93,12 +94,17 @@ export function AlertsDialog({
               </p>
             </div>
             <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => onOpenChange(false)}
-              className="h-8 w-8"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const clusterWithoutAdmin = cluster.replace('-admin', '');
+                const port = window.location.port || '8080';
+                window.open(`http://localhost:${port}/alerts/${clusterWithoutAdmin}`, '_blank');
+              }}
+              className="gap-2"
             >
-              <X className="h-4 w-4" />
+              <ExternalLink className="h-4 w-4" />
+              Ver Página de Alertas
             </Button>
           </div>
         </DialogHeader>
