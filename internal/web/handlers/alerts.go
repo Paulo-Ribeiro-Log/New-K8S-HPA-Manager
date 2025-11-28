@@ -3,10 +3,10 @@ package handlers
 import (
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"k8s-hpa-manager/internal/monitoring/alerts"
+	"k8s-hpa-manager/internal/monitoring/discovery"
 )
 
 // AlertsHandler gerencia endpoints de alertas
@@ -172,16 +172,9 @@ func (h *AlertsHandler) GetHPAAlertsByNamespace(c *gin.Context) {
 }
 
 // getPrometheusURL descobre a URL do Prometheus para o cluster
+// Usa a função de discovery que corretamente remove sufixo -admin e constrói URL
 func getPrometheusURL(clusterName string) (string, error) {
-	// Validar formato do cluster
-	// Formato esperado: akspriv-{nome}-{ambiente}
-	parts := strings.Split(clusterName, "-")
-	if len(parts) < 3 {
-		return "", fmt.Errorf("cluster name inválido: %s (esperado: akspriv-{nome}-{ambiente})", clusterName)
-	}
-
-	// Construir URL do Prometheus
-	// Formato: prometheus-akspriv-{nome}-{ambiente}.viavarejo.com.br
-	promURL := fmt.Sprintf("https://prometheus-%s.viavarejo.com.br", clusterName)
+	// Usar função de discovery que trata corretamente o sufixo -admin
+	promURL := discovery.GetPrometheusURL(clusterName)
 	return promURL, nil
 }

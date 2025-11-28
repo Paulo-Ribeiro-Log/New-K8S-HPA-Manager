@@ -18,7 +18,7 @@ import {
   Edit,
   Bell,
 } from "lucide-react";
-import { useHPASpecificAlerts } from "@/hooks/useAlerts";
+import { useHPASpecificAlertsWithDuration } from "@/hooks/useAlerts";
 import { AlertsDialog } from "@/components/AlertsDialog";
 import {
   LineChart,
@@ -103,9 +103,9 @@ export function MetricsPanel({
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(1); // 1 minuto
   const [latencyView, setLatencyView] = useState<"p95" | "p99">("p95");
   const [alertsDialogOpen, setAlertsDialogOpen] = useState(false);
-  
-  // Buscar alertas específicos deste HPA
-  const { data: alerts } = useHPASpecificAlerts(cluster, namespace, hpaName);
+
+  // Buscar alertas específicos deste HPA filtrados pelo período selecionado
+  const { data: alerts } = useHPASpecificAlertsWithDuration(cluster, namespace, hpaName, duration);
   const alertsCount = alerts?.length || 0;
   const criticalAlertsCount = alerts?.filter(a => a.severity === "critical").length || 0;
   const hasAlerts = alertsCount > 0;
