@@ -114,6 +114,35 @@ const Index = ({ onLogout }: IndexProps) => {
     hpaName: string;
   } | null>(null);
 
+  // Função para navegar diretamente para um HPA no Monitoramento
+  const navigateToHPAInMonitoring = async (cluster: string, namespace: string, hpaName: string) => {
+    try {
+      console.log("[NavigateToHPA] Iniciando navegação:", { cluster, namespace, hpaName });
+
+      // 1. Toast informativo antes de iniciar
+      toast.info(`Carregando ${hpaName}...`);
+
+      // 2. Configurar navegação pendente PRIMEIRO (antes de qualquer mudança)
+      console.log("[NavigateToHPA] Configurando navegação pendente");
+      setPendingHPANavigation({ cluster, namespace, hpaName });
+
+      // 3. Trocar para o cluster correto (se necessário)
+      if (cluster !== selectedCluster) {
+        console.log("[NavigateToHPA] Trocando cluster de", selectedCluster, "para", cluster);
+        await handleClusterChange(cluster);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      // 4. Trocar para aba de monitoramento
+      handleTabChange("monitoring");
+
+      console.log("[NavigateToHPA] Navegação configurada com sucesso");
+    } catch (error) {
+      console.error("[NavigateToHPA] Erro ao navegar:", error);
+      toast.error("Erro ao navegar para o HPA");
+    }
+  };
+
   // TabManager para sincronizar estado com abas
   const { updateActiveTabState } = useTabManager();
 
@@ -474,10 +503,13 @@ const Index = ({ onLogout }: IndexProps) => {
                                   h.name === displayHPA.name
                                 );
 
-                                // Se já está sendo monitorado, apenas trocar para a aba de monitoramento
+                                // Se já está sendo monitorado, navegar direto para o HPA no monitoramento
                                 if (exists) {
-                                  toast.info(`Visualizando HPA ${displayHPA.name} no monitoramento`);
-                                  handleTabChange("monitoring");
+                                  await navigateToHPAInMonitoring(
+                                    displayHPA.cluster,
+                                    displayHPA.namespace,
+                                    displayHPA.name
+                                  );
                                   return;
                                 }
 
@@ -756,6 +788,12 @@ const Index = ({ onLogout }: IndexProps) => {
       case "monitoring":
         return (
           <MonitoringPage
+            preSelectedHPA={pendingHPANavigation}
+            onHPASelected={() => {
+              // Limpar navegação pendente após HPA ser selecionado
+              console.log("[Index] HPA selecionado, limpando pendingHPANavigation");
+              setPendingHPANavigation(null);
+            }}
             onNavigateToHPA={async (cluster, namespace, hpaName) => {
               try {
                 console.log("[NavigateToHPA] Iniciando navegação:", { cluster, namespace, hpaName });

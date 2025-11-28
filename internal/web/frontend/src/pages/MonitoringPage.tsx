@@ -26,9 +26,11 @@ interface MonitoredHPA {
 
 interface MonitoringPageProps {
   onNavigateToHPA?: (cluster: string, namespace: string, hpaName: string) => void;
+  preSelectedHPA?: { cluster: string; namespace: string; hpaName: string } | null;
+  onHPASelected?: () => void; // Callback quando HPA é selecionado (para limpar pendingNavigation)
 }
 
-export const MonitoringPage = ({ onNavigateToHPA }: MonitoringPageProps) => {
+export const MonitoringPage = ({ onNavigateToHPA, preSelectedHPA, onHPASelected }: MonitoringPageProps) => {
   const [monitoredHPAs, setMonitoredHPAs] = useState<MonitoredHPA[]>([]);
   const [selectedHPA, setSelectedHPA] = useState<MonitoredHPA | null>(null);
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
@@ -57,6 +59,36 @@ export const MonitoringPage = ({ onNavigateToHPA }: MonitoringPageProps) => {
       }
     }
   }, []);
+
+  // Auto-selecionar HPA quando preSelectedHPA é fornecido
+  useEffect(() => {
+    if (preSelectedHPA && monitoredHPAs.length > 0) {
+      console.log("[MonitoringPage] Tentando auto-selecionar HPA:", preSelectedHPA);
+
+      // Encontrar HPA correspondente na lista de monitorados
+      const targetHPA = monitoredHPAs.find(
+        (h) =>
+          h.cluster === preSelectedHPA.cluster &&
+          h.namespace === preSelectedHPA.namespace &&
+          h.name === preSelectedHPA.hpaName
+      );
+
+      if (targetHPA) {
+        console.log("[MonitoringPage] HPA encontrado, selecionando:", targetHPA);
+        setSelectedHPA(targetHPA);
+
+        // Expandir cluster do HPA selecionado
+        setExpandedClusters((prev) => new Set(prev).add(targetHPA.cluster));
+
+        // Notificar que HPA foi selecionado (para limpar pendingNavigation)
+        if (onHPASelected) {
+          onHPASelected();
+        }
+      } else {
+        console.warn("[MonitoringPage] HPA não encontrado na lista de monitorados:", preSelectedHPA);
+      }
+    }
+  }, [preSelectedHPA, monitoredHPAs, onHPASelected]);
 
   // Sistema de reconciliação: Sincroniza lista do frontend com backend
   const syncWithBackend = async (hpas: MonitoredHPA[]) => {
