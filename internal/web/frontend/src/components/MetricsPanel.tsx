@@ -17,7 +17,18 @@ import {
   Users,
   Edit,
   Bell,
+  Maximize2,
+  X,
+  ZoomIn,
+  ZoomOut,
+  Minimize2,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useHPASpecificAlertsWithDuration } from "@/hooks/useAlerts";
 import { AlertsDialog } from "@/components/AlertsDialog";
 import {
@@ -103,6 +114,10 @@ export function MetricsPanel({
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(1); // 1 minuto
   const [latencyView, setLatencyView] = useState<"p95" | "p99">("p95");
   const [alertsDialogOpen, setAlertsDialogOpen] = useState(false);
+  const [expandedChart, setExpandedChart] = useState<"cpu" | "memory" | "replicas" | null>(null);
+  const [zoomDomain, setZoomDomain] = useState<{ start: number; end: number } | null>(null);
+  const [refAreaLeft, setRefAreaLeft] = useState<string>("");
+  const [refAreaRight, setRefAreaRight] = useState<string>("");
 
   // Buscar alertas específicos deste HPA filtrados pelo período selecionado
   const { data: alerts } = useHPASpecificAlertsWithDuration(cluster, namespace, hpaName, duration);
@@ -252,11 +267,11 @@ export function MetricsPanel({
         memoryRequest: snapshot.memory_request,
         memoryLimit: snapshot.memory_limit,
         memoryYesterday: yesterdaySnapshot?.memory_current ?? null,
-        replicasCurrent: snapshot.replicas,  // Backend envia "replicas" (não "replicas_current")
+        replicasCurrent: snapshot.replicas_current,
         replicasDesired: snapshot.replicas_desired,
         replicasMin: snapshot.replicas_min,
         replicasMax: snapshot.replicas_max,
-        replicasYesterday: yesterdaySnapshot?.replicas ?? null,  // Backend envia "replicas" (não "replicas_current")
+        replicasYesterday: yesterdaySnapshot?.replicas_current ?? null,
         latencyP95: snapshot.p95_latency ?? null,
         latencyP99: snapshot.p99_latency ?? null,
         requestRate: snapshot.request_rate ?? null,
@@ -306,18 +321,22 @@ export function MetricsPanel({
       return { current: 0, average: 0, peak: 0, min: 0, p95: 0, trend: "stable", trendPercent: 0 };
     }
 
-    const values = chartData.map(d => d.cpuCurrent);
-    const current = values[values.length - 1];
+    const values = chartData.map(d => d.cpuCurrent).filter(v => typeof v === 'number' && !isNaN(v));
+    if (values.length === 0) {
+      return { current: 0, average: 0, peak: 0, min: 0, p95: 0, trend: "stable", trendPercent: 0 };
+    }
+
+    const current = values[values.length - 1] || 0;
     const average = values.reduce((a, b) => a + b, 0) / values.length;
     const peak = Math.max(...values);
     const min = Math.min(...values);
     const sorted = [...values].sort((a, b) => a - b);
-    const p95 = sorted[Math.floor(sorted.length * 0.95)];
+    const p95 = sorted[Math.floor(sorted.length * 0.95)] || 0;
 
     // Calcular tendência (últimos 5 vs primeiros 5 pontos)
-    const recentAvg = values.slice(-5).reduce((a, b) => a + b, 0) / 5;
-    const oldAvg = values.slice(0, 5).reduce((a, b) => a + b, 0) / 5;
-    const trendPercent = ((recentAvg - oldAvg) / oldAvg) * 100;
+    const recentAvg = values.slice(-5).reduce((a, b) => a + b, 0) / Math.max(values.slice(-5).length, 1);
+    const oldAvg = values.slice(0, 5).reduce((a, b) => a + b, 0) / Math.max(values.slice(0, 5).length, 1);
+    const trendPercent = oldAvg !== 0 ? ((recentAvg - oldAvg) / oldAvg) * 100 : 0;
     const trend = Math.abs(trendPercent) < 5 ? "stable" : trendPercent > 0 ? "up" : "down";
 
     return { current, average, peak, min, p95, trend, trendPercent };
@@ -328,17 +347,21 @@ export function MetricsPanel({
       return { current: 0, average: 0, peak: 0, min: 0, p95: 0, trend: "stable", trendPercent: 0 };
     }
 
-    const values = chartData.map(d => d.memoryCurrent);
-    const current = values[values.length - 1];
+    const values = chartData.map(d => d.memoryCurrent).filter(v => typeof v === 'number' && !isNaN(v));
+    if (values.length === 0) {
+      return { current: 0, average: 0, peak: 0, min: 0, p95: 0, trend: "stable", trendPercent: 0 };
+    }
+
+    const current = values[values.length - 1] || 0;
     const average = values.reduce((a, b) => a + b, 0) / values.length;
     const peak = Math.max(...values);
     const min = Math.min(...values);
     const sorted = [...values].sort((a, b) => a - b);
-    const p95 = sorted[Math.floor(sorted.length * 0.95)];
+    const p95 = sorted[Math.floor(sorted.length * 0.95)] || 0;
 
-    const recentAvg = values.slice(-5).reduce((a, b) => a + b, 0) / 5;
-    const oldAvg = values.slice(0, 5).reduce((a, b) => a + b, 0) / 5;
-    const trendPercent = ((recentAvg - oldAvg) / oldAvg) * 100;
+    const recentAvg = values.slice(-5).reduce((a, b) => a + b, 0) / Math.max(values.slice(-5).length, 1);
+    const oldAvg = values.slice(0, 5).reduce((a, b) => a + b, 0) / Math.max(values.slice(0, 5).length, 1);
+    const trendPercent = oldAvg !== 0 ? ((recentAvg - oldAvg) / oldAvg) * 100 : 0;
     const trend = Math.abs(trendPercent) < 5 ? "stable" : trendPercent > 0 ? "up" : "down";
 
     return { current, average, peak, min, p95, trend, trendPercent };
@@ -725,6 +748,113 @@ export function MetricsPanel({
     );
   };
 
+  // Funções de zoom para o gráfico expandido
+  const getZoomedData = () => {
+    if (!zoomDomain || chartData.length === 0) return chartData;
+    
+    return chartData.filter(d => 
+      d.timestamp >= zoomDomain.start && d.timestamp <= zoomDomain.end
+    );
+  };
+
+  const handleZoomIn = () => {
+    if (chartData.length === 0) return;
+    
+    const current = zoomDomain || {
+      start: chartData[0].timestamp,
+      end: chartData[chartData.length - 1].timestamp
+    };
+    
+    const range = current.end - current.start;
+    const newRange = range * 0.75; // Zoom in 25% (mais suave)
+    const center = (current.start + current.end) / 2;
+    
+    setZoomDomain({
+      start: center - newRange / 2,
+      end: center + newRange / 2
+    });
+  };
+
+  const handleZoomOut = () => {
+    if (chartData.length === 0) return;
+    
+    const fullRange = {
+      start: chartData[0].timestamp,
+      end: chartData[chartData.length - 1].timestamp
+    };
+    
+    if (!zoomDomain) {
+      // Já está no máximo
+      return;
+    }
+    
+    const range = zoomDomain.end - zoomDomain.start;
+    const newRange = Math.min(range * 1.33, fullRange.end - fullRange.start); // Zoom out 33% (mais suave)
+    const center = (zoomDomain.start + zoomDomain.end) / 2;
+    
+    const newStart = Math.max(fullRange.start, center - newRange / 2);
+    const newEnd = Math.min(fullRange.end, center + newRange / 2);
+    
+    // Se chegou ao range completo, resetar
+    if (newStart === fullRange.start && newEnd === fullRange.end) {
+      setZoomDomain(null);
+    } else {
+      setZoomDomain({ start: newStart, end: newEnd });
+    }
+  };
+
+  const handleZoomReset = () => {
+    setZoomDomain(null);
+    setRefAreaLeft("");
+    setRefAreaRight("");
+  };
+
+  // Funções para seleção de área (como no Grafana)
+  const handleMouseDown = (e: any) => {
+    if (e && e.activeLabel) {
+      setRefAreaLeft(e.activeLabel);
+      setRefAreaRight(e.activeLabel);
+    }
+  };
+
+  const handleMouseMove = (e: any) => {
+    if (refAreaLeft && e && e.activeLabel) {
+      setRefAreaRight(e.activeLabel);
+    }
+  };
+
+  const handleMouseUp = () => {
+    if (refAreaLeft && refAreaRight && refAreaLeft !== refAreaRight) {
+      // Encontrar os índices correspondentes aos timestamps
+      const leftIndex = chartData.findIndex(d => d.time === refAreaLeft);
+      const rightIndex = chartData.findIndex(d => d.time === refAreaRight);
+      
+      if (leftIndex !== -1 && rightIndex !== -1) {
+        const startIndex = Math.min(leftIndex, rightIndex);
+        const endIndex = Math.max(leftIndex, rightIndex);
+        
+        const start = chartData[startIndex].timestamp;
+        const end = chartData[endIndex].timestamp;
+        
+        setZoomDomain({ start, end });
+      }
+    }
+    
+    setRefAreaLeft("");
+    setRefAreaRight("");
+  };
+
+  // Reset zoom quando trocar de gráfico ou fechar modal
+  useEffect(() => {
+    if (expandedChart === null) {
+      setZoomDomain(null);
+      setRefAreaLeft("");
+      setRefAreaRight("");
+    }
+  }, [expandedChart]);
+
+  const zoomedData = getZoomedData();
+
   return (
     <Card className={className}>
       <CardHeader className="pb-4">
@@ -909,7 +1039,16 @@ export function MetricsPanel({
             {/* Gráficos - Seção separada */}
             <div className="space-y-6">
               {/* Gráfico de CPU */}
-              <div className="border rounded-lg p-4 bg-card">
+              <div className="border rounded-lg p-4 bg-card group relative">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                  onClick={() => setExpandedChart("cpu")}
+                  title="Expandir gráfico"
+                >
+                  <Maximize2 className="h-4 w-4" />
+                </Button>
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="text-sm font-semibold flex items-center gap-2">
                     <Cpu className="h-4 w-4" />
@@ -1018,7 +1157,16 @@ export function MetricsPanel({
               {/* Memory e Replicas lado a lado - Grid 2 colunas */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Memory Analysis */}
-                <div className="border rounded-lg p-4 bg-card">
+                <div className="border rounded-lg p-4 bg-card group relative">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                  onClick={() => setExpandedChart("memory")}
+                  title="Expandir gráfico"
+                >
+                  <Maximize2 className="h-4 w-4" />
+                </Button>
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="text-sm font-semibold flex items-center gap-2">
                     <MemoryStick className="h-4 w-4" />
@@ -1150,7 +1298,16 @@ export function MetricsPanel({
               </div>
 
                 {/* Replicas Analysis */}
-                <div className="border rounded-lg p-4 bg-card">
+                <div className="border rounded-lg p-4 bg-card group relative">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                  onClick={() => setExpandedChart("replicas")}
+                  title="Expandir gráfico"
+                >
+                  <Maximize2 className="h-4 w-4" />
+                </Button>
                 <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
                   <Users className="h-4 w-4" />
                   Réplicas ao longo do tempo
@@ -1250,6 +1407,375 @@ export function MetricsPanel({
         namespace={namespace}
         hpaName={hpaName}
       />
+
+      {/* Dialog de Gráfico Expandido */}
+      <Dialog open={expandedChart !== null} onOpenChange={(open) => !open && setExpandedChart(null)}>
+        <DialogContent className="max-w-[95vw] max-h-[95vh] p-6" hideCloseButton>
+          <DialogHeader>
+            <div className="flex items-center justify-between gap-4">
+              <DialogTitle className="flex items-center gap-2">
+                {expandedChart === "cpu" && (
+                  <>
+                    <Cpu className="h-5 w-5" />
+                    Uso de CPU ao longo do tempo
+                  </>
+                )}
+                {expandedChart === "memory" && (
+                  <>
+                    <MemoryStick className="h-5 w-5" />
+                    Uso de Memória ao longo do tempo
+                  </>
+                )}
+                {expandedChart === "replicas" && (
+                  <>
+                    <Users className="h-5 w-5" />
+                    Réplicas ao longo do tempo
+                  </>
+                )}
+              </DialogTitle>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {/* Seletores de Tempo */}
+                <Select value={duration} onValueChange={setDuration}>
+                  <SelectTrigger className="h-8 w-24 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="5m">5 min</SelectItem>
+                    <SelectItem value="15m">15 min</SelectItem>
+                    <SelectItem value="30m">30 min</SelectItem>
+                    <SelectItem value="1h">1 hora</SelectItem>
+                    <SelectItem value="3h">3 horas</SelectItem>
+                    <SelectItem value="6h">6 horas</SelectItem>
+                    <SelectItem value="12h">12 horas</SelectItem>
+                    <SelectItem value="24h">24 horas</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={autoRefreshInterval.toString()} onValueChange={(v) => setAutoRefreshInterval(parseInt(v))}>
+                  <SelectTrigger className="h-8 w-28 text-xs">
+                    <SelectValue placeholder="Auto-refresh" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0">Off</SelectItem>
+                    <SelectItem value="1">1 min</SelectItem>
+                    <SelectItem value="5">5 min</SelectItem>
+                    <SelectItem value="10">10 min</SelectItem>
+                    <SelectItem value="15">15 min</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => refetch(duration)}
+                  disabled={loading}
+                  title="Atualizar métricas"
+                  className="h-8 w-8"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                </Button>
+                {/* Controles de Zoom */}
+                <div className="flex items-center gap-1 border rounded-md px-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={handleZoomIn}
+                    className="h-7 w-7"
+                    title="Zoom In"
+                  >
+                    <ZoomIn className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={handleZoomOut}
+                    className="h-7 w-7"
+                    title="Zoom Out"
+                  >
+                    <ZoomOut className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={handleZoomReset}
+                    className="h-7 w-7"
+                    title="Reset Zoom"
+                    disabled={zoomDomain === null}
+                  >
+                    <Minimize2 className="h-4 w-4" />
+                  </Button>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setExpandedChart(null)}
+                  className="h-8 w-8"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </DialogHeader>
+          <div className="mt-4">
+            {/* Gráfico de CPU Expandido */}
+            {expandedChart === "cpu" && (
+              <div>
+                <div className="mb-4 flex items-center justify-between text-sm">
+                  {snapshotWithResources?.cpu_request && (
+                    <span className="text-orange-600">
+                      CPU Request: <strong>{snapshotWithResources.cpu_request}</strong>
+                    </span>
+                  )}
+                  {snapshotWithResources?.cpu_limit && (
+                    <span className="text-red-600">
+                      CPU Limit: <strong>{snapshotWithResources.cpu_limit}</strong>
+                    </span>
+                  )}
+                </div>
+                <ResponsiveContainer width="100%" height={600}>
+                  <AreaChart 
+                    data={zoomedData} 
+                    isAnimationActive={false}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                  >
+                    <defs>
+                      <linearGradient id="cpuGradientExpanded" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis dataKey="time" tick={{ fontSize: 12 }} className="text-xs" />
+                    <YAxis
+                      tick={{ fontSize: 12 }}
+                      label={{ value: "CPU (%)", angle: -90, position: "insideLeft", fontSize: 12 }}
+                      domain={[0, 150]}
+                    />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend />
+                    {snapshotWithResources?.cpu_request && (
+                      <ReferenceLine
+                        y={absoluteToPercent(snapshotWithResources.cpu_request, snapshotWithResources.cpu_limit || snapshotWithResources.cpu_request, true) || 0}
+                        stroke="#f97316"
+                        strokeDasharray="3 3"
+                        label={{ value: `Request: ${snapshotWithResources.cpu_request}`, position: "right", fontSize: 11, fill: "#f97316" }}
+                      />
+                    )}
+                    {snapshotWithResources?.cpu_limit && (
+                      <ReferenceLine
+                        y={100}
+                        stroke="#ef4444"
+                        strokeDasharray="3 3"
+                        label={{ value: `Limit: ${snapshotWithResources.cpu_limit}`, position: "right", fontSize: 11, fill: "#ef4444" }}
+                      />
+                    )}
+                    <ReferenceArea y1={90} y2={100} fill="#ef4444" fillOpacity={0.1} label={{ value: "Zona Crítica", position: "insideTopRight", fontSize: 11 }} />
+                    <ReferenceArea y1={80} y2={90} fill="#f59e0b" fillOpacity={0.1} label={{ value: "Zona de Alerta", position: "insideTopRight", fontSize: 11 }} />
+                    <ReferenceLine
+                      y={cpuTarget}
+                      stroke="#10b981"
+                      strokeWidth={2}
+                      strokeDasharray="5 5"
+                      label={{ value: `Target: ${cpuTarget}%`, fill: '#10b981', position: 'insideTopRight' }}
+                    />
+                    <Line type="monotone" dataKey="cpuYesterday" name="CPU D-1" stroke="#9ca3af" strokeWidth={2} strokeDasharray="8 4" dot={false} unit="%" connectNulls isAnimationActive={false} />
+                    <Area type="monotone" dataKey="cpuCurrent" name="CPU Atual" stroke="#3b82f6" strokeWidth={2} fill="url(#cpuGradientExpanded)" unit="%" isAnimationActive={false} />
+                    {refAreaLeft && refAreaRight && (
+                      <ReferenceArea
+                        x1={refAreaLeft}
+                        x2={refAreaRight}
+                        strokeOpacity={0.3}
+                        fill="#3b82f6"
+                        fillOpacity={0.3}
+                      />
+                    )}
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
+            {/* Gráfico de Memory Expandido */}
+            {expandedChart === "memory" && (
+              <div>
+                <div className="mb-4 flex items-center justify-between text-sm">
+                  {snapshotWithResources?.memory_request && (
+                    <span className="text-orange-600">
+                      Memory Request: <strong>{snapshotWithResources.memory_request}</strong>
+                    </span>
+                  )}
+                  {snapshotWithResources?.memory_limit && (
+                    <span className="text-red-600">
+                      Memory Limit: <strong>{snapshotWithResources.memory_limit}</strong>
+                    </span>
+                  )}
+                </div>
+                <ResponsiveContainer width="100%" height={600}>
+                  <AreaChart 
+                    data={zoomedData} 
+                    isAnimationActive={false}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                  >
+                    <defs>
+                      <linearGradient id="memoryGradientExpanded" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis dataKey="time" tick={{ fontSize: 12 }} className="text-xs" />
+                    <YAxis
+                      tick={{ fontSize: 12 }}
+                      label={{ value: "Memória (%)", angle: -90, position: "insideLeft", fontSize: 12 }}
+                      domain={[0, 150]}
+                    />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend />
+                    {snapshotWithResources?.memory_request && (
+                      <ReferenceLine
+                        y={absoluteToPercent(snapshotWithResources.memory_request, snapshotWithResources.memory_limit || snapshotWithResources.memory_request, false) || 0}
+                        stroke="#f97316"
+                        strokeDasharray="3 3"
+                        label={{ value: `Request: ${snapshotWithResources.memory_request}`, position: "right", fontSize: 11, fill: "#f97316" }}
+                      />
+                    )}
+                    {snapshotWithResources?.memory_limit && (
+                      <ReferenceLine
+                        y={100}
+                        stroke="#ef4444"
+                        strokeDasharray="3 3"
+                        label={{ value: `Limit: ${snapshotWithResources.memory_limit}`, position: "right", fontSize: 11, fill: "#ef4444" }}
+                      />
+                    )}
+                    <ReferenceArea y1={90} y2={100} fill="#ef4444" fillOpacity={0.1} label={{ value: "Zona Crítica", position: "insideTopRight", fontSize: 11 }} />
+                    <ReferenceArea y1={80} y2={90} fill="#f59e0b" fillOpacity={0.1} label={{ value: "Zona de Alerta", position: "insideTopRight", fontSize: 11 }} />
+                    <ReferenceLine
+                      y={memoryTarget}
+                      stroke="#10b981"
+                      strokeWidth={2}
+                      strokeDasharray="5 5"
+                      label={{ value: `Target: ${memoryTarget}%`, fill: '#10b981', position: 'insideTopRight' }}
+                    />
+                    <Line type="monotone" dataKey="memoryYesterday" name="Memória D-1" stroke="#9ca3af" strokeWidth={2} strokeDasharray="8 4" dot={false} unit="%" connectNulls isAnimationActive={false} />
+                    <Area type="monotone" dataKey="memoryCurrent" name="Memória Atual" stroke="#8b5cf6" strokeWidth={2} fill="url(#memoryGradientExpanded)" unit="%" isAnimationActive={false} />
+                    {refAreaLeft && refAreaRight && (
+                      <ReferenceArea
+                        x1={refAreaLeft}
+                        x2={refAreaRight}
+                        strokeOpacity={0.3}
+                        fill="#8b5cf6"
+                        fillOpacity={0.3}
+                      />
+                    )}
+                  </AreaChart>
+                </ResponsiveContainer>
+                <div className="mt-4 pt-3 border-t flex items-center justify-around text-sm">
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Atual</div>
+                    <div className="font-semibold">{memoryStats.current.toFixed(1)}%</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Média</div>
+                    <div className="font-semibold">{memoryStats.average.toFixed(1)}%</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Pico</div>
+                    <div className="font-semibold text-orange-600">{memoryStats.peak.toFixed(1)}%</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Mínimo</div>
+                    <div className="font-semibold">{memoryStats.min.toFixed(1)}%</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Gráfico de Replicas Expandido */}
+            {expandedChart === "replicas" && (
+              <div>
+                <ResponsiveContainer width="100%" height={600}>
+                  <LineChart 
+                    data={zoomedData} 
+                    isAnimationActive={false}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis dataKey="time" tick={{ fontSize: 12 }} className="text-xs" />
+                    <YAxis
+                      tick={{ fontSize: 12 }}
+                      label={{ value: "Réplicas", angle: -90, position: "insideLeft", fontSize: 12 }}
+                      allowDecimals={false}
+                      domain={[0, (dataMax: number) => {
+                        const maxReplicas = replicaBounds.max || dataMax;
+                        return Math.max(dataMax, maxReplicas * 1.5);
+                      }]}
+                    />
+                    <Tooltip content={(props) => {
+                      if (!props.active || !props.payload || !props.payload.length) return null;
+                      return (
+                        <div className="bg-background border rounded-lg shadow-lg p-3 space-y-1.5">
+                          <p className="text-sm font-semibold mb-2">{props.label}</p>
+                          {props.payload.map((entry: any, index: number) => (
+                            <div key={index} className="flex items-center justify-between gap-3 text-xs">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: entry.color }} />
+                                <span className="text-muted-foreground truncate">{entry.name}</span>
+                              </div>
+                              <span className="font-semibold whitespace-nowrap">{entry.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    }} />
+                    <Legend />
+                    <ReferenceLine
+                      y={replicaBounds.min}
+                      stroke="#f59e0b"
+                      strokeWidth={2}
+                      strokeDasharray="5 5"
+                      label={{ value: `Min: ${replicaBounds.min}`, position: "left", fill: "#f59e0b", fontSize: 12 }}
+                    />
+                    <ReferenceLine
+                      y={replicaBounds.max}
+                      stroke="#ef4444"
+                      strokeWidth={2}
+                      strokeDasharray="5 5"
+                      label={{ value: `Max: ${replicaBounds.max}`, position: "right", fill: "#ef4444", fontSize: 12 }}
+                    />
+                    <Line type="stepAfter" dataKey="replicasCurrent" name="Réplicas Atuais" stroke="#3b82f6" strokeWidth={2} dot={false} unit="" connectNulls isAnimationActive={false} />
+                    {refAreaLeft && refAreaRight && (
+                      <ReferenceArea
+                        x1={refAreaLeft}
+                        x2={refAreaRight}
+                        strokeOpacity={0.3}
+                        fill="#3b82f6"
+                        fillOpacity={0.3}
+                      />
+                    )}
+                  </LineChart>
+                </ResponsiveContainer>
+                <div className="mt-4 pt-3 border-t flex items-center justify-around text-sm">
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Min (HPA)</div>
+                    <div className="font-semibold text-amber-600">{replicaBounds.min}</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Atual</div>
+                    <div className="font-semibold text-blue-600">{zoomedData[zoomedData.length - 1]?.replicasCurrent || 0}</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-muted-foreground">Max (HPA)</div>
+                    <div className="font-semibold text-red-600">{replicaBounds.max}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
