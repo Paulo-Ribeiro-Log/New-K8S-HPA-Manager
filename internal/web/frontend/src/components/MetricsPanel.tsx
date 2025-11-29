@@ -132,7 +132,8 @@ export function MetricsPanel({
     cluster,
     namespace,
     hpaName,
-    duration
+    duration,
+    comparisonDays
   );
 
   // Auto-refresh com intervalo configurável
@@ -1472,9 +1473,8 @@ export function MetricsPanel({
       {/* Dialog de Gráfico Expandido */}
       <Dialog open={expandedChart !== null} onOpenChange={(open) => !open && setExpandedChart(null)}>
         <DialogContent className="max-w-[95vw] max-h-[95vh] p-6">
-          <DialogHeader>
-            <div className="flex items-center justify-between gap-4">
-              <DialogTitle className="flex items-center gap-2">
+          <DialogHeader className="flex flex-row items-center justify-between gap-4">
+            <DialogTitle className="flex items-center gap-2">
                 {expandedChart === "cpu" && (
                   <>
                     <Cpu className="h-5 w-5" />
@@ -1494,46 +1494,56 @@ export function MetricsPanel({
                   </>
                 )}
               </DialogTitle>
-              <div className="flex items-center gap-2 flex-shrink-0">
+              <div className="flex items-end gap-4 flex-shrink-0">
                 {/* Seletor de Comparação (D-1, D-2, D-3) */}
-                <Select value={comparisonDays.toString()} onValueChange={(v) => setComparisonDays(parseInt(v))}>
-                  <SelectTrigger className="h-8 w-20 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="1">D-1</SelectItem>
-                    <SelectItem value="2">D-2</SelectItem>
-                    <SelectItem value="3">D-3</SelectItem>
-                  </SelectContent>
-                </Select>
-                {/* Seletores de Tempo */}
-                <Select value={duration} onValueChange={setDuration}>
-                  <SelectTrigger className="h-8 w-24 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="5m">5 min</SelectItem>
-                    <SelectItem value="15m">15 min</SelectItem>
-                    <SelectItem value="30m">30 min</SelectItem>
-                    <SelectItem value="1h">1 hora</SelectItem>
-                    <SelectItem value="3h">3 horas</SelectItem>
-                    <SelectItem value="6h">6 horas</SelectItem>
-                    <SelectItem value="12h">12 horas</SelectItem>
-                    <SelectItem value="24h">24 horas</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select value={autoRefreshInterval.toString()} onValueChange={(v) => setAutoRefreshInterval(parseInt(v))}>
-                  <SelectTrigger className="h-8 w-28 text-xs">
-                    <SelectValue placeholder="Auto-refresh" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="0">Off</SelectItem>
-                    <SelectItem value="1">1 min</SelectItem>
-                    <SelectItem value="5">5 min</SelectItem>
-                    <SelectItem value="10">10 min</SelectItem>
-                    <SelectItem value="15">15 min</SelectItem>
-                  </SelectContent>
-                </Select>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-muted-foreground font-medium">Comparação</label>
+                  <Select value={comparisonDays.toString()} onValueChange={(v) => setComparisonDays(parseInt(v))}>
+                    <SelectTrigger className="h-8 w-20 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">D-1</SelectItem>
+                      <SelectItem value="2">D-2</SelectItem>
+                      <SelectItem value="3">D-3</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* Seletor de Duração */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-muted-foreground font-medium">Período</label>
+                  <Select value={duration} onValueChange={setDuration}>
+                    <SelectTrigger className="h-8 w-24 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="5m">5 min</SelectItem>
+                      <SelectItem value="15m">15 min</SelectItem>
+                      <SelectItem value="30m">30 min</SelectItem>
+                      <SelectItem value="1h">1 hora</SelectItem>
+                      <SelectItem value="3h">3 horas</SelectItem>
+                      <SelectItem value="6h">6 horas</SelectItem>
+                      <SelectItem value="12h">12 horas</SelectItem>
+                      <SelectItem value="24h">24 horas</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* Seletor de Auto-refresh */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-muted-foreground font-medium">Atualização</label>
+                  <Select value={autoRefreshInterval.toString()} onValueChange={(v) => setAutoRefreshInterval(parseInt(v))}>
+                    <SelectTrigger className="h-8 w-28 text-xs">
+                      <SelectValue placeholder="Auto-refresh" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0">Off</SelectItem>
+                      <SelectItem value="1">1 min</SelectItem>
+                      <SelectItem value="5">5 min</SelectItem>
+                      <SelectItem value="10">10 min</SelectItem>
+                      <SelectItem value="15">15 min</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
                 <Button
                   variant="outline"
                   size="icon"
@@ -1576,9 +1586,8 @@ export function MetricsPanel({
                   </Button>
                 </div>
               </div>
-            </div>
-          </DialogHeader>
-          <div className="mt-4">
+            </DialogHeader>
+            <div className="mt-4">
             {/* Gráfico de CPU Expandido */}
             {expandedChart === "cpu" && (
               <div>
