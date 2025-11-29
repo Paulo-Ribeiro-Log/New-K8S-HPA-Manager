@@ -289,6 +289,57 @@ func (e *MonitoringEngineV2) GetHPAHistoricalMetrics(cluster, namespace, hpaName
 	return converted, nil
 }
 
+// GetHPAHistoricalMetricsWithOffset busca métricas históricas de um HPA com offset temporal (ex: D-1)
+func (e *MonitoringEngineV2) GetHPAHistoricalMetricsWithOffset(cluster, namespace, hpaName string, duration time.Duration, step time.Duration, offset time.Duration) (map[string]interface{}, error) {
+	log.Info().
+		Str("cluster", cluster).
+		Str("namespace", namespace).
+		Str("hpa", hpaName).
+		Dur("duration", duration).
+		Dur("offset", offset).
+		Msg("Buscando métricas históricas do HPA com offset temporal")
+
+	// Tentar buscar do cache primeiro
+	cacheKey := fmt.Sprintf("hpa_historical_offset:%s:%s:%s:%s:%s", cluster, namespace, hpaName, duration, offset)
+	if cached, found := e.cache.Get(cacheKey); found {
+		log.Debug().Msg("Returning cached historical metrics with offset")
+		return cached.(map[string]interface{}), nil
+	}
+
+	log.Debug().Msg("Cache miss, fetching from Prometheus with offset")
+
+	promClient, err := e.getOrCreateClient(cluster)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao obter cliente: %w", err)
+	}
+
+	historicalData, err := promClient.GetHPAHistoricalMetricsWithOffset(e.ctx, namespace, hpaName, duration, step, offset)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao buscar histórico com offset: %w", err)
+	}
+
+	log.Info().
+		Str("cluster", cluster).
+		Str("namespace", namespace).
+		Str("hpa", hpaName).
+		Dur("duration", duration).
+		Dur("offset", offset).
+		Int("metrics_count", len(historicalData)).
+		Msg("Métricas históricas com offset coletadas do Prometheus")
+
+	// Converter para map[string]interface{} para retornar
+	converted := make(map[string]interface{})
+	for key, value := range historicalData {
+		converted[key] = value
+	}
+
+	// Armazenar no cache
+	e.cache.Set(cacheKey, converted)
+	log.Debug().Str("cache_key", cacheKey).Msg("Historical metrics with offset cached successfully")
+
+	return converted, nil
+}
+
 // GetMultipleHPAMetrics busca métricas de múltiplos HPAs em paralelo
 func (e *MonitoringEngineV2) GetMultipleHPAMetrics(targets []HPATarget) ([]*HPAMetrics, error) {
 	var wg sync.WaitGroup

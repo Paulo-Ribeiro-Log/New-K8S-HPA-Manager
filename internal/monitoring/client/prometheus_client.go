@@ -566,6 +566,162 @@ func (c *PrometheusClient) GetHPAHistoricalMetrics(ctx context.Context, namespac
 	return historicalMetrics, nil
 }
 
+// GetHPAHistoricalMetricsWithOffset busca métricas históricas de um HPA com offset temporal (ex: D-1)
+// offset: deslocamento temporal (ex: 24*time.Hour para dados de ontem)
+func (c *PrometheusClient) GetHPAHistoricalMetricsWithOffset(ctx context.Context, namespace, hpaName string, duration time.Duration, step time.Duration, offset time.Duration) (map[string]*QueryRangeResult, error) {
+	// Calcular janela temporal deslocada
+	// Para D-1: pegar a mesma janela de tempo, mas deslocada 24h no passado
+	now := time.Now()
+	end := now.Add(-offset)
+	start := now.Add(-duration).Add(-offset)
+
+	log.Info().
+		Str("namespace", namespace).
+		Str("hpa", hpaName).
+		Time("start", start).
+		Time("end", end).
+		Dur("duration", duration).
+		Dur("step", step).
+		Dur("offset", offset).
+		Str("url", c.endpoint.URL).
+		Msg("Iniciando busca de métricas históricas com offset no Prometheus")
+
+	historicalMetrics := make(map[string]*QueryRangeResult)
+
+	// Réplicas atuais ao longo do tempo
+	replicasQuery := fmt.Sprintf(
+		`kube_horizontalpodautoscaler_status_current_replicas{namespace="%s",horizontalpodautoscaler="%s"}`,
+		namespace, hpaName,
+	)
+
+	result, err := c.QueryRange(ctx, replicasQuery, start, end, step)
+	if err == nil {
+		historicalMetrics["replicas"] = result
+	}
+
+	// Réplicas desejadas ao longo do tempo
+	desiredReplicasQuery := fmt.Sprintf(
+		`kube_horizontalpodautoscaler_status_desired_replicas{namespace="%s",horizontalpodautoscaler="%s"}`,
+		namespace, hpaName,
+	)
+
+	result, err = c.QueryRange(ctx, desiredReplicasQuery, start, end, step)
+	if err == nil {
+		historicalMetrics["desired_replicas"] = result
+	}
+
+	// Min replicas ao longo do tempo
+	minReplicasQuery := fmt.Sprintf(
+		`kube_horizontalpodautoscaler_spec_min_replicas{namespace="%s",horizontalpodautoscaler="%s"}`,
+		namespace, hpaName,
+	)
+
+	result, err = c.QueryRange(ctx, minReplicasQuery, start, end, step)
+	if err == nil {
+		historicalMetrics["min_replicas"] = result
+	}
+
+	// Max replicas ao longo do tempo
+	maxReplicasQuery := fmt.Sprintf(
+		`kube_horizontalpodautoscaler_spec_max_replicas{namespace="%s",horizontalpodautoscaler="%s"}`,
+		namespace, hpaName,
+	)
+
+	result, err = c.QueryRange(ctx, maxReplicasQuery, start, end, step)
+	if err == nil {
+		historicalMetrics["max_replicas"] = result
+	}
+
+	// CPU usage ao longo do tempo (usa avg() para evitar valores > 100%)
+	cpuQuery := fmt.Sprintf(
+		`avg(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s.*",container!="",container!="POD"}[1m]) / on(pod,container) group_left() kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="cpu"}) * 100`,
+		namespace, hpaName, namespace, hpaName,
+	)
+
+	result, err = c.QueryRange(ctx, cpuQuery, start, end, step)
+	if err == nil {
+		historicalMetrics["cpu"] = result
+	}
+
+	// Memory usage ao longo do tempo (usa avg() para evitar valores > 100%)
+	memoryQuery := fmt.Sprintf(
+		`avg(container_memory_working_set_bytes{namespace="%s",pod=~"%s.*",container!="",container!="POD"} / on(pod,container) group_left() kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"}) * 100`,
+		namespace, hpaName, namespace, hpaName,
+	)
+
+	result, err = c.QueryRange(ctx, memoryQuery, start, end, step)
+	if err == nil {
+		historicalMetrics["memory"] = result
+	}
+
+	// CPU Request ao longo do tempo (em cores - será convertido para millicores no processamento)
+	cpuRequestQuery := fmt.Sprintf(
+		`max(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="cpu"})`,
+		namespace, hpaName,
+	)
+
+	result, err = c.QueryRange(ctx, cpuRequestQuery, start, end, step)
+	if err == nil {
+		historicalMetrics["cpu_request"] = result
+	}
+
+	// CPU Limit ao longo do tempo (em cores - será convertido para millicores no processamento)
+	cpuLimitQuery := fmt.Sprintf(
+		`max(kube_pod_container_resource_limits{namespace="%s",pod=~"%s.*",resource="cpu"})`,
+		namespace, hpaName,
+	)
+
+	result, err = c.QueryRange(ctx, cpuLimitQuery, start, end, step)
+	if err == nil {
+		historicalMetrics["cpu_limit"] = result
+	}
+
+	// Memory Request ao longo do tempo (em bytes)
+	memoryRequestQuery := fmt.Sprintf(
+		`max(kube_pod_container_resource_requests{namespace="%s",pod=~"%s.*",resource="memory"})`,
+		namespace, hpaName,
+	)
+
+	result, err = c.QueryRange(ctx, memoryRequestQuery, start, end, step)
+	if err == nil {
+		historicalMetrics["memory_request"] = result
+	}
+
+	// Memory Limit ao longo do tempo (em bytes)
+	memoryLimitQuery := fmt.Sprintf(
+		`max(kube_pod_container_resource_limits{namespace="%s",pod=~"%s.*",resource="memory"})`,
+		namespace, hpaName,
+	)
+
+	result, err = c.QueryRange(ctx, memoryLimitQuery, start, end, step)
+	if err == nil {
+		historicalMetrics["memory_limit"] = result
+	}
+
+	// Log detalhado dos dados retornados
+	logger := log.Info().
+		Str("namespace", namespace).
+		Str("hpa", hpaName).
+		Dur("duration", duration).
+		Dur("step", step).
+		Dur("offset", offset).
+		Int("metrics_count", len(historicalMetrics))
+
+	// Mostrar primeiro e último timestamp das réplicas (se disponível)
+	if replicasResult, ok := historicalMetrics["replicas"]; ok && len(replicasResult.Data.Result) > 0 && len(replicasResult.Data.Result[0].Values) > 0 {
+		firstTs := replicasResult.Data.Result[0].Values[0][0].(float64)
+		lastTs := replicasResult.Data.Result[0].Values[len(replicasResult.Data.Result[0].Values)-1][0].(float64)
+		logger = logger.
+			Time("first_timestamp", time.Unix(int64(firstTs), 0)).
+			Time("last_timestamp", time.Unix(int64(lastTs), 0)).
+			Int("data_points", len(replicasResult.Data.Result[0].Values))
+	}
+
+	logger.Msg("Métricas históricas com offset coletadas do Prometheus")
+
+	return historicalMetrics, nil
+}
+
 // Close fecha o cliente (cleanup de recursos)
 func (c *PrometheusClient) Close() error {
 	c.httpClient.CloseIdleConnections()
