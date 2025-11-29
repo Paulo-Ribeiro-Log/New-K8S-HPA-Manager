@@ -674,9 +674,13 @@ class APIClient {
     cluster: string,
     namespace: string,
     hpaName: string,
-    duration: string = "5m"
+    duration: string = "5m",
+    daysOffset: number = 1
   ): Promise<HPAMetrics> {
-    const params = new URLSearchParams({ duration });
+    const params = new URLSearchParams({ 
+      duration,
+      days_offset: daysOffset.toString()
+    });
     return this.request<HPAMetrics>(
       `/monitoring/v2/metrics/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(hpaName)}?${params}`
     );

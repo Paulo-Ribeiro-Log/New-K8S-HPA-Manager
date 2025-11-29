@@ -71,12 +71,13 @@ func NewMonitoringHandlerV2(engine *enginev2.MonitoringEngineV2, kubeManager *co
 }
 
 // GetMetrics retorna métricas em tempo real de um HPA (via Prometheus)
-// GET /api/v1/monitoring/v2/metrics/:cluster/:namespace/:hpaName?duration=1h
+// GET /api/v1/monitoring/v2/metrics/:cluster/:namespace/:hpaName?duration=1h&days_offset=1
 func (h *MonitoringHandlerV2) GetMetrics(c *gin.Context) {
 	cluster := c.Param("cluster")
 	namespace := c.Param("namespace")
 	hpaName := c.Param("hpaName")
 	duration := c.DefaultQuery("duration", "1h")
+	daysOffsetStr := c.DefaultQuery("days_offset", "1")
 
 	// Remove sufixo -admin do cluster (frontend envia com -admin, mas Prometheus não precisa)
 	normalizedCluster := strings.TrimSuffix(cluster, "-admin")
@@ -86,6 +87,15 @@ func (h *MonitoringHandlerV2) GetMetrics(c *gin.Context) {
 	if err != nil {
 		c.JSON(400, gin.H{
 			"error": "Invalid duration format. Use formats like: 5m, 1h, 24h",
+		})
+		return
+	}
+
+	// Parse days_offset (1, 2 ou 3)
+	daysOffset, err := strconv.Atoi(daysOffsetStr)
+	if err != nil || daysOffset < 1 || daysOffset > 3 {
+		c.JSON(400, gin.H{
+			"error": "Invalid days_offset. Must be 1, 2 or 3",
 		})
 		return
 	}
@@ -123,6 +133,28 @@ func (h *MonitoringHandlerV2) GetMetrics(c *gin.Context) {
 		Int("data_points", len(historicalData)).
 		Msg("Métricas históricas obtidas com sucesso")
 
+	// Buscar métricas de D-N (N dias atrás) via Prometheus com offset
+	offsetDuration := time.Duration(daysOffset) * 24 * time.Hour
+	historicalDataYesterday, err := h.engine.GetHPAHistoricalMetricsWithOffset(normalizedCluster, namespace, hpaName, dur, 1*time.Minute, offsetDuration)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("cluster", normalizedCluster).
+			Str("namespace", namespace).
+			Str("hpa", hpaName).
+			Int("days_offset", daysOffset).
+			Msgf("Falha ao buscar métricas D-%d (continuando sem comparação)", daysOffset)
+		historicalDataYesterday = nil // Continua sem dados de ontem
+	} else {
+		log.Info().
+			Str("cluster", normalizedCluster).
+			Str("namespace", namespace).
+			Str("hpa", hpaName).
+			Int("days_offset", daysOffset).
+			Int("data_points_yesterday", len(historicalDataYesterday)).
+			Msgf("Métricas D-%d obtidas com sucesso", daysOffset)
+	}
+
 	// Buscar targets do HPA (uma vez, válido para todos os snapshots)
 	var cpuTarget, memoryTarget float64
 	tmpSnapshot := &enginev2.HPAMetrics{}
@@ -136,12 +168,20 @@ func (h *MonitoringHandlerV2) GetMetrics(c *gin.Context) {
 	// Converter para formato API (compatível com frontend)
 	apiSnapshots := convertHistoricalToAPI(historicalData, cpuTarget, memoryTarget)
 
+	// Converter dados de ontem para formato API
+	apiSnapshotsYesterday := []gin.H{}
+	if historicalDataYesterday != nil {
+		apiSnapshotsYesterday = convertHistoricalToAPI(historicalDataYesterday, cpuTarget, memoryTarget)
+	}
+
 	log.Info().
 		Str("cluster", normalizedCluster).
 		Str("namespace", namespace).
 		Str("hpa", hpaName).
 		Int("count", len(apiSnapshots)).
-		Msg("Métricas retornadas via Prometheus")
+		Int("count_yesterday", len(apiSnapshotsYesterday)).
+		Int("days_offset", daysOffset).
+		Msgf("Métricas retornadas via Prometheus (com comparação D-%d)", daysOffset)
 
 	c.JSON(200, gin.H{
 		"cluster":             cluster,
@@ -149,9 +189,9 @@ func (h *MonitoringHandlerV2) GetMetrics(c *gin.Context) {
 		"hpa_name":            hpaName,
 		"duration":            duration,
 		"snapshots":           apiSnapshots,
-		"snapshots_yesterday": []gin.H{}, // V2 não usa comparação D-1 (dados em tempo real)
+		"snapshots_yesterday": apiSnapshotsYesterday,
 		"count":               len(apiSnapshots),
-		"count_yesterday":     0,
+		"count_yesterday":     len(apiSnapshotsYesterday),
 		"source":              "prometheus", // Indicador de fonte de dados
 		"cpu_target":          cpuTarget,
 		"memory_target":       memoryTarget,

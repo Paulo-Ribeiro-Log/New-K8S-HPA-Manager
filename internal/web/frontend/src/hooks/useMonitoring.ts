@@ -47,7 +47,8 @@ export function useHPAMetrics(
   cluster?: string,
   namespace?: string,
   hpaName?: string,
-  duration: string = "5m"
+  duration: string = "5m",
+  daysOffset: number = 1
 ) {
   const [metrics, setMetrics] = useState<HPAMetrics | null>(null);
   const [loading, setLoading] = useState(false);
@@ -71,7 +72,8 @@ export function useHPAMetrics(
           cluster,
           namespace,
           hpaName,
-          customDuration || duration
+          customDuration || duration,
+          daysOffset
         );
         setMetrics(data);
         setIsInitialLoad(false);
@@ -85,7 +87,7 @@ export function useHPAMetrics(
         }
       }
     },
-    [cluster, namespace, hpaName, duration, isInitialLoad]
+    [cluster, namespace, hpaName, duration, daysOffset, isInitialLoad]
   );
 
   useEffect(() => {
