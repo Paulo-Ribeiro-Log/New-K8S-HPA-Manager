@@ -36,6 +36,7 @@ import {
   Line,
   AreaChart,
   Area,
+  ComposedChart,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -115,6 +116,7 @@ export function MetricsPanel({
   const [latencyView, setLatencyView] = useState<"p95" | "p99">("p95");
   const [alertsDialogOpen, setAlertsDialogOpen] = useState(false);
   const [expandedChart, setExpandedChart] = useState<"cpu" | "memory" | "replicas" | null>(null);
+  const [comparisonDays, setComparisonDays] = useState<number>(1); // D-1, D-2 ou D-3
   const [zoomDomain, setZoomDomain] = useState<{ start: number; end: number } | null>(null);
   const [selectedArea, setSelectedArea] = useState<{ start: number; end: number } | null>(null);
   const [zoomLevel, setZoomLevel] = useState<number>(1); // 1 = sem zoom, maior = mais zoom
@@ -130,7 +132,8 @@ export function MetricsPanel({
     cluster,
     namespace,
     hpaName,
-    duration
+    duration,
+    comparisonDays
   );
 
   // Auto-refresh com intervalo configurável
@@ -211,46 +214,16 @@ export function MetricsPanel({
       return [];
     }
 
-    // Criar mapa de snapshots de ontem por minuto relativo
-    // Ex: timestamp de hoje 18:52:30 → busca ontem no mesmo minuto (18:52:XX qualquer segundo)
-    const yesterdayMap = new Map<number, HPASnapshot>();
-    if (metrics.snapshots_yesterday && metrics.snapshots_yesterday.length > 0) {
-      console.log('[DEBUG] Dados de ontem:', {
-        count: metrics.snapshots_yesterday.length,
-        first: metrics.snapshots_yesterday[0],
-        last: metrics.snapshots_yesterday[metrics.snapshots_yesterday.length - 1]
-      });
+    console.log('🚀 [D-1] NOVA LÓGICA - Iniciando mapeamento por índice direto', {
+      snapshotsCount: metrics.snapshots.length,
+      snapshotsYesterdayCount: metrics.snapshots_yesterday?.length || 0,
+      willMapYesterday: !!metrics.snapshots_yesterday
+    });
 
-      // Agrupar por minuto (chave = minuto absoluto dentro da janela de 1h)
-      metrics.snapshots_yesterday.forEach((snap: HPASnapshot) => {
-        const date = new Date(snap.timestamp);
-        const minuteKey = date.getMinutes(); // Apenas minuto (0-59)
-        // Se já existe snapshot neste minuto, guarda o mais próximo do segundo 30
-        if (!yesterdayMap.has(minuteKey) || Math.abs(date.getSeconds() - 30) < Math.abs(new Date(yesterdayMap.get(minuteKey)!.timestamp).getSeconds() - 30)) {
-          yesterdayMap.set(minuteKey, snap);
-        }
-      });
-
-      console.log('[DEBUG] yesterdayMap criado com', yesterdayMap.size, 'entradas (agrupado por minuto)');
-    } else {
-      console.log('[DEBUG] Nenhum dado de ontem disponível');
-    }
-
+    // Mapeamento D-1: ambos arrays têm mesmo tamanho e cadência, mapear por índice direto
     const result = metrics.snapshots.map((snapshot: HPASnapshot, index: number) => {
-      // Buscar dado correspondente de ontem pelo mesmo minuto
-      const todayDate = new Date(snapshot.timestamp);
-      const minuteKey = todayDate.getMinutes(); // Apenas minuto
-      const yesterdaySnapshot = yesterdayMap.get(minuteKey);
-
-      if (index === 0) {
-        console.log('[DEBUG] Primeiro snapshot de hoje:', {
-          timestamp: snapshot.timestamp,
-          minute: minuteKey,
-          hasMatch: !!yesterdaySnapshot,
-          yesterdayValue: yesterdaySnapshot?.cpu_current,
-          yesterdayTimestamp: yesterdaySnapshot?.timestamp
-        });
-      }
+      // Dados D-1 no mesmo índice (mesma posição relativa na janela de tempo)
+      const yesterdaySnapshot = metrics.snapshots_yesterday?.[index];
 
       // Extrair valores de Request/Limit
       const cpuRequest = snapshot.cpu_request ? parseCpuValue(snapshot.cpu_request) : null;
@@ -281,12 +254,24 @@ export function MetricsPanel({
       };
     });
 
+    // Log de debug para verificar mapeamento D-1
     const hasYesterdayData = result.some(d => d.cpuYesterday !== null);
-    console.log('[DEBUG] chartData criado:', {
-      totalPoints: result.length,
-      hasYesterdayData,
-      yesterdayPoints: result.filter(d => d.cpuYesterday !== null).length
-    });
+    if (metrics.snapshots_yesterday && metrics.snapshots_yesterday.length > 0) {
+      console.log('[D-1] Mapeamento concluído:', {
+        totalPoints: result.length,
+        yesterdayPointsWithData: result.filter(d => d.cpuYesterday !== null).length,
+        firstPoint: {
+          today: result[0]?.timestamp ? new Date(result[0].timestamp).toISOString() : 'N/A',
+          todayCPU: result[0]?.cpuCurrent,
+          yesterdayCPU: result[0]?.cpuYesterday
+        },
+        lastPoint: {
+          today: result[result.length-1]?.timestamp ? new Date(result[result.length-1].timestamp).toISOString() : 'N/A',
+          todayCPU: result[result.length-1]?.cpuCurrent,
+          yesterdayCPU: result[result.length-1]?.cpuYesterday
+        }
+      });
+    }
 
     return result;
   }, [metrics]);
@@ -1136,7 +1121,7 @@ export function MetricsPanel({
                   </div>
                 </div>
                 <ResponsiveContainer width="100%" height={300}>
-                  <AreaChart data={chartData} isAnimationActive={false}>
+                  <ComposedChart data={chartData}>
                     <defs>
                       <linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
@@ -1195,19 +1180,6 @@ export function MetricsPanel({
                       strokeDasharray="5 5"
                       label={{ value: `Target: ${cpuTarget}%`, fill: '#10b981', position: 'insideTopRight' }}
                     />
-                    {/* Linha de ontem (D-1) - ANTES da Area para ficar por cima */}
-                    <Line
-                      type="monotone"
-                      dataKey="cpuYesterday"
-                      name="CPU D-1"
-                      stroke="#9ca3af"
-                      strokeWidth={2}
-                      strokeDasharray="8 4"
-                      dot={false}
-                      unit="%"
-                      connectNulls
-                      isAnimationActive={false}
-                    />
                     <Area
                       type="monotone"
                       dataKey="cpuCurrent"
@@ -1218,7 +1190,19 @@ export function MetricsPanel({
                       unit="%"
                       isAnimationActive={false}
                     />
-                  </AreaChart>
+                    {/* Linha D-N - lembrança sutil no gráfico */}
+                    <Line
+                      type="monotone"
+                      dataKey="cpuYesterday"
+                      name={`CPU D-${comparisonDays} (${comparisonDays * 24}h atrás)`}
+                      stroke="#c084fc"
+                      strokeWidth={1.5}
+                      strokeOpacity={0.2}
+                      dot={false}
+                      unit="%"
+                      isAnimationActive={false}
+                    />
+                  </ComposedChart>
                 </ResponsiveContainer>
               </div>
 
@@ -1254,7 +1238,7 @@ export function MetricsPanel({
                   </div>
                 </div>
                 <ResponsiveContainer width="100%" height={300}>
-                  <AreaChart data={chartData} isAnimationActive={false}>
+                  <ComposedChart data={chartData}>
                     <defs>
                       <linearGradient id="memoryGradient" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
@@ -1313,19 +1297,6 @@ export function MetricsPanel({
                       strokeDasharray="5 5"
                       label={{ value: `Target: ${memoryTarget}%`, fill: '#10b981', position: 'insideTopRight' }}
                     />
-                    {/* Linha de ontem (D-1) - ANTES da Area para ficar por cima */}
-                    <Line
-                      type="monotone"
-                      dataKey="memoryYesterday"
-                      name="Memória D-1"
-                      stroke="#9ca3af"
-                      strokeWidth={2}
-                      strokeDasharray="8 4"
-                      dot={false}
-                      unit="%"
-                      connectNulls
-                      isAnimationActive={false}
-                    />
                     <Area
                       type="monotone"
                       dataKey="memoryCurrent"
@@ -1336,7 +1307,19 @@ export function MetricsPanel({
                       unit="%"
                       isAnimationActive={false}
                     />
-                  </AreaChart>
+                    {/* Linha D-N - lembrança sutil no gráfico */}
+                    <Line
+                      type="monotone"
+                      dataKey="memoryYesterday"
+                      name={`Memória D-${comparisonDays} (${comparisonDays * 24}h atrás)`}
+                      stroke="#c084fc"
+                      strokeWidth={1.5}
+                      strokeOpacity={0.3}
+                      dot={false}
+                      unit="%"
+                      isAnimationActive={false}
+                    />
+                  </ComposedChart>
                 </ResponsiveContainer>
 
                 {/* Labels de estatísticas abaixo do gráfico */}
@@ -1438,6 +1421,17 @@ export function MetricsPanel({
                       stroke="#3b82f6"
                       strokeWidth={2}
                       dot={false}
+                      isAnimationActive={false}
+                    />
+                    {/* Linha D-N - lembrança sutil no gráfico */}
+                    <Line
+                      type="stepAfter"
+                      dataKey="replicasYesterday"
+                      name={`Réplicas D-${comparisonDays} (${comparisonDays * 24}h atrás)`}
+                      stroke="#c084fc"
+                      strokeWidth={1.5}
+                      strokeOpacity={0.3}
+                      dot={false}
                       unit=""
                       connectNulls
                       isAnimationActive={false}
@@ -1479,9 +1473,8 @@ export function MetricsPanel({
       {/* Dialog de Gráfico Expandido */}
       <Dialog open={expandedChart !== null} onOpenChange={(open) => !open && setExpandedChart(null)}>
         <DialogContent className="max-w-[95vw] max-h-[95vh] p-6">
-          <DialogHeader>
-            <div className="flex items-center justify-between gap-4">
-              <DialogTitle className="flex items-center gap-2">
+          <DialogHeader className="flex flex-row items-center justify-between gap-4">
+            <DialogTitle className="flex items-center gap-2">
                 {expandedChart === "cpu" && (
                   <>
                     <Cpu className="h-5 w-5" />
@@ -1501,35 +1494,56 @@ export function MetricsPanel({
                   </>
                 )}
               </DialogTitle>
-              <div className="flex items-center gap-2 flex-shrink-0">
-                {/* Seletores de Tempo */}
-                <Select value={duration} onValueChange={setDuration}>
-                  <SelectTrigger className="h-8 w-24 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="5m">5 min</SelectItem>
-                    <SelectItem value="15m">15 min</SelectItem>
-                    <SelectItem value="30m">30 min</SelectItem>
-                    <SelectItem value="1h">1 hora</SelectItem>
-                    <SelectItem value="3h">3 horas</SelectItem>
-                    <SelectItem value="6h">6 horas</SelectItem>
-                    <SelectItem value="12h">12 horas</SelectItem>
-                    <SelectItem value="24h">24 horas</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select value={autoRefreshInterval.toString()} onValueChange={(v) => setAutoRefreshInterval(parseInt(v))}>
-                  <SelectTrigger className="h-8 w-28 text-xs">
-                    <SelectValue placeholder="Auto-refresh" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="0">Off</SelectItem>
-                    <SelectItem value="1">1 min</SelectItem>
-                    <SelectItem value="5">5 min</SelectItem>
-                    <SelectItem value="10">10 min</SelectItem>
-                    <SelectItem value="15">15 min</SelectItem>
-                  </SelectContent>
-                </Select>
+              <div className="flex items-end gap-4 flex-shrink-0">
+                {/* Seletor de Comparação (D-1, D-2, D-3) */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-muted-foreground font-medium">Comparação</label>
+                  <Select value={comparisonDays.toString()} onValueChange={(v) => setComparisonDays(parseInt(v))}>
+                    <SelectTrigger className="h-8 w-20 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">D-1</SelectItem>
+                      <SelectItem value="2">D-2</SelectItem>
+                      <SelectItem value="3">D-3</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* Seletor de Duração */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-muted-foreground font-medium">Período</label>
+                  <Select value={duration} onValueChange={setDuration}>
+                    <SelectTrigger className="h-8 w-24 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="5m">5 min</SelectItem>
+                      <SelectItem value="15m">15 min</SelectItem>
+                      <SelectItem value="30m">30 min</SelectItem>
+                      <SelectItem value="1h">1 hora</SelectItem>
+                      <SelectItem value="3h">3 horas</SelectItem>
+                      <SelectItem value="6h">6 horas</SelectItem>
+                      <SelectItem value="12h">12 horas</SelectItem>
+                      <SelectItem value="24h">24 horas</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* Seletor de Auto-refresh */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-muted-foreground font-medium">Atualização</label>
+                  <Select value={autoRefreshInterval.toString()} onValueChange={(v) => setAutoRefreshInterval(parseInt(v))}>
+                    <SelectTrigger className="h-8 w-28 text-xs">
+                      <SelectValue placeholder="Auto-refresh" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0">Off</SelectItem>
+                      <SelectItem value="1">1 min</SelectItem>
+                      <SelectItem value="5">5 min</SelectItem>
+                      <SelectItem value="10">10 min</SelectItem>
+                      <SelectItem value="15">15 min</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
                 <Button
                   variant="outline"
                   size="icon"
@@ -1572,9 +1586,8 @@ export function MetricsPanel({
                   </Button>
                 </div>
               </div>
-            </div>
-          </DialogHeader>
-          <div className="mt-4">
+            </DialogHeader>
+            <div className="mt-4">
             {/* Gráfico de CPU Expandido */}
             {expandedChart === "cpu" && (
               <div>
@@ -1592,9 +1605,8 @@ export function MetricsPanel({
                 </div>
                 <div onMouseDown={(e) => e.preventDefault()}>
                   <ResponsiveContainer width="100%" height={600}>
-                    <AreaChart 
-                      data={zoomedData} 
-                      isAnimationActive={false}
+                    <ComposedChart 
+                      data={zoomedData}
                       onMouseDown={handleMouseDown}
                       onMouseMove={handleMouseMove}
                       onMouseUp={handleMouseUp}
@@ -1639,8 +1651,9 @@ export function MetricsPanel({
                       strokeDasharray="5 5"
                       label={{ value: `Target: ${cpuTarget}%`, fill: '#10b981', position: 'insideTopRight' }}
                     />
-                    <Line type="monotone" dataKey="cpuYesterday" name="CPU D-1" stroke="#9ca3af" strokeWidth={2} strokeDasharray="8 4" dot={false} unit="%" connectNulls isAnimationActive={false} />
                     <Area type="monotone" dataKey="cpuCurrent" name="CPU Atual" stroke="#3b82f6" strokeWidth={2} fill="url(#cpuGradientExpanded)" unit="%" isAnimationActive={false} />
+                    {/* Linha D-N - lembrança sutil */}
+                    <Line type="monotone" dataKey="cpuYesterday" name={`CPU D-${comparisonDays} (${comparisonDays * 24}h atrás)`} stroke="#c084fc" strokeWidth={1.5} strokeOpacity={0.3} dot={false} unit="%" isAnimationActive={false} />
                     {refAreaValues && (
                       <ReferenceArea
                         x1={refAreaValues.x1}
@@ -1650,7 +1663,7 @@ export function MetricsPanel({
                         fillOpacity={0.3}
                       />
                     )}
-                  </AreaChart>
+                  </ComposedChart>
                 </ResponsiveContainer>
                 </div>
               </div>
@@ -1673,9 +1686,8 @@ export function MetricsPanel({
                 </div>
                 <div onMouseDown={(e) => e.preventDefault()}>
                   <ResponsiveContainer width="100%" height={600}>
-                  <AreaChart 
-                    data={zoomedData} 
-                    isAnimationActive={false}
+                  <ComposedChart 
+                    data={zoomedData}
                     onMouseDown={handleMouseDown}
                     onMouseMove={handleMouseMove}
                     onMouseUp={handleMouseUp}
@@ -1720,8 +1732,9 @@ export function MetricsPanel({
                       strokeDasharray="5 5"
                       label={{ value: `Target: ${memoryTarget}%`, fill: '#10b981', position: 'insideTopRight' }}
                     />
-                    <Line type="monotone" dataKey="memoryYesterday" name="Memória D-1" stroke="#9ca3af" strokeWidth={2} strokeDasharray="8 4" dot={false} unit="%" connectNulls isAnimationActive={false} />
                     <Area type="monotone" dataKey="memoryCurrent" name="Memória Atual" stroke="#8b5cf6" strokeWidth={2} fill="url(#memoryGradientExpanded)" unit="%" isAnimationActive={false} />
+                    {/* Linha D-N - lembrança sutil */}
+                    <Line type="monotone" dataKey="memoryYesterday" name={`Memória D-${comparisonDays} (${comparisonDays * 24}h atrás)`} stroke="#c084fc" strokeWidth={1.5} strokeOpacity={0.3} dot={false} unit="%" isAnimationActive={false} />
                     {refAreaValues && (
                       <ReferenceArea
                         x1={refAreaValues.x1}
@@ -1731,7 +1744,7 @@ export function MetricsPanel({
                         fillOpacity={0.3}
                       />
                     )}
-                  </AreaChart>
+                  </ComposedChart>
                   </ResponsiveContainer>
                 </div>
                 <div className="mt-4 pt-3 border-t flex items-center justify-around text-sm">
@@ -1811,6 +1824,8 @@ export function MetricsPanel({
                       label={{ value: `Max: ${replicaBounds.max}`, position: "right", fill: "#ef4444", fontSize: 12 }}
                     />
                     <Line type="stepAfter" dataKey="replicasCurrent" name="Réplicas Atuais" stroke="#3b82f6" strokeWidth={2} dot={false} unit="" connectNulls isAnimationActive={false} />
+                    {/* Linha D-N - lembrança sutil */}
+                    <Line type="stepAfter" dataKey="replicasYesterday" name={`Réplicas D-${comparisonDays} (${comparisonDays * 24}h atrás)`} stroke="#c084fc" strokeWidth={1.5} strokeOpacity={0.3} dot={false} unit="" connectNulls isAnimationActive={false} />
                     {refAreaValues && (
                       <ReferenceArea
                         x1={refAreaValues.x1}

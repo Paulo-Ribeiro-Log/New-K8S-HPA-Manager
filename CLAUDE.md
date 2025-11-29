@@ -122,6 +122,11 @@ k8s-hpa-manager/
 ✅ **Sistema de Alertas Completo** - Exibe TODOS os alertas ativos (sem filtros restritivos) com filtro por período de tempo
 ✅ **Alertas Filtrados por Tempo** - Botão de alertas no painel "Análise de Métricas" respeita seletor de tempo (5min-24h)
 ✅ **Gráfico de Réplicas Corrigido** - Backend agora retorna `replicas_current` corretamente (era `replicas`)
+✅ **Comparação Histórica D-1/D-2/D-3** - Linha lilás nos gráficos permite comparar métricas atuais com 1, 2 ou 3 dias atrás
+  - Select dropdown nos modais expandidos para escolher período de comparação
+  - Backend: parâmetro `days_offset` (1-3) com validação e cálculo dinâmico de offset
+  - Frontend: refetch automático ao trocar período, labels descritivas nos selects
+  - Linha com opacidade 0.2-0.3 e nome dinâmico (ex: "CPU D-2 (48h atrás)")
 
 ---
 
@@ -133,10 +138,14 @@ Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
 
 Versão: v1.1.4+ (Nov 2025)
 Tech: Go 1.23 + Bubble Tea (TUI) + React 18.3 (Web)
-Build: make build && make web-build
+Build: go build -o build/new-k8s-hpa && make web-build
 Binary: ./build/new-k8s-hpa
 
 Recent Updates:
+- Comparação Histórica D-1/D-2/D-3: Linha lilás nos gráficos permite comparar métricas atuais com 1, 2 ou 3 dias atrás
+  - Backend: Parâmetro days_offset (1-3) na API /monitoring/v2/metrics com validação
+  - Frontend: Select com labels descritivas, refetch automático ao trocar período
+  - UX: Nome da linha dinâmico (ex: "CPU D-2 (48h atrás)"), opacidade sutil (0.2-0.3)
 - Gráfico de Réplicas Corrigido: Backend retorna `replicas_current` corretamente (monitoring_v2.go:452)
 - Sistema de Alertas Completo: Exibe TODOS os alertas ativos (removido filtro restritivo de nomes)
 - Alertas Filtrados por Tempo: Botão de alertas respeita seletor de tempo no painel "Análise de Métricas"
