@@ -123,6 +123,25 @@ func (h *MonitoringHandlerV2) GetMetrics(c *gin.Context) {
 		Int("data_points", len(historicalData)).
 		Msg("Métricas históricas obtidas com sucesso")
 
+	// Buscar métricas de D-1 (24h atrás) via Prometheus com offset
+	historicalDataYesterday, err := h.engine.GetHPAHistoricalMetricsWithOffset(normalizedCluster, namespace, hpaName, dur, 1*time.Minute, 24*time.Hour)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("cluster", normalizedCluster).
+			Str("namespace", namespace).
+			Str("hpa", hpaName).
+			Msg("Falha ao buscar métricas D-1 (continuando sem comparação)")
+		historicalDataYesterday = nil // Continua sem dados de ontem
+	} else {
+		log.Info().
+			Str("cluster", normalizedCluster).
+			Str("namespace", namespace).
+			Str("hpa", hpaName).
+			Int("data_points_yesterday", len(historicalDataYesterday)).
+			Msg("Métricas D-1 obtidas com sucesso")
+	}
+
 	// Buscar targets do HPA (uma vez, válido para todos os snapshots)
 	var cpuTarget, memoryTarget float64
 	tmpSnapshot := &enginev2.HPAMetrics{}
@@ -136,12 +155,19 @@ func (h *MonitoringHandlerV2) GetMetrics(c *gin.Context) {
 	// Converter para formato API (compatível com frontend)
 	apiSnapshots := convertHistoricalToAPI(historicalData, cpuTarget, memoryTarget)
 
+	// Converter dados de ontem para formato API
+	apiSnapshotsYesterday := []gin.H{}
+	if historicalDataYesterday != nil {
+		apiSnapshotsYesterday = convertHistoricalToAPI(historicalDataYesterday, cpuTarget, memoryTarget)
+	}
+
 	log.Info().
 		Str("cluster", normalizedCluster).
 		Str("namespace", namespace).
 		Str("hpa", hpaName).
 		Int("count", len(apiSnapshots)).
-		Msg("Métricas retornadas via Prometheus")
+		Int("count_yesterday", len(apiSnapshotsYesterday)).
+		Msg("Métricas retornadas via Prometheus (com comparação D-1)")
 
 	c.JSON(200, gin.H{
 		"cluster":             cluster,
@@ -149,9 +175,9 @@ func (h *MonitoringHandlerV2) GetMetrics(c *gin.Context) {
 		"hpa_name":            hpaName,
 		"duration":            duration,
 		"snapshots":           apiSnapshots,
-		"snapshots_yesterday": []gin.H{}, // V2 não usa comparação D-1 (dados em tempo real)
+		"snapshots_yesterday": apiSnapshotsYesterday,
 		"count":               len(apiSnapshots),
-		"count_yesterday":     0,
+		"count_yesterday":     len(apiSnapshotsYesterday),
 		"source":              "prometheus", // Indicador de fonte de dados
 		"cpu_target":          cpuTarget,
 		"memory_target":       memoryTarget,
