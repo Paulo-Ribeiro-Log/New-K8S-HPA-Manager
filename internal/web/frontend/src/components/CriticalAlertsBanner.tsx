@@ -27,8 +27,8 @@ export function CriticalAlertsBanner({ cluster }: CriticalAlertsBannerProps) {
   const criticalNodeAlerts = nodePoolAlerts.filter((a) => a.severity === "critical");
 
   const handleViewDetails = () => {
-    // Navegar para painel de alertas
-    navigate(`/alerts/${cluster}`);
+    // Abrir em nova aba
+    window.open(`/alerts/${cluster}`, '_blank');
   };
 
   const handleDismiss = () => {
