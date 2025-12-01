@@ -220,9 +220,35 @@ export const DeploymentsTab = ({
     refetch();
   };
 
-  const refreshManifest = () => {
-    if (selectedDeployment) {
-      handleSelectDeployment(selectedDeployment);
+  const refreshManifest = async () => {
+    if (!selectedDeployment) return;
+    
+    setManifestLoading(true);
+    try {
+      // Buscar deployment atualizado do servidor
+      const detail = await apiClient.getDeployment(
+        selectedDeployment.cluster,
+        selectedDeployment.namespace,
+        selectedDeployment.name
+      );
+      setManifest(detail);
+      const freshYaml = detail.yaml || "";
+      
+      // Atualizar com YAML fresco do servidor (ignorar cache)
+      setOriginalYaml(freshYaml);
+      setEditorValue(freshYaml);
+      
+      // Resetar histórico com o novo YAML
+      setHistory([freshYaml]);
+      setHistoryIndex(0);
+      
+      toast.success("Manifest recarregado do servidor");
+    } catch (err) {
+      toast.error("Falha ao recarregar", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setManifestLoading(false);
     }
   };
 
@@ -321,7 +347,9 @@ export const DeploymentsTab = ({
       toast.success("Deployment aplicado", {
         description: `${selectedDeployment.namespace}/${selectedDeployment.name}`,
       });
-      refreshManifest();
+      
+      // Recarregar manifest do servidor após aplicar
+      await refreshManifest();
     } catch (err) {
       toast.error("Falha ao aplicar", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
