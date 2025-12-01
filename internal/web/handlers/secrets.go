@@ -197,7 +197,7 @@ func (h *SecretHandler) Validate(c *gin.Context) {
 	}
 
 	kubeClient := kubeclient.NewClient(clientset, req.Cluster)
-	sanitizedYAML, err := sanitizeSecretYAML(req.YAML)
+	sanitizedYAML, err := sanitizeSecretYAML(req.YAML, "", req.Namespace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("INVALID_YAML", err.Error()))
 		return
@@ -260,7 +260,7 @@ func (h *SecretHandler) Apply(c *gin.Context) {
 	}
 
 	start := time.Now()
-	sanitizedYAML, err := sanitizeSecretYAML(req.YAML)
+	sanitizedYAML, err := sanitizeSecretYAML(req.YAML, name, namespace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("INVALID_YAML", err.Error()))
 		return
@@ -325,15 +325,23 @@ type secretApplyRequest struct {
 	DryRun       bool   `json:"dryRun"`
 }
 
-func sanitizeSecretYAML(yamlContent string) (string, error) {
+func sanitizeSecretYAML(yamlContent, enforceName, enforceNamespace string) (string, error) {
 	var obj map[string]interface{}
 	if err := yaml.Unmarshal([]byte(yamlContent), &obj); err != nil {
-		return "", fmt.Errorf("invalid configmap yaml: %w", err)
+		return "", fmt.Errorf("invalid secret yaml: %w", err)
 	}
 
 	metadata, _ := obj["metadata"].(map[string]interface{})
 	if metadata == nil {
 		metadata = make(map[string]interface{})
+	}
+
+	// Forçar nome e namespace corretos (previne erro de mismatch)
+	if enforceName != "" {
+		metadata["name"] = enforceName
+	}
+	if enforceNamespace != "" {
+		metadata["namespace"] = enforceNamespace
 	}
 
 	delete(metadata, "managedFields")
