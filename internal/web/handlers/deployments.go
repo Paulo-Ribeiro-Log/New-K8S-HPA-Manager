@@ -266,6 +266,9 @@ func (h *DeploymentHandler) Apply(c *gin.Context) {
 		return
 	}
 
+	fmt.Printf("[DEBUG] Handler ApplyDeployment: cluster=%s, namespace=%s, name=%s, dryRun=%v, fieldManager=%s\n", 
+		cluster, namespace, name, req.DryRun, req.FieldManager)
+	
 	result, err := kubeClient.ApplyDeployment(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -273,9 +276,12 @@ func (h *DeploymentHandler) Apply(c *gin.Context) {
 		if apierrors.IsConflict(err) {
 			status = http.StatusConflict
 		}
+		fmt.Printf("[ERROR] Failed to apply deployment: %v\n", err)
 		c.JSON(status, errorResponse(errorCode, err.Error()))
 		return
 	}
+	
+	fmt.Printf("[DEBUG] Handler ApplyDeployment SUCCESS: resourceVersion=%s\n", result.ResourceVersion)
 
 	if !req.DryRun && h.historyTracker != nil {
 		after := deploymentToHistoryMap(result)

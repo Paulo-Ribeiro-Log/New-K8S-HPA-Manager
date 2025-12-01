@@ -475,9 +475,16 @@ func (c *Client) applyDeployment(ctx context.Context, yamlContent, fieldManager,
 		return nil, err
 	}
 
-	options := metav1.PatchOptions{FieldManager: fieldManager}
+	forceFlag := true
+	options := metav1.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        &forceFlag, // Force ownership transfer (resolve conflicts with helm/other managers)
+	}
 	if dryRun {
 		options.DryRun = []string{metav1.DryRunAll}
+		fmt.Printf("[DEBUG] Applying deployment %s/%s in DRY-RUN mode\n", namespace, name)
+	} else {
+		fmt.Printf("[DEBUG] Applying deployment %s/%s with Force=true\n", namespace, name)
 	}
 
 	result, err := c.clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
@@ -485,6 +492,7 @@ func (c *Client) applyDeployment(ctx context.Context, yamlContent, fieldManager,
 		return nil, fmt.Errorf("failed to apply deployment %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
 
+	fmt.Printf("[DEBUG] Successfully applied deployment %s/%s, resourceVersion: %s\n", namespace, name, result.ResourceVersion)
 	return result, nil
 }
 

@@ -237,9 +237,38 @@ export const SecretsTab = ({
     refetch();
   };
 
-  const refreshManifest = () => {
-    if (selectedSecret) {
-      handleSelectSecret(selectedSecret);
+  const refreshManifest = async () => {
+    if (!selectedSecret) return;
+    
+    setManifestLoading(true);
+    try {
+      // Buscar secret atualizado do servidor
+      const detail = await apiClient.getSecret(
+        selectedSecret.cluster,
+        selectedSecret.namespace,
+        selectedSecret.name
+      );
+      setManifest(detail);
+      const freshYaml = detail.yaml || "";
+      
+      // Atualizar com YAML fresco do servidor (ignorar cache)
+      setOriginalYaml(freshYaml);
+      setEditorValue(freshYaml);
+      
+      // Resetar histórico com o novo YAML
+      setHistory([freshYaml]);
+      setHistoryIndex(0);
+      
+      // Resetar estado de decode
+      setIsDecoded(false);
+      
+      toast.success("Manifest recarregado do servidor");
+    } catch (err) {
+      toast.error("Falha ao recarregar", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setManifestLoading(false);
     }
   };
 
@@ -434,7 +463,9 @@ export const SecretsTab = ({
       toast.success("Secret aplicado", {
         description: `${selectedSecret.namespace}/${selectedSecret.name}`,
       });
-      refreshManifest();
+      
+      // Recarregar manifest do servidor após aplicar
+      await refreshManifest();
     } catch (err) {
       toast.error("Falha ao aplicar", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
