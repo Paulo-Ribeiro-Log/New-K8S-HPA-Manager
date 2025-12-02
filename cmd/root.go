@@ -33,24 +33,29 @@ Features:
 - Alerts and notifications system
 
 Usage:
-  new-k8s-hpa web              Start web server (default: port 8080)
-  new-k8s-hpa web -f           Start in foreground mode
+  new-k8s-hpa                  Start web server (default behavior)
+  new-k8s-hpa -f               Start in foreground mode
+  new-k8s-hpa --port 9000      Start on custom port
   new-k8s-hpa version          Check version and updates
   new-k8s-hpa autodiscover     Auto-discover clusters
+
+Legacy (still works):
+  new-k8s-hpa web              Same as default (for compatibility)
 
 Documentation:
   https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// TUI mode has been removed - redirect to web
-		fmt.Println("❌ TUI mode has been removed in this version")
-		fmt.Println("")
-		fmt.Println("✅ Please use the web interface instead:")
-		fmt.Println("   new-k8s-hpa web              # Start web server")
-		fmt.Println("   new-k8s-hpa web -f           # Start in foreground")
-		fmt.Println("")
-		fmt.Println("📖 Documentation: https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager")
-		fmt.Println("")
-		return fmt.Errorf("TUI mode removed - use 'new-k8s-hpa web' instead")
+		// Since TUI was removed, default behavior is to start web server
+		// This makes the user experience simpler: just run "new-k8s-hpa"
+
+		// If no subcommand was specified, start web server
+		if len(args) == 0 {
+			// Execute web command
+			return webCmd.RunE(cmd, args)
+		}
+
+		// If args were provided but no matching subcommand, show error
+		return fmt.Errorf("unknown command: %s\nRun 'new-k8s-hpa --help' for usage", args[0])
 	},
 }
 
@@ -152,6 +157,11 @@ func init() {
 		"Check for updates on startup (default: true)")
 	rootCmd.PersistentFlags().BoolVar(&autoUpdate, "auto-update", false,
 		"Run auto-update script (supports --yes, --dry-run, --check, --force)")
+
+	// Web server flags (now available on root command since it's the default)
+	rootCmd.PersistentFlags().IntVar(&webPort, "port", 8080, "Port for web server")
+	rootCmd.PersistentFlags().BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically")
+	rootCmd.PersistentFlags().BoolVarP(&foreground, "foreground", "f", false, "Run server in foreground (default: background)")
 
 	// Set default kubeconfig path
 	if home, exists := os.LookupEnv("HOME"); exists && kubeconfig == "" {
