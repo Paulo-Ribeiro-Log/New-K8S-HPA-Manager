@@ -1093,21 +1093,12 @@ export function MetricsPanel({
             <div className="space-y-6">
               {/* Gráfico de CPU */}
               <div className="border rounded-lg p-4 bg-card group relative">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                  onClick={() => setExpandedChart("cpu")}
-                  title="Expandir gráfico"
-                >
-                  <Maximize2 className="h-4 w-4" />
-                </Button>
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="text-sm font-semibold flex items-center gap-2">
                     <Cpu className="h-4 w-4" />
                     Uso de CPU ao longo do tempo
                   </h3>
-                  <div className="flex items-center gap-4 text-xs">
+                  <div className="flex items-center gap-4 text-xs pr-12">
                     {snapshotWithResources?.cpu_request && (
                       <span className="text-orange-600">
                         CPU Request: <strong>{snapshotWithResources.cpu_request}</strong>
@@ -1119,6 +1110,15 @@ export function MetricsPanel({
                       </span>
                     )}
                   </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => setExpandedChart("cpu")}
+                    title="Expandir gráfico"
+                  >
+                    <Maximize2 className="h-4 w-4" />
+                  </Button>
                 </div>
                 <ResponsiveContainer width="100%" height={300}>
                   <ComposedChart data={chartData}>
@@ -1210,21 +1210,12 @@ export function MetricsPanel({
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Memory Analysis */}
                 <div className="border rounded-lg p-4 bg-card group relative">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                  onClick={() => setExpandedChart("memory")}
-                  title="Expandir gráfico"
-                >
-                  <Maximize2 className="h-4 w-4" />
-                </Button>
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="text-sm font-semibold flex items-center gap-2">
                     <MemoryStick className="h-4 w-4" />
                     Uso de Memória ao longo do tempo
                   </h3>
-                  <div className="flex items-center gap-4 text-xs">
+                  <div className="flex items-center gap-4 text-xs pr-12">
                     {snapshotWithResources?.memory_request && (
                       <span className="text-orange-600">
                         Memory Request: <strong>{snapshotWithResources.memory_request}</strong>
@@ -1236,6 +1227,15 @@ export function MetricsPanel({
                       </span>
                     )}
                   </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => setExpandedChart("memory")}
+                    title="Expandir gráfico"
+                  >
+                    <Maximize2 className="h-4 w-4" />
+                  </Button>
                 </div>
                 <ResponsiveContainer width="100%" height={300}>
                   <ComposedChart data={chartData}>
@@ -1350,19 +1350,21 @@ export function MetricsPanel({
 
                 {/* Replicas Analysis */}
                 <div className="border rounded-lg p-4 bg-card group relative">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                  onClick={() => setExpandedChart("replicas")}
-                  title="Expandir gráfico"
-                >
-                  <Maximize2 className="h-4 w-4" />
-                </Button>
-                <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
-                  <Users className="h-4 w-4" />
-                  Réplicas ao longo do tempo
-                </h3>
+                <div className="mb-4 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold flex items-center gap-2">
+                    <Users className="h-4 w-4" />
+                    Réplicas ao longo do tempo
+                  </h3>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => setExpandedChart("replicas")}
+                    title="Expandir gráfico"
+                  >
+                    <Maximize2 className="h-4 w-4" />
+                  </Button>
+                </div>
                 <ResponsiveContainer width="100%" height={300}>
                   <LineChart data={chartData} isAnimationActive={false}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />

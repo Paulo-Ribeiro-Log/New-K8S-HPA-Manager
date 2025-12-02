@@ -1025,12 +1025,12 @@ func (c *Client) TriggerRollout(ctx context.Context, hpa models.HPA) error {
 			Status:   history.StatusSuccess,
 			Duration: time.Since(startTime).Milliseconds(),
 			Before: map[string]interface{}{
-				"hpa":                hpa.Name,
-				"perform_rollout":    hpa.PerformRollout,
+				"hpa":             hpa.Name,
+				"perform_rollout": hpa.PerformRollout,
 			},
 			After: map[string]interface{}{
-				"deployment":         deploymentName,
-				"restarted_at":       deployment.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"],
+				"deployment":   deploymentName,
+				"restarted_at": deployment.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"],
 			},
 		})
 	}
@@ -1173,8 +1173,8 @@ func (c *Client) TriggerStatefulSetRollout(ctx context.Context, hpa models.HPA) 
 			Status:   history.StatusSuccess,
 			Duration: time.Since(startTime).Milliseconds(),
 			Before: map[string]interface{}{
-				"hpa":                           hpa.Name,
-				"perform_statefulset_rollout":   hpa.PerformStatefulSetRollout,
+				"hpa":                         hpa.Name,
+				"perform_statefulset_rollout": hpa.PerformStatefulSetRollout,
 			},
 			After: map[string]interface{}{
 				"statefulset":  statefulSetName,
