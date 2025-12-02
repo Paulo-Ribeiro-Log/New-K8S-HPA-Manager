@@ -1,12 +1,9 @@
-// CriticalAlertsBanner - Barra de alerta sempre visível quando há alertas críticos
-// Aparece no topo da aplicação com animação pulsante
+// CriticalAlertsBanner - Card de alerta compacto para exibir alertas críticos
+// Aparece junto aos outros cards de estatísticas
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { AlertTriangle, X, ChevronRight } from "lucide-react";
-import { useAlertSummary, useAllAlerts } from "@/hooks/useAlerts";
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Card } from "@/components/ui/card";
+import { AlertTriangle } from "lucide-react";
+import { useAllAlerts } from "@/hooks/useAlerts";
 import { cn } from "@/lib/utils";
 
 interface CriticalAlertsBannerProps {
@@ -14,83 +11,77 @@ interface CriticalAlertsBannerProps {
 }
 
 export function CriticalAlertsBanner({ cluster }: CriticalAlertsBannerProps) {
-  const [dismissed, setDismissed] = useState(false);
-  const navigate = useNavigate();
   const { summary, hpaAlerts, nodePoolAlerts, loading } = useAllAlerts(cluster);
 
-  // Não mostrar se não há alertas críticos ou foi dispensado
-  if (loading || !summary || summary.critical === 0 || dismissed) {
-    return null;
+  // Não mostrar se carregando ou sem dados
+  if (loading || !summary) {
+    return (
+      <Card className="p-4 bg-gradient-card border-border/50">
+        <div className="flex items-start justify-between">
+          <div className="flex flex-col gap-1">
+            <p className="text-xs font-medium text-muted-foreground">Alertas Críticos</p>
+            <p className="text-2xl font-bold text-primary">...</p>
+          </div>
+          <div className="p-2 bg-primary/10 rounded-lg">
+            <AlertTriangle className="w-5 h-5 text-primary" />
+          </div>
+        </div>
+      </Card>
+    );
   }
 
   const criticalHPAAlerts = hpaAlerts.filter((a) => a.severity === "critical");
   const criticalNodeAlerts = nodePoolAlerts.filter((a) => a.severity === "critical");
+  const hasCritical = summary.critical > 0;
 
-  const handleViewDetails = () => {
-    // Abrir em nova aba
-    window.open(`/alerts/${cluster}`, '_blank');
-  };
-
-  const handleDismiss = () => {
-    setDismissed(true);
-    // O banner volta a aparecer quando o componente for remontado ou quando
-    // o número de alertas críticos mudar
+  const handleClick = () => {
+    if (hasCritical) {
+      window.open(`/alerts/${cluster}`, '_blank');
+    }
   };
 
   return (
-    <div className="w-full animate-in slide-in-from-top-5 duration-500">
-      <Alert
-        className={cn(
-          "border-red-500 bg-red-50 dark:bg-red-950/20 mb-4 relative",
-          "animate-pulse-slow" // Animação pulsante sutil
-        )}
-      >
-        <AlertTriangle className="h-5 w-5 text-red-600 dark:text-red-400" />
-        <AlertDescription className="flex items-center justify-between">
-          <div className="flex flex-col gap-1">
-            <div className="font-semibold text-red-900 dark:text-red-100">
-              🚨 {summary.critical} Alerta{summary.critical > 1 ? "s" : ""} Crítico
-              {summary.critical > 1 ? "s" : ""} Ativo{summary.critical > 1 ? "s" : ""}!
-            </div>
-            <div className="text-sm text-red-800 dark:text-red-200">
-              {criticalHPAAlerts.length > 0 && (
-                <span>
-                  {criticalHPAAlerts.length} HPA{criticalHPAAlerts.length > 1 ? "s" : ""}
-                </span>
-              )}
-              {criticalHPAAlerts.length > 0 && criticalNodeAlerts.length > 0 && (
-                <span className="mx-2">•</span>
-              )}
-              {criticalNodeAlerts.length > 0 && (
-                <span>
-                  {criticalNodeAlerts.length} Node Pool{criticalNodeAlerts.length > 1 ? "s" : ""}
-                </span>
-              )}
-            </div>
+    <Card 
+      className={cn(
+        "p-4 transition-all duration-300 border-border/50",
+        hasCritical 
+          ? "bg-red-50 dark:bg-red-950/20 border-red-500 hover:shadow-lg hover:-translate-y-1 cursor-pointer animate-pulse-slow" 
+          : "bg-gradient-card hover:shadow-lg hover:-translate-y-1"
+      )}
+      onClick={handleClick}
+    >
+      <div className="flex items-start justify-between">
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-medium text-muted-foreground">
+            {hasCritical ? "🚨 Alertas Críticos" : "Alertas Críticos"}
+          </p>
+          <div className="flex items-baseline gap-2">
+            <p className={cn(
+              "text-2xl font-bold",
+              hasCritical ? "text-red-600 dark:text-red-400" : "text-primary"
+            )}>
+              {summary.critical}
+            </p>
           </div>
-
-          <div className="flex items-center gap-2">
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={handleViewDetails}
-              className="gap-1"
-            >
-              Ver Detalhes
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-100"
-              onClick={handleDismiss}
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        </AlertDescription>
-      </Alert>
-    </div>
+          {hasCritical && (
+            <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+              {criticalHPAAlerts.length > 0 && `${criticalHPAAlerts.length} HPA${criticalHPAAlerts.length > 1 ? "s" : ""}`}
+              {criticalHPAAlerts.length > 0 && criticalNodeAlerts.length > 0 && " • "}
+              {criticalNodeAlerts.length > 0 && `${criticalNodeAlerts.length} Node${criticalNodeAlerts.length > 1 ? "s" : ""}`}
+            </p>
+          )}
+        </div>
+        <div className={cn(
+          "p-2 rounded-lg",
+          hasCritical ? "bg-red-600/20" : "bg-primary/10"
+        )}>
+          <AlertTriangle className={cn(
+            "w-5 h-5",
+            hasCritical ? "text-red-600 dark:text-red-400" : "text-primary"
+          )} />
+        </div>
+      </div>
+    </Card>
   );
 }
 

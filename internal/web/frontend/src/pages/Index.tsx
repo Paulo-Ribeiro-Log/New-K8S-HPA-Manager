@@ -889,7 +889,7 @@ const Index = ({ onLogout }: IndexProps) => {
 
       {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps, Secrets e Deployments */}
       {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-6 py-3 flex-shrink-0">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           <StatsCard
             icon={Layers}
             value={clustersLoading ? "..." : String(stats.clusters)}
@@ -910,17 +910,16 @@ const Index = ({ onLogout }: IndexProps) => {
             value={nodePoolsLoading ? "..." : String(stats.nodePools)}
             label="Node Pools"
           />
+          {/* Card de Alertas Críticos */}
+          {selectedCluster && (
+            <CriticalAlertsBanner cluster={selectedCluster} />
+          )}
         </div>
       )}
 
       {/* Banner de VPN desconectada */}
       {showVPNWarning && (
         <VPNWarningBanner onDismiss={() => setShowVPNWarning(false)} />
-      )}
-
-      {/* Banner de Alertas Críticos */}
-      {selectedCluster && (
-        <CriticalAlertsBanner cluster={selectedCluster} />
       )}
 
       <TabNavigation
