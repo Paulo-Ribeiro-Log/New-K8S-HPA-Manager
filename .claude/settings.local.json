@@ -30,7 +30,8 @@
       "Bash(./create-v1-release.sh)",
       "Bash(new-k8s-hpa-web start)",
       "Bash(git tag:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []
