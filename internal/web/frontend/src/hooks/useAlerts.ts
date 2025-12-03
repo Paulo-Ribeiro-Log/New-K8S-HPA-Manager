@@ -88,11 +88,11 @@ export function useHPASpecificAlerts(
       const response: any = await api.getHPAAlertsByNamespace(cluster, namespace);
       const allAlerts: HPAAlert[] = response.alerts || [];
       // Filtrar alertas relacionados a este HPA específico
+      // IMPORTANTE: namespace já está filtrado pela API, aqui filtramos pelo HPA/deployment específico
       return allAlerts.filter(
         (alert) =>
           alert.hpaName === hpaName ||
-          alert.deployment === hpaName ||
-          alert.namespace === namespace
+          alert.deployment === hpaName
       );
     },
     enabled: enabled && !!cluster && !!namespace && !!hpaName,
@@ -188,11 +188,11 @@ export function useHPASpecificAlertsWithDuration(
       const allAlerts: HPAAlert[] = response.alerts || [];
 
       // Filtrar alertas relacionados a este HPA específico
+      // IMPORTANTE: namespace já está filtrado pela API, aqui filtramos pelo HPA/deployment específico
       const hpaAlerts = allAlerts.filter(
         (alert) =>
           alert.hpaName === hpaName ||
-          alert.deployment === hpaName ||
-          alert.namespace === namespace
+          alert.deployment === hpaName
       );
 
       // Filtrar por período de tempo

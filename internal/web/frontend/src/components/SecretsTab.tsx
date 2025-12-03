@@ -237,9 +237,38 @@ export const SecretsTab = ({
     refetch();
   };
 
-  const refreshManifest = () => {
-    if (selectedSecret) {
-      handleSelectSecret(selectedSecret);
+  const refreshManifest = async () => {
+    if (!selectedSecret) return;
+    
+    setManifestLoading(true);
+    try {
+      // Buscar secret atualizado do servidor
+      const detail = await apiClient.getSecret(
+        selectedSecret.cluster,
+        selectedSecret.namespace,
+        selectedSecret.name
+      );
+      setManifest(detail);
+      const freshYaml = detail.yaml || "";
+      
+      // Atualizar com YAML fresco do servidor (ignorar cache)
+      setOriginalYaml(freshYaml);
+      setEditorValue(freshYaml);
+      
+      // Resetar histórico com o novo YAML
+      setHistory([freshYaml]);
+      setHistoryIndex(0);
+      
+      // Resetar estado de decode
+      setIsDecoded(false);
+      
+      toast.success("Manifest recarregado do servidor");
+    } catch (err) {
+      toast.error("Falha ao recarregar", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setManifestLoading(false);
     }
   };
 
@@ -434,7 +463,9 @@ export const SecretsTab = ({
       toast.success("Secret aplicado", {
         description: `${selectedSecret.namespace}/${selectedSecret.name}`,
       });
-      refreshManifest();
+      
+      // Recarregar manifest do servidor após aplicar
+      await refreshManifest();
     } catch (err) {
       toast.error("Falha ao aplicar", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -1108,9 +1139,49 @@ export const SecretsTab = ({
   const renderApplyConfirmDialog = () => {
     if (!selectedSecret) return null;
 
+    // Gerar diff compacto apenas com mudanças
+    const generateCompactDiff = () => {
+      try {
+        const originalObj = yaml.load(originalYaml) as any;
+        const updatedObj = yaml.load(editorValue) as any;
+        
+        const changes: Array<{ path: string; before: any; after: any }> = [];
+        
+        const compareObjects = (obj1: any, obj2: any, path: string = '') => {
+          const allKeys = new Set([...Object.keys(obj1 || {}), ...Object.keys(obj2 || {})]);
+          
+          for (const key of allKeys) {
+            const currentPath = path ? `${path}.${key}` : key;
+            const val1 = obj1?.[key];
+            const val2 = obj2?.[key];
+            
+            if (val1 === val2) continue;
+            
+            if (typeof val1 === 'object' && typeof val2 === 'object' && val1 !== null && val2 !== null && !Array.isArray(val1) && !Array.isArray(val2)) {
+              compareObjects(val1, val2, currentPath);
+            } else if (JSON.stringify(val1) !== JSON.stringify(val2)) {
+              changes.push({
+                path: currentPath,
+                before: val1 === undefined ? '(não existe)' : typeof val1 === 'object' ? JSON.stringify(val1, null, 2) : String(val1),
+                after: val2 === undefined ? '(removido)' : typeof val2 === 'object' ? JSON.stringify(val2, null, 2) : String(val2)
+              });
+            }
+          }
+        };
+        
+        compareObjects(originalObj, updatedObj);
+        
+        return changes;
+      } catch {
+        return [];
+      }
+    };
+    
+    const changes = generateCompactDiff();
+
     return (
       <Dialog open={applyConfirmOpen} onOpenChange={setApplyConfirmOpen}>
-        <DialogContent className="max-w-md bg-background border-border">
+        <DialogContent className="max-w-4xl max-h-[90vh] bg-background border-border">
           <DialogHeader>
             <DialogTitle className="text-xl font-semibold text-primary">
               Confirmar aplicação
@@ -1125,8 +1196,32 @@ export const SecretsTab = ({
               <p><span className="text-muted-foreground">Namespace:</span> {selectedSecret.namespace}</p>
               <p><span className="text-muted-foreground">Secret:</span> {selectedSecret.name}</p>
             </div>
+            
+            {changes.length > 0 && (
+              <div className="space-y-2">
+                <p className="font-semibold text-sm">Mudanças detectadas ({changes.length}):</p>
+                <div className="max-h-[400px] overflow-y-auto space-y-2 border rounded-lg p-3 bg-muted/10">
+                  {changes.map((change, idx) => (
+                    <div key={idx} className="border-l-2 border-blue-500 pl-3 py-2 bg-background/50 rounded-r text-xs">
+                      <p className="font-mono font-semibold text-blue-400 mb-2">{change.path}</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-red-500/10 border border-red-500/30 rounded p-2">
+                          <p className="text-red-400 font-semibold mb-1">Antes:</p>
+                          <pre className="whitespace-pre-wrap break-all text-[11px] text-red-300">{change.before}</pre>
+                        </div>
+                        <div className="bg-green-500/10 border border-green-500/30 rounded p-2">
+                          <p className="text-green-400 font-semibold mb-1">Depois:</p>
+                          <pre className="whitespace-pre-wrap break-all text-[11px] text-green-300">{change.after}</pre>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
             <p className="text-muted-foreground">
-              Certifique-se de que o diff foi revisado antes de confirmar. Esta operação não possui rollback automático.
+              Esta operação não possui rollback automático. Confirme que as mudanças estão corretas.
             </p>
           </div>
           <div className="flex justify-end gap-2 pt-4">

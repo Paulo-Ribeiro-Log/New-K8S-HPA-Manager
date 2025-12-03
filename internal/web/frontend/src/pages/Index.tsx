@@ -63,6 +63,7 @@ import { useTabManager } from "@/contexts/TabContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import { useVPNMonitor } from "@/hooks/useVPNMonitor";
+import { ClusterContextCard } from "@/components/ClusterContextCard";
 
 interface IndexProps {
   onLogout?: () => void;
@@ -889,12 +890,17 @@ const Index = ({ onLogout }: IndexProps) => {
 
       {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps, Secrets e Deployments */}
       {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-6 py-3 flex-shrink-0">
-          <StatsCard
-            icon={Layers}
-            value={clustersLoading ? "..." : String(stats.clusters)}
-            label="Clusters"
-          />
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
+          {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
+          {activeTab === "dashboard" ? (
+            <StatsCard
+              icon={Layers}
+              value={clustersLoading ? "..." : String(stats.clusters)}
+              label="Clusters"
+            />
+          ) : (
+            <ClusterContextCard cluster={selectedCluster} />
+          )}
           <StatsCard
             icon={Package}
             value={namespacesLoading ? "..." : String(stats.namespaces)}
@@ -910,17 +916,16 @@ const Index = ({ onLogout }: IndexProps) => {
             value={nodePoolsLoading ? "..." : String(stats.nodePools)}
             label="Node Pools"
           />
+          {/* Card de Alertas Críticos */}
+          {selectedCluster && (
+            <CriticalAlertsBanner cluster={selectedCluster} />
+          )}
         </div>
       )}
 
       {/* Banner de VPN desconectada */}
       {showVPNWarning && (
         <VPNWarningBanner onDismiss={() => setShowVPNWarning(false)} />
-      )}
-
-      {/* Banner de Alertas Críticos */}
-      {selectedCluster && (
-        <CriticalAlertsBanner cluster={selectedCluster} />
       )}
 
       <TabNavigation
