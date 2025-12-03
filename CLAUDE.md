@@ -153,6 +153,7 @@ Recent Updates (v1.3.1):
 - UI/UX: Gráfico de memória corrigido (azul vs roxo), labels recolhidos por padrão em ConfigMaps/Secrets/Deployments
 - ConfigMaps/Secrets/Deployments: Campo "Versão" exibe app.kubernetes.io/version quando disponível
 - Node Pools: Botão de refresh no painel "Available Node Pools" busca dados atualizados do Azure AKS
+  - Fix: Correção de erros TypeScript em Index.tsx (sequencedNodePools.find com sequence_order)
 - Card de Cluster Contextual: Dashboard mostra total de clusters, outras abas mostram contexto + versão K8s
   - Componente ClusterContextCard mantém estrutura visual dos StatsCards
   - Hook useClusterInfo busca informações via API /clusters/info

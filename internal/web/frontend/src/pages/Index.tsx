@@ -52,7 +52,8 @@ import {
   FileCode,
   Settings,
   Key,
-  X
+  X,
+  RefreshCcw
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -181,7 +182,7 @@ const Index = ({ onLogout }: IndexProps) => {
   const { namespaces, loading: namespacesLoading } = useNamespaces(selectedCluster);
   // Para HPAs: sempre buscar de TODOS os namespaces (passar undefined ao invés de selectedNamespace)
   const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, undefined, showSystemNamespaces);
-  const { nodePools, loading: nodePoolsLoading } = useNodePools(selectedCluster);
+  const { nodePools, loading: nodePoolsLoading, refetch: refetchNodePools } = useNodePools(selectedCluster);
 
   // Auto-select first cluster (using context instead of name)
   useEffect(() => {
@@ -682,21 +683,34 @@ const Index = ({ onLogout }: IndexProps) => {
           <SplitView
             leftPanel={{
               title: "Available Node Pools",
-              titleAction: markedNodePools.length === 2 ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="bg-primary/10 border-primary/30 text-primary hover:bg-primary/20"
-                  onClick={() => {
-                    setSequencedNodePools(markedNodePools);
-                    setShowSequencingModal(true);
-                  }}
-                  title="Configurar cordon/drain para sequenciamento"
-                >
-                  <Settings className="h-4 w-4 mr-2" />
-                  Configure Sequencing ({markedNodePools.length})
-                </Button>
-              ) : null,
+              titleAction: (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => refetchNodePools()}
+                    disabled={!selectedCluster || nodePoolsLoading}
+                    title="Atualizar lista de Node Pools"
+                  >
+                    <RefreshCcw className={`w-4 h-4 ${nodePoolsLoading ? 'animate-spin' : ''}`} />
+                  </Button>
+                  {markedNodePools.length === 2 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="bg-primary/10 border-primary/30 text-primary hover:bg-primary/20"
+                      onClick={() => {
+                        setSequencedNodePools(markedNodePools);
+                        setShowSequencingModal(true);
+                      }}
+                      title="Configurar cordon/drain para sequenciamento"
+                    >
+                      <Settings className="h-4 w-4 mr-2" />
+                      Configure Sequencing ({markedNodePools.length})
+                    </Button>
+                  )}
+                </div>
+              ),
               content: nodePoolsLoading ? (
                 <div className="flex items-center justify-center h-64 text-muted-foreground">
                   Loading Node Pools...
@@ -991,15 +1005,15 @@ const Index = ({ onLogout }: IndexProps) => {
             // Fechar modal de configuração
             setShowSequencingModal(false);
 
-            // Extrair informações para o modal de progresso
+            // Extrair informações para o modal de progresso usando o estado sequencedNodePools
             const sessionId = response.data?.session_id;
-            const origin = config.node_pools.find((np) => np.sequence_order === 1);
-            const dest = config.node_pools.find((np) => np.sequence_order === 2);
+            const origin = sequencedNodePools.find((np) => np.sequence_order === 1);
+            const dest = sequencedNodePools.find((np) => np.sequence_order === 2);
 
             if (sessionId && origin && dest) {
               // Configurar estados do modal de progresso
               setProgressSessionId(sessionId);
-              setProgressCluster(config.cluster);
+              setProgressCluster(selectedCluster);
               setProgressOrigin(origin.name);
               setProgressDest(dest.name);
 
