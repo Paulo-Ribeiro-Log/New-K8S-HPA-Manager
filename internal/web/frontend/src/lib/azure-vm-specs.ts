@@ -106,14 +106,14 @@ export const azureVMSpecs: Record<string, VMSpec> = {
   "Standard_E96s_v5": { size: "Standard_E96s_v5", vCPUs: 96, memoryGiB: 672, family: "Esv5-Series" },
 
   // === F-Series (Compute Optimized) ===
-  "Standard_F2s_v2": { size: "Standard_F2s_v2", vCPUs: 2, memoryGiB: 4, family: "Fsv2-Series" },
-  "Standard_F4s_v2": { size: "Standard_F4s_v2", vCPUs: 4, memoryGiB: 8, family: "Fsv2-Series" },
-  "Standard_F8s_v2": { size: "Standard_F8s_v2", vCPUs: 8, memoryGiB: 16, family: "Fsv2-Series" },
-  "Standard_F16s_v2": { size: "Standard_F16s_v2", vCPUs: 16, memoryGiB: 32, family: "Fsv2-Series" },
-  "Standard_F32s_v2": { size: "Standard_F32s_v2", vCPUs: 32, memoryGiB: 64, family: "Fsv2-Series" },
-  "Standard_F48s_v2": { size: "Standard_F48s_v2", vCPUs: 48, memoryGiB: 96, family: "Fsv2-Series" },
-  "Standard_F64s_v2": { size: "Standard_F64s_v2", vCPUs: 64, memoryGiB: 128, family: "Fsv2-Series" },
-  "Standard_F72s_v2": { size: "Standard_F72s_v2", vCPUs: 72, memoryGiB: 144, family: "Fsv2-Series" },
+  "Standard_F2s_v2": { size: "Standard_F2s_v2", vCPUs: 2, memoryGiB: 4, family: "Fsv2-Series", tempDiskGiB: 16, maxDataDisks: 4, maxIOPS: 3200, maxThroughputMBps: 48 },
+  "Standard_F4s_v2": { size: "Standard_F4s_v2", vCPUs: 4, memoryGiB: 8, family: "Fsv2-Series", tempDiskGiB: 32, maxDataDisks: 8, maxIOPS: 6400, maxThroughputMBps: 96 },
+  "Standard_F8s_v2": { size: "Standard_F8s_v2", vCPUs: 8, memoryGiB: 16, family: "Fsv2-Series", tempDiskGiB: 64, maxDataDisks: 16, maxIOPS: 12800, maxThroughputMBps: 192 },
+  "Standard_F16s_v2": { size: "Standard_F16s_v2", vCPUs: 16, memoryGiB: 32, family: "Fsv2-Series", tempDiskGiB: 128, maxDataDisks: 32, maxIOPS: 25600, maxThroughputMBps: 384 },
+  "Standard_F32s_v2": { size: "Standard_F32s_v2", vCPUs: 32, memoryGiB: 64, family: "Fsv2-Series", tempDiskGiB: 256, maxDataDisks: 32, maxIOPS: 51200, maxThroughputMBps: 768 },
+  "Standard_F48s_v2": { size: "Standard_F48s_v2", vCPUs: 48, memoryGiB: 96, family: "Fsv2-Series", tempDiskGiB: 384, maxDataDisks: 32, maxIOPS: 76800, maxThroughputMBps: 1152 },
+  "Standard_F64s_v2": { size: "Standard_F64s_v2", vCPUs: 64, memoryGiB: 128, family: "Fsv2-Series", tempDiskGiB: 512, maxDataDisks: 32, maxIOPS: 80000, maxThroughputMBps: 1200 },
+  "Standard_F72s_v2": { size: "Standard_F72s_v2", vCPUs: 72, memoryGiB: 144, family: "Fsv2-Series", tempDiskGiB: 576, maxDataDisks: 32, maxIOPS: 80000, maxThroughputMBps: 1200 },
 
   // === L-Series (Storage Optimized) ===
   "Standard_L4s": { size: "Standard_L4s", vCPUs: 4, memoryGiB: 32, family: "L-Series" },
