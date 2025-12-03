@@ -190,12 +190,12 @@ export function formatDiskSpecs(vmSize: string): string | null {
 
   // Temp disk
   if (specs.tempDiskGiB) {
-    parts.push(`💾 Temp: ${specs.tempDiskGiB} GiB`);
+    parts.push(`Temp: ${specs.tempDiskGiB} GiB`);
   }
 
   // Max data disks
   if (specs.maxDataDisks) {
-    parts.push(`📀 Max Disks: ${specs.maxDataDisks}`);
+    parts.push(`Max Disks: ${specs.maxDataDisks}`);
   }
 
   // IOPS
@@ -203,7 +203,7 @@ export function formatDiskSpecs(vmSize: string): string | null {
     const iopsFormatted = specs.maxIOPS >= 1000
       ? `${(specs.maxIOPS / 1000).toFixed(0)}K`
       : specs.maxIOPS.toString();
-    parts.push(`⚡ ${iopsFormatted} IOPS`);
+    parts.push(`${iopsFormatted} IOPS`);
   }
 
   // Throughput
@@ -211,7 +211,7 @@ export function formatDiskSpecs(vmSize: string): string | null {
     const throughputFormatted = specs.maxThroughputMBps >= 1000
       ? `${(specs.maxThroughputMBps / 1000).toFixed(1)} GB/s`
       : `${specs.maxThroughputMBps} MB/s`;
-    parts.push(`📊 ${throughputFormatted}`);
+    parts.push(`${throughputFormatted}`);
   }
 
   return parts.length > 0 ? parts.join(' • ') : null;
