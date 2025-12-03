@@ -127,6 +127,10 @@ k8s-hpa-manager/
   - Backend: parâmetro `days_offset` (1-3) com validação e cálculo dinâmico de offset
   - Frontend: refetch automático ao trocar período, labels descritivas nos selects
   - Linha com opacidade 0.2-0.3 e nome dinâmico (ex: "CPU D-2 (48h atrás)")
+✅ **Card de Cluster Contextual** - Card de estatísticas adapta-se ao contexto da aba
+  - Dashboard: exibe total de clusters disponíveis no kubeconfig
+  - Outras abas: mostra contexto selecionado + versão do Kubernetes
+  - Usa truncate com tooltip para nomes longos, mantém consistência visual
 
 ---
 
@@ -142,6 +146,10 @@ Build: go build -o build/new-k8s-hpa && make web-build
 Binary: ./build/new-k8s-hpa
 
 Recent Updates:
+- Card de Cluster Contextual: Dashboard mostra total de clusters, outras abas mostram contexto + versão K8s
+  - Componente ClusterContextCard mantém estrutura visual dos StatsCards
+  - Hook useClusterInfo busca informações via API /clusters/info
+  - Truncate com tooltip para nomes longos, refetch automático a cada 60s
 - Comparação Histórica D-1/D-2/D-3: Linha lilás nos gráficos permite comparar métricas atuais com 1, 2 ou 3 dias atrás
   - Backend: Parâmetro days_offset (1-3) na API /monitoring/v2/metrics com validação
   - Frontend: Select com labels descritivas, refetch automático ao trocar período

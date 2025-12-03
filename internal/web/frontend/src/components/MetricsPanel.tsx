@@ -1093,21 +1093,12 @@ export function MetricsPanel({
             <div className="space-y-6">
               {/* Gráfico de CPU */}
               <div className="border rounded-lg p-4 bg-card group relative">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                  onClick={() => setExpandedChart("cpu")}
-                  title="Expandir gráfico"
-                >
-                  <Maximize2 className="h-4 w-4" />
-                </Button>
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="text-sm font-semibold flex items-center gap-2">
                     <Cpu className="h-4 w-4" />
                     Uso de CPU ao longo do tempo
                   </h3>
-                  <div className="flex items-center gap-4 text-xs">
+                  <div className="flex items-center gap-4 text-xs pr-12">
                     {snapshotWithResources?.cpu_request && (
                       <span className="text-orange-600">
                         CPU Request: <strong>{snapshotWithResources.cpu_request}</strong>
@@ -1119,6 +1110,15 @@ export function MetricsPanel({
                       </span>
                     )}
                   </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => setExpandedChart("cpu")}
+                    title="Expandir gráfico"
+                  >
+                    <Maximize2 className="h-4 w-4" />
+                  </Button>
                 </div>
                 <ResponsiveContainer width="100%" height={300}>
                   <ComposedChart data={chartData}>
@@ -1210,21 +1210,12 @@ export function MetricsPanel({
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Memory Analysis */}
                 <div className="border rounded-lg p-4 bg-card group relative">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                  onClick={() => setExpandedChart("memory")}
-                  title="Expandir gráfico"
-                >
-                  <Maximize2 className="h-4 w-4" />
-                </Button>
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="text-sm font-semibold flex items-center gap-2">
                     <MemoryStick className="h-4 w-4" />
                     Uso de Memória ao longo do tempo
                   </h3>
-                  <div className="flex items-center gap-4 text-xs">
+                  <div className="flex items-center gap-4 text-xs pr-12">
                     {snapshotWithResources?.memory_request && (
                       <span className="text-orange-600">
                         Memory Request: <strong>{snapshotWithResources.memory_request}</strong>
@@ -1236,13 +1227,22 @@ export function MetricsPanel({
                       </span>
                     )}
                   </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => setExpandedChart("memory")}
+                    title="Expandir gráfico"
+                  >
+                    <Maximize2 className="h-4 w-4" />
+                  </Button>
                 </div>
                 <ResponsiveContainer width="100%" height={300}>
                   <ComposedChart data={chartData}>
                     <defs>
                       <linearGradient id="memoryGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -1301,7 +1301,7 @@ export function MetricsPanel({
                       type="monotone"
                       dataKey="memoryCurrent"
                       name="Memória Atual"
-                      stroke="#8b5cf6"
+                      stroke="#3b82f6"
                       strokeWidth={2}
                       fill="url(#memoryGradient)"
                       unit="%"
@@ -1350,19 +1350,21 @@ export function MetricsPanel({
 
                 {/* Replicas Analysis */}
                 <div className="border rounded-lg p-4 bg-card group relative">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                  onClick={() => setExpandedChart("replicas")}
-                  title="Expandir gráfico"
-                >
-                  <Maximize2 className="h-4 w-4" />
-                </Button>
-                <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
-                  <Users className="h-4 w-4" />
-                  Réplicas ao longo do tempo
-                </h3>
+                <div className="mb-4 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold flex items-center gap-2">
+                    <Users className="h-4 w-4" />
+                    Réplicas ao longo do tempo
+                  </h3>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => setExpandedChart("replicas")}
+                    title="Expandir gráfico"
+                  >
+                    <Maximize2 className="h-4 w-4" />
+                  </Button>
+                </div>
                 <ResponsiveContainer width="100%" height={300}>
                   <LineChart data={chartData} isAnimationActive={false}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -1686,7 +1688,7 @@ export function MetricsPanel({
                 </div>
                 <div onMouseDown={(e) => e.preventDefault()}>
                   <ResponsiveContainer width="100%" height={600}>
-                  <ComposedChart 
+                  <ComposedChart
                     data={zoomedData}
                     onMouseDown={handleMouseDown}
                     onMouseMove={handleMouseMove}
@@ -1694,8 +1696,8 @@ export function MetricsPanel({
                   >
                     <defs>
                       <linearGradient id="memoryGradientExpanded" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -1732,7 +1734,7 @@ export function MetricsPanel({
                       strokeDasharray="5 5"
                       label={{ value: `Target: ${memoryTarget}%`, fill: '#10b981', position: 'insideTopRight' }}
                     />
-                    <Area type="monotone" dataKey="memoryCurrent" name="Memória Atual" stroke="#8b5cf6" strokeWidth={2} fill="url(#memoryGradientExpanded)" unit="%" isAnimationActive={false} />
+                    <Area type="monotone" dataKey="memoryCurrent" name="Memória Atual" stroke="#3b82f6" strokeWidth={2} fill="url(#memoryGradientExpanded)" unit="%" isAnimationActive={false} />
                     {/* Linha D-N - lembrança sutil */}
                     <Line type="monotone" dataKey="memoryYesterday" name={`Memória D-${comparisonDays} (${comparisonDays * 24}h atrás)`} stroke="#c084fc" strokeWidth={1.5} strokeOpacity={0.3} dot={false} unit="%" isAnimationActive={false} />
                     {refAreaValues && (
