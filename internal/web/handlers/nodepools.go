@@ -20,6 +20,7 @@ import (
 	"k8s-hpa-manager/internal/models"
 	"k8s-hpa-manager/internal/web/sse"
 	"k8s-hpa-manager/internal/web/validators"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // NodePoolHandler gerencia requisições relacionadas a Node Pools
@@ -1365,4 +1366,129 @@ func validateDrainOptions(opts *models.DrainOptions) error {
 		return fmt.Errorf("chunk size must be >= 1")
 	}
 	return nil
+}
+
+// NodeDiskMetrics representa métricas de disco de um node
+type NodeDiskMetrics struct {
+	NodeName       string  `json:"node_name"`
+	NodePoolName   string  `json:"node_pool_name"`
+	TotalBytes     float64 `json:"total_bytes"`
+	UsedBytes      float64 `json:"used_bytes"`
+	AvailableBytes float64 `json:"available_bytes"`
+	UsagePercent   float64 `json:"usage_percent"`
+}
+
+// NodePoolDiskMetrics representa métricas agregadas de disco de um node pool
+type NodePoolDiskMetrics struct {
+	NodePoolName   string  `json:"node_pool_name"`
+	TotalBytes     float64 `json:"total_bytes"`
+	UsedBytes      float64 `json:"used_bytes"`
+	AvailableBytes float64 `json:"available_bytes"`
+	UsagePercent   float64 `json:"usage_percent"`
+	NodeCount      int     `json:"node_count"`
+}
+
+// GetNodePoolDiskMetrics retorna métricas de disco agregadas por node pool
+func (h *NodePoolHandler) GetNodePoolDiskMetrics(c *gin.Context) {
+	cluster := c.Query("cluster")
+	nodePoolName := c.Query("nodepool")
+
+	if cluster == "" {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETERS",
+				"message": "Parameter 'cluster' is required",
+			},
+		})
+		return
+	}
+
+	// Obter client do cluster
+	client, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "KUBERNETES_CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get Kubernetes client: %v", err),
+			},
+		})
+		return
+	}
+
+	// Listar todos os nodes
+	nodes, err := client.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "NODE_LIST_ERROR",
+				"message": fmt.Sprintf("Failed to list nodes: %v", err),
+			},
+		})
+		return
+	}
+
+	// Agrupar métricas por node pool
+	poolMetrics := make(map[string]*NodePoolDiskMetrics)
+
+	for _, node := range nodes.Items {
+		// Extrair nome do node pool das labels
+		nodePool, ok := node.Labels["agentpool"]
+		if !ok {
+			continue
+		}
+
+		// Filtrar por node pool se especificado
+		if nodePoolName != "" && nodePool != nodePoolName {
+			continue
+		}
+
+		// Calcular uso de disco (ephemeral-storage)
+		var totalBytes, usedBytes, availableBytes float64
+
+		// Buscar capacidade total do node
+		if capacity, ok := node.Status.Capacity["ephemeral-storage"]; ok {
+			totalBytes = float64(capacity.Value())
+		}
+
+		// Buscar espaço alocável (disponível para pods)
+		if allocatable, ok := node.Status.Allocatable["ephemeral-storage"]; ok {
+			availableBytes = float64(allocatable.Value())
+		}
+
+		// Calcular usado
+		usedBytes = totalBytes - availableBytes
+
+		// Agregar por node pool
+		if _, exists := poolMetrics[nodePool]; !exists {
+			poolMetrics[nodePool] = &NodePoolDiskMetrics{
+				NodePoolName: nodePool,
+			}
+		}
+
+		poolMetrics[nodePool].TotalBytes += totalBytes
+		poolMetrics[nodePool].UsedBytes += usedBytes
+		poolMetrics[nodePool].AvailableBytes += availableBytes
+		poolMetrics[nodePool].NodeCount++
+	}
+
+	// Recalcular percentual médio por pool
+	for _, metrics := range poolMetrics {
+		if metrics.TotalBytes > 0 {
+			metrics.UsagePercent = (metrics.UsedBytes / metrics.TotalBytes) * 100
+		}
+	}
+
+	// Converter map para slice
+	result := make([]NodePoolDiskMetrics, 0, len(poolMetrics))
+	for _, metrics := range poolMetrics {
+		result = append(result, *metrics)
+	}
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"data":    result,
+	})
 }

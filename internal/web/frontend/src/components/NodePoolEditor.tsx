@@ -15,6 +15,7 @@ import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import CordonDrainConfigModal, { CordonDrainConfig } from "./CordonDrainConfigModal";
 import { formatVMSpecs, formatDiskSpecs, getVMSpecs } from "@/lib/azure-vm-specs";
+import { useNodePoolDiskMetrics } from "@/hooks/useNodePoolDiskMetrics";
 
 interface NodePoolEditorProps {
   nodePool: NodePool | null;
@@ -24,6 +25,12 @@ interface NodePoolEditorProps {
 
 export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorProps) => {
   const staging = useStaging();
+
+  // Buscar métricas de disco do node pool
+  const { metrics: diskMetrics, loading: diskMetricsLoading } = useNodePoolDiskMetrics(
+    nodePool?.cluster_name || "",
+    nodePool?.name
+  );
 
   // Refs for input fields to enable select-all behavior
   const nodeCountRef = useRef<HTMLInputElement>(null);
@@ -372,6 +379,29 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                         <div className="mt-2 pt-2 border-t border-border/50">
                           <p className="text-xs text-muted-foreground mb-1">Disk Performance</p>
                           <p className="text-xs font-medium">{diskSpecsFormatted}</p>
+                        </div>
+                      )}
+                      {diskMetrics && !diskMetricsLoading && (
+                        <div className="mt-2 pt-2 border-t border-border/50">
+                          <p className="text-xs text-muted-foreground mb-1">Current Disk Usage ({diskMetrics.node_count} nodes)</p>
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-xs">
+                              <span>Used: {(diskMetrics.used_bytes / (1024**3)).toFixed(1)} GiB</span>
+                              <span>Available: {(diskMetrics.available_bytes / (1024**3)).toFixed(1)} GiB</span>
+                            </div>
+                            <div className="w-full bg-muted rounded-full h-2">
+                              <div
+                                className={`h-2 rounded-full transition-all ${
+                                  diskMetrics.usage_percent > 80 ? 'bg-destructive' :
+                                  diskMetrics.usage_percent > 60 ? 'bg-warning' : 'bg-primary'
+                                }`}
+                                style={{ width: `${diskMetrics.usage_percent}%` }}
+                              />
+                            </div>
+                            <p className="text-xs text-muted-foreground text-right">
+                              {diskMetrics.usage_percent.toFixed(1)}% used
+                            </p>
+                          </div>
                         </div>
                       )}
                     </div>
