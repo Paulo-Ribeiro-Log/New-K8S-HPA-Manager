@@ -135,6 +135,7 @@ k8s-hpa-manager/
   - Gráfico de Memória: Linha corrente agora usa cor azul (#3b82f6) ao invés de roxo, evitando confusão com linha D-1
   - ConfigMaps/Secrets/Deployments: Labels iniciam recolhidos, campo "Versão" exibido quando disponível (app.kubernetes.io/version)
   - Node Pools: Botão de refresh adicionado no painel "Available Node Pools" para atualizar dados do Azure AKS
+  - VM Disk Specs: Exibe informações de performance de disco (Temp Disk, Max Disks, IOPS, Throughput) no Node Pool Editor
 
 ---
 
@@ -154,6 +155,10 @@ Recent Updates (v1.3.1):
 - ConfigMaps/Secrets/Deployments: Campo "Versão" exibe app.kubernetes.io/version quando disponível
 - Node Pools: Botão de refresh no painel "Available Node Pools" busca dados atualizados do Azure AKS
   - Fix: Correção de erros TypeScript em Index.tsx (sequencedNodePools.find com sequence_order)
+- VM Disk Specs: Exibe performance de disco (Temp Disk, Max Disks, IOPS, Throughput) no Node Pool Editor
+  - Interface VMSpec estendida com tempDiskGiB, maxDataDisks, maxIOPS, maxThroughputMBps
+  - Função formatDiskSpecs() formata informações com emojis e unidades legíveis
+  - Specs adicionadas para séries Dsv3, Dsv5, Esv3 (VMs mais comuns)
 - Card de Cluster Contextual: Dashboard mostra total de clusters, outras abas mostram contexto + versão K8s
   - Componente ClusterContextCard mantém estrutura visual dos StatsCards
   - Hook useClusterInfo busca informações via API /clusters/info

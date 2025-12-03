@@ -7,6 +7,10 @@ export interface VMSpec {
   memoryGiB: number;
   family: string;
   description?: string;
+  tempDiskGiB?: number;      // Disco temporário local
+  maxDataDisks?: number;     // Número máximo de discos de dados
+  maxIOPS?: number;          // IOPS máximo (sem cache)
+  maxThroughputMBps?: number; // Throughput máximo em MB/s
 }
 
 export const azureVMSpecs: Record<string, VMSpec> = {
@@ -43,13 +47,13 @@ export const azureVMSpecs: Record<string, VMSpec> = {
   "Standard_D15_v2": { size: "Standard_D15_v2", vCPUs: 20, memoryGiB: 140, family: "D-Series v2" },
 
   // === Dsv3-Series (General Purpose with SSD) ===
-  "Standard_D2s_v3": { size: "Standard_D2s_v3", vCPUs: 2, memoryGiB: 8, family: "Dsv3-Series" },
-  "Standard_D4s_v3": { size: "Standard_D4s_v3", vCPUs: 4, memoryGiB: 16, family: "Dsv3-Series" },
-  "Standard_D8s_v3": { size: "Standard_D8s_v3", vCPUs: 8, memoryGiB: 32, family: "Dsv3-Series" },
-  "Standard_D16s_v3": { size: "Standard_D16s_v3", vCPUs: 16, memoryGiB: 64, family: "Dsv3-Series" },
-  "Standard_D32s_v3": { size: "Standard_D32s_v3", vCPUs: 32, memoryGiB: 128, family: "Dsv3-Series" },
-  "Standard_D48s_v3": { size: "Standard_D48s_v3", vCPUs: 48, memoryGiB: 192, family: "Dsv3-Series" },
-  "Standard_D64s_v3": { size: "Standard_D64s_v3", vCPUs: 64, memoryGiB: 256, family: "Dsv3-Series" },
+  "Standard_D2s_v3": { size: "Standard_D2s_v3", vCPUs: 2, memoryGiB: 8, family: "Dsv3-Series", tempDiskGiB: 16, maxDataDisks: 4, maxIOPS: 3200, maxThroughputMBps: 48 },
+  "Standard_D4s_v3": { size: "Standard_D4s_v3", vCPUs: 4, memoryGiB: 16, family: "Dsv3-Series", tempDiskGiB: 32, maxDataDisks: 8, maxIOPS: 6400, maxThroughputMBps: 96 },
+  "Standard_D8s_v3": { size: "Standard_D8s_v3", vCPUs: 8, memoryGiB: 32, family: "Dsv3-Series", tempDiskGiB: 64, maxDataDisks: 16, maxIOPS: 12800, maxThroughputMBps: 192 },
+  "Standard_D16s_v3": { size: "Standard_D16s_v3", vCPUs: 16, memoryGiB: 64, family: "Dsv3-Series", tempDiskGiB: 128, maxDataDisks: 32, maxIOPS: 25600, maxThroughputMBps: 384 },
+  "Standard_D32s_v3": { size: "Standard_D32s_v3", vCPUs: 32, memoryGiB: 128, family: "Dsv3-Series", tempDiskGiB: 256, maxDataDisks: 32, maxIOPS: 51200, maxThroughputMBps: 768 },
+  "Standard_D48s_v3": { size: "Standard_D48s_v3", vCPUs: 48, memoryGiB: 192, family: "Dsv3-Series", tempDiskGiB: 384, maxDataDisks: 32, maxIOPS: 76800, maxThroughputMBps: 1152 },
+  "Standard_D64s_v3": { size: "Standard_D64s_v3", vCPUs: 64, memoryGiB: 256, family: "Dsv3-Series", tempDiskGiB: 512, maxDataDisks: 32, maxIOPS: 80000, maxThroughputMBps: 1200 },
 
   // === Dsv4-Series (General Purpose - Latest) ===
   "Standard_D2s_v4": { size: "Standard_D2s_v4", vCPUs: 2, memoryGiB: 8, family: "Dsv4-Series" },
@@ -61,24 +65,24 @@ export const azureVMSpecs: Record<string, VMSpec> = {
   "Standard_D64s_v4": { size: "Standard_D64s_v4", vCPUs: 64, memoryGiB: 256, family: "Dsv4-Series" },
 
   // === Dsv5-Series (General Purpose - 5th Gen) ===
-  "Standard_D2s_v5": { size: "Standard_D2s_v5", vCPUs: 2, memoryGiB: 8, family: "Dsv5-Series" },
-  "Standard_D4s_v5": { size: "Standard_D4s_v5", vCPUs: 4, memoryGiB: 16, family: "Dsv5-Series" },
-  "Standard_D8s_v5": { size: "Standard_D8s_v5", vCPUs: 8, memoryGiB: 32, family: "Dsv5-Series" },
-  "Standard_D16s_v5": { size: "Standard_D16s_v5", vCPUs: 16, memoryGiB: 64, family: "Dsv5-Series" },
-  "Standard_D32s_v5": { size: "Standard_D32s_v5", vCPUs: 32, memoryGiB: 128, family: "Dsv5-Series" },
-  "Standard_D48s_v5": { size: "Standard_D48s_v5", vCPUs: 48, memoryGiB: 192, family: "Dsv5-Series" },
-  "Standard_D64s_v5": { size: "Standard_D64s_v5", vCPUs: 64, memoryGiB: 256, family: "Dsv5-Series" },
-  "Standard_D96s_v5": { size: "Standard_D96s_v5", vCPUs: 96, memoryGiB: 384, family: "Dsv5-Series" },
+  "Standard_D2s_v5": { size: "Standard_D2s_v5", vCPUs: 2, memoryGiB: 8, family: "Dsv5-Series", maxDataDisks: 4, maxIOPS: 3750, maxThroughputMBps: 85 },
+  "Standard_D4s_v5": { size: "Standard_D4s_v5", vCPUs: 4, memoryGiB: 16, family: "Dsv5-Series", maxDataDisks: 8, maxIOPS: 6400, maxThroughputMBps: 145 },
+  "Standard_D8s_v5": { size: "Standard_D8s_v5", vCPUs: 8, memoryGiB: 32, family: "Dsv5-Series", maxDataDisks: 16, maxIOPS: 12800, maxThroughputMBps: 290 },
+  "Standard_D16s_v5": { size: "Standard_D16s_v5", vCPUs: 16, memoryGiB: 64, family: "Dsv5-Series", maxDataDisks: 32, maxIOPS: 25600, maxThroughputMBps: 600 },
+  "Standard_D32s_v5": { size: "Standard_D32s_v5", vCPUs: 32, memoryGiB: 128, family: "Dsv5-Series", maxDataDisks: 32, maxIOPS: 51200, maxThroughputMBps: 865 },
+  "Standard_D48s_v5": { size: "Standard_D48s_v5", vCPUs: 48, memoryGiB: 192, family: "Dsv5-Series", maxDataDisks: 32, maxIOPS: 76800, maxThroughputMBps: 1315 },
+  "Standard_D64s_v5": { size: "Standard_D64s_v5", vCPUs: 64, memoryGiB: 256, family: "Dsv5-Series", maxDataDisks: 32, maxIOPS: 80000, maxThroughputMBps: 1735 },
+  "Standard_D96s_v5": { size: "Standard_D96s_v5", vCPUs: 96, memoryGiB: 384, family: "Dsv5-Series", maxDataDisks: 32, maxIOPS: 80000, maxThroughputMBps: 2600 },
 
   // === E-Series (Memory Optimized) ===
-  "Standard_E2s_v3": { size: "Standard_E2s_v3", vCPUs: 2, memoryGiB: 16, family: "Esv3-Series" },
-  "Standard_E4s_v3": { size: "Standard_E4s_v3", vCPUs: 4, memoryGiB: 32, family: "Esv3-Series" },
-  "Standard_E8s_v3": { size: "Standard_E8s_v3", vCPUs: 8, memoryGiB: 64, family: "Esv3-Series" },
-  "Standard_E16s_v3": { size: "Standard_E16s_v3", vCPUs: 16, memoryGiB: 128, family: "Esv3-Series" },
-  "Standard_E20s_v3": { size: "Standard_E20s_v3", vCPUs: 20, memoryGiB: 160, family: "Esv3-Series" },
-  "Standard_E32s_v3": { size: "Standard_E32s_v3", vCPUs: 32, memoryGiB: 256, family: "Esv3-Series" },
-  "Standard_E48s_v3": { size: "Standard_E48s_v3", vCPUs: 48, memoryGiB: 384, family: "Esv3-Series" },
-  "Standard_E64s_v3": { size: "Standard_E64s_v3", vCPUs: 64, memoryGiB: 432, family: "Esv3-Series" },
+  "Standard_E2s_v3": { size: "Standard_E2s_v3", vCPUs: 2, memoryGiB: 16, family: "Esv3-Series", tempDiskGiB: 32, maxDataDisks: 4, maxIOPS: 3200, maxThroughputMBps: 48 },
+  "Standard_E4s_v3": { size: "Standard_E4s_v3", vCPUs: 4, memoryGiB: 32, family: "Esv3-Series", tempDiskGiB: 64, maxDataDisks: 8, maxIOPS: 6400, maxThroughputMBps: 96 },
+  "Standard_E8s_v3": { size: "Standard_E8s_v3", vCPUs: 8, memoryGiB: 64, family: "Esv3-Series", tempDiskGiB: 128, maxDataDisks: 16, maxIOPS: 12800, maxThroughputMBps: 192 },
+  "Standard_E16s_v3": { size: "Standard_E16s_v3", vCPUs: 16, memoryGiB: 128, family: "Esv3-Series", tempDiskGiB: 256, maxDataDisks: 32, maxIOPS: 25600, maxThroughputMBps: 384 },
+  "Standard_E20s_v3": { size: "Standard_E20s_v3", vCPUs: 20, memoryGiB: 160, family: "Esv3-Series", tempDiskGiB: 320, maxDataDisks: 32, maxIOPS: 32000, maxThroughputMBps: 480 },
+  "Standard_E32s_v3": { size: "Standard_E32s_v3", vCPUs: 32, memoryGiB: 256, family: "Esv3-Series", tempDiskGiB: 512, maxDataDisks: 32, maxIOPS: 51200, maxThroughputMBps: 768 },
+  "Standard_E48s_v3": { size: "Standard_E48s_v3", vCPUs: 48, memoryGiB: 384, family: "Esv3-Series", tempDiskGiB: 768, maxDataDisks: 32, maxIOPS: 76800, maxThroughputMBps: 1152 },
+  "Standard_E64s_v3": { size: "Standard_E64s_v3", vCPUs: 64, memoryGiB: 432, family: "Esv3-Series", tempDiskGiB: 864, maxDataDisks: 32, maxIOPS: 80000, maxThroughputMBps: 1200 },
 
   // === Esv4-Series (Memory Optimized - Latest) ===
   "Standard_E2s_v4": { size: "Standard_E2s_v4", vCPUs: 2, memoryGiB: 16, family: "Esv4-Series" },
@@ -171,6 +175,46 @@ export function formatVMSpecs(vmSize: string): string | null {
     : `${specs.memoryGiB} GiB`;
 
   return `${specs.vCPUs} vCPU${specs.vCPUs > 1 ? 's' : ''}, ${memoryFormatted}`;
+}
+
+/**
+ * Formata as especificações de disco da VM para exibição
+ * @param vmSize - Tamanho da VM
+ * @returns String formatada com informações de disco ou null
+ */
+export function formatDiskSpecs(vmSize: string): string | null {
+  const specs = getVMSpecs(vmSize);
+  if (!specs) return null;
+
+  const parts: string[] = [];
+
+  // Temp disk
+  if (specs.tempDiskGiB) {
+    parts.push(`💾 Temp: ${specs.tempDiskGiB} GiB`);
+  }
+
+  // Max data disks
+  if (specs.maxDataDisks) {
+    parts.push(`📀 Max Disks: ${specs.maxDataDisks}`);
+  }
+
+  // IOPS
+  if (specs.maxIOPS) {
+    const iopsFormatted = specs.maxIOPS >= 1000
+      ? `${(specs.maxIOPS / 1000).toFixed(0)}K`
+      : specs.maxIOPS.toString();
+    parts.push(`⚡ ${iopsFormatted} IOPS`);
+  }
+
+  // Throughput
+  if (specs.maxThroughputMBps) {
+    const throughputFormatted = specs.maxThroughputMBps >= 1000
+      ? `${(specs.maxThroughputMBps / 1000).toFixed(1)} GB/s`
+      : `${specs.maxThroughputMBps} MB/s`;
+    parts.push(`📊 ${throughputFormatted}`);
+  }
+
+  return parts.length > 0 ? parts.join(' • ') : null;
 }
 
 /**

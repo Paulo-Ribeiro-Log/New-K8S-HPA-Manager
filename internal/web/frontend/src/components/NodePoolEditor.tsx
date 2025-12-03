@@ -14,7 +14,7 @@ import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import CordonDrainConfigModal, { CordonDrainConfig } from "./CordonDrainConfigModal";
-import { formatVMSpecs, getVMSpecs } from "@/lib/azure-vm-specs";
+import { formatVMSpecs, formatDiskSpecs, getVMSpecs } from "@/lib/azure-vm-specs";
 
 interface NodePoolEditorProps {
   nodePool: NodePool | null;
@@ -352,13 +352,14 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           {(() => {
             const vmSpecs = getVMSpecs(nodePool.vm_size);
             const specsFormatted = formatVMSpecs(nodePool.vm_size);
+            const diskSpecsFormatted = formatDiskSpecs(nodePool.vm_size);
 
             if (vmSpecs && specsFormatted) {
               return (
                 <div className="pt-2 border-t">
                   <div className="flex items-start gap-2 text-sm">
                     <Info className="w-4 h-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-                    <div>
+                    <div className="w-full">
                       <p className="text-muted-foreground mb-1">Specifications</p>
                       <p className="font-medium text-primary">{specsFormatted}</p>
                       {vmSpecs.family && (
@@ -366,6 +367,12 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                       )}
                       {vmSpecs.description && (
                         <p className="text-xs text-muted-foreground mt-1">{vmSpecs.description}</p>
+                      )}
+                      {diskSpecsFormatted && (
+                        <div className="mt-2 pt-2 border-t border-border/50">
+                          <p className="text-xs text-muted-foreground mb-1">Disk Performance</p>
+                          <p className="text-xs font-medium">{diskSpecsFormatted}</p>
+                        </div>
                       )}
                     </div>
                   </div>
