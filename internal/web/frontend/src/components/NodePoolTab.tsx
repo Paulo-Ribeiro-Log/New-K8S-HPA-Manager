@@ -1,11 +1,13 @@
 import { useState, useEffect } from "react";
-import { 
+import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
+import { RefreshCcw } from "lucide-react";
 import { SplitView } from "@/components/SplitView";
 import { NodePoolListItem } from "@/components/NodePoolListItem";
 import { NodePoolEditor } from "@/components/NodePoolEditor";
@@ -79,6 +81,17 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
         <SplitView
           leftPanel={{
             title: "Available Node Pools",
+            titleAction: (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => refetchNodePools()}
+                disabled={!selectedCluster || nodePoolsLoading}
+                title="Atualizar lista de Node Pools"
+              >
+                <RefreshCcw className={`w-4 h-4 ${nodePoolsLoading ? 'animate-spin' : ''}`} />
+              </Button>
+            ),
             content: nodePoolsLoading ? (
               <div className="flex items-center justify-center h-64 text-muted-foreground">
                 Loading Node Pools...

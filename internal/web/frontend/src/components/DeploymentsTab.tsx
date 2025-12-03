@@ -53,7 +53,7 @@ export const DeploymentsTab = ({
   const [viewMode, setViewMode] = useState<"editor" | "diff">("editor");
   const [isValidating, setIsValidating] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
-  const [showLabels, setShowLabels] = useState(true);
+  const [showLabels, setShowLabels] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [diffModalOpen, setDiffModalOpen] = useState(false);
   const [diffHtml, setDiffHtml] = useState("");
@@ -100,7 +100,7 @@ export const DeploymentsTab = ({
     setManifest(null);
     setEditorValue("");
     setOriginalYaml("");
-    setShowLabels(true);
+    setShowLabels(false);
     setViewMode("editor");
     setHistory([]);
     setHistoryIndex(-1);
@@ -140,7 +140,7 @@ export const DeploymentsTab = ({
       setManifest(detail);
       const initialYaml = detail.yaml || "";
       setOriginalYaml(initialYaml);
-      setShowLabels(true);
+      setShowLabels(false);
       setViewMode("editor");
       
       // Restaurar histórico do cache se existir
@@ -272,11 +272,9 @@ export const DeploymentsTab = ({
       const diffResponse = await apiClient.diffDeployment(originalYaml, editorValue, selectedDeployment?.name);
       const unifiedDiff = diffResponse.unifiedDiff || "";
       const html = diff2html(unifiedDiff, {
-        inputFormat: "diff",
         drawFileList: false,
         matching: "lines",
         outputFormat: "side-by-side",
-        highlight: true,
       });
       setDiffHtml(html);
       setDiffFullScreen(!!options?.fullscreen);
@@ -543,6 +541,11 @@ export const DeploymentsTab = ({
       }
     };
 
+    // Extrair versão dos labels (app.kubernetes.io/version ou version)
+    const appVersion = selectedDeployment.labels?.["app.kubernetes.io/version"] ||
+                       selectedDeployment.labels?.["version"] ||
+                       selectedDeployment.labels?.["app.version"];
+
     return (
       <div className="space-y-3" onKeyDown={handleEditorKeyDown} tabIndex={-1}>
         <div className="flex items-start gap-4 text-xs border-b border-border/50 pb-2">
@@ -554,6 +557,12 @@ export const DeploymentsTab = ({
             <span className="text-muted-foreground uppercase mb-0.5">Namespace</span>
             <span className="font-medium">{selectedDeployment.namespace}</span>
           </div>
+          {appVersion && (
+            <div className="flex flex-col">
+              <span className="text-muted-foreground uppercase mb-0.5">Versão</span>
+              <span className="font-mono text-primary">{appVersion}</span>
+            </div>
+          )}
           <div className="flex flex-col">
             <span className="text-muted-foreground uppercase mb-0.5">Replicas</span>
             <span className="font-mono">
@@ -676,7 +685,7 @@ export const DeploymentsTab = ({
             <Button
               variant="outline"
               size="sm"
-              onClick={handleShowDiffModal}
+              onClick={() => handleShowDiffModal()}
               disabled={!selectedDeployment || !hasChanges || isDiffLoading}
             >
               {isDiffLoading ? (
