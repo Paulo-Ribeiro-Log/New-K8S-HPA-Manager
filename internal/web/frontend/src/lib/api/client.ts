@@ -466,6 +466,17 @@ class APIClient {
     return response.data || [];
   }
 
+  async getNodePoolDiskMetrics(cluster: string, nodePoolName?: string): Promise<{ success: boolean; data: any[] }> {
+    let query = `?cluster=${encodeURIComponent(cluster)}`;
+    if (nodePoolName) {
+      query += `&nodepool=${encodeURIComponent(nodePoolName)}`;
+    }
+    const response = await this.request<{ success: boolean; data: any[] }>(
+      `/nodepools/disk-metrics${query}`
+    );
+    return response;
+  }
+
   async updateNodePool(
     cluster: string,
     resourceGroup: string,

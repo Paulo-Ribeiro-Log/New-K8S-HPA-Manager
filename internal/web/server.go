@@ -294,6 +294,7 @@ func (s *Server) setupRoutes() {
 	// Node Pools
 	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager, s.historyTracker)
 	api.GET("/nodepools", nodePoolHandler.List)
+	api.GET("/nodepools/disk-metrics", nodePoolHandler.GetNodePoolDiskMetrics) // NOVO: Métricas de disco
 	api.PUT("/nodepools/:cluster/:resource_group/:name", nodePoolHandler.Update)
 	api.POST("/nodepools/apply-sequential", nodePoolHandler.ApplySequential)
 	api.POST("/nodepools/sequence/execute", nodePoolHandler.ExecuteSequence)  // NOVO: Cordon/Drain sequencing
