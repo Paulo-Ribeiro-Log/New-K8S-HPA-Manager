@@ -261,7 +261,13 @@ func (c *Client) applyConfigMap(ctx context.Context, yamlContent, fieldManager, 
 		return nil, err
 	}
 
-	options := metav1.PatchOptions{FieldManager: fieldManager}
+	// Force=true permite assumir ownership de campos gerenciados por outros field managers
+	// Necessário quando ConfigMaps são gerenciados por kubectl, helm, terraform, etc.
+	forceFlag := true
+	options := metav1.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        &forceFlag,
+	}
 	if dryRun {
 		options.DryRun = []string{metav1.DryRunAll}
 	}

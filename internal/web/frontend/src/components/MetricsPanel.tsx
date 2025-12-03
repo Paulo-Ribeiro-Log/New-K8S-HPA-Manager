@@ -1241,8 +1241,8 @@ export function MetricsPanel({
                   <ComposedChart data={chartData}>
                     <defs>
                       <linearGradient id="memoryGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -1301,7 +1301,7 @@ export function MetricsPanel({
                       type="monotone"
                       dataKey="memoryCurrent"
                       name="Memória Atual"
-                      stroke="#8b5cf6"
+                      stroke="#3b82f6"
                       strokeWidth={2}
                       fill="url(#memoryGradient)"
                       unit="%"
@@ -1688,7 +1688,7 @@ export function MetricsPanel({
                 </div>
                 <div onMouseDown={(e) => e.preventDefault()}>
                   <ResponsiveContainer width="100%" height={600}>
-                  <ComposedChart 
+                  <ComposedChart
                     data={zoomedData}
                     onMouseDown={handleMouseDown}
                     onMouseMove={handleMouseMove}
@@ -1696,8 +1696,8 @@ export function MetricsPanel({
                   >
                     <defs>
                       <linearGradient id="memoryGradientExpanded" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -1734,7 +1734,7 @@ export function MetricsPanel({
                       strokeDasharray="5 5"
                       label={{ value: `Target: ${memoryTarget}%`, fill: '#10b981', position: 'insideTopRight' }}
                     />
-                    <Area type="monotone" dataKey="memoryCurrent" name="Memória Atual" stroke="#8b5cf6" strokeWidth={2} fill="url(#memoryGradientExpanded)" unit="%" isAnimationActive={false} />
+                    <Area type="monotone" dataKey="memoryCurrent" name="Memória Atual" stroke="#3b82f6" strokeWidth={2} fill="url(#memoryGradientExpanded)" unit="%" isAnimationActive={false} />
                     {/* Linha D-N - lembrança sutil */}
                     <Line type="monotone" dataKey="memoryYesterday" name={`Memória D-${comparisonDays} (${comparisonDays * 24}h atrás)`} stroke="#c084fc" strokeWidth={1.5} strokeOpacity={0.3} dot={false} unit="%" isAnimationActive={false} />
                     {refAreaValues && (
