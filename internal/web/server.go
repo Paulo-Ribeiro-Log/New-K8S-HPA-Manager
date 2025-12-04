@@ -274,7 +274,7 @@ func (s *Server) setupRoutes() {
 
 	// Auto-descoberta de clusters (SSE + Sync)
 	autoDiscoverHandler := handlers.NewAutoDiscoverHandler(s.kubeManager)
-	api.POST("/clusters/autodiscover", autoDiscoverHandler.HandleAutoDiscover)       // SSE com progress em tempo real
+	api.POST("/clusters/autodiscover", autoDiscoverHandler.HandleAutoDiscover)          // SSE com progress em tempo real
 	api.POST("/clusters/autodiscover-sync", autoDiscoverHandler.HandleAutoDiscoverSync) // Síncrono sem SSE
 
 	// Azure
@@ -294,6 +294,8 @@ func (s *Server) setupRoutes() {
 	// Node Pools
 	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager, s.historyTracker)
 	api.GET("/nodepools", nodePoolHandler.List)
+	api.GET("/nodepools/disk-metrics", nodePoolHandler.GetNodePoolDiskMetrics) // NOVO: Métricas de disco
+	api.GET("/nodepools/storage-overview", nodePoolHandler.GetStorageOverview) // NOVO: Visão geral de storage
 	api.PUT("/nodepools/:cluster/:resource_group/:name", nodePoolHandler.Update)
 	api.POST("/nodepools/apply-sequential", nodePoolHandler.ApplySequential)
 	api.POST("/nodepools/sequence/execute", nodePoolHandler.ExecuteSequence)  // NOVO: Cordon/Drain sequencing
@@ -336,6 +338,16 @@ func (s *Server) setupRoutes() {
 		deployments.PUT("/:cluster/:namespace/:name", deploymentHandler.Apply)
 	}
 
+	// Pods/Containers
+	podHandler := handlers.NewPodHandler(s.kubeManager)
+	pods := api.Group("/pods")
+	{
+		pods.GET("", podHandler.List)
+		pods.GET("/:cluster/:namespace/:name", podHandler.Get)
+		pods.DELETE("/:cluster/:namespace/:name", podHandler.Delete)
+		pods.GET("/:cluster/:namespace/:name/logs", podHandler.GetLogs)
+	}
+
 	// Secrets
 	secretHandler := handlers.NewSecretHandler(s.kubeManager, s.historyTracker)
 	secrets := api.Group("/secrets")
@@ -355,11 +367,11 @@ func (s *Server) setupRoutes() {
 	alertsHandler := handlers.NewAlertsHandler()
 	alertsGroup := api.Group("/alerts")
 	{
-		alertsGroup.GET("", alertsHandler.GetAlerts)                           // GET /api/v1/alerts?cluster=X
-		alertsGroup.GET("/summary", alertsHandler.GetAlertsSummary)            // GET /api/v1/alerts/summary?cluster=X
-		alertsGroup.GET("/hpa", alertsHandler.GetHPAAlerts)                    // GET /api/v1/alerts/hpa?cluster=X
+		alertsGroup.GET("", alertsHandler.GetAlerts)                             // GET /api/v1/alerts?cluster=X
+		alertsGroup.GET("/summary", alertsHandler.GetAlertsSummary)              // GET /api/v1/alerts/summary?cluster=X
+		alertsGroup.GET("/hpa", alertsHandler.GetHPAAlerts)                      // GET /api/v1/alerts/hpa?cluster=X
 		alertsGroup.GET("/hpa/namespace", alertsHandler.GetHPAAlertsByNamespace) // GET /api/v1/alerts/hpa/namespace?cluster=X&namespace=Y
-		alertsGroup.GET("/nodepool", alertsHandler.GetNodePoolAlerts)          // GET /api/v1/alerts/nodepool?cluster=X
+		alertsGroup.GET("/nodepool", alertsHandler.GetNodePoolAlerts)            // GET /api/v1/alerts/nodepool?cluster=X
 	}
 
 	// VPN Status Check (sem auth para polling leve)

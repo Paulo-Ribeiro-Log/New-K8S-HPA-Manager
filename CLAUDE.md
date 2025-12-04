@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Interface **totalmente responsiva** - adapta-se a qualquer tamanho de terminal (recomendado: 80x24 ou maior).
+**IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 
 ---
 
@@ -97,7 +97,7 @@ k8s-hpa-manager/
 
 | Categoria | Tecnologia |
 |-----------|------------|
-| **Backend** | Go 1.23+, Bubble Tea, client-go, Azure SDK |
+| **Backend** | Go 1.24+, client-go v0.34, Azure SDK |
 | **Frontend** | React 18.3, TypeScript 5.8, Vite 5.4 |
 | **UI** | shadcn/ui, Tailwind CSS 3.4 |
 | **Arquitetura** | MVC, SSE (Server-Sent Events) |
@@ -131,6 +131,11 @@ k8s-hpa-manager/
   - Dashboard: exibe total de clusters disponíveis no kubeconfig
   - Outras abas: mostra contexto selecionado + versão do Kubernetes
   - Usa truncate com tooltip para nomes longos, mantém consistência visual
+✅ **UI/UX Improvements (v1.3.1)** - Melhorias na interface e usabilidade
+  - Gráfico de Memória: Linha corrente agora usa cor azul (#3b82f6) ao invés de roxo, evitando confusão com linha D-1
+  - ConfigMaps/Secrets/Deployments: Labels iniciam recolhidos, campo "Versão" exibido quando disponível (app.kubernetes.io/version)
+  - Node Pools: Botão de refresh adicionado no painel "Available Node Pools" para atualizar dados do Azure AKS
+  - VM Disk Specs: Exibe informações de performance de disco (Temp Disk, Max Disks, IOPS, Throughput) no Node Pool Editor
 
 ---
 
@@ -140,12 +145,21 @@ k8s-hpa-manager/
 ```
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
 
-Versão: v1.1.4+ (Nov 2025)
-Tech: Go 1.23 + Bubble Tea (TUI) + React 18.3 (Web)
-Build: go build -o build/new-k8s-hpa && make web-build
+Repositório: git@github.com:Paulo-Ribeiro-Log/New-K8S-HPA-Manager.git
+Versão Atual: v1.3.1 (oficial - 2025-12-03)
+Tech: Go 1.24+ + React 18.3 (Web)
+Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
-Recent Updates:
+Recent Updates (v1.3.1):
+- UI/UX: Gráfico de memória corrigido (azul vs roxo), labels recolhidos por padrão em ConfigMaps/Secrets/Deployments
+- ConfigMaps/Secrets/Deployments: Campo "Versão" exibe app.kubernetes.io/version quando disponível
+- Node Pools: Botão de refresh no painel "Available Node Pools" busca dados atualizados do Azure AKS
+  - Fix: Correção de erros TypeScript em Index.tsx (sequencedNodePools.find com sequence_order)
+- VM Disk Specs: Exibe performance de disco (Temp Disk, Max Disks, IOPS, Throughput) no Node Pool Editor
+  - Interface VMSpec estendida com tempDiskGiB, maxDataDisks, maxIOPS, maxThroughputMBps
+  - Função formatDiskSpecs() formata informações com emojis e unidades legíveis
+  - Specs adicionadas para séries Dsv3, Dsv5, Esv3 (VMs mais comuns)
 - Card de Cluster Contextual: Dashboard mostra total de clusters, outras abas mostram contexto + versão K8s
   - Componente ClusterContextCard mantém estrutura visual dos StatsCards
   - Hook useClusterInfo busca informações via API /clusters/info

@@ -33,6 +33,8 @@ import type {
   DeploymentDiffResult,
   DeploymentValidateResult,
   DeploymentApplyResult,
+  PodSummary,
+  PodManifest,
   VersionInfo,
   SequenceExecuteRequest,
 } from "./types";
@@ -189,7 +191,8 @@ class APIClient {
     cluster?: string,
     namespaces?: string[],
     search?: string,
-    showSystem: boolean = false
+    showSystem: boolean = false,
+    bypassCache: boolean = false
   ): Promise<ConfigMapSummary[]> {
     const params = new URLSearchParams();
     if (cluster) params.append("cluster", cluster);
@@ -198,10 +201,19 @@ class APIClient {
     }
     if (search) params.append("search", search);
     if (showSystem) params.append("showSystem", "true");
+    if (bypassCache) params.append("_t", Date.now().toString());
 
     const query = params.toString() ? `?${params.toString()}` : "";
     const response = await this.request<APIResponse<ConfigMapSummary[]>>(
-      `/configmaps${query}`
+      `/configmaps${query}`,
+      {
+        headers: bypassCache
+          ? {
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+            }
+          : {},
+      }
     );
     return response.data || [];
   }
@@ -269,7 +281,7 @@ class APIClient {
   }
 
   // Secrets API Methods
-  async getSecrets(cluster: string, namespaces?: string[], showSystem?: boolean): Promise<SecretSummary[]> {
+  async getSecrets(cluster: string, namespaces?: string[], showSystem?: boolean, bypassCache: boolean = false): Promise<SecretSummary[]> {
     const params = new URLSearchParams();
     if (cluster) params.append("cluster", cluster);
     if (namespaces && namespaces.length > 0) {
@@ -278,9 +290,18 @@ class APIClient {
     if (showSystem !== undefined) {
       params.append("showSystem", showSystem.toString());
     }
+    if (bypassCache) params.append("_t", Date.now().toString());
 
     const response = await this.request<APIResponse<SecretSummary[]>>(
-      `/secrets?${params.toString()}`
+      `/secrets?${params.toString()}`,
+      {
+        headers: bypassCache
+          ? {
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+            }
+          : {},
+      }
     );
     return response.data || [];
   }
@@ -352,7 +373,8 @@ class APIClient {
     cluster?: string,
     namespaces?: string[],
     search?: string,
-    showSystem: boolean = false
+    showSystem: boolean = false,
+    bypassCache: boolean = false
   ): Promise<DeploymentSummary[]> {
     const params = new URLSearchParams();
     if (cluster) params.append("cluster", cluster);
@@ -361,10 +383,19 @@ class APIClient {
     }
     if (search) params.append("search", search);
     if (showSystem) params.append("showSystem", "true");
+    if (bypassCache) params.append("_t", Date.now().toString());
 
     const query = params.toString() ? `?${params.toString()}` : "";
     const response = await this.request<APIResponse<DeploymentSummary[]>>(
-      `/deployments${query}`
+      `/deployments${query}`,
+      {
+        headers: bypassCache
+          ? {
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+            }
+          : {},
+      }
     );
     return response.data || [];
   }
@@ -431,6 +462,76 @@ class APIClient {
     return response.data;
   }
 
+  // Pods/Containers API Methods
+  async getPods(
+    cluster?: string,
+    namespaces?: string[],
+    search?: string,
+    showSystem: boolean = false,
+    bypassCache: boolean = false
+  ): Promise<PodSummary[]> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (namespaces && namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    if (search) params.append("search", search);
+    if (showSystem) params.append("showSystem", "true");
+    if (bypassCache) params.append("_t", Date.now().toString());
+
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const response = await this.request<APIResponse<PodSummary[]>>(
+      `/pods${query}`,
+      {
+        headers: bypassCache
+          ? {
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+            }
+          : {},
+      }
+    );
+    return response.data || [];
+  }
+
+  async getPod(cluster: string, namespace: string, name: string): Promise<PodManifest> {
+    const response = await this.request<APIResponse<PodManifest>>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) {
+      throw new Error("Pod not found");
+    }
+    return response.data;
+  }
+
+  async deletePod(cluster: string, namespace: string, name: string): Promise<{ success: boolean; message: string }> {
+    const response = await this.request<APIResponse<{ success: boolean; message: string }>>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      {
+        method: "DELETE",
+      }
+    );
+    return response.data || { success: false, message: "Unknown error" };
+  }
+
+  async getPodLogs(
+    cluster: string,
+    namespace: string,
+    podName: string,
+    containerName?: string,
+    tailLines?: number
+  ): Promise<{ logs: string }> {
+    const params = new URLSearchParams();
+    if (containerName) params.append("container", containerName);
+    if (tailLines) params.append("tail", tailLines.toString());
+    
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const response = await this.request<APIResponse<{ logs: string }>>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}/logs${query}`
+    );
+    return response.data || { logs: "" };
+  }
+
   async updateHPA(
     cluster: string,
     namespace: string,
@@ -464,6 +565,24 @@ class APIClient {
       `/nodepools${query}`
     );
     return response.data || [];
+  }
+
+  async getNodePoolDiskMetrics(cluster: string, nodePoolName?: string): Promise<{ success: boolean; data: any[] }> {
+    let query = `?cluster=${encodeURIComponent(cluster)}`;
+    if (nodePoolName) {
+      query += `&nodepool=${encodeURIComponent(nodePoolName)}`;
+    }
+    const response = await this.request<{ success: boolean; data: any[] }>(
+      `/nodepools/disk-metrics${query}`
+    );
+    return response;
+  }
+
+  async getStorageOverview(cluster: string): Promise<{ success: boolean; data: any }> {
+    const response = await this.request<{ success: boolean; data: any }>(
+      `/nodepools/storage-overview?cluster=${encodeURIComponent(cluster)}`
+    );
+    return response;
   }
 
   async updateNodePool(
@@ -772,9 +891,17 @@ class APIClient {
   async executeNodePoolSequence(
     request: SequenceExecuteRequest
   ): Promise<{ success: boolean; message: string; data?: any }> {
+    const headers: HeadersInit = {
+      "Content-Type": "application/json",
+    };
+
+    if (this.token) {
+      headers["Authorization"] = `Bearer ${this.token}`;
+    }
+
     const response = await fetch("/api/v1/nodepools/sequence/execute", {
       method: "POST",
-      headers: this.getHeaders(),
+      headers,
       body: JSON.stringify(request),
     });
 

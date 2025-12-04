@@ -24,6 +24,7 @@ import SequenceProgressModal from "@/components/SequenceProgressModal";
 import { ConfigMapsTab } from "@/components/ConfigMapsTab";
 import { SecretsTab } from "@/components/SecretsTab";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
+import { ContainersTab } from "@/components/ContainersTab";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
@@ -52,7 +53,9 @@ import {
   FileCode,
   Settings,
   Key,
-  X
+  Box,
+  X,
+  RefreshCcw
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -181,7 +184,7 @@ const Index = ({ onLogout }: IndexProps) => {
   const { namespaces, loading: namespacesLoading } = useNamespaces(selectedCluster);
   // Para HPAs: sempre buscar de TODOS os namespaces (passar undefined ao invés de selectedNamespace)
   const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, undefined, showSystemNamespaces);
-  const { nodePools, loading: nodePoolsLoading } = useNodePools(selectedCluster);
+  const { nodePools, loading: nodePoolsLoading, refetch: refetchNodePools } = useNodePools(selectedCluster);
 
   // Auto-select first cluster (using context instead of name)
   useEffect(() => {
@@ -315,6 +318,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "configmaps", label: "ConfigMaps", icon: FileCode },
     { id: "secrets", label: "Secrets", icon: Key },
     { id: "deployments", label: "Deployments", icon: Package },
+    { id: "containers", label: "Containers", icon: Box },
   ];
 
   // Filtrar namespaces
@@ -673,6 +677,20 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
+      case "containers":
+        return (
+          <ErrorBoundary componentName="Containers Tab">
+            <ContainersTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
+        );
+
       case "nodepools":
         const markedNodePools = staging?.stagedNodePools.filter(
           np => np.sequence_order > 0
@@ -682,21 +700,34 @@ const Index = ({ onLogout }: IndexProps) => {
           <SplitView
             leftPanel={{
               title: "Available Node Pools",
-              titleAction: markedNodePools.length === 2 ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="bg-primary/10 border-primary/30 text-primary hover:bg-primary/20"
-                  onClick={() => {
-                    setSequencedNodePools(markedNodePools);
-                    setShowSequencingModal(true);
-                  }}
-                  title="Configurar cordon/drain para sequenciamento"
-                >
-                  <Settings className="h-4 w-4 mr-2" />
-                  Configure Sequencing ({markedNodePools.length})
-                </Button>
-              ) : null,
+              titleAction: (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => refetchNodePools()}
+                    disabled={!selectedCluster || nodePoolsLoading}
+                    title="Atualizar lista de Node Pools"
+                  >
+                    <RefreshCcw className={`w-4 h-4 ${nodePoolsLoading ? 'animate-spin' : ''}`} />
+                  </Button>
+                  {markedNodePools.length === 2 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="bg-primary/10 border-primary/30 text-primary hover:bg-primary/20"
+                      onClick={() => {
+                        setSequencedNodePools(markedNodePools);
+                        setShowSequencingModal(true);
+                      }}
+                      title="Configurar cordon/drain para sequenciamento"
+                    >
+                      <Settings className="h-4 w-4 mr-2" />
+                      Configure Sequencing ({markedNodePools.length})
+                    </Button>
+                  )}
+                </div>
+              ),
               content: nodePoolsLoading ? (
                 <div className="flex items-center justify-center h-64 text-muted-foreground">
                   Loading Node Pools...
@@ -888,8 +919,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps, Secrets e Deployments */}
-      {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps, Secrets, Deployments e Containers */}
+      {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (
@@ -981,25 +1012,55 @@ const Index = ({ onLogout }: IndexProps) => {
       {/* Modal de Configuração de Sequenciamento - Cordon/Drain */}
       <NodePoolSequencingModal
         open={showSequencingModal}
-        onOpenChange={setShowSequencingModal}
-        nodePools={sequencedNodePools}
+        nodePools={sequencedNodePools.map(np => ({
+          name: np.name,
+          cluster: np.cluster_name,
+          resourceGroup: np.resource_group || "",
+          subscription: np.subscription || "",
+          sequenceOrder: np.sequence_order || 0,
+        }))}
         onConfirm={async (config) => {
           try {
+            // Converter SequenceConfig para SequenceExecuteRequest
+            const request = {
+              cluster: selectedCluster,
+              node_pools: sequencedNodePools.map(np => ({
+                name: np.name,
+                resource_group: np.resource_group || "",
+                subscription: np.subscription || "",
+                sequence_order: np.sequence_order || 0,
+              })),
+              cordon_enabled: config.cordonEnabled,
+              drain_enabled: config.drainEnabled,
+              drain_options: {
+                ignore_daemonsets: config.drainOptions.ignoreDaemonsets,
+                delete_emptydir_data: config.drainOptions.deleteEmptyDirData,
+                force: config.drainOptions.force,
+                grace_period: config.drainOptions.gracePeriod,
+                timeout: config.drainOptions.timeout,
+                disable_eviction: config.drainOptions.disableEviction,
+                skip_wait_for_delete_timeout: config.drainOptions.skipWaitForDeleteTimeout,
+                pod_selector: config.drainOptions.podSelector,
+                dry_run: config.drainOptions.dryRun,
+                chunk_size: config.drainOptions.chunkSize,
+              },
+            };
+
             // Chamar API para executar sequenciamento
-            const response = await apiClient.executeNodePoolSequence(config);
+            const response = await apiClient.executeNodePoolSequence(request);
 
             // Fechar modal de configuração
             setShowSequencingModal(false);
 
-            // Extrair informações para o modal de progresso
+            // Extrair informações para o modal de progresso usando o estado sequencedNodePools
             const sessionId = response.data?.session_id;
-            const origin = config.node_pools.find((np) => np.sequence_order === 1);
-            const dest = config.node_pools.find((np) => np.sequence_order === 2);
+            const origin = sequencedNodePools.find((np) => np.sequence_order === 1);
+            const dest = sequencedNodePools.find((np) => np.sequence_order === 2);
 
             if (sessionId && origin && dest) {
               // Configurar estados do modal de progresso
               setProgressSessionId(sessionId);
-              setProgressCluster(config.cluster);
+              setProgressCluster(selectedCluster);
               setProgressOrigin(origin.name);
               setProgressDest(dest.name);
 

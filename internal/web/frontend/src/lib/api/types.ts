@@ -179,6 +179,52 @@ export interface DeploymentApplyResult {
   appliedAt?: string;
 }
 
+// Pod/Container Types
+export interface ContainerStatus {
+  name: string;
+  image: string;
+  ready: boolean;
+  restartCount: number;
+  state: string;
+  stateReason?: string;
+  started?: boolean;
+}
+
+export interface PodSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  podIP?: string;
+  nodeName?: string;
+  phase: string;
+  labels?: Record<string, string>;
+  containers: ContainerStatus[];
+  readyContainers: number;
+  totalContainers: number;
+  cpuRequest?: string;
+  memoryRequest?: string;
+  cpuLimit?: string;
+  memoryLimit?: string;
+  resourceVersion?: string;
+  createdAt: string;
+  restarts: number;
+}
+
+export interface PodMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface PodManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  yaml: string;
+  metadata: PodMetadata;
+}
+
 export interface HPA {
   name: string;
   namespace: string;
