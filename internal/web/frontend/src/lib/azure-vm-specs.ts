@@ -11,6 +11,7 @@ export interface VMSpec {
   maxDataDisks?: number;     // Número máximo de discos de dados
   maxIOPS?: number;          // IOPS máximo (sem cache)
   maxThroughputMBps?: number; // Throughput máximo em MB/s
+  supportsEphemeralOS?: boolean; // Suporta disco de SO efêmero
 }
 
 export const azureVMSpecs: Record<string, VMSpec> = {
@@ -47,22 +48,22 @@ export const azureVMSpecs: Record<string, VMSpec> = {
   "Standard_D15_v2": { size: "Standard_D15_v2", vCPUs: 20, memoryGiB: 140, family: "D-Series v2" },
 
   // === Dsv3-Series (General Purpose with SSD) ===
-  "Standard_D2s_v3": { size: "Standard_D2s_v3", vCPUs: 2, memoryGiB: 8, family: "Dsv3-Series", tempDiskGiB: 16, maxDataDisks: 4, maxIOPS: 3200, maxThroughputMBps: 48 },
-  "Standard_D4s_v3": { size: "Standard_D4s_v3", vCPUs: 4, memoryGiB: 16, family: "Dsv3-Series", tempDiskGiB: 32, maxDataDisks: 8, maxIOPS: 6400, maxThroughputMBps: 96 },
-  "Standard_D8s_v3": { size: "Standard_D8s_v3", vCPUs: 8, memoryGiB: 32, family: "Dsv3-Series", tempDiskGiB: 64, maxDataDisks: 16, maxIOPS: 12800, maxThroughputMBps: 192 },
-  "Standard_D16s_v3": { size: "Standard_D16s_v3", vCPUs: 16, memoryGiB: 64, family: "Dsv3-Series", tempDiskGiB: 128, maxDataDisks: 32, maxIOPS: 25600, maxThroughputMBps: 384 },
-  "Standard_D32s_v3": { size: "Standard_D32s_v3", vCPUs: 32, memoryGiB: 128, family: "Dsv3-Series", tempDiskGiB: 256, maxDataDisks: 32, maxIOPS: 51200, maxThroughputMBps: 768 },
-  "Standard_D48s_v3": { size: "Standard_D48s_v3", vCPUs: 48, memoryGiB: 192, family: "Dsv3-Series", tempDiskGiB: 384, maxDataDisks: 32, maxIOPS: 76800, maxThroughputMBps: 1152 },
-  "Standard_D64s_v3": { size: "Standard_D64s_v3", vCPUs: 64, memoryGiB: 256, family: "Dsv3-Series", tempDiskGiB: 512, maxDataDisks: 32, maxIOPS: 80000, maxThroughputMBps: 1200 },
+  "Standard_D2s_v3": { size: "Standard_D2s_v3", vCPUs: 2, memoryGiB: 8, family: "Dsv3-Series", tempDiskGiB: 16, maxDataDisks: 4, maxIOPS: 3200, maxThroughputMBps: 48, supportsEphemeralOS: true },
+  "Standard_D4s_v3": { size: "Standard_D4s_v3", vCPUs: 4, memoryGiB: 16, family: "Dsv3-Series", tempDiskGiB: 32, maxDataDisks: 8, maxIOPS: 6400, maxThroughputMBps: 96, supportsEphemeralOS: true },
+  "Standard_D8s_v3": { size: "Standard_D8s_v3", vCPUs: 8, memoryGiB: 32, family: "Dsv3-Series", tempDiskGiB: 64, maxDataDisks: 16, maxIOPS: 12800, maxThroughputMBps: 192, supportsEphemeralOS: true },
+  "Standard_D16s_v3": { size: "Standard_D16s_v3", vCPUs: 16, memoryGiB: 64, family: "Dsv3-Series", tempDiskGiB: 128, maxDataDisks: 32, maxIOPS: 25600, maxThroughputMBps: 384, supportsEphemeralOS: true },
+  "Standard_D32s_v3": { size: "Standard_D32s_v3", vCPUs: 32, memoryGiB: 128, family: "Dsv3-Series", tempDiskGiB: 256, maxDataDisks: 32, maxIOPS: 51200, maxThroughputMBps: 768, supportsEphemeralOS: true },
+  "Standard_D48s_v3": { size: "Standard_D48s_v3", vCPUs: 48, memoryGiB: 192, family: "Dsv3-Series", tempDiskGiB: 384, maxDataDisks: 32, maxIOPS: 76800, maxThroughputMBps: 1152, supportsEphemeralOS: true },
+  "Standard_D64s_v3": { size: "Standard_D64s_v3", vCPUs: 64, memoryGiB: 256, family: "Dsv3-Series", tempDiskGiB: 512, maxDataDisks: 32, maxIOPS: 80000, maxThroughputMBps: 1200, supportsEphemeralOS: true },
 
   // === Dsv4-Series (General Purpose - Latest) ===
-  "Standard_D2s_v4": { size: "Standard_D2s_v4", vCPUs: 2, memoryGiB: 8, family: "Dsv4-Series" },
-  "Standard_D4s_v4": { size: "Standard_D4s_v4", vCPUs: 4, memoryGiB: 16, family: "Dsv4-Series" },
-  "Standard_D8s_v4": { size: "Standard_D8s_v4", vCPUs: 8, memoryGiB: 32, family: "Dsv4-Series" },
-  "Standard_D16s_v4": { size: "Standard_D16s_v4", vCPUs: 16, memoryGiB: 64, family: "Dsv4-Series" },
-  "Standard_D32s_v4": { size: "Standard_D32s_v4", vCPUs: 32, memoryGiB: 128, family: "Dsv4-Series" },
-  "Standard_D48s_v4": { size: "Standard_D48s_v4", vCPUs: 48, memoryGiB: 192, family: "Dsv4-Series" },
-  "Standard_D64s_v4": { size: "Standard_D64s_v4", vCPUs: 64, memoryGiB: 256, family: "Dsv4-Series" },
+  "Standard_D2s_v4": { size: "Standard_D2s_v4", vCPUs: 2, memoryGiB: 8, family: "Dsv4-Series", maxDataDisks: 4, maxIOPS: 3200, maxThroughputMBps: 48 },
+  "Standard_D4s_v4": { size: "Standard_D4s_v4", vCPUs: 4, memoryGiB: 16, family: "Dsv4-Series", maxDataDisks: 8, maxIOPS: 6400, maxThroughputMBps: 96 },
+  "Standard_D8s_v4": { size: "Standard_D8s_v4", vCPUs: 8, memoryGiB: 32, family: "Dsv4-Series", maxDataDisks: 16, maxIOPS: 12800, maxThroughputMBps: 192 },
+  "Standard_D16s_v4": { size: "Standard_D16s_v4", vCPUs: 16, memoryGiB: 64, family: "Dsv4-Series", maxDataDisks: 32, maxIOPS: 25600, maxThroughputMBps: 384 },
+  "Standard_D32s_v4": { size: "Standard_D32s_v4", vCPUs: 32, memoryGiB: 128, family: "Dsv4-Series", maxDataDisks: 32, maxIOPS: 51200, maxThroughputMBps: 768 },
+  "Standard_D48s_v4": { size: "Standard_D48s_v4", vCPUs: 48, memoryGiB: 192, family: "Dsv4-Series", maxDataDisks: 32, maxIOPS: 76800, maxThroughputMBps: 1152 },
+  "Standard_D64s_v4": { size: "Standard_D64s_v4", vCPUs: 64, memoryGiB: 256, family: "Dsv4-Series", maxDataDisks: 32, maxIOPS: 80000, maxThroughputMBps: 1200 },
 
   // === Dsv5-Series (General Purpose - 5th Gen) ===
   "Standard_D2s_v5": { size: "Standard_D2s_v5", vCPUs: 2, memoryGiB: 8, family: "Dsv5-Series", maxDataDisks: 4, maxIOPS: 3750, maxThroughputMBps: 85 },

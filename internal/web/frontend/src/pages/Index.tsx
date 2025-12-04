@@ -24,6 +24,7 @@ import SequenceProgressModal from "@/components/SequenceProgressModal";
 import { ConfigMapsTab } from "@/components/ConfigMapsTab";
 import { SecretsTab } from "@/components/SecretsTab";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
+import { ContainersTab } from "@/components/ContainersTab";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
@@ -52,6 +53,7 @@ import {
   FileCode,
   Settings,
   Key,
+  Box,
   X,
   RefreshCcw
 } from "lucide-react";
@@ -316,6 +318,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "configmaps", label: "ConfigMaps", icon: FileCode },
     { id: "secrets", label: "Secrets", icon: Key },
     { id: "deployments", label: "Deployments", icon: Package },
+    { id: "containers", label: "Containers", icon: Box },
   ];
 
   // Filtrar namespaces
@@ -674,6 +677,20 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
+      case "containers":
+        return (
+          <ErrorBoundary componentName="Containers Tab">
+            <ContainersTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
+        );
+
       case "nodepools":
         const markedNodePools = staging?.stagedNodePools.filter(
           np => np.sequence_order > 0
@@ -902,8 +919,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps, Secrets e Deployments */}
-      {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps, Secrets, Deployments e Containers */}
+      {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (
@@ -995,12 +1012,42 @@ const Index = ({ onLogout }: IndexProps) => {
       {/* Modal de Configuração de Sequenciamento - Cordon/Drain */}
       <NodePoolSequencingModal
         open={showSequencingModal}
-        onOpenChange={setShowSequencingModal}
-        nodePools={sequencedNodePools}
+        nodePools={sequencedNodePools.map(np => ({
+          name: np.name,
+          cluster: np.cluster_name,
+          resourceGroup: np.resource_group || "",
+          subscription: np.subscription || "",
+          sequenceOrder: np.sequence_order || 0,
+        }))}
         onConfirm={async (config) => {
           try {
+            // Converter SequenceConfig para SequenceExecuteRequest
+            const request = {
+              cluster: selectedCluster,
+              node_pools: sequencedNodePools.map(np => ({
+                name: np.name,
+                resource_group: np.resource_group || "",
+                subscription: np.subscription || "",
+                sequence_order: np.sequence_order || 0,
+              })),
+              cordon_enabled: config.cordonEnabled,
+              drain_enabled: config.drainEnabled,
+              drain_options: {
+                ignore_daemonsets: config.drainOptions.ignoreDaemonsets,
+                delete_emptydir_data: config.drainOptions.deleteEmptyDirData,
+                force: config.drainOptions.force,
+                grace_period: config.drainOptions.gracePeriod,
+                timeout: config.drainOptions.timeout,
+                disable_eviction: config.drainOptions.disableEviction,
+                skip_wait_for_delete_timeout: config.drainOptions.skipWaitForDeleteTimeout,
+                pod_selector: config.drainOptions.podSelector,
+                dry_run: config.drainOptions.dryRun,
+                chunk_size: config.drainOptions.chunkSize,
+              },
+            };
+
             // Chamar API para executar sequenciamento
-            const response = await apiClient.executeNodePoolSequence(config);
+            const response = await apiClient.executeNodePoolSequence(request);
 
             // Fechar modal de configuração
             setShowSequencingModal(false);

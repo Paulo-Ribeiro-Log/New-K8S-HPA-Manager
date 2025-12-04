@@ -6,6 +6,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { SplitView } from "@/components/SplitView";
 import { HPAListItem } from "@/components/HPAListItem";
 import { HPAEditor } from "@/components/HPAEditor";
@@ -24,6 +32,9 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
   const [selectedCluster, setSelectedCluster] = useState("");
   const [selectedNamespace, setSelectedNamespace] = useState("");
   const [selectedHPA, setSelectedHPA] = useState<HPA | null>(null);
+  const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
+  const [hpaToApply, setHpaToApply] = useState<{ hpa: HPA; original: HPA } | null>(null);
+  const [isApplying, setIsApplying] = useState(false);
 
   const staging = useStaging();
   
@@ -70,9 +81,61 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
     }
   };
 
-  const handleApplySingle = (hpa: HPA) => {
-    console.log("Aplicando HPA:", hpa);
-    onHPAModified?.();
+  const handleApplySingle = async (hpa: HPA, original: HPA) => {
+    setHpaToApply({ hpa, original });
+    setApplyConfirmOpen(true);
+  };
+
+  const confirmApplyHPA = async () => {
+    if (!hpaToApply) return;
+
+    const { hpa, original } = hpaToApply;
+    setIsApplying(true);
+
+    try {
+      // Adicionar sufixo -admin ao nome do cluster para a API
+      const clusterWithAdmin = hpa.cluster.endsWith('-admin') 
+        ? hpa.cluster 
+        : `${hpa.cluster}-admin`;
+      
+      // Update the HPA object's cluster property to match
+      const hpaWithCorrectCluster = {
+        ...hpa,
+        cluster: clusterWithAdmin
+      };
+      
+      toast.info(`Aplicando HPA ${hpa.name}...`);
+      
+      await apiClient.updateHPA(
+        clusterWithAdmin,
+        hpa.namespace,
+        hpa.name,
+        hpaWithCorrectCluster
+      );
+
+      toast.success(`✅ HPA ${hpa.name} aplicado com sucesso`);
+      
+      setApplyConfirmOpen(false);
+      setHpaToApply(null);
+      
+      // Refresh HPAs list
+      await refetchHPAs();
+      onHPAModified?.();
+      
+      // Reselect the updated HPA to show new values
+      const updatedHPAs = await apiClient.getHPAs(selectedCluster, undefined, true);
+      const updatedHPA = updatedHPAs.find(h => 
+        h.name === hpa.name && h.namespace === hpa.namespace
+      );
+      if (updatedHPA) {
+        setSelectedHPA(updatedHPA);
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Erro desconhecido";
+      toast.error(`❌ Erro ao aplicar ${hpa.name}: ${errorMessage}`);
+    } finally {
+      setIsApplying(false);
+    }
   };
 
   return (
@@ -169,6 +232,118 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
           }}
         />
       </div>
+
+      {/* Modal de confirmação */}
+      <Dialog open={applyConfirmOpen} onOpenChange={setApplyConfirmOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] bg-background border-border">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-semibold text-primary">
+              Confirmar aplicação de HPA
+            </DialogTitle>
+            <DialogDescription>
+              Essa ação vai aplicar as alterações do HPA diretamente no cluster selecionado.
+            </DialogDescription>
+          </DialogHeader>
+          {hpaToApply && (
+            <div className="space-y-3 text-sm">
+              <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs">
+                <p><span className="text-muted-foreground">Cluster:</span> {hpaToApply.hpa.cluster}</p>
+                <p><span className="text-muted-foreground">Namespace:</span> {hpaToApply.hpa.namespace}</p>
+                <p><span className="text-muted-foreground">HPA:</span> {hpaToApply.hpa.name}</p>
+              </div>
+              
+              <div className="space-y-2">
+                <p className="font-semibold text-sm">Mudanças:</p>
+                <div className="max-h-[400px] overflow-y-auto space-y-2 border rounded-lg p-3 bg-muted/10">
+                  {hpaToApply.original.min_replicas !== hpaToApply.hpa.min_replicas && (
+                    <div className="border-l-2 border-blue-500 pl-3 py-2 bg-background/50 rounded-r text-xs">
+                      <p className="font-mono font-semibold text-blue-400 mb-2">Min Replicas</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-red-500/10 border border-red-500/30 rounded p-2">
+                          <p className="text-red-400 font-semibold mb-1">Antes:</p>
+                          <pre className="text-[11px] text-red-300">{hpaToApply.original.min_replicas ?? 'N/A'}</pre>
+                        </div>
+                        <div className="bg-green-500/10 border border-green-500/30 rounded p-2">
+                          <p className="text-green-400 font-semibold mb-1">Depois:</p>
+                          <pre className="text-[11px] text-green-300">{hpaToApply.hpa.min_replicas ?? 'N/A'}</pre>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {hpaToApply.original.max_replicas !== hpaToApply.hpa.max_replicas && (
+                    <div className="border-l-2 border-blue-500 pl-3 py-2 bg-background/50 rounded-r text-xs">
+                      <p className="font-mono font-semibold text-blue-400 mb-2">Max Replicas</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-red-500/10 border border-red-500/30 rounded p-2">
+                          <p className="text-red-400 font-semibold mb-1">Antes:</p>
+                          <pre className="text-[11px] text-red-300">{hpaToApply.original.max_replicas}</pre>
+                        </div>
+                        <div className="bg-green-500/10 border border-green-500/30 rounded p-2">
+                          <p className="text-green-400 font-semibold mb-1">Depois:</p>
+                          <pre className="text-[11px] text-green-300">{hpaToApply.hpa.max_replicas}</pre>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {hpaToApply.original.target_cpu !== hpaToApply.hpa.target_cpu && (
+                    <div className="border-l-2 border-blue-500 pl-3 py-2 bg-background/50 rounded-r text-xs">
+                      <p className="font-mono font-semibold text-blue-400 mb-2">Target CPU (%)</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-red-500/10 border border-red-500/30 rounded p-2">
+                          <p className="text-red-400 font-semibold mb-1">Antes:</p>
+                          <pre className="text-[11px] text-red-300">{hpaToApply.original.target_cpu ?? 'N/A'}</pre>
+                        </div>
+                        <div className="bg-green-500/10 border border-green-500/30 rounded p-2">
+                          <p className="text-green-400 font-semibold mb-1">Depois:</p>
+                          <pre className="text-[11px] text-green-300">{hpaToApply.hpa.target_cpu ?? 'N/A'}</pre>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {hpaToApply.original.target_memory !== hpaToApply.hpa.target_memory && (
+                    <div className="border-l-2 border-blue-500 pl-3 py-2 bg-background/50 rounded-r text-xs">
+                      <p className="font-mono font-semibold text-blue-400 mb-2">Target Memory (%)</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-red-500/10 border border-red-500/30 rounded p-2">
+                          <p className="text-red-400 font-semibold mb-1">Antes:</p>
+                          <pre className="text-[11px] text-red-300">{hpaToApply.original.target_memory ?? 'N/A'}</pre>
+                        </div>
+                        <div className="bg-green-500/10 border border-green-500/30 rounded p-2">
+                          <p className="text-green-400 font-semibold mb-1">Depois:</p>
+                          <pre className="text-[11px] text-green-300">{hpaToApply.hpa.target_memory ?? 'N/A'}</pre>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              <p className="text-muted-foreground">
+                Esta operação não possui rollback automático. Confirme que as mudanças estão corretas.
+              </p>
+            </div>
+          )}
+          <div className="flex justify-end gap-2 pt-4">
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setApplyConfirmOpen(false);
+                setHpaToApply(null);
+              }}
+              disabled={isApplying}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirmApplyHPA}
+              disabled={isApplying}
+            >
+              {isApplying ? "Aplicando..." : "Confirmar e Aplicar"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
