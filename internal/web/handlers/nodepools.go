@@ -8,18 +8,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog/log"
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
+	promclient "k8s-hpa-manager/internal/monitoring/client"
 	"k8s-hpa-manager/internal/web/sse"
 	"k8s-hpa-manager/internal/web/validators"
+
+	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // NodePoolHandler gerencia requisições relacionadas a Node Pools
@@ -40,16 +45,16 @@ func NewNodePoolHandler(km *config.KubeConfigManager, ht *history.HistoryTracker
 
 // ProgressEvent representa um evento de progresso
 type ProgressEvent struct {
-	Phase      int     `json:"phase"`       // 1-5
-	PhaseName  string  `json:"phase_name"`  // "PRE-DRAIN", "CORDON", etc
-	Status     string  `json:"status"`      // "running", "completed", "error"
-	Message    string  `json:"message"`     // Mensagem detalhada
-	Progress   float64 `json:"progress"`    // 0-100
-	NodeName   string  `json:"node_name"`   // Node sendo processado (se aplicável)
-	NodeIndex  int     `json:"node_index"`  // Índice do node (se aplicável)
-	NodeTotal  int     `json:"node_total"`  // Total de nodes (se aplicável)
-	Timestamp  string  `json:"timestamp"`   // ISO 8601
-	Error      string  `json:"error"`       // Mensagem de erro (se status == "error")
+	Phase     int     `json:"phase"`      // 1-5
+	PhaseName string  `json:"phase_name"` // "PRE-DRAIN", "CORDON", etc
+	Status    string  `json:"status"`     // "running", "completed", "error"
+	Message   string  `json:"message"`    // Mensagem detalhada
+	Progress  float64 `json:"progress"`   // 0-100
+	NodeName  string  `json:"node_name"`  // Node sendo processado (se aplicável)
+	NodeIndex int     `json:"node_index"` // Índice do node (se aplicável)
+	NodeTotal int     `json:"node_total"` // Total de nodes (se aplicável)
+	Timestamp string  `json:"timestamp"`  // ISO 8601
+	Error     string  `json:"error"`      // Mensagem de erro (se status == "error")
 }
 
 // SequenceProgressManager gerencia o progresso de múltiplas execuções
@@ -792,12 +797,12 @@ type SequenceExecuteRequest struct {
 
 // NodePoolSequenceConfig representa um node pool no sequenciamento
 type NodePoolSequenceConfig struct {
-	Name             string                   `json:"name"`
-	ResourceGroup    string                   `json:"resource_group"`
-	Subscription     string                   `json:"subscription"`
-	SequenceOrder    int                      `json:"sequence_order"`    // 1 ou 2
-	PreDrainChanges  *models.NodePoolChanges  `json:"pre_drain_changes"`
-	PostDrainChanges *models.NodePoolChanges  `json:"post_drain_changes"`
+	Name             string                  `json:"name"`
+	ResourceGroup    string                  `json:"resource_group"`
+	Subscription     string                  `json:"subscription"`
+	SequenceOrder    int                     `json:"sequence_order"` // 1 ou 2
+	PreDrainChanges  *models.NodePoolChanges `json:"pre_drain_changes"`
+	PostDrainChanges *models.NodePoolChanges `json:"post_drain_changes"`
 }
 
 // ExecuteSequence executa o sequenciamento de node pools com cordon/drain
@@ -1279,10 +1284,10 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 			Status:   history.StatusSuccess,
 			Duration: duration.Milliseconds(),
 			Before: map[string]interface{}{
-				"origin_pool":  origin.Name,
-				"dest_pool":    dest.Name,
-				"cordon":       req.CordonEnabled,
-				"drain":        req.DrainEnabled,
+				"origin_pool": origin.Name,
+				"dest_pool":   dest.Name,
+				"cordon":      req.CordonEnabled,
+				"drain":       req.DrainEnabled,
 			},
 			After: map[string]interface{}{
 				"total_duration_ms": duration.Milliseconds(),
@@ -1365,4 +1370,526 @@ func validateDrainOptions(opts *models.DrainOptions) error {
 		return fmt.Errorf("chunk size must be >= 1")
 	}
 	return nil
+}
+
+// NodeDiskMetrics representa métricas de disco de um node
+type NodeDiskMetrics struct {
+	NodeName       string  `json:"node_name"`
+	NodePoolName   string  `json:"node_pool_name"`
+	TotalBytes     float64 `json:"total_bytes"`
+	UsedBytes      float64 `json:"used_bytes"`
+	AvailableBytes float64 `json:"available_bytes"`
+	UsagePercent   float64 `json:"usage_percent"`
+	IsEphemeral    bool    `json:"is_ephemeral"`
+	DiskType       string  `json:"disk_type"`
+}
+
+// NodePoolDiskMetrics representa métricas agregadas de disco de um node pool
+type NodePoolDiskMetrics struct {
+	NodePoolName   string            `json:"node_pool_name"`
+	TotalBytes     float64           `json:"total_bytes"`
+	UsedBytes      float64           `json:"used_bytes"`
+	AvailableBytes float64           `json:"available_bytes"`
+	UsagePercent   float64           `json:"usage_percent"`
+	NodeCount      int               `json:"node_count"`
+	Nodes          []NodeDiskMetrics `json:"nodes"`
+}
+
+// StorageClassInfo representa informações sobre uma storage class
+type StorageClassInfo struct {
+	Name              string            `json:"name"`
+	Provisioner       string            `json:"provisioner"`
+	ReclaimPolicy     string            `json:"reclaim_policy"`
+	VolumeBindMode    string            `json:"volume_bind_mode"`
+	AllowExpansion    bool              `json:"allow_expansion"`
+	Parameters        map[string]string `json:"parameters"`
+	PVCount           int               `json:"pv_count"`
+	TotalCapacity     float64           `json:"total_capacity_bytes"`
+	UsedCapacity      float64           `json:"used_capacity_bytes,omitempty"`
+	AvailableCapacity float64           `json:"available_capacity_bytes,omitempty"`
+	UsagePercentage   float64           `json:"usage_percentage,omitempty"`
+}
+
+// PVCInfo representa informações sobre um PVC
+type PVCInfo struct {
+	Name            string   `json:"name"`
+	Namespace       string   `json:"namespace"`
+	Status          string   `json:"status"`
+	StorageClass    string   `json:"storage_class"`
+	Capacity        float64  `json:"capacity_bytes"`
+	AccessModes     []string `json:"access_modes"`
+	BoundPV         string   `json:"bound_pv"`
+	NodeName        string   `json:"node_name,omitempty"`
+	UsedBytes       float64  `json:"used_bytes,omitempty"`
+	AvailableBytes  float64  `json:"available_bytes,omitempty"`
+	UsagePercentage float64  `json:"usage_percentage,omitempty"`
+}
+
+// StorageOverview representa uma visão geral do storage no cluster
+type StorageOverview struct {
+	StorageClasses []StorageClassInfo `json:"storage_classes"`
+	PVCs           []PVCInfo          `json:"pvcs"`
+	TotalPVs       int                `json:"total_pvs"`
+	TotalPVCs      int                `json:"total_pvcs"`
+	TotalCapacity  float64            `json:"total_capacity_bytes"`
+	UsedCapacity   float64            `json:"used_capacity_bytes"`
+}
+
+// GetNodePoolDiskMetrics retorna métricas de disco agregadas por node pool
+func (h *NodePoolHandler) GetNodePoolDiskMetrics(c *gin.Context) {
+	cluster := c.Query("cluster")
+	nodePoolName := c.Query("nodepool")
+
+	if cluster == "" {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETERS",
+				"message": "Parameter 'cluster' is required",
+			},
+		})
+		return
+	}
+
+	// Obter client do cluster
+	client, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "KUBERNETES_CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get Kubernetes client: %v", err),
+			},
+		})
+		return
+	}
+
+	// Listar todos os nodes
+	nodes, err := client.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "NODE_LIST_ERROR",
+				"message": fmt.Sprintf("Failed to list nodes: %v", err),
+			},
+		})
+		return
+	}
+
+	// Agrupar métricas por node pool
+	poolMetrics := make(map[string]*NodePoolDiskMetrics)
+
+	for _, node := range nodes.Items {
+		// Extrair nome do node pool das labels
+		nodePool, ok := node.Labels["agentpool"]
+		if !ok {
+			continue
+		}
+
+		// Filtrar por node pool se especificado
+		if nodePoolName != "" && nodePool != nodePoolName {
+			continue
+		}
+
+		// Calcular uso de disco (ephemeral-storage)
+		var totalBytes, usedBytes, availableBytes float64
+
+		// Buscar capacidade total do node
+		if capacity, ok := node.Status.Capacity["ephemeral-storage"]; ok {
+			totalBytes = float64(capacity.Value())
+		}
+
+		// Buscar espaço alocável (disponível para pods)
+		if allocatable, ok := node.Status.Allocatable["ephemeral-storage"]; ok {
+			availableBytes = float64(allocatable.Value())
+		}
+
+		// Calcular usado
+		usedBytes = totalBytes - availableBytes
+
+		// Determinar tipo de disco (efêmero ou persistente)
+		// Verificar se tem label indicando disco efêmero
+		isEphemeral := false
+		diskType := "Managed Disk"
+
+		// Azure AKS usa a anotação "storageprofile" ou verifica o tamanho do disco temporário
+		if storageProfile, ok := node.Labels["storageprofile"]; ok {
+			if storageProfile == "ephemeral" {
+				isEphemeral = true
+				diskType = "Ephemeral OS Disk"
+			}
+		} else if node.Labels["kubernetes.azure.com/ephemeral-os"] == "true" {
+			isEphemeral = true
+			diskType = "Ephemeral OS Disk"
+		}
+
+		// Criar métrica do node individual
+		nodeMetric := NodeDiskMetrics{
+			NodeName:       node.Name,
+			NodePoolName:   nodePool,
+			TotalBytes:     totalBytes,
+			UsedBytes:      usedBytes,
+			AvailableBytes: availableBytes,
+			UsagePercent:   0,
+			IsEphemeral:    isEphemeral,
+			DiskType:       diskType,
+		}
+
+		if totalBytes > 0 {
+			nodeMetric.UsagePercent = (usedBytes / totalBytes) * 100
+		}
+
+		// Agregar por node pool
+		if _, exists := poolMetrics[nodePool]; !exists {
+			poolMetrics[nodePool] = &NodePoolDiskMetrics{
+				NodePoolName: nodePool,
+				Nodes:        make([]NodeDiskMetrics, 0),
+			}
+		}
+
+		poolMetrics[nodePool].TotalBytes += totalBytes
+		poolMetrics[nodePool].UsedBytes += usedBytes
+		poolMetrics[nodePool].AvailableBytes += availableBytes
+		poolMetrics[nodePool].NodeCount++
+		poolMetrics[nodePool].Nodes = append(poolMetrics[nodePool].Nodes, nodeMetric)
+	}
+
+	// Recalcular percentual médio por pool
+	for _, metrics := range poolMetrics {
+		if metrics.TotalBytes > 0 {
+			metrics.UsagePercent = (metrics.UsedBytes / metrics.TotalBytes) * 100
+		}
+	}
+
+	// Converter map para slice
+	result := make([]NodePoolDiskMetrics, 0, len(poolMetrics))
+	for _, metrics := range poolMetrics {
+		result = append(result, *metrics)
+	}
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"data":    result,
+	})
+}
+
+// GetStorageOverview retorna informações sobre StorageClasses e PVs/PVCs do cluster
+func (h *NodePoolHandler) GetStorageOverview(c *gin.Context) {
+	cluster := c.Query("cluster")
+
+	if cluster == "" {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETERS",
+				"message": "Parameter 'cluster' is required",
+			},
+		})
+		return
+	}
+
+	// Obter client do cluster
+	client, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "KUBERNETES_CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get Kubernetes client: %v", err),
+			},
+		})
+		return
+	}
+
+	overview := StorageOverview{
+		StorageClasses: make([]StorageClassInfo, 0),
+		PVCs:           make([]PVCInfo, 0),
+	}
+
+	// Buscar StorageClasses
+	storageClasses, err := client.StorageV1().StorageClasses().List(context.Background(), metav1.ListOptions{})
+	if err == nil {
+		// Buscar todos os PVs para contar por StorageClass
+		pvs, pvErr := client.CoreV1().PersistentVolumes().List(context.Background(), metav1.ListOptions{})
+		pvCountByClass := make(map[string]int)
+		pvCapacityByClass := make(map[string]float64)
+
+		if pvErr == nil {
+			overview.TotalPVs = len(pvs.Items)
+			for _, pv := range pvs.Items {
+				if pv.Spec.StorageClassName != "" {
+					pvCountByClass[pv.Spec.StorageClassName]++
+					if capacity, ok := pv.Spec.Capacity["storage"]; ok {
+						bytes := float64(capacity.Value())
+						pvCapacityByClass[pv.Spec.StorageClassName] += bytes
+						overview.TotalCapacity += bytes
+					}
+				}
+			}
+		}
+
+		for _, sc := range storageClasses.Items {
+			scInfo := StorageClassInfo{
+				Name:           sc.Name,
+				Provisioner:    sc.Provisioner,
+				Parameters:     sc.Parameters,
+				PVCount:        pvCountByClass[sc.Name],
+				TotalCapacity:  pvCapacityByClass[sc.Name],
+				AllowExpansion: sc.AllowVolumeExpansion != nil && *sc.AllowVolumeExpansion,
+			}
+
+			if sc.ReclaimPolicy != nil {
+				scInfo.ReclaimPolicy = string(*sc.ReclaimPolicy)
+			}
+
+			if sc.VolumeBindingMode != nil {
+				scInfo.VolumeBindMode = string(*sc.VolumeBindingMode)
+			}
+
+			overview.StorageClasses = append(overview.StorageClasses, scInfo)
+		}
+	}
+
+	// Buscar PVCs de todos os namespaces
+	pvcs, err := client.CoreV1().PersistentVolumeClaims("").List(context.Background(), metav1.ListOptions{})
+	if err == nil {
+		overview.TotalPVCs = len(pvcs.Items)
+
+		// Buscar pods para associar PVCs aos nodes e obter métricas
+		pods, _ := client.CoreV1().Pods("").List(context.Background(), metav1.ListOptions{})
+		pvcToNode := make(map[string]string)    // namespace/pvcname -> nodename
+		pvcToPodName := make(map[string]string) // namespace/pvcname -> podname
+
+		for _, pod := range pods.Items {
+			if pod.Spec.NodeName != "" {
+				for _, vol := range pod.Spec.Volumes {
+					if vol.PersistentVolumeClaim != nil {
+						key := pod.Namespace + "/" + vol.PersistentVolumeClaim.ClaimName
+						pvcToNode[key] = pod.Spec.NodeName
+						pvcToPodName[key] = pod.Name
+					}
+				}
+			}
+		}
+
+		// Buscar métricas de uso via Prometheus
+		volumeMetrics := h.getVolumeMetricsFromPrometheus(cluster)
+
+		// Mapear uso por StorageClass
+		usedByStorageClass := make(map[string]float64)
+
+		for _, pvc := range pvcs.Items {
+			pvcInfo := PVCInfo{
+				Name:        pvc.Name,
+				Namespace:   pvc.Namespace,
+				Status:      string(pvc.Status.Phase),
+				AccessModes: make([]string, 0),
+			}
+
+			if pvc.Spec.StorageClassName != nil {
+				pvcInfo.StorageClass = *pvc.Spec.StorageClassName
+			}
+
+			if pvc.Spec.VolumeName != "" {
+				pvcInfo.BoundPV = pvc.Spec.VolumeName
+			}
+
+			// Capacidade
+			if capacity, ok := pvc.Status.Capacity["storage"]; ok {
+				pvcInfo.Capacity = float64(capacity.Value())
+			}
+
+			// Access modes
+			for _, mode := range pvc.Spec.AccessModes {
+				pvcInfo.AccessModes = append(pvcInfo.AccessModes, string(mode))
+			}
+
+			// Node associado
+			key := pvc.Namespace + "/" + pvc.Name
+			if nodeName, ok := pvcToNode[key]; ok {
+				pvcInfo.NodeName = nodeName
+			}
+
+			// Buscar métricas do Prometheus primeiro
+			metricsKey := pvc.Namespace + "/" + pvc.Name
+			if metric, hasMetrics := volumeMetrics[metricsKey]; hasMetrics {
+				pvcInfo.UsedBytes = metric.UsedBytes
+				pvcInfo.AvailableBytes = metric.AvailableBytes
+				pvcInfo.UsagePercentage = metric.UsagePercentage
+			} else {
+				// Fallback: verificar anotações
+				if usageAnnotation, hasAnnotation := pvc.Annotations["volume.kubernetes.io/storage-used"]; hasAnnotation {
+					if quantity, parseErr := resource.ParseQuantity(usageAnnotation); parseErr == nil {
+						pvcInfo.UsedBytes = float64(quantity.Value())
+						pvcInfo.AvailableBytes = pvcInfo.Capacity - pvcInfo.UsedBytes
+						if pvcInfo.Capacity > 0 {
+							pvcInfo.UsagePercentage = (pvcInfo.UsedBytes / pvcInfo.Capacity) * 100
+						}
+					}
+				}
+			}
+
+			// Acumular uso por StorageClass
+			if pvcInfo.UsedBytes > 0 && pvcInfo.StorageClass != "" {
+				usedByStorageClass[pvcInfo.StorageClass] += pvcInfo.UsedBytes
+				overview.UsedCapacity += pvcInfo.UsedBytes
+			}
+
+			overview.PVCs = append(overview.PVCs, pvcInfo)
+		}
+
+		// Atualizar uso nas StorageClasses
+		for i := range overview.StorageClasses {
+			if used, ok := usedByStorageClass[overview.StorageClasses[i].Name]; ok {
+				overview.StorageClasses[i].UsedCapacity = used
+				overview.StorageClasses[i].AvailableCapacity = overview.StorageClasses[i].TotalCapacity - used
+				if overview.StorageClasses[i].TotalCapacity > 0 {
+					overview.StorageClasses[i].UsagePercentage = (used / overview.StorageClasses[i].TotalCapacity) * 100
+				}
+			}
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"data":    overview,
+	})
+}
+
+// getVolumeMetricsFromPrometheus busca métricas de uso de volumes do Prometheus
+func (h *NodePoolHandler) getVolumeMetricsFromPrometheus(cluster string) map[string]VolumeMetric {
+	metrics := make(map[string]VolumeMetric)
+
+	// Criar cliente Prometheus
+	promClient, err := promclient.NewPrometheusClient(cluster)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("cluster", cluster).
+			Msg("Não foi possível criar cliente Prometheus para métricas de volumes")
+		return metrics
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Query para obter uso de volumes persistentes
+	// kubelet_volume_stats_used_bytes - bytes usados no volume
+	// kubelet_volume_stats_capacity_bytes - capacidade total do volume
+	queries := map[string]string{
+		"used":      `kubelet_volume_stats_used_bytes{persistentvolumeclaim!=""}`,
+		"capacity":  `kubelet_volume_stats_capacity_bytes{persistentvolumeclaim!=""}`,
+		"available": `kubelet_volume_stats_available_bytes{persistentvolumeclaim!=""}`,
+	}
+
+	// Buscar métricas de uso
+	usedResult, err := promClient.Query(ctx, queries["used"])
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("cluster", cluster).
+			Msg("Erro ao buscar métricas de uso de volumes do Prometheus")
+		return metrics
+	}
+
+	// Processar resultados
+	for _, result := range usedResult.Data.Result {
+		namespace := result.Metric["namespace"]
+		pvcName := result.Metric["persistentvolumeclaim"]
+
+		if namespace == "" || pvcName == "" {
+			continue
+		}
+
+		key := namespace + "/" + pvcName
+
+		// Extrair valor de bytes usados
+		if len(result.Value) >= 2 {
+			if usedStr, ok := result.Value[1].(string); ok {
+				if used, parseErr := strconv.ParseFloat(usedStr, 64); parseErr == nil {
+					metric := metrics[key]
+					metric.UsedBytes = used
+					metric.Namespace = namespace
+					metric.PVCName = pvcName
+					metrics[key] = metric
+				}
+			}
+		}
+	}
+
+	// Buscar capacidade total
+	capacityResult, err := promClient.Query(ctx, queries["capacity"])
+	if err == nil {
+		for _, result := range capacityResult.Data.Result {
+			namespace := result.Metric["namespace"]
+			pvcName := result.Metric["persistentvolumeclaim"]
+
+			if namespace == "" || pvcName == "" {
+				continue
+			}
+
+			key := namespace + "/" + pvcName
+
+			if len(result.Value) >= 2 {
+				if capacityStr, ok := result.Value[1].(string); ok {
+					if capacity, parseErr := strconv.ParseFloat(capacityStr, 64); parseErr == nil {
+						metric := metrics[key]
+						metric.CapacityBytes = capacity
+						metrics[key] = metric
+					}
+				}
+			}
+		}
+	}
+
+	// Buscar bytes disponíveis
+	availableResult, err := promClient.Query(ctx, queries["available"])
+	if err == nil {
+		for _, result := range availableResult.Data.Result {
+			namespace := result.Metric["namespace"]
+			pvcName := result.Metric["persistentvolumeclaim"]
+
+			if namespace == "" || pvcName == "" {
+				continue
+			}
+
+			key := namespace + "/" + pvcName
+
+			if len(result.Value) >= 2 {
+				if availableStr, ok := result.Value[1].(string); ok {
+					if available, parseErr := strconv.ParseFloat(availableStr, 64); parseErr == nil {
+						metric := metrics[key]
+						metric.AvailableBytes = available
+						metrics[key] = metric
+					}
+				}
+			}
+		}
+	}
+
+	// Calcular percentuais
+	for key, metric := range metrics {
+		if metric.CapacityBytes > 0 {
+			metric.UsagePercentage = (metric.UsedBytes / metric.CapacityBytes) * 100
+			metrics[key] = metric
+		}
+	}
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("volumes", len(metrics)).
+		Msg("Métricas de volumes obtidas do Prometheus")
+
+	return metrics
+}
+
+// VolumeMetric representa métricas de um volume
+type VolumeMetric struct {
+	Namespace       string
+	PVCName         string
+	UsedBytes       float64
+	CapacityBytes   float64
+	AvailableBytes  float64
+	UsagePercentage float64
 }

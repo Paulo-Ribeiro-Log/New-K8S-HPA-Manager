@@ -53,7 +53,7 @@ export const ConfigMapsTab = ({
   const [viewMode, setViewMode] = useState<"editor" | "diff">("editor");
   const [isValidating, setIsValidating] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
-  const [showLabels, setShowLabels] = useState(true);
+  const [showLabels, setShowLabels] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [diffModalOpen, setDiffModalOpen] = useState(false);
   const [diffHtml, setDiffHtml] = useState("");
@@ -100,7 +100,7 @@ export const ConfigMapsTab = ({
     setManifest(null);
     setEditorValue("");
     setOriginalYaml("");
-    setShowLabels(true);
+    setShowLabels(false);
     setViewMode("editor");
     setHistory([]);
     setHistoryIndex(-1);
@@ -158,7 +158,7 @@ export const ConfigMapsTab = ({
       setManifest(detail);
       const initialYaml = detail.yaml || "";
       setOriginalYaml(initialYaml);
-      setShowLabels(true);
+      setShowLabels(false);
       setViewMode("editor");
       
       // Restaurar histórico do cache se existir
@@ -559,6 +559,11 @@ export const ConfigMapsTab = ({
       }
     };
 
+    // Extrair versão dos labels (app.kubernetes.io/version ou version)
+    const appVersion = selectedConfigMap.labels?.["app.kubernetes.io/version"] ||
+                       selectedConfigMap.labels?.["version"] ||
+                       selectedConfigMap.labels?.["app.version"];
+
     return (
       <div className="space-y-3" onKeyDown={handleEditorKeyDown} tabIndex={-1}>
         <div className="flex items-start gap-4 text-xs border-b border-border/50 pb-2">
@@ -570,6 +575,12 @@ export const ConfigMapsTab = ({
             <span className="text-muted-foreground uppercase mb-0.5">Namespace</span>
             <span className="font-medium">{selectedConfigMap.namespace}</span>
           </div>
+          {appVersion && (
+            <div className="flex flex-col">
+              <span className="text-muted-foreground uppercase mb-0.5">Versão</span>
+              <span className="font-mono text-primary">{appVersion}</span>
+            </div>
+          )}
           <div className="flex flex-col">
             <span className="text-muted-foreground uppercase mb-0.5">ResourceVersion</span>
             <span className="font-mono">{selectedConfigMap.resourceVersion || "--"}</span>

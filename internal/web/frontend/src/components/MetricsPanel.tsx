@@ -1366,7 +1366,7 @@ export function MetricsPanel({
                   </Button>
                 </div>
                 <ResponsiveContainer width="100%" height={300}>
-                  <LineChart data={chartData} isAnimationActive={false}>
+                  <LineChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                     <XAxis
                       dataKey="time"
@@ -1776,8 +1776,7 @@ export function MetricsPanel({
                 <div onMouseDown={(e) => e.preventDefault()}>
                 <ResponsiveContainer width="100%" height={600}>
                   <LineChart 
-                    data={zoomedData} 
-                    isAnimationActive={false}
+                    data={zoomedData}
                     onMouseDown={handleMouseDown}
                     onMouseMove={handleMouseMove}
                     onMouseUp={handleMouseUp}

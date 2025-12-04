@@ -14,7 +14,9 @@ import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import CordonDrainConfigModal, { CordonDrainConfig } from "./CordonDrainConfigModal";
-import { formatVMSpecs, getVMSpecs } from "@/lib/azure-vm-specs";
+import NodePoolDiskDetailsModal from "./NodePoolDiskDetailsModal";
+import { formatVMSpecs, formatDiskSpecs, getVMSpecs } from "@/lib/azure-vm-specs";
+import { useNodePoolDiskMetrics } from "@/hooks/useNodePoolDiskMetrics";
 
 interface NodePoolEditorProps {
   nodePool: NodePool | null;
@@ -24,6 +26,17 @@ interface NodePoolEditorProps {
 
 export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorProps) => {
   const staging = useStaging();
+
+  // Buscar métricas de disco do node pool
+  // Adicionar sufixo -admin se não tiver (compatibilidade com kubeconfig)
+  const clusterWithAdmin = nodePool?.cluster_name
+    ? (nodePool.cluster_name.endsWith('-admin') ? nodePool.cluster_name : `${nodePool.cluster_name}-admin`)
+    : "";
+
+  const { metrics: diskMetrics, loading: diskMetricsLoading } = useNodePoolDiskMetrics(
+    clusterWithAdmin,
+    nodePool?.name
+  );
 
   // Refs for input fields to enable select-all behavior
   const nodeCountRef = useRef<HTMLInputElement>(null);
@@ -48,6 +61,9 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const [showCordonDrainModal, setShowCordonDrainModal] = useState(false);
   const [cordonDrainConfig, setCordonDrainConfig] = useState<CordonDrainConfig | null>(null);
   const [modalContext, setModalContext] = useState<'applyNow' | 'saveStaging'>('saveStaging');
+
+  // Disk details modal state
+  const [showDiskDetailsModal, setShowDiskDetailsModal] = useState(false);
 
   // Initialize form when nodePool changes or staging updates
   useEffect(() => {
@@ -352,13 +368,14 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           {(() => {
             const vmSpecs = getVMSpecs(nodePool.vm_size);
             const specsFormatted = formatVMSpecs(nodePool.vm_size);
+            const diskSpecsFormatted = formatDiskSpecs(nodePool.vm_size);
 
             if (vmSpecs && specsFormatted) {
               return (
                 <div className="pt-2 border-t">
                   <div className="flex items-start gap-2 text-sm">
                     <Info className="w-4 h-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-                    <div>
+                    <div className="w-full">
                       <p className="text-muted-foreground mb-1">Specifications</p>
                       <p className="font-medium text-primary">{specsFormatted}</p>
                       {vmSpecs.family && (
@@ -366,6 +383,39 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                       )}
                       {vmSpecs.description && (
                         <p className="text-xs text-muted-foreground mt-1">{vmSpecs.description}</p>
+                      )}
+                      {diskSpecsFormatted && (
+                        <div className="mt-2 pt-2 border-t border-border/50">
+                          <p className="text-xs text-muted-foreground mb-1">Disk Performance</p>
+                          <p className="text-xs font-medium">{diskSpecsFormatted}</p>
+                        </div>
+                      )}
+                      {diskMetrics && !diskMetricsLoading && (
+                        <div className="mt-2 pt-2 border-t border-border/50">
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-xs text-muted-foreground">Current Disk Usage ({diskMetrics.node_count} nodes)</p>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setShowDiskDetailsModal(true)}
+                              className="h-7 text-xs gap-1"
+                            >
+                              <HardDrive className="w-3 h-3" />
+                              Details
+                            </Button>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-xs">
+                              <span>Used: {(diskMetrics.used_bytes / (1024**3)).toFixed(1)} GiB</span>
+                              <span className={`font-medium ${
+                                diskMetrics.usage_percent > 80 ? 'text-destructive' :
+                                diskMetrics.usage_percent > 60 ? 'text-warning' : 'text-primary'
+                              }`}>
+                                {diskMetrics.usage_percent.toFixed(1)}%
+                              </span>
+                            </div>
+                          </div>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -649,6 +699,16 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         onOpenChange={setShowCordonDrainModal}
         onConfirm={handleCordonDrainConfirm}
         nodePoolName={nodePool.name}
+      />
+
+      {/* Disk Details Modal */}
+      <NodePoolDiskDetailsModal
+        open={showDiskDetailsModal}
+        onOpenChange={setShowDiskDetailsModal}
+        diskMetrics={diskMetrics}
+        loading={diskMetricsLoading}
+        vmSize={nodePool.vm_size}
+        cluster={clusterWithAdmin}
       />
     </div>
   );
