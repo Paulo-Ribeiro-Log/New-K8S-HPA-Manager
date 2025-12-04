@@ -11,6 +11,8 @@ import type {
   PrometheusResource,
   ConfigMapSummary,
   SecretSummary,
+  DeploymentSummary,
+  PodSummary,
 } from "@/lib/api/types";
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
@@ -269,7 +271,7 @@ export function useConfigMaps(cluster?: string, namespaces?: string[], showSyste
 
   const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
 
-  const fetchConfigMaps = async () => {
+  const fetchConfigMaps = async (bypassCache: boolean = false) => {
     if (!cluster) {
       setConfigMaps([]);
       return;
@@ -278,7 +280,7 @@ export function useConfigMaps(cluster?: string, namespaces?: string[], showSyste
     try {
       setLoading(true);
       setError(null);
-      const data = await apiClient.getConfigMaps(cluster, namespaces, undefined, showSystem);
+      const data = await apiClient.getConfigMaps(cluster, namespaces, undefined, showSystem, bypassCache);
       setConfigMaps(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch configmaps");
@@ -291,7 +293,9 @@ export function useConfigMaps(cluster?: string, namespaces?: string[], showSyste
     fetchConfigMaps();
   }, [cluster, namespaceKey, showSystem]);
 
-  return { configMaps, loading, error, refetch: fetchConfigMaps };
+  const refetch = () => fetchConfigMaps(true);
+
+  return { configMaps, loading, error, refetch };
 }
 
 export function useSecrets(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
@@ -301,7 +305,7 @@ export function useSecrets(cluster?: string, namespaces?: string[], showSystem: 
 
   const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
 
-  const fetchSecrets = async () => {
+  const fetchSecrets = async (bypassCache: boolean = false) => {
     if (!cluster) {
       setSecrets([]);
       return;
@@ -310,7 +314,7 @@ export function useSecrets(cluster?: string, namespaces?: string[], showSystem: 
     try {
       setLoading(true);
       setError(null);
-      const data = await apiClient.getSecrets(cluster, namespaces, showSystem);
+      const data = await apiClient.getSecrets(cluster, namespaces, showSystem, bypassCache);
       setSecrets(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch secrets");
@@ -323,7 +327,9 @@ export function useSecrets(cluster?: string, namespaces?: string[], showSystem: 
     fetchSecrets();
   }, [cluster, namespaceKey, showSystem]);
 
-  return { secrets, loading, error, refetch: fetchSecrets };
+  const refetch = () => fetchSecrets(true);
+
+  return { secrets, loading, error, refetch };
 }
 
 export function useDeployments(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
@@ -333,7 +339,7 @@ export function useDeployments(cluster?: string, namespaces?: string[], showSyst
 
   const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
 
-  const fetchDeployments = async () => {
+  const fetchDeployments = async (bypassCache: boolean = false) => {
     if (!cluster) {
       setDeployments([]);
       return;
@@ -342,7 +348,7 @@ export function useDeployments(cluster?: string, namespaces?: string[], showSyst
     try {
       setLoading(true);
       setError(null);
-      const data = await apiClient.getDeployments(cluster, namespaces, undefined, showSystem);
+      const data = await apiClient.getDeployments(cluster, namespaces, undefined, showSystem, bypassCache);
       setDeployments(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch deployments");
@@ -355,7 +361,43 @@ export function useDeployments(cluster?: string, namespaces?: string[], showSyst
     fetchDeployments();
   }, [cluster, namespaceKey, showSystem]);
 
-  return { deployments, loading, error, refetch: fetchDeployments };
+  const refetch = () => fetchDeployments(true);
+
+  return { deployments, loading, error, refetch };
+}
+
+export function usePods(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
+  const [pods, setPods] = useState<PodSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
+
+  const fetchPods = async (bypassCache: boolean = false) => {
+    if (!cluster) {
+      setPods([]);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await apiClient.getPods(cluster, namespaces, undefined, showSystem, bypassCache);
+      setPods(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch pods");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPods();
+  }, [cluster, namespaceKey, showSystem]);
+
+  const refetch = () => fetchPods(true);
+
+  return { pods, loading, error, refetch };
 }
 
 // CronJobs hooks
