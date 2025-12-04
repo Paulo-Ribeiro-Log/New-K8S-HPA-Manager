@@ -65,21 +65,21 @@ curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manag
 
 **Linux (amd64)**
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.6/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.1/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
 
 **macOS (Intel)**
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.6/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.1/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
 
 **macOS (Apple Silicon M1/M2)**
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.6/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.1/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
@@ -90,7 +90,7 @@ sudo mv new-k8s-hpa /usr/local/bin/
 Use **WSL2** (Windows Subsystem for Linux) para funcionalidade completa:
 ```bash
 # Dentro do WSL2 (Ubuntu)
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.0.6/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.1/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
@@ -103,7 +103,7 @@ sudo mv new-k8s-hpa /usr/local/bin/
 
 | Categoria | Tecnologias |
 |-----------|-------------|
-| **Backend** | Go 1.23+, Bubble Tea v0.24.2, Lipgloss v1.1.0 |
+| **Backend** | Go 1.24+, client-go v0.34, Azure SDK |
 | **Kubernetes** | client-go v0.31.4 (official) |
 | **Azure** | azcore v1.19.1, azidentity v1.12.0, Azure CLI |
 | **Frontend** | React 18.3, TypeScript 5.8, Vite 5.4 |
@@ -165,7 +165,7 @@ http://localhost:8080
 ## 📋 Requisitos
 
 ### Obrigatórios
-- **Go 1.23+** (para compilação)
+- **Go 1.24+** (para compilação)
 - **kubectl** configurado com acesso aos clusters
 - **Git** (para clone do repositório)
 
@@ -198,7 +198,7 @@ new-k8s-hpa
 - **[CLAUDE.md](CLAUDE.md)** - Guia completo de desenvolvimento
 - **[INSTRUCTIONS_RELEASE.md](INSTRUCTIONS_RELEASE.md)** - Como criar releases com binários pré-compilados
 - **[WINDOWS_SUPPORT.md](WINDOWS_SUPPORT.md)** - Limitações Windows e instalação via WSL2
-- **[RELEASE_NOTES_v1.0.6.md](RELEASE_NOTES_v1.0.6.md)** - Release notes da versão atual
+- **[GitHub Releases](https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases)** - Release notes e downloads
 
 ---
 
@@ -219,28 +219,27 @@ Após instalação via script, os seguintes utilitários ficam disponíveis em `
 
 ## 📦 Releases
 
-### v1.0.6 (2025-11-15) - **Versão Atual**
-- 🎉 **Sistema de Cordon/Drain para Node Pools**
-  - ✅ Cordon automático antes de drain (isola nodes de novos pods)
-  - ✅ Drain com validação de pods e timeout configurável
-  - ✅ Feedback visual em tempo real durante operação
+### v1.3.1 (2025-12-03) - **Versão Atual**
+- 🐛 **Correções Críticas**
+  - ✅ Corrigido erro de conflito ao aplicar edições em ConfigMaps
+  - ✅ Melhorias na estabilidade do editor de ConfigMaps
 
-- 🚀 **Sistema Completo de Releases**
-  - ✅ Script automatizado `create-release.sh` para publicar releases
-  - ✅ Suporte multi-plataforma (Linux amd64, macOS Intel, macOS ARM)
-  - ✅ Documentação completa em `INSTRUCTIONS_RELEASE.md`
-  - ✅ Detecção automática de versão via Git tags
-  - ✅ Upload automático de binários para GitHub
+- 🎨 **UI/UX Improvements**
+  - ✅ Gráfico de Memória: Linha corrente usa cor azul ao invés de roxo
+  - ✅ ConfigMaps/Secrets/Deployments: Labels iniciam recolhidos por padrão
+  - ✅ Campo "Versão" exibido quando disponível (app.kubernetes.io/version)
+  - ✅ Node Pools: Botão de refresh no painel "Available Node Pools"
+  - ✅ VM Disk Specs: Informações de performance de disco (IOPS, Throughput)
 
-- 📚 **Documentação Técnica**
-  - ✅ `WINDOWS_SUPPORT.md` - Explicação sobre limitações Windows e uso via WSL2
-  - ✅ `INSTRUCTIONS_RELEASE.md` - Guia completo para criar releases
-  - ✅ Templates de release notes com instruções de instalação
+- 📊 **Monitoramento e Alertas**
+  - ✅ Card de Cluster Contextual: Adapta-se ao contexto da aba
+  - ✅ Comparação Histórica D-1/D-2/D-3: Linha lilás nos gráficos
+  - ✅ Sistema de Alertas completo com filtro por período de tempo
+  - ✅ Navegação bidirecional: HPAs ↔ Monitoramento com 1 clique
 
-- ⚙️ **Melhorias Técnicas**
-  - ✅ Injeção de versão via `-ldflags` durante build
-  - ✅ Sistema de versionamento semântico via Git tags
-  - ✅ Testes de integração desabilitados no CI/CD (requerem cluster real)
+- ⚙️ **Tech Stack**
+  - ✅ Go 1.24+, client-go v0.34, Azure SDK
+  - ✅ React 18.3, TypeScript 5.8, Vite 5.4
 
 [Ver todas as releases](https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases)
 
