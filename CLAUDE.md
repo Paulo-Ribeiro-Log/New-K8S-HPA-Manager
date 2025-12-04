@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Interface **totalmente responsiva** - adapta-se a qualquer tamanho de terminal (recomendado: 80x24 ou maior).
+**IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 
 ---
 
@@ -97,7 +97,7 @@ k8s-hpa-manager/
 
 | Categoria | Tecnologia |
 |-----------|------------|
-| **Backend** | Go 1.23+, Bubble Tea, client-go, Azure SDK |
+| **Backend** | Go 1.24+, client-go v0.34, Azure SDK |
 | **Frontend** | React 18.3, TypeScript 5.8, Vite 5.4 |
 | **UI** | shadcn/ui, Tailwind CSS 3.4 |
 | **Arquitetura** | MVC, SSE (Server-Sent Events) |
@@ -145,9 +145,10 @@ k8s-hpa-manager/
 ```
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
 
-Versão: v1.3.1+ (Dez 2025)
-Tech: Go 1.23 + Bubble Tea (TUI) + React 18.3 (Web)
-Build: go build -o build/new-k8s-hpa && make web-build
+Repositório: git@github.com:Paulo-Ribeiro-Log/New-K8S-HPA-Manager.git
+Versão Atual: v1.3.1 (oficial - 2025-12-03)
+Tech: Go 1.24+ + React 18.3 (Web)
+Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
 Recent Updates (v1.3.1):
