@@ -66,7 +66,7 @@ export const PodsPanel = ({
 
     setLoading(true);
     try {
-      const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
+      const namespaceFilter = selectedNamespace && selectedNamespace !== "__all__" ? [selectedNamespace] : undefined;
       const data = await apiClient.getPods(cluster, namespaceFilter, undefined, showSystemNamespaces, true);
       setPods(data);
     } catch (err) {
@@ -198,12 +198,12 @@ export const PodsPanel = ({
         <div className="p-4 space-y-3">
           <div className="flex items-center gap-3 flex-wrap">
             {/* Select Namespace */}
-            <Select value={selectedNamespace} onValueChange={onNamespaceChange}>
+            <Select value={selectedNamespace || "__all__"} onValueChange={(value) => onNamespaceChange(value === "__all__" ? "" : value)}>
               <SelectTrigger className="w-64 bg-white dark:bg-slate-900">
                 <SelectValue placeholder="Selecione um namespace" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">Todos os namespaces</SelectItem>
+                <SelectItem value="__all__">Todos os namespaces</SelectItem>
                 {filteredNamespaces.map((ns) => (
                   <SelectItem key={ns.name} value={ns.name}>
                     {ns.name}
