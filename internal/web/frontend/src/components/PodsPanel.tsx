@@ -9,12 +9,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 
 import type { Namespace, PodSummary } from "@/lib/api/types";
 import { apiClient } from "@/lib/api/client";
@@ -47,6 +48,7 @@ export const PodsPanel = ({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deletingPod, setDeletingPod] = useState<PodSummary | null>(null);
   const [expandedLabels, setExpandedLabels] = useState(false);
+  const [yamlCopied, setYamlCopied] = useState(false);
 
   const filteredNamespaces = useMemo(() => {
     if (showSystemNamespaces) return namespaces;
@@ -112,6 +114,7 @@ export const PodsPanel = ({
     setPodYaml("");
     setPodLogs({});
     setExpandedLabels(false);
+    setYamlCopied(false);
 
     try {
       const manifest = await apiClient.getPod(pod.cluster, pod.namespace, pod.name);
@@ -122,6 +125,18 @@ export const PodsPanel = ({
     } finally {
       setYamlLoading(false);
     }
+  };
+
+  const handleCopyYaml = () => {
+    if (!podYaml) return;
+
+    navigator.clipboard.writeText(podYaml);
+    setYamlCopied(true);
+    toast.success("YAML copiado para a área de transferência");
+
+    setTimeout(() => {
+      setYamlCopied(false);
+    }, 2000);
   };
 
   const handleLoadLogs = async (containerName: string) => {
@@ -428,8 +443,8 @@ export const PodsPanel = ({
         </div>
 
         {/* Tabs: YAML + Logs */}
-        <Tabs defaultValue="yaml" className="flex-1 flex flex-col">
-          <TabsList className="mx-4 mt-2">
+        <Tabs defaultValue="yaml" className="flex-1 flex flex-col min-h-0">
+          <TabsList className="mx-4 mt-2 flex-shrink-0">
             <TabsTrigger value="yaml">YAML Manifest</TabsTrigger>
             <TabsTrigger value="logs">
               <Terminal className="w-4 h-4 mr-2" />
@@ -437,12 +452,42 @@ export const PodsPanel = ({
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="yaml" className="flex-1 m-4 mt-2">
-            <ScrollArea className="h-full border rounded-lg bg-muted/50">
-              <pre className="p-4 text-xs font-mono">
-                <code>{yamlLoading ? "Carregando..." : podYaml}</code>
-              </pre>
-            </ScrollArea>
+          <TabsContent value="yaml" className="flex-1 m-4 mt-2 min-h-0 flex flex-col space-y-2">
+            <div className="flex items-center justify-between flex-shrink-0">
+              <p className="text-sm font-medium">Manifesto YAML (Read-only)</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCopyYaml}
+                disabled={!podYaml || yamlLoading}
+              >
+                {yamlCopied ? (
+                  <>
+                    <Check className="w-4 h-4 mr-2" />
+                    Copiado!
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4 mr-2" />
+                    Copiar YAML
+                  </>
+                )}
+              </Button>
+            </div>
+
+            {yamlLoading ? (
+              <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+                Carregando manifest...
+              </div>
+            ) : (
+              <div className="flex-1 min-h-0">
+                <MonacoYamlEditor
+                  value={podYaml}
+                  onChange={() => {}} // Read-only
+                  readOnly={true}
+                />
+              </div>
+            )}
           </TabsContent>
 
           <TabsContent value="logs" className="flex-1 m-4 mt-2 overflow-y-auto">
