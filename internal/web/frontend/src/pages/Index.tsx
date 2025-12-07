@@ -25,6 +25,7 @@ import { ConfigMapsTab } from "@/components/ConfigMapsTab";
 import { SecretsTab } from "@/components/SecretsTab";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
 import { ContainersTab } from "@/components/ContainersTab";
+import { PodsPanel } from "@/components/PodsPanel";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
@@ -319,6 +320,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "secrets", label: "Secrets", icon: Key },
     { id: "deployments", label: "Deployments", icon: Package },
     { id: "containers", label: "Containers", icon: Box },
+    { id: "pods", label: "Pods", icon: Layers },
   ];
 
   // Filtrar namespaces
@@ -681,6 +683,20 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="Containers Tab">
             <ContainersTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
+        );
+
+      case "pods":
+        return (
+          <ErrorBoundary componentName="Pods Panel">
+            <PodsPanel
               cluster={selectedCluster}
               namespaces={namespaces}
               selectedNamespace={selectedNamespace}

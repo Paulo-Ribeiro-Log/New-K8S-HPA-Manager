@@ -146,6 +146,19 @@ k8s-hpa-manager/
   - Backend: Queries Prometheus agregadas por namespace (`sum by (namespace)`)
   - Endpoint: `GET /api/v1/namespaces/:cluster/metrics?limit=5`
   - Graceful degradation: estado de erro elegante quando Prometheus inacessível
+✅ **Aba Pods (v1.3.3)** - Gerenciamento completo de Pods Kubernetes
+  - Listagem de pods com filtros por namespace, search, system pods
+  - Status visual com badges coloridos (Running/Pending/Failed/CrashLoopBackOff)
+  - Indicadores de restart count com alertas visuais (>3 restarts)
+  - Informações de containers: estado, imagem, restarts, ready status
+  - Labels colapsáveis por pod
+  - Modal de detalhes com 2 tabs: YAML Manifest + Logs
+  - Logs de containers individuais (tail 500 linhas)
+  - Botão "Delete Pod" com confirmação
+  - Auto-refresh a cada 30 segundos
+  - Backend: Endpoints já existiam em `internal/web/handlers/pods.go`
+  - API: `GET /pods?cluster=...&namespaces=...`, `GET /pods/:cluster/:namespace/:name`, `DELETE /pods/:cluster/:namespace/:name`, `GET /pods/:cluster/:namespace/:name/logs`
+  - Componente: `PodsPanel.tsx` (estilo ConfigMaps/Secrets/Deployments)
 
 ---
 
@@ -156,22 +169,29 @@ k8s-hpa-manager/
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
 
 Repositório: git@github.com:Paulo-Ribeiro-Log/New-K8S-HPA-Manager.git
-Versão Atual: v1.3.2+ (em desenvolvimento)
+Versão Atual: v1.3.3+ (em desenvolvimento)
 Tech: Go 1.24+ + React 18.3 (Web)
 Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
-Recent Updates (v1.3.2):
-- Dashboard por Namespace: Card "Top 5 Namespaces por Consumo" no Dashboard
-  - Grid 3 colunas lado a lado: CPU Usage | Memory Usage | Top 5 Namespaces
-  - Tabs interativas: CPU (millicores), Memory (GB), Pods (count)
-  - Barras de progresso coloridas: verde (0-50%), amarelo (50-75%), vermelho (75-100%)
-  - Seção "Outros" com soma de namespaces fora do Top 5
-  - Auto-refresh a cada 60s + botão manual de refresh
-  - Backend: PrometheusClient.GetNamespaceMetrics() com queries agregadas
-  - Endpoint: GET /api/v1/namespaces/:cluster/metrics?limit=5
-  - Componente: TopNamespacesCard (compacto, mesmo tamanho dos gauges)
-  - Graceful degradation quando Prometheus inacessível
+Recent Updates (v1.3.3):
+- Aba Pods: Nova aba para gerenciamento completo de Pods Kubernetes
+  - Listagem com filtros (namespace, search, system pods)
+  - Status visual: badges coloridos (Running/Pending/Failed/CrashLoopBackOff)
+  - Indicadores de restart count com alertas (>3 restarts)
+  - Container info: estado, imagem, restarts, ready status
+  - Labels colapsáveis por pod
+  - Modal de detalhes: YAML Manifest + Logs (tail 500)
+  - Delete Pod com confirmação
+  - Auto-refresh a cada 30s
+  - Backend: internal/web/handlers/pods.go (já existia)
+  - API: GET /pods, GET /pods/:cluster/:namespace/:name, DELETE, GET logs
+  - Componente: PodsPanel.tsx
+
+- Dashboard por Namespace (v1.3.2): Card "Top 5 Namespaces por Consumo"
+  - Grid 3 colunas: CPU | Memory | Top 5 NS
+  - Tabs: CPU (millicores), Memory (GB), Pods (count)
+  - Prometheus agregado: sum by (namespace)
 ```
 
 **Ver documentação completa:**
