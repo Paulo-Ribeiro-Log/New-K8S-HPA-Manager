@@ -612,3 +612,26 @@ export interface HPAHealth {
   score?: number; // 0-100
   recommendations?: string[];
 }
+
+// Namespace Metrics Types
+export interface NamespaceMetrics {
+  namespace: string;
+  cpu_request_millis: number;
+  cpu_usage_millis: number;
+  cpu_percent_of_cluster: number;
+  memory_request_gb: number;
+  memory_usage_gb: number;
+  memory_percent_of_cluster: number;
+  pod_count: number;
+  pod_percent_of_cluster: number;
+}
+
+export interface TopNamespacesResponse {
+  top_cpu: NamespaceMetrics[];
+  top_memory: NamespaceMetrics[];
+  top_pods: NamespaceMetrics[];
+  cpu_others: NamespaceMetrics;
+  memory_others: NamespaceMetrics;
+  pods_others: NamespaceMetrics;
+  total_namespaces: number;
+}

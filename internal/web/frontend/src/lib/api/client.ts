@@ -37,6 +37,8 @@ import type {
   PodManifest,
   VersionInfo,
   SequenceExecuteRequest,
+  TopNamespacesResponse,
+  NamespaceMetrics,
 } from "./types";
 
 const API_BASE_URL = "/api/v1";
@@ -133,6 +135,13 @@ class APIClient {
       `/namespaces${query}`
     );
     return response.data || [];
+  }
+
+  async getNamespaceMetrics(cluster: string, limit: number = 5): Promise<TopNamespacesResponse> {
+    const response = await this.request<APIResponse<TopNamespacesResponse>>(
+      `/namespaces/${encodeURIComponent(cluster)}/metrics?limit=${limit}`
+    );
+    return response.data;
   }
 
   // HPAs

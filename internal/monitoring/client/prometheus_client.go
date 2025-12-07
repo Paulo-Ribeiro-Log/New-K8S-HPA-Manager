@@ -722,6 +722,188 @@ func (c *PrometheusClient) GetHPAHistoricalMetricsWithOffset(ctx context.Context
 	return historicalMetrics, nil
 }
 
+// NamespaceMetrics representa métricas agregadas de um namespace
+type NamespaceMetrics struct {
+	Namespace           string  `json:"namespace"`
+	CPURequestMillis    int64   `json:"cpu_request_millis"`
+	CPUUsageMillis      int64   `json:"cpu_usage_millis"`
+	CPUPercentOfCluster float64 `json:"cpu_percent_of_cluster"`
+	MemoryRequestGB     float64 `json:"memory_request_gb"`
+	MemoryUsageGB       float64 `json:"memory_usage_gb"`
+	MemoryPercentOfCluster float64 `json:"memory_percent_of_cluster"`
+	PodCount            int     `json:"pod_count"`
+	PodPercentOfCluster float64 `json:"pod_percent_of_cluster"`
+}
+
+// GetNamespaceMetrics busca métricas agregadas por namespace
+func (c *PrometheusClient) GetNamespaceMetrics(ctx context.Context) ([]NamespaceMetrics, error) {
+	log.Info().Msg("Buscando métricas agregadas por namespace")
+
+	metrics := make([]NamespaceMetrics, 0)
+
+	// Query para CPU Request por namespace (em cores, converter para millicores)
+	cpuRequestQuery := `sum by (namespace) (kube_pod_container_resource_requests{resource="cpu"})`
+	cpuRequestResult, err := c.Query(ctx, cpuRequestQuery)
+	if err != nil {
+		log.Error().Err(err).Msg("Erro ao buscar CPU request por namespace")
+		return nil, fmt.Errorf("erro ao buscar CPU request: %w", err)
+	}
+
+	// Query para CPU Usage por namespace (em cores/s, converter para millicores)
+	cpuUsageQuery := `sum by (namespace) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m]))`
+	cpuUsageResult, err := c.Query(ctx, cpuUsageQuery)
+	if err != nil {
+		log.Warn().Err(err).Msg("Erro ao buscar CPU usage por namespace (continuando)")
+	}
+
+	// Query para Memory Request por namespace (em bytes, converter para GB)
+	memoryRequestQuery := `sum by (namespace) (kube_pod_container_resource_requests{resource="memory"})`
+	memoryRequestResult, err := c.Query(ctx, memoryRequestQuery)
+	if err != nil {
+		log.Error().Err(err).Msg("Erro ao buscar Memory request por namespace")
+		return nil, fmt.Errorf("erro ao buscar Memory request: %w", err)
+	}
+
+	// Query para Memory Usage por namespace (em bytes, converter para GB)
+	memoryUsageQuery := `sum by (namespace) (container_memory_working_set_bytes{container!="",container!="POD"})`
+	memoryUsageResult, err := c.Query(ctx, memoryUsageQuery)
+	if err != nil {
+		log.Warn().Err(err).Msg("Erro ao buscar Memory usage por namespace (continuando)")
+	}
+
+	// Query para contagem de Pods por namespace
+	podCountQuery := `count by (namespace) (kube_pod_info)`
+	podCountResult, err := c.Query(ctx, podCountQuery)
+	if err != nil {
+		log.Error().Err(err).Msg("Erro ao buscar Pod count por namespace")
+		return nil, fmt.Errorf("erro ao buscar Pod count: %w", err)
+	}
+
+	// Calcular totais do cluster para percentuais
+	var totalCPURequest, totalCPUUsage, totalMemoryRequest, totalMemoryUsage float64
+	var totalPods int
+
+	// Processar CPU Request
+	namespaceData := make(map[string]*NamespaceMetrics)
+
+	for _, result := range cpuRequestResult.Data.Result {
+		namespace := result.Metric["namespace"]
+		if namespace == "" {
+			continue
+		}
+
+		value := parseFloat(fmt.Sprintf("%v", result.Value[1]))
+		totalCPURequest += value
+
+		if _, exists := namespaceData[namespace]; !exists {
+			namespaceData[namespace] = &NamespaceMetrics{Namespace: namespace}
+		}
+		namespaceData[namespace].CPURequestMillis = int64(value * 1000) // Converter cores para millicores
+	}
+
+	// Processar CPU Usage
+	if cpuUsageResult != nil {
+		for _, result := range cpuUsageResult.Data.Result {
+			namespace := result.Metric["namespace"]
+			if namespace == "" {
+				continue
+			}
+
+			value := parseFloat(fmt.Sprintf("%v", result.Value[1]))
+			totalCPUUsage += value
+
+			if _, exists := namespaceData[namespace]; !exists {
+				namespaceData[namespace] = &NamespaceMetrics{Namespace: namespace}
+			}
+			namespaceData[namespace].CPUUsageMillis = int64(value * 1000)
+		}
+	}
+
+	// Processar Memory Request
+	for _, result := range memoryRequestResult.Data.Result {
+		namespace := result.Metric["namespace"]
+		if namespace == "" {
+			continue
+		}
+
+		value := parseFloat(fmt.Sprintf("%v", result.Value[1]))
+		totalMemoryRequest += value
+
+		if _, exists := namespaceData[namespace]; !exists {
+			namespaceData[namespace] = &NamespaceMetrics{Namespace: namespace}
+		}
+		namespaceData[namespace].MemoryRequestGB = value / 1024 / 1024 / 1024 // Converter bytes para GB
+	}
+
+	// Processar Memory Usage
+	if memoryUsageResult != nil {
+		for _, result := range memoryUsageResult.Data.Result {
+			namespace := result.Metric["namespace"]
+			if namespace == "" {
+				continue
+			}
+
+			value := parseFloat(fmt.Sprintf("%v", result.Value[1]))
+			totalMemoryUsage += value
+
+			if _, exists := namespaceData[namespace]; !exists {
+				namespaceData[namespace] = &NamespaceMetrics{Namespace: namespace}
+			}
+			namespaceData[namespace].MemoryUsageGB = value / 1024 / 1024 / 1024
+		}
+	}
+
+	// Processar Pod Count
+	for _, result := range podCountResult.Data.Result {
+		namespace := result.Metric["namespace"]
+		if namespace == "" {
+			continue
+		}
+
+		value := int(parseFloat(fmt.Sprintf("%v", result.Value[1])))
+		totalPods += value
+
+		if _, exists := namespaceData[namespace]; !exists {
+			namespaceData[namespace] = &NamespaceMetrics{Namespace: namespace}
+		}
+		namespaceData[namespace].PodCount = value
+	}
+
+	// Calcular percentuais
+	for _, data := range namespaceData {
+		if totalCPURequest > 0 {
+			data.CPUPercentOfCluster = (float64(data.CPURequestMillis) / 1000 / totalCPURequest) * 100
+		}
+		if totalMemoryRequest > 0 {
+			data.MemoryPercentOfCluster = (data.MemoryRequestGB * 1024 * 1024 * 1024 / totalMemoryRequest) * 100
+		}
+		if totalPods > 0 {
+			data.PodPercentOfCluster = (float64(data.PodCount) / float64(totalPods)) * 100
+		}
+
+		metrics = append(metrics, *data)
+	}
+
+	log.Info().
+		Int("namespace_count", len(metrics)).
+		Float64("total_cpu_cores", totalCPURequest).
+		Float64("total_memory_gb", totalMemoryRequest/1024/1024/1024).
+		Int("total_pods", totalPods).
+		Msg("Métricas de namespace coletadas")
+
+	return metrics, nil
+}
+
+// parseFloat helper para converter interface{} para float64
+func parseFloat(value string) float64 {
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		log.Warn().Str("value", value).Msg("Erro ao parsear float")
+		return 0
+	}
+	return f
+}
+
 // Close fecha o cliente (cleanup de recursos)
 func (c *PrometheusClient) Close() error {
 	c.httpClient.CloseIdleConnections()
