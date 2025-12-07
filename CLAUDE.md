@@ -136,6 +136,16 @@ k8s-hpa-manager/
   - ConfigMaps/Secrets/Deployments: Labels iniciam recolhidos, campo "Versão" exibido quando disponível (app.kubernetes.io/version)
   - Node Pools: Botão de refresh adicionado no painel "Available Node Pools" para atualizar dados do Azure AKS
   - VM Disk Specs: Exibe informações de performance de disco (Temp Disk, Max Disks, IOPS, Throughput) no Node Pool Editor
+✅ **Dashboard por Namespace (v1.3.2)** - Visibilidade granular de consumo de recursos
+  - Card "Top 5 Namespaces por Consumo" no Dashboard principal
+  - Grid 3 colunas: CPU Usage | Memory Usage | Top 5 Namespaces (lado a lado)
+  - Tabs interativas: CPU (millicores), Memory (GB), Pods (count)
+  - Barras de progresso coloridas: verde (0-50%), amarelo (50-75%), vermelho (75-100%)
+  - Seção "Outros" com soma de namespaces fora do Top 5
+  - Auto-refresh a cada 60 segundos + botão manual de refresh
+  - Backend: Queries Prometheus agregadas por namespace (`sum by (namespace)`)
+  - Endpoint: `GET /api/v1/namespaces/:cluster/metrics?limit=5`
+  - Graceful degradation: estado de erro elegante quando Prometheus inacessível
 
 ---
 
@@ -146,37 +156,22 @@ k8s-hpa-manager/
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
 
 Repositório: git@github.com:Paulo-Ribeiro-Log/New-K8S-HPA-Manager.git
-Versão Atual: v1.3.1 (oficial - 2025-12-03)
+Versão Atual: v1.3.2+ (em desenvolvimento)
 Tech: Go 1.24+ + React 18.3 (Web)
 Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
-Recent Updates (v1.3.1):
-- UI/UX: Gráfico de memória corrigido (azul vs roxo), labels recolhidos por padrão em ConfigMaps/Secrets/Deployments
-- ConfigMaps/Secrets/Deployments: Campo "Versão" exibe app.kubernetes.io/version quando disponível
-- Node Pools: Botão de refresh no painel "Available Node Pools" busca dados atualizados do Azure AKS
-  - Fix: Correção de erros TypeScript em Index.tsx (sequencedNodePools.find com sequence_order)
-- VM Disk Specs: Exibe performance de disco (Temp Disk, Max Disks, IOPS, Throughput) no Node Pool Editor
-  - Interface VMSpec estendida com tempDiskGiB, maxDataDisks, maxIOPS, maxThroughputMBps
-  - Função formatDiskSpecs() formata informações com emojis e unidades legíveis
-  - Specs adicionadas para séries Dsv3, Dsv5, Esv3 (VMs mais comuns)
-- Card de Cluster Contextual: Dashboard mostra total de clusters, outras abas mostram contexto + versão K8s
-  - Componente ClusterContextCard mantém estrutura visual dos StatsCards
-  - Hook useClusterInfo busca informações via API /clusters/info
-  - Truncate com tooltip para nomes longos, refetch automático a cada 60s
-- Comparação Histórica D-1/D-2/D-3: Linha lilás nos gráficos permite comparar métricas atuais com 1, 2 ou 3 dias atrás
-  - Backend: Parâmetro days_offset (1-3) na API /monitoring/v2/metrics com validação
-  - Frontend: Select com labels descritivas, refetch automático ao trocar período
-  - UX: Nome da linha dinâmico (ex: "CPU D-2 (48h atrás)"), opacidade sutil (0.2-0.3)
-- Gráfico de Réplicas Corrigido: Backend retorna `replicas_current` corretamente (monitoring_v2.go:452)
-- Sistema de Alertas Completo: Exibe TODOS os alertas ativos (removido filtro restritivo de nomes)
-- Alertas Filtrados por Tempo: Botão de alertas respeita seletor de tempo no painel "Análise de Métricas"
-- Navegação Bidirecional: HPAs ↔ Monitoramento com 1 clique (⚙️ monitora HPA, "Edit HPA" edita)
-- Prometheus URL Fix: Corrigido erro HTTP 500 em endpoints de alertas (remoção de sufixo -admin)
-- Métricas Prometheus CORRIGIDAS: CPU/Memória histórica agora usam avg() ao invés de sum() (0-100%)
-- AlertsDialog Aprimorado: Card de contexto destacado com extração inteligente de HPA/Pod/Container
-- VM Specs: Exibe vCPUs e memória no Node Pool Editor (150+ Azure VMs catalogadas)
-- Notificações In-App Clicáveis: Sistema web com navegação contextual para AlertsDialog
+Recent Updates (v1.3.2):
+- Dashboard por Namespace: Card "Top 5 Namespaces por Consumo" no Dashboard
+  - Grid 3 colunas lado a lado: CPU Usage | Memory Usage | Top 5 Namespaces
+  - Tabs interativas: CPU (millicores), Memory (GB), Pods (count)
+  - Barras de progresso coloridas: verde (0-50%), amarelo (50-75%), vermelho (75-100%)
+  - Seção "Outros" com soma de namespaces fora do Top 5
+  - Auto-refresh a cada 60s + botão manual de refresh
+  - Backend: PrometheusClient.GetNamespaceMetrics() com queries agregadas
+  - Endpoint: GET /api/v1/namespaces/:cluster/metrics?limit=5
+  - Componente: TopNamespacesCard (compacto, mesmo tamanho dos gauges)
+  - Graceful degradation quando Prometheus inacessível
 ```
 
 **Ver documentação completa:**

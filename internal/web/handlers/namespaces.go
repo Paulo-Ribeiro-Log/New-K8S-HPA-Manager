@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 	"k8s-hpa-manager/internal/config"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
+	"k8s-hpa-manager/internal/monitoring/client"
 )
 
 // NamespaceHandler gerencia requisições relacionadas a namespaces
@@ -76,5 +79,163 @@ func (h *NamespaceHandler) List(c *gin.Context) {
 		"success": true,
 		"data":    response,
 		"count":   len(response),
+	})
+}
+
+// GetMetrics retorna métricas agregadas por namespace (Top N namespaces por CPU, Memory, Pods)
+// GET /api/v1/namespaces/:cluster/metrics?limit=5&sort_by=cpu
+func (h *NamespaceHandler) GetMetrics(c *gin.Context) {
+	cluster := c.Param("cluster")
+	limit := 5 // Top 5 por padrão
+	sortBy := c.DefaultQuery("sort_by", "cpu") // cpu, memory, pods
+
+	if cluster == "" {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Parameter 'cluster' is required",
+			},
+		})
+		return
+	}
+
+	log.Info().
+		Str("cluster", cluster).
+		Str("sort_by", sortBy).
+		Int("limit", limit).
+		Msg("Buscando métricas agregadas por namespace")
+
+	// Criar cliente Prometheus para o cluster
+	promClient, err := client.NewPrometheusClient(cluster)
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("cluster", cluster).
+			Msg("Erro ao criar cliente Prometheus")
+
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "PROMETHEUS_CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to create Prometheus client: %v", err),
+			},
+		})
+		return
+	}
+	defer promClient.Close()
+
+	// Buscar métricas de todos os namespaces
+	metrics, err := promClient.GetNamespaceMetrics(c.Request.Context())
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("cluster", cluster).
+			Msg("Erro ao buscar métricas de namespace")
+
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "METRICS_ERROR",
+				"message": fmt.Sprintf("Failed to fetch namespace metrics: %v", err),
+			},
+		})
+		return
+	}
+
+	// Ordenar por CPU request (padrão)
+	sortByCPU := func(metrics []client.NamespaceMetrics) []client.NamespaceMetrics {
+		sort.Slice(metrics, func(i, j int) bool {
+			return metrics[i].CPURequestMillis > metrics[j].CPURequestMillis
+		})
+		return metrics
+	}
+
+	sortByMemory := func(metrics []client.NamespaceMetrics) []client.NamespaceMetrics {
+		sort.Slice(metrics, func(i, j int) bool {
+			return metrics[i].MemoryRequestGB > metrics[j].MemoryRequestGB
+		})
+		return metrics
+	}
+
+	sortByPods := func(metrics []client.NamespaceMetrics) []client.NamespaceMetrics {
+		sort.Slice(metrics, func(i, j int) bool {
+			return metrics[i].PodCount > metrics[j].PodCount
+		})
+		return metrics
+	}
+
+	// Criar cópias para cada ordenação
+	topCPU := make([]client.NamespaceMetrics, len(metrics))
+	topMemory := make([]client.NamespaceMetrics, len(metrics))
+	topPods := make([]client.NamespaceMetrics, len(metrics))
+
+	copy(topCPU, metrics)
+	copy(topMemory, metrics)
+	copy(topPods, metrics)
+
+	topCPU = sortByCPU(topCPU)
+	topMemory = sortByMemory(topMemory)
+	topPods = sortByPods(topPods)
+
+	// Limitar ao Top N
+	if len(topCPU) > limit {
+		topCPU = topCPU[:limit]
+	}
+	if len(topMemory) > limit {
+		topMemory = topMemory[:limit]
+	}
+	if len(topPods) > limit {
+		topPods = topPods[:limit]
+	}
+
+	// Calcular "Others" (soma de todos os namespaces fora do Top N)
+	calculateOthers := func(allMetrics []client.NamespaceMetrics, topN []client.NamespaceMetrics) client.NamespaceMetrics {
+		topNamesMap := make(map[string]bool)
+		for _, m := range topN {
+			topNamesMap[m.Namespace] = true
+		}
+
+		others := client.NamespaceMetrics{
+			Namespace: "Outros",
+		}
+
+		for _, m := range allMetrics {
+			if !topNamesMap[m.Namespace] {
+				others.CPURequestMillis += m.CPURequestMillis
+				others.MemoryRequestGB += m.MemoryRequestGB
+				others.PodCount += m.PodCount
+				others.CPUPercentOfCluster += m.CPUPercentOfCluster
+				others.MemoryPercentOfCluster += m.MemoryPercentOfCluster
+				others.PodPercentOfCluster += m.PodPercentOfCluster
+			}
+		}
+
+		return others
+	}
+
+	cpuOthers := calculateOthers(metrics, topCPU)
+	memoryOthers := calculateOthers(metrics, topMemory)
+	podsOthers := calculateOthers(metrics, topPods)
+
+	log.Info().
+		Int("total_namespaces", len(metrics)).
+		Int("top_cpu_count", len(topCPU)).
+		Int("top_memory_count", len(topMemory)).
+		Int("top_pods_count", len(topPods)).
+		Msg("Métricas de namespace processadas")
+
+	// Retornar resposta com Top N + Others
+	c.JSON(200, gin.H{
+		"success": true,
+		"data": gin.H{
+			"top_cpu":           topCPU,
+			"top_memory":        topMemory,
+			"top_pods":          topPods,
+			"cpu_others":        cpuOthers,
+			"memory_others":     memoryOthers,
+			"pods_others":       podsOthers,
+			"total_namespaces":  len(metrics),
+		},
 	})
 }

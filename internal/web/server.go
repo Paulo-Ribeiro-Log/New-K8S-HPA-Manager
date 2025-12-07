@@ -284,6 +284,7 @@ func (s *Server) setupRoutes() {
 	// Namespaces
 	namespaceHandler := handlers.NewNamespaceHandler(s.kubeManager)
 	api.GET("/namespaces", namespaceHandler.List)
+	api.GET("/namespaces/:cluster/metrics", namespaceHandler.GetMetrics) // NOVO: Métricas agregadas por namespace
 
 	// HPAs
 	hpaHandler := handlers.NewHPAHandler(s.kubeManager, s.historyTracker)
