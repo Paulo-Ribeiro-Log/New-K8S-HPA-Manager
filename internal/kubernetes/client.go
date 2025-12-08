@@ -2715,3 +2715,17 @@ func (c *Client) canDisruptPods(pdb *policyv1.PodDisruptionBudget, affectedPods 
 
 	return true, ""
 }
+
+// ExecuteKubectlDescribe executa kubectl describe para um recurso
+func ExecuteKubectlDescribe(cluster, resourceType, name, namespace string) (string, error) {
+	cmd := exec.Command("kubectl", "describe", resourceType, name,
+		"--context", cluster,
+		"--namespace", namespace)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("kubectl describe failed: %w - %s", err, string(output))
+	}
+
+	return string(output), nil
+}

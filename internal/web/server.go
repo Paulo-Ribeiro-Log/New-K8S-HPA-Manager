@@ -323,6 +323,7 @@ func (s *Server) setupRoutes() {
 	{
 		configMaps.GET("", configMapHandler.List)
 		configMaps.GET("/:cluster/:namespace/:name", configMapHandler.Get)
+		configMaps.GET("/:cluster/:namespace/:name/describe", configMapHandler.Describe)
 		configMaps.POST("/diff", configMapHandler.Diff)
 		configMaps.POST("/validate", configMapHandler.Validate)
 		configMaps.PUT("/:cluster/:namespace/:name", configMapHandler.Apply)
@@ -334,6 +335,7 @@ func (s *Server) setupRoutes() {
 	{
 		deployments.GET("", deploymentHandler.List)
 		deployments.GET("/:cluster/:namespace/:name", deploymentHandler.Get)
+		deployments.GET("/:cluster/:namespace/:name/describe", deploymentHandler.Describe)
 		deployments.POST("/diff", deploymentHandler.Diff)
 		deployments.POST("/validate", deploymentHandler.Validate)
 		deployments.PUT("/:cluster/:namespace/:name", deploymentHandler.Apply)
@@ -345,7 +347,9 @@ func (s *Server) setupRoutes() {
 	{
 		pods.GET("", podHandler.List)
 		pods.GET("/:cluster/:namespace/:name", podHandler.Get)
+		pods.GET("/:cluster/:namespace/:name/describe", podHandler.Describe)
 		pods.DELETE("/:cluster/:namespace/:name", podHandler.Delete)
+		pods.POST("/:cluster/:namespace/:name/restart", podHandler.Restart)
 		pods.GET("/:cluster/:namespace/:name/logs", podHandler.GetLogs)
 	}
 
@@ -355,6 +359,7 @@ func (s *Server) setupRoutes() {
 	{
 		secrets.GET("", secretHandler.List)
 		secrets.GET("/:cluster/:namespace/:name", secretHandler.Get)
+		secrets.GET("/:cluster/:namespace/:name/describe", secretHandler.Describe)
 		secrets.POST("/diff", secretHandler.Diff)
 		secrets.POST("/validate", secretHandler.Validate)
 		secrets.PUT("/:cluster/:namespace/:name", secretHandler.Apply)

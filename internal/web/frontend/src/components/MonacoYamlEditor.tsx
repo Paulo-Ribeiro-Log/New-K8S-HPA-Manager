@@ -69,6 +69,33 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
     tabSize: 2,
     formatOnPaste: true,
     formatOnType: true,
+    fontSize: 13,
+    lineHeight: 20,
+    fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace",
+    fontLigatures: true,
+    cursorBlinking: "smooth" as const,
+    cursorSmoothCaretAnimation: "on" as const,
+    smoothScrolling: true,
+    scrollbar: {
+      vertical: "visible" as const,
+      horizontal: "visible" as const,
+      useShadows: true,
+      verticalScrollbarSize: 14,
+      horizontalScrollbarSize: 14,
+    },
+    renderWhitespace: "selection" as const,
+    renderLineHighlight: "all" as const,
+    lineNumbers: "on" as const,
+    glyphMargin: true,
+    folding: true,
+    foldingHighlight: true,
+    showFoldingControls: "mouseover" as const,
+    matchBrackets: "always" as const,
+    colorDecorators: true,
+    suggest: {
+      showIcons: true,
+      showSnippets: true,
+    },
   };
 
   return (

@@ -935,8 +935,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps, Secrets, Deployments e Containers */}
-      {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps, Secrets, Deployments, Containers e Pods */}
+      {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (

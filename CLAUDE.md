@@ -153,12 +153,36 @@ k8s-hpa-manager/
   - Informações de containers: estado, imagem, restarts, ready status
   - Labels colapsáveis por pod
   - Modal de detalhes com 2 tabs: YAML Manifest + Logs
-  - Logs de containers individuais (tail 500 linhas)
+  - Logs de containers individuais (tail 500 linhas) com **syntax highlighting**
   - Botão "Delete Pod" com confirmação
   - Auto-refresh a cada 30 segundos
   - Backend: Endpoints já existiam em `internal/web/handlers/pods.go`
   - API: `GET /pods?cluster=...&namespaces=...`, `GET /pods/:cluster/:namespace/:name`, `DELETE /pods/:cluster/:namespace/:name`, `GET /pods/:cluster/:namespace/:name/logs`
   - Componente: `PodsPanel.tsx` (estilo ConfigMaps/Secrets/Deployments)
+✅ **Aba Containers (v1.3.3)** - Visualização dedicada de containers
+  - Painel esquerdo: Lista de pods + containers (tree view)
+  - Painel direito: Logs + Detalhes do container selecionado
+  - Botão "Labels" movido para painel direito (Container Logs & Details)
+  - Auto-refresh de logs a cada 3 segundos (opcional)
+  - Download de logs como arquivo .txt
+  - Componente: `ContainersTab.tsx`
+✅ **UX Improvements - Pods/Containers (v1.3.3)**
+  - **Métricas inline**: Layout horizontal "RESTARTS: 3  CPU/R: 800m  CPU/L: 1" (ao invés de grid vertical)
+  - **Badge de versão**: Extrai versão da imagem do container (ex: nginx:1.21.0 → "1.21.0")
+  - **Log highlighting com estilos inline**: Colorização automática de logs
+    - ❌ ERROR/FATAL/EXCEPTION: Vermelho (#f87171) com fundo e borda vermelha
+    - ⚠️ WARN/WARNING: Amarelo/Laranja (#fbbf24) com fundo e borda
+    - ℹ️ INFO: Azul claro (#60a5fa)
+    - 🔍 DEBUG/TRACE: Roxo (#c084fc) com fonte menor
+    - ✅ SUCCESS/COMPLETED: Verde (#4ade80)
+    - 🔴 HTTP 4xx/5xx: Laranja (#fb923c) com fundo
+    - HTTP 2xx/3xx: Verde claro (#86efac)
+  - **YAML Fullscreen Modal**: Botão "Expandir" no painel YAML (estilo ConfigMaps) com Monaco Editor
+  - **kubectl describe**: Botão "Describe" em todas as abas (Pods, ConfigMaps, Secrets, Deployments)
+    - Backend: Executa `kubectl describe {resourceType} {name}` via `internal/kubernetes/client.go:ExecuteKubectlDescribe()`
+    - API: `GET /api/v1/{resource}/:cluster/:namespace/:name/describe`
+    - Handlers: `configmaps.go`, `secrets.go`, `deployments.go`, `pods.go`
+    - Frontend: Modal com ScrollArea exibindo output completo do kubectl describe
 
 ---
 
@@ -175,18 +199,14 @@ Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
 Recent Updates (v1.3.3):
-- Aba Pods: Nova aba para gerenciamento completo de Pods Kubernetes
+- Aba Pods/Containers: Gerenciamento completo de Pods e Containers Kubernetes
   - Listagem com filtros (namespace, search, system pods)
-  - Status visual: badges coloridos (Running/Pending/Failed/CrashLoopBackOff)
-  - Indicadores de restart count com alertas (>3 restarts)
-  - Container info: estado, imagem, restarts, ready status
-  - Labels colapsáveis por pod
-  - Modal de detalhes: YAML Manifest + Logs (tail 500)
-  - Delete Pod com confirmação
-  - Auto-refresh a cada 30s
-  - Backend: internal/web/handlers/pods.go (já existia)
-  - API: GET /pods, GET /pods/:cluster/:namespace/:name, DELETE, GET logs
-  - Componente: PodsPanel.tsx
+  - Métricas inline, badge de versão extraído da imagem
+  - Log highlighting com cores (ERROR vermelho, WARN amarelo, INFO azul, etc)
+  - YAML fullscreen modal + kubectl describe integrado
+- kubectl describe: Implementado em todas as abas (Pods, ConfigMaps, Secrets, Deployments)
+  - Backend: `ExecuteKubectlDescribe()` em `internal/kubernetes/client.go`
+  - API: `GET /api/v1/{resource}/:cluster/:namespace/:name/describe`
 
 - Dashboard por Namespace (v1.3.2): Card "Top 5 Namespaces por Consumo"
   - Grid 3 colunas: CPU | Memory | Top 5 NS

@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 
@@ -61,6 +61,9 @@ export const DeploymentsTab = ({
   const [diffFullScreen, setDiffFullScreen] = useState(false);
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
   const [editorFullScreen, setEditorFullScreen] = useState(false);
+  const [describeModalOpen, setDescribeModalOpen] = useState(false);
+  const [describeContent, setDescribeContent] = useState("");
+  const [describeLoading, setDescribeLoading] = useState(false);
 
   // Undo/Redo history with persistent cache
   const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
@@ -370,6 +373,24 @@ export const DeploymentsTab = ({
   const confirmApplyChanges = async () => {
     setApplyConfirmOpen(false);
     await handleApply();
+  };
+
+  const handleViewDescribe = async () => {
+    if (!selectedDeployment) return;
+
+    setDescribeLoading(true);
+    setDescribeModalOpen(true);
+    try {
+      const result = await apiClient.describeDeployment(selectedDeployment.cluster, selectedDeployment.namespace, selectedDeployment.name);
+      setDescribeContent(result.describe);
+    } catch (err) {
+      toast.error("Erro ao buscar describe", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+      setDescribeContent("Error loading describe");
+    } finally {
+      setDescribeLoading(false);
+    }
   };
 
   const collapseButton = (
@@ -682,6 +703,15 @@ export const DeploymentsTab = ({
           </div>
 
           <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleViewDescribe}
+              disabled={!selectedDeployment}
+            >
+              <FileText className="w-4 h-4 mr-1" />
+              Describe
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -1142,6 +1172,27 @@ export const DeploymentsTab = ({
       {renderDiffDialog()}
       {renderEditorFullScreen()}
       {renderApplyConfirmDialog()}
+
+      {/* Modal Describe */}
+      <Dialog open={describeModalOpen} onOpenChange={setDescribeModalOpen}>
+        <DialogContent className="max-w-6xl max-h-[90vh]">
+          <DialogHeader>
+            <DialogTitle>Kubectl Describe - {selectedDeployment?.name}</DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">
+              {selectedDeployment?.namespace}/{selectedDeployment?.name}
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="h-[70vh]">
+            {describeLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            ) : (
+              <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
+            )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
     </>
   );
 };

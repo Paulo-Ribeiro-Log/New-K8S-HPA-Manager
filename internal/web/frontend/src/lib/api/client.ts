@@ -289,6 +289,13 @@ class APIClient {
     return response.data;
   }
 
+  async describeConfigMap(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/configmaps/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
+  }
+
   // Secrets API Methods
   async getSecrets(cluster: string, namespaces?: string[], showSystem?: boolean, bypassCache: boolean = false): Promise<SecretSummary[]> {
     const params = new URLSearchParams();
@@ -375,6 +382,13 @@ class APIClient {
       throw new Error("Aplicação sem retorno");
     }
     return response.data;
+  }
+
+  async describeSecret(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
   }
 
   // Deployments API Methods
@@ -471,6 +485,13 @@ class APIClient {
     return response.data;
   }
 
+  async describeDeployment(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
+  }
+
   // Pods/Containers API Methods
   async getPods(
     cluster?: string,
@@ -523,6 +544,16 @@ class APIClient {
     return response.data || { success: false, message: "Unknown error" };
   }
 
+  async restartPod(cluster: string, namespace: string, name: string): Promise<{ success: boolean; message: string; hasOwner: boolean; ownerKind?: string }> {
+    const response = await this.request<APIResponse<{ success: boolean; message: string; hasOwner: boolean; ownerKind?: string }>>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/restart`,
+      {
+        method: "POST",
+      }
+    );
+    return response.data || { success: false, message: "Unknown error", hasOwner: false };
+  }
+
   async getPodLogs(
     cluster: string,
     namespace: string,
@@ -533,12 +564,19 @@ class APIClient {
     const params = new URLSearchParams();
     if (containerName) params.append("container", containerName);
     if (tailLines) params.append("tail", tailLines.toString());
-    
+
     const query = params.toString() ? `?${params.toString()}` : "";
     const response = await this.request<APIResponse<{ logs: string }>>(
       `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}/logs${query}`
     );
     return response.data || { logs: "" };
+  }
+
+  async describePod(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
   }
 
   async updateHPA(
