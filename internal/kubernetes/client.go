@@ -241,21 +241,21 @@ func copyStringMap(in map[string]string) map[string]string {
 // formatAge formata a idade de um recurso em formato legível (exibe as 2 unidades mais significativas)
 func formatAge(t time.Time) string {
 	duration := time.Since(t)
-	
+
 	totalSeconds := int(duration.Seconds())
-	
+
 	years := totalSeconds / (365 * 24 * 3600)
 	remainingAfterYears := totalSeconds % (365 * 24 * 3600)
-	
+
 	days := remainingAfterYears / (24 * 3600)
 	remainingAfterDays := remainingAfterYears % (24 * 3600)
-	
+
 	hours := remainingAfterDays / 3600
 	remainingAfterHours := remainingAfterDays % 3600
-	
+
 	minutes := remainingAfterHours / 60
 	seconds := remainingAfterHours % 60
-	
+
 	// Exibir as 2 unidades mais significativas
 	if years > 0 {
 		if days > 0 {
