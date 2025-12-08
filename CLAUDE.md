@@ -153,7 +153,7 @@ k8s-hpa-manager/
     - Top 5 Namespaces por Pods (count)
     - Seção "Outros" agregando namespaces fora do Top 5
   - **Detalhes do Namespace**: Ao selecionar namespace, exibe painel com:
-    - Metadados: Nome, Cluster, Status, Age
+    - Metadados: Nome, Cluster, Status (Phase do namespace), Age (formato compacto: 2d5h, 30m, 45s)
     - Monaco YAML Editor (tema VS Code) com **edição completa e persistente**
     - **Sistema de edição avançado** (copiado de ConfigMaps):
       - ✅ Undo/Redo com histórico de 50 versões (cache persistente por namespace)
