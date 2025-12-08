@@ -473,7 +473,7 @@ func (h *NamespaceHandler) Apply(c *gin.Context) {
 	}
 
 	kubeClient := kubeclient.NewClient(clientset, cluster)
-	
+
 	// Aplicar namespace
 	_, err = kubeClient.ApplyNamespace(c.Request.Context(), req.YAML, req.FieldManager, name, req.DryRun)
 	if err != nil {

@@ -959,14 +959,14 @@ func AggressiveDrainOptions() *DrainOptions {
 // CordonDrainConfig representa a configuração de Cordon/Drain para Node Pools
 // Usado tanto na interface web quanto nas sessões salvas
 type CordonDrainConfig struct {
-	CordonEnabled    bool `json:"cordon_enabled"`     // Habilitar CORDON (marca nodes como unschedulable)
-	DrainEnabled     bool `json:"drain_enabled"`      // Habilitar DRAIN (evacua pods dos nodes)
-	GracePeriod      int  `json:"grace_period"`       // Tempo de espera antes de forçar término (padrão: 300s)
-	Timeout          int  `json:"timeout"`            // Timeout máximo para drain (padrão: 600s)
-	ForceDelete      bool `json:"force_delete"`       // ⚠️ Ignora PodDisruptionBudget (perigoso!)
-	IgnoreDaemonSets bool `json:"ignore_daemonsets"`  // Ignora DaemonSets durante drain (padrão: true)
-	DeleteEmptyDir   bool `json:"delete_emptydir"`    // Deleta volumes EmptyDir durante drain
-	ChunkSize        int  `json:"chunk_size"`         // Pods evacuados simultaneamente (padrão: 5)
+	CordonEnabled    bool `json:"cordon_enabled"`    // Habilitar CORDON (marca nodes como unschedulable)
+	DrainEnabled     bool `json:"drain_enabled"`     // Habilitar DRAIN (evacua pods dos nodes)
+	GracePeriod      int  `json:"grace_period"`      // Tempo de espera antes de forçar término (padrão: 300s)
+	Timeout          int  `json:"timeout"`           // Timeout máximo para drain (padrão: 600s)
+	ForceDelete      bool `json:"force_delete"`      // ⚠️ Ignora PodDisruptionBudget (perigoso!)
+	IgnoreDaemonSets bool `json:"ignore_daemonsets"` // Ignora DaemonSets durante drain (padrão: true)
+	DeleteEmptyDir   bool `json:"delete_emptydir"`   // Deleta volumes EmptyDir durante drain
+	ChunkSize        int  `json:"chunk_size"`        // Pods evacuados simultaneamente (padrão: 5)
 }
 
 // DefaultCordonDrainConfig retorna configuração segura padrão
