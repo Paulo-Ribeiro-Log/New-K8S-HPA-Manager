@@ -253,14 +253,6 @@ export const ContainersTab = ({
       >
         {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
       </Button>
-      <Button
-        variant={showLabels ? "secondary" : "outline"}
-        size="sm"
-        onClick={() => setShowLabels(!showLabels)}
-        title={showLabels ? "Ocultar labels" : "Mostrar labels"}
-      >
-        {showLabels ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Labels
-      </Button>
       <Button variant="outline" size="sm" onClick={refreshPods} disabled={!cluster || loading}>
         <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
       </Button>
@@ -604,6 +596,17 @@ export const ContainersTab = ({
     </div>
   );
 
+  const rightTitleAction = selectedPod ? (
+    <Button
+      variant={showLabels ? "secondary" : "outline"}
+      size="sm"
+      onClick={() => setShowLabels(!showLabels)}
+      title={showLabels ? "Ocultar labels" : "Mostrar labels"}
+    >
+      {showLabels ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Labels
+    </Button>
+  ) : undefined;
+
   return (
     <SplitView
       leftPanel={{
@@ -612,7 +615,8 @@ export const ContainersTab = ({
         content: leftPanel,
       }}
       rightPanel={{
-        title: selectedPod ? "Pod Details" : "Container Logs & Details",
+        title: selectedPod ? "Container Logs & Details" : "Container Logs & Details",
+        titleAction: rightTitleAction,
         content: rightPanel,
       }}
     />

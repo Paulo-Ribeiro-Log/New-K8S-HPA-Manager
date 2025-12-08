@@ -384,3 +384,31 @@ func deploymentToHistoryMap(dep *appsv1.Deployment) map[string]interface{} {
 		"readyReplicas":   dep.Status.ReadyReplicas,
 	}
 }
+
+// Describe retorna a saída do kubectl describe para um Deployment
+func (h *DeploymentHandler) Describe(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cluster, namespace e name são obrigatórios"})
+		return
+	}
+
+	// Executar kubectl describe
+	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "deployment", name, namespace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("Erro ao executar kubectl describe: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"cluster":   cluster,
+		"namespace": namespace,
+		"name":      name,
+		"describe":  output,
+	})
+}

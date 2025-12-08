@@ -9,12 +9,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 
 import type { Namespace, PodSummary } from "@/lib/api/types";
@@ -47,13 +52,104 @@ export const PodsPanel = ({
   const [logsLoading, setLogsLoading] = useState<Record<string, boolean>>({});
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deletingPod, setDeletingPod] = useState<PodSummary | null>(null);
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
+  const [restartingPod, setRestartingPod] = useState<PodSummary | null>(null);
   const [expandedLabels, setExpandedLabels] = useState(false);
   const [yamlCopied, setYamlCopied] = useState(false);
+  const [logsModalOpen, setLogsModalOpen] = useState(false);
+  const [selectedContainerForLogs, setSelectedContainerForLogs] = useState<string>("");
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isAutoRefreshingLogs, setIsAutoRefreshingLogs] = useState(false);
+  const [yamlFullScreen, setYamlFullScreen] = useState(false);
+  const [describeModalOpen, setDescribeModalOpen] = useState(false);
+  const [describeContent, setDescribeContent] = useState("");
+  const [describeLoading, setDescribeLoading] = useState(false);
 
   const filteredNamespaces = useMemo(() => {
     if (showSystemNamespaces) return namespaces;
     return namespaces.filter((ns) => !ns.isSystem);
   }, [namespaces, showSystemNamespaces]);
+
+  // Helper: Extrair versão da imagem do container
+  const extractImageVersion = (image: string): string => {
+    // Extract version from image string (e.g., "nginx:1.21.0" -> "1.21.0")
+    const parts = image.split(':');
+    if (parts.length > 1) {
+      // Get the part after the last ':'
+      const versionPart = parts[parts.length - 1];
+      // If it contains '/', get the part after '/' (for registry paths like gcr.io/project/image:v1.0.0)
+      const slashIndex = versionPart.lastIndexOf('/');
+      return slashIndex >= 0 ? versionPart.substring(slashIndex + 1) : versionPart;
+    }
+    return 'latest';
+  };
+
+  // Helper: Processar e colorir logs
+  const processLogLine = (line: string, index: number) => {
+    const lowerLine = line.toLowerCase();
+
+    // Detectar nível do log e aplicar estilo inline para garantir
+    let style: React.CSSProperties = { color: '#d1d5db' }; // Default gray
+    let bgStyle: React.CSSProperties = {};
+    let icon = null;
+
+    // ERROR - Vermelho intenso com background
+    if (lowerLine.includes("error") || lowerLine.includes("fatal") || lowerLine.includes("exception") || lowerLine.includes("fail")) {
+      style = { color: '#f87171', fontWeight: 600 };
+      bgStyle = { backgroundColor: 'rgba(127, 29, 29, 0.3)', borderLeft: '4px solid #ef4444', paddingLeft: '8px' };
+      icon = "❌";
+    }
+    // WARN - Amarelo/Laranja
+    else if (lowerLine.includes("warn") || lowerLine.includes("warning") || lowerLine.includes("deprecated")) {
+      style = { color: '#fbbf24', fontWeight: 500 };
+      bgStyle = { backgroundColor: 'rgba(113, 63, 18, 0.2)', borderLeft: '4px solid #f59e0b', paddingLeft: '8px' };
+      icon = "⚠️";
+    }
+    // INFO - Azul claro
+    else if (lowerLine.includes("info") || lowerLine.includes("information")) {
+      style = { color: '#60a5fa' };
+      icon = "ℹ️";
+    }
+    // DEBUG - Roxo/Magenta
+    else if (lowerLine.includes("debug") || lowerLine.includes("trace")) {
+      style = { color: '#c084fc', fontSize: '10px' };
+      icon = "🔍";
+    }
+    // SUCCESS - Verde
+    else if (lowerLine.includes("success") || lowerLine.includes("completed") || lowerLine.includes("done")) {
+      style = { color: '#4ade80' };
+      icon = "✅";
+    }
+    // HTTP Status codes
+    else if (lowerLine.match(/\b[45]\d{2}\b/)) { // 4xx ou 5xx
+      style = { color: '#fb923c' };
+      bgStyle = { backgroundColor: 'rgba(124, 45, 18, 0.2)', borderLeft: '2px solid #f97316', paddingLeft: '8px' };
+      icon = "🔴";
+    }
+    else if (lowerLine.match(/\b[23]\d{2}\b/)) { // 2xx ou 3xx
+      style = { color: '#86efac' };
+    }
+
+    return (
+      <div key={index} style={{ ...bgStyle, paddingTop: '2px', paddingBottom: '2px', lineHeight: '1.6' }}>
+        <span style={style}>
+          {icon && <span style={{ marginRight: '8px', display: 'inline-block', width: '16px' }}>{icon}</span>}
+          {line}
+        </span>
+      </div>
+    );
+  };
+
+  // Renderizar logs com highlight
+  const renderHighlightedLogs = (logs: string) => {
+    if (!logs) return null;
+    const lines = logs.split('\n');
+    return (
+      <div className="text-xs font-mono">
+        {lines.map((line, index) => processLogLine(line, index))}
+      </div>
+    );
+  };
 
   useEffect(() => {
     if (!selectedNamespace) return;
@@ -63,27 +159,51 @@ export const PodsPanel = ({
     }
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
-  const fetchPods = async () => {
+  const fetchPods = async (silent = false) => {
     if (!cluster) return;
 
-    setLoading(true);
+    if (!silent) {
+      setLoading(true);
+    }
     try {
       const namespaceFilter = selectedNamespace && selectedNamespace !== "__all__" ? [selectedNamespace] : undefined;
       const data = await apiClient.getPods(cluster, namespaceFilter, undefined, showSystemNamespaces, true);
       setPods(data);
+
+      // Se há um pod selecionado, atualizar seus dados sem perder a seleção
+      if (silent && selectedPod) {
+        const updatedPod = data.find(
+          (p) => p.name === selectedPod.name && p.namespace === selectedPod.namespace
+        );
+        if (updatedPod) {
+          setSelectedPod(updatedPod);
+
+          // Atualizar YAML silenciosamente também
+          try {
+            const manifest = await apiClient.getPod(updatedPod.cluster, updatedPod.namespace, updatedPod.name);
+            setPodYaml(manifest.yaml);
+          } catch (err) {
+            // Erro silencioso - não mostra toast
+          }
+        }
+      }
     } catch (err) {
-      toast.error("Erro ao carregar Pods", {
-        description: err instanceof Error ? err.message : "Erro desconhecido",
-      });
+      if (!silent) {
+        toast.error("Erro ao carregar Pods", {
+          description: err instanceof Error ? err.message : "Erro desconhecido",
+        });
+      }
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
     fetchPods();
-    // Auto-refresh a cada 30 segundos
-    const interval = setInterval(fetchPods, 30000);
+    // Auto-refresh silencioso a cada 30 segundos
+    const interval = setInterval(() => fetchPods(true), 30000);
     return () => clearInterval(interval);
   }, [cluster, selectedNamespace, showSystemNamespaces]);
 
@@ -115,6 +235,12 @@ export const PodsPanel = ({
     setPodLogs({});
     setExpandedLabels(false);
     setYamlCopied(false);
+
+    // Inicia auto-refresh de logs automaticamente
+    if (pod.containers.length > 0) {
+      setSelectedContainerForLogs(pod.containers[0].name);
+      setIsAutoRefreshingLogs(true);
+    }
 
     try {
       const manifest = await apiClient.getPod(pod.cluster, pod.namespace, pod.name);
@@ -179,6 +305,82 @@ export const PodsPanel = ({
     }
   };
 
+  const handleRestartPod = async () => {
+    if (!restartingPod) return;
+
+    try {
+      const result = await apiClient.restartPod(restartingPod.cluster, restartingPod.namespace, restartingPod.name);
+
+      if (!result.hasOwner) {
+        toast.warning("Pod reiniciado (sem owner)", {
+          description: "ATENÇÃO: Este pod não tem owner e NÃO será recriado automaticamente.",
+        });
+      } else {
+        toast.success(result.message);
+      }
+
+      setRestartConfirmOpen(false);
+      setRestartingPod(null);
+      if (selectedPod?.name === restartingPod.name && selectedPod?.namespace === restartingPod.namespace) {
+        setSelectedPod(null);
+      }
+      fetchPods();
+    } catch (err) {
+      toast.error("Erro ao reiniciar Pod", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    }
+  };
+
+  const handleDownloadLogs = (containerName: string) => {
+    const logs = podLogs[containerName];
+    if (!logs || !selectedPod) return;
+
+    const blob = new Blob([logs], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${selectedPod.name}_${containerName}_logs.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    toast.success(`Logs do container ${containerName} baixados`);
+  };
+
+  const handleViewDescribe = async () => {
+    if (!selectedPod) return;
+
+    setDescribeLoading(true);
+    setDescribeModalOpen(true);
+    try {
+      const result = await apiClient.describePod(selectedPod.cluster, selectedPod.namespace, selectedPod.name);
+      setDescribeContent(result.describe);
+    } catch (err) {
+      toast.error("Erro ao buscar describe", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+      setDescribeContent("Error loading describe");
+    } finally {
+      setDescribeLoading(false);
+    }
+  };
+
+  // Auto-refresh de logs a cada 3 segundos quando habilitado
+  useEffect(() => {
+    if (!isAutoRefreshingLogs || !selectedContainerForLogs || !selectedPod) return;
+
+    // Carrega imediatamente ao iniciar
+    handleLoadLogs(selectedContainerForLogs);
+
+    const interval = setInterval(() => {
+      handleLoadLogs(selectedContainerForLogs);
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [isAutoRefreshingLogs, selectedContainerForLogs, selectedPod]);
+
   const getPhaseColor = (phase: string) => {
     switch (phase.toLowerCase()) {
       case "running":
@@ -229,6 +431,17 @@ export const PodsPanel = ({
     </Select>
   );
 
+  const collapseButton = (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+      title={isSidebarCollapsed ? "Mostrar painel de Pods" : "Ocultar painel de Pods"}
+    >
+      {isSidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+    </Button>
+  );
+
   const leftTitleAction = (
     <div className="flex items-center gap-2 flex-wrap">
       {namespaceSelector}
@@ -240,24 +453,42 @@ export const PodsPanel = ({
       >
         {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
       </Button>
-      <Button variant="outline" size="sm" onClick={fetchPods} disabled={!cluster || loading}>
+      <Button variant="outline" size="sm" onClick={() => fetchPods()} disabled={!cluster || loading}>
         <RefreshCcw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} /> Atualizar
       </Button>
+      {collapseButton}
     </div>
   );
 
   const rightTitleAction = selectedPod && (
-    <Button
-      variant="destructive"
-      size="sm"
-      onClick={() => {
-        setDeletingPod(selectedPod);
-        setDeleteConfirmOpen(true);
-      }}
-    >
-      <Trash2 className="w-4 h-4 mr-2" />
-      Deletar Pod
-    </Button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon">
+          <MoreVertical className="w-4 h-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem
+          onClick={() => {
+            setRestartingPod(selectedPod);
+            setRestartConfirmOpen(true);
+          }}
+        >
+          <RotateCw className="w-4 h-4 mr-2" />
+          Restart Pod
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            setDeletingPod(selectedPod);
+            setDeleteConfirmOpen(true);
+          }}
+          className="text-destructive focus:text-destructive"
+        >
+          <Trash2 className="w-4 h-4 mr-2" />
+          Deletar Pod
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 
   const renderPodList = () => {
@@ -349,15 +580,43 @@ export const PodsPanel = ({
       ? new Date(selectedPod.createdAt).toLocaleString()
       : "--";
 
+    // Calcular AGE
+    const calculateAge = (createdAt: string) => {
+      if (!createdAt) return "N/A";
+      const created = new Date(createdAt);
+      const now = new Date();
+      const diffMs = now.getTime() - created.getTime();
+      const diffMinutes = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMinutes / 60);
+      const diffDays = Math.floor(diffHours / 24);
+
+      if (diffDays > 0) return `${diffDays}d`;
+      if (diffHours > 0) return `${diffHours}h`;
+      if (diffMinutes > 0) return `${diffMinutes}m`;
+      return "agora";
+    };
+
+    const age = calculateAge(selectedPod.createdAt);
+
     return (
       <div className="flex flex-col h-full">
         {/* Header */}
         <div className="border-b border-border p-4 space-y-3">
           <div>
             <h3 className="font-semibold text-lg">{selectedPod.name}</h3>
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-sm text-muted-foreground">Namespace:</span>
-              <span className="text-sm font-mono">{selectedPod.namespace}</span>
+            <div className="flex items-center gap-4 mt-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Namespace:</span>
+                <span className="text-sm font-mono">{selectedPod.namespace}</span>
+              </div>
+              {selectedPod.containers.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Versão:</span>
+                  <Badge variant="outline" className="text-xs font-mono">
+                    {extractImageVersion(selectedPod.containers[0].image)}
+                  </Badge>
+                </div>
+              )}
             </div>
           </div>
 
@@ -367,6 +626,19 @@ export const PodsPanel = ({
               <span className="text-muted-foreground">Status:</span>
               <Badge variant="outline" className={`ml-2 ${getPhaseColor(selectedPod.phase)}`}>
                 {selectedPod.phase}
+              </Badge>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Ready:</span>
+              <Badge
+                variant="outline"
+                className={`ml-2 ${
+                  selectedPod.readyContainers === selectedPod.totalContainers
+                    ? "bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20"
+                    : "bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20"
+                }`}
+              >
+                {selectedPod.readyContainers}/{selectedPod.totalContainers}
               </Badge>
             </div>
             <div>
@@ -380,6 +652,25 @@ export const PodsPanel = ({
             <div>
               <span className="text-muted-foreground">Criado em:</span>
               <span className="ml-2 text-xs">{createdAt}</span>
+            </div>
+          </div>
+
+          {/* Recursos e Métricas */}
+          <div className="border border-border/50 rounded-lg p-3 bg-muted/20">
+            <div className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wide">
+              Recursos e Métricas
+            </div>
+            <div className="space-y-2 text-xs">
+              <div className="flex items-center gap-6">
+                <span className="text-muted-foreground font-medium">RESTARTS: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.restarts}</span></span>
+                <span className="text-muted-foreground font-medium">CPU/R: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.cpuRequest || "N/A"}</span></span>
+                <span className="text-muted-foreground font-medium">CPU/L: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.cpuLimit || "N/A"}</span></span>
+              </div>
+              <div className="flex items-center gap-6">
+                <span className="text-muted-foreground font-medium">AGE: <span className="font-mono font-semibold text-foreground ml-1">{age}</span></span>
+                <span className="text-muted-foreground font-medium">MEM/R: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.memoryRequest || "N/A"}</span></span>
+                <span className="text-muted-foreground font-medium">MEM/L: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.memoryLimit || "N/A"}</span></span>
+              </div>
             </div>
           </div>
 
@@ -442,81 +733,64 @@ export const PodsPanel = ({
           )}
         </div>
 
-        {/* Tabs: YAML + Logs */}
-        <Tabs defaultValue="yaml" className="flex-1 flex flex-col min-h-0">
-          <TabsList className="mx-4 mt-2 flex-shrink-0">
-            <TabsTrigger value="yaml">YAML Manifest</TabsTrigger>
-            <TabsTrigger value="logs">
-              <Terminal className="w-4 h-4 mr-2" />
-              Logs
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="yaml" className="flex-1 m-4 mt-2 min-h-0 flex flex-col space-y-2">
-            <div className="flex items-center justify-between flex-shrink-0">
-              <p className="text-sm font-medium">Manifesto YAML (Read-only)</p>
+        {/* YAML Manifest + Botão Ver Logs */}
+        <div className="flex-1 flex flex-col min-h-0 m-4 mt-2 space-y-2">
+          <div className="flex items-center justify-between flex-shrink-0">
+            <p className="text-sm font-medium">Manifesto YAML (Read-only)</p>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleViewDescribe}
+                disabled={!selectedPod}
+              >
+                <FileText className="w-4 h-4 mr-1" />
+                Describe
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setLogsModalOpen(true)}
+                disabled={!selectedPod}
+              >
+                <Terminal className="w-4 h-4 mr-2" />
+                Ver Logs
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={handleCopyYaml}
                 disabled={!podYaml || yamlLoading}
               >
-                {yamlCopied ? (
-                  <>
-                    <Check className="w-4 h-4 mr-2" />
-                    Copiado!
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-4 h-4 mr-2" />
-                    Copiar YAML
-                  </>
-                )}
+                {yamlCopied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+                {yamlCopied ? "Copiado!" : "Copiar YAML"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setYamlFullScreen(true)}
+                title="Abrir YAML em tela cheia"
+                disabled={!podYaml || yamlLoading}
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
               </Button>
             </div>
+          </div>
 
-            {yamlLoading ? (
-              <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-                Carregando manifest...
-              </div>
-            ) : (
-              <div className="flex-1 min-h-0">
-                <MonacoYamlEditor
-                  value={podYaml}
-                  onChange={() => {}} // Read-only
-                  readOnly={true}
-                />
-              </div>
-            )}
-          </TabsContent>
-
-          <TabsContent value="logs" className="flex-1 m-4 mt-2 overflow-y-auto">
-            <div className="space-y-4">
-              {selectedPod.containers.map((container) => (
-                <div key={container.name} className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <h4 className="font-medium text-sm">Container: {container.name}</h4>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleLoadLogs(container.name)}
-                      disabled={logsLoading[container.name]}
-                    >
-                      {logsLoading[container.name] ? "Carregando..." : "Carregar Logs"}
-                    </Button>
-                  </div>
-                  {podLogs[container.name] && (
-                    <ScrollArea className="h-[250px] border rounded-lg bg-muted/50">
-                      <pre className="p-4 text-xs font-mono">
-                        <code>{podLogs[container.name]}</code>
-                      </pre>
-                    </ScrollArea>
-                  )}
-                </div>
-              ))}
+          {yamlLoading ? (
+            <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+              Carregando manifest...
             </div>
-          </TabsContent>
-        </Tabs>
+          ) : (
+            <div className="flex-1 min-h-0">
+              <MonacoYamlEditor
+                value={podYaml}
+                onChange={() => {}} // Read-only
+                readOnly={true}
+              />
+            </div>
+          )}
+        </div>
       </div>
     );
   };
@@ -546,6 +820,179 @@ export const PodsPanel = ({
       {renderPodList()}
     </div>
   );
+
+  // Renderização quando sidebar está recolhido
+  if (isSidebarCollapsed) {
+    return (
+      <>
+        <div className="p-4 h-full">
+          <div className="grid grid-cols-1 h-full">
+            <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
+              <div className="flex items-center justify-between mb-3 pb-2 border-b-2 border-primary">
+                <div className="flex items-center gap-3 flex-wrap">
+                  {collapseButton}
+                  <p className="text-base font-semibold text-primary">Detalhes do Pod</p>
+                </div>
+                {rightTitleAction}
+              </div>
+              <div className="flex-1 overflow-auto min-h-0">
+                {renderPodDetails()}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Modal de Confirmação de Deleção */}
+        <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Confirmar Deleção</DialogTitle>
+              <DialogDescription>
+                Tem certeza que deseja deletar o pod <strong>{deletingPod?.name}</strong>?
+                <br />
+                Esta ação não pode ser desfeita.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeleteConfirmOpen(false)}>
+                Cancelar
+              </Button>
+              <Button variant="destructive" onClick={handleDeletePod}>
+                Deletar Pod
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Modal de Confirmação de Restart */}
+        <Dialog open={restartConfirmOpen} onOpenChange={setRestartConfirmOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Confirmar Restart do Pod</DialogTitle>
+              <DialogDescription>
+                Tem certeza que deseja reiniciar o pod <strong>{restartingPod?.name}</strong>?
+                <br />
+                <br />
+                O pod será deletado e recriado automaticamente pelo controller (Deployment/StatefulSet).
+                {restartingPod && (
+                  <div className="mt-2 p-2 bg-muted rounded text-sm">
+                    <strong>Namespace:</strong> {restartingPod.namespace}
+                  </div>
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setRestartConfirmOpen(false)}>
+                Cancelar
+              </Button>
+              <Button onClick={handleRestartPod}>
+                <RotateCw className="w-4 h-4 mr-2" />
+                Restart Pod
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Modal de Logs */}
+        <Dialog open={logsModalOpen} onOpenChange={(open) => {
+          setLogsModalOpen(open);
+          if (open && selectedPod && selectedPod.containers.length > 0) {
+            if (!selectedContainerForLogs) {
+              setSelectedContainerForLogs(selectedPod.containers[0].name);
+            }
+            // Inicia auto-refresh automaticamente ao abrir
+            setIsAutoRefreshingLogs(true);
+          } else {
+            // Para auto-refresh ao fechar
+            setIsAutoRefreshingLogs(false);
+          }
+        }}>
+          <DialogContent className="max-w-6xl max-h-[90vh] flex flex-col p-0">
+            <DialogHeader className="border-b border-border px-6 py-4 flex-shrink-0">
+              <div className="flex items-center justify-between gap-4 pr-8">
+                <div>
+                  <DialogTitle className="text-xl font-semibold">
+                    Logs do Pod
+                  </DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground mt-1">
+                    {selectedPod?.namespace}/{selectedPod?.name}
+                  </DialogDescription>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">Container:</span>
+                    <Select
+                      value={selectedContainerForLogs}
+                      onValueChange={setSelectedContainerForLogs}
+                    >
+                      <SelectTrigger className="w-[200px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {selectedPod?.containers.map((container) => (
+                          <SelectItem key={container.name} value={container.name}>
+                            {container.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button
+                    variant={isAutoRefreshingLogs ? "destructive" : "default"}
+                    size="sm"
+                    onClick={() => setIsAutoRefreshingLogs(!isAutoRefreshingLogs)}
+                  >
+                    {isAutoRefreshingLogs ? (
+                      <>
+                        <X className="w-4 h-4 mr-2" />
+                        Parar
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCcw className="w-4 h-4 mr-2" />
+                        Iniciar
+                      </>
+                    )}
+                  </Button>
+                  {podLogs[selectedContainerForLogs] && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDownloadLogs(selectedContainerForLogs)}
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </DialogHeader>
+
+            <div className="flex-1 overflow-hidden p-6">
+              {podLogs[selectedContainerForLogs] ? (
+                <ScrollArea className="h-[calc(90vh-200px)] border rounded-lg bg-black/95">
+                  <div className="p-4">
+                    {renderHighlightedLogs(podLogs[selectedContainerForLogs])}
+                  </div>
+                </ScrollArea>
+              ) : (
+                <div className="flex items-center justify-center h-[calc(90vh-200px)] border border-dashed rounded-lg text-muted-foreground text-sm">
+                  {isAutoRefreshingLogs ? (
+                    <div className="flex flex-col items-center gap-2">
+                      <RefreshCcw className="w-6 h-6 animate-spin" />
+                      <span>Carregando logs automaticamente...</span>
+                    </div>
+                  ) : (
+                    <span>Clique em "Iniciar" para carregar os logs</span>
+                  )}
+                </div>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+      </>
+    );
+  }
 
   return (
     <>
@@ -581,6 +1028,206 @@ export const PodsPanel = ({
               Deletar Pod
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Confirmação de Restart */}
+      <Dialog open={restartConfirmOpen} onOpenChange={setRestartConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirmar Restart do Pod</DialogTitle>
+            <DialogDescription>
+              Tem certeza que deseja reiniciar o pod <strong>{restartingPod?.name}</strong>?
+              <br />
+              <br />
+              O pod será deletado e recriado automaticamente pelo controller (Deployment/StatefulSet).
+              {restartingPod && (
+                <div className="mt-2 p-2 bg-muted rounded text-sm">
+                  <strong>Namespace:</strong> {restartingPod.namespace}
+                </div>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRestartConfirmOpen(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleRestartPod}>
+              <RotateCw className="w-4 h-4 mr-2" />
+              Restart Pod
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Logs */}
+      <Dialog open={logsModalOpen} onOpenChange={(open) => {
+        setLogsModalOpen(open);
+        if (open && selectedPod && selectedPod.containers.length > 0) {
+          if (!selectedContainerForLogs) {
+            setSelectedContainerForLogs(selectedPod.containers[0].name);
+          }
+          // Inicia auto-refresh automaticamente ao abrir
+          setIsAutoRefreshingLogs(true);
+        } else {
+          // Para auto-refresh ao fechar
+          setIsAutoRefreshingLogs(false);
+        }
+      }}>
+        <DialogContent className="max-w-6xl max-h-[90vh] flex flex-col p-0">
+          <DialogHeader className="border-b border-border px-6 py-4 flex-shrink-0">
+            <div className="flex items-center justify-between gap-4 pr-8">
+              <div>
+                <DialogTitle className="text-xl font-semibold">
+                  Logs do Pod
+                </DialogTitle>
+                <DialogDescription className="text-sm text-muted-foreground mt-1">
+                  {selectedPod?.namespace}/{selectedPod?.name}
+                </DialogDescription>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">Container:</span>
+                  <Select
+                    value={selectedContainerForLogs}
+                    onValueChange={setSelectedContainerForLogs}
+                  >
+                    <SelectTrigger className="w-[200px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {selectedPod?.containers.map((container) => (
+                        <SelectItem key={container.name} value={container.name}>
+                          {container.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  variant={isAutoRefreshingLogs ? "destructive" : "default"}
+                  size="sm"
+                  onClick={() => setIsAutoRefreshingLogs(!isAutoRefreshingLogs)}
+                >
+                  {isAutoRefreshingLogs ? (
+                    <>
+                      <X className="w-4 h-4 mr-2" />
+                      Parar
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCcw className="w-4 h-4 mr-2" />
+                      Iniciar
+                    </>
+                  )}
+                </Button>
+                {podLogs[selectedContainerForLogs] && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleDownloadLogs(selectedContainerForLogs)}
+                  >
+                    <Download className="w-4 h-4 mr-2" />
+                    Download
+                  </Button>
+                )}
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-hidden p-6">
+            {podLogs[selectedContainerForLogs] ? (
+              <ScrollArea className="h-[calc(90vh-200px)] border rounded-lg bg-black/95">
+                <pre className="p-4 text-xs font-mono text-green-400 whitespace-pre-wrap break-words">
+                  <code>{podLogs[selectedContainerForLogs]}</code>
+                </pre>
+              </ScrollArea>
+            ) : (
+              <div className="flex items-center justify-center h-[calc(90vh-200px)] border border-dashed rounded-lg text-muted-foreground text-sm">
+                {isAutoRefreshingLogs ? (
+                  <div className="flex flex-col items-center gap-2">
+                    <RefreshCcw className="w-6 h-6 animate-spin" />
+                    <span>Carregando logs automaticamente...</span>
+                  </div>
+                ) : (
+                  <span>Clique em "Iniciar" para carregar os logs</span>
+                )}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Fullscreen para YAML */}
+      <Dialog open={yamlFullScreen} onOpenChange={setYamlFullScreen}>
+        <DialogContent className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none p-0">
+          <div className="h-full flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border flex-shrink-0">
+              <div>
+                <DialogTitle className="text-xl font-semibold">
+                  Manifesto YAML (Read-only)
+                </DialogTitle>
+                <DialogDescription className="text-sm text-muted-foreground mt-1">
+                  {selectedPod?.namespace}/{selectedPod?.name}
+                </DialogDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCopyYaml}
+                  disabled={!podYaml || yamlLoading}
+                >
+                  {yamlCopied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+                  {yamlCopied ? "Copiado!" : "Copiar YAML"}
+                </Button>
+              </div>
+            </div>
+
+            {/* Monaco Editor */}
+            <div className="flex-1 overflow-hidden p-6">
+              {yamlLoading ? (
+                <div className="flex items-center justify-center h-full">
+                  <div className="flex flex-col items-center gap-2">
+                    <RefreshCcw className="w-6 h-6 animate-spin text-muted-foreground" />
+                    <span className="text-sm text-muted-foreground">Carregando manifest...</span>
+                  </div>
+                </div>
+              ) : podYaml ? (
+                <MonacoYamlEditor
+                  value={podYaml}
+                  readOnly={true}
+                  height="100%"
+                />
+              ) : (
+                <div className="flex items-center justify-center h-full text-muted-foreground">
+                  <p>Nenhum manifest disponível</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Describe */}
+      <Dialog open={describeModalOpen} onOpenChange={setDescribeModalOpen}>
+        <DialogContent className="max-w-6xl max-h-[90vh]">
+          <DialogHeader>
+            <DialogTitle>Kubectl Describe - {selectedPod?.name}</DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">
+              {selectedPod?.namespace}/{selectedPod?.name}
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="h-[70vh]">
+            {describeLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            ) : (
+              <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
+            )}
+          </ScrollArea>
         </DialogContent>
       </Dialog>
     </>

@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"k8s-hpa-manager/internal/config"
+	kubeclient "k8s-hpa-manager/internal/kubernetes"
 )
 
 // isSystemNamespace verifica se um namespace é de sistema
@@ -308,6 +309,89 @@ func (h *PodHandler) Delete(c *gin.Context) {
 	})
 }
 
+// Restart reinicia um pod (delete + deixa controller recriar)
+func (h *PodHandler) Restart(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+	name := strings.TrimSpace(c.Param("name"))
+
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster, namespace and name must be provided",
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	// Buscar o pod para verificar se é gerenciado por um controller
+	pod, err := clientset.CoreV1().Pods(namespace).Get(c.Request.Context(), name, metav1.GetOptions{})
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "NOT_FOUND",
+				"message": fmt.Sprintf("Pod not found: %v", err),
+			},
+		})
+		return
+	}
+
+	// Verificar se o pod tem owner (Deployment, StatefulSet, DaemonSet, etc)
+	hasOwner := len(pod.OwnerReferences) > 0
+	var ownerKind string
+	if hasOwner {
+		ownerKind = pod.OwnerReferences[0].Kind
+	}
+
+	// Deletar o pod com GracePeriodSeconds=0 para restart rápido
+	gracePeriod := int64(0)
+	err = clientset.CoreV1().Pods(namespace).Delete(c.Request.Context(), name, metav1.DeleteOptions{
+		GracePeriodSeconds: &gracePeriod,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "RESTART_ERROR",
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	message := fmt.Sprintf("Pod %s restarted successfully", name)
+	if hasOwner {
+		message = fmt.Sprintf("Pod %s restarted successfully (managed by %s)", name, ownerKind)
+	} else {
+		message = fmt.Sprintf("Pod %s deleted successfully (WARNING: pod has no owner and will NOT be recreated)", name)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"success":   true,
+			"message":   message,
+			"hasOwner":  hasOwner,
+			"ownerKind": ownerKind,
+		},
+	})
+}
+
 // GetLogs retorna os logs de um container
 func (h *PodHandler) GetLogs(c *gin.Context) {
 	cluster := strings.TrimSpace(c.Param("cluster"))
@@ -452,4 +536,32 @@ func (h *PodHandler) convertToPodSummary(cluster string, pod *corev1.Pod) PodSum
 		CreatedAt:       createdAt,
 		Restarts:        totalRestarts,
 	}
+}
+
+// Describe retorna a saída do kubectl describe para um Pod
+func (h *PodHandler) Describe(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cluster, namespace e name são obrigatórios"})
+		return
+	}
+
+	// Executar kubectl describe
+	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "pod", name, namespace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("Erro ao executar kubectl describe: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"cluster":   cluster,
+		"namespace": namespace,
+		"name":      name,
+		"describe":  output,
+	})
 }
