@@ -426,3 +426,74 @@ func (h *NamespaceHandler) Create(c *gin.Context) {
 		"message": fmt.Sprintf("Namespace %s created successfully", req.Name),
 	})
 }
+
+// Apply aplica um manifesto YAML de namespace (suporta dry-run)
+func (h *NamespaceHandler) Apply(c *gin.Context) {
+	cluster := c.Param("cluster")
+	name := c.Param("name")
+
+	var req struct {
+		YAML         string `json:"yaml" binding:"required"`
+		FieldManager string `json:"fieldManager"`
+		DryRun       bool   `json:"dryRun"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": "YAML is required",
+			},
+		})
+		return
+	}
+
+	if cluster == "" || name == "" {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster and name are required",
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	
+	// Aplicar namespace
+	_, err = kubeClient.ApplyNamespace(c.Request.Context(), req.YAML, req.FieldManager, name, req.DryRun)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "APPLY_ERROR",
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	message := fmt.Sprintf("Namespace %s applied successfully", name)
+	if req.DryRun {
+		message = fmt.Sprintf("Namespace %s validated successfully (dry-run)", name)
+	}
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"message": message,
+	})
+}

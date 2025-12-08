@@ -287,6 +287,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/namespaces/:cluster/:name", namespaceHandler.Get)
 	api.GET("/namespaces/:cluster/:name/describe", namespaceHandler.Describe)
 	api.POST("/namespaces/:cluster", namespaceHandler.Create)
+	api.PUT("/namespaces/:cluster/:name", namespaceHandler.Apply)
 	api.DELETE("/namespaces/:cluster/:name", namespaceHandler.Delete)
 	api.GET("/namespaces/:cluster/metrics", namespaceHandler.GetMetrics) // NOVO: Métricas agregadas por namespace
 
