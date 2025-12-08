@@ -79,6 +79,8 @@ type NamespaceManifest struct {
 	Cluster  string            `json:"cluster"`
 	Name     string            `json:"name"`
 	YAML     string            `json:"yaml"`
+	Status   string            `json:"status"`
+	Age      string            `json:"age"`
 	Metadata NamespaceMetadata `json:"metadata"`
 }
 

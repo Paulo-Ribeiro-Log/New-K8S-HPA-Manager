@@ -238,6 +238,32 @@ func copyStringMap(in map[string]string) map[string]string {
 	return out
 }
 
+// formatAge formata a idade de um recurso em formato legível
+func formatAge(t time.Time) string {
+	duration := time.Since(t)
+	
+	days := int(duration.Hours() / 24)
+	hours := int(duration.Hours()) % 24
+	minutes := int(duration.Minutes()) % 60
+	
+	if days > 0 {
+		if hours > 0 {
+			return fmt.Sprintf("%dd%dh", days, hours)
+		}
+		return fmt.Sprintf("%dd", days)
+	}
+	if hours > 0 {
+		if minutes > 0 {
+			return fmt.Sprintf("%dh%dm", hours, minutes)
+		}
+		return fmt.Sprintf("%dh", hours)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	return fmt.Sprintf("%ds", int(duration.Seconds()))
+}
+
 // ValidateConfigMap executa um server-side apply com dry-run
 func (c *Client) ValidateConfigMap(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*corev1.ConfigMap, error) {
 	return c.applyConfigMap(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
@@ -361,10 +387,19 @@ func (c *Client) GetNamespace(ctx context.Context, name string) (*models.Namespa
 		return nil, fmt.Errorf("failed to marshal namespace %s: %w", name, err)
 	}
 
+	// Calcular status e age
+	status := string(ns.Status.Phase)
+	if status == "" {
+		status = "Active"
+	}
+	age := formatAge(ns.CreationTimestamp.Time)
+
 	manifest := &models.NamespaceManifest{
 		Cluster: c.cluster,
 		Name:    name,
 		YAML:    string(yamlBytes),
+		Status:  status,
+		Age:     age,
 		Metadata: models.NamespaceMetadata{
 			UID:             string(ns.UID),
 			ResourceVersion: ns.ResourceVersion,
