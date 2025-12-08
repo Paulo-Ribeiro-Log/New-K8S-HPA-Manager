@@ -154,11 +154,19 @@ k8s-hpa-manager/
     - Seção "Outros" agregando namespaces fora do Top 5
   - **Detalhes do Namespace**: Ao selecionar namespace, exibe painel com:
     - Metadados: Nome, Cluster, Status, Age
-    - Monaco YAML Editor (tema VS Code) com edição completa
-    - Botões de ação: Describe, Copiar YAML, Expandir Editor
+    - Monaco YAML Editor (tema VS Code) com **edição completa e persistente**
+    - **Sistema de edição avançado** (copiado de ConfigMaps):
+      - ✅ Undo/Redo com histórico de 50 versões (cache persistente por namespace)
+      - ✅ View Mode toggle: Editor | Diff (side-by-side)
+      - ✅ Validação Dry-run (testa YAML antes de aplicar)
+      - ✅ Visualizar diff com diff2html (modal compacto + fullscreen)
+      - ✅ Apply com confirmação (exibe mudanças detectadas)
+      - ✅ Cancelar (restaura YAML original)
+      - ✅ Botões duplicados em: painel normal + modal fullscreen
+    - Botões de ação: Describe, Visualizar diff, Expandir Editor, Dry-run, Cancelar, Aplicar
     - Dropdown menu (⋮) com opção Delete (cor vermelha)
-    - Modal fullscreen do editor com botão "Copiar YAML" no header
-  - **Criar Namespace**: Botão no painel "Visualização" (à direita)
+    - Modal fullscreen do editor com toolbar completa de edição
+  - **Criar Namespace**: Botão no header do painel "Visualização" (à direita)
     - Modal com campo de texto para nome do namespace
     - Validação: nome obrigatório, cluster selecionado
     - Auto-refresh da lista após criação bem-sucedida
@@ -166,10 +174,12 @@ k8s-hpa-manager/
     - `GET /namespaces/:cluster/:name` - Obter manifesto YAML
     - `GET /namespaces/:cluster/:name/describe` - kubectl describe
     - `POST /namespaces/:cluster` - Criar namespace
+    - `PUT /namespaces/:cluster/:name` - **Aplicar YAML editado** (com suporte a dry-run)
     - `DELETE /namespaces/:cluster/:name` - Deletar namespace
     - `GET /namespaces/:cluster/metrics?limit=5` - Top 5 métricas
-  - **Componente**: `NamespacesTab.tsx` (dual-mode: overview vs details)
+  - **Componente**: `NamespacesTab.tsx` (1240+ linhas, dual-mode: overview vs details)
   - **Correções**: Hook `useNamespaces` agora retorna `refetch` corretamente conectado ao botão Atualizar
+  - **Imports**: diff (createTwoFilesPatch), diff2html (html), js-yaml (load), ícones Undo2/Redo2/CheckCircle2/TriangleAlert/FileDiff
 ✅ **Aba Pods (v1.3.3)** - Gerenciamento completo de Pods Kubernetes
   - Listagem de pods com filtros por namespace, search, system pods
   - Status visual com badges coloridos (Running/Pending/Failed/CrashLoopBackOff)
@@ -223,12 +233,18 @@ Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
 Recent Updates (v1.3.4):
-- Aba Namespaces: Gerenciamento completo com overview Top 5 (CPU/Memory/Pods)
+- Aba Namespaces: Gerenciamento completo com overview Top 5 (CPU/Memory/Pods) + **Sistema de edição avançado**
   - Dual-mode: Overview (charts) quando nenhum namespace selecionado, detalhes com Monaco Editor quando selecionado
-  - CRUD completo: Criar, Visualizar, Editar YAML, Deletar namespaces
+  - CRUD completo: Criar, Visualizar, Editar YAML (com undo/redo/diff/dry-run/apply), Deletar namespaces
+  - **Edição avançada** (copiado de ConfigMaps): Undo/Redo (50 versões), Diff side-by-side, Dry-run, Apply com confirmação
+  - Botões duplicados em painel normal e modal fullscreen
   - Botão "Criar Namespace" no header do painel "Visualização"
-  - kubectl describe integrado, modal fullscreen para edição
-  - Backend: endpoints POST/GET/DELETE em `/namespaces/:cluster`
+  - kubectl describe integrado, modal fullscreen para edição com toolbar completa
+  - Backend: endpoints POST/GET/**PUT**/DELETE em `/namespaces/:cluster`
+  - Handler Apply: `internal/web/handlers/namespaces.go:Apply()` com suporte a dry-run
+  - Kubernetes client: `internal/kubernetes/client.go:ApplyNamespace()` reutilizado
+  - API client: `internal/web/frontend/src/lib/api/client.ts:applyNamespace()` adicionado
+  - Component: `NamespacesTab.tsx` (1240+ linhas com toda lógica de edição)
 
 Recent Updates (v1.3.3):
 - Aba Pods/Containers: Gerenciamento completo de Pods e Containers Kubernetes

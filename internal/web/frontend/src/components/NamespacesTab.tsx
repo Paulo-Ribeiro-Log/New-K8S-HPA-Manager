@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import type { Namespace, TopNamespacesResponse, NamespaceManifest } from "@/lib/api/types";
@@ -22,6 +22,10 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend } from "recharts";
+import { createTwoFilesPatch } from "diff";
+import { html } from "diff2html";
+import "diff2html/bundles/css/diff2html.min.css";
+import * as yaml from "js-yaml";
 
 interface NamespacesTabProps {
   cluster: string;
@@ -58,10 +62,29 @@ export const NamespacesTab = ({
   const [newNamespaceName, setNewNamespaceName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
 
+  // Estados de edição (copiado de ConfigMapsTab)
+  const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [originalYaml, setOriginalYaml] = useState("");
+  const [viewMode, setViewMode] = useState<"editor" | "diff">("editor");
+  const [isValidating, setIsValidating] = useState(false);
+  const [isApplying, setIsApplying] = useState(false);
+  const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
+  const [diffModalOpen, setDiffModalOpen] = useState(false);
+  const [diffHtml, setDiffHtml] = useState("");
+  const [isDiffLoading, setIsDiffLoading] = useState(false);
+  const [diffFullScreen, setDiffFullScreen] = useState(false);
+
   const filteredNamespaces = useMemo(() => {
     if (showSystemNamespaces) return namespaces;
     return namespaces.filter((ns) => !ns.isSystem);
   }, [namespaces, showSystemNamespaces]);
+
+  // Computed values para edição
+  const hasChanges = useMemo(() => editorValue !== originalYaml, [editorValue, originalYaml]);
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex < history.length - 1;
 
   const loadOverviewMetrics = async () => {
     if (!cluster) return;
@@ -82,11 +105,34 @@ export const NamespacesTab = ({
   const loadManifest = async () => {
     if (!selectedNamespace || !cluster) return;
 
+    // Salvar histórico antes de trocar
+    if (selectedNamespace && history.length > 0) {
+      const cacheKey = `${cluster}/${selectedNamespace.name}`;
+      historyCache.current.set(cacheKey, {
+        history: [...history],
+        index: historyIndex,
+      });
+    }
+
     setManifestLoading(true);
     try {
       const manifest = await apiClient.getNamespace(cluster, selectedNamespace.name);
       setNamespaceManifest(manifest);
-      setEditorValue(manifest.yaml || "");
+      const yamlContent = manifest.yaml || "";
+      setEditorValue(yamlContent);
+      setOriginalYaml(yamlContent);
+      setViewMode("editor");
+
+      // Restaurar histórico do cache ou inicializar
+      const cacheKey = `${cluster}/${selectedNamespace.name}`;
+      const cached = historyCache.current.get(cacheKey);
+      if (cached) {
+        setHistory(cached.history);
+        setHistoryIndex(cached.index);
+      } else {
+        setHistory([yamlContent]);
+        setHistoryIndex(0);
+      }
     } catch (err) {
       toast.error("Erro ao carregar manifesto do namespace", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -99,6 +145,168 @@ export const NamespacesTab = ({
   const handleCopyYaml = () => {
     navigator.clipboard.writeText(editorValue);
     toast.success("YAML copiado para a área de transferência");
+  };
+
+  // Funções de edição (copiado de ConfigMapsTab)
+  const handleEditorChange = (value: string | undefined) => {
+    setEditorValue(value || "");
+  };
+
+  const addToHistory = useCallback(() => {
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(editorValue);
+    if (newHistory.length > 50) {
+      newHistory.shift();
+    } else {
+      setHistoryIndex((prev) => prev + 1);
+    }
+    setHistory(newHistory);
+  }, [editorValue, history, historyIndex]);
+
+  const handleUndo = () => {
+    if (canUndo) {
+      const newIndex = historyIndex - 1;
+      setHistoryIndex(newIndex);
+      setEditorValue(history[newIndex]);
+    }
+  };
+
+  const handleRedo = () => {
+    if (canRedo) {
+      const newIndex = historyIndex + 1;
+      setHistoryIndex(newIndex);
+      setEditorValue(history[newIndex]);
+    }
+  };
+
+  const handleToggleView = (mode: "editor" | "diff") => {
+    setViewMode(mode);
+  };
+
+  const refreshManifest = async () => {
+    if (!selectedNamespace || !cluster) return;
+    try {
+      const manifest = await apiClient.getNamespace(cluster, selectedNamespace.name);
+      const yamlContent = manifest.yaml || "";
+      setEditorValue(yamlContent);
+      setOriginalYaml(yamlContent);
+      setHistory([yamlContent]);
+      setHistoryIndex(0);
+      setNamespaceManifest(manifest);
+      toast.success("Manifesto recarregado");
+    } catch (err) {
+      toast.error("Erro ao recarregar manifesto", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    }
+  };
+
+  const handleShowDiffModal = async (fullScreen: boolean) => {
+    if (!selectedNamespace || !hasChanges) return;
+    
+    setIsDiffLoading(true);
+    setDiffModalOpen(true);
+    setDiffFullScreen(fullScreen);
+
+    try {
+      const patch = createTwoFilesPatch(
+        `${selectedNamespace.name} (original)`,
+        `${selectedNamespace.name} (editado)`,
+        originalYaml,
+        editorValue,
+        "",
+        ""
+      );
+
+      const diffHtmlOutput = html(patch, {
+        drawFileList: false,
+        matching: "lines",
+        outputFormat: "side-by-side",
+      });
+
+      setDiffHtml(diffHtmlOutput);
+    } catch (err) {
+      toast.error("Erro ao gerar diff", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsDiffLoading(false);
+    }
+  };
+
+  const handleValidate = async () => {
+    if (!selectedNamespace) return;
+    setIsValidating(true);
+    try {
+      await apiClient.applyNamespace(
+        cluster,
+        selectedNamespace.name,
+        {
+          yaml: editorValue,
+          fieldManager: "web-namespace-editor",
+          dryRun: true,
+        }
+      );
+      toast.success("Validação bem-sucedida (dry-run)", {
+        description: "O YAML está válido e pode ser aplicado",
+      });
+    } catch (err) {
+      toast.error("Falha na validação", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setEditorValue(originalYaml);
+    setHistory([originalYaml]);
+    setHistoryIndex(0);
+    setViewMode("editor");
+    toast.info("Alterações descartadas");
+  };
+
+  const handleApply = async () => {
+    if (!selectedNamespace) return;
+    setIsApplying(true);
+    try {
+      await apiClient.applyNamespace(
+        cluster,
+        selectedNamespace.name,
+        {
+          yaml: editorValue,
+          fieldManager: "web-namespace-editor",
+          dryRun: false,
+        }
+      );
+      toast.success("Namespace aplicado", {
+        description: selectedNamespace.name,
+      });
+      
+      // Recarregar manifest do servidor após aplicar
+      await refreshManifest();
+    } catch (err) {
+      toast.error("Falha ao aplicar", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsApplying(false);
+    }
+  };
+
+  const openApplyConfirm = () => {
+    if (!selectedNamespace) return;
+    if (!hasChanges) {
+      toast.info("Nenhuma alteração para aplicar");
+      return;
+    }
+    setApplyConfirmOpen(true);
+  };
+
+  const confirmApplyChanges = async () => {
+    setApplyConfirmOpen(false);
+    await handleApply();
   };
 
   const handleDescribe = async () => {
@@ -594,34 +802,147 @@ export const NamespacesTab = ({
             <Loader2 className="w-6 h-6 animate-spin" />
           </div>
         ) : (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-medium">Manifesto YAML</p>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={handleDescribe}>
-                  <FileText className="w-4 h-4 mr-1" />
-                  Describe
-                </Button>
-                <Button variant="outline" size="sm" onClick={handleCopyYaml}>
-                  <Copy className="w-4 h-4 mr-1" />
-                  Copiar YAML
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setEditorFullScreen(true)}
-                  title="Expandir editor"
-                >
-                  <Maximize2 className="w-4 h-4" />
-                </Button>
+          <div className="space-y-3">
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">Manifesto YAML</p>
+                <div className="flex items-center gap-2">
+                  {manifestLoading && (
+                    <span className="text-xs text-muted-foreground">Carregando...</span>
+                  )}
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={handleUndo}
+                      disabled={!canUndo}
+                      className={`px-2 py-1 text-xs font-medium ${
+                        canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Desfazer (Ctrl+Z)"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRedo}
+                      disabled={!canRedo}
+                      className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                        canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Refazer (Ctrl+Y)"
+                    >
+                      <Redo2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("editor")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      }`}
+                    >
+                      Editor
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("diff")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "diff" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                      disabled={!hasChanges}
+                    >
+                      Diff
+                    </button>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setEditorFullScreen(true)}
+                    title="Abrir editor em tela cheia"
+                    disabled={!selectedNamespace}
+                  >
+                    <Maximize2 className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
               </div>
+              {viewMode === "editor" && (
+                <MonacoYamlEditor
+                  value={editorValue}
+                  onChange={handleEditorChange}
+                  height={450}
+                />
+              )}
+              {viewMode === "diff" && (
+                <MonacoYamlEditor
+                  mode="diff"
+                  originalValue={originalYaml}
+                  value={editorValue}
+                  height={450}
+                  readOnly
+                />
+              )}
             </div>
-            <MonacoYamlEditor
-              value={editorValue}
-              onChange={setEditorValue}
-              height={450}
-              readOnly={false}
-            />
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDescribe}
+                disabled={!selectedNamespace}
+              >
+                <FileText className="w-4 h-4 mr-1" />
+                Describe
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleShowDiffModal(false)}
+                disabled={!selectedNamespace || !hasChanges || isDiffLoading}
+              >
+                {isDiffLoading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <FileDiff className="w-4 h-4 mr-2" />
+                )}
+                Visualizar diff
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleShowDiffModal(true)}
+                disabled={!selectedNamespace || !hasChanges || isDiffLoading}
+                className="gap-2"
+                title="Abrir diff ocupando toda a tela"
+              >
+                <Maximize2 className="w-4 h-4" />
+                Tela cheia
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleValidate}
+                disabled={!selectedNamespace || isValidating}
+              >
+                <CheckCircle2 className="w-4 h-4 mr-2" /> Validar (Dry-run)
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCancel}
+                disabled={!selectedNamespace || !hasChanges}
+              >
+                <X className="w-4 h-4 mr-2" /> Cancelar
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={openApplyConfirm}
+                disabled={!selectedNamespace || isApplying || !hasChanges}
+              >
+                <TriangleAlert className="w-4 h-4 mr-2" /> Aplicar
+              </Button>
+            </div>
           </div>
         )}
 
@@ -710,9 +1031,16 @@ export const NamespacesTab = ({
 
         {/* Modal Editor Full Screen */}
         <Dialog open={editorFullScreen} onOpenChange={setEditorFullScreen}>
-          <DialogContent className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none p-0">
+          <DialogContent 
+            className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none p-0"
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setEditorFullScreen(false);
+              }
+            }}
+          >
             <div className="h-full flex flex-col">
-              <DialogHeader className="border-b border-border px-6 py-4 pr-16">
+              <DialogHeader className="border-b border-border px-6 py-4">
                 <div className="flex items-center justify-between gap-4">
                   <div>
                     <DialogTitle className="text-xl font-semibold text-primary">
@@ -722,19 +1050,113 @@ export const NamespacesTab = ({
                       {selectedNamespace.name} • {cluster}
                     </DialogDescription>
                   </div>
-                  <Button variant="outline" size="sm" onClick={handleCopyYaml} className="mr-8">
-                    <Copy className="w-4 h-4 mr-1" />
-                    Copiar YAML
-                  </Button>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={handleUndo}
+                        disabled={!canUndo}
+                        className={`px-2 py-1 text-xs font-medium ${
+                          canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                        }`}
+                        title="Desfazer (Ctrl+Z)"
+                      >
+                        <Undo2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRedo}
+                        disabled={!canRedo}
+                        className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                          canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                        }`}
+                        title="Refazer (Ctrl+Y)"
+                      >
+                        <Redo2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleView("editor")}
+                        className={`px-3 py-1 text-xs font-medium ${
+                          viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                        }`}
+                      >
+                        Editor
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleView("diff")}
+                        className={`px-3 py-1 text-xs font-medium ${
+                          viewMode === "diff" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                        } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                        disabled={!hasChanges}
+                      >
+                        Diff
+                      </button>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleValidate}
+                      disabled={!selectedNamespace || isValidating}
+                    >
+                      {isValidating ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="w-4 h-4 mr-2" />
+                      )}
+                      Dry-run
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleCancel}
+                      title="Descartar alterações e sair (Esc)"
+                    >
+                      Cancelar
+                    </Button>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={() => {
+                        openApplyConfirm();
+                        setEditorFullScreen(false);
+                      }}
+                      disabled={!selectedNamespace || isApplying || !hasChanges}
+                    >
+                      <TriangleAlert className="w-4 h-4 mr-2" />
+                      Aplicar
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setEditorFullScreen(false)}
+                      title="Minimizar tela cheia (Esc)"
+                    >
+                      <Minimize2 className="w-4 h-4" />
+                    </Button>
+                  </div>
                 </div>
               </DialogHeader>
               <div className="flex-1 p-4">
-                <MonacoYamlEditor
-                  value={editorValue}
-                  onChange={setEditorValue}
-                  height="calc(100vh - 140px)"
-                  readOnly={false}
-                />
+                {viewMode === "editor" && (
+                  <MonacoYamlEditor
+                    value={editorValue}
+                    onChange={handleEditorChange}
+                    height="calc(100vh - 140px)"
+                  />
+                )}
+                {viewMode === "diff" && (
+                  <MonacoYamlEditor
+                    mode="diff"
+                    originalValue={originalYaml}
+                    value={editorValue}
+                    height="calc(100vh - 140px)"
+                    readOnly
+                  />
+                )}
               </div>
             </div>
           </DialogContent>
@@ -800,18 +1222,168 @@ export const NamespacesTab = ({
     </Button>
   );
 
+  // Render modais
+  const renderDiffDialog = () => {
+    if (!selectedNamespace) return null;
+
+    const maxWidth = diffFullScreen ? "max-w-[95vw]" : "max-w-5xl";
+    const maxHeight = diffFullScreen ? "max-h-[95vh]" : "max-h-[85vh]";
+
+    return (
+      <Dialog open={diffModalOpen} onOpenChange={setDiffModalOpen}>
+        <DialogContent className={`${maxWidth} ${maxHeight}`}>
+          <DialogHeader>
+            <DialogTitle>Comparação de Alterações (Diff)</DialogTitle>
+            <DialogDescription>
+              {selectedNamespace.name} • {cluster}
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="h-[70vh] w-full">
+            {isDiffLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            ) : (
+              <div 
+                className="diff-content"
+                dangerouslySetInnerHTML={{ __html: diffHtml }}
+              />
+            )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
+  const renderApplyConfirmDialog = () => {
+    if (!selectedNamespace) return null;
+
+    // Gerar diff compacto apenas com mudanças
+    const generateCompactDiff = () => {
+      try {
+        const originalObj = yaml.load(originalYaml) as any;
+        const updatedObj = yaml.load(editorValue) as any;
+        
+        const changes: Array<{ path: string; before: any; after: any }> = [];
+        
+        const compareObjects = (obj1: any, obj2: any, path: string = '') => {
+          const allKeys = new Set([...Object.keys(obj1 || {}), ...Object.keys(obj2 || {})]);
+          
+          for (const key of allKeys) {
+            const currentPath = path ? `${path}.${key}` : key;
+            const val1 = obj1?.[key];
+            const val2 = obj2?.[key];
+            
+            if (val1 === val2) continue;
+            
+            if (typeof val1 === 'object' && typeof val2 === 'object' && val1 !== null && val2 !== null && !Array.isArray(val1) && !Array.isArray(val2)) {
+              compareObjects(val1, val2, currentPath);
+            } else if (JSON.stringify(val1) !== JSON.stringify(val2)) {
+              changes.push({
+                path: currentPath,
+                before: val1 === undefined ? '(não existe)' : typeof val1 === 'object' ? JSON.stringify(val1, null, 2) : String(val1),
+                after: val2 === undefined ? '(removido)' : typeof val2 === 'object' ? JSON.stringify(val2, null, 2) : String(val2)
+              });
+            }
+          }
+        };
+        
+        compareObjects(originalObj, updatedObj);
+        
+        return changes;
+      } catch {
+        return [];
+      }
+    };
+    
+    const changes = generateCompactDiff();
+
+    return (
+      <Dialog open={applyConfirmOpen} onOpenChange={setApplyConfirmOpen}>
+        <DialogContent className="max-w-4xl max-h-[90vh] bg-background border-border">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-semibold text-primary">
+              Confirmar aplicação
+            </DialogTitle>
+            <DialogDescription>
+              Essa ação vai aplicar o Namespace diretamente no cluster selecionado.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs">
+              <p><span className="text-muted-foreground">Cluster:</span> {cluster}</p>
+              <p><span className="text-muted-foreground">Namespace:</span> {selectedNamespace.name}</p>
+            </div>
+            
+            {changes.length > 0 && (
+              <div className="space-y-2">
+                <p className="font-semibold text-sm">Mudanças detectadas ({changes.length}):</p>
+                <div className="max-h-[400px] overflow-y-auto space-y-2 border rounded-lg p-3 bg-muted/10">
+                  {changes.map((change, idx) => (
+                    <div key={idx} className="border-l-2 border-blue-500 pl-3 py-2 bg-background/50 rounded-r text-xs">
+                      <p className="font-mono font-semibold text-blue-400 mb-2">{change.path}</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-red-500/10 border border-red-500/30 rounded p-2">
+                          <p className="text-red-400 font-semibold mb-1">Antes:</p>
+                          <pre className="whitespace-pre-wrap break-all text-[11px] text-red-300">{change.before}</pre>
+                        </div>
+                        <div className="bg-green-500/10 border border-green-500/30 rounded p-2">
+                          <p className="text-green-400 font-semibold mb-1">Depois:</p>
+                          <pre className="whitespace-pre-wrap break-all text-[11px] text-green-300">{change.after}</pre>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            <p className="text-muted-foreground">
+              Esta operação não possui rollback automático. Confirme que as mudanças estão corretas.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button
+              variant="ghost"
+              onClick={() => setApplyConfirmOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirmApplyChanges}
+              disabled={isApplying}
+            >
+              {isApplying ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <TriangleAlert className="w-4 h-4 mr-2" />
+              )}
+              Confirmar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
   return (
-    <SplitView
-      leftPanel={{
-        title: "Namespaces",
-        titleAction: leftTitleAction,
-        content: leftContent,
-      }}
-      rightPanel={{
-        title: "Visualização",
-        titleAction: rightTitleAction,
-        content: renderMetricsPanel(),
-      }}
-    />
+    <>
+      <SplitView
+        leftPanel={{
+          title: "Namespaces",
+          titleAction: leftTitleAction,
+          content: leftContent,
+        }}
+        rightPanel={{
+          title: "Visualização",
+          titleAction: rightTitleAction,
+          content: renderMetricsPanel(),
+        }}
+      />
+
+      {renderDiffDialog()}
+      {renderApplyConfirmDialog()}
+    </>
   );
 };

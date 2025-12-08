@@ -178,6 +178,20 @@ class APIClient {
     );
   }
 
+  async applyNamespace(
+    cluster: string,
+    name: string,
+    payload: { yaml: string; fieldManager: string; dryRun: boolean }
+  ): Promise<{ success: boolean; message: string }> {
+    return await this.request<{ success: boolean; message: string }>(
+      `/namespaces/${encodeURIComponent(cluster)}/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }
+    );
+  }
+
   // HPAs
   async getHPAs(cluster?: string, namespace?: string, bypassCache: boolean = false, showSystem: boolean = false): Promise<HPA[]> {
     const params = new URLSearchParams();
