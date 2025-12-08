@@ -146,6 +146,30 @@ k8s-hpa-manager/
   - Backend: Queries Prometheus agregadas por namespace (`sum by (namespace)`)
   - Endpoint: `GET /api/v1/namespaces/:cluster/metrics?limit=5`
   - Graceful degradation: estado de erro elegante quando Prometheus inacessível
+✅ **Aba Namespaces (v1.3.4)** - Gerenciamento completo de Namespaces Kubernetes
+  - **Overview Top 5**: Quando nenhum namespace selecionado, exibe 3 gráficos de pizza lado a lado
+    - Top 5 Namespaces por CPU (millicores)
+    - Top 5 Namespaces por Memória (GB)
+    - Top 5 Namespaces por Pods (count)
+    - Seção "Outros" agregando namespaces fora do Top 5
+  - **Detalhes do Namespace**: Ao selecionar namespace, exibe painel com:
+    - Metadados: Nome, Cluster, Status, Age
+    - Monaco YAML Editor (tema VS Code) com edição completa
+    - Botões de ação: Describe, Copiar YAML, Expandir Editor
+    - Dropdown menu (⋮) com opção Delete (cor vermelha)
+    - Modal fullscreen do editor com botão "Copiar YAML" no header
+  - **Criar Namespace**: Botão no painel "Visualização" (à direita)
+    - Modal com campo de texto para nome do namespace
+    - Validação: nome obrigatório, cluster selecionado
+    - Auto-refresh da lista após criação bem-sucedida
+  - **Backend completo**:
+    - `GET /namespaces/:cluster/:name` - Obter manifesto YAML
+    - `GET /namespaces/:cluster/:name/describe` - kubectl describe
+    - `POST /namespaces/:cluster` - Criar namespace
+    - `DELETE /namespaces/:cluster/:name` - Deletar namespace
+    - `GET /namespaces/:cluster/metrics?limit=5` - Top 5 métricas
+  - **Componente**: `NamespacesTab.tsx` (dual-mode: overview vs details)
+  - **Correções**: Hook `useNamespaces` agora retorna `refetch` corretamente conectado ao botão Atualizar
 ✅ **Aba Pods (v1.3.3)** - Gerenciamento completo de Pods Kubernetes
   - Listagem de pods com filtros por namespace, search, system pods
   - Status visual com badges coloridos (Running/Pending/Failed/CrashLoopBackOff)
@@ -193,10 +217,18 @@ k8s-hpa-manager/
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
 
 Repositório: git@github.com:Paulo-Ribeiro-Log/New-K8S-HPA-Manager.git
-Versão Atual: v1.3.3+ (em desenvolvimento)
+Versão Atual: v1.3.4+ (em desenvolvimento)
 Tech: Go 1.24+ + React 18.3 (Web)
 Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
+
+Recent Updates (v1.3.4):
+- Aba Namespaces: Gerenciamento completo com overview Top 5 (CPU/Memory/Pods)
+  - Dual-mode: Overview (charts) quando nenhum namespace selecionado, detalhes com Monaco Editor quando selecionado
+  - CRUD completo: Criar, Visualizar, Editar YAML, Deletar namespaces
+  - Botão "Criar Namespace" no header do painel "Visualização"
+  - kubectl describe integrado, modal fullscreen para edição
+  - Backend: endpoints POST/GET/DELETE em `/namespaces/:cluster`
 
 Recent Updates (v1.3.3):
 - Aba Pods/Containers: Gerenciamento completo de Pods e Containers Kubernetes

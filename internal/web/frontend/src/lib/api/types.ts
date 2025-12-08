@@ -37,6 +37,23 @@ export interface Namespace {
   isSystem?: boolean;
 }
 
+export interface NamespaceMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  creationTimestamp?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface NamespaceManifest {
+  cluster: string;
+  name: string;
+  yaml: string;
+  status: string;
+  age: string;
+  metadata: NamespaceMetadata;
+}
+
 export interface ConfigMapSummary {
   cluster: string;
   namespace: string;
