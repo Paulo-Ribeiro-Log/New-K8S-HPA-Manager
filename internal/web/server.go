@@ -282,7 +282,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/azure/subscription", azureHandler.SetSubscription)
 
 	// Namespaces
-	namespaceHandler := handlers.NewNamespaceHandler(s.kubeManager)
+	namespaceHandler := handlers.NewNamespaceHandler(s.kubeManager, s.historyTracker)
 	api.GET("/namespaces", namespaceHandler.List)
 	api.GET("/namespaces/:cluster/metrics", namespaceHandler.GetMetrics) // NOVO: Métricas agregadas por namespace
 

@@ -784,9 +784,11 @@ export const PodsPanel = ({
           ) : (
             <div className="flex-1 min-h-0">
               <MonacoYamlEditor
+                key={`pod-manifest-${selectedPod?.name}`}
                 value={podYaml}
                 onChange={() => {}} // Read-only
                 readOnly={true}
+                height="400px"
               />
             </div>
           )}
@@ -1172,7 +1174,7 @@ export const PodsPanel = ({
                   {selectedPod?.namespace}/{selectedPod?.name}
                 </DialogDescription>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 pr-8">
                 <Button
                   variant="outline"
                   size="sm"
@@ -1186,7 +1188,7 @@ export const PodsPanel = ({
             </div>
 
             {/* Monaco Editor */}
-            <div className="flex-1 overflow-hidden p-6">
+            <div className="flex-1 p-4">
               {yamlLoading ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="flex flex-col items-center gap-2">
@@ -1196,9 +1198,10 @@ export const PodsPanel = ({
                 </div>
               ) : podYaml ? (
                 <MonacoYamlEditor
+                  key={`pod-manifest-fullscreen-${selectedPod?.name}`}
                   value={podYaml}
                   readOnly={true}
-                  height="100%"
+                  height="calc(100vh - 140px)"
                 />
               ) : (
                 <div className="flex items-center justify-center h-full text-muted-foreground">

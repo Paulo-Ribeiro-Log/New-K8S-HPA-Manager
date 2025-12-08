@@ -346,6 +346,153 @@ func prepareConfigMapApplyPayload(yamlContent, enforceNamespace, enforceName str
 }
 
 // ============================================================================
+// Namespaces Methods
+// ============================================================================
+
+// GetNamespace retorna o manifesto YAML completo do Namespace
+func (c *Client) GetNamespace(ctx context.Context, name string) (*models.NamespaceManifest, error) {
+	ns, err := c.clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get namespace %s in cluster %s: %w", name, c.cluster, err)
+	}
+
+	yamlBytes, err := yaml.Marshal(ns)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal namespace %s: %w", name, err)
+	}
+
+	manifest := &models.NamespaceManifest{
+		Cluster: c.cluster,
+		Name:    name,
+		YAML:    string(yamlBytes),
+		Metadata: models.NamespaceMetadata{
+			UID:             string(ns.UID),
+			ResourceVersion: ns.ResourceVersion,
+			Labels:          copyStringMap(ns.Labels),
+			Annotations:     copyStringMap(ns.Annotations),
+		},
+	}
+
+	return manifest, nil
+}
+
+// ValidateNamespace executa um server-side apply com dry-run
+func (c *Client) ValidateNamespace(ctx context.Context, yamlContent, fieldManager string) (*corev1.Namespace, error) {
+	return c.applyNamespace(ctx, yamlContent, fieldManager, "", true)
+}
+
+// ApplyNamespace aplica (ou dry-run opcionalmente) o Namespace no cluster
+func (c *Client) ApplyNamespace(ctx context.Context, yamlContent, fieldManager, enforceName string, dryRun bool) (*corev1.Namespace, error) {
+	return c.applyNamespace(ctx, yamlContent, fieldManager, enforceName, dryRun)
+}
+
+func (c *Client) applyNamespace(ctx context.Context, yamlContent, fieldManager, enforceName string, dryRun bool) (*corev1.Namespace, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("namespace yaml content cannot be empty")
+	}
+	if fieldManager == "" {
+		fieldManager = "web-namespace-editor"
+	}
+
+	payload, name, err := prepareNamespaceApplyPayload(yamlContent, enforceName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Force=true permite assumir ownership de campos gerenciados por outros field managers
+	forceFlag := true
+	options := metav1.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        &forceFlag,
+	}
+	if dryRun {
+		options.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.CoreV1().Namespaces().Patch(ctx, name, types.ApplyPatchType, payload, options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply namespace %s in cluster %s: %w", name, c.cluster, err)
+	}
+
+	return result, nil
+}
+
+func prepareNamespaceApplyPayload(yamlContent, enforceName string) ([]byte, string, error) {
+	var ns map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &ns); err != nil {
+		return nil, "", fmt.Errorf("invalid namespace yaml: %w", err)
+	}
+
+	if len(ns) == 0 {
+		return nil, "", fmt.Errorf("namespace yaml cannot be empty")
+	}
+
+	apiVersion, _ := ns["apiVersion"].(string)
+	if strings.TrimSpace(apiVersion) == "" {
+		ns["apiVersion"] = "v1"
+	}
+	kind, _ := ns["kind"].(string)
+	if strings.TrimSpace(kind) == "" {
+		ns["kind"] = "Namespace"
+	} else if !strings.EqualFold(kind, "Namespace") {
+		return nil, "", fmt.Errorf("expected kind Namespace, got %s", kind)
+	}
+
+	metadata, _ := ns["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	name, _ := metadata["name"].(string)
+	name = strings.TrimSpace(name)
+	if enforceName != "" {
+		enforceName = strings.TrimSpace(enforceName)
+		if name == "" {
+			name = enforceName
+		}
+		if name != enforceName {
+			return nil, "", fmt.Errorf("namespace name mismatch: expected %s, got %s", enforceName, name)
+		}
+	}
+	if name == "" {
+		return nil, "", fmt.Errorf("namespace metadata.name is required")
+	}
+	metadata["name"] = name
+
+	// Remover namespace do metadata (namespace não tem namespace)
+	delete(metadata, "namespace")
+	ns["metadata"] = metadata
+
+	jsonPayload, err := json.Marshal(ns)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to marshal namespace payload: %w", err)
+	}
+
+	return jsonPayload, name, nil
+}
+
+// DeleteNamespace deleta um namespace do cluster
+func (c *Client) DeleteNamespace(ctx context.Context, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("namespace name cannot be empty")
+	}
+
+	// Verificar se namespace existe antes de deletar
+	_, err := c.clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get namespace %s: %w", name, err)
+	}
+
+	// Deletar namespace
+	err = c.clientset.CoreV1().Namespaces().Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete namespace %s in cluster %s: %w", name, c.cluster, err)
+	}
+
+	return nil
+}
+
+// ============================================================================
 // Deployments Methods
 // ============================================================================
 
