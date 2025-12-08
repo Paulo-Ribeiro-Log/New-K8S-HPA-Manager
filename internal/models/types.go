@@ -54,6 +54,34 @@ type ConfigMapManifest struct {
 	Metadata  ConfigMapMetadata `json:"metadata"`
 }
 
+// NamespaceSummary descreve informações resumidas de um Namespace
+type NamespaceSummary struct {
+	Cluster         string            `json:"cluster"`
+	Name            string            `json:"name"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Status          string            `json:"status"`
+	Phase           string            `json:"phase"`
+	Age             string            `json:"age"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	UpdatedAt       time.Time         `json:"updatedAt"`
+}
+
+// NamespaceMetadata consolida metadados relevantes do Namespace
+type NamespaceMetadata struct {
+	UID             string            `json:"uid,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Annotations     map[string]string `json:"annotations,omitempty"`
+}
+
+// NamespaceManifest contém o YAML bruto e metadados para edição
+type NamespaceManifest struct {
+	Cluster  string            `json:"cluster"`
+	Name     string            `json:"name"`
+	YAML     string            `json:"yaml"`
+	Metadata NamespaceMetadata `json:"metadata"`
+}
+
 // DeploymentSummary descreve informações resumidas de um Deployment
 type DeploymentSummary struct {
 	Cluster           string            `json:"cluster"`

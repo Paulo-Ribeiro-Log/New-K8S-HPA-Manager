@@ -6,19 +6,25 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
+
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/monitoring/client"
 )
 
 // NamespaceHandler gerencia requisições relacionadas a namespaces
 type NamespaceHandler struct {
-	kubeManager *config.KubeConfigManager
+	kubeManager    *config.KubeConfigManager
+	historyTracker *history.HistoryTracker
 }
 
 // NewNamespaceHandler cria um novo handler de namespaces
-func NewNamespaceHandler(km *config.KubeConfigManager) *NamespaceHandler {
-	return &NamespaceHandler{kubeManager: km}
+func NewNamespaceHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *NamespaceHandler {
+	return &NamespaceHandler{
+		kubeManager:    km,
+		historyTracker: ht,
+	}
 }
 
 // List retorna todos os namespaces de um cluster
@@ -86,7 +92,7 @@ func (h *NamespaceHandler) List(c *gin.Context) {
 // GET /api/v1/namespaces/:cluster/metrics?limit=5&sort_by=cpu
 func (h *NamespaceHandler) GetMetrics(c *gin.Context) {
 	cluster := c.Param("cluster")
-	limit := 5 // Top 5 por padrão
+	limit := 5                                 // Top 5 por padrão
 	sortBy := c.DefaultQuery("sort_by", "cpu") // cpu, memory, pods
 
 	if cluster == "" {
@@ -229,13 +235,13 @@ func (h *NamespaceHandler) GetMetrics(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"success": true,
 		"data": gin.H{
-			"top_cpu":           topCPU,
-			"top_memory":        topMemory,
-			"top_pods":          topPods,
-			"cpu_others":        cpuOthers,
-			"memory_others":     memoryOthers,
-			"pods_others":       podsOthers,
-			"total_namespaces":  len(metrics),
+			"top_cpu":          topCPU,
+			"top_memory":       topMemory,
+			"top_pods":         topPods,
+			"cpu_others":       cpuOthers,
+			"memory_others":    memoryOthers,
+			"pods_others":      podsOthers,
+			"total_namespaces": len(metrics),
 		},
 	})
 }
