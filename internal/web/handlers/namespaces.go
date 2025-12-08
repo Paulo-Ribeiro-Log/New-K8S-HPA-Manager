@@ -245,3 +245,184 @@ func (h *NamespaceHandler) GetMetrics(c *gin.Context) {
 		},
 	})
 }
+
+// Get retorna o manifesto YAML completo de um namespace específico
+func (h *NamespaceHandler) Get(c *gin.Context) {
+	cluster := c.Param("cluster")
+	name := c.Param("name")
+
+	if cluster == "" || name == "" {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster and name are required",
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	manifest, err := kubeClient.GetNamespace(c.Request.Context(), name)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "GET_ERROR",
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"data":    manifest,
+	})
+}
+
+// Describe retorna a saída do kubectl describe para um namespace
+func (h *NamespaceHandler) Describe(c *gin.Context) {
+	cluster := c.Param("cluster")
+	name := c.Param("name")
+
+	if cluster == "" || name == "" {
+		c.JSON(400, gin.H{"error": "cluster and name are required"})
+		return
+	}
+
+	// Executar kubectl describe
+	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "namespace", name, "")
+	if err != nil {
+		c.JSON(500, gin.H{
+			"error": fmt.Sprintf("Failed to execute kubectl describe: %v", err),
+		})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"cluster":  cluster,
+		"name":     name,
+		"describe": output,
+	})
+}
+
+// Delete deleta um namespace
+func (h *NamespaceHandler) Delete(c *gin.Context) {
+	cluster := c.Param("cluster")
+	name := c.Param("name")
+
+	if cluster == "" || name == "" {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster and name are required",
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	err = kubeClient.DeleteNamespace(c.Request.Context(), name)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "DELETE_ERROR",
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Namespace %s deleted successfully", name),
+	})
+}
+
+// Create cria um novo namespace
+func (h *NamespaceHandler) Create(c *gin.Context) {
+	cluster := c.Param("cluster")
+
+	var req struct {
+		Name string `json:"name" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": "Name is required",
+			},
+		})
+		return
+	}
+
+	if cluster == "" {
+		c.JSON(400, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster is required",
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	err = kubeClient.CreateNamespace(c.Request.Context(), req.Name)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CREATE_ERROR",
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Namespace %s created successfully", req.Name),
+	})
+}

@@ -471,6 +471,28 @@ func prepareNamespaceApplyPayload(yamlContent, enforceName string) ([]byte, stri
 	return jsonPayload, name, nil
 }
 
+// CreateNamespace cria um novo namespace no cluster
+func (c *Client) CreateNamespace(ctx context.Context, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("namespace name cannot be empty")
+	}
+
+	// Criar objeto namespace
+	namespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+	}
+
+	// Criar namespace
+	_, err := c.clientset.CoreV1().Namespaces().Create(ctx, namespace, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to create namespace %s in cluster %s: %w", name, c.cluster, err)
+	}
+
+	return nil
+}
+
 // DeleteNamespace deleta um namespace do cluster
 func (c *Client) DeleteNamespace(ctx context.Context, name string) error {
 	if strings.TrimSpace(name) == "" {

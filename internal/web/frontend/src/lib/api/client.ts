@@ -4,6 +4,7 @@ import type {
   Cluster,
   ClusterInfo,
   Namespace,
+  NamespaceManifest,
   HPA,
   NodePool,
   CronJob,
@@ -142,6 +143,39 @@ class APIClient {
       `/namespaces/${encodeURIComponent(cluster)}/metrics?limit=${limit}`
     );
     return response.data;
+  }
+
+  async getNamespace(cluster: string, name: string): Promise<NamespaceManifest> {
+    const response = await this.request<APIResponse<NamespaceManifest>>(
+      `/namespaces/${encodeURIComponent(cluster)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) {
+      throw new Error("Namespace not found");
+    }
+    return response.data;
+  }
+
+  async describeNamespace(cluster: string, name: string): Promise<{ describe: string }> {
+    return await this.request<{ describe: string }>(
+      `/namespaces/${encodeURIComponent(cluster)}/${encodeURIComponent(name)}/describe`
+    );
+  }
+
+  async deleteNamespace(cluster: string, name: string): Promise<{ success: boolean; message: string }> {
+    return await this.request<{ success: boolean; message: string }>(
+      `/namespaces/${encodeURIComponent(cluster)}/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    );
+  }
+
+  async createNamespace(cluster: string, name: string): Promise<{ success: boolean; message: string }> {
+    return await this.request<{ success: boolean; message: string }>(
+      `/namespaces/${encodeURIComponent(cluster)}`,
+      { 
+        method: "POST",
+        body: JSON.stringify({ name })
+      }
+    );
   }
 
   // HPAs

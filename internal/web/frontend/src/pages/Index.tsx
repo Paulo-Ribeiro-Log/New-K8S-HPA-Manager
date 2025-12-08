@@ -22,6 +22,7 @@ import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
 import NodePoolSequencingModal from "@/components/NodePoolSequencingModal";
 import SequenceProgressModal from "@/components/SequenceProgressModal";
 import { ConfigMapsTab } from "@/components/ConfigMapsTab";
+import { NamespacesTab } from "@/components/NamespacesTab";
 import { SecretsTab } from "@/components/SecretsTab";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
 import { ContainersTab } from "@/components/ContainersTab";
@@ -182,7 +183,7 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // API Hooks
   const { clusters, loading: clustersLoading } = useClusters();
-  const { namespaces, loading: namespacesLoading } = useNamespaces(selectedCluster);
+  const { namespaces, loading: namespacesLoading, refetch: refetchNamespaces } = useNamespaces(selectedCluster);
   // Para HPAs: sempre buscar de TODOS os namespaces (passar undefined ao invés de selectedNamespace)
   const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, undefined, showSystemNamespaces);
   const { nodePools, loading: nodePoolsLoading, refetch: refetchNodePools } = useNodePools(selectedCluster);
@@ -316,6 +317,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "cronjobs", label: "CronJobs", icon: Clock },
     { id: "prometheus", label: "Prometheus", icon: Activity },
     { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
+    { id: "namespaces", label: "Namespaces", icon: Database },
     { id: "configmaps", label: "ConfigMaps", icon: FileCode },
     { id: "secrets", label: "Secrets", icon: Key },
     { id: "deployments", label: "Deployments", icon: Package },
@@ -639,6 +641,20 @@ const Index = ({ onLogout }: IndexProps) => {
           />
         );
       
+      case "namespaces":
+        return (
+          <ErrorBoundary componentName="Namespaces Tab">
+            <NamespacesTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              onNamespaceChange={setSelectedNamespace}
+              onRefresh={refetchNamespaces}
+            />
+          </ErrorBoundary>
+        );
+
       case "configmaps":
         return (
           <ConfigMapsTab
@@ -935,8 +951,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps, Secrets, Deployments, Containers e Pods */}
-      {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers e Pods */}
+      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (

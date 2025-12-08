@@ -284,6 +284,10 @@ func (s *Server) setupRoutes() {
 	// Namespaces
 	namespaceHandler := handlers.NewNamespaceHandler(s.kubeManager, s.historyTracker)
 	api.GET("/namespaces", namespaceHandler.List)
+	api.GET("/namespaces/:cluster/:name", namespaceHandler.Get)
+	api.GET("/namespaces/:cluster/:name/describe", namespaceHandler.Describe)
+	api.POST("/namespaces/:cluster", namespaceHandler.Create)
+	api.DELETE("/namespaces/:cluster/:name", namespaceHandler.Delete)
 	api.GET("/namespaces/:cluster/metrics", namespaceHandler.GetMetrics) // NOVO: Métricas agregadas por namespace
 
 	// HPAs
