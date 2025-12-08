@@ -327,7 +327,7 @@ export const NamespacesTab = ({
     }
   };
 
-  const handleDelete = async () => {
+  const handleDelete = useCallback(async () => {
     if (!selectedNamespace || !cluster) return;
 
     setIsDeleting(true);
@@ -345,9 +345,9 @@ export const NamespacesTab = ({
     } finally {
       setIsDeleting(false);
     }
-  };
+  }, [selectedNamespace, cluster, onNamespaceChange, onRefresh]);
 
-  const handleCreate = async () => {
+  const handleCreate = useCallback(async () => {
     if (!newNamespaceName.trim() || !cluster) return;
 
     setIsCreating(true);
@@ -364,7 +364,7 @@ export const NamespacesTab = ({
     } finally {
       setIsCreating(false);
     }
-  };
+  }, [newNamespaceName, cluster, onRefresh]);
 
   useEffect(() => {
     setSelectedNamespace(null);
@@ -946,89 +946,6 @@ export const NamespacesTab = ({
           </div>
         )}
 
-        {/* Modal Describe */}
-        <Dialog open={describeModalOpen} onOpenChange={setDescribeModalOpen}>
-          <DialogContent className="max-w-6xl max-h-[90vh]">
-            <DialogHeader>
-              <DialogTitle>Kubectl Describe - {selectedNamespace.name}</DialogTitle>
-              <DialogDescription className="text-sm text-muted-foreground">
-                Namespace: {selectedNamespace.name} • Cluster: {cluster}
-              </DialogDescription>
-            </DialogHeader>
-            <ScrollArea className="h-[70vh]">
-              {describeLoading ? (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="w-6 h-6 animate-spin" />
-                </div>
-              ) : (
-                <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
-              )}
-            </ScrollArea>
-          </DialogContent>
-        </Dialog>
-
-        {/* Modal Create Namespace */}
-        <Dialog open={createModalOpen} onOpenChange={setCreateModalOpen}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle>Criar Novo Namespace</DialogTitle>
-              <DialogDescription>
-                Digite o nome do namespace que deseja criar no cluster <strong>{cluster}</strong>.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <label htmlFor="namespace-name" className="text-sm font-medium">
-                  Nome do Namespace
-                </label>
-                <Input
-                  id="namespace-name"
-                  value={newNamespaceName}
-                  onChange={(e) => setNewNamespaceName(e.target.value)}
-                  placeholder="meu-namespace"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && newNamespaceName.trim()) {
-                      handleCreate();
-                    }
-                  }}
-                />
-              </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setCreateModalOpen(false)} disabled={isCreating}>
-                Cancelar
-              </Button>
-              <Button onClick={handleCreate} disabled={!newNamespaceName.trim() || isCreating}>
-                {isCreating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
-                Criar
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-
-        {/* Modal Delete Confirmation */}
-        <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle className="text-destructive">Confirmar Deleção</DialogTitle>
-              <DialogDescription>
-                Tem certeza que deseja deletar o namespace <strong>{selectedNamespace.name}</strong>?
-                <br />
-                Esta ação não pode ser desfeita e irá remover todos os recursos dentro do namespace.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="flex justify-end gap-2 pt-4">
-              <Button variant="ghost" onClick={() => setDeleteConfirmOpen(false)}>
-                Cancelar
-              </Button>
-              <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
-                {isDeleting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Trash2 className="w-4 h-4 mr-2" />}
-                Deletar
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-
         {/* Modal Editor Full Screen */}
         <Dialog open={editorFullScreen} onOpenChange={setEditorFullScreen}>
           <DialogContent 
@@ -1191,6 +1108,94 @@ export const NamespacesTab = ({
     </div>
   );
 
+  // Modais globais (sempre disponíveis)
+  const renderGlobalModals = () => (
+    <>
+      {/* Modal Describe */}
+      <Dialog open={describeModalOpen} onOpenChange={setDescribeModalOpen}>
+        <DialogContent className="max-w-6xl max-h-[90vh]">
+          <DialogHeader>
+            <DialogTitle>Kubectl Describe - {selectedNamespace?.name}</DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">
+              Namespace: {selectedNamespace?.name} • Cluster: {cluster}
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="h-[70vh]">
+            {describeLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            ) : (
+              <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
+            )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Create Namespace */}
+      <Dialog open={createModalOpen} onOpenChange={setCreateModalOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Criar Novo Namespace</DialogTitle>
+            <DialogDescription>
+              Digite o nome do namespace que deseja criar no cluster <strong>{cluster}</strong>.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label htmlFor="namespace-name" className="text-sm font-medium">
+                Nome do Namespace
+              </label>
+              <Input
+                id="namespace-name"
+                value={newNamespaceName}
+                onChange={(e) => setNewNamespaceName(e.target.value)}
+                placeholder="meu-namespace"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newNamespaceName.trim()) {
+                    handleCreate();
+                  }
+                }}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setCreateModalOpen(false)} disabled={isCreating}>
+              Cancelar
+            </Button>
+            <Button onClick={handleCreate} disabled={!newNamespaceName.trim() || isCreating}>
+              {isCreating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
+              Criar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Delete Confirmation */}
+      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-destructive">Confirmar Deleção</DialogTitle>
+            <DialogDescription>
+              Tem certeza que deseja deletar o namespace <strong>{selectedNamespace?.name}</strong>?
+              <br />
+              Esta ação não pode ser desfeita e irá remover todos os recursos dentro do namespace.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="ghost" onClick={() => setDeleteConfirmOpen(false)}>
+              Cancelar
+            </Button>
+            <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
+              {isDeleting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Trash2 className="w-4 h-4 mr-2" />}
+              Deletar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+
   if (isSidebarCollapsed) {
     return (
       <div className="p-4 h-full">
@@ -1211,6 +1216,7 @@ export const NamespacesTab = ({
             </div>
           </div>
         </div>
+        {renderGlobalModals()}
       </div>
     );
   }
@@ -1384,6 +1390,7 @@ export const NamespacesTab = ({
 
       {renderDiffDialog()}
       {renderApplyConfirmDialog()}
+      {renderGlobalModals()}
     </>
   );
 };

@@ -238,14 +238,31 @@ func copyStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-// formatAge formata a idade de um recurso em formato legível
+// formatAge formata a idade de um recurso em formato legível (exibe as 2 unidades mais significativas)
 func formatAge(t time.Time) string {
 	duration := time.Since(t)
 	
-	days := int(duration.Hours() / 24)
-	hours := int(duration.Hours()) % 24
-	minutes := int(duration.Minutes()) % 60
+	totalSeconds := int(duration.Seconds())
 	
+	years := totalSeconds / (365 * 24 * 3600)
+	remainingAfterYears := totalSeconds % (365 * 24 * 3600)
+	
+	days := remainingAfterYears / (24 * 3600)
+	remainingAfterDays := remainingAfterYears % (24 * 3600)
+	
+	hours := remainingAfterDays / 3600
+	remainingAfterHours := remainingAfterDays % 3600
+	
+	minutes := remainingAfterHours / 60
+	seconds := remainingAfterHours % 60
+	
+	// Exibir as 2 unidades mais significativas
+	if years > 0 {
+		if days > 0 {
+			return fmt.Sprintf("%dy%dd", years, days)
+		}
+		return fmt.Sprintf("%dy", years)
+	}
 	if days > 0 {
 		if hours > 0 {
 			return fmt.Sprintf("%dd%dh", days, hours)
@@ -259,9 +276,12 @@ func formatAge(t time.Time) string {
 		return fmt.Sprintf("%dh", hours)
 	}
 	if minutes > 0 {
+		if seconds > 0 {
+			return fmt.Sprintf("%dm%ds", minutes, seconds)
+		}
 		return fmt.Sprintf("%dm", minutes)
 	}
-	return fmt.Sprintf("%ds", int(duration.Seconds()))
+	return fmt.Sprintf("%ds", seconds)
 }
 
 // ValidateConfigMap executa um server-side apply com dry-run
