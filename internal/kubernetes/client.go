@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -386,6 +387,256 @@ func prepareConfigMapApplyPayload(yamlContent, enforceNamespace, enforceName str
 	jsonPayload, err := json.Marshal(cm)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("failed to marshal configmap payload: %w", err)
+	}
+
+	return jsonPayload, namespace, name, nil
+}
+
+// ============================================================================
+// Ingress Methods
+// ============================================================================
+
+// ListIngresses retorna todos os Ingresses considerando filtros simples
+func (c *Client) ListIngresses(ctx context.Context, namespaces []string, search string, showSystemNamespaces bool) ([]models.IngressSummary, error) {
+	var result []models.IngressSummary
+	search = strings.ToLower(strings.TrimSpace(search))
+
+	listAllNamespaces := len(namespaces) == 0
+	uniqueNamespaces := make(map[string]struct{})
+	for _, ns := range namespaces {
+		ns = strings.TrimSpace(ns)
+		if ns == "" {
+			continue
+		}
+		uniqueNamespaces[ns] = struct{}{}
+	}
+
+	appendSummaries := func(items []networkingv1.Ingress) {
+		for _, ing := range items {
+			if !showSystemNamespaces && isSystemNamespace(ing.Namespace) {
+				continue
+			}
+			if search != "" && !matchesIngressSearch(&ing, search) {
+				continue
+			}
+			result = append(result, buildIngressSummary(c.cluster, &ing))
+		}
+	}
+
+	if listAllNamespaces {
+		ings, err := c.clientset.NetworkingV1().Ingresses("").List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list ingresses in cluster %s: %w", c.cluster, err)
+		}
+		appendSummaries(ings.Items)
+		return result, nil
+	}
+
+	for ns := range uniqueNamespaces {
+		ings, err := c.clientset.NetworkingV1().Ingresses(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list ingresses in %s/%s: %w", c.cluster, ns, err)
+		}
+		appendSummaries(ings.Items)
+	}
+
+	return result, nil
+}
+
+// GetIngress retorna o manifesto YAML completo do Ingress
+func (c *Client) GetIngress(ctx context.Context, namespace, name string) (*models.IngressManifest, error) {
+	ing, err := c.clientset.NetworkingV1().Ingresses(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ingress %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	yamlBytes, err := yaml.Marshal(ing)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal ingress %s/%s: %w", namespace, name, err)
+	}
+
+	manifest := &models.IngressManifest{
+		Cluster:   c.cluster,
+		Namespace: namespace,
+		Name:      name,
+		YAML:      string(yamlBytes),
+		Metadata: models.IngressMetadata{
+			UID:             string(ing.UID),
+			ResourceVersion: ing.ResourceVersion,
+			Labels:          copyStringMap(ing.Labels),
+			Annotations:     copyStringMap(ing.Annotations),
+		},
+	}
+
+	return manifest, nil
+}
+
+func matchesIngressSearch(ing *networkingv1.Ingress, search string) bool {
+	name := strings.ToLower(ing.Name)
+	if strings.Contains(name, search) {
+		return true
+	}
+	for k, v := range ing.Labels {
+		candidate := strings.ToLower(fmt.Sprintf("%s=%s", k, v))
+		if strings.Contains(candidate, search) {
+			return true
+		}
+	}
+	// Pesquisar por hosts
+	if ing.Spec.Rules != nil {
+		for _, rule := range ing.Spec.Rules {
+			host := strings.ToLower(rule.Host)
+			if strings.Contains(host, search) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func buildIngressSummary(cluster string, ing *networkingv1.Ingress) models.IngressSummary {
+	hosts := make([]string, 0)
+	if ing.Spec.Rules != nil {
+		for _, rule := range ing.Spec.Rules {
+			if rule.Host != "" {
+				hosts = append(hosts, rule.Host)
+			}
+		}
+	}
+
+	addresses := make([]string, 0)
+	if ing.Status.LoadBalancer.Ingress != nil {
+		for _, lb := range ing.Status.LoadBalancer.Ingress {
+			if lb.IP != "" {
+				addresses = append(addresses, lb.IP)
+			}
+			if lb.Hostname != "" {
+				addresses = append(addresses, lb.Hostname)
+			}
+		}
+	}
+
+	ingressClass := ""
+	if ing.Spec.IngressClassName != nil {
+		ingressClass = *ing.Spec.IngressClassName
+	}
+
+	updatedAt := ing.CreationTimestamp.Time
+	return models.IngressSummary{
+		Cluster:         cluster,
+		Namespace:       ing.Namespace,
+		Name:            ing.Name,
+		Labels:          copyStringMap(ing.Labels),
+		IngressClass:    ingressClass,
+		Hosts:           hosts,
+		Addresses:       addresses,
+		ResourceVersion: ing.ResourceVersion,
+		UpdatedAt:       updatedAt,
+	}
+}
+
+// ValidateIngress executa um server-side apply com dry-run
+func (c *Client) ValidateIngress(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*networkingv1.Ingress, error) {
+	return c.applyIngress(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+}
+
+// ApplyIngress aplica (ou dry-run opcionalmente) o Ingress no cluster
+func (c *Client) ApplyIngress(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*networkingv1.Ingress, error) {
+	return c.applyIngress(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+}
+
+func (c *Client) applyIngress(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*networkingv1.Ingress, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("ingress yaml content cannot be empty")
+	}
+	if fieldManager == "" {
+		fieldManager = "web-ingress-editor"
+	}
+
+	payload, namespace, name, err := prepareIngressApplyPayload(yamlContent, enforceNamespace, enforceName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Force=true permite assumir ownership de campos gerenciados por outros field managers
+	// Necessário quando Ingresses são gerenciados por kubectl, helm, terraform, etc.
+	forceFlag := true
+	options := metav1.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        &forceFlag,
+	}
+	if dryRun {
+		options.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.NetworkingV1().Ingresses(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply ingress %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	return result, nil
+}
+
+func prepareIngressApplyPayload(yamlContent, enforceNamespace, enforceName string) ([]byte, string, string, error) {
+	var ing map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &ing); err != nil {
+		return nil, "", "", fmt.Errorf("invalid ingress yaml: %w", err)
+	}
+
+	if len(ing) == 0 {
+		return nil, "", "", fmt.Errorf("ingress yaml cannot be empty")
+	}
+
+	apiVersion, _ := ing["apiVersion"].(string)
+	if strings.TrimSpace(apiVersion) == "" {
+		ing["apiVersion"] = "networking.k8s.io/v1"
+	}
+	kind, _ := ing["kind"].(string)
+	if strings.TrimSpace(kind) == "" {
+		ing["kind"] = "Ingress"
+	} else if !strings.EqualFold(kind, "Ingress") {
+		return nil, "", "", fmt.Errorf("expected kind Ingress, got %s", kind)
+	}
+
+	metadata, _ := ing["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	name, _ := metadata["name"].(string)
+	name = strings.TrimSpace(name)
+	if enforceName != "" {
+		enforceName = strings.TrimSpace(enforceName)
+		if name == "" {
+			name = enforceName
+		}
+		if name != enforceName {
+			return nil, "", "", fmt.Errorf("ingress name mismatch: expected %s, got %s", enforceName, name)
+		}
+	}
+	if name == "" {
+		return nil, "", "", fmt.Errorf("ingress metadata.name is required")
+	}
+	metadata["name"] = name
+
+	namespace := strings.TrimSpace(enforceNamespace)
+	if nsRaw, ok := metadata["namespace"].(string); ok {
+		ns := strings.TrimSpace(nsRaw)
+		if namespace == "" {
+			namespace = ns
+		} else if ns != "" && ns != namespace {
+			return nil, "", "", fmt.Errorf("ingress namespace mismatch: expected %s, got %s", namespace, ns)
+		}
+	}
+	if namespace == "" {
+		return nil, "", "", fmt.Errorf("ingress metadata.namespace is required")
+	}
+	metadata["namespace"] = namespace
+	ing["metadata"] = metadata
+
+	jsonPayload, err := json.Marshal(ing)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to marshal ingress payload: %w", err)
 	}
 
 	return jsonPayload, namespace, name, nil

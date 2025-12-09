@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 )
 
@@ -35,13 +36,15 @@ func isSystemNamespace(namespace string) bool {
 
 // PodHandler gerencia as rotas de Pods
 type PodHandler struct {
-	kubeManager *config.KubeConfigManager
+	kubeManager    *config.KubeConfigManager
+	historyTracker *history.HistoryTracker
 }
 
 // NewPodHandler cria um handler de pods
-func NewPodHandler(km *config.KubeConfigManager) *PodHandler {
+func NewPodHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *PodHandler {
 	return &PodHandler{
-		kubeManager: km,
+		kubeManager:    km,
+		historyTracker: ht,
 	}
 }
 
@@ -288,7 +291,19 @@ func (h *PodHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	err = clientset.CoreV1().Pods(namespace).Delete(c.Request.Context(), name, metav1.DeleteOptions{})
+	ctx := c.Request.Context()
+	var before map[string]interface{}
+	if pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{}); err == nil {
+		before = map[string]interface{}{
+			"name":      pod.Name,
+			"namespace": pod.Namespace,
+			"phase":     string(pod.Status.Phase),
+			"nodeName":  pod.Spec.NodeName,
+		}
+	}
+
+	start := time.Now()
+	err = clientset.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -298,6 +313,21 @@ func (h *PodHandler) Delete(c *gin.Context) {
 			},
 		})
 		return
+	}
+
+	if h.historyTracker != nil {
+		entry := history.HistoryEntry{
+			Action:   "delete_pod",
+			Resource: fmt.Sprintf("%s/%s", namespace, name),
+			Cluster:  cluster,
+			Before:   before,
+			After:    nil,
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -358,7 +388,20 @@ func (h *PodHandler) Restart(c *gin.Context) {
 		ownerKind = pod.OwnerReferences[0].Kind
 	}
 
+	// Capturar estado antes do restart
+	before := map[string]interface{}{
+		"name":      pod.Name,
+		"namespace": pod.Namespace,
+		"phase":     string(pod.Status.Phase),
+		"nodeName":  pod.Spec.NodeName,
+		"hasOwner":  hasOwner,
+	}
+	if hasOwner {
+		before["ownerKind"] = ownerKind
+	}
+
 	// Deletar o pod com GracePeriodSeconds=0 para restart rápido
+	start := time.Now()
 	gracePeriod := int64(0)
 	err = clientset.CoreV1().Pods(namespace).Delete(c.Request.Context(), name, metav1.DeleteOptions{
 		GracePeriodSeconds: &gracePeriod,
@@ -372,6 +415,21 @@ func (h *PodHandler) Restart(c *gin.Context) {
 			},
 		})
 		return
+	}
+
+	if h.historyTracker != nil {
+		entry := history.HistoryEntry{
+			Action:   "restart_pod",
+			Resource: fmt.Sprintf("%s/%s", namespace, name),
+			Cluster:  cluster,
+			Before:   before,
+			After:    map[string]interface{}{"restarted": true, "hasOwner": hasOwner, "ownerKind": ownerKind},
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
 	}
 
 	message := fmt.Sprintf("Pod %s restarted successfully", name)

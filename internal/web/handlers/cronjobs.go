@@ -3,8 +3,10 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/history"
 
 	"github.com/gin-gonic/gin"
 	batchv1 "k8s.io/api/batch/v1"
@@ -13,12 +15,16 @@ import (
 
 // CronJobHandler gerencia requisições relacionadas a CronJobs
 type CronJobHandler struct {
-	kubeManager *config.KubeConfigManager
+	kubeManager    *config.KubeConfigManager
+	historyTracker *history.HistoryTracker
 }
 
 // NewCronJobHandler cria um novo handler de CronJobs
-func NewCronJobHandler(km *config.KubeConfigManager) *CronJobHandler {
-	return &CronJobHandler{kubeManager: km}
+func NewCronJobHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *CronJobHandler {
+	return &CronJobHandler{
+		kubeManager:    km,
+		historyTracker: ht,
+	}
 }
 
 // CronJobResponse representa um CronJob na resposta
@@ -165,6 +171,12 @@ func (h *CronJobHandler) Update(c *gin.Context) {
 		return
 	}
 
+	// Capturar estado antes da atualização
+	before := map[string]interface{}{
+		"schedule": cronJob.Spec.Schedule,
+		"suspend":  cronJob.Spec.Suspend,
+	}
+
 	// Atualizar campos conforme fornecido
 	if req.Suspend != nil {
 		cronJob.Spec.Suspend = req.Suspend
@@ -174,6 +186,7 @@ func (h *CronJobHandler) Update(c *gin.Context) {
 	}
 
 	// Aplicar atualização
+	start := time.Now()
 	updatedCronJob, err := client.BatchV1().CronJobs(namespace).Update(context.Background(), cronJob, metav1.UpdateOptions{})
 	if err != nil {
 		c.JSON(500, gin.H{
@@ -184,6 +197,25 @@ func (h *CronJobHandler) Update(c *gin.Context) {
 			},
 		})
 		return
+	}
+
+	if h.historyTracker != nil {
+		after := map[string]interface{}{
+			"schedule": updatedCronJob.Spec.Schedule,
+			"suspend":  updatedCronJob.Spec.Suspend,
+		}
+		entry := history.HistoryEntry{
+			Action:   "update_cronjob",
+			Resource: fmt.Sprintf("%s/%s", namespace, name),
+			Cluster:  cluster,
+			Before:   before,
+			After:    after,
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
 	}
 
 	c.JSON(200, gin.H{

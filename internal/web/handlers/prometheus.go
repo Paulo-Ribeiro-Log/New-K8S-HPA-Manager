@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/kubernetes"
 
 	"github.com/gin-gonic/gin"
@@ -18,12 +20,16 @@ import (
 
 // PrometheusHandler gerencia requisições relacionadas ao Prometheus Stack
 type PrometheusHandler struct {
-	kubeManager *config.KubeConfigManager
+	kubeManager    *config.KubeConfigManager
+	historyTracker *history.HistoryTracker
 }
 
 // NewPrometheusHandler cria um novo handler de Prometheus
-func NewPrometheusHandler(km *config.KubeConfigManager) *PrometheusHandler {
-	return &PrometheusHandler{kubeManager: km}
+func NewPrometheusHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *PrometheusHandler {
+	return &PrometheusHandler{
+		kubeManager:    km,
+		historyTracker: ht,
+	}
 }
 
 // PrometheusResource representa um recurso do Prometheus Stack
@@ -176,7 +182,17 @@ func (h *PrometheusHandler) Update(c *gin.Context) {
 		Replicas:      req.Replicas,
 	}
 
+	// Capturar estado antes da atualização
+	before := map[string]interface{}{
+		"cpuRequest":    req.CPURequest,
+		"memoryRequest": req.MemoryRequest,
+		"cpuLimit":      req.CPULimit,
+		"memoryLimit":   req.MemoryLimit,
+		"replicas":      req.Replicas,
+	}
+
 	// Atualizar baseado no tipo
+	start := time.Now()
 	var err error
 	switch resourceType {
 	case "deployment":
@@ -205,6 +221,28 @@ func (h *PrometheusHandler) Update(c *gin.Context) {
 			},
 		})
 		return
+	}
+
+	if h.historyTracker != nil {
+		after := map[string]interface{}{
+			"cpuRequest":    req.CPURequest,
+			"memoryRequest": req.MemoryRequest,
+			"cpuLimit":      req.CPULimit,
+			"memoryLimit":   req.MemoryLimit,
+			"replicas":      req.Replicas,
+		}
+		entry := history.HistoryEntry{
+			Action:   "update_prometheus",
+			Resource: fmt.Sprintf("%s/%s/%s", resourceType, namespace, name),
+			Cluster:  cluster,
+			Before:   before,
+			After:    after,
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
 	}
 
 	c.JSON(200, gin.H{
@@ -535,6 +573,7 @@ func (h *PrometheusHandler) Rollout(c *gin.Context) {
 	ctx := context.Background()
 
 	// Executar rollout com base no tipo de recurso
+	start := time.Now()
 	switch strings.ToLower(resourceType) {
 	case "deployment":
 		err = client.RolloutDeployment(ctx, namespace, name)
@@ -556,6 +595,21 @@ func (h *PrometheusHandler) Rollout(c *gin.Context) {
 			"error":   fmt.Sprintf("failed to rollout %s: %v", resourceType, err),
 		})
 		return
+	}
+
+	if h.historyTracker != nil {
+		entry := history.HistoryEntry{
+			Action:   "rollout_prometheus",
+			Resource: fmt.Sprintf("%s/%s/%s", resourceType, namespace, name),
+			Cluster:  cluster,
+			Before:   nil,
+			After:    map[string]interface{}{"rolledOut": true},
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

@@ -29,6 +29,11 @@ import type {
   SecretDiffResult,
   SecretValidateResult,
   SecretApplyResult,
+  IngressSummary,
+  IngressManifest,
+  IngressDiffResult,
+  IngressValidateResult,
+  IngressApplyResult,
   DeploymentSummary,
   DeploymentManifest,
   DeploymentDiffResult,
@@ -536,6 +541,107 @@ class APIClient {
   async describeDeployment(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
     const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
       `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
+  }
+
+  // Ingress API Methods
+  async getIngresses(
+    cluster?: string,
+    namespaces?: string[],
+    search?: string,
+    showSystem: boolean = false,
+    bypassCache: boolean = false
+  ): Promise<IngressSummary[]> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (namespaces && namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    if (search) params.append("search", search);
+    if (showSystem) params.append("showSystem", "true");
+    if (bypassCache) params.append("_t", Date.now().toString());
+
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const response = await this.request<APIResponse<IngressSummary[]>>(
+      `/ingresses${query}`,
+      {
+        headers: bypassCache
+          ? {
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+            }
+          : {},
+      }
+    );
+    return response.data || [];
+  }
+
+  async getIngress(cluster: string, namespace: string, name: string): Promise<IngressManifest> {
+    const response = await this.request<APIResponse<IngressManifest>>(
+      `/ingresses/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) {
+      throw new Error("Ingress not found");
+    }
+    return response.data;
+  }
+
+  async diffIngress(originalYaml: string, updatedYaml: string, fileName?: string): Promise<IngressDiffResult> {
+    const response = await this.request<APIResponse<IngressDiffResult>>(
+      `/ingresses/diff`,
+      {
+        method: "POST",
+        body: JSON.stringify({ originalYaml, updatedYaml, fileName }),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Diff response inválida");
+    }
+    return response.data;
+  }
+
+  async validateIngress(payload: {
+    cluster: string;
+    namespace: string;
+    yaml: string;
+    fieldManager?: string;
+  }): Promise<IngressValidateResult> {
+    const response = await this.request<APIResponse<IngressValidateResult>>(
+      `/ingresses/validate`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Validação sem retorno");
+    }
+    return response.data;
+  }
+
+  async applyIngress(
+    cluster: string,
+    namespace: string,
+    name: string,
+    body: { yaml: string; fieldManager?: string; dryRun?: boolean }
+  ): Promise<IngressApplyResult> {
+    const response = await this.request<APIResponse<IngressApplyResult>>(
+      `/ingresses/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Aplicação sem retorno");
+    }
+    return response.data;
+  }
+
+  async describeIngress(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/ingresses/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
     );
     return response;
   }

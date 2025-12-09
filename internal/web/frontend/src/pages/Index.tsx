@@ -23,6 +23,7 @@ import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
 import NodePoolSequencingModal from "@/components/NodePoolSequencingModal";
 import SequenceProgressModal from "@/components/SequenceProgressModal";
 import { ConfigMapsTab } from "@/components/ConfigMapsTab";
+import { IngressTab } from "@/components/IngressTab";
 import { NamespacesTab } from "@/components/NamespacesTab";
 import { SecretsTab } from "@/components/SecretsTab";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
@@ -657,6 +658,20 @@ const Index = ({ onLogout }: IndexProps) => {
           />
         );
 
+      case "ingresses":
+        return (
+          <ErrorBoundary componentName="Ingress Tab">
+            <IngressTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
+        );
+
       case "secrets":
         return (
           <ErrorBoundary componentName="Secrets Tab">
@@ -941,8 +956,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers e Pods */}
-      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers, Pods, CronJobs, Prometheus e Ingresses */}
+      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (
