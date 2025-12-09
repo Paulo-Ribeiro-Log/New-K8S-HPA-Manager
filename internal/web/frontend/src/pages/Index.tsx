@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { Header } from "@/components/Header";
 import { StatsCard } from "@/components/StatsCard";
 import { TabNavigation } from "@/components/TabNavigation";
+import { WorkloadMenu } from "@/components/WorkloadMenu";
 import { DashboardCharts } from "@/components/DashboardCharts";
 import { SplitView } from "@/components/SplitView";
 import {
@@ -42,8 +43,6 @@ import {
   LayoutDashboard,
   Scale,
   Server,
-  Clock,
-  Activity,
   Layers,
   Package,
   Database,
@@ -52,10 +51,7 @@ import {
   Eye,
   EyeOff,
   BarChart3,
-  FileCode,
   Settings,
-  Key,
-  Box,
   X,
   RefreshCcw
 } from "lucide-react";
@@ -309,20 +305,14 @@ const Index = ({ onLogout }: IndexProps) => {
     nodePools: nodePools.length,
   };
 
+  // Abas que ficam no TabNavigation (topo) - SEM as abas workload
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "hpas", label: "HPAs", icon: Scale },
     { id: "nodepools", label: "Node Pools", icon: Server },
     { id: "staging", label: "Staging", icon: FileText, badge: staging.getChangesCount().total },
-    { id: "cronjobs", label: "CronJobs", icon: Clock },
-    { id: "prometheus", label: "Prometheus", icon: Activity },
     { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
     { id: "namespaces", label: "Namespaces", icon: Database },
-    { id: "configmaps", label: "ConfigMaps", icon: FileCode },
-    { id: "secrets", label: "Secrets", icon: Key },
-    { id: "deployments", label: "Deployments", icon: Package },
-    { id: "containers", label: "Containers", icon: Box },
-    { id: "pods", label: "Pods", icon: Layers },
   ];
 
   // Filtrar namespaces
@@ -991,12 +981,17 @@ const Index = ({ onLogout }: IndexProps) => {
         <VPNWarningBanner onDismiss={() => setShowVPNWarning(false)} />
       )}
 
+      {/* TabNavigation com WorkloadMenu */}
       <TabNavigation
         tabs={tabs}
         activeTab={activeTab}
         onTabChange={handleTabChange}
-      />
+      >
+        {/* Menu dropdown Workload */}
+        <WorkloadMenu activeTab={activeTab} onTabChange={handleTabChange} />
+      </TabNavigation>
 
+      {/* Conteúdo Principal */}
       <div className="flex-1 min-h-0 overflow-auto">
         {renderTabContent()}
       </div>

@@ -240,11 +240,16 @@ Recent Updates (v1.3.4):
   - Botões duplicados em painel normal e modal fullscreen
   - Botão "Criar Namespace" no header do painel "Visualização"
   - kubectl describe integrado, modal fullscreen para edição com toolbar completa
+  - **Lista de Deployments**: Botão colapsável (estilo Labels do ConfigMaps) exibindo deployments do namespace
+    - Mostra ícone Package + nome + réplicas (ready/total)
+    - Carregamento automático ao selecionar namespace
+    - Endpoint: `GET /api/v1/deployments?cluster=...&namespaces=...`
+    - Estado inicial: recolhido, click para expandir/colapsar
   - Backend: endpoints POST/GET/**PUT**/DELETE em `/namespaces/:cluster`
   - Handler Apply: `internal/web/handlers/namespaces.go:Apply()` com suporte a dry-run
   - Kubernetes client: `internal/kubernetes/client.go:ApplyNamespace()` reutilizado
   - API client: `internal/web/frontend/src/lib/api/client.ts:applyNamespace()` adicionado
-  - Component: `NamespacesTab.tsx` (1240+ linhas com toda lógica de edição)
+  - Component: `NamespacesTab.tsx` (1250+ linhas com toda lógica de edição + deployments)
 
 Recent Updates (v1.3.3):
 - Aba Pods/Containers: Gerenciamento completo de Pods e Containers Kubernetes
