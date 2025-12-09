@@ -196,6 +196,54 @@ export interface DeploymentApplyResult {
   appliedAt?: string;
 }
 
+// Ingress Types
+export interface IngressSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  labels?: Record<string, string>;
+  ingressClass?: string;
+  hosts?: string[];
+  addresses?: string[];
+  resourceVersion?: string;
+  updatedAt: string;
+}
+
+export interface IngressMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface IngressManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  yaml: string;
+  metadata: IngressMetadata;
+}
+
+export interface IngressDiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface IngressValidateResult {
+  name: string;
+  namespace: string;
+  resourceVersion?: string;
+}
+
+export interface IngressApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  resourceVersion?: string;
+  dryRun?: boolean;
+  appliedAt?: string;
+}
+
 // Pod/Container Types
 export interface ContainerStatus {
   name: string;

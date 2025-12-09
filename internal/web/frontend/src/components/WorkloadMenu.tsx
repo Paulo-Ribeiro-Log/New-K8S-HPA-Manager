@@ -13,6 +13,7 @@ import {
   Layers,
   Clock,
   Activity,
+  Network,
 } from "lucide-react";
 
 interface WorkloadMenuProps {
@@ -28,6 +29,7 @@ interface WorkloadTab {
 
 const workloadTabs: WorkloadTab[] = [
   { id: "configmaps", label: "ConfigMaps", icon: FileCode },
+  { id: "ingresses", label: "Ingresses", icon: Network },
   { id: "secrets", label: "Secrets", icon: Key },
   { id: "deployments", label: "Deployments", icon: Package },
   { id: "containers", label: "Containers", icon: Box },
@@ -39,6 +41,7 @@ const workloadTabs: WorkloadTab[] = [
 export const WorkloadMenu = ({ activeTab, onTabChange }: WorkloadMenuProps) => {
   // Verificar se alguma aba workload está ativa
   const isWorkloadActive = workloadTabs.some((tab) => tab.id === activeTab);
+  const activeWorkloadTab = workloadTabs.find((tab) => tab.id === activeTab);
 
   return (
     <DropdownMenu>
@@ -55,7 +58,7 @@ export const WorkloadMenu = ({ activeTab, onTabChange }: WorkloadMenuProps) => {
           `}
         >
           <Layers className="w-4 h-4" />
-          Workload
+          Workload{activeWorkloadTab ? `: ${activeWorkloadTab.label}` : ""}
           <ChevronDown className="w-3 h-3" />
         </button>
       </DropdownMenuTrigger>

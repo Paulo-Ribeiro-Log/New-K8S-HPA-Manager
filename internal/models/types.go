@@ -84,6 +84,36 @@ type NamespaceManifest struct {
 	Metadata NamespaceMetadata `json:"metadata"`
 }
 
+// IngressSummary descreve informações resumidas de um Ingress
+type IngressSummary struct {
+	Cluster         string            `json:"cluster"`
+	Namespace       string            `json:"namespace"`
+	Name            string            `json:"name"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	IngressClass    string            `json:"ingressClass,omitempty"`
+	Hosts           []string          `json:"hosts"`
+	Addresses       []string          `json:"addresses,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	UpdatedAt       time.Time         `json:"updatedAt"`
+}
+
+// IngressMetadata consolida metadados relevantes do Ingress
+type IngressMetadata struct {
+	UID             string            `json:"uid,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Annotations     map[string]string `json:"annotations,omitempty"`
+}
+
+// IngressManifest contém o YAML bruto e metadados para edição
+type IngressManifest struct {
+	Cluster   string          `json:"cluster"`
+	Namespace string          `json:"namespace"`
+	Name      string          `json:"name"`
+	YAML      string          `json:"yaml"`
+	Metadata  IngressMetadata `json:"metadata"`
+}
+
 // DeploymentSummary descreve informações resumidas de um Deployment
 type DeploymentSummary struct {
 	Cluster           string            `json:"cluster"`

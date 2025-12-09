@@ -312,12 +312,12 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/api/v1/nodepools/progress/:operationId/status", handlers.HandleProgressStatus)
 
 	// CronJobs
-	cronJobHandler := handlers.NewCronJobHandler(s.kubeManager)
+	cronJobHandler := handlers.NewCronJobHandler(s.kubeManager, s.historyTracker)
 	api.GET("/cronjobs", cronJobHandler.List)
 	api.PUT("/cronjobs/:cluster/:namespace/:name", cronJobHandler.Update)
 
 	// Prometheus Stack
-	prometheusHandler := handlers.NewPrometheusHandler(s.kubeManager)
+	prometheusHandler := handlers.NewPrometheusHandler(s.kubeManager, s.historyTracker)
 	api.GET("/prometheus", prometheusHandler.List)
 	api.PUT("/prometheus/:cluster/:namespace/:type/:name", prometheusHandler.Update)
 	api.POST("/prometheus/:cluster/:namespace/:type/:name/rollout", prometheusHandler.Rollout)
@@ -334,6 +334,18 @@ func (s *Server) setupRoutes() {
 		configMaps.PUT("/:cluster/:namespace/:name", configMapHandler.Apply)
 	}
 
+	// Ingress
+	ingressHandler := handlers.NewIngressHandler(s.kubeManager, s.historyTracker)
+	ingresses := api.Group("/ingresses")
+	{
+		ingresses.GET("", ingressHandler.List)
+		ingresses.GET("/:cluster/:namespace/:name", ingressHandler.Get)
+		ingresses.GET("/:cluster/:namespace/:name/describe", ingressHandler.Describe)
+		ingresses.POST("/diff", ingressHandler.Diff)
+		ingresses.POST("/validate", ingressHandler.Validate)
+		ingresses.PUT("/:cluster/:namespace/:name", ingressHandler.Apply)
+	}
+
 	// Deployments
 	deploymentHandler := handlers.NewDeploymentHandler(s.kubeManager, s.historyTracker)
 	deployments := api.Group("/deployments")
@@ -347,7 +359,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Pods/Containers
-	podHandler := handlers.NewPodHandler(s.kubeManager)
+	podHandler := handlers.NewPodHandler(s.kubeManager, s.historyTracker)
 	pods := api.Group("/pods")
 	{
 		pods.GET("", podHandler.List)

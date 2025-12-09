@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
@@ -348,7 +349,19 @@ func (h *NamespaceHandler) Delete(c *gin.Context) {
 	}
 
 	kubeClient := kubeclient.NewClient(clientset, cluster)
-	err = kubeClient.DeleteNamespace(c.Request.Context(), name)
+
+	ctx := c.Request.Context()
+	var before map[string]interface{}
+	if manifest, err := kubeClient.GetNamespace(ctx, name); err == nil {
+		before = map[string]interface{}{
+			"name":            manifest.Name,
+			"yaml":            manifest.YAML,
+			"resourceVersion": manifest.Metadata.ResourceVersion,
+		}
+	}
+
+	start := time.Now()
+	err = kubeClient.DeleteNamespace(ctx, name)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"success": false,
@@ -358,6 +371,21 @@ func (h *NamespaceHandler) Delete(c *gin.Context) {
 			},
 		})
 		return
+	}
+
+	if h.historyTracker != nil {
+		entry := history.HistoryEntry{
+			Action:   "delete_namespace",
+			Resource: name,
+			Cluster:  cluster,
+			Before:   before,
+			After:    nil,
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
 	}
 
 	c.JSON(200, gin.H{
@@ -409,6 +437,7 @@ func (h *NamespaceHandler) Create(c *gin.Context) {
 	}
 
 	kubeClient := kubeclient.NewClient(clientset, cluster)
+	start := time.Now()
 	err = kubeClient.CreateNamespace(c.Request.Context(), req.Name)
 	if err != nil {
 		c.JSON(500, gin.H{
@@ -419,6 +448,21 @@ func (h *NamespaceHandler) Create(c *gin.Context) {
 			},
 		})
 		return
+	}
+
+	if h.historyTracker != nil {
+		entry := history.HistoryEntry{
+			Action:   "create_namespace",
+			Resource: req.Name,
+			Cluster:  cluster,
+			Before:   nil,
+			After:    map[string]interface{}{"name": req.Name},
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
 	}
 
 	c.JSON(200, gin.H{
@@ -474,8 +518,20 @@ func (h *NamespaceHandler) Apply(c *gin.Context) {
 
 	kubeClient := kubeclient.NewClient(clientset, cluster)
 
+	ctx := c.Request.Context()
+	var before map[string]interface{}
+	if !req.DryRun {
+		if manifest, err := kubeClient.GetNamespace(ctx, name); err == nil {
+			before = map[string]interface{}{
+				"yaml":            manifest.YAML,
+				"resourceVersion": manifest.Metadata.ResourceVersion,
+			}
+		}
+	}
+
+	start := time.Now()
 	// Aplicar namespace
-	_, err = kubeClient.ApplyNamespace(c.Request.Context(), req.YAML, req.FieldManager, name, req.DryRun)
+	result, err := kubeClient.ApplyNamespace(ctx, req.YAML, req.FieldManager, name, req.DryRun)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"success": false,
@@ -485,6 +541,27 @@ func (h *NamespaceHandler) Apply(c *gin.Context) {
 			},
 		})
 		return
+	}
+
+	if !req.DryRun && h.historyTracker != nil {
+		after := map[string]interface{}{
+			"name":            result.Name,
+			"resourceVersion": result.ResourceVersion,
+			"labels":          result.Labels,
+			"annotations":     result.Annotations,
+		}
+		entry := history.HistoryEntry{
+			Action:   "apply_namespace",
+			Resource: name,
+			Cluster:  cluster,
+			Before:   before,
+			After:    after,
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
 	}
 
 	message := fmt.Sprintf("Namespace %s applied successfully", name)
