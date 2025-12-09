@@ -172,7 +172,7 @@ export const TopNamespacesCard = ({ cluster }: TopNamespacesCardProps) => {
   };
 
   return (
-    <Card className="p-4 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-700/60 shadow-lg hover:shadow-xl transition-all duration-300">
+    <Card className="p-4 bg-gradient-card backdrop-blur-sm border border-border/50 shadow-lg hover:shadow-xl transition-all duration-300">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <div className="p-2 bg-gradient-to-r from-yellow-500 to-orange-600 rounded-lg shadow-md">
