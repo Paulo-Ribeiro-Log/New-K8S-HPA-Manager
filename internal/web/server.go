@@ -379,6 +379,7 @@ func (s *Server) setupRoutes() {
 		secrets.GET("/:cluster/:namespace/:name/describe", secretHandler.Describe)
 		secrets.POST("/diff", secretHandler.Diff)
 		secrets.POST("/validate", secretHandler.Validate)
+		secrets.POST("/:cluster/:namespace", secretHandler.Create)
 		secrets.PUT("/:cluster/:namespace/:name", secretHandler.Apply)
 	}
 

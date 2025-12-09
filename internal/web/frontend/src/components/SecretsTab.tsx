@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock, X, FileText } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock, X, FileText, Plus } from "lucide-react";
 import { toast } from "sonner";
 import * as yaml from "js-yaml";
 
@@ -26,6 +26,7 @@ import "diff2html/bundles/css/diff2html.min.css";
 import "@/styles/diff2html-dark.css";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { CreateSecretModal } from "@/components/CreateSecretModal";
 
 interface SecretsTabProps {
   cluster: string;
@@ -65,6 +66,7 @@ export const SecretsTab = ({
   const [describeModalOpen, setDescribeModalOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
 
   // Undo/Redo history with persistent cache
   const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
@@ -548,15 +550,26 @@ export const SecretsTab = ({
   );
 
   const rightTitleAction = (
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={refreshManifest}
-      disabled={!selectedSecret || manifestLoading}
-    >
-      <RefreshCcw className="w-4 h-4 mr-2" />
-      Recarregar YAML
-    </Button>
+    <div className="flex items-center gap-2">
+      <Button
+        variant="default"
+        size="sm"
+        onClick={() => setCreateModalOpen(true)}
+        disabled={!cluster}
+      >
+        <Plus className="w-4 h-4 mr-2" />
+        Criar Secret
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={refreshManifest}
+        disabled={!selectedSecret || manifestLoading}
+      >
+        <RefreshCcw className="w-4 h-4 mr-2" />
+        Recarregar YAML
+      </Button>
+    </div>
   );
 
   const renderSecretList = () => {
@@ -1351,6 +1364,17 @@ export const SecretsTab = ({
       {renderDiffDialog()}
       {renderEditorFullScreen()}
       {renderApplyConfirmDialog()}
+
+      {/* Modal Create Secret */}
+      <CreateSecretModal
+        open={createModalOpen}
+        onOpenChange={setCreateModalOpen}
+        cluster={cluster}
+        namespaces={filteredNamespaces}
+        onSuccess={() => {
+          refetch();
+        }}
+      />
 
       {/* Modal Describe */}
       <Dialog open={describeModalOpen} onOpenChange={setDescribeModalOpen}>

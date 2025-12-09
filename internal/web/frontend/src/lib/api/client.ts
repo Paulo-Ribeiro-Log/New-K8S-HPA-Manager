@@ -444,6 +444,24 @@ class APIClient {
     return response;
   }
 
+  async createSecret(
+    cluster: string,
+    namespace: string,
+    body: { yaml: string; fieldManager?: string }
+  ): Promise<SecretApplyResult> {
+    const response = await this.request<APIResponse<SecretApplyResult>>(
+      `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Criação sem retorno");
+    }
+    return response.data;
+  }
+
   // Deployments API Methods
   async getDeployments(
     cluster?: string,
