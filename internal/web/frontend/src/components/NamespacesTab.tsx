@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
-import type { Namespace, TopNamespacesResponse, NamespaceManifest } from "@/lib/api/types";
+import type { Namespace, TopNamespacesResponse, NamespaceManifest, DeploymentSummary } from "@/lib/api/types";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -61,6 +61,11 @@ export const NamespacesTab = ({
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newNamespaceName, setNewNamespaceName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+
+  // Estados para deployments
+  const [deployments, setDeployments] = useState<DeploymentSummary[]>([]);
+  const [deploymentsLoading, setDeploymentsLoading] = useState(false);
+  const [showDeployments, setShowDeployments] = useState(false);
 
   // Estados de edição (copiado de ConfigMapsTab)
   const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
@@ -139,6 +144,30 @@ export const NamespacesTab = ({
       });
     } finally {
       setManifestLoading(false);
+    }
+  };
+
+  const loadDeployments = async () => {
+    if (!selectedNamespace || !cluster) return;
+
+    setDeploymentsLoading(true);
+    try {
+      const deploymentsList = await apiClient.getDeployments(
+        cluster,
+        [selectedNamespace.name],
+        undefined,
+        false,
+        true
+      );
+      setDeployments(deploymentsList);
+      setShowDeployments(false); // Inicialmente recolhido
+    } catch (err) {
+      toast.error("Erro ao carregar deployments", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+      setDeployments([]);
+    } finally {
+      setDeploymentsLoading(false);
     }
   };
 
@@ -378,13 +407,16 @@ export const NamespacesTab = ({
     }
   }, [cluster]);
 
-  // Carregar manifest quando namespace é selecionado
+  // Carregar manifest e deployments quando namespace é selecionado
   useEffect(() => {
     if (selectedNamespace && cluster) {
       loadManifest();
+      loadDeployments();
     } else {
       setNamespaceManifest(null);
       setEditorValue("");
+      setDeployments([]);
+      setShowDeployments(false);
     }
   }, [selectedNamespace, cluster]);
 
@@ -780,8 +812,37 @@ export const NamespacesTab = ({
                 Sistema
               </span>
             )}
+            {deployments.length > 0 && (
+              <div className="flex flex-col">
+                <button
+                  type="button"
+                  onClick={() => setShowDeployments((prev) => !prev)}
+                  className="flex items-center gap-1 text-muted-foreground uppercase mb-0.5 hover:text-foreground"
+                >
+                  {showDeployments ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                  <span>Deployments ({deployments.length})</span>
+                </button>
+                {showDeployments && (
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {deployments.map((dep) => (
+                      <span
+                        key={dep.name}
+                        className="px-2 py-1 bg-secondary/60 rounded text-[10px] font-mono flex items-center gap-1"
+                        title={`${dep.readyReplicas}/${dep.replicas} réplicas prontas`}
+                      >
+                        <Package className="w-3 h-3" />
+                        {dep.name}
+                        <span className="text-muted-foreground ml-0.5">
+                          ({dep.readyReplicas}/{dep.replicas})
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-          
+
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="sm">

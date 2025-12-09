@@ -12,9 +12,10 @@ interface TabNavigationProps {
   tabs: Tab[];
   activeTab: string;
   onTabChange: (tabId: string) => void;
+  children?: React.ReactNode; // Componentes customizados (ex: WorkloadMenu)
 }
 
-export const TabNavigation = ({ tabs, activeTab, onTabChange }: TabNavigationProps) => {
+export const TabNavigation = ({ tabs, activeTab, onTabChange, children }: TabNavigationProps) => {
   return (
     <div className="h-12 bg-card border-b border-border flex items-center px-4 gap-1 flex-shrink-0">
       {tabs.map((tab) => {
@@ -48,6 +49,8 @@ export const TabNavigation = ({ tabs, activeTab, onTabChange }: TabNavigationPro
           </button>
         );
       })}
+      {/* Renderizar componentes customizados (ex: WorkloadMenu) */}
+      {children}
     </div>
   );
 };
