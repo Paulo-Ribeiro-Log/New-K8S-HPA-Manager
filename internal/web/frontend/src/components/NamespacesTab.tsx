@@ -26,6 +26,7 @@ import { createTwoFilesPatch } from "diff";
 import { html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
 import * as yaml from "js-yaml";
+import { ProtectedAction } from "@/components/rbac";
 
 interface NamespacesTabProps {
   cluster: string;
@@ -850,10 +851,12 @@ export const NamespacesTab = ({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setDeleteConfirmOpen(true)} className="text-destructive focus:text-destructive">
-                <Trash2 className="w-4 h-4 mr-2" />
-                Deletar Namespace
-              </DropdownMenuItem>
+              <ProtectedAction showWarning={false}>
+                <DropdownMenuItem onClick={() => setDeleteConfirmOpen(true)} className="text-destructive focus:text-destructive">
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Deletar Namespace
+                </DropdownMenuItem>
+              </ProtectedAction>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -979,14 +982,16 @@ export const NamespacesTab = ({
                 <Maximize2 className="w-4 h-4" />
                 Tela cheia
               </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleValidate}
-                disabled={!selectedNamespace || isValidating}
-              >
-                <CheckCircle2 className="w-4 h-4 mr-2" /> Validar (Dry-run)
-              </Button>
+              <ProtectedAction>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleValidate}
+                  disabled={!selectedNamespace || isValidating}
+                >
+                  <CheckCircle2 className="w-4 h-4 mr-2" /> Validar (Dry-run)
+                </Button>
+              </ProtectedAction>
               <Button
                 variant="outline"
                 size="sm"
@@ -995,14 +1000,16 @@ export const NamespacesTab = ({
               >
                 <X className="w-4 h-4 mr-2" /> Cancelar
               </Button>
-              <Button
-                variant="default"
-                size="sm"
-                onClick={openApplyConfirm}
-                disabled={!selectedNamespace || isApplying || !hasChanges}
-              >
-                <TriangleAlert className="w-4 h-4 mr-2" /> Aplicar
-              </Button>
+              <ProtectedAction>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={openApplyConfirm}
+                  disabled={!selectedNamespace || isApplying || !hasChanges}
+                >
+                  <TriangleAlert className="w-4 h-4 mr-2" /> Aplicar
+                </Button>
+              </ProtectedAction>
             </div>
           </div>
         )}
@@ -1074,19 +1081,21 @@ export const NamespacesTab = ({
                         Diff
                       </button>
                     </div>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={handleValidate}
-                      disabled={!selectedNamespace || isValidating}
-                    >
-                      {isValidating ? (
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      ) : (
-                        <CheckCircle2 className="w-4 h-4 mr-2" />
-                      )}
-                      Dry-run
-                    </Button>
+                    <ProtectedAction>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={handleValidate}
+                        disabled={!selectedNamespace || isValidating}
+                      >
+                        {isValidating ? (
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        ) : (
+                          <CheckCircle2 className="w-4 h-4 mr-2" />
+                        )}
+                        Dry-run
+                      </Button>
+                    </ProtectedAction>
                     <Button
                       variant="outline"
                       size="sm"
@@ -1095,18 +1104,20 @@ export const NamespacesTab = ({
                     >
                       Cancelar
                     </Button>
-                    <Button
-                      variant="default"
-                      size="sm"
-                      onClick={() => {
-                        openApplyConfirm();
-                        setEditorFullScreen(false);
-                      }}
-                      disabled={!selectedNamespace || isApplying || !hasChanges}
-                    >
-                      <TriangleAlert className="w-4 h-4 mr-2" />
-                      Aplicar
-                    </Button>
+                    <ProtectedAction>
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={() => {
+                          openApplyConfirm();
+                          setEditorFullScreen(false);
+                        }}
+                        disabled={!selectedNamespace || isApplying || !hasChanges}
+                      >
+                        <TriangleAlert className="w-4 h-4 mr-2" />
+                        Aplicar
+                      </Button>
+                    </ProtectedAction>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1224,10 +1235,12 @@ export const NamespacesTab = ({
             <Button variant="ghost" onClick={() => setCreateModalOpen(false)} disabled={isCreating}>
               Cancelar
             </Button>
-            <Button onClick={handleCreate} disabled={!newNamespaceName.trim() || isCreating}>
-              {isCreating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
-              Criar
-            </Button>
+            <ProtectedAction>
+              <Button onClick={handleCreate} disabled={!newNamespaceName.trim() || isCreating}>
+                {isCreating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
+                Criar
+              </Button>
+            </ProtectedAction>
           </div>
         </DialogContent>
       </Dialog>
@@ -1247,10 +1260,12 @@ export const NamespacesTab = ({
             <Button variant="ghost" onClick={() => setDeleteConfirmOpen(false)}>
               Cancelar
             </Button>
-            <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
-              {isDeleting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Trash2 className="w-4 h-4 mr-2" />}
-              Deletar
-            </Button>
+            <ProtectedAction>
+              <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
+                {isDeleting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Trash2 className="w-4 h-4 mr-2" />}
+                Deletar
+              </Button>
+            </ProtectedAction>
           </div>
         </DialogContent>
       </Dialog>
@@ -1267,10 +1282,12 @@ export const NamespacesTab = ({
                 {collapseButton}
                 <p className="text-base font-semibold text-primary">Visualização</p>
               </div>
-              <Button variant="outline" size="sm" onClick={() => setCreateModalOpen(true)}>
-                <Plus className="w-4 h-4 mr-1" />
-                Criar Namespace
-              </Button>
+              <ProtectedAction>
+                <Button variant="outline" size="sm" onClick={() => setCreateModalOpen(true)}>
+                  <Plus className="w-4 h-4 mr-1" />
+                  Criar Namespace
+                </Button>
+              </ProtectedAction>
             </div>
             <div className="flex-1 overflow-auto min-h-0">
               {renderMetricsPanel()}
@@ -1283,10 +1300,12 @@ export const NamespacesTab = ({
   }
 
   const rightTitleAction = (
-    <Button variant="outline" size="sm" onClick={() => setCreateModalOpen(true)}>
-      <Plus className="w-4 h-4 mr-1" />
-      Criar Namespace
-    </Button>
+    <ProtectedAction>
+      <Button variant="outline" size="sm" onClick={() => setCreateModalOpen(true)}>
+        <Plus className="w-4 h-4 mr-1" />
+        Criar Namespace
+      </Button>
+    </ProtectedAction>
   );
 
   // Render modais
@@ -1416,18 +1435,20 @@ export const NamespacesTab = ({
             >
               Cancelar
             </Button>
-            <Button
-              variant="destructive"
-              onClick={confirmApplyChanges}
-              disabled={isApplying}
-            >
-              {isApplying ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <TriangleAlert className="w-4 h-4 mr-2" />
-              )}
-              Confirmar
-            </Button>
+            <ProtectedAction>
+              <Button
+                variant="destructive"
+                onClick={confirmApplyChanges}
+                disabled={isApplying}
+              >
+                {isApplying ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <TriangleAlert className="w-4 h-4 mr-2" />
+                )}
+                Confirmar
+              </Button>
+            </ProtectedAction>
           </div>
         </DialogContent>
       </Dialog>

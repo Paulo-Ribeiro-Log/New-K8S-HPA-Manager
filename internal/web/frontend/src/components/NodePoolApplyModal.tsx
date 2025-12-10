@@ -25,6 +25,7 @@ import {
   MoreVertical,
   Edit
 } from "lucide-react";
+import { ProtectedAction } from "@/components/rbac";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -431,17 +432,18 @@ export const NodePoolApplyModal = ({
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleApplyIndividual(key, current)}
-                        disabled={isApplying || applyingIndividual !== null}
-                        className="shrink-0"
-                      >
-                        {applyingIndividual === key ? (
-                          <>
-                            <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                            Aplicando...
+                      <ProtectedAction>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleApplyIndividual(key, current)}
+                          disabled={isApplying || applyingIndividual !== null}
+                          className="shrink-0"
+                        >
+                          {applyingIndividual === key ? (
+                            <>
+                              <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                              Aplicando...
                           </>
                         ) : (
                           <>
@@ -450,6 +452,7 @@ export const NodePoolApplyModal = ({
                           </>
                         )}
                       </Button>
+                      </ProtectedAction>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button
@@ -555,20 +558,22 @@ export const NodePoolApplyModal = ({
               >
                 {isApplying || applyingIndividual !== null ? "Aguarde..." : "Fechar"}
               </Button>
-              <Button
-                onClick={handleApplyAll}
-                disabled={isApplying || applyingIndividual !== null}
-                className="bg-success hover:bg-success/90"
-              >
-                {isApplying ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Aplicando todos...
-                  </>
-                ) : (
-                  `Aplicar ${modifiedNodePools.length} Node Pool(s)`
+              <ProtectedAction>
+                <Button
+                  onClick={handleApplyAll}
+                  disabled={isApplying || applyingIndividual !== null}
+                  className="bg-success hover:bg-success/90"
+                >
+                  {isApplying ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Aplicando todos...
+                    </>
+                  ) : (
+                    `Aplicar ${modifiedNodePools.length} Node Pool(s)`
                 )}
               </Button>
+              </ProtectedAction>
             </div>
           </div>
         </DialogFooter>
@@ -653,9 +658,11 @@ export const NodePoolApplyModal = ({
               >
                 Cancelar
               </Button>
-              <Button onClick={handleSaveEdit}>
-                Salvar Alterações
-              </Button>
+              <ProtectedAction>
+                <Button onClick={handleSaveEdit}>
+                  Salvar Alterações
+                </Button>
+              </ProtectedAction>
             </DialogFooter>
           </DialogContent>
         );

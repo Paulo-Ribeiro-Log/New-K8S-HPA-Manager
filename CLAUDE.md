@@ -24,6 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 9. [⚡ Async Optimization Plan](docs/guides/ASYNC_OPTIMIZATION_PLAN.md) - Plano de otimização assíncrona da auto descoberta
 10. [📦 Installation Scripts](docs/guides/INSTALLATION_SCRIPTS.md) - Scripts de instalação (release vs main)
 11. [🔔 Windows Notifications](docs/guides/WINDOWS_NOTIFICATIONS.md) - Sistema de notificações via PowerShell/WSL2
+12. [🔒 RBAC Azure AD](docs/guides/RBAC_AZURE_AD_IMPLEMENTATION.md) - Controle de acesso baseado em grupos do Azure AD
 
 ### 📚 Histórico e Referências
 11. [📜 Histórico de Correções](docs/history/CHANGELOG.md) - Correções e refatorações principais
@@ -59,6 +60,7 @@ go test -run TestGetClient    # Rodar teste específico
 # Debug Web
 tail -f /tmp/k8s-hpa-manager-web-*.log  # Logs do servidor (background mode)
 ./build/new-k8s-hpa web -f    # Foreground mode (logs no terminal)
+./build/new-k8s-hpa web --ad  # ⚠️  EMERGÊNCIA: Bypass RBAC (flag oculta, sem documentação)
 
 # Installation (Release - Estável)
 curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/main/install-from-github.sh | bash
@@ -217,6 +219,17 @@ k8s-hpa-manager/
     - API: `GET /api/v1/{resource}/:cluster/:namespace/:name/describe`
     - Handlers: `configmaps.go`, `secrets.go`, `deployments.go`, `pods.go`
     - Frontend: Modal com ScrollArea exibindo output completo do kubectl describe
+✅ **RBAC com Azure AD (v1.3.5+)** - Controle de acesso baseado em grupos do Azure AD
+  - **Grupo SRE**: `VV_CLOUD_SRE` (ID: `eb865ea5-2672-49be-abc8-74c248c556b0`)
+  - **Backend**: Módulo `internal/rbac/azure_ad.go` com verificação via Azure CLI (`az ad user get-member-groups`)
+  - **Middleware**: `internal/web/middleware/rbac.go` protege rotas sensíveis (POST, PUT, DELETE)
+  - **Frontend**: Hook `useUserPermissions()` + componente `<ProtectedAction>` para ocultar/desabilitar botões
+  - **Cache**: TTL de 1 hora para permissões, invalidação manual via endpoint `/permissions/refresh`
+  - **Recursos Protegidos**: Apply (HPAs, Node Pools, ConfigMaps, Namespaces), Delete (todos os recursos), Cordon/Drain
+  - **Recursos Públicos**: Visualização (GET), Staging area, Sessions, Monitoramento, Logs
+  - **Badge de Status**: Componente `<SREBadge>` exibe status SRE no header com popover de grupos
+  - **Testes**: Suite completa (`./testes/test-rbac.sh`) + testes Go unitários (`go test ./internal/rbac`)
+  - **Documentação**: [RBAC_AZURE_AD_IMPLEMENTATION.md](docs/guides/RBAC_AZURE_AD_IMPLEMENTATION.md) + [RBAC_SUMMARY.md](docs/guides/RBAC_SUMMARY.md)
 
 ---
 
@@ -227,10 +240,20 @@ k8s-hpa-manager/
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
 
 Repositório: git@github.com:Paulo-Ribeiro-Log/New-K8S-HPA-Manager.git
-Versão Atual: v1.3.4+ (em desenvolvimento)
+Versão Atual: v1.3.5+ (em desenvolvimento)
 Tech: Go 1.24+ + React 18.3 (Web)
 Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
+
+Recent Updates (v1.3.5):
+- **RBAC com Azure AD**: Sistema completo de controle de acesso
+  - Frontend: 10 componentes protegidos (44 botões com `<ProtectedAction>`)
+  - Backend: Middleware RBAC protegendo 20+ rotas (POST/PUT/DELETE)
+  - Hook `useUserPermissions()` com cache de 1 hora
+  - Flag oculta `--ad` para bypass em emergências (sem documentação)
+  - Badge SRE no header, teste completo em `./testes/test-rbac.sh`
+  - Módulo: `internal/rbac/azure_ad.go`, `internal/web/middleware/rbac.go`
+  - Grupo: VV_CLOUD_SRE (eb865ea5-2672-49be-abc8-74c248c556b0)
 
 Recent Updates (v1.3.4):
 - Aba Namespaces: Gerenciamento completo com overview Top 5 (CPU/Memory/Pods) + **Sistema de edição avançado**
