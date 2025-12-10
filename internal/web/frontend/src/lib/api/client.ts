@@ -111,6 +111,18 @@ class APIClient {
     return response.json();
   }
 
+  // Generic HTTP methods (used by hooks like useUserPermissions)
+  async get<T = any>(endpoint: string): Promise<T> {
+    return this.request<T>(endpoint, { method: 'GET' });
+  }
+
+  async post<T = any>(endpoint: string, data?: any): Promise<T> {
+    return this.request<T>(endpoint, {
+      method: 'POST',
+      body: data ? JSON.stringify(data) : undefined,
+    });
+  }
+
   // Clusters
   async getClusters(): Promise<Cluster[]> {
     const response = await this.request<APIResponse<Cluster[]>>("/clusters");

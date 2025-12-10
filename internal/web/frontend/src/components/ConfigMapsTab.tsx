@@ -26,6 +26,7 @@ import "diff2html/bundles/css/diff2html.min.css";
 import "@/styles/diff2html-dark.css";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ProtectedAction } from "@/components/rbac";
 
 interface ConfigMapsTabProps {
   cluster: string;
@@ -752,14 +753,16 @@ export const ConfigMapsTab = ({
               <Maximize2 className="w-4 h-4" />
               Tela cheia
             </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={handleValidate}
-              disabled={!selectedConfigMap || isValidating}
-            >
-              <CheckCircle2 className="w-4 h-4 mr-2" /> Validar (Dry-run)
-            </Button>
+            <ProtectedAction>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleValidate}
+                disabled={!selectedConfigMap || isValidating}
+              >
+                <CheckCircle2 className="w-4 h-4 mr-2" /> Validar (Dry-run)
+              </Button>
+            </ProtectedAction>
             <Button
               variant="outline"
               size="sm"
@@ -768,14 +771,16 @@ export const ConfigMapsTab = ({
             >
               <X className="w-4 h-4 mr-2" /> Cancelar
             </Button>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={openApplyConfirm}
-              disabled={!selectedConfigMap || isApplying || !hasChanges}
-            >
-              <TriangleAlert className="w-4 h-4 mr-2" /> Aplicar
-            </Button>
+            <ProtectedAction>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={openApplyConfirm}
+                disabled={!selectedConfigMap || isApplying || !hasChanges}
+              >
+                <TriangleAlert className="w-4 h-4 mr-2" /> Aplicar
+              </Button>
+            </ProtectedAction>
           </div>
 
         </div>
@@ -962,19 +967,21 @@ export const ConfigMapsTab = ({
                       Diff
                     </button>
                   </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={handleValidate}
-                    disabled={!selectedConfigMap || isValidating}
-                  >
-                    {isValidating ? (
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    ) : (
-                      <CheckCircle2 className="w-4 h-4 mr-2" />
-                    )}
-                    Dry-run
-                  </Button>
+                  <ProtectedAction>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleValidate}
+                      disabled={!selectedConfigMap || isValidating}
+                    >
+                      {isValidating ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="w-4 h-4 mr-2" />
+                      )}
+                      Dry-run
+                    </Button>
+                  </ProtectedAction>
                   <Button
                     variant="outline"
                     size="sm"
@@ -983,18 +990,20 @@ export const ConfigMapsTab = ({
                   >
                     Cancelar
                   </Button>
-                  <Button
-                    variant="default"
-                    size="sm"
-                    onClick={() => {
-                      openApplyConfirm();
-                      setEditorFullScreen(false);
-                    }}
-                    disabled={!selectedConfigMap || isApplying || !hasChanges}
-                  >
-                    <TriangleAlert className="w-4 h-4 mr-2" />
-                    Aplicar
-                  </Button>
+                  <ProtectedAction>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={() => {
+                        openApplyConfirm();
+                        setEditorFullScreen(false);
+                      }}
+                      disabled={!selectedConfigMap || isApplying || !hasChanges}
+                    >
+                      <TriangleAlert className="w-4 h-4 mr-2" />
+                      Aplicar
+                    </Button>
+                  </ProtectedAction>
                   <Button
                     variant="ghost"
                     size="sm"
@@ -1125,18 +1134,20 @@ export const ConfigMapsTab = ({
             >
               Cancelar
             </Button>
-            <Button
-              variant="destructive"
-              onClick={confirmApplyChanges}
-              disabled={isApplying}
-            >
-              {isApplying ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <TriangleAlert className="w-4 h-4 mr-2" />
-              )}
-              Confirmar
-            </Button>
+            <ProtectedAction>
+              <Button
+                variant="destructive"
+                onClick={confirmApplyChanges}
+                disabled={isApplying}
+              >
+                {isApplying ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <TriangleAlert className="w-4 h-4 mr-2" />
+                )}
+                Confirmar
+              </Button>
+            </ProtectedAction>
           </div>
         </DialogContent>
       </Dialog>

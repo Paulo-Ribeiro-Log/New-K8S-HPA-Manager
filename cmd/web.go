@@ -16,9 +16,10 @@ import (
 )
 
 var (
-	webPort    int
-	noBrowser  bool
-	foreground bool
+	webPort       int
+	noBrowser     bool
+	foreground    bool
+	disableADAuth bool // Flag oculta para desabilitar verificação AD em caso de erro
 )
 
 // runInBackground executes the web server as a background process
@@ -42,6 +43,10 @@ func runInBackground() error {
 
 	if kubeconfig != "" {
 		args = append(args, "--kubeconfig", kubeconfig)
+	}
+
+	if disableADAuth {
+		args = append(args, "--ad")
 	}
 
 	// Start process in background
@@ -179,7 +184,7 @@ API Endpoints:
 		}
 
 		// Criar servidor web
-		server, err := web.NewServer(kubeconfig, webPort, debug)
+		server, err := web.NewServer(kubeconfig, webPort, debug, disableADAuth)
 		if err != nil {
 			return fmt.Errorf("failed to create web server: %w", err)
 		}
@@ -233,4 +238,8 @@ func init() {
 	webCmd.Flags().IntVar(&webPort, "port", 8080, "Port for web server")
 	webCmd.Flags().BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically")
 	webCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "Run server in foreground (default: background)")
+
+	// Flag oculta para desabilitar verificação AD (sem documentação, apenas para emergências)
+	webCmd.Flags().BoolVar(&disableADAuth, "ad", false, "")
+	webCmd.Flags().MarkHidden("ad")
 }

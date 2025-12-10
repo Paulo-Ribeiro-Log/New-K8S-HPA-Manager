@@ -21,6 +21,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
+import { ProtectedAction } from "@/components/rbac";
 
 import type { Namespace, PodSummary } from "@/lib/api/types";
 import { apiClient } from "@/lib/api/client";
@@ -468,25 +469,29 @@ export const PodsPanel = ({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem
-          onClick={() => {
-            setRestartingPod(selectedPod);
-            setRestartConfirmOpen(true);
-          }}
-        >
-          <RotateCw className="w-4 h-4 mr-2" />
-          Restart Pod
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={() => {
-            setDeletingPod(selectedPod);
-            setDeleteConfirmOpen(true);
-          }}
-          className="text-destructive focus:text-destructive"
-        >
-          <Trash2 className="w-4 h-4 mr-2" />
-          Deletar Pod
-        </DropdownMenuItem>
+        <ProtectedAction showWarning={false}>
+          <DropdownMenuItem
+            onClick={() => {
+              setRestartingPod(selectedPod);
+              setRestartConfirmOpen(true);
+            }}
+          >
+            <RotateCw className="w-4 h-4 mr-2" />
+            Restart Pod
+          </DropdownMenuItem>
+        </ProtectedAction>
+        <ProtectedAction showWarning={false}>
+          <DropdownMenuItem
+            onClick={() => {
+              setDeletingPod(selectedPod);
+              setDeleteConfirmOpen(true);
+            }}
+            className="text-destructive focus:text-destructive"
+          >
+            <Trash2 className="w-4 h-4 mr-2" />
+            Deletar Pod
+          </DropdownMenuItem>
+        </ProtectedAction>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -859,9 +864,11 @@ export const PodsPanel = ({
               <Button variant="outline" onClick={() => setDeleteConfirmOpen(false)}>
                 Cancelar
               </Button>
-              <Button variant="destructive" onClick={handleDeletePod}>
-                Deletar Pod
-              </Button>
+              <ProtectedAction>
+                <Button variant="destructive" onClick={handleDeletePod}>
+                  Deletar Pod
+                </Button>
+              </ProtectedAction>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -887,10 +894,12 @@ export const PodsPanel = ({
               <Button variant="outline" onClick={() => setRestartConfirmOpen(false)}>
                 Cancelar
               </Button>
-              <Button onClick={handleRestartPod}>
-                <RotateCw className="w-4 h-4 mr-2" />
-                Restart Pod
-              </Button>
+              <ProtectedAction>
+                <Button onClick={handleRestartPod}>
+                  <RotateCw className="w-4 h-4 mr-2" />
+                  Restart Pod
+                </Button>
+              </ProtectedAction>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -1026,9 +1035,11 @@ export const PodsPanel = ({
             <Button variant="outline" onClick={() => setDeleteConfirmOpen(false)}>
               Cancelar
             </Button>
-            <Button variant="destructive" onClick={handleDeletePod}>
-              Deletar Pod
-            </Button>
+            <ProtectedAction>
+              <Button variant="destructive" onClick={handleDeletePod}>
+                Deletar Pod
+              </Button>
+            </ProtectedAction>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1054,10 +1065,12 @@ export const PodsPanel = ({
             <Button variant="outline" onClick={() => setRestartConfirmOpen(false)}>
               Cancelar
             </Button>
-            <Button onClick={handleRestartPod}>
-              <RotateCw className="w-4 h-4 mr-2" />
-              Restart Pod
-            </Button>
+            <ProtectedAction>
+              <Button onClick={handleRestartPod}>
+                <RotateCw className="w-4 h-4 mr-2" />
+                Restart Pod
+              </Button>
+            </ProtectedAction>
           </DialogFooter>
         </DialogContent>
       </Dialog>

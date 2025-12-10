@@ -17,6 +17,7 @@ import CordonDrainConfigModal, { CordonDrainConfig } from "./CordonDrainConfigMo
 import NodePoolDiskDetailsModal from "./NodePoolDiskDetailsModal";
 import { formatVMSpecs, formatDiskSpecs, getVMSpecs } from "@/lib/azure-vm-specs";
 import { useNodePoolDiskMetrics } from "@/hooks/useNodePoolDiskMetrics";
+import { ProtectedAction } from "@/components/rbac";
 
 interface NodePoolEditorProps {
   nodePool: NodePool | null;
@@ -654,24 +655,27 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
 
       {/* Action Buttons */}
       <div className="flex gap-3 pt-3 border-t border-border">
-        <Button
-          onClick={handleApply}
-          disabled={!hasChanges || isApplying}
-          className="flex-1 bg-gradient-primary h-9"
-        >
-          <Save className="w-4 h-4 mr-2" />
-          💾 Salvar (Staging)
-        </Button>
+        <ProtectedAction>
+          <Button
+            onClick={handleApply}
+            disabled={!hasChanges || isApplying}
+            className="flex-1 bg-gradient-primary h-9"
+          >
+            <Save className="w-4 h-4 mr-2" />
+            💾 Salvar (Staging)
+          </Button>
+        </ProtectedAction>
 
-        <Button
-          onClick={handleApplyNow}
-          variant="default"
-          disabled={!hasChanges || isApplying}
-          className="flex-1 bg-success hover:bg-success/90 h-9"
-        >
-          {isApplying ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+        <ProtectedAction>
+          <Button
+            onClick={handleApplyNow}
+            variant="default"
+            disabled={!hasChanges || isApplying}
+            className="flex-1 bg-success hover:bg-success/90 h-9"
+          >
+            {isApplying ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
               Aplicando...
             </>
           ) : (
@@ -681,6 +685,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             </>
           )}
         </Button>
+        </ProtectedAction>
 
         <Button
           onClick={handleReset}
