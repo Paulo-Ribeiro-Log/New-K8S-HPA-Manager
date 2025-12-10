@@ -45,7 +45,7 @@ export const TopNamespacesCard = ({ cluster }: TopNamespacesCardProps) => {
 
   if (loading) {
     return (
-      <Card className="p-6 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-700/60 shadow-lg">
+      <Card className="p-6 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-700/60 shadow-lg hover:shadow-xl transition-all duration-300">
         <div className="flex items-center gap-3 mb-6">
           <div className="w-12 h-12 bg-slate-200 dark:bg-slate-700 rounded-xl animate-pulse"></div>
           <div>
@@ -67,7 +67,7 @@ export const TopNamespacesCard = ({ cluster }: TopNamespacesCardProps) => {
 
   if (error) {
     return (
-      <Card className="p-4 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-700/60 shadow-lg">
+      <Card className="p-4 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-700/60 shadow-lg hover:shadow-xl transition-all duration-300">
         <div className="flex items-center gap-2 mb-3">
           <div className="p-2 bg-gradient-to-r from-yellow-500 to-orange-600 rounded-lg shadow-md opacity-50">
             <Trophy className="w-5 h-5 text-white" />
@@ -172,7 +172,7 @@ export const TopNamespacesCard = ({ cluster }: TopNamespacesCardProps) => {
   };
 
   return (
-    <Card className="p-4 bg-gradient-card backdrop-blur-sm border border-border/50 shadow-lg hover:shadow-xl transition-all duration-300">
+    <Card className="p-4 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-700/60 shadow-lg hover:shadow-xl transition-all duration-300">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <div className="p-2 bg-gradient-to-r from-yellow-500 to-orange-600 rounded-lg shadow-md">

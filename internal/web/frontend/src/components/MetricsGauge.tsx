@@ -36,7 +36,7 @@ export const MetricsGauge = ({
   const systemOverhead = 100 - capacityPercent;
 
   return (
-    <Card className="p-4 bg-gradient-card border-border/50 flex flex-col items-center gap-3">
+    <Card className="p-4 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border border-slate-200/60 dark:border-slate-700/60 shadow-lg hover:shadow-xl transition-all duration-300 flex flex-col items-center gap-3">
       <div className="flex items-center gap-2 w-full">
         <div className="p-1.5 bg-primary/10 rounded-lg">
           <Icon className="w-4 h-4 text-primary" />
