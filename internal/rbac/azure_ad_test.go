@@ -7,7 +7,7 @@ import (
 )
 
 func TestNewRBACManager(t *testing.T) {
-	manager := NewRBACManager()
+	manager := NewRBACManager(false)
 	if manager == nil {
 		t.Fatal("NewRBACManager returned nil")
 	}
@@ -17,10 +17,23 @@ func TestNewRBACManager(t *testing.T) {
 	if manager.cacheTTL != 1*time.Hour {
 		t.Errorf("Expected cache TTL of 1 hour, got %v", manager.cacheTTL)
 	}
+	if manager.disableADCheck != false {
+		t.Error("Expected disableADCheck to be false")
+	}
+}
+
+func TestNewRBACManagerWithBypass(t *testing.T) {
+	manager := NewRBACManager(true)
+	if manager == nil {
+		t.Fatal("NewRBACManager returned nil")
+	}
+	if manager.disableADCheck != true {
+		t.Error("Expected disableADCheck to be true")
+	}
 }
 
 func TestGetCurrentUserEmail(t *testing.T) {
-	manager := NewRBACManager()
+	manager := NewRBACManager(false)
 	ctx := context.Background()
 
 	email, err := manager.GetCurrentUserEmail(ctx)
@@ -36,7 +49,7 @@ func TestGetCurrentUserEmail(t *testing.T) {
 }
 
 func TestGetUserGroups(t *testing.T) {
-	manager := NewRBACManager()
+	manager := NewRBACManager(false)
 	ctx := context.Background()
 
 	email, err := manager.GetCurrentUserEmail(ctx)
@@ -60,7 +73,7 @@ func TestGetUserGroups(t *testing.T) {
 }
 
 func TestCheckCurrentUserIsSRE(t *testing.T) {
-	manager := NewRBACManager()
+	manager := NewRBACManager(false)
 	ctx := context.Background()
 
 	isSRE, err := manager.CheckCurrentUserIsSRE(ctx)
@@ -72,7 +85,7 @@ func TestCheckCurrentUserIsSRE(t *testing.T) {
 }
 
 func TestGetUserPermissions(t *testing.T) {
-	manager := NewRBACManager()
+	manager := NewRBACManager(false)
 	ctx := context.Background()
 
 	email, err := manager.GetCurrentUserEmail(ctx)
@@ -96,7 +109,7 @@ func TestGetUserPermissions(t *testing.T) {
 }
 
 func TestCacheInvalidation(t *testing.T) {
-	manager := NewRBACManager()
+	manager := NewRBACManager(false)
 	ctx := context.Background()
 
 	email, err := manager.GetCurrentUserEmail(ctx)
@@ -137,7 +150,7 @@ func TestCacheInvalidation(t *testing.T) {
 }
 
 func TestCheckUserInGroup(t *testing.T) {
-	manager := NewRBACManager()
+	manager := NewRBACManager(false)
 	ctx := context.Background()
 
 	email, err := manager.GetCurrentUserEmail(ctx)
@@ -160,4 +173,35 @@ func TestCheckUserInGroup(t *testing.T) {
 	if isMember {
 		t.Error("User should not be member of non-existent group")
 	}
+}
+
+func TestBypassMode(t *testing.T) {
+	manager := NewRBACManager(true) // Bypass enabled
+	ctx := context.Background()
+
+	// CheckCurrentUserIsSRE should always return true in bypass mode
+	isSRE, err := manager.CheckCurrentUserIsSRE(ctx)
+	if err != nil {
+		t.Fatalf("Failed to check SRE status in bypass mode: %v", err)
+	}
+	if !isSRE {
+		t.Error("Expected isSRE to be true in bypass mode")
+	}
+
+	// GetCurrentUserPermissions should return bypass permissions
+	perms, err := manager.GetCurrentUserPermissions(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get permissions in bypass mode: %v", err)
+	}
+	if perms.Email != "bypass@emergency.mode" {
+		t.Errorf("Expected bypass email, got %s", perms.Email)
+	}
+	if !perms.IsSRE {
+		t.Error("Expected isSRE to be true in bypass mode")
+	}
+	if len(perms.Groups) != 1 || perms.Groups[0].DisplayName != "EMERGENCY_MODE" {
+		t.Error("Expected EMERGENCY_MODE group in bypass mode")
+	}
+
+	t.Logf("Bypass mode test passed - Email: %s, IsSRE: %v", perms.Email, perms.IsSRE)
 }

@@ -1167,6 +1167,31 @@ class APIClient {
   async getAllAlerts(cluster: string): Promise<any> {
     return this.request(`/alerts?cluster=${cluster}`);
   }
+
+  // Service Mesh - Istio/Kiali Integration
+  async getServiceGraph(
+    cluster: string,
+    namespace: string,
+    duration: string = '5m',
+    graphType: string = 'workload'
+  ): Promise<import('@/types/servicemesh').ServiceGraphResponse> {
+    return this.request(
+      `/servicemesh/graph?cluster=${cluster}&namespace=${namespace}&duration=${duration}&graphType=${graphType}`
+    );
+  }
+
+  async getServiceMeshNamespaces(
+    cluster: string
+  ): Promise<import('@/types/servicemesh').ServiceMeshNamespace> {
+    return this.request(`/servicemesh/namespaces?cluster=${cluster}`);
+  }
+
+  async getServiceMeshMetrics(
+    cluster: string,
+    namespace: string
+  ): Promise<import('@/types/servicemesh').ServiceMeshMetrics> {
+    return this.request(`/servicemesh/metrics?cluster=${cluster}&namespace=${namespace}`);
+  }
 }
 
 // Singleton instance

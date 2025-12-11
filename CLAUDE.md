@@ -33,6 +33,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### 🚀 Otimizações
 13. [⚡ Autodiscover Optimization](docs/optimization/AUTODISCOVER_OPTIMIZATION.md) - Paralelização da busca de subscriptions
 
+### 📋 Roadmaps e Estudos
+14. [🔐 Estudo SSO Azure AD](ESTUDO_SSO_AZURE_AD.md) - Análise técnica de SSO OAuth 2.0/OIDC
+15. [🛣️ Roteiro Implementação SSO](ROTEIRO_IMPLEMENTACAO_SSO.md) - **Roadmap completo para servidor centralizado** (6 dias)
+16. [📧 Implementação user_email History](IMPLEMENTACAO_USER_EMAIL_HISTORY.md) - User tracking no History Tracker (v1.3.6)
+
 ---
 
 ## 📌 Quick Reference
