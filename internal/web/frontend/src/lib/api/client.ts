@@ -1173,11 +1173,30 @@ class APIClient {
     cluster: string,
     namespace: string,
     duration: string = '5m',
-    graphType: string = 'workload'
+    graphType: string = 'workload',
+    options?: {
+      injectServiceNodes?: boolean;
+      includeIdleEdges?: boolean;
+      includeIdleNodes?: boolean;
+      appenders?: string;
+    }
   ): Promise<import('@/types/servicemesh').ServiceGraphResponse> {
-    return this.request(
-      `/servicemesh/graph?cluster=${cluster}&namespace=${namespace}&duration=${duration}&graphType=${graphType}`
-    );
+    let url = `/servicemesh/graph?cluster=${cluster}&namespace=${namespace}&duration=${duration}&graphType=${graphType}`;
+    
+    if (options?.injectServiceNodes !== undefined) {
+      url += `&injectServiceNodes=${options.injectServiceNodes}`;
+    }
+    if (options?.includeIdleEdges !== undefined) {
+      url += `&includeIdleEdges=${options.includeIdleEdges}`;
+    }
+    if (options?.includeIdleNodes !== undefined) {
+      url += `&includeIdleNodes=${options.includeIdleNodes}`;
+    }
+    if (options?.appenders) {
+      url += `&appenders=${encodeURIComponent(options.appenders)}`;
+    }
+    
+    return this.request(url);
   }
 
   async getServiceMeshNamespaces(
