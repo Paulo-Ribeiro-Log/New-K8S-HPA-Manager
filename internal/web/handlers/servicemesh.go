@@ -12,7 +12,6 @@ import (
 	"k8s-hpa-manager/internal/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
 // ServiceMeshHandler gerencia endpoints de service mesh (Kiali integration)
@@ -147,14 +146,14 @@ func (h *ServiceMeshHandler) GetServiceGraph(c *gin.Context) {
 	}
 
 	// Obter clientset do cluster
-	clientset, restConfig, err := h.kubeManager.GetClientForCluster(clusterName)
+	clientset, err := h.kubeManager.GetClient(clusterName)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cluster inválido: %v", err)})
 		return
 	}
 
 	// Descobrir o serviço Kiali no cluster
-	kialiURL, err := h.discoverKialiService(clientset, restConfig)
+	kialiURL, err := h.discoverKialiService(clientset)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"error": "Kiali não encontrado no cluster",
@@ -164,7 +163,7 @@ func (h *ServiceMeshHandler) GetServiceGraph(c *gin.Context) {
 	}
 
 	// Consultar a API do Kiali
-	graphData, err := h.queryKialiGraph(restConfig, kialiURL, namespace, duration, graphType)
+	graphData, err := h.queryKialiGraph(kialiURL, namespace, duration, graphType)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Erro ao consultar Kiali API",
@@ -188,7 +187,7 @@ func (h *ServiceMeshHandler) GetNamespaces(c *gin.Context) {
 		return
 	}
 
-	clientset, _, err := h.kubeManager.GetClientForCluster(clusterName)
+	clientset, err := h.kubeManager.GetClient(clusterName)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cluster inválido: %v", err)})
 		return
@@ -227,14 +226,14 @@ func (h *ServiceMeshHandler) GetMetrics(c *gin.Context) {
 		return
 	}
 
-	clientset, restConfig, err := h.kubeManager.GetClientForCluster(clusterName)
+	clientset, err := h.kubeManager.GetClient(clusterName)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cluster inválido: %v", err)})
 		return
 	}
 
 	// Descobrir Kiali
-	kialiURL, err := h.discoverKialiService(clientset, restConfig)
+	kialiURL, err := h.discoverKialiService(clientset)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"error": "Kiali não encontrado no cluster",
@@ -243,7 +242,7 @@ func (h *ServiceMeshHandler) GetMetrics(c *gin.Context) {
 	}
 
 	// Consultar métricas do namespace via Kiali
-	metrics, err := h.queryKialiMetrics(restConfig, kialiURL, namespace)
+	metrics, err := h.queryKialiMetrics(kialiURL, namespace)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Erro ao consultar métricas",
@@ -256,7 +255,7 @@ func (h *ServiceMeshHandler) GetMetrics(c *gin.Context) {
 }
 
 // discoverKialiService descobre o endpoint do Kiali no cluster
-func (h *ServiceMeshHandler) discoverKialiService(clientset *kubernetes.Clientset, restConfig *rest.Config) (string, error) {
+func (h *ServiceMeshHandler) discoverKialiService(clientset kubernetes.Interface) (string, error) {
 	ctx := context.Background()
 
 	// Tentar encontrar o serviço Kiali (normalmente em istio-system)
@@ -285,27 +284,19 @@ func (h *ServiceMeshHandler) discoverKialiService(clientset *kubernetes.Clientse
 }
 
 // queryKialiGraph consulta a API do Kiali para obter o service graph
-func (h *ServiceMeshHandler) queryKialiGraph(restConfig *rest.Config, kialiURL, namespace, duration, graphType string) (*KialiGraphResponse, error) {
+func (h *ServiceMeshHandler) queryKialiGraph(kialiURL, namespace, duration, graphType string) (*KialiGraphResponse, error) {
 	// Construir URL da API Kiali
 	url := fmt.Sprintf("%s/api/namespaces/%s/graph?duration=%s&graphType=%s&injectServiceNodes=true", 
 		kialiURL, namespace, duration, graphType)
 
-	// Criar HTTP client com kubeconfig para acesso interno ao cluster
+	// Criar HTTP client simples (acesso interno no cluster não requer TLS complexo)
 	client := &http.Client{
 		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: restConfig.TLSClientConfig.DeepCopy(),
-		},
 	}
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao criar requisição: %w", err)
-	}
-
-	// Adicionar headers de autenticação se necessário
-	if restConfig.BearerToken != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", restConfig.BearerToken))
 	}
 
 	resp, err := client.Do(req)
@@ -328,24 +319,17 @@ func (h *ServiceMeshHandler) queryKialiGraph(restConfig *rest.Config, kialiURL, 
 }
 
 // queryKialiMetrics consulta métricas agregadas via Kiali
-func (h *ServiceMeshHandler) queryKialiMetrics(restConfig *rest.Config, kialiURL, namespace string) (map[string]interface{}, error) {
+func (h *ServiceMeshHandler) queryKialiMetrics(kialiURL, namespace string) (map[string]interface{}, error) {
 	// URL para métricas do namespace
 	url := fmt.Sprintf("%s/api/namespaces/%s/metrics", kialiURL, namespace)
 
 	client := &http.Client{
 		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: restConfig.TLSClientConfig.DeepCopy(),
-		},
 	}
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao criar requisição: %w", err)
-	}
-
-	if restConfig.BearerToken != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", restConfig.BearerToken))
 	}
 
 	resp, err := client.Do(req)

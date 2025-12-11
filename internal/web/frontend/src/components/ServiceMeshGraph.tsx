@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Loader2, RefreshCw, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import { ServiceGraphResponse, ServiceMeshFilters } from '@/types/servicemesh';
-import { useToast } from '@/hooks/use-toast';
+import { toast } from 'sonner';
 
 interface ServiceMeshGraphProps {
   cluster: string;
@@ -20,7 +20,6 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
   const [graphData, setGraphData] = useState<ServiceGraphResponse | null>(null);
   const [namespaces, setNamespaces] = useState<string[]>([]);
   const [selectedNode, setSelectedNode] = useState<NodeSingular | null>(null);
-  const { toast } = useToast();
 
   const [filters, setFilters] = useState<ServiceMeshFilters>({
     cluster: cluster,
@@ -52,21 +51,13 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
         setFilters(prev => ({ ...prev, namespace: response.namespaces[0] }));
       }
     } catch (error) {
-      toast({
-        title: 'Erro ao carregar namespaces',
-        description: error instanceof Error ? error.message : 'Erro desconhecido',
-        variant: 'destructive',
-      });
+      toast.error(`Erro ao carregar namespaces: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
     }
   };
 
   const loadServiceGraph = async () => {
     if (!filters.namespace) {
-      toast({
-        title: 'Selecione um namespace',
-        description: 'É necessário selecionar um namespace para visualizar o service mesh',
-        variant: 'destructive',
-      });
+      toast.error('É necessário selecionar um namespace para visualizar o service mesh');
       return;
     }
 
@@ -80,16 +71,9 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       );
       setGraphData(data);
       
-      toast({
-        title: 'Grafo atualizado',
-        description: `${data.nodes.length} serviços, ${data.edges.length} conexões`,
-      });
+      toast.success(`Grafo atualizado: ${data.nodes.length} serviços, ${data.edges.length} conexões`);
     } catch (error) {
-      toast({
-        title: 'Erro ao carregar service mesh',
-        description: error instanceof Error ? error.message : 'Erro desconhecido',
-        variant: 'destructive',
-      });
+      toast.error(`Erro ao carregar service mesh: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
     } finally {
       setLoading(false);
     }
