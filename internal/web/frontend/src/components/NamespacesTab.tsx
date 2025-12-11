@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import type { Namespace, TopNamespacesResponse, NamespaceManifest, DeploymentSummary } from "@/lib/api/types";
@@ -147,6 +148,17 @@ export const NamespacesTab = ({
       setManifestLoading(false);
     }
   };
+
+  // Helper para verificar se Istio está habilitado
+  const isIstioEnabled = useMemo(() => {
+    if (!namespaceManifest?.yaml) return false;
+    try {
+      const manifest = yaml.load(namespaceManifest.yaml) as any;
+      return manifest?.metadata?.labels?.["istio-injection"] === "enabled";
+    } catch {
+      return false;
+    }
+  }, [namespaceManifest]);
 
   const loadDeployments = async () => {
     if (!selectedNamespace || !cluster) return;
@@ -806,6 +818,12 @@ export const NamespacesTab = ({
                   <span className="text-muted-foreground uppercase mb-0.5">Age</span>
                   <span className="font-medium">{namespaceManifest.age}</span>
                 </div>
+                {isIstioEnabled && (
+                  <Badge variant="outline" className="h-fit px-2 py-1 bg-purple-500/10 text-purple-400 border-purple-500/30">
+                    <Network className="w-3 h-3 mr-1" />
+                    Istio Enabled
+                  </Badge>
+                )}
               </>
             )}
             {selectedNamespace.isSystem && (

@@ -441,14 +441,11 @@ func (s *Server) setupRoutes() {
 	// VPN Status Check (sem auth para polling leve)
 	s.router.GET("/api/v1/vpn/status", handlers.CheckVPNConnection)
 
-	// Service Mesh (Istio/Kiali Integration)
+	// Service Mesh (Istio/Kiali Integration) - SEM AUTH (operações de leitura públicas)
 	serviceMeshHandler := handlers.NewServiceMeshHandler(s.kubeManager)
-	serviceMesh := api.Group("/servicemesh")
-	{
-		serviceMesh.GET("/graph", serviceMeshHandler.GetServiceGraph)       // GET /api/v1/servicemesh/graph?cluster=X&namespace=Y&duration=60s
-		serviceMesh.GET("/namespaces", serviceMeshHandler.GetNamespaces)    // GET /api/v1/servicemesh/namespaces?cluster=X
-		serviceMesh.GET("/metrics", serviceMeshHandler.GetMetrics)          // GET /api/v1/servicemesh/metrics?cluster=X&namespace=Y
-	}
+	s.router.GET("/api/v1/servicemesh/graph", serviceMeshHandler.GetServiceGraph)       // GET /api/v1/servicemesh/graph?cluster=X&namespace=Y&duration=60s
+	s.router.GET("/api/v1/servicemesh/namespaces", serviceMeshHandler.GetNamespaces)    // GET /api/v1/servicemesh/namespaces?cluster=X
+	s.router.GET("/api/v1/servicemesh/metrics", serviceMeshHandler.GetMetrics)          // GET /api/v1/servicemesh/metrics?cluster=X&namespace=Y
 
 	// Sessions
 	sessionHandler := handlers.NewSessionsHandler()

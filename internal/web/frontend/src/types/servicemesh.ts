@@ -46,4 +46,26 @@ export interface ServiceMeshFilters {
   namespace: string;
   duration: '60s' | '5m' | '10m' | '30m' | '1h' | '6h' | '12h' | '24h';
   graphType: 'workload' | 'app' | 'service' | 'versioned_app';
+  // Advanced options
+  injectServiceNodes?: boolean;
+  includeIdleEdges?: boolean;
+  includeIdleNodes?: boolean;
+  appenders?: string;
+  // Display options
+  showEdgeLabels?: {
+    responseTime?: boolean;
+    trafficDistribution?: boolean;
+    trafficRate?: boolean;
+    throughput?: boolean;
+  };
+  showNodeOptions?: {
+    operationNodes?: boolean;
+    serviceNodes?: boolean;
+    trafficAnimation?: boolean;
+  };
+  showBadges?: {
+    missingSidecars?: boolean;
+    security?: boolean;
+    virtualServices?: boolean;
+  };
 }
