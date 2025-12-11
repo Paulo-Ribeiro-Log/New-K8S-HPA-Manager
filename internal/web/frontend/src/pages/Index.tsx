@@ -40,6 +40,7 @@ import { CriticalAlertsBanner } from "@/components/CriticalAlertsBanner";
 import { CronJobsPage } from "./CronJobsPage";
 import { PrometheusPage } from "./PrometheusPage";
 import { MonitoringPage } from "./MonitoringPage";
+import { ServiceMeshGraph } from "@/components/ServiceMeshGraph";
 import {
   LayoutDashboard,
   Scale,
@@ -54,7 +55,8 @@ import {
   BarChart3,
   Settings,
   X,
-  RefreshCcw
+  RefreshCcw,
+  Network
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -313,6 +315,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "nodepools", label: "Node Pools", icon: Server },
     { id: "staging", label: "Staging", icon: FileText, badge: staging.getChangesCount().total },
     { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
+    { id: "servicemesh", label: "Service Mesh", icon: Network },
     { id: "namespaces", label: "Namespaces", icon: Database },
   ];
 
@@ -898,6 +901,13 @@ const Index = ({ onLogout }: IndexProps) => {
                 setPendingHPANavigation(null); // Limpar navegação pendente em caso de erro
               }
             }}
+          />
+        );
+
+      case "servicemesh":
+        return (
+          <ServiceMeshGraph
+            cluster={selectedCluster}
           />
         );
 
