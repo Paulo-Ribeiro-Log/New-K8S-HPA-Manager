@@ -62,15 +62,63 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       missingSidecars: false,
       security: false,
       virtualServices: false
+    },
+    traffic: {
+      grpc: {
+        enabled: true,
+        requests: true,
+        receivedMessages: false,
+        sentMessages: false,
+        totalMessages: false
+      },
+      http: {
+        enabled: true,
+        requests: true
+      },
+      tcp: {
+        enabled: true,
+        sentBytes: true,
+        receivedBytes: false,
+        totalBytes: false
+      }
     }
   });
 
-  // Carregar namespaces com Istio habilitado
+  // Sincronizar filters.cluster quando prop cluster mudar
   useEffect(() => {
-    if (cluster) {
-      loadNamespaces();
+    if (cluster && cluster !== filters.cluster) {
+      console.log('[ServiceMesh] Cluster mudou de', filters.cluster, 'para', cluster);
+      setFilters(prev => ({ ...prev, cluster: cluster, namespace: '' }));
     }
   }, [cluster]);
+
+  // Carregar namespaces quando filters.cluster mudar
+  useEffect(() => {
+    if (filters.cluster) {
+      // Limpar lista de namespaces e gráfico ao trocar de cluster
+      setNamespaces([]);
+      setGraphData(null);
+      
+      // Limpar posições salvas
+      nodePositions.current.clear();
+      
+      // Destruir instância do gráfico de forma segura
+      if (cyInstance.current) {
+        try {
+          if (cyInstance.current.container()) {
+            cyInstance.current.destroy();
+          }
+        } catch (e) {
+          console.warn('[ServiceMesh] Erro ao destruir instância ao trocar cluster:', e);
+        }
+        cyInstance.current = null;
+      }
+      
+      // Carregar novos namespaces
+      console.log('[ServiceMesh] Carregando namespaces do cluster:', filters.cluster);
+      loadNamespaces();
+    }
+  }, [filters.cluster]);
 
   // Inicializar grafo quando há dados ou opções mudam
   useEffect(() => {
@@ -95,14 +143,28 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
     }
   }, [isFullscreen]);
 
-  // Recarregar grafo quando filtros mudarem (COM notificação)
+  // Recarregar grafo quando namespace mudar (COM notificação)
   useEffect(() => {
     if (filters.namespace) {
-      // Limpar posições salvas ao trocar cluster/namespace
+      // Limpar posições salvas ao trocar namespace
       nodePositions.current.clear();
+      
+      // Limpar dados do gráfico
+      setGraphData(null);
+      
+      // Destruir gráfico completamente
+      if (cyInstance.current) {
+        try {
+          cyInstance.current.destroy();
+        } catch (e) {
+          console.warn('Erro ao destruir instância:', e);
+        }
+        cyInstance.current = null;
+      }
+      
       loadServiceGraph(false); // false = mostra toast
     }
-  }, [filters.cluster, filters.namespace]);
+  }, [filters.namespace]);
 
   // Recarregar quando duration/graphType mudam (SILENCIOSO)
   useEffect(() => {
@@ -179,14 +241,18 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
 
   const loadNamespaces = async () => {
     try {
-      const response = await apiClient.getServiceMeshNamespaces(cluster);
+      console.log('[ServiceMesh] Buscando namespaces do cluster:', filters.cluster);
+      const response = await apiClient.getServiceMeshNamespaces(filters.cluster);
+      console.log('[ServiceMesh] Namespaces encontrados:', response.namespaces);
       setNamespaces(response.namespaces);
       
       if (response.namespaces.length > 0 && !filters.namespace) {
         setFilters(prev => ({ ...prev, namespace: response.namespaces[0] }));
       }
     } catch (error) {
+      console.error('[ServiceMesh] Erro ao carregar namespaces:', error);
       toast.error(`Erro ao carregar namespaces: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
+      setNamespaces([]);
     }
   };
 
@@ -231,17 +297,89 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
     }
   };
 
-  const loadServiceGraphSilent = () => {
-    loadServiceGraph(true);
+  const loadServiceGraphSilent = async () => {
+    if (!filters.namespace) return;
+
+    try {
+      const data = await apiClient.getServiceGraph(
+        filters.cluster,
+        filters.namespace,
+        filters.duration,
+        filters.graphType,
+        {
+          injectServiceNodes: displayOptions.show.serviceNodes,
+          includeIdleEdges: displayOptions.show.idleEdges,
+          includeIdleNodes: displayOptions.show.idleNodes,
+        }
+      );
+      
+      console.log('[ServiceMesh] Refresh silencioso - dados recebidos:', {
+        nodes: data.nodes.length,
+        edges: data.edges.length
+      });
+      
+      // Atualizar apenas os dados sem recriar o gráfico
+      if (cyInstance.current && cyInstance.current.container()) {
+        updateGraphDataFromResponse(data);
+        setLastRefresh(new Date());
+      } else {
+        // Se não existe gráfico, criar um novo
+        setGraphData(data);
+        setLastRefresh(new Date());
+      }
+    } catch (error) {
+      console.error('[ServiceMesh] Erro no refresh silencioso:', error);
+    }
   };
 
-  const updateGraphData = () => {
-    if (!cyInstance.current || !graphData) return;
+  const updateGraphDataFromResponse = (data: SimplifiedServiceGraph) => {
+    if (!cyInstance.current) return;
 
-    // Atualizar apenas os dados dos elementos existentes sem recriar o grafo
-    graphData.edges.forEach(edge => {
+    console.log('[ServiceMesh] Atualizando gráfico com novos dados');
+    
+    const existingNodeIds = new Set(cyInstance.current.nodes().map((n: any) => n.id()));
+    const existingEdgeIds = new Set(cyInstance.current.edges().map((e: any) => e.id()));
+    
+    const newNodeIds = new Set(data.nodes.map(n => n.id));
+    const newEdgeIds = new Set(data.edges.map(e => e.id));
+
+    // 1. Atualizar nodes existentes
+    data.nodes.forEach(node => {
+      const cyNode = cyInstance.current?.getElementById(node.id);
+      if (cyNode && cyNode.length > 0) {
+        cyNode.data({
+          ...cyNode.data(),
+          requestRate: node.requestRate,
+          errorRate: node.errorRate,
+        });
+      } else {
+        // Adicionar novo node
+        cyInstance.current?.add({
+          data: {
+            id: node.id,
+            label: node.label,
+            type: node.type,
+            nodeType: node.type,
+            namespace: node.namespace,
+            workload: node.workload,
+            app: node.app,
+            version: node.version,
+            service: node.service,
+            isRoot: node.isRoot,
+            isInaccessible: node.isInaccessible,
+            isOutside: node.isOutside,
+            requestRate: node.requestRate,
+            errorRate: node.errorRate,
+          },
+        });
+        console.log('[ServiceMesh] Novo node adicionado:', node.id);
+      }
+    });
+
+    // 2. Atualizar edges existentes
+    data.edges.forEach(edge => {
       const cyEdge = cyInstance.current?.getElementById(edge.id);
-      if (cyEdge) {
+      if (cyEdge && cyEdge.length > 0) {
         cyEdge.data({
           ...cyEdge.data(),
           requestRate: edge.requestRate,
@@ -249,24 +387,58 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
           errorRate: edge.errorRate,
           protocol: edge.protocol,
         });
-      }
-    });
-
-    graphData.nodes.forEach(node => {
-      const cyNode = cyInstance.current?.getElementById(node.id);
-      if (cyNode) {
-        cyNode.data({
-          ...cyNode.data(),
-          requestRate: node.requestRate,
-          errorRate: node.errorRate,
+      } else {
+        // Adicionar novo edge
+        cyInstance.current?.add({
+          data: {
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            protocol: edge.protocol,
+            requestRate: edge.requestRate,
+            responseTime: edge.responseTime,
+            errorRate: edge.errorRate,
+          },
         });
+        console.log('[ServiceMesh] Novo edge adicionado:', edge.id);
       }
     });
 
-    // Forçar re-renderização das labels
-    if (cyInstance.current) {
-      cyInstance.current.style().update();
+    // 3. Remover nodes que não existem mais nos dados
+    existingNodeIds.forEach(nodeId => {
+      if (!newNodeIds.has(nodeId)) {
+        const node = cyInstance.current?.getElementById(nodeId);
+        if (node) {
+          console.log('[ServiceMesh] Removendo node:', nodeId);
+          node.remove();
+          nodePositions.current.delete(nodeId);
+        }
+      }
+    });
+
+    // 4. Remover edges que não existem mais nos dados
+    existingEdgeIds.forEach(edgeId => {
+      if (!newEdgeIds.has(edgeId)) {
+        const edge = cyInstance.current?.getElementById(edgeId);
+        if (edge) {
+          console.log('[ServiceMesh] Removendo edge:', edgeId);
+          edge.remove();
+        }
+      }
+    });
+
+    // 5. Fazer layout apenas para nodes novos (sem posição salva)
+    const newNodes = cyInstance.current.nodes().filter((node: any) => {
+      return !nodePositions.current.has(node.id());
+    });
+    
+    if (newNodes.length > 0) {
+      console.log('[ServiceMesh] Fazendo layout para', newNodes.length, 'novos nodes');
+      newNodes.layout({ name: 'cose', animate: false, fit: false }).run();
     }
+
+    // 6. Forçar re-renderização
+    cyInstance.current.style().update();
   };
 
   const initializeGraph = () => {
@@ -466,8 +638,6 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
           selector: 'edge',
           style: {
             'width': 2,
-            'line-color': '#9ca3af',
-            'target-arrow-color': '#9ca3af',
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
             'arrow-scale': 1.5,
@@ -475,6 +645,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
               const labels = [];
               const rate = ele.data('requestRate');
               const responseTime = ele.data('responseTime');
+              const errorRate = ele.data('errorRate');
               const protocol = ele.data('protocol');
 
               if (displayOptions.showEdgeLabels.trafficRate && rate) {
@@ -487,6 +658,13 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
                   : `${rateNum.toFixed(1)}`;
                 labels.push(formatted + ' req/s');
               }
+              
+              // Mostrar taxa de erro se houver
+              if (errorRate && parseFloat(errorRate) > 0) {
+                const errorNum = parseFloat(errorRate);
+                labels.push(`${errorNum.toFixed(1)}% err`);
+              }
+              
               if (displayOptions.showEdgeLabels.responseTime && responseTime) {
                 labels.push(responseTime);
               }
@@ -510,42 +688,69 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
 
               return labels.join('\n');
             },
+            'line-color': function(ele: any) {
+              const errorRate = parseFloat(ele.data('errorRate') || '0');
+              const rate = parseFloat(ele.data('requestRate') || '0');
+              
+              // PRIORIDADE: Erros sempre aparecem primeiro
+              // Vermelho para taxa de erro muito alta (>=5%)
+              if (errorRate >= 5) {
+                return '#ef4444'; // red-500
+              }
+              // Laranja para taxa de erro alta (1-5%)
+              if (errorRate >= 1) {
+                return '#f97316'; // orange-500
+              }
+              // Amarelo para taxa de erro média (0.1-1%)
+              if (errorRate >= 0.1) {
+                return '#eab308'; // yellow-500
+              }
+              // Vermelho claro para qualquer erro (>0%)
+              if (errorRate > 0) {
+                return '#fca5a5'; // red-300
+              }
+              
+              // Sem erros: cores baseadas em tráfego e protocolo
+              // Verde para tráfego alto e sem erros
+              if (rate > 100) {
+                return '#10b981'; // green-500
+              }
+              // Azul para HTTP
+              if (ele.data('protocol') === 'http') {
+                return '#3b82f6'; // blue-500
+              }
+              // Cinza padrão
+              return '#9ca3af'; // gray-400
+            },
+            'target-arrow-color': function(ele: any) {
+              const errorRate = parseFloat(ele.data('errorRate') || '0');
+              const rate = parseFloat(ele.data('requestRate') || '0');
+              
+              // Mesma lógica de cores da linha
+              if (errorRate >= 5) return '#ef4444';
+              if (errorRate >= 1) return '#f97316';
+              if (errorRate >= 0.1) return '#eab308';
+              if (errorRate > 0) return '#fca5a5';
+              if (rate > 100) return '#10b981';
+              if (ele.data('protocol') === 'http') return '#3b82f6';
+              return '#9ca3af';
+            },
             'font-size': '10px',
             'color': '#f8fafc',
             'text-background-color': '#1e293b',
             'text-background-opacity': 0.95,
-            'text-background-padding': '5px',
+            'text-background-padding': '6px',
             'text-background-shape': 'roundrectangle',
             'text-border-color': '#475569',
             'text-border-width': 1,
             'text-border-opacity': 1,
             'text-margin-y': -12,
-            'text-wrap': 'none',
+            'text-wrap': 'wrap',
+            'text-max-width': '120px',
+            'text-justification': 'center',
             'line-style': displayOptions.show.trafficAnimation ? 'dashed' : 'solid',
             'line-dash-pattern': displayOptions.show.trafficAnimation ? [6, 3] : [1, 0],
             'line-dash-offset': 0,
-          },
-        },
-        {
-          selector: 'edge[protocol="http"]',
-          style: {
-            'line-color': '#3b82f6',
-            'target-arrow-color': '#3b82f6',
-          },
-        },
-        {
-          selector: 'edge[protocol="tcp"]',
-          style: {
-            'line-color': '#10b981',
-            'target-arrow-color': '#10b981',
-          },
-        },
-        {
-          selector: 'edge[errorRate > 0]',
-          style: {
-            'line-color': '#ef4444',
-            'target-arrow-color': '#ef4444',
-            'line-style': 'dashed',
           },
         },
       ],
@@ -750,7 +955,169 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
             </div>
 
             {/* Display Options */}
-            <Accordion type="single" collapsible className="mt-4">
+            <Accordion type="multiple" className="mt-4">
+              {/* Traffic Accordion */}
+              <AccordionItem value="traffic">
+                <AccordionTrigger className="text-sm font-medium">Traffic</AccordionTrigger>
+                <AccordionContent>
+                  <div className="space-y-4 pt-2 max-h-[400px] overflow-y-auto pr-2">
+                    {/* gRPC */}
+                    <div className="space-y-2">
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="grpc"
+                          checked={displayOptions.traffic.grpc.enabled}
+                          onCheckedChange={(checked) =>
+                            setDisplayOptions(prev => ({
+                              ...prev,
+                              traffic: {
+                                ...prev.traffic,
+                                grpc: { ...prev.traffic.grpc, enabled: !!checked }
+                              }
+                            }))
+                          }
+                        />
+                        <Label htmlFor="grpc" className="text-sm font-medium cursor-pointer">Grpc</Label>
+                      </div>
+
+                      {displayOptions.traffic.grpc.enabled && (
+                        <RadioGroup
+                          value={
+                            displayOptions.traffic.grpc.requests ? 'requests' :
+                            displayOptions.traffic.grpc.receivedMessages ? 'receivedMessages' :
+                            displayOptions.traffic.grpc.sentMessages ? 'sentMessages' :
+                            displayOptions.traffic.grpc.totalMessages ? 'totalMessages' : 'requests'
+                          }
+                          onValueChange={(value) =>
+                            setDisplayOptions(prev => ({
+                              ...prev,
+                              traffic: {
+                                ...prev.traffic,
+                                grpc: {
+                                  ...prev.traffic.grpc,
+                                  requests: value === 'requests',
+                                  receivedMessages: value === 'receivedMessages',
+                                  sentMessages: value === 'sentMessages',
+                                  totalMessages: value === 'totalMessages'
+                                }
+                              }
+                            }))
+                          }
+                          className="ml-6 space-y-1"
+                        >
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="receivedMessages" id="grpc-receivedMessages" />
+                            <Label htmlFor="grpc-receivedMessages" className="text-sm font-normal cursor-pointer">Received Messages</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="requests" id="grpc-requests" />
+                            <Label htmlFor="grpc-requests" className="text-sm font-normal cursor-pointer">Requests</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="sentMessages" id="grpc-sentMessages" />
+                            <Label htmlFor="grpc-sentMessages" className="text-sm font-normal cursor-pointer">Sent Messages</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="totalMessages" id="grpc-totalMessages" />
+                            <Label htmlFor="grpc-totalMessages" className="text-sm font-normal cursor-pointer">Total Messages</Label>
+                          </div>
+                        </RadioGroup>
+                      )}
+                    </div>
+
+                    {/* HTTP */}
+                    <div className="space-y-2 border-t pt-2">
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="http"
+                          checked={displayOptions.traffic.http.enabled}
+                          onCheckedChange={(checked) =>
+                            setDisplayOptions(prev => ({
+                              ...prev,
+                              traffic: {
+                                ...prev.traffic,
+                                http: { ...prev.traffic.http, enabled: !!checked }
+                              }
+                            }))
+                          }
+                        />
+                        <Label htmlFor="http" className="text-sm font-medium cursor-pointer">Http</Label>
+                      </div>
+
+                      {displayOptions.traffic.http.enabled && (
+                        <RadioGroup
+                          value="requests"
+                          className="ml-6 space-y-1"
+                        >
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="requests" id="http-requests" />
+                            <Label htmlFor="http-requests" className="text-sm font-normal cursor-pointer">Requests</Label>
+                          </div>
+                        </RadioGroup>
+                      )}
+                    </div>
+
+                    {/* TCP */}
+                    <div className="space-y-2 border-t pt-2">
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="tcp"
+                          checked={displayOptions.traffic.tcp.enabled}
+                          onCheckedChange={(checked) =>
+                            setDisplayOptions(prev => ({
+                              ...prev,
+                              traffic: {
+                                ...prev.traffic,
+                                tcp: { ...prev.traffic.tcp, enabled: !!checked }
+                              }
+                            }))
+                          }
+                        />
+                        <Label htmlFor="tcp" className="text-sm font-medium cursor-pointer">Tcp</Label>
+                      </div>
+
+                      {displayOptions.traffic.tcp.enabled && (
+                        <RadioGroup
+                          value={
+                            displayOptions.traffic.tcp.receivedBytes ? 'receivedBytes' :
+                            displayOptions.traffic.tcp.sentBytes ? 'sentBytes' :
+                            displayOptions.traffic.tcp.totalBytes ? 'totalBytes' : 'sentBytes'
+                          }
+                          onValueChange={(value) =>
+                            setDisplayOptions(prev => ({
+                              ...prev,
+                              traffic: {
+                                ...prev.traffic,
+                                tcp: {
+                                  ...prev.traffic.tcp,
+                                  receivedBytes: value === 'receivedBytes',
+                                  sentBytes: value === 'sentBytes',
+                                  totalBytes: value === 'totalBytes'
+                                }
+                              }
+                            }))
+                          }
+                          className="ml-6 space-y-1"
+                        >
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="receivedBytes" id="tcp-receivedBytes" />
+                            <Label htmlFor="tcp-receivedBytes" className="text-sm font-normal cursor-pointer">Received Bytes</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="sentBytes" id="tcp-sentBytes" />
+                            <Label htmlFor="tcp-sentBytes" className="text-sm font-normal cursor-pointer">Sent Bytes</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="totalBytes" id="tcp-totalBytes" />
+                            <Label htmlFor="tcp-totalBytes" className="text-sm font-normal cursor-pointer">Total Bytes</Label>
+                          </div>
+                        </RadioGroup>
+                      )}
+                    </div>
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
+
               <AccordionItem value="display">
                 <AccordionTrigger className="text-sm font-medium">Display</AccordionTrigger>
                 <AccordionContent>

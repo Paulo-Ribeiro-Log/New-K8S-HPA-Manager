@@ -597,4 +597,87 @@ Cada arquivo contém um link "Voltar ao CLAUDE.md principal" no topo para fácil
 
 ---
 
+## 🔄 Últimas Atualizações (12/12/2025)
+
+### Service Mesh - Kiali Integration
+
+#### Seletor Traffic Implementado
+- **Traffic Accordion** com 3 protocolos:
+  - **gRPC**: Requests (padrão), Received Messages, Sent Messages, Total Messages
+  - **HTTP**: Requests (única opção)
+  - **TCP**: Sent Bytes (padrão), Received Bytes, Total Bytes
+- Accordion múltiplo (Traffic + Display podem abrir simultaneamente)
+- Interface idêntica ao Kiali original
+
+#### Sistema de Cores Dinâmico para Erros
+**Problema Resolvido**: Chaves duplicadas `line-color` e `target-arrow-color` faziam apenas primeira definição (estática) ser usada.
+
+**Solução**: Removidas definições estáticas, mantidas apenas funções dinâmicas:
+
+```typescript
+// internal/web/frontend/src/components/ServiceMeshGraph.tsx
+'line-color': function(ele: any) {
+  const errorRate = parseFloat(ele.data('errorRate') || '0');
+  
+  // PRIORIDADE: Erros sempre aparecem primeiro
+  if (errorRate >= 5) return '#ef4444';    // Vermelho (>=5%)
+  if (errorRate >= 1) return '#f97316';    // Laranja (1-5%)
+  if (errorRate >= 0.1) return '#eab308';  // Amarelo (0.1-1%)
+  if (errorRate > 0) return '#fca5a5';     // Vermelho claro (>0%)
+  
+  // Sem erros: tráfego e protocolo
+  if (rate > 100) return '#10b981';        // Verde (alto tráfego)
+  if (protocol === 'http') return '#3b82f6'; // Azul (HTTP)
+  return '#9ca3af';                        // Cinza (padrão)
+}
+```
+
+#### Cálculo de Error Rate pelo Backend
+**Implementação**: Backend agora calcula `errorRate` analisando `responses` do Kiali:
+
+```go
+// internal/web/handlers/servicemesh.go
+// Se Kiali retorna apenas códigos de erro (4xx/5xx) com count 0.00,
+// considera 100% erro (todas requisições falhando)
+if errorRequests == 0 && totalRequests == 0 {
+    hasErrorCodes := false
+    for code := range edge.Data.Traffic.Responses {
+        if len(code) > 0 && (code[0] == '4' || code[0] == '5') {
+            hasErrorCodes = true
+            break
+        }
+    }
+    if hasErrorCodes {
+        simpleEdge.ErrorRate = 100.0  // 🔴 Linha vermelha
+    }
+}
+```
+
+#### Correção do Refresh
+**Problema**: Refresh removia todos elementos e recriava, causando perda de nodes.
+
+**Solução**: Método `updateGraphDataFromResponse()` que:
+- Atualiza apenas **dados** de elementos existentes
+- Adiciona **novos** nodes/edges
+- Remove **apenas** elementos que desapareceram
+- Mantém **posições** dos nodes existentes
+- Layout apenas para nodes novos
+
+```typescript
+// internal/web/frontend/src/components/ServiceMeshGraph.tsx
+const loadServiceGraphSilent = async () => {
+  const data = await apiClient.getServiceGraph(...)
+  
+  if (cyInstance.current) {
+    updateGraphDataFromResponse(data);  // ✅ Não destrói gráfico
+  } else {
+    setGraphData(data);  // Cria novo
+  }
+}
+```
+
+**Labels de Erro**: Agora exibem `X.X% err` inline com métricas de tráfego.
+
+---
+
 **Happy coding!** 🚀

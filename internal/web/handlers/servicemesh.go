@@ -394,6 +394,16 @@ func (h *ServiceMeshHandler) queryKialiGraph(kialiURL, namespace, duration, grap
 	url := fmt.Sprintf("%sapi/namespaces/graph?namespaces=%s&duration=%s&graphType=%s&injectServiceNodes=%s&includeIdleEdges=%s&includeIdleNodes=%s&appenders=%s",
 		kialiURL, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders)
 
+	fmt.Printf("[ServiceMesh] 🌐 URL COMPLETA que será chamada:\n%s\n", url)
+	fmt.Printf("[ServiceMesh] 📋 Parâmetros da query:\n")
+	fmt.Printf("  - namespace: %s\n", namespace)
+	fmt.Printf("  - duration: %s\n", duration)
+	fmt.Printf("  - graphType: %s\n", graphType)
+	fmt.Printf("  - injectServiceNodes: %s\n", injectServiceNodes)
+	fmt.Printf("  - includeIdleEdges: %s\n", includeIdleEdges)
+	fmt.Printf("  - includeIdleNodes: %s\n", includeIdleNodes)
+	fmt.Printf("  - appenders: %s\n", appenders)
+
 	// Criar HTTP client com suporte para TLS (certificados auto-assinados)
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -653,7 +663,8 @@ func (h *ServiceMeshHandler) simplifyGraphData(graphData *KialiGraphResponse) *S
 	}
 
 	// Processar arestas
-	for _, edge := range graphData.Elements.Edges {
+	fmt.Printf("[ServiceMesh] 🔗 Processando %d arestas do Kiali\n", len(graphData.Elements.Edges))
+	for i, edge := range graphData.Elements.Edges {
 		simpleEdge := SimplifiedEdge{
 			ID:       edge.Data.ID,
 			Source:   edge.Data.Source,
@@ -661,23 +672,81 @@ func (h *ServiceMeshHandler) simplifyGraphData(graphData *KialiGraphResponse) *S
 			Protocol: edge.Data.Traffic.Protocol,
 		}
 
+		fmt.Printf("  Edge %d: %s -> %s (protocol=%s)\n", i+1, edge.Data.Source, edge.Data.Target, edge.Data.Traffic.Protocol)
+
 		// Request Rate (HTTP ou TCP)
 		if edge.Data.Traffic.Rates.HTTP != "" {
 			simpleEdge.RequestRate = edge.Data.Traffic.Rates.HTTP
+			fmt.Printf("    HTTP Rate: %s\n", edge.Data.Traffic.Rates.HTTP)
 		} else if edge.Data.Traffic.Rates.TCP != "" {
 			simpleEdge.RequestRate = edge.Data.Traffic.Rates.TCP
+			fmt.Printf("    TCP Rate: %s\n", edge.Data.Traffic.Rates.TCP)
 		}
 
 		// Response Time (se disponível no Kiali)
 		if edge.Data.ResponseTime != "" {
 			simpleEdge.ResponseTime = edge.Data.ResponseTime
+			fmt.Printf("    Response Time: %s\n", edge.Data.ResponseTime)
 		}
 
-		// Calcular error rate se houver responses
-		// Nota: Kiali pode não incluir essas informações dependendo da configuração
+		// Calcular error rate a partir dos responses
+		fmt.Printf("    Responses disponíveis: %d\n", len(edge.Data.Traffic.Responses))
+		if len(edge.Data.Traffic.Responses) > 0 {
+			var totalRequests float64
+			var errorRequests float64
+
+			fmt.Printf("    Analisando responses:\n")
+			for code, value := range edge.Data.Traffic.Responses {
+				// Tentar converter valor para float64
+				var count float64
+				switch v := value.(type) {
+				case float64:
+					count = v
+				case string:
+					// Se for string com formato "X.XX%", remover % e converter
+					fmt.Sscanf(v, "%f", &count)
+				}
+
+				fmt.Printf("      Code %s: %.2f requests\n", code, count)
+				totalRequests += count
+
+				// Códigos 4xx e 5xx são erros
+				if len(code) > 0 && (code[0] == '4' || code[0] == '5') {
+					errorRequests += count
+					fmt.Printf("        -> É ERRO!\n")
+				}
+			}
+
+			// Se encontramos códigos de erro (mesmo com count 0), considerar 100% erro
+			// Isso indica que TODAS as requisições estão falhando
+			if errorRequests == 0 && totalRequests == 0 {
+				// Verificar se há códigos de erro mesmo sem count
+				hasErrorCodes := false
+				for code := range edge.Data.Traffic.Responses {
+					if len(code) > 0 && (code[0] == '4' || code[0] == '5') {
+						hasErrorCodes = true
+						break
+					}
+				}
+				if hasErrorCodes {
+					simpleEdge.ErrorRate = 100.0
+					fmt.Printf("    ⚠️  Códigos de erro detectados sem requests: assumindo 100%% erro\n")
+				}
+			} else if totalRequests > 0 {
+				// Calcular porcentagem de erro normalmente
+				errorRate := (errorRequests / totalRequests) * 100
+				simpleEdge.ErrorRate = errorRate
+				fmt.Printf("    ✅ Error Rate calculado: %.2f%% (%.2f errors / %.2f total)\n",
+					errorRate, errorRequests, totalRequests)
+			}
+		} else {
+			fmt.Printf("    ⚠️  Nenhum dado de responses disponível\n")
+		}
 
 		response.Edges = append(response.Edges, simpleEdge)
 	}
+
+	fmt.Printf("[ServiceMesh] ✅ Processadas %d arestas\n", len(response.Edges))
 
 	return response
 }
