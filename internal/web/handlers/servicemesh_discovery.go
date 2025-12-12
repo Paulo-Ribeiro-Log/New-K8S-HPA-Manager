@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/client-go/kubernetes"
 	authv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 // KialiAuthConfig representa a configuração de autenticação do Kiali
@@ -121,7 +121,7 @@ func getKialiAuthStrategy(kialiURL string, authToken string) (string, error) {
 
 	// Endpoint de configuração do Kiali
 	configURL := kialiURL + "api/config"
-	
+
 	req, err := http.NewRequest("GET", configURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("erro ao criar requisição: %w", err)
@@ -201,7 +201,7 @@ func createKialiToken(clientset kubernetes.Interface, namespace string, clusterN
 	if len(tokenPreview) > 20 {
 		tokenPreview = tokenPreview[:20] + "..."
 	}
-	fmt.Printf("[ServiceMesh] ✅ Token criado com sucesso para cluster '%s' (início: %s, comprimento: %d, expira em 1h)\n", 
+	fmt.Printf("[ServiceMesh] ✅ Token criado com sucesso para cluster '%s' (início: %s, comprimento: %d, expira em 1h)\n",
 		clusterName, tokenPreview, len(result.Status.Token))
 	return result.Status.Token, nil
 }
@@ -244,7 +244,7 @@ func authenticateKiali(kialiURL, token string) (*http.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("erro ao criar cookiejar: %w", err)
 	}
-	
+
 	// Criar HTTP client com suporte a cookies e TLS
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -255,7 +255,7 @@ func authenticateKiali(kialiURL, token string) (*http.Client, error) {
 			},
 		},
 	}
-	
+
 	// Endpoint de autenticação do Kiali
 	authURL := kialiURL + "api/authenticate"
 
@@ -271,26 +271,26 @@ func authenticateKiali(kialiURL, token string) (*http.Client, error) {
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("erro na autenticação: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	fmt.Printf("[ServiceMesh] Status da autenticação: %d\n", resp.StatusCode)
-	
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		fmt.Printf("[ServiceMesh] Erro de autenticação: %s\n", string(body))
 		return nil, fmt.Errorf("autenticação falhou com status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	// Ler resposta (contém informações do usuário)
 	body, _ := io.ReadAll(resp.Body)
 	fmt.Printf("[ServiceMesh] ✅ Autenticação bem-sucedida, sessão estabelecida\n")
 	fmt.Printf("[ServiceMesh] Resposta: %s\n", string(body))
-	
+
 	// Retornar client com cookies de sessão configurados
 	return client, nil
 }

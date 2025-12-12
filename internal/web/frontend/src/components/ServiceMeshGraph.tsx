@@ -4,11 +4,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Checkbox } from '@/components/ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
-import { Loader2, RefreshCw, ZoomIn, ZoomOut, Maximize2, Minimize2, Settings, Clock, Pause, Play } from 'lucide-react';
+import { Loader2, RefreshCw, ZoomIn, ZoomOut, Maximize2, Minimize2, Settings, Clock, Pause, Play, Filter, Eye } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import { ServiceGraphResponse, ServiceMeshFilters } from '@/types/servicemesh';
 import { toast } from 'sonner';
@@ -844,16 +844,16 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
                 </Button>
               </div>
             </CardHeader>
-            <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div>
-              <label className="text-sm font-medium mb-2 block">Namespace</label>
+            <CardContent className="space-y-2 py-3">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="min-w-[130px] max-w-[160px]">
+              <label className="text-xs font-medium mb-1 block text-muted-foreground">Namespace</label>
               <Select
                 value={filters.namespace}
                 onValueChange={(value) => setFilters(prev => ({ ...prev, namespace: value }))}
               >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione namespace" />
+                <SelectTrigger className="h-8 text-sm">
+                  <SelectValue placeholder="Selecione" />
                 </SelectTrigger>
                 <SelectContent>
                   {namespaces.map(ns => (
@@ -863,13 +863,13 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
               </Select>
             </div>
 
-            <div>
-              <label className="text-sm font-medium mb-2 block">Duração</label>
+            <div className="min-w-[100px] max-w-[120px]">
+              <label className="text-xs font-medium mb-1 block text-muted-foreground">Duração</label>
               <Select
                 value={filters.duration}
                 onValueChange={(value: any) => setFilters(prev => ({ ...prev, duration: value }))}
               >
-                <SelectTrigger>
+                <SelectTrigger className="h-8 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -885,13 +885,13 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
               </Select>
             </div>
 
-            <div>
-              <label className="text-sm font-medium mb-2 block">Tipo de Grafo</label>
+            <div className="min-w-[100px] max-w-[120px]">
+              <label className="text-xs font-medium mb-1 block text-muted-foreground">Tipo de Grafo</label>
               <Select
                 value={filters.graphType}
                 onValueChange={(value: any) => setFilters(prev => ({ ...prev, graphType: value }))}
               >
-                <SelectTrigger>
+                <SelectTrigger className="h-8 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -903,16 +903,17 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
               </Select>
             </div>
 
-            <div className="flex items-end gap-2">
+            <div className="flex items-end">
               <Button
                 onClick={() => loadServiceGraph(false)}
                 disabled={loading || !filters.namespace}
-                className="flex-1"
+                size="sm"
+                className="h-8 text-xs px-3 min-w-[90px] max-w-[100px]"
               >
                 {loading ? (
-                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Carregando...</>
+                  <><Loader2 className="mr-2 h-3 w-3 animate-spin" /> Carregando...</>
                 ) : (
-                  <><RefreshCw className="mr-2 h-4 w-4" /> Atualizar</>
+                  <><RefreshCw className="mr-2 h-3 w-3" /> Atualizar</>
                 )}
               </Button>
             </div>
@@ -954,13 +955,20 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
               )}
             </div>
 
-            {/* Display Options */}
-            <Accordion type="multiple" className="mt-4">
-              {/* Traffic Accordion */}
-              <AccordionItem value="traffic">
-                <AccordionTrigger className="text-sm font-medium">Traffic</AccordionTrigger>
-                <AccordionContent>
-                  <div className="space-y-4 pt-2 max-h-[400px] overflow-y-auto pr-2">
+            {/* Display Options - Popovers */}
+            <div className="flex gap-2 mt-4">
+              {/* Traffic Popover */}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    <Filter className="mr-2 h-4 w-4" />
+                    Traffic
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-80" align="start">
+                  <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                    <h4 className="font-semibold text-sm mb-3">Traffic Options</h4>
+                    
                     {/* gRPC */}
                     <div className="space-y-2">
                       <div className="flex items-center space-x-2">
@@ -977,7 +985,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
                             }))
                           }
                         />
-                        <Label htmlFor="grpc" className="text-sm font-medium cursor-pointer">Grpc</Label>
+                        <Label htmlFor="grpc" className="text-sm font-medium cursor-pointer">gRPC</Label>
                       </div>
 
                       {displayOptions.traffic.grpc.enabled && (
@@ -1115,13 +1123,21 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
                       )}
                     </div>
                   </div>
-                </AccordionContent>
-              </AccordionItem>
+                </PopoverContent>
+              </Popover>
 
-              <AccordionItem value="display">
-                <AccordionTrigger className="text-sm font-medium">Display</AccordionTrigger>
-                <AccordionContent>
-                  <div className="space-y-4 pt-2 max-h-[400px] overflow-y-auto pr-2">
+              {/* Display Popover */}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    <Eye className="mr-2 h-4 w-4" />
+                    Display
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-80" align="start">
+                  <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                    <h4 className="font-semibold text-sm mb-3">Display Options</h4>
+                    
                     {/* Show Edge Labels */}
                     <div className="space-y-2">
                       <div className="text-xs font-semibold text-muted-foreground">Show Edge Labels</div>
@@ -1399,9 +1415,9 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
                       </div>
                     </div>
                   </div>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
+                </PopoverContent>
+              </Popover>
+            </div>
           </div>
 
           {graphData && (

@@ -678,6 +678,41 @@ const loadServiceGraphSilent = async () => {
 
 **Labels de Erro**: Agora exibem `X.X% err` inline com métricas de tráfego.
 
+#### Otimização de Espaço dos Controles
+**Problema**: Selects e botão "Atualizar" ocupavam muito espaço, reduzindo área do gráfico.
+
+**Solução**: Controles compactos com larguras fixas:
+
+```typescript
+// internal/web/frontend/src/components/ServiceMeshGraph.tsx
+// Layout flexbox com larguras máximas definidas
+<CardContent className="space-y-2 py-3">
+  <div className="flex flex-wrap items-end gap-2">
+    {/* Namespace: 130-160px */}
+    <div className="min-w-[130px] max-w-[160px]">
+      <SelectTrigger className="h-8 text-sm">
+    
+    {/* Duração: 100-120px */}
+    <div className="min-w-[100px] max-w-[120px]">
+      <SelectTrigger className="h-8 text-sm">
+    
+    {/* Tipo de Grafo: 100-120px */}
+    <div className="min-w-[100px] max-w-[120px]">
+      <SelectTrigger className="h-8 text-sm">
+    
+    {/* Botão Atualizar: 90-100px */}
+    <Button className="h-8 text-xs px-3 min-w-[90px] max-w-[100px]">
+```
+
+**Melhorias**:
+- Labels: `text-xs` (antes `text-sm`), margem reduzida `mb-1` (antes `mb-2`)
+- Espaçamento: `gap-2` (antes `gap-3`), `py-3` (antes padrão)
+- Altura: `h-8` em todos os controles (compacto e uniforme)
+- Larguras: Fixadas com `min-w-` e `max-w-` (antes esticavam com `flex-1`)
+- Ícones: `h-3 w-3` (antes `h-4 w-4`)
+
+**Resultado**: ~40% menos espaço vertical, liberando mais área para visualização do gráfico.
+
 ---
 
 **Happy coding!** 🚀
