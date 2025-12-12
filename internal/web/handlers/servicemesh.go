@@ -69,21 +69,8 @@ type KialiGraphEdge struct {
 				HTTPPercentReq string `json:"httpPercentReq,omitempty"`
 				TCP            string `json:"tcp,omitempty"`
 			} `json:"rates"`
-			Responses struct {
-				Status200 struct {
-					Flags struct {
-						PercentReq string `json:"-"`
-					} `json:"flags"`
-					Hosts map[string]struct {
-						PercentReq string `json:"-"`
-					} `json:"hosts"`
-				} `json:"200,omitempty"`
-				Status500 struct {
-					Flags struct {
-						PercentReq string `json:"-"`
-					} `json:"flags"`
-				} `json:"500,omitempty"`
-			} `json:"responses,omitempty"`
+			// Responses é complexo e varia, usar map genérico para não quebrar unmarshal
+			Responses map[string]interface{} `json:"responses,omitempty"`
 		} `json:"traffic"`
 		ResponseTime string `json:"responseTime,omitempty"`
 	} `json:"data"`
@@ -106,8 +93,10 @@ type SimplifiedNode struct {
 	Label          string `json:"label"`
 	Type           string `json:"type"` // workload, service, app
 	Namespace      string `json:"namespace"`
+	Workload       string `json:"workload,omitempty"`
 	App            string `json:"app,omitempty"`
 	Version        string `json:"version,omitempty"`
+	Service        string `json:"service,omitempty"`
 	IsRoot         bool   `json:"isRoot,omitempty"`
 	IsInaccessible bool   `json:"isInaccessible,omitempty"`
 	IsOutside      bool   `json:"isOutside,omitempty"`
@@ -153,60 +142,83 @@ func (h *ServiceMeshHandler) GetServiceGraph(c *gin.Context) {
 		return
 	}
 
-	// Método 1: Tentar URL externa do Kiali (via Ingress) - PREFERIDO
-	kialiURL, err := getKialiURL(clusterName)
-	if err == nil {
-		fmt.Printf("[ServiceMesh] ✅ Usando Kiali via URL externa: %s\n", kialiURL)
+	// Verificar se Kiali via Ingress requer autenticação
+	kialiURL, needsAuth, err := getKialiURL(clusterName)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": "Kiali não acessível",
+			"details": fmt.Sprintf("Não foi possível acessar o Kiali via Ingress: %v", err),
+			"hint": "Verifique se o Kiali está configurado e acessível",
+		})
+		return
+	}
 
-		// Consultar via HTTP direto ao Ingress
-		graphData, err := h.queryKialiGraph(kialiURL, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders)
-		if err == nil {
-			fmt.Printf("[ServiceMesh] ✅ Dados recebidos via URL externa: %d nodes, %d edges\n", len(graphData.Elements.Nodes), len(graphData.Elements.Edges))
-			// Sucesso! Simplificar e retornar
-			response := h.simplifyGraphData(graphData)
-			c.JSON(http.StatusOK, response)
+	// Se o Kiali requer autenticação (token strategy), criar token automaticamente
+	if needsAuth {
+		fmt.Printf("[ServiceMesh] 🔐 Kiali configurado com auth:token, criando token automaticamente...\n")
+
+		// Obter clientset
+		clientset, err := h.kubeManager.GetClient(clusterName)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cluster inválido: %v", err)})
 			return
 		}
 
-		fmt.Printf("[ServiceMesh] ❌ Erro ao consultar via URL externa: %v\n", err)
-		fmt.Printf("[ServiceMesh] Tentando fallback para proxy do Kubernetes...\n")
-	} else {
-		fmt.Printf("[ServiceMesh] ❌ URL externa não disponível: %v\n", err)
-		fmt.Printf("[ServiceMesh] Tentando proxy do Kubernetes...\n")
-	}
+		// Criar token do service account kiali
+		token, err := getOrCreateKialiToken(clientset, clusterName, "istio-system")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Erro ao criar token",
+				"details": err.Error(),
+			})
+			return
+		}
 
-	// Método 2 (Fallback): Tentar proxy do Kubernetes
-	clientset, err := h.kubeManager.GetClient(clusterName)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("cluster inválido: %v", err)})
+		fmt.Printf("[ServiceMesh] ✅ Token criado com sucesso\n")
+
+		// Autenticar no Kiali via POST /api/authenticate (recebe cookies de sessão)
+		authenticatedClient, err := authenticateKiali(kialiURL, token)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "Erro na autenticação do Kiali",
+				"details": err.Error(),
+			})
+			return
+		}
+
+		fmt.Printf("[ServiceMesh] ✅ Autenticado com sucesso, usando sessão com cookies\n")
+
+		// Consultar usando client autenticado com cookies de sessão
+		graphData, err := h.queryKialiGraphWithClient(authenticatedClient, kialiURL, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Erro ao consultar Kiali",
+				"details": err.Error(),
+			})
+			return
+		}
+
+		fmt.Printf("[ServiceMesh] ✅ Dados recebidos: %d nodes, %d edges\n", len(graphData.Elements.Nodes), len(graphData.Elements.Edges))
+		response := h.simplifyGraphData(graphData)
+		c.JSON(http.StatusOK, response)
 		return
 	}
 
-	// Descobrir o serviço Kiali no cluster
-	kialiService, kialiNamespace, kialiPort, err := h.discoverKialiService(clientset)
-	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error":   "Kiali não encontrado",
-			"details": "Não foi possível acessar Kiali via URL externa nem proxy interno",
-			"hint":    "Certifique-se de que o Kiali está acessível via Ingress ou instalado no cluster",
-		})
-		return
-	}
+	// Kiali com autenticação anonymous, usar URL externa sem token
+	fmt.Printf("[ServiceMesh] ℹ️  Kiali configurado com auth:anonymous, usando URL externa SEM token\n")
 
-	// Consultar a API do Kiali via proxy do Kubernetes
-	graphData, err := h.queryKialiGraphViaProxy(clientset, kialiService, kialiNamespace, kialiPort, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders)
+	// Consultar via HTTP direto (sem autenticação)
+	graphData, err := h.queryKialiGraph(kialiURL, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders, "")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":         "Erro ao consultar Kiali API",
-			"details":       err.Error(),
-			"kiali_service": fmt.Sprintf("%s.%s:%d", kialiService, kialiNamespace, kialiPort),
+			"error": "Erro ao consultar Kiali",
+			"details": err.Error(),
 		})
 		return
 	}
 
-	// Simplificar dados para o frontend
+	fmt.Printf("[ServiceMesh] ✅ Dados recebidos: %d nodes, %d edges\n", len(graphData.Elements.Nodes), len(graphData.Elements.Edges))
 	response := h.simplifyGraphData(graphData)
-
 	c.JSON(http.StatusOK, response)
 }
 
@@ -324,7 +336,7 @@ func (h *ServiceMeshHandler) discoverKialiService(clientset kubernetes.Interface
 }
 
 // queryKialiGraphViaProxy consulta a API do Kiali via proxy do Kubernetes
-func (h *ServiceMeshHandler) queryKialiGraphViaProxy(clientset kubernetes.Interface, serviceName, serviceNamespace string, servicePort int, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders string) (*KialiGraphResponse, error) {
+func (h *ServiceMeshHandler) queryKialiGraphViaProxy(clientset kubernetes.Interface, serviceName, serviceNamespace string, servicePort int, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders, authToken string) (*KialiGraphResponse, error) {
 	// Construir URL via proxy do Kubernetes API
 	// Formato correto: /api/v1/namespaces/{namespace}/services/[http:]name[:port]/proxy/{path}
 	// API do Kiali usa /api/namespaces/graph?namespaces=X (não /api/namespaces/X/graph)
@@ -338,7 +350,15 @@ func (h *ServiceMeshHandler) queryKialiGraphViaProxy(clientset kubernetes.Interf
 	fmt.Printf("[ServiceMesh] Proxy path completo: %s\n", proxyPath)
 
 	// Fazer requisição via proxy
-	result := clientset.CoreV1().RESTClient().Get().AbsPath(proxyPath).Do(context.Background())
+	req := clientset.CoreV1().RESTClient().Get().AbsPath(proxyPath)
+	
+	// Adicionar token de autenticação se fornecido
+	if authToken != "" {
+		req.SetHeader("Authorization", fmt.Sprintf("Bearer %s", authToken))
+		fmt.Printf("[ServiceMesh] Usando autenticação com token no proxy\n")
+	}
+	
+	result := req.Do(context.Background())
 
 	if result.Error() != nil {
 		fmt.Printf("[ServiceMesh] Erro no proxy do Kubernetes: %v\n", result.Error())
@@ -369,7 +389,7 @@ func (h *ServiceMeshHandler) queryKialiGraphViaProxy(clientset kubernetes.Interf
 }
 
 // queryKialiGraph consulta a API do Kiali para obter o service graph (método legado - mantido para compatibilidade)
-func (h *ServiceMeshHandler) queryKialiGraph(kialiURL, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders string) (*KialiGraphResponse, error) {
+func (h *ServiceMeshHandler) queryKialiGraph(kialiURL, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders, authToken string) (*KialiGraphResponse, error) {
 	// Construir URL da API Kiali (formato correto: /api/namespaces/graph?namespaces=X)
 	url := fmt.Sprintf("%sapi/namespaces/graph?namespaces=%s&duration=%s&graphType=%s&injectServiceNodes=%s&includeIdleEdges=%s&includeIdleNodes=%s&appenders=%s",
 		kialiURL, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders)
@@ -389,7 +409,19 @@ func (h *ServiceMeshHandler) queryKialiGraph(kialiURL, namespace, duration, grap
 		return nil, fmt.Errorf("erro ao criar requisição: %w", err)
 	}
 
-	fmt.Printf("[ServiceMesh] Fazendo requisição para: %s\n", url)
+	// Adicionar token de autenticação se fornecido
+	if authToken != "" {
+		tokenPreview := authToken
+		if len(authToken) > 20 {
+			tokenPreview = authToken[:20] + "..."
+		}
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", authToken))
+		fmt.Printf("[ServiceMesh] 🔐 Usando autenticação com token (início: %s)\n", tokenPreview)
+	} else {
+		fmt.Printf("[ServiceMesh] ℹ️ Requisição sem token (autenticação anonymous)\n")
+	}
+
+	fmt.Printf("[ServiceMesh] 📡 Fazendo requisição para: %s\n", url)
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("[ServiceMesh] Erro na requisição: %v\n", err)
@@ -409,6 +441,106 @@ func (h *ServiceMeshHandler) queryKialiGraph(kialiURL, namespace, duration, grap
 		return nil, fmt.Errorf("erro ao decodificar resposta: %w", err)
 	}
 
+	return &graphData, nil
+}
+
+// queryKialiGraphWithClient consulta a API do Kiali usando client HTTP pré-autenticado
+func (h *ServiceMeshHandler) queryKialiGraphWithClient(client *http.Client, kialiURL, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders string) (*KialiGraphResponse, error) {
+	// Construir URL da API Kiali
+	url := fmt.Sprintf("%sapi/namespaces/graph?namespaces=%s&duration=%s&graphType=%s&injectServiceNodes=%s&includeIdleEdges=%s&includeIdleNodes=%s&appenders=%s",
+		kialiURL, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders)
+
+	fmt.Printf("[ServiceMesh] 📡 Fazendo requisição autenticada para: %s\n", url)
+	
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao criar requisição: %w", err)
+	}
+
+	// O client já tem os cookies de sessão configurados
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("[ServiceMesh] Erro na requisição: %v\n", err)
+		return nil, fmt.Errorf("erro ao executar requisição: %w", err)
+	}
+	defer resp.Body.Close()
+
+	fmt.Printf("[ServiceMesh] Status da resposta: %d\n", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Printf("[ServiceMesh] Corpo da resposta de erro: %s\n", string(body))
+		return nil, fmt.Errorf("kiali retornou status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var graphData KialiGraphResponse
+	if err := json.NewDecoder(resp.Body).Decode(&graphData); err != nil {
+		return nil, fmt.Errorf("erro ao decodificar resposta: %w", err)
+	}
+
+	fmt.Printf("[ServiceMesh] ✅ Grafo carregado: %d nós, %d arestas\n", len(graphData.Elements.Nodes), len(graphData.Elements.Edges))
+	return &graphData, nil
+}
+
+// queryKialiViaPodProxy acessa o Kiali diretamente via pod proxy, contornando autenticação do Ingress
+func (h *ServiceMeshHandler) queryKialiViaPodProxy(clientset kubernetes.Interface, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders string) (*KialiGraphResponse, error) {
+	ctx := context.Background()
+	
+	// Buscar pod do Kiali no namespace istio-system
+	fmt.Printf("[ServiceMesh] 🔍 Procurando pod do Kiali...\n")
+	pods, err := clientset.CoreV1().Pods("istio-system").List(ctx, metav1.ListOptions{
+		LabelSelector: "app=kiali",
+		Limit:         1,
+	})
+	
+	if err != nil || len(pods.Items) == 0 {
+		return nil, fmt.Errorf("pod do Kiali não encontrado: %w", err)
+	}
+	
+	podName := pods.Items[0].Name
+	podNamespace := pods.Items[0].Namespace
+	fmt.Printf("[ServiceMesh] ✅ Pod encontrado: %s/%s\n", podNamespace, podName)
+	
+	// Construir path para proxy do pod
+	// Formato: /api/v1/namespaces/{namespace}/pods/{pod}/proxy/{path}
+	proxyPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/proxy/api/namespaces/graph",
+		podNamespace, podName)
+	
+	queryParams := fmt.Sprintf("?namespaces=%s&duration=%s&graphType=%s&injectServiceNodes=%s&includeIdleEdges=%s&includeIdleNodes=%s&appenders=%s",
+		namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders)
+	proxyPath += queryParams
+	
+	fmt.Printf("[ServiceMesh] 📡 Proxy path: %s\n", proxyPath)
+	
+	// Fazer requisição via REST client do Kubernetes
+	result := clientset.CoreV1().RESTClient().Get().AbsPath(proxyPath).Do(ctx)
+	
+	if result.Error() != nil {
+		fmt.Printf("[ServiceMesh] ❌ Erro no proxy do pod: %v\n", result.Error())
+		return nil, fmt.Errorf("erro ao consultar Kiali via pod proxy: %w", result.Error())
+	}
+	
+	// Ler resposta
+	rawData, err := result.Raw()
+	if err != nil {
+		fmt.Printf("[ServiceMesh] ❌ Erro ao ler resposta: %v\n", err)
+		return nil, fmt.Errorf("erro ao ler resposta do Kiali: %w", err)
+	}
+	
+	fmt.Printf("[ServiceMesh] ✅ Resposta recebida: %d bytes\n", len(rawData))
+	
+	// Decodificar JSON
+	var graphData KialiGraphResponse
+	if err := json.Unmarshal(rawData, &graphData); err != nil {
+		preview := string(rawData)
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		fmt.Printf("[ServiceMesh] ❌ Erro ao decodificar JSON: %v\n", err)
+		fmt.Printf("[ServiceMesh] Preview: %s\n", preview)
+		return nil, fmt.Errorf("erro ao decodificar resposta: %w", err)
+	}
+	
+	fmt.Printf("[ServiceMesh] ✅ Grafo carregado: %d nós, %d arestas\n", len(graphData.Elements.Nodes), len(graphData.Elements.Edges))
 	return &graphData, nil
 }
 
@@ -477,14 +609,18 @@ func (h *ServiceMeshHandler) simplifyGraphData(graphData *KialiGraphResponse) *S
 		Duration:  graphData.Duration,
 	}
 
+	fmt.Printf("[ServiceMesh] 📊 Simplificando dados: %d nós, %d arestas do Kiali\n", len(graphData.Elements.Nodes), len(graphData.Elements.Edges))
+
 	// Processar nós
 	for _, node := range graphData.Elements.Nodes {
 		simpleNode := SimplifiedNode{
 			ID:             node.Data.ID,
 			Type:           node.Data.NodeType,
 			Namespace:      node.Data.Namespace,
+			Workload:       node.Data.Workload,
 			App:            node.Data.App,
 			Version:        node.Data.Version,
+			Service:        node.Data.Service,
 			IsRoot:         node.Data.IsRoot,
 			IsInaccessible: node.Data.IsInaccessible,
 			IsOutside:      node.Data.IsOutside,
@@ -508,6 +644,12 @@ func (h *ServiceMeshHandler) simplifyGraphData(graphData *KialiGraphResponse) *S
 		}
 
 		response.Nodes = append(response.Nodes, simpleNode)
+	}
+
+	fmt.Printf("[ServiceMesh] ✅ Processados %d nós\n", len(response.Nodes))
+	for i, node := range response.Nodes {
+		fmt.Printf("  Node %d: %s (type=%s, workload=%s, app=%s, version=%s)\n", 
+			i+1, node.Label, node.Type, node.Workload, node.App, node.Version)
 	}
 
 	// Processar arestas
