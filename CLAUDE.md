@@ -713,6 +713,159 @@ const loadServiceGraphSilent = async () => {
 
 **Resultado**: ~40% menos espaço vertical, liberando mais área para visualização do gráfico.
 
+#### Modo Fullscreen Melhorado
+**Problema**: Controles Traffic e Display não estavam acessíveis no modo fullscreen.
+
+**Solução**: 
+- Popovers Traffic e Display duplicados no header do fullscreen
+- Botão Settings (engrenagem) removido (não tinha funcionalidade real)
+- Estado `showFullscreenControls` removido (não mais necessário)
+
+**Implementação**:
+```typescript
+// internal/web/frontend/src/components/ServiceMeshGraph.tsx
+{isFullscreen && (
+  <div className="flex items-center gap-2">
+    {/* Popover Traffic */}
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm">
+          <Filter className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      {/* ... mesmo conteúdo do modo normal */}
+    </Popover>
+    
+    {/* Popover Display */}
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm">
+          <Eye className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      {/* ... mesmo conteúdo do modo normal */}
+    </Popover>
+  </div>
+)}
+```
+
+#### Sistema de Badges do Istio
+**Funcionalidades Implementadas**:
+- **Missing Sidecars** (⚠️): Detecta pods sem `istio-proxy` container
+- **Security - mTLS** (🔒): Verifica PeerAuthentication STRICT (placeholder)
+- **Virtual Services** (🔀): Detecta VirtualServices do Istio (placeholder)
+
+**Backend** (`internal/web/handlers/servicemesh.go`):
+```go
+// SimplifiedNode com novos campos
+type SimplifiedNode struct {
+    // ... campos existentes
+    HasSidecar        bool `json:"hasSidecar"`        // ⚠️
+    HasVirtualService bool `json:"hasVirtualService"` // 🔀
+    MtlsEnabled       bool `json:"mtlsEnabled"`       // 🔒
+}
+
+// Detecção de sidecar (FUNCIONAL)
+func (h *ServiceMeshHandler) checkSidecar(ctx context.Context, clientset kubernetes.Interface, namespace, workloadName string) bool {
+    pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+        LabelSelector: fmt.Sprintf("app=%s", workloadName),
+    })
+    if err != nil || len(pods.Items) == 0 {
+        return false
+    }
+    
+    for _, container := range pods.Items[0].Spec.Containers {
+        if container.Name == "istio-proxy" {
+            return true
+        }
+    }
+    return false
+}
+
+// Detecção de mTLS (PLACEHOLDER - requer dynamic client)
+func (h *ServiceMeshHandler) checkMTLS(ctx context.Context, clientset kubernetes.Interface, namespace string) bool {
+    // TODO: Implementar com dynamic client para acessar PeerAuthentication do Istio
+    return false
+}
+
+// Detecção de VirtualService (PLACEHOLDER - requer dynamic client)
+func (h *ServiceMeshHandler) checkVirtualService(ctx context.Context, clientset kubernetes.Interface, namespace, serviceName string) bool {
+    // TODO: Implementar com dynamic client para Istio CRDs
+    return false
+}
+```
+
+**Frontend** (`internal/web/frontend/src/components/ServiceMeshGraph.tsx`):
+```typescript
+// Display Options
+const [displayOptions, setDisplayOptions] = useState({
+  show: {
+    // ... existentes
+    trafficAnimation: false,
+  },
+  showBadges: {
+    missingSidecars: false,  // ⚠️
+    security: false,          // 🔒
+    virtualServices: false,   // 🔀
+  },
+  // ...
+});
+
+// Renderização no label do node
+'label': function(ele: any) {
+  let label = workload || 'unknown';
+  
+  // Badges visuais
+  const badges = [];
+  if (displayOptions.showBadges.missingSidecars && hasSidecar === false) {
+    badges.push('⚠️'); // Missing sidecar
+  }
+  if (displayOptions.showBadges.virtualServices && hasVirtualService) {
+    badges.push('🔀'); // Virtual Service
+  }
+  if (displayOptions.showBadges.security && mtlsEnabled) {
+    badges.push('🔒'); // mTLS
+  }
+  
+  if (badges.length > 0) {
+    label += '\n' + badges.join(' ');
+  }
+  
+  return label;
+}
+```
+
+**Display Popover**: Seção "Show Badges" adicionada:
+```typescript
+<div className="space-y-2">
+  <div className="text-xs font-medium text-muted-foreground mb-2">Show Badges</div>
+  <div className="flex items-center justify-between">
+    <Label htmlFor="missing-sidecars">Missing Sidecars</Label>
+    <Checkbox
+      id="missing-sidecars"
+      checked={displayOptions.showBadges.missingSidecars}
+      onCheckedChange={(checked) => {
+        setDisplayOptions(prev => ({
+          ...prev,
+          showBadges: { ...prev.showBadges, missingSidecars: checked as boolean }
+        }));
+      }}
+    />
+  </div>
+  {/* Security (mTLS) e Virtual Services similar */}
+</div>
+```
+
+**Status Atual**:
+- ✅ **Missing Sidecars**: Totalmente funcional (detecta `istio-proxy` container)
+- ⚠️ **mTLS Security**: Placeholder (retorna `false` - TODO: dynamic client)
+- ⚠️ **Virtual Services**: Placeholder (retorna `false` - TODO: dynamic client)
+- ✅ **Frontend**: Totalmente implementado com checkboxes e renderização de emojis
+
+**TODOs**:
+- Implementar `checkMTLS()` com dynamic client para acessar `PeerAuthentication` do Istio
+- Implementar `checkVirtualService()` com dynamic client para acessar CRDs do Istio
+
 ---
 
 **Happy coding!** 🚀

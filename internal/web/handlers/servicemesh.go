@@ -89,19 +89,22 @@ type KialiGraphResponse struct {
 
 // SimplifiedNode representa um nó simplificado para o frontend
 type SimplifiedNode struct {
-	ID             string `json:"id"`
-	Label          string `json:"label"`
-	Type           string `json:"type"` // workload, service, app
-	Namespace      string `json:"namespace"`
-	Workload       string `json:"workload,omitempty"`
-	App            string `json:"app,omitempty"`
-	Version        string `json:"version,omitempty"`
-	Service        string `json:"service,omitempty"`
-	IsRoot         bool   `json:"isRoot,omitempty"`
-	IsInaccessible bool   `json:"isInaccessible,omitempty"`
-	IsOutside      bool   `json:"isOutside,omitempty"`
-	RequestRate    string `json:"requestRate,omitempty"`
-	ErrorRate      string `json:"errorRate,omitempty"`
+	ID                string `json:"id"`
+	Label             string `json:"label"`
+	Type              string `json:"type"` // workload, service, app
+	Namespace         string `json:"namespace"`
+	Workload          string `json:"workload,omitempty"`
+	App               string `json:"app,omitempty"`
+	Version           string `json:"version,omitempty"`
+	Service           string `json:"service,omitempty"`
+	IsRoot            bool   `json:"isRoot,omitempty"`
+	IsInaccessible    bool   `json:"isInaccessible,omitempty"`
+	IsOutside         bool   `json:"isOutside,omitempty"`
+	RequestRate       string `json:"requestRate,omitempty"`
+	ErrorRate         string `json:"errorRate,omitempty"`
+	HasSidecar        bool   `json:"hasSidecar"`        // Missing Sidecars
+	HasVirtualService bool   `json:"hasVirtualService"` // Virtual Services
+	MtlsEnabled       bool   `json:"mtlsEnabled"`       // Security (mTLS)
 }
 
 // SimplifiedEdge representa uma aresta simplificada para o frontend
@@ -199,8 +202,18 @@ func (h *ServiceMeshHandler) GetServiceGraph(c *gin.Context) {
 		}
 
 		fmt.Printf("[ServiceMesh] ✅ Dados recebidos: %d nodes, %d edges\n", len(graphData.Elements.Nodes), len(graphData.Elements.Edges))
-		response := h.simplifyGraphData(graphData)
-		c.JSON(http.StatusOK, response)
+
+		// Obter clientset para verificações adicionais
+		var clientsetForChecks kubernetes.Interface
+		clientsetForChecks, err = h.kubeManager.GetClient(clusterName)
+		if err == nil {
+			response := h.simplifyGraphData(graphData, clientsetForChecks, namespace)
+			c.JSON(http.StatusOK, response)
+		} else {
+			// Fallback: retornar sem verificações de sidecar/mTLS
+			response := h.simplifyGraphData(graphData, nil, namespace)
+			c.JSON(http.StatusOK, response)
+		}
 		return
 	}
 
@@ -218,8 +231,18 @@ func (h *ServiceMeshHandler) GetServiceGraph(c *gin.Context) {
 	}
 
 	fmt.Printf("[ServiceMesh] ✅ Dados recebidos: %d nodes, %d edges\n", len(graphData.Elements.Nodes), len(graphData.Elements.Edges))
-	response := h.simplifyGraphData(graphData)
-	c.JSON(http.StatusOK, response)
+
+	// Obter clientset para verificações adicionais
+	var clientsetForChecks kubernetes.Interface
+	clientsetForChecks, err = h.kubeManager.GetClient(clusterName)
+	if err == nil {
+		response := h.simplifyGraphData(graphData, clientsetForChecks, namespace)
+		c.JSON(http.StatusOK, response)
+	} else {
+		// Fallback: retornar sem verificações de sidecar/mTLS
+		response := h.simplifyGraphData(graphData, nil, namespace)
+		c.JSON(http.StatusOK, response)
+	}
 }
 
 // GetNamespaces retorna lista de namespaces com Istio habilitado
@@ -611,7 +634,7 @@ func (h *ServiceMeshHandler) queryKialiMetrics(kialiURL, namespace string) (map[
 }
 
 // simplifyGraphData converte dados do Kiali para formato simplificado
-func (h *ServiceMeshHandler) simplifyGraphData(graphData *KialiGraphResponse) *ServiceGraphResponse {
+func (h *ServiceMeshHandler) simplifyGraphData(graphData *KialiGraphResponse, clientset kubernetes.Interface, namespace string) *ServiceGraphResponse {
 	response := &ServiceGraphResponse{
 		Nodes:     make([]SimplifiedNode, 0),
 		Edges:     make([]SimplifiedEdge, 0),
@@ -620,6 +643,14 @@ func (h *ServiceMeshHandler) simplifyGraphData(graphData *KialiGraphResponse) *S
 	}
 
 	fmt.Printf("[ServiceMesh] 📊 Simplificando dados: %d nós, %d arestas do Kiali\n", len(graphData.Elements.Nodes), len(graphData.Elements.Edges))
+
+	// Verificar mTLS para o namespace (uma vez só)
+	mtlsEnabled := false
+	if clientset != nil {
+		ctx := context.Background()
+		mtlsEnabled = h.checkMTLS(ctx, clientset, namespace)
+		fmt.Printf("[ServiceMesh] 🔒 mTLS para namespace %s: %v\n", namespace, mtlsEnabled)
+	}
 
 	// Processar nós
 	for _, node := range graphData.Elements.Nodes {
@@ -634,6 +665,7 @@ func (h *ServiceMeshHandler) simplifyGraphData(graphData *KialiGraphResponse) *S
 			IsRoot:         node.Data.IsRoot,
 			IsInaccessible: node.Data.IsInaccessible,
 			IsOutside:      node.Data.IsOutside,
+			MtlsEnabled:    mtlsEnabled, // Aplicar mTLS do namespace
 		}
 
 		// Label = workload, service ou app
@@ -653,13 +685,30 @@ func (h *ServiceMeshHandler) simplifyGraphData(graphData *KialiGraphResponse) *S
 			simpleNode.RequestRate = node.Data.Traffic[0].Rates.HTTP
 		}
 
+		// Verificar sidecar e VirtualService (se clientset disponível)
+		if clientset != nil {
+			ctx := context.Background()
+
+			// Verificar sidecar para workloads
+			if node.Data.Workload != "" {
+				simpleNode.HasSidecar = h.checkSidecar(ctx, clientset, node.Data.Namespace, node.Data.Workload)
+			} else if node.Data.App != "" {
+				simpleNode.HasSidecar = h.checkSidecar(ctx, clientset, node.Data.Namespace, node.Data.App)
+			}
+
+			// Verificar VirtualService para services
+			if node.Data.Service != "" {
+				simpleNode.HasVirtualService = h.checkVirtualService(ctx, clientset, node.Data.Namespace, node.Data.Service)
+			}
+		}
+
 		response.Nodes = append(response.Nodes, simpleNode)
 	}
 
 	fmt.Printf("[ServiceMesh] ✅ Processados %d nós\n", len(response.Nodes))
 	for i, node := range response.Nodes {
-		fmt.Printf("  Node %d: %s (type=%s, workload=%s, app=%s, version=%s)\n",
-			i+1, node.Label, node.Type, node.Workload, node.App, node.Version)
+		fmt.Printf("  Node %d: %s (type=%s, sidecar=%v, vs=%v, mtls=%v)\n",
+			i+1, node.Label, node.Type, node.HasSidecar, node.HasVirtualService, node.MtlsEnabled)
 	}
 
 	// Processar arestas
@@ -749,4 +798,48 @@ func (h *ServiceMeshHandler) simplifyGraphData(graphData *KialiGraphResponse) *S
 	fmt.Printf("[ServiceMesh] ✅ Processadas %d arestas\n", len(response.Edges))
 
 	return response
+}
+
+// checkSidecar verifica se um workload tem sidecar do Istio injetado
+func (h *ServiceMeshHandler) checkSidecar(ctx context.Context, clientset kubernetes.Interface, namespace, workloadName string) bool {
+	if workloadName == "" {
+		return false
+	}
+
+	// Buscar pods do workload
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=%s", workloadName),
+	})
+	if err != nil || len(pods.Items) == 0 {
+		return false
+	}
+
+	// Verificar se algum pod tem container istio-proxy
+	for _, pod := range pods.Items {
+		for _, container := range pod.Spec.Containers {
+			if container.Name == "istio-proxy" {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// checkVirtualService verifica se existe VirtualService para um serviço
+func (h *ServiceMeshHandler) checkVirtualService(ctx context.Context, clientset kubernetes.Interface, namespace, serviceName string) bool {
+	if serviceName == "" {
+		return false
+	}
+
+	// Por enquanto, retornar false (implementação completa requer dynamic client)
+	// TODO: Implementar com dynamic client para acessar CRDs do Istio
+	return false
+}
+
+// checkMTLS verifica se mTLS está habilitado para o namespace
+func (h *ServiceMeshHandler) checkMTLS(ctx context.Context, clientset kubernetes.Interface, namespace string) bool {
+	// Por enquanto, retornar false (implementação completa requer dynamic client)
+	// TODO: Implementar com dynamic client para acessar PeerAuthentication do Istio
+	return false
 }
