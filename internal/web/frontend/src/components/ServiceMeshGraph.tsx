@@ -22,6 +22,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
   const cyInstance = useRef<Core | null>(null);
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const animationIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const nodePositions = useRef<Map<string, { x: number; y: number }>>(new Map());
   const [loading, setLoading] = useState(false);
   const [graphData, setGraphData] = useState<ServiceGraphResponse | null>(null);
   const [namespaces, setNamespaces] = useState<string[]>([]);
@@ -94,6 +95,29 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
     }
   }, [isFullscreen]);
 
+  // Recarregar grafo quando filtros mudarem (COM notificação)
+  useEffect(() => {
+    if (filters.namespace) {
+      // Limpar posições salvas ao trocar cluster/namespace
+      nodePositions.current.clear();
+      loadServiceGraph(false); // false = mostra toast
+    }
+  }, [filters.cluster, filters.namespace]);
+
+  // Recarregar quando duration/graphType mudam (SILENCIOSO)
+  useEffect(() => {
+    if (filters.namespace && graphData) {
+      loadServiceGraphSilent();
+    }
+  }, [filters.duration, filters.graphType]);
+
+  // Recarregar com display options alterados (SILENCIOSO)
+  useEffect(() => {
+    if (filters.namespace && graphData) {
+      loadServiceGraphSilent();
+    }
+  }, [displayOptions.show.serviceNodes, displayOptions.show.idleEdges, displayOptions.show.idleNodes]);
+
   // Auto-refresh
   useEffect(() => {
     // Limpar intervalo anterior
@@ -115,9 +139,9 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
         clearInterval(refreshIntervalRef.current);
       }
     };
-  }, [autoRefreshInterval, filters.namespace, filters.duration, filters.graphType, displayOptions]);
+  }, [autoRefreshInterval, filters.namespace]);
 
-  // Controlar animação de tráfego
+  // Controlar animação de tráfego com velocidade variável baseada em requestRate
   useEffect(() => {
     // Limpar animação anterior
     if (animationIntervalRef.current) {
@@ -127,11 +151,17 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
 
     // Iniciar nova animação se habilitada
     if (displayOptions.show.trafficAnimation && cyInstance.current) {
-      let offset = 0;
       animationIntervalRef.current = setInterval(() => {
         if (cyInstance.current) {
-          offset -= 0.5; // Negativo para seguir direção das setas
-          cyInstance.current.edges().style('line-dash-offset', offset);
+          // Animar cada edge individualmente baseado em seu requestRate
+          cyInstance.current.edges().forEach((edge: any) => {
+            const requestRate = parseFloat(edge.data('requestRate') || '0');
+            // Calcular velocidade: quanto maior o rate, mais rápido
+            // Base speed: 0.5, max speed: 5.0 (para rates > 1000)
+            const speed = Math.min(5.0, Math.max(0.5, requestRate / 200));
+            const currentOffset = parseFloat(edge.style('line-dash-offset') || '0');
+            edge.style('line-dash-offset', currentOffset - speed);
+          });
         }
       }, 50);
     } else if (cyInstance.current) {
@@ -181,6 +211,11 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
           includeIdleNodes: displayOptions.show.idleNodes,
         }
       );
+      console.log('[ServiceMesh] Dados recebidos do backend:', {
+        nodes: data.nodes.length,
+        edges: data.edges.length,
+        nodesList: data.nodes.map(n => n.label || n.id)
+      });
       setGraphData(data);
       setLastRefresh(new Date());
       
@@ -237,18 +272,80 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
   const initializeGraph = () => {
     if (!cyRef.current || !graphData) return;
 
-    // Se já existe e não está destruído, apenas atualizar dados
+    console.log('[ServiceMesh] Inicializando gráfico com', graphData.nodes.length, 'nodes e', graphData.edges.length, 'edges');
+
+    // Se já existe instância válida, apenas atualizar elementos
     if (cyInstance.current && cyInstance.current.container()) {
-      updateGraphData();
+      console.log('[ServiceMesh] Atualizando gráfico existente');
+      
+      // Salvar posições atuais dos nodes
+      cyInstance.current.nodes().forEach((node: any) => {
+        const pos = node.position();
+        nodePositions.current.set(node.id(), { x: pos.x, y: pos.y });
+      });
+      
+      // Remover elementos antigos
+      cyInstance.current.elements().remove();
+      
+      // Adicionar novos elementos
+      const elements = [
+        ...graphData.nodes.map(node => {
+          const savedPos = nodePositions.current.get(node.id);
+          return {
+            data: {
+              id: node.id,
+              label: node.label,
+              type: node.type,
+              nodeType: node.type,
+              namespace: node.namespace,
+              workload: node.workload,
+              app: node.app,
+              version: node.version,
+              service: node.service,
+              isRoot: node.isRoot,
+              isInaccessible: node.isInaccessible,
+              isOutside: node.isOutside,
+              requestRate: node.requestRate,
+              errorRate: node.errorRate,
+            },
+            // Restaurar posição salva se existir
+            ...(savedPos ? { position: savedPos } : {}),
+          };
+        }),
+        ...graphData.edges.map(edge => ({
+          data: {
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            protocol: edge.protocol,
+            requestRate: edge.requestRate,
+            responseTime: edge.responseTime,
+            errorRate: edge.errorRate,
+          },
+        })),
+      ];
+      
+      cyInstance.current.add(elements);
+      
+      // Apenas fazer layout para nodes novos (sem posição salva)
+      const newNodes = cyInstance.current.nodes().filter((node: any) => {
+        return !nodePositions.current.has(node.id());
+      });
+      
+      if (newNodes.length > 0) {
+        // Layout apenas para nodes novos
+        newNodes.layout({ name: 'cose', animate: false }).run();
+      }
+      
       return;
     }
 
-    // Limpar instância anterior se existir
+    // Limpar instância anterior se existir (mas não tem container)
     if (cyInstance.current) {
       try {
         cyInstance.current.destroy();
       } catch (e) {
-        // Ignorar erro se já foi destruído
+        console.warn('Erro ao destruir instância anterior:', e);
       }
       cyInstance.current = null;
     }
@@ -261,9 +358,12 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
           id: node.id,
           label: node.label,
           type: node.type,
+          nodeType: node.type,
           namespace: node.namespace,
+          workload: node.workload,
           app: node.app,
           version: node.version,
+          service: node.service,
           isRoot: node.isRoot,
           isInaccessible: node.isInaccessible,
           isOutside: node.isOutside,
@@ -294,14 +394,26 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
           selector: 'node',
           style: {
             'background-color': '#3b82f6',
-            'label': 'data(label)',
+            'label': function(ele: any) {
+              const workload = ele.data('workload') || ele.data('service') || ele.data('app');
+              const version = ele.data('version');
+              const nodeType = ele.data('nodeType');
+              
+              // Para workloads, mostrar nome e versão em linhas separadas
+              if (nodeType === 'workload' && version) {
+                return `${workload}\nv${version.replace(/-/g, '.')}`;
+              }
+              return workload || 'unknown';
+            },
             'color': '#ffffff',
             'text-valign': 'center',
             'text-halign': 'center',
-            'font-size': '12px',
-            'width': '60px',
-            'height': '60px',
-            'border-width': '2px',
+            'font-size': '11px',
+            'text-wrap': 'wrap',
+            'text-max-width': '80px',
+            'width': '80px',
+            'height': '80px',
+            'border-width': '3px',
             'border-color': '#1e40af',
           },
         },
@@ -366,31 +478,47 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
               const protocol = ele.data('protocol');
 
               if (displayOptions.showEdgeLabels.trafficRate && rate) {
-                labels.push(`🔄 ${rate}`);
+                // Formatar como "XXX.XX req/s" (requests per second)
+                const rateNum = parseFloat(rate);
+                const formatted = rateNum >= 1000
+                  ? `${(rateNum / 1000).toFixed(1)}k`
+                  : rateNum >= 100
+                  ? `${Math.round(rateNum)}`
+                  : `${rateNum.toFixed(1)}`;
+                labels.push(formatted + ' req/s');
               }
               if (displayOptions.showEdgeLabels.responseTime && responseTime) {
-                labels.push(`⏱️ ${responseTime}`);
+                labels.push(responseTime);
               }
               if (displayOptions.showEdgeLabels.throughput && rate) {
-                labels.push(`📊 ${rate}`);
+                // Throughput: converter para bps (bytes per second)
+                const rateNum = parseFloat(rate);
+                // Assumindo tamanho médio de request: 1KB
+                const bps = rateNum * 1024;
+                const formatted = bps >= 1024 * 1024
+                  ? `${(bps / (1024 * 1024)).toFixed(1)} MB/s`
+                  : bps >= 1024
+                  ? `${(bps / 1024).toFixed(1)} KB/s`
+                  : `${Math.round(bps)} B/s`;
+                labels.push(formatted);
               }
-              
+
               // Se nenhum dado disponível, mostrar protocolo
               if (labels.length === 0 && protocol) {
                 return protocol.toUpperCase();
               }
-              
-              return labels.join('  •  ');
+
+              return labels.join('\n');
             },
-            'font-size': '11px',
-            'color': '#1f2937',
-            'text-background-color': '#ffffff',
+            'font-size': '10px',
+            'color': '#f8fafc',
+            'text-background-color': '#1e293b',
             'text-background-opacity': 0.95,
-            'text-background-padding': '4px',
+            'text-background-padding': '5px',
             'text-background-shape': 'roundrectangle',
-            'text-border-color': '#e5e7eb',
+            'text-border-color': '#475569',
             'text-border-width': 1,
-            'text-border-opacity': 0.8,
+            'text-border-opacity': 1,
             'text-margin-y': -12,
             'text-wrap': 'none',
             'line-style': displayOptions.show.trafficAnimation ? 'dashed' : 'solid',

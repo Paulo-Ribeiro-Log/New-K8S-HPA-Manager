@@ -5,8 +5,11 @@ export interface SimplifiedNode {
   label: string;
   type: 'workload' | 'service' | 'app' | 'unknown';
   namespace: string;
+  workload?: string;
   app?: string;
   version?: string;
+  service?: string;
+  nodeType?: string;
   isRoot?: boolean;
   isInaccessible?: boolean;
   isOutside?: boolean;
