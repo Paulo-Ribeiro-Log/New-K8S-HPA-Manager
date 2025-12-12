@@ -26,6 +26,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
   const [loading, setLoading] = useState(false);
   const [graphData, setGraphData] = useState<ServiceGraphResponse | null>(null);
   const [namespaces, setNamespaces] = useState<string[]>([]);
+  const [istioNotAvailable, setIstioNotAvailable] = useState(false);
   const [selectedNode, setSelectedNode] = useState<NodeSingular | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -243,6 +244,17 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       console.log('[ServiceMesh] Buscando namespaces do cluster:', filters.cluster);
       const response = await apiClient.getServiceMeshNamespaces(filters.cluster);
       console.log('[ServiceMesh] Namespaces encontrados:', response.namespaces);
+      
+      // Verificar se Istio está disponível
+      if (!response.namespaces || response.namespaces.length === 0) {
+        console.log('[ServiceMesh] Nenhum namespace encontrado - Istio provavelmente não disponível');
+        setIstioNotAvailable(true);
+        setNamespaces([]);
+        toast.error('Istio/Kiali não está disponível neste cluster');
+        return;
+      }
+      
+      setIstioNotAvailable(false);
       setNamespaces(response.namespaces);
       
       if (response.namespaces.length > 0 && !filters.namespace) {
@@ -250,7 +262,18 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       }
     } catch (error) {
       console.error('[ServiceMesh] Erro ao carregar namespaces:', error);
-      toast.error(`Erro ao carregar namespaces: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
+      const errorMsg = error instanceof Error ? error.message : 'Erro desconhecido';
+      
+      // Detectar se é erro do Istio
+      if (errorMsg.toLowerCase().includes('kiali') || 
+          errorMsg.toLowerCase().includes('service unavailable') ||
+          errorMsg.toLowerCase().includes('503') ||
+          errorMsg.toLowerCase().includes('istio')) {
+        setIstioNotAvailable(true);
+        toast.error('Istio/Kiali não está disponível neste cluster');
+      } else {
+        toast.error(`Erro ao carregar namespaces: ${errorMsg}`);
+      }
       setNamespaces([]);
     }
   };
@@ -283,13 +306,40 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       });
       setGraphData(data);
       setLastRefresh(new Date());
+      setIstioNotAvailable(false);
       
       if (!silent) {
         toast.success(`Grafo atualizado: ${data.nodes.length} serviços, ${data.edges.length} conexões`);
       }
     } catch (error) {
-      if (!silent) {
-        toast.error(`Erro ao carregar service mesh: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
+      const errorMsg = error instanceof Error ? error.message : 'Erro desconhecido';
+      
+      console.error('[ServiceMesh] Erro capturado:', error);
+      console.error('[ServiceMesh] Mensagem de erro:', errorMsg);
+      
+      // Detectar se o erro é devido ao Istio não estar instalado
+      // Backend retorna StatusServiceUnavailable (503) com "Kiali não acessível"
+      const isIstioError = errorMsg.toLowerCase().includes('kiali') || 
+          errorMsg.toLowerCase().includes('service unavailable') ||
+          errorMsg.toLowerCase().includes('503') ||
+          errorMsg.includes('connection refused') || 
+          errorMsg.includes('não encontrado') || 
+          errorMsg.includes('not found') ||
+          errorMsg.toLowerCase().includes('istio');
+      
+      console.log('[ServiceMesh] É erro de Istio?', isIstioError);
+      
+      if (isIstioError) {
+        console.log('[ServiceMesh] Setando istioNotAvailable = true');
+        setIstioNotAvailable(true);
+        if (!silent) {
+          toast.error('Istio/Kiali não está disponível neste cluster');
+        }
+      } else {
+        setIstioNotAvailable(false);
+        if (!silent) {
+          toast.error(`Erro ao carregar service mesh: ${errorMsg}`);
+        }
       }
     } finally {
       setLoading(false);
@@ -1460,24 +1510,59 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       <Card className="relative">
         <CardContent className="p-0">
           <div className="relative">
-            <div
-              ref={cyRef}
-              className="w-full bg-slate-50 dark:bg-slate-900 border rounded-lg"
-              style={{ height: '600px' }}
-            />
+            {istioNotAvailable ? (
+              <div 
+                className="w-full bg-slate-50 dark:bg-slate-900 border rounded-lg flex items-center justify-center"
+                style={{ height: '600px' }}
+              >
+                <div className="text-center space-y-4 max-w-md px-6">
+                  <div className="text-6xl">🚫</div>
+                  <h3 className="text-xl font-semibold text-slate-700 dark:text-slate-300">
+                    Istio não disponível
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    O Istio Service Mesh não está instalado ou não está acessível neste cluster.
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Para visualizar a topologia do Service Mesh, é necessário ter o Istio e o Kiali instalados no cluster <strong>{cluster}</strong>.
+                  </p>
+                  <Button
+                    onClick={() => loadServiceGraph(false)}
+                    disabled={loading}
+                    variant="outline"
+                    size="sm"
+                    className="mt-4"
+                  >
+                    {loading ? (
+                      <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Tentando reconectar...</>
+                    ) : (
+                      <><RefreshCw className="mr-2 h-4 w-4" /> Tentar novamente</>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div
+                ref={cyRef}
+                className="w-full bg-slate-50 dark:bg-slate-900 border rounded-lg"
+                style={{ height: '600px' }}
+              />
+            )}
             
             {/* Controles de Zoom */}
-            <div className="absolute top-4 right-4 flex flex-col gap-2">
-              <Button size="icon" variant="secondary" onClick={handleZoomIn}>
-                <ZoomIn className="h-4 w-4" />
-              </Button>
-              <Button size="icon" variant="secondary" onClick={handleZoomOut}>
-                <ZoomOut className="h-4 w-4" />
-              </Button>
-              <Button size="icon" variant="secondary" onClick={handleFitView}>
-                <Maximize2 className="h-4 w-4" />
-              </Button>
-            </div>
+            {!istioNotAvailable && (
+              <div className="absolute top-4 right-4 flex flex-col gap-2">
+                <Button size="icon" variant="secondary" onClick={handleZoomIn}>
+                  <ZoomIn className="h-4 w-4" />
+                </Button>
+                <Button size="icon" variant="secondary" onClick={handleZoomOut}>
+                  <ZoomOut className="h-4 w-4" />
+                </Button>
+                <Button size="icon" variant="secondary" onClick={handleFitView}>
+                  <Maximize2 className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -2082,23 +2167,55 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
 
           {/* Grafo em Tela Cheia */}
           <div className="flex-1 relative">
-            <div
-              ref={cyRef}
-              className="w-full h-full bg-slate-50 dark:bg-slate-900"
-            />
+            {istioNotAvailable ? (
+              <div className="w-full h-full bg-slate-50 dark:bg-slate-900 flex items-center justify-center">
+                <div className="text-center space-y-4 max-w-md px-6">
+                  <div className="text-6xl">🚫</div>
+                  <h3 className="text-xl font-semibold text-slate-700 dark:text-slate-300">
+                    Istio não disponível
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    O Istio Service Mesh não está instalado ou não está acessível neste cluster.
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Para visualizar a topologia do Service Mesh, é necessário ter o Istio e o Kiali instalados no cluster <strong>{cluster}</strong>.
+                  </p>
+                  <Button
+                    onClick={() => loadServiceGraph(false)}
+                    disabled={loading}
+                    variant="outline"
+                    size="sm"
+                    className="mt-4"
+                  >
+                    {loading ? (
+                      <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Tentando reconectar...</>
+                    ) : (
+                      <><RefreshCw className="mr-2 h-4 w-4" /> Tentar novamente</>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div
+                ref={cyRef}
+                className="w-full h-full bg-slate-50 dark:bg-slate-900"
+              />
+            )}
 
             {/* Controles de Zoom Flutuantes */}
-            <div className="absolute bottom-4 right-4 flex flex-col gap-2 z-10">
-              <Button size="icon" variant="secondary" onClick={handleZoomIn}>
-                <ZoomIn className="h-4 w-4" />
-              </Button>
-              <Button size="icon" variant="secondary" onClick={handleZoomOut}>
-                <ZoomOut className="h-4 w-4" />
-              </Button>
-              <Button size="icon" variant="secondary" onClick={handleFitView}>
-                <Maximize2 className="h-4 w-4" />
-              </Button>
-            </div>
+            {!istioNotAvailable && (
+              <div className="absolute bottom-4 right-4 flex flex-col gap-2 z-10">
+                <Button size="icon" variant="secondary" onClick={handleZoomIn}>
+                  <ZoomIn className="h-4 w-4" />
+                </Button>
+                <Button size="icon" variant="secondary" onClick={handleZoomOut}>
+                  <ZoomOut className="h-4 w-4" />
+                </Button>
+                <Button size="icon" variant="secondary" onClick={handleFitView}>
+                  <Maximize2 className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       )}
