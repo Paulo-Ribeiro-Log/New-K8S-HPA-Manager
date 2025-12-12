@@ -15,6 +15,9 @@ export interface SimplifiedNode {
   isOutside?: boolean;
   requestRate?: string;
   errorRate?: string;
+  hasSidecar?: boolean;           // Missing Sidecars
+  hasVirtualService?: boolean;    // Virtual Services
+  mtlsEnabled?: boolean;          // Security (mTLS)
 }
 
 export interface SimplifiedEdge {

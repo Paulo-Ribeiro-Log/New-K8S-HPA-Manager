@@ -8,7 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Checkbox } from '@/components/ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
-import { Loader2, RefreshCw, ZoomIn, ZoomOut, Maximize2, Minimize2, Settings, Clock, Pause, Play, Filter, Eye } from 'lucide-react';
+import { Loader2, RefreshCw, ZoomIn, ZoomOut, Maximize2, Minimize2, Clock, Pause, Play, Filter, Eye } from 'lucide-react';
 import { apiClient } from '@/lib/api/client';
 import { ServiceGraphResponse, ServiceMeshFilters } from '@/types/servicemesh';
 import { toast } from 'sonner';
@@ -28,7 +28,6 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
   const [namespaces, setNamespaces] = useState<string[]>([]);
   const [selectedNode, setSelectedNode] = useState<NodeSingular | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [showFullscreenControls, setShowFullscreenControls] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(0); // 0 = off, tempo em ms
 
@@ -332,7 +331,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
     }
   };
 
-  const updateGraphDataFromResponse = (data: SimplifiedServiceGraph) => {
+  const updateGraphDataFromResponse = (data: ServiceGraphResponse) => {
     if (!cyInstance.current) return;
 
     console.log('[ServiceMesh] Atualizando gráfico com novos dados');
@@ -541,6 +540,9 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
           isOutside: node.isOutside,
           requestRate: node.requestRate,
           errorRate: node.errorRate,
+          hasSidecar: node.hasSidecar,
+          hasVirtualService: node.hasVirtualService,
+          mtlsEnabled: node.mtlsEnabled,
         },
       })),
       // Edges
@@ -570,12 +572,34 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
               const workload = ele.data('workload') || ele.data('service') || ele.data('app');
               const version = ele.data('version');
               const nodeType = ele.data('nodeType');
+              const hasSidecar = ele.data('hasSidecar');
+              const hasVirtualService = ele.data('hasVirtualService');
+              const mtlsEnabled = ele.data('mtlsEnabled');
+              
+              let label = workload || 'unknown';
               
               // Para workloads, mostrar nome e versão em linhas separadas
               if (nodeType === 'workload' && version) {
-                return `${workload}\nv${version.replace(/-/g, '.')}`;
+                label = `${workload}\nv${version.replace(/-/g, '.')}`;
               }
-              return workload || 'unknown';
+              
+              // Adicionar badges visuais (se habilitados nas opções)
+              const badges = [];
+              if (displayOptions.showBadges.missingSidecars && hasSidecar === false) {
+                badges.push('⚠️'); // Missing sidecar
+              }
+              if (displayOptions.showBadges.virtualServices && hasVirtualService) {
+                badges.push('🔀'); // Virtual Service
+              }
+              if (displayOptions.showBadges.security && mtlsEnabled) {
+                badges.push('🔒'); // mTLS
+              }
+              
+              if (badges.length > 0) {
+                label += '\n' + badges.join(' ');
+              }
+              
+              return label;
             },
             'color': '#ffffff',
             'text-valign': 'center',
@@ -1382,7 +1406,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
                               }))
                             }
                           />
-                          <Label htmlFor="missingSidecars" className="text-sm font-normal cursor-pointer">Missing Sidecars</Label>
+                          <Label htmlFor="missingSidecars" className="text-sm font-normal cursor-pointer">⚠️ Missing Sidecars</Label>
                         </div>
 
                         <div className="flex items-center space-x-2">
@@ -1396,7 +1420,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
                               }))
                             }
                           />
-                          <Label htmlFor="security" className="text-sm font-normal cursor-pointer">Security</Label>
+                          <Label htmlFor="security" className="text-sm font-normal cursor-pointer">🔒 Security (mTLS)</Label>
                         </div>
 
                         <div className="flex items-center space-x-2">
@@ -1410,7 +1434,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
                               }))
                             }
                           />
-                          <Label htmlFor="virtualServices" className="text-sm font-normal cursor-pointer">Virtual Services</Label>
+                          <Label htmlFor="virtualServices" className="text-sm font-normal cursor-pointer">🔀 Virtual Services</Label>
                         </div>
                       </div>
                     </div>
@@ -1549,8 +1573,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       ) : (
         <div className="fixed inset-0 z-50 bg-background flex flex-col">
           {/* Barra de Controles Flutuante */}
-          {showFullscreenControls && (
-            <div className="flex-shrink-0 p-2 bg-background/95 backdrop-blur border-b">
+          <div className="flex-shrink-0 p-2 bg-background/95 backdrop-blur border-b">
               <div className="flex items-center gap-2">
                 <Select
                   value={filters.namespace}
@@ -1649,6 +1672,397 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
 
                 <div className="flex-1" />
 
+                {/* Traffic Popover */}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" size="sm">
+                      <Filter className="mr-2 h-4 w-4" />
+                      Traffic
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-80" align="end">
+                    <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                      <h4 className="font-semibold text-sm mb-3">Traffic Options</h4>
+                      
+                      {/* gRPC */}
+                      <div className="space-y-2">
+                        <div className="flex items-center space-x-2">
+                          <Checkbox
+                            id="grpc-fullscreen"
+                            checked={displayOptions.traffic.grpc.enabled}
+                            onCheckedChange={(checked) =>
+                              setDisplayOptions(prev => ({
+                                ...prev,
+                                traffic: {
+                                  ...prev.traffic,
+                                  grpc: { ...prev.traffic.grpc, enabled: !!checked }
+                                }
+                              }))
+                            }
+                          />
+                          <Label htmlFor="grpc-fullscreen" className="text-sm font-medium cursor-pointer">gRPC</Label>
+                        </div>
+
+                        {displayOptions.traffic.grpc.enabled && (
+                          <RadioGroup
+                            value={
+                              displayOptions.traffic.grpc.requests ? 'requests' :
+                              displayOptions.traffic.grpc.receivedMessages ? 'receivedMessages' :
+                              displayOptions.traffic.grpc.sentMessages ? 'sentMessages' :
+                              displayOptions.traffic.grpc.totalMessages ? 'totalMessages' : 'requests'
+                            }
+                            onValueChange={(value) =>
+                              setDisplayOptions(prev => ({
+                                ...prev,
+                                traffic: {
+                                  ...prev.traffic,
+                                  grpc: {
+                                    ...prev.traffic.grpc,
+                                    requests: value === 'requests',
+                                    receivedMessages: value === 'receivedMessages',
+                                    sentMessages: value === 'sentMessages',
+                                    totalMessages: value === 'totalMessages'
+                                  }
+                                }
+                              }))
+                            }
+                            className="ml-6 space-y-1"
+                          >
+                            <div className="flex items-center space-x-2">
+                              <RadioGroupItem value="receivedMessages" id="grpc-receivedMessages-fullscreen" />
+                              <Label htmlFor="grpc-receivedMessages-fullscreen" className="text-sm font-normal cursor-pointer">Received Messages</Label>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <RadioGroupItem value="requests" id="grpc-requests-fullscreen" />
+                              <Label htmlFor="grpc-requests-fullscreen" className="text-sm font-normal cursor-pointer">Requests</Label>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <RadioGroupItem value="sentMessages" id="grpc-sentMessages-fullscreen" />
+                              <Label htmlFor="grpc-sentMessages-fullscreen" className="text-sm font-normal cursor-pointer">Sent Messages</Label>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <RadioGroupItem value="totalMessages" id="grpc-totalMessages-fullscreen" />
+                              <Label htmlFor="grpc-totalMessages-fullscreen" className="text-sm font-normal cursor-pointer">Total Messages</Label>
+                            </div>
+                          </RadioGroup>
+                        )}
+                      </div>
+
+                      {/* HTTP */}
+                      <div className="space-y-2 border-t pt-2">
+                        <div className="flex items-center space-x-2">
+                          <Checkbox
+                            id="http-fullscreen"
+                            checked={displayOptions.traffic.http.enabled}
+                            onCheckedChange={(checked) =>
+                              setDisplayOptions(prev => ({
+                                ...prev,
+                                traffic: {
+                                  ...prev.traffic,
+                                  http: { ...prev.traffic.http, enabled: !!checked }
+                                }
+                              }))
+                            }
+                          />
+                          <Label htmlFor="http-fullscreen" className="text-sm font-medium cursor-pointer">Http</Label>
+                        </div>
+
+                        {displayOptions.traffic.http.enabled && (
+                          <RadioGroup
+                            value="requests"
+                            className="ml-6 space-y-1"
+                          >
+                            <div className="flex items-center space-x-2">
+                              <RadioGroupItem value="requests" id="http-requests-fullscreen" />
+                              <Label htmlFor="http-requests-fullscreen" className="text-sm font-normal cursor-pointer">Requests</Label>
+                            </div>
+                          </RadioGroup>
+                        )}
+                      </div>
+
+                      {/* TCP */}
+                      <div className="space-y-2 border-t pt-2">
+                        <div className="flex items-center space-x-2">
+                          <Checkbox
+                            id="tcp-fullscreen"
+                            checked={displayOptions.traffic.tcp.enabled}
+                            onCheckedChange={(checked) =>
+                              setDisplayOptions(prev => ({
+                                ...prev,
+                                traffic: {
+                                  ...prev.traffic,
+                                  tcp: { ...prev.traffic.tcp, enabled: !!checked }
+                                }
+                              }))
+                            }
+                          />
+                          <Label htmlFor="tcp-fullscreen" className="text-sm font-medium cursor-pointer">Tcp</Label>
+                        </div>
+
+                        {displayOptions.traffic.tcp.enabled && (
+                          <RadioGroup
+                            value={
+                              displayOptions.traffic.tcp.receivedBytes ? 'receivedBytes' :
+                              displayOptions.traffic.tcp.sentBytes ? 'sentBytes' :
+                              displayOptions.traffic.tcp.totalBytes ? 'totalBytes' : 'sentBytes'
+                            }
+                            onValueChange={(value) =>
+                              setDisplayOptions(prev => ({
+                                ...prev,
+                                traffic: {
+                                  ...prev.traffic,
+                                  tcp: {
+                                    ...prev.traffic.tcp,
+                                    receivedBytes: value === 'receivedBytes',
+                                    sentBytes: value === 'sentBytes',
+                                    totalBytes: value === 'totalBytes'
+                                  }
+                                }
+                              }))
+                            }
+                            className="ml-6 space-y-1"
+                          >
+                            <div className="flex items-center space-x-2">
+                              <RadioGroupItem value="receivedBytes" id="tcp-receivedBytes-fullscreen" />
+                              <Label htmlFor="tcp-receivedBytes-fullscreen" className="text-sm font-normal cursor-pointer">Received Bytes</Label>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <RadioGroupItem value="sentBytes" id="tcp-sentBytes-fullscreen" />
+                              <Label htmlFor="tcp-sentBytes-fullscreen" className="text-sm font-normal cursor-pointer">Sent Bytes</Label>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <RadioGroupItem value="totalBytes" id="tcp-totalBytes-fullscreen" />
+                              <Label htmlFor="tcp-totalBytes-fullscreen" className="text-sm font-normal cursor-pointer">Total Bytes</Label>
+                            </div>
+                          </RadioGroup>
+                        )}
+                      </div>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+
+                {/* Display Popover */}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" size="sm">
+                      <Eye className="mr-2 h-4 w-4" />
+                      Display
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-80" align="end">
+                    <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                      <h4 className="font-semibold text-sm mb-3">Display Options</h4>
+                      
+                      {/* Show Edge Labels */}
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold text-muted-foreground">Show Edge Labels</div>
+                        
+                        <div className="space-y-1.5">
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="responseTime-fullscreen"
+                              checked={displayOptions.showEdgeLabels.responseTime}
+                              onCheckedChange={(checked) => 
+                                setDisplayOptions(prev => ({
+                                  ...prev,
+                                  showEdgeLabels: { ...prev.showEdgeLabels, responseTime: !!checked }
+                                }))
+                              }
+                            />
+                            <Label htmlFor="responseTime-fullscreen" className="text-sm font-normal cursor-pointer">
+                              Response Time
+                            </Label>
+                          </div>
+
+                          {displayOptions.showEdgeLabels.responseTime && (
+                            <RadioGroup
+                              value={displayOptions.showEdgeLabels.responseTimeType}
+                              onValueChange={(value) =>
+                                setDisplayOptions(prev => ({
+                                  ...prev,
+                                  showEdgeLabels: { ...prev.showEdgeLabels, responseTimeType: value }
+                                }))
+                              }
+                              className="ml-6 space-y-1"
+                            >
+                              <div className="flex items-center space-x-2">
+                                <RadioGroupItem value="average" id="average-fullscreen" />
+                                <Label htmlFor="average-fullscreen" className="text-sm font-normal cursor-pointer">Average</Label>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <RadioGroupItem value="median" id="median-fullscreen" />
+                                <Label htmlFor="median-fullscreen" className="text-sm font-normal cursor-pointer">Median</Label>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <RadioGroupItem value="95th" id="95th-fullscreen" />
+                                <Label htmlFor="95th-fullscreen" className="text-sm font-normal cursor-pointer">95th Percentile</Label>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <RadioGroupItem value="99th" id="99th-fullscreen" />
+                                <Label htmlFor="99th-fullscreen" className="text-sm font-normal cursor-pointer">99th Percentile</Label>
+                              </div>
+                            </RadioGroup>
+                          )}
+
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="throughput-fullscreen"
+                              checked={displayOptions.showEdgeLabels.throughput}
+                              onCheckedChange={(checked) =>
+                                setDisplayOptions(prev => ({
+                                  ...prev,
+                                  showEdgeLabels: { ...prev.showEdgeLabels, throughput: !!checked }
+                                }))
+                              }
+                            />
+                            <Label htmlFor="throughput-fullscreen" className="text-sm font-normal cursor-pointer">Throughput</Label>
+                          </div>
+
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="trafficDistribution-fullscreen"
+                              checked={displayOptions.showEdgeLabels.trafficDistribution}
+                              onCheckedChange={(checked) =>
+                                setDisplayOptions(prev => ({
+                                  ...prev,
+                                  showEdgeLabels: { ...prev.showEdgeLabels, trafficDistribution: !!checked }
+                                }))
+                              }
+                            />
+                            <Label htmlFor="trafficDistribution-fullscreen" className="text-sm font-normal cursor-pointer">Traffic Distribution</Label>
+                          </div>
+
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="trafficRate-fullscreen"
+                              checked={displayOptions.showEdgeLabels.trafficRate}
+                              onCheckedChange={(checked) =>
+                                setDisplayOptions(prev => ({
+                                  ...prev,
+                                  showEdgeLabels: { ...prev.showEdgeLabels, trafficRate: !!checked }
+                                }))
+                              }
+                            />
+                            <Label htmlFor="trafficRate-fullscreen" className="text-sm font-normal cursor-pointer">Traffic Rate</Label>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Show */}
+                      <div className="space-y-2 border-t pt-2">
+                        <div className="text-xs font-semibold text-muted-foreground">Show</div>
+                        
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="clusterBoxes-fullscreen"
+                              checked={displayOptions.show.clusterBoxes}
+                              onCheckedChange={(checked) =>
+                                setDisplayOptions(prev => ({
+                                  ...prev,
+                                  show: { ...prev.show, clusterBoxes: !!checked }
+                                }))
+                              }
+                            />
+                            <Label htmlFor="clusterBoxes-fullscreen" className="text-sm font-normal cursor-pointer">Cluster Boxes</Label>
+                          </div>
+
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="namespaceBoxes-fullscreen"
+                              checked={displayOptions.show.namespaceBoxes}
+                              onCheckedChange={(checked) =>
+                                setDisplayOptions(prev => ({
+                                  ...prev,
+                                  show: { ...prev.show, namespaceBoxes: !!checked }
+                                }))
+                              }
+                            />
+                            <Label htmlFor="namespaceBoxes-fullscreen" className="text-sm font-normal cursor-pointer">Namespace Boxes</Label>
+                          </div>
+
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="serviceNodes-fullscreen"
+                              checked={displayOptions.show.serviceNodes}
+                              onCheckedChange={(checked) =>
+                                setDisplayOptions(prev => ({
+                                  ...prev,
+                                  show: { ...prev.show, serviceNodes: !!checked }
+                                }))
+                              }
+                            />
+                            <Label htmlFor="serviceNodes-fullscreen" className="text-sm font-normal cursor-pointer">Service Nodes</Label>
+                          </div>
+
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="trafficAnimation-fullscreen"
+                              checked={displayOptions.show.trafficAnimation}
+                              onCheckedChange={(checked) =>
+                                setDisplayOptions(prev => ({
+                                  ...prev,
+                                  show: { ...prev.show, trafficAnimation: !!checked }
+                                }))
+                              }
+                            />
+                            <Label htmlFor="trafficAnimation-fullscreen" className="text-sm font-normal cursor-pointer">Traffic Animation</Label>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Show Badges */}
+                      <div className="space-y-2 border-t pt-2">
+                        <div className="text-xs font-semibold text-muted-foreground">Show Badges</div>
+                        
+                        <div className="space-y-1.5">
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="missingSidecars-fullscreen"
+                              checked={displayOptions.showBadges.missingSidecars}
+                              onCheckedChange={(checked) =>
+                                setDisplayOptions(prev => ({
+                                  ...prev,
+                                  showBadges: { ...prev.showBadges, missingSidecars: !!checked }
+                                }))
+                              }
+                            />
+                            <Label htmlFor="missingSidecars-fullscreen" className="text-sm font-normal cursor-pointer">⚠️ Missing Sidecars</Label>
+                          </div>
+
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="security-fullscreen"
+                              checked={displayOptions.showBadges.security}
+                              onCheckedChange={(checked) =>
+                                setDisplayOptions(prev => ({
+                                  ...prev,
+                                  showBadges: { ...prev.showBadges, security: !!checked }
+                                }))
+                              }
+                            />
+                            <Label htmlFor="security-fullscreen" className="text-sm font-normal cursor-pointer">🔒 Security (mTLS)</Label>
+                          </div>
+
+                          <div className="flex items-center space-x-2">
+                            <Checkbox
+                              id="virtualServices-fullscreen"
+                              checked={displayOptions.showBadges.virtualServices}
+                              onCheckedChange={(checked) =>
+                                setDisplayOptions(prev => ({
+                                  ...prev,
+                                  showBadges: { ...prev.showBadges, virtualServices: !!checked }
+                                }))
+                              }
+                            />
+                            <Label htmlFor="virtualServices-fullscreen" className="text-sm font-normal cursor-pointer">🔀 Virtual Services</Label>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+
                 {graphData && (
                   <div className="flex items-center gap-2 text-sm">
                     <Badge variant="secondary">{graphData.nodes.length} nós</Badge>
@@ -1665,7 +2079,6 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
                 </Button>
               </div>
             </div>
-          )}
 
           {/* Grafo em Tela Cheia */}
           <div className="flex-1 relative">
@@ -1684,13 +2097,6 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
               </Button>
               <Button size="icon" variant="secondary" onClick={handleFitView}>
                 <Maximize2 className="h-4 w-4" />
-              </Button>
-              <Button
-                size="icon"
-                variant="secondary"
-                onClick={() => setShowFullscreenControls(!showFullscreenControls)}
-              >
-                <Settings className="h-4 w-4" />
               </Button>
             </div>
           </div>
