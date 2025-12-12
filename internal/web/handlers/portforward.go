@@ -96,7 +96,7 @@ func (m *PortForwardManager) CreatePortForward(cluster, context, namespace, podN
 	go func() {
 		for i := 0; i < 10; i++ {
 			time.Sleep(1 * time.Second)
-			
+
 			// Testar conectividade
 			resp, err := http.Get(fmt.Sprintf("http://localhost:%d/", localPort))
 			if err == nil {

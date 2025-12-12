@@ -146,9 +146,9 @@ func (h *ServiceMeshHandler) GetServiceGraph(c *gin.Context) {
 	kialiURL, needsAuth, err := getKialiURL(clusterName)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": "Kiali não acessível",
+			"error":   "Kiali não acessível",
 			"details": fmt.Sprintf("Não foi possível acessar o Kiali via Ingress: %v", err),
-			"hint": "Verifique se o Kiali está configurado e acessível",
+			"hint":    "Verifique se o Kiali está configurado e acessível",
 		})
 		return
 	}
@@ -168,7 +168,7 @@ func (h *ServiceMeshHandler) GetServiceGraph(c *gin.Context) {
 		token, err := getOrCreateKialiToken(clientset, clusterName, "istio-system")
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Erro ao criar token",
+				"error":   "Erro ao criar token",
 				"details": err.Error(),
 			})
 			return
@@ -180,7 +180,7 @@ func (h *ServiceMeshHandler) GetServiceGraph(c *gin.Context) {
 		authenticatedClient, err := authenticateKiali(kialiURL, token)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Erro na autenticação do Kiali",
+				"error":   "Erro na autenticação do Kiali",
 				"details": err.Error(),
 			})
 			return
@@ -192,7 +192,7 @@ func (h *ServiceMeshHandler) GetServiceGraph(c *gin.Context) {
 		graphData, err := h.queryKialiGraphWithClient(authenticatedClient, kialiURL, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Erro ao consultar Kiali",
+				"error":   "Erro ao consultar Kiali",
 				"details": err.Error(),
 			})
 			return
@@ -211,7 +211,7 @@ func (h *ServiceMeshHandler) GetServiceGraph(c *gin.Context) {
 	graphData, err := h.queryKialiGraph(kialiURL, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders, "")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Erro ao consultar Kiali",
+			"error":   "Erro ao consultar Kiali",
 			"details": err.Error(),
 		})
 		return
@@ -351,13 +351,13 @@ func (h *ServiceMeshHandler) queryKialiGraphViaProxy(clientset kubernetes.Interf
 
 	// Fazer requisição via proxy
 	req := clientset.CoreV1().RESTClient().Get().AbsPath(proxyPath)
-	
+
 	// Adicionar token de autenticação se fornecido
 	if authToken != "" {
 		req.SetHeader("Authorization", fmt.Sprintf("Bearer %s", authToken))
 		fmt.Printf("[ServiceMesh] Usando autenticação com token no proxy\n")
 	}
-	
+
 	result := req.Do(context.Background())
 
 	if result.Error() != nil {
@@ -461,7 +461,7 @@ func (h *ServiceMeshHandler) queryKialiGraphWithClient(client *http.Client, kial
 		kialiURL, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders)
 
 	fmt.Printf("[ServiceMesh] 📡 Fazendo requisição autenticada para: %s\n", url)
-	
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao criar requisição: %w", err)
@@ -494,50 +494,50 @@ func (h *ServiceMeshHandler) queryKialiGraphWithClient(client *http.Client, kial
 // queryKialiViaPodProxy acessa o Kiali diretamente via pod proxy, contornando autenticação do Ingress
 func (h *ServiceMeshHandler) queryKialiViaPodProxy(clientset kubernetes.Interface, namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders string) (*KialiGraphResponse, error) {
 	ctx := context.Background()
-	
+
 	// Buscar pod do Kiali no namespace istio-system
 	fmt.Printf("[ServiceMesh] 🔍 Procurando pod do Kiali...\n")
 	pods, err := clientset.CoreV1().Pods("istio-system").List(ctx, metav1.ListOptions{
 		LabelSelector: "app=kiali",
 		Limit:         1,
 	})
-	
+
 	if err != nil || len(pods.Items) == 0 {
 		return nil, fmt.Errorf("pod do Kiali não encontrado: %w", err)
 	}
-	
+
 	podName := pods.Items[0].Name
 	podNamespace := pods.Items[0].Namespace
 	fmt.Printf("[ServiceMesh] ✅ Pod encontrado: %s/%s\n", podNamespace, podName)
-	
+
 	// Construir path para proxy do pod
 	// Formato: /api/v1/namespaces/{namespace}/pods/{pod}/proxy/{path}
 	proxyPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/proxy/api/namespaces/graph",
 		podNamespace, podName)
-	
+
 	queryParams := fmt.Sprintf("?namespaces=%s&duration=%s&graphType=%s&injectServiceNodes=%s&includeIdleEdges=%s&includeIdleNodes=%s&appenders=%s",
 		namespace, duration, graphType, injectServiceNodes, includeIdleEdges, includeIdleNodes, appenders)
 	proxyPath += queryParams
-	
+
 	fmt.Printf("[ServiceMesh] 📡 Proxy path: %s\n", proxyPath)
-	
+
 	// Fazer requisição via REST client do Kubernetes
 	result := clientset.CoreV1().RESTClient().Get().AbsPath(proxyPath).Do(ctx)
-	
+
 	if result.Error() != nil {
 		fmt.Printf("[ServiceMesh] ❌ Erro no proxy do pod: %v\n", result.Error())
 		return nil, fmt.Errorf("erro ao consultar Kiali via pod proxy: %w", result.Error())
 	}
-	
+
 	// Ler resposta
 	rawData, err := result.Raw()
 	if err != nil {
 		fmt.Printf("[ServiceMesh] ❌ Erro ao ler resposta: %v\n", err)
 		return nil, fmt.Errorf("erro ao ler resposta do Kiali: %w", err)
 	}
-	
+
 	fmt.Printf("[ServiceMesh] ✅ Resposta recebida: %d bytes\n", len(rawData))
-	
+
 	// Decodificar JSON
 	var graphData KialiGraphResponse
 	if err := json.Unmarshal(rawData, &graphData); err != nil {
@@ -549,7 +549,7 @@ func (h *ServiceMeshHandler) queryKialiViaPodProxy(clientset kubernetes.Interfac
 		fmt.Printf("[ServiceMesh] Preview: %s\n", preview)
 		return nil, fmt.Errorf("erro ao decodificar resposta: %w", err)
 	}
-	
+
 	fmt.Printf("[ServiceMesh] ✅ Grafo carregado: %d nós, %d arestas\n", len(graphData.Elements.Nodes), len(graphData.Elements.Edges))
 	return &graphData, nil
 }
@@ -658,7 +658,7 @@ func (h *ServiceMeshHandler) simplifyGraphData(graphData *KialiGraphResponse) *S
 
 	fmt.Printf("[ServiceMesh] ✅ Processados %d nós\n", len(response.Nodes))
 	for i, node := range response.Nodes {
-		fmt.Printf("  Node %d: %s (type=%s, workload=%s, app=%s, version=%s)\n", 
+		fmt.Printf("  Node %d: %s (type=%s, workload=%s, app=%s, version=%s)\n",
 			i+1, node.Label, node.Type, node.Workload, node.App, node.Version)
 	}
 
