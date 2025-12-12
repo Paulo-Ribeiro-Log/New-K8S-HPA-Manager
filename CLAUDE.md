@@ -866,6 +866,73 @@ const [displayOptions, setDisplayOptions] = useState({
 - Implementar `checkMTLS()` com dynamic client para acessar `PeerAuthentication` do Istio
 - Implementar `checkVirtualService()` com dynamic client para acessar CRDs do Istio
 
+#### Detecção de Clusters sem Istio
+**Problema**: Muitos clusters não têm Istio instalado, causando erros e confusão.
+
+**Solução**: Mensagem informativa quando Istio/Kiali não está disponível.
+
+**Detecção Automática**:
+```typescript
+// internal/web/frontend/src/components/ServiceMeshGraph.tsx
+const loadNamespaces = async () => {
+  try {
+    const response = await apiClient.getServiceMeshNamespaces(filters.cluster);
+    
+    // Backend retorna null quando Kiali não está acessível
+    if (!response.namespaces || response.namespaces.length === 0) {
+      setIstioNotAvailable(true);
+      toast.error('Istio/Kiali não está disponível neste cluster');
+      return;
+    }
+    
+    setIstioNotAvailable(false);
+    setNamespaces(response.namespaces);
+  } catch (error) {
+    // Detectar erros específicos do Istio
+    if (errorMsg.includes('kiali') || errorMsg.includes('503')) {
+      setIstioNotAvailable(true);
+    }
+  }
+}
+```
+
+**Mensagem Visual**:
+```tsx
+{istioNotAvailable ? (
+  <div className="w-full h-full flex items-center justify-center">
+    <div className="text-center space-y-4">
+      <div className="text-6xl">🚫</div>
+      <h3 className="text-xl font-semibold">
+        Istio não disponível
+      </h3>
+      <p className="text-sm text-muted-foreground">
+        O Istio Service Mesh não está instalado ou não está acessível neste cluster.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        Para visualizar a topologia do Service Mesh, é necessário ter o Istio e o Kiali instalados no cluster <strong>{cluster}</strong>.
+      </p>
+      <Button onClick={() => loadServiceGraph(false)}>
+        <RefreshCw className="mr-2 h-4 w-4" /> Tentar novamente
+      </Button>
+    </div>
+  </div>
+) : (
+  // Grafo normal
+)}
+```
+
+**Triggers de Detecção**:
+1. `response.namespaces === null` ou vazio
+2. Erro com status 503 (Service Unavailable)
+3. Mensagem contendo: "kiali", "istio", "service unavailable"
+4. Connection refused / not found
+
+**UX**:
+- Mensagem aparece em modo normal e fullscreen
+- Controles de zoom ocultos quando Istio não disponível
+- Botão "Tentar novamente" para reconectar
+- Toast notification informando o problema
+
 ---
 
 **Happy coding!** 🚀
