@@ -12,6 +12,7 @@ import type {
   ConfigMapSummary,
   SecretSummary,
   DeploymentSummary,
+  IngressSummary,
   PodSummary,
 } from "@/lib/api/types";
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -364,6 +365,40 @@ export function useDeployments(cluster?: string, namespaces?: string[], showSyst
   const refetch = () => fetchDeployments(true);
 
   return { deployments, loading, error, refetch };
+}
+
+export function useIngresses(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
+  const [ingresses, setIngresses] = useState<IngressSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
+
+  const fetchIngresses = async (bypassCache: boolean = false) => {
+    if (!cluster) {
+      setIngresses([]);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await apiClient.getIngresses(cluster, namespaces, undefined, showSystem, bypassCache);
+      setIngresses(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch ingresses");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchIngresses();
+  }, [cluster, namespaceKey, showSystem]);
+
+  const refetch = () => fetchIngresses(true);
+
+  return { ingresses, loading, error, refetch };
 }
 
 export function usePods(cluster?: string, namespaces?: string[], showSystem: boolean = false) {

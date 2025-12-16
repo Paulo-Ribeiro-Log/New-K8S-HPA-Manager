@@ -54,6 +54,66 @@ type ConfigMapManifest struct {
 	Metadata  ConfigMapMetadata `json:"metadata"`
 }
 
+// NamespaceSummary descreve informações resumidas de um Namespace
+type NamespaceSummary struct {
+	Cluster         string            `json:"cluster"`
+	Name            string            `json:"name"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Status          string            `json:"status"`
+	Phase           string            `json:"phase"`
+	Age             string            `json:"age"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	UpdatedAt       time.Time         `json:"updatedAt"`
+}
+
+// NamespaceMetadata consolida metadados relevantes do Namespace
+type NamespaceMetadata struct {
+	UID             string            `json:"uid,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Annotations     map[string]string `json:"annotations,omitempty"`
+}
+
+// NamespaceManifest contém o YAML bruto e metadados para edição
+type NamespaceManifest struct {
+	Cluster  string            `json:"cluster"`
+	Name     string            `json:"name"`
+	YAML     string            `json:"yaml"`
+	Status   string            `json:"status"`
+	Age      string            `json:"age"`
+	Metadata NamespaceMetadata `json:"metadata"`
+}
+
+// IngressSummary descreve informações resumidas de um Ingress
+type IngressSummary struct {
+	Cluster         string            `json:"cluster"`
+	Namespace       string            `json:"namespace"`
+	Name            string            `json:"name"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	IngressClass    string            `json:"ingressClass,omitempty"`
+	Hosts           []string          `json:"hosts"`
+	Addresses       []string          `json:"addresses,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	UpdatedAt       time.Time         `json:"updatedAt"`
+}
+
+// IngressMetadata consolida metadados relevantes do Ingress
+type IngressMetadata struct {
+	UID             string            `json:"uid,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Annotations     map[string]string `json:"annotations,omitempty"`
+}
+
+// IngressManifest contém o YAML bruto e metadados para edição
+type IngressManifest struct {
+	Cluster   string          `json:"cluster"`
+	Namespace string          `json:"namespace"`
+	Name      string          `json:"name"`
+	YAML      string          `json:"yaml"`
+	Metadata  IngressMetadata `json:"metadata"`
+}
+
 // DeploymentSummary descreve informações resumidas de um Deployment
 type DeploymentSummary struct {
 	Cluster           string            `json:"cluster"`
@@ -929,14 +989,14 @@ func AggressiveDrainOptions() *DrainOptions {
 // CordonDrainConfig representa a configuração de Cordon/Drain para Node Pools
 // Usado tanto na interface web quanto nas sessões salvas
 type CordonDrainConfig struct {
-	CordonEnabled    bool `json:"cordon_enabled"`     // Habilitar CORDON (marca nodes como unschedulable)
-	DrainEnabled     bool `json:"drain_enabled"`      // Habilitar DRAIN (evacua pods dos nodes)
-	GracePeriod      int  `json:"grace_period"`       // Tempo de espera antes de forçar término (padrão: 300s)
-	Timeout          int  `json:"timeout"`            // Timeout máximo para drain (padrão: 600s)
-	ForceDelete      bool `json:"force_delete"`       // ⚠️ Ignora PodDisruptionBudget (perigoso!)
-	IgnoreDaemonSets bool `json:"ignore_daemonsets"`  // Ignora DaemonSets durante drain (padrão: true)
-	DeleteEmptyDir   bool `json:"delete_emptydir"`    // Deleta volumes EmptyDir durante drain
-	ChunkSize        int  `json:"chunk_size"`         // Pods evacuados simultaneamente (padrão: 5)
+	CordonEnabled    bool `json:"cordon_enabled"`    // Habilitar CORDON (marca nodes como unschedulable)
+	DrainEnabled     bool `json:"drain_enabled"`     // Habilitar DRAIN (evacua pods dos nodes)
+	GracePeriod      int  `json:"grace_period"`      // Tempo de espera antes de forçar término (padrão: 300s)
+	Timeout          int  `json:"timeout"`           // Timeout máximo para drain (padrão: 600s)
+	ForceDelete      bool `json:"force_delete"`      // ⚠️ Ignora PodDisruptionBudget (perigoso!)
+	IgnoreDaemonSets bool `json:"ignore_daemonsets"` // Ignora DaemonSets durante drain (padrão: true)
+	DeleteEmptyDir   bool `json:"delete_emptydir"`   // Deleta volumes EmptyDir durante drain
+	ChunkSize        int  `json:"chunk_size"`        // Pods evacuados simultaneamente (padrão: 5)
 }
 
 // DefaultCordonDrainConfig retorna configuração segura padrão

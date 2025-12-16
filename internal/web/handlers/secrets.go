@@ -384,3 +384,159 @@ func secretToHistoryMap(cm *corev1.Secret) map[string]interface{} {
 		"annotations":     cm.Annotations,
 	}
 }
+
+// Create cria um novo Secret no cluster/namespace especificado
+func (h *SecretHandler) Create(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+
+	if cluster == "" || namespace == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster and namespace must be provided",
+			},
+		})
+		return
+	}
+
+	var req secretApplyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": fmt.Sprintf("Invalid request body: %v", err),
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+
+	// Parse YAML para extrair o nome do secret
+	var obj map[string]interface{}
+	if err := yaml.Unmarshal([]byte(req.YAML), &obj); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_YAML",
+				"message": fmt.Sprintf("Invalid YAML: %v", err),
+			},
+		})
+		return
+	}
+
+	metadata, _ := obj["metadata"].(map[string]interface{})
+	if metadata == nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_METADATA",
+				"message": "Secret YAML must contain metadata",
+			},
+		})
+		return
+	}
+
+	secretName, _ := metadata["name"].(string)
+	if secretName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_NAME",
+				"message": "Secret YAML must contain metadata.name",
+			},
+		})
+		return
+	}
+
+	startTime := time.Now()
+
+	// Aplicar o secret (usando apply para criar ou atualizar)
+	result, err := kubeClient.ApplySecret(c.Request.Context(), namespace, secretName, req.YAML, req.FieldManager, false)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "APPLY_ERROR",
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	duration := time.Since(startTime)
+
+	// Registrar no histórico
+	if h.historyTracker != nil {
+		entry := history.HistoryEntry{
+			Action:   "create_secret",
+			Resource: fmt.Sprintf("%s/%s", namespace, secretName),
+			Cluster:  cluster,
+			Before:   nil,
+			After: map[string]interface{}{
+				"name":            secretName,
+				"namespace":       namespace,
+				"resourceVersion": result.ResourceVersion,
+			},
+			Status:   "success",
+			Duration: duration.Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"name":            result.Name,
+			"namespace":       result.Namespace,
+			"cluster":         cluster,
+			"resourceVersion": result.ResourceVersion,
+			"createdAt":       time.Now().UTC(),
+		},
+	})
+}
+
+// Describe retorna a saída do kubectl describe para um Secret
+func (h *SecretHandler) Describe(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cluster, namespace e name são obrigatórios"})
+		return
+	}
+
+	// Executar kubectl describe
+	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "secret", name, namespace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("Erro ao executar kubectl describe: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"cluster":   cluster,
+		"namespace": namespace,
+		"name":      name,
+		"describe":  output,
+	})
+}

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { Header } from "@/components/Header";
 import { StatsCard } from "@/components/StatsCard";
 import { TabNavigation } from "@/components/TabNavigation";
+import { WorkloadMenu } from "@/components/WorkloadMenu";
 import { DashboardCharts } from "@/components/DashboardCharts";
 import { SplitView } from "@/components/SplitView";
 import {
@@ -22,9 +23,12 @@ import { NodePoolApplyModal } from "@/components/NodePoolApplyModal";
 import NodePoolSequencingModal from "@/components/NodePoolSequencingModal";
 import SequenceProgressModal from "@/components/SequenceProgressModal";
 import { ConfigMapsTab } from "@/components/ConfigMapsTab";
+import { IngressTab } from "@/components/IngressTab";
+import { NamespacesTab } from "@/components/NamespacesTab";
 import { SecretsTab } from "@/components/SecretsTab";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
 import { ContainersTab } from "@/components/ContainersTab";
+import { PodsPanel } from "@/components/PodsPanel";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
@@ -36,12 +40,11 @@ import { CriticalAlertsBanner } from "@/components/CriticalAlertsBanner";
 import { CronJobsPage } from "./CronJobsPage";
 import { PrometheusPage } from "./PrometheusPage";
 import { MonitoringPage } from "./MonitoringPage";
+import { ServiceMeshGraph } from "@/components/ServiceMeshGraph";
 import {
   LayoutDashboard,
   Scale,
   Server,
-  Clock,
-  Activity,
   Layers,
   Package,
   Database,
@@ -50,12 +53,10 @@ import {
   Eye,
   EyeOff,
   BarChart3,
-  FileCode,
   Settings,
-  Key,
-  Box,
   X,
-  RefreshCcw
+  RefreshCcw,
+  Network
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -181,7 +182,7 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // API Hooks
   const { clusters, loading: clustersLoading } = useClusters();
-  const { namespaces, loading: namespacesLoading } = useNamespaces(selectedCluster);
+  const { namespaces, loading: namespacesLoading, refetch: refetchNamespaces } = useNamespaces(selectedCluster);
   // Para HPAs: sempre buscar de TODOS os namespaces (passar undefined ao invés de selectedNamespace)
   const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, undefined, showSystemNamespaces);
   const { nodePools, loading: nodePoolsLoading, refetch: refetchNodePools } = useNodePools(selectedCluster);
@@ -307,18 +308,15 @@ const Index = ({ onLogout }: IndexProps) => {
     nodePools: nodePools.length,
   };
 
+  // Abas que ficam no TabNavigation (topo) - SEM as abas workload
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "hpas", label: "HPAs", icon: Scale },
     { id: "nodepools", label: "Node Pools", icon: Server },
     { id: "staging", label: "Staging", icon: FileText, badge: staging.getChangesCount().total },
-    { id: "cronjobs", label: "CronJobs", icon: Clock },
-    { id: "prometheus", label: "Prometheus", icon: Activity },
     { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
-    { id: "configmaps", label: "ConfigMaps", icon: FileCode },
-    { id: "secrets", label: "Secrets", icon: Key },
-    { id: "deployments", label: "Deployments", icon: Package },
-    { id: "containers", label: "Containers", icon: Box },
+    { id: "servicemesh", label: "Service Mesh", icon: Network },
+    { id: "namespaces", label: "Namespaces", icon: Database },
   ];
 
   // Filtrar namespaces
@@ -637,6 +635,20 @@ const Index = ({ onLogout }: IndexProps) => {
           />
         );
       
+      case "namespaces":
+        return (
+          <ErrorBoundary componentName="Namespaces Tab">
+            <NamespacesTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              onNamespaceChange={setSelectedNamespace}
+              onRefresh={refetchNamespaces}
+            />
+          </ErrorBoundary>
+        );
+
       case "configmaps":
         return (
           <ConfigMapsTab
@@ -647,6 +659,20 @@ const Index = ({ onLogout }: IndexProps) => {
             showSystemNamespaces={showSystemNamespaces}
             onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
           />
+        );
+
+      case "ingresses":
+        return (
+          <ErrorBoundary componentName="Ingress Tab">
+            <IngressTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
         );
 
       case "secrets":
@@ -681,6 +707,20 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="Containers Tab">
             <ContainersTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
+        );
+
+      case "pods":
+        return (
+          <ErrorBoundary componentName="Pods Panel">
+            <PodsPanel
               cluster={selectedCluster}
               namespaces={namespaces}
               selectedNamespace={selectedNamespace}
@@ -864,6 +904,13 @@ const Index = ({ onLogout }: IndexProps) => {
           />
         );
 
+      case "servicemesh":
+        return (
+          <ServiceMeshGraph
+            cluster={selectedCluster}
+          />
+        );
+
       default:
         return null;
     }
@@ -919,8 +966,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, ConfigMaps, Secrets, Deployments e Containers */}
-      {activeTab !== "monitoring" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers, Pods, CronJobs, Prometheus, Ingresses e Service Mesh */}
+      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (
@@ -959,12 +1006,17 @@ const Index = ({ onLogout }: IndexProps) => {
         <VPNWarningBanner onDismiss={() => setShowVPNWarning(false)} />
       )}
 
+      {/* TabNavigation com WorkloadMenu */}
       <TabNavigation
         tabs={tabs}
         activeTab={activeTab}
         onTabChange={handleTabChange}
-      />
+      >
+        {/* Menu dropdown Workload */}
+        <WorkloadMenu activeTab={activeTab} onTabChange={handleTabChange} />
+      </TabNavigation>
 
+      {/* Conteúdo Principal */}
       <div className="flex-1 min-h-0 overflow-auto">
         {renderTabContent()}
       </div>

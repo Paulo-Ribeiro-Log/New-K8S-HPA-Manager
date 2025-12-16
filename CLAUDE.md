@@ -24,6 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 9. [⚡ Async Optimization Plan](docs/guides/ASYNC_OPTIMIZATION_PLAN.md) - Plano de otimização assíncrona da auto descoberta
 10. [📦 Installation Scripts](docs/guides/INSTALLATION_SCRIPTS.md) - Scripts de instalação (release vs main)
 11. [🔔 Windows Notifications](docs/guides/WINDOWS_NOTIFICATIONS.md) - Sistema de notificações via PowerShell/WSL2
+12. [🔒 RBAC Azure AD](docs/guides/RBAC_AZURE_AD_IMPLEMENTATION.md) - Controle de acesso baseado em grupos do Azure AD
 
 ### 📚 Histórico e Referências
 11. [📜 Histórico de Correções](docs/history/CHANGELOG.md) - Correções e refatorações principais
@@ -31,6 +32,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 🚀 Otimizações
 13. [⚡ Autodiscover Optimization](docs/optimization/AUTODISCOVER_OPTIMIZATION.md) - Paralelização da busca de subscriptions
+
+### 📋 Roadmaps e Estudos
+14. [🔐 Estudo SSO Azure AD](ESTUDO_SSO_AZURE_AD.md) - Análise técnica de SSO OAuth 2.0/OIDC
+15. [🛣️ Roteiro Implementação SSO](ROTEIRO_IMPLEMENTACAO_SSO.md) - **Roadmap completo para servidor centralizado** (6 dias)
+16. [📧 Implementação user_email History](IMPLEMENTACAO_USER_EMAIL_HISTORY.md) - User tracking no History Tracker (v1.3.6)
 
 ---
 
@@ -59,6 +65,7 @@ go test -run TestGetClient    # Rodar teste específico
 # Debug Web
 tail -f /tmp/k8s-hpa-manager-web-*.log  # Logs do servidor (background mode)
 ./build/new-k8s-hpa web -f    # Foreground mode (logs no terminal)
+./build/new-k8s-hpa web --ad  # ⚠️  EMERGÊNCIA: Bypass RBAC (flag oculta, sem documentação)
 
 # Installation (Release - Estável)
 curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/main/install-from-github.sh | bash
@@ -136,6 +143,98 @@ k8s-hpa-manager/
   - ConfigMaps/Secrets/Deployments: Labels iniciam recolhidos, campo "Versão" exibido quando disponível (app.kubernetes.io/version)
   - Node Pools: Botão de refresh adicionado no painel "Available Node Pools" para atualizar dados do Azure AKS
   - VM Disk Specs: Exibe informações de performance de disco (Temp Disk, Max Disks, IOPS, Throughput) no Node Pool Editor
+✅ **Dashboard por Namespace (v1.3.2)** - Visibilidade granular de consumo de recursos
+  - Card "Top 5 Namespaces por Consumo" no Dashboard principal
+  - Grid 3 colunas: CPU Usage | Memory Usage | Top 5 Namespaces (lado a lado)
+  - Tabs interativas: CPU (millicores), Memory (GB), Pods (count)
+  - Barras de progresso coloridas: verde (0-50%), amarelo (50-75%), vermelho (75-100%)
+  - Seção "Outros" com soma de namespaces fora do Top 5
+  - Auto-refresh a cada 60 segundos + botão manual de refresh
+  - Backend: Queries Prometheus agregadas por namespace (`sum by (namespace)`)
+  - Endpoint: `GET /api/v1/namespaces/:cluster/metrics?limit=5`
+  - Graceful degradation: estado de erro elegante quando Prometheus inacessível
+✅ **Aba Namespaces (v1.3.4)** - Gerenciamento completo de Namespaces Kubernetes
+  - **Overview Top 5**: Quando nenhum namespace selecionado, exibe 3 gráficos de pizza lado a lado
+    - Top 5 Namespaces por CPU (millicores)
+    - Top 5 Namespaces por Memória (GB)
+    - Top 5 Namespaces por Pods (count)
+    - Seção "Outros" agregando namespaces fora do Top 5
+  - **Detalhes do Namespace**: Ao selecionar namespace, exibe painel com:
+    - Metadados: Nome, Cluster, Status (Phase do namespace), Age (formato compacto: 2d5h, 30m, 45s)
+    - Monaco YAML Editor (tema VS Code) com **edição completa e persistente**
+    - **Sistema de edição avançado** (copiado de ConfigMaps):
+      - ✅ Undo/Redo com histórico de 50 versões (cache persistente por namespace)
+      - ✅ View Mode toggle: Editor | Diff (side-by-side)
+      - ✅ Validação Dry-run (testa YAML antes de aplicar)
+      - ✅ Visualizar diff com diff2html (modal compacto + fullscreen)
+      - ✅ Apply com confirmação (exibe mudanças detectadas)
+      - ✅ Cancelar (restaura YAML original)
+      - ✅ Botões duplicados em: painel normal + modal fullscreen
+    - Botões de ação: Describe, Visualizar diff, Expandir Editor, Dry-run, Cancelar, Aplicar
+    - Dropdown menu (⋮) com opção Delete (cor vermelha)
+    - Modal fullscreen do editor com toolbar completa de edição
+  - **Criar Namespace**: Botão no header do painel "Visualização" (à direita)
+    - Modal com campo de texto para nome do namespace
+    - Validação: nome obrigatório, cluster selecionado
+    - Auto-refresh da lista após criação bem-sucedida
+  - **Backend completo**:
+    - `GET /namespaces/:cluster/:name` - Obter manifesto YAML
+    - `GET /namespaces/:cluster/:name/describe` - kubectl describe
+    - `POST /namespaces/:cluster` - Criar namespace
+    - `PUT /namespaces/:cluster/:name` - **Aplicar YAML editado** (com suporte a dry-run)
+    - `DELETE /namespaces/:cluster/:name` - Deletar namespace
+    - `GET /namespaces/:cluster/metrics?limit=5` - Top 5 métricas
+  - **Componente**: `NamespacesTab.tsx` (1240+ linhas, dual-mode: overview vs details)
+  - **Correções**: Hook `useNamespaces` agora retorna `refetch` corretamente conectado ao botão Atualizar
+  - **Imports**: diff (createTwoFilesPatch), diff2html (html), js-yaml (load), ícones Undo2/Redo2/CheckCircle2/TriangleAlert/FileDiff
+✅ **Aba Pods (v1.3.3)** - Gerenciamento completo de Pods Kubernetes
+  - Listagem de pods com filtros por namespace, search, system pods
+  - Status visual com badges coloridos (Running/Pending/Failed/CrashLoopBackOff)
+  - Indicadores de restart count com alertas visuais (>3 restarts)
+  - Informações de containers: estado, imagem, restarts, ready status
+  - Labels colapsáveis por pod
+  - Modal de detalhes com 2 tabs: YAML Manifest + Logs
+  - Logs de containers individuais (tail 500 linhas) com **syntax highlighting**
+  - Botão "Delete Pod" com confirmação
+  - Auto-refresh a cada 30 segundos
+  - Backend: Endpoints já existiam em `internal/web/handlers/pods.go`
+  - API: `GET /pods?cluster=...&namespaces=...`, `GET /pods/:cluster/:namespace/:name`, `DELETE /pods/:cluster/:namespace/:name`, `GET /pods/:cluster/:namespace/:name/logs`
+  - Componente: `PodsPanel.tsx` (estilo ConfigMaps/Secrets/Deployments)
+✅ **Aba Containers (v1.3.3)** - Visualização dedicada de containers
+  - Painel esquerdo: Lista de pods + containers (tree view)
+  - Painel direito: Logs + Detalhes do container selecionado
+  - Botão "Labels" movido para painel direito (Container Logs & Details)
+  - Auto-refresh de logs a cada 3 segundos (opcional)
+  - Download de logs como arquivo .txt
+  - Componente: `ContainersTab.tsx`
+✅ **UX Improvements - Pods/Containers (v1.3.3)**
+  - **Métricas inline**: Layout horizontal "RESTARTS: 3  CPU/R: 800m  CPU/L: 1" (ao invés de grid vertical)
+  - **Badge de versão**: Extrai versão da imagem do container (ex: nginx:1.21.0 → "1.21.0")
+  - **Log highlighting com estilos inline**: Colorização automática de logs
+    - ❌ ERROR/FATAL/EXCEPTION: Vermelho (#f87171) com fundo e borda vermelha
+    - ⚠️ WARN/WARNING: Amarelo/Laranja (#fbbf24) com fundo e borda
+    - ℹ️ INFO: Azul claro (#60a5fa)
+    - 🔍 DEBUG/TRACE: Roxo (#c084fc) com fonte menor
+    - ✅ SUCCESS/COMPLETED: Verde (#4ade80)
+    - 🔴 HTTP 4xx/5xx: Laranja (#fb923c) com fundo
+    - HTTP 2xx/3xx: Verde claro (#86efac)
+  - **YAML Fullscreen Modal**: Botão "Expandir" no painel YAML (estilo ConfigMaps) com Monaco Editor
+  - **kubectl describe**: Botão "Describe" em todas as abas (Pods, ConfigMaps, Secrets, Deployments)
+    - Backend: Executa `kubectl describe {resourceType} {name}` via `internal/kubernetes/client.go:ExecuteKubectlDescribe()`
+    - API: `GET /api/v1/{resource}/:cluster/:namespace/:name/describe`
+    - Handlers: `configmaps.go`, `secrets.go`, `deployments.go`, `pods.go`
+    - Frontend: Modal com ScrollArea exibindo output completo do kubectl describe
+✅ **RBAC com Azure AD (v1.3.5+)** - Controle de acesso baseado em grupos do Azure AD
+  - **Grupo SRE**: `VV_CLOUD_SRE` (ID: `eb865ea5-2672-49be-abc8-74c248c556b0`)
+  - **Backend**: Módulo `internal/rbac/azure_ad.go` com verificação via Azure CLI (`az ad user get-member-groups`)
+  - **Middleware**: `internal/web/middleware/rbac.go` protege rotas sensíveis (POST, PUT, DELETE)
+  - **Frontend**: Hook `useUserPermissions()` + componente `<ProtectedAction>` para ocultar/desabilitar botões
+  - **Cache**: TTL de 1 hora para permissões, invalidação manual via endpoint `/permissions/refresh`
+  - **Recursos Protegidos**: Apply (HPAs, Node Pools, ConfigMaps, Namespaces), Delete (todos os recursos), Cordon/Drain
+  - **Recursos Públicos**: Visualização (GET), Staging area, Sessions, Monitoramento, Logs
+  - **Badge de Status**: Componente `<SREBadge>` exibe status SRE no header com popover de grupos
+  - **Testes**: Suite completa (`./testes/test-rbac.sh`) + testes Go unitários (`go test ./internal/rbac`)
+  - **Documentação**: [RBAC_AZURE_AD_IMPLEMENTATION.md](docs/guides/RBAC_AZURE_AD_IMPLEMENTATION.md) + [RBAC_SUMMARY.md](docs/guides/RBAC_SUMMARY.md)
 
 ---
 
@@ -146,37 +245,54 @@ k8s-hpa-manager/
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
 
 Repositório: git@github.com:Paulo-Ribeiro-Log/New-K8S-HPA-Manager.git
-Versão Atual: v1.3.1 (oficial - 2025-12-03)
+Versão Atual: v1.3.5+ (em desenvolvimento)
 Tech: Go 1.24+ + React 18.3 (Web)
 Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 
-Recent Updates (v1.3.1):
-- UI/UX: Gráfico de memória corrigido (azul vs roxo), labels recolhidos por padrão em ConfigMaps/Secrets/Deployments
-- ConfigMaps/Secrets/Deployments: Campo "Versão" exibe app.kubernetes.io/version quando disponível
-- Node Pools: Botão de refresh no painel "Available Node Pools" busca dados atualizados do Azure AKS
-  - Fix: Correção de erros TypeScript em Index.tsx (sequencedNodePools.find com sequence_order)
-- VM Disk Specs: Exibe performance de disco (Temp Disk, Max Disks, IOPS, Throughput) no Node Pool Editor
-  - Interface VMSpec estendida com tempDiskGiB, maxDataDisks, maxIOPS, maxThroughputMBps
-  - Função formatDiskSpecs() formata informações com emojis e unidades legíveis
-  - Specs adicionadas para séries Dsv3, Dsv5, Esv3 (VMs mais comuns)
-- Card de Cluster Contextual: Dashboard mostra total de clusters, outras abas mostram contexto + versão K8s
-  - Componente ClusterContextCard mantém estrutura visual dos StatsCards
-  - Hook useClusterInfo busca informações via API /clusters/info
-  - Truncate com tooltip para nomes longos, refetch automático a cada 60s
-- Comparação Histórica D-1/D-2/D-3: Linha lilás nos gráficos permite comparar métricas atuais com 1, 2 ou 3 dias atrás
-  - Backend: Parâmetro days_offset (1-3) na API /monitoring/v2/metrics com validação
-  - Frontend: Select com labels descritivas, refetch automático ao trocar período
-  - UX: Nome da linha dinâmico (ex: "CPU D-2 (48h atrás)"), opacidade sutil (0.2-0.3)
-- Gráfico de Réplicas Corrigido: Backend retorna `replicas_current` corretamente (monitoring_v2.go:452)
-- Sistema de Alertas Completo: Exibe TODOS os alertas ativos (removido filtro restritivo de nomes)
-- Alertas Filtrados por Tempo: Botão de alertas respeita seletor de tempo no painel "Análise de Métricas"
-- Navegação Bidirecional: HPAs ↔ Monitoramento com 1 clique (⚙️ monitora HPA, "Edit HPA" edita)
-- Prometheus URL Fix: Corrigido erro HTTP 500 em endpoints de alertas (remoção de sufixo -admin)
-- Métricas Prometheus CORRIGIDAS: CPU/Memória histórica agora usam avg() ao invés de sum() (0-100%)
-- AlertsDialog Aprimorado: Card de contexto destacado com extração inteligente de HPA/Pod/Container
-- VM Specs: Exibe vCPUs e memória no Node Pool Editor (150+ Azure VMs catalogadas)
-- Notificações In-App Clicáveis: Sistema web com navegação contextual para AlertsDialog
+Recent Updates (v1.3.5):
+- **RBAC com Azure AD**: Sistema completo de controle de acesso
+  - Frontend: 10 componentes protegidos (44 botões com `<ProtectedAction>`)
+  - Backend: Middleware RBAC protegendo 20+ rotas (POST/PUT/DELETE)
+  - Hook `useUserPermissions()` com cache de 1 hora
+  - Flag oculta `--ad` para bypass em emergências (sem documentação)
+  - Badge SRE no header, teste completo em `./testes/test-rbac.sh`
+  - Módulo: `internal/rbac/azure_ad.go`, `internal/web/middleware/rbac.go`
+  - Grupo: VV_CLOUD_SRE (eb865ea5-2672-49be-abc8-74c248c556b0)
+
+Recent Updates (v1.3.4):
+- Aba Namespaces: Gerenciamento completo com overview Top 5 (CPU/Memory/Pods) + **Sistema de edição avançado**
+  - Dual-mode: Overview (charts) quando nenhum namespace selecionado, detalhes com Monaco Editor quando selecionado
+  - CRUD completo: Criar, Visualizar, Editar YAML (com undo/redo/diff/dry-run/apply), Deletar namespaces
+  - **Edição avançada** (copiado de ConfigMaps): Undo/Redo (50 versões), Diff side-by-side, Dry-run, Apply com confirmação
+  - Botões duplicados em painel normal e modal fullscreen
+  - Botão "Criar Namespace" no header do painel "Visualização"
+  - kubectl describe integrado, modal fullscreen para edição com toolbar completa
+  - **Lista de Deployments**: Botão colapsável (estilo Labels do ConfigMaps) exibindo deployments do namespace
+    - Mostra ícone Package + nome + réplicas (ready/total)
+    - Carregamento automático ao selecionar namespace
+    - Endpoint: `GET /api/v1/deployments?cluster=...&namespaces=...`
+    - Estado inicial: recolhido, click para expandir/colapsar
+  - Backend: endpoints POST/GET/**PUT**/DELETE em `/namespaces/:cluster`
+  - Handler Apply: `internal/web/handlers/namespaces.go:Apply()` com suporte a dry-run
+  - Kubernetes client: `internal/kubernetes/client.go:ApplyNamespace()` reutilizado
+  - API client: `internal/web/frontend/src/lib/api/client.ts:applyNamespace()` adicionado
+  - Component: `NamespacesTab.tsx` (1250+ linhas com toda lógica de edição + deployments)
+
+Recent Updates (v1.3.3):
+- Aba Pods/Containers: Gerenciamento completo de Pods e Containers Kubernetes
+  - Listagem com filtros (namespace, search, system pods)
+  - Métricas inline, badge de versão extraído da imagem
+  - Log highlighting com cores (ERROR vermelho, WARN amarelo, INFO azul, etc)
+  - YAML fullscreen modal + kubectl describe integrado
+- kubectl describe: Implementado em todas as abas (Pods, ConfigMaps, Secrets, Deployments)
+  - Backend: `ExecuteKubectlDescribe()` em `internal/kubernetes/client.go`
+  - API: `GET /api/v1/{resource}/:cluster/:namespace/:name/describe`
+
+- Dashboard por Namespace (v1.3.2): Card "Top 5 Namespaces por Consumo"
+  - Grid 3 colunas: CPU | Memory | Top 5 NS
+  - Tabs: CPU (millicores), Memory (GB), Pods (count)
+  - Prometheus agregado: sum by (namespace)
 ```
 
 **Ver documentação completa:**
@@ -478,6 +594,344 @@ Cada arquivo contém um link "Voltar ao CLAUDE.md principal" no topo para fácil
 - **Latest Release**: https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/latest
 - **Análise Cordon/Drain**: [ANALISE_NODEPOOL_CORDON_DRAIN.md](ANALISE_NODEPOOL_CORDON_DRAIN.md)
 - **Plano Otimização Async**: [PLANO_OTIMIZACAO_ASYNC.md](PLANO_OTIMIZACAO_ASYNC.md)
+
+---
+
+## 🔄 Últimas Atualizações (12/12/2025)
+
+### Service Mesh - Kiali Integration
+
+#### Seletor Traffic Implementado
+- **Traffic Accordion** com 3 protocolos:
+  - **gRPC**: Requests (padrão), Received Messages, Sent Messages, Total Messages
+  - **HTTP**: Requests (única opção)
+  - **TCP**: Sent Bytes (padrão), Received Bytes, Total Bytes
+- Accordion múltiplo (Traffic + Display podem abrir simultaneamente)
+- Interface idêntica ao Kiali original
+
+#### Sistema de Cores Dinâmico para Erros
+**Problema Resolvido**: Chaves duplicadas `line-color` e `target-arrow-color` faziam apenas primeira definição (estática) ser usada.
+
+**Solução**: Removidas definições estáticas, mantidas apenas funções dinâmicas:
+
+```typescript
+// internal/web/frontend/src/components/ServiceMeshGraph.tsx
+'line-color': function(ele: any) {
+  const errorRate = parseFloat(ele.data('errorRate') || '0');
+  
+  // PRIORIDADE: Erros sempre aparecem primeiro
+  if (errorRate >= 5) return '#ef4444';    // Vermelho (>=5%)
+  if (errorRate >= 1) return '#f97316';    // Laranja (1-5%)
+  if (errorRate >= 0.1) return '#eab308';  // Amarelo (0.1-1%)
+  if (errorRate > 0) return '#fca5a5';     // Vermelho claro (>0%)
+  
+  // Sem erros: tráfego e protocolo
+  if (rate > 100) return '#10b981';        // Verde (alto tráfego)
+  if (protocol === 'http') return '#3b82f6'; // Azul (HTTP)
+  return '#9ca3af';                        // Cinza (padrão)
+}
+```
+
+#### Cálculo de Error Rate pelo Backend
+**Implementação**: Backend agora calcula `errorRate` analisando `responses` do Kiali:
+
+```go
+// internal/web/handlers/servicemesh.go
+// Se Kiali retorna apenas códigos de erro (4xx/5xx) com count 0.00,
+// considera 100% erro (todas requisições falhando)
+if errorRequests == 0 && totalRequests == 0 {
+    hasErrorCodes := false
+    for code := range edge.Data.Traffic.Responses {
+        if len(code) > 0 && (code[0] == '4' || code[0] == '5') {
+            hasErrorCodes = true
+            break
+        }
+    }
+    if hasErrorCodes {
+        simpleEdge.ErrorRate = 100.0  // 🔴 Linha vermelha
+    }
+}
+```
+
+#### Correção do Refresh
+**Problema**: Refresh removia todos elementos e recriava, causando perda de nodes.
+
+**Solução**: Método `updateGraphDataFromResponse()` que:
+- Atualiza apenas **dados** de elementos existentes
+- Adiciona **novos** nodes/edges
+- Remove **apenas** elementos que desapareceram
+- Mantém **posições** dos nodes existentes
+- Layout apenas para nodes novos
+
+```typescript
+// internal/web/frontend/src/components/ServiceMeshGraph.tsx
+const loadServiceGraphSilent = async () => {
+  const data = await apiClient.getServiceGraph(...)
+  
+  if (cyInstance.current) {
+    updateGraphDataFromResponse(data);  // ✅ Não destrói gráfico
+  } else {
+    setGraphData(data);  // Cria novo
+  }
+}
+```
+
+**Labels de Erro**: Agora exibem `X.X% err` inline com métricas de tráfego.
+
+#### Otimização de Espaço dos Controles
+**Problema**: Selects e botão "Atualizar" ocupavam muito espaço, reduzindo área do gráfico.
+
+**Solução**: Controles compactos com larguras fixas:
+
+```typescript
+// internal/web/frontend/src/components/ServiceMeshGraph.tsx
+// Layout flexbox com larguras máximas definidas
+<CardContent className="space-y-2 py-3">
+  <div className="flex flex-wrap items-end gap-2">
+    {/* Namespace: 130-160px */}
+    <div className="min-w-[130px] max-w-[160px]">
+      <SelectTrigger className="h-8 text-sm">
+    
+    {/* Duração: 100-120px */}
+    <div className="min-w-[100px] max-w-[120px]">
+      <SelectTrigger className="h-8 text-sm">
+    
+    {/* Tipo de Grafo: 100-120px */}
+    <div className="min-w-[100px] max-w-[120px]">
+      <SelectTrigger className="h-8 text-sm">
+    
+    {/* Botão Atualizar: 90-100px */}
+    <Button className="h-8 text-xs px-3 min-w-[90px] max-w-[100px]">
+```
+
+**Melhorias**:
+- Labels: `text-xs` (antes `text-sm`), margem reduzida `mb-1` (antes `mb-2`)
+- Espaçamento: `gap-2` (antes `gap-3`), `py-3` (antes padrão)
+- Altura: `h-8` em todos os controles (compacto e uniforme)
+- Larguras: Fixadas com `min-w-` e `max-w-` (antes esticavam com `flex-1`)
+- Ícones: `h-3 w-3` (antes `h-4 w-4`)
+
+**Resultado**: ~40% menos espaço vertical, liberando mais área para visualização do gráfico.
+
+#### Modo Fullscreen Melhorado
+**Problema**: Controles Traffic e Display não estavam acessíveis no modo fullscreen.
+
+**Solução**: 
+- Popovers Traffic e Display duplicados no header do fullscreen
+- Botão Settings (engrenagem) removido (não tinha funcionalidade real)
+- Estado `showFullscreenControls` removido (não mais necessário)
+
+**Implementação**:
+```typescript
+// internal/web/frontend/src/components/ServiceMeshGraph.tsx
+{isFullscreen && (
+  <div className="flex items-center gap-2">
+    {/* Popover Traffic */}
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm">
+          <Filter className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      {/* ... mesmo conteúdo do modo normal */}
+    </Popover>
+    
+    {/* Popover Display */}
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm">
+          <Eye className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      {/* ... mesmo conteúdo do modo normal */}
+    </Popover>
+  </div>
+)}
+```
+
+#### Sistema de Badges do Istio
+**Funcionalidades Implementadas**:
+- **Missing Sidecars** (⚠️): Detecta pods sem `istio-proxy` container
+- **Security - mTLS** (🔒): Verifica PeerAuthentication STRICT (placeholder)
+- **Virtual Services** (🔀): Detecta VirtualServices do Istio (placeholder)
+
+**Backend** (`internal/web/handlers/servicemesh.go`):
+```go
+// SimplifiedNode com novos campos
+type SimplifiedNode struct {
+    // ... campos existentes
+    HasSidecar        bool `json:"hasSidecar"`        // ⚠️
+    HasVirtualService bool `json:"hasVirtualService"` // 🔀
+    MtlsEnabled       bool `json:"mtlsEnabled"`       // 🔒
+}
+
+// Detecção de sidecar (FUNCIONAL)
+func (h *ServiceMeshHandler) checkSidecar(ctx context.Context, clientset kubernetes.Interface, namespace, workloadName string) bool {
+    pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+        LabelSelector: fmt.Sprintf("app=%s", workloadName),
+    })
+    if err != nil || len(pods.Items) == 0 {
+        return false
+    }
+    
+    for _, container := range pods.Items[0].Spec.Containers {
+        if container.Name == "istio-proxy" {
+            return true
+        }
+    }
+    return false
+}
+
+// Detecção de mTLS (PLACEHOLDER - requer dynamic client)
+func (h *ServiceMeshHandler) checkMTLS(ctx context.Context, clientset kubernetes.Interface, namespace string) bool {
+    // TODO: Implementar com dynamic client para acessar PeerAuthentication do Istio
+    return false
+}
+
+// Detecção de VirtualService (PLACEHOLDER - requer dynamic client)
+func (h *ServiceMeshHandler) checkVirtualService(ctx context.Context, clientset kubernetes.Interface, namespace, serviceName string) bool {
+    // TODO: Implementar com dynamic client para Istio CRDs
+    return false
+}
+```
+
+**Frontend** (`internal/web/frontend/src/components/ServiceMeshGraph.tsx`):
+```typescript
+// Display Options
+const [displayOptions, setDisplayOptions] = useState({
+  show: {
+    // ... existentes
+    trafficAnimation: false,
+  },
+  showBadges: {
+    missingSidecars: false,  // ⚠️
+    security: false,          // 🔒
+    virtualServices: false,   // 🔀
+  },
+  // ...
+});
+
+// Renderização no label do node
+'label': function(ele: any) {
+  let label = workload || 'unknown';
+  
+  // Badges visuais
+  const badges = [];
+  if (displayOptions.showBadges.missingSidecars && hasSidecar === false) {
+    badges.push('⚠️'); // Missing sidecar
+  }
+  if (displayOptions.showBadges.virtualServices && hasVirtualService) {
+    badges.push('🔀'); // Virtual Service
+  }
+  if (displayOptions.showBadges.security && mtlsEnabled) {
+    badges.push('🔒'); // mTLS
+  }
+  
+  if (badges.length > 0) {
+    label += '\n' + badges.join(' ');
+  }
+  
+  return label;
+}
+```
+
+**Display Popover**: Seção "Show Badges" adicionada:
+```typescript
+<div className="space-y-2">
+  <div className="text-xs font-medium text-muted-foreground mb-2">Show Badges</div>
+  <div className="flex items-center justify-between">
+    <Label htmlFor="missing-sidecars">Missing Sidecars</Label>
+    <Checkbox
+      id="missing-sidecars"
+      checked={displayOptions.showBadges.missingSidecars}
+      onCheckedChange={(checked) => {
+        setDisplayOptions(prev => ({
+          ...prev,
+          showBadges: { ...prev.showBadges, missingSidecars: checked as boolean }
+        }));
+      }}
+    />
+  </div>
+  {/* Security (mTLS) e Virtual Services similar */}
+</div>
+```
+
+**Status Atual**:
+- ✅ **Missing Sidecars**: Totalmente funcional (detecta `istio-proxy` container)
+- ⚠️ **mTLS Security**: Placeholder (retorna `false` - TODO: dynamic client)
+- ⚠️ **Virtual Services**: Placeholder (retorna `false` - TODO: dynamic client)
+- ✅ **Frontend**: Totalmente implementado com checkboxes e renderização de emojis
+
+**TODOs**:
+- Implementar `checkMTLS()` com dynamic client para acessar `PeerAuthentication` do Istio
+- Implementar `checkVirtualService()` com dynamic client para acessar CRDs do Istio
+
+#### Detecção de Clusters sem Istio
+**Problema**: Muitos clusters não têm Istio instalado, causando erros e confusão.
+
+**Solução**: Mensagem informativa quando Istio/Kiali não está disponível.
+
+**Detecção Automática**:
+```typescript
+// internal/web/frontend/src/components/ServiceMeshGraph.tsx
+const loadNamespaces = async () => {
+  try {
+    const response = await apiClient.getServiceMeshNamespaces(filters.cluster);
+    
+    // Backend retorna null quando Kiali não está acessível
+    if (!response.namespaces || response.namespaces.length === 0) {
+      setIstioNotAvailable(true);
+      toast.error('Istio/Kiali não está disponível neste cluster');
+      return;
+    }
+    
+    setIstioNotAvailable(false);
+    setNamespaces(response.namespaces);
+  } catch (error) {
+    // Detectar erros específicos do Istio
+    if (errorMsg.includes('kiali') || errorMsg.includes('503')) {
+      setIstioNotAvailable(true);
+    }
+  }
+}
+```
+
+**Mensagem Visual**:
+```tsx
+{istioNotAvailable ? (
+  <div className="w-full h-full flex items-center justify-center">
+    <div className="text-center space-y-4">
+      <div className="text-6xl">🚫</div>
+      <h3 className="text-xl font-semibold">
+        Istio não disponível
+      </h3>
+      <p className="text-sm text-muted-foreground">
+        O Istio Service Mesh não está instalado ou não está acessível neste cluster.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        Para visualizar a topologia do Service Mesh, é necessário ter o Istio e o Kiali instalados no cluster <strong>{cluster}</strong>.
+      </p>
+      <Button onClick={() => loadServiceGraph(false)}>
+        <RefreshCw className="mr-2 h-4 w-4" /> Tentar novamente
+      </Button>
+    </div>
+  </div>
+) : (
+  // Grafo normal
+)}
+```
+
+**Triggers de Detecção**:
+1. `response.namespaces === null` ou vazio
+2. Erro com status 503 (Service Unavailable)
+3. Mensagem contendo: "kiali", "istio", "service unavailable"
+4. Connection refused / not found
+
+**UX**:
+- Mensagem aparece em modo normal e fullscreen
+- Controles de zoom ocultos quando Istio não disponível
+- Botão "Tentar novamente" para reconectar
+- Toast notification informando o problema
 
 ---
 

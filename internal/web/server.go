@@ -18,6 +18,7 @@ import (
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/notifications"
+	"k8s-hpa-manager/internal/rbac"
 
 	// TODO: Remover após migração completa para V2
 	// "k8s-hpa-manager/internal/monitoring/analyzer"
@@ -38,6 +39,7 @@ type Server struct {
 	kubeManager    *config.KubeConfigManager
 	port           int
 	token          string
+	disableADAuth  bool // Flag para desabilitar verificação RBAC (emergências)
 	lastHeartbeat  time.Time
 	heartbeatMutex sync.RWMutex
 	shutdownTimer  *time.Timer
@@ -61,7 +63,7 @@ type Server struct {
 }
 
 // NewServer cria uma nova instância do servidor web
-func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
+func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool) (*Server, error) {
 	// Reutilizar gerenciador de kube existente
 	kubeManager, err := config.NewKubeConfigManager(kubeconfig)
 	if err != nil {
@@ -106,6 +108,15 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 		fmt.Println("   ⚠️  Notificações desabilitadas (não está em WSL2)")
 	}
 
+	// Aviso se autenticação AD estiver desabilitada
+	if disableADAuth {
+		fmt.Println("\n⚠️  ⚠️  ⚠️  AVISO DE SEGURANÇA ⚠️  ⚠️  ⚠️")
+		fmt.Println("   Verificação RBAC (Azure AD) DESABILITADA")
+		fmt.Println("   Todos os usuários terão acesso TOTAL ao sistema")
+		fmt.Println("   Use apenas para debugging ou emergências")
+		fmt.Println("   ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️")
+	}
+
 	// Configurar historyTracker no kubeManager para audit logging de rollouts
 	kubeManager.SetHistoryTracker(historyTracker)
 
@@ -126,6 +137,7 @@ func NewServer(kubeconfig string, port int, debug bool) (*Server, error) {
 		kubeManager:         kubeManager,
 		port:                port,
 		token:               token,
+		disableADAuth:       disableADAuth,
 		lastHeartbeat:       time.Now(),
 		logBuffer:           logBuffer,
 		historyTracker:      historyTracker,
@@ -263,6 +275,14 @@ func (s *Server) setupRoutes() {
 	api := s.router.Group("/api/v1")
 	api.Use(middleware.AuthMiddleware(s.token))
 
+	// RBAC - Inicializar manager e middleware
+	rbacManager := rbac.NewRBACManager(s.disableADAuth)
+	rbacMiddleware := middleware.NewRBACMiddleware(rbacManager)
+
+	// RBAC - Endpoints públicos de permissões (apenas GET, sem proteção extra)
+	api.GET("/permissions", rbacMiddleware.GetUserPermissions())
+	api.POST("/permissions/refresh", rbacMiddleware.RefreshPermissions())
+
 	// Clusters
 	clusterHandler := handlers.NewClusterHandler(s.kubeManager)
 	api.GET("/clusters", clusterHandler.List)
@@ -282,39 +302,55 @@ func (s *Server) setupRoutes() {
 	api.POST("/azure/subscription", azureHandler.SetSubscription)
 
 	// Namespaces
-	namespaceHandler := handlers.NewNamespaceHandler(s.kubeManager)
+	namespaceHandler := handlers.NewNamespaceHandler(s.kubeManager, s.historyTracker)
 	api.GET("/namespaces", namespaceHandler.List)
+	api.GET("/namespaces/:cluster/:name", namespaceHandler.Get)
+	api.GET("/namespaces/:cluster/:name/describe", namespaceHandler.Describe)
+	api.GET("/namespaces/:cluster/metrics", namespaceHandler.GetMetrics) // NOVO: Métricas agregadas por namespace
+
+	// Namespaces - Write Operations (SRE-only)
+	api.POST("/namespaces/:cluster", rbacMiddleware.RequireSREGroup(), namespaceHandler.Create)
+	api.PUT("/namespaces/:cluster/:name", rbacMiddleware.RequireSREGroup(), namespaceHandler.Apply)
+	api.DELETE("/namespaces/:cluster/:name", rbacMiddleware.RequireSREGroup(), namespaceHandler.Delete)
 
 	// HPAs
 	hpaHandler := handlers.NewHPAHandler(s.kubeManager, s.historyTracker)
 	api.GET("/hpas", hpaHandler.List)
 	api.GET("/hpas/:cluster/:namespace/:name", hpaHandler.Get)
-	api.PUT("/hpas/:cluster/:namespace/:name", hpaHandler.Update)
+
+	// HPAs - Write Operations (SRE-only)
+	api.PUT("/hpas/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), hpaHandler.Update)
 
 	// Node Pools
 	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager, s.historyTracker)
 	api.GET("/nodepools", nodePoolHandler.List)
 	api.GET("/nodepools/disk-metrics", nodePoolHandler.GetNodePoolDiskMetrics) // NOVO: Métricas de disco
 	api.GET("/nodepools/storage-overview", nodePoolHandler.GetStorageOverview) // NOVO: Visão geral de storage
-	api.PUT("/nodepools/:cluster/:resource_group/:name", nodePoolHandler.Update)
-	api.POST("/nodepools/apply-sequential", nodePoolHandler.ApplySequential)
-	api.POST("/nodepools/sequence/execute", nodePoolHandler.ExecuteSequence)  // NOVO: Cordon/Drain sequencing
-	api.GET("/nodepools/sequence/progress", nodePoolHandler.SequenceProgress) // NOVO: SSE progress tracking
+	api.GET("/nodepools/sequence/progress", nodePoolHandler.SequenceProgress)  // NOVO: SSE progress tracking
+
+	// Node Pools - Write Operations (SRE-only)
+	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)
+	api.POST("/nodepools/apply-sequential", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ApplySequential)
+	api.POST("/nodepools/sequence/execute", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ExecuteSequence) // NOVO: Cordon/Drain sequencing
 
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
 	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)
 	s.router.GET("/api/v1/nodepools/progress/:operationId/status", handlers.HandleProgressStatus)
 
 	// CronJobs
-	cronJobHandler := handlers.NewCronJobHandler(s.kubeManager)
+	cronJobHandler := handlers.NewCronJobHandler(s.kubeManager, s.historyTracker)
 	api.GET("/cronjobs", cronJobHandler.List)
-	api.PUT("/cronjobs/:cluster/:namespace/:name", cronJobHandler.Update)
+
+	// CronJobs - Write Operations (SRE-only)
+	api.PUT("/cronjobs/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), cronJobHandler.Update)
 
 	// Prometheus Stack
-	prometheusHandler := handlers.NewPrometheusHandler(s.kubeManager)
+	prometheusHandler := handlers.NewPrometheusHandler(s.kubeManager, s.historyTracker)
 	api.GET("/prometheus", prometheusHandler.List)
-	api.PUT("/prometheus/:cluster/:namespace/:type/:name", prometheusHandler.Update)
-	api.POST("/prometheus/:cluster/:namespace/:type/:name/rollout", prometheusHandler.Rollout)
+
+	// Prometheus Stack - Write Operations (SRE-only)
+	api.PUT("/prometheus/:cluster/:namespace/:type/:name", rbacMiddleware.RequireSREGroup(), prometheusHandler.Update)
+	api.POST("/prometheus/:cluster/:namespace/:type/:name/rollout", rbacMiddleware.RequireSREGroup(), prometheusHandler.Rollout)
 
 	// ConfigMaps
 	configMapHandler := handlers.NewConfigMapHandler(s.kubeManager, s.historyTracker)
@@ -322,9 +358,26 @@ func (s *Server) setupRoutes() {
 	{
 		configMaps.GET("", configMapHandler.List)
 		configMaps.GET("/:cluster/:namespace/:name", configMapHandler.Get)
+		configMaps.GET("/:cluster/:namespace/:name/describe", configMapHandler.Describe)
 		configMaps.POST("/diff", configMapHandler.Diff)
 		configMaps.POST("/validate", configMapHandler.Validate)
-		configMaps.PUT("/:cluster/:namespace/:name", configMapHandler.Apply)
+
+		// ConfigMaps - Write Operations (SRE-only)
+		configMaps.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), configMapHandler.Apply)
+	}
+
+	// Ingress
+	ingressHandler := handlers.NewIngressHandler(s.kubeManager, s.historyTracker)
+	ingresses := api.Group("/ingresses")
+	{
+		ingresses.GET("", ingressHandler.List)
+		ingresses.GET("/:cluster/:namespace/:name", ingressHandler.Get)
+		ingresses.GET("/:cluster/:namespace/:name/describe", ingressHandler.Describe)
+		ingresses.POST("/diff", ingressHandler.Diff)
+		ingresses.POST("/validate", ingressHandler.Validate)
+
+		// Ingress - Write Operations (SRE-only)
+		ingresses.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), ingressHandler.Apply)
 	}
 
 	// Deployments
@@ -333,31 +386,42 @@ func (s *Server) setupRoutes() {
 	{
 		deployments.GET("", deploymentHandler.List)
 		deployments.GET("/:cluster/:namespace/:name", deploymentHandler.Get)
+		deployments.GET("/:cluster/:namespace/:name/describe", deploymentHandler.Describe)
 		deployments.POST("/diff", deploymentHandler.Diff)
 		deployments.POST("/validate", deploymentHandler.Validate)
-		deployments.PUT("/:cluster/:namespace/:name", deploymentHandler.Apply)
+
+		// Deployments - Write Operations (SRE-only)
+		deployments.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), deploymentHandler.Apply)
 	}
 
 	// Pods/Containers
-	podHandler := handlers.NewPodHandler(s.kubeManager)
+	podHandler := handlers.NewPodHandler(s.kubeManager, s.historyTracker)
 	pods := api.Group("/pods")
 	{
 		pods.GET("", podHandler.List)
 		pods.GET("/:cluster/:namespace/:name", podHandler.Get)
-		pods.DELETE("/:cluster/:namespace/:name", podHandler.Delete)
+		pods.GET("/:cluster/:namespace/:name/describe", podHandler.Describe)
 		pods.GET("/:cluster/:namespace/:name/logs", podHandler.GetLogs)
+
+		// Pods - Write Operations (SRE-only)
+		pods.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Delete)
+		pods.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), podHandler.Restart)
 	}
 
 	// Secrets
 	secretHandler := handlers.NewSecretHandler(s.kubeManager, s.historyTracker)
 	secrets := api.Group("/secrets")
 	{
-		secrets.GET("", secretHandler.List)
-		secrets.GET("/:cluster/:namespace/:name", secretHandler.Get)
-		secrets.POST("/diff", secretHandler.Diff)
-		secrets.POST("/validate", secretHandler.Validate)
-		secrets.PUT("/:cluster/:namespace/:name", secretHandler.Apply)
-	}
+	secrets.GET("", secretHandler.List)
+	secrets.GET("/:cluster/:namespace/:name", secretHandler.Get)
+	secrets.GET("/:cluster/:namespace/:name/describe", secretHandler.Describe)
+	secrets.POST("/diff", secretHandler.Diff)
+	secrets.POST("/validate", secretHandler.Validate)
+
+	// Secrets - Write Operations (SRE-only)
+	secrets.POST("/:cluster/:namespace", rbacMiddleware.RequireSREGroup(), secretHandler.Create)
+	secrets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), secretHandler.Apply)
+}
 
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()
@@ -376,6 +440,12 @@ func (s *Server) setupRoutes() {
 
 	// VPN Status Check (sem auth para polling leve)
 	s.router.GET("/api/v1/vpn/status", handlers.CheckVPNConnection)
+
+	// Service Mesh (Istio/Kiali Integration) - SEM AUTH (operações de leitura públicas)
+	serviceMeshHandler := handlers.NewServiceMeshHandler(s.kubeManager)
+	s.router.GET("/api/v1/servicemesh/graph", serviceMeshHandler.GetServiceGraph)       // GET /api/v1/servicemesh/graph?cluster=X&namespace=Y&duration=60s
+	s.router.GET("/api/v1/servicemesh/namespaces", serviceMeshHandler.GetNamespaces)    // GET /api/v1/servicemesh/namespaces?cluster=X
+	s.router.GET("/api/v1/servicemesh/metrics", serviceMeshHandler.GetMetrics)          // GET /api/v1/servicemesh/metrics?cluster=X&namespace=Y
 
 	// Sessions
 	sessionHandler := handlers.NewSessionsHandler()
