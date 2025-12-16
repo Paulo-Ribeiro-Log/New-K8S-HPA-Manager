@@ -4,6 +4,7 @@ import type {
   Cluster,
   ClusterInfo,
   Namespace,
+  NamespaceManifest,
   HPA,
   NodePool,
   CronJob,
@@ -28,6 +29,11 @@ import type {
   SecretDiffResult,
   SecretValidateResult,
   SecretApplyResult,
+  IngressSummary,
+  IngressManifest,
+  IngressDiffResult,
+  IngressValidateResult,
+  IngressApplyResult,
   DeploymentSummary,
   DeploymentManifest,
   DeploymentDiffResult,
@@ -37,6 +43,8 @@ import type {
   PodManifest,
   VersionInfo,
   SequenceExecuteRequest,
+  TopNamespacesResponse,
+  NamespaceMetrics,
 } from "./types";
 
 const API_BASE_URL = "/api/v1";
@@ -103,6 +111,18 @@ class APIClient {
     return response.json();
   }
 
+  // Generic HTTP methods (used by hooks like useUserPermissions)
+  async get<T = any>(endpoint: string): Promise<T> {
+    return this.request<T>(endpoint, { method: 'GET' });
+  }
+
+  async post<T = any>(endpoint: string, data?: any): Promise<T> {
+    return this.request<T>(endpoint, {
+      method: 'POST',
+      body: data ? JSON.stringify(data) : undefined,
+    });
+  }
+
   // Clusters
   async getClusters(): Promise<Cluster[]> {
     const response = await this.request<APIResponse<Cluster[]>>("/clusters");
@@ -133,6 +153,60 @@ class APIClient {
       `/namespaces${query}`
     );
     return response.data || [];
+  }
+
+  async getNamespaceMetrics(cluster: string, limit: number = 5): Promise<TopNamespacesResponse> {
+    const response = await this.request<APIResponse<TopNamespacesResponse>>(
+      `/namespaces/${encodeURIComponent(cluster)}/metrics?limit=${limit}`
+    );
+    return response.data;
+  }
+
+  async getNamespace(cluster: string, name: string): Promise<NamespaceManifest> {
+    const response = await this.request<APIResponse<NamespaceManifest>>(
+      `/namespaces/${encodeURIComponent(cluster)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) {
+      throw new Error("Namespace not found");
+    }
+    return response.data;
+  }
+
+  async describeNamespace(cluster: string, name: string): Promise<{ describe: string }> {
+    return await this.request<{ describe: string }>(
+      `/namespaces/${encodeURIComponent(cluster)}/${encodeURIComponent(name)}/describe`
+    );
+  }
+
+  async deleteNamespace(cluster: string, name: string): Promise<{ success: boolean; message: string }> {
+    return await this.request<{ success: boolean; message: string }>(
+      `/namespaces/${encodeURIComponent(cluster)}/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    );
+  }
+
+  async createNamespace(cluster: string, name: string): Promise<{ success: boolean; message: string }> {
+    return await this.request<{ success: boolean; message: string }>(
+      `/namespaces/${encodeURIComponent(cluster)}`,
+      { 
+        method: "POST",
+        body: JSON.stringify({ name })
+      }
+    );
+  }
+
+  async applyNamespace(
+    cluster: string,
+    name: string,
+    payload: { yaml: string; fieldManager: string; dryRun: boolean }
+  ): Promise<{ success: boolean; message: string }> {
+    return await this.request<{ success: boolean; message: string }>(
+      `/namespaces/${encodeURIComponent(cluster)}/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }
+    );
   }
 
   // HPAs
@@ -280,6 +354,13 @@ class APIClient {
     return response.data;
   }
 
+  async describeConfigMap(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/configmaps/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
+  }
+
   // Secrets API Methods
   async getSecrets(cluster: string, namespaces?: string[], showSystem?: boolean, bypassCache: boolean = false): Promise<SecretSummary[]> {
     const params = new URLSearchParams();
@@ -364,6 +445,31 @@ class APIClient {
     );
     if (!response.data) {
       throw new Error("Aplicação sem retorno");
+    }
+    return response.data;
+  }
+
+  async describeSecret(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
+  }
+
+  async createSecret(
+    cluster: string,
+    namespace: string,
+    body: { yaml: string; fieldManager?: string }
+  ): Promise<SecretApplyResult> {
+    const response = await this.request<APIResponse<SecretApplyResult>>(
+      `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Criação sem retorno");
     }
     return response.data;
   }
@@ -462,6 +568,114 @@ class APIClient {
     return response.data;
   }
 
+  async describeDeployment(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
+  }
+
+  // Ingress API Methods
+  async getIngresses(
+    cluster?: string,
+    namespaces?: string[],
+    search?: string,
+    showSystem: boolean = false,
+    bypassCache: boolean = false
+  ): Promise<IngressSummary[]> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (namespaces && namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    if (search) params.append("search", search);
+    if (showSystem) params.append("showSystem", "true");
+    if (bypassCache) params.append("_t", Date.now().toString());
+
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const response = await this.request<APIResponse<IngressSummary[]>>(
+      `/ingresses${query}`,
+      {
+        headers: bypassCache
+          ? {
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+            }
+          : {},
+      }
+    );
+    return response.data || [];
+  }
+
+  async getIngress(cluster: string, namespace: string, name: string): Promise<IngressManifest> {
+    const response = await this.request<APIResponse<IngressManifest>>(
+      `/ingresses/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) {
+      throw new Error("Ingress not found");
+    }
+    return response.data;
+  }
+
+  async diffIngress(originalYaml: string, updatedYaml: string, fileName?: string): Promise<IngressDiffResult> {
+    const response = await this.request<APIResponse<IngressDiffResult>>(
+      `/ingresses/diff`,
+      {
+        method: "POST",
+        body: JSON.stringify({ originalYaml, updatedYaml, fileName }),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Diff response inválida");
+    }
+    return response.data;
+  }
+
+  async validateIngress(payload: {
+    cluster: string;
+    namespace: string;
+    yaml: string;
+    fieldManager?: string;
+  }): Promise<IngressValidateResult> {
+    const response = await this.request<APIResponse<IngressValidateResult>>(
+      `/ingresses/validate`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Validação sem retorno");
+    }
+    return response.data;
+  }
+
+  async applyIngress(
+    cluster: string,
+    namespace: string,
+    name: string,
+    body: { yaml: string; fieldManager?: string; dryRun?: boolean }
+  ): Promise<IngressApplyResult> {
+    const response = await this.request<APIResponse<IngressApplyResult>>(
+      `/ingresses/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Aplicação sem retorno");
+    }
+    return response.data;
+  }
+
+  async describeIngress(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/ingresses/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
+  }
+
   // Pods/Containers API Methods
   async getPods(
     cluster?: string,
@@ -514,6 +728,16 @@ class APIClient {
     return response.data || { success: false, message: "Unknown error" };
   }
 
+  async restartPod(cluster: string, namespace: string, name: string): Promise<{ success: boolean; message: string; hasOwner: boolean; ownerKind?: string }> {
+    const response = await this.request<APIResponse<{ success: boolean; message: string; hasOwner: boolean; ownerKind?: string }>>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/restart`,
+      {
+        method: "POST",
+      }
+    );
+    return response.data || { success: false, message: "Unknown error", hasOwner: false };
+  }
+
   async getPodLogs(
     cluster: string,
     namespace: string,
@@ -524,12 +748,19 @@ class APIClient {
     const params = new URLSearchParams();
     if (containerName) params.append("container", containerName);
     if (tailLines) params.append("tail", tailLines.toString());
-    
+
     const query = params.toString() ? `?${params.toString()}` : "";
     const response = await this.request<APIResponse<{ logs: string }>>(
       `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}/logs${query}`
     );
     return response.data || { logs: "" };
+  }
+
+  async describePod(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
   }
 
   async updateHPA(
@@ -935,6 +1166,50 @@ class APIClient {
 
   async getAllAlerts(cluster: string): Promise<any> {
     return this.request(`/alerts?cluster=${cluster}`);
+  }
+
+  // Service Mesh - Istio/Kiali Integration
+  async getServiceGraph(
+    cluster: string,
+    namespace: string,
+    duration: string = '5m',
+    graphType: string = 'workload',
+    options?: {
+      injectServiceNodes?: boolean;
+      includeIdleEdges?: boolean;
+      includeIdleNodes?: boolean;
+      appenders?: string;
+    }
+  ): Promise<import('@/types/servicemesh').ServiceGraphResponse> {
+    let url = `/servicemesh/graph?cluster=${cluster}&namespace=${namespace}&duration=${duration}&graphType=${graphType}`;
+    
+    if (options?.injectServiceNodes !== undefined) {
+      url += `&injectServiceNodes=${options.injectServiceNodes}`;
+    }
+    if (options?.includeIdleEdges !== undefined) {
+      url += `&includeIdleEdges=${options.includeIdleEdges}`;
+    }
+    if (options?.includeIdleNodes !== undefined) {
+      url += `&includeIdleNodes=${options.includeIdleNodes}`;
+    }
+    if (options?.appenders) {
+      url += `&appenders=${encodeURIComponent(options.appenders)}`;
+    }
+    
+    return this.request(url);
+  }
+
+  async getServiceMeshNamespaces(
+    cluster: string
+  ): Promise<import('@/types/servicemesh').ServiceMeshNamespace> {
+    return this.request(`/servicemesh/namespaces?cluster=${cluster}`);
+  }
+
+  async getServiceMeshMetrics(
+    cluster: string,
+    namespace: string
+  ): Promise<import('@/types/servicemesh').ServiceMeshMetrics> {
+    return this.request(`/servicemesh/metrics?cluster=${cluster}&namespace=${namespace}`);
   }
 }
 

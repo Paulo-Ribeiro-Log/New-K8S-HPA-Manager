@@ -37,6 +37,23 @@ export interface Namespace {
   isSystem?: boolean;
 }
 
+export interface NamespaceMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  creationTimestamp?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface NamespaceManifest {
+  cluster: string;
+  name: string;
+  yaml: string;
+  status: string;
+  age: string;
+  metadata: NamespaceMetadata;
+}
+
 export interface ConfigMapSummary {
   cluster: string;
   namespace: string;
@@ -171,6 +188,54 @@ export interface DeploymentValidateResult {
 }
 
 export interface DeploymentApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  resourceVersion?: string;
+  dryRun?: boolean;
+  appliedAt?: string;
+}
+
+// Ingress Types
+export interface IngressSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  labels?: Record<string, string>;
+  ingressClass?: string;
+  hosts?: string[];
+  addresses?: string[];
+  resourceVersion?: string;
+  updatedAt: string;
+}
+
+export interface IngressMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface IngressManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  yaml: string;
+  metadata: IngressMetadata;
+}
+
+export interface IngressDiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface IngressValidateResult {
+  name: string;
+  namespace: string;
+  resourceVersion?: string;
+}
+
+export interface IngressApplyResult {
   name: string;
   namespace: string;
   cluster: string;
@@ -611,4 +676,27 @@ export interface HPAHealth {
   message?: string;
   score?: number; // 0-100
   recommendations?: string[];
+}
+
+// Namespace Metrics Types
+export interface NamespaceMetrics {
+  namespace: string;
+  cpu_request_millis: number;
+  cpu_usage_millis: number;
+  cpu_percent_of_cluster: number;
+  memory_request_gb: number;
+  memory_usage_gb: number;
+  memory_percent_of_cluster: number;
+  pod_count: number;
+  pod_percent_of_cluster: number;
+}
+
+export interface TopNamespacesResponse {
+  top_cpu: NamespaceMetrics[];
+  top_memory: NamespaceMetrics[];
+  top_pods: NamespaceMetrics[];
+  cpu_others: NamespaceMetrics;
+  memory_others: NamespaceMetrics;
+  pods_others: NamespaceMetrics;
+  total_namespaces: number;
 }

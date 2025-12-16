@@ -17,6 +17,8 @@ import (
 type HistoryEntry struct {
 	ID          string                 `json:"id"`
 	Timestamp   time.Time              `json:"timestamp"`
+	UserEmail   string                 `json:"user_email,omitempty"`   // Email do usuário (via RBAC/SSO)
+	UserName    string                 `json:"user_name,omitempty"`    // Nome do usuário (via RBAC/SSO)
 	Action      string                 `json:"action"`      // update_hpa, apply_nodepool, etc
 	Resource    string                 `json:"resource"`    // namespace/name
 	Cluster     string                 `json:"cluster"`
@@ -238,6 +240,7 @@ type HistoryFilter struct {
 	Cluster     string    // Filtrar por cluster
 	Resource    string    // Filtrar por resource
 	Status      string    // Filtrar por status
+	UserEmail   string    // Filtrar por email do usuário
 	StartDate   time.Time // Data inicial
 	EndDate     time.Time // Data final
 	SessionName string    // Filtrar por sessão
@@ -258,6 +261,10 @@ func (f HistoryFilter) Matches(entry HistoryEntry) bool {
 	}
 
 	if f.Status != "" && entry.Status != f.Status {
+		return false
+	}
+
+	if f.UserEmail != "" && entry.UserEmail != f.UserEmail {
 		return false
 	}
 

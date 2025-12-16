@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, Terminal, Trash2, FileText, AlertCircle, CheckCircle2, XCircle, Loader2, Download } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, Terminal, Trash2, FileText, AlertCircle, CheckCircle2, XCircle, Loader2, Download, ChevronDown, ChevronRight, Maximize2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 
 interface ContainersTabProps {
   cluster: string;
@@ -46,7 +47,7 @@ export const ContainersTab = ({
   const [selectedContainer, setSelectedContainer] = useState<string | null>(null);
   const [logs, setLogs] = useState<string>("");
   const [logsLoading, setLogsLoading] = useState(false);
-  const [showLabels, setShowLabels] = useState(false);
+  const [showLabelsInDetails, setShowLabelsInDetails] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deletingPod, setDeletingPod] = useState(false);
   const [manifestModalOpen, setManifestModalOpen] = useState(false);
@@ -118,16 +119,29 @@ export const ContainersTab = ({
     }
   };
 
-  const handlePodSelect = (pod: PodSummary) => {
+  const handlePodSelect = async (pod: PodSummary) => {
     setSelectedPod(pod);
     setSelectedContainer(null);
     setLogs("");
+    setManifestLoading(true);
+    setManifest("");
     
     // Auto-select first container
     if (pod.containers.length > 0) {
       const firstContainer = pod.containers[0].name;
       setSelectedContainer(firstContainer);
       fetchLogs(pod, firstContainer);
+    }
+
+    // Load manifest
+    try {
+      const result = await apiClient.getPod(pod.cluster, pod.namespace, pod.name);
+      setManifest(result.yaml);
+    } catch (err) {
+      setManifest("Error loading manifest");
+      toast.error("Erro ao carregar manifest do Pod");
+    } finally {
+      setManifestLoading(false);
     }
   };
 
@@ -161,15 +175,17 @@ export const ContainersTab = ({
     if (!selectedPod) return;
     
     setManifestLoading(true);
-    setManifestModalOpen(true);
     try {
       const result = await apiClient.getPod(selectedPod.cluster, selectedPod.namespace, selectedPod.name);
       setManifest(result.yaml);
+      // Open modal after manifest is loaded
+      setTimeout(() => setManifestModalOpen(true), 100);
     } catch (err) {
       toast.error("Erro ao buscar manifest", {
         description: err instanceof Error ? err.message : "Unknown error",
       });
       setManifest("Error loading manifest");
+      setManifestModalOpen(true);
     } finally {
       setManifestLoading(false);
     }
@@ -253,14 +269,6 @@ export const ContainersTab = ({
       >
         {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
       </Button>
-      <Button
-        variant={showLabels ? "secondary" : "outline"}
-        size="sm"
-        onClick={() => setShowLabels(!showLabels)}
-        title={showLabels ? "Ocultar labels" : "Mostrar labels"}
-      >
-        {showLabels ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Labels
-      </Button>
       <Button variant="outline" size="sm" onClick={refreshPods} disabled={!cluster || loading}>
         <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
       </Button>
@@ -331,24 +339,6 @@ export const ContainersTab = ({
                   </div>
                 )}
               </div>
-
-              {showLabels && pod.labels && Object.keys(pod.labels).length > 0 && (
-                <div className="mt-2 pt-2 border-t">
-                  <p className="text-xs font-medium text-muted-foreground mb-1">Labels:</p>
-                  <div className="flex flex-wrap gap-1">
-                    {Object.entries(pod.labels).slice(0, 3).map(([key, value]) => (
-                      <Badge key={key} variant="outline" className="text-[10px] px-1 py-0">
-                        {key}: {value}
-                      </Badge>
-                    ))}
-                    {Object.keys(pod.labels).length > 3 && (
-                      <Badge variant="outline" className="text-[10px] px-1 py-0">
-                        +{Object.keys(pod.labels).length - 3}
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
           ))}
         </div>
@@ -375,6 +365,31 @@ export const ContainersTab = ({
           </Button>
         </div>
       </div>
+
+      {selectedPod.labels && Object.keys(selectedPod.labels).length > 0 && (
+        <div className="mb-4 pb-3 border-b border-border/50">
+          <button
+            type="button"
+            onClick={() => setShowLabelsInDetails((prev) => !prev)}
+            className="flex items-center gap-1 text-xs text-muted-foreground uppercase mb-2 hover:text-foreground transition-colors"
+          >
+            {showLabelsInDetails ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            <span>Labels</span>
+          </button>
+          {showLabelsInDetails && (
+            <div className="flex flex-wrap gap-1">
+              {Object.entries(selectedPod.labels).map(([key, value]) => (
+                <span
+                  key={`${key}-${value}`}
+                  className="px-1.5 py-0.5 bg-secondary/60 rounded text-[10px] font-mono"
+                >
+                  {key}={value}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <Tabs defaultValue="logs" className="flex-1 flex flex-col">
         <TabsList className="w-full justify-start mb-4">
@@ -537,19 +552,51 @@ export const ContainersTab = ({
                 </div>
               </div>
 
-              {selectedPod.labels && Object.keys(selectedPod.labels).length > 0 && (
-                <div>
-                  <h4 className="font-medium mb-2">Labels</h4>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    {Object.entries(selectedPod.labels).map(([key, value]) => (
-                      <div key={key} className="border rounded p-2">
-                        <span className="text-muted-foreground">{key}:</span>
-                        <p className="font-medium break-all">{value}</p>
-                      </div>
-                    ))}
+              {/* YAML Manifest Section */}
+              <div className="flex-1 flex flex-col min-h-0 space-y-2">
+                <div className="flex items-center justify-between flex-shrink-0">
+                  <p className="text-sm font-medium">Manifesto YAML (Read-only)</p>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        if (manifest) {
+                          navigator.clipboard.writeText(manifest);
+                          toast.success("YAML copiado");
+                        }
+                      }}
+                      disabled={!manifest || manifestLoading}
+                    >
+                      <FileText className="w-4 h-4 mr-2" />
+                      {manifestLoading ? "Carregando..." : "Copiar YAML"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setManifestModalOpen(true)}
+                      title="Abrir YAML em tela cheia"
+                      disabled={!manifest || manifestLoading}
+                    >
+                      <Maximize2 className="w-3.5 h-3.5" />
+                    </Button>
                   </div>
                 </div>
-              )}
+
+                {manifestLoading ? (
+                  <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+                    Carregando manifest...
+                  </div>
+                ) : (
+                  <div className="flex-1 min-h-0">
+                    <MonacoYamlEditor
+                      value={manifest || ""}
+                      readOnly={true}
+                      height="400px"
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           </ScrollArea>
         </TabsContent>
@@ -579,19 +626,68 @@ export const ContainersTab = ({
 
       {/* Manifest Dialog */}
       <Dialog open={manifestModalOpen} onOpenChange={setManifestModalOpen}>
-        <DialogContent className="max-w-4xl max-h-[80vh]">
-          <DialogHeader>
-            <DialogTitle>Pod Manifest - {selectedPod.name}</DialogTitle>
+        <DialogContent className="max-w-6xl h-[90vh] flex flex-col p-0">
+          <DialogHeader className="border-b border-border px-6 py-4 flex-shrink-0">
+            <div className="flex items-center justify-between gap-4 pr-8">
+              <div>
+                <DialogTitle className="text-xl font-semibold">
+                  Manifesto YAML (Read-only)
+                </DialogTitle>
+                <DialogDescription className="text-sm text-muted-foreground mt-1">
+                  {selectedPod.namespace}/{selectedPod.name}
+                </DialogDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (manifest) {
+                      navigator.clipboard.writeText(manifest);
+                      toast.success("YAML copiado para área de transferência");
+                    }
+                  }}
+                  disabled={!manifest || manifestLoading}
+                >
+                  <FileText className="w-4 h-4 mr-2" />
+                  Copiar YAML
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setManifestModalOpen(false)}
+                  className="h-8 w-8 p-0"
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
           </DialogHeader>
-          <ScrollArea className="h-[60vh]">
+
+          {/* Monaco Editor */}
+          <div className="flex-1 overflow-hidden p-6" style={{ minHeight: 0 }}>
             {manifestLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-6 h-6 animate-spin" />
+              <div className="flex items-center justify-center h-full">
+                <div className="flex flex-col items-center gap-2">
+                  <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                  <span className="text-sm text-muted-foreground">Carregando manifest...</span>
+                </div>
+              </div>
+            ) : manifest && manifest !== "Error loading manifest" ? (
+              <div className="h-full w-full">
+                <MonacoYamlEditor
+                  key={`manifest-modal-${selectedPod.name}`}
+                  value={manifest}
+                  readOnly={true}
+                  height="100%"
+                />
               </div>
             ) : (
-              <pre className="text-xs font-mono bg-muted p-4 rounded">{manifest}</pre>
+              <div className="flex items-center justify-center h-full text-muted-foreground">
+                <p>{manifest === "Error loading manifest" ? "Erro ao carregar manifest" : "Nenhum manifest disponível"}</p>
+              </div>
             )}
-          </ScrollArea>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
@@ -604,6 +700,8 @@ export const ContainersTab = ({
     </div>
   );
 
+  const rightTitleAction = undefined;
+
   return (
     <SplitView
       leftPanel={{
@@ -612,7 +710,8 @@ export const ContainersTab = ({
         content: leftPanel,
       }}
       rightPanel={{
-        title: selectedPod ? "Pod Details" : "Container Logs & Details",
+        title: selectedPod ? "Container Logs & Details" : "Container Logs & Details",
+        titleAction: rightTitleAction,
         content: rightPanel,
       }}
     />

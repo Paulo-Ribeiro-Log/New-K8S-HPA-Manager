@@ -18,6 +18,7 @@ import { ModeToggle } from "@/components/mode-toggle";
 import { NotificationBell } from "@/components/NotificationBell";
 import { NotificationDrawer } from "@/components/NotificationDrawer";
 import { AlertsDialog } from "@/components/AlertsDialog";
+import { SREBadge } from "@/components/rbac";
 import { useNotifications } from "@/hooks/useNotifications";
 import type { InAppNotification } from "@/hooks/useNotifications";
 import { cn } from "@/lib/utils";
@@ -246,6 +247,9 @@ export const Header = ({
         )}
 
         <span className="text-white/90 text-sm">{userInfo}</span>
+
+        {/* SRE Badge */}
+        <SREBadge />
 
         {/* Notification Bell */}
         <NotificationBell

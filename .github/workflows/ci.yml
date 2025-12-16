@@ -36,6 +36,8 @@ jobs:
         run: go mod verify
 
       - name: Run tests
+        env:
+          SKIP_AZURE_TESTS: 1
         run: make test
 
       - name: Build

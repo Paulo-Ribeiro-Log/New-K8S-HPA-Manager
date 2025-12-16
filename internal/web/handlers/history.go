@@ -30,6 +30,7 @@ func (h *HistoryHandler) GetHistory(c *gin.Context) {
 		Cluster:     c.Query("cluster"),
 		Resource:    c.Query("resource"),
 		Status:      c.Query("status"),
+		UserEmail:   c.Query("user_email"),
 		SessionName: c.Query("session_name"),
 	}
 
@@ -49,7 +50,7 @@ func (h *HistoryHandler) GetHistory(c *gin.Context) {
 	// Buscar histórico filtrado
 	var entries []history.HistoryEntry
 	if filter.Action == "" && filter.Cluster == "" && filter.Resource == "" &&
-		filter.Status == "" && filter.SessionName == "" &&
+		filter.Status == "" && filter.UserEmail == "" && filter.SessionName == "" &&
 		filter.StartDate.IsZero() && filter.EndDate.IsZero() {
 		// Sem filtros, retornar todos
 		entries = h.tracker.GetAll()

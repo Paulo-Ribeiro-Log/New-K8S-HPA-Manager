@@ -9,6 +9,7 @@ import type { HPA } from "@/lib/api/types";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import { validateHPAUpdate, formatValidationErrors, type ValidationError } from "@/lib/validation";
+import { ProtectedAction } from "@/components/rbac";
 
 interface HPAEditorProps {
   hpa: HPA | null;
@@ -646,23 +647,27 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
 
       {/* Action Buttons */}
       <div className="flex gap-3 pt-3 border-t border-border">
-        <Button
-          onClick={handleSave}
-          disabled={!isModified || isSaving}
-          className="flex-1 bg-gradient-primary h-9"
-        >
-          <Save className="w-4 h-4 mr-2" />
-          {isSaving ? "Salvando..." : "💾 Salvar (Staging)"}
-        </Button>
+        <ProtectedAction>
+          <Button
+            onClick={handleSave}
+            disabled={!isModified || isSaving}
+            className="flex-1 bg-gradient-primary h-9"
+          >
+            <Save className="w-4 h-4 mr-2" />
+            {isSaving ? "Salvando..." : "💾 Salvar (Staging)"}
+          </Button>
+        </ProtectedAction>
 
-        <Button
-          onClick={handleApply}
-          variant="default"
-          className="flex-1 bg-success hover:bg-success/90 h-9"
-        >
-          <CheckCircle className="w-4 h-4 mr-2" />
-          ✅ Aplicar Agora
-        </Button>
+        <ProtectedAction>
+          <Button
+            onClick={handleApply}
+            variant="default"
+            className="flex-1 bg-success hover:bg-success/90 h-9"
+          >
+            <CheckCircle className="w-4 h-4 mr-2" />
+            ✅ Aplicar Agora
+          </Button>
+        </ProtectedAction>
 
         <Button
           onClick={handleReset}

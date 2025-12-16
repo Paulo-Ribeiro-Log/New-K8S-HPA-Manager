@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -238,6 +239,52 @@ func copyStringMap(in map[string]string) map[string]string {
 	return out
 }
 
+// formatAge formata a idade de um recurso em formato legível (exibe as 2 unidades mais significativas)
+func formatAge(t time.Time) string {
+	duration := time.Since(t)
+
+	totalSeconds := int(duration.Seconds())
+
+	years := totalSeconds / (365 * 24 * 3600)
+	remainingAfterYears := totalSeconds % (365 * 24 * 3600)
+
+	days := remainingAfterYears / (24 * 3600)
+	remainingAfterDays := remainingAfterYears % (24 * 3600)
+
+	hours := remainingAfterDays / 3600
+	remainingAfterHours := remainingAfterDays % 3600
+
+	minutes := remainingAfterHours / 60
+	seconds := remainingAfterHours % 60
+
+	// Exibir as 2 unidades mais significativas
+	if years > 0 {
+		if days > 0 {
+			return fmt.Sprintf("%dy%dd", years, days)
+		}
+		return fmt.Sprintf("%dy", years)
+	}
+	if days > 0 {
+		if hours > 0 {
+			return fmt.Sprintf("%dd%dh", days, hours)
+		}
+		return fmt.Sprintf("%dd", days)
+	}
+	if hours > 0 {
+		if minutes > 0 {
+			return fmt.Sprintf("%dh%dm", hours, minutes)
+		}
+		return fmt.Sprintf("%dh", hours)
+	}
+	if minutes > 0 {
+		if seconds > 0 {
+			return fmt.Sprintf("%dm%ds", minutes, seconds)
+		}
+		return fmt.Sprintf("%dm", minutes)
+	}
+	return fmt.Sprintf("%ds", seconds)
+}
+
 // ValidateConfigMap executa um server-side apply com dry-run
 func (c *Client) ValidateConfigMap(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*corev1.ConfigMap, error) {
 	return c.applyConfigMap(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
@@ -343,6 +390,434 @@ func prepareConfigMapApplyPayload(yamlContent, enforceNamespace, enforceName str
 	}
 
 	return jsonPayload, namespace, name, nil
+}
+
+// ============================================================================
+// Ingress Methods
+// ============================================================================
+
+// ListIngresses retorna todos os Ingresses considerando filtros simples
+func (c *Client) ListIngresses(ctx context.Context, namespaces []string, search string, showSystemNamespaces bool) ([]models.IngressSummary, error) {
+	var result []models.IngressSummary
+	search = strings.ToLower(strings.TrimSpace(search))
+
+	listAllNamespaces := len(namespaces) == 0
+	uniqueNamespaces := make(map[string]struct{})
+	for _, ns := range namespaces {
+		ns = strings.TrimSpace(ns)
+		if ns == "" {
+			continue
+		}
+		uniqueNamespaces[ns] = struct{}{}
+	}
+
+	appendSummaries := func(items []networkingv1.Ingress) {
+		for _, ing := range items {
+			if !showSystemNamespaces && isSystemNamespace(ing.Namespace) {
+				continue
+			}
+			if search != "" && !matchesIngressSearch(&ing, search) {
+				continue
+			}
+			result = append(result, buildIngressSummary(c.cluster, &ing))
+		}
+	}
+
+	if listAllNamespaces {
+		ings, err := c.clientset.NetworkingV1().Ingresses("").List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list ingresses in cluster %s: %w", c.cluster, err)
+		}
+		appendSummaries(ings.Items)
+		return result, nil
+	}
+
+	for ns := range uniqueNamespaces {
+		ings, err := c.clientset.NetworkingV1().Ingresses(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list ingresses in %s/%s: %w", c.cluster, ns, err)
+		}
+		appendSummaries(ings.Items)
+	}
+
+	return result, nil
+}
+
+// GetIngress retorna o manifesto YAML completo do Ingress
+func (c *Client) GetIngress(ctx context.Context, namespace, name string) (*models.IngressManifest, error) {
+	ing, err := c.clientset.NetworkingV1().Ingresses(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ingress %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	yamlBytes, err := yaml.Marshal(ing)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal ingress %s/%s: %w", namespace, name, err)
+	}
+
+	manifest := &models.IngressManifest{
+		Cluster:   c.cluster,
+		Namespace: namespace,
+		Name:      name,
+		YAML:      string(yamlBytes),
+		Metadata: models.IngressMetadata{
+			UID:             string(ing.UID),
+			ResourceVersion: ing.ResourceVersion,
+			Labels:          copyStringMap(ing.Labels),
+			Annotations:     copyStringMap(ing.Annotations),
+		},
+	}
+
+	return manifest, nil
+}
+
+func matchesIngressSearch(ing *networkingv1.Ingress, search string) bool {
+	name := strings.ToLower(ing.Name)
+	if strings.Contains(name, search) {
+		return true
+	}
+	for k, v := range ing.Labels {
+		candidate := strings.ToLower(fmt.Sprintf("%s=%s", k, v))
+		if strings.Contains(candidate, search) {
+			return true
+		}
+	}
+	// Pesquisar por hosts
+	if ing.Spec.Rules != nil {
+		for _, rule := range ing.Spec.Rules {
+			host := strings.ToLower(rule.Host)
+			if strings.Contains(host, search) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func buildIngressSummary(cluster string, ing *networkingv1.Ingress) models.IngressSummary {
+	hosts := make([]string, 0)
+	if ing.Spec.Rules != nil {
+		for _, rule := range ing.Spec.Rules {
+			if rule.Host != "" {
+				hosts = append(hosts, rule.Host)
+			}
+		}
+	}
+
+	addresses := make([]string, 0)
+	if ing.Status.LoadBalancer.Ingress != nil {
+		for _, lb := range ing.Status.LoadBalancer.Ingress {
+			if lb.IP != "" {
+				addresses = append(addresses, lb.IP)
+			}
+			if lb.Hostname != "" {
+				addresses = append(addresses, lb.Hostname)
+			}
+		}
+	}
+
+	ingressClass := ""
+	if ing.Spec.IngressClassName != nil {
+		ingressClass = *ing.Spec.IngressClassName
+	}
+
+	updatedAt := ing.CreationTimestamp.Time
+	return models.IngressSummary{
+		Cluster:         cluster,
+		Namespace:       ing.Namespace,
+		Name:            ing.Name,
+		Labels:          copyStringMap(ing.Labels),
+		IngressClass:    ingressClass,
+		Hosts:           hosts,
+		Addresses:       addresses,
+		ResourceVersion: ing.ResourceVersion,
+		UpdatedAt:       updatedAt,
+	}
+}
+
+// ValidateIngress executa um server-side apply com dry-run
+func (c *Client) ValidateIngress(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*networkingv1.Ingress, error) {
+	return c.applyIngress(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+}
+
+// ApplyIngress aplica (ou dry-run opcionalmente) o Ingress no cluster
+func (c *Client) ApplyIngress(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*networkingv1.Ingress, error) {
+	return c.applyIngress(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+}
+
+func (c *Client) applyIngress(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*networkingv1.Ingress, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("ingress yaml content cannot be empty")
+	}
+	if fieldManager == "" {
+		fieldManager = "web-ingress-editor"
+	}
+
+	payload, namespace, name, err := prepareIngressApplyPayload(yamlContent, enforceNamespace, enforceName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Force=true permite assumir ownership de campos gerenciados por outros field managers
+	// Necessário quando Ingresses são gerenciados por kubectl, helm, terraform, etc.
+	forceFlag := true
+	options := metav1.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        &forceFlag,
+	}
+	if dryRun {
+		options.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.NetworkingV1().Ingresses(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply ingress %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	return result, nil
+}
+
+func prepareIngressApplyPayload(yamlContent, enforceNamespace, enforceName string) ([]byte, string, string, error) {
+	var ing map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &ing); err != nil {
+		return nil, "", "", fmt.Errorf("invalid ingress yaml: %w", err)
+	}
+
+	if len(ing) == 0 {
+		return nil, "", "", fmt.Errorf("ingress yaml cannot be empty")
+	}
+
+	apiVersion, _ := ing["apiVersion"].(string)
+	if strings.TrimSpace(apiVersion) == "" {
+		ing["apiVersion"] = "networking.k8s.io/v1"
+	}
+	kind, _ := ing["kind"].(string)
+	if strings.TrimSpace(kind) == "" {
+		ing["kind"] = "Ingress"
+	} else if !strings.EqualFold(kind, "Ingress") {
+		return nil, "", "", fmt.Errorf("expected kind Ingress, got %s", kind)
+	}
+
+	metadata, _ := ing["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	name, _ := metadata["name"].(string)
+	name = strings.TrimSpace(name)
+	if enforceName != "" {
+		enforceName = strings.TrimSpace(enforceName)
+		if name == "" {
+			name = enforceName
+		}
+		if name != enforceName {
+			return nil, "", "", fmt.Errorf("ingress name mismatch: expected %s, got %s", enforceName, name)
+		}
+	}
+	if name == "" {
+		return nil, "", "", fmt.Errorf("ingress metadata.name is required")
+	}
+	metadata["name"] = name
+
+	namespace := strings.TrimSpace(enforceNamespace)
+	if nsRaw, ok := metadata["namespace"].(string); ok {
+		ns := strings.TrimSpace(nsRaw)
+		if namespace == "" {
+			namespace = ns
+		} else if ns != "" && ns != namespace {
+			return nil, "", "", fmt.Errorf("ingress namespace mismatch: expected %s, got %s", namespace, ns)
+		}
+	}
+	if namespace == "" {
+		return nil, "", "", fmt.Errorf("ingress metadata.namespace is required")
+	}
+	metadata["namespace"] = namespace
+	ing["metadata"] = metadata
+
+	jsonPayload, err := json.Marshal(ing)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to marshal ingress payload: %w", err)
+	}
+
+	return jsonPayload, namespace, name, nil
+}
+
+// ============================================================================
+// Namespaces Methods
+// ============================================================================
+
+// GetNamespace retorna o manifesto YAML completo do Namespace
+func (c *Client) GetNamespace(ctx context.Context, name string) (*models.NamespaceManifest, error) {
+	ns, err := c.clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get namespace %s in cluster %s: %w", name, c.cluster, err)
+	}
+
+	yamlBytes, err := yaml.Marshal(ns)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal namespace %s: %w", name, err)
+	}
+
+	// Calcular status e age
+	status := string(ns.Status.Phase)
+	if status == "" {
+		status = "Active"
+	}
+	age := formatAge(ns.CreationTimestamp.Time)
+
+	manifest := &models.NamespaceManifest{
+		Cluster: c.cluster,
+		Name:    name,
+		YAML:    string(yamlBytes),
+		Status:  status,
+		Age:     age,
+		Metadata: models.NamespaceMetadata{
+			UID:             string(ns.UID),
+			ResourceVersion: ns.ResourceVersion,
+			Labels:          copyStringMap(ns.Labels),
+			Annotations:     copyStringMap(ns.Annotations),
+		},
+	}
+
+	return manifest, nil
+}
+
+// ValidateNamespace executa um server-side apply com dry-run
+func (c *Client) ValidateNamespace(ctx context.Context, yamlContent, fieldManager string) (*corev1.Namespace, error) {
+	return c.applyNamespace(ctx, yamlContent, fieldManager, "", true)
+}
+
+// ApplyNamespace aplica (ou dry-run opcionalmente) o Namespace no cluster
+func (c *Client) ApplyNamespace(ctx context.Context, yamlContent, fieldManager, enforceName string, dryRun bool) (*corev1.Namespace, error) {
+	return c.applyNamespace(ctx, yamlContent, fieldManager, enforceName, dryRun)
+}
+
+func (c *Client) applyNamespace(ctx context.Context, yamlContent, fieldManager, enforceName string, dryRun bool) (*corev1.Namespace, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("namespace yaml content cannot be empty")
+	}
+	if fieldManager == "" {
+		fieldManager = "web-namespace-editor"
+	}
+
+	payload, name, err := prepareNamespaceApplyPayload(yamlContent, enforceName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Force=true permite assumir ownership de campos gerenciados por outros field managers
+	forceFlag := true
+	options := metav1.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        &forceFlag,
+	}
+	if dryRun {
+		options.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.CoreV1().Namespaces().Patch(ctx, name, types.ApplyPatchType, payload, options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply namespace %s in cluster %s: %w", name, c.cluster, err)
+	}
+
+	return result, nil
+}
+
+func prepareNamespaceApplyPayload(yamlContent, enforceName string) ([]byte, string, error) {
+	var ns map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &ns); err != nil {
+		return nil, "", fmt.Errorf("invalid namespace yaml: %w", err)
+	}
+
+	if len(ns) == 0 {
+		return nil, "", fmt.Errorf("namespace yaml cannot be empty")
+	}
+
+	apiVersion, _ := ns["apiVersion"].(string)
+	if strings.TrimSpace(apiVersion) == "" {
+		ns["apiVersion"] = "v1"
+	}
+	kind, _ := ns["kind"].(string)
+	if strings.TrimSpace(kind) == "" {
+		ns["kind"] = "Namespace"
+	} else if !strings.EqualFold(kind, "Namespace") {
+		return nil, "", fmt.Errorf("expected kind Namespace, got %s", kind)
+	}
+
+	metadata, _ := ns["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	name, _ := metadata["name"].(string)
+	name = strings.TrimSpace(name)
+	if enforceName != "" {
+		enforceName = strings.TrimSpace(enforceName)
+		if name == "" {
+			name = enforceName
+		}
+		if name != enforceName {
+			return nil, "", fmt.Errorf("namespace name mismatch: expected %s, got %s", enforceName, name)
+		}
+	}
+	if name == "" {
+		return nil, "", fmt.Errorf("namespace metadata.name is required")
+	}
+	metadata["name"] = name
+
+	// Remover namespace do metadata (namespace não tem namespace)
+	delete(metadata, "namespace")
+	ns["metadata"] = metadata
+
+	jsonPayload, err := json.Marshal(ns)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to marshal namespace payload: %w", err)
+	}
+
+	return jsonPayload, name, nil
+}
+
+// CreateNamespace cria um novo namespace no cluster
+func (c *Client) CreateNamespace(ctx context.Context, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("namespace name cannot be empty")
+	}
+
+	// Criar objeto namespace
+	namespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+	}
+
+	// Criar namespace
+	_, err := c.clientset.CoreV1().Namespaces().Create(ctx, namespace, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to create namespace %s in cluster %s: %w", name, c.cluster, err)
+	}
+
+	return nil
+}
+
+// DeleteNamespace deleta um namespace do cluster
+func (c *Client) DeleteNamespace(ctx context.Context, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("namespace name cannot be empty")
+	}
+
+	// Verificar se namespace existe antes de deletar
+	_, err := c.clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get namespace %s: %w", name, err)
+	}
+
+	// Deletar namespace
+	err = c.clientset.CoreV1().Namespaces().Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete namespace %s in cluster %s: %w", name, c.cluster, err)
+	}
+
+	return nil
 }
 
 // ============================================================================
@@ -2714,4 +3189,18 @@ func (c *Client) canDisruptPods(pdb *policyv1.PodDisruptionBudget, affectedPods 
 	}
 
 	return true, ""
+}
+
+// ExecuteKubectlDescribe executa kubectl describe para um recurso
+func ExecuteKubectlDescribe(cluster, resourceType, name, namespace string) (string, error) {
+	cmd := exec.Command("kubectl", "describe", resourceType, name,
+		"--context", cluster,
+		"--namespace", namespace)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("kubectl describe failed: %w - %s", err, string(output))
+	}
+
+	return string(output), nil
 }

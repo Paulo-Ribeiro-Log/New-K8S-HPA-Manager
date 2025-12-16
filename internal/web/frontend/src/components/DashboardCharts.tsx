@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { apiClient } from "@/lib/api/client";
 import { ClusterInfo } from "@/lib/api/types";
 import { MetricsGauge } from "@/components/MetricsGauge";
+import { TopNamespacesCard } from "@/components/TopNamespacesCard";
 
 
 
@@ -224,8 +225,8 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
         </div>
       </Card>
 
-      {/* Resources Usage Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {/* Resources Usage Grid - 3 colunas lado a lado em desktop */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <MetricsGauge
           icon={Cpu}
           label="CPU Usage"
@@ -245,6 +246,9 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
           warningThreshold={70}
           dangerThreshold={90}
         />
+
+        {/* Top Namespaces Card - mesma largura dos outros cards */}
+        {selectedCluster && <TopNamespacesCard cluster={selectedCluster} />}
       </div>
     </div>
   );

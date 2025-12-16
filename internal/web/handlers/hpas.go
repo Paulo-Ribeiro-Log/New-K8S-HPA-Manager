@@ -254,15 +254,18 @@ func (h *HPAHandler) Update(c *gin.Context) {
 		// Log falha no history
 		if h.historyTracker != nil && beforeState != nil {
 			duration := time.Since(startTime).Milliseconds()
+			userInfo := GetUserInfoForHistory(c)
 			h.historyTracker.Log(history.HistoryEntry{
-				Action:   history.ActionUpdateHPA,
-				Resource: fmt.Sprintf("%s/%s", namespace, name),
-				Cluster:  cluster,
-				Before:   beforeState,
-				After:    nil,
-				Status:   history.StatusFailed,
-				ErrorMsg: err.Error(),
-				Duration: duration,
+				UserEmail: userInfo.Email,
+				UserName:  userInfo.Name,
+				Action:    history.ActionUpdateHPA,
+				Resource:  fmt.Sprintf("%s/%s", namespace, name),
+				Cluster:   cluster,
+				Before:    beforeState,
+				After:     nil,
+				Status:    history.StatusFailed,
+				ErrorMsg:  err.Error(),
+				Duration:  duration,
 			})
 		}
 
@@ -301,14 +304,17 @@ func (h *HPAHandler) Update(c *gin.Context) {
 	// Log sucesso no history
 	if h.historyTracker != nil {
 		duration := time.Since(startTime).Milliseconds()
+		userInfo := GetUserInfoForHistory(c)
 		h.historyTracker.Log(history.HistoryEntry{
-			Action:   history.ActionUpdateHPA,
-			Resource: fmt.Sprintf("%s/%s", namespace, name),
-			Cluster:  cluster,
-			Before:   beforeState,
-			After:    afterState,
-			Status:   history.StatusSuccess,
-			Duration: duration,
+			UserEmail: userInfo.Email,
+			UserName:  userInfo.Name,
+			Action:    history.ActionUpdateHPA,
+			Resource:  fmt.Sprintf("%s/%s", namespace, name),
+			Cluster:   cluster,
+			Before:    beforeState,
+			After:     afterState,
+			Status:    history.StatusSuccess,
+			Duration:  duration,
 		})
 	}
 
