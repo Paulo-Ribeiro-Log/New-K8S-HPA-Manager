@@ -2,14 +2,22 @@ package rbac
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
 )
 
-// skipIfNoAzureCLI skips the test if Azure CLI is not available
+// skipIfNoAzureCLI skips the test if Azure CLI is not available or not authenticated
+// Set SKIP_AZURE_TESTS=1 to skip all Azure AD tests (useful for CI environments)
 func skipIfNoAzureCLI(t *testing.T) {
 	t.Helper()
+
+	// Bypass completo via variável de ambiente (para CI sem Azure CLI)
+	if os.Getenv("SKIP_AZURE_TESTS") != "" {
+		t.Skip("SKIP_AZURE_TESTS is set - skipping Azure AD test")
+		return
+	}
 
 	// Primeiro verificar se 'az' existe no PATH
 	_, err := exec.LookPath("az")
@@ -22,6 +30,14 @@ func skipIfNoAzureCLI(t *testing.T) {
 	cmd := exec.Command("az", "--version")
 	if err := cmd.Run(); err != nil {
 		t.Skipf("Azure CLI (az) not working - skipping test: %v", err)
+		return
+	}
+
+	// CRÍTICO: Verificar se usuário está autenticado
+	// Tentar executar 'az ad signed-in-user show' (comando que requer autenticação)
+	checkAuthCmd := exec.Command("az", "ad", "signed-in-user", "show")
+	if err := checkAuthCmd.Run(); err != nil {
+		t.Skipf("Azure CLI not authenticated - skipping test: %v", err)
 		return
 	}
 }
