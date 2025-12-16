@@ -114,7 +114,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool) (*Se
 		fmt.Println("   Verificação RBAC (Azure AD) DESABILITADA")
 		fmt.Println("   Todos os usuários terão acesso TOTAL ao sistema")
 		fmt.Println("   Use apenas para debugging ou emergências")
-		fmt.Println("   ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️\n")
+		fmt.Println("   ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️")
 	}
 
 	// Configurar historyTracker no kubeManager para audit logging de rollouts
