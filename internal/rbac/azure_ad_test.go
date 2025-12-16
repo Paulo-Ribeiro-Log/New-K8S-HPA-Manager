@@ -2,9 +2,29 @@ package rbac
 
 import (
 	"context"
+	"os/exec"
 	"testing"
 	"time"
 )
+
+// skipIfNoAzureCLI skips the test if Azure CLI is not available
+func skipIfNoAzureCLI(t *testing.T) {
+	t.Helper()
+
+	// Primeiro verificar se 'az' existe no PATH
+	_, err := exec.LookPath("az")
+	if err != nil {
+		t.Skipf("Azure CLI (az) not found in PATH - skipping test: %v", err)
+		return
+	}
+
+	// Tentar executar 'az --version' para confirmar que funciona
+	cmd := exec.Command("az", "--version")
+	if err := cmd.Run(); err != nil {
+		t.Skipf("Azure CLI (az) not working - skipping test: %v", err)
+		return
+	}
+}
 
 func TestNewRBACManager(t *testing.T) {
 	manager := NewRBACManager(false)
@@ -33,6 +53,8 @@ func TestNewRBACManagerWithBypass(t *testing.T) {
 }
 
 func TestGetCurrentUserEmail(t *testing.T) {
+	skipIfNoAzureCLI(t)
+
 	manager := NewRBACManager(false)
 	ctx := context.Background()
 
@@ -49,6 +71,8 @@ func TestGetCurrentUserEmail(t *testing.T) {
 }
 
 func TestGetUserGroups(t *testing.T) {
+	skipIfNoAzureCLI(t)
+
 	manager := NewRBACManager(false)
 	ctx := context.Background()
 
@@ -73,6 +97,8 @@ func TestGetUserGroups(t *testing.T) {
 }
 
 func TestCheckCurrentUserIsSRE(t *testing.T) {
+	skipIfNoAzureCLI(t)
+
 	manager := NewRBACManager(false)
 	ctx := context.Background()
 
@@ -85,6 +111,8 @@ func TestCheckCurrentUserIsSRE(t *testing.T) {
 }
 
 func TestGetUserPermissions(t *testing.T) {
+	skipIfNoAzureCLI(t)
+
 	manager := NewRBACManager(false)
 	ctx := context.Background()
 
@@ -109,6 +137,8 @@ func TestGetUserPermissions(t *testing.T) {
 }
 
 func TestCacheInvalidation(t *testing.T) {
+	skipIfNoAzureCLI(t)
+
 	manager := NewRBACManager(false)
 	ctx := context.Background()
 
@@ -150,6 +180,8 @@ func TestCacheInvalidation(t *testing.T) {
 }
 
 func TestCheckUserInGroup(t *testing.T) {
+	skipIfNoAzureCLI(t)
+
 	manager := NewRBACManager(false)
 	ctx := context.Background()
 
