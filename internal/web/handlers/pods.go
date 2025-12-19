@@ -623,3 +623,70 @@ func (h *PodHandler) Describe(c *gin.Context) {
 		"describe":  output,
 	})
 }
+
+// PodsSummary representa um resumo agregado de pods de um namespace
+type PodsSummary struct {
+	Total   int `json:"total"`
+	Running int `json:"running"`
+	Pending int `json:"pending"`
+	Failed  int `json:"failed"`
+}
+
+// GetSummary retorna um resumo agregado de pods de um namespace
+func (h *PodHandler) GetSummary(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+
+	if cluster == "" || namespace == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "cluster and namespace are required",
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	pods, err := clientset.CoreV1().Pods(namespace).List(c.Request.Context(), metav1.ListOptions{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "LIST_ERROR",
+				"message": fmt.Sprintf("Failed to list pods: %v", err),
+			},
+		})
+		return
+	}
+
+	summary := PodsSummary{Total: len(pods.Items)}
+
+	for _, pod := range pods.Items {
+		switch pod.Status.Phase {
+		case corev1.PodRunning:
+			summary.Running++
+		case corev1.PodPending:
+			summary.Pending++
+		case corev1.PodFailed:
+			summary.Failed++
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    summary,
+	})
+}

@@ -41,6 +41,7 @@ import type {
   DeploymentApplyResult,
   PodSummary,
   PodManifest,
+  EventSummary,
   VersionInfo,
   SequenceExecuteRequest,
   TopNamespacesResponse,
@@ -761,6 +762,81 @@ class APIClient {
       `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
     );
     return response;
+  }
+
+  // Events API Methods
+  async getEvents(
+    cluster?: string,
+    namespaces?: string[],
+    search?: string,
+    type?: "Normal" | "Warning",
+    showSystem: boolean = false,
+    bypassCache: boolean = false
+  ): Promise<EventSummary[]> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (namespaces && namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    if (search) params.append("search", search);
+    if (type) params.append("type", type);
+    if (showSystem) params.append("showSystem", "true");
+    if (bypassCache) params.append("_t", Date.now().toString());
+
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const response = await this.request<APIResponse<{ events: EventSummary[]; count: number }>>(
+      `/events${query}`
+    );
+    return response.data?.events || [];
+  }
+
+  async getResourceQuotas(
+    cluster: string,
+    namespaces: string[]
+  ): Promise<ResourceQuotaSummary[]> {
+    const params = new URLSearchParams({ cluster });
+    if (namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    const response = await this.request<APIResponse<{ quotas: ResourceQuotaSummary[]; count: number }>>(
+      `/resource-quotas?${params}`
+    );
+    return response.data?.quotas || [];
+  }
+
+  async getNetworkPolicies(
+    cluster: string,
+    namespaces: string[]
+  ): Promise<NetworkPolicySummary[]> {
+    const params = new URLSearchParams({ cluster });
+    if (namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    const response = await this.request<APIResponse<{ policies: NetworkPolicySummary[]; count: number }>>(
+      `/network-policies?${params}`
+    );
+    return response.data?.policies || [];
+  }
+
+  async getServices(
+    cluster: string,
+    namespaces: string[]
+  ): Promise<ServiceSummary[]> {
+    const params = new URLSearchParams({ cluster });
+    if (namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    const response = await this.request<APIResponse<{ services: ServiceSummary[]; count: number }>>(
+      `/services?${params}`
+    );
+    return response.data?.services || [];
+  }
+
+  async getPodsSummary(cluster: string, namespace: string): Promise<PodsSummary> {
+    const response = await this.request<APIResponse<PodsSummary>>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/summary`
+    );
+    return response.data as PodsSummary;
   }
 
   async updateHPA(

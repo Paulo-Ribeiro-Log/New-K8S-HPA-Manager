@@ -3191,6 +3191,108 @@ func (c *Client) canDisruptPods(pdb *policyv1.PodDisruptionBudget, affectedPods 
 	return true, ""
 }
 
+// NamespaceEvent representa um evento do Kubernetes relacionado ao namespace
+type NamespaceEvent struct {
+	Type          string    `json:"type"`           // Normal, Warning
+	Reason        string    `json:"reason"`         // Razão do evento (ex: FailedScheduling, Pulled)
+	Message       string    `json:"message"`        // Mensagem descritiva
+	Count         int32     `json:"count"`          // Número de ocorrências
+	FirstTime     time.Time `json:"firstTime"`      // Primeira ocorrência
+	LastTime      time.Time `json:"lastTime"`       // Última ocorrência
+	Source        string    `json:"source"`         // Componente que gerou (ex: kubelet, scheduler)
+	Object        string    `json:"object"`         // Recurso afetado (ex: Pod/nginx-xxx)
+	ObjectKind    string    `json:"objectKind"`     // Tipo do objeto (Pod, Deployment, etc)
+	LastTimestamp string    `json:"lastTimestamp"`  // Timestamp formatado para display
+}
+
+// GetNamespaceEvents retorna eventos recentes de um namespace
+func (c *Client) GetNamespaceEvents(ctx context.Context, namespace string, limitStr string) ([]NamespaceEvent, error) {
+	// Parse do limit (padrão: 50, máximo: 200)
+	limit := int64(50)
+	if limitStr != "" {
+		if l := parseInt64(limitStr); l > 0 {
+			limit = l
+			if limit > 200 {
+				limit = 200
+			}
+		}
+	}
+
+	// Buscar eventos do namespace
+	eventList, err := c.clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
+		Limit: limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list events in namespace %s: %w", namespace, err)
+	}
+
+	// Ordenar por LastTimestamp (mais recente primeiro)
+	sort.Slice(eventList.Items, func(i, j int) bool {
+		return eventList.Items[i].LastTimestamp.Time.After(eventList.Items[j].LastTimestamp.Time)
+	})
+
+	// Converter para NamespaceEvent
+	var events []NamespaceEvent
+	for _, event := range eventList.Items {
+		// Formatar timestamp relativo (ex: "2m ago", "1h ago")
+		lastTime := event.LastTimestamp.Time
+		if lastTime.IsZero() {
+			lastTime = event.EventTime.Time
+		}
+
+		timeAgo := formatTimeAgo(lastTime)
+
+		// Determinar objeto afetado
+		objectName := event.InvolvedObject.Name
+		if event.InvolvedObject.Namespace != "" && event.InvolvedObject.Namespace != namespace {
+			objectName = event.InvolvedObject.Namespace + "/" + objectName
+		}
+
+		events = append(events, NamespaceEvent{
+			Type:          event.Type,
+			Reason:        event.Reason,
+			Message:       event.Message,
+			Count:         event.Count,
+			FirstTime:     event.FirstTimestamp.Time,
+			LastTime:      lastTime,
+			Source:        event.Source.Component,
+			Object:        objectName,
+			ObjectKind:    event.InvolvedObject.Kind,
+			LastTimestamp: timeAgo,
+		})
+	}
+
+	return events, nil
+}
+
+// formatTimeAgo formata um timestamp como "5m ago", "2h ago", etc
+func formatTimeAgo(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+
+	duration := time.Since(t)
+
+	if duration < time.Minute {
+		return fmt.Sprintf("%ds ago", int(duration.Seconds()))
+	}
+	if duration < time.Hour {
+		return fmt.Sprintf("%dm ago", int(duration.Minutes()))
+	}
+	if duration < 24*time.Hour {
+		return fmt.Sprintf("%dh ago", int(duration.Hours()))
+	}
+	days := int(duration.Hours() / 24)
+	return fmt.Sprintf("%dd ago", days)
+}
+
+// parseInt64 faz parse de string para int64
+func parseInt64(s string) int64 {
+	var result int64
+	fmt.Sscanf(s, "%d", &result)
+	return result
+}
+
 // ExecuteKubectlDescribe executa kubectl describe para um recurso
 func ExecuteKubectlDescribe(cluster, resourceType, name, namespace string) (string, error) {
 	cmd := exec.Command("kubectl", "describe", resourceType, name,

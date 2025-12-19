@@ -290,6 +290,69 @@ export interface PodManifest {
   metadata: PodMetadata;
 }
 
+export interface InvolvedObjectRef {
+  kind: string;
+  name: string;
+  namespace: string;
+  uid?: string;
+}
+
+export interface EventSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  type: string; // "Normal" ou "Warning"
+  reason: string;
+  message: string;
+  count: number;
+  firstTimestamp: string;
+  lastTimestamp: string;
+  involvedObject: InvolvedObjectRef;
+  sourceComponent: string;
+  sourceHost?: string;
+  age: string;
+}
+
+export interface ResourceQuotaSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  hard: ResourceLimit[];
+}
+
+export interface ResourceLimit {
+  resource: string;
+  hard: string;
+  used: string;
+  percent?: number;
+}
+
+export interface NetworkPolicySummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  podSelector: string;
+  policyTypes: string[];
+  ingress?: string;
+  egress?: string;
+}
+
+export interface ServiceSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  type: string;
+  clusterIP: string;
+  ports: string[];
+}
+
+export interface PodsSummary {
+  total: number;
+  running: number;
+  pending: number;
+  failed: number;
+}
+
 export interface HPA {
   name: string;
   namespace: string;
