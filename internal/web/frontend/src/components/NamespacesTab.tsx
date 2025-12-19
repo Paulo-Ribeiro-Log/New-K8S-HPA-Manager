@@ -3,10 +3,10 @@ import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
-import type { Namespace, TopNamespacesResponse, NamespaceManifest, DeploymentSummary } from "@/lib/api/types";
+import type { Namespace, TopNamespacesResponse, NamespaceManifest, DeploymentSummary, EventSummary, ResourceQuotaSummary, NetworkPolicySummary, ServiceSummary, PodsSummary } from "@/lib/api/types";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -16,6 +16,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ChartContainer,
@@ -68,6 +74,24 @@ export const NamespacesTab = ({
   const [deployments, setDeployments] = useState<DeploymentSummary[]>([]);
   const [deploymentsLoading, setDeploymentsLoading] = useState(false);
   const [showDeployments, setShowDeployments] = useState(false);
+
+  // Estados para observabilidade
+  const [events, setEvents] = useState<EventSummary[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [resourceQuotas, setResourceQuotas] = useState<ResourceQuotaSummary[]>([]);
+  const [quotasLoading, setQuotasLoading] = useState(false);
+  const [networkPolicies, setNetworkPolicies] = useState<NetworkPolicySummary[]>([]);
+  const [policiesLoading, setPoliciesLoading] = useState(false);
+  const [services, setServices] = useState<ServiceSummary[]>([]);
+  const [servicesLoading, setServicesLoading] = useState(false);
+  const [podsSummary, setPodsSummary] = useState<PodsSummary | null>(null);
+  const [podsSummaryLoading, setPodsSummaryLoading] = useState(false);
+
+  // Modais de observabilidade
+  const [eventsModalOpen, setEventsModalOpen] = useState(false);
+  const [quotasModalOpen, setQuotasModalOpen] = useState(false);
+  const [policiesModalOpen, setPoliciesModalOpen] = useState(false);
+  const [servicesModalOpen, setServicesModalOpen] = useState(false);
 
   // Estados de edição (copiado de ConfigMapsTab)
   const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
@@ -181,6 +205,84 @@ export const NamespacesTab = ({
       setDeployments([]);
     } finally {
       setDeploymentsLoading(false);
+    }
+  };
+
+  // Funções de carregamento para observabilidade
+  const loadEvents = async () => {
+    if (!selectedNamespace || !cluster) return;
+    setEventsLoading(true);
+    try {
+      const data = await apiClient.getEvents(
+        cluster,
+        [selectedNamespace.name],
+        undefined,
+        undefined,
+        false,
+        true
+      );
+      setEvents(data.slice(0, 10));
+    } catch (err) {
+      console.error("Erro ao carregar events:", err);
+      setEvents([]);
+    } finally {
+      setEventsLoading(false);
+    }
+  };
+
+  const loadResourceQuotas = async () => {
+    if (!selectedNamespace || !cluster) return;
+    setQuotasLoading(true);
+    try {
+      const data = await apiClient.getResourceQuotas(cluster, [selectedNamespace.name]);
+      setResourceQuotas(data);
+    } catch (err) {
+      console.error("Erro ao carregar resource quotas:", err);
+      setResourceQuotas([]);
+    } finally {
+      setQuotasLoading(false);
+    }
+  };
+
+  const loadNetworkPolicies = async () => {
+    if (!selectedNamespace || !cluster) return;
+    setPoliciesLoading(true);
+    try {
+      const data = await apiClient.getNetworkPolicies(cluster, [selectedNamespace.name]);
+      setNetworkPolicies(data);
+    } catch (err) {
+      console.error("Erro ao carregar network policies:", err);
+      setNetworkPolicies([]);
+    } finally {
+      setPoliciesLoading(false);
+    }
+  };
+
+  const loadServices = async () => {
+    if (!selectedNamespace || !cluster) return;
+    setServicesLoading(true);
+    try {
+      const data = await apiClient.getServices(cluster, [selectedNamespace.name]);
+      setServices(data);
+    } catch (err) {
+      console.error("Erro ao carregar services:", err);
+      setServices([]);
+    } finally {
+      setServicesLoading(false);
+    }
+  };
+
+  const loadPodsSummary = async () => {
+    if (!selectedNamespace || !cluster) return;
+    setPodsSummaryLoading(true);
+    try {
+      const data = await apiClient.getPodsSummary(cluster, selectedNamespace.name);
+      setPodsSummary(data);
+    } catch (err) {
+      console.error("Erro ao carregar pods summary:", err);
+      setPodsSummary(null);
+    } finally {
+      setPodsSummaryLoading(false);
     }
   };
 
@@ -425,6 +527,11 @@ export const NamespacesTab = ({
     if (selectedNamespace && cluster) {
       loadManifest();
       loadDeployments();
+      loadEvents();
+      loadResourceQuotas();
+      loadNetworkPolicies();
+      loadServices();
+      loadPodsSummary();
     } else {
       setNamespaceManifest(null);
       setEditorValue("");
@@ -622,7 +729,7 @@ export const NamespacesTab = ({
     const COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#6b7280"];
 
     return (
-      <div className="space-y-3">
+      <div className="space-y-3 w-full overflow-hidden">
         <div className="flex items-start gap-4 text-xs border-b border-border/50 pb-2">
           <div className="flex flex-col">
             <span className="text-muted-foreground uppercase mb-0.5">Cluster</span>
@@ -638,9 +745,9 @@ export const NamespacesTab = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 w-full">
           {/* CPU Chart */}
-          <Card>
+          <Card className="min-w-0 w-full">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm flex items-center gap-2">
                 <Activity className="w-4 h-4 text-blue-500" />
@@ -648,7 +755,7 @@ export const NamespacesTab = ({
               </CardTitle>
               <CardDescription className="text-xs">Requisição de CPU (millicores)</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="overflow-hidden">
               <ChartContainer
                 config={{
                   value: {
@@ -656,7 +763,7 @@ export const NamespacesTab = ({
                     color: "hsl(var(--chart-1))",
                   },
                 }}
-                className="h-[140px]"
+                className="h-[200px] w-full max-w-full"
               >
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
@@ -678,10 +785,16 @@ export const NamespacesTab = ({
                   </PieChart>
                 </ResponsiveContainer>
               </ChartContainer>
-              <div className="mt-2 space-y-1">
+              <div className="mt-3 space-y-1">
                 {metrics.top_cpu.map((m, idx) => (
-                  <div key={idx} className="text-xs flex justify-between">
-                    <span className="font-medium">{m.namespace}</span>
+                  <div key={idx} className="text-xs flex justify-between items-center">
+                    <div className="flex items-center gap-2">
+                      <div 
+                        className="w-3 h-3 rounded-sm flex-shrink-0" 
+                        style={{ backgroundColor: COLORS[idx % COLORS.length] }}
+                      />
+                      <span className="font-medium">{m.namespace}</span>
+                    </div>
                     <span className="text-muted-foreground">{m.cpu_request_millis} m</span>
                   </div>
                 ))}
@@ -690,7 +803,7 @@ export const NamespacesTab = ({
           </Card>
 
           {/* Memory Chart */}
-          <Card>
+          <Card className="min-w-0 w-full">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm flex items-center gap-2">
                 <BarChart3 className="w-4 h-4 text-green-500" />
@@ -698,7 +811,7 @@ export const NamespacesTab = ({
               </CardTitle>
               <CardDescription className="text-xs">Requisição de Memória (GB)</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="overflow-hidden">
               <ChartContainer
                 config={{
                   value: {
@@ -706,7 +819,7 @@ export const NamespacesTab = ({
                     color: "hsl(var(--chart-2))",
                   },
                 }}
-                className="h-[140px]"
+                className="h-[200px] w-full max-w-full"
               >
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
@@ -728,10 +841,16 @@ export const NamespacesTab = ({
                   </PieChart>
                 </ResponsiveContainer>
               </ChartContainer>
-              <div className="mt-2 space-y-1">
+              <div className="mt-3 space-y-1">
                 {metrics.top_memory.map((m, idx) => (
-                  <div key={idx} className="text-xs flex justify-between">
-                    <span className="font-medium">{m.namespace}</span>
+                  <div key={idx} className="text-xs flex justify-between items-center">
+                    <div className="flex items-center gap-2">
+                      <div 
+                        className="w-3 h-3 rounded-sm flex-shrink-0" 
+                        style={{ backgroundColor: COLORS[idx % COLORS.length] }}
+                      />
+                      <span className="font-medium">{m.namespace}</span>
+                    </div>
                     <span className="text-muted-foreground">{m.memory_request_gb.toFixed(2)} GB</span>
                   </div>
                 ))}
@@ -740,7 +859,7 @@ export const NamespacesTab = ({
           </Card>
 
           {/* Pods Chart */}
-          <Card>
+          <Card className="min-w-0 w-full">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm flex items-center gap-2">
                 <Package className="w-4 h-4 text-purple-500" />
@@ -748,7 +867,7 @@ export const NamespacesTab = ({
               </CardTitle>
               <CardDescription className="text-xs">Quantidade de Pods</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="overflow-hidden">
               <ChartContainer
                 config={{
                   value: {
@@ -756,7 +875,7 @@ export const NamespacesTab = ({
                     color: "hsl(var(--chart-3))",
                   },
                 }}
-                className="h-[140px]"
+                className="h-[200px] w-full max-w-full"
               >
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
@@ -778,10 +897,16 @@ export const NamespacesTab = ({
                   </PieChart>
                 </ResponsiveContainer>
               </ChartContainer>
-              <div className="mt-2 space-y-1">
+              <div className="mt-3 space-y-1">
                 {metrics.top_pods.map((m, idx) => (
-                  <div key={idx} className="text-xs flex justify-between">
-                    <span className="font-medium">{m.namespace}</span>
+                  <div key={idx} className="text-xs flex justify-between items-center">
+                    <div className="flex items-center gap-2">
+                      <div 
+                        className="w-3 h-3 rounded-sm flex-shrink-0" 
+                        style={{ backgroundColor: COLORS[idx % COLORS.length] }}
+                      />
+                      <span className="font-medium">{m.namespace}</span>
+                    </div>
                     <span className="text-muted-foreground">{m.pod_count} pods</span>
                   </div>
                 ))}
@@ -878,6 +1003,113 @@ export const NamespacesTab = ({
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+
+        {/* Observabilidade - Pods Summary + Botões */}
+        {selectedNamespace && (
+          <div className="w-full space-y-3">
+            {/* Pods Summary - Sempre Visível */}
+            <Card className="border-primary/30">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Package className="w-4 h-4 text-primary" />
+                    Pods Status
+                  </CardTitle>
+                  {podsSummaryLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+                </div>
+              </CardHeader>
+              <CardContent>
+                {podsSummary ? (
+                  <div className="grid grid-cols-4 gap-3">
+                    <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-lg text-center">
+                      <p className="text-3xl font-bold text-green-400">{podsSummary.running}</p>
+                      <p className="text-xs text-muted-foreground mt-1">Running</p>
+                    </div>
+                    <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-center">
+                      <p className="text-3xl font-bold text-yellow-400">{podsSummary.pending}</p>
+                      <p className="text-xs text-muted-foreground mt-1">Pending</p>
+                    </div>
+                    <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-center">
+                      <p className="text-3xl font-bold text-red-400">{podsSummary.failed}</p>
+                      <p className="text-xs text-muted-foreground mt-1">Failed</p>
+                    </div>
+                    <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg text-center">
+                      <p className="text-3xl font-bold text-blue-400">{podsSummary.total}</p>
+                      <p className="text-xs text-muted-foreground mt-1">Total</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center py-4">
+                    <p className="text-xs text-muted-foreground">Carregando status dos pods...</p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Botões para Modais de Observabilidade */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setEventsModalOpen(true)}
+                className="flex items-center justify-between gap-2"
+              >
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4" />
+                  <span>Events</span>
+                </div>
+                <Badge variant="secondary" className="text-xs">
+                  {events.length}
+                </Badge>
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setQuotasModalOpen(true)}
+                className="flex items-center justify-between gap-2"
+              >
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="w-4 h-4" />
+                  <span>Quotas</span>
+                </div>
+                <Badge variant="secondary" className="text-xs">
+                  {resourceQuotas.length}
+                </Badge>
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPoliciesModalOpen(true)}
+                className="flex items-center justify-between gap-2"
+              >
+                <div className="flex items-center gap-2">
+                  <Shield className="w-4 h-4" />
+                  <span>Policies</span>
+                </div>
+                <Badge variant="secondary" className="text-xs">
+                  {networkPolicies.length}
+                </Badge>
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setServicesModalOpen(true)}
+                className="flex items-center justify-between gap-2"
+              >
+                <div className="flex items-center gap-2">
+                  <Network className="w-4 h-4" />
+                  <span>Services</span>
+                </div>
+                <Badge variant="secondary" className="text-xs">
+                  {services.length}
+                </Badge>
+              </Button>
+            </div>
+          </div>
+        )}
 
         {manifestLoading ? (
           <div className="flex items-center justify-center h-64">
@@ -1473,6 +1705,307 @@ export const NamespacesTab = ({
     );
   };
 
+  // Modais de Observabilidade
+  const renderObservabilityModals = () => {
+    if (!selectedNamespace) return null;
+
+    return (
+      <>
+        {/* Modal Events */}
+        <Dialog open={eventsModalOpen} onOpenChange={setEventsModalOpen}>
+          <DialogContent className="max-w-4xl max-h-[85vh]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5" />
+                Events - {selectedNamespace.name}
+              </DialogTitle>
+              <DialogDescription>
+                Eventos recentes do namespace • Cluster: {cluster}
+              </DialogDescription>
+            </DialogHeader>
+            <ScrollArea className="h-[60vh]">
+              {eventsLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                </div>
+              ) : events.length === 0 ? (
+                <div className="flex items-center justify-center py-12">
+                  <p className="text-muted-foreground">Nenhum evento recente</p>
+                </div>
+              ) : (
+                <div className="space-y-2 p-2">
+                  {events.map((event, idx) => (
+                    <div
+                      key={`${event.name}-${idx}`}
+                      className={`p-4 rounded-lg border ${
+                        event.type === "Warning"
+                          ? "bg-destructive/5 border-destructive/30"
+                          : "bg-blue-500/5 border-blue-500/30"
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        {event.type === "Warning" ? (
+                          <AlertTriangle className="w-5 h-5 text-destructive flex-shrink-0 mt-0.5" />
+                        ) : (
+                          <Info className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Badge
+                              variant={event.type === "Warning" ? "destructive" : "default"}
+                              className="text-xs"
+                            >
+                              {event.reason}
+                            </Badge>
+                            <span className="text-xs text-muted-foreground">{event.age}</span>
+                          </div>
+                          <p className="text-sm break-words">{event.message}</p>
+                          {event.name && (
+                            <p className="text-xs text-muted-foreground mt-2 font-mono">
+                              Object: {event.name}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+          </DialogContent>
+        </Dialog>
+
+        {/* Modal Resource Quotas */}
+        <Dialog open={quotasModalOpen} onOpenChange={setQuotasModalOpen}>
+          <DialogContent className="max-w-4xl max-h-[85vh]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <BarChart3 className="w-5 h-5" />
+                Resource Quotas - {selectedNamespace.name}
+              </DialogTitle>
+              <DialogDescription>
+                Limites de recursos configurados • Cluster: {cluster}
+              </DialogDescription>
+            </DialogHeader>
+            <ScrollArea className="h-[60vh]">
+              {quotasLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                </div>
+              ) : resourceQuotas.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 gap-2">
+                  <AlertCircle className="w-12 h-12 text-muted-foreground" />
+                  <p className="text-muted-foreground">Nenhuma quota configurada</p>
+                  <p className="text-xs text-muted-foreground">
+                    Este namespace não possui limites de recursos definidos
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4 p-2">
+                  {resourceQuotas.map((quota) => (
+                    <Card key={quota.name}>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base font-mono">{quota.name}</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {quota.hard.map((limit) => {
+                            const percent = limit.percent || 0;
+                            const isHigh = percent > 80;
+                            const isMedium = percent > 60 && percent <= 80;
+
+                            return (
+                              <div
+                                key={limit.resource}
+                                className={`p-3 rounded-lg border ${
+                                  isHigh
+                                    ? "bg-destructive/10 border-destructive/30"
+                                    : isMedium
+                                    ? "bg-yellow-500/10 border-yellow-500/30"
+                                    : "bg-green-500/10 border-green-500/30"
+                                }`}
+                              >
+                                <div className="flex justify-between items-start mb-2">
+                                  <span className="text-sm font-medium">{limit.resource}</span>
+                                  {limit.percent !== undefined && (
+                                    <Badge
+                                      variant={isHigh ? "destructive" : isMedium ? "default" : "secondary"}
+                                      className="text-xs"
+                                    >
+                                      {limit.percent.toFixed(0)}%
+                                    </Badge>
+                                  )}
+                                </div>
+                                <div className="flex items-center justify-between text-xs">
+                                  <span className="text-muted-foreground">Used:</span>
+                                  <span className="font-mono font-semibold">{limit.used}</span>
+                                </div>
+                                <div className="flex items-center justify-between text-xs mt-1">
+                                  <span className="text-muted-foreground">Limit:</span>
+                                  <span className="font-mono">{limit.hard}</span>
+                                </div>
+                                {limit.percent !== undefined && (
+                                  <div className="mt-2 w-full bg-secondary/30 rounded-full h-2">
+                                    <div
+                                      className={`h-2 rounded-full transition-all ${
+                                        isHigh
+                                          ? "bg-destructive"
+                                          : isMedium
+                                          ? "bg-yellow-500"
+                                          : "bg-green-500"
+                                      }`}
+                                      style={{ width: `${Math.min(percent, 100)}%` }}
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+          </DialogContent>
+        </Dialog>
+
+        {/* Modal Network Policies */}
+        <Dialog open={policiesModalOpen} onOpenChange={setPoliciesModalOpen}>
+          <DialogContent className="max-w-4xl max-h-[85vh]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Shield className="w-5 h-5" />
+                Network Policies - {selectedNamespace.name}
+              </DialogTitle>
+              <DialogDescription>
+                Políticas de rede e segurança • Cluster: {cluster}
+              </DialogDescription>
+            </DialogHeader>
+            <ScrollArea className="h-[60vh]">
+              {policiesLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                </div>
+              ) : networkPolicies.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 gap-3">
+                  <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                    <AlertCircle className="w-12 h-12 text-yellow-500 mx-auto mb-3" />
+                    <p className="text-yellow-300 text-center font-medium mb-2">
+                      Nenhuma Network Policy configurada
+                    </p>
+                    <p className="text-xs text-yellow-300/70 text-center max-w-md">
+                      Todos os pods neste namespace podem se comunicar livremente com qualquer outro pod
+                      ou serviço sem restrições de rede.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3 p-2">
+                  {networkPolicies.map((policy) => (
+                    <Card key={policy.name}>
+                      <CardHeader className="pb-3">
+                        <div className="flex items-center justify-between">
+                          <CardTitle className="text-base font-mono">{policy.name}</CardTitle>
+                          <Badge variant="outline" className="text-xs">
+                            {policy.policyTypes.join(" + ")}
+                          </Badge>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <div className="p-3 bg-secondary/30 rounded-lg">
+                          <p className="text-xs text-muted-foreground mb-1">Pod Selector:</p>
+                          <p className="text-sm font-mono">{policy.podSelector || "Todos os pods"}</p>
+                        </div>
+                        {policy.ingress && (
+                          <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-lg">
+                            <p className="text-xs text-green-400 mb-1 font-semibold">
+                              Ingress Rules:
+                            </p>
+                            <p className="text-sm">{policy.ingress}</p>
+                          </div>
+                        )}
+                        {policy.egress && (
+                          <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                            <p className="text-xs text-blue-400 mb-1 font-semibold">Egress Rules:</p>
+                            <p className="text-sm">{policy.egress}</p>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+          </DialogContent>
+        </Dialog>
+
+        {/* Modal Services */}
+        <Dialog open={servicesModalOpen} onOpenChange={setServicesModalOpen}>
+          <DialogContent className="max-w-4xl max-h-[85vh]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Network className="w-5 h-5" />
+                Services - {selectedNamespace.name}
+              </DialogTitle>
+              <DialogDescription>
+                Serviços de rede expostos • Cluster: {cluster}
+              </DialogDescription>
+            </DialogHeader>
+            <ScrollArea className="h-[60vh]">
+              {servicesLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                </div>
+              ) : services.length === 0 ? (
+                <div className="flex items-center justify-center py-12">
+                  <p className="text-muted-foreground">Nenhum serviço configurado</p>
+                </div>
+              ) : (
+                <div className="space-y-3 p-2">
+                  {services.map((svc) => (
+                    <Card key={svc.name}>
+                      <CardHeader className="pb-3">
+                        <div className="flex items-center justify-between">
+                          <CardTitle className="text-base font-mono">{svc.name}</CardTitle>
+                          <Badge
+                            variant={
+                              svc.type === "LoadBalancer"
+                                ? "default"
+                                : svc.type === "NodePort"
+                                ? "secondary"
+                                : "outline"
+                            }
+                            className="text-xs"
+                          >
+                            {svc.type}
+                          </Badge>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="p-3 bg-secondary/30 rounded-lg">
+                            <p className="text-xs text-muted-foreground mb-1">Cluster IP:</p>
+                            <p className="text-sm font-mono">{svc.clusterIP}</p>
+                          </div>
+                          <div className="p-3 bg-secondary/30 rounded-lg">
+                            <p className="text-xs text-muted-foreground mb-1">Ports:</p>
+                            <p className="text-sm font-mono">{svc.ports.join(", ")}</p>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+          </DialogContent>
+        </Dialog>
+      </>
+    );
+  };
+
   return (
     <>
       <SplitView
@@ -1491,6 +2024,7 @@ export const NamespacesTab = ({
       {renderDiffDialog()}
       {renderApplyConfirmDialog()}
       {renderGlobalModals()}
+      {renderObservabilityModals()}
     </>
   );
 };

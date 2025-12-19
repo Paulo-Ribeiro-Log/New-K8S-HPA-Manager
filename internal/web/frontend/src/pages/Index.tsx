@@ -29,6 +29,7 @@ import { SecretsTab } from "@/components/SecretsTab";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
 import { ContainersTab } from "@/components/ContainersTab";
 import { PodsPanel } from "@/components/PodsPanel";
+import { EventsTab } from "@/components/EventsTab";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
@@ -721,6 +722,20 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="Pods Panel">
             <PodsPanel
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
+        );
+
+      case "events":
+        return (
+          <ErrorBoundary componentName="Events Tab">
+            <EventsTab
               cluster={selectedCluster}
               namespaces={namespaces}
               selectedNamespace={selectedNamespace}

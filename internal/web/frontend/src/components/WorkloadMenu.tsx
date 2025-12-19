@@ -14,6 +14,7 @@ import {
   Clock,
   Activity,
   Network,
+  Calendar,
 } from "lucide-react";
 
 interface WorkloadMenuProps {
@@ -34,6 +35,7 @@ const workloadTabs: WorkloadTab[] = [
   { id: "deployments", label: "Deployments", icon: Package },
   { id: "containers", label: "Containers", icon: Box },
   { id: "pods", label: "Pods", icon: Layers },
+  { id: "events", label: "Events", icon: Calendar },
   { id: "cronjobs", label: "CronJobs", icon: Clock },
   { id: "prometheus", label: "Prometheus", icon: Activity },
 ];

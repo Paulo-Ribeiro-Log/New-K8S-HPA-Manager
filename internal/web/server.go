@@ -408,20 +408,51 @@ func (s *Server) setupRoutes() {
 		pods.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), podHandler.Restart)
 	}
 
+	// Pods Summary
+	pods.GET("/:cluster/:namespace/summary", podHandler.GetSummary)
+
+	// Events
+	eventHandler := handlers.NewEventHandler(s.kubeManager)
+	events := api.Group("/events")
+	{
+		events.GET("", eventHandler.List)
+	}
+
+	// Resource Quotas
+	quotaHandler := handlers.NewResourceQuotaHandler(s.kubeManager)
+	quotas := api.Group("/resource-quotas")
+	{
+		quotas.GET("", quotaHandler.List)
+	}
+
+	// Network Policies
+	policyHandler := handlers.NewNetworkPolicyHandler(s.kubeManager)
+	policies := api.Group("/network-policies")
+	{
+		policies.GET("", policyHandler.List)
+	}
+
+	// Services
+	serviceHandler := handlers.NewServiceHandler(s.kubeManager)
+	services := api.Group("/services")
+	{
+		services.GET("", serviceHandler.List)
+	}
+
 	// Secrets
 	secretHandler := handlers.NewSecretHandler(s.kubeManager, s.historyTracker)
 	secrets := api.Group("/secrets")
 	{
-	secrets.GET("", secretHandler.List)
-	secrets.GET("/:cluster/:namespace/:name", secretHandler.Get)
-	secrets.GET("/:cluster/:namespace/:name/describe", secretHandler.Describe)
-	secrets.POST("/diff", secretHandler.Diff)
-	secrets.POST("/validate", secretHandler.Validate)
+		secrets.GET("", secretHandler.List)
+		secrets.GET("/:cluster/:namespace/:name", secretHandler.Get)
+		secrets.GET("/:cluster/:namespace/:name/describe", secretHandler.Describe)
+		secrets.POST("/diff", secretHandler.Diff)
+		secrets.POST("/validate", secretHandler.Validate)
 
-	// Secrets - Write Operations (SRE-only)
-	secrets.POST("/:cluster/:namespace", rbacMiddleware.RequireSREGroup(), secretHandler.Create)
-	secrets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), secretHandler.Apply)
-}
+		// Secrets - Write Operations (SRE-only)
+		secrets.POST("/:cluster/:namespace", rbacMiddleware.RequireSREGroup(), secretHandler.Create)
+		secrets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), secretHandler.Apply)
+	}
 
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()
@@ -443,9 +474,9 @@ func (s *Server) setupRoutes() {
 
 	// Service Mesh (Istio/Kiali Integration) - SEM AUTH (operações de leitura públicas)
 	serviceMeshHandler := handlers.NewServiceMeshHandler(s.kubeManager)
-	s.router.GET("/api/v1/servicemesh/graph", serviceMeshHandler.GetServiceGraph)       // GET /api/v1/servicemesh/graph?cluster=X&namespace=Y&duration=60s
-	s.router.GET("/api/v1/servicemesh/namespaces", serviceMeshHandler.GetNamespaces)    // GET /api/v1/servicemesh/namespaces?cluster=X
-	s.router.GET("/api/v1/servicemesh/metrics", serviceMeshHandler.GetMetrics)          // GET /api/v1/servicemesh/metrics?cluster=X&namespace=Y
+	s.router.GET("/api/v1/servicemesh/graph", serviceMeshHandler.GetServiceGraph)    // GET /api/v1/servicemesh/graph?cluster=X&namespace=Y&duration=60s
+	s.router.GET("/api/v1/servicemesh/namespaces", serviceMeshHandler.GetNamespaces) // GET /api/v1/servicemesh/namespaces?cluster=X
+	s.router.GET("/api/v1/servicemesh/metrics", serviceMeshHandler.GetMetrics)       // GET /api/v1/servicemesh/metrics?cluster=X&namespace=Y
 
 	// Sessions
 	sessionHandler := handlers.NewSessionsHandler()
