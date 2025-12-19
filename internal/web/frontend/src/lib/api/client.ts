@@ -1247,7 +1247,7 @@ class APIClient {
   // Service Mesh - Istio/Kiali Integration
   async getServiceGraph(
     cluster: string,
-    namespace: string,
+    namespace: string | string[],  // Aceita string ou array
     duration: string = '5m',
     graphType: string = 'workload',
     options?: {
@@ -1257,7 +1257,9 @@ class APIClient {
       appenders?: string;
     }
   ): Promise<import('@/types/servicemesh').ServiceGraphResponse> {
-    let url = `/servicemesh/graph?cluster=${cluster}&namespace=${namespace}&duration=${duration}&graphType=${graphType}`;
+    // Converter array para string separada por vírgulas
+    const namespaceParam = Array.isArray(namespace) ? namespace.join(',') : namespace;
+    let url = `/servicemesh/graph?cluster=${cluster}&namespace=${namespaceParam}&duration=${duration}&graphType=${graphType}`;
     
     if (options?.injectServiceNodes !== undefined) {
       url += `&injectServiceNodes=${options.injectServiceNodes}`;

@@ -49,7 +49,7 @@ export interface ServiceMeshMetrics {
 
 export interface ServiceMeshFilters {
   cluster: string;
-  namespace: string;
+  namespace: string[];  // Alterado para array para suportar múltiplos namespaces
   duration: '60s' | '5m' | '10m' | '30m' | '1h' | '6h' | '12h' | '24h';
   graphType: 'workload' | 'app' | 'service' | 'versioned_app';
   // Advanced options

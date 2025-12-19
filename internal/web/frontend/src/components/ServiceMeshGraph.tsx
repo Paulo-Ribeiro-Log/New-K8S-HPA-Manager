@@ -29,12 +29,13 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
   const [istioNotAvailable, setIstioNotAvailable] = useState(false);
   const [selectedNode, setSelectedNode] = useState<NodeSingular | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const isTransitioningFullscreen = useRef(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(0); // 0 = off, tempo em ms
 
   const [filters, setFilters] = useState<ServiceMeshFilters>({
     cluster: cluster,
-    namespace: '',
+    namespace: [],  // Alterado para array vazio
     duration: '5m',
     graphType: 'workload',
   });
@@ -88,7 +89,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
   useEffect(() => {
     if (cluster && cluster !== filters.cluster) {
       console.log('[ServiceMesh] Cluster mudou de', filters.cluster, 'para', cluster);
-      setFilters(prev => ({ ...prev, cluster: cluster, namespace: '' }));
+      setFilters(prev => ({ ...prev, cluster: cluster, namespace: [] }));  // Resetar para array vazio
     }
   }, [cluster]);
 
@@ -129,15 +130,31 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
 
   // Recriar grafo quando mudar fullscreen (porque muda de container)
   useEffect(() => {
-    if (graphData && cyRef.current && cyInstance.current) {
-      // Destruir instância atual
-      cyInstance.current.destroy();
-      cyInstance.current = null;
+    if (graphData && cyRef.current) {
+      isTransitioningFullscreen.current = true;
+      
+      // Salvar posições antes de destruir
+      if (cyInstance.current) {
+        try {
+          cyInstance.current.nodes().forEach((node: any) => {
+            const pos = node.position();
+            nodePositions.current.set(node.id(), { x: pos.x, y: pos.y });
+          });
+          cyInstance.current.destroy();
+        } catch (e) {
+          console.warn('Erro ao destruir instância:', e);
+        }
+        cyInstance.current = null;
+      }
       
       // Aguardar DOM atualizar e recriar
       setTimeout(() => {
         if (cyRef.current) {
           initializeGraph();
+          // Liberar transição após gráfico estar pronto
+          setTimeout(() => {
+            isTransitioningFullscreen.current = false;
+          }, 200);
         }
       }, 100);
     }
@@ -257,9 +274,8 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
       setIstioNotAvailable(false);
       setNamespaces(response.namespaces);
       
-      if (response.namespaces.length > 0 && !filters.namespace) {
-        setFilters(prev => ({ ...prev, namespace: response.namespaces[0] }));
-      }
+      // Não selecionar automaticamente nenhum namespace
+      // O usuário deve escolher manualmente quais namespaces quer visualizar
     } catch (error) {
       console.error('[ServiceMesh] Erro ao carregar namespaces:', error);
       const errorMsg = error instanceof Error ? error.message : 'Erro desconhecido';
@@ -279,9 +295,9 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
   };
 
   const loadServiceGraph = async (silent: boolean = false) => {
-    if (!filters.namespace) {
+    if (!filters.namespace || filters.namespace.length === 0) {
       if (!silent) {
-        toast.error('É necessário selecionar um namespace para visualizar o service mesh');
+        toast.error('É necessário selecionar pelo menos um namespace para visualizar o service mesh');
       }
       return;
     }
@@ -347,7 +363,13 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
   };
 
   const loadServiceGraphSilent = async () => {
-    if (!filters.namespace) return;
+    if (!filters.namespace || filters.namespace.length === 0) return;
+    
+    // Não fazer refresh durante transição de fullscreen
+    if (isTransitioningFullscreen.current) {
+      console.log('[ServiceMesh] Ignorando refresh durante transição de fullscreen');
+      return;
+    }
 
     try {
       const data = await apiClient.getServiceGraph(
@@ -367,43 +389,292 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
         edges: data.edges.length
       });
       
-      // Atualizar apenas os dados sem recriar o gráfico
-      if (cyInstance.current && cyInstance.current.container()) {
-        updateGraphDataFromResponse(data);
-        setLastRefresh(new Date());
-      } else {
-        // Se não existe gráfico, criar um novo
-        setGraphData(data);
-        setLastRefresh(new Date());
-      }
+      // Sempre usar setGraphData - initializeGraph já cuida de preservar posições
+      setGraphData(data);
+      setLastRefresh(new Date());
     } catch (error) {
       console.error('[ServiceMesh] Erro no refresh silencioso:', error);
     }
   };
 
-  const updateGraphDataFromResponse = (data: ServiceGraphResponse) => {
-    if (!cyInstance.current) return;
+  const initializeGraph = () => {
+    if (!cyRef.current || !graphData) {
+      console.log('[ServiceMesh] Não é possível inicializar: cyRef ou graphData ausentes');
+      return;
+    }
 
-    console.log('[ServiceMesh] Atualizando gráfico com novos dados');
-    
-    const existingNodeIds = new Set(cyInstance.current.nodes().map((n: any) => n.id()));
-    const existingEdgeIds = new Set(cyInstance.current.edges().map((e: any) => e.id()));
-    
-    const newNodeIds = new Set(data.nodes.map(n => n.id));
-    const newEdgeIds = new Set(data.edges.map(e => e.id));
+    console.log('[ServiceMesh] Inicializando gráfico com', graphData.nodes.length, 'nodes e', graphData.edges.length, 'edges');
 
-    // 1. Atualizar nodes existentes
-    data.nodes.forEach(node => {
-      const cyNode = cyInstance.current?.getElementById(node.id);
-      if (cyNode && cyNode.length > 0) {
-        cyNode.data({
-          ...cyNode.data(),
-          requestRate: node.requestRate,
-          errorRate: node.errorRate,
+    // Se já existe instância válida com container, apenas atualizar elementos
+    if (cyInstance.current) {
+      try {
+        // Verificar se o container ainda é válido
+        const container = cyInstance.current.container();
+        if (container && document.contains(container)) {
+          console.log('[ServiceMesh] Atualizando gráfico existente silenciosamente');
+          
+          // IMPORTANTE: Salvar TODAS as posições antes de qualquer mudança
+          const savedPositions = new Map<string, { x: number; y: number }>();
+          cyInstance.current.nodes().forEach((node: any) => {
+            const pos = node.position();
+            if (pos && !isNaN(pos.x) && !isNaN(pos.y)) {
+              savedPositions.set(node.id(), { x: pos.x, y: pos.y });
+              nodePositions.current.set(node.id(), { x: pos.x, y: pos.y });
+            }
+          });
+          
+          // Salvar zoom e pan atuais
+          const currentZoom = cyInstance.current.zoom();
+          const currentPan = cyInstance.current.pan();
+          
+          console.log('[ServiceMesh] Posições salvas:', savedPositions.size, 'nodes');
+          
+          // Desabilitar animações e viewport changes durante update
+          cyInstance.current.autoungrabify(true);
+          cyInstance.current.autounselectify(true);
+          
+          // Usar batch para minimizar redraws
+          cyInstance.current.startBatch();
+          
+          // Remover elementos antigos
+          cyInstance.current.elements().remove();
+      
+          // Adicionar novos elementos
+          const elements = [];
+          
+          // Se namespaceBoxes estiver habilitado, criar nós compostos para cada namespace
+          if (displayOptions.show.namespaceBoxes) {
+            const namespaceSet = new Set(graphData.nodes.map(node => node.namespace));
+            
+            // Adicionar nós compostos (namespace boxes)
+            namespaceSet.forEach(ns => {
+              elements.push({
+                data: {
+                  id: `namespace-${ns}`,
+                  label: `Namespace: ${ns}`,
+                  type: 'namespace',
+                },
+                classes: 'namespace-box',
+              });
+            });
+            
+            // Adicionar nodes com parent e posição restaurada
+            graphData.nodes.forEach(node => {
+              const savedPos = nodePositions.current.get(node.id);
+              elements.push({
+                data: {
+                  id: node.id,
+                  label: node.label,
+                  type: node.type,
+                  nodeType: node.type,
+                  namespace: node.namespace,
+                  parent: `namespace-${node.namespace}`,
+                  workload: node.workload,
+                  app: node.app,
+                  version: node.version,
+                  service: node.service,
+                  isRoot: node.isRoot,
+                  isInaccessible: node.isInaccessible,
+                  isOutside: node.isOutside,
+                  requestRate: node.requestRate,
+                  errorRate: node.errorRate,
+                  hasSidecar: node.hasSidecar,
+                  hasVirtualService: node.hasVirtualService,
+                  mtlsEnabled: node.mtlsEnabled,
+                },
+                ...(savedPos ? { position: savedPos } : {}),
+              });
+            });
+          } else {
+            // Sem namespace boxes
+            graphData.nodes.forEach(node => {
+              const savedPos = nodePositions.current.get(node.id);
+              elements.push({
+                data: {
+                  id: node.id,
+                  label: node.label,
+                  type: node.type,
+                  nodeType: node.type,
+                  namespace: node.namespace,
+                  workload: node.workload,
+                  app: node.app,
+                  version: node.version,
+                  service: node.service,
+                  isRoot: node.isRoot,
+                  isInaccessible: node.isInaccessible,
+                  isOutside: node.isOutside,
+                  requestRate: node.requestRate,
+                  errorRate: node.errorRate,
+                  hasSidecar: node.hasSidecar,
+                  hasVirtualService: node.hasVirtualService,
+                  mtlsEnabled: node.mtlsEnabled,
+                },
+                ...(savedPos ? { position: savedPos } : {}),
+              });
+            });
+          }
+          
+          // Adicionar edges
+          graphData.edges.forEach(edge => {
+            elements.push({
+              data: {
+                id: edge.id,
+                source: edge.source,
+                target: edge.target,
+                protocol: edge.protocol,
+                requestRate: edge.requestRate,
+                responseTime: edge.responseTime,
+                errorRate: edge.errorRate,
+              },
+            });
+          });
+          
+          cyInstance.current.add(elements);
+          
+          // Finalizar batch
+          cyInstance.current.endBatch();
+          
+          // Pequena pausa para garantir que o batch foi processado
+          setTimeout(() => {
+            if (!cyInstance.current) return;
+            
+            console.log('[ServiceMesh] Elementos adicionados, restaurando viewport');
+            
+            // Restaurar zoom e pan exatos - SEM ajustar fit
+            try {
+              cyInstance.current.viewport({
+                zoom: currentZoom,
+                pan: currentPan
+              });
+            } catch (e) {
+              console.warn('[ServiceMesh] Erro ao restaurar viewport, usando valores padrão:', e);
+            }
+            
+            // Reabilitar interações
+            cyInstance.current.autoungrabify(false);
+            cyInstance.current.autounselectify(false);
+            
+            // Forçar re-renderização do canvas
+            cyInstance.current.resize();
+            cyInstance.current.forceRender();
+            
+            // Contar nodes com e sem posição
+            const nodesWithPosition = cyInstance.current.nodes().filter((node: any) => {
+              return savedPositions.has(node.id());
+            }).length;
+            
+            console.log('[ServiceMesh] Nodes com posição:', nodesWithPosition, '/', cyInstance.current.nodes().length);
+            
+            // Se faltam muitas posições (>30%), fazer layout completo
+            if (nodesWithPosition < cyInstance.current.nodes().length * 0.7) {
+              console.log('[ServiceMesh] Muitos nodes sem posição, fazendo layout completo');
+              cyInstance.current.layout({
+                name: 'cose',
+                animate: false,
+                fit: false,  // Manter viewport
+                padding: 30,
+              }).run();
+              // Forçar render após layout
+              setTimeout(() => {
+                if (cyInstance.current) {
+                  cyInstance.current.forceRender();
+                }
+              }, 50);
+            } else if (nodesWithPosition < cyInstance.current.nodes().length) {
+              // Apenas alguns nodes novos
+              const newNodes = cyInstance.current.nodes().filter((node: any) => {
+                return !savedPositions.has(node.id());
+              });
+              console.log('[ServiceMesh] Fazendo layout para', newNodes.length, 'nodes novos');
+              newNodes.layout({ 
+                name: 'cose', 
+                animate: false,
+                fit: false,
+              }).run();
+              // Forçar render após layout
+              setTimeout(() => {
+                if (cyInstance.current) {
+                  cyInstance.current.forceRender();
+                }
+              }, 50);
+            } else {
+              // Todos os nodes têm posição, apenas forçar render
+              console.log('[ServiceMesh] Todos os nodes têm posição salva');
+              cyInstance.current.forceRender();
+            }
+          }, 10);
+          
+          return;
+        } else {
+          // Container inválido, destruir e recriar
+          console.log('[ServiceMesh] Container inválido, destruindo instância');
+          cyInstance.current.destroy();
+          cyInstance.current = null;
+        }
+      } catch (e) {
+        console.warn('[ServiceMesh] Erro ao verificar container:', e);
+        cyInstance.current = null;
+      }
+    }
+
+    // Limpar instância anterior se existir (mas não tem container válido)
+    if (cyInstance.current) {
+      try {
+        cyInstance.current.destroy();
+      } catch (e) {
+        console.warn('Erro ao destruir instância anterior:', e);
+      }
+      cyInstance.current = null;
+    }
+
+    // Converter dados para formato Cytoscape
+    const elements = [];
+    
+    // Se namespaceBoxes estiver habilitado, criar nós compostos para cada namespace
+    if (displayOptions.show.namespaceBoxes) {
+      const namespaceSet = new Set(graphData.nodes.map(node => node.namespace));
+      
+      // Adicionar nós compostos (namespace boxes)
+      namespaceSet.forEach(ns => {
+        elements.push({
+          data: {
+            id: `namespace-${ns}`,
+            label: `Namespace: ${ns}`,
+            type: 'namespace',
+          },
+          classes: 'namespace-box',
         });
-      } else {
-        // Adicionar novo node
-        cyInstance.current?.add({
+      });
+      
+      // Adicionar nodes com parent (namespace)
+      graphData.nodes.forEach(node => {
+        elements.push({
+          data: {
+            id: node.id,
+            label: node.label,
+            type: node.type,
+            nodeType: node.type,
+            namespace: node.namespace,
+            parent: `namespace-${node.namespace}`, // Definir parent para criar hierarquia
+            workload: node.workload,
+            app: node.app,
+            version: node.version,
+            service: node.service,
+            isRoot: node.isRoot,
+            isInaccessible: node.isInaccessible,
+            isOutside: node.isOutside,
+            requestRate: node.requestRate,
+            errorRate: node.errorRate,
+            hasSidecar: node.hasSidecar,
+            hasVirtualService: node.hasVirtualService,
+            mtlsEnabled: node.mtlsEnabled,
+          },
+        });
+      });
+    } else {
+      // Sem namespace boxes, adicionar nodes normalmente
+      graphData.nodes.forEach(node => {
+        elements.push({
           data: {
             id: node.id,
             label: node.label,
@@ -419,184 +690,17 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
             isOutside: node.isOutside,
             requestRate: node.requestRate,
             errorRate: node.errorRate,
+            hasSidecar: node.hasSidecar,
+            hasVirtualService: node.hasVirtualService,
+            mtlsEnabled: node.mtlsEnabled,
           },
         });
-        console.log('[ServiceMesh] Novo node adicionado:', node.id);
-      }
-    });
-
-    // 2. Atualizar edges existentes
-    data.edges.forEach(edge => {
-      const cyEdge = cyInstance.current?.getElementById(edge.id);
-      if (cyEdge && cyEdge.length > 0) {
-        cyEdge.data({
-          ...cyEdge.data(),
-          requestRate: edge.requestRate,
-          responseTime: edge.responseTime,
-          errorRate: edge.errorRate,
-          protocol: edge.protocol,
-        });
-      } else {
-        // Adicionar novo edge
-        cyInstance.current?.add({
-          data: {
-            id: edge.id,
-            source: edge.source,
-            target: edge.target,
-            protocol: edge.protocol,
-            requestRate: edge.requestRate,
-            responseTime: edge.responseTime,
-            errorRate: edge.errorRate,
-          },
-        });
-        console.log('[ServiceMesh] Novo edge adicionado:', edge.id);
-      }
-    });
-
-    // 3. Remover nodes que não existem mais nos dados
-    existingNodeIds.forEach(nodeId => {
-      if (!newNodeIds.has(nodeId)) {
-        const node = cyInstance.current?.getElementById(nodeId);
-        if (node) {
-          console.log('[ServiceMesh] Removendo node:', nodeId);
-          node.remove();
-          nodePositions.current.delete(nodeId);
-        }
-      }
-    });
-
-    // 4. Remover edges que não existem mais nos dados
-    existingEdgeIds.forEach(edgeId => {
-      if (!newEdgeIds.has(edgeId)) {
-        const edge = cyInstance.current?.getElementById(edgeId);
-        if (edge) {
-          console.log('[ServiceMesh] Removendo edge:', edgeId);
-          edge.remove();
-        }
-      }
-    });
-
-    // 5. Fazer layout apenas para nodes novos (sem posição salva)
-    const newNodes = cyInstance.current.nodes().filter((node: any) => {
-      return !nodePositions.current.has(node.id());
-    });
+      });
+    }
     
-    if (newNodes.length > 0) {
-      console.log('[ServiceMesh] Fazendo layout para', newNodes.length, 'novos nodes');
-      newNodes.layout({ name: 'cose', animate: false, fit: false }).run();
-    }
-
-    // 6. Forçar re-renderização
-    cyInstance.current.style().update();
-  };
-
-  const initializeGraph = () => {
-    if (!cyRef.current || !graphData) return;
-
-    console.log('[ServiceMesh] Inicializando gráfico com', graphData.nodes.length, 'nodes e', graphData.edges.length, 'edges');
-
-    // Se já existe instância válida, apenas atualizar elementos
-    if (cyInstance.current && cyInstance.current.container()) {
-      console.log('[ServiceMesh] Atualizando gráfico existente');
-      
-      // Salvar posições atuais dos nodes
-      cyInstance.current.nodes().forEach((node: any) => {
-        const pos = node.position();
-        nodePositions.current.set(node.id(), { x: pos.x, y: pos.y });
-      });
-      
-      // Remover elementos antigos
-      cyInstance.current.elements().remove();
-      
-      // Adicionar novos elementos
-      const elements = [
-        ...graphData.nodes.map(node => {
-          const savedPos = nodePositions.current.get(node.id);
-          return {
-            data: {
-              id: node.id,
-              label: node.label,
-              type: node.type,
-              nodeType: node.type,
-              namespace: node.namespace,
-              workload: node.workload,
-              app: node.app,
-              version: node.version,
-              service: node.service,
-              isRoot: node.isRoot,
-              isInaccessible: node.isInaccessible,
-              isOutside: node.isOutside,
-              requestRate: node.requestRate,
-              errorRate: node.errorRate,
-            },
-            // Restaurar posição salva se existir
-            ...(savedPos ? { position: savedPos } : {}),
-          };
-        }),
-        ...graphData.edges.map(edge => ({
-          data: {
-            id: edge.id,
-            source: edge.source,
-            target: edge.target,
-            protocol: edge.protocol,
-            requestRate: edge.requestRate,
-            responseTime: edge.responseTime,
-            errorRate: edge.errorRate,
-          },
-        })),
-      ];
-      
-      cyInstance.current.add(elements);
-      
-      // Apenas fazer layout para nodes novos (sem posição salva)
-      const newNodes = cyInstance.current.nodes().filter((node: any) => {
-        return !nodePositions.current.has(node.id());
-      });
-      
-      if (newNodes.length > 0) {
-        // Layout apenas para nodes novos
-        newNodes.layout({ name: 'cose', animate: false }).run();
-      }
-      
-      return;
-    }
-
-    // Limpar instância anterior se existir (mas não tem container)
-    if (cyInstance.current) {
-      try {
-        cyInstance.current.destroy();
-      } catch (e) {
-        console.warn('Erro ao destruir instância anterior:', e);
-      }
-      cyInstance.current = null;
-    }
-
-    // Converter dados para formato Cytoscape
-    const elements = [
-      // Nodes
-      ...graphData.nodes.map(node => ({
-        data: {
-          id: node.id,
-          label: node.label,
-          type: node.type,
-          nodeType: node.type,
-          namespace: node.namespace,
-          workload: node.workload,
-          app: node.app,
-          version: node.version,
-          service: node.service,
-          isRoot: node.isRoot,
-          isInaccessible: node.isInaccessible,
-          isOutside: node.isOutside,
-          requestRate: node.requestRate,
-          errorRate: node.errorRate,
-          hasSidecar: node.hasSidecar,
-          hasVirtualService: node.hasVirtualService,
-          mtlsEnabled: node.mtlsEnabled,
-        },
-      })),
-      // Edges
-      ...graphData.edges.map(edge => ({
+    // Adicionar edges
+    graphData.edges.forEach(edge => {
+      elements.push({
         data: {
           id: edge.id,
           source: edge.source,
@@ -606,8 +710,8 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
           responseTime: edge.responseTime,
           errorRate: edge.errorRate,
         },
-      })),
-    ];
+      });
+    });
 
     // Inicializar Cytoscape
     cyInstance.current = cytoscape({
@@ -654,11 +758,11 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
             'color': '#ffffff',
             'text-valign': 'center',
             'text-halign': 'center',
-            'font-size': '11px',
+            'font-size': '12px',
             'text-wrap': 'wrap',
-            'text-max-width': '80px',
-            'width': '80px',
-            'height': '80px',
+            'text-max-width': '100px',
+            'width': '100px',
+            'height': '100px',
             'border-width': '3px',
             'border-color': '#1e40af',
           },
@@ -827,6 +931,27 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
             'line-dash-offset': 0,
           },
         },
+        // Estilo para namespace boxes (compound nodes)
+        {
+          selector: '.namespace-box',
+          style: {
+            'background-color': 'transparent',
+            'background-opacity': 0,
+            'border-width': 1,
+            'border-color': 'rgba(59, 130, 246, 0.3)', // blue-500 com transparência
+            'border-style': 'solid',
+            'shape': 'roundrectangle',
+            'label': 'data(label)',
+            'text-valign': 'top',
+            'text-halign': 'center',
+            'font-size': '13px',
+            'font-weight': 'bold',
+            'color': 'rgba(59, 130, 246, 0.7)',
+            'padding': '10px',
+            'text-margin-y': -5,
+            'compound-sizing-wrt-labels': 'include',
+          },
+        },
       ],
       layout: {
         name: 'cose',
@@ -882,21 +1007,24 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
   };
 
   const toggleFullscreen = () => {
-    const wasFullscreen = isFullscreen;
-    setIsFullscreen(!isFullscreen);
+    // Bloquear múltiplos cliques
+    if (isTransitioningFullscreen.current) return;
     
-    // Dar tempo para o DOM atualizar antes de redimensionar
-    setTimeout(() => {
-      if (cyInstance.current) {
-        cyInstance.current.resize();
-        cyInstance.current.center();
-        
-        // Se estava saindo do fullscreen, forçar um refresh da renderização
-        if (wasFullscreen) {
-          cyInstance.current.fit(undefined, 30);
-        }
+    const wasFullscreen = isFullscreen;
+    
+    // Salvar posições antes de mudar de modo
+    if (cyInstance.current) {
+      try {
+        cyInstance.current.nodes().forEach((node: any) => {
+          const pos = node.position();
+          nodePositions.current.set(node.id(), { x: pos.x, y: pos.y });
+        });
+      } catch (e) {
+        console.warn('Erro ao salvar posições:', e);
       }
-    }, 150);
+    }
+    
+    setIsFullscreen(!isFullscreen);
   };
 
   return (
@@ -920,21 +1048,66 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
             </CardHeader>
             <CardContent className="space-y-2 py-3">
           <div className="flex flex-wrap items-end gap-2">
-            <div className="min-w-[130px] max-w-[160px]">
-              <label className="text-xs font-medium mb-1 block text-muted-foreground">Namespace</label>
-              <Select
-                value={filters.namespace}
-                onValueChange={(value) => setFilters(prev => ({ ...prev, namespace: value }))}
-              >
-                <SelectTrigger className="h-8 text-sm">
-                  <SelectValue placeholder="Selecione" />
-                </SelectTrigger>
-                <SelectContent>
-                  {namespaces.map(ns => (
-                    <SelectItem key={ns} value={ns}>{ns}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="min-w-[180px] max-w-[220px]">
+              <label className="text-xs font-medium mb-1 block text-muted-foreground">Namespaces</label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="h-8 text-sm w-full justify-between">
+                    <span className="truncate">
+                      {filters.namespace.length === 0 
+                        ? 'Selecione...' 
+                        : filters.namespace.length === 1
+                        ? filters.namespace[0]
+                        : `${filters.namespace.length} selecionados`}
+                    </span>
+                    <Filter className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[220px] p-2" align="start">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between pb-2 border-b">
+                      <span className="text-xs font-medium">Selecionar Namespaces</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-xs px-2"
+                        onClick={() => setFilters(prev => ({ ...prev, namespace: [] }))}
+                      >
+                        Limpar
+                      </Button>
+                    </div>
+                    <div className="max-h-[300px] overflow-y-auto space-y-1">
+                      {namespaces.map((ns) => (
+                        <div key={ns} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`ns-${ns}`}
+                            checked={filters.namespace.includes(ns)}
+                            onCheckedChange={(checked) => {
+                              setFilters(prev => ({
+                                ...prev,
+                                namespace: checked
+                                  ? [...prev.namespace, ns]
+                                  : prev.namespace.filter(n => n !== ns)
+                              }));
+                            }}
+                          />
+                          <label
+                            htmlFor={`ns-${ns}`}
+                            className="text-sm cursor-pointer flex-1 py-1"
+                          >
+                            {ns}
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                    {namespaces.length === 0 && (
+                      <div className="text-xs text-muted-foreground text-center py-2">
+                        Nenhum namespace disponível
+                      </div>
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
 
             <div className="min-w-[100px] max-w-[120px]">
@@ -980,7 +1153,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
             <div className="flex items-end">
               <Button
                 onClick={() => loadServiceGraph(false)}
-                disabled={loading || !filters.namespace}
+                disabled={loading || !filters.namespace || filters.namespace.length === 0}
                 size="sm"
                 className="h-8 text-xs px-3 min-w-[90px] max-w-[100px]"
               >
@@ -1660,19 +1833,64 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
           {/* Barra de Controles Flutuante */}
           <div className="flex-shrink-0 p-2 bg-background/95 backdrop-blur border-b">
               <div className="flex items-center gap-2">
-                <Select
-                  value={filters.namespace}
-                  onValueChange={(value) => setFilters(prev => ({ ...prev, namespace: value }))}
-                >
-                  <SelectTrigger className="w-48">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {namespaces.map(ns => (
-                      <SelectItem key={ns} value={ns}>{ns}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" className="w-48 justify-between">
+                      <span className="truncate">
+                        {filters.namespace.length === 0 
+                          ? 'Selecione...' 
+                          : filters.namespace.length === 1
+                          ? filters.namespace[0]
+                          : `${filters.namespace.length} namespaces`}
+                      </span>
+                      <Filter className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[220px] p-2" align="start">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between pb-2 border-b">
+                        <span className="text-xs font-medium">Selecionar Namespaces</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 text-xs px-2"
+                          onClick={() => setFilters(prev => ({ ...prev, namespace: [] }))}
+                        >
+                          Limpar
+                        </Button>
+                      </div>
+                      <div className="max-h-[300px] overflow-y-auto space-y-1">
+                        {namespaces.map((ns) => (
+                          <div key={ns} className="flex items-center space-x-2">
+                            <Checkbox
+                              id={`ns-fullscreen-${ns}`}
+                              checked={filters.namespace.includes(ns)}
+                              onCheckedChange={(checked) => {
+                                setFilters(prev => ({
+                                  ...prev,
+                                  namespace: checked
+                                    ? [...prev.namespace, ns]
+                                    : prev.namespace.filter(n => n !== ns)
+                                }));
+                              }}
+                            />
+                            <label
+                              htmlFor={`ns-fullscreen-${ns}`}
+                              className="text-sm cursor-pointer flex-1 py-1"
+                            >
+                              {ns}
+                            </label>
+                          </div>
+                        ))}
+                      </div>
+                      {namespaces.length === 0 && (
+                        <div className="text-xs text-muted-foreground text-center py-2">
+                          Nenhum namespace disponível
+                        </div>
+                      )}
+                    </div>
+                  </PopoverContent>
+                </Popover>
 
                 <Select
                   value={filters.duration}
@@ -1710,7 +1928,7 @@ export function ServiceMeshGraph({ cluster }: ServiceMeshGraphProps) {
 
                 <Button
                   onClick={() => loadServiceGraph(false)}
-                  disabled={loading || !filters.namespace}
+                  disabled={loading || !filters.namespace || filters.namespace.length === 0}
                   size="sm"
                   variant="outline"
                 >
