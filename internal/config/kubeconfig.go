@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
 
@@ -168,6 +169,44 @@ func (k *KubeConfigManager) TestClusterConnection(ctx context.Context, clusterNa
 // GetClient retorna um cliente Kubernetes para o cluster especificado
 func (k *KubeConfigManager) GetClient(clusterName string) (kubernetes.Interface, error) {
 	return k.getClient(clusterName)
+}
+
+// GetRestConfig retorna a configuração REST para o cluster especificado
+func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, error) {
+	// Verificar se o arquivo kubeconfig existe e é válido
+	if k.configPath == "" {
+		return nil, fmt.Errorf("kubeconfig path is empty")
+	}
+
+	// Verificar se o arquivo kubeconfig existe
+	if _, err := os.Stat(k.configPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("kubeconfig file does not exist at path: %s", k.configPath)
+	}
+
+	// Criar configuração do cliente para o contexto específico
+	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: k.configPath}
+	configOverrides := &clientcmd.ConfigOverrides{CurrentContext: clusterName}
+
+	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		loadingRules,
+		configOverrides,
+	)
+
+	// Obter configuração REST
+	restConfig, err := clientConfig.ClientConfig()
+	if err != nil {
+		if strings.Contains(err.Error(), "yaml") || strings.Contains(err.Error(), "unmarshal") {
+			return nil, fmt.Errorf("kubeconfig file has invalid YAML format for cluster %s: %w", clusterName, err)
+		}
+		return nil, fmt.Errorf("failed to create client config for %s: %w", clusterName, err)
+	}
+
+	// Configurar timeouts
+	restConfig.Timeout = 30 * time.Second
+	restConfig.QPS = 50
+	restConfig.Burst = 100
+
+	return restConfig, nil
 }
 
 // getClient cria ou retorna um cliente existente para o cluster
