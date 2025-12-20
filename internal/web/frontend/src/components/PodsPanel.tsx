@@ -1096,15 +1096,6 @@ export const PodsPanel = ({
                     </div>
                   </Label>
                 </div>
-                <div className="flex items-start space-x-2 p-2 rounded hover:bg-muted/50 transition-colors">
-                  <RadioGroupItem value="/bin/zsh" id="zsh" className="mt-0.5" />
-                  <Label htmlFor="zsh" className="font-normal cursor-pointer flex-1">
-                    <div className="font-medium">/bin/zsh</div>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      Shell avançado • Comum em netshoot e imagens de debug • Autocompletion rico
-                    </div>
-                  </Label>
-                </div>
                 <div className="flex items-start space-x-2 p-2 rounded bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20 transition-colors">
                   <RadioGroupItem value="ephemeral" id="ephemeral" className="mt-0.5" />
                   <Label htmlFor="ephemeral" className="font-normal cursor-pointer flex-1">
@@ -1124,6 +1115,9 @@ export const PodsPanel = ({
                       <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">iperf</code>
                       <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">mtr</code>
                       <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">ethtool</code>
+                    </div>
+                    <div className="text-xs mt-2 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded">
+                      <span className="text-yellow-300">ℹ️ Nota:</span> Ephemeral containers persistem até o pod reiniciar. Containers existentes serão reutilizados automaticamente.
                     </div>
                   </Label>
                 </div>

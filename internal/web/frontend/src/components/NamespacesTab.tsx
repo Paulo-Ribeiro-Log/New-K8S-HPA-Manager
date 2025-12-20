@@ -3,13 +3,23 @@ import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle, Terminal } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
-import type { Namespace, TopNamespacesResponse, NamespaceManifest, DeploymentSummary, EventSummary, ResourceQuotaSummary, NetworkPolicySummary, ServiceSummary, PodsSummary } from "@/lib/api/types";
+import type { Namespace, TopNamespacesResponse, NamespaceManifest, DeploymentSummary, EventSummary, ResourceQuotaSummary, NetworkPolicySummary, ServiceSummary, PodsSummary, PodSummary } from "@/lib/api/types";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { PodTerminal } from "@/components/PodTerminal";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -92,6 +102,21 @@ export const NamespacesTab = ({
   const [quotasModalOpen, setQuotasModalOpen] = useState(false);
   const [policiesModalOpen, setPoliciesModalOpen] = useState(false);
   const [servicesModalOpen, setServicesModalOpen] = useState(false);
+
+  // Estados para shell
+  const [namespacePods, setNamespacePods] = useState<PodSummary[]>([]);
+  const [podsListLoading, setPodsListLoading] = useState(false);
+  const [selectedPodForShell, setSelectedPodForShell] = useState<PodSummary | null>(null);
+  const [shellModalOpen, setShellModalOpen] = useState(false);
+  const [selectedShellContainer, setSelectedShellContainer] = useState("");
+  const [selectedShellType, setSelectedShellType] = useState("/bin/bash");
+  const [useEphemeralDebug, setUseEphemeralDebug] = useState(false);
+  const [useStandaloneDebugPod, setUseStandaloneDebugPod] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalFullscreen, setTerminalFullscreen] = useState(false);
+  const [creatingDebugPod, setCreatingDebugPod] = useState(false);
+  const [debugPodName, setDebugPodName] = useState("");
+  const [isStandalonePod, setIsStandalonePod] = useState(false);
 
   // Estados de edição (copiado de ConfigMapsTab)
   const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
@@ -286,9 +311,39 @@ export const NamespacesTab = ({
     }
   };
 
+  const loadNamespacePods = async () => {
+    if (!selectedNamespace || !cluster) return;
+    setPodsListLoading(true);
+    try {
+      const pods = await apiClient.getPods(cluster, [selectedNamespace.name]);
+      setNamespacePods(pods);
+    } catch (err) {
+      console.error("Erro ao carregar pods:", err);
+      setNamespacePods([]);
+    } finally {
+      setPodsListLoading(false);
+    }
+  };
+
   const handleCopyYaml = () => {
     navigator.clipboard.writeText(editorValue);
     toast.success("YAML copiado para a área de transferência");
+  };
+
+  // Helper para cor do status do pod
+  const getPhaseColor = (phase: string) => {
+    switch (phase) {
+      case "Running":
+        return "bg-green-500/20 text-green-300 border-green-500/30";
+      case "Pending":
+        return "bg-yellow-500/20 text-yellow-300 border-yellow-500/30";
+      case "Succeeded":
+        return "bg-blue-500/20 text-blue-300 border-blue-500/30";
+      case "Failed":
+        return "bg-red-500/20 text-red-300 border-red-500/30";
+      default:
+        return "bg-muted/20 text-muted-foreground border-muted/30";
+    }
   };
 
   // Funções de edição (copiado de ConfigMapsTab)
@@ -532,11 +587,13 @@ export const NamespacesTab = ({
       loadNetworkPolicies();
       loadServices();
       loadPodsSummary();
+      loadNamespacePods();
     } else {
       setNamespaceManifest(null);
       setEditorValue("");
       setDeployments([]);
       setShowDeployments(false);
+      setNamespacePods([]);
     }
   }, [selectedNamespace, cluster]);
 
@@ -994,6 +1051,28 @@ export const NamespacesTab = ({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem 
+                onClick={() => {
+                  if (namespacePods.length === 0) {
+                    toast.info("Nenhum pod encontrado neste namespace");
+                    return;
+                  }
+                  const runningPod = namespacePods.find(p => p.phase === "Running");
+                  const podToUse = runningPod || namespacePods[0];
+                  setSelectedPodForShell(podToUse);
+                  setSelectedShellContainer(podToUse.containers[0]?.name || "");
+                  setShellModalOpen(true);
+                }}
+                disabled={podsListLoading || namespacePods.length === 0}
+              >
+                <Terminal className="w-4 h-4 mr-2" />
+                Shell
+                {namespacePods.length > 0 && (
+                  <Badge variant="secondary" className="text-xs ml-2">
+                    {namespacePods.length}
+                  </Badge>
+                )}
+              </DropdownMenuItem>
               <ProtectedAction showWarning={false}>
                 <DropdownMenuItem onClick={() => setDeleteConfirmOpen(true)} className="text-destructive focus:text-destructive">
                   <Trash2 className="w-4 h-4 mr-2" />
@@ -2025,6 +2104,321 @@ export const NamespacesTab = ({
       {renderApplyConfirmDialog()}
       {renderGlobalModals()}
       {renderObservabilityModals()}
+
+      {/* Modal Shell Selection */}
+      <Dialog open={shellModalOpen} onOpenChange={(open) => {
+        setShellModalOpen(open);
+        if (!open) {
+          // Reset standalone flag ao fechar modal sem criar pod
+          if (!terminalOpen) {
+            setUseStandaloneDebugPod(false);
+          }
+        }
+      }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader className="flex-shrink-0">
+            <DialogTitle className="flex items-center gap-2">
+              <Terminal className="w-5 h-5" />
+              Conectar ao Shell
+            </DialogTitle>
+            <DialogDescription>
+              Selecione o pod, container e tipo de shell para conectar
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="flex-1 overflow-y-auto min-h-0">
+            <div className="space-y-4 py-4 pr-2">
+            {/* Seletor de Pod */}
+            <div className="space-y-2">
+              <Label>Pod ({namespacePods.length} disponíveis)</Label>
+              <Select
+                value={selectedPodForShell?.name || ""}
+                onValueChange={(podName) => {
+                  const pod = namespacePods.find(p => p.name === podName);
+                  if (pod) {
+                    setSelectedPodForShell(pod);
+                    setSelectedShellContainer(pod.containers[0]?.name || "");
+                  }
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione um pod" />
+                </SelectTrigger>
+                <SelectContent>
+                  {namespacePods.map((pod) => (
+                    <SelectItem key={pod.name} value={pod.name}>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className={getPhaseColor(pod.phase)}>
+                          {pod.phase}
+                        </Badge>
+                        <span className="font-mono text-sm">{pod.name}</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Seletor de Container */}
+            {selectedPodForShell && selectedPodForShell.containers.length > 0 && (
+              <div className="space-y-2">
+                <Label>
+                  Container
+                  {selectedPodForShell.containers.length > 1 && (
+                    <span className="text-muted-foreground ml-2">
+                      ({selectedPodForShell.containers.length} containers)
+                    </span>
+                  )}
+                </Label>
+                <Select
+                  value={selectedShellContainer}
+                  onValueChange={setSelectedShellContainer}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {selectedPodForShell.containers.map((container) => (
+                      <SelectItem key={container.name} value={container.name}>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm">{container.name}</span>
+                          {container.ready && (
+                            <Badge variant="outline" className="bg-green-500/20 text-green-300 border-green-500/30">
+                              Ready
+                            </Badge>
+                          )}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {/* Seletor de Shell Type */}
+            <div className="space-y-2">
+              <Label>Tipo de Shell</Label>
+              <RadioGroup
+                value={useStandaloneDebugPod ? "standalone" : (useEphemeralDebug ? "ephemeral" : selectedShellType)}
+                onValueChange={(value) => {
+                  if (value === "standalone") {
+                    setUseStandaloneDebugPod(true);
+                    setUseEphemeralDebug(false);
+                    setSelectedShellType("/bin/bash");
+                  } else if (value === "ephemeral") {
+                    setUseEphemeralDebug(true);
+                    setUseStandaloneDebugPod(false);
+                    setSelectedShellType("/bin/bash");
+                  } else {
+                    setUseEphemeralDebug(false);
+                    setUseStandaloneDebugPod(false);
+                    setSelectedShellType(value);
+                  }
+                }}
+              >
+                <div className="flex items-start space-x-2 p-2 rounded hover:bg-secondary/50 transition-colors">
+                  <RadioGroupItem value="/bin/bash" id="bash" className="mt-0.5" />
+                  <Label htmlFor="bash" className="font-normal cursor-pointer flex-1">
+                    <div className="font-medium">/bin/bash</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      Shell padrão • Disponível na maioria dos containers • Boa compatibilidade
+                    </div>
+                  </Label>
+                </div>
+                <div className="flex items-start space-x-2 p-2 rounded hover:bg-secondary/50 transition-colors">
+                  <RadioGroupItem value="/bin/sh" id="sh" className="mt-0.5" />
+                  <Label htmlFor="sh" className="font-normal cursor-pointer flex-1">
+                    <div className="font-medium">/bin/sh</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      Shell mínimo • Presente em quase todos os containers • Alpine, busybox
+                    </div>
+                  </Label>
+                </div>
+                <div className="flex items-start space-x-2 p-2 rounded bg-green-500/10 border border-green-500/20 hover:bg-green-500/20 transition-colors">
+                  <RadioGroupItem value="standalone" id="standalone" className="mt-0.5" />
+                  <Label htmlFor="standalone" className="font-normal cursor-pointer flex-1">
+                    <div className="font-medium flex items-center gap-2">
+                      <span>🚀 Debug Pod Standalone</span>
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-600 dark:text-green-400 font-semibold">NOVO</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      <span className="font-medium">nicolaka/netshoot</span> • Cria um pod dedicado de debug no namespace
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      Ideal para testes de rede, DNS e conectividade sem afetar pods existentes
+                    </div>
+                    <div className="text-xs mt-2 p-2 bg-green-500/10 border border-green-500/20 rounded space-y-1">
+                      <div><span className="text-green-300">✓ Auto-limpeza:</span> Pod é removido automaticamente ao fechar o terminal</div>
+                      <div><span className="text-green-300">✓ Independente:</span> Não afeta outros pods do namespace</div>
+                    </div>
+                  </Label>
+                </div>
+                <div className="flex items-start space-x-2 p-2 rounded bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20 transition-colors">
+                  <RadioGroupItem value="ephemeral" id="ephemeral" className="mt-0.5" />
+                  <Label htmlFor="ephemeral" className="font-normal cursor-pointer flex-1">
+                    <div className="font-medium flex items-center gap-2">
+                      <span>🛠️ Ephemeral Debug Container</span>
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-600 dark:text-blue-400 font-semibold">RECOMENDADO</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      <span className="font-medium">nicolaka/netshoot</span> • Container temporário com arsenal completo de debug
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1 flex flex-wrap gap-1">
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">tcpdump</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">curl</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">nslookup</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">dig</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">netstat</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">iperf</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">mtr</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">ethtool</code>
+                    </div>
+                    <div className="text-xs mt-2 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded">
+                      <span className="text-yellow-300">ℹ️ Nota:</span> Ephemeral containers persistem até o pod reiniciar. Containers existentes serão reutilizados automaticamente.
+                    </div>
+                  </Label>
+                </div>
+              </RadioGroup>
+            </div>
+
+            {/* Info sobre o pod */}
+            {selectedPodForShell && (
+              <div className="mt-4 p-3 bg-muted rounded-lg text-sm space-y-1">
+                <div><span className="font-medium">Pod:</span> {selectedPodForShell.name}</div>
+                <div><span className="font-medium">Namespace:</span> {selectedPodForShell.namespace}</div>
+                <div><span className="font-medium">Status:</span> <Badge variant="outline" className={getPhaseColor(selectedPodForShell.phase)}>{selectedPodForShell.phase}</Badge></div>
+              </div>
+            )}
+            </div>
+          </div>
+
+          <DialogFooter className="flex-shrink-0 pt-4">
+            <Button
+              variant="outline"
+              onClick={() => setShellModalOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={async () => {
+                if (useStandaloneDebugPod) {
+                  // Criar debug pod standalone
+                  setCreatingDebugPod(true);
+                  try {
+                    const podName = `debug-${selectedNamespace.name}-${Date.now()}`;
+                    await apiClient.createDebugPod(cluster, selectedNamespace.name, podName);
+                    setDebugPodName(podName);
+                    setShellModalOpen(false);
+                    
+                    toast.info("Aguardando pod estar pronto...", { duration: 3000 });
+                    
+                    // Aguardar pod estar pronto com polling
+                    let attempts = 0;
+                    const maxAttempts = 30; // 30 segundos
+                    let createdPod: PodSummary | undefined;
+                    
+                    while (attempts < maxAttempts) {
+                      await new Promise(resolve => setTimeout(resolve, 1000));
+                      await loadNamespacePods();
+                      
+                      // Precisamos aguardar a próxima atualização do estado
+                      const pods = await apiClient.getPods(cluster, [selectedNamespace.name]);
+                      createdPod = pods.find(p => p.name === podName);
+                      
+                      if (createdPod && createdPod.phase === "Running") {
+                        break;
+                      }
+                      attempts++;
+                    }
+                    
+                    if (createdPod && createdPod.phase === "Running") {
+                      setSelectedPodForShell(createdPod);
+                      setSelectedShellContainer("netshoot");
+                      setIsStandalonePod(true);
+                      setTerminalOpen(true);
+                      toast.success("Debug pod pronto e conectado!");
+                    } else {
+                      toast.warning("Debug pod criado mas ainda não está Running. Verifique na aba Pods.");
+                    }
+                  } catch (err) {
+                    toast.error("Erro ao criar debug pod", {
+                      description: err instanceof Error ? err.message : "Erro desconhecido"
+                    });
+                  } finally {
+                    setCreatingDebugPod(false);
+                  }
+                } else {
+                  if (!selectedPodForShell || !selectedShellContainer) {
+                    toast.error("Selecione um pod e container");
+                    return;
+                  }
+                  setIsStandalonePod(false);
+                  setShellModalOpen(false);
+                  setTerminalOpen(true);
+                }
+              }}
+              disabled={creatingDebugPod || (!useStandaloneDebugPod && (!selectedPodForShell || !selectedShellContainer))}
+            >
+              {creatingDebugPod ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Terminal className="w-4 h-4 mr-2" />
+              )}
+              {creatingDebugPod ? "Criando..." : "Conectar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal do Terminal */}
+      <Dialog open={terminalOpen} onOpenChange={async (open) => {
+        if (!open && isStandalonePod && selectedPodForShell && selectedNamespace) {
+          // Deletar pod standalone ao fechar
+          try {
+            await apiClient.deletePod(cluster, selectedNamespace.name, selectedPodForShell.name);
+            toast.success("Debug pod removido automaticamente");
+          } catch (err) {
+            console.error("Erro ao remover debug pod:", err);
+          }
+          setIsStandalonePod(false);
+          setSelectedPodForShell(null);
+        }
+        setTerminalOpen(open);
+        if (!open) {
+          setTerminalFullscreen(false);
+        }
+      }}>
+        <DialogContent className={terminalFullscreen 
+          ? "w-screen h-screen max-w-none max-h-none p-0 m-0 rounded-none"
+          : "max-w-6xl h-[85vh] p-0"
+        }>
+          {selectedPodForShell && selectedShellContainer && selectedNamespace && (
+            <PodTerminal
+              cluster={cluster}
+              namespace={selectedNamespace.name}
+              pod={selectedPodForShell.name}
+              container={selectedShellContainer}
+              shell={selectedShellType}
+              ephemeral={useEphemeralDebug}
+              isFullscreen={terminalFullscreen}
+              onToggleFullscreen={() => setTerminalFullscreen(!terminalFullscreen)}
+              onClose={async () => {
+                if (isStandalonePod) {
+                  try {
+                    await apiClient.deletePod(cluster, selectedNamespace.name, selectedPodForShell.name);
+                    toast.success("Debug pod removido automaticamente");
+                  } catch (err) {
+                    console.error("Erro ao remover debug pod:", err);
+                  }
+                  setIsStandalonePod(false);
+                  setSelectedPodForShell(null);
+                }
+                setTerminalOpen(false);
+              }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </>
   );
 };
