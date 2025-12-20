@@ -49,7 +49,7 @@ func (h *PodExecHandler) HandleShell(c *gin.Context) {
 	containerName := c.Query("container")
 	shell := c.Query("shell")
 
-	log.Printf("[SHELL] Connection request - cluster=%s, namespace=%s, pod=%s, container=%s, shell=%s", 
+	log.Printf("[SHELL] Connection request - cluster=%s, namespace=%s, pod=%s, container=%s, shell=%s",
 		cluster, namespace, podName, containerName, shell)
 
 	if shell == "" {
@@ -95,7 +95,7 @@ func (h *PodExecHandler) HandleDebug(c *gin.Context) {
 	shell := c.Query("shell")
 	image := c.Query("image")
 
-	log.Printf("[DEBUG] Connection request - cluster=%s, namespace=%s, pod=%s, container=%s, shell=%s, image=%s", 
+	log.Printf("[DEBUG] Connection request - cluster=%s, namespace=%s, pod=%s, container=%s, shell=%s, image=%s",
 		cluster, namespace, podName, targetContainer, shell, image)
 
 	if shell == "" {
