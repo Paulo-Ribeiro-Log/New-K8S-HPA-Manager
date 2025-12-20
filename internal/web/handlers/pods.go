@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
@@ -688,5 +689,128 @@ func (h *PodHandler) GetSummary(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    summary,
+	})
+}
+
+// CreateDebugPod cria um pod de debug standalone no namespace
+func (h *PodHandler) CreateDebugPod(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+
+	var req struct {
+		Name string `json:"name"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": fmt.Sprintf("Invalid request body: %v", err),
+			},
+		})
+		return
+	}
+
+	if cluster == "" || namespace == "" || req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "cluster, namespace and name are required",
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	// Define debug pod spec
+	debugPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      req.Name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app":  "debug",
+				"type": "standalone-debug",
+			},
+			Annotations: map[string]string{
+				"description": "Standalone debug pod created via HPA Manager",
+				"created-at":  time.Now().Format(time.RFC3339),
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:            "netshoot",
+					Image:           "nicolaka/netshoot:latest",
+					ImagePullPolicy: corev1.PullIfNotPresent,
+					Command:         []string{"/bin/bash"},
+					Args:            []string{"-c", "sleep infinity"},
+					Stdin:           true,
+					StdinOnce:       false,
+					TTY:             true,
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("100m"),
+							corev1.ResourceMemory: resource.MustParse("128Mi"),
+						},
+						Limits: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("500m"),
+							corev1.ResourceMemory: resource.MustParse("512Mi"),
+						},
+					},
+				},
+			},
+			RestartPolicy: corev1.RestartPolicyNever,
+		},
+	}
+
+	// Create the pod
+	_, err = clientset.CoreV1().Pods(namespace).Create(c.Request.Context(), debugPod, metav1.CreateOptions{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CREATE_ERROR",
+				"message": fmt.Sprintf("Failed to create debug pod: %v", err),
+			},
+		})
+		return
+	}
+
+	// Register in history
+	entry := history.HistoryEntry{
+		Action:   "create_debug_pod",
+		Resource: fmt.Sprintf("%s/%s", namespace, req.Name),
+		Cluster:  cluster,
+		Before:   nil,
+		After: map[string]interface{}{
+			"pod":  req.Name,
+			"type": "standalone-debug",
+		},
+		Status:   "success",
+		Duration: 0,
+	}
+	if err := h.historyTracker.Log(entry); err != nil {
+		fmt.Printf("warning: failed to record history entry: %v\n", err)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"success": true,
+			"message": fmt.Sprintf("Debug pod %s created successfully", req.Name),
+		},
 	})
 }

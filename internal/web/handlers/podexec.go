@@ -83,7 +83,7 @@ func (h *PodExecHandler) HandleShell(c *gin.Context) {
 	log.Printf("[SHELL] WebSocket upgrade successful")
 
 	// Execute shell
-	h.execInPod(c.Request.Context(), conn, clientset, restConfig, namespace, podName, containerName, shell, false, "")
+	h.execInPod(c.Request.Context(), conn, clientset, restConfig, namespace, podName, containerName, shell, false, "", false)
 }
 
 // HandleDebug cria ephemeral debug container e conecta
@@ -132,31 +132,71 @@ func (h *PodExecHandler) HandleDebug(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Step 1: Create ephemeral debug container
+	// Step 1: Check for existing ephemeral debug container or create new
+	debugContainerName, isReused, err := h.getOrCreateEphemeralContainer(ctx, clientset, namespace, podName, targetContainer, image, conn)
+	if err != nil {
+		h.sendError(conn, fmt.Sprintf("Failed to get/create ephemeral container: %v", err))
+		return
+	}
+
+	// Step 2: Wait for ephemeral container to be ready
+	if !isReused {
+		h.sendOutput(conn, "\x1b[1;36m⏳ Waiting for container to start...\x1b[0m\r\n")
+		err = h.waitForEphemeralContainer(ctx, clientset, namespace, podName, debugContainerName, 30*time.Second)
+		if err != nil {
+			h.sendError(conn, fmt.Sprintf("Ephemeral container not ready: %v", err))
+			return
+		}
+		h.sendOutput(conn, "\x1b[1;32m✓ Container ready!\x1b[0m\r\n\r\n")
+	}
+
+	// Step 3: Exec into ephemeral container
+	h.execInPod(ctx, conn, clientset, restConfig, namespace, podName, debugContainerName, shell, true, image, isReused)
+}
+
+// getOrCreateEphemeralContainer verifica se já existe um container de debug ou cria um novo
+func (h *PodExecHandler) getOrCreateEphemeralContainer(
+	ctx context.Context,
+	clientset kubernetes.Interface,
+	namespace, podName, targetContainer, image string,
+	conn *websocket.Conn,
+) (string, bool, error) {
+	// Get current pod
+	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return "", false, fmt.Errorf("failed to get pod: %w", err)
+	}
+
+	// Check for existing debug containers with the same image and target
+	for _, ec := range pod.Spec.EphemeralContainers {
+		if ec.Image == image && ec.TargetContainerName == targetContainer {
+			// Check if container is still running
+			for _, status := range pod.Status.EphemeralContainerStatuses {
+				if status.Name == ec.Name && status.State.Running != nil {
+					h.sendOutput(conn, "\r\n\x1b[1;32m♻️  Reusing existing ephemeral debug container...\x1b[0m\r\n")
+					h.sendOutput(conn, fmt.Sprintf("\x1b[1;33m🛠️  Container:\x1b[0m %s\r\n", ec.Name))
+					h.sendOutput(conn, fmt.Sprintf("\x1b[1;33m🎯 Target:\x1b[0m %s\r\n\r\n", targetContainer))
+					h.sendOutput(conn, "\x1b[1;36mℹ️  Note: Ephemeral containers persist until pod restart\x1b[0m\r\n\r\n")
+					return ec.Name, true, nil
+				}
+			}
+		}
+	}
+
+	// No suitable existing container found, create a new one
 	debugContainerName := fmt.Sprintf("debug-%d", time.Now().Unix())
 
 	h.sendOutput(conn, "\r\n\x1b[1;34m⚡ Creating ephemeral debug container...\x1b[0m\r\n")
 	h.sendOutput(conn, fmt.Sprintf("\x1b[1;33m🛠️  Image:\x1b[0m %s\r\n", image))
 	h.sendOutput(conn, fmt.Sprintf("\x1b[1;33m🎯 Target:\x1b[0m %s\r\n\r\n", targetContainer))
+	h.sendOutput(conn, "\x1b[1;36mℹ️  Note: Ephemeral containers persist until pod restart\x1b[0m\r\n\r\n")
 
 	err = h.createEphemeralContainer(ctx, clientset, namespace, podName, debugContainerName, targetContainer, image)
 	if err != nil {
-		h.sendError(conn, fmt.Sprintf("Failed to create ephemeral container: %v", err))
-		return
+		return "", false, err
 	}
 
-	// Step 2: Wait for ephemeral container to be ready
-	h.sendOutput(conn, "\x1b[1;36m⏳ Waiting for container to start...\x1b[0m\r\n")
-	err = h.waitForEphemeralContainer(ctx, clientset, namespace, podName, debugContainerName, 30*time.Second)
-	if err != nil {
-		h.sendError(conn, fmt.Sprintf("Ephemeral container not ready: %v", err))
-		return
-	}
-
-	h.sendOutput(conn, "\x1b[1;32m✓ Container ready!\x1b[0m\r\n\r\n")
-
-	// Step 3: Exec into ephemeral container
-	h.execInPod(ctx, conn, clientset, restConfig, namespace, podName, debugContainerName, shell, true, image)
+	return debugContainerName, false, nil
 }
 
 // createEphemeralContainer cria um ephemeral debug container
@@ -274,6 +314,7 @@ func (h *PodExecHandler) execInPod(
 	namespace, podName, containerName, shell string,
 	isEphemeral bool,
 	image string,
+	isReused bool,
 ) {
 	// Create exec request with UTF-8 locale support
 	// Use C.UTF-8 which is available in most containers (more universal than pt_BR)
@@ -310,10 +351,11 @@ func (h *PodExecHandler) execInPod(
 		sizeCh:      make(chan remotecommand.TerminalSize, 1),
 		isEphemeral: isEphemeral,
 		image:       image,
+		isReused:    isReused,
 	}
 
 	// Send welcome message
-	if isEphemeral {
+	if isEphemeral && !isReused {
 		session.sendWelcomeMessage()
 	}
 
@@ -371,6 +413,7 @@ type TerminalSession struct {
 	sizeCh      chan remotecommand.TerminalSize
 	isEphemeral bool
 	image       string
+	isReused    bool
 }
 
 // Read lê input do WebSocket
