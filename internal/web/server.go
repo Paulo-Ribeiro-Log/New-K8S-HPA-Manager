@@ -282,7 +282,7 @@ func (s *Server) setupRoutes() {
 	// WebSocket endpoints (com auth via query param + RBAC SRE-only)
 	// Usa WebSocketAuthMiddleware para aceitar token via query parameter
 	podExecHandler := handlers.NewPodExecHandler(s.kubeManager)
-	
+
 	wsShell := s.router.Group("/api/v1/pods/:cluster/:namespace/:name")
 	wsShell.Use(middleware.WebSocketAuthMiddleware(s.token))
 	wsShell.Use(rbacMiddleware.RequireSREGroup())
