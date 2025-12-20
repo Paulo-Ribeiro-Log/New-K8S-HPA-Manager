@@ -22,6 +22,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { ProtectedAction } from "@/components/rbac";
+import { PodTerminal } from "@/components/PodTerminal";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
 import type { Namespace, PodSummary } from "@/lib/api/types";
 import { apiClient } from "@/lib/api/client";
@@ -65,6 +68,12 @@ export const PodsPanel = ({
   const [describeModalOpen, setDescribeModalOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
+  const [shellModalOpen, setShellModalOpen] = useState(false);
+  const [selectedShellContainer, setSelectedShellContainer] = useState("");
+  const [selectedShellType, setSelectedShellType] = useState("/bin/bash");
+  const [useEphemeralDebug, setUseEphemeralDebug] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalFullscreen, setTerminalFullscreen] = useState(false);
 
   const filteredNamespaces = useMemo(() => {
     if (showSystemNamespaces) return namespaces;
@@ -469,6 +478,17 @@ export const PodsPanel = ({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
+        <DropdownMenuItem
+          onClick={() => {
+            if (selectedPod.containers.length > 0) {
+              setSelectedShellContainer(selectedPod.containers[0].name);
+            }
+            setShellModalOpen(true);
+          }}
+        >
+          <Terminal className="w-4 h-4 mr-2" />
+          Abrir Shell
+        </DropdownMenuItem>
         <ProtectedAction showWarning={false}>
           <DropdownMenuItem
             onClick={() => {
@@ -1007,6 +1027,172 @@ export const PodsPanel = ({
 
   return (
     <>
+      {/* Modal de Configuração do Shell */}
+      <Dialog open={shellModalOpen} onOpenChange={setShellModalOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Abrir Shell no Container</DialogTitle>
+            <DialogDescription>
+              Escolha o container e o tipo de shell para conectar
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-4">
+            {/* Seleção de Container */}
+            <div className="space-y-2">
+              <Label htmlFor="container-select">Container</Label>
+              <Select
+                value={selectedShellContainer}
+                onValueChange={setSelectedShellContainer}
+              >
+                <SelectTrigger id="container-select">
+                  <SelectValue placeholder="Selecione um container" />
+                </SelectTrigger>
+                <SelectContent>
+                  {selectedPod?.containers.map((container) => (
+                    <SelectItem key={container.name} value={container.name}>
+                      <div className="flex items-center gap-2">
+                        <span>{container.name}</span>
+                        <Badge variant="outline" className="text-xs">
+                          {container.state}
+                        </Badge>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Seleção de Shell */}
+            <div className="space-y-3">
+              <Label>Tipo de Shell</Label>
+              <RadioGroup 
+                value={useEphemeralDebug ? "ephemeral" : selectedShellType} 
+                onValueChange={(value) => {
+                  if (value === "ephemeral") {
+                    setUseEphemeralDebug(true);
+                    setSelectedShellType("/bin/bash");
+                  } else {
+                    setUseEphemeralDebug(false);
+                    setSelectedShellType(value);
+                  }
+                }}
+              >
+                <div className="flex items-start space-x-2 p-2 rounded hover:bg-muted/50 transition-colors">
+                  <RadioGroupItem value="/bin/bash" id="bash" className="mt-0.5" />
+                  <Label htmlFor="bash" className="font-normal cursor-pointer flex-1">
+                    <div className="font-medium">/bin/bash</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      Shell padrão mais comum • Recursos avançados • Presente na maioria dos containers
+                    </div>
+                  </Label>
+                </div>
+                <div className="flex items-start space-x-2 p-2 rounded hover:bg-muted/50 transition-colors">
+                  <RadioGroupItem value="/bin/sh" id="sh" className="mt-0.5" />
+                  <Label htmlFor="sh" className="font-normal cursor-pointer flex-1">
+                    <div className="font-medium">/bin/sh</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      Shell minimalista POSIX • Comum em imagens Alpine e efêmeras • Sempre disponível
+                    </div>
+                  </Label>
+                </div>
+                <div className="flex items-start space-x-2 p-2 rounded hover:bg-muted/50 transition-colors">
+                  <RadioGroupItem value="/bin/zsh" id="zsh" className="mt-0.5" />
+                  <Label htmlFor="zsh" className="font-normal cursor-pointer flex-1">
+                    <div className="font-medium">/bin/zsh</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      Shell avançado • Comum em netshoot e imagens de debug • Autocompletion rico
+                    </div>
+                  </Label>
+                </div>
+                <div className="flex items-start space-x-2 p-2 rounded bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20 transition-colors">
+                  <RadioGroupItem value="ephemeral" id="ephemeral" className="mt-0.5" />
+                  <Label htmlFor="ephemeral" className="font-normal cursor-pointer flex-1">
+                    <div className="font-medium flex items-center gap-2">
+                      <span>🛠️ Ephemeral Debug Container</span>
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-600 dark:text-blue-400 font-semibold">RECOMENDADO</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      <span className="font-medium">nicolaka/netshoot</span> • Container temporário com arsenal completo de debug
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1 flex flex-wrap gap-1">
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">tcpdump</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">curl</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">nslookup</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">dig</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">netstat</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">iperf</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">mtr</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">ethtool</code>
+                    </div>
+                  </Label>
+                </div>
+              </RadioGroup>
+            </div>
+
+            {/* Info sobre o pod */}
+            {selectedPod && (
+              <div className="mt-4 p-3 bg-muted rounded-lg text-sm space-y-1">
+                <div><span className="font-medium">Pod:</span> {selectedPod.name}</div>
+                <div><span className="font-medium">Namespace:</span> {selectedPod.namespace}</div>
+                <div><span className="font-medium">Status:</span> <Badge variant="outline" className={getPhaseColor(selectedPod.phase)}>{selectedPod.phase}</Badge></div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShellModalOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => {
+                if (!selectedShellContainer) {
+                  toast.error("Selecione um container");
+                  return;
+                }
+                setShellModalOpen(false);
+                setTerminalOpen(true);
+              }}
+              disabled={!selectedShellContainer}
+            >
+              <Terminal className="w-4 h-4 mr-2" />
+              Conectar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal do Terminal */}
+      <Dialog open={terminalOpen} onOpenChange={(open) => {
+        setTerminalOpen(open);
+        if (!open) {
+          // Resetar fullscreen ao fechar
+          setTerminalFullscreen(false);
+        }
+      }}>
+        <DialogContent className={terminalFullscreen 
+          ? "w-screen h-screen max-w-none max-h-none p-0 m-0 rounded-none"
+          : "max-w-6xl h-[85vh] p-0"
+        }>
+          {selectedPod && selectedShellContainer && (
+            <PodTerminal
+              cluster={selectedPod.cluster}
+              namespace={selectedPod.namespace}
+              pod={selectedPod.name}
+              container={selectedShellContainer}
+              shell={selectedShellType}
+              ephemeral={useEphemeralDebug}
+              isFullscreen={terminalFullscreen}
+              onToggleFullscreen={() => setTerminalFullscreen(!terminalFullscreen)}
+              onClose={() => setTerminalOpen(false)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
       <SplitView
         leftPanel={{
           title: `Pods (${filteredPods.length})`,

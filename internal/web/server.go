@@ -279,6 +279,18 @@ func (s *Server) setupRoutes() {
 	rbacManager := rbac.NewRBACManager(s.disableADAuth)
 	rbacMiddleware := middleware.NewRBACMiddleware(rbacManager)
 
+	// WebSocket endpoints (com auth via query param + RBAC SRE-only)
+	// Usa WebSocketAuthMiddleware para aceitar token via query parameter
+	podExecHandler := handlers.NewPodExecHandler(s.kubeManager)
+	
+	wsShell := s.router.Group("/api/v1/pods/:cluster/:namespace/:name")
+	wsShell.Use(middleware.WebSocketAuthMiddleware(s.token))
+	wsShell.Use(rbacMiddleware.RequireSREGroup())
+	{
+		wsShell.GET("/shell", podExecHandler.HandleShell)
+		wsShell.GET("/debug", podExecHandler.HandleDebug)
+	}
+
 	// RBAC - Endpoints públicos de permissões (apenas GET, sem proteção extra)
 	api.GET("/permissions", rbacMiddleware.GetUserPermissions())
 	api.POST("/permissions/refresh", rbacMiddleware.RefreshPermissions())
