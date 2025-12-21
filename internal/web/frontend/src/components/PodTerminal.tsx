@@ -186,49 +186,64 @@ export const PodTerminal = ({
         // O navegador detecta o layout físico do teclado, não o layout lógico
         // Precisamos interceptar os keycodes e mapear para ABNT2
         
-        // Debug completo - mostre TODAS as teclas para diagnóstico
-        console.log("[Keyboard DEBUG]", {
-          key: event.key,
-          code: event.code,
-          shift: event.shiftKey,
-          ctrl: event.ctrlKey,
-          alt: event.altKey,
-          charCode: event.key.charCodeAt(0),
-        });
+        // Debug completo - mostre TODAS as teclas para diagnóstico (comentado para produção)
+        // console.log("[Keyboard DEBUG]", {
+        //   key: event.key,
+        //   code: event.code,
+        //   shift: event.shiftKey,
+        //   ctrl: event.ctrlKey,
+        //   alt: event.altKey,
+        //   charCode: event.key.charCodeAt(0),
+        // });
 
         // Semicolon -> ç/Ç (tecla do ç no ABNT2)
         if (event.code === "Semicolon" && !event.ctrlKey && !event.altKey) {
+          event.preventDefault();
           const char = event.shiftKey ? "Ç" : "ç";
-          // Envia direto para o terminal, não via WebSocket
-          terminal.write(char);
-          return false; // Bloqueia processamento padrão
+          // Envia via WebSocket para o backend processar corretamente
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "input", data: char }));
+          }
+          return false; // Bloqueia processamento padrão do xterm
         }
 
         // Quote -> ~/ (til/crase no ABNT2)
         if (event.code === "Quote" && !event.ctrlKey && !event.altKey) {
+          event.preventDefault();
           const char = event.shiftKey ? "`" : "~";
-          terminal.write(char);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "input", data: char }));
+          }
           return false;
         }
 
         // BracketLeft -> ´/` (acento agudo no ABNT2)
         if (event.code === "BracketLeft" && !event.ctrlKey && !event.altKey) {
+          event.preventDefault();
           const char = event.shiftKey ? "`" : "´";
-          terminal.write(char);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "input", data: char }));
+          }
           return false;
         }
 
         // BracketRight -> [/{ (colchetes no ABNT2)
         if (event.code === "BracketRight" && !event.ctrlKey && !event.altKey) {
+          event.preventDefault();
           const char = event.shiftKey ? "{" : "[";
-          terminal.write(char);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "input", data: char }));
+          }
           return false;
         }
 
         // Backslash (acima do Enter) -> ]/} (colchetes fechamento no ABNT2)
         if (event.code === "Backslash" && !event.ctrlKey && !event.altKey) {
+          event.preventDefault();
           const char = event.shiftKey ? "}" : "]";
-          terminal.write(char);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "input", data: char }));
+          }
           return false;
         }
         
