@@ -935,4 +935,108 @@ const loadNamespaces = async () => {
 
 ---
 
+---
+
+## 🐛 Correções Recentes (Dezembro 2025)
+
+### ✅ Fix: Bug de Duplicação do Caractere "ç" no Terminal (21/12/2025)
+
+**Commit**: `6d4f010`
+
+**Contexto**:
+O componente `PodTerminal` é usado nas seguintes abas da interface web:
+- **Aba Pods** (`PodsPanel.tsx`) - Shell em containers de pods
+- **Aba Namespaces** (`NamespacesTab.tsx`) - Shell em pods do namespace
+- Suporta dois modos:
+  - Shell normal (exec direto no container)
+  - Ephemeral Debug (container de debug temporário)
+
+**Problema**: 
+- Ao digitar "ç" no terminal (shell de pods/namespaces), o caractere era duplicado ("çç")
+- Ao tentar deletar, apenas um dos "ç" era removido, o outro permanecia
+- Isso tornava impossível usar corretamente códigos com caracteres especiais ABNT2
+- Bug afetava ambas as abas (Pods e Namespaces) pois compartilham o mesmo componente
+
+**Causa Raiz**:
+- O código estava usando `terminal.write(char)` para escrever diretamente no terminal
+- O xterm.js processava o evento novamente, duplicando o caractere
+- O delete só removia a representação visual, não o caractere real no buffer
+
+**Solução Implementada**:
+```typescript
+// ANTES (INCORRETO)
+if (event.code === "Semicolon" && !event.ctrlKey && !event.altKey) {
+  const char = event.shiftKey ? "Ç" : "ç";
+  terminal.write(char);  // ❌ Escrita direta causa duplicação
+  return false;
+}
+
+// DEPOIS (CORRETO)
+if (event.code === "Semicolon" && !event.ctrlKey && !event.altKey) {
+  event.preventDefault();  // ✅ Bloqueia processamento padrão
+  const char = event.shiftKey ? "Ç" : "ç";
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "input", data: char }));  // ✅ Envia via WebSocket
+  }
+  return false;
+}
+```
+
+**Arquivos Modificados**:
+- `internal/web/frontend/src/components/PodTerminal.tsx` (componente compartilhado)
+
+**Onde a Correção se Aplica**:
+- ✅ Aba **Pods** - Shell em qualquer container de pod
+- ✅ Aba **Namespaces** - Shell em pods listados no namespace
+- ✅ Modo **Shell Normal** (exec direto)
+- ✅ Modo **Ephemeral Debug** (container debug temporário)
+
+**Teclas ABNT2 Corrigidas**:
+- ✅ `ç/Ç` - Semicolon key
+- ✅ `~/`` - Quote key (til/crase)
+- ✅ `´` - BracketLeft (acento agudo)
+- ✅ `[/{` - BracketRight (colchetes)
+- ✅ `]/}` - Backslash (colchetes fechamento)
+
+---
+
+### ✅ Fix: Mensagens do Banner de Clusters Inacessíveis (21/12/2025)
+
+**Commit**: `9c3b594`
+
+**Problema**:
+- Banner assumia que o problema era sempre "VPN Desconectada"
+- Não considerava o caso de VPN conectada mas clusters desligados
+- Usuários ficavam confusos quando a VPN estava OK mas clusters offline
+
+**Solução**:
+```tsx
+// ANTES
+<h3>VPN Desconectada - Kubernetes Inacessível</h3>
+<p>Não foi possível conectar aos clusters Kubernetes. 
+   Verifique se você está conectado à VPN corporativa.</p>
+
+// DEPOIS
+<h3>Clusters Kubernetes Inacessíveis</h3>
+<p>Não foi possível conectar aos clusters Kubernetes. 
+   Isso pode ocorrer se a VPN estiver desconectada ou 
+   os clusters estiverem desligados.</p>
+```
+
+**Instruções Reorganizadas**:
+1. ✅ Verifique a conexão VPN e clique em "Tentar Novamente"
+2. ✅ Confirme se os clusters estão ligados e acessíveis *(NOVO)*
+3. ✅ Clique em "Auto-Descobrir Clusters" ou execute comando
+4. ✅ Verifique se o kubectl está configurado corretamente
+
+**Arquivos Modificados**:
+- `internal/web/frontend/src/components/VPNWarningBanner.tsx`
+
+**Benefícios**:
+- Mensagem mais precisa e menos assumptiva
+- Cobre ambos os cenários: VPN OFF ou clusters desligados
+- Melhor experiência do usuário (UX) com troubleshooting mais claro
+
+---
+
 **Happy coding!** 🚀
