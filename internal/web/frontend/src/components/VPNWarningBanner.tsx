@@ -45,20 +45,26 @@ export function VPNWarningBanner({ onDismiss }: VPNWarningBannerProps) {
           <AlertTriangle className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
           <div className="flex-1">
             <h3 className="text-red-500 font-semibold text-base mb-1">
-              VPN Desconectada - Kubernetes Inacessível
+              Clusters Kubernetes Inacessíveis
             </h3>
             <p className="text-sm text-muted-foreground mb-3">
-              Não foi possível conectar aos clusters Kubernetes. Verifique se você está conectado à VPN corporativa.
+              Não foi possível conectar aos clusters Kubernetes. Isso pode ocorrer se a VPN estiver desconectada ou os clusters estiverem desligados.
             </p>
             <div className="flex flex-col gap-2 text-sm text-muted-foreground">
               <div className="flex items-center gap-2">
                 <span className="text-red-400">•</span>
-                <span>Conecte-se à VPN e clique em "Tentar Novamente"</span>
+                <span>Verifique a conexão VPN e clique em "Tentar Novamente"</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-red-400">•</span>
                 <span>
-                  Após conectar, clique em "Auto-Descobrir Clusters" ou execute:{" "}
+                  Confirme se os clusters estão ligados e acessíveis
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-red-400">•</span>
+                <span>
+                  Clique em "Auto-Descobrir Clusters" ou execute:{" "}
                   <code className="bg-muted px-1 py-0.5 rounded text-xs">
                     new-k8s-hpa autodiscover
                   </code>
