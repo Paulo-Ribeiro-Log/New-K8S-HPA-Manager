@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
+**IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
 ---
 
@@ -80,6 +81,14 @@ new-k8s-hpa version           # Verificar versão e updates disponíveis
 # Release
 make release                  # Build multi-plataforma (Linux, macOS Intel/ARM)
 ./create-v1-release.sh        # Criar release no GitHub com binários
+
+# Scripts Utilitários
+./web-server.sh start|stop|status|logs  # Gerenciar servidor web
+./rebuild-web.sh -b                     # Rebuild frontend + backend (limpa cache)
+./backup.sh                             # Backup automático do código
+./restore.sh                            # Restaurar último backup
+./uninstall.sh                          # Desinstalar completamente
+./diagnostico.sh                        # Diagnóstico de problemas comuns
 ```
 
 ### Estrutura do Projeto
@@ -104,10 +113,13 @@ k8s-hpa-manager/
 
 | Categoria | Tecnologia |
 |-----------|------------|
-| **Backend** | Go 1.24+, client-go v0.34, Azure SDK |
-| **Frontend** | React 18.3, TypeScript 5.8, Vite 5.4 |
-| **UI** | shadcn/ui, Tailwind CSS 3.4 |
-| **Arquitetura** | MVC, SSE (Server-Sent Events) |
+| **Backend** | Go 1.24.0+, client-go v0.34.1, Azure SDK v1.19.1 |
+| **Frontend** | React 18.3.1, TypeScript 5.8.3, Vite 5.4.21 |
+| **UI** | shadcn/ui (Radix UI), Tailwind CSS 3.4.17 |
+| **Editor** | Monaco Editor 0.52.2, xterm.js 5.3.0 |
+| **Gráficos** | Recharts 2.15.4, Cytoscape 3.33.1 |
+| **Web Server** | Gin 1.11.0, CORS, SSE (Server-Sent Events) |
+| **Arquitetura** | MVC, SSE, WebSocket (Terminal), React Query |
 
 ### Features Principais
 
@@ -245,10 +257,12 @@ k8s-hpa-manager/
 Projeto: Kubernetes HPA + Azure AKS Node Pool Manager
 
 Repositório: git@github.com:Paulo-Ribeiro-Log/New-K8S-HPA-Manager.git
-Versão Atual: v1.3.5+ (em desenvolvimento)
-Tech: Go 1.24+ + React 18.3 (Web)
+Branch Principal: new-k8s-hpa-dev (desenvolvimento contínuo)
+Versão Atual: v1.3.1 (última release estável)
+Tech: Go 1.24.0+ + React 18.3.1 + TypeScript 5.8.3
 Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
+Servidor Web: ./build/new-k8s-hpa web (porta 8080)
 
 Recent Updates (v1.3.5):
 - **RBAC com Azure AD**: Sistema completo de controle de acesso
@@ -455,6 +469,115 @@ interface StagingContextType {
 // 3. ApplyAllModal mostra diff antes/depois
 // 4. applyAll() executa rollout com progress tracking
 ```
+
+---
+
+## 🧩 Padrões de Desenvolvimento do Projeto
+
+### Sistema de Versionamento
+**Versão injetada em tempo de build** via linker flags:
+
+```bash
+# Makefile detecta versão automaticamente
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "v0.0.0-dev")
+LDFLAGS := -X main.version=$(VERSION)
+
+# Build com versão
+go build -ldflags "$(LDFLAGS)" -o build/new-k8s-hpa
+```
+
+**NUNCA hardcodear versão no código** - usar `main.version` (injetado via build).
+
+### Estrutura de Handlers HTTP (Backend)
+**Padrão Gin + Dependency Injection:**
+
+```go
+// internal/web/handlers/example.go
+type ExampleHandler struct {
+    clientCache *cache.ClientCache  // Shared K8s clients
+    logger      *zerolog.Logger
+}
+
+func NewExampleHandler(cc *cache.ClientCache, logger *zerolog.Logger) *ExampleHandler {
+    return &ExampleHandler{clientCache: cc, logger: logger}
+}
+
+// Route registration em internal/web/routes.go
+func SetupRoutes(router *gin.Engine, handlers ...) {
+    v1 := router.Group("/api/v1")
+    v1.GET("/resource/:cluster/:namespace", handler.GetResource)
+}
+```
+
+**NUNCA** criar clientes K8s diretamente - sempre reutilizar do cache.
+
+### Frontend - API Client Pattern
+**Centralizar chamadas HTTP** (`internal/web/frontend/src/lib/api/client.ts`):
+
+```typescript
+// ✅ CORRETO
+export const apiClient = {
+  async getHPAs(cluster: string, namespaces: string[]): Promise<HPAInfo[]> {
+    const params = new URLSearchParams({ cluster })
+    namespaces.forEach(ns => params.append('namespaces', ns))
+
+    const response = await fetch(`/api/v1/hpas?${params}`)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return response.json()
+  }
+}
+
+// ❌ ERRADO - Não fazer fetch direto em componentes
+```
+
+### WebSocket Pattern (Terminal)
+**Protocolo JSON** (`internal/web/handlers/websocket_shell.go`):
+
+```typescript
+// Frontend envia comandos via JSON
+ws.send(JSON.stringify({ type: "input", data: "ls -la\n" }))
+ws.send(JSON.stringify({ type: "resize", rows: 50, cols: 120 }))
+
+// Backend responde com output base64
+{ type: "output", data: "base64-encoded-terminal-output" }
+```
+
+**SEMPRE** usar `event.preventDefault()` em handlers de teclado para evitar duplicação.
+
+### Logging Pattern (Backend)
+**Structured logging com zerolog:**
+
+```go
+// SEMPRE passar logger via DI, nunca global
+logger.Info().
+    Str("cluster", cluster).
+    Str("namespace", namespace).
+    Str("hpa", hpaName).
+    Msg("Applying HPA changes")
+
+// Errors com stack trace
+logger.Error().
+    Err(err).
+    Str("operation", "apply-hpa").
+    Msg("Failed to apply HPA")
+```
+
+### React Query Pattern (Frontend)
+**Cacheable API calls** com TanStack React Query:
+
+```typescript
+// hooks/useHPAs.ts
+export const useHPAs = (cluster: string, namespaces: string[]) => {
+  return useQuery({
+    queryKey: ['hpas', cluster, namespaces],
+    queryFn: () => apiClient.getHPAs(cluster, namespaces),
+    staleTime: 30000,  // 30 segundos
+    enabled: !!cluster && namespaces.length > 0
+  })
+}
+```
+
+**SEMPRE** usar `queryKey` único para invalidação de cache.
 
 ---
 
@@ -1036,6 +1159,96 @@ if (event.code === "Semicolon" && !event.ctrlKey && !event.altKey) {
 - Mensagem mais precisa e menos assumptiva
 - Cobre ambos os cenários: VPN OFF ou clusters desligados
 - Melhor experiência do usuário (UX) com troubleshooting mais claro
+
+---
+
+---
+
+## 🔍 Troubleshooting - Problemas Comuns
+
+### Frontend não atualiza após mudanças
+**Sintoma**: Alterações no código React/TypeScript não aparecem no navegador.
+
+**Solução**:
+```bash
+# 1. Rebuild completo (limpa cache do Vite)
+./rebuild-web.sh -b
+
+# 2. Hard refresh no navegador
+# Linux/Windows: Ctrl+Shift+R
+# macOS: Cmd+Shift+R
+
+# 3. Se persistir, limpar cache manualmente
+rm -rf internal/web/frontend/node_modules/.vite
+rm -rf internal/web/frontend/dist
+make web-build
+```
+
+### Terminal duplica caracteres especiais (ç, ~, etc)
+**Sintoma**: Ao digitar "ç" no terminal de pods, aparece "çç".
+
+**Causa**: Handler de teclado processando evento duas vezes (xterm.js + browser).
+
+**Solução** (já corrigida em `PodTerminal.tsx`):
+- ✅ Usar `event.preventDefault()` ANTES de enviar via WebSocket
+- ✅ Mapear códigos físicos (Semicolon, Quote, etc) para caracteres ABNT2
+- ❌ NUNCA usar `terminal.write()` diretamente em key handlers
+
+### Clusters aparecem como inacessíveis
+**Sintoma**: Banner "VPN Desconectada" mesmo com VPN conectada.
+
+**Causas possíveis**:
+1. VPN realmente desconectada
+2. Clusters desligados (shutdown programado)
+3. Timeout de validação (5s padrão)
+
+**Diagnóstico**:
+```bash
+# Validar conexão manualmente
+kubectl cluster-info --context <cluster-name>
+
+# Aumentar timeout (se clusters lentos)
+# Ver internal/config/kubeconfig.go:ValidateClusterConnection()
+```
+
+### Istio/Kiali não disponível
+**Sintoma**: Service Mesh Graph exibe mensagem "Istio não disponível".
+
+**Diagnóstico**:
+```bash
+# Verificar se Kiali está instalado
+kubectl get svc -n istio-system kiali
+
+# Testar acesso direto
+./scripts/diagnose-kiali-503.sh
+
+# Configurar autenticação anônima (se necessário)
+./scripts/configure-kiali-anonymous.sh
+```
+
+### Race conditions em testes
+**Sintoma**: `go test -race` reporta race conditions.
+
+**Áreas críticas**:
+- `clientCache` em `internal/config/kubeconfig.go` - sempre usar `sync.RWMutex`
+- Bubble Tea - NUNCA usar goroutines diretas, sempre `tea.Cmd`
+
+**Teste específico**:
+```bash
+go test -v ./internal/config -race
+```
+
+### Build falha com "version not found"
+**Sintoma**: `make build` falha ao detectar versão.
+
+**Solução**:
+```bash
+# Git tags locais corrompidos - limpar
+git fetch --tags --prune
+
+# Forçar versão manualmente
+VERSION=v1.3.1 make build
+```
 
 ---
 
