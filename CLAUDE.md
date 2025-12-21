@@ -39,6 +39,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 15. [🛣️ Roteiro Implementação SSO](ROTEIRO_IMPLEMENTACAO_SSO.md) - **Roadmap completo para servidor centralizado** (6 dias)
 16. [📧 Implementação user_email History](IMPLEMENTACAO_USER_EMAIL_HISTORY.md) - User tracking no History Tracker (v1.3.6)
 
+### 🤖 AI Diagnostics (Em Desenvolvimento)
+17. [🧠 Plano AI Diagnostics](PLANO_AI_DIAGNOSTICS.md) - **Plano completo de implementação** (8 dias)
+18. [📊 Progresso AI Diagnostics](PROGRESSO_AI_DIAGNOSTICS.md) - **Status atual: Backend 90%** (atualizado 21/12/2025)
+
 ---
 
 ## 📌 Quick Reference
@@ -247,6 +251,25 @@ k8s-hpa-manager/
   - **Badge de Status**: Componente `<SREBadge>` exibe status SRE no header com popover de grupos
   - **Testes**: Suite completa (`./testes/test-rbac.sh`) + testes Go unitários (`go test ./internal/rbac`)
   - **Documentação**: [RBAC_AZURE_AD_IMPLEMENTATION.md](docs/guides/RBAC_AZURE_AD_IMPLEMENTATION.md) + [RBAC_SUMMARY.md](docs/guides/RBAC_SUMMARY.md)
+🟡 **AI Diagnostics (v1.3.6 - Em Desenvolvimento)** - Análise inteligente de problemas Kubernetes com IA
+  - **Status**: 🟡 Backend 90% completo | Frontend 0% | Documentação completa
+  - **Providers**: Gemini API (default, usa `GEMINI_API_KEY` env var) + Ollama local
+  - **Recursos Suportados**: Pods, Deployments, HPAs, Nodes
+  - **Backend Completo (5 módulos, 20 arquivos, ~2.500 linhas)**:
+    - ✅ `internal/sanitizer/` - Sanitização de IPs, emails, tokens, secrets antes de enviar para IA
+    - ✅ `internal/collectors/` - Coleta de contexto (logs, events, describe, metrics)
+    - ✅ `internal/storage/` - SQLite + histórico persistente (./build/ai_diagnostics.db)
+    - ✅ `internal/ai/` - Providers (Gemini/Ollama) + Analyzer + Prompts especializados
+    - ✅ `internal/web/handlers/ai_diagnostics.go` - 6 endpoints REST API
+  - **API REST**: `/api/v1/ai/analyze`, `/api/v1/ai/history`, `/api/v1/ai/status`, `/api/v1/ai/stats`
+  - **Funcionalidades**:
+    - Análise de problemas (CrashLoopBackOff, maxed out HPAs, node pressure, etc)
+    - Extração automática de sugestões + comandos kubectl
+    - Inferência de prioridade (critical/high/medium/low)
+    - Histórico completo com filtros (cluster, namespace, resource, data, provider)
+    - Sanitização completa de dados sensíveis (NUNCA envia secrets/tokens/IPs reais para IA)
+  - **Pendente**: Integração no servidor web (flags CLI) + Frontend React (7 componentes)
+  - **Documentação**: [PLANO_AI_DIAGNOSTICS.md](PLANO_AI_DIAGNOSTICS.md) | [PROGRESSO_AI_DIAGNOSTICS.md](PROGRESSO_AI_DIAGNOSTICS.md)
 
 ---
 
