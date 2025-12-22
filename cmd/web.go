@@ -20,6 +20,11 @@ var (
 	noBrowser     bool
 	foreground    bool
 	disableADAuth bool // Flag oculta para desabilitar verificação AD em caso de erro
+
+	// AI Diagnostics flags
+	aiProvider   string
+	ollamaURL    string
+	ollamaModel  string
 )
 
 // runInBackground executes the web server as a background process
@@ -47,6 +52,19 @@ func runInBackground() error {
 
 	if disableADAuth {
 		args = append(args, "--ad")
+	}
+
+	// AI Diagnostics flags
+	if aiProvider != "" {
+		args = append(args, "--ai-provider", aiProvider)
+	}
+
+	if ollamaURL != "" {
+		args = append(args, "--ollama-url", ollamaURL)
+	}
+
+	if ollamaModel != "" {
+		args = append(args, "--ollama-model", ollamaModel)
 	}
 
 	// Start process in background
@@ -184,7 +202,7 @@ API Endpoints:
 		}
 
 		// Criar servidor web
-		server, err := web.NewServer(kubeconfig, webPort, debug, disableADAuth)
+		server, err := web.NewServer(kubeconfig, webPort, debug, disableADAuth, aiProvider, ollamaURL, ollamaModel)
 		if err != nil {
 			return fmt.Errorf("failed to create web server: %w", err)
 		}
@@ -242,4 +260,9 @@ func init() {
 	// Flag oculta para desabilitar verificação AD (sem documentação, apenas para emergências)
 	webCmd.Flags().BoolVar(&disableADAuth, "ad", false, "")
 	webCmd.Flags().MarkHidden("ad")
+
+	// AI Diagnostics flags
+	webCmd.Flags().StringVar(&aiProvider, "ai-provider", "gemini", "AI provider (gemini or ollama)")
+	webCmd.Flags().StringVar(&ollamaURL, "ollama-url", "http://localhost:11434", "Ollama base URL")
+	webCmd.Flags().StringVar(&ollamaModel, "ollama-model", "llama3.2", "Ollama model name")
 }
