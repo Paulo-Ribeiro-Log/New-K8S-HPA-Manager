@@ -1,7 +1,8 @@
 # Progresso: AI Diagnostics - Implementação
 
 **Data de início**: 21/12/2025
-**Status**: 🟡 Backend 90% completo | Frontend 0%
+**Status**: 🟢 Backend 100% completo (Opção 1) | Frontend 0%
+**Última atualização**: 21/12/2025 19:00
 
 ---
 
@@ -10,6 +11,20 @@
 Sistema de diagnósticos AI para recursos Kubernetes (Pods, Deployments, HPAs, Nodes) com **Gemini API** e **Ollama** como providers, sanitização de dados sensíveis e histórico persistente em SQLite.
 
 **Objetivo**: Analisar problemas de recursos K8s usando IA, fornecendo sugestões de ação corretiva sem execução automática.
+
+### 🎯 Opção 1 - Backend Integration: ✅ CONCLUÍDA (21/12/2025)
+
+**Implementação realizada:**
+- ✅ Flags CLI adicionadas (`--ai-provider`, `--ollama-url`, `--ollama-model`)
+- ✅ AI system inicializado no `internal/web/server.go`
+- ✅ 6 rotas REST registradas (`/api/v1/ai/*`)
+- ✅ Endpoint `/api/v1/ai/status` testado com sucesso
+- ✅ Detecção automática de `GEMINI_API_KEY` (variável de ambiente)
+- ✅ Graceful degradation (AI desabilitado se inicialização falhar)
+
+**Commits:**
+- `a6a7686` - feat: implementa backend completo do AI Diagnostics (90%)
+- `a108bdc` - feat: integra backend AI Diagnostics com servidor web
 
 ---
 
