@@ -42,6 +42,7 @@ import { CronJobsPage } from "./CronJobsPage";
 import { PrometheusPage } from "./PrometheusPage";
 import { MonitoringPage } from "./MonitoringPage";
 import { ServiceMeshGraph } from "@/components/ServiceMeshGraph";
+import { AIDiagnosticsTab } from "@/components/AIDiagnosticsTab";
 import {
   LayoutDashboard,
   Scale,
@@ -57,7 +58,8 @@ import {
   Settings,
   X,
   RefreshCcw,
-  Network
+  Network,
+  Brain
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -317,6 +319,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "staging", label: "Staging", icon: FileText, badge: staging.getChangesCount().total },
     { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
     { id: "servicemesh", label: "Service Mesh", icon: Network },
+    { id: "ai-diagnostics", label: "AI Diagnostics", icon: Brain },
     { id: "namespaces", label: "Namespaces", icon: Database },
   ];
 
@@ -926,6 +929,9 @@ const Index = ({ onLogout }: IndexProps) => {
           />
         );
 
+      case "ai-diagnostics":
+        return <AIDiagnosticsTab />;
+
       default:
         return null;
     }
@@ -981,8 +987,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers, Pods, CronJobs, Prometheus, Ingresses e Service Mesh */}
-      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh e AI Diagnostics */}
+      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "ai-diagnostics" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (
