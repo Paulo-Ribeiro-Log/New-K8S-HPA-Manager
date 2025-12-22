@@ -15,10 +15,13 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 
+	"k8s-hpa-manager/internal/ai"
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
+	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/notifications"
 	"k8s-hpa-manager/internal/rbac"
+	"k8s-hpa-manager/internal/storage"
 
 	// TODO: Remover após migração completa para V2
 	// "k8s-hpa-manager/internal/monitoring/analyzer"
@@ -60,10 +63,13 @@ type Server struct {
 
 	// Notification Manager (Windows Toast via PowerShell)
 	notificationManager *notifications.NotificationManager
+
+	// AI Diagnostics Handler (pode ser nil se AI estiver desabilitado)
+	aiHandler *handlers.AIDiagnosticsHandler
 }
 
 // NewServer cria uma nova instância do servidor web
-func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool) (*Server, error) {
+func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiProvider, ollamaURL, ollamaModel string) (*Server, error) {
 	// Reutilizar gerenciador de kube existente
 	kubeManager, err := config.NewKubeConfigManager(kubeconfig)
 	if err != nil {
@@ -132,6 +138,61 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool) (*Se
 	monitoringEngineV2 := enginev2.NewMonitoringEngineV2()
 	fmt.Println("✅ Monitoring Engine V2 criado (sem port-forwards - acesso direto ao Prometheus)")
 
+	// Inicializar AI Diagnostics System
+	fmt.Println("🤖 Inicializando AI Diagnostics System...")
+
+	// 1. Criar SQLite client para histórico AI
+	aiDBPath := filepath.Join("./build", "ai_diagnostics.db")
+	sqliteClient, err := storage.NewSQLiteClient(aiDBPath)
+	if err != nil {
+		fmt.Printf("⚠️  Falha ao criar SQLite client para AI: %v\n", err)
+		fmt.Println("   AI Diagnostics desabilitado")
+		sqliteClient = nil
+	}
+
+	var aiHistoryStore *storage.AIHistoryStore
+	var aiHandler *handlers.AIDiagnosticsHandler
+
+	if sqliteClient != nil {
+		aiHistoryStore = storage.NewAIHistoryStore(sqliteClient)
+
+		// 2. Criar AI config
+		aiConfig := &ai.Config{
+			Provider:      aiProvider,
+			OllamaBaseURL: ollamaURL,
+			OllamaModel:   ollamaModel,
+			Timeout:       120,
+		}
+
+		// 3. Criar AI provider
+		aiProviderInstance, err := ai.NewProvider(aiConfig)
+		if err != nil {
+			fmt.Printf("⚠️  Falha ao criar AI provider: %v\n", err)
+			fmt.Println("   AI Diagnostics desabilitado")
+		} else {
+			// 4. Criar KubeManager wrapper
+			kubeManagerWrapper := kubernetes.NewKubeManager(
+				kubeManager.GetClient,
+				nil, // kubectl describe será implementado depois
+			)
+
+			// 5. Criar AI Analyzer
+			aiAnalyzer := ai.NewAnalyzer(aiProviderInstance, kubeManagerWrapper, aiHistoryStore)
+
+			// 6. Criar handler
+			aiHandler = handlers.NewAIDiagnosticsHandler(aiAnalyzer, aiHistoryStore)
+
+			fmt.Printf("✅ AI Diagnostics habilitado (Provider: %s)\n", aiProvider)
+			if aiProvider == "gemini" {
+				if os.Getenv("GEMINI_API_KEY") != "" {
+					fmt.Println("   ✅ GEMINI_API_KEY detectado (env var)")
+				} else {
+					fmt.Println("   ⚠️  GEMINI_API_KEY não encontrado (pode falhar na análise)")
+				}
+			}
+		}
+	}
+
 	server := &Server{
 		router:              router,
 		kubeManager:         kubeManager,
@@ -150,6 +211,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool) (*Se
 		// monitoringCtx:      monitoringCtx,
 		// monitoringCancel:   monitoringCancel,
 		monitoringEngineV2: monitoringEngineV2,
+		aiHandler:          aiHandler, // Pode ser nil se AI estiver desabilitado
 	}
 
 	server.setupMiddleware()
@@ -564,6 +626,21 @@ func (s *Server) setupRoutes() {
 	api.PUT("/notifications/in-app/:id/read", notificationHandler.MarkNotificationAsRead)
 	api.PUT("/notifications/in-app/read-all", notificationHandler.MarkAllNotificationsAsRead)
 	api.DELETE("/notifications/in-app", notificationHandler.ClearAllNotifications)
+
+	// AI Diagnostics (se habilitado)
+	if s.aiHandler != nil {
+		// Rotas públicas (GET)
+		api.GET("/ai/status", s.aiHandler.GetProviderStatus)
+		api.GET("/ai/history", s.aiHandler.GetHistory)
+		api.GET("/ai/history/:id", s.aiHandler.GetAnalysisByID)
+		api.GET("/ai/stats", s.aiHandler.GetStats)
+
+		// Rotas de escrita (POST, DELETE) - podem adicionar RBAC depois se necessário
+		api.POST("/ai/analyze", s.aiHandler.Analyze)
+		api.DELETE("/ai/history/:id", s.aiHandler.DeleteAnalysis)
+
+		fmt.Println("✅ AI Diagnostics routes registradas")
+	}
 }
 
 // setupStatic configura servir arquivos estáticos
