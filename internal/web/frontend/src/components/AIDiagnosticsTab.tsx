@@ -29,19 +29,28 @@ export function AIDiagnosticsTab() {
 
   // Load initial data
   useEffect(() => {
-    fetchProviderStatus();
-    fetchHistory();
-    fetchStats();
-  }, []);
+    const loadData = async () => {
+      try {
+        await Promise.all([
+          fetchProviderStatus(),
+          fetchHistory(),
+          fetchStats(),
+        ]);
+      } catch (error) {
+        console.error("Error loading AI diagnostics data:", error);
+      }
+    };
 
-  // Auto-refresh history every 60 seconds
-  useEffect(() => {
+    loadData();
+
+    // Auto-refresh history every 60 seconds
     const interval = setInterval(() => {
-      fetchHistory();
+      fetchHistory().catch(console.error);
     }, 60000);
 
     return () => clearInterval(interval);
-  }, [fetchHistory]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Intencionalmente vazio - queremos rodar apenas no mount
 
   // Switch to current view when new analysis arrives
   useEffect(() => {
@@ -135,7 +144,7 @@ export function AIDiagnosticsTab() {
               </div>
               <div className="space-y-1 text-xs text-muted-foreground">
                 <div>
-                  Total de análises: <span className="font-mono">{stats?.totalAnalyses || 0}</span>
+                  Total de análises: <span className="font-mono">{stats?.totalAnalyses ?? 0}</span>
                 </div>
                 <div>
                   Tempo médio: <span className="font-mono">
@@ -144,7 +153,7 @@ export function AIDiagnosticsTab() {
                 </div>
                 <div>
                   Tokens usados: <span className="font-mono">
-                    {stats?.totalTokensUsed || 0}
+                    {stats?.totalTokensUsed ?? 0}
                   </span>
                 </div>
               </div>
@@ -210,7 +219,7 @@ export function AIDiagnosticsTab() {
 
         <TabsContent value="history" className="space-y-4">
           <AIHistoryPanel
-            history={history}
+            history={history || []}
             isLoading={isLoadingHistory}
             onRefresh={fetchHistory}
             onViewAnalysis={handleViewAnalysis}
