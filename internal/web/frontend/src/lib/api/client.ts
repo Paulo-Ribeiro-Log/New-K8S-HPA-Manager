@@ -48,6 +48,14 @@ import type {
   NamespaceMetrics,
 } from "./types";
 
+import type {
+  AnalyzeRequest,
+  AnalysisResult,
+  ProviderStatus,
+  AIStats,
+  HistoryFilter,
+} from "@/types/ai";
+
 const API_BASE_URL = "/api/v1";
 
 class APIClient {
@@ -1302,6 +1310,74 @@ class APIClient {
     namespace: string
   ): Promise<import('@/types/servicemesh').ServiceMeshMetrics> {
     return this.request(`/servicemesh/metrics?cluster=${cluster}&namespace=${namespace}`);
+  }
+
+  // =============================================================================
+  // AI Diagnostics Methods
+  // =============================================================================
+
+  /**
+   * Get AI provider status
+   */
+  async getAIProviderStatus(): Promise<ProviderStatus> {
+    return this.request(`/ai/status`);
+  }
+
+  /**
+   * Analyze a Kubernetes resource with AI
+   */
+  async analyzeResource(request: AnalyzeRequest): Promise<AnalysisResult> {
+    return this.request(`/ai/analyze`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
+  /**
+   * Get AI analysis history with optional filters
+   */
+  async getAIHistory(filters?: HistoryFilter): Promise<AnalysisResult[]> {
+    let url = `/ai/history`;
+    const params = new URLSearchParams();
+
+    if (filters) {
+      if (filters.cluster) params.append("cluster", filters.cluster);
+      if (filters.namespace) params.append("namespace", filters.namespace);
+      if (filters.resourceType) params.append("resourceType", filters.resourceType);
+      if (filters.provider) params.append("provider", filters.provider);
+      if (filters.limit !== undefined) params.append("limit", filters.limit.toString());
+      if (filters.offset !== undefined) params.append("offset", filters.offset.toString());
+    }
+
+    const queryString = params.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    return this.request(url);
+  }
+
+  /**
+   * Get a specific analysis by ID
+   */
+  async getAnalysisById(id: string): Promise<AnalysisResult> {
+    return this.request(`/ai/history/${id}`);
+  }
+
+  /**
+   * Get AI statistics
+   */
+  async getAIStats(): Promise<AIStats> {
+    return this.request(`/ai/stats`);
+  }
+
+  /**
+   * Delete an analysis from history
+   */
+  async deleteAnalysis(id: string): Promise<void> {
+    return this.request(`/ai/history/${id}`, {
+      method: "DELETE",
+    });
   }
 }
 
