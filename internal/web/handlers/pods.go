@@ -554,23 +554,35 @@ func (h *PodHandler) convertToPodSummary(cluster string, pod *corev1.Pod) PodSum
 		})
 	}
 
-	// Calcular recursos totais
+	// Calcular recursos totais (soma de todos os containers)
 	var cpuRequest, memoryRequest, cpuLimit, memoryLimit string
-	totalCPUReq := pod.Spec.Containers[0].Resources.Requests.Cpu()
-	totalMemReq := pod.Spec.Containers[0].Resources.Requests.Memory()
-	totalCPULim := pod.Spec.Containers[0].Resources.Limits.Cpu()
-	totalMemLim := pod.Spec.Containers[0].Resources.Limits.Memory()
+	var totalCPUReq, totalMemReq, totalCPULim, totalMemLim resource.Quantity
 
-	if totalCPUReq != nil && !totalCPUReq.IsZero() {
+	for _, container := range pod.Spec.Containers {
+		if req := container.Resources.Requests.Cpu(); req != nil && !req.IsZero() {
+			totalCPUReq.Add(*req)
+		}
+		if req := container.Resources.Requests.Memory(); req != nil && !req.IsZero() {
+			totalMemReq.Add(*req)
+		}
+		if lim := container.Resources.Limits.Cpu(); lim != nil && !lim.IsZero() {
+			totalCPULim.Add(*lim)
+		}
+		if lim := container.Resources.Limits.Memory(); lim != nil && !lim.IsZero() {
+			totalMemLim.Add(*lim)
+		}
+	}
+
+	if !totalCPUReq.IsZero() {
 		cpuRequest = totalCPUReq.String()
 	}
-	if totalMemReq != nil && !totalMemReq.IsZero() {
+	if !totalMemReq.IsZero() {
 		memoryRequest = totalMemReq.String()
 	}
-	if totalCPULim != nil && !totalCPULim.IsZero() {
+	if !totalCPULim.IsZero() {
 		cpuLimit = totalCPULim.String()
 	}
-	if totalMemLim != nil && !totalMemLim.IsZero() {
+	if !totalMemLim.IsZero() {
 		memoryLimit = totalMemLim.String()
 	}
 
@@ -903,6 +915,106 @@ func (h *PodHandler) Apply(c *gin.Context) {
 			"resourceVersion": result.ResourceVersion,
 			"dryRun":          req.DryRun,
 			"appliedAt":       time.Now().UTC(),
+		},
+	})
+}
+
+// GetMetrics retorna métricas atuais de CPU e memória de um Pod
+func (h *PodHandler) GetMetrics(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+	name := strings.TrimSpace(c.Param("name"))
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster, namespace and name are required"))
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("CLIENT_ERROR", fmt.Sprintf("Failed to get client: %v", err)))
+		return
+	}
+
+	ctx := c.Request.Context()
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+
+	// Buscar métricas usando metrics-server
+	metrics, err := kubeClient.GetPodMetricsFromServer(ctx, namespace, name)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"available": false,
+				"message":   "Metrics not available",
+			},
+		})
+		return
+	}
+
+	// Buscar Pod para obter requests/limits
+	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("GET_POD_ERROR", err.Error()))
+		return
+	}
+
+	// Calcular totais de CPU e memória
+	var totalCPU, totalMemory int64
+	for _, container := range metrics.Containers {
+		totalCPU += container.Usage.Cpu().MilliValue()
+		totalMemory += container.Usage.Memory().Value()
+	}
+
+	// Calcular requests e limits
+	var cpuRequest, cpuLimit, memRequest, memLimit int64
+	for _, container := range pod.Spec.Containers {
+		if req := container.Resources.Requests[corev1.ResourceCPU]; !req.IsZero() {
+			cpuRequest += req.MilliValue()
+		}
+		if lim := container.Resources.Limits[corev1.ResourceCPU]; !lim.IsZero() {
+			cpuLimit += lim.MilliValue()
+		}
+		if req := container.Resources.Requests[corev1.ResourceMemory]; !req.IsZero() {
+			memRequest += req.Value()
+		}
+		if lim := container.Resources.Limits[corev1.ResourceMemory]; !lim.IsZero() {
+			memLimit += lim.Value()
+		}
+	}
+
+	// Calcular percentuais
+	cpuPercent := 0.0
+	if cpuLimit > 0 {
+		cpuPercent = float64(totalCPU) / float64(cpuLimit) * 100
+	} else if cpuRequest > 0 {
+		cpuPercent = float64(totalCPU) / float64(cpuRequest) * 100
+	}
+
+	memPercent := 0.0
+	if memLimit > 0 {
+		memPercent = float64(totalMemory) / float64(memLimit) * 100
+	} else if memRequest > 0 {
+		memPercent = float64(totalMemory) / float64(memRequest) * 100
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"available": true,
+			"cpu": gin.H{
+				"current": totalCPU,
+				"request": cpuRequest,
+				"limit":   cpuLimit,
+				"percent": cpuPercent,
+				"unit":    "millicores",
+			},
+			"memory": gin.H{
+				"current": totalMemory,
+				"request": memRequest,
+				"limit":   memLimit,
+				"percent": memPercent,
+				"unit":    "bytes",
+			},
 		},
 	})
 }

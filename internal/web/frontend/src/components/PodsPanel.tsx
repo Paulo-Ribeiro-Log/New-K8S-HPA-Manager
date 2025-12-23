@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff } from "lucide-react";
+import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -24,6 +24,7 @@ import {
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { ProtectedAction } from "@/components/rbac";
 import { PodTerminal } from "@/components/PodTerminal";
+import ResourceGauge from "@/components/ResourceGauge";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useAIDiagnostics } from "@/hooks/useAIDiagnostics";
@@ -91,6 +92,13 @@ export const PodsPanel = ({
   const [yamlHistory, setYamlHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [editorFullScreen, setEditorFullScreen] = useState(false);
+
+  // Métricas em tempo real
+  const [metrics, setMetrics] = useState<{
+    available: boolean;
+    cpu?: { current: number; percent: number; limit: number; request: number };
+    memory?: { current: number; percent: number; limit: number; request: number };
+  } | null>(null);
 
   // Controle de undo/redo
   const canUndo = historyIndex > 0;
@@ -237,6 +245,28 @@ export const PodsPanel = ({
     toast.info("Edições canceladas");
   };
 
+  // Recarregar YAML do cluster
+  const handleReloadYaml = async () => {
+    if (!selectedPod) return;
+
+    try {
+      setYamlLoading(true);
+      const manifest = await apiClient.getPod(selectedPod.cluster, selectedPod.namespace, selectedPod.name);
+      setPodYaml(manifest.yaml);
+      setEditedYaml(manifest.yaml);
+      setOriginalYaml(manifest.yaml);
+      setYamlHistory([manifest.yaml]);
+      setHistoryIndex(0);
+      toast.success("YAML recarregado do cluster");
+    } catch (err) {
+      toast.error("Erro ao recarregar YAML", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setYamlLoading(false);
+    }
+  };
+
   // Aplicar mudanças
   const handleApplyChanges = async () => {
     if (!selectedPod) return;
@@ -368,6 +398,70 @@ export const PodsPanel = ({
       onNamespaceChange("");
     }
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
+
+  // Helper: Converter CPU string para millicores
+  const parseCPU = (cpu: string | undefined): number => {
+    if (!cpu) return 0;
+    const match = cpu.match(/^(\d+)m?$/);
+    if (!match) return 0;
+    return parseInt(match[1], 10);
+  };
+
+  // Helper: Converter Memory string para bytes
+  const parseMemory = (mem: string | undefined): number => {
+    if (!mem) return 0;
+    const units: Record<string, number> = {
+      'Ki': 1024,
+      'Mi': 1024 * 1024,
+      'Gi': 1024 * 1024 * 1024,
+      'K': 1000,
+      'M': 1000 * 1000,
+      'G': 1000 * 1000 * 1000,
+    };
+    const match = mem.match(/^(\d+(?:\.\d+)?)(Ki|Mi|Gi|K|M|G)?$/);
+    if (!match) return 0;
+    const value = parseFloat(match[1]);
+    const unit = match[2] || '';
+    return value * (units[unit] || 1);
+  };
+
+  // Carregar métricas do Pod
+  const loadMetrics = async (pod: PodSummary) => {
+    try {
+      const response = await apiClient.getPodMetrics(pod.cluster, pod.namespace, pod.name);
+      if (response.success && response.data?.available) {
+        setMetrics({
+          available: true,
+          cpu: response.data.cpu,
+          memory: response.data.memory,
+        });
+      } else {
+        setMetrics({ available: false });
+      }
+    } catch (error) {
+      setMetrics({ available: false });
+    }
+  };
+
+  // Auto-refresh de métricas a cada 30 segundos
+  useEffect(() => {
+    if (!selectedPod) {
+      setMetrics(null);
+      return;
+    }
+
+    // Carregar imediatamente
+    loadMetrics(selectedPod);
+
+    // Refresh a cada 30 segundos
+    const interval = setInterval(() => {
+      if (selectedPod) {
+        loadMetrics(selectedPod);
+      }
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [selectedPod]);
 
   const fetchPods = async (silent = false) => {
     if (!cluster) return;
@@ -849,129 +943,114 @@ export const PodsPanel = ({
 
     return (
       <div className="flex flex-col h-full overflow-hidden">
-        {/* Header */}
-        <div className="border-b border-border p-4 space-y-3 flex-shrink-0">
-          <div>
-            <h3 className="font-semibold text-lg">{selectedPod.name}</h3>
-            <div className="flex items-center gap-4 mt-1">
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">Namespace:</span>
-                <span className="text-sm font-mono">{selectedPod.namespace}</span>
-              </div>
+        {/* Header Compacto */}
+        <div className="border-b border-border px-4 py-2 space-y-2 flex-shrink-0">
+          {/* Linha 1: Nome, Versão + Gauges */}
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <h3 className="font-semibold text-base">{selectedPod.name}</h3>
+              <span className="text-xs text-muted-foreground">NS: {selectedPod.namespace}</span>
               {selectedPod.containers.length > 0 && (
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground">Versão:</span>
-                  <Badge variant="outline" className="text-xs font-mono">
-                    {extractImageVersion(selectedPod.containers[0].image)}
-                  </Badge>
-                </div>
+                <Badge variant="outline" className="text-xs">
+                  v{extractImageVersion(selectedPod.containers[0].image)}
+                </Badge>
               )}
             </div>
+            
+            {/* Gauges de CPU e Memória */}
+            {metrics && metrics.available && (
+              <div className="flex items-center gap-2">
+                <ResourceGauge
+                  title="CPU"
+                  current={metrics.cpu?.current || 0}
+                  request={metrics.cpu?.request || 0}
+                  limit={metrics.cpu?.limit || 0}
+                  unit="m"
+                  formatValue={(v) => v.toFixed(0)}
+                />
+                <ResourceGauge
+                  title="Memory"
+                  current={(metrics.memory?.current || 0) / (1024 * 1024)}
+                  request={(metrics.memory?.request || 0) / (1024 * 1024)}
+                  limit={(metrics.memory?.limit || 0) / (1024 * 1024)}
+                  unit="Mi"
+                  formatValue={(v) => v.toFixed(0)}
+                />
+              </div>
+            )}
           </div>
 
-          {/* Informações Gerais */}
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <span className="text-muted-foreground">Status:</span>
-              <Badge variant="outline" className={`ml-2 ${getPhaseColor(selectedPod.phase)}`}>
+          {/* Linha 2: Node, IP, Age, Restarts */}
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            <span>Node: <span className="font-mono text-foreground">{selectedPod.nodeName || "N/A"}</span></span>
+            <span>IP: <span className="font-mono text-foreground">{selectedPod.podIP || "N/A"}</span></span>
+            <span>Age: <span className="text-foreground">{age}</span></span>
+            <span>Restarts: <span className="text-foreground">{selectedPod.restarts}</span></span>
+          </div>
+
+          {/* Linha 3: CPU e Memória com cores + Status Badges */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4 text-xs">
+              <span className="text-muted-foreground">CPU/R: <span className="font-mono font-semibold text-blue-600 dark:text-blue-400">{selectedPod.cpuRequest || "N/A"}</span></span>
+              <span className="text-muted-foreground">CPU/L: <span className="font-mono font-semibold text-slate-600 dark:text-slate-400">{selectedPod.cpuLimit || "N/A"}</span></span>
+              <span className="text-muted-foreground">MEM/R: <span className="font-mono font-semibold text-blue-600 dark:text-blue-400">{selectedPod.memoryRequest || "N/A"}</span></span>
+              <span className="text-muted-foreground">MEM/L: <span className="font-mono font-semibold text-slate-600 dark:text-slate-400">{selectedPod.memoryLimit || "N/A"}</span></span>
+            </div>
+            
+            {/* Status Badges */}
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className={`text-xs ${getPhaseColor(selectedPod.phase)}`}>
                 {selectedPod.phase}
               </Badge>
-            </div>
-            <div>
-              <span className="text-muted-foreground">Ready:</span>
               <Badge
                 variant="outline"
-                className={`ml-2 ${
+                className={`text-xs ${
                   selectedPod.readyContainers === selectedPod.totalContainers
-                    ? "bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20"
-                    : "bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20"
+                    ? "bg-green-500/10 text-green-700 dark:text-green-400"
+                    : "bg-red-500/10 text-red-700 dark:text-red-400"
                 }`}
               >
                 {selectedPod.readyContainers}/{selectedPod.totalContainers}
               </Badge>
             </div>
-            <div>
-              <span className="text-muted-foreground">Node:</span>
-              <span className="ml-2 font-mono text-xs">{selectedPod.nodeName || "N/A"}</span>
-            </div>
-            <div>
-              <span className="text-muted-foreground">IP:</span>
-              <span className="ml-2 font-mono text-xs">{selectedPod.podIP || "N/A"}</span>
-            </div>
-            <div>
-              <span className="text-muted-foreground">Criado em:</span>
-              <span className="ml-2 text-xs">{createdAt}</span>
-            </div>
           </div>
 
-          {/* Recursos e Métricas */}
-          <div className="border border-border/50 rounded-lg p-3 bg-muted/20">
-            <div className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wide">
-              Recursos e Métricas
-            </div>
-            <div className="space-y-2 text-xs">
-              <div className="flex items-center gap-6">
-                <span className="text-muted-foreground font-medium">RESTARTS: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.restarts}</span></span>
-                <span className="text-muted-foreground font-medium">CPU/R: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.cpuRequest || "N/A"}</span></span>
-                <span className="text-muted-foreground font-medium">CPU/L: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.cpuLimit || "N/A"}</span></span>
-              </div>
-              <div className="flex items-center gap-6">
-                <span className="text-muted-foreground font-medium">AGE: <span className="font-mono font-semibold text-foreground ml-1">{age}</span></span>
-                <span className="text-muted-foreground font-medium">MEM/R: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.memoryRequest || "N/A"}</span></span>
-                <span className="text-muted-foreground font-medium">MEM/L: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.memoryLimit || "N/A"}</span></span>
-              </div>
-            </div>
+          {/* Containers - Compacto */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-muted-foreground">Containers:</span>
+            {selectedPod.containers.map((container) => (
+              <Badge
+                key={container.name}
+                variant="outline"
+                className={`text-xs ${getContainerStateColor(container.state)}`}
+              >
+                {container.name}
+                {container.restartCount > 0 && ` (${container.restartCount}↻)`}
+              </Badge>
+            ))}
           </div>
 
-          {/* Containers */}
-          <div>
-            <div className="text-sm font-medium mb-2">Containers ({selectedPod.containers.length})</div>
-            <div className="space-y-1">
-              {selectedPod.containers.map((container) => (
-                <div
-                  key={container.name}
-                  className="flex items-center gap-2 text-xs bg-muted/50 p-2 rounded"
-                >
-                  <span className={`font-medium ${getContainerStateColor(container.state)}`}>
-                    {container.state}
-                  </span>
-                  <span className="font-mono flex-1">{container.name}</span>
-                  {container.restartCount > 0 && (
-                    <Badge variant="outline" className="text-xs">
-                      {container.restartCount} restarts
-                    </Badge>
-                  )}
-                  {container.stateReason && (
-                    <span className="text-muted-foreground italic">
-                      ({container.stateReason})
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Labels */}
+          {/* Labels - Colapsável */}
           {selectedPod.labels && Object.keys(selectedPod.labels).length > 0 && (
             <div>
               <button
                 onClick={() => setExpandedLabels(!expandedLabels)}
-                className="flex items-center gap-1 text-sm font-medium hover:text-primary transition-colors"
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
               >
                 {expandedLabels ? (
-                  <ChevronDown className="w-4 h-4" />
+                  <ChevronDown className="w-3 h-3" />
                 ) : (
-                  <ChevronRight className="w-4 h-4" />
+                  <ChevronRight className="w-3 h-3" />
                 )}
                 Labels ({Object.keys(selectedPod.labels).length})
               </button>
               {expandedLabels && (
-                <div className="mt-2 flex flex-wrap gap-1">
+                <div className="mt-1 flex flex-wrap gap-1">
                   {Object.entries(selectedPod.labels).map(([key, value]) => (
                     <Badge
                       key={key}
                       variant="outline"
-                      className="text-xs font-mono bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400"
+                      className="text-xs font-mono"
                     >
                       {key}={value}
                     </Badge>
@@ -983,17 +1062,28 @@ export const PodsPanel = ({
         </div>
 
         {/* YAML Manifest + Editor */}
-        <div className="flex-1 overflow-auto p-4">
-          {yamlLoading ? (
-            <div className="flex items-center justify-center h-64">
-              <Loader2 className="w-6 h-6 animate-spin" />
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between">
+        <div className="flex-1 overflow-auto">
+          <div className="p-4">
+            {yamlLoading ? (
+              <div className="flex items-center justify-center h-64">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-medium">Manifesto YAML</p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleReloadYaml}
+                      disabled={yamlLoading}
+                      className="h-6 w-6 p-0"
+                      title="Recarregar YAML do cluster"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${yamlLoading ? "animate-spin" : ""}`} />
+                    </Button>
                     {hasChanges && (
                       <Badge variant="outline" className="text-xs bg-orange-500/10 text-orange-700 dark:text-orange-400">
                         Não salvo
@@ -1140,7 +1230,7 @@ export const PodsPanel = ({
                       }
                     }}
                     readOnly={false}
-                    height={800}
+                    height={1200}
                   />
                 )}
                 {viewMode === "diff" && (
@@ -1148,7 +1238,7 @@ export const PodsPanel = ({
                     mode="diff"
                     originalValue={originalYaml}
                     value={editedYaml}
-                    height={800}
+                    height={1200}
                     readOnly
                   />
                 )}
@@ -1216,10 +1306,11 @@ export const PodsPanel = ({
                     )}
                     Aplicar
                   </Button>
-                </ProtectedAction>
+                  </ProtectedAction>
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
     );
