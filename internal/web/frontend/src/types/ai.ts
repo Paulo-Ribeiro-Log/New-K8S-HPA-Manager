@@ -43,7 +43,7 @@ export interface AnalyzeRequest {
 }
 
 export interface ProviderStatus {
-  provider: "gemini" | "ollama";
+  provider: "gemini" | "ollama" | "claude";
   available: boolean;
   model: string;
   error?: string;
@@ -61,7 +61,7 @@ export interface HistoryFilter {
   cluster?: string;
   namespace?: string;
   resourceType?: ResourceType;
-  provider?: "gemini" | "ollama";
+  provider?: "gemini" | "ollama" | "claude";
   limit?: number;
   offset?: number;
 }

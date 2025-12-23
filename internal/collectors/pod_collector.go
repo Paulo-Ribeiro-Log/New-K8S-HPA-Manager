@@ -40,19 +40,31 @@ func (c *PodCollector) Collect(ctx context.Context, namespace, podName string, r
 
 	// 2. Coletar logs dos containers (se habilitado)
 	if req.IncludeLogs {
+		fmt.Printf("📋 [POD_COLLECTOR] Coletando logs de %d containers...\n", len(pod.Spec.Containers))
 		for _, container := range pod.Spec.Containers {
 			// Logs atuais
+			fmt.Printf("  📄 Coletando logs do container '%s'...\n", container.Name)
 			logs, err := c.getContainerLogs(ctx, namespace, podName, container.Name, false, req.LogTailLines)
 			if err == nil && logs != "" {
 				podContext.Logs[container.Name] = logs
+				lineCount := len(strings.Split(logs, "\n"))
+				fmt.Printf("  ✅ Logs coletados: %d linhas\n", lineCount)
+			} else if err != nil {
+				fmt.Printf("  ⚠️ Erro ao coletar logs: %v\n", err)
+			} else {
+				fmt.Printf("  ⚠️ Logs vazios\n")
 			}
 
 			// Logs anteriores (se container crashou)
 			previousLogs, err := c.getContainerLogs(ctx, namespace, podName, container.Name, true, req.LogTailLines)
 			if err == nil && previousLogs != "" {
 				podContext.PreviousLogs[container.Name] = previousLogs
+				lineCount := len(strings.Split(previousLogs, "\n"))
+				fmt.Printf("  ✅ Logs anteriores coletados: %d linhas\n", lineCount)
 			}
 		}
+	} else {
+		fmt.Println("⚠️ [POD_COLLECTOR] IncludeLogs=false - logs NÃO serão coletados")
 	}
 
 	// 3. Identificar recursos relacionados

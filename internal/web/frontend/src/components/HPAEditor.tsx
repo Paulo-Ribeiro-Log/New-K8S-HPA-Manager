@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import { validateHPAUpdate, formatValidationErrors, type ValidationError } from "@/lib/validation";
 import { ProtectedAction } from "@/components/rbac";
+import { AITriggerButton } from "@/components/AITriggerButton";
 
 interface HPAEditorProps {
   hpa: HPA | null;
@@ -48,6 +49,26 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
 
   // Validation state
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+
+  // Helper: Detectar HPA problemático (maxed out ou flapping)
+  const isHPAProblematic = (): boolean => {
+    // TEMPORÁRIO: Sempre mostrar botão para teste
+    return true;
+    
+    /* LÓGICA ORIGINAL (comentada para debug):
+    if (!hpa) return false;
+    
+    // HPA maxed out (currentReplicas == maxReplicas e maxReplicas definido)
+    if (hpa.current_replicas && hpa.max_replicas && hpa.current_replicas >= hpa.max_replicas) {
+      return true;
+    }
+
+    // Flapping detection: muitas mudanças recentes (se tiver essa informação)
+    // Por enquanto, apenas maxed out
+    
+    return false;
+    */
+  };
 
   // Initialize form when HPA changes
   // Use a combination of hpa reference + key fields to detect updates
@@ -647,6 +668,17 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
 
       {/* Action Buttons */}
       <div className="flex gap-3 pt-3 border-t border-border">
+        {isHPAProblematic() && hpa && (
+          <AITriggerButton
+            resourceType="HPA"
+            cluster={hpa.cluster}
+            namespace={hpa.namespace}
+            resourceName={hpa.name}
+            size="sm"
+            variant="outline"
+            className="flex-1"
+          />
+        )}
         <ProtectedAction>
           <Button
             onClick={handleSave}

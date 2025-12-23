@@ -3,8 +3,8 @@ package collectors
 import (
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	corev1 "k8s.io/api/core/v1"
 )
 
 // DiagnosticContext representa o contexto completo para análise AI
@@ -44,6 +44,60 @@ type DiagnosticContext struct {
 
 	// DescribeOutput output do kubectl describe
 	DescribeOutput string `json:"describe_output,omitempty"`
+
+	// Investigation resultados da investigação automática de recursos faltantes
+	Investigation *InvestigationResult `json:"investigation,omitempty"`
+}
+
+// InvestigationResult resultado da investigação de recursos problemáticos
+type InvestigationResult struct {
+	// MissingResources recursos que não existem
+	MissingResources []MissingResource `json:"missing_resources,omitempty"`
+
+	// FoundAlternatives recursos similares encontrados
+	FoundAlternatives []AlternativeResource `json:"found_alternatives,omitempty"`
+
+	// Validations validações automáticas de recursos
+	Validations []ValidationResult `json:"validations,omitempty"`
+
+	// Recommendations recomendações baseadas na investigação
+	Recommendations []string `json:"recommendations,omitempty"`
+}
+
+// ValidationResult resultado da validação de um recurso
+type ValidationResult struct {
+	ResourceType string   `json:"resource_type"` // ConfigMap, Secret, Service, etc
+	ResourceName string   `json:"resource_name"`
+	Exists       bool     `json:"exists"`
+	Issues       []string `json:"issues"`      // Problemas encontrados
+	Suggestions  []string `json:"suggestions"` // Sugestões de correção
+}
+
+// MissingResource recurso que não foi encontrado
+type MissingResource struct {
+	Type      string `json:"type"`      // ConfigMap, Secret, Image, PVC, etc
+	Name      string `json:"name"`      // Nome exato buscado
+	Namespace string `json:"namespace"` // Namespace onde foi buscado
+	Reason    string `json:"reason"`    // Motivo da falta (evento/log)
+}
+
+// AlternativeResource recurso similar encontrado
+type AlternativeResource struct {
+	Type       string           `json:"type"`              // ConfigMap, Secret, etc
+	SearchName string           `json:"search_name"`       // Nome buscado (com wildcard)
+	FoundName  string           `json:"found_name"`        // Nome real encontrado
+	Namespace  string           `json:"namespace"`         // Namespace
+	Similarity string           `json:"similarity"`        // "exact_prefix", "contains", "similar", "exact_match"
+	Content    *ResourceContent `json:"content,omitempty"` // Conteúdo do recurso (se exact_match)
+}
+
+// ResourceContent conteúdo de um recurso para análise
+type ResourceContent struct {
+	Type string            `json:"type"` // ConfigMap, Secret
+	Name string            `json:"name"`
+	Keys []string          `json:"keys,omitempty"` // Keys disponíveis
+	Data map[string]string `json:"data,omitempty"` // Dados do ConfigMap (não sensível)
+	Size int               `json:"size"`           // Número de keys
 }
 
 // PodContext contexto específico de um Pod
@@ -142,8 +196,8 @@ type PrometheusAlert struct {
 
 // NodeSummary sumário de informações de um node
 type NodeSummary struct {
-	Name       string              `json:"name"`
-	Ready      bool                `json:"ready"`
+	Name       string                 `json:"name"`
+	Ready      bool                   `json:"ready"`
 	Conditions []corev1.NodeCondition `json:"conditions,omitempty"`
 }
 
@@ -184,9 +238,9 @@ type ScalingEvent struct {
 
 // ResourceUsage uso de recursos de um node
 type ResourceUsage struct {
-	CPUUsageMillis    int64   `json:"cpu_usage_millis"`
-	CPUUsagePercent   float64 `json:"cpu_usage_percent"`
-	MemoryUsageBytes  int64   `json:"memory_usage_bytes"`
+	CPUUsageMillis     int64   `json:"cpu_usage_millis"`
+	CPUUsagePercent    float64 `json:"cpu_usage_percent"`
+	MemoryUsageBytes   int64   `json:"memory_usage_bytes"`
 	MemoryUsagePercent float64 `json:"memory_usage_percent"`
 }
 

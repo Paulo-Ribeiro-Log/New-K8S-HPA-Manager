@@ -52,6 +52,31 @@ export function useAIDiagnostics() {
   }, [toast]);
 
   /**
+   * Fetch analysis history with optional filters
+   */
+  const fetchHistory = useCallback(
+    async (filters?: HistoryFilter) => {
+      setIsLoadingHistory(true);
+      try {
+        const historyData = await apiClient.getAIHistory(filters);
+        setHistory(historyData);
+        return historyData;
+      } catch (error) {
+        console.error("Failed to fetch AI history:", error);
+        toast({
+          title: "❌ Erro ao carregar histórico",
+          description: error instanceof Error ? error.message : "Erro desconhecido",
+          variant: "destructive",
+        });
+        return [];
+      } finally {
+        setIsLoadingHistory(false);
+      }
+    },
+    [toast]
+  );
+
+  /**
    * Analyze a Kubernetes resource with AI
    */
   const analyzeResource = useCallback(
@@ -89,32 +114,7 @@ export function useAIDiagnostics() {
         setIsAnalyzing(false);
       }
     },
-    [toast]
-  );
-
-  /**
-   * Fetch analysis history with optional filters
-   */
-  const fetchHistory = useCallback(
-    async (filters?: HistoryFilter) => {
-      setIsLoadingHistory(true);
-      try {
-        const historyData = await apiClient.getAIHistory(filters);
-        setHistory(historyData);
-        return historyData;
-      } catch (error) {
-        console.error("Failed to fetch AI history:", error);
-        toast({
-          title: "❌ Erro ao carregar histórico",
-          description: error instanceof Error ? error.message : "Erro desconhecido",
-          variant: "destructive",
-        });
-        return [];
-      } finally {
-        setIsLoadingHistory(false);
-      }
-    },
-    [toast]
+    [toast, fetchHistory]
   );
 
   /**

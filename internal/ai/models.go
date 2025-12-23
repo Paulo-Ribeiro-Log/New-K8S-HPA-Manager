@@ -64,22 +64,22 @@ type Suggestion struct {
 
 // AnalysisRequest requisição de análise AI
 type AnalysisRequest struct {
-	ResourceType string
-	Cluster      string
-	Namespace    string
-	ResourceName string
+	ResourceType string `json:"resourceType" binding:"required"`
+	Cluster      string `json:"cluster" binding:"required"`
+	Namespace    string `json:"namespace" binding:"required"`
+	ResourceName string `json:"resourceName" binding:"required"`
 
 	// IncludeLogs se verdadeiro, inclui logs na análise
-	IncludeLogs bool
+	IncludeLogs bool `json:"includeLogs"`
 
 	// IncludeMetrics se verdadeiro, inclui métricas Prometheus
-	IncludeMetrics bool
+	IncludeMetrics bool `json:"includeMetrics"`
 
 	// IncludeDescribe se verdadeiro, inclui kubectl describe
-	IncludeDescribe bool
+	IncludeDescribe bool `json:"includeDescribe"`
 
 	// UserEmail email do usuário que solicitou a análise
-	UserEmail string
+	UserEmail string `json:"userEmail,omitempty"`
 }
 
 // ProviderStatus representa o status de um provider AI

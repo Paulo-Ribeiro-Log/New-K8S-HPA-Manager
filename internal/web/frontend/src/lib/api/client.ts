@@ -1354,7 +1354,10 @@ class APIClient {
       url += `?${queryString}`;
     }
 
-    return this.request(url);
+    const response = await this.request<{ records: AnalysisResult[]; total: number }>(url);
+    
+    // Backend retorna { records: [], total: 0 }, mas precisamos apenas do array
+    return Array.isArray(response) ? response : (response.records || []);
   }
 
   /**
@@ -1377,6 +1380,56 @@ class APIClient {
   async deleteAnalysis(id: string): Promise<void> {
     return this.request(`/ai/history/${id}`, {
       method: "DELETE",
+    });
+  }
+
+  /**
+   * Get user's AI tokens status
+   */
+  async getAITokens(): Promise<{
+    has_gemini: boolean;
+    has_openai: boolean;
+    has_claude: boolean;
+    preferred_provider: string;
+    updated_at?: string;
+  }> {
+    return this.request(`/ai/tokens`);
+  }
+
+  /**
+   * Save user's AI tokens
+   */
+  async saveAITokens(tokens: {
+    gemini_api_key?: string;
+    openai_api_key?: string;
+    claude_api_key?: string;
+    preferred_provider: string;
+  }): Promise<{ success: boolean; message: string }> {
+    return this.request(`/ai/tokens`, {
+      method: "POST",
+      body: JSON.stringify(tokens),
+    });
+  }
+
+  /**
+   * Delete user's AI tokens
+   */
+  async deleteAITokens(): Promise<{ success: boolean; message: string }> {
+    return this.request(`/ai/tokens`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Validate an AI token
+   */
+  async validateAIToken(
+    provider: string,
+    apiKey: string
+  ): Promise<{ valid: boolean; error?: string; message?: string }> {
+    return this.request(`/ai/tokens/validate`, {
+      method: "POST",
+      body: JSON.stringify({ provider, api_key: apiKey }),
     });
   }
 }

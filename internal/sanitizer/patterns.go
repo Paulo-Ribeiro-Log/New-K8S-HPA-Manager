@@ -37,16 +37,59 @@ var (
 
 // Replacements padrão para cada tipo de dado
 const (
-	IPReplacement        = "X.X.X.X"
-	EmailReplacement     = "user@REDACTED"
-	JWTReplacement       = "eyJ***REDACTED***"
-	BearerReplacement    = "Bearer ***REDACTED***"
-	UUIDReplacement      = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
-	Base64Replacement    = "***BASE64_REDACTED***"
-	SecretReplacement    = "***REDACTED***"
-	PasswordReplacement  = "***PASSWORD_REDACTED***"
-	APIKeyReplacement    = "***APIKEY_REDACTED***"
+	IPReplacement       = "X.X.X.X"
+	EmailReplacement    = "user@REDACTED"
+	JWTReplacement      = "eyJ***REDACTED***"
+	BearerReplacement   = "Bearer ***REDACTED***"
+	UUIDReplacement     = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+	Base64Replacement   = "***BASE64_REDACTED***"
+	SecretReplacement   = "***REDACTED***"
+	PasswordReplacement = "***PASSWORD_REDACTED***"
+	APIKeyReplacement   = "***APIKEY_REDACTED***"
 )
+
+// MaskPartial mascara parcialmente um valor mostrando início e fim
+// Ex: "MDFhghthghthghthghthghthghthghtTRk4=" -> "MDF****************************TRk4="
+// Ex: "s6Yxbn1I9i98GHIJcJdc" -> "s6Yx*************Jdc"
+func MaskPartial(value string, showChars int) string {
+	if len(value) <= showChars*2 {
+		// Se muito curto, mascara tudo
+		return "***REDACTED***"
+	}
+
+	prefix := value[:showChars]
+	suffix := value[len(value)-showChars:]
+	middle := len(value) - (showChars * 2)
+	mask := ""
+	for i := 0; i < middle; i++ {
+		mask += "*"
+	}
+
+	return prefix + mask + suffix
+}
+
+// MaskConnectionString mascara senha em connection string preservando estrutura completa
+// Ex: "mongodb://user:password@host:27017/db" -> "mongodb://user:pa******rd@host:27017/db"
+// IMPORTANTE: NÃO trunca, apenas mascara a senha
+func MaskConnectionString(connStr string) string {
+	// Pattern: protocol://user:password@host ou user:password@host
+	pattern := regexp.MustCompile(`((?:mongodb|postgres|mysql|redis|amqp|https?)://)?([^:]+):([^@]+)(@.*)`)
+
+	return pattern.ReplaceAllStringFunc(connStr, func(match string) string {
+		parts := pattern.FindStringSubmatch(match)
+		if len(parts) == 5 {
+			protocol := parts[1] // mongodb:// ou vazio
+			user := parts[2]     // username
+			password := parts[3] // password
+			rest := parts[4]     // @host:port/db
+
+			// Mascara senha parcialmente mantendo comprimento
+			maskedPassword := MaskPartial(password, 2)
+			return protocol + user + ":" + maskedPassword + rest
+		}
+		return match
+	})
+}
 
 // IsSensitiveKey verifica se uma chave é considerada sensível
 func IsSensitiveKey(key string, sensitiveKeys []string) bool {
@@ -56,7 +99,7 @@ func IsSensitiveKey(key string, sensitiveKeys []string) bool {
 	)
 
 	for _, sensitiveKey := range sensitiveKeys {
-		if regexp.MustCompile(`(?i)`+sensitiveKey).MatchString(keyLower) {
+		if regexp.MustCompile(`(?i)` + sensitiveKey).MatchString(keyLower) {
 			return true
 		}
 	}

@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2 } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -18,6 +18,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
@@ -25,6 +26,7 @@ import { ProtectedAction } from "@/components/rbac";
 import { PodTerminal } from "@/components/PodTerminal";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { useAIDiagnostics } from "@/hooks/useAIDiagnostics";
 
 import type { Namespace, PodSummary } from "@/lib/api/types";
 import { apiClient } from "@/lib/api/client";
@@ -46,6 +48,7 @@ export const PodsPanel = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
 }: PodsPanelProps) => {
+  const { analyzeResource, isAnalyzing } = useAIDiagnostics();
   const [searchQuery, setSearchQuery] = useState("");
   const [pods, setPods] = useState<PodSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -79,6 +82,40 @@ export const PodsPanel = ({
     if (showSystemNamespaces) return namespaces;
     return namespaces.filter((ns) => !ns.isSystem);
   }, [namespaces, showSystemNamespaces]);
+
+  // Helper: Detectar pods problemáticos para AI analysis
+  const isPodProblematic = (pod: PodSummary): boolean => {
+    // TEMPORÁRIO: Mostrar botão em TODOS os pods para teste
+    return true;
+    
+    /* LÓGICA ORIGINAL (comentada para debug):
+    const problematicStatuses = [
+      'CrashLoopBackOff',
+      'Error',
+      'ImagePullBackOff',
+      'ErrImagePull',
+      'CreateContainerConfigError',
+      'InvalidImageName',
+      'CreateContainerError',
+    ];
+
+    // Status problemático
+    if (problematicStatuses.includes(pod.status)) return true;
+
+    // Muitos restarts
+    if (pod.restarts > 3) return true;
+
+    // Pending por muito tempo (assumindo que age está em seconds ou similar)
+    // Se o pod está Pending e não é recente
+    if (pod.status === 'Pending') {
+      // age format pode ser "5m", "2h", "1d", etc
+      // Simplificação: considerar problemático se não tem "s" (segundos)
+      if (!pod.age.includes('s') && pod.age !== '0s') return true;
+    }
+
+    return false;
+    */
+  };
 
   // Helper: Extrair versão da imagem do container
   const extractImageVersion = (image: string): string => {
@@ -763,6 +800,72 @@ export const PodsPanel = ({
           <div className="flex items-center justify-between flex-shrink-0">
             <p className="text-sm font-medium">Manifesto YAML (Read-only)</p>
             <div className="flex gap-2">
+              {selectedPod && isPodProblematic(selectedPod) && (
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={async () => {
+                    console.log('🚀 BOTÃO CLICADO! Pod:', selectedPod.name);
+                    console.log('🔍 Estado:', { cluster, namespace: selectedPod.namespace, resourceName: selectedPod.name });
+                    
+                    try {
+                      console.log('📡 Chamando analyzeResource...');
+                      const analysis = await analyzeResource({
+                        resourceType: "Pod",
+                        cluster,
+                        namespace: selectedPod.namespace,
+                        resourceName: selectedPod.name,
+                        includeDescribe: true,
+                        includeMetrics: false,
+                        includeLogs: true,
+                      });
+                      
+                      console.log('✅ Análise retornada:', analysis);
+                      
+                      if (analysis) {
+                        console.log('🔗 Abrindo análise em nova aba...');
+                        console.log('📝 Analysis ID:', analysis.id);
+                        
+                        // Salvar análise no sessionStorage
+                        sessionStorage.setItem(`ai-analysis-${analysis.id}`, JSON.stringify(analysis));
+                        console.log('💾 Análise salva no sessionStorage');
+                        
+                        // Construir URL
+                        const url = `/ai-analysis/${analysis.id}`;
+                        console.log('🌐 URL:', url);
+                        
+                        // Abrir em nova aba
+                        const newWindow = window.open(url, '_blank');
+                        
+                        if (newWindow) {
+                          console.log('✅ Nova aba aberta com sucesso');
+                          toast.success('Análise aberta em nova aba');
+                        } else {
+                          console.warn('⚠️ Popup bloqueado pelo navegador');
+                          toast.error('Popup bloqueado! Permita popups para este site.');
+                        }
+                      }
+                    } catch (error) {
+                      console.error('❌ Erro ao analisar:', error);
+                      toast.error('Falha ao analisar recurso');
+                    }
+                  }}
+                  disabled={isAnalyzing}
+                  className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                >
+                  {isAnalyzing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Analisando...
+                    </>
+                  ) : (
+                    <>
+                      <Brain className="w-4 h-4 mr-2" />
+                      Analisar com AI
+                    </>
+                  )}
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
