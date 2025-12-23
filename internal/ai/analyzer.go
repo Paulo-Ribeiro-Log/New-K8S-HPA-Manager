@@ -18,11 +18,11 @@ import (
 
 // Analyzer orquestra análises AI de recursos Kubernetes
 type Analyzer struct {
-	provider        Provider
-	contextBuilder  *collectors.ContextBuilder
-	promptBuilder   *PromptBuilder
-	sanitizer       *sanitizer.Sanitizer
-	historyStore    *storage.AIHistoryStore
+	provider       Provider
+	contextBuilder *collectors.ContextBuilder
+	promptBuilder  *PromptBuilder
+	sanitizer      *sanitizer.Sanitizer
+	historyStore   *storage.AIHistoryStore
 }
 
 // NewAnalyzer cria um novo Analyzer
@@ -155,6 +155,9 @@ func (a *Analyzer) sanitizeContext(diagCtx *collectors.DiagnosticContext) (*coll
 		diagCtx.DescribeOutput = a.sanitizer.SanitizeText(diagCtx.DescribeOutput)
 	}
 
+	// Investigation já vem sanitizada (ConfigMaps truncados em 100 chars, Secrets sem valores)
+	// Não precisa sanitizar novamente
+
 	return diagCtx, nil
 }
 
@@ -280,15 +283,17 @@ func (a *Analyzer) createGenericSuggestion(analysis string) *Suggestion {
 
 	// Detectar prioridade baseado em palavras-chave
 	priority := "medium"
-	if strings.Contains(lowerAnalysis, "critical") || strings.Contains(lowerAnalysis, "failed") {
+	if strings.Contains(lowerAnalysis, "critical") || strings.Contains(lowerAnalysis, "failed") ||
+		strings.Contains(lowerAnalysis, "crítico") || strings.Contains(lowerAnalysis, "falhou") {
 		priority = "critical"
-	} else if strings.Contains(lowerAnalysis, "high") || strings.Contains(lowerAnalysis, "warning") {
+	} else if strings.Contains(lowerAnalysis, "high") || strings.Contains(lowerAnalysis, "warning") ||
+		strings.Contains(lowerAnalysis, "alto") || strings.Contains(lowerAnalysis, "aviso") {
 		priority = "high"
 	}
 
 	return &Suggestion{
 		Type:        "investigate",
-		Description: "Review the analysis and take appropriate action",
+		Description: "Revise a análise e tome as ações apropriadas",
 		Priority:    priority,
 	}
 }

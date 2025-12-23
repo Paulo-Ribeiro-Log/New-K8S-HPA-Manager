@@ -122,10 +122,32 @@ func (p *GeminiProvider) GetModel() string {
 
 // IsAvailable verifica se Gemini API está acessível
 func (p *GeminiProvider) IsAvailable(ctx context.Context) bool {
-	// Tenta uma requisição simples para verificar conectividade
-	testPrompt := "test"
-	_, err := p.Analyze(ctx, testPrompt)
-	return err == nil
+	// Verificar se API key está presente
+	if p.apiKey == "" {
+		return false
+	}
+
+	// Fazer check leve com timeout curto (não gasta quota)
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// Endpoint de listagem de modelos (não consome quota)
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models?key=%s", p.apiKey)
+
+	req, err := http.NewRequestWithContext(checkCtx, "GET", url, nil)
+	if err != nil {
+		return false
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	// Verificar se API retornou 200 OK (chave válida)
+	return resp.StatusCode == http.StatusOK
 }
 
 // GetName retorna nome do provider

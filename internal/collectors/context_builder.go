@@ -89,6 +89,27 @@ func (cb *ContextBuilder) BuildContext(ctx context.Context, req *ContextRequest)
 		}
 	}
 
+	// 🔍 INVESTIGAÇÃO AUTOMÁTICA: Buscar recursos faltantes
+	if cs, ok := clientset.(*k8sclient.Clientset); ok {
+		fmt.Println("🔍 [CONTEXT_BUILDER] Iniciando investigador...")
+		investigator := NewInvestigator(cs)
+		investigation, err := investigator.InvestigateMissingResources(ctx, diagCtx)
+		if err != nil {
+			fmt.Printf("❌ [CONTEXT_BUILDER] Erro na investigação: %v\n", err)
+		} else {
+			fmt.Printf("✅ [CONTEXT_BUILDER] Investigação concluída: %d recursos faltantes, %d alternativas\n",
+				len(investigation.MissingResources), len(investigation.FoundAlternatives))
+			if len(investigation.MissingResources) > 0 || len(investigation.FoundAlternatives) > 0 {
+				diagCtx.Investigation = investigation
+				fmt.Println("✅ [CONTEXT_BUILDER] Investigação adicionada ao contexto")
+			} else {
+				fmt.Println("⚠️ [CONTEXT_BUILDER] Nenhum recurso problemático detectado")
+			}
+		}
+	} else {
+		fmt.Println("⚠️ [CONTEXT_BUILDER] Clientset não é *k8sclient.Clientset, investigador não executado")
+	}
+
 	// TODO: Coletar alertas do Prometheus (req.IncludeMetrics)
 	// Isso será implementado quando integrarmos com o módulo de monitoramento
 

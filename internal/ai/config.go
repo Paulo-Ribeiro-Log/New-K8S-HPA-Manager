@@ -7,7 +7,7 @@ import (
 
 // Config configuração de providers AI
 type Config struct {
-	// Provider provider selecionado (gemini, ollama)
+	// Provider provider selecionado (gemini, ollama, claude)
 	Provider string
 
 	// GeminiAPIKey chave de API do Gemini
@@ -22,6 +22,12 @@ type Config struct {
 	// OllamaModel modelo do Ollama (padrão: llama3.2)
 	OllamaModel string
 
+	// ClaudeAPIKey chave de API do Claude (Anthropic)
+	ClaudeAPIKey string
+
+	// ClaudeModel modelo do Claude (padrão: claude-3-5-sonnet-20241022)
+	ClaudeModel string
+
 	// Timeout timeout para requisições AI em segundos (padrão: 120)
 	Timeout int
 }
@@ -29,18 +35,19 @@ type Config struct {
 // DefaultConfig retorna configuração padrão
 func DefaultConfig() *Config {
 	return &Config{
-		Provider:      "gemini",
-		GeminiModel:   "gemini-pro",
+		Provider:      "ollama", // Ollama llama3.2 3B
+		GeminiModel:   "gemini-2.0-flash-exp",
 		OllamaBaseURL: "http://localhost:11434",
-		OllamaModel:   "llama3.2",
-		Timeout:       120,
+		OllamaModel:   "llama3.2:3b", // Llama3.2 3B - melhor qualidade
+		ClaudeModel:   "claude-3-5-sonnet-20241022",
+		Timeout:       300, // 5 minutos para modelos mais lentos
 	}
 }
 
 // Validate valida a configuração
 func (c *Config) Validate() error {
-	if c.Provider != "gemini" && c.Provider != "ollama" {
-		return fmt.Errorf("invalid provider: %s (must be 'gemini' or 'ollama')", c.Provider)
+	if c.Provider != "gemini" && c.Provider != "ollama" && c.Provider != "claude" {
+		return fmt.Errorf("invalid provider: %s (must be 'gemini', 'ollama' or 'claude')", c.Provider)
 	}
 
 	// Validações específicas do provider
@@ -55,7 +62,7 @@ func (c *Config) Validate() error {
 		}
 
 		if c.GeminiModel == "" {
-			c.GeminiModel = "gemini-pro"
+			c.GeminiModel = "gemini-2.0-flash-exp"
 		}
 	}
 
@@ -66,6 +73,21 @@ func (c *Config) Validate() error {
 
 		if c.OllamaModel == "" {
 			c.OllamaModel = "llama3.2"
+		}
+	}
+
+	if c.Provider == "claude" {
+		// Tentar obter API key de variável de ambiente se não foi fornecida
+		if c.ClaudeAPIKey == "" {
+			c.ClaudeAPIKey = os.Getenv("CLAUDE_API_KEY")
+		}
+
+		if c.ClaudeAPIKey == "" {
+			return fmt.Errorf("claude API key not provided (use --claude-api-key or CLAUDE_API_KEY env var)")
+		}
+
+		if c.ClaudeModel == "" {
+			c.ClaudeModel = "claude-3-5-sonnet-20241022"
 		}
 	}
 
@@ -86,6 +108,9 @@ func (c *Config) GetProviderConfig() map[string]string {
 	} else if c.Provider == "ollama" {
 		config["base_url"] = c.OllamaBaseURL
 		config["model"] = c.OllamaModel
+	} else if c.Provider == "claude" {
+		config["api_key"] = c.ClaudeAPIKey
+		config["model"] = c.ClaudeModel
 	}
 
 	return config

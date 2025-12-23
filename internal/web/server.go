@@ -66,10 +66,13 @@ type Server struct {
 
 	// AI Diagnostics Handler (pode ser nil se AI estiver desabilitado)
 	aiHandler *handlers.AIDiagnosticsHandler
+
+	// AI Tokens Handler (gerencia tokens AI dos usuários)
+	aiTokensHandler *handlers.AITokensHandler
 }
 
 // NewServer cria uma nova instância do servidor web
-func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiProvider, ollamaURL, ollamaModel string) (*Server, error) {
+func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiProvider, ollamaURL, ollamaModel, claudeAPIKey, claudeModel string) (*Server, error) {
 	// Reutilizar gerenciador de kube existente
 	kubeManager, err := config.NewKubeConfigManager(kubeconfig)
 	if err != nil {
@@ -152,15 +155,28 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 
 	var aiHistoryStore *storage.AIHistoryStore
 	var aiHandler *handlers.AIDiagnosticsHandler
+	var aiTokensStore *storage.UserTokensStore
+	var aiTokensHandler *handlers.AITokensHandler
 
 	if sqliteClient != nil {
 		aiHistoryStore = storage.NewAIHistoryStore(sqliteClient)
+		aiTokensStore = storage.NewUserTokensStore(sqliteClient)
+
+		// Criar tabelas
+		if err := aiTokensStore.CreateTable(); err != nil {
+			fmt.Printf("⚠️  Falha ao criar tabela de tokens: %v\n", err)
+		} else {
+			aiTokensHandler = handlers.NewAITokensHandler(aiTokensStore)
+			fmt.Println("✅ AI Tokens Handler criado")
+		}
 
 		// 2. Criar AI config
 		aiConfig := &ai.Config{
 			Provider:      aiProvider,
 			OllamaBaseURL: ollamaURL,
 			OllamaModel:   ollamaModel,
+			ClaudeAPIKey:  claudeAPIKey,
+			ClaudeModel:   claudeModel,
 			Timeout:       120,
 		}
 
@@ -211,7 +227,8 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		// monitoringCtx:      monitoringCtx,
 		// monitoringCancel:   monitoringCancel,
 		monitoringEngineV2: monitoringEngineV2,
-		aiHandler:          aiHandler, // Pode ser nil se AI estiver desabilitado
+		aiHandler:          aiHandler,       // Pode ser nil se AI estiver desabilitado
+		aiTokensHandler:    aiTokensHandler, // Gerencia tokens AI dos usuários
 	}
 
 	server.setupMiddleware()
@@ -640,6 +657,12 @@ func (s *Server) setupRoutes() {
 		api.DELETE("/ai/history/:id", s.aiHandler.DeleteAnalysis)
 
 		fmt.Println("✅ AI Diagnostics routes registradas")
+	}
+
+	// AI Tokens (gerenciamento de tokens por usuário)
+	if s.aiTokensHandler != nil {
+		s.aiTokensHandler.RegisterRoutes(api)
+		fmt.Println("✅ AI Tokens routes registradas")
 	}
 }
 

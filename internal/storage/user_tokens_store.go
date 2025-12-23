@@ -1,0 +1,175 @@
+package storage
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+// UserTokensStore gerencia tokens AI dos usuários
+type UserTokensStore struct {
+	client *SQLiteClient
+}
+
+// NewUserTokensStore cria nova instância
+func NewUserTokensStore(client *SQLiteClient) *UserTokensStore {
+	return &UserTokensStore{client: client}
+}
+
+// UserTokens representa tokens de um usuário
+type UserTokens struct {
+	UserEmail         string            `json:"user_email"`
+	GeminiAPIKey      string            `json:"gemini_api_key,omitempty"`
+	OpenAIAPIKey      string            `json:"openai_api_key,omitempty"`
+	ClaudeAPIKey      string            `json:"claude_api_key,omitempty"`
+	PreferredProvider string            `json:"preferred_provider"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+	CreatedAt         time.Time         `json:"created_at"`
+}
+
+// CreateTable cria tabela de tokens de usuários
+func (s *UserTokensStore) CreateTable() error {
+	query := `
+	CREATE TABLE IF NOT EXISTS user_ai_tokens (
+		user_email TEXT PRIMARY KEY,
+		gemini_api_key TEXT,
+		openai_api_key TEXT,
+		claude_api_key TEXT,
+		preferred_provider TEXT DEFAULT 'gemini',
+		metadata TEXT,
+		updated_at DATETIME NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	
+	CREATE INDEX IF NOT EXISTS idx_user_tokens_email ON user_ai_tokens(user_email);
+	CREATE INDEX IF NOT EXISTS idx_user_tokens_updated ON user_ai_tokens(updated_at DESC);
+	`
+
+	_, err := s.client.db.Exec(query)
+	return err
+}
+
+// SaveTokens salva/atualiza tokens de um usuário
+func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error {
+	if userEmail == "" {
+		return fmt.Errorf("user_email is required")
+	}
+
+	tokens.UserEmail = userEmail
+	tokens.UpdatedAt = time.Now()
+
+	// Serializar metadata
+	metadataJSON := "{}"
+	if tokens.Metadata != nil {
+		data, err := json.Marshal(tokens.Metadata)
+		if err != nil {
+			return fmt.Errorf("failed to marshal metadata: %w", err)
+		}
+		metadataJSON = string(data)
+	}
+
+	query := `
+	INSERT INTO user_ai_tokens (
+		user_email, gemini_api_key, openai_api_key, claude_api_key,
+		preferred_provider, metadata, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(user_email) DO UPDATE SET
+		gemini_api_key = excluded.gemini_api_key,
+		openai_api_key = excluded.openai_api_key,
+		claude_api_key = excluded.claude_api_key,
+		preferred_provider = excluded.preferred_provider,
+		metadata = excluded.metadata,
+		updated_at = excluded.updated_at
+	`
+
+	_, err := s.client.db.Exec(query,
+		userEmail,
+		tokens.GeminiAPIKey,
+		tokens.OpenAIAPIKey,
+		tokens.ClaudeAPIKey,
+		tokens.PreferredProvider,
+		metadataJSON,
+		tokens.UpdatedAt,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to save tokens: %w", err)
+	}
+
+	return nil
+}
+
+// GetTokens obtém tokens de um usuário
+func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
+	if userEmail == "" {
+		return nil, fmt.Errorf("user_email is required")
+	}
+
+	query := `
+	SELECT user_email, gemini_api_key, openai_api_key, claude_api_key,
+	       preferred_provider, metadata, updated_at, created_at
+	FROM user_ai_tokens
+	WHERE user_email = ?
+	`
+
+	row := s.client.db.QueryRow(query, userEmail)
+
+	var tokens UserTokens
+	var metadataJSON string
+
+	err := row.Scan(
+		&tokens.UserEmail,
+		&tokens.GeminiAPIKey,
+		&tokens.OpenAIAPIKey,
+		&tokens.ClaudeAPIKey,
+		&tokens.PreferredProvider,
+		&metadataJSON,
+		&tokens.UpdatedAt,
+		&tokens.CreatedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil // Usuário não tem tokens configurados
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tokens: %w", err)
+	}
+
+	// Deserializar metadata
+	if metadataJSON != "" && metadataJSON != "{}" {
+		if err := json.Unmarshal([]byte(metadataJSON), &tokens.Metadata); err != nil {
+			// Ignorar erro de deserialização de metadata
+			tokens.Metadata = nil
+		}
+	}
+
+	return &tokens, nil
+}
+
+// DeleteTokens remove tokens de um usuário
+func (s *UserTokensStore) DeleteTokens(userEmail string) error {
+	if userEmail == "" {
+		return fmt.Errorf("user_email is required")
+	}
+
+	query := `DELETE FROM user_ai_tokens WHERE user_email = ?`
+	_, err := s.client.db.Exec(query, userEmail)
+	return err
+}
+
+// HasTokens verifica se usuário tem pelo menos um token configurado
+func (s *UserTokensStore) HasTokens(userEmail string) (bool, error) {
+	tokens, err := s.GetTokens(userEmail)
+	if err != nil {
+		return false, err
+	}
+
+	if tokens == nil {
+		return false, nil
+	}
+
+	return tokens.GeminiAPIKey != "" || tokens.OpenAIAPIKey != "" || tokens.ClaudeAPIKey != "", nil
+}

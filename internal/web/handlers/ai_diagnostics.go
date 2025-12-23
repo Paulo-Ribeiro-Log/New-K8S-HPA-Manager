@@ -31,21 +31,10 @@ func NewAIDiagnosticsHandler(
 	}
 }
 
-// analyzeRequest estrutura de requisição para análise
-type analyzeRequest struct {
-	ResourceType    string `json:"resource_type" binding:"required"`
-	Cluster         string `json:"cluster" binding:"required"`
-	Namespace       string `json:"namespace" binding:"required"`
-	ResourceName    string `json:"resource_name" binding:"required"`
-	IncludeLogs     bool   `json:"include_logs"`
-	IncludeMetrics  bool   `json:"include_metrics"`
-	IncludeDescribe bool   `json:"include_describe"`
-}
-
 // Analyze executa análise AI de um recurso
 // POST /api/v1/ai/analyze
 func (h *AIDiagnosticsHandler) Analyze(c *gin.Context) {
-	var req analyzeRequest
+	var req ai.AnalysisRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
 		return
@@ -59,27 +48,14 @@ func (h *AIDiagnosticsHandler) Analyze(c *gin.Context) {
 		Msg("Starting AI analysis")
 
 	// Obter user email do contexto RBAC (se disponível)
-	userEmail := ""
 	if email, exists := c.Get("user_email"); exists {
 		if emailStr, ok := email.(string); ok {
-			userEmail = emailStr
+			req.UserEmail = emailStr
 		}
 	}
 
-	// Criar request de análise
-	analysisReq := &ai.AnalysisRequest{
-		ResourceType:    req.ResourceType,
-		Cluster:         req.Cluster,
-		Namespace:       req.Namespace,
-		ResourceName:    req.ResourceName,
-		IncludeLogs:     req.IncludeLogs,
-		IncludeMetrics:  req.IncludeMetrics,
-		IncludeDescribe: req.IncludeDescribe,
-		UserEmail:       userEmail,
-	}
-
 	// Executar análise (com timeout do Gin context)
-	result, err := h.analyzer.Analyze(c.Request.Context(), analysisReq)
+	result, err := h.analyzer.Analyze(c.Request.Context(), &req)
 	if err != nil {
 		log.Error().Err(err).Msg("AI analysis failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "analysis failed: " + err.Error()})

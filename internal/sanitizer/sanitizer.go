@@ -57,49 +57,42 @@ func (s *Sanitizer) SanitizeText(text string) string {
 	s.mu.RUnlock()
 
 	sanitized := text
-	var count int
 
-	// IPv4
-	if config.MaskIPs {
-		sanitized, count = SanitizePattern(sanitized, IPv4Pattern, IPReplacement)
-	}
-
-	// Email
-	if config.MaskEmails {
-		sanitized, count = SanitizePattern(sanitized, EmailPattern, EmailReplacement)
-	}
-
-	// Tokens
+	// Aplicar APENAS mascaramento de tokens (base64 + connection strings)
 	if config.MaskTokens {
-		// JWT tokens
-		sanitized, count = SanitizePattern(sanitized, JWTPattern, JWTReplacement)
+		// 1. Connection strings - mascara APENAS a senha (entre : e @)
+		// Exemplo: user:senha@host -> user:se**ha@host
+		connStrPattern := regexp.MustCompile(`([^:@\s]+):([^:@\s]+)(@[^\s]+)`)
+		sanitized = connStrPattern.ReplaceAllStringFunc(sanitized, func(match string) string {
+			parts := connStrPattern.FindStringSubmatch(match)
+			if len(parts) == 4 {
+				user := parts[1]
+				password := parts[2]
+				rest := parts[3] // @host:port/db
 
-		// Bearer tokens
-		sanitized, count = SanitizePattern(sanitized, BearerTokenPattern, BearerReplacement)
+				// Mascara apenas a senha
+				maskedPassword := MaskPartial(password, 2)
+				return user + ":" + maskedPassword + rest
+			}
+			return match
+		})
 
-		// UUIDs (podem ser tokens de sessão)
-		sanitized, count = SanitizePattern(sanitized, UUIDPattern, UUIDReplacement)
-
-		// API Keys com contexto
-		sanitized, count = SanitizePatternWithGroup(sanitized, APIKeyPattern, APIKeyReplacement)
-
-		// Passwords com contexto
-		sanitized, count = SanitizePatternWithGroup(sanitized, PasswordPattern, PasswordReplacement)
-
-		// Base64 longas (podem ser tokens)
-		sanitized, count = SanitizePattern(sanitized, Base64Pattern, Base64Replacement)
+		// 2. Base64 longas (>30 chars) - mascara parcialmente
+		// Exemplo: MDFhghthghthghthghthghthghthghtTRk4= -> MDF****************************TRk4=
+		sanitized = Base64Pattern.ReplaceAllStringFunc(sanitized, func(match string) string {
+			if len(match) > 30 {
+				return MaskPartial(match, 3)
+			}
+			return match // Mantém base64 curtas intactas
+		})
 	}
 
-	// Custom patterns
+	// Custom patterns (se houver)
 	for pattern, replacement := range config.CustomPatterns {
-		// Ignora erros de regex inválida (apenas skip)
 		if regexPattern, err := regexp.Compile(pattern); err == nil {
 			sanitized, _ = SanitizePattern(sanitized, regexPattern, replacement)
 		}
 	}
-
-	// Suprimir warning de unused
-	_ = count
 
 	return sanitized
 }
@@ -119,56 +112,32 @@ func (s *Sanitizer) SanitizeTextWithResult(text string) *SanitizationResult {
 
 	var count int
 
-	// IPv4
-	if config.MaskIPs {
-		result.Sanitized, count = SanitizePattern(result.Sanitized, IPv4Pattern, IPReplacement)
-		if count > 0 {
-			result.MaskedItems["ipv4"] = count
-		}
-	}
-
-	// Email
-	if config.MaskEmails {
-		result.Sanitized, count = SanitizePattern(result.Sanitized, EmailPattern, EmailReplacement)
-		if count > 0 {
-			result.MaskedItems["email"] = count
-		}
-	}
-
-	// Tokens
+	// Aplicar APENAS mascaramento de tokens (base64 + connection strings)
 	if config.MaskTokens {
-		// JWT
-		result.Sanitized, count = SanitizePattern(result.Sanitized, JWTPattern, JWTReplacement)
-		if count > 0 {
-			result.MaskedItems["jwt"] = count
+		// 1. Connection strings - mascara APENAS a senha
+		connStrPattern := regexp.MustCompile(`([^:@\s]+):([^:@\s]+)(@[^\s]+)`)
+		matches := connStrPattern.FindAllString(result.Sanitized, -1)
+		if len(matches) > 0 {
+			result.Sanitized = connStrPattern.ReplaceAllStringFunc(result.Sanitized, func(match string) string {
+				parts := connStrPattern.FindStringSubmatch(match)
+				if len(parts) == 4 {
+					return parts[1] + ":" + MaskPartial(parts[2], 2) + parts[3]
+				}
+				return match
+			})
+			result.MaskedItems["connection_string"] = len(matches)
 		}
 
-		// Bearer
-		result.Sanitized, count = SanitizePattern(result.Sanitized, BearerTokenPattern, BearerReplacement)
-		if count > 0 {
-			result.MaskedItems["bearer"] = count
-		}
-
-		// UUID
-		result.Sanitized, count = SanitizePattern(result.Sanitized, UUIDPattern, UUIDReplacement)
-		if count > 0 {
-			result.MaskedItems["uuid"] = count
-		}
-
-		// API Keys
-		result.Sanitized, count = SanitizePatternWithGroup(result.Sanitized, APIKeyPattern, APIKeyReplacement)
-		if count > 0 {
-			result.MaskedItems["apikey"] = count
-		}
-
-		// Passwords
-		result.Sanitized, count = SanitizePatternWithGroup(result.Sanitized, PasswordPattern, PasswordReplacement)
-		if count > 0 {
-			result.MaskedItems["password"] = count
-		}
-
-		// Base64
-		result.Sanitized, count = SanitizePattern(result.Sanitized, Base64Pattern, Base64Replacement)
+		// 2. Base64 longas - mascara parcialmente
+		matches = Base64Pattern.FindAllString(result.Sanitized, -1)
+		count = 0
+		result.Sanitized = Base64Pattern.ReplaceAllStringFunc(result.Sanitized, func(match string) string {
+			if len(match) > 30 {
+				count++
+				return MaskPartial(match, 3)
+			}
+			return match
+		})
 		if count > 0 {
 			result.MaskedItems["base64"] = count
 		}

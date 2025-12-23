@@ -930,7 +930,11 @@ const Index = ({ onLogout }: IndexProps) => {
         );
 
       case "ai-diagnostics":
-        return <AIDiagnosticsTab />;
+        return (
+          <ErrorBoundary>
+            <AIDiagnosticsTab />
+          </ErrorBoundary>
+        );
 
       default:
         return null;

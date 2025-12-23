@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 
@@ -21,6 +21,7 @@ import type {
 import { useDeployments } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
+import { AITriggerButton } from "@/components/AITriggerButton";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
 import "@/styles/diff2html-dark.css";
@@ -65,6 +66,22 @@ export const DeploymentsTab = ({
   const [describeModalOpen, setDescribeModalOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
+
+  // Helper: Detectar deployment problemático
+  const isDeploymentProblematic = (dep: DeploymentSummary): boolean => {
+    // TEMPORÁRIO: Sempre mostrar botão para teste
+    return true;
+    
+    /* LÓGICA ORIGINAL (comentada para debug):
+    // availableReplicas < desiredReplicas
+    if (dep.availableReplicas < dep.replicas) return true;
+    
+    // readyReplicas < desiredReplicas
+    if (dep.readyReplicas < dep.replicas) return true;
+    
+    return false;
+    */
+  };
 
   // Undo/Redo history with persistent cache
   const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
@@ -444,15 +461,27 @@ export const DeploymentsTab = ({
   );
 
   const rightTitleAction = (
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={refreshManifest}
-      disabled={!selectedDeployment || manifestLoading}
-    >
-      <RefreshCcw className="w-4 h-4 mr-2" />
-      Recarregar YAML
-    </Button>
+    <div className="flex gap-2">
+      {selectedDeployment && isDeploymentProblematic(selectedDeployment) && (
+        <AITriggerButton
+          resourceType="Deployment"
+          cluster={cluster}
+          namespace={selectedDeployment.namespace}
+          resourceName={selectedDeployment.name}
+          size="sm"
+          variant="outline"
+        />
+      )}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={refreshManifest}
+        disabled={!selectedDeployment || manifestLoading}
+      >
+        <RefreshCcw className="w-4 h-4 mr-2" />
+        Recarregar YAML
+      </Button>
+    </div>
   );
 
   const renderDeploymentList = () => {

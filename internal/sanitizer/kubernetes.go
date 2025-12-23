@@ -3,6 +3,7 @@ package sanitizer
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,20 +37,12 @@ func (s *Sanitizer) sanitizeContainerEnvVars(container *corev1.Container) {
 
 		// Verifica se a chave da env var é sensível
 		if IsSensitiveKey(envVar.Name, s.config.SensitiveKeys) {
+			// APENAS sanitiza o VALUE (valor direto da env var)
 			envVar.Value = SecretReplacement
 
-			// Também sanitiza ValueFrom se existir
-			if envVar.ValueFrom != nil {
-				if envVar.ValueFrom.SecretKeyRef != nil {
-					envVar.ValueFrom.SecretKeyRef.Key = SecretReplacement
-				}
-				if envVar.ValueFrom.ConfigMapKeyRef != nil {
-					// ConfigMaps podem conter secrets
-					if IsSensitiveKey(envVar.ValueFrom.ConfigMapKeyRef.Key, s.config.SensitiveKeys) {
-						envVar.ValueFrom.ConfigMapKeyRef.Key = SecretReplacement
-					}
-				}
-			}
+			// NÃO sanitiza ValueFrom - preserva referências para análise
+			// A AI precisa ver qual key está sendo referenciada
+			// O valor real virá do ConfigMap/Secret, não do manifesto
 		}
 	}
 }
@@ -77,8 +70,19 @@ func (s *Sanitizer) SanitizeKubernetesConfigMap(cm *corev1.ConfigMap) (*corev1.C
 
 	// Sanitiza apenas chaves sensíveis
 	for key, value := range cmCopy.Data {
+		// Connection strings: MASCARA senha mas preserva estrutura completa
+		if isConnectionString(value) {
+			cmCopy.Data[key] = MaskConnectionString(value) // Mascara senha, mantém sintaxe
+			continue
+		}
+
 		if IsSensitiveKey(key, s.config.SensitiveKeys) {
-			cmCopy.Data[key] = SecretReplacement
+			if len(value) > 20 {
+				// Valores longos: mascara parcialmente (NÃO trunca)
+				cmCopy.Data[key] = MaskPartial(value, 4)
+			} else {
+				cmCopy.Data[key] = SecretReplacement
+			}
 		} else {
 			// Sanitiza o conteúdo (pode conter IPs, emails, etc)
 			cmCopy.Data[key] = s.SanitizeText(value)
@@ -92,6 +96,28 @@ func (s *Sanitizer) SanitizeKubernetesConfigMap(cm *corev1.ConfigMap) (*corev1.C
 	}
 
 	return cmCopy, nil
+}
+
+// isConnectionString detecta se um valor é uma connection string
+func isConnectionString(value string) bool {
+	// Padrões comuns de connection strings
+	patterns := []string{
+		`^mongodb://`,
+		`^postgres://`,
+		`^mysql://`,
+		`^redis://`,
+		`^amqp://`,
+		`^https?://[^@]+@`, // http/https com auth
+		`:.*@.*:`,          // user:password@host:port
+	}
+
+	for _, pattern := range patterns {
+		if matched, _ := regexp.MatchString(pattern, value); matched {
+			return true
+		}
+	}
+
+	return false
 }
 
 // sanitizeMap sanitiza valores de um map[string]string

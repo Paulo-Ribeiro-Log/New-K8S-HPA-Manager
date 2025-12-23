@@ -37,6 +37,11 @@ export function AIHistoryPanel({
 
   // Filtrar histórico
   const filteredHistory = useMemo(() => {
+    // Garantir que history é sempre um array
+    if (!Array.isArray(history)) {
+      return [];
+    }
+
     return history.filter((item) => {
       const matchesSearch =
         searchQuery === "" ||

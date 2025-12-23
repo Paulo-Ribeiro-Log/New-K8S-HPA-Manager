@@ -33,6 +33,9 @@ func NewProvider(config *Config) (Provider, error) {
 	case "ollama":
 		return NewOllamaProvider(config), nil
 
+	case "claude":
+		return NewClaudeProvider(config), nil
+
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", config.Provider)
 	}
