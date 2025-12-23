@@ -251,24 +251,36 @@ k8s-hpa-manager/
   - **Badge de Status**: Componente `<SREBadge>` exibe status SRE no header com popover de grupos
   - **Testes**: Suite completa (`./testes/test-rbac.sh`) + testes Go unitários (`go test ./internal/rbac`)
   - **Documentação**: [RBAC_AZURE_AD_IMPLEMENTATION.md](docs/guides/RBAC_AZURE_AD_IMPLEMENTATION.md) + [RBAC_SUMMARY.md](docs/guides/RBAC_SUMMARY.md)
-🟡 **AI Diagnostics (v1.3.6 - Em Desenvolvimento)** - Análise inteligente de problemas Kubernetes com IA
-  - **Status**: 🟡 Backend 90% completo | Frontend 0% | Documentação completa
-  - **Providers**: Gemini API (default, usa `GEMINI_API_KEY` env var) + Ollama local
+✅ **AI Diagnostics (v1.3.6 - Produção)** - Análise inteligente de problemas Kubernetes com IA
+  - **Status**: ✅ Backend 100% | ✅ Frontend 100% | ✅ Integração completa
+  - **Providers**: Ollama local (llama3.2:3b padrão, compatível com modelos <3B) + Claude (via API key)
+  - **Modelo Recomendado**: llama3.2:3b (2GB RAM, rápido, eficiente para análise de logs)
+  - **Constraint**: Sistema com 6.1GB RAM disponível - modelos >3B causam timeout
   - **Recursos Suportados**: Pods, Deployments, HPAs, Nodes
   - **Backend Completo (5 módulos, 20 arquivos, ~2.500 linhas)**:
-    - ✅ `internal/sanitizer/` - Sanitização de IPs, emails, tokens, secrets antes de enviar para IA
-    - ✅ `internal/collectors/` - Coleta de contexto (logs, events, describe, metrics)
+    - ✅ `internal/sanitizer/` - **Sanitização minimalista** (apenas base64 >30 chars e passwords em connection strings)
+    - ✅ `internal/collectors/` - Coleta de contexto incluindo **logs anteriores** (últimas 30 linhas antes do crash)
     - ✅ `internal/storage/` - SQLite + histórico persistente (./build/ai_diagnostics.db)
-    - ✅ `internal/ai/` - Providers (Gemini/Ollama) + Analyzer + Prompts especializados
+    - ✅ `internal/ai/` - Providers (Ollama/Claude) + Analyzer + Prompts especializados
     - ✅ `internal/web/handlers/ai_diagnostics.go` - 6 endpoints REST API
   - **API REST**: `/api/v1/ai/analyze`, `/api/v1/ai/history`, `/api/v1/ai/status`, `/api/v1/ai/stats`
+  - **Frontend React**:
+    - ✅ Botão "Analisar com AI" integrado ao **painel de detalhes de Pods** (lado direito)
+    - ✅ Modal de análise com markdown formatado, badges de prioridade, sugestões expandíveis
+    - ✅ Indicador de provider/modelo em uso (Ollama llama3.2:3b ou Claude)
+    - ✅ UX otimizada: botão apenas em painel de detalhes (não na lista de cards)
   - **Funcionalidades**:
     - Análise de problemas (CrashLoopBackOff, maxed out HPAs, node pressure, etc)
     - Extração automática de sugestões + comandos kubectl
     - Inferência de prioridade (critical/high/medium/low)
     - Histórico completo com filtros (cluster, namespace, resource, data, provider)
-    - Sanitização completa de dados sensíveis (NUNCA envia secrets/tokens/IPs reais para IA)
-  - **Pendente**: Integração no servidor web (flags CLI) + Frontend React (7 componentes)
+    - **Sanitização inteligente**: Preserva legibilidade de stack traces, mascara apenas credenciais
+    - **Análise de crash logs**: Envia últimas 30 linhas antes do restart (logs anteriores)
+  - **Inicialização**: `./build/k8s-hpa-manager web --ai-provider ollama --ollama-model llama3.2:3b`
+  - **Limitações Conhecidas**:
+    - llama3.2:3b tem capacidade limitada (3B parâmetros) - análises menos profundas que Claude/Gemini
+    - Modelos maiores (qwen2.5:14b, deepseek-r1:7b) causam timeout ou falha por falta de RAM
+    - Para melhor qualidade: usar Claude (pago) ou Gemini (grátis com API key)
   - **Documentação**: [PLANO_AI_DIAGNOSTICS.md](PLANO_AI_DIAGNOSTICS.md) | [PROGRESSO_AI_DIAGNOSTICS.md](PROGRESSO_AI_DIAGNOSTICS.md)
 
 ---
@@ -286,6 +298,27 @@ Tech: Go 1.24.0+ + React 18.3.1 + TypeScript 5.8.3
 Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 Servidor Web: ./build/new-k8s-hpa web (porta 8080)
+
+Recent Updates (v1.3.6 - 23/12/2025):
+- **AI Diagnostics em Produção**: Sistema completo integrado ao servidor web
+  - Frontend: Botão "Analisar com AI" no painel de detalhes de Pods
+  - Backend: Integração com Ollama (llama3.2:3b) + Claude API
+  - **Sanitização minimalista**: Apenas base64 >30 chars e passwords em connection strings
+    - Stack traces preservados integralmente para legibilidade
+    - `MDFhgh...TRk4=` → `MDF****TRk4=` (primeiros/últimos 3 chars visíveis)
+    - `user:password@host` → `user:pa**rd@host` (primeiros/últimos 2 chars visíveis)
+  - **Análise de crash logs**: Sistema envia últimas 30 linhas ANTES do restart
+    - Prompt destaca seção "LOGS ANTERIORES (ANTES DO CRASH)"
+    - AI foca no erro real que causou o crashloop
+  - **UI otimizada**: Botão apenas no painel de detalhes (removido da lista de Pods)
+  - **Constraint RAM**: Sistema tem 6.1GB RAM disponível
+    - Modelos >3B (qwen2.5:14b, deepseek-r1:7b) causam timeout ou falha
+    - llama3.2:3b (2GB) é o maior modelo viável localmente
+  - Comando: `./build/k8s-hpa-manager web --ai-provider ollama --ollama-model llama3.2:3b`
+  - Arquivos chave: 
+    - `internal/sanitizer/sanitizer.go` (linhas 44-82 - sanitização minimalista)
+    - `internal/ai/prompts.go` (linhas 237-268 - seção de logs anteriores)
+    - `internal/web/frontend/src/components/PodsPanel.tsx` (UI sem botão na lista)
 
 Recent Updates (v1.3.5):
 - **RBAC com Azure AD**: Sistema completo de controle de acesso
