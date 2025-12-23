@@ -495,6 +495,7 @@ func (s *Server) setupRoutes() {
 		pods.GET("/:cluster/:namespace/:name/logs", podHandler.GetLogs)
 
 		// Pods - Write Operations (SRE-only)
+		pods.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Apply)
 		pods.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Delete)
 		pods.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), podHandler.Restart)
 		pods.POST("/:cluster/:namespace/debug", rbacMiddleware.RequireSREGroup(), podHandler.CreateDebugPod)

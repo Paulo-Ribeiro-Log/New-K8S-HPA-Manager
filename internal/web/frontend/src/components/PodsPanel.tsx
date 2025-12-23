@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -27,6 +27,9 @@ import { PodTerminal } from "@/components/PodTerminal";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useAIDiagnostics } from "@/hooks/useAIDiagnostics";
+import { createTwoFilesPatch } from "diff";
+import { html } from "diff2html";
+import * as yaml from "js-yaml";
 
 import type { Namespace, PodSummary } from "@/lib/api/types";
 import { apiClient } from "@/lib/api/client";
@@ -67,7 +70,6 @@ export const PodsPanel = ({
   const [selectedContainerForLogs, setSelectedContainerForLogs] = useState<string>("");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isAutoRefreshingLogs, setIsAutoRefreshingLogs] = useState(false);
-  const [yamlFullScreen, setYamlFullScreen] = useState(false);
   const [describeModalOpen, setDescribeModalOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
@@ -77,6 +79,23 @@ export const PodsPanel = ({
   const [useEphemeralDebug, setUseEphemeralDebug] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
+
+  // Estados para edição de YAML
+  const [editedYaml, setEditedYaml] = useState("");
+  const [originalYaml, setOriginalYaml] = useState("");
+  const [isApplying, setIsApplying] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
+  const [viewMode, setViewMode] = useState<"editor" | "diff">("editor");
+  const [diffHtml, setDiffHtml] = useState<string>("");
+  const [showDiffModal, setShowDiffModal] = useState(false);
+  const [yamlHistory, setYamlHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [editorFullScreen, setEditorFullScreen] = useState(false);
+
+  // Controle de undo/redo
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex < yamlHistory.length - 1;
+  const hasChanges = editedYaml !== originalYaml;
 
   const filteredNamespaces = useMemo(() => {
     if (showSystemNamespaces) return namespaces;
@@ -129,6 +148,150 @@ export const PodsPanel = ({
       return slashIndex >= 0 ? versionPart.substring(slashIndex + 1) : versionPart;
     }
     return 'latest';
+  };
+
+  // ===== Funções de Edição YAML =====
+
+  // Adicionar à história de edição
+  const addToHistory = useCallback((yamlContent: string) => {
+    setYamlHistory(prev => {
+      const newHistory = prev.slice(0, historyIndex + 1);
+      newHistory.push(yamlContent);
+      if (newHistory.length > 50) newHistory.shift(); // Limite de 50 versões
+      return newHistory;
+    });
+    setHistoryIndex(prev => Math.min(prev + 1, 49));
+  }, [historyIndex]);
+
+  // Undo
+  const handleUndo = useCallback(() => {
+    if (canUndo) {
+      const newIndex = historyIndex - 1;
+      setHistoryIndex(newIndex);
+      setEditedYaml(yamlHistory[newIndex]);
+    }
+  }, [canUndo, historyIndex, yamlHistory]);
+
+  // Redo
+  const handleRedo = useCallback(() => {
+    if (canRedo) {
+      const newIndex = historyIndex + 1;
+      setHistoryIndex(newIndex);
+      setEditedYaml(yamlHistory[newIndex]);
+    }
+  }, [canRedo, historyIndex, yamlHistory]);
+
+  // Toggle entre editor e diff
+  const handleToggleView = (mode: "editor" | "diff") => {
+    if (mode === "diff" && hasChanges) {
+      const diff = createTwoFilesPatch(
+        "original.yaml",
+        "edited.yaml",
+        originalYaml,
+        editedYaml,
+        "",
+        ""
+      );
+      const diffHtmlContent = html(diff, {
+        drawFileList: false,
+        matching: "lines",
+        outputFormat: "side-by-side",
+      });
+      setDiffHtml(diffHtmlContent);
+    }
+    setViewMode(mode);
+  };
+
+  // Validar YAML (dry-run)
+  const handleValidate = async () => {
+    if (!selectedPod) return;
+
+    setIsValidating(true);
+    try {
+      await apiClient.applyPod(
+        cluster,
+        selectedPod.namespace,
+        selectedPod.name,
+        {
+          yaml: editedYaml,
+          fieldManager: "web-pod-editor",
+          dryRun: true,
+        }
+      );
+      toast.success("✅ YAML válido!", {
+        description: "Validação dry-run passou sem erros",
+      });
+    } catch (err) {
+      toast.error("❌ YAML inválido", {
+        description: err instanceof Error ? err.message : "Erro na validação",
+      });
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  // Cancelar edições
+  const handleCancelEdit = () => {
+    setEditedYaml(originalYaml);
+    setViewMode("editor");
+    toast.info("Edições canceladas");
+  };
+
+  // Aplicar mudanças
+  const handleApplyChanges = async () => {
+    if (!selectedPod) return;
+
+    setIsApplying(true);
+    try {
+      await apiClient.applyPod(
+        cluster,
+        selectedPod.namespace,
+        selectedPod.name,
+        {
+          yaml: editedYaml,
+          fieldManager: "web-pod-editor",
+          dryRun: false,
+        }
+      );
+      toast.success("✅ Pod atualizado com sucesso!");
+      setOriginalYaml(editedYaml);
+      setYamlHistory([editedYaml]);
+      setHistoryIndex(0);
+      // Recarregar pod
+      await loadPods();
+      if (selectedPod) {
+        await loadPodYaml(selectedPod);
+      }
+    } catch (err) {
+      toast.error("Erro ao aplicar mudanças", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsApplying(false);
+    }
+  };
+
+  // Visualizar diff em modal
+  const handleViewDiff = () => {
+    if (!hasChanges) {
+      toast.info("Nenhuma mudança para visualizar");
+      return;
+    }
+    const diff = createTwoFilesPatch(
+      "original.yaml",
+      "edited.yaml",
+      originalYaml,
+      editedYaml,
+      "",
+      ""
+    );
+    const diffHtmlContent = html(diff, {
+      drawFileList: false,
+      matching: "lines",
+      outputFormat: "side-by-side",
+    });
+    setDiffHtml(diffHtmlContent);
+    setShowDiffModal(true);
   };
 
   // Helper: Processar e colorir logs
@@ -292,12 +455,36 @@ export const PodsPanel = ({
     try {
       const manifest = await apiClient.getPod(pod.cluster, pod.namespace, pod.name);
       setPodYaml(manifest.yaml);
+      
+      // Inicializar estados de edição
+      setOriginalYaml(manifest.yaml);
+      setEditedYaml(manifest.yaml);
+      setYamlHistory([manifest.yaml]);
+      setHistoryIndex(0);
+      setViewMode("editor");
     } catch (err) {
       setPodYaml("Erro ao carregar manifest");
       toast.error("Erro ao carregar manifest do Pod");
     } finally {
       setYamlLoading(false);
     }
+  };
+
+  const loadPodYaml = async (pod: PodSummary) => {
+    try {
+      const manifest = await apiClient.getPod(pod.cluster, pod.namespace, pod.name);
+      setPodYaml(manifest.yaml);
+      setOriginalYaml(manifest.yaml);
+      setEditedYaml(manifest.yaml);
+      setYamlHistory([manifest.yaml]);
+      setHistoryIndex(0);
+    } catch (err) {
+      toast.error("Erro ao recarregar manifest do Pod");
+    }
+  };
+
+  const loadPods = async () => {
+    await fetchPods(false);
   };
 
   const handleCopyYaml = () => {
@@ -661,9 +848,9 @@ export const PodsPanel = ({
     const age = calculateAge(selectedPod.createdAt);
 
     return (
-      <div className="flex flex-col h-full">
+      <div className="flex flex-col h-full overflow-hidden">
         {/* Header */}
-        <div className="border-b border-border p-4 space-y-3">
+        <div className="border-b border-border p-4 space-y-3 flex-shrink-0">
           <div>
             <h3 className="font-semibold text-lg">{selectedPod.name}</h3>
             <div className="flex items-center gap-4 mt-1">
@@ -795,129 +982,242 @@ export const PodsPanel = ({
           )}
         </div>
 
-        {/* YAML Manifest + Botão Ver Logs */}
-        <div className="flex-1 flex flex-col min-h-0 m-4 mt-2 space-y-2">
-          <div className="flex items-center justify-between flex-shrink-0">
-            <p className="text-sm font-medium">Manifesto YAML (Read-only)</p>
-            <div className="flex gap-2">
-              {selectedPod && isPodProblematic(selectedPod) && (
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={async () => {
-                    console.log('🚀 BOTÃO CLICADO! Pod:', selectedPod.name);
-                    console.log('🔍 Estado:', { cluster, namespace: selectedPod.namespace, resourceName: selectedPod.name });
-                    
-                    try {
-                      console.log('📡 Chamando analyzeResource...');
-                      const analysis = await analyzeResource({
-                        resourceType: "Pod",
-                        cluster,
-                        namespace: selectedPod.namespace,
-                        resourceName: selectedPod.name,
-                        includeDescribe: true,
-                        includeMetrics: false,
-                        includeLogs: true,
-                      });
-                      
-                      console.log('✅ Análise retornada:', analysis);
-                      
-                      if (analysis) {
-                        console.log('🔗 Abrindo análise em nova aba...');
-                        console.log('📝 Analysis ID:', analysis.id);
-                        
-                        // Salvar análise no sessionStorage
-                        sessionStorage.setItem(`ai-analysis-${analysis.id}`, JSON.stringify(analysis));
-                        console.log('💾 Análise salva no sessionStorage');
-                        
-                        // Construir URL
-                        const url = `/ai-analysis/${analysis.id}`;
-                        console.log('🌐 URL:', url);
-                        
-                        // Abrir em nova aba
-                        const newWindow = window.open(url, '_blank');
-                        
-                        if (newWindow) {
-                          console.log('✅ Nova aba aberta com sucesso');
-                          toast.success('Análise aberta em nova aba');
-                        } else {
-                          console.warn('⚠️ Popup bloqueado pelo navegador');
-                          toast.error('Popup bloqueado! Permita popups para este site.');
-                        }
-                      }
-                    } catch (error) {
-                      console.error('❌ Erro ao analisar:', error);
-                      toast.error('Falha ao analisar recurso');
-                    }
-                  }}
-                  disabled={isAnalyzing}
-                  className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
-                >
-                  {isAnalyzing ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Analisando...
-                    </>
-                  ) : (
-                    <>
-                      <Brain className="w-4 h-4 mr-2" />
-                      Analisar com AI
-                    </>
-                  )}
-                </Button>
-              )}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleViewDescribe}
-                disabled={!selectedPod}
-              >
-                <FileText className="w-4 h-4 mr-1" />
-                Describe
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setLogsModalOpen(true)}
-                disabled={!selectedPod}
-              >
-                <Terminal className="w-4 h-4 mr-2" />
-                Ver Logs
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleCopyYaml}
-                disabled={!podYaml || yamlLoading}
-              >
-                {yamlCopied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-                {yamlCopied ? "Copiado!" : "Copiar YAML"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setYamlFullScreen(true)}
-                title="Abrir YAML em tela cheia"
-                disabled={!podYaml || yamlLoading}
-              >
-                <Maximize2 className="w-3.5 h-3.5" />
-              </Button>
-            </div>
-          </div>
-
+        {/* YAML Manifest + Editor */}
+        <div className="flex-1 overflow-auto p-4">
           {yamlLoading ? (
-            <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-              Carregando manifest...
+            <div className="flex items-center justify-center h-64">
+              <Loader2 className="w-6 h-6 animate-spin" />
             </div>
           ) : (
-            <div className="flex-1 min-h-0">
-              <MonacoYamlEditor
-                key={`pod-manifest-${selectedPod?.name}`}
-                value={podYaml}
-                onChange={() => {}} // Read-only
-                readOnly={true}
-                height="400px"
-              />
+            <div className="space-y-3">
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium">Manifesto YAML</p>
+                    {hasChanges && (
+                      <Badge variant="outline" className="text-xs bg-orange-500/10 text-orange-700 dark:text-orange-400">
+                        Não salvo
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {/* Undo/Redo */}
+                    <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={handleUndo}
+                        disabled={!canUndo}
+                        className={`px-2 py-1 text-xs font-medium ${
+                          canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                        }`}
+                        title="Desfazer (Ctrl+Z)"
+                      >
+                        <Undo2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRedo}
+                        disabled={!canRedo}
+                        className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                          canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                        }`}
+                        title="Refazer (Ctrl+Y)"
+                      >
+                        <Redo2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    {/* View Mode Toggle */}
+                    <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleView("editor")}
+                        className={`px-3 py-1 text-xs font-medium ${
+                          viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                        }`}
+                      >
+                        Editor
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleView("diff")}
+                        className={`px-3 py-1 text-xs font-medium ${
+                          viewMode === "diff" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                        } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                        disabled={!hasChanges}
+                      >
+                        Diff
+                      </button>
+                    </div>
+
+                    {/* Botão AI (se pod problemático) */}
+                    {selectedPod && isPodProblematic(selectedPod) && (
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            const analysis = await analyzeResource({
+                              resourceType: "Pod",
+                              cluster,
+                              namespace: selectedPod.namespace,
+                              resourceName: selectedPod.name,
+                              includeDescribe: true,
+                              includeMetrics: false,
+                              includeLogs: true,
+                            });
+                            
+                            if (analysis) {
+                              sessionStorage.setItem(`ai-analysis-${analysis.id}`, JSON.stringify(analysis));
+                              const newWindow = window.open(`/ai-analysis/${analysis.id}`, '_blank');
+                              if (newWindow) {
+                                toast.success('Análise aberta em nova aba');
+                              } else {
+                                toast.error('Popup bloqueado! Permita popups para este site.');
+                              }
+                            }
+                          } catch (error) {
+                            toast.error('Falha ao analisar recurso');
+                          }
+                        }}
+                        disabled={isAnalyzing}
+                        className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                      >
+                        {isAnalyzing ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Analisando...
+                          </>
+                        ) : (
+                          <>
+                            <Brain className="w-4 h-4 mr-2" />
+                            Analisar com AI
+                          </>
+                        )}
+                      </Button>
+                    )}
+
+                    {/* Botões auxiliares */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setLogsModalOpen(true)}
+                      disabled={!selectedPod}
+                    >
+                      <Terminal className="w-4 h-4 mr-2" />
+                      Ver Logs
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleCopyYaml}
+                      disabled={!podYaml || yamlLoading}
+                    >
+                      {yamlCopied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+                      {yamlCopied ? "Copiado!" : "Copiar YAML"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditorFullScreen(true)}
+                      title="Abrir editor em tela cheia"
+                      disabled={!podYaml || yamlLoading}
+                    >
+                      <Maximize2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Editor / Diff View */}
+                {viewMode === "editor" && (
+                  <MonacoYamlEditor
+                    key={`pod-manifest-${selectedPod?.name}`}
+                    value={editedYaml}
+                    onChange={(value) => {
+                      setEditedYaml(value || "");
+                      if (value && value !== yamlHistory[historyIndex]) {
+                        addToHistory(value);
+                      }
+                    }}
+                    readOnly={false}
+                    height={800}
+                  />
+                )}
+                {viewMode === "diff" && (
+                  <MonacoYamlEditor
+                    mode="diff"
+                    originalValue={originalYaml}
+                    value={editedYaml}
+                    height={800}
+                    readOnly
+                  />
+                )}
+              </div>
+
+              {/* Botões de ação na parte inferior */}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleViewDescribe}
+                  disabled={!selectedPod}
+                >
+                  <FileText className="w-4 h-4 mr-1" />
+                  Describe
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleViewDiff}
+                  disabled={!hasChanges}
+                >
+                  <FileDiff className="w-4 h-4 mr-2" />
+                  Visualizar diff
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCancelEdit}
+                  disabled={!hasChanges}
+                >
+                  <X className="w-4 h-4 mr-2" />
+                  Cancelar
+                </Button>
+
+                <ProtectedAction>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleValidate}
+                    disabled={!selectedPod || isValidating}
+                  >
+                    {isValidating ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4 mr-2" />
+                    )}
+                    Dry-run
+                  </Button>
+                </ProtectedAction>
+
+                <ProtectedAction>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={handleApplyChanges}
+                    disabled={!hasChanges || isApplying}
+                  >
+                    {isApplying ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Check className="w-4 h-4 mr-2" />
+                    )}
+                    Aplicar
+                  </Button>
+                </ProtectedAction>
+              </div>
             </div>
           )}
         </div>
@@ -1456,59 +1756,6 @@ export const PodsPanel = ({
         </DialogContent>
       </Dialog>
 
-      {/* Modal Fullscreen para YAML */}
-      <Dialog open={yamlFullScreen} onOpenChange={setYamlFullScreen}>
-        <DialogContent className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none p-0">
-          <div className="h-full flex flex-col">
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-border flex-shrink-0">
-              <div>
-                <DialogTitle className="text-xl font-semibold">
-                  Manifesto YAML (Read-only)
-                </DialogTitle>
-                <DialogDescription className="text-sm text-muted-foreground mt-1">
-                  {selectedPod?.namespace}/{selectedPod?.name}
-                </DialogDescription>
-              </div>
-              <div className="flex items-center gap-2 pr-8">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleCopyYaml}
-                  disabled={!podYaml || yamlLoading}
-                >
-                  {yamlCopied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-                  {yamlCopied ? "Copiado!" : "Copiar YAML"}
-                </Button>
-              </div>
-            </div>
-
-            {/* Monaco Editor */}
-            <div className="flex-1 p-4">
-              {yamlLoading ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="flex flex-col items-center gap-2">
-                    <RefreshCcw className="w-6 h-6 animate-spin text-muted-foreground" />
-                    <span className="text-sm text-muted-foreground">Carregando manifest...</span>
-                  </div>
-                </div>
-              ) : podYaml ? (
-                <MonacoYamlEditor
-                  key={`pod-manifest-fullscreen-${selectedPod?.name}`}
-                  value={podYaml}
-                  readOnly={true}
-                  height="calc(100vh - 140px)"
-                />
-              ) : (
-                <div className="flex items-center justify-center h-full text-muted-foreground">
-                  <p>Nenhum manifest disponível</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
       {/* Modal Describe */}
       <Dialog open={describeModalOpen} onOpenChange={setDescribeModalOpen}>
         <DialogContent className="max-w-6xl max-h-[90vh]">
@@ -1527,6 +1774,182 @@ export const PodsPanel = ({
               <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
             )}
           </ScrollArea>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Fullscreen de Edição */}
+      <Dialog open={editorFullScreen} onOpenChange={setEditorFullScreen}>
+        <DialogContent 
+          className="max-w-[98vw] max-h-[98vh] w-full h-full p-0"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setEditorFullScreen(false);
+            }
+          }}
+        >
+          <div className="h-full flex flex-col">
+            <DialogHeader className="border-b border-border px-6 py-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <DialogTitle className="text-xl font-semibold text-primary">
+                    Editor YAML - Tela Cheia
+                  </DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
+                    {selectedPod?.name} • {selectedPod?.namespace} • {cluster}
+                  </DialogDescription>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Undo/Redo */}
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={handleUndo}
+                      disabled={!canUndo}
+                      className={`px-2 py-1 text-xs font-medium ${
+                        canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Desfazer (Ctrl+Z)"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRedo}
+                      disabled={!canRedo}
+                      className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                        canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Refazer (Ctrl+Y)"
+                    >
+                      <Redo2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* View Mode Toggle */}
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("editor")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      }`}
+                    >
+                      Editor
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("diff")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "diff" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                      disabled={!hasChanges}
+                    >
+                      Diff
+                    </button>
+                  </div>
+
+                  <ProtectedAction>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleValidate}
+                      disabled={!selectedPod || isValidating}
+                    >
+                      {isValidating ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="w-4 h-4 mr-2" />
+                      )}
+                      Dry-run
+                    </Button>
+                  </ProtectedAction>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCancelEdit}
+                    disabled={!hasChanges}
+                  >
+                    <X className="w-4 h-4 mr-2" />
+                    Cancelar
+                  </Button>
+
+                  <ProtectedAction>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={handleApplyChanges}
+                      disabled={!hasChanges || isApplying}
+                    >
+                      {isApplying ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : (
+                        <Check className="w-4 h-4 mr-2" />
+                      )}
+                      Aplicar
+                    </Button>
+                  </ProtectedAction>
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditorFullScreen(false)}
+                  >
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            </DialogHeader>
+
+            <div className="flex-1 p-6 overflow-hidden">
+              <div className="h-full">
+                {viewMode === "editor" ? (
+                  <MonacoYamlEditor
+                    value={editedYaml}
+                    onChange={(value) => {
+                      setEditedYaml(value || "");
+                      if (value && value !== yamlHistory[historyIndex]) {
+                        addToHistory(value);
+                      }
+                    }}
+                    readOnly={false}
+                    height="calc(98vh - 180px)"
+                  />
+                ) : (
+                  <MonacoYamlEditor
+                    mode="diff"
+                    originalValue={originalYaml}
+                    value={editedYaml}
+                    height="calc(98vh - 180px)"
+                    readOnly
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Diff */}
+      <Dialog open={showDiffModal} onOpenChange={setShowDiffModal}>
+        <DialogContent className="max-w-6xl max-h-[90vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>Visualizar Mudanças (Diff)</DialogTitle>
+            <DialogDescription>
+              Comparação entre o YAML original e o editado
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="h-[70vh]">
+            <div 
+              className="diff-container text-xs"
+              dangerouslySetInnerHTML={{ __html: diffHtml }}
+            />
+          </ScrollArea>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDiffModal(false)}>
+              Fechar
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </>

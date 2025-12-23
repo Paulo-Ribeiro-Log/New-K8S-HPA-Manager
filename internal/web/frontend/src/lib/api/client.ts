@@ -42,6 +42,10 @@ import type {
   PodSummary,
   PodManifest,
   EventSummary,
+  ResourceQuotaSummary,
+  NetworkPolicySummary,
+  ServiceSummary,
+  PodsSummary,
   VersionInfo,
   SequenceExecuteRequest,
   TopNamespacesResponse,
@@ -211,6 +215,21 @@ class APIClient {
   ): Promise<{ success: boolean; message: string }> {
     return await this.request<{ success: boolean; message: string }>(
       `/namespaces/${encodeURIComponent(cluster)}/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }
+    );
+  }
+
+  async applyPod(
+    cluster: string,
+    namespace: string,
+    name: string,
+    payload: { yaml: string; fieldManager: string; dryRun: boolean }
+  ): Promise<{ success: boolean; message: string; data?: any }> {
+    return await this.request<{ success: boolean; message: string; data?: any }>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
       {
         method: "PUT",
         body: JSON.stringify(payload),
