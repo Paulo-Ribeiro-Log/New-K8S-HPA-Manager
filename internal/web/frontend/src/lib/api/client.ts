@@ -237,6 +237,55 @@ class APIClient {
     );
   }
 
+  async getPodMetrics(
+    cluster: string,
+    namespace: string,
+    name: string
+  ): Promise<{ 
+    success: boolean; 
+    data?: {
+      available: boolean;
+      cpu?: {
+        current: number;
+        request: number;
+        limit: number;
+        percent: number;
+        unit: string;
+      };
+      memory?: {
+        current: number;
+        request: number;
+        limit: number;
+        percent: number;
+        unit: string;
+      };
+      message?: string;
+    };
+  }> {
+    try {
+      return await this.request<{ 
+        success: boolean; 
+        data: {
+          available: boolean;
+          cpu?: any;
+          memory?: any;
+          message?: string;
+        };
+      }>(
+        `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/metrics`
+      );
+    } catch (error: any) {
+      return {
+        success: false,
+        data: {
+          available: false,
+          message: "Metrics not available",
+        },
+      };
+    }
+  }
+
+
   // HPAs
   async getHPAs(cluster?: string, namespace?: string, bypassCache: boolean = false, showSystem: boolean = false): Promise<HPA[]> {
     const params = new URLSearchParams();

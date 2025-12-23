@@ -18,6 +18,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 	"sigs.k8s.io/yaml"
 
 	"k8s-hpa-manager/internal/history"
@@ -70,6 +72,7 @@ func isSystemNamespace(namespace string) bool {
 // Client encapsula as operações do Kubernetes
 type Client struct {
 	clientset      kubernetes.Interface
+	metricsClient  *metricsclientset.Clientset
 	cluster        string
 	historyTracker *history.HistoryTracker
 }
@@ -3193,16 +3196,16 @@ func (c *Client) canDisruptPods(pdb *policyv1.PodDisruptionBudget, affectedPods 
 
 // NamespaceEvent representa um evento do Kubernetes relacionado ao namespace
 type NamespaceEvent struct {
-	Type          string    `json:"type"`           // Normal, Warning
-	Reason        string    `json:"reason"`         // Razão do evento (ex: FailedScheduling, Pulled)
-	Message       string    `json:"message"`        // Mensagem descritiva
-	Count         int32     `json:"count"`          // Número de ocorrências
-	FirstTime     time.Time `json:"firstTime"`      // Primeira ocorrência
-	LastTime      time.Time `json:"lastTime"`       // Última ocorrência
-	Source        string    `json:"source"`         // Componente que gerou (ex: kubelet, scheduler)
-	Object        string    `json:"object"`         // Recurso afetado (ex: Pod/nginx-xxx)
-	ObjectKind    string    `json:"objectKind"`     // Tipo do objeto (Pod, Deployment, etc)
-	LastTimestamp string    `json:"lastTimestamp"`  // Timestamp formatado para display
+	Type          string    `json:"type"`          // Normal, Warning
+	Reason        string    `json:"reason"`        // Razão do evento (ex: FailedScheduling, Pulled)
+	Message       string    `json:"message"`       // Mensagem descritiva
+	Count         int32     `json:"count"`         // Número de ocorrências
+	FirstTime     time.Time `json:"firstTime"`     // Primeira ocorrência
+	LastTime      time.Time `json:"lastTime"`      // Última ocorrência
+	Source        string    `json:"source"`        // Componente que gerou (ex: kubelet, scheduler)
+	Object        string    `json:"object"`        // Recurso afetado (ex: Pod/nginx-xxx)
+	ObjectKind    string    `json:"objectKind"`    // Tipo do objeto (Pod, Deployment, etc)
+	LastTimestamp string    `json:"lastTimestamp"` // Timestamp formatado para display
 }
 
 // GetNamespaceEvents retorna eventos recentes de um namespace
@@ -3406,4 +3409,26 @@ func preparePodApplyPayload(yamlContent, enforceNamespace, enforceName string) (
 	}
 
 	return jsonPayload, namespace, name, nil
+}
+
+// GetPodMetricsFromServer retorna métricas atuais de um Pod específico usando metrics-server
+func (c *Client) GetPodMetricsFromServer(ctx context.Context, namespace, name string) (*metricsv1beta1.PodMetrics, error) {
+	// Usar raw REST client para acessar metrics.k8s.io API
+	restClient := c.clientset.CoreV1().RESTClient()
+
+	// Buscar via metrics.k8s.io/v1beta1
+	data, err := restClient.Get().
+		AbsPath("/apis/metrics.k8s.io/v1beta1/namespaces/" + namespace + "/pods/" + name).
+		DoRaw(ctx)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pod metrics: %w", err)
+	}
+
+	var metrics metricsv1beta1.PodMetrics
+	if err := json.Unmarshal(data, &metrics); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metrics: %w", err)
+	}
+
+	return &metrics, nil
 }
