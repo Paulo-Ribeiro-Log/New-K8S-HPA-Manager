@@ -814,3 +814,95 @@ func (h *PodHandler) CreateDebugPod(c *gin.Context) {
 		},
 	})
 }
+
+// podApplyRequest representa uma requisição de apply de Pod
+type podApplyRequest struct {
+	YAML         string `json:"yaml"`
+	FieldManager string `json:"fieldManager"`
+	DryRun       bool   `json:"dryRun"`
+}
+
+// Apply aplica mudanças em um Pod existente
+func (h *PodHandler) Apply(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+	name := strings.TrimSpace(c.Param("name"))
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster, namespace and name are required"))
+		return
+	}
+
+	var req podApplyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", fmt.Sprintf("Invalid body: %v", err)))
+		return
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", "yaml is required"))
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("CLIENT_ERROR", fmt.Sprintf("Failed to get client: %v", err)))
+		return
+	}
+	ctx := c.Request.Context()
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+
+	var before map[string]interface{}
+	if !req.DryRun {
+		// Capturar estado anterior para history tracking
+		pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err == nil {
+			yamlBytes, _ := yaml.Marshal(pod)
+			before = map[string]interface{}{
+				"name":      pod.Name,
+				"namespace": pod.Namespace,
+				"phase":     string(pod.Status.Phase),
+				"yaml":      string(yamlBytes),
+			}
+		}
+	}
+
+	start := time.Now()
+	result, err := kubeClient.ApplyPod(ctx, req.YAML, req.FieldManager, namespace, name, req.DryRun)
+	if err != nil {
+		status := http.StatusInternalServerError
+		errorCode := "APPLY_ERROR"
+		c.JSON(status, errorResponse(errorCode, err.Error()))
+		return
+	}
+
+	if !req.DryRun && h.historyTracker != nil {
+		after := map[string]interface{}{
+			"name":      result.Name,
+			"namespace": result.Namespace,
+			"phase":     string(result.Status.Phase),
+		}
+		entry := history.HistoryEntry{
+			Action:   "apply_pod",
+			Resource: fmt.Sprintf("%s/%s", namespace, name),
+			Cluster:  cluster,
+			Before:   before,
+			After:    after,
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"name":            result.Name,
+			"namespace":       result.Namespace,
+			"cluster":         cluster,
+			"resourceVersion": result.ResourceVersion,
+			"dryRun":          req.DryRun,
+			"appliedAt":       time.Now().UTC(),
+		},
+	})
+}

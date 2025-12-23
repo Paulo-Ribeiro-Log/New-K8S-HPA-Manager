@@ -3306,3 +3306,104 @@ func ExecuteKubectlDescribe(cluster, resourceType, name, namespace string) (stri
 
 	return string(output), nil
 }
+
+// ApplyPod aplica um Pod a partir de YAML
+func (c *Client) ApplyPod(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*corev1.Pod, error) {
+	return c.applyPod(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+}
+
+func (c *Client) applyPod(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*corev1.Pod, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("pod yaml content cannot be empty")
+	}
+	if fieldManager == "" {
+		fieldManager = "web-pod-editor"
+	}
+
+	payload, namespace, name, err := preparePodApplyPayload(yamlContent, enforceNamespace, enforceName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Force=true permite assumir ownership de campos gerenciados por outros field managers
+	forceFlag := true
+	options := metav1.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        &forceFlag,
+	}
+	if dryRun {
+		options.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.CoreV1().Pods(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply pod %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	return result, nil
+}
+
+func preparePodApplyPayload(yamlContent, enforceNamespace, enforceName string) ([]byte, string, string, error) {
+	var pod map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &pod); err != nil {
+		return nil, "", "", fmt.Errorf("invalid pod yaml: %w", err)
+	}
+
+	if len(pod) == 0 {
+		return nil, "", "", fmt.Errorf("pod yaml cannot be empty")
+	}
+
+	apiVersion, _ := pod["apiVersion"].(string)
+	if strings.TrimSpace(apiVersion) == "" {
+		pod["apiVersion"] = "v1"
+	}
+	kind, _ := pod["kind"].(string)
+	if strings.TrimSpace(kind) == "" {
+		pod["kind"] = "Pod"
+	} else if !strings.EqualFold(kind, "Pod") {
+		return nil, "", "", fmt.Errorf("expected kind Pod, got %s", kind)
+	}
+
+	metadata, _ := pod["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	name, _ := metadata["name"].(string)
+	name = strings.TrimSpace(name)
+	if enforceName != "" {
+		enforceName = strings.TrimSpace(enforceName)
+		if name == "" {
+			name = enforceName
+		}
+		if name != enforceName {
+			return nil, "", "", fmt.Errorf("pod name mismatch: expected %s, got %s", enforceName, name)
+		}
+	}
+	if name == "" {
+		return nil, "", "", fmt.Errorf("pod metadata.name is required")
+	}
+	metadata["name"] = name
+
+	namespace := strings.TrimSpace(enforceNamespace)
+	if nsRaw, ok := metadata["namespace"].(string); ok {
+		ns := strings.TrimSpace(nsRaw)
+		if namespace == "" {
+			namespace = ns
+		} else if ns != "" && ns != namespace {
+			return nil, "", "", fmt.Errorf("pod namespace mismatch: expected %s, got %s", namespace, ns)
+		}
+	}
+	if namespace == "" {
+		return nil, "", "", fmt.Errorf("pod metadata.namespace is required")
+	}
+	metadata["namespace"] = namespace
+	pod["metadata"] = metadata
+
+	jsonPayload, err := json.Marshal(pod)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to marshal pod payload: %w", err)
+	}
+
+	return jsonPayload, namespace, name, nil
+}
