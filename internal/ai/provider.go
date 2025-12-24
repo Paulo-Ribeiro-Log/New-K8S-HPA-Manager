@@ -36,6 +36,12 @@ func NewProvider(config *Config) (Provider, error) {
 	case "claude":
 		return NewClaudeProvider(config), nil
 
+	case "openai":
+		return NewOpenAIProvider(config), nil
+
+	case "copilot":
+		return NewCopilotProvider(config), nil
+
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", config.Provider)
 	}

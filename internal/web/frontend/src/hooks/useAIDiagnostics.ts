@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { apiClient } from "@/lib/api/client";
 import type {
   AnalyzeRequest,
@@ -199,6 +199,17 @@ export function useAIDiagnostics() {
   const clearCurrentAnalysis = useCallback(() => {
     setCurrentAnalysis(null);
   }, []);
+
+  /**
+   * Auto-refresh stats every 60 seconds
+   */
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchStats();
+    }, 60000); // 60 seconds
+
+    return () => clearInterval(interval);
+  }, [fetchStats]);
 
   return {
     // State

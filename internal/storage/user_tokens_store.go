@@ -19,14 +19,17 @@ func NewUserTokensStore(client *SQLiteClient) *UserTokensStore {
 
 // UserTokens representa tokens de um usuário
 type UserTokens struct {
-	UserEmail         string            `json:"user_email"`
-	GeminiAPIKey      string            `json:"gemini_api_key,omitempty"`
-	OpenAIAPIKey      string            `json:"openai_api_key,omitempty"`
-	ClaudeAPIKey      string            `json:"claude_api_key,omitempty"`
-	PreferredProvider string            `json:"preferred_provider"`
-	Metadata          map[string]string `json:"metadata,omitempty"`
-	UpdatedAt         time.Time         `json:"updated_at"`
-	CreatedAt         time.Time         `json:"created_at"`
+	UserEmail           string            `json:"user_email"`
+	GeminiAPIKey        string            `json:"gemini_api_key,omitempty"`
+	OpenAIAPIKey        string            `json:"openai_api_key,omitempty"`
+	ClaudeAPIKey        string            `json:"claude_api_key,omitempty"`
+	CopilotAPIKey       string            `json:"copilot_api_key,omitempty"`
+	CopilotEndpoint     string            `json:"copilot_endpoint,omitempty"`
+	CopilotDeployment   string            `json:"copilot_deployment,omitempty"`
+	PreferredProvider   string            `json:"preferred_provider"`
+	Metadata            map[string]string `json:"metadata,omitempty"`
+	UpdatedAt           time.Time         `json:"updated_at"`
+	CreatedAt           time.Time         `json:"created_at"`
 }
 
 // CreateTable cria tabela de tokens de usuários
@@ -37,12 +40,15 @@ func (s *UserTokensStore) CreateTable() error {
 		gemini_api_key TEXT,
 		openai_api_key TEXT,
 		claude_api_key TEXT,
-		preferred_provider TEXT DEFAULT 'gemini',
+		copilot_api_key TEXT,
+		copilot_endpoint TEXT,
+		copilot_deployment TEXT,
+		preferred_provider TEXT DEFAULT 'ollama',
 		metadata TEXT,
 		updated_at DATETIME NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
-	
+
 	CREATE INDEX IF NOT EXISTS idx_user_tokens_email ON user_ai_tokens(user_email);
 	CREATE INDEX IF NOT EXISTS idx_user_tokens_updated ON user_ai_tokens(updated_at DESC);
 	`
@@ -73,12 +79,16 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 	query := `
 	INSERT INTO user_ai_tokens (
 		user_email, gemini_api_key, openai_api_key, claude_api_key,
+		copilot_api_key, copilot_endpoint, copilot_deployment,
 		preferred_provider, metadata, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(user_email) DO UPDATE SET
 		gemini_api_key = excluded.gemini_api_key,
 		openai_api_key = excluded.openai_api_key,
 		claude_api_key = excluded.claude_api_key,
+		copilot_api_key = excluded.copilot_api_key,
+		copilot_endpoint = excluded.copilot_endpoint,
+		copilot_deployment = excluded.copilot_deployment,
 		preferred_provider = excluded.preferred_provider,
 		metadata = excluded.metadata,
 		updated_at = excluded.updated_at
@@ -89,6 +99,9 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 		tokens.GeminiAPIKey,
 		tokens.OpenAIAPIKey,
 		tokens.ClaudeAPIKey,
+		tokens.CopilotAPIKey,
+		tokens.CopilotEndpoint,
+		tokens.CopilotDeployment,
 		tokens.PreferredProvider,
 		metadataJSON,
 		tokens.UpdatedAt,
@@ -109,6 +122,7 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 
 	query := `
 	SELECT user_email, gemini_api_key, openai_api_key, claude_api_key,
+	       copilot_api_key, copilot_endpoint, copilot_deployment,
 	       preferred_provider, metadata, updated_at, created_at
 	FROM user_ai_tokens
 	WHERE user_email = ?
@@ -124,6 +138,9 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 		&tokens.GeminiAPIKey,
 		&tokens.OpenAIAPIKey,
 		&tokens.ClaudeAPIKey,
+		&tokens.CopilotAPIKey,
+		&tokens.CopilotEndpoint,
+		&tokens.CopilotDeployment,
 		&tokens.PreferredProvider,
 		&metadataJSON,
 		&tokens.UpdatedAt,
@@ -171,5 +188,5 @@ func (s *UserTokensStore) HasTokens(userEmail string) (bool, error) {
 		return false, nil
 	}
 
-	return tokens.GeminiAPIKey != "" || tokens.OpenAIAPIKey != "" || tokens.ClaudeAPIKey != "", nil
+	return tokens.GeminiAPIKey != "" || tokens.OpenAIAPIKey != "" || tokens.ClaudeAPIKey != "" || tokens.CopilotAPIKey != "", nil
 }

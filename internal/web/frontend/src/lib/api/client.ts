@@ -1471,6 +1471,9 @@ class APIClient {
     gemini_api_key?: string;
     openai_api_key?: string;
     claude_api_key?: string;
+    copilot_api_key?: string;
+    copilot_endpoint?: string;
+    copilot_deployment?: string;
     preferred_provider: string;
   }): Promise<{ success: boolean; message: string }> {
     return this.request(`/ai/tokens`, {
@@ -1493,11 +1496,17 @@ class APIClient {
    */
   async validateAIToken(
     provider: string,
-    apiKey: string
+    apiKey: string,
+    endpoint?: string,
+    deployment?: string
   ): Promise<{ valid: boolean; error?: string; message?: string }> {
+    const body: any = { provider, api_key: apiKey };
+    if (endpoint) body.endpoint = endpoint;
+    if (deployment) body.deployment = deployment;
+
     return this.request(`/ai/tokens/validate`, {
       method: "POST",
-      body: JSON.stringify({ provider, api_key: apiKey }),
+      body: JSON.stringify(body),
     });
   }
 }

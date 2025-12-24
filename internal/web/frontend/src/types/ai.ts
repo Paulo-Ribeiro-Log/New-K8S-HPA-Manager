@@ -13,6 +13,8 @@ export interface Suggestion {
   priority: Priority;
 }
 
+export type AIProvider = "gemini" | "ollama" | "claude" | "openai" | "copilot";
+
 export interface AnalysisResult {
   id: string;
   resourceType: ResourceType;
@@ -25,7 +27,7 @@ export interface AnalysisResult {
   suggestions: Suggestion[];
 
   // Metadados
-  provider: "gemini" | "ollama";
+  provider: AIProvider;
   model?: string;
   analyzedAt: string; // ISO timestamp
   tokensUsed?: number;
@@ -43,25 +45,27 @@ export interface AnalyzeRequest {
 }
 
 export interface ProviderStatus {
-  provider: "gemini" | "ollama" | "claude";
+  provider: AIProvider;
   available: boolean;
   model: string;
   error?: string;
+  lastCheck?: string; // ISO timestamp
 }
 
 export interface AIStats {
-  totalAnalyses: number;
-  analysesByResource: Record<ResourceType, number>;
-  analysesByProvider: Record<string, number>;
-  avgResponseTime: number;
-  totalTokensUsed: number;
+  total_analyses: number;
+  by_resource_type: Record<ResourceType, number>;
+  by_provider: Record<string, number>;
+  avg_response_time: number;
+  total_tokens_used: number;
+  last_analysis_at?: string;
 }
 
 export interface HistoryFilter {
   cluster?: string;
   namespace?: string;
   resourceType?: ResourceType;
-  provider?: "gemini" | "ollama" | "claude";
+  provider?: AIProvider;
   limit?: number;
   offset?: number;
 }
