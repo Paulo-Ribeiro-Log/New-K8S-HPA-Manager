@@ -44,10 +44,10 @@ export function AIHistoryPanel({
 
     return history.filter((item) => {
       // Verificações de segurança para campos opcionais
-      const resourceName = item.resourceName || "";
+      const resourceName = item.resource_name || "";
       const namespace = item.namespace || "";
       const cluster = item.cluster || "";
-      const resourceType = item.resourceType || "";
+      const resourceType = item.resource_type || "";
       const provider = item.provider || "";
 
       const matchesSearch =
@@ -196,13 +196,13 @@ export function AIHistoryPanel({
                     <div className="flex-1 space-y-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <Badge variant="outline">
-                          {item.resourceType || "Unknown"}
+                          {item.resource_type || "Unknown"}
                         </Badge>
                         <Badge variant="secondary">
                           {item.provider || "Unknown"}
                         </Badge>
                         <span className="text-sm font-medium">
-                          {item.resourceName || "sem nome"}
+                          {item.resource_name || "sem nome"}
                         </span>
                       </div>
 
@@ -213,10 +213,10 @@ export function AIHistoryPanel({
                       <div className="flex items-center gap-3 text-xs text-muted-foreground">
                         <span className="flex items-center gap-1">
                           <Clock className="h-3 w-3" />
-                          {formatDate(item.analyzedAt)}
+                          {formatDate(item.analyzed_at)}
                         </span>
-                        {item.responseTime && (
-                          <span>⚡ {item.responseTime.toFixed(1)}s</span>
+                        {item.response_time && (
+                          <span>⚡ {item.response_time.toFixed(1)}s</span>
                         )}
                         {item.suggestions && (
                           <span>💡 {item.suggestions.length} sugestões</span>
@@ -235,7 +235,7 @@ export function AIHistoryPanel({
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={(e) => handleDelete(item.id, item.resourceName, e)}
+                        onClick={(e) => handleDelete(item.id, item.resource_name, e)}
                         className="text-red-500 hover:text-red-600 hover:bg-red-50"
                       >
                         <Trash2 className="h-4 w-4" />

@@ -108,9 +108,9 @@ const SuggestionCard = ({ suggestion }: { suggestion: Suggestion }) => {
 export function AIAnalysisCard({ analysis, onClose }: AIAnalysisCardProps) {
   // Validar e formatar data
   const formatDate = () => {
-    if (!analysis.analyzedAt) return "data desconhecida";
+    if (!analysis.analyzed_at) return "data desconhecida";
 
-    const date = new Date(analysis.analyzedAt);
+    const date = new Date(analysis.analyzed_at);
     if (isNaN(date.getTime())) return "data inválida";
 
     return date.toLocaleString("pt-BR", {
@@ -134,7 +134,7 @@ export function AIAnalysisCard({ analysis, onClose }: AIAnalysisCardProps) {
               <Badge variant="outline">{analysis.provider || "Unknown"}</Badge>
             </CardTitle>
             <CardDescription>
-              {analysis.resourceType || "Unknown"}: {analysis.cluster || "?"}/{analysis.namespace || "?"}/{analysis.resourceName || "sem nome"}
+              {analysis.resource_type || "Unknown"}: {analysis.cluster || "?"}/{analysis.namespace || "?"}/{analysis.resource_name || "sem nome"}
             </CardDescription>
           </div>
           {onClose && (
