@@ -944,43 +944,60 @@ export const PodsPanel = ({
     return (
       <div className="flex flex-col h-full overflow-hidden">
         {/* Header Compacto */}
-        <div className="border-b border-border px-4 py-2 space-y-2 flex-shrink-0">
-          {/* Linha 1: Nome, Versão + Gauges */}
-          <div className="flex items-start justify-between">
-            <div className="flex items-center gap-3">
-              <h3 className="font-semibold text-base">{selectedPod.name}</h3>
-              <span className="text-xs text-muted-foreground">NS: {selectedPod.namespace}</span>
-              {selectedPod.containers.length > 0 && (
-                <Badge variant="outline" className="text-xs">
-                  v{extractImageVersion(selectedPod.containers[0].image)}
-                </Badge>
-              )}
+        <div className="border-b border-border px-4 py-2 space-y-2 flex-shrink-0 relative">
+          {/* Gauges - Container Isolado (Posicionamento Absoluto) */}
+          {metrics && metrics.available && (
+            <div className="absolute top-2 right-4 flex items-center gap-2">
+              <ResourceGauge
+                title="CPU"
+                current={metrics.cpu?.current || 0}
+                request={metrics.cpu?.request || 0}
+                limit={metrics.cpu?.limit || 0}
+                unit="m"
+                formatValue={(v) => v.toFixed(0)}
+              />
+              <ResourceGauge
+                title="Memory"
+                current={(metrics.memory?.current || 0) / (1024 * 1024)}
+                request={(metrics.memory?.request || 0) / (1024 * 1024)}
+                limit={(metrics.memory?.limit || 0) / (1024 * 1024)}
+                unit="Mi"
+                formatValue={(v) => v.toFixed(0)}
+              />
             </div>
-            
-            {/* Gauges de CPU e Memória */}
-            {metrics && metrics.available && (
-              <div className="flex items-center gap-2">
-                <ResourceGauge
-                  title="CPU"
-                  current={metrics.cpu?.current || 0}
-                  request={metrics.cpu?.request || 0}
-                  limit={metrics.cpu?.limit || 0}
-                  unit="m"
-                  formatValue={(v) => v.toFixed(0)}
-                />
-                <ResourceGauge
-                  title="Memory"
-                  current={(metrics.memory?.current || 0) / (1024 * 1024)}
-                  request={(metrics.memory?.request || 0) / (1024 * 1024)}
-                  limit={(metrics.memory?.limit || 0) / (1024 * 1024)}
-                  unit="Mi"
-                  formatValue={(v) => v.toFixed(0)}
-                />
-              </div>
-            )}
+          )}
+
+          {/* Linha 1: Nome do Pod */}
+          <div className="pr-48">
+            <h3 className="font-semibold text-base">{selectedPod.name}</h3>
           </div>
 
-          {/* Linha 2: Node, IP, Age, Restarts */}
+          {/* Linha 2: Badges de Namespace, Versão e Status */}
+          <div className="flex items-center gap-2 pr-48">
+            <Badge variant="secondary" className="text-xs">
+              NS: {selectedPod.namespace}
+            </Badge>
+            {selectedPod.containers.length > 0 && extractImageVersion(selectedPod.containers[0].image) && (
+              <Badge variant="secondary" className="text-xs">
+                v{extractImageVersion(selectedPod.containers[0].image)}
+              </Badge>
+            )}
+            <Badge variant="outline" className={`text-xs ${getPhaseColor(selectedPod.phase)}`}>
+              {selectedPod.phase}
+            </Badge>
+            <Badge
+              variant="outline"
+              className={`text-xs ${
+                selectedPod.readyContainers === selectedPod.totalContainers
+                  ? "bg-green-500/10 text-green-700 dark:text-green-400"
+                  : "bg-red-500/10 text-red-700 dark:text-red-400"
+              }`}
+            >
+              {selectedPod.readyContainers}/{selectedPod.totalContainers}
+            </Badge>
+          </div>
+
+          {/* Linha 3: Node, IP, Age, Restarts */}
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
             <span>Node: <span className="font-mono text-foreground">{selectedPod.nodeName || "N/A"}</span></span>
             <span>IP: <span className="font-mono text-foreground">{selectedPod.podIP || "N/A"}</span></span>
@@ -988,31 +1005,12 @@ export const PodsPanel = ({
             <span>Restarts: <span className="text-foreground">{selectedPod.restarts}</span></span>
           </div>
 
-          {/* Linha 3: CPU e Memória com cores + Status Badges */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4 text-xs">
-              <span className="text-muted-foreground">CPU/R: <span className="font-mono font-semibold text-blue-600 dark:text-blue-400">{selectedPod.cpuRequest || "N/A"}</span></span>
-              <span className="text-muted-foreground">CPU/L: <span className="font-mono font-semibold text-slate-600 dark:text-slate-400">{selectedPod.cpuLimit || "N/A"}</span></span>
-              <span className="text-muted-foreground">MEM/R: <span className="font-mono font-semibold text-blue-600 dark:text-blue-400">{selectedPod.memoryRequest || "N/A"}</span></span>
-              <span className="text-muted-foreground">MEM/L: <span className="font-mono font-semibold text-slate-600 dark:text-slate-400">{selectedPod.memoryLimit || "N/A"}</span></span>
-            </div>
-            
-            {/* Status Badges */}
-            <div className="flex items-center gap-2">
-              <Badge variant="outline" className={`text-xs ${getPhaseColor(selectedPod.phase)}`}>
-                {selectedPod.phase}
-              </Badge>
-              <Badge
-                variant="outline"
-                className={`text-xs ${
-                  selectedPod.readyContainers === selectedPod.totalContainers
-                    ? "bg-green-500/10 text-green-700 dark:text-green-400"
-                    : "bg-red-500/10 text-red-700 dark:text-red-400"
-                }`}
-              >
-                {selectedPod.readyContainers}/{selectedPod.totalContainers}
-              </Badge>
-            </div>
+          {/* Linha 4: CPU e Memória com cores */}
+          <div className="flex items-center gap-4 text-xs">
+            <span className="text-muted-foreground">CPU/R: <span className="font-mono font-semibold text-blue-600 dark:text-blue-400">{selectedPod.cpuRequest || "N/A"}</span></span>
+            <span className="text-muted-foreground">CPU/L: <span className="font-mono font-semibold text-slate-600 dark:text-slate-400">{selectedPod.cpuLimit || "N/A"}</span></span>
+            <span className="text-muted-foreground">MEM/R: <span className="font-mono font-semibold text-blue-600 dark:text-blue-400">{selectedPod.memoryRequest || "N/A"}</span></span>
+            <span className="text-muted-foreground">MEM/L: <span className="font-mono font-semibold text-slate-600 dark:text-slate-400">{selectedPod.memoryLimit || "N/A"}</span></span>
           </div>
 
           {/* Containers - Compacto */}
