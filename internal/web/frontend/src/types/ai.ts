@@ -40,8 +40,9 @@ export interface AnalyzeRequest {
   cluster: string;
   namespace: string;
   resourceName: string;
-  includeDescribe?: boolean;
+  includeLogs?: boolean;
   includeMetrics?: boolean;
+  includeDescribe?: boolean;
 }
 
 export interface ProviderStatus {
