@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
+**IMPORTANTE**: Data de hoje: **23 de dezembro de 2025** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -39,9 +40,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 15. [🛣️ Roteiro Implementação SSO](ROTEIRO_IMPLEMENTACAO_SSO.md) - **Roadmap completo para servidor centralizado** (6 dias)
 16. [📧 Implementação user_email History](IMPLEMENTACAO_USER_EMAIL_HISTORY.md) - User tracking no History Tracker (v1.3.6)
 
-### 🤖 AI Diagnostics (Em Desenvolvimento)
+### 🤖 AI Diagnostics (✅ Produção desde 23/12/2025)
 17. [🧠 Plano AI Diagnostics](PLANO_AI_DIAGNOSTICS.md) - **Plano completo de implementação** (8 dias)
-18. [📊 Progresso AI Diagnostics](PROGRESSO_AI_DIAGNOSTICS.md) - **Status atual: Backend 90%** (atualizado 21/12/2025)
+18. [📊 Progresso AI Diagnostics](PROGRESSO_AI_DIAGNOSTICS.md) - **Status: 100% Completo** (v1.3.6)
 
 ---
 
@@ -66,6 +67,10 @@ make test                     # Rodar todos os testes
 make test-coverage            # Testes com coverage (gera coverage.html)
 go test -v ./internal/config -race  # Testar race conditions específicas
 go test -run TestGetClient    # Rodar teste específico
+go test -v ./internal/rbac -race    # Testar RBAC com race detector
+go test -v ./internal/ai            # Testar AI Diagnostics
+go test -v ./internal/sanitizer     # Testar sanitização de logs
+./testes/test-rbac.sh         # Suite completa RBAC (40+ cenários)
 
 # Debug Web
 tail -f /tmp/k8s-hpa-manager-web-*.log  # Logs do servidor (background mode)
@@ -105,12 +110,82 @@ k8s-hpa-manager/
 │   ├── web/                  # Web Interface (React/TS)
 │   │   ├── frontend/         # React SPA
 │   │   ├── handlers/         # Go REST API
-│   │   └── sse/              # Server-Sent Events
+│   │   ├── sse/              # Server-Sent Events
+│   │   └── middleware/       # RBAC, CORS, etc.
 │   ├── kubernetes/           # K8s client wrapper
 │   ├── azure/                # Azure SDK auth
-│   └── models/               # Data structures
+│   ├── models/               # Data structures
+│   ├── config/               # Kubeconfig, cache
+│   ├── session/              # Session management
+│   ├── monitoring/           # Prometheus/metrics
+│   ├── rbac/                 # Azure AD RBAC
+│   ├── ai/                   # AI Diagnostics (Ollama/Claude)
+│   ├── collectors/           # Context collectors
+│   ├── sanitizer/            # Sanitização de logs
+│   ├── storage/              # SQLite persistence
+│   ├── history/              # History tracker
+│   ├── updater/              # Auto-update system
+│   ├── validation/           # Input validation
+│   └── logs/                 # Logging utilities
 ├── docs/                     # Documentação modular
-└── build/                    # Build artifacts
+├── build/                    # Build artifacts
+├── vendor/                   # Go modules vendored
+└── scripts/                  # Utility scripts
+```
+
+**Módulos Go Principais:**
+- `k8s-hpa-manager` (root) - Módulo principal (Go 1.24.0)
+- Dependências chave: k8s.io/client-go v0.34.1, gin v1.11.0, zerolog v1.34.0
+- Build com vendor mode: `go build -mod=vendor`
+
+### ⚠️ Comandos Críticos - NÃO Esquecer
+
+**Antes de Commitar Código:**
+```bash
+# 1. SEMPRE rodar testes com race detector
+go test -v ./internal/... -race
+
+# 2. SEMPRE verificar se build funciona
+make build
+
+# 3. Se alterou frontend, SEMPRE rebuild
+./rebuild-web.sh -b
+
+# 4. Verificar formatting Go
+go fmt ./...
+
+# 5. Verificar se vendored modules estão atualizados
+go mod vendor
+```
+
+**Antes de Fazer PR/Release:**
+```bash
+# 1. Rodar suite completa de testes
+make test-coverage
+
+# 2. Testar RBAC (se alterou permissões)
+./testes/test-rbac.sh
+
+# 3. Verificar versão será injetada corretamente
+make version
+
+# 4. Build multi-plataforma (smoke test)
+make release
+```
+
+**Após Fazer Mudanças no Frontend:**
+```bash
+# 1. SEMPRE rebuild com script
+./rebuild-web.sh -b
+
+# 2. SEMPRE fazer hard refresh no navegador
+# Ctrl+Shift+R (Linux/Windows) ou Cmd+Shift+R (macOS)
+
+# 3. Verificar assets foram gerados
+ls -lh internal/web/static/assets/ | grep -E "\.(js|css)$"
+
+# 4. Verificar referências no index.html
+grep -E "index-.*\.(js|css)" internal/web/static/index.html
 ```
 
 ### Tech Stack (Quick Reference)
@@ -240,6 +315,16 @@ k8s-hpa-manager/
     - API: `GET /api/v1/{resource}/:cluster/:namespace/:name/describe`
     - Handlers: `configmaps.go`, `secrets.go`, `deployments.go`, `pods.go`
     - Frontend: Modal com ScrollArea exibindo output completo do kubectl describe
+  - **Header Compacto no Painel de Detalhes (v1.3.6 - 23/12/2025)**:
+    - Gauges de CPU/Memory isolados com `position: absolute` (não mais afetam altura do header)
+    - Namespace e versão transformados em badges `variant="secondary"`
+    - Badges de status (Running, container count) agrupados na mesma linha
+    - Estrutura otimizada:
+      - Linha 1: Nome do pod
+      - Linha 2: Badge NS + Badge versão + Badge status + Badge container count
+      - Linha 3: Node, IP, Age, Restarts
+      - Linha 4: CPU/R, CPU/L, MEM/R, MEM/L
+    - Redução de ~40% na altura do header sem perda de informações
 ✅ **RBAC com Azure AD (v1.3.5+)** - Controle de acesso baseado em grupos do Azure AD
   - **Grupo SRE**: `VV_CLOUD_SRE` (ID: `eb865ea5-2672-49be-abc8-74c248c556b0`)
   - **Backend**: Módulo `internal/rbac/azure_ad.go` com verificação via Azure CLI (`az ad user get-member-groups`)
@@ -1304,6 +1389,79 @@ git fetch --tags --prune
 
 # Forçar versão manualmente
 VERSION=v1.3.1 make build
+```
+
+### AI Diagnostics não funciona
+**Sintoma**: Botão "Analisar com AI" não responde ou retorna erro.
+
+**Diagnóstico**:
+```bash
+# 1. Verificar se Ollama está rodando (local)
+curl http://localhost:11434/api/tags
+
+# 2. Verificar modelo instalado
+ollama list | grep llama3.2:3b
+
+# 3. Testar modelo manualmente
+ollama run llama3.2:3b "teste"
+
+# 4. Verificar logs do backend
+tail -f /tmp/k8s-hpa-manager-web-*.log | grep -i "ai\|ollama\|claude"
+```
+
+**Soluções**:
+- Se Ollama não está instalado: `curl -fsSL https://ollama.com/install.sh | sh`
+- Se modelo não existe: `ollama pull llama3.2:3b`
+- Se RAM insuficiente (<6GB): usar modelo menor ou Claude API
+- Para Claude API: configurar `ANTHROPIC_API_KEY` e iniciar com `--ai-provider claude`
+
+---
+
+## 🔄 Fluxo de Desenvolvimento
+
+### Desenvolvimento Local (TUI)
+```bash
+# 1. Fazer mudanças no código Go
+# 2. Testar localmente
+make run-dev                     # TUI com debug mode
+
+# 3. Testar com race detector
+go test -v ./internal/... -race
+
+# 4. Build para produção
+make build
+./build/new-k8s-hpa             # Testar binário compilado
+```
+
+### Desenvolvimento Web (Frontend)
+```bash
+# 1. Fazer mudanças em React/TypeScript
+cd internal/web/frontend
+
+# 2. Dev mode com hot reload (Vite)
+npm run dev                      # Frontend na porta 5173
+# Em outro terminal: ./build/new-k8s-hpa web -f
+
+# 3. Build para produção
+cd ../../..                      # Voltar para raiz
+./rebuild-web.sh -b             # Build completo + limpa cache
+# IMPORTANTE: Hard refresh no navegador (Ctrl+Shift+R)
+
+# 4. Verificar assets gerados
+ls -lh internal/web/static/assets/
+```
+
+### Workflow de Release
+```bash
+# 1. Atualizar versão
+git tag v1.3.2
+git push origin v1.3.2
+
+# 2. Build multi-plataforma
+make release                     # Gera binários em build/release/
+
+# 3. Criar GitHub release
+./create-v1-release.sh           # Upload automático para GitHub
 ```
 
 ---
