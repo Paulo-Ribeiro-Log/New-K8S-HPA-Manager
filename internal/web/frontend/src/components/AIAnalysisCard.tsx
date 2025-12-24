@@ -106,13 +106,23 @@ const SuggestionCard = ({ suggestion }: { suggestion: Suggestion }) => {
 };
 
 export function AIAnalysisCard({ analysis, onClose }: AIAnalysisCardProps) {
-  const formattedDate = new Date(analysis.analyzedAt).toLocaleString("pt-BR", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  // Validar e formatar data
+  const formatDate = () => {
+    if (!analysis.analyzedAt) return "data desconhecida";
+
+    const date = new Date(analysis.analyzedAt);
+    if (isNaN(date.getTime())) return "data inválida";
+
+    return date.toLocaleString("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const formattedDate = formatDate();
 
   return (
     <Card className="w-full">
@@ -121,10 +131,10 @@ export function AIAnalysisCard({ analysis, onClose }: AIAnalysisCardProps) {
           <div className="space-y-1">
             <CardTitle className="flex items-center gap-2">
               🤖 AI Diagnostics
-              <Badge variant="outline">{analysis.provider}</Badge>
+              <Badge variant="outline">{analysis.provider || "Unknown"}</Badge>
             </CardTitle>
             <CardDescription>
-              {analysis.resourceType}: {analysis.cluster}/{analysis.namespace}/{analysis.resourceName}
+              {analysis.resourceType || "Unknown"}: {analysis.cluster || "?"}/{analysis.namespace || "?"}/{analysis.resourceName || "sem nome"}
             </CardDescription>
           </div>
           {onClose && (

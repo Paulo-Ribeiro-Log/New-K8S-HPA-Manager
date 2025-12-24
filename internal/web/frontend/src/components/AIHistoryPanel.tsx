@@ -79,7 +79,13 @@ export function AIHistoryPanel({
   };
 
   const formatDate = (dateString: string) => {
+    if (!dateString) return "data desconhecida";
+
     const date = new Date(dateString);
+
+    // Validar se a data é válida
+    if (isNaN(date.getTime())) return "data inválida";
+
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
     const diffMins = Math.floor(diffMs / 60000);
@@ -189,15 +195,19 @@ export function AIHistoryPanel({
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 space-y-1">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <Badge variant="outline">{item.resourceType}</Badge>
-                        <Badge variant="secondary">{item.provider}</Badge>
+                        <Badge variant="outline">
+                          {item.resourceType || "Unknown"}
+                        </Badge>
+                        <Badge variant="secondary">
+                          {item.provider || "Unknown"}
+                        </Badge>
                         <span className="text-sm font-medium">
-                          {item.resourceName}
+                          {item.resourceName || "sem nome"}
                         </span>
                       </div>
 
                       <div className="text-xs text-muted-foreground">
-                        {item.cluster}/{item.namespace}
+                        {item.cluster || "?"}/{item.namespace || "?"}
                       </div>
 
                       <div className="flex items-center gap-3 text-xs text-muted-foreground">
