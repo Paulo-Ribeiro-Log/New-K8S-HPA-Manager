@@ -1,14 +1,21 @@
 package sanitizer
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // Regex patterns para detecção de dados sensíveis
 var (
-	// IPv4Pattern detecta endereços IPv4 (ex: 192.168.1.1)
-	IPv4Pattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+	// IPv4Pattern - DESABILITADO (IPs não são mascarados)
+	// IPv4Pattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
 
-	// EmailPattern detecta endereços de email
-	EmailPattern = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
+	// EmailPattern - DESABILITADO (emails não são mascarados)
+	// EmailPattern = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
+
+	// CertificatePattern detecta referências a certificados (.cert/.key)
+	// Ex: "certificado-tls.cert" -> "certificado<certificado-tls>"
+	CertificatePattern = regexp.MustCompile(`([a-zA-Z0-9\-_]+)\.(cert|key)`)
 
 	// JWTPattern detecta tokens JWT (eyJ...)
 	JWTPattern = regexp.MustCompile(`eyJ[a-zA-Z0-9_\-]*\.eyJ[a-zA-Z0-9_\-]*\.[a-zA-Z0-9_\-]*`)
@@ -49,46 +56,117 @@ const (
 )
 
 // MaskPartial mascara parcialmente um valor mostrando início e fim
-// Ex: "MDFhghthghthghthghthghthghthghtTRk4=" -> "MDF****************************TRk4="
-// Ex: "s6Yxbn1I9i98GHIJcJdc" -> "s6Yx*************Jdc"
+// Ex: uso genérico com showChars simétrico
 func MaskPartial(value string, showChars int) string {
 	if len(value) <= showChars*2 {
-		// Se muito curto, mascara tudo
-		return "***REDACTED***"
+		// Se muito curto, mostra tudo
+		return value
 	}
 
 	prefix := value[:showChars]
 	suffix := value[len(value)-showChars:]
 	middle := len(value) - (showChars * 2)
-	mask := ""
-	for i := 0; i < middle; i++ {
-		mask += "*"
+	mask := strings.Repeat("*", middle)
+
+	return prefix + mask + suffix
+}
+
+// MaskPassword mascara senha de connection string (4 primeiros + 3 últimos)
+// Ex: "s6Yxbn1I9i98GHIJcJdc" -> "s6Yx*************Jdc"
+func MaskPassword(password string) string {
+	showPrefix := 4
+	showSuffix := 3
+
+	if len(password) <= showPrefix+showSuffix {
+		// Se muito curto, mostra tudo
+		return password
 	}
+
+	prefix := password[:showPrefix]
+	suffix := password[len(password)-showSuffix:]
+	middle := len(password) - (showPrefix + showSuffix)
+	mask := strings.Repeat("*", middle)
+
+	return prefix + mask + suffix
+}
+
+// MaskBase64 mascara base64 mostrando 3 primeiros + 3/4 últimos (mantém "=" se existir)
+// Ex: "MDFhghthghthghthghthghthghthghtTRk4=" -> "MDF*****************************Rk4="
+func MaskBase64(value string) string {
+	showPrefix := 3
+	showSuffix := 3
+
+	// Se termina com "=", mostra 4 caracteres no final (incluindo o "=")
+	if strings.HasSuffix(value, "=") {
+		showSuffix = 4
+	}
+
+	// Se muito curto, mostra tudo (não mascara)
+	if len(value) <= showPrefix+showSuffix {
+		return value
+	}
+
+	prefix := value[:showPrefix]
+	suffix := value[len(value)-showSuffix:]
+	middle := len(value) - (showPrefix + showSuffix)
+	mask := strings.Repeat("*", middle)
 
 	return prefix + mask + suffix
 }
 
 // MaskConnectionString mascara senha em connection string preservando estrutura completa
-// Ex: "mongodb://user:password@host:27017/db" -> "mongodb://user:pa******rd@host:27017/db"
-// IMPORTANTE: NÃO trunca, apenas mascara a senha
+// Ex: "mongodb://user:password@host:27017/db" -> "mongodb://user:pass****ord@host:27017/db"
+// Suporta senhas com @ interno (ex: "MyP@ssw0rd")
 func MaskConnectionString(connStr string) string {
-	// Pattern: protocol://user:password@host ou user:password@host
-	pattern := regexp.MustCompile(`((?:mongodb|postgres|mysql|redis|amqp|https?)://)?([^:]+):([^@]+)(@.*)`)
+	// 1. Extrair protocolo (se houver)
+	protoPattern := regexp.MustCompile(`^(mongodb|postgres|postgresql|mysql|redis|amqp|https?)://(.+)$`)
+	protoMatches := protoPattern.FindStringSubmatch(connStr)
 
-	return pattern.ReplaceAllStringFunc(connStr, func(match string) string {
-		parts := pattern.FindStringSubmatch(match)
-		if len(parts) == 5 {
-			protocol := parts[1] // mongodb:// ou vazio
-			user := parts[2]     // username
-			password := parts[3] // password
-			rest := parts[4]     // @host:port/db
-
-			// Mascara senha parcialmente mantendo comprimento
-			maskedPassword := MaskPartial(password, 2)
-			return protocol + user + ":" + maskedPassword + rest
+	var protocol, content string
+	if len(protoMatches) == 3 {
+		protocol = protoMatches[1] + "://"
+		content = protoMatches[2]
+	} else {
+		// Sem protocolo - verificar se é connection string (hostname com 3+ partes)
+		if !strings.Contains(connStr, "@") || !strings.Contains(connStr, ":") {
+			return connStr // Não é connection string
 		}
-		return match
-	})
+		// Verificar se hostname tem múltiplas partes (ex: mdbp-logreversa-1.dc.nova)
+		atIdx := strings.LastIndex(connStr, "@")
+		if atIdx == -1 {
+			return connStr
+		}
+		hostname := connStr[atIdx+1:]
+		// Hostname deve ter pelo menos 2 pontos (3 partes) para não ser email simples
+		if strings.Count(hostname, ".") < 2 {
+			return connStr // Provavelmente é email, não connection string
+		}
+		protocol = ""
+		content = connStr
+	}
+
+	// 2. Processar content: user:password@host
+	// Usar ÚLTIMO @ como delimitador (senha pode ter @ interno)
+	lastAtIdx := strings.LastIndex(content, "@")
+	if lastAtIdx == -1 {
+		return connStr
+	}
+
+	beforeAt := content[:lastAtIdx]
+	afterAt := content[lastAtIdx+1:]
+
+	colonIdx := strings.Index(beforeAt, ":")
+	if colonIdx == -1 {
+		return connStr
+	}
+
+	user := beforeAt[:colonIdx]
+	password := beforeAt[colonIdx+1:]
+
+	// 3. Mascara senha (4 primeiros + 3 últimos)
+	maskedPassword := MaskPassword(password)
+
+	return protocol + user + ":" + maskedPassword + "@" + afterAt
 }
 
 // IsSensitiveKey verifica se uma chave é considerada sensível

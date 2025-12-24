@@ -344,7 +344,7 @@ func (pb *PromptBuilder) addInvestigationResults(builder *strings.Builder, inves
 }
 
 // Template para análise de Pods
-const podTemplate = `Você é um especialista em Kubernetes. Analise os dados REAIS fornecidos abaixo.
+const podTemplate = `Você é um especialista sênior em Kubernetes e troubleshooting de aplicações.
 
 ═══════════════════════════════════════════════════════════════
 ⛔ REGRAS ABSOLUTAS ⛔
@@ -353,7 +353,26 @@ const podTemplate = `Você é um especialista em Kubernetes. Analise os dados RE
 2. Se não há logs: escreva "LOGS NÃO DISPONÍVEIS"
 3. NUNCA invente dados ou use exemplos genéricos
 4. NUNCA peça: kubectl logs, kubectl describe, kubectl get
+5. INVESTIGUE PROFUNDAMENTE - não pare no sintoma, encontre a CAUSA RAIZ
 ═══════════════════════════════════════════════════════════════
+
+**INSTRUÇÕES DE ANÁLISE PROFUNDA:**
+
+Quando encontrar ERROS DE CONEXÃO (timeout, connection refused, unreachable):
+1. NÃO sugira apenas "restart" - isso é workaround, não solução
+2. INVESTIGUE o PORQUÊ da falha de conexão:
+   - Connection string está correta? (verifique ConfigMap)
+   - Credenciais estão válidas? (verifique Secret)
+   - Serviço de destino está disponível? (kubectl get service)
+   - Network policies estão bloqueando? (kubectl get networkpolicy)
+   - DNS está resolvendo? (kubectl exec pod -- nslookup <service>)
+   - Resource limits podem estar causando lentidão?
+
+Quando encontrar ERROS DE APLICAÇÃO (exceptions, stack traces):
+1. Identifique o erro EXATO da stack trace (linha, método, mensagem)
+2. Analise se é erro de configuração, código ou dependência
+3. Verifique se ConfigMaps/Secrets necessários existem
+4. Sugira comandos para verificar cada hipótese
 
 **FORMATO DA RESPOSTA:**
 
@@ -365,13 +384,40 @@ Container [nome] com [X] restarts - [descreva baseado nos dados reais]
 [OU escreva: "LOGS NÃO DISPONÍVEIS NO CONTEXTO"]
 
 ## 📊 Causa Raiz
-[Explique baseado APENAS nas evidências reais acima]
+[NÃO apenas repita o erro - INVESTIGUE PROFUNDAMENTE:]
+
+### 🔍 Sintoma
+[O que está acontecendo - ex: MongoTimeoutException após 5000ms]
+
+### 🎯 Causa Provável
+[PORQUÊ está acontecendo - analise as possibilidades:]
+- Opção 1: [ex: Connection string incorreta no ConfigMap]
+- Opção 2: [ex: MongoDB service não está disponível]
+- Opção 3: [ex: Network policy bloqueando tráfego]
+- Opção 4: [ex: Credenciais inválidas no Secret]
+
+### 🔬 Investigação Necessária
+[Comandos para verificar cada hipótese:]
+$ kubectl get configmap <nome> -n <namespace> -o yaml
+$ kubectl get secret <nome> -n <namespace>
+$ kubectl get service mongodb -n <namespace>
+$ kubectl exec <pod> -- nslookup mongodb-service
+$ kubectl exec <pod> -- nc -zv mongodb-service 27017
 
 ## ⚡ Impacto
 Severidade: [critical/high/medium/low]
 
 ## ✅ Solução
-[Comando kubectl específico de correção]
+[SOLUÇÃO REAL - não workaround temporário:]
+
+1. [Passo específico baseado na causa raiz]
+2. [Comando kubectl de correção]
+3. [Validação da correção]
+
+**❌ EVITE:**
+- Sugerir "kubectl rollout restart" sem investigar a causa
+- Soluções genéricas que não resolvem o problema real
+- Ignorar evidências nos logs
 
 **CONTEXTO COM OS DADOS REAIS:**
 {{CONTEXT}}

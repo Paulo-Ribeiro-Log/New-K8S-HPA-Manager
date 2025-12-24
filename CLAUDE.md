@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **23 de dezembro de 2025** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **24 de dezembro de 2025** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -343,7 +343,18 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
   - **Constraint**: Sistema com 6.1GB RAM disponível - modelos >3B causam timeout
   - **Recursos Suportados**: Pods, Deployments, HPAs, Nodes
   - **Backend Completo (5 módulos, 20 arquivos, ~2.500 linhas)**:
-    - ✅ `internal/sanitizer/` - **Sanitização minimalista** (apenas base64 >30 chars e passwords em connection strings)
+    - ✅ `internal/sanitizer/` - **Sanitização inteligente e seletiva** (v1.3.6 - 24/12/2025)
+      - **IPs NÃO são mascarados**: `192.168.1.100` → `192.168.1.100`
+      - **Emails NÃO são mascarados**: `usuario@example.com` → `usuario@example.com`
+      - **Certificados mascarados** (formato `[tipo:nome]`):
+        - `certificado-tls.cert` → `[cert:certificado-tls]`
+        - `app-private.key` → `[key:app-private]`
+      - **Connection strings** (senha mascarada - 4 primeiros + 3 últimos):
+        - `user:s6Yxbn1I9i98GHIJcJdc@host` → `user:s6Yx*************Jdc@host`
+        - `mongodb://user:MyP@ss@host:27017/` → `mongodb://user:MyP@****ss@host:27017/`
+      - **Base64 >30 chars** (3 primeiros + 3/4 últimos, mantém "=" se existir):
+        - `MDFhghthghthghthghthghthghthghtTRk4=` → `MDF*****************************Rk4=`
+      - Stack traces preservados integralmente para legibilidade
     - ✅ `internal/collectors/` - Coleta de contexto incluindo **logs anteriores** (últimas 30 linhas antes do crash)
     - ✅ `internal/storage/` - SQLite + histórico persistente (./build/ai_diagnostics.db)
     - ✅ `internal/ai/` - Providers (Ollama/Claude) + Analyzer + Prompts especializados
@@ -359,13 +370,30 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
     - Extração automática de sugestões + comandos kubectl
     - Inferência de prioridade (critical/high/medium/low)
     - Histórico completo com filtros (cluster, namespace, resource, data, provider)
-    - **Sanitização inteligente**: Preserva legibilidade de stack traces, mascara apenas credenciais
+    - **Sanitização inteligente e seletiva** (atualizada 24/12/2025):
+      - IPs e emails **não são mascarados** (análise completa de conectividade)
+      - Certificados mascarados formato `[tipo:nome]`: `app.cert` → `[cert:app]`, `app.key` → `[key:app]`
+      - Senhas em connection strings: 4 primeiros + 3 últimos chars visíveis (suporta `@` interno)
+      - Base64 >30 chars: 3 primeiros + 3/4 últimos (mantém "=" se existir)
+      - Stack traces preservados integralmente para legibilidade
     - **Análise de crash logs**: Envia últimas 30 linhas antes do restart (logs anteriores)
   - **Inicialização**: `./build/k8s-hpa-manager web --ai-provider ollama --ollama-model llama3.2:3b`
   - **Limitações Conhecidas**:
     - llama3.2:3b tem capacidade limitada (3B parâmetros) - análises menos profundas que Claude/Gemini
     - Modelos maiores (qwen2.5:14b, deepseek-r1:7b) causam timeout ou falha por falta de RAM
     - Para melhor qualidade: usar Claude (pago) ou Gemini (grátis com API key)
+  - **⚠️ IMPORTANTE - Qualidade de Análise (24/12/2025)**:
+    - **llama3.2:3b**: Análises SUPERFICIAIS - identifica sintomas mas não investiga causas profundas
+      - Exemplo ruim: "Timeout MongoDB → restart deployment" ❌ (workaround, não solução)
+    - **Claude API (Recomendado)**: Análises PROFUNDAS com investigação de causa raiz
+      - Exemplo bom: "Timeout MongoDB → verificar ConfigMap connection string → validar Secret credenciais → testar conectividade → verificar DNS" ✅
+    - **Comando para Claude**: `./build/k8s-hpa-manager web --ai-provider claude`
+    - **Variável de ambiente**: `export ANTHROPIC_API_KEY=sk-ant-...`
+    - **Melhorias no prompt (24/12/2025)**:
+      - Template agora FORÇA análise profunda de causa raiz (não apenas sintomas)
+      - Instruções específicas para timeouts de conexão (DB, API, services)
+      - Comandos de investigação (kubectl get configmap/secret/service, nslookup, nc)
+      - Evita workarounds temporários (restart sem investigar causa)
   - **Documentação**: [PLANO_AI_DIAGNOSTICS.md](PLANO_AI_DIAGNOSTICS.md) | [PROGRESSO_AI_DIAGNOSTICS.md](PROGRESSO_AI_DIAGNOSTICS.md)
 
 ---
@@ -384,14 +412,16 @@ Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 Servidor Web: ./build/new-k8s-hpa web (porta 8080)
 
-Recent Updates (v1.3.6 - 23/12/2025):
+Recent Updates (v1.3.6 - 24/12/2025):
 - **AI Diagnostics em Produção**: Sistema completo integrado ao servidor web
   - Frontend: Botão "Analisar com AI" no painel de detalhes de Pods
   - Backend: Integração com Ollama (llama3.2:3b) + Claude API
-  - **Sanitização minimalista**: Apenas base64 >30 chars e passwords em connection strings
+  - **Sanitização inteligente e seletiva** (v1.3.6 - 24/12/2025):
+    - IPs e emails NÃO são mascarados (visíveis para análise completa)
+    - Certificados formato `[tipo:nome]`: `app.cert` → `[cert:app]`, `app.key` → `[key:app]`
+    - Connection strings (senha 4+3 chars, suporta `@` interno): `user:MyP@ss@host` → `user:MyP@****ss@host`
+    - Base64 >30 chars (3+4 chars, mantém "="): `MDFhghthghthghthghthghthghthghtTRk4=` → `MDF*****************************Rk4=`
     - Stack traces preservados integralmente para legibilidade
-    - `MDFhgh...TRk4=` → `MDF****TRk4=` (primeiros/últimos 3 chars visíveis)
-    - `user:password@host` → `user:pa**rd@host` (primeiros/últimos 2 chars visíveis)
   - **Análise de crash logs**: Sistema envia últimas 30 linhas ANTES do restart
     - Prompt destaca seção "LOGS ANTERIORES (ANTES DO CRASH)"
     - AI foca no erro real que causou o crashloop
@@ -399,10 +429,17 @@ Recent Updates (v1.3.6 - 23/12/2025):
   - **Constraint RAM**: Sistema tem 6.1GB RAM disponível
     - Modelos >3B (qwen2.5:14b, deepseek-r1:7b) causam timeout ou falha
     - llama3.2:3b (2GB) é o maior modelo viável localmente
-  - Comando: `./build/k8s-hpa-manager web --ai-provider ollama --ollama-model llama3.2:3b`
-  - Arquivos chave: 
-    - `internal/sanitizer/sanitizer.go` (linhas 44-82 - sanitização minimalista)
-    - `internal/ai/prompts.go` (linhas 237-268 - seção de logs anteriores)
+  - **⚠️ Melhorias no Prompt (24/12/2025)**:
+    - Template refatorado para FORÇAR análise profunda de causa raiz
+    - llama3.2:3b tem limitações graves (análises superficiais, workarounds ruins)
+    - **RECOMENDAÇÃO**: Usar Claude API para análises complexas (`--ai-provider claude`)
+    - Novo prompt inclui: análise multi-hipótese, comandos de investigação, evita workarounds
+  - Comando Ollama: `./build/k8s-hpa-manager web --ai-provider ollama --ollama-model llama3.2:3b`
+  - Comando Claude (Recomendado): `./build/k8s-hpa-manager web --ai-provider claude` (requer `ANTHROPIC_API_KEY`)
+  - Arquivos chave:
+    - `internal/sanitizer/sanitizer.go` (sanitização inteligente - v1.3.6 24/12/2025)
+    - `internal/sanitizer/patterns.go` (regras: IPs/emails NÃO mascarados, certificados, connection strings, base64)
+    - `internal/ai/prompts.go` (linhas 347-425 - template melhorado com análise profunda)
     - `internal/web/frontend/src/components/PodsPanel.tsx` (UI sem botão na lista)
 
 Recent Updates (v1.3.5):

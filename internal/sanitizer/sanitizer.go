@@ -58,30 +58,26 @@ func (s *Sanitizer) SanitizeText(text string) string {
 
 	sanitized := text
 
-	// Aplicar APENAS mascaramento de tokens (base64 + connection strings)
+	// Aplicar APENAS mascaramento de tokens (base64 + connection strings + certificados)
 	if config.MaskTokens {
-		// 1. Connection strings - mascara APENAS a senha (entre : e @)
-		// Exemplo: user:senha@host -> user:se**ha@host
-		connStrPattern := regexp.MustCompile(`([^:@\s]+):([^:@\s]+)(@[^\s]+)`)
-		sanitized = connStrPattern.ReplaceAllStringFunc(sanitized, func(match string) string {
-			parts := connStrPattern.FindStringSubmatch(match)
-			if len(parts) == 4 {
-				user := parts[1]
-				password := parts[2]
-				rest := parts[3] // @host:port/db
+		// 1. Certificados (.cert/.key) - mascara como "[tipo:nome]"
+		// Exemplo: "certificado-tls.cert" -> "[cert:certificado-tls]"
+		// Exemplo: "app-private.key" -> "[key:app-private]"
+		sanitized = CertificatePattern.ReplaceAllString(sanitized, "[$2:$1]")
 
-				// Mascara apenas a senha
-				maskedPassword := MaskPartial(password, 2)
-				return user + ":" + maskedPassword + rest
-			}
-			return match
+		// 2. Connection strings - mascara APENAS a senha
+		// Suporta COM e SEM protocolo, senhas com @ interno
+		// Exemplo: mongodb://user:MyP@ss@host:27017/db -> mongodb://user:MyP****ss@host:27017/db
+		connStrPattern := regexp.MustCompile(`(?:mongodb|postgres|postgresql|mysql|redis|amqp|https?)://[^:@\s]+:[^@\s]+@[^\s]+|[a-zA-Z0-9_\-]+:[^@\s]+@[a-zA-Z0-9\-]+(?:\.[a-zA-Z0-9\-]+){2,}[^\s]*`)
+		sanitized = connStrPattern.ReplaceAllStringFunc(sanitized, func(match string) string {
+			return MaskConnectionString(match)
 		})
 
-		// 2. Base64 longas (>30 chars) - mascara parcialmente
-		// Exemplo: MDFhghthghthghthghthghthghthghtTRk4= -> MDF****************************TRk4=
+		// 3. Base64 longas (>30 chars) - mascara parcialmente mantendo "="
+		// Exemplo: MDFhghthghthghthghthghthghthghtTRk4= -> MDF*****************************Rk4=
 		sanitized = Base64Pattern.ReplaceAllStringFunc(sanitized, func(match string) string {
 			if len(match) > 30 {
-				return MaskPartial(match, 3)
+				return MaskBase64(match)
 			}
 			return match // Mantém base64 curtas intactas
 		})
@@ -112,29 +108,32 @@ func (s *Sanitizer) SanitizeTextWithResult(text string) *SanitizationResult {
 
 	var count int
 
-	// Aplicar APENAS mascaramento de tokens (base64 + connection strings)
+	// Aplicar APENAS mascaramento de tokens (base64 + connection strings + certificados)
 	if config.MaskTokens {
-		// 1. Connection strings - mascara APENAS a senha
-		connStrPattern := regexp.MustCompile(`([^:@\s]+):([^:@\s]+)(@[^\s]+)`)
-		matches := connStrPattern.FindAllString(result.Sanitized, -1)
+		// 1. Certificados (.cert/.key) - mascara como "[tipo:nome]"
+		matches := CertificatePattern.FindAllString(result.Sanitized, -1)
+		if len(matches) > 0 {
+			result.Sanitized = CertificatePattern.ReplaceAllString(result.Sanitized, "[$2:$1]")
+			result.MaskedItems["certificate"] = len(matches)
+		}
+
+		// 2. Connection strings - mascara APENAS a senha
+		connStrPattern := regexp.MustCompile(`(?:mongodb|postgres|postgresql|mysql|redis|amqp|https?)://[^:@\s]+:[^@\s]+@[^\s]+|[a-zA-Z0-9_\-]+:[^@\s]+@[a-zA-Z0-9\-]+(?:\.[a-zA-Z0-9\-]+){2,}[^\s]*`)
+		matches = connStrPattern.FindAllString(result.Sanitized, -1)
 		if len(matches) > 0 {
 			result.Sanitized = connStrPattern.ReplaceAllStringFunc(result.Sanitized, func(match string) string {
-				parts := connStrPattern.FindStringSubmatch(match)
-				if len(parts) == 4 {
-					return parts[1] + ":" + MaskPartial(parts[2], 2) + parts[3]
-				}
-				return match
+				return MaskConnectionString(match)
 			})
 			result.MaskedItems["connection_string"] = len(matches)
 		}
 
-		// 2. Base64 longas - mascara parcialmente
+		// 3. Base64 longas - mascara parcialmente mantendo "="
 		matches = Base64Pattern.FindAllString(result.Sanitized, -1)
 		count = 0
 		result.Sanitized = Base64Pattern.ReplaceAllStringFunc(result.Sanitized, func(match string) string {
 			if len(match) > 30 {
 				count++
-				return MaskPartial(match, 3)
+				return MaskBase64(match)
 			}
 			return match
 		})
