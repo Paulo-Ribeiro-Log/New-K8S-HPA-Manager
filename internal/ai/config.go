@@ -54,7 +54,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Provider:          "ollama", // Ollama llama3.2 3B
-		GeminiModel:       "gemini-2.0-flash-exp",
+		GeminiModel:       "gemini-1.5-flash", // Free tier: 15 RPM / 1.5M RPD
 		OllamaBaseURL:     "http://localhost:11434",
 		OllamaModel:       "llama3.2:3b", // Llama3.2 3B - melhor qualidade
 		ClaudeModel:       "claude-3-5-sonnet-20241022",
@@ -83,7 +83,7 @@ func (c *Config) Validate() error {
 		}
 
 		if c.GeminiModel == "" {
-			c.GeminiModel = "gemini-2.0-flash-exp"
+			c.GeminiModel = "gemini-1.5-flash" // Free tier oficial
 		}
 	}
 
