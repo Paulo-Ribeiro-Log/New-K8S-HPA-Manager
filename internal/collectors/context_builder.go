@@ -50,6 +50,19 @@ func (cb *ContextBuilder) BuildContext(ctx context.Context, req *ContextRequest)
 		}
 		diagCtx.Pod = podCtx
 
+		// 🔍 INVESTIGAÇÃO AUTOMÁTICA DE POD: Validar recursos referenciados
+		fmt.Println("🔍 [SMART_INVESTIGATOR] Iniciando investigação de recursos do Pod...")
+		investigation := cb.investigatePodResources(ctx, clientset, podCtx)
+		if investigation != nil && (len(investigation.MissingResources) > 0 || len(investigation.FoundAlternatives) > 0 || len(investigation.Validations) > 0) {
+			diagCtx.Investigation = investigation
+			fmt.Printf("✅ [SMART_INVESTIGATOR] Investigação concluída:\n")
+			fmt.Printf("   - Recursos faltantes: %d\n", len(investigation.MissingResources))
+			fmt.Printf("   - Recursos alternativos: %d\n", len(investigation.FoundAlternatives))
+			fmt.Printf("   - Validações: %d\n", len(investigation.Validations))
+		} else {
+			fmt.Println("✅ [SMART_INVESTIGATOR] Todos os recursos validados com sucesso")
+		}
+
 	case "Deployment":
 		deployCtx, err := cb.collectDeploymentContext(ctx, clientset, req)
 		if err != nil {
@@ -87,27 +100,6 @@ func (cb *ContextBuilder) BuildContext(ctx context.Context, req *ContextRequest)
 		if err == nil {
 			diagCtx.DescribeOutput = describeOutput
 		}
-	}
-
-	// 🔍 INVESTIGAÇÃO AUTOMÁTICA: Buscar recursos faltantes
-	if cs, ok := clientset.(*k8sclient.Clientset); ok {
-		fmt.Println("🔍 [CONTEXT_BUILDER] Iniciando investigador...")
-		investigator := NewInvestigator(cs)
-		investigation, err := investigator.InvestigateMissingResources(ctx, diagCtx)
-		if err != nil {
-			fmt.Printf("❌ [CONTEXT_BUILDER] Erro na investigação: %v\n", err)
-		} else {
-			fmt.Printf("✅ [CONTEXT_BUILDER] Investigação concluída: %d recursos faltantes, %d alternativas\n",
-				len(investigation.MissingResources), len(investigation.FoundAlternatives))
-			if len(investigation.MissingResources) > 0 || len(investigation.FoundAlternatives) > 0 {
-				diagCtx.Investigation = investigation
-				fmt.Println("✅ [CONTEXT_BUILDER] Investigação adicionada ao contexto")
-			} else {
-				fmt.Println("⚠️ [CONTEXT_BUILDER] Nenhum recurso problemático detectado")
-			}
-		}
-	} else {
-		fmt.Println("⚠️ [CONTEXT_BUILDER] Clientset não é *k8sclient.Clientset, investigador não executado")
 	}
 
 	// TODO: Coletar alertas do Prometheus (req.IncludeMetrics)
@@ -160,4 +152,14 @@ func (cb *ContextBuilder) collectEvents(ctx context.Context, clientset k8sclient
 	}
 
 	return relatedEvents, nil
+}
+
+// investigatePodResources executa investigação inteligente de recursos do Pod
+func (cb *ContextBuilder) investigatePodResources(ctx context.Context, clientset k8sclient.Interface, podCtx *PodContext) *InvestigationResult {
+	if podCtx == nil || podCtx.Manifest == nil {
+		return nil
+	}
+
+	collector := NewPodCollector(clientset)
+	return collector.InvestigateResources(ctx, podCtx.Manifest, podCtx)
 }
