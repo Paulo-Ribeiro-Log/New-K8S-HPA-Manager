@@ -17,10 +17,10 @@ export type AIProvider = "gemini" | "ollama" | "claude" | "openai" | "copilot";
 
 export interface AnalysisResult {
   id: string;
-  resourceType: ResourceType;
+  resource_type: ResourceType;
   cluster: string;
   namespace: string;
-  resourceName: string;
+  resource_name: string;
 
   // Análise da IA
   analysis: string; // Markdown formatado
@@ -29,10 +29,10 @@ export interface AnalysisResult {
   // Metadados
   provider: AIProvider;
   model?: string;
-  analyzedAt: string; // ISO timestamp
-  tokensUsed?: number;
-  responseTime?: number; // segundos
-  userEmail?: string;
+  analyzed_at: string; // ISO timestamp
+  tokens_used?: number;
+  response_time?: number; // segundos
+  user_email?: string;
 }
 
 export interface AnalyzeRequest {
