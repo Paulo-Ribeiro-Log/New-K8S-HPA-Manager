@@ -81,9 +81,28 @@ start_server() {
 
     print_step "Iniciando servidor web na porta $PORT..."
 
+    # Construir array de argumentos
+    local cmd_args=("web" "--port" "$PORT")
+
+    # Adicionar flags de AI se especificadas
+    if [ -n "$AI_PROVIDER" ]; then
+        cmd_args+=("--ai-provider" "$AI_PROVIDER")
+        print_info "AI Provider: $AI_PROVIDER"
+    fi
+
+    if [ -n "$AI_MODEL" ]; then
+        cmd_args+=("--model" "$AI_MODEL")
+        print_info "AI Model: $AI_MODEL"
+    fi
+
+    if [ -n "$OLLAMA_MODEL" ]; then
+        cmd_args+=("--ollama-model" "$OLLAMA_MODEL")
+        print_info "Ollama Model: $OLLAMA_MODEL"
+    fi
+
     if [ "$mode" = "background" ]; then
         # Rodar em background
-        nohup "$BINARY" web --port "$PORT" > /tmp/k8s-hpa-web.log 2>&1 &
+        nohup "$BINARY" "${cmd_args[@]}" > /tmp/k8s-hpa-web.log 2>&1 &
         local pid=$!
         sleep 2
 
@@ -102,7 +121,7 @@ start_server() {
         print_success "Iniciando servidor em foreground (Ctrl+C para parar)..."
         print_info "URL: http://localhost:$PORT"
         echo ""
-        "$BINARY" web --port "$PORT"
+        "$BINARY" "${cmd_args[@]}"
     fi
 }
 
@@ -124,22 +143,33 @@ show_usage() {
     cat << EOF
 Uso: $0 [opções]
 
-Opções:
-    -h, --help          Mostra esta ajuda
-    -b, --background    Inicia servidor em background
-    -f, --foreground    Inicia servidor em foreground (padrão)
-    -n, --no-build      Pula etapa de build (apenas restart)
-    -p, --port PORT     Define porta do servidor (padrão: 8080)
-    -k, --kill-only     Apenas mata processos existentes
-    -s, --status        Verifica status do servidor
+Opções Gerais:
+    -h, --help                Mostra esta ajuda
+    -b, --background          Inicia servidor em background
+    -f, --foreground          Inicia servidor em foreground (padrão)
+    -n, --no-build            Pula etapa de build (apenas restart)
+    -p, --port PORT           Define porta do servidor (padrão: 8080)
+    -k, --kill-only           Apenas mata processos existentes
+    -s, --status              Verifica status do servidor
+
+Opções de AI Diagnostics:
+    --ai-provider PROVIDER    Provider de AI (ollama, claude, gemini, openai, copilot)
+    --model MODEL             Modelo de AI genérico (funciona para qualquer provider)
+    --ollama-model MODEL      Modelo específico do Ollama (ex: llama3.2:3b)
 
 Exemplos:
-    $0                  # Build + start em foreground
-    $0 -b               # Build + start em background
-    $0 -n -b            # Start em background sem rebuild
-    $0 -p 3000 -b       # Build + start na porta 3000 em background
-    $0 -k               # Apenas mata processos na porta 8080
-    $0 -s               # Verifica se servidor está rodando
+    $0                              # Build + start em foreground
+    $0 -b                           # Build + start em background
+    $0 -n -b                        # Start em background sem rebuild
+    $0 -p 3000 -b                   # Build + start na porta 3000 em background
+    $0 -k                           # Apenas mata processos na porta 8080
+    $0 -s                           # Verifica se servidor está rodando
+
+Exemplos com AI Diagnostics:
+    $0 -b --ai-provider ollama --ollama-model llama3.2:3b
+    $0 -b --ai-provider claude --model claude-3-sonnet-20240229
+    $0 -b --ai-provider gemini --model gemini-pro
+    $0 -b --ai-provider openai --model gpt-4-turbo-preview
 
 EOF
 }
@@ -168,6 +198,9 @@ show_status() {
 MODE="foreground"
 DO_BUILD=true
 ACTION="rebuild"
+AI_PROVIDER=""
+AI_MODEL=""
+OLLAMA_MODEL=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -198,6 +231,18 @@ while [[ $# -gt 0 ]]; do
         -s|--status)
             ACTION="status"
             shift
+            ;;
+        --ai-provider)
+            AI_PROVIDER="$2"
+            shift 2
+            ;;
+        --model)
+            AI_MODEL="$2"
+            shift 2
+            ;;
+        --ollama-model)
+            OLLAMA_MODEL="$2"
+            shift 2
             ;;
         *)
             print_error "Opção desconhecida: $1"
