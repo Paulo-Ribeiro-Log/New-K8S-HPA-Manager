@@ -318,6 +318,24 @@ GROUP BY resource_type
 		stats["avg_response_time"] = avgResponseTime.Float64
 	}
 
+	// Total de tokens usados
+	var totalTokensUsed sql.NullInt64
+	err = s.client.QueryRow("SELECT SUM(tokens_used) FROM ai_analysis_history WHERE tokens_used IS NOT NULL").Scan(&totalTokensUsed)
+	if err == nil && totalTokensUsed.Valid {
+		stats["total_tokens_used"] = totalTokensUsed.Int64
+	} else {
+		stats["total_tokens_used"] = 0
+	}
+
+	// Última análise - usar string diretamente ao invés de NullTime
+	var lastAnalysisAtStr sql.NullString
+	err = s.client.QueryRow("SELECT MAX(analyzed_at) FROM ai_analysis_history").Scan(&lastAnalysisAtStr)
+	if err == nil && lastAnalysisAtStr.Valid && lastAnalysisAtStr.String != "" {
+		stats["last_analysis_at"] = lastAnalysisAtStr.String
+	} else {
+		stats["last_analysis_at"] = nil
+	}
+
 	return stats, nil
 }
 

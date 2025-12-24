@@ -7,7 +7,7 @@ import (
 
 // Config configuração de providers AI
 type Config struct {
-	// Provider provider selecionado (gemini, ollama, claude)
+	// Provider provider selecionado (gemini, ollama, claude, openai)
 	Provider string
 
 	// GeminiAPIKey chave de API do Gemini
@@ -28,6 +28,24 @@ type Config struct {
 	// ClaudeModel modelo do Claude (padrão: claude-3-5-sonnet-20241022)
 	ClaudeModel string
 
+	// OpenAIAPIKey chave de API do OpenAI
+	OpenAIAPIKey string
+
+	// OpenAIModel modelo do OpenAI (padrão: gpt-4o-mini)
+	OpenAIModel string
+
+	// CopilotAPIKey chave de API do Microsoft Copilot (Azure OpenAI)
+	CopilotAPIKey string
+
+	// CopilotEndpoint endpoint do Azure OpenAI (ex: https://my-resource.openai.azure.com)
+	CopilotEndpoint string
+
+	// CopilotDeployment nome do deployment no Azure OpenAI
+	CopilotDeployment string
+
+	// CopilotAPIVersion versão da API Azure OpenAI (padrão: 2024-02-15-preview)
+	CopilotAPIVersion string
+
 	// Timeout timeout para requisições AI em segundos (padrão: 120)
 	Timeout int
 }
@@ -35,19 +53,22 @@ type Config struct {
 // DefaultConfig retorna configuração padrão
 func DefaultConfig() *Config {
 	return &Config{
-		Provider:      "ollama", // Ollama llama3.2 3B
-		GeminiModel:   "gemini-2.0-flash-exp",
-		OllamaBaseURL: "http://localhost:11434",
-		OllamaModel:   "llama3.2:3b", // Llama3.2 3B - melhor qualidade
-		ClaudeModel:   "claude-3-5-sonnet-20241022",
-		Timeout:       300, // 5 minutos para modelos mais lentos
+		Provider:          "ollama", // Ollama llama3.2 3B
+		GeminiModel:       "gemini-2.0-flash-exp",
+		OllamaBaseURL:     "http://localhost:11434",
+		OllamaModel:       "llama3.2:3b", // Llama3.2 3B - melhor qualidade
+		ClaudeModel:       "claude-3-5-sonnet-20241022",
+		OpenAIModel:       "gpt-4o-mini",            // GPT-4o-mini - barato e eficiente
+		CopilotAPIVersion: "2024-02-15-preview",     // Azure OpenAI API version
+		CopilotDeployment: "gpt-4o",                 // Deployment padrão
+		Timeout:           300,                      // 5 minutos para modelos mais lentos
 	}
 }
 
 // Validate valida a configuração
 func (c *Config) Validate() error {
-	if c.Provider != "gemini" && c.Provider != "ollama" && c.Provider != "claude" {
-		return fmt.Errorf("invalid provider: %s (must be 'gemini', 'ollama' or 'claude')", c.Provider)
+	if c.Provider != "gemini" && c.Provider != "ollama" && c.Provider != "claude" && c.Provider != "openai" && c.Provider != "copilot" {
+		return fmt.Errorf("invalid provider: %s (must be 'gemini', 'ollama', 'claude', 'openai' or 'copilot')", c.Provider)
 	}
 
 	// Validações específicas do provider
@@ -91,6 +112,54 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if c.Provider == "openai" {
+		// Tentar obter API key de variável de ambiente se não foi fornecida
+		if c.OpenAIAPIKey == "" {
+			c.OpenAIAPIKey = os.Getenv("OPENAI_API_KEY")
+		}
+
+		if c.OpenAIAPIKey == "" {
+			return fmt.Errorf("openai API key not provided (use --openai-api-key or OPENAI_API_KEY env var)")
+		}
+
+		if c.OpenAIModel == "" {
+			c.OpenAIModel = "gpt-4o-mini"
+		}
+	}
+
+	if c.Provider == "copilot" {
+		// Tentar obter API key de variável de ambiente se não foi fornecida
+		if c.CopilotAPIKey == "" {
+			c.CopilotAPIKey = os.Getenv("COPILOT_API_KEY")
+		}
+
+		if c.CopilotAPIKey == "" {
+			return fmt.Errorf("copilot API key not provided (use --copilot-api-key or COPILOT_API_KEY env var)")
+		}
+
+		// Endpoint é obrigatório para Azure OpenAI
+		if c.CopilotEndpoint == "" {
+			c.CopilotEndpoint = os.Getenv("COPILOT_ENDPOINT")
+		}
+
+		if c.CopilotEndpoint == "" {
+			return fmt.Errorf("copilot endpoint not provided (use --copilot-endpoint or COPILOT_ENDPOINT env var)")
+		}
+
+		// Deployment é obrigatório para Azure OpenAI
+		if c.CopilotDeployment == "" {
+			c.CopilotDeployment = os.Getenv("COPILOT_DEPLOYMENT")
+		}
+
+		if c.CopilotDeployment == "" {
+			c.CopilotDeployment = "gpt-4o" // Padrão
+		}
+
+		if c.CopilotAPIVersion == "" {
+			c.CopilotAPIVersion = "2024-02-15-preview"
+		}
+	}
+
 	if c.Timeout <= 0 {
 		c.Timeout = 120
 	}
@@ -111,6 +180,14 @@ func (c *Config) GetProviderConfig() map[string]string {
 	} else if c.Provider == "claude" {
 		config["api_key"] = c.ClaudeAPIKey
 		config["model"] = c.ClaudeModel
+	} else if c.Provider == "openai" {
+		config["api_key"] = c.OpenAIAPIKey
+		config["model"] = c.OpenAIModel
+	} else if c.Provider == "copilot" {
+		config["api_key"] = c.CopilotAPIKey
+		config["endpoint"] = c.CopilotEndpoint
+		config["deployment"] = c.CopilotDeployment
+		config["api_version"] = c.CopilotAPIVersion
 	}
 
 	return config

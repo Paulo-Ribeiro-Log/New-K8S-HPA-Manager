@@ -33,7 +33,7 @@ export function AIHistoryPanel({
   const { toast } = useToast();
   const [searchQuery, setSearchQuery] = useState("");
   const [resourceTypeFilter, setResourceTypeFilter] = useState<ResourceType | "all">("all");
-  const [providerFilter, setProviderFilter] = useState<"all" | "gemini" | "ollama">("all");
+  const [providerFilter, setProviderFilter] = useState<"all" | "gemini" | "ollama" | "claude" | "openai" | "copilot">("all");
 
   // Filtrar histórico
   const filteredHistory = useMemo(() => {
@@ -43,17 +43,24 @@ export function AIHistoryPanel({
     }
 
     return history.filter((item) => {
+      // Verificações de segurança para campos opcionais
+      const resourceName = item.resourceName || "";
+      const namespace = item.namespace || "";
+      const cluster = item.cluster || "";
+      const resourceType = item.resourceType || "";
+      const provider = item.provider || "";
+
       const matchesSearch =
         searchQuery === "" ||
-        item.resourceName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        item.namespace.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        item.cluster.toLowerCase().includes(searchQuery.toLowerCase());
+        resourceName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        namespace.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        cluster.toLowerCase().includes(searchQuery.toLowerCase());
 
       const matchesResourceType =
-        resourceTypeFilter === "all" || item.resourceType === resourceTypeFilter;
+        resourceTypeFilter === "all" || resourceType === resourceTypeFilter;
 
       const matchesProvider =
-        providerFilter === "all" || item.provider === providerFilter;
+        providerFilter === "all" || provider === providerFilter;
 
       return matchesSearch && matchesResourceType && matchesProvider;
     });
@@ -143,15 +150,18 @@ export function AIHistoryPanel({
 
           <Select
             value={providerFilter}
-            onValueChange={(value) => setProviderFilter(value as "all" | "gemini" | "ollama")}
+            onValueChange={(value) => setProviderFilter(value as "all" | "gemini" | "ollama" | "claude" | "openai" | "copilot")}
           >
             <SelectTrigger>
               <SelectValue placeholder="Provider AI" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos providers</SelectItem>
-              <SelectItem value="gemini">Gemini</SelectItem>
               <SelectItem value="ollama">Ollama</SelectItem>
+              <SelectItem value="gemini">Gemini</SelectItem>
+              <SelectItem value="claude">Claude</SelectItem>
+              <SelectItem value="openai">OpenAI</SelectItem>
+              <SelectItem value="copilot">GitHub Copilot</SelectItem>
             </SelectContent>
           </Select>
         </div>
