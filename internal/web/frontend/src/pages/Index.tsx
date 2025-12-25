@@ -406,8 +406,8 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "staging", label: "Staging", icon: FileText, badge: staging.getChangesCount().total },
     { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
     { id: "servicemesh", label: "Service Mesh", icon: Network },
-    { id: "ai-diagnostics", label: "AI Diagnostics", icon: Brain },
     { id: "namespaces", label: "Namespaces", icon: Database },
+    { id: "ai-diagnostics", label: "AI Diagnostics", icon: Brain },
   ];
 
   // Filtrar namespaces
