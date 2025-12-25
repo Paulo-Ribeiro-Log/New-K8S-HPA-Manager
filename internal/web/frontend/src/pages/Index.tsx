@@ -89,6 +89,7 @@ const Index = ({ onLogout }: IndexProps) => {
   const [deploymentsNamespace, setDeploymentsNamespace] = useState("");
   const [secretsNamespace, setSecretsNamespace] = useState("");
   const [containersNamespace, setContainersNamespace] = useState("");
+  const [ingressNamespace, setIngressNamespace] = useState("");
   const [showApplyModal, setShowApplyModal] = useState(false);
   const [hpasToApply, setHpasToApply] = useState<Array<{ key: string; current: HPA; original: HPA }>>([]);
   const [showNodePoolApplyModal, setShowNodePoolApplyModal] = useState(false);
@@ -171,11 +172,12 @@ const Index = ({ onLogout }: IndexProps) => {
     deployments: false,
     secrets: false,
     containers: false,
+    ingresses: false,
   });
 
   // 🔄 Marcar componente como montado quando usuário acessa a aba
   useEffect(() => {
-    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers"];
+    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers", "ingresses"];
     if (workloadTabs.includes(activeTab as any)) {
       hasBeenMounted.current[activeTab as keyof typeof hasBeenMounted.current] = true;
     }
@@ -738,20 +740,6 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
-      case "ingresses":
-        return (
-          <ErrorBoundary componentName="Ingress Tab">
-            <IngressTab
-              cluster={selectedCluster}
-              namespaces={namespaces}
-              selectedNamespace={selectedNamespace}
-              onNamespaceChange={setSelectedNamespace}
-              showSystemNamespaces={showSystemNamespaces}
-              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
-            />
-          </ErrorBoundary>
-        );
-
       case "events":
         return (
           <ErrorBoundary componentName="Events Tab">
@@ -1141,8 +1129,24 @@ const Index = ({ onLogout }: IndexProps) => {
           )}
         </div>
 
+        {/* Ingresses - sempre montado */}
+        <div style={{ display: activeTab === "ingresses" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "ingresses" || hasBeenMounted.current.ingresses) && (
+            <ErrorBoundary componentName="Ingress Tab">
+              <IngressTab
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={ingressNamespace}
+                onNamespaceChange={setIngressNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
         {/* Outras abas - renderização condicional normal (switch/case) */}
-        {!["pods", "configmaps", "deployments", "secrets", "containers"].includes(activeTab) && renderTabContent()}
+        {!["pods", "configmaps", "deployments", "secrets", "containers", "ingresses"].includes(activeTab) && renderTabContent()}
       </div>
 
       {/* Modal de Confirmação - HPAs */}
