@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Header } from "@/components/Header";
 import { StatsCard } from "@/components/StatsCard";
 import { TabNavigation } from "@/components/TabNavigation";
@@ -152,31 +152,10 @@ const Index = ({ onLogout }: IndexProps) => {
   };
 
   // TabManager para sincronizar estado com abas
-  const { updateActiveTabState, getActiveTab } = useTabManager();
+  const { updateActiveTabState } = useTabManager();
 
-  // 🔄 RESTAURAR ESTADO DA ABA quando a aba é montada ou reativada
-  useEffect(() => {
-    const activeTabData = getActiveTab();
-    if (activeTabData && activeTabData.pageState) {
-      const { pageState } = activeTabData;
-
-      // Restaurar todos os estados salvos da aba
-      if (pageState.activeTab) setActiveTab(pageState.activeTab);
-      if (pageState.selectedCluster) setSelectedCluster(pageState.selectedCluster);
-      if (pageState.selectedNamespace !== undefined) setSelectedNamespace(pageState.selectedNamespace);
-      if (pageState.selectedHPA !== undefined) setSelectedHPA(pageState.selectedHPA);
-      if (pageState.selectedNodePool !== undefined) setSelectedNodePool(pageState.selectedNodePool);
-      if (pageState.showApplyModal !== undefined) setShowApplyModal(pageState.showApplyModal);
-      if (pageState.hpasToApply) setHpasToApply(pageState.hpasToApply);
-      if (pageState.showNodePoolApplyModal !== undefined) setShowNodePoolApplyModal(pageState.showNodePoolApplyModal);
-      if (pageState.nodePoolsToApply) setNodePoolsToApply(pageState.nodePoolsToApply);
-      if (pageState.showSaveSessionModal !== undefined) setShowSaveSessionModal(pageState.showSaveSessionModal);
-      if (pageState.showLoadSessionModal !== undefined) setShowLoadSessionModal(pageState.showLoadSessionModal);
-      if (pageState.isContextSwitching !== undefined) setIsContextSwitching(pageState.isContextSwitching);
-
-      console.log('[TabState] Estado da aba restaurado:', pageState);
-    }
-  }, [getActiveTab]); // Reexecutar quando a aba ativa mudar
+  // 🔄 Ref para rastrear cluster anterior (evitar reset ao restaurar aba)
+  const previousClusterRef = useRef<string>("");
 
   // 💾 PERSISTIR ESTADO no TabContext sempre que estados locais mudarem
   useEffect(() => {
@@ -213,12 +192,10 @@ const Index = ({ onLogout }: IndexProps) => {
   // 🧹 RESET DE CONTEXTOS DEPENDENTES quando cluster mudar
   useEffect(() => {
     // Ao trocar de cluster, limpar estados dependentes do cluster anterior
-    // Isso evita erros de contexto (ex: tentar buscar HPA de cluster A no cluster B)
+    // Usa ref para evitar reset ao restaurar aba (apenas reset em mudanças manuais)
 
-    const previousCluster = getActiveTab()?.pageState.selectedCluster;
-
-    if (previousCluster && previousCluster !== selectedCluster) {
-      console.log(`[ClusterChange] Cluster mudou de ${previousCluster} para ${selectedCluster} - limpando contextos`);
+    if (previousClusterRef.current && previousClusterRef.current !== selectedCluster && selectedCluster) {
+      console.log(`[ClusterChange] Cluster mudou de ${previousClusterRef.current} para ${selectedCluster} - limpando contextos`);
 
       // Resetar seleções específicas do cluster
       setSelectedNamespace("");
@@ -233,7 +210,10 @@ const Index = ({ onLogout }: IndexProps) => {
 
       toast.info(`Cluster alterado para ${selectedCluster}. Contexto de busca resetado.`);
     }
-  }, [selectedCluster, getActiveTab]); // Executar sempre que cluster mudar
+
+    // Atualizar ref para próxima comparação
+    previousClusterRef.current = selectedCluster;
+  }, [selectedCluster]); // Executar sempre que cluster mudar
 
   // Staging context
   const staging = useStaging();
