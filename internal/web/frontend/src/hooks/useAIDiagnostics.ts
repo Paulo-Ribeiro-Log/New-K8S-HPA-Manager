@@ -201,15 +201,21 @@ export function useAIDiagnostics() {
   }, []);
 
   /**
-   * Auto-refresh stats every 60 seconds
+   * REMOVIDO: Auto-refresh stats a cada 60 segundos
+   *
+   * MOTIVO: Com componentes sempre montados (Pods, ConfigMaps, etc), este hook
+   * fica ativo em background mesmo quando usuário não está vendo a aba.
+   * Isso causava chamadas desnecessárias ao backend, esgotando quota do Gemini.
+   *
+   * SOLUÇÃO: Stats devem ser carregados APENAS quando usuário explicitamente
+   * acessar a aba de AI Diagnostics, via chamada manual a fetchStats().
    */
-  useEffect(() => {
-    const interval = setInterval(() => {
-      fetchStats();
-    }, 60000); // 60 seconds
-
-    return () => clearInterval(interval);
-  }, [fetchStats]);
+  // useEffect(() => {
+  //   const interval = setInterval(() => {
+  //     fetchStats();
+  //   }, 60000);
+  //   return () => clearInterval(interval);
+  // }, [fetchStats]);
 
   return {
     // State
