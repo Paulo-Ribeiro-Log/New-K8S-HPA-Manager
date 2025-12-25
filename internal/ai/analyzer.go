@@ -305,15 +305,84 @@ func (a *Analyzer) GetProviderStatus(ctx context.Context) *ProviderStatus {
 		Model:    a.provider.GetModel(),
 	}
 
-	// Verificar disponibilidade com timeout curto
-	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// Fazer chamada real de teste para detectar erros de quota, autenticação, etc
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	status.Available = a.provider.IsAvailable(checkCtx)
+	// Prompt mínimo para teste (baixo custo de tokens)
+	testPrompt := "Responda apenas: OK"
+	_, err := a.provider.Analyze(checkCtx, testPrompt)
 
-	if !status.Available {
-		status.Error = "Provider is not available or unreachable"
+	if err != nil {
+		status.Available = false
+		status.Error = a.parseProviderError(err)
+	} else {
+		status.Available = true
+		status.Error = ""
 	}
 
 	return status
+}
+
+// parseProviderError analisa erro do provider e retorna mensagem amigável
+func (a *Analyzer) parseProviderError(err error) string {
+	errMsg := err.Error()
+	lowerMsg := strings.ToLower(errMsg)
+
+	// Quota exceeded (HTTP 429)
+	if strings.Contains(lowerMsg, "429") ||
+	   strings.Contains(lowerMsg, "quota") ||
+	   strings.Contains(lowerMsg, "resource_exhausted") ||
+	   strings.Contains(lowerMsg, "rate limit") {
+		return "Quota exceeded - API limit reached. Please check your plan or wait before retrying."
+	}
+
+	// Authentication failed (HTTP 401/403)
+	if strings.Contains(lowerMsg, "401") ||
+	   strings.Contains(lowerMsg, "403") ||
+	   strings.Contains(lowerMsg, "unauthorized") ||
+	   strings.Contains(lowerMsg, "forbidden") ||
+	   strings.Contains(lowerMsg, "invalid api key") ||
+	   strings.Contains(lowerMsg, "authentication") {
+		return "Authentication failed - Invalid or expired API key. Please check your credentials."
+	}
+
+	// Model not found (HTTP 404)
+	if strings.Contains(lowerMsg, "404") ||
+	   strings.Contains(lowerMsg, "not found") ||
+	   strings.Contains(lowerMsg, "model") && strings.Contains(lowerMsg, "does not exist") {
+		return fmt.Sprintf("Model not found - The model '%s' is not available. Please select a valid model.", a.provider.GetModel())
+	}
+
+	// Connection timeout
+	if strings.Contains(lowerMsg, "timeout") ||
+	   strings.Contains(lowerMsg, "context deadline exceeded") {
+		return "Connection timeout - Unable to reach the AI provider. Please check your network connection."
+	}
+
+	// Connection refused
+	if strings.Contains(lowerMsg, "connection refused") ||
+	   strings.Contains(lowerMsg, "no such host") ||
+	   strings.Contains(lowerMsg, "dial tcp") {
+		return "Connection failed - Unable to connect to the AI provider. Check if the service is running."
+	}
+
+	// Bad request (HTTP 400)
+	if strings.Contains(lowerMsg, "400") ||
+	   strings.Contains(lowerMsg, "bad request") ||
+	   strings.Contains(lowerMsg, "invalid_request") {
+		return "Bad request - The request format is invalid. Please check your configuration."
+	}
+
+	// Service unavailable (HTTP 503)
+	if strings.Contains(lowerMsg, "503") ||
+	   strings.Contains(lowerMsg, "service unavailable") {
+		return "Service unavailable - The AI provider is temporarily unavailable. Please try again later."
+	}
+
+	// Generic error (retorna primeiras 200 chars da mensagem)
+	if len(errMsg) > 200 {
+		return fmt.Sprintf("Error: %s...", errMsg[:200])
+	}
+	return fmt.Sprintf("Error: %s", errMsg)
 }
