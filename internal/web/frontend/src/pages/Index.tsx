@@ -157,6 +157,23 @@ const Index = ({ onLogout }: IndexProps) => {
   // 🔄 Ref para rastrear cluster anterior (evitar reset ao restaurar aba)
   const previousClusterRef = useRef<string>("");
 
+  // 🔄 Ref para rastrear quais componentes workload já foram montados (lazy loading)
+  const hasBeenMounted = useRef({
+    pods: false,
+    configmaps: false,
+    deployments: false,
+    secrets: false,
+    containers: false,
+  });
+
+  // 🔄 Marcar componente como montado quando usuário acessa a aba
+  useEffect(() => {
+    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers"];
+    if (workloadTabs.includes(activeTab as any)) {
+      hasBeenMounted.current[activeTab as keyof typeof hasBeenMounted.current] = true;
+    }
+  }, [activeTab]);
+
   // 💾 PERSISTIR ESTADO no TabContext sempre que estados locais mudarem
   useEffect(() => {
     updateActiveTabState({
@@ -714,78 +731,10 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
-      case "configmaps":
-        return (
-          <ConfigMapsTab
-            cluster={selectedCluster}
-            namespaces={namespaces}
-            selectedNamespace={selectedNamespace}
-            onNamespaceChange={setSelectedNamespace}
-            showSystemNamespaces={showSystemNamespaces}
-            onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
-          />
-        );
-
       case "ingresses":
         return (
           <ErrorBoundary componentName="Ingress Tab">
             <IngressTab
-              cluster={selectedCluster}
-              namespaces={namespaces}
-              selectedNamespace={selectedNamespace}
-              onNamespaceChange={setSelectedNamespace}
-              showSystemNamespaces={showSystemNamespaces}
-              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
-            />
-          </ErrorBoundary>
-        );
-
-      case "secrets":
-        return (
-          <ErrorBoundary componentName="Secrets Tab">
-            <SecretsTab
-              cluster={selectedCluster}
-              namespaces={namespaces}
-              selectedNamespace={selectedNamespace}
-              onNamespaceChange={setSelectedNamespace}
-              showSystemNamespaces={showSystemNamespaces}
-              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
-            />
-          </ErrorBoundary>
-        );
-
-      case "deployments":
-        return (
-          <ErrorBoundary componentName="Deployments Tab">
-            <DeploymentsTab
-              cluster={selectedCluster}
-              namespaces={namespaces}
-              selectedNamespace={selectedNamespace}
-              onNamespaceChange={setSelectedNamespace}
-              showSystemNamespaces={showSystemNamespaces}
-              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
-            />
-          </ErrorBoundary>
-        );
-
-      case "containers":
-        return (
-          <ErrorBoundary componentName="Containers Tab">
-            <ContainersTab
-              cluster={selectedCluster}
-              namespaces={namespaces}
-              selectedNamespace={selectedNamespace}
-              onNamespaceChange={setSelectedNamespace}
-              showSystemNamespaces={showSystemNamespaces}
-              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
-            />
-          </ErrorBoundary>
-        );
-
-      case "pods":
-        return (
-          <ErrorBoundary componentName="Pods Panel">
-            <PodsPanel
               cluster={selectedCluster}
               namespaces={namespaces}
               selectedNamespace={selectedNamespace}
@@ -1104,7 +1053,89 @@ const Index = ({ onLogout }: IndexProps) => {
 
       {/* Conteúdo Principal */}
       <div className="flex-1 min-h-0 overflow-auto">
-        {renderTabContent()}
+        {/* ✅ SOLUÇÃO: Renderizar componentes workload SEMPRE montados, mostrar apenas o ativo */}
+        {/* Isso mantém o estado React naturalmente sem precisar persistir/restaurar */}
+
+        {/* Pods - sempre montado */}
+        <div style={{ display: activeTab === "pods" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "pods" || hasBeenMounted.current.pods) && (
+            <ErrorBoundary componentName="Pods Panel">
+              <PodsPanel
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={selectedNamespace}
+                onNamespaceChange={setSelectedNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
+        {/* ConfigMaps - sempre montado */}
+        <div style={{ display: activeTab === "configmaps" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "configmaps" || hasBeenMounted.current.configmaps) && (
+            <ConfigMapsTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          )}
+        </div>
+
+        {/* Deployments - sempre montado */}
+        <div style={{ display: activeTab === "deployments" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "deployments" || hasBeenMounted.current.deployments) && (
+            <ErrorBoundary componentName="Deployments Tab">
+              <DeploymentsTab
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={selectedNamespace}
+                onNamespaceChange={setSelectedNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
+        {/* Secrets - sempre montado */}
+        <div style={{ display: activeTab === "secrets" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "secrets" || hasBeenMounted.current.secrets) && (
+            <ErrorBoundary componentName="Secrets Tab">
+              <SecretsTab
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={selectedNamespace}
+                onNamespaceChange={setSelectedNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
+        {/* Containers - sempre montado */}
+        <div style={{ display: activeTab === "containers" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "containers" || hasBeenMounted.current.containers) && (
+            <ErrorBoundary componentName="Containers Tab">
+              <ContainersTab
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={selectedNamespace}
+                onNamespaceChange={setSelectedNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
+        {/* Outras abas - renderização condicional normal (switch/case) */}
+        {!["pods", "configmaps", "deployments", "secrets", "containers"].includes(activeTab) && renderTabContent()}
       </div>
 
       {/* Modal de Confirmação - HPAs */}
