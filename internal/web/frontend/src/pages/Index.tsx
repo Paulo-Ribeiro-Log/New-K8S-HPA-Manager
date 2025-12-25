@@ -152,7 +152,88 @@ const Index = ({ onLogout }: IndexProps) => {
   };
 
   // TabManager para sincronizar estado com abas
-  const { updateActiveTabState } = useTabManager();
+  const { updateActiveTabState, getActiveTab } = useTabManager();
+
+  // 🔄 RESTAURAR ESTADO DA ABA quando a aba é montada ou reativada
+  useEffect(() => {
+    const activeTabData = getActiveTab();
+    if (activeTabData && activeTabData.pageState) {
+      const { pageState } = activeTabData;
+
+      // Restaurar todos os estados salvos da aba
+      if (pageState.activeTab) setActiveTab(pageState.activeTab);
+      if (pageState.selectedCluster) setSelectedCluster(pageState.selectedCluster);
+      if (pageState.selectedNamespace !== undefined) setSelectedNamespace(pageState.selectedNamespace);
+      if (pageState.selectedHPA !== undefined) setSelectedHPA(pageState.selectedHPA);
+      if (pageState.selectedNodePool !== undefined) setSelectedNodePool(pageState.selectedNodePool);
+      if (pageState.showApplyModal !== undefined) setShowApplyModal(pageState.showApplyModal);
+      if (pageState.hpasToApply) setHpasToApply(pageState.hpasToApply);
+      if (pageState.showNodePoolApplyModal !== undefined) setShowNodePoolApplyModal(pageState.showNodePoolApplyModal);
+      if (pageState.nodePoolsToApply) setNodePoolsToApply(pageState.nodePoolsToApply);
+      if (pageState.showSaveSessionModal !== undefined) setShowSaveSessionModal(pageState.showSaveSessionModal);
+      if (pageState.showLoadSessionModal !== undefined) setShowLoadSessionModal(pageState.showLoadSessionModal);
+      if (pageState.isContextSwitching !== undefined) setIsContextSwitching(pageState.isContextSwitching);
+
+      console.log('[TabState] Estado da aba restaurado:', pageState);
+    }
+  }, [getActiveTab]); // Reexecutar quando a aba ativa mudar
+
+  // 💾 PERSISTIR ESTADO no TabContext sempre que estados locais mudarem
+  useEffect(() => {
+    updateActiveTabState({
+      activeTab,
+      selectedCluster,
+      selectedNamespace,
+      selectedHPA,
+      selectedNodePool,
+      showApplyModal,
+      hpasToApply,
+      showNodePoolApplyModal,
+      nodePoolsToApply,
+      showSaveSessionModal,
+      showLoadSessionModal,
+      isContextSwitching,
+    });
+  }, [
+    activeTab,
+    selectedCluster,
+    selectedNamespace,
+    selectedHPA,
+    selectedNodePool,
+    showApplyModal,
+    hpasToApply,
+    showNodePoolApplyModal,
+    nodePoolsToApply,
+    showSaveSessionModal,
+    showLoadSessionModal,
+    isContextSwitching,
+    updateActiveTabState,
+  ]);
+
+  // 🧹 RESET DE CONTEXTOS DEPENDENTES quando cluster mudar
+  useEffect(() => {
+    // Ao trocar de cluster, limpar estados dependentes do cluster anterior
+    // Isso evita erros de contexto (ex: tentar buscar HPA de cluster A no cluster B)
+
+    const previousCluster = getActiveTab()?.pageState.selectedCluster;
+
+    if (previousCluster && previousCluster !== selectedCluster) {
+      console.log(`[ClusterChange] Cluster mudou de ${previousCluster} para ${selectedCluster} - limpando contextos`);
+
+      // Resetar seleções específicas do cluster
+      setSelectedNamespace("");
+      setSelectedHPA(null);
+      setSelectedNodePool(null);
+
+      // Limpar modals que dependem do cluster
+      setShowApplyModal(false);
+      setHpasToApply([]);
+      setShowNodePoolApplyModal(false);
+      setNodePoolsToApply([]);
+
+      toast.info(`Cluster alterado para ${selectedCluster}. Contexto de busca resetado.`);
+    }
+  }, [selectedCluster, getActiveTab]); // Executar sempre que cluster mudar
 
   // Staging context
   const staging = useStaging();
