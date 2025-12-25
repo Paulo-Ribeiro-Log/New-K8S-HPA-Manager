@@ -27,6 +27,7 @@ import "@/styles/diff2html-dark.css";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { CreateSecretModal } from "@/components/CreateSecretModal";
+import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 
 interface SecretsTabProps {
   cluster: string;
@@ -45,23 +46,26 @@ export const SecretsTab = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
 }: SecretsTabProps) => {
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedSecret, setSelectedSecret] = useState<SecretSummary | null>(null);
+  // ✅ Estados com persistência entre trocas de aba
+  const [searchQuery, setSearchQuery] = usePersistedTabState<string>('secrets', 'searchQuery', "");
+  const [selectedSecret, setSelectedSecret] = usePersistedTabState<SecretSummary | null>('secrets', 'selectedSecret', null);
+  const [showLabels, setShowLabels] = usePersistedTabState<boolean>('secrets', 'showLabels', false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = usePersistedTabState<boolean>('secrets', 'isSidebarCollapsed', false);
+  const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">('secrets', 'viewMode', "editor");
+  const [isDecoded, setIsDecoded] = usePersistedTabState<boolean>('secrets', 'isDecoded', false);
+
+  // Estados locais (não persistidos)
   const [manifest, setManifest] = useState<SecretManifest | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
   const [editorValue, setEditorValue] = useState("");
   const [originalYaml, setOriginalYaml] = useState("");
-  const [viewMode, setViewMode] = useState<"editor" | "diff">("editor");
   const [isValidating, setIsValidating] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
-  const [showLabels, setShowLabels] = useState(false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [diffModalOpen, setDiffModalOpen] = useState(false);
   const [diffHtml, setDiffHtml] = useState("");
   const [isDiffLoading, setIsDiffLoading] = useState(false);
   const [diffFullScreen, setDiffFullScreen] = useState(false);
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
-  const [isDecoded, setIsDecoded] = useState(false);
   const [editorFullScreen, setEditorFullScreen] = useState(false);
   const [describeModalOpen, setDescribeModalOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");
@@ -140,6 +144,40 @@ export const SecretsTab = ({
       );
     });
   }, [secrets, searchQuery, showSystemNamespaces]);
+
+  // ===== Funções Utilitárias para Base64 =====
+
+  // Função para validar se uma string é base64 válida
+  const isValidBase64 = (str: string): boolean => {
+    if (!str || str.trim() === '') return false;
+    // Regex para validar base64: só permite caracteres A-Z, a-z, 0-9, +, /, = (padding)
+    const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
+    if (!base64Regex.test(str)) return false;
+
+    try {
+      // Tentar decodificar - se falhar, não é base64 válido
+      const decoded = atob(str);
+      // Re-encodar e comparar para verificar se é base64 legítimo
+      return btoa(decoded) === str;
+    } catch {
+      return false;
+    }
+  };
+
+  // Funções para encode/decode UTF-8 seguro
+  const base64EncodeUtf8 = (str: string): string => {
+    // Converter string para UTF-8 bytes e depois para base64
+    return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => {
+      return String.fromCharCode(parseInt(p1, 16));
+    }));
+  };
+
+  const base64DecodeUtf8 = (str: string): string => {
+    // Decodificar base64 e depois converter UTF-8 bytes para string
+    return decodeURIComponent(Array.prototype.map.call(atob(str), (c: string) => {
+      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+    }).join(''));
+  };
 
   const handleSelectSecret = async (summary: SecretSummary) => {
     // Salvar histórico atual no cache antes de trocar
@@ -296,38 +334,6 @@ export const SecretsTab = ({
       toast.warning("Editor vazio - carregue um Secret primeiro");
       return;
     }
-
-    // Função para validar se uma string é base64 válida
-    const isValidBase64 = (str: string): boolean => {
-      if (!str || str.trim() === '') return false;
-      // Regex para validar base64: só permite caracteres A-Z, a-z, 0-9, +, /, = (padding)
-      const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
-      if (!base64Regex.test(str)) return false;
-      
-      try {
-        // Tentar decodificar - se falhar, não é base64 válido
-        const decoded = atob(str);
-        // Re-encodar e comparar para verificar se é base64 legítimo
-        return btoa(decoded) === str;
-      } catch {
-        return false;
-      }
-    };
-
-    // Funções para encode/decode UTF-8 seguro
-    const base64EncodeUtf8 = (str: string): string => {
-      // Converter string para UTF-8 bytes e depois para base64
-      return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => {
-        return String.fromCharCode(parseInt(p1, 16));
-      }));
-    };
-
-    const base64DecodeUtf8 = (str: string): string => {
-      // Decodificar base64 e depois converter UTF-8 bytes para string
-      return decodeURIComponent(Array.prototype.map.call(atob(str), (c: string) => {
-        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-      }).join(''));
-    };
 
     // Função para detectar se é um certificado ou chave que não deve ser processado
     const isCertificateOrKey = (key: string, value: string): boolean => {
