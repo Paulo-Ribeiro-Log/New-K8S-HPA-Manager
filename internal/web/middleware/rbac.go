@@ -21,6 +21,28 @@ func NewRBACMiddleware(rbacManager *rbac.RBACManager) *RBACMiddleware {
 	}
 }
 
+// InjectUserEmail middleware que injeta user_email no contexto
+// Usado para endpoints que precisam do email do usuário (ex: AI tokens)
+func (m *RBACMiddleware) InjectUserEmail() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		email, err := m.rbacManager.GetCurrentUserEmail(ctx)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "user not authenticated",
+			})
+			c.Abort()
+			return
+		}
+
+		// Injetar email no contexto para handlers usarem
+		c.Set("user_email", email)
+		c.Next()
+	}
+}
+
 // RequireSREGroup middleware que exige que usuário seja do grupo VV_CLOUD_SRE
 func (m *RBACMiddleware) RequireSREGroup() gin.HandlerFunc {
 	return func(c *gin.Context) {

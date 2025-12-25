@@ -26,20 +26,29 @@ func NewAITokensHandler(tokensStore *storage.UserTokensStore) *AITokensHandler {
 // SaveTokensRequest request para salvar tokens
 type SaveTokensRequest struct {
 	GeminiAPIKey        string `json:"gemini_api_key,omitempty"`
+	GeminiModel         string `json:"gemini_model,omitempty"`
 	OpenAIAPIKey        string `json:"openai_api_key,omitempty"`
+	OpenAIModel         string `json:"openai_model,omitempty"`
 	ClaudeAPIKey        string `json:"claude_api_key,omitempty"`
+	ClaudeModel         string `json:"claude_model,omitempty"`
 	CopilotAPIKey       string `json:"copilot_api_key,omitempty"`
 	CopilotEndpoint     string `json:"copilot_endpoint,omitempty"`
 	CopilotDeployment   string `json:"copilot_deployment,omitempty"`
+	OllamaModel         string `json:"ollama_model,omitempty"`
 	PreferredProvider   string `json:"preferred_provider"`
 }
 
 // TokensResponse response com tokens (sem expor valores completos)
 type TokensResponse struct {
 	HasGemini         bool   `json:"has_gemini"`
+	GeminiModel       string `json:"gemini_model,omitempty"`
 	HasOpenAI         bool   `json:"has_openai"`
+	OpenAIModel       string `json:"openai_model,omitempty"`
 	HasClaude         bool   `json:"has_claude"`
+	ClaudeModel       string `json:"claude_model,omitempty"`
 	HasCopilot        bool   `json:"has_copilot"`
+	CopilotDeployment string `json:"copilot_deployment,omitempty"`
+	OllamaModel       string `json:"ollama_model,omitempty"`
 	PreferredProvider string `json:"preferred_provider"`
 	UpdatedAt         string `json:"updated_at,omitempty"`
 }
@@ -127,11 +136,15 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 	tokens := &storage.UserTokens{
 		UserEmail:         userEmailStr,
 		GeminiAPIKey:      req.GeminiAPIKey,
+		GeminiModel:       req.GeminiModel,
 		OpenAIAPIKey:      req.OpenAIAPIKey,
+		OpenAIModel:       req.OpenAIModel,
 		ClaudeAPIKey:      req.ClaudeAPIKey,
+		ClaudeModel:       req.ClaudeModel,
 		CopilotAPIKey:     req.CopilotAPIKey,
 		CopilotEndpoint:   req.CopilotEndpoint,
 		CopilotDeployment: req.CopilotDeployment,
+		OllamaModel:       req.OllamaModel,
 		PreferredProvider: req.PreferredProvider,
 	}
 
@@ -186,9 +199,14 @@ func (h *AITokensHandler) GetTokens(c *gin.Context) {
 	// Retornar apenas status (não expor tokens completos)
 	c.JSON(http.StatusOK, TokensResponse{
 		HasGemini:         tokens.GeminiAPIKey != "",
+		GeminiModel:       tokens.GeminiModel,
 		HasOpenAI:         tokens.OpenAIAPIKey != "",
+		OpenAIModel:       tokens.OpenAIModel,
 		HasClaude:         tokens.ClaudeAPIKey != "",
+		ClaudeModel:       tokens.ClaudeModel,
 		HasCopilot:        tokens.CopilotAPIKey != "",
+		CopilotDeployment: tokens.CopilotDeployment,
+		OllamaModel:       tokens.OllamaModel,
 		PreferredProvider: tokens.PreferredProvider,
 		UpdatedAt:         tokens.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	})
@@ -412,13 +430,90 @@ func validateCopilotToken(apiKey, endpoint, deployment string) error {
 	return nil
 }
 
+// ModelInfo informações sobre um modelo disponível
+type ModelInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	IsDefault   bool   `json:"is_default"`
+}
+
+// ModelsResponse resposta com modelos disponíveis por provider
+type ModelsResponse struct {
+	Provider string      `json:"provider"`
+	Models   []ModelInfo `json:"models"`
+}
+
+// GetAvailableModels retorna modelos disponíveis por provider
+func (h *AITokensHandler) GetAvailableModels(c *gin.Context) {
+	provider := c.Query("provider")
+	if provider == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "provider query parameter is required",
+		})
+		return
+	}
+
+	var models []ModelInfo
+
+	switch provider {
+	case "gemini":
+		models = []ModelInfo{
+			{ID: "gemini-2.0-flash-exp", Name: "Gemini 2.0 Flash (Experimental)", Description: "Versão mais recente e rápida", IsDefault: true},
+			{ID: "gemini-1.5-pro", Name: "Gemini 1.5 Pro", Description: "Modelo mais avançado com maior capacidade"},
+			{ID: "gemini-pro", Name: "Gemini Pro", Description: "Modelo robusto anterior"},
+		}
+	case "claude":
+		models = []ModelInfo{
+			{ID: "claude-3-5-sonnet-20241022", Name: "Claude 3.5 Sonnet", Description: "Modelo equilibrado (recomendado)", IsDefault: true},
+			{ID: "claude-3-5-haiku-20241022", Name: "Claude 3.5 Haiku", Description: "Modelo rápido e econômico"},
+			{ID: "claude-3-opus-20240229", Name: "Claude 3 Opus", Description: "Modelo mais avançado"},
+		}
+	case "openai":
+		models = []ModelInfo{
+			{ID: "gpt-4o-mini", Name: "GPT-4o Mini", Description: "Modelo rápido e econômico", IsDefault: true},
+			{ID: "gpt-4o", Name: "GPT-4o", Description: "Modelo mais avançado"},
+			{ID: "gpt-4-turbo", Name: "GPT-4 Turbo", Description: "Modelo anterior mais rápido"},
+			{ID: "gpt-3.5-turbo", Name: "GPT-3.5 Turbo", Description: "Modelo anterior econômico"},
+		}
+	case "ollama":
+		models = []ModelInfo{
+			{ID: "llama3.2:3b", Name: "Llama 3.2 3B", Description: "Modelo rápido (3B parâmetros)", IsDefault: true},
+			{ID: "qwen2.5:7b", Name: "Qwen 2.5 7B", Description: "Modelo médio (7B parâmetros)"},
+			{ID: "deepseek-r1:7b", Name: "DeepSeek R1 7B", Description: "Modelo de raciocínio (7B)"},
+			{ID: "qwen2.5:14b", Name: "Qwen 2.5 14B", Description: "Modelo avançado (14B parâmetros)"},
+		}
+	case "copilot":
+		models = []ModelInfo{
+			{ID: "gpt-4o", Name: "GPT-4o (Azure)", Description: "Deployment padrão", IsDefault: true},
+			{ID: "gpt-4o-mini", Name: "GPT-4o Mini (Azure)", Description: "Deployment econômico"},
+			{ID: "gpt-4-turbo", Name: "GPT-4 Turbo (Azure)", Description: "Deployment turbo"},
+		}
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid provider (must be: gemini, claude, openai, ollama, or copilot)",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, ModelsResponse{
+		Provider: provider,
+		Models:   models,
+	})
+}
+
 // RegisterRoutes registra rotas do handler
-func (h *AITokensHandler) RegisterRoutes(router *gin.RouterGroup) {
+func (h *AITokensHandler) RegisterRoutes(router *gin.RouterGroup, rbacMiddleware interface{ InjectUserEmail() gin.HandlerFunc }) {
+	// Aplicar middleware de injeção de user_email para todas as rotas de tokens
 	tokens := router.Group("/ai/tokens")
+	tokens.Use(rbacMiddleware.InjectUserEmail())
 	{
 		tokens.GET("", h.GetTokens)               // GET /api/v1/ai/tokens
 		tokens.POST("", h.SaveTokens)             // POST /api/v1/ai/tokens
 		tokens.DELETE("", h.DeleteTokens)         // DELETE /api/v1/ai/tokens
 		tokens.POST("/validate", h.ValidateToken) // POST /api/v1/ai/tokens/validate
 	}
+
+	// Endpoint de modelos disponíveis (não precisa de user_email)
+	router.GET("/ai/models", h.GetAvailableModels) // GET /api/v1/ai/models?provider=gemini
 }

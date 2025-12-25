@@ -180,25 +180,32 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 			Timeout:       120,
 		}
 
-		// 3. Criar AI provider
+		// 3. Criar KubeManager wrapper
+		kubeManagerWrapper := kubernetes.NewKubeManager(
+			kubeManager.GetClient,
+			nil, // kubectl describe será implementado depois
+		)
+
+		// 4. Criar AI provider padrão
 		aiProviderInstance, err := ai.NewProvider(aiConfig)
 		if err != nil {
-			fmt.Printf("⚠️  Falha ao criar AI provider: %v\n", err)
+			fmt.Printf("⚠️  Falha ao criar AI provider padrão: %v\n", err)
 			fmt.Println("   AI Diagnostics desabilitado")
 		} else {
-			// 4. Criar KubeManager wrapper
-			kubeManagerWrapper := kubernetes.NewKubeManager(
-				kubeManager.GetClient,
-				nil, // kubectl describe será implementado depois
-			)
-
-			// 5. Criar AI Analyzer
+			// 5. Criar AI Analyzer padrão (fallback)
 			aiAnalyzer := ai.NewAnalyzer(aiProviderInstance, kubeManagerWrapper, aiHistoryStore)
 
-			// 6. Criar handler
-			aiHandler = handlers.NewAIDiagnosticsHandler(aiAnalyzer, aiHistoryStore)
+			// 6. Criar handler (com suporte a preferências de usuário)
+			aiHandler = handlers.NewAIDiagnosticsHandler(
+				aiAnalyzer,
+				aiHistoryStore,
+				aiTokensStore,
+				kubeManagerWrapper,
+				aiConfig,
+			)
 
-			fmt.Printf("✅ AI Diagnostics habilitado (Provider: %s)\n", aiProvider)
+			fmt.Printf("✅ AI Diagnostics habilitado (Provider padrão: %s)\n", aiProvider)
+			fmt.Println("   ℹ️  Usuários podem configurar seus próprios modelos em Settings → AI")
 			if aiProvider == "gemini" {
 				if os.Getenv("GEMINI_API_KEY") != "" {
 					fmt.Println("   ✅ GEMINI_API_KEY detectado (env var)")
@@ -663,7 +670,7 @@ func (s *Server) setupRoutes() {
 
 	// AI Tokens (gerenciamento de tokens por usuário)
 	if s.aiTokensHandler != nil {
-		s.aiTokensHandler.RegisterRoutes(api)
+		s.aiTokensHandler.RegisterRoutes(api, rbacMiddleware)
 		fmt.Println("✅ AI Tokens routes registradas")
 	}
 }
