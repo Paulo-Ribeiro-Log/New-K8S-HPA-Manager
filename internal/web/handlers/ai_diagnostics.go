@@ -312,7 +312,19 @@ func (h *AIDiagnosticsHandler) GetAnalysisByID(c *gin.Context) {
 // GetProviderStatus obtém status do provider AI
 // GET /api/v1/ai/status
 func (h *AIDiagnosticsHandler) GetProviderStatus(c *gin.Context) {
-	status := h.analyzer.GetProviderStatus(c.Request.Context())
+	// Obter user email do contexto RBAC (se disponível)
+	var userEmail string
+	if email, exists := c.Get("user_email"); exists {
+		if emailStr, ok := email.(string); ok {
+			userEmail = emailStr
+		}
+	}
+
+	// Buscar analyzer apropriado (preferências do usuário ou padrão do servidor)
+	analyzer := h.getAnalyzerForUser(userEmail)
+
+	// Obter status do provider (com chamada de teste para detectar erros)
+	status := analyzer.GetProviderStatus(c.Request.Context())
 	c.JSON(http.StatusOK, status)
 }
 
