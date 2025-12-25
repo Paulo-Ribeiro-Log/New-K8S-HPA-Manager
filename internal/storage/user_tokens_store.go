@@ -21,11 +21,15 @@ func NewUserTokensStore(client *SQLiteClient) *UserTokensStore {
 type UserTokens struct {
 	UserEmail           string            `json:"user_email"`
 	GeminiAPIKey        string            `json:"gemini_api_key,omitempty"`
+	GeminiModel         string            `json:"gemini_model,omitempty"`
 	OpenAIAPIKey        string            `json:"openai_api_key,omitempty"`
+	OpenAIModel         string            `json:"openai_model,omitempty"`
 	ClaudeAPIKey        string            `json:"claude_api_key,omitempty"`
+	ClaudeModel         string            `json:"claude_model,omitempty"`
 	CopilotAPIKey       string            `json:"copilot_api_key,omitempty"`
 	CopilotEndpoint     string            `json:"copilot_endpoint,omitempty"`
 	CopilotDeployment   string            `json:"copilot_deployment,omitempty"`
+	OllamaModel         string            `json:"ollama_model,omitempty"`
 	PreferredProvider   string            `json:"preferred_provider"`
 	Metadata            map[string]string `json:"metadata,omitempty"`
 	UpdatedAt           time.Time         `json:"updated_at"`
@@ -38,11 +42,15 @@ func (s *UserTokensStore) CreateTable() error {
 	CREATE TABLE IF NOT EXISTS user_ai_tokens (
 		user_email TEXT PRIMARY KEY,
 		gemini_api_key TEXT,
+		gemini_model TEXT,
 		openai_api_key TEXT,
+		openai_model TEXT,
 		claude_api_key TEXT,
+		claude_model TEXT,
 		copilot_api_key TEXT,
 		copilot_endpoint TEXT,
 		copilot_deployment TEXT,
+		ollama_model TEXT,
 		preferred_provider TEXT DEFAULT 'ollama',
 		metadata TEXT,
 		updated_at DATETIME NOT NULL,
@@ -54,7 +62,24 @@ func (s *UserTokensStore) CreateTable() error {
 	`
 
 	_, err := s.client.db.Exec(query)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migration: adicionar colunas se não existirem (para DBs existentes)
+	migrations := []string{
+		`ALTER TABLE user_ai_tokens ADD COLUMN gemini_model TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN openai_model TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN claude_model TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN ollama_model TEXT`,
+	}
+
+	for _, migration := range migrations {
+		// Ignorar erros se coluna já existe
+		s.client.db.Exec(migration)
+	}
+
+	return nil
 }
 
 // SaveTokens salva/atualiza tokens de um usuário
@@ -78,17 +103,21 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 
 	query := `
 	INSERT INTO user_ai_tokens (
-		user_email, gemini_api_key, openai_api_key, claude_api_key,
-		copilot_api_key, copilot_endpoint, copilot_deployment,
-		preferred_provider, metadata, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		user_email, gemini_api_key, gemini_model, openai_api_key, openai_model,
+		claude_api_key, claude_model, copilot_api_key, copilot_endpoint,
+		copilot_deployment, ollama_model, preferred_provider, metadata, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(user_email) DO UPDATE SET
 		gemini_api_key = excluded.gemini_api_key,
+		gemini_model = excluded.gemini_model,
 		openai_api_key = excluded.openai_api_key,
+		openai_model = excluded.openai_model,
 		claude_api_key = excluded.claude_api_key,
+		claude_model = excluded.claude_model,
 		copilot_api_key = excluded.copilot_api_key,
 		copilot_endpoint = excluded.copilot_endpoint,
 		copilot_deployment = excluded.copilot_deployment,
+		ollama_model = excluded.ollama_model,
 		preferred_provider = excluded.preferred_provider,
 		metadata = excluded.metadata,
 		updated_at = excluded.updated_at
@@ -97,11 +126,15 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 	_, err := s.client.db.Exec(query,
 		userEmail,
 		tokens.GeminiAPIKey,
+		tokens.GeminiModel,
 		tokens.OpenAIAPIKey,
+		tokens.OpenAIModel,
 		tokens.ClaudeAPIKey,
+		tokens.ClaudeModel,
 		tokens.CopilotAPIKey,
 		tokens.CopilotEndpoint,
 		tokens.CopilotDeployment,
+		tokens.OllamaModel,
 		tokens.PreferredProvider,
 		metadataJSON,
 		tokens.UpdatedAt,
@@ -121,9 +154,10 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	}
 
 	query := `
-	SELECT user_email, gemini_api_key, openai_api_key, claude_api_key,
-	       copilot_api_key, copilot_endpoint, copilot_deployment,
-	       preferred_provider, metadata, updated_at, created_at
+	SELECT user_email, gemini_api_key, gemini_model, openai_api_key, openai_model,
+	       claude_api_key, claude_model, copilot_api_key, copilot_endpoint,
+	       copilot_deployment, ollama_model, preferred_provider, metadata,
+	       updated_at, created_at
 	FROM user_ai_tokens
 	WHERE user_email = ?
 	`
@@ -136,11 +170,15 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	err := row.Scan(
 		&tokens.UserEmail,
 		&tokens.GeminiAPIKey,
+		&tokens.GeminiModel,
 		&tokens.OpenAIAPIKey,
+		&tokens.OpenAIModel,
 		&tokens.ClaudeAPIKey,
+		&tokens.ClaudeModel,
 		&tokens.CopilotAPIKey,
 		&tokens.CopilotEndpoint,
 		&tokens.CopilotDeployment,
+		&tokens.OllamaModel,
 		&tokens.PreferredProvider,
 		&metadataJSON,
 		&tokens.UpdatedAt,

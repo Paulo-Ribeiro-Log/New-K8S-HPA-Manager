@@ -18,11 +18,28 @@ import { apiClient } from "@/lib/api/client";
 
 interface TokenStatus {
   has_gemini: boolean;
+  gemini_model?: string;
   has_openai: boolean;
+  openai_model?: string;
   has_claude: boolean;
+  claude_model?: string;
   has_copilot: boolean;
+  copilot_deployment?: string;
+  ollama_model?: string;
   preferred_provider: string;
   updated_at?: string;
+}
+
+interface ModelInfo {
+  id: string;
+  name: string;
+  description?: string;
+  is_default: boolean;
+}
+
+interface ModelsResponse {
+  provider: string;
+  models: ModelInfo[];
 }
 
 export function AISettingsTab() {
@@ -34,12 +51,23 @@ export function AISettingsTab() {
 
   // Form state
   const [geminiKey, setGeminiKey] = useState("");
+  const [geminiModel, setGeminiModel] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
+  const [openaiModel, setOpenaiModel] = useState("");
   const [claudeKey, setClaudeKey] = useState("");
+  const [claudeModel, setClaudeModel] = useState("");
   const [copilotKey, setCopilotKey] = useState("");
   const [copilotEndpoint, setCopilotEndpoint] = useState("");
   const [copilotDeployment, setCopilotDeployment] = useState("");
+  const [ollamaModel, setOllamaModel] = useState("");
   const [preferredProvider, setPreferredProvider] = useState("ollama");
+
+  // Available models per provider
+  const [geminiModels, setGeminiModels] = useState<ModelInfo[]>([]);
+  const [claudeModels, setClaudeModels] = useState<ModelInfo[]>([]);
+  const [openaiModels, setOpenaiModels] = useState<ModelInfo[]>([]);
+  const [ollamaModels, setOllamaModels] = useState<ModelInfo[]>([]);
+  const [copilotModels, setCopilotModels] = useState<ModelInfo[]>([]);
 
   // Visibility state
   const [showGemini, setShowGemini] = useState(false);
@@ -55,6 +83,7 @@ export function AISettingsTab() {
 
   useEffect(() => {
     loadTokenStatus();
+    loadAvailableModels();
   }, []);
 
   const loadTokenStatus = async () => {
@@ -62,7 +91,14 @@ export function AISettingsTab() {
     try {
       const response = await apiClient.getAITokens();
       setTokenStatus(response);
-      setPreferredProvider(response.preferred_provider || "gemini");
+      setPreferredProvider(response.preferred_provider || "ollama");
+
+      // Carregar modelos salvos
+      if (response.gemini_model) setGeminiModel(response.gemini_model);
+      if (response.claude_model) setClaudeModel(response.claude_model);
+      if (response.openai_model) setOpenaiModel(response.openai_model);
+      if (response.ollama_model) setOllamaModel(response.ollama_model);
+      if (response.copilot_deployment) setCopilotDeployment(response.copilot_deployment);
     } catch (error) {
       console.error("Failed to load token status:", error);
       toast({
@@ -72,6 +108,49 @@ export function AISettingsTab() {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadAvailableModels = async () => {
+    try {
+      // Carregar modelos de todos os providers em paralelo
+      const [gemini, claude, openai, ollama, copilot] = await Promise.all([
+        apiClient.getAvailableModels("gemini"),
+        apiClient.getAvailableModels("claude"),
+        apiClient.getAvailableModels("openai"),
+        apiClient.getAvailableModels("ollama"),
+        apiClient.getAvailableModels("copilot"),
+      ]);
+
+      setGeminiModels(gemini.models);
+      setClaudeModels(claude.models);
+      setOpenaiModels(openai.models);
+      setOllamaModels(ollama.models);
+      setCopilotModels(copilot.models);
+
+      // Definir modelos padrão se não houver selecionado
+      if (!geminiModel && gemini.models.length > 0) {
+        const defaultModel = gemini.models.find(m => m.is_default);
+        if (defaultModel) setGeminiModel(defaultModel.id);
+      }
+      if (!claudeModel && claude.models.length > 0) {
+        const defaultModel = claude.models.find(m => m.is_default);
+        if (defaultModel) setClaudeModel(defaultModel.id);
+      }
+      if (!openaiModel && openai.models.length > 0) {
+        const defaultModel = openai.models.find(m => m.is_default);
+        if (defaultModel) setOpenaiModel(defaultModel.id);
+      }
+      if (!ollamaModel && ollama.models.length > 0) {
+        const defaultModel = ollama.models.find(m => m.is_default);
+        if (defaultModel) setOllamaModel(defaultModel.id);
+      }
+      if (!copilotDeployment && copilot.models.length > 0) {
+        const defaultModel = copilot.models.find(m => m.is_default);
+        if (defaultModel) setCopilotDeployment(defaultModel.id);
+      }
+    } catch (error) {
+      console.error("Failed to load available models:", error);
     }
   };
 
@@ -142,11 +221,15 @@ export function AISettingsTab() {
     try {
       await apiClient.saveAITokens({
         gemini_api_key: geminiKey,
+        gemini_model: geminiModel,
         openai_api_key: openaiKey,
+        openai_model: openaiModel,
         claude_api_key: claudeKey,
+        claude_model: claudeModel,
         copilot_api_key: copilotKey,
         copilot_endpoint: copilotEndpoint,
         copilot_deployment: copilotDeployment,
+        ollama_model: ollamaModel,
         preferred_provider: preferredProvider,
       });
 
@@ -319,6 +402,23 @@ export function AISettingsTab() {
                 https://aistudio.google.com/app/apikey
               </a>
             </p>
+
+            {/* Seleção de Modelo Gemini */}
+            <div className="space-y-2">
+              <Label htmlFor="gemini-model">Modelo Gemini</Label>
+              <Select value={geminiModel} onValueChange={setGeminiModel}>
+                <SelectTrigger id="gemini-model">
+                  <SelectValue placeholder="Selecione o modelo" />
+                </SelectTrigger>
+                <SelectContent>
+                  {geminiModels.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.name} {model.is_default && "(Padrão)"} {model.description && `- ${model.description}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           {/* OpenAI API Key */}
@@ -375,6 +475,23 @@ export function AISettingsTab() {
                 https://platform.openai.com/api-keys
               </a>
             </p>
+
+            {/* Seleção de Modelo OpenAI */}
+            <div className="space-y-2">
+              <Label htmlFor="openai-model">Modelo OpenAI</Label>
+              <Select value={openaiModel} onValueChange={setOpenaiModel}>
+                <SelectTrigger id="openai-model">
+                  <SelectValue placeholder="Selecione o modelo" />
+                </SelectTrigger>
+                <SelectContent>
+                  {openaiModels.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.name} {model.is_default && "(Padrão)"} {model.description && `- ${model.description}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           {/* Claude API Key */}
@@ -431,6 +548,23 @@ export function AISettingsTab() {
                 https://console.anthropic.com/settings/keys
               </a>
             </p>
+
+            {/* Seleção de Modelo Claude */}
+            <div className="space-y-2">
+              <Label htmlFor="claude-model">Modelo Claude</Label>
+              <Select value={claudeModel} onValueChange={setClaudeModel}>
+                <SelectTrigger id="claude-model">
+                  <SelectValue placeholder="Selecione o modelo" />
+                </SelectTrigger>
+                <SelectContent>
+                  {claudeModels.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.name} {model.is_default && "(Padrão)"} {model.description && `- ${model.description}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           {/* Microsoft Copilot API Key (Azure OpenAI) */}
@@ -493,20 +627,21 @@ export function AISettingsTab() {
               />
             </div>
 
-            {/* Copilot Deployment */}
+            {/* Copilot Deployment - Select Dropdown */}
             <div className="space-y-1">
-              <Label htmlFor="copilot-deployment" className="text-xs">Deployment Name</Label>
-              <Input
-                id="copilot-deployment"
-                type="text"
-                placeholder="gpt-4o (opcional, padrão: gpt-4o)"
-                value={copilotDeployment}
-                onChange={(e) => {
-                  setCopilotDeployment(e.target.value);
-                  setCopilotValid(null);
-                }}
-                className="text-sm"
-              />
+              <Label htmlFor="copilot-deployment" className="text-xs">Deployment / Modelo</Label>
+              <Select value={copilotDeployment} onValueChange={setCopilotDeployment}>
+                <SelectTrigger id="copilot-deployment" className="text-sm">
+                  <SelectValue placeholder="Selecione o deployment" />
+                </SelectTrigger>
+                <SelectContent>
+                  {copilotModels.map((model) => (
+                    <SelectItem key={model.id} value={model.id} className="text-sm">
+                      {model.name} {model.is_default && "(Padrão)"} {model.description && `- ${model.description}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <p className="text-xs text-muted-foreground">
@@ -518,6 +653,38 @@ export function AISettingsTab() {
                 className="text-blue-500 hover:underline"
               >
                 Azure Portal - OpenAI
+              </a>
+            </p>
+          </div>
+
+          <Separator />
+
+          {/* Ollama Model Selection */}
+          <div className="space-y-2">
+            <Label htmlFor="ollama-model" className="flex items-center gap-2">
+              Modelo Ollama (Local)
+            </Label>
+            <Select value={ollamaModel} onValueChange={setOllamaModel}>
+              <SelectTrigger id="ollama-model">
+                <SelectValue placeholder="Selecione o modelo Ollama" />
+              </SelectTrigger>
+              <SelectContent>
+                {ollamaModels.map((model) => (
+                  <SelectItem key={model.id} value={model.id}>
+                    {model.name} {model.is_default && "(Padrão)"} {model.description && `- ${model.description}`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Ollama roda localmente (grátis). Instale em:{" "}
+              <a
+                href="https://ollama.com/download"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-500 hover:underline"
+              >
+                https://ollama.com/download
               </a>
             </p>
           </div>

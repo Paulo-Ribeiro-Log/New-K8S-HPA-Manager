@@ -1456,8 +1456,14 @@ class APIClient {
    */
   async getAITokens(): Promise<{
     has_gemini: boolean;
+    gemini_model?: string;
     has_openai: boolean;
+    openai_model?: string;
     has_claude: boolean;
+    claude_model?: string;
+    has_copilot: boolean;
+    copilot_deployment?: string;
+    ollama_model?: string;
     preferred_provider: string;
     updated_at?: string;
   }> {
@@ -1469,11 +1475,15 @@ class APIClient {
    */
   async saveAITokens(tokens: {
     gemini_api_key?: string;
+    gemini_model?: string;
     openai_api_key?: string;
+    openai_model?: string;
     claude_api_key?: string;
+    claude_model?: string;
     copilot_api_key?: string;
     copilot_endpoint?: string;
     copilot_deployment?: string;
+    ollama_model?: string;
     preferred_provider: string;
   }): Promise<{ success: boolean; message: string }> {
     return this.request(`/ai/tokens`, {
@@ -1508,6 +1518,21 @@ class APIClient {
       method: "POST",
       body: JSON.stringify(body),
     });
+  }
+
+  /**
+   * Get available models for a specific AI provider
+   */
+  async getAvailableModels(provider: string): Promise<{
+    provider: string;
+    models: Array<{
+      id: string;
+      name: string;
+      description?: string;
+      is_default: boolean;
+    }>;
+  }> {
+    return this.request(`/ai/models?provider=${provider}`);
   }
 }
 
