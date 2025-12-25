@@ -28,6 +28,7 @@ import ResourceGauge from "@/components/ResourceGauge";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useAIDiagnostics } from "@/hooks/useAIDiagnostics";
+import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { createTwoFilesPatch } from "diff";
 import { html } from "diff2html";
 import * as yaml from "js-yaml";
@@ -53,10 +54,16 @@ export const PodsPanel = ({
   onToggleSystemNamespaces,
 }: PodsPanelProps) => {
   const { analyzeResource, isAnalyzing } = useAIDiagnostics();
-  const [searchQuery, setSearchQuery] = useState("");
+
+  // ✅ Estados com persistência entre trocas de aba
+  const [searchQuery, setSearchQuery] = usePersistedTabState<string>('pods', 'searchQuery', "");
+  const [selectedPod, setSelectedPod] = usePersistedTabState<PodSummary | null>('pods', 'selectedPod', null);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = usePersistedTabState<boolean>('pods', 'isSidebarCollapsed', false);
+  const [expandedLabels, setExpandedLabels] = usePersistedTabState<boolean>('pods', 'expandedLabels', false);
+
+  // Estados locais (não persistidos)
   const [pods, setPods] = useState<PodSummary[]>([]);
   const [loading, setLoading] = useState(false);
-  const [selectedPod, setSelectedPod] = useState<PodSummary | null>(null);
   const [podYaml, setPodYaml] = useState("");
   const [yamlLoading, setYamlLoading] = useState(false);
   const [podLogs, setPodLogs] = useState<Record<string, string>>({});
@@ -65,11 +72,9 @@ export const PodsPanel = ({
   const [deletingPod, setDeletingPod] = useState<PodSummary | null>(null);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const [restartingPod, setRestartingPod] = useState<PodSummary | null>(null);
-  const [expandedLabels, setExpandedLabels] = useState(false);
   const [yamlCopied, setYamlCopied] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [selectedContainerForLogs, setSelectedContainerForLogs] = useState<string>("");
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isAutoRefreshingLogs, setIsAutoRefreshingLogs] = useState(false);
   const [describeModalOpen, setDescribeModalOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");

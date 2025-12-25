@@ -28,6 +28,7 @@ import "@/styles/diff2html-dark.css";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProtectedAction } from "@/components/rbac";
+import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 
 interface DeploymentsTabProps {
   cluster: string;
@@ -46,17 +47,20 @@ export const DeploymentsTab = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
 }: DeploymentsTabProps) => {
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedDeployment, setSelectedDeployment] = useState<DeploymentSummary | null>(null);
+  // ✅ Estados com persistência entre trocas de aba
+  const [searchQuery, setSearchQuery] = usePersistedTabState<string>('deployments', 'searchQuery', "");
+  const [selectedDeployment, setSelectedDeployment] = usePersistedTabState<DeploymentSummary | null>('deployments', 'selectedDeployment', null);
+  const [showLabels, setShowLabels] = usePersistedTabState<boolean>('deployments', 'showLabels', false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = usePersistedTabState<boolean>('deployments', 'isSidebarCollapsed', false);
+  const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">('deployments', 'viewMode', "editor");
+
+  // Estados locais (não persistidos)
   const [manifest, setManifest] = useState<DeploymentManifest | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
   const [editorValue, setEditorValue] = useState("");
   const [originalYaml, setOriginalYaml] = useState("");
-  const [viewMode, setViewMode] = useState<"editor" | "diff">("editor");
   const [isValidating, setIsValidating] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
-  const [showLabels, setShowLabels] = useState(false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [diffModalOpen, setDiffModalOpen] = useState(false);
   const [diffHtml, setDiffHtml] = useState("");
   const [isDiffLoading, setIsDiffLoading] = useState(false);
