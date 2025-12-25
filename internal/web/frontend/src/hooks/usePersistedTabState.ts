@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useTabManager } from "@/contexts/TabContext";
 
 /**
@@ -21,6 +21,7 @@ export function usePersistedTabState<T>(
   initialValue: T
 ): [T, (value: T | ((prev: T) => T)) => void] {
   const { updateActiveTabState, getActiveTab } = useTabManager();
+  const isRestoringRef = useRef(false);
 
   // Tentar restaurar valor salvo do TabContext
   const getSavedValue = useCallback((): T => {
@@ -34,8 +35,27 @@ export function usePersistedTabState<T>(
   // Estado local (inicializado com valor salvo ou inicial)
   const [state, setState] = useState<T>(getSavedValue);
 
+  // ✅ RESTAURAR estado quando componente monta (ao voltar para a aba)
+  useEffect(() => {
+    const savedValue = getSavedValue();
+
+    // Só restaurar se houver valor salvo diferente do inicial
+    if (savedValue !== initialValue || savedValue !== state) {
+      isRestoringRef.current = true;
+      setState(savedValue);
+
+      // Reset flag após restauração
+      setTimeout(() => {
+        isRestoringRef.current = false;
+      }, 0);
+    }
+  }, [namespace, key]); // Só roda quando namespace/key mudam (montagem do componente)
+
   // Persistir no TabContext sempre que o estado mudar
   useEffect(() => {
+    // Não persistir durante restauração (evita sobrescrever com valor antigo)
+    if (isRestoringRef.current) return;
+
     const activeTab = getActiveTab();
     const currentWorkloadStates = activeTab?.pageState?.workloadStates || {};
 
