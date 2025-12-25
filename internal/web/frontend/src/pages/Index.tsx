@@ -79,9 +79,16 @@ interface IndexProps {
 const Index = ({ onLogout }: IndexProps) => {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [selectedCluster, setSelectedCluster] = useState("");
-  const [selectedNamespace, setSelectedNamespace] = useState("");
+  const [selectedNamespace, setSelectedNamespace] = useState(""); // Namespace global (HPAs, Namespaces tab)
   const [selectedHPA, setSelectedHPA] = useState<HPA | null>(null);
   const [selectedNodePool, setSelectedNodePool] = useState<NodePool | null>(null);
+
+  // 🔄 Namespace independente por aba workload (evita interferência ao trocar namespaces em outras abas)
+  const [podsNamespace, setPodsNamespace] = useState("");
+  const [configMapsNamespace, setConfigMapsNamespace] = useState("");
+  const [deploymentsNamespace, setDeploymentsNamespace] = useState("");
+  const [secretsNamespace, setSecretsNamespace] = useState("");
+  const [containersNamespace, setContainersNamespace] = useState("");
   const [showApplyModal, setShowApplyModal] = useState(false);
   const [hpasToApply, setHpasToApply] = useState<Array<{ key: string; current: HPA; original: HPA }>>([]);
   const [showNodePoolApplyModal, setShowNodePoolApplyModal] = useState(false);
@@ -1063,8 +1070,8 @@ const Index = ({ onLogout }: IndexProps) => {
               <PodsPanel
                 cluster={selectedCluster}
                 namespaces={namespaces}
-                selectedNamespace={selectedNamespace}
-                onNamespaceChange={setSelectedNamespace}
+                selectedNamespace={podsNamespace}
+                onNamespaceChange={setPodsNamespace}
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
               />
@@ -1078,8 +1085,8 @@ const Index = ({ onLogout }: IndexProps) => {
             <ConfigMapsTab
               cluster={selectedCluster}
               namespaces={namespaces}
-              selectedNamespace={selectedNamespace}
-              onNamespaceChange={setSelectedNamespace}
+              selectedNamespace={configMapsNamespace}
+              onNamespaceChange={setConfigMapsNamespace}
               showSystemNamespaces={showSystemNamespaces}
               onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
             />
@@ -1093,8 +1100,8 @@ const Index = ({ onLogout }: IndexProps) => {
               <DeploymentsTab
                 cluster={selectedCluster}
                 namespaces={namespaces}
-                selectedNamespace={selectedNamespace}
-                onNamespaceChange={setSelectedNamespace}
+                selectedNamespace={deploymentsNamespace}
+                onNamespaceChange={setDeploymentsNamespace}
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
               />
@@ -1109,8 +1116,8 @@ const Index = ({ onLogout }: IndexProps) => {
               <SecretsTab
                 cluster={selectedCluster}
                 namespaces={namespaces}
-                selectedNamespace={selectedNamespace}
-                onNamespaceChange={setSelectedNamespace}
+                selectedNamespace={secretsNamespace}
+                onNamespaceChange={setSecretsNamespace}
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
               />
@@ -1125,8 +1132,8 @@ const Index = ({ onLogout }: IndexProps) => {
               <ContainersTab
                 cluster={selectedCluster}
                 namespaces={namespaces}
-                selectedNamespace={selectedNamespace}
-                onNamespaceChange={setSelectedNamespace}
+                selectedNamespace={containersNamespace}
+                onNamespaceChange={setContainersNamespace}
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
               />
