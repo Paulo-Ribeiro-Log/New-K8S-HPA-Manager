@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -45,9 +44,7 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 }
 
 // ExecuteHealthCheck executa health check em um ou mais clusters
-func (o *Orchestrator) ExecuteHealthCheck(ctx context.Context, req HealthCheckRequest) ([]*HealthCheckResult, error) {
-	sessionID := uuid.New().String()
-
+func (o *Orchestrator) ExecuteHealthCheck(ctx context.Context, sessionID string, req HealthCheckRequest) ([]*HealthCheckResult, error) {
 	// Resolver clusters baseado em Environment ou Clusters
 	clusters, err := o.resolveClusters(req)
 	if err != nil {
@@ -328,8 +325,8 @@ func (o *Orchestrator) publishProgress(sessionID, cluster, phase, message string
 		Timestamp: time.Now(),
 	}
 
-	// Publicar via ProgressTracker
-	o.progressTracker.Broadcast(event)
+	// Publicar para a sessão específica (não broadcast)
+	o.progressTracker.SendToClient(sessionID, event)
 }
 
 // GetHistory retorna histórico de health checks

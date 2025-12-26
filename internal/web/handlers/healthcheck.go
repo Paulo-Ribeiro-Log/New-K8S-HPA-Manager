@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/healthcheck"
@@ -71,9 +72,19 @@ func (h *HealthCheckHandler) Run(c *gin.Context) {
 			Int("clusters", len(req.Clusters)).
 			Msg("Starting health check")
 
-		results, err := h.orchestrator.ExecuteHealthCheck(ctx, req)
+		results, err := h.orchestrator.ExecuteHealthCheck(ctx, sessionID, req)
 		if err != nil {
 			log.Error().Err(err).Str("session_id", sessionID).Msg("Health check failed")
+
+			// Publicar evento de erro via SSE
+			h.tracker.SendToClient(sessionID, sse.ProgressEvent{
+				ID:        sessionID,
+				Type:      "error",
+				Phase:     "failed",
+				Message:   fmt.Sprintf("Health check failed: %v", err),
+				Progress:  0,
+				Timestamp: time.Now(),
+			})
 			return
 		}
 
