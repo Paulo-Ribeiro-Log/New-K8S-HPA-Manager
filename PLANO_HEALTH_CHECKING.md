@@ -4,7 +4,7 @@
 **Data Atualização:** 26/12/2025
 **Versão:** v1.4.0
 **Estimativa:** 5 dias de implementação
-**Status:** ✅ Dia 1-4 Completos (Backend + Frontend 90%) | ⏸️ Aguardando Dia 5 (Export + AI)
+**Status:** ✅ Dia 1-4 COMPLETOS (Backend + Frontend 100% FUNCIONAL!) | 📦 Pronto para uso!
 
 ---
 
@@ -1569,11 +1569,14 @@ go get github.com/streadway/amqp
 - [x] Criar `HealthCheckProgressModal.tsx` - 160+ linhas (modal SSE)
 - [x] Criar `HealthCheckResultsPanel.tsx` - 140+ linhas (tabs deployments/services/configs)
 - [x] Criar `HealthCheckCard.tsx` - 200+ linhas (card individual com sugestões)
+- [x] Registrar aba no Index.tsx (import, tabs array, renderização, lazy loading)
+- [x] Build frontend + deploy em static/
 - [x] Commit 1: "feat: adiciona tipos TypeScript e API client para health checking" (ed558b2)
 - [x] Commit 2: "feat: adiciona hooks customizados para health checking" (03f0943)
 - [x] Commit 3: "feat: adiciona componentes React para Health Checking" (2ea8250)
-- [ ] Registrar aba no ClusterTabs.tsx (próximo passo)
+- [x] Commit 4: "feat: registra aba Health Checking na interface web" (27030b7)
 - [x] **EXTRA**: Proteção RBAC integrada (ProtectedAction no botão run)
+- [x] **EXTRA**: Lazy loading com hasBeenMounted (performance)
 
 **Dia 5: Refinamentos + Export + AI Integration**
 - [ ] Adicionar filtros por status
