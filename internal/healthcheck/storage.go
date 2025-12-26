@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -268,6 +269,101 @@ func (s *HealthCheckStorage) DeleteOlderThan(ctx context.Context, before time.Ti
 		Msg("Deleted old health check results")
 
 	return rowsAffected, nil
+}
+
+// Delete deleta um resultado específico
+func (s *HealthCheckStorage) Delete(ctx context.Context, resultID string) error {
+	query := "DELETE FROM health_check_results WHERE id = ?"
+
+	result, err := s.db.ExecContext(ctx, query, resultID)
+	if err != nil {
+		return fmt.Errorf("failed to delete result: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("health check result not found: %s", resultID)
+	}
+
+	log.Info().Str("result_id", resultID).Msg("Deleted health check result")
+
+	return nil
+}
+
+// GetStats retorna estatísticas agregadas de health checks
+func (s *HealthCheckStorage) GetStats(ctx context.Context, cluster, daysStr string) (map[string]interface{}, error) {
+	days := 7 // Default 7 dias
+	if daysStr != "" {
+		if d, err := strconv.Atoi(daysStr); err == nil && d > 0 {
+			days = d
+		}
+	}
+
+	since := time.Now().AddDate(0, 0, -days)
+
+	query := `
+		SELECT
+			COUNT(*) as total_runs,
+			SUM(total_checks) as total_checks,
+			SUM(healthy_count) as total_healthy,
+			SUM(warning_count) as total_warnings,
+			SUM(critical_count) as total_critical,
+			AVG(duration_ms) as avg_duration_ms,
+			COUNT(CASE WHEN overall_status = 'healthy' THEN 1 END) as healthy_runs,
+			COUNT(CASE WHEN overall_status = 'warning' THEN 1 END) as warning_runs,
+			COUNT(CASE WHEN overall_status = 'critical' THEN 1 END) as critical_runs
+		FROM health_check_results
+		WHERE started_at >= ?
+	`
+
+	args := []interface{}{since}
+
+	if cluster != "" {
+		query += " AND cluster = ?"
+		args = append(args, cluster)
+	}
+
+	var stats struct {
+		TotalRuns      int
+		TotalChecks    int
+		TotalHealthy   int
+		TotalWarnings  int
+		TotalCritical  int
+		AvgDurationMs  float64
+		HealthyRuns    int
+		WarningRuns    int
+		CriticalRuns   int
+	}
+
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(
+		&stats.TotalRuns,
+		&stats.TotalChecks,
+		&stats.TotalHealthy,
+		&stats.TotalWarnings,
+		&stats.TotalCritical,
+		&stats.AvgDurationMs,
+		&stats.HealthyRuns,
+		&stats.WarningRuns,
+		&stats.CriticalRuns,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to query stats: %w", err)
+	}
+
+	return map[string]interface{}{
+		"total_runs":       stats.TotalRuns,
+		"total_checks":     stats.TotalChecks,
+		"total_healthy":    stats.TotalHealthy,
+		"total_warnings":   stats.TotalWarnings,
+		"total_critical":   stats.TotalCritical,
+		"avg_duration_ms":  stats.AvgDurationMs,
+		"healthy_runs":     stats.HealthyRuns,
+		"warning_runs":     stats.WarningRuns,
+		"critical_runs":    stats.CriticalRuns,
+		"days":             days,
+		"since":            since,
+	}, nil
 }
 
 // Close fecha a conexão com o banco
