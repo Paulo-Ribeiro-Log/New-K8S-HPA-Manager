@@ -19,12 +19,6 @@ import {
   Play,
   Loader2,
   RefreshCcw,
-  PanelLeftClose,
-  PanelLeftOpen,
-  CheckCircle2,
-  AlertCircle,
-  XCircle,
-  Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useHealthChecking } from "@/hooks/useHealthChecking";
@@ -45,7 +39,12 @@ export const HealthCheckingTab = ({
   namespaces,
   onRefresh,
 }: HealthCheckingTabProps) => {
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  // Debug logs
+  console.log("[HealthCheckingTab] Rendered with:", {
+    cluster,
+    namespacesCount: namespaces?.length || 0,
+    namespaces: namespaces,
+  });
 
   // Health Check State
   const {
@@ -129,29 +128,11 @@ export const HealthCheckingTab = ({
   return (
     <>
       <SplitView
-        leftPanel={
-          <div className="h-full flex flex-col">
-            {/* Header */}
-            <div className="flex items-center justify-between p-4 border-b">
-              <div className="flex items-center gap-2">
-                <Activity className="h-5 w-5 text-blue-600" />
-                <h2 className="text-lg font-semibold">Health Check Configuration</h2>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-              >
-                {isSidebarCollapsed ? (
-                  <PanelLeftOpen className="h-4 w-4" />
-                ) : (
-                  <PanelLeftClose className="h-4 w-4" />
-                )}
-              </Button>
-            </div>
-
-            <ScrollArea className="flex-1">
-              <div className="p-4 space-y-6">
+        leftPanel={{
+          title: "Health Check Configuration",
+          content: (
+            <ScrollArea className="h-full">
+              <div className="space-y-4">
                 {/* Cluster Info */}
                 <Card>
                   <CardHeader className="pb-3">
@@ -229,21 +210,27 @@ export const HealthCheckingTab = ({
                       />
                       <ScrollArea className="h-48">
                         <div className="space-y-2">
-                          {filteredNamespaces.map((ns) => (
-                            <div key={ns.name} className="flex items-center gap-2">
-                              <Checkbox
-                                id={`ns-${ns.name}`}
-                                checked={selectedNamespaces.includes(ns.name)}
-                                onCheckedChange={() => toggleNamespace(ns.name)}
-                              />
-                              <Label
-                                htmlFor={`ns-${ns.name}`}
-                                className="text-sm cursor-pointer"
-                              >
-                                {ns.name}
-                              </Label>
+                          {filteredNamespaces.length === 0 ? (
+                            <div className="text-center py-4 text-sm text-muted-foreground">
+                              {!cluster ? "Selecione um cluster primeiro" : "Nenhum namespace encontrado"}
                             </div>
-                          ))}
+                          ) : (
+                            filteredNamespaces.map((ns) => (
+                              <div key={ns.name} className="flex items-center gap-2">
+                                <Checkbox
+                                  id={`ns-${ns.name}`}
+                                  checked={selectedNamespaces.includes(ns.name)}
+                                  onCheckedChange={() => toggleNamespace(ns.name)}
+                                />
+                                <Label
+                                  htmlFor={`ns-${ns.name}`}
+                                  className="text-sm cursor-pointer"
+                                >
+                                  {ns.name}
+                                </Label>
+                              </div>
+                            ))
+                          )}
                         </div>
                       </ScrollArea>
                     </div>
@@ -339,20 +326,17 @@ export const HealthCheckingTab = ({
                 </ProtectedAction>
               </div>
             </ScrollArea>
-          </div>
-        }
-        rightPanel={
-          <div className="h-full flex flex-col">
-            {/* Header */}
-            <div className="flex items-center justify-between p-4 border-b">
-              <h2 className="text-lg font-semibold">Resultados</h2>
-              <Button variant="ghost" size="sm" onClick={onRefresh}>
-                <RefreshCcw className="h-4 w-4" />
-              </Button>
-            </div>
-
-            {/* Content */}
-            <ScrollArea className="flex-1">
+          ),
+        }}
+        rightPanel={{
+          title: "Resultados",
+          titleAction: (
+            <Button variant="ghost" size="sm" onClick={onRefresh}>
+              <RefreshCcw className="h-4 w-4" />
+            </Button>
+          ),
+          content: (
+            <ScrollArea className="h-full">
               {!isRunning && results.length === 0 && (
                 <div className="flex flex-col items-center justify-center h-full text-center p-8">
                   <Activity className="h-16 w-16 text-muted-foreground opacity-50 mb-4" />
@@ -369,10 +353,8 @@ export const HealthCheckingTab = ({
                 <HealthCheckResultsPanel results={results} />
               )}
             </ScrollArea>
-          </div>
-        }
-        isLeftCollapsed={isSidebarCollapsed}
-        onLeftCollapse={setIsSidebarCollapsed}
+          ),
+        }}
       />
 
       {/* Progress Modal */}
