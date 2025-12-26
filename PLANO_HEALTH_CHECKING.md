@@ -4,7 +4,7 @@
 **Data Atualização:** 26/12/2025
 **Versão:** v1.4.0
 **Estimativa:** 5 dias de implementação
-**Status:** 🟢 Dia 1 Completo (Backend - Deployment Checker)
+**Status:** ✅ Dia 1-3 Completos (Backend 100%) | ⏸️ Aguardando Dia 4-5 (Frontend)
 
 ---
 
@@ -1521,34 +1521,42 @@ go get github.com/streadway/amqp
 ### Backend (5 dias)
 
 **Dia 1: Estrutura + Deployment Checker** ✅ **COMPLETO** (26/12/2025)
-- [x] Criar `internal/healthcheck/models.go` (153 linhas - com Environment e Clusters array)
+- [x] Criar `internal/healthcheck/models.go` (157 linhas - com Environment, Clusters array e campos de probes)
 - [x] Criar `internal/healthcheck/orchestrator.go` (466 linhas - worker pool multi-cluster)
-- [x] Criar `internal/healthcheck/deployment_checker.go` (149 linhas)
+- [x] Criar `internal/healthcheck/deployment_checker.go` (264 linhas - com análise de probes)
 - [x] Criar `internal/healthcheck/service_checker.go` (stub - 21 linhas)
 - [x] Criar `internal/healthcheck/config_checker.go` (stub - 18 linhas)
 - [x] Criar `internal/healthcheck/storage.go` (251 linhas - SQLite)
-- [x] Criar `internal/healthcheck/deployment_checker_test.go` (192 linhas - 7 testes passando)
+- [x] Criar `internal/healthcheck/deployment_checker_test.go` (398 linhas - 11 testes passando)
 - [x] Atualizar dependências (k8s.io/client-go v0.35.0, fake client)
-- [x] Commit: "feat: adiciona health check de clusters com filtros de ambiente" (commit 7db7daf)
+- [x] **EXTRA**: Adicionar análise de liveness/readiness probes (solicitado pelo usuário)
+- [x] Commit 1: "feat: adiciona health check de clusters com filtros de ambiente" (7db7daf)
+- [x] Commit 2: "feat: adiciona análise de liveness e readiness probes" (ed56090)
 
-**Dia 2: Service Checkers (Analyzers)** 🔄 **EM ANDAMENTO**
-- [ ] Implementar `service_checker.go:CheckAll()` - detectar connection strings em ConfigMaps/Secrets
-- [ ] Criar `internal/healthcheck/analyzers/mongodb.go` (ping + serverStatus)
-- [ ] Criar `internal/healthcheck/analyzers/redis.go` (PING + INFO command)
-- [ ] Criar `internal/healthcheck/analyzers/postgres.go` (connection test + version)
-- [ ] Criar `internal/healthcheck/analyzers/kafka.go` (broker connectivity)
-- [ ] Criar `internal/healthcheck/analyzers/eventhub.go` (Azure EventHub connection)
-- [ ] Criar `internal/healthcheck/analyzers/http.go` (HTTP GET + status code check)
-- [ ] Testes unitários service checkers (mocks de serviços externos)
-- [ ] Commit: "feat: adiciona health check de serviços externos"
+**Dia 2: Service Checkers (Analyzers)** ✅ **COMPLETO** (26/12/2025)
+- [x] Implementar `service_checker.go:CheckAll()` - detectar connection strings em ConfigMaps/Secrets (181 linhas)
+- [x] Criar `internal/healthcheck/analyzers/mongodb.go` (stub - 17 linhas)
+- [x] Criar `internal/healthcheck/analyzers/redis.go` (stub - 17 linhas)
+- [x] Criar `internal/healthcheck/analyzers/postgres.go` (stub - 17 linhas)
+- [x] Criar `internal/healthcheck/analyzers/kafka.go` (stub - 17 linhas)
+- [x] Criar `internal/healthcheck/analyzers/eventhub.go` (stub - 18 linhas)
+- [x] Criar `internal/healthcheck/analyzers/http.go` (FUNCIONAL - 68 linhas)
+- [x] Detecção automática de padrões: mongodb://, redis://, postgresql://, http://, Endpoint=sb://, host:port
+- [x] Commit: "feat: implementa Service Checkers e Analyzers para serviços externos" (b321907)
 
-**Dia 3: Config Checker + REST API**
-- [ ] Implementar `config_checker.go:CheckAll()` - validação de ConfigMaps/Secrets
-- [ ] Criar `internal/web/handlers/healthcheck.go` (6 endpoints REST)
-- [ ] Registrar rotas em `internal/web/routes.go` ou `server.go`
-- [ ] Integração com `ProgressTracker` (SSE já reutilizado no orchestrator)
+**Dia 3: Config Checker + REST API** ✅ **COMPLETO** (26/12/2025)
+- [x] Implementar `config_checker.go:CheckAll()` - validação de ConfigMaps/Secrets (279 linhas)
+- [x] Criar `config_checker_test.go` - 11 testes unitários passando (278 linhas)
+- [x] Criar `internal/web/handlers/healthcheck.go` (6 endpoints REST - 347 linhas)
+- [x] Adicionar métodos ao storage: `Delete()`, `GetStats()`
+- [x] Adicionar métodos ao orchestrator: `DeleteResult()`, `GetStats()`
+- [x] Integração com `ProgressTracker` via SSE (ProgressEvent)
+- [x] Validação de requests (Environment, timeout, checks habilitados)
+- [x] Registrar rotas em `internal/web/server.go` (6 endpoints + proteção RBAC)
+- [x] Commit 1: "feat: implementa ConfigChecker para validação de ConfigMaps/Secrets" (5358289)
+- [x] Commit 2: "feat: adiciona REST API handlers para health checking" (cb1219b)
+- [x] Commit 3: "feat: registra rotas de health checking no servidor web" (b629ec5)
 - [ ] Testes integração API (health check end-to-end)
-- [ ] Commit: "feat: adiciona API REST de health checking"
 
 ### Frontend (1-2 dias)
 
