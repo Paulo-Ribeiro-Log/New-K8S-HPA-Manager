@@ -1153,11 +1153,7 @@ const Index = ({ onLogout }: IndexProps) => {
         <div style={{ display: activeTab === "healthcheck" ? "block" : "none", height: "100%" }}>
           {(activeTab === "healthcheck" || hasBeenMounted.current.healthcheck) && (
             <ErrorBoundary componentName="Health Checking Tab">
-              <HealthCheckingTab
-                cluster={selectedCluster}
-                namespaces={namespaces}
-                onRefresh={refetchNamespaces}
-              />
+              <HealthCheckingTab />
             </ErrorBoundary>
           )}
         </div>
