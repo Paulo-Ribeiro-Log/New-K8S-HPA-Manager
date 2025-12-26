@@ -1,10 +1,10 @@
 # Plano de Implementação: Health Checking Completo para Clusters AKS
 
 **Data Início:** 25/12/2025
-**Data Atualização:** 26/12/2025
+**Data Atualização:** 26/12/2025 17:35
 **Versão:** v1.4.0
 **Estimativa:** 5 dias de implementação
-**Status:** ✅ Dia 1-4 COMPLETOS (Backend + Frontend 100% FUNCIONAL!) | 📦 Pronto para uso!
+**Status:** ✅ Dia 1-4 COMPLETOS + BUG FIX (Backend + Frontend 100% FUNCIONAL!) | 🚀 PRONTO PARA TESTES!
 
 ---
 
@@ -1575,6 +1575,12 @@ go get github.com/streadway/amqp
 - [x] Commit 2: "feat: adiciona hooks customizados para health checking" (03f0943)
 - [x] Commit 3: "feat: adiciona componentes React para Health Checking" (2ea8250)
 - [x] Commit 4: "feat: registra aba Health Checking na interface web" (27030b7)
+- [x] **BUG FIX**: Corrigido `loadNamespaces` → `refetchNamespaces` em Index.tsx (0681b86)
+  - **Sintoma**: Tela ficava totalmente vazia ao clicar no botão Health Checking
+  - **Causa**: Função inexistente `loadNamespaces` passada para prop `onRefresh`
+  - **Solução**: Usar `refetchNamespaces` do hook useNamespaces (linha 278)
+  - **Arquivo**: `internal/web/frontend/src/pages/Index.tsx` linha 1159
+  - **Status**: Frontend rebuilded e deployado para static/
 - [x] **EXTRA**: Proteção RBAC integrada (ProtectedAction no botão run)
 - [x] **EXTRA**: Lazy loading com hasBeenMounted (performance)
 
