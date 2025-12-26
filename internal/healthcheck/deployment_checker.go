@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -137,9 +139,12 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 			health.Suggestions = append(health.Suggestions, "Validar ImagePullSecrets")
 			return health
 		}
+
+		// 5. Analisar Liveness e Readiness Probes
+		c.analyzeProbes(deployment, pods.Items, &health)
 	}
 
-	// 5. Verificar condições do deployment
+	// 6. Verificar condições do deployment
 	for _, condition := range deployment.Status.Conditions {
 		if condition.Type == "Progressing" && condition.Status == "False" {
 			health.Status = StatusWarning
@@ -156,11 +161,105 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 		}
 	}
 
-	// 6. Se nenhum problema detectado
+	// 7. Se nenhum problema detectado
 	if health.Status == "" {
 		health.Status = StatusHealthy
 		health.Message = "Deployment saudável"
 	}
 
 	return health
+}
+
+// analyzeProbes verifica se deployment tem probes configurados e se estão falhando
+func (c *DeploymentChecker) analyzeProbes(deployment *appsv1.Deployment, pods []corev1.Pod, health *DeploymentHealth) {
+	// Verificar se deployment tem probes configurados
+	hasLiveness := false
+	hasReadiness := false
+
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		if container.LivenessProbe != nil {
+			hasLiveness = true
+		}
+		if container.ReadinessProbe != nil {
+			hasReadiness = true
+		}
+	}
+
+	health.HasLivenessProbe = hasLiveness
+	health.HasReadinessProbe = hasReadiness
+
+	// Contar falhas de probes nos pods
+	livenessFailures := 0
+	readinessFailures := 0
+
+	for _, pod := range pods {
+		// Verificar condições do pod para detectar falhas de probe
+		for _, condition := range pod.Status.Conditions {
+			// Ready=False pode indicar readiness probe falhando
+			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionFalse {
+				if condition.Reason == "ContainersNotReady" {
+					readinessFailures++
+				}
+			}
+		}
+
+		// Verificar container statuses para restarts causados por liveness probe
+		for _, cs := range pod.Status.ContainerStatuses {
+			// RestartCount alto pode indicar liveness probe matando container
+			if cs.RestartCount > 0 {
+				// Se container está em CrashLoopBackOff, já foi detectado antes
+				// Aqui detectamos restarts por liveness probe (container saudável mas restart > 0)
+				if cs.State.Running != nil || cs.State.Waiting != nil {
+					// Verificar se último término foi por unhealthy (liveness probe)
+					if cs.LastTerminationState.Terminated != nil {
+						if cs.LastTerminationState.Terminated.Reason == "Error" && cs.LastTerminationState.Terminated.ExitCode == 137 {
+							// Exit code 137 = SIGKILL (típico de liveness probe matando container)
+							livenessFailures++
+						}
+					}
+				}
+			}
+		}
+	}
+
+	health.LivenessProbeFailures = int32(livenessFailures)
+	health.ReadinessProbeFailures = int32(readinessFailures)
+
+	// Adicionar avisos se probes não estão configurados
+	if !hasLiveness && health.Status != StatusCritical {
+		if health.Status == "" {
+			health.Status = StatusWarning
+		}
+		health.Message = "Liveness probe não configurado"
+		health.Suggestions = append(health.Suggestions, "Configurar liveness probe para detectar containers travados")
+		health.Suggestions = append(health.Suggestions, "Exemplo: livenessProbe com httpGet, tcpSocket ou exec")
+	}
+
+	if !hasReadiness && health.Status != StatusCritical {
+		if health.Status == "" {
+			health.Status = StatusWarning
+		}
+		if health.Message == "Liveness probe não configurado" {
+			health.Message = "Liveness e readiness probes não configurados"
+		} else {
+			health.Message = "Readiness probe não configurado"
+		}
+		health.Suggestions = append(health.Suggestions, "Configurar readiness probe para controlar tráfego")
+		health.Suggestions = append(health.Suggestions, "Exemplo: readinessProbe com httpGet para validar app inicializada")
+	}
+
+	// Adicionar avisos se há falhas de probes
+	if readinessFailures > 0 && health.Status != StatusCritical {
+		health.Status = StatusWarning
+		health.Message = fmt.Sprintf("Readiness probe falhando em %d pods", readinessFailures)
+		health.Suggestions = append(health.Suggestions, "Verificar logs dos pods para entender falhas de readiness")
+		health.Suggestions = append(health.Suggestions, fmt.Sprintf("kubectl describe pod -n %s -l app=%s", health.Namespace, health.Name))
+	}
+
+	if livenessFailures > 0 && health.Status != StatusCritical {
+		health.Status = StatusWarning
+		health.Message = fmt.Sprintf("Liveness probe causando restarts em %d containers", livenessFailures)
+		health.Suggestions = append(health.Suggestions, "Liveness probe pode estar muito agressivo (timeout/threshold)")
+		health.Suggestions = append(health.Suggestions, "Verificar se aplicação responde dentro do timeout configurado")
+	}
 }
