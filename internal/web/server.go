@@ -17,6 +17,7 @@ import (
 
 	"k8s-hpa-manager/internal/ai"
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/healthcheck"
 	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/notifications"
@@ -672,6 +673,35 @@ func (s *Server) setupRoutes() {
 	if s.aiTokensHandler != nil {
 		s.aiTokensHandler.RegisterRoutes(api, rbacMiddleware)
 		fmt.Println("✅ AI Tokens routes registradas")
+	}
+
+	// Health Checking System
+	fmt.Println("🏥 Inicializando Health Checking System...")
+	healthCheckDBPath := filepath.Join("./build", "health_checks.db")
+	progressTracker := handlers.GetProgressTracker() // Reutilizar ProgressTracker global
+
+	healthCheckOrchestrator, err := healthcheck.NewOrchestrator(s.kubeManager, progressTracker, healthCheckDBPath)
+	if err != nil {
+		fmt.Printf("⚠️  Falha ao criar Health Check Orchestrator: %v\n", err)
+	} else {
+		// Criar handler
+		healthCheckHandler := handlers.NewHealthCheckHandler(s.kubeManager, healthCheckOrchestrator, progressTracker)
+
+		// Rotas de health checking
+		healthCheckGroup := api.Group("/healthcheck")
+		{
+			// Rotas públicas (GET)
+			healthCheckGroup.GET("/history", healthCheckHandler.History)
+			healthCheckGroup.GET("/progress", healthCheckHandler.Progress) // SSE stream
+			healthCheckGroup.GET("/stats", healthCheckHandler.Stats)
+			healthCheckGroup.GET("/:id", healthCheckHandler.Get)
+
+			// Rotas de escrita (POST, DELETE) - SRE only
+			healthCheckGroup.POST("/run", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Run)
+			healthCheckGroup.DELETE("/:id", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Delete)
+		}
+
+		fmt.Println("✅ Health Checking routes registradas")
 	}
 }
 
