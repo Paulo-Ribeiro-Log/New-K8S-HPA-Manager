@@ -1156,7 +1156,7 @@ const Index = ({ onLogout }: IndexProps) => {
               <HealthCheckingTab
                 cluster={selectedCluster}
                 namespaces={namespaces}
-                onRefresh={loadNamespaces}
+                onRefresh={refetchNamespaces}
               />
             </ErrorBoundary>
           )}
