@@ -465,3 +465,20 @@ func detectEnvironment(clusterName string) string {
 	// Se não detectar, assume produção (mais seguro mostrar tudo)
 	return "prod"
 }
+
+// DeleteResult deleta um resultado específico de health check
+func (o *Orchestrator) DeleteResult(ctx context.Context, resultID string) error {
+	log.Info().Str("result_id", resultID).Msg("Deleting health check result")
+
+	return o.storage.Delete(ctx, resultID)
+}
+
+// GetStats retorna estatísticas agregadas de health checks
+func (o *Orchestrator) GetStats(ctx context.Context, cluster, daysStr string) (map[string]interface{}, error) {
+	log.Info().
+		Str("cluster", cluster).
+		Str("days", daysStr).
+		Msg("Fetching health check stats")
+
+	return o.storage.GetStats(ctx, cluster, daysStr)
+}
