@@ -43,6 +43,7 @@ import { PrometheusPage } from "./PrometheusPage";
 import { MonitoringPage } from "./MonitoringPage";
 import { ServiceMeshGraph } from "@/components/ServiceMeshGraph";
 import { AIDiagnosticsTab } from "@/components/AIDiagnosticsTab";
+import { HealthCheckingTab } from "@/components/HealthCheckingTab";
 import {
   LayoutDashboard,
   Scale,
@@ -59,7 +60,8 @@ import {
   X,
   RefreshCcw,
   Network,
-  Brain
+  Brain,
+  Activity
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -173,11 +175,12 @@ const Index = ({ onLogout }: IndexProps) => {
     secrets: false,
     containers: false,
     ingresses: false,
+    healthcheck: false,
   });
 
   // 🔄 Marcar componente como montado quando usuário acessa a aba
   useEffect(() => {
-    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers", "ingresses"];
+    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "healthcheck"];
     if (workloadTabs.includes(activeTab as any)) {
       hasBeenMounted.current[activeTab as keyof typeof hasBeenMounted.current] = true;
     }
@@ -406,6 +409,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "staging", label: "Staging", icon: FileText, badge: staging.getChangesCount().total },
     { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
     { id: "servicemesh", label: "Service Mesh", icon: Network },
+    { id: "healthcheck", label: "Health Checking", icon: Activity },
     { id: "namespaces", label: "Namespaces", icon: Database },
     { id: "ai-diagnostics", label: "AI Diagnostics", icon: Brain },
   ];
@@ -1145,8 +1149,21 @@ const Index = ({ onLogout }: IndexProps) => {
           )}
         </div>
 
+        {/* Health Checking - sempre montado */}
+        <div style={{ display: activeTab === "healthcheck" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "healthcheck" || hasBeenMounted.current.healthcheck) && (
+            <ErrorBoundary componentName="Health Checking Tab">
+              <HealthCheckingTab
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                onRefresh={loadNamespaces}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
         {/* Outras abas - renderização condicional normal (switch/case) */}
-        {!["pods", "configmaps", "deployments", "secrets", "containers", "ingresses"].includes(activeTab) && renderTabContent()}
+        {!["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "healthcheck"].includes(activeTab) && renderTabContent()}
       </div>
 
       {/* Modal de Confirmação - HPAs */}
