@@ -4,7 +4,7 @@
 **Data Atualização:** 26/12/2025
 **Versão:** v1.4.0
 **Estimativa:** 5 dias de implementação
-**Status:** ✅ Dia 1-3 Completos (Backend 100%) | ⏸️ Aguardando Dia 4-5 (Frontend)
+**Status:** ✅ Dia 1-4 Completos (Backend + Frontend 90%) | ⏸️ Aguardando Dia 5 (Export + AI)
 
 ---
 
@@ -1560,16 +1560,20 @@ go get github.com/streadway/amqp
 
 ### Frontend (1-2 dias)
 
-**Dia 4: Componentes React**
-- [ ] Criar `HealthCheckingTab.tsx`
-- [ ] Criar `HealthCheckProgressModal.tsx`
-- [ ] Criar `HealthCheckResultsPanel.tsx`
-- [ ] Criar `HealthCheckCard.tsx`
-- [ ] Criar `HealthCheckConfigDialog.tsx`
-- [ ] Hook `useHealthChecking.ts`
-- [ ] Hook `useHealthCheckProgress.ts`
-- [ ] Tipos TypeScript em `types/healthcheck.ts`
-- [ ] Commit: "feat: adiciona interface de health checking"
+**Dia 4: Componentes React** ✅ **COMPLETO** (26/12/2025)
+- [x] Criar `types/healthcheck.ts` - 200+ linhas (mirror completo do backend)
+- [x] Adicionar métodos API client - 5 métodos (run, history, stats, get, delete)
+- [x] Hook `useHealthChecking.ts` - 220+ linhas (lógica principal)
+- [x] Hook `useHealthCheckProgress.ts` - 180+ linhas (SSE progress)
+- [x] Criar `HealthCheckingTab.tsx` - 340+ linhas (SplitView container)
+- [x] Criar `HealthCheckProgressModal.tsx` - 160+ linhas (modal SSE)
+- [x] Criar `HealthCheckResultsPanel.tsx` - 140+ linhas (tabs deployments/services/configs)
+- [x] Criar `HealthCheckCard.tsx` - 200+ linhas (card individual com sugestões)
+- [x] Commit 1: "feat: adiciona tipos TypeScript e API client para health checking" (ed558b2)
+- [x] Commit 2: "feat: adiciona hooks customizados para health checking" (03f0943)
+- [x] Commit 3: "feat: adiciona componentes React para Health Checking" (2ea8250)
+- [ ] Registrar aba no ClusterTabs.tsx (próximo passo)
+- [x] **EXTRA**: Proteção RBAC integrada (ProtectedAction no botão run)
 
 **Dia 5: Refinamentos + Export + AI Integration**
 - [ ] Adicionar filtros por status
