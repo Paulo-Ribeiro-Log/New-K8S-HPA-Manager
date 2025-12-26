@@ -92,6 +92,12 @@ type DeploymentHealth struct {
 	ContainersCrash int32 `json:"containers_crash"`
 	ImagePullErrors int32 `json:"image_pull_errors"`
 
+	// Probes (Liveness/Readiness)
+	HasLivenessProbe       bool  `json:"has_liveness_probe"`
+	HasReadinessProbe      bool  `json:"has_readiness_probe"`
+	LivenessProbeFailures  int32 `json:"liveness_probe_failures"`
+	ReadinessProbeFailures int32 `json:"readiness_probe_failures"`
+
 	// Recursos
 	CPUUsagePercent    float64 `json:"cpu_usage_percent"`    // 0-100
 	MemoryUsagePercent float64 `json:"memory_usage_percent"` // 0-100
