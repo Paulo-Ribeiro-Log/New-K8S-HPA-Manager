@@ -19,31 +19,27 @@ import {
   Play,
   Loader2,
   RefreshCcw,
+  Server,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useHealthChecking } from "@/hooks/useHealthChecking";
 import type { HealthCheckRequest } from "@/types/healthcheck";
 import { HealthCheckProgressModal } from "@/components/HealthCheckProgressModal";
 import { HealthCheckResultsPanel } from "@/components/HealthCheckResultsPanel";
-import type { Namespace } from "@/lib/api/types";
+import { useClusters, useNamespaces } from "@/hooks/useAPI";
 import { ProtectedAction } from "@/components/rbac";
 
 interface HealthCheckingTabProps {
-  cluster: string;
-  namespaces: Namespace[];
-  onRefresh: () => void;
+  // Componente independente - não recebe contexto do Dashboard
 }
 
-export const HealthCheckingTab = ({
-  cluster,
-  namespaces,
-  onRefresh,
-}: HealthCheckingTabProps) => {
+export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
+  // Buscar TODOS os clusters disponíveis (independente do contexto)
+  const { clusters: allClusters, loading: clustersLoading } = useClusters();
+
   // Debug logs
   console.log("[HealthCheckingTab] Rendered with:", {
-    cluster,
-    namespacesCount: namespaces?.length || 0,
-    namespaces: namespaces,
+    allClustersCount: allClusters?.length || 0,
   });
 
   // Health Check State
@@ -57,6 +53,7 @@ export const HealthCheckingTab = ({
 
   // Configuration State
   const [environment, setEnvironment] = useState<string>("");
+  const [selectedClusters, setSelectedClusters] = useState<string[]>([]);
   const [selectedNamespaces, setSelectedNamespaces] = useState<string[]>([]);
   const [checkDeployments, setCheckDeployments] = useState(true);
   const [checkServices, setCheckServices] = useState(true);
@@ -66,11 +63,34 @@ export const HealthCheckingTab = ({
   // Modal state
   const [showProgressModal, setShowProgressModal] = useState(false);
 
+  // Auto-select clusters when environment changes
+  useEffect(() => {
+    if (!environment || !allClusters) return;
+
+    const clustersToSelect = allClusters
+      .filter((c) => {
+        const name = c.name.toLowerCase();
+        if (environment === "prod") {
+          return name.includes("prod") || name.includes("prd");
+        }
+        if (environment === "hlg") {
+          return name.includes("hlg") || name.includes("homolog") || name.includes("staging");
+        }
+        if (environment === "all") {
+          return true;
+        }
+        return false;
+      })
+      .map((c) => c.name);
+
+    setSelectedClusters(clustersToSelect);
+  }, [environment, allClusters]);
+
   // Handle run health check
   const handleRun = async () => {
     // Validação
-    if (!cluster) {
-      toast.error("Selecione um cluster primeiro");
+    if (selectedClusters.length === 0) {
+      toast.error("Selecione pelo menos um cluster");
       return;
     }
 
@@ -82,7 +102,7 @@ export const HealthCheckingTab = ({
     // Construir request
     const request: HealthCheckRequest = {
       environment: environment || undefined,
-      clusters: environment ? undefined : [cluster],
+      clusters: selectedClusters,
       namespaces: selectedNamespaces.length > 0 ? selectedNamespaces : undefined,
       check_deployments: checkDeployments,
       check_services: checkServices,
@@ -96,6 +116,28 @@ export const HealthCheckingTab = ({
     if (newSessionId) {
       setShowProgressModal(true);
     }
+  };
+
+  // Toggle cluster selection
+  const toggleCluster = (clusterName: string) => {
+    setSelectedClusters((prev) =>
+      prev.includes(clusterName)
+        ? prev.filter((c) => c !== clusterName)
+        : [...prev, clusterName]
+    );
+    // Limpar filtro de ambiente quando seleção manual
+    setEnvironment("");
+  };
+
+  // Select all/none clusters
+  const selectAllClusters = () => {
+    setSelectedClusters(allClusters.map((c) => c.name));
+    setEnvironment("");
+  };
+
+  const clearClusters = () => {
+    setSelectedClusters([]);
+    setEnvironment("");
   };
 
   // Toggle namespace selection
@@ -116,14 +158,31 @@ export const HealthCheckingTab = ({
     setSelectedNamespaces([]);
   };
 
-  // Filter namespaces (search)
-  const [searchQuery, setSearchQuery] = useState("");
-  const filteredNamespaces = useMemo(() => {
-    if (!searchQuery) return namespaces;
-    return namespaces.filter((ns) =>
-      ns.name.toLowerCase().includes(searchQuery.toLowerCase())
+  // Filter clusters (search)
+  const [clusterSearchQuery, setClusterSearchQuery] = useState("");
+  const filteredClusters = useMemo(() => {
+    if (!clusterSearchQuery) return allClusters;
+    return allClusters.filter((c) =>
+      c.name.toLowerCase().includes(clusterSearchQuery.toLowerCase())
     );
-  }, [namespaces, searchQuery]);
+  }, [allClusters, clusterSearchQuery]);
+
+  // Filter namespaces (search)
+  const [namespaceSearchQuery, setNamespaceSearchQuery] = useState("");
+
+  // Buscar namespaces dos clusters selecionados (combinados)
+  const allNamespacesFromClusters = useMemo(() => {
+    // TODO: Implementar busca de namespaces combinados de múltiplos clusters
+    // Por enquanto, retornar array vazio
+    return [];
+  }, [selectedClusters]);
+
+  const filteredNamespaces = useMemo(() => {
+    if (!namespaceSearchQuery) return allNamespacesFromClusters;
+    return allNamespacesFromClusters.filter((ns: any) =>
+      ns.toLowerCase().includes(namespaceSearchQuery.toLowerCase())
+    );
+  }, [allNamespacesFromClusters, namespaceSearchQuery]);
 
   return (
     <>
@@ -133,15 +192,77 @@ export const HealthCheckingTab = ({
           content: (
             <ScrollArea className="h-full">
               <div className="space-y-4">
-                {/* Cluster Info */}
+                {/* Cluster Selection */}
                 <Card>
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-sm font-medium">Cluster Selecionado</CardTitle>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <CardTitle className="text-sm font-medium">Clusters</CardTitle>
+                        <CardDescription className="text-xs">
+                          {selectedClusters.length === 0
+                            ? "Selecione clusters para testar"
+                            : `${selectedClusters.length} cluster(s) selecionado(s)`}
+                        </CardDescription>
+                      </div>
+                      <div className="flex gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={selectAllClusters}
+                          className="h-7 text-xs"
+                        >
+                          Todos
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={clearClusters}
+                          className="h-7 text-xs"
+                        >
+                          Limpar
+                        </Button>
+                      </div>
+                    </div>
                   </CardHeader>
                   <CardContent>
-                    <Badge variant="outline" className="font-mono">
-                      {cluster || "Nenhum cluster selecionado"}
-                    </Badge>
+                    <div className="space-y-2">
+                      <Input
+                        placeholder="Buscar clusters..."
+                        value={clusterSearchQuery}
+                        onChange={(e) => setClusterSearchQuery(e.target.value)}
+                        className="h-8"
+                      />
+                      <ScrollArea className="h-48">
+                        <div className="space-y-2">
+                          {clustersLoading ? (
+                            <div className="text-center py-4 text-sm text-muted-foreground">
+                              <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
+                              Carregando clusters...
+                            </div>
+                          ) : filteredClusters.length === 0 ? (
+                            <div className="text-center py-4 text-sm text-muted-foreground">
+                              Nenhum cluster encontrado
+                            </div>
+                          ) : (
+                            filteredClusters.map((c) => (
+                              <div key={c.name} className="flex items-center gap-2">
+                                <Checkbox
+                                  id={`cluster-${c.name}`}
+                                  checked={selectedClusters.includes(c.name)}
+                                  onCheckedChange={() => toggleCluster(c.name)}
+                                />
+                                <Label
+                                  htmlFor={`cluster-${c.name}`}
+                                  className="text-sm cursor-pointer font-mono flex-1"
+                                >
+                                  {c.name}
+                                </Label>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </ScrollArea>
+                    </div>
                   </CardContent>
                 </Card>
 
@@ -150,21 +271,32 @@ export const HealthCheckingTab = ({
                   <CardHeader className="pb-3">
                     <CardTitle className="text-sm font-medium">Filtro de Ambiente (Opcional)</CardTitle>
                     <CardDescription className="text-xs">
-                      Deixe vazio para usar apenas o cluster atual
+                      Seleciona automaticamente clusters por ambiente (prod/hlg). Desativa seleção manual.
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <Select value={environment} onValueChange={setEnvironment}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Selecione ambiente (opcional)" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="">Nenhum (apenas cluster atual)</SelectItem>
-                        <SelectItem value="prod">Produção</SelectItem>
-                        <SelectItem value="hlg">Homologação</SelectItem>
-                        <SelectItem value="all">Todos os ambientes</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <div className="space-y-2">
+                      <Select value={environment || undefined} onValueChange={setEnvironment}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Nenhum (apenas cluster atual)" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="prod">Produção</SelectItem>
+                          <SelectItem value="hlg">Homologação</SelectItem>
+                          <SelectItem value="all">Todos os ambientes</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {environment && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEnvironment("")}
+                          className="h-7 text-xs w-full"
+                        >
+                          Limpar filtro
+                        </Button>
+                      )}
+                    </div>
                   </CardContent>
                 </Card>
 
@@ -173,11 +305,11 @@ export const HealthCheckingTab = ({
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between">
                       <div>
-                        <CardTitle className="text-sm font-medium">Namespaces</CardTitle>
+                        <CardTitle className="text-sm font-medium">Namespaces (Opcional)</CardTitle>
                         <CardDescription className="text-xs">
                           {selectedNamespaces.length === 0
-                            ? "Todos os namespaces"
-                            : `${selectedNamespaces.length} selecionados`}
+                            ? "Todos os namespaces (padrão)"
+                            : `${selectedNamespaces.length} selecionado(s)`}
                         </CardDescription>
                       </div>
                       <div className="flex gap-1">
@@ -186,6 +318,7 @@ export const HealthCheckingTab = ({
                           size="sm"
                           onClick={selectAllNamespaces}
                           className="h-7 text-xs"
+                          disabled={selectedClusters.length === 0}
                         >
                           Todos
                         </Button>
@@ -204,29 +337,34 @@ export const HealthCheckingTab = ({
                     <div className="space-y-2">
                       <Input
                         placeholder="Buscar namespaces..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
+                        value={namespaceSearchQuery}
+                        onChange={(e) => setNamespaceSearchQuery(e.target.value)}
                         className="h-8"
+                        disabled={selectedClusters.length === 0}
                       />
                       <ScrollArea className="h-48">
                         <div className="space-y-2">
-                          {filteredNamespaces.length === 0 ? (
+                          {selectedClusters.length === 0 ? (
                             <div className="text-center py-4 text-sm text-muted-foreground">
-                              {!cluster ? "Selecione um cluster primeiro" : "Nenhum namespace encontrado"}
+                              Selecione clusters primeiro
+                            </div>
+                          ) : filteredNamespaces.length === 0 ? (
+                            <div className="text-center py-4 text-sm text-muted-foreground">
+                              Deixe vazio para testar todos os namespaces
                             </div>
                           ) : (
                             filteredNamespaces.map((ns) => (
-                              <div key={ns.name} className="flex items-center gap-2">
+                              <div key={ns} className="flex items-center gap-2">
                                 <Checkbox
-                                  id={`ns-${ns.name}`}
-                                  checked={selectedNamespaces.includes(ns.name)}
-                                  onCheckedChange={() => toggleNamespace(ns.name)}
+                                  id={`ns-${ns}`}
+                                  checked={selectedNamespaces.includes(ns)}
+                                  onCheckedChange={() => toggleNamespace(ns)}
                                 />
                                 <Label
-                                  htmlFor={`ns-${ns.name}`}
+                                  htmlFor={`ns-${ns}`}
                                   className="text-sm cursor-pointer"
                                 >
-                                  {ns.name}
+                                  {ns}
                                 </Label>
                               </div>
                             ))
@@ -309,7 +447,7 @@ export const HealthCheckingTab = ({
                   <Button
                     className="w-full"
                     onClick={handleRun}
-                    disabled={isRunning || !cluster}
+                    disabled={isRunning || selectedClusters.length === 0}
                   >
                     {isRunning ? (
                       <>
@@ -320,6 +458,7 @@ export const HealthCheckingTab = ({
                       <>
                         <Play className="mr-2 h-4 w-4" />
                         Executar Health Check
+                        {selectedClusters.length > 0 && ` (${selectedClusters.length} cluster${selectedClusters.length > 1 ? 's' : ''})`}
                       </>
                     )}
                   </Button>
@@ -330,11 +469,12 @@ export const HealthCheckingTab = ({
         }}
         rightPanel={{
           title: "Resultados",
-          titleAction: (
-            <Button variant="ghost" size="sm" onClick={onRefresh}>
-              <RefreshCcw className="h-4 w-4" />
-            </Button>
-          ),
+          titleAction: selectedClusters.length > 0 ? (
+            <Badge variant="secondary" className="gap-1">
+              <Server className="h-3 w-3" />
+              {selectedClusters.length} cluster{selectedClusters.length > 1 ? 's' : ''}
+            </Badge>
+          ) : undefined,
           content: (
             <ScrollArea className="h-full">
               {!isRunning && results.length === 0 && (

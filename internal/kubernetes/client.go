@@ -59,9 +59,9 @@ var systemNamespaces = map[string]bool{
 	"velero":                        true,
 	"calico-apiserver":              true,
 	"rbac-manager":                  true,
-	"spinnaker":                     true,
-	"aks-command":                   true,
-	"dsv-system":                    true,
+	// "spinnaker":                     true,
+	"aks-command": true,
+	"dsv-system":  true,
 }
 
 // isSystemNamespace verifica se um namespace é de sistema e deve ser filtrado
