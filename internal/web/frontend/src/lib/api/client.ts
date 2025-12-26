@@ -60,6 +60,15 @@ import type {
   HistoryFilter,
 } from "@/types/ai";
 
+import type {
+  HealthCheckRequest,
+  HealthCheckRunResponse,
+  HealthCheckHistoryResponse,
+  HealthCheckStatsResponse,
+  HealthCheckGetResponse,
+  HealthCheckDeleteResponse,
+} from "@/types/healthcheck";
+
 const API_BASE_URL = "/api/v1";
 
 class APIClient {
@@ -1533,6 +1542,71 @@ class APIClient {
     }>;
   }> {
     return this.request(`/ai/models?provider=${provider}`);
+  }
+
+  // ========================
+  // Health Checking Methods
+  // ========================
+
+  /**
+   * Run health check on specified clusters
+   * POST /api/v1/healthcheck/run
+   */
+  async runHealthCheck(request: HealthCheckRequest): Promise<HealthCheckRunResponse> {
+    return this.request(`/healthcheck/run`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
+  /**
+   * Get health check history
+   * GET /api/v1/healthcheck/history?cluster=x&namespace=y
+   */
+  async getHealthCheckHistory(
+    cluster?: string,
+    namespace?: string
+  ): Promise<HealthCheckHistoryResponse> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (namespace) params.append("namespace", namespace);
+
+    const query = params.toString();
+    return this.request(`/healthcheck/history${query ? `?${query}` : ""}`);
+  }
+
+  /**
+   * Get health check statistics
+   * GET /api/v1/healthcheck/stats?cluster=x&days=7
+   */
+  async getHealthCheckStats(
+    cluster?: string,
+    days?: number
+  ): Promise<HealthCheckStatsResponse> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (days) params.append("days", days.toString());
+
+    const query = params.toString();
+    return this.request(`/healthcheck/stats${query ? `?${query}` : ""}`);
+  }
+
+  /**
+   * Get specific health check result by ID
+   * GET /api/v1/healthcheck/:id
+   */
+  async getHealthCheckResult(id: string): Promise<HealthCheckGetResponse> {
+    return this.request(`/healthcheck/${id}`);
+  }
+
+  /**
+   * Delete health check result
+   * DELETE /api/v1/healthcheck/:id
+   */
+  async deleteHealthCheckResult(id: string): Promise<HealthCheckDeleteResponse> {
+    return this.request(`/healthcheck/${id}`, {
+      method: "DELETE",
+    });
   }
 }
 
