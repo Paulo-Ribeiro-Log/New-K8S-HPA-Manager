@@ -692,13 +692,19 @@ func (s *Server) setupRoutes() {
 		{
 			// Rotas públicas (GET)
 			healthCheckGroup.GET("/history", healthCheckHandler.History)
-			healthCheckGroup.GET("/progress", healthCheckHandler.Progress) // SSE stream
 			healthCheckGroup.GET("/stats", healthCheckHandler.Stats)
 			healthCheckGroup.GET("/:id", healthCheckHandler.Get)
 
 			// Rotas de escrita (POST, DELETE) - SRE only
 			healthCheckGroup.POST("/run", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Run)
 			healthCheckGroup.DELETE("/:id", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Delete)
+		}
+
+		// SSE stream - requer token via query param (EventSource não suporta headers)
+		sseGroup := s.router.Group("/api/v1/healthcheck")
+		sseGroup.Use(middleware.WebSocketAuthMiddleware(s.token))
+		{
+			sseGroup.GET("/progress", healthCheckHandler.Progress)
 		}
 
 		fmt.Println("✅ Health Checking routes registradas")

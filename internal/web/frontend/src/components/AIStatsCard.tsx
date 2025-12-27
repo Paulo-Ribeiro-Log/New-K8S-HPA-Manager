@@ -150,11 +150,18 @@ export function AIStatsCard({ stats, isLoading, onRefresh }: AIStatsCardProps) {
                     <YAxis tick={{ fontSize: 12 }} />
                     <Tooltip
                       contentStyle={{
-                        backgroundColor: "rgba(0, 0, 0, 0.8)",
-                        border: "none",
+                        backgroundColor: "hsl(var(--popover))",
+                        border: "1px solid hsl(var(--border))",
                         borderRadius: "8px",
-                        color: "#fff",
+                        boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)",
                       }}
+                      itemStyle={{
+                        color: "hsl(var(--popover-foreground))",
+                      }}
+                      labelStyle={{
+                        color: "hsl(var(--popover-foreground))",
+                      }}
+                      cursor={{ fill: "transparent" }}
                     />
                     <Bar dataKey="count" fill="#3b82f6" radius={[8, 8, 0, 0]} />
                   </BarChart>
@@ -177,6 +184,7 @@ export function AIStatsCard({ stats, isLoading, onRefresh }: AIStatsCardProps) {
                       outerRadius={60}
                       label={(entry) => `${entry.provider}: ${entry.count}`}
                       labelLine={false}
+                      isAnimationActive={false}
                     >
                       {providerData.map((_, index) => (
                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
@@ -184,11 +192,18 @@ export function AIStatsCard({ stats, isLoading, onRefresh }: AIStatsCardProps) {
                     </Pie>
                     <Tooltip
                       contentStyle={{
-                        backgroundColor: "rgba(0, 0, 0, 0.8)",
-                        border: "none",
+                        backgroundColor: "hsl(var(--popover))",
+                        border: "1px solid hsl(var(--border))",
                         borderRadius: "8px",
-                        color: "#fff",
+                        boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)",
                       }}
+                      itemStyle={{
+                        color: "hsl(var(--popover-foreground))",
+                      }}
+                      labelStyle={{
+                        color: "hsl(var(--popover-foreground))",
+                      }}
+                      cursor={false}
                     />
                     <Legend
                       wrapperStyle={{ fontSize: "12px" }}

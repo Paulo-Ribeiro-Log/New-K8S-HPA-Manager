@@ -159,54 +159,12 @@ func (p *CopilotProvider) GetModel() string {
 	return p.deployment
 }
 
-// IsAvailable verifica se Azure OpenAI API está acessível
+// IsAvailable verifica se Azure OpenAI API está configurado
+// NOTA: Não faz chamadas à API para evitar consumo de créditos automático
+// A validação real da chave acontece apenas quando o usuário clica em "Validar" explicitamente
 func (p *CopilotProvider) IsAvailable(ctx context.Context) bool {
-	// Verificar se API key e endpoint estão presentes
-	if p.apiKey == "" || p.endpoint == "" || p.deployment == "" {
-		return false
-	}
-
-	// Fazer check leve com timeout curto
-	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	// Construir URL de teste
-	url := fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s",
-		p.endpoint, p.deployment, p.apiVersion)
-
-	// Fazer uma requisição mínima de teste
-	reqBody := copilotRequest{
-		Messages: []copilotMessage{
-			{
-				Role:    "user",
-				Content: "test",
-			},
-		},
-		MaxTokens: 10, // Requisição mínima
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return false
-	}
-
-	req, err := http.NewRequestWithContext(checkCtx, "POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return false
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("api-key", p.apiKey)
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	// Verificar se API retornou 200 OK (chave válida)
-	return resp.StatusCode == http.StatusOK
+	// Apenas verificar se API key, endpoint e deployment estão presentes (não faz requisição)
+	return p.apiKey != "" && p.endpoint != "" && p.deployment != ""
 }
 
 // GetName retorna nome do provider

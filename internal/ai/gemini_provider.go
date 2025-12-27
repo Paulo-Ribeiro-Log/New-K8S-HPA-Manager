@@ -120,34 +120,12 @@ func (p *GeminiProvider) GetModel() string {
 	return p.model
 }
 
-// IsAvailable verifica se Gemini API está acessível
+// IsAvailable verifica se Gemini API está configurado
+// NOTA: Não faz chamadas à API para evitar consumo de quota automático
+// A validação real da chave acontece apenas quando o usuário clica em "Validar" explicitamente
 func (p *GeminiProvider) IsAvailable(ctx context.Context) bool {
-	// Verificar se API key está presente
-	if p.apiKey == "" {
-		return false
-	}
-
-	// Fazer check leve com timeout curto (não gasta quota)
-	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	// Endpoint de listagem de modelos (não consome quota)
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models?key=%s", p.apiKey)
-
-	req, err := http.NewRequestWithContext(checkCtx, "GET", url, nil)
-	if err != nil {
-		return false
-	}
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	// Verificar se API retornou 200 OK (chave válida)
-	return resp.StatusCode == http.StatusOK
+	// Apenas verificar se API key está presente (não faz requisição)
+	return p.apiKey != ""
 }
 
 // GetName retorna nome do provider

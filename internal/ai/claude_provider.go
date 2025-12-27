@@ -143,54 +143,12 @@ func (p *ClaudeProvider) GetModel() string {
 	return p.model
 }
 
-// IsAvailable verifica se Claude API está acessível
+// IsAvailable verifica se Claude API está configurado
+// NOTA: Não faz chamadas à API para evitar consumo de créditos automático
+// A validação real da chave acontece apenas quando o usuário clica em "Validar" explicitamente
 func (p *ClaudeProvider) IsAvailable(ctx context.Context) bool {
-	// Verificar se API key está presente
-	if p.apiKey == "" {
-		return false
-	}
-
-	// Fazer check leve com timeout curto
-	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	// Fazer uma requisição mínima de teste
-	url := "https://api.anthropic.com/v1/messages"
-
-	reqBody := claudeRequest{
-		Model:     p.model,
-		MaxTokens: 10, // Requisição mínima
-		Messages: []claudeMessage{
-			{
-				Role:    "user",
-				Content: "test",
-			},
-		},
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return false
-	}
-
-	req, err := http.NewRequestWithContext(checkCtx, "POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return false
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", p.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	// Verificar se API retornou 200 OK (chave válida)
-	return resp.StatusCode == http.StatusOK
+	// Apenas verificar se API key está presente (não faz requisição)
+	return p.apiKey != ""
 }
 
 // GetName retorna nome do provider
