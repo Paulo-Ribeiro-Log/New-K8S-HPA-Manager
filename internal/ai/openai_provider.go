@@ -30,9 +30,9 @@ func NewOpenAIProvider(config *Config) *OpenAIProvider {
 
 // openAIRequest estrutura de requisição OpenAI API
 type openAIRequest struct {
-	Model    string          `json:"model"`
-	Messages []openAIMessage `json:"messages"`
-	MaxTokens int            `json:"max_tokens,omitempty"`
+	Model     string          `json:"model"`
+	Messages  []openAIMessage `json:"messages"`
+	MaxTokens int             `json:"max_tokens,omitempty"`
 }
 
 type openAIMessage struct {
@@ -146,53 +146,12 @@ func (p *OpenAIProvider) GetModel() string {
 	return p.model
 }
 
-// IsAvailable verifica se OpenAI API está acessível
+// IsAvailable verifica se OpenAI API está configurado
+// NOTA: Não faz chamadas à API para evitar consumo de créditos automático
+// A validação real da chave acontece apenas quando o usuário clica em "Validar" explicitamente
 func (p *OpenAIProvider) IsAvailable(ctx context.Context) bool {
-	// Verificar se API key está presente
-	if p.apiKey == "" {
-		return false
-	}
-
-	// Fazer check leve com timeout curto
-	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	// Fazer uma requisição mínima de teste
-	url := "https://api.openai.com/v1/chat/completions"
-
-	reqBody := openAIRequest{
-		Model: p.model,
-		Messages: []openAIMessage{
-			{
-				Role:    "user",
-				Content: "test",
-			},
-		},
-		MaxTokens: 10, // Requisição mínima
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return false
-	}
-
-	req, err := http.NewRequestWithContext(checkCtx, "POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return false
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	// Verificar se API retornou 200 OK (chave válida)
-	return resp.StatusCode == http.StatusOK
+	// Apenas verificar se API key está presente (não faz requisição)
+	return p.apiKey != ""
 }
 
 // GetName retorna nome do provider

@@ -99,11 +99,14 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       return;
     }
 
+    // Parse namespaces do input
+    const namespaces = parseNamespaces();
+
     // Construir request
     const request: HealthCheckRequest = {
       environment: environment || undefined,
       clusters: selectedClusters,
-      namespaces: selectedNamespaces.length > 0 ? selectedNamespaces : undefined,
+      namespaces: namespaces.length > 0 ? namespaces : undefined,
       check_deployments: checkDeployments,
       check_services: checkServices,
       check_configs: checkConfigs,
@@ -140,22 +143,10 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
     setEnvironment("");
   };
 
-  // Toggle namespace selection
-  const toggleNamespace = (namespace: string) => {
-    setSelectedNamespaces((prev) =>
-      prev.includes(namespace)
-        ? prev.filter((ns) => ns !== namespace)
-        : [...prev, namespace]
-    );
-  };
-
-  // Select all/none namespaces
-  const selectAllNamespaces = () => {
-    setSelectedNamespaces(namespaces.map((ns) => ns.name));
-  };
-
-  const clearNamespaces = () => {
-    setSelectedNamespaces([]);
+  // Parse namespace input ao executar (separado por vírgula)
+  const parseNamespaces = (): string[] => {
+    if (!namespaceInput.trim()) return [];
+    return namespaceInput.split(',').map(ns => ns.trim()).filter(ns => ns.length > 0);
   };
 
   // Filter clusters (search)
@@ -167,22 +158,8 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
     );
   }, [allClusters, clusterSearchQuery]);
 
-  // Filter namespaces (search)
-  const [namespaceSearchQuery, setNamespaceSearchQuery] = useState("");
-
-  // Buscar namespaces dos clusters selecionados (combinados)
-  const allNamespacesFromClusters = useMemo(() => {
-    // TODO: Implementar busca de namespaces combinados de múltiplos clusters
-    // Por enquanto, retornar array vazio
-    return [];
-  }, [selectedClusters]);
-
-  const filteredNamespaces = useMemo(() => {
-    if (!namespaceSearchQuery) return allNamespacesFromClusters;
-    return allNamespacesFromClusters.filter((ns: any) =>
-      ns.toLowerCase().includes(namespaceSearchQuery.toLowerCase())
-    );
-  }, [allNamespacesFromClusters, namespaceSearchQuery]);
+  // Namespace input (opcional - usuário pode digitar namespaces separados por vírgula)
+  const [namespaceInput, setNamespaceInput] = useState("");
 
   return (
     <>
@@ -300,78 +277,27 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                   </CardContent>
                 </Card>
 
-                {/* Namespace Selection */}
+                {/* Namespace Input */}
                 <Card>
                   <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle className="text-sm font-medium">Namespaces (Opcional)</CardTitle>
-                        <CardDescription className="text-xs">
-                          {selectedNamespaces.length === 0
-                            ? "Todos os namespaces (padrão)"
-                            : `${selectedNamespaces.length} selecionado(s)`}
-                        </CardDescription>
-                      </div>
-                      <div className="flex gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={selectAllNamespaces}
-                          className="h-7 text-xs"
-                          disabled={selectedClusters.length === 0}
-                        >
-                          Todos
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={clearNamespaces}
-                          className="h-7 text-xs"
-                        >
-                          Limpar
-                        </Button>
-                      </div>
-                    </div>
+                    <CardTitle className="text-sm font-medium">Namespaces (Opcional)</CardTitle>
+                    <CardDescription className="text-xs">
+                      Deixe vazio para testar todos os namespaces. Separe múltiplos namespaces por vírgula.
+                    </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <div className="space-y-2">
-                      <Input
-                        placeholder="Buscar namespaces..."
-                        value={namespaceSearchQuery}
-                        onChange={(e) => setNamespaceSearchQuery(e.target.value)}
-                        className="h-8"
-                        disabled={selectedClusters.length === 0}
-                      />
-                      <ScrollArea className="h-48">
-                        <div className="space-y-2">
-                          {selectedClusters.length === 0 ? (
-                            <div className="text-center py-4 text-sm text-muted-foreground">
-                              Selecione clusters primeiro
-                            </div>
-                          ) : filteredNamespaces.length === 0 ? (
-                            <div className="text-center py-4 text-sm text-muted-foreground">
-                              Deixe vazio para testar todos os namespaces
-                            </div>
-                          ) : (
-                            filteredNamespaces.map((ns) => (
-                              <div key={ns} className="flex items-center gap-2">
-                                <Checkbox
-                                  id={`ns-${ns}`}
-                                  checked={selectedNamespaces.includes(ns)}
-                                  onCheckedChange={() => toggleNamespace(ns)}
-                                />
-                                <Label
-                                  htmlFor={`ns-${ns}`}
-                                  className="text-sm cursor-pointer"
-                                >
-                                  {ns}
-                                </Label>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </ScrollArea>
-                    </div>
+                    <Input
+                      placeholder="Ex: default, kube-system, production"
+                      value={namespaceInput}
+                      onChange={(e) => setNamespaceInput(e.target.value)}
+                      className="h-8"
+                      disabled={selectedClusters.length === 0}
+                    />
+                    {namespaceInput && (
+                      <p className="text-xs text-muted-foreground mt-2">
+                        {parseNamespaces().length} namespace(s): {parseNamespaces().join(", ")}
+                      </p>
+                    )}
                   </CardContent>
                 </Card>
 
