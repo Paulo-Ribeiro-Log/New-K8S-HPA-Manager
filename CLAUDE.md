@@ -396,8 +396,14 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
       - Evita workarounds temporários (restart sem investigar causa)
   - **Documentação**: [PLANO_AI_DIAGNOSTICS.md](PLANO_AI_DIAGNOSTICS.md) | [PROGRESSO_AI_DIAGNOSTICS.md](PROGRESSO_AI_DIAGNOSTICS.md)
 ✅ **Health Checking (v1.3.7 - Produção desde 28/12/2025)** - Sistema completo de verificação de saúde de clusters
-  - **Status**: ✅ Backend 100% | ✅ Frontend 100% | ✅ SSE Progress 100%
+  - **Status**: ✅ Backend 100% | ✅ Frontend 100% | ✅ SSE Progress 100% | ✅ **Multi-Cluster com Tabs** 100%
   - **Funcionalidades**:
+    - ✅ **Multi-Cluster com Tabs (NOVO - 28/12/2025)**: Execução paralela em múltiplos clusters com tabs independentes
+      - Worker pool paralelo no backend (sessionID único por cluster: `baseSessionID-clusterName`)
+      - Tabs component (shadcn/ui) com ícone de status (✅ completo, ❌ falhou)
+      - Progresso independente por cluster via SSE (só activeTab conecta)
+      - Contador global: "Health Check em Progresso (2/3)" no header
+      - Caso especial: 1 cluster apenas - não mostra tabs (UX otimizada)
     - ✅ **Verificação de Deployments**: Status de réplicas, containers crash, image pull errors, probes (liveness/readiness)
     - ✅ **Verificação de Services**: Testes de conectividade (MongoDB, Redis, PostgreSQL, Kafka, EventHub, HTTP) - *placeholder*
     - ✅ **Verificação de Configs**: Validação de ConfigMaps/Secrets - *placeholder*
@@ -406,18 +412,30 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
     - ✅ **Filtros de Status**: Healthy, Warning, Critical com contadores ao vivo
   - **Backend (5 arquivos, ~800 linhas)**:
     - `internal/healthcheck/models.go` - Estruturas de dados (HealthStatus, DeploymentHealth, ServiceHealth, ConfigHealth)
-    - `internal/healthcheck/orchestrator.go` - Orquestrador principal com progresso dinâmico e SSE
+    - `internal/healthcheck/orchestrator.go` - Orquestrador principal com worker pool paralelo
+      - `executeMultiClusterCheck()` - Worker pool com sessionID único por cluster
+      - `GetClusterSessionMapping()` - Retorna map: cluster -> sessionID
+      - `ResolveClusters()` - Público (resolve clusters por environment ou lista manual)
     - `internal/healthcheck/deployment_checker.go` - Valida Deployments (réplicas, crashes, probes)
     - `internal/healthcheck/service_checker.go` - Testa conectividade de serviços externos (*placeholder*)
     - `internal/healthcheck/config_checker.go` - Valida ConfigMaps/Secrets (*placeholder*)
     - `internal/web/handlers/healthcheck.go` - REST API + SSE endpoints
+      - `Run()` retorna `cluster_sessions: Record<string, string>` na response
   - **Frontend React**:
-    - `HealthCheckingTab.tsx` - Tab principal com configuração + execução
-    - `HealthCheckProgressModal.tsx` - Modal com SSE progress (max-w-4xl, overflow controlado)
+    - `HealthCheckingTab.tsx` - Tab principal com configuração + execução (multi-select já existia)
+    - `HealthCheckProgressModal.tsx` - **REFATORADO para Tabs** (500 linhas)
+      - Componente filho: `ClusterTabContent` (gerencia SSE progress de cada cluster)
+      - Tabs component com ícones de status nos triggers (Server + CheckCircle2/XCircle)
+      - Enabled prop evita múltiplas conexões SSE simultâneas (só activeTab conecta)
+      - Estado global: completedClusters, failedClusters (Sets)
     - Hook `useHealthCheckProgress()` - Gerencia conexão SSE e eventos
+    - Hook `useHealthChecking()` - Agora retorna `clusterSessions` além de `sessionId`
   - **API REST**:
-    - `POST /api/v1/healthcheck/run` - Inicia health check (retorna session_id)
-    - `GET /api/v1/healthcheck/progress?session={id}` - SSE stream de progresso
+    - `POST /api/v1/healthcheck/run` - Inicia health check
+      - Request: `{clusters: string[], check_deployments: bool, ...}`
+      - Response: `{session_id: string, cluster_sessions: Record<string, string>}`
+      - Exemplo: `cluster_sessions: {"cluster-a": "uuid-cluster-a", "cluster-b": "uuid-cluster-b"}`
+    - `GET /api/v1/healthcheck/progress?session={id}` - SSE stream de progresso (por cluster)
     - `GET /api/v1/healthcheck/{id}` - Busca resultado completo
   - **Progresso Dinâmico**:
     - Checks habilitados determinam faixas de progresso (5-95%)
