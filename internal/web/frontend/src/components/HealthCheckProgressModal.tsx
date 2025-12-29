@@ -6,6 +6,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +18,7 @@ import {
   Loader2,
   Activity,
   X,
+  Server,
 } from "lucide-react";
 import { useHealthCheckProgress } from "@/hooks/useHealthCheckProgress";
 import type { HealthCheckResult, HealthCheckProgress } from "@/types/healthcheck";
@@ -24,18 +26,29 @@ import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 
 interface HealthCheckProgressModalProps {
-  sessionId: string;
+  sessionId: string;                           // Base session ID
+  clusterSessions: Record<string, string>;     // Map: cluster -> sessionID único
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onComplete: (result: HealthCheckResult) => void;
 }
 
-export const HealthCheckProgressModal = ({
+// Componente filho para cada cluster tab
+interface ClusterTabContentProps {
+  cluster: string;
+  sessionId: string;
+  enabled: boolean;
+  onComplete: (result: HealthCheckResult) => void;
+  onError: (error: string) => void;
+}
+
+const ClusterTabContent = ({
+  cluster,
   sessionId,
-  open,
-  onOpenChange,
+  enabled,
   onComplete,
-}: HealthCheckProgressModalProps) => {
+  onError,
+}: ClusterTabContentProps) => {
   const [result, setResult] = useState<HealthCheckResult | null>(null);
   const [filter, setFilter] = useState<"all" | "healthy" | "warning" | "critical">("all");
 
@@ -51,7 +64,7 @@ export const HealthCheckProgressModal = ({
     clearEvents,
   } = useHealthCheckProgress({
     sessionId,
-    enabled: open,
+    enabled,
     onComplete: async () => {
       // Fetch final result
       try {
@@ -61,24 +74,24 @@ export const HealthCheckProgressModal = ({
           onComplete(response.data);
         }
       } catch (error) {
-        console.error("Failed to fetch final result:", error);
-        toast.error("Erro ao buscar resultado final");
+        console.error(`[${cluster}] Failed to fetch final result:`, error);
+        toast.error(`[${cluster}] Erro ao buscar resultado final`);
       }
     },
     onError: (error) => {
-      console.error("SSE Error:", error);
-      toast.error("Erro na conexão SSE");
+      console.error(`[${cluster}] SSE Error:`, error);
+      onError(error);
     },
   });
 
-  // ✅ Resetar estado quando modal fechar
+  // ✅ Resetar estado quando tab desabilitar
   useEffect(() => {
-    if (!open) {
+    if (!enabled) {
       setResult(null);
       clearEvents();
       setFilter("all");
     }
-  }, [open, clearEvents]);
+  }, [enabled, clearEvents]);
 
   // Filtrar eventos baseado no filtro selecionado
   const filteredEvents = events.filter((event) => {
@@ -86,35 +99,28 @@ export const HealthCheckProgressModal = ({
     return event.status === filter;
   });
 
-  // Handle cancel
-  const handleCancel = () => {
-    disconnect();
-    toast.info("Health check cancelado");
-    onOpenChange(false);
-  };
-
   const progress = getProgress();
   const phase = getCurrentPhase();
   const message = getCurrentMessage();
 
-  // Contar eventos em tempo real (para exibir contadores durante progresso)
+  // Contar eventos em tempo real
   const liveHealthy = events.filter(e => e.status === "healthy").length;
   const liveWarning = events.filter(e => e.status === "warning").length;
   const liveCritical = events.filter(e => e.status === "critical").length;
   const liveTotal = events.length;
 
-  // Status icon based on current state
+  // Status icon
   const getStatusIcon = () => {
     if (hasError()) {
-      return <XCircle className="h-6 w-6 text-red-600" />;
+      return <XCircle className="h-5 w-5 text-red-600" />;
     }
     if (isComplete()) {
-      return <CheckCircle2 className="h-6 w-6 text-green-600" />;
+      return <CheckCircle2 className="h-5 w-5 text-green-600" />;
     }
-    return <Loader2 className="h-6 w-6 text-blue-600 animate-spin" />;
+    return <Loader2 className="h-5 w-5 text-blue-600 animate-spin" />;
   };
 
-  // Event badge variant with custom colors
+  // Event badge
   const getEventBadgeProps = (status: string): { variant: "default" | "secondary" | "destructive" | "outline", className?: string } => {
     switch (status) {
       case "healthy":
@@ -128,7 +134,6 @@ export const HealthCheckProgressModal = ({
     }
   };
 
-  // Event badge label
   const getEventBadgeLabel = (status: string): string => {
     switch (status) {
       case "healthy":
@@ -143,226 +148,343 @@ export const HealthCheckProgressModal = ({
   };
 
   return (
+    <div className="space-y-4">
+      {/* Status Header */}
+      <div className="flex items-center gap-2">
+        {getStatusIcon()}
+        <span className="text-sm font-medium">
+          {isComplete() ? `Concluído - ${cluster}` : `Em Progresso - ${cluster}`}
+        </span>
+      </div>
+
+      {/* Progress Bar */}
+      {!isComplete() && !hasError() && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-medium">{phase}</span>
+            <span className="text-muted-foreground">{progress}%</span>
+          </div>
+          <Progress value={progress} className="h-2" />
+        </div>
+      )}
+
+      {/* Current Message */}
+      {!isComplete() && (
+        <div className="text-sm text-muted-foreground break-words whitespace-normal">
+          {message}
+        </div>
+      )}
+
+      {/* Live Summary Filters */}
+      {!result && liveTotal > 0 && (
+        <div className="grid grid-cols-4 gap-2">
+          <Button
+            variant={filter === "healthy" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setFilter(filter === "healthy" ? "all" : "healthy")}
+            className="flex flex-col h-auto py-2"
+          >
+            <div className="text-xl font-bold text-green-600">
+              {liveHealthy}
+            </div>
+            <div className="text-xs">Healthy</div>
+          </Button>
+          <Button
+            variant={filter === "warning" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setFilter(filter === "warning" ? "all" : "warning")}
+            className="flex flex-col h-auto py-2"
+          >
+            <div className="text-xl font-bold text-yellow-600">
+              {liveWarning}
+            </div>
+            <div className="text-xs">Warnings</div>
+          </Button>
+          <Button
+            variant={filter === "critical" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setFilter(filter === "critical" ? "all" : "critical")}
+            className="flex flex-col h-auto py-2"
+          >
+            <div className="text-xl font-bold text-red-600">
+              {liveCritical}
+            </div>
+            <div className="text-xs">Critical</div>
+          </Button>
+          <Button
+            variant={filter === "all" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setFilter("all")}
+            className="flex flex-col h-auto py-2"
+          >
+            <div className="text-xl font-bold">
+              {liveTotal}
+            </div>
+            <div className="text-xs">Total</div>
+          </Button>
+        </div>
+      )}
+
+      {/* Event Log */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium">Log de Eventos</h3>
+          {filter !== "all" && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setFilter("all")}
+              className="h-6 text-xs"
+            >
+              Limpar filtro
+            </Button>
+          )}
+        </div>
+        <ScrollArea className="h-[350px] rounded-md border p-4">
+          <div className="space-y-2 max-w-full overflow-hidden">
+            {filteredEvents.length === 0 && events.length === 0 && (
+              <div className="text-sm text-muted-foreground text-center py-4">
+                Aguardando eventos...
+              </div>
+            )}
+
+            {filteredEvents.length === 0 && events.length > 0 && (
+              <div className="text-sm text-muted-foreground text-center py-4">
+                Nenhum evento encontrado para o filtro selecionado
+              </div>
+            )}
+
+            {filteredEvents.map((event, i) => {
+              const badgeProps = getEventBadgeProps(event.status);
+              return (
+                <div key={i} className="flex items-start justify-between gap-2 text-sm border-b pb-2">
+                  <div className="flex-1 space-y-1 min-w-0" style={{ maxWidth: "calc(100% - 80px)" }}>
+                    <div
+                      className="font-medium"
+                      style={{
+                        wordBreak: "break-word",
+                        overflowWrap: "break-word",
+                        whiteSpace: "normal",
+                        maxWidth: "100%"
+                      }}
+                    >
+                      {event.message}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {new Date(event.timestamp).toLocaleTimeString()}
+                    </div>
+                  </div>
+                  <Badge
+                    variant={badgeProps.variant}
+                    className={`text-xs shrink-0 ${badgeProps.className || ''}`}
+                  >
+                    {getEventBadgeLabel(event.status)}
+                  </Badge>
+                </div>
+              );
+            })}
+          </div>
+        </ScrollArea>
+      </div>
+
+      {/* Summary Filters (when complete) */}
+      {result && (
+        <div className="grid grid-cols-4 gap-2">
+          <Button
+            variant={filter === "healthy" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setFilter(filter === "healthy" ? "all" : "healthy")}
+            className="flex flex-col h-auto py-2"
+          >
+            <div className="text-xl font-bold text-green-600">
+              {result.healthy_count}
+            </div>
+            <div className="text-xs">Healthy</div>
+          </Button>
+          <Button
+            variant={filter === "warning" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setFilter(filter === "warning" ? "all" : "warning")}
+            className="flex flex-col h-auto py-2"
+          >
+            <div className="text-xl font-bold text-yellow-600">
+              {result.warning_count}
+            </div>
+            <div className="text-xs">Warnings</div>
+          </Button>
+          <Button
+            variant={filter === "critical" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setFilter(filter === "critical" ? "all" : "critical")}
+            className="flex flex-col h-auto py-2"
+          >
+            <div className="text-xl font-bold text-red-600">
+              {result.critical_count}
+            </div>
+            <div className="text-xs">Critical</div>
+          </Button>
+          <Button
+            variant={filter === "all" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setFilter("all")}
+            className="flex flex-col h-auto py-2"
+          >
+            <div className="text-xl font-bold">
+              {result.total_checks}
+            </div>
+            <div className="text-xs">Total</div>
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Componente principal do modal
+export const HealthCheckProgressModal = ({
+  sessionId,
+  clusterSessions,
+  open,
+  onOpenChange,
+  onComplete,
+}: HealthCheckProgressModalProps) => {
+  const [activeTab, setActiveTab] = useState<string>("");
+  const [completedClusters, setCompletedClusters] = useState<Set<string>>(new Set());
+  const [failedClusters, setFailedClusters] = useState<Set<string>>(new Set());
+
+  // Extrair clusters do clusterSessions
+  const clusters = Object.keys(clusterSessions);
+
+  // ✅ Resetar estado quando modal fechar
+  useEffect(() => {
+    if (!open) {
+      setCompletedClusters(new Set());
+      setFailedClusters(new Set());
+      setActiveTab("");
+    } else {
+      // Auto-select primeiro cluster ao abrir
+      if (clusters.length > 0 && !activeTab) {
+        setActiveTab(clusters[0]);
+      }
+    }
+  }, [open, clusters, activeTab]);
+
+  // Handle complete de um cluster específico
+  const handleClusterComplete = (cluster: string) => (result: HealthCheckResult) => {
+    console.log(`[${cluster}] Health check completed:`, result);
+    setCompletedClusters(prev => new Set(prev).add(cluster));
+    onComplete(result);
+  };
+
+  // Handle error de um cluster específico
+  const handleClusterError = (cluster: string) => (error: string) => {
+    console.error(`[${cluster}] Health check error:`, error);
+    setFailedClusters(prev => new Set(prev).add(cluster));
+    toast.error(`[${cluster}] Erro na conexão SSE`);
+  };
+
+  // Handle cancel
+  const handleCancel = () => {
+    toast.info("Health check cancelado");
+    onOpenChange(false);
+  };
+
+  // Status geral
+  const allCompleted = completedClusters.size === clusters.length;
+  const hasFailures = failedClusters.size > 0;
+
+  return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[80vh] overflow-hidden">
+      <DialogContent className="max-w-4xl max-h-[85vh] overflow-hidden">
         <DialogHeader>
           <div className="flex items-center gap-2">
-            {getStatusIcon()}
+            {allCompleted ? (
+              <CheckCircle2 className="h-6 w-6 text-green-600" />
+            ) : hasFailures ? (
+              <XCircle className="h-6 w-6 text-red-600" />
+            ) : (
+              <Loader2 className="h-6 w-6 text-blue-600 animate-spin" />
+            )}
             <DialogTitle>
-              {isComplete() ? "Health Check Concluído" : "Health Check em Progresso"}
+              {allCompleted
+                ? "Health Check Concluído"
+                : `Health Check em Progresso (${completedClusters.size}/${clusters.length})`}
             </DialogTitle>
           </div>
           <DialogDescription>
-            {isComplete()
-              ? "Análise completa do cluster"
-              : "Verificando saúde dos recursos do cluster..."}
+            {allCompleted
+              ? "Análise completa de todos os clusters"
+              : "Verificando saúde dos recursos dos clusters..."}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 overflow-x-hidden">
-          {/* Progress Bar */}
-          {!isComplete() && !hasError() && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="font-medium">{phase}</span>
-                <span className="text-muted-foreground">{progress}%</span>
-              </div>
-              <Progress value={progress} className="h-2" />
-            </div>
-          )}
-
-          {/* Current Message */}
-          {!isComplete() && (
-            <div className="text-sm text-muted-foreground break-words whitespace-normal">
-              {message}
-            </div>
-          )}
-
-          {/* Live Summary Filters (durante progresso) */}
-          {!result && liveTotal > 0 && (
-            <div className="grid grid-cols-4 gap-2">
-              <Button
-                variant={filter === "healthy" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilter(filter === "healthy" ? "all" : "healthy")}
-                className="flex flex-col h-auto py-3"
-              >
-                <div className="text-2xl font-bold text-green-600">
-                  {liveHealthy}
-                </div>
-                <div className="text-xs">Healthy</div>
-              </Button>
-              <Button
-                variant={filter === "warning" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilter(filter === "warning" ? "all" : "warning")}
-                className="flex flex-col h-auto py-3"
-              >
-                <div className="text-2xl font-bold text-yellow-600">
-                  {liveWarning}
-                </div>
-                <div className="text-xs">Warnings</div>
-              </Button>
-              <Button
-                variant={filter === "critical" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilter(filter === "critical" ? "all" : "critical")}
-                className="flex flex-col h-auto py-3"
-              >
-                <div className="text-2xl font-bold text-red-600">
-                  {liveCritical}
-                </div>
-                <div className="text-xs">Critical</div>
-              </Button>
-              <Button
-                variant={filter === "all" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilter("all")}
-                className="flex flex-col h-auto py-3"
-              >
-                <div className="text-2xl font-bold">
-                  {liveTotal}
-                </div>
-                <div className="text-xs">Total</div>
-              </Button>
-            </div>
-          )}
-
-          {/* Event Log */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium">Log de Eventos</h3>
-              {filter !== "all" && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setFilter("all")}
-                  className="h-6 text-xs"
-                >
-                  Limpar filtro
-                </Button>
-              )}
-            </div>
-            <ScrollArea className="h-[400px] rounded-md border p-4">
-              <div className="space-y-2 max-w-full overflow-hidden">
-                {filteredEvents.length === 0 && events.length === 0 && (
-                  <div className="text-sm text-muted-foreground text-center py-4">
-                    Aguardando eventos...
-                  </div>
-                )}
-
-                {filteredEvents.length === 0 && events.length > 0 && (
-                  <div className="text-sm text-muted-foreground text-center py-4">
-                    Nenhum evento encontrado para o filtro selecionado
-                  </div>
-                )}
-
-                {filteredEvents.map((event, i) => {
-                  const badgeProps = getEventBadgeProps(event.status);
-                  return (
-                    <div key={i} className="flex items-start justify-between gap-2 text-sm border-b pb-2">
-                      <div className="flex-1 space-y-1 min-w-0" style={{ maxWidth: "calc(100% - 80px)" }}>
-                        <div
-                          className="font-medium"
-                          style={{
-                            wordBreak: "break-word",
-                            overflowWrap: "break-word",
-                            whiteSpace: "normal",
-                            maxWidth: "100%"
-                          }}
-                        >
-                          {event.message}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {new Date(event.timestamp).toLocaleTimeString()}
-                        </div>
-                      </div>
-                      <Badge
-                        variant={badgeProps.variant}
-                        className={`text-xs shrink-0 ${badgeProps.className || ''}`}
-                      >
-                        {getEventBadgeLabel(event.status)}
-                      </Badge>
+          {/* Tabs para cada cluster */}
+          {clusters.length === 1 ? (
+            // Caso especial: 1 cluster apenas - não mostrar tabs
+            <ClusterTabContent
+              cluster={clusters[0]}
+              sessionId={clusterSessions[clusters[0]]}
+              enabled={open}
+              onComplete={handleClusterComplete(clusters[0])}
+              onError={handleClusterError(clusters[0])}
+            />
+          ) : (
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+              <TabsList className="grid w-full" style={{ gridTemplateColumns: `repeat(${clusters.length}, 1fr)` }}>
+                {clusters.map((cluster) => (
+                  <TabsTrigger key={cluster} value={cluster} className="relative">
+                    <div className="flex items-center gap-2">
+                      <Server className="h-4 w-4" />
+                      <span className="truncate max-w-[150px]">{cluster}</span>
+                      {completedClusters.has(cluster) && (
+                        <CheckCircle2 className="h-3 w-3 text-green-600 absolute -top-1 -right-1" />
+                      )}
+                      {failedClusters.has(cluster) && (
+                        <XCircle className="h-3 w-3 text-red-600 absolute -top-1 -right-1" />
+                      )}
                     </div>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          </div>
+                  </TabsTrigger>
+                ))}
+              </TabsList>
 
-          {/* Summary Filters (when complete) */}
-          {result && (
-            <div className="grid grid-cols-4 gap-2">
-              <Button
-                variant={filter === "healthy" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilter(filter === "healthy" ? "all" : "healthy")}
-                className="flex flex-col h-auto py-3"
-              >
-                <div className="text-2xl font-bold text-green-600">
-                  {result.healthy_count}
-                </div>
-                <div className="text-xs">Healthy</div>
-              </Button>
-              <Button
-                variant={filter === "warning" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilter(filter === "warning" ? "all" : "warning")}
-                className="flex flex-col h-auto py-3"
-              >
-                <div className="text-2xl font-bold text-yellow-600">
-                  {result.warning_count}
-                </div>
-                <div className="text-xs">Warnings</div>
-              </Button>
-              <Button
-                variant={filter === "critical" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilter(filter === "critical" ? "all" : "critical")}
-                className="flex flex-col h-auto py-3"
-              >
-                <div className="text-2xl font-bold text-red-600">
-                  {result.critical_count}
-                </div>
-                <div className="text-xs">Critical</div>
-              </Button>
-              <Button
-                variant={filter === "all" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilter("all")}
-                className="flex flex-col h-auto py-3"
-              >
-                <div className="text-2xl font-bold">
-                  {result.total_checks}
-                </div>
-                <div className="text-xs">Total</div>
-              </Button>
-            </div>
+              {clusters.map((cluster) => (
+                <TabsContent key={cluster} value={cluster} className="mt-4">
+                  <ClusterTabContent
+                    cluster={cluster}
+                    sessionId={clusterSessions[cluster]}
+                    enabled={open && activeTab === cluster}
+                    onComplete={handleClusterComplete(cluster)}
+                    onError={handleClusterError(cluster)}
+                  />
+                </TabsContent>
+              ))}
+            </Tabs>
           )}
 
           {/* Actions */}
-          <div className="flex justify-between gap-2">
+          <div className="flex justify-between gap-2 pt-4 border-t">
             {/* Cancel/Stop button - only show when in progress */}
-            {!isComplete() && !hasError() && (
+            {!allCompleted && (
               <Button
                 variant="destructive"
                 onClick={handleCancel}
-                disabled={!isConnected}
+                size="sm"
               >
                 <X className="mr-2 h-4 w-4" />
                 Cancelar
               </Button>
             )}
 
-            {/* Close/Minimize button */}
+            {/* Close button */}
             <div className="flex gap-2 ml-auto">
-              {isComplete() ? (
-                <Button onClick={() => onOpenChange(false)}>
+              {allCompleted ? (
+                <Button onClick={() => onOpenChange(false)} size="sm">
                   <CheckCircle2 className="mr-2 h-4 w-4" />
                   Fechar
                 </Button>
               ) : (
-                <Button variant="outline" onClick={() => onOpenChange(false)}>
+                <Button variant="outline" onClick={() => onOpenChange(false)} size="sm">
                   <X className="mr-2 h-4 w-4" />
                   Minimizar
                 </Button>

@@ -41,6 +41,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   const {
     isRunning,
     sessionId,
+    clusterSessions,
     results,
     runHealthCheck,
     reset,
@@ -447,6 +448,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       {sessionId && showProgressModal && (
         <HealthCheckProgressModal
           sessionId={sessionId}
+          clusterSessions={clusterSessions}
           open={showProgressModal}
           onOpenChange={(open) => {
             setShowProgressModal(open);

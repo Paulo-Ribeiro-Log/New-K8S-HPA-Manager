@@ -59,45 +59,63 @@ func (h *HealthCheckHandler) Run(c *gin.Context) {
 		return
 	}
 
-	// Gerar ID da sessão
-	sessionID := uuid.New().String()
+	// Gerar ID da sessão base
+	baseSessionID := uuid.New().String()
+
+	// Resolver clusters para obter lista completa
+	clusters, err := h.orchestrator.ResolveClusters(req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"message": fmt.Sprintf("Failed to resolve clusters: %v", err),
+			},
+		})
+		return
+	}
+
+	// Gerar mapeamento cluster -> sessionID
+	clusterSessions := h.orchestrator.GetClusterSessionMapping(baseSessionID, clusters)
 
 	// Executar em goroutine (long-running operation)
 	go func() {
 		ctx := context.Background()
 
 		log.Info().
-			Str("session_id", sessionID).
+			Str("base_session_id", baseSessionID).
 			Str("environment", string(req.Environment)).
-			Int("clusters", len(req.Clusters)).
+			Int("clusters", len(clusters)).
 			Msg("Starting health check")
 
-		results, err := h.orchestrator.ExecuteHealthCheck(ctx, sessionID, req)
+		results, err := h.orchestrator.ExecuteHealthCheck(ctx, baseSessionID, req)
 		if err != nil {
-			log.Error().Err(err).Str("session_id", sessionID).Msg("Health check failed")
+			log.Error().Err(err).Str("base_session_id", baseSessionID).Msg("Health check failed")
 
-			// Publicar evento de erro via SSE
-			h.tracker.SendToClient(sessionID, sse.ProgressEvent{
-				ID:        sessionID,
-				Type:      "error",
-				Phase:     "failed",
-				Message:   fmt.Sprintf("Health check failed: %v", err),
-				Progress:  0,
-				Timestamp: time.Now(),
-			})
+			// Publicar evento de erro via SSE para todos os clusters
+			for _, sessionID := range clusterSessions {
+				h.tracker.SendToClient(sessionID, sse.ProgressEvent{
+					ID:        sessionID,
+					Type:      "error",
+					Phase:     "failed",
+					Message:   fmt.Sprintf("Health check failed: %v", err),
+					Progress:  0,
+					Timestamp: time.Now(),
+				})
+			}
 			return
 		}
 
 		log.Info().
-			Str("session_id", sessionID).
+			Str("base_session_id", baseSessionID).
 			Int("total_results", len(results)).
 			Msg("Health check completed")
 	}()
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"success":    true,
-		"session_id": sessionID,
-		"message":    "Health check iniciado",
+		"success":         true,
+		"session_id":      baseSessionID,
+		"cluster_sessions": clusterSessions, // Map: cluster -> sessionID
+		"message":         "Health check iniciado",
 	})
 }
 
