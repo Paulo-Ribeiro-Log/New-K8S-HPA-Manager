@@ -146,7 +146,8 @@ export interface HealthCheckProgress {
 // Response da API
 export interface HealthCheckRunResponse {
   success: boolean;
-  session_id: string;
+  session_id: string;             // Base session ID
+  cluster_sessions: Record<string, string>; // Map: cluster -> sessionID único
   message: string;
 }
 

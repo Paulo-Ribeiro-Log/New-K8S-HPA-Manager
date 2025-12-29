@@ -46,7 +46,7 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 // ExecuteHealthCheck executa health check em um ou mais clusters
 func (o *Orchestrator) ExecuteHealthCheck(ctx context.Context, sessionID string, req HealthCheckRequest) ([]*HealthCheckResult, error) {
 	// Resolver clusters baseado em Environment ou Clusters
-	clusters, err := o.resolveClusters(req)
+	clusters, err := o.ResolveClusters(req)
 	if err != nil {
 		return nil, err
 	}
@@ -342,16 +342,23 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 }
 
 // executeMultiClusterCheck executa health check em múltiplos clusters com worker pool
+// Retorna um map de cluster -> sessionID gerado para cada cluster
 func (o *Orchestrator) executeMultiClusterCheck(ctx context.Context, sessionID string, clusters []string, req HealthCheckRequest, numWorkers int) ([]*HealthCheckResult, error) {
-	clusterChan := make(chan string, len(clusters))
+	type clusterJob struct {
+		cluster   string
+		sessionID string
+	}
+
+	jobsChan := make(chan clusterJob, len(clusters))
 	resultsChan := make(chan *HealthCheckResult, len(clusters))
 	errorsChan := make(chan error, len(clusters))
 
-	// Enfileirar clusters
+	// Gerar sessionID único por cluster e enfileirar jobs
 	for _, cluster := range clusters {
-		clusterChan <- cluster
+		clusterSessionID := fmt.Sprintf("%s-%s", sessionID, cluster) // sessionID-base + cluster name
+		jobsChan <- clusterJob{cluster: cluster, sessionID: clusterSessionID}
 	}
-	close(clusterChan)
+	close(jobsChan)
 
 	// Iniciar workers
 	var wg sync.WaitGroup
@@ -360,20 +367,21 @@ func (o *Orchestrator) executeMultiClusterCheck(ctx context.Context, sessionID s
 		go func(workerID int) {
 			defer wg.Done()
 
-			for cluster := range clusterChan {
+			for job := range jobsChan {
 				log.Info().
 					Int("worker_id", workerID).
-					Str("cluster", cluster).
+					Str("cluster", job.cluster).
+					Str("session_id", job.sessionID).
 					Msg("Worker processing cluster")
 
-				result, err := o.executeClusterCheck(ctx, sessionID, cluster, req)
+				result, err := o.executeClusterCheck(ctx, job.sessionID, job.cluster, req)
 				if err != nil {
 					log.Error().
 						Err(err).
 						Int("worker_id", workerID).
-						Str("cluster", cluster).
+						Str("cluster", job.cluster).
 						Msg("Worker failed to process cluster")
-					errorsChan <- fmt.Errorf("cluster %s: %w", cluster, err)
+					errorsChan <- fmt.Errorf("cluster %s: %w", job.cluster, err)
 					continue
 				}
 
@@ -407,6 +415,15 @@ func (o *Orchestrator) executeMultiClusterCheck(ctx context.Context, sessionID s
 	}
 
 	return results, nil
+}
+
+// GetClusterSessionMapping retorna mapeamento cluster -> sessionID para múltiplos clusters
+func (o *Orchestrator) GetClusterSessionMapping(baseSessionID string, clusters []string) map[string]string {
+	mapping := make(map[string]string)
+	for _, cluster := range clusters {
+		mapping[cluster] = fmt.Sprintf("%s-%s", baseSessionID, cluster)
+	}
+	return mapping
 }
 
 // calculateSummary calcula resumo do health check
@@ -525,8 +542,8 @@ func calculateWorkers(numClusters, maxParallel int) int {
 	return numWorkers
 }
 
-// resolveClusters resolve lista de clusters baseado em Environment ou Clusters
-func (o *Orchestrator) resolveClusters(req HealthCheckRequest) ([]string, error) {
+// ResolveClusters resolve lista de clusters baseado em Environment ou Clusters (método público)
+func (o *Orchestrator) ResolveClusters(req HealthCheckRequest) ([]string, error) {
 	// Modo 1: Filtro por ambiente (prioritário)
 	if req.Environment != "" {
 		return o.filterClustersByEnvironment(req.Environment)

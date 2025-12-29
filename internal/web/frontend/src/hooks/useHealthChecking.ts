@@ -11,6 +11,7 @@ export function useHealthChecking() {
 
   const [isRunning, setIsRunning] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [clusterSessions, setClusterSessions] = useState<Record<string, string>>({});
   const [results, setResults] = useState<HealthCheckResult[]>([]);
   const [history, setHistory] = useState<HealthCheckResult[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
@@ -29,7 +30,9 @@ export function useHealthChecking() {
 
         if (response.success) {
           setSessionId(response.session_id);
+          setClusterSessions(response.cluster_sessions);
           console.log("[useHealthChecking] Session ID set:", response.session_id);
+          console.log("[useHealthChecking] Cluster sessions:", response.cluster_sessions);
           toast({
             title: "✅ Health Check Iniciado",
             description: response.message,
@@ -200,6 +203,7 @@ export function useHealthChecking() {
   const reset = useCallback(() => {
     setIsRunning(false);
     setSessionId(null);
+    setClusterSessions({});
     setResults([]);
   }, []);
 
@@ -215,6 +219,7 @@ export function useHealthChecking() {
     // State
     isRunning,
     sessionId,
+    clusterSessions,
     results,
     history,
     isLoadingHistory,
