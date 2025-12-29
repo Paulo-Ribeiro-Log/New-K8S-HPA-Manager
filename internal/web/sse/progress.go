@@ -5,16 +5,19 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // ProgressEvent representa um evento de progresso enviado via SSE
 type ProgressEvent struct {
 	ID        string    `json:"id"`         // ID da operação (ex: "nodepool-prod-pool-1234")
-	Type      string    `json:"type"`       // "cordon" | "drain" | "azure" | "complete" | "error"
+	Type      string    `json:"type"`       // "cordon" | "drain" | "azure" | "complete" | "error" | "init" | "deployments" | "services" | "configs" | "summary"
 	Phase     string    `json:"phase"`      // "started" | "in_progress" | "completed" | "failed"
 	Message   string    `json:"message"`    // Mensagem descritiva
 	Progress  float64   `json:"progress"`   // 0.0 - 1.0
 	Details   string    `json:"details"`    // Detalhes adicionais
+	Status    string    `json:"status"`     // "healthy" | "warning" | "critical" | "unknown" (para health checking)
 	Timestamp time.Time `json:"timestamp"`  // Timestamp do evento
 	NodeName  string    `json:"node_name"`  // Nome do node sendo processado (se aplicável)
 	PodsCount int       `json:"pods_count"` // Quantidade de pods (se aplicável)
@@ -120,6 +123,14 @@ func (pt *ProgressTracker) SendToClient(clientID string, event ProgressEvent) {
 	client, exists := pt.GetClient(clientID)
 	if exists {
 		client.Send(event)
+	} else {
+		// Cliente não encontrado - provavelmente ainda não conectou via SSE
+		// Isso pode acontecer se ExecuteHealthCheck começar antes do EventSource conectar
+		log.Warn().
+			Str("client_id", clientID).
+			Str("event_type", event.Type).
+			Float64("progress", event.Progress).
+			Msg("[SSE] Cliente não encontrado no tracker - evento perdido")
 	}
 }
 

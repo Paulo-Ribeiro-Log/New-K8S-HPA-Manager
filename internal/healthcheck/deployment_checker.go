@@ -12,6 +12,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// ProgressCallback é chamado para publicar progresso de cada deployment
+type ProgressCallback func(namespace, name, message string, status HealthStatus, current, total int)
+
 // DeploymentChecker valida saúde de Deployments
 type DeploymentChecker struct{}
 
@@ -21,8 +24,21 @@ func NewDeploymentChecker() *DeploymentChecker {
 }
 
 // CheckAll verifica todos os deployments nos namespaces especificados
-func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, timeout int) []DeploymentHealth {
+func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, timeout int, progressCallback ProgressCallback) []DeploymentHealth {
 	results := []DeploymentHealth{}
+
+	// Primeiro, contar total de deployments para calcular progresso
+	totalDeployments := 0
+	for _, ns := range namespaces {
+		deployments, err := client.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			log.Error().Err(err).Str("namespace", ns).Msg("Failed to list deployments")
+			continue
+		}
+		totalDeployments += len(deployments.Items)
+	}
+
+	currentDeployment := 0
 
 	for _, ns := range namespaces {
 		deployments, err := client.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
@@ -32,12 +48,34 @@ func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Inte
 		}
 
 		for _, d := range deployments.Items {
+			currentDeployment++
+
+			// Publicar evento: verificando deployment
+			if progressCallback != nil {
+				progressCallback(ns, d.Name, fmt.Sprintf("Verificando deployment %s/%s...", ns, d.Name), StatusHealthy, currentDeployment, totalDeployments)
+			}
+
 			health := c.Check(ctx, client, ns, d.Name, timeout)
 			results = append(results, health)
+
+			// Publicar resultado do deployment
+			if progressCallback != nil {
+				summary := c.getHealthSummary(health)
+				progressCallback(ns, d.Name, fmt.Sprintf("%s/%s: %s", ns, d.Name, summary), health.Status, currentDeployment, totalDeployments)
+			}
 		}
 	}
 
 	return results
+}
+
+// getHealthSummary gera resumo compacto do health check
+func (c *DeploymentChecker) getHealthSummary(health DeploymentHealth) string {
+	if health.Status == StatusHealthy {
+		return fmt.Sprintf("%d/%d réplicas prontas", health.ReplicasReady, health.ReplicasDesired)
+	}
+	// Para warning/critical, usar mensagem completa
+	return health.Message
 }
 
 // Check verifica a saúde de um deployment específico

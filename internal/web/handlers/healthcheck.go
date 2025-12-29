@@ -115,12 +115,17 @@ func (h *HealthCheckHandler) Progress(c *gin.Context) {
 		return
 	}
 
-	log.Info().Str("session_id", sessionID).Msg("Client connected to progress stream")
+	log.Info().Str("session_id", sessionID).Msg("[SSE] Client connected to progress stream")
 
 	// Criar cliente SSE para esta sessão
 	client := sse.NewClient(sessionID)
 	h.tracker.AddClient(client)
-	defer h.tracker.RemoveClient(sessionID)
+	defer func() {
+		h.tracker.RemoveClient(sessionID)
+		log.Info().Str("session_id", sessionID).Msg("[SSE] Client removed from tracker")
+	}()
+
+	log.Info().Str("session_id", sessionID).Msg("[SSE] Client added to tracker, waiting for events")
 
 	// Set SSE headers
 	c.Header("Content-Type", "text/event-stream")
@@ -132,21 +137,30 @@ func (h *HealthCheckHandler) Progress(c *gin.Context) {
 		select {
 		case event, ok := <-client.Channel:
 			if !ok {
+				log.Warn().Str("session_id", sessionID).Msg("[SSE] Channel closed")
 				return false
 			}
+
+			log.Info().
+				Str("session_id", sessionID).
+				Str("type", event.Type).
+				Str("message", event.Message).
+				Float64("progress", event.Progress).
+				Msg("[SSE] Sending event to client")
 
 			// Marshal event to JSON
 			c.SSEvent("progress", event)
 
 			// Fechar stream se tipo for "complete" ou "error"
 			if event.Type == "complete" || event.Type == "error" {
+				log.Info().Str("session_id", sessionID).Str("type", event.Type).Msg("[SSE] Closing stream (complete/error)")
 				return false
 			}
 
 			return true
 
 		case <-c.Request.Context().Done():
-			log.Info().Str("session_id", sessionID).Msg("Client disconnected from progress stream")
+			log.Info().Str("session_id", sessionID).Msg("[SSE] Client disconnected from progress stream")
 			return false
 		}
 	})

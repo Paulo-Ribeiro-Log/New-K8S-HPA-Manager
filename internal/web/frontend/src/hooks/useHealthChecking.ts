@@ -20,18 +20,23 @@ export function useHealthChecking() {
    */
   const runHealthCheck = useCallback(
     async (request: HealthCheckRequest) => {
+      console.log("[useHealthChecking] runHealthCheck called with request:", request);
       setIsRunning(true);
       try {
+        console.log("[useHealthChecking] Calling apiClient.runHealthCheck...");
         const response = await apiClient.runHealthCheck(request);
+        console.log("[useHealthChecking] Response received:", response);
 
         if (response.success) {
           setSessionId(response.session_id);
+          console.log("[useHealthChecking] Session ID set:", response.session_id);
           toast({
             title: "✅ Health Check Iniciado",
             description: response.message,
           });
           return response.session_id;
         } else {
+          console.error("[useHealthChecking] Response not successful:", response);
           toast({
             title: "❌ Erro ao iniciar health check",
             description: "Falha ao iniciar health check",
@@ -40,7 +45,7 @@ export function useHealthChecking() {
           return null;
         }
       } catch (error) {
-        console.error("Failed to run health check:", error);
+        console.error("[useHealthChecking] Exception caught:", error);
         toast({
           title: "❌ Erro ao executar health check",
           description: error instanceof Error ? error.message : "Erro desconhecido",

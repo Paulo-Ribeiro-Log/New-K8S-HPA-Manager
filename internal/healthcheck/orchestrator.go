@@ -58,6 +58,11 @@ func (o *Orchestrator) ExecuteHealthCheck(ctx context.Context, sessionID string,
 		Int("cluster_count", len(clusters)).
 		Msg("Starting health check")
 
+	// ⏱️ Aguardar 500ms para garantir que cliente SSE conecte antes de publicar eventos
+	// (Evita race condition: events publicados antes do cliente registrar no tracker)
+	time.Sleep(500 * time.Millisecond)
+	log.Debug().Str("session_id", sessionID).Msg("SSE client connection grace period completed")
+
 	// Validação
 	if len(clusters) == 0 {
 		return nil, fmt.Errorf("no clusters specified or found for environment")
@@ -95,57 +100,93 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 	// Obter cliente Kubernetes
 	client, err := o.kubeManager.GetClient(cluster)
 	if err != nil {
+		// Publicar erro via SSE antes de retornar
+		o.publishProgress(sessionID, cluster, "error", fmt.Sprintf("Falha ao conectar: %v", err), 0, StatusCritical)
 		return nil, fmt.Errorf("failed to get kubernetes client for %s: %w", cluster, err)
 	}
 
 	// Determinar namespaces
 	namespaces := req.Namespaces
 	if len(namespaces) == 0 {
+		o.publishProgress(sessionID, cluster, "init", "Buscando todos os namespaces do cluster...", 0, StatusHealthy)
 		namespaces, err = getAllNamespaces(ctx, client)
 		if err != nil {
+			// Publicar erro via SSE antes de retornar
+			o.publishProgress(sessionID, cluster, "error", fmt.Sprintf("Falha ao obter namespaces: %v", err), 0, StatusCritical)
 			return nil, fmt.Errorf("failed to get namespaces for %s: %w", cluster, err)
 		}
+		o.publishProgress(sessionID, cluster, "init", fmt.Sprintf("%d namespace(s) encontrado(s): %v", len(namespaces), namespaces), 5, StatusHealthy)
+	} else {
+		o.publishProgress(sessionID, cluster, "init", fmt.Sprintf("Verificando %d namespace(s) especificado(s): %v", len(namespaces), namespaces), 5, StatusHealthy)
 	}
 
 	// Executar checks em paralelo (dentro do cluster)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	totalPhases := 0
+	// ✅ Calcular faixas de progresso DINÂMICAS baseadas nos checks habilitados
+	const (
+		progressInit     = 5  // 0-5%: Inicialização
+		progressSummary  = 95 // 95-100%: Summary
+		availableRange   = 90 // 5-95% disponível para dividir entre checks
+	)
+
+	// Contar quantos checks estão habilitados
+	enabledChecks := 0
 	if req.CheckDeployments {
-		totalPhases++
+		enabledChecks++
 	}
 	if req.CheckServices {
-		totalPhases++
+		enabledChecks++
 	}
 	if req.CheckConfigs {
-		totalPhases++
+		enabledChecks++
 	}
-	currentPhase := 0
+
+	// Calcular quanto cada check vale (dividir 90% entre checks habilitados)
+	rangePerCheck := availableRange / enabledChecks
+	currentRangeStart := progressInit
 
 	// Check Deployments
 	if req.CheckDeployments {
+		deploymentStart := currentRangeStart
+		deploymentEnd := currentRangeStart + rangePerCheck
+		currentRangeStart = deploymentEnd
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			o.publishProgress(sessionID, cluster, "deployments", "Verificando deployments...", currentPhase*100/totalPhases, StatusHealthy)
+			o.publishProgress(sessionID, cluster, "deployments", fmt.Sprintf("Iniciando verificação de Deployments em %d namespace(s)...", len(namespaces)), deploymentStart, StatusHealthy)
 
-			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, namespaces, req.Timeout)
+			// Callback para publicar progresso de cada deployment
+			deploymentCallback := func(namespace, name, message string, status HealthStatus, current, total int) {
+				// Calcular progresso proporcional dentro da faixa alocada para deployments
+				// Exemplo: se deploymentStart=5 e deploymentEnd=35 (range=30):
+				//   deployment 15/30 = 5 + (15/30 * 30) = 20%
+				deploymentProgress := deploymentStart + int(float64(current)/float64(total)*float64(rangePerCheck))
+				o.publishProgress(sessionID, cluster, "deployments", message, deploymentProgress, status)
+			}
+
+			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, namespaces, req.Timeout, deploymentCallback)
 
 			mu.Lock()
 			result.DeploymentResults = deploymentResults
 			mu.Unlock()
 
-			currentPhase++
+			o.publishProgress(sessionID, cluster, "deployments", fmt.Sprintf("%d deployment(s) verificado(s)", len(deploymentResults)), deploymentEnd, StatusHealthy)
 		}()
 	}
 
 	// Check Services
 	if req.CheckServices {
+		servicesStart := currentRangeStart
+		servicesEnd := currentRangeStart + rangePerCheck
+		currentRangeStart = servicesEnd
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			o.publishProgress(sessionID, cluster, "services", "Testando conectividade de serviços...", currentPhase*100/totalPhases, StatusHealthy)
+			o.publishProgress(sessionID, cluster, "services", fmt.Sprintf("Iniciando testes de conectividade de serviços externos em %d namespace(s)...", len(namespaces)), servicesStart, StatusHealthy)
 
 			serviceResults := o.serviceChecker.CheckAll(ctx, client, namespaces, req.Timeout)
 
@@ -153,16 +194,20 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			result.ServiceResults = serviceResults
 			mu.Unlock()
 
-			currentPhase++
+			o.publishProgress(sessionID, cluster, "services", fmt.Sprintf("%d serviço(s) testado(s)", len(serviceResults)), servicesEnd, StatusHealthy)
 		}()
 	}
 
 	// Check Configs
 	if req.CheckConfigs {
+		configsStart := currentRangeStart
+		configsEnd := currentRangeStart + rangePerCheck
+		currentRangeStart = configsEnd
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			o.publishProgress(sessionID, cluster, "configs", "Validando ConfigMaps e Secrets...", currentPhase*100/totalPhases, StatusHealthy)
+			o.publishProgress(sessionID, cluster, "configs", fmt.Sprintf("Iniciando validação de ConfigMaps e Secrets em %d namespace(s)...", len(namespaces)), configsStart, StatusHealthy)
 
 			configResults := o.configChecker.CheckAll(ctx, client, namespaces)
 
@@ -170,7 +215,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			result.ConfigResults = configResults
 			mu.Unlock()
 
-			currentPhase++
+			o.publishProgress(sessionID, cluster, "configs", fmt.Sprintf("%d configuração(ões) validada(s)", len(configResults)), configsEnd, StatusHealthy)
 		}()
 	}
 
@@ -182,8 +227,102 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 	result.Duration = result.FinishedAt.Sub(result.StartedAt).Milliseconds()
 	o.calculateSummary(result)
 
+	// Publicar resumo detalhado
+	o.publishProgress(sessionID, cluster, "summary", fmt.Sprintf("Total: %d checks realizados", result.TotalChecks), 95, result.OverallStatus)
+	o.publishProgress(sessionID, cluster, "summary", fmt.Sprintf("Saudáveis: %d", result.HealthyCount), 96, StatusHealthy)
+
+	// Publicar detalhes dos problemas CRÍTICOS (limite de 10 para não sobrecarregar UI)
+	if result.CriticalCount > 0 {
+		o.publishProgress(sessionID, cluster, "summary", fmt.Sprintf("Críticos: %d", result.CriticalCount), 97, StatusCritical)
+
+		criticalShown := 0
+		maxCritical := 10
+
+		// Publicar primeiros 10 deployments críticos
+		for _, d := range result.DeploymentResults {
+			if d.Status == StatusCritical && criticalShown < maxCritical {
+				o.publishProgress(sessionID, cluster, "summary",
+					fmt.Sprintf("❌ Deployment %s/%s: %s", d.Namespace, d.Name, d.Message), 97, StatusCritical)
+				criticalShown++
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+
+		// Publicar primeiros serviços críticos (se ainda tiver espaço)
+		for _, s := range result.ServiceResults {
+			if s.Status == StatusCritical && criticalShown < maxCritical {
+				o.publishProgress(sessionID, cluster, "summary",
+					fmt.Sprintf("❌ Service %s/%s: %s", s.Namespace, s.Name, s.Message), 97, StatusCritical)
+				criticalShown++
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+
+		// Publicar primeiros configs críticos (se ainda tiver espaço)
+		for _, c := range result.ConfigResults {
+			if c.Status == StatusCritical && criticalShown < maxCritical {
+				o.publishProgress(sessionID, cluster, "summary",
+					fmt.Sprintf("❌ Config %s/%s: %s", c.Namespace, c.Name, c.Message), 97, StatusCritical)
+				criticalShown++
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+
+		// Avisar se há mais problemas
+		if result.CriticalCount > maxCritical {
+			o.publishProgress(sessionID, cluster, "summary",
+				fmt.Sprintf("... e mais %d problema(s) crítico(s). Veja abaixo nos resultados completos.", result.CriticalCount-criticalShown), 97, StatusCritical)
+		}
+	}
+
+	// Publicar detalhes dos problemas de AVISO (limite de 10)
+	if result.WarningCount > 0 {
+		o.publishProgress(sessionID, cluster, "summary", fmt.Sprintf("Avisos: %d", result.WarningCount), 98, StatusWarning)
+
+		warningShown := 0
+		maxWarning := 10
+
+		// Publicar primeiros 10 deployments warning
+		for _, d := range result.DeploymentResults {
+			if d.Status == StatusWarning && warningShown < maxWarning {
+				o.publishProgress(sessionID, cluster, "summary",
+					fmt.Sprintf("⚠️ Deployment %s/%s: %s", d.Namespace, d.Name, d.Message), 98, StatusWarning)
+				warningShown++
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+
+		// Publicar primeiros serviços warning
+		for _, s := range result.ServiceResults {
+			if s.Status == StatusWarning && warningShown < maxWarning {
+				o.publishProgress(sessionID, cluster, "summary",
+					fmt.Sprintf("⚠️ Service %s/%s: %s", s.Namespace, s.Name, s.Message), 98, StatusWarning)
+				warningShown++
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+
+		// Publicar primeiros configs warning
+		for _, c := range result.ConfigResults {
+			if c.Status == StatusWarning && warningShown < maxWarning {
+				o.publishProgress(sessionID, cluster, "summary",
+					fmt.Sprintf("⚠️ Config %s/%s: %s", c.Namespace, c.Name, c.Message), 98, StatusWarning)
+				warningShown++
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+
+		// Avisar se há mais problemas
+		if result.WarningCount > maxWarning {
+			o.publishProgress(sessionID, cluster, "summary",
+				fmt.Sprintf("... e mais %d aviso(s). Veja abaixo nos resultados completos.", result.WarningCount-warningShown), 98, StatusWarning)
+		}
+	}
+
+	o.publishProgress(sessionID, cluster, "summary", fmt.Sprintf("Duração: %dms", result.Duration), 99, StatusHealthy)
+
 	// Publicar conclusão
-	o.publishProgress(sessionID, cluster, "complete", "Health check concluído", 100, result.OverallStatus)
+	o.publishProgress(sessionID, cluster, "complete", fmt.Sprintf("Concluído - Status: %s", result.OverallStatus), 100, result.OverallStatus)
 
 	// Salvar no histórico
 	if err := o.storage.Save(ctx, result); err != nil {
@@ -318,9 +457,10 @@ func (o *Orchestrator) publishProgress(sessionID, cluster, phase, message string
 	event := sse.ProgressEvent{
 		ID:        sessionID,
 		Type:      phase,
-		Phase:     string(status),
+		Phase:     "in_progress",  // Fase da operação (sempre "in_progress" para health checking)
+		Status:    string(status), // ✅ CORRIGIDO: Status de saúde (healthy/warning/critical)
 		Message:   fmt.Sprintf("[%s] %s", cluster, message),
-		Progress:  float64(progress) / 100.0,
+		Progress:  float64(progress), // 0-100 direto (frontend espera 0-100)
 		Details:   cluster,
 		Timestamp: time.Now(),
 	}

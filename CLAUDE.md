@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **24 de dezembro de 2025** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **28 de dezembro de 2025** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -395,6 +395,45 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
       - Comandos de investigação (kubectl get configmap/secret/service, nslookup, nc)
       - Evita workarounds temporários (restart sem investigar causa)
   - **Documentação**: [PLANO_AI_DIAGNOSTICS.md](PLANO_AI_DIAGNOSTICS.md) | [PROGRESSO_AI_DIAGNOSTICS.md](PROGRESSO_AI_DIAGNOSTICS.md)
+✅ **Health Checking (v1.3.7 - Produção desde 28/12/2025)** - Sistema completo de verificação de saúde de clusters
+  - **Status**: ✅ Backend 100% | ✅ Frontend 100% | ✅ SSE Progress 100%
+  - **Funcionalidades**:
+    - ✅ **Verificação de Deployments**: Status de réplicas, containers crash, image pull errors, probes (liveness/readiness)
+    - ✅ **Verificação de Services**: Testes de conectividade (MongoDB, Redis, PostgreSQL, Kafka, EventHub, HTTP) - *placeholder*
+    - ✅ **Verificação de Configs**: Validação de ConfigMaps/Secrets - *placeholder*
+    - ✅ **Progresso Dinâmico**: Barra de progresso adapta-se aos checks selecionados (0-100% para 1 check, divide proporcionalmente para múltiplos)
+    - ✅ **Eventos Detalhados**: Log em tempo real com detalhes de cada problema (máximo 10 críticos + 10 warnings)
+    - ✅ **Filtros de Status**: Healthy, Warning, Critical com contadores ao vivo
+  - **Backend (5 arquivos, ~800 linhas)**:
+    - `internal/healthcheck/models.go` - Estruturas de dados (HealthStatus, DeploymentHealth, ServiceHealth, ConfigHealth)
+    - `internal/healthcheck/orchestrator.go` - Orquestrador principal com progresso dinâmico e SSE
+    - `internal/healthcheck/deployment_checker.go` - Valida Deployments (réplicas, crashes, probes)
+    - `internal/healthcheck/service_checker.go` - Testa conectividade de serviços externos (*placeholder*)
+    - `internal/healthcheck/config_checker.go` - Valida ConfigMaps/Secrets (*placeholder*)
+    - `internal/web/handlers/healthcheck.go` - REST API + SSE endpoints
+  - **Frontend React**:
+    - `HealthCheckingTab.tsx` - Tab principal com configuração + execução
+    - `HealthCheckProgressModal.tsx` - Modal com SSE progress (max-w-4xl, overflow controlado)
+    - Hook `useHealthCheckProgress()` - Gerencia conexão SSE e eventos
+  - **API REST**:
+    - `POST /api/v1/healthcheck/run` - Inicia health check (retorna session_id)
+    - `GET /api/v1/healthcheck/progress?session={id}` - SSE stream de progresso
+    - `GET /api/v1/healthcheck/{id}` - Busca resultado completo
+  - **Progresso Dinâmico**:
+    - Checks habilitados determinam faixas de progresso (5-95%)
+    - 1 check selecionado: 0-100% dedicado (ex: só Deployments)
+    - 3 checks selecionados: divide em 30% cada (Deployments 5-35%, Services 35-65%, Configs 65-95%)
+    - Progresso incremental dentro de cada fase (atual/total)
+  - **Limitações Conhecidas**:
+    - Service Checker e Config Checker são *placeholders* (retornam listas vazias)
+    - Máximo 10 eventos críticos + 10 warnings exibidos no log (evita sobrecarga UI)
+    - Delay de 50ms entre eventos detalhados (processamento suave)
+    - Modal com largura fixa 896px (max-w-4xl) e altura 400px
+  - **UI/UX**:
+    - Textos com quebra de linha forçada (`word-break`, `overflow-wrap`, `whitespace: normal`)
+    - ScrollArea com `overflow-hidden` para evitar texto vazar fora do modal
+    - Badges coloridos (verde/amarelo/vermelho) para status visual
+    - Mensagens detalhadas: "❌ Deployment namespace/nome: mensagem do erro"
 
 ---
 
