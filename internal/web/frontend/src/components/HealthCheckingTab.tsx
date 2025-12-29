@@ -37,11 +37,6 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   // Buscar TODOS os clusters disponíveis (independente do contexto)
   const { clusters: allClusters, loading: clustersLoading } = useClusters();
 
-  // Debug logs
-  console.log("[HealthCheckingTab] Rendered with:", {
-    allClustersCount: allClusters?.length || 0,
-  });
-
   // Health Check State
   const {
     isRunning,
@@ -63,6 +58,15 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   // Modal state
   const [showProgressModal, setShowProgressModal] = useState(false);
 
+  // Debug logs - executa após estado estar inicializado
+  useEffect(() => {
+    console.log("[HealthCheckingTab] State updated:", {
+      allClustersCount: allClusters?.length || 0,
+      allClusters: allClusters?.map(c => ({ name: c.name, context: c.context })),
+      selectedClusters,
+    });
+  }, [allClusters, selectedClusters]);
+
   // Auto-select clusters when environment changes
   useEffect(() => {
     if (!environment || !allClusters) return;
@@ -81,26 +85,35 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
         }
         return false;
       })
-      .map((c) => c.name);
+      .map((c) => c.context);  // ✅ Usar context (com -admin) ao invés de name
 
     setSelectedClusters(clustersToSelect);
   }, [environment, allClusters]);
 
   // Handle run health check
   const handleRun = async () => {
+    console.log("[HealthCheckingTab] handleRun called");
+    console.log("[HealthCheckingTab] selectedClusters:", selectedClusters);
+    console.log("[HealthCheckingTab] checkDeployments:", checkDeployments);
+    console.log("[HealthCheckingTab] checkServices:", checkServices);
+    console.log("[HealthCheckingTab] checkConfigs:", checkConfigs);
+
     // Validação
     if (selectedClusters.length === 0) {
+      console.error("[HealthCheckingTab] No clusters selected");
       toast.error("Selecione pelo menos um cluster");
       return;
     }
 
     if (!checkDeployments && !checkServices && !checkConfigs) {
+      console.error("[HealthCheckingTab] No check types selected");
       toast.error("Selecione pelo menos um tipo de check");
       return;
     }
 
     // Parse namespaces do input
     const namespaces = parseNamespaces();
+    console.log("[HealthCheckingTab] Parsed namespaces:", namespaces);
 
     // Construir request
     const request: HealthCheckRequest = {
@@ -113,20 +126,27 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       timeout: timeout,
     };
 
+    console.log("[HealthCheckingTab] Sending request:", request);
+
     // Executar
     const newSessionId = await runHealthCheck(request);
 
+    console.log("[HealthCheckingTab] Received sessionId:", newSessionId);
+
     if (newSessionId) {
       setShowProgressModal(true);
+      console.log("[HealthCheckingTab] Progress modal opened");
+    } else {
+      console.error("[HealthCheckingTab] No sessionId returned");
     }
   };
 
   // Toggle cluster selection
-  const toggleCluster = (clusterName: string) => {
+  const toggleCluster = (clusterContext: string) => {
     setSelectedClusters((prev) =>
-      prev.includes(clusterName)
-        ? prev.filter((c) => c !== clusterName)
-        : [...prev, clusterName]
+      prev.includes(clusterContext)
+        ? prev.filter((c) => c !== clusterContext)
+        : [...prev, clusterContext]
     );
     // Limpar filtro de ambiente quando seleção manual
     setEnvironment("");
@@ -134,7 +154,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
 
   // Select all/none clusters
   const selectAllClusters = () => {
-    setSelectedClusters(allClusters.map((c) => c.name));
+    setSelectedClusters(allClusters.map((c) => c.context));  // ✅ Usar context
     setEnvironment("");
   };
 
@@ -222,14 +242,14 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                             </div>
                           ) : (
                             filteredClusters.map((c) => (
-                              <div key={c.name} className="flex items-center gap-2">
+                              <div key={c.context} className="flex items-center gap-2">
                                 <Checkbox
-                                  id={`cluster-${c.name}`}
-                                  checked={selectedClusters.includes(c.name)}
-                                  onCheckedChange={() => toggleCluster(c.name)}
+                                  id={`cluster-${c.context}`}
+                                  checked={selectedClusters.includes(c.context)}
+                                  onCheckedChange={() => toggleCluster(c.context)}
                                 />
                                 <Label
-                                  htmlFor={`cluster-${c.name}`}
+                                  htmlFor={`cluster-${c.context}`}
                                   className="text-sm cursor-pointer font-mono flex-1"
                                 >
                                   {c.name}
@@ -428,10 +448,16 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
         <HealthCheckProgressModal
           sessionId={sessionId}
           open={showProgressModal}
-          onOpenChange={setShowProgressModal}
+          onOpenChange={(open) => {
+            setShowProgressModal(open);
+            // Quando modal fechar, fazer reset
+            if (!open) {
+              reset();
+            }
+          }}
           onComplete={(result) => {
-            setShowProgressModal(false);
-            reset();
+            // ✅ NÃO fechar modal automaticamente - deixar usuário ver resultados
+            // O modal mostrará botão "Fechar" quando completo
             toast.success("Health check concluído!");
           }}
         />

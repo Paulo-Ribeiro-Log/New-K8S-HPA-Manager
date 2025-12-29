@@ -134,8 +134,9 @@ export interface ConfigHealth {
 
 // Progress de health check (SSE)
 export interface HealthCheckProgress {
-  session_id: string;
-  phase: string;     // "deployments" | "services" | "configs" | "complete" | "error"
+  id: string;        // Session ID
+  type: string;      // "init" | "deployments" | "services" | "configs" | "summary" | "complete" | "error"
+  phase: string;     // Mantido por compatibilidade (usado em cordon/drain, não em health checking)
   message: string;
   progress: number;  // 0-100
   status: HealthStatus;
