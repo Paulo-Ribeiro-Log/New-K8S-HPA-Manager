@@ -172,50 +172,50 @@ const ClusterTabContent = ({
 
       {/* Live Summary Filters */}
       {!result && liveTotal > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 sm:gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 sm:gap-2">
           <Button
             variant={filter === "healthy" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(filter === "healthy" ? "all" : "healthy")}
-            className="flex flex-col h-auto py-1.5 sm:py-2 min-w-0 px-1 sm:px-3"
+            className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
           >
-            <div className="text-base sm:text-xl font-bold text-green-600 leading-tight">
+            <div className="text-sm sm:text-xl font-bold text-green-600 leading-none">
               {liveHealthy}
             </div>
-            <div className="text-[9px] sm:text-xs leading-tight mt-0.5">Healthy</div>
+            <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Healthy</div>
           </Button>
           <Button
             variant={filter === "warning" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(filter === "warning" ? "all" : "warning")}
-            className="flex flex-col h-auto py-1.5 sm:py-2 min-w-0 px-1 sm:px-3"
+            className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
           >
-            <div className="text-base sm:text-xl font-bold text-yellow-600 leading-tight">
+            <div className="text-sm sm:text-xl font-bold text-yellow-600 leading-none">
               {liveWarning}
             </div>
-            <div className="text-[9px] sm:text-xs leading-tight mt-0.5">Warnings</div>
+            <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Warning</div>
           </Button>
           <Button
             variant={filter === "critical" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(filter === "critical" ? "all" : "critical")}
-            className="flex flex-col h-auto py-1.5 sm:py-2 min-w-0 px-1 sm:px-3"
+            className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
           >
-            <div className="text-base sm:text-xl font-bold text-red-600 leading-tight">
+            <div className="text-sm sm:text-xl font-bold text-red-600 leading-none">
               {liveCritical}
             </div>
-            <div className="text-[9px] sm:text-xs leading-tight mt-0.5">Critical</div>
+            <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Critical</div>
           </Button>
           <Button
             variant={filter === "all" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter("all")}
-            className="flex flex-col h-auto py-1.5 sm:py-2 min-w-0 px-1 sm:px-3"
+            className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
           >
-            <div className="text-base sm:text-xl font-bold leading-tight">
+            <div className="text-sm sm:text-xl font-bold leading-none">
               {liveTotal}
             </div>
-            <div className="text-[9px] sm:text-xs leading-tight mt-0.5">Total</div>
+            <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Total</div>
           </Button>
         </div>
       )}
@@ -284,50 +284,50 @@ const ClusterTabContent = ({
 
       {/* Summary Filters (when complete) */}
       {result && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 sm:gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 sm:gap-2">
           <Button
             variant={filter === "healthy" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(filter === "healthy" ? "all" : "healthy")}
-            className="flex flex-col h-auto py-1.5 sm:py-2 min-w-0 px-1 sm:px-3"
+            className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
           >
-            <div className="text-base sm:text-xl font-bold text-green-600 leading-tight">
+            <div className="text-sm sm:text-xl font-bold text-green-600 leading-none">
               {result.healthy_count}
             </div>
-            <div className="text-[9px] sm:text-xs leading-tight mt-0.5">Healthy</div>
+            <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Healthy</div>
           </Button>
           <Button
             variant={filter === "warning" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(filter === "warning" ? "all" : "warning")}
-            className="flex flex-col h-auto py-1.5 sm:py-2 min-w-0 px-1 sm:px-3"
+            className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
           >
-            <div className="text-base sm:text-xl font-bold text-yellow-600 leading-tight">
+            <div className="text-sm sm:text-xl font-bold text-yellow-600 leading-none">
               {result.warning_count}
             </div>
-            <div className="text-[9px] sm:text-xs leading-tight mt-0.5">Warnings</div>
+            <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Warning</div>
           </Button>
           <Button
             variant={filter === "critical" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(filter === "critical" ? "all" : "critical")}
-            className="flex flex-col h-auto py-1.5 sm:py-2 min-w-0 px-1 sm:px-3"
+            className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
           >
-            <div className="text-base sm:text-xl font-bold text-red-600 leading-tight">
+            <div className="text-sm sm:text-xl font-bold text-red-600 leading-none">
               {result.critical_count}
             </div>
-            <div className="text-[9px] sm:text-xs leading-tight mt-0.5">Critical</div>
+            <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Critical</div>
           </Button>
           <Button
             variant={filter === "all" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter("all")}
-            className="flex flex-col h-auto py-1.5 sm:py-2 min-w-0 px-1 sm:px-3"
+            className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
           >
-            <div className="text-base sm:text-xl font-bold leading-tight">
+            <div className="text-sm sm:text-xl font-bold leading-none">
               {result.total_checks}
             </div>
-            <div className="text-[9px] sm:text-xs leading-tight mt-0.5">Total</div>
+            <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Total</div>
           </Button>
         </div>
       )}
