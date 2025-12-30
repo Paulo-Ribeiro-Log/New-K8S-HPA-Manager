@@ -20,8 +20,28 @@ func NewConfigChecker() *ConfigChecker {
 }
 
 // CheckAll valida todos os ConfigMaps e Secrets necessários
-func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string) []ConfigHealth {
+func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, progressCallback ProgressCallback) []ConfigHealth {
 	results := []ConfigHealth{}
+
+	// Primeiro, contar total de configs para calcular progresso
+	totalConfigs := 0
+	for _, ns := range namespaces {
+		configMaps, err := client.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			log.Error().Err(err).Str("namespace", ns).Msg("Failed to list configmaps")
+			continue
+		}
+		totalConfigs += len(configMaps.Items)
+
+		secrets, err := client.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			log.Error().Err(err).Str("namespace", ns).Msg("Failed to list secrets")
+			continue
+		}
+		totalConfigs += len(secrets.Items)
+	}
+
+	currentConfig := 0
 
 	for _, ns := range namespaces {
 		// Validar ConfigMaps
@@ -32,8 +52,24 @@ func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interfac
 		}
 
 		for _, cm := range configMaps.Items {
+			currentConfig++
+
+			// Publicar evento: validando ConfigMap
+			if progressCallback != nil {
+				progressCallback(ns, cm.Name,
+					fmt.Sprintf("Validando ConfigMap %s/%s...", ns, cm.Name),
+					StatusHealthy, currentConfig, totalConfigs)
+			}
+
 			health := c.validateConfigMap(ns, cm.Name, cm.Data)
 			results = append(results, health)
+
+			// Publicar resultado
+			if progressCallback != nil {
+				summary := c.getHealthSummary(health)
+				progressCallback(ns, cm.Name,
+					fmt.Sprintf("ConfigMap %s/%s: %s", ns, cm.Name, summary), health.Status, currentConfig, totalConfigs)
+			}
 		}
 
 		// Validar Secrets
@@ -44,6 +80,15 @@ func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interfac
 		}
 
 		for _, secret := range secrets.Items {
+			currentConfig++
+
+			// Publicar evento: validando Secret
+			if progressCallback != nil {
+				progressCallback(ns, secret.Name,
+					fmt.Sprintf("Validando Secret %s/%s...", ns, secret.Name),
+					StatusHealthy, currentConfig, totalConfigs)
+			}
+
 			// Converter []byte para string
 			data := make(map[string]string)
 			for k, v := range secret.Data {
@@ -51,10 +96,26 @@ func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interfac
 			}
 			health := c.validateSecret(ns, secret.Name, data)
 			results = append(results, health)
+
+			// Publicar resultado
+			if progressCallback != nil {
+				summary := c.getHealthSummary(health)
+				progressCallback(ns, secret.Name,
+					fmt.Sprintf("Secret %s/%s: %s", ns, secret.Name, summary), health.Status, currentConfig, totalConfigs)
+			}
 		}
 	}
 
 	return results
+}
+
+// getHealthSummary gera resumo compacto do health check
+func (c *ConfigChecker) getHealthSummary(health ConfigHealth) string {
+	if health.Status == StatusHealthy {
+		return "OK"
+	}
+	// Para warning/critical, usar mensagem completa
+	return health.Message
 }
 
 // validateConfigMap valida um ConfigMap específico
