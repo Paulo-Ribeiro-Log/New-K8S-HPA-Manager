@@ -48,10 +48,14 @@ export function useHealthCheckProgress(options: UseHealthCheckProgressOptions) {
   }, [onEvent, onError, onComplete]);
 
   useEffect(() => {
-    // ✅ Não criar conexão se já completou
-    if (!enabled || !sessionId || isCompleted) {
+    // ✅ Não criar conexão se já completou ou se sessionId inválido
+    if (!sessionId || isCompleted) {
       return;
     }
+
+    // ⚠️ IMPORTANTE: Não verificar enabled aqui!
+    // Queremos que a conexão permaneça ativa mesmo quando tab está inativa
+    // Assim os eventos continuam acumulando em background
 
     // ✅ Evitar conexões duplicadas
     if (eventSourceRef.current && eventSourceRef.current.readyState !== EventSource.CLOSED) {
@@ -133,7 +137,7 @@ export function useHealthCheckProgress(options: UseHealthCheckProgressOptions) {
       }
     };
 
-    // Cleanup ao desmontar
+    // Cleanup ao desmontar (só quando componente é destruído, não quando enabled muda)
     return () => {
       console.log('[useHealthCheckProgress] Cleanup: fechando conexão SSE');
       if (eventSource.readyState !== EventSource.CLOSED) {
@@ -141,7 +145,7 @@ export function useHealthCheckProgress(options: UseHealthCheckProgressOptions) {
       }
       setIsConnected(false);
     };
-  }, [sessionId, enabled, isCompleted]);  // ✅ Apenas sessionId e enabled como dependências
+  }, [sessionId, isCompleted]);  // ✅ REMOVIDO enabled - não queremos desconectar ao trocar de tab
 
   /**
    * Fecha conexão SSE manualmente
