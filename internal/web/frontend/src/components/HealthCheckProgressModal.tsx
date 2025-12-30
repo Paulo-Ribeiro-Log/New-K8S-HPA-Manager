@@ -84,14 +84,9 @@ const ClusterTabContent = ({
     },
   });
 
-  // ✅ Resetar estado quando tab desabilitar
-  useEffect(() => {
-    if (!enabled) {
-      setResult(null);
-      clearEvents();
-      setFilter("all");
-    }
-  }, [enabled, clearEvents]);
+  // ❌ REMOVIDO: Não limpar eventos ao trocar de tab
+  // Eventos devem persistir entre trocas de tab
+  // Só limpar quando modal fechar completamente (gerenciado pelo componente pai)
 
   // Filtrar eventos baseado no filtro selecionado
   const filteredEvents = events.filter((event) => {
@@ -177,50 +172,50 @@ const ClusterTabContent = ({
 
       {/* Live Summary Filters */}
       {!result && liveTotal > 0 && (
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <Button
             variant={filter === "healthy" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(filter === "healthy" ? "all" : "healthy")}
-            className="flex flex-col h-auto py-2"
+            className="flex flex-col h-auto py-1.5 sm:py-2"
           >
-            <div className="text-xl font-bold text-green-600">
+            <div className="text-lg sm:text-xl font-bold text-green-600">
               {liveHealthy}
             </div>
-            <div className="text-xs">Healthy</div>
+            <div className="text-[10px] sm:text-xs">Healthy</div>
           </Button>
           <Button
             variant={filter === "warning" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(filter === "warning" ? "all" : "warning")}
-            className="flex flex-col h-auto py-2"
+            className="flex flex-col h-auto py-1.5 sm:py-2"
           >
-            <div className="text-xl font-bold text-yellow-600">
+            <div className="text-lg sm:text-xl font-bold text-yellow-600">
               {liveWarning}
             </div>
-            <div className="text-xs">Warnings</div>
+            <div className="text-[10px] sm:text-xs">Warnings</div>
           </Button>
           <Button
             variant={filter === "critical" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(filter === "critical" ? "all" : "critical")}
-            className="flex flex-col h-auto py-2"
+            className="flex flex-col h-auto py-1.5 sm:py-2"
           >
-            <div className="text-xl font-bold text-red-600">
+            <div className="text-lg sm:text-xl font-bold text-red-600">
               {liveCritical}
             </div>
-            <div className="text-xs">Critical</div>
+            <div className="text-[10px] sm:text-xs">Critical</div>
           </Button>
           <Button
             variant={filter === "all" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter("all")}
-            className="flex flex-col h-auto py-2"
+            className="flex flex-col h-auto py-1.5 sm:py-2"
           >
-            <div className="text-xl font-bold">
+            <div className="text-lg sm:text-xl font-bold">
               {liveTotal}
             </div>
-            <div className="text-xs">Total</div>
+            <div className="text-[10px] sm:text-xs">Total</div>
           </Button>
         </div>
       )}
@@ -240,7 +235,7 @@ const ClusterTabContent = ({
             </Button>
           )}
         </div>
-        <ScrollArea className="h-[350px] rounded-md border p-4">
+        <ScrollArea className="h-[250px] sm:h-[350px] rounded-md border p-2 sm:p-4">
           <div className="space-y-2 max-w-full overflow-hidden">
             {filteredEvents.length === 0 && events.length === 0 && (
               <div className="text-sm text-muted-foreground text-center py-4">
@@ -289,50 +284,50 @@ const ClusterTabContent = ({
 
       {/* Summary Filters (when complete) */}
       {result && (
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <Button
             variant={filter === "healthy" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(filter === "healthy" ? "all" : "healthy")}
-            className="flex flex-col h-auto py-2"
+            className="flex flex-col h-auto py-1.5 sm:py-2"
           >
-            <div className="text-xl font-bold text-green-600">
+            <div className="text-lg sm:text-xl font-bold text-green-600">
               {result.healthy_count}
             </div>
-            <div className="text-xs">Healthy</div>
+            <div className="text-[10px] sm:text-xs">Healthy</div>
           </Button>
           <Button
             variant={filter === "warning" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(filter === "warning" ? "all" : "warning")}
-            className="flex flex-col h-auto py-2"
+            className="flex flex-col h-auto py-1.5 sm:py-2"
           >
-            <div className="text-xl font-bold text-yellow-600">
+            <div className="text-lg sm:text-xl font-bold text-yellow-600">
               {result.warning_count}
             </div>
-            <div className="text-xs">Warnings</div>
+            <div className="text-[10px] sm:text-xs">Warnings</div>
           </Button>
           <Button
             variant={filter === "critical" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(filter === "critical" ? "all" : "critical")}
-            className="flex flex-col h-auto py-2"
+            className="flex flex-col h-auto py-1.5 sm:py-2"
           >
-            <div className="text-xl font-bold text-red-600">
+            <div className="text-lg sm:text-xl font-bold text-red-600">
               {result.critical_count}
             </div>
-            <div className="text-xs">Critical</div>
+            <div className="text-[10px] sm:text-xs">Critical</div>
           </Button>
           <Button
             variant={filter === "all" ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter("all")}
-            className="flex flex-col h-auto py-2"
+            className="flex flex-col h-auto py-1.5 sm:py-2"
           >
-            <div className="text-xl font-bold">
+            <div className="text-lg sm:text-xl font-bold">
               {result.total_checks}
             </div>
-            <div className="text-xs">Total</div>
+            <div className="text-[10px] sm:text-xs">Total</div>
           </Button>
         </div>
       )}
@@ -395,23 +390,23 @@ export const HealthCheckProgressModal = ({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[85vh] overflow-hidden">
+      <DialogContent className="w-[95vw] sm:max-w-4xl max-h-[90vh] sm:max-h-[85vh] overflow-hidden">
         <DialogHeader>
           <div className="flex items-center gap-2">
             {allCompleted ? (
-              <CheckCircle2 className="h-6 w-6 text-green-600" />
+              <CheckCircle2 className="h-5 w-5 sm:h-6 sm:w-6 text-green-600" />
             ) : hasFailures ? (
-              <XCircle className="h-6 w-6 text-red-600" />
+              <XCircle className="h-5 w-5 sm:h-6 sm:w-6 text-red-600" />
             ) : (
-              <Loader2 className="h-6 w-6 text-blue-600 animate-spin" />
+              <Loader2 className="h-5 w-5 sm:h-6 sm:w-6 text-blue-600 animate-spin" />
             )}
-            <DialogTitle>
+            <DialogTitle className="text-base sm:text-lg">
               {allCompleted
                 ? "Health Check Concluído"
                 : `Health Check em Progresso (${completedClusters.size}/${clusters.length})`}
             </DialogTitle>
           </div>
-          <DialogDescription>
+          <DialogDescription className="text-xs sm:text-sm">
             {allCompleted
               ? "Análise completa de todos os clusters"
               : "Verificando saúde dos recursos dos clusters..."}
@@ -431,12 +426,12 @@ export const HealthCheckProgressModal = ({
             />
           ) : (
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-              <TabsList className="grid w-full" style={{ gridTemplateColumns: `repeat(${clusters.length}, 1fr)` }}>
+              <TabsList className="inline-flex w-full overflow-x-auto" style={{ gridTemplateColumns: clusters.length <= 3 ? `repeat(${clusters.length}, 1fr)` : undefined }}>
                 {clusters.map((cluster) => (
-                  <TabsTrigger key={cluster} value={cluster} className="relative">
-                    <div className="flex items-center gap-2">
-                      <Server className="h-4 w-4" />
-                      <span className="truncate max-w-[150px]">{cluster}</span>
+                  <TabsTrigger key={cluster} value={cluster} className="relative flex-shrink-0">
+                    <div className="flex items-center gap-1 sm:gap-2">
+                      <Server className="h-3 w-3 sm:h-4 sm:w-4" />
+                      <span className="truncate max-w-[80px] sm:max-w-[150px] text-xs sm:text-sm">{cluster}</span>
                       {completedClusters.has(cluster) && (
                         <CheckCircle2 className="h-3 w-3 text-green-600 absolute -top-1 -right-1" />
                       )}
@@ -448,45 +443,54 @@ export const HealthCheckProgressModal = ({
                 ))}
               </TabsList>
 
-              {clusters.map((cluster) => (
-                <TabsContent key={cluster} value={cluster} className="mt-4">
-                  <ClusterTabContent
-                    cluster={cluster}
-                    sessionId={clusterSessions[cluster]}
-                    enabled={open && activeTab === cluster}
-                    onComplete={handleClusterComplete(cluster)}
-                    onError={handleClusterError(cluster)}
-                  />
-                </TabsContent>
-              ))}
+              {/* ✅ IMPORTANTE: Renderizar TODOS os ClusterTabContent simultaneamente (não desmontar ao trocar tab)
+                  Usar className para ocultar visualmente as tabs inativas (display: none)
+                  Isso mantém o estado de eventos persistente entre trocas de tab */}
+              <div className="mt-4">
+                {clusters.map((cluster) => (
+                  <div
+                    key={cluster}
+                    className={activeTab === cluster ? "block" : "hidden"}
+                  >
+                    <ClusterTabContent
+                      cluster={cluster}
+                      sessionId={clusterSessions[cluster]}
+                      enabled={open}
+                      onComplete={handleClusterComplete(cluster)}
+                      onError={handleClusterError(cluster)}
+                    />
+                  </div>
+                ))}
+              </div>
             </Tabs>
           )}
 
           {/* Actions */}
-          <div className="flex justify-between gap-2 pt-4 border-t">
+          <div className="flex flex-col sm:flex-row justify-between gap-2 pt-4 border-t">
             {/* Cancel/Stop button - only show when in progress */}
             {!allCompleted && (
               <Button
                 variant="destructive"
                 onClick={handleCancel}
                 size="sm"
+                className="w-full sm:w-auto"
               >
-                <X className="mr-2 h-4 w-4" />
-                Cancelar
+                <X className="mr-2 h-3 w-3 sm:h-4 sm:w-4" />
+                <span className="text-xs sm:text-sm">Cancelar</span>
               </Button>
             )}
 
             {/* Close button */}
-            <div className="flex gap-2 ml-auto">
+            <div className="flex gap-2 sm:ml-auto w-full sm:w-auto">
               {allCompleted ? (
-                <Button onClick={() => onOpenChange(false)} size="sm">
-                  <CheckCircle2 className="mr-2 h-4 w-4" />
-                  Fechar
+                <Button onClick={() => onOpenChange(false)} size="sm" className="w-full sm:w-auto">
+                  <CheckCircle2 className="mr-2 h-3 w-3 sm:h-4 sm:w-4" />
+                  <span className="text-xs sm:text-sm">Fechar</span>
                 </Button>
               ) : (
-                <Button variant="outline" onClick={() => onOpenChange(false)} size="sm">
-                  <X className="mr-2 h-4 w-4" />
-                  Minimizar
+                <Button variant="outline" onClick={() => onOpenChange(false)} size="sm" className="w-full sm:w-auto">
+                  <X className="mr-2 h-3 w-3 sm:h-4 sm:w-4" />
+                  <span className="text-xs sm:text-sm">Minimizar</span>
                 </Button>
               )}
             </div>
