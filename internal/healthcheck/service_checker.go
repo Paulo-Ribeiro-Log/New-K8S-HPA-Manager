@@ -40,11 +40,22 @@ func NewServiceChecker() *ServiceChecker {
 }
 
 // CheckAll verifica conectividade de todos os serviços externos
-func (c *ServiceChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, timeout int) []ServiceHealth {
+func (c *ServiceChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, timeout int, progressCallback ProgressCallback) []ServiceHealth {
 	results := []ServiceHealth{}
 
+	// Primeiro, contar total de services para calcular progresso
+	totalServices := 0
+	servicesToCheck := []struct {
+		namespace    string
+		resourceName string
+		key          string
+		serviceType  ServiceType
+		connStr      string
+		configSource string
+	}{}
+
+	// Detectar todos os services primeiro
 	for _, ns := range namespaces {
-		// Buscar ConfigMaps e Secrets com connection strings
 		configMaps, err := client.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			log.Error().Err(err).Str("namespace", ns).Msg("Failed to list configmaps")
@@ -57,33 +68,95 @@ func (c *ServiceChecker) CheckAll(ctx context.Context, client kubernetes.Interfa
 			continue
 		}
 
-		// Extrair connection strings de ConfigMaps
+		// Coletar de ConfigMaps
 		for _, cm := range configMaps.Items {
 			for key, value := range cm.Data {
 				serviceType, connStr := c.detectServiceType(value)
 				if serviceType != "" {
-					health := c.Check(ctx, ns, cm.Name, key, serviceType, connStr, timeout)
-					health.ConfigSource = fmt.Sprintf("configmap:%s/%s", cm.Name, key)
-					results = append(results, health)
+					servicesToCheck = append(servicesToCheck, struct {
+						namespace    string
+						resourceName string
+						key          string
+						serviceType  ServiceType
+						connStr      string
+						configSource string
+					}{
+						namespace:    ns,
+						resourceName: cm.Name,
+						key:          key,
+						serviceType:  serviceType,
+						connStr:      connStr,
+						configSource: fmt.Sprintf("configmap:%s/%s", cm.Name, key),
+					})
+					totalServices++
 				}
 			}
 		}
 
-		// Extrair connection strings de Secrets
+		// Coletar de Secrets
 		for _, secret := range secrets.Items {
 			for key, value := range secret.Data {
 				valueStr := string(value)
 				serviceType, connStr := c.detectServiceType(valueStr)
 				if serviceType != "" {
-					health := c.Check(ctx, ns, secret.Name, key, serviceType, connStr, timeout)
-					health.ConfigSource = fmt.Sprintf("secret:%s/%s", secret.Name, key)
-					results = append(results, health)
+					servicesToCheck = append(servicesToCheck, struct {
+						namespace    string
+						resourceName string
+						key          string
+						serviceType  ServiceType
+						connStr      string
+						configSource string
+					}{
+						namespace:    ns,
+						resourceName: secret.Name,
+						key:          key,
+						serviceType:  serviceType,
+						connStr:      connStr,
+						configSource: fmt.Sprintf("secret:%s/%s", secret.Name, key),
+					})
+					totalServices++
 				}
 			}
 		}
 	}
 
+	// Agora verificar todos os services com progresso
+	currentService := 0
+	for _, svc := range servicesToCheck {
+		currentService++
+
+		// Publicar evento: testando conectividade
+		if progressCallback != nil {
+			progressCallback(svc.namespace, svc.resourceName,
+				fmt.Sprintf("Testando %s conectividade via %s...", svc.serviceType, svc.configSource),
+				StatusHealthy, currentService, totalServices)
+		}
+
+		health := c.Check(ctx, svc.namespace, svc.resourceName, svc.key, svc.serviceType, svc.connStr, timeout)
+		health.ConfigSource = svc.configSource
+		results = append(results, health)
+
+		// Publicar resultado
+		if progressCallback != nil {
+			summary := c.getHealthSummary(health)
+			progressCallback(svc.namespace, svc.resourceName,
+				fmt.Sprintf("%s: %s", svc.configSource, summary), health.Status, currentService, totalServices)
+		}
+	}
+
 	return results
+}
+
+// getHealthSummary gera resumo compacto do health check
+func (c *ServiceChecker) getHealthSummary(health ServiceHealth) string {
+	if health.Status == StatusHealthy {
+		return fmt.Sprintf("Conectado (%dms)", health.LatencyMs)
+	}
+	if health.Status == StatusWarning {
+		return fmt.Sprintf("Conectado mas lento (%dms)", health.LatencyMs)
+	}
+	// Para critical, usar mensagem completa
+	return health.Message
 }
 
 // detectServiceType detecta tipo de serviço por padrões de connection string

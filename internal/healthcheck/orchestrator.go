@@ -78,7 +78,9 @@ func (o *Orchestrator) ExecuteHealthCheck(ctx context.Context, sessionID string,
 
 	// Caso especial: 1 cluster apenas (sem pool)
 	if len(clusters) == 1 {
-		result, err := o.executeClusterCheck(ctx, sessionID, clusters[0], req)
+		// ✅ Gerar sessionID com sufixo do cluster (mesmo padrão de multi-cluster)
+		clusterSessionID := fmt.Sprintf("%s-%s", sessionID, clusters[0])
+		result, err := o.executeClusterCheck(ctx, clusterSessionID, clusters[0], req)
 		if err != nil {
 			return nil, err
 		}
@@ -188,7 +190,14 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			defer wg.Done()
 			o.publishProgress(sessionID, cluster, "services", fmt.Sprintf("Iniciando testes de conectividade de serviços externos em %d namespace(s)...", len(namespaces)), servicesStart, StatusHealthy)
 
-			serviceResults := o.serviceChecker.CheckAll(ctx, client, namespaces, req.Timeout)
+			// Callback para publicar progresso de cada service
+			serviceCallback := func(namespace, name, message string, status HealthStatus, current, total int) {
+				// Calcular progresso proporcional dentro da faixa alocada para services
+				serviceProgress := servicesStart + int(float64(current)/float64(total)*float64(rangePerCheck))
+				o.publishProgress(sessionID, cluster, "services", message, serviceProgress, status)
+			}
+
+			serviceResults := o.serviceChecker.CheckAll(ctx, client, namespaces, req.Timeout, serviceCallback)
 
 			mu.Lock()
 			result.ServiceResults = serviceResults
@@ -209,7 +218,14 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			defer wg.Done()
 			o.publishProgress(sessionID, cluster, "configs", fmt.Sprintf("Iniciando validação de ConfigMaps e Secrets em %d namespace(s)...", len(namespaces)), configsStart, StatusHealthy)
 
-			configResults := o.configChecker.CheckAll(ctx, client, namespaces)
+			// Callback para publicar progresso de cada config
+			configCallback := func(namespace, name, message string, status HealthStatus, current, total int) {
+				// Calcular progresso proporcional dentro da faixa alocada para configs
+				configProgress := configsStart + int(float64(current)/float64(total)*float64(rangePerCheck))
+				o.publishProgress(sessionID, cluster, "configs", message, configProgress, status)
+			}
+
+			configResults := o.configChecker.CheckAll(ctx, client, namespaces, configCallback)
 
 			mu.Lock()
 			result.ConfigResults = configResults
