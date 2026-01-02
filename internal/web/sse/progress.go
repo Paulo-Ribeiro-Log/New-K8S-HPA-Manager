@@ -36,7 +36,7 @@ type Client struct {
 func NewClient(id string) *Client {
 	return &Client{
 		ID:       id,
-		Channel:  make(chan ProgressEvent, 10), // Buffer de 10 eventos
+		Channel:  make(chan ProgressEvent, 500), // Buffer de 500 eventos (suporta múltiplos clusters simultâneos)
 		IsClosed: false,
 	}
 }
@@ -55,6 +55,14 @@ func (c *Client) Send(event ProgressEvent) {
 		// Evento enviado com sucesso
 	default:
 		// Canal cheio, descartar evento mais antigo (não bloquear)
+		// ⚠️ CRÍTICO: Log quando evento for descartado - pode causar travamento no frontend!
+		log.Warn().
+			Str("client_id", c.ID).
+			Str("event_type", event.Type).
+			Str("event_phase", event.Phase).
+			Float64("progress", event.Progress).
+			Int("buffer_size", cap(c.Channel)).
+			Msg("[SSE] Canal cheio! Evento descartado - frontend pode travar se for 'complete'")
 	}
 }
 
