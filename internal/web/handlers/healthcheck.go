@@ -364,15 +364,9 @@ func (h *HealthCheckHandler) ProgressMultiplexed(c *gin.Context) {
 		clientIdx := chosen - 1
 		cluster := clusters[clientIdx]
 
-		// ✅ IMPORTANTE: Adicionar campo "cluster" ao evento para frontend distribuir
-		// Extrair cluster do sessionID se não estiver presente
-		if event.ID != "" {
-			// event.ID geralmente é "baseSessionID-clusterName"
-			parts := strings.Split(event.ID, "-")
-			if len(parts) > 1 {
-				event.Details = fmt.Sprintf("cluster:%s", parts[len(parts)-1])
-			}
-		}
+		// ✅ IMPORTANTE: Adicionar identificador de cluster ao evento para frontend distribuir
+		// Usar diretamente a variável 'cluster' ao invés de fazer split do ID
+		event.Details = fmt.Sprintf("cluster:%s", cluster)
 
 		log.Info().
 			Str("base_session_id", baseSessionID).
