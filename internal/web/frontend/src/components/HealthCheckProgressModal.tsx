@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -423,8 +423,8 @@ export const HealthCheckProgressModal = ({
   const [completedClusters, setCompletedClusters] = useState<Set<string>>(new Set());
   const [failedClusters, setFailedClusters] = useState<Set<string>>(new Set());
 
-  // Extrair clusters do clusterSessions
-  const clusters = Object.keys(clusterSessions);
+  // ✅ Memoizar clusters para evitar loop infinito de reconexão SSE
+  const clusters = useMemo(() => Object.keys(clusterSessions), [clusterSessions]);
 
   // ✅ Hook SSE Multiplexado - UMA conexão para TODOS os clusters
   const {
