@@ -707,7 +707,8 @@ func (s *Server) setupRoutes() {
 		sseGroup := s.router.Group("/api/v1/healthcheck")
 		sseGroup.Use(middleware.WebSocketAuthMiddleware(s.token))
 		{
-			sseGroup.GET("/progress", healthCheckHandler.Progress)
+			sseGroup.GET("/progress", healthCheckHandler.Progress)                       // Original: 1 conexão por cluster
+			sseGroup.GET("/progress-multiplex", healthCheckHandler.ProgressMultiplexed) // 🆕 Multiplexado: 1 conexão para TODOS os clusters
 		}
 
 		fmt.Println("✅ Health Checking routes registradas")
