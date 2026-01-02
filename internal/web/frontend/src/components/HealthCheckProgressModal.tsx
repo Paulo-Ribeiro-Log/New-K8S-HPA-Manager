@@ -587,7 +587,8 @@ export const HealthCheckProgressModal = ({
 
               {/* ✅ IMPORTANTE: Renderizar TODOS os ClusterTabContent simultaneamente (não desmontar ao trocar tab)
                   Usar className para ocultar visualmente as tabs inativas (display: none)
-                  Isso mantém o estado de eventos persistente entre trocas de tab */}
+                  Isso mantém o estado de eventos persistente entre trocas de tab
+                  ⚠️ CRÍTICO: enabled={activeTab === cluster && open} - apenas tab ativa conecta SSE */}
               <div className="mt-4">
                 {clusters.map((cluster) => (
                   <div
@@ -597,7 +598,7 @@ export const HealthCheckProgressModal = ({
                     <ClusterTabContent
                       cluster={cluster}
                       sessionId={clusterSessions[cluster]}
-                      enabled={open}
+                      enabled={activeTab === cluster && open}
                       preloadedEvents={preloadedEvents}
                       preloadedResult={preloadedResult} // ✅ Passar resultado pré-carregado
                       viewMode={viewMode}
