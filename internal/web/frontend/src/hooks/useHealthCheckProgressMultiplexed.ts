@@ -170,7 +170,7 @@ export function useHealthCheckProgressMultiplexed(options: UseHealthCheckProgres
       if (eventSource.readyState !== EventSource.CLOSED) {
         eventSource.close();
       }
-    });
+    };
 
     // Cleanup ao desmontar
     return () => {
