@@ -204,11 +204,12 @@ onOpenChange(true);   // Eventos ainda em eventsPerCluster
 - [x] Detecção de cluster via `Details`
 - [x] Rastreamento de completions
 
-### Frontend Modal ⏳ (PENDENTE)
-- [ ] Remover hook individual de ClusterTabContent
-- [ ] Usar hook multiplexado no componente pai
-- [ ] Passar eventos via props (ClusterTabContentStatic)
-- [ ] Simplificar botão cancelar
+### Frontend Modal ✅ (CONCLUÍDO)
+- [x] Remover hook individual de ClusterTabContent
+- [x] Usar hook multiplexado no componente pai
+- [x] Passar eventos via props (events, progress, isComplete, hasError)
+- [x] Simplificar botão cancelar (12 disconnect → 1)
+- [x] Corrigir tipos TypeScript (Details, ID/id)
 - [ ] Testar reabertura do modal
 - [ ] Testar com 12+ clusters
 
@@ -347,5 +348,12 @@ if (event.Details && event.Details.startsWith('cluster:')) {
 ---
 
 **Status Final Backend:** ✅ 100% Completo
-**Status Final Frontend:** ⏳ 50% (Hook pronto, Modal pendente)
-**Próxima ação:** Refatorar `HealthCheckProgressModal.tsx`
+**Status Final Frontend:** ✅ 100% Completo (Hook + Modal refatorados)
+**Próxima ação:** Testar com 12+ clusters em produção
+
+**Commits:**
+- `98a9c65` - Backend: endpoint multiplexado criado
+- `5a363a3` - Backend: rota registrada + buffer aumentado
+- `d1f5c5b` - Frontend: hook multiplexado criado
+- `ed37dc3` - Frontend: início da refatoração do modal (REVERTIDO)
+- `6ed3c7a` - Frontend: refatoração completa + fixes TypeScript
