@@ -19,8 +19,77 @@ func NewConfigChecker() *ConfigChecker {
 	return &ConfigChecker{}
 }
 
+// Whitelist de ConfigMaps/Secrets conhecidos que podem estar vazios sem ser problema
+var knownEmptyConfigMapsSecretsWhitelist = map[string]map[string]bool{
+	// ConfigMaps conhecidos que podem estar vazios
+	"configmap": {
+		// Ingress NGINX
+		"ingress-nginx-external/ingress-controller-leader":          true,
+		"ingress-nginx-internal/ingress-controller-leader":          true,
+		"ingress-nginx/ingress-controller-leader":                   true,
+		"ingress-nginx-external/ingress-nginx-controller":           true,
+		"ingress-nginx-internal/ingress-nginx-controller":           true,
+
+		// Cert-manager
+		"cert-manager/cert-manager-cainjector-leader-election":      true,
+		"cert-manager/cert-manager-controller":                      true,
+
+		// Kube-system
+		"kube-system/extension-apiserver-authentication":            true,
+		"kube-system/kube-proxy":                                    true,
+		"kube-system/kubeadm-config":                                true,
+		"kube-system/cluster-info":                                  true,
+
+		// Istio
+		"istio-system/istio-leader":                                 true,
+		"istio-system/istio-ca-root-cert":                           true,
+
+		// ArgoCD
+		"argocd/argocd-cm":                                          true,
+		"argocd/argocd-rbac-cm":                                     true,
+	},
+
+	// Secrets conhecidos que podem estar vazios ou ter dados mínimos
+	"secret": {
+		// Service Account Tokens (gerados automaticamente pelo K8s)
+		// Pattern: default-token-*, system:serviceaccount:*
+		// Estes serão tratados por regex no método isKnownEmptyResource
+	},
+}
+
+// isKnownEmptyResource verifica se um recurso vazio está na whitelist
+func (c *ConfigChecker) isKnownEmptyResource(namespace, name string, resourceType ResourceType) bool {
+	key := fmt.Sprintf("%s/%s", namespace, name)
+
+	// Verificar whitelist explícita
+	if resourceType == ResourceConfigMap {
+		if knownEmptyConfigMapsSecretsWhitelist["configmap"][key] {
+			return true
+		}
+	} else if resourceType == ResourceSecret {
+		// Service account tokens (pattern: default-token-*, *-token-*)
+		if strings.HasSuffix(name, "-token") || strings.Contains(name, "-token-") {
+			return true
+		}
+		// Service account secrets (pattern: *-sa-token, *-serviceaccount-*)
+		if strings.HasSuffix(name, "-sa-token") || strings.Contains(name, "-serviceaccount-") {
+			return true
+		}
+		// Docker registry secrets (gerados automaticamente)
+		if strings.HasPrefix(name, "default-dockercfg-") {
+			return true
+		}
+
+		if knownEmptyConfigMapsSecretsWhitelist["secret"][key] {
+			return true
+		}
+	}
+
+	return false
+}
+
 // CheckAll valida todos os ConfigMaps e Secrets necessários
-func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, progressCallback ProgressCallback) []ConfigHealth {
+func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, applyFilters bool, progressCallback ProgressCallback) []ConfigHealth {
 	results := []ConfigHealth{}
 
 	// Primeiro, contar total de configs para calcular progresso
@@ -61,7 +130,18 @@ func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interfac
 					StatusHealthy, currentConfig, totalConfigs)
 			}
 
-			health := c.validateConfigMap(ns, cm.Name, cm.Data)
+			health := c.validateConfigMap(ns, cm.Name, cm.Data, applyFilters)
+
+			// ✅ Se filtros ativos e recurso vazio está na whitelist, pular
+			if applyFilters && health.Status == StatusWarning &&
+			   c.isKnownEmptyResource(ns, cm.Name, ResourceConfigMap) {
+				log.Debug().
+					Str("namespace", ns).
+					Str("configmap", cm.Name).
+					Msg("Skipping known empty ConfigMap (whitelist)")
+				continue
+			}
+
 			results = append(results, health)
 
 			// Publicar resultado
@@ -94,7 +174,18 @@ func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interfac
 			for k, v := range secret.Data {
 				data[k] = string(v)
 			}
-			health := c.validateSecret(ns, secret.Name, data)
+			health := c.validateSecret(ns, secret.Name, data, applyFilters)
+
+			// ✅ Se filtros ativos e recurso vazio está na whitelist, pular
+			if applyFilters && health.Status == StatusWarning &&
+			   c.isKnownEmptyResource(ns, secret.Name, ResourceSecret) {
+				log.Debug().
+					Str("namespace", ns).
+					Str("secret", secret.Name).
+					Msg("Skipping known empty Secret (whitelist)")
+				continue
+			}
+
 			results = append(results, health)
 
 			// Publicar resultado
@@ -119,7 +210,7 @@ func (c *ConfigChecker) getHealthSummary(health ConfigHealth) string {
 }
 
 // validateConfigMap valida um ConfigMap específico
-func (c *ConfigChecker) validateConfigMap(namespace, name string, data map[string]string) ConfigHealth {
+func (c *ConfigChecker) validateConfigMap(namespace, name string, data map[string]string, applyFilters bool) ConfigHealth {
 	health := ConfigHealth{
 		Name:         name,
 		Namespace:    namespace,
@@ -174,7 +265,7 @@ func (c *ConfigChecker) validateConfigMap(namespace, name string, data map[strin
 }
 
 // validateSecret valida um Secret específico
-func (c *ConfigChecker) validateSecret(namespace, name string, data map[string]string) ConfigHealth {
+func (c *ConfigChecker) validateSecret(namespace, name string, data map[string]string, applyFilters bool) ConfigHealth {
 	health := ConfigHealth{
 		Name:         name,
 		Namespace:    namespace,

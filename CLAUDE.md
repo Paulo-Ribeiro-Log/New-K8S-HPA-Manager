@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **28 de dezembro de 2025** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **31 de dezembro de 2025** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -43,6 +43,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### 🤖 AI Diagnostics (✅ Produção desde 23/12/2025)
 17. [🧠 Plano AI Diagnostics](PLANO_AI_DIAGNOSTICS.md) - **Plano completo de implementação** (8 dias)
 18. [📊 Progresso AI Diagnostics](PROGRESSO_AI_DIAGNOSTICS.md) - **Status: 100% Completo** (v1.3.6)
+
+### 📋 Health Checking (✅ Produção desde 28/12/2025)
+19. [📊 Implementação Logs Persistentes](IMPLEMENTACAO_LOGS_PERSISTENTES.md) - **Sistema de persistência e visualização de logs históricos** (v1.3.7+)
 
 ---
 
@@ -395,8 +398,8 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
       - Comandos de investigação (kubectl get configmap/secret/service, nslookup, nc)
       - Evita workarounds temporários (restart sem investigar causa)
   - **Documentação**: [PLANO_AI_DIAGNOSTICS.md](PLANO_AI_DIAGNOSTICS.md) | [PROGRESSO_AI_DIAGNOSTICS.md](PROGRESSO_AI_DIAGNOSTICS.md)
-✅ **Health Checking (v1.3.7 - Produção desde 28/12/2025)** - Sistema completo de verificação de saúde de clusters
-  - **Status**: ✅ Backend 100% | ✅ Frontend 100% | ✅ SSE Progress 100% | ✅ **Multi-Cluster com Tabs** 100%
+✅ **Health Checking (v1.3.7+ - Produção desde 28/12/2025)** - Sistema completo de verificação de saúde de clusters
+  - **Status**: ✅ Backend 100% | ✅ Frontend 100% | ✅ SSE Progress 100% | ✅ **Multi-Cluster com Tabs** 100% | ✅ **Logs Persistentes** 100%
   - **Funcionalidades**:
     - ✅ **Multi-Cluster com Tabs (NOVO - 28/12/2025)**: Execução paralela em múltiplos clusters com tabs independentes
       - Worker pool paralelo no backend (sessionID único por cluster: `baseSessionID-clusterName`)
@@ -407,6 +410,16 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
     - ✅ **Verificação de Deployments**: Status de réplicas, containers crash, image pull errors, probes (liveness/readiness)
     - ✅ **Verificação de Services**: Testes de conectividade (MongoDB, Redis, PostgreSQL, Kafka, EventHub, HTTP) - *placeholder*
     - ✅ **Verificação de Configs**: Validação de ConfigMaps/Secrets - *placeholder*
+    - ✅ **Logs Persistentes (NOVO - 31/12/2025)**: Sistema completo de persistência e visualização de logs históricos
+      - **Backend SQLite**: Eventos salvos automaticamente na tabela `health_check_events` (./build/health_check.db)
+      - **Persistência Automática**: Cada evento SSE é salvo no banco via `orchestrator.go:publishProgress()`
+      - **Badges Clicáveis**: 4 badges (Healthy, Warning, Critical, Total) com contadores visuais
+      - **Visualização de Histórico**: Clique nos badges abre modal com logs completos do banco
+      - **Modo Visualização**: Modal desabilita SSE e exibe apenas eventos pré-carregados
+      - **API REST**: `GET /api/v1/healthcheck/events/:sessionId` retorna eventos persistidos
+      - **Frontend**: Handler `handleShowProgress()` busca eventos e passa para modal via `preloadedEvents`
+      - **Arquivos**: `storage.go` (tabela + CRUD), `orchestrator.go` (auto-save), `handlers/healthcheck.go` (endpoint)
+      - **Documentação**: [IMPLEMENTACAO_LOGS_PERSISTENTES.md](IMPLEMENTACAO_LOGS_PERSISTENTES.md)
     - ✅ **Progresso Dinâmico**: Barra de progresso adapta-se aos checks selecionados (0-100% para 1 check, divide proporcionalmente para múltiplos)
     - ✅ **Eventos Detalhados**: Log em tempo real com detalhes de cada problema (máximo 10 críticos + 10 warnings)
     - ✅ **Filtros de Status**: Healthy, Warning, Critical com contadores ao vivo
@@ -446,12 +459,55 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
     - Service Checker e Config Checker são *placeholders* (retornam listas vazias)
     - Máximo 10 eventos críticos + 10 warnings exibidos no log (evita sobrecarga UI)
     - Delay de 50ms entre eventos detalhados (processamento suave)
-    - Modal com largura fixa 896px (max-w-4xl) e altura 400px
   - **UI/UX**:
     - Textos com quebra de linha forçada (`word-break`, `overflow-wrap`, `whitespace: normal`)
     - ScrollArea com `overflow-hidden` para evitar texto vazar fora do modal
     - Badges coloridos (verde/amarelo/vermelho) para status visual
     - Mensagens detalhadas: "❌ Deployment namespace/nome: mensagem do erro"
+    - **Modal de Progresso**: Largura aumentada para 1280px (max-w-7xl) - 43% maior que anterior (896px)
+      - Evita scroll confuso ao analisar 4+ clusters simultaneamente
+      - Melhor visualização de tabs e progresso paralelo
+  - **Filtros de Histórico (NOVO - 02/01/2026)**:
+    - ✅ **Date Picker com Range**: Seleção de período customizável no modal de histórico
+      - Componente: react-day-picker com `mode="range"` (Calendar shadcn/ui)
+      - Suporta seleção de data única (only "from") ou range completo (from → to)
+      - Dual calendar (2 meses side-by-side) para fácil seleção
+      - Integrado com filtros existentes (Hoje, Última Semana, Último Mês)
+      - Desabilita datas futuras (`disabled={(date) => date > new Date()}`)
+      - Formato visual: "DD MMM YYYY" (ex: "25 Dez 2025")
+    - Arquivo: `HealthCheckHistoryModal.tsx` (linhas 40-55, 180-215)
+  - **Sistema de Exportação de Relatórios (NOVO - 02/01/2026)**:
+    - ✅ **3 Formatos Profissionais**: PDF, Markdown (.md), CSV
+    - ✅ **Dados Exportados**:
+      - Warnings e Criticals: Detalhes completos (fase, descrição, severidade)
+      - Healthies: Apenas mencionados (totais por cluster)
+      - Metadados: Data da análise, duração, total de checks
+    - ✅ **Design Profissional** (sem emojis):
+      - **PDF**: Cabeçalho azul (RGB 41,128,185), tabelas com jsPDF-autoTable
+        - Sumário executivo com métricas agregadas
+        - Detalhes por cluster com color-coding (warnings=laranja, critical=vermelho, healthy=verde)
+        - Filename: `health-check-report-YYYY-MM-DD.pdf` (data da análise)
+      - **Markdown**: Estrutura com tabelas e blockquotes
+        - Headers em CAPS (SUMÁRIO EXECUTIVO, ANÁLISE DETALHADA)
+        - Tabelas markdown para métricas e alertas
+        - Filename: `health-check-report-YYYY-MM-DD.md`
+      - **CSV**: Formato tabular para Excel/BI
+        - Headers: Data_Analise, Cluster, Status, Duracao_ms, Total_Checks, Healthy, Warnings, Critical, Tipo_Alerta, Fase, Mensagem
+        - Escape de aspas duplas e quebras de linha
+        - Filename: `health-check-report-YYYY-MM-DD.csv`
+    - ✅ **Botão de Exportação**:
+      - Painel "Resultados": Exporta análise atual (após execução)
+      - Modal de Histórico: Exporta resultados filtrados (por período/cluster)
+      - Modal de seleção de formato com preview de resumo
+    - ✅ **Timestamp Correto**: Usa data real da análise (`started_at`), não data atual
+      - Fix crítico: Exportações agora refletem quando análise foi executada
+      - Cálculo: `Math.max(...timestamps)` para pegar análise mais recente
+    - Arquivos:
+      - `lib/reportGenerator.ts` - Geração de PDF/Markdown/CSV (440 linhas)
+      - `ExportReportModal.tsx` - Seleção de formato (187 linhas)
+      - `HealthCheckingTab.tsx` - Botão no painel Resultados
+      - `HealthCheckHistoryModal.tsx` - Botão no header do histórico
+    - Dependências: jspdf 2.5.2, jspdf-autotable 3.8.4, react-day-picker 9.4.3
 
 ---
 

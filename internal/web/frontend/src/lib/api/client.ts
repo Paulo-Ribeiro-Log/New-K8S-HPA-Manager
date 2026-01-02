@@ -67,6 +67,7 @@ import type {
   HealthCheckStatsResponse,
   HealthCheckGetResponse,
   HealthCheckDeleteResponse,
+  HealthCheckEventsResponse,
 } from "@/types/healthcheck";
 
 const API_BASE_URL = "/api/v1";
@@ -1560,6 +1561,16 @@ class APIClient {
   }
 
   /**
+   * Cancel health check
+   * DELETE /api/v1/healthcheck/cancel/:sessionId
+   */
+  async cancelHealthCheck(sessionId: string): Promise<{ success: boolean; message: string }> {
+    return this.request(`/healthcheck/cancel/${sessionId}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
    * Get health check history
    * GET /api/v1/healthcheck/history?cluster=x&namespace=y
    */
@@ -1605,6 +1616,56 @@ class APIClient {
    */
   async deleteHealthCheckResult(id: string): Promise<HealthCheckDeleteResponse> {
     return this.request(`/healthcheck/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Get health check events (logs persistidos) by session ID
+   * GET /api/v1/healthcheck/events/:sessionId
+   */
+  async getHealthCheckEvents(sessionId: string): Promise<HealthCheckEventsResponse> {
+    return this.request(`/healthcheck/events/${sessionId}`);
+  }
+
+  // ===== HEALTH CHECK FILTERS =====
+
+  /**
+   * Get all filter rules
+   * GET /api/v1/filters
+   */
+  async getFilters(): Promise<any> {
+    return this.request("/filters");
+  }
+
+  /**
+   * Get available filter categories
+   * GET /api/v1/filters/categories
+   */
+  async getFilterCategories(): Promise<any> {
+    return this.request("/filters/categories");
+  }
+
+  /**
+   * Add new filter rule
+   * POST /api/v1/filters
+   */
+  async addFilterRule(rule: any): Promise<any> {
+    return this.request("/filters", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(rule),
+    });
+  }
+
+  /**
+   * Remove filter rule
+   * DELETE /api/v1/filters/:id
+   */
+  async removeFilterRule(id: string): Promise<any> {
+    return this.request(`/filters/${id}`, {
       method: "DELETE",
     });
   }
