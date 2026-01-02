@@ -25,6 +25,7 @@ import { useHealthCheckProgressMultiplexed } from "@/hooks/useHealthCheckProgres
 import type { HealthCheckResult, HealthCheckProgress } from "@/types/healthcheck";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
+import { HealthCheckAlertsReport } from "@/components/HealthCheckAlertsReport";
 
 interface HealthCheckProgressModalProps {
   sessionId: string;                           // Base session ID
@@ -422,6 +423,7 @@ export const HealthCheckProgressModal = ({
   const [activeTab, setActiveTab] = useState<string>("");
   const [completedClusters, setCompletedClusters] = useState<Set<string>>(new Set());
   const [failedClusters, setFailedClusters] = useState<Set<string>>(new Set());
+  const [showAlertsReport, setShowAlertsReport] = useState(false);
 
   // ✅ Memoizar clusters para evitar loop infinito de reconexão SSE
   const clusters = useMemo(() => Object.keys(clusterSessions), [clusterSessions]);
@@ -500,24 +502,35 @@ export const HealthCheckProgressModal = ({
         onInteractOutside={(e) => e.preventDefault()}
       >
         <DialogHeader>
-          <div className="flex items-center gap-2">
-            {viewMode ? (
-              // ✅ Modo Visualização - ícone de arquivo/histórico
-              <FileText className="h-5 w-5 sm:h-6 sm:w-6 text-blue-600" />
-            ) : allCompleted ? (
-              <CheckCircle2 className="h-5 w-5 sm:h-6 sm:w-6 text-green-600" />
-            ) : hasFailures ? (
-              <XCircle className="h-5 w-5 sm:h-6 sm:w-6 text-red-600" />
-            ) : (
-              <Loader2 className="h-5 w-5 sm:h-6 sm:w-6 text-blue-600 animate-spin" />
-            )}
-            <DialogTitle className="text-base sm:text-lg">
-              {viewMode
-                ? "Resultados do Health Check"
-                : allCompleted
-                ? "Health Check Concluído"
-                : `Health Check em Progresso (${completedClusters.size}/${clusters.length})`}
-            </DialogTitle>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              {viewMode ? (
+                // ✅ Modo Visualização - ícone de arquivo/histórico
+                <FileText className="h-5 w-5 sm:h-6 sm:w-6 text-blue-600" />
+              ) : allCompleted ? (
+                <CheckCircle2 className="h-5 w-5 sm:h-6 sm:w-6 text-green-600" />
+              ) : hasFailures ? (
+                <XCircle className="h-5 w-5 sm:h-6 sm:w-6 text-red-600" />
+              ) : (
+                <Loader2 className="h-5 w-5 sm:h-6 sm:w-6 text-blue-600 animate-spin" />
+              )}
+              <DialogTitle className="text-base sm:text-lg">
+                {viewMode
+                  ? "Resultados do Health Check"
+                  : allCompleted
+                  ? "Health Check Concluído"
+                  : `Health Check em Progresso (${completedClusters.size}/${clusters.length})`}
+              </DialogTitle>
+            </div>
+            <Button
+              onClick={() => setShowAlertsReport(true)}
+              variant="outline"
+              size="sm"
+              className="gap-2"
+            >
+              <AlertCircle className="h-4 w-4" />
+              Relatório de Alertas
+            </Button>
           </div>
           <DialogDescription className="text-xs sm:text-sm">
             {viewMode
@@ -620,6 +633,14 @@ export const HealthCheckProgressModal = ({
           </div>
         </div>
       </DialogContent>
+
+      {/* Modal de Relatório de Alertas */}
+      <HealthCheckAlertsReport
+        open={showAlertsReport}
+        onOpenChange={setShowAlertsReport}
+        eventsPerCluster={eventsPerCluster}
+        clusters={clusters}
+      />
     </Dialog>
   );
 };
