@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -233,7 +235,7 @@ func (h *HealthCheckHandler) Progress(c *gin.Context) {
 			c.SSEvent("progress", event)
 
 			// Fechar stream se tipo for "complete" ou "error"
-			if event.Type == "complete" || event.Type == "error" {
+			if (event.Type == "complete" || event.Type == "error") {
 				log.Info().Str("session_id", sessionID).Str("type", event.Type).Msg("[SSE] Closing stream (complete/error)")
 				return false
 			}
@@ -244,6 +246,165 @@ func (h *HealthCheckHandler) Progress(c *gin.Context) {
 			log.Info().Str("session_id", sessionID).Msg("[SSE] Client disconnected from progress stream")
 			return false
 		}
+	})
+}
+
+// ProgressMultiplexed retorna stream SSE multiplexado de TODOS os clusters
+// GET /api/v1/healthcheck/progress-multiplex?session={baseId}&clusters=cluster1,cluster2,cluster3
+// Uma única conexão EventSource recebe eventos de todos os clusters
+func (h *HealthCheckHandler) ProgressMultiplexed(c *gin.Context) {
+	baseSessionID := c.Query("session")
+	clustersParam := c.Query("clusters")
+
+	if baseSessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{"message": "base session ID é obrigatório"},
+		})
+		return
+	}
+
+	if clustersParam == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{"message": "lista de clusters é obrigatória"},
+		})
+		return
+	}
+
+	// Parse clusters
+	clusters := strings.Split(clustersParam, ",")
+	if len(clusters) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{"message": "lista de clusters vazia"},
+		})
+		return
+	}
+
+	log.Info().
+		Str("base_session_id", baseSessionID).
+		Strs("clusters", clusters).
+		Int("num_clusters", len(clusters)).
+		Msg("[SSE Multiplex] Client connected to multiplexed progress stream")
+
+	// Criar um client para CADA cluster session ID
+	// Todos os eventos serão merged em um único stream
+	clients := make([]*sse.Client, 0, len(clusters))
+	for _, cluster := range clusters {
+		clusterSessionID := fmt.Sprintf("%s-%s", baseSessionID, cluster)
+		client := sse.NewClient(clusterSessionID)
+		h.tracker.AddClient(client)
+		clients = append(clients, client)
+		log.Debug().
+			Str("cluster", cluster).
+			Str("cluster_session_id", clusterSessionID).
+			Msg("[SSE Multiplex] Added client for cluster")
+	}
+
+	defer func() {
+		for _, client := range clients {
+			h.tracker.RemoveClient(client.ID)
+		}
+		log.Info().Str("base_session_id", baseSessionID).Msg("[SSE Multiplex] All clients removed from tracker")
+	}()
+
+	// Set SSE headers
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+
+	// Track completions/errors to know when to close stream
+	completedClusters := make(map[string]bool)
+
+	// Stream events multiplexados
+	c.Stream(func(w io.Writer) bool {
+		// Use select para escutar TODOS os channels simultaneamente
+		cases := make([]reflect.SelectCase, len(clients)+1)
+
+		// Case 0: Context cancellation
+		cases[0] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(c.Request.Context().Done())}
+
+		// Cases 1+: Channels dos clients
+		for i, client := range clients {
+			cases[i+1] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(client.Channel)}
+		}
+
+		chosen, value, ok := reflect.Select(cases)
+
+		// Case 0: Context cancelled
+		if chosen == 0 {
+			log.Info().Str("base_session_id", baseSessionID).Msg("[SSE Multiplex] Client disconnected")
+			return false
+		}
+
+		// Cases 1+: Event from cluster client
+		if !ok {
+			// Channel fechado - um cluster terminou
+			clientIdx := chosen - 1
+			cluster := clusters[clientIdx]
+			log.Warn().
+				Str("base_session_id", baseSessionID).
+				Str("cluster", cluster).
+				Msg("[SSE Multiplex] Cluster channel closed")
+
+			// Se todos os clusters completaram, fechar stream
+			completedClusters[cluster] = true
+			if len(completedClusters) == len(clusters) {
+				log.Info().
+					Str("base_session_id", baseSessionID).
+					Msg("[SSE Multiplex] All clusters completed, closing stream")
+				return false
+			}
+			return true
+		}
+
+		// Evento válido
+		event := value.Interface().(sse.ProgressEvent)
+		clientIdx := chosen - 1
+		cluster := clusters[clientIdx]
+
+		// ✅ IMPORTANTE: Adicionar campo "cluster" ao evento para frontend distribuir
+		// Extrair cluster do sessionID se não estiver presente
+		if event.ID != "" {
+			// event.ID geralmente é "baseSessionID-clusterName"
+			parts := strings.Split(event.ID, "-")
+			if len(parts) > 1 {
+				event.Details = fmt.Sprintf("cluster:%s", parts[len(parts)-1])
+			}
+		}
+
+		log.Info().
+			Str("base_session_id", baseSessionID).
+			Str("cluster", cluster).
+			Str("type", event.Type).
+			Str("message", event.Message).
+			Float64("progress", event.Progress).
+			Msg("[SSE Multiplex] Sending event to client")
+
+		// Send event
+		c.SSEvent("progress", event)
+
+		// Se cluster completou/falhou, marcar como completo
+		if event.Type == "complete" || event.Type == "error" {
+			completedClusters[cluster] = true
+			log.Info().
+				Str("cluster", cluster).
+				Str("type", event.Type).
+				Int("completed_count", len(completedClusters)).
+				Int("total_clusters", len(clusters)).
+				Msg("[SSE Multiplex] Cluster finished")
+
+			// Se todos completaram, fechar stream
+			if len(completedClusters) == len(clusters) {
+				log.Info().
+					Str("base_session_id", baseSessionID).
+					Msg("[SSE Multiplex] All clusters completed, closing stream")
+				return false
+			}
+		}
+
+		return true
 	})
 }
 

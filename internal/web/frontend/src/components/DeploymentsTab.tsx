@@ -73,10 +73,6 @@ export const DeploymentsTab = ({
 
   // Helper: Detectar deployment problemático
   const isDeploymentProblematic = (dep: DeploymentSummary): boolean => {
-    // TEMPORÁRIO: Sempre mostrar botão para teste
-    return true;
-    
-    /* LÓGICA ORIGINAL (comentada para debug):
     // availableReplicas < desiredReplicas
     if (dep.availableReplicas < dep.replicas) return true;
     
@@ -84,7 +80,6 @@ export const DeploymentsTab = ({
     if (dep.readyReplicas < dep.replicas) return true;
     
     return false;
-    */
   };
 
   // Undo/Redo history with persistent cache
@@ -521,20 +516,35 @@ export const DeploymentsTab = ({
           const isSelected =
             selectedDeployment?.name === dep.name &&
             selectedDeployment?.namespace === dep.namespace;
+          const hasProblems = isDeploymentProblematic(dep);
+          const statusColor = hasProblems ? "text-red-400" : "text-green-400";
+          
           return (
             <button
               key={`${dep.cluster}-${dep.namespace}-${dep.name}`}
               onClick={() => handleSelectDeployment(dep)}
-              className={`w-full text-left p-3 rounded-lg border transition-colors ${
+              className={`w-full text-left p-3 rounded-lg border transition-colors relative ${
                 isSelected
                   ? "border-primary bg-primary/10 text-primary-foreground"
+                  : hasProblems
+                  ? "border-red-500/40 hover:border-red-500/60 bg-red-500/5"
                   : "border-border/60 hover:border-primary/40"
               }`}
             >
-              <div className="font-semibold text-sm">{dep.name}</div>
+              {hasProblems && (
+                <div className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full animate-pulse" title="Deployment com problemas" />
+              )}
+              <div className="flex items-center gap-2">
+                <div className="font-semibold text-sm">{dep.name}</div>
+                {hasProblems && (
+                  <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] font-medium rounded">
+                    ⚠
+                  </span>
+                )}
+              </div>
               <div className="text-xs text-muted-foreground">{dep.namespace}</div>
-              <div className="text-[11px] text-muted-foreground mt-1">
-                {dep.replicas} / {dep.readyReplicas} ready • {dep.availableReplicas} available
+              <div className={`text-[11px] mt-1 font-medium ${statusColor}`}>
+                {dep.readyReplicas}/{dep.replicas} ready • {dep.availableReplicas}/{dep.replicas} available
               </div>
             </button>
           );
