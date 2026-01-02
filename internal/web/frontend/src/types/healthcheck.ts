@@ -145,7 +145,8 @@ export interface HealthCheckProgress {
   progress: number;  // 0-100
   status: HealthStatus;
   timestamp: string; // ISO timestamp
-  Details?: string;  // Campo adicional para multiplexing SSE (formato: "cluster:nome")
+  details?: string;  // Campo adicional para multiplexing SSE (formato: "cluster:nome") - lowercase da tag JSON do backend
+  Details?: string;  // Fallback para compatibilidade (se backend mudar para uppercase)
 }
 
 // Response da API
