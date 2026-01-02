@@ -37,6 +37,9 @@ export interface HealthCheckRequest {
 
   // Paralelismo máximo (opcional)
   max_parallel?: number;
+
+  // Aplicar filtros de falsos positivos (opcional, padrão: true)
+  apply_filters?: boolean;
 }
 
 // Resultado de health check (por cluster)
@@ -182,6 +185,23 @@ export interface HealthCheckGetResponse {
 export interface HealthCheckDeleteResponse {
   success: boolean;
   message: string;
+}
+
+// Evento de progresso (SSE + Persistido)
+export interface HealthCheckProgress {
+  id: string;          // Session ID
+  type: string;        // Tipo do evento (ex: "deployments", "services", "configs")
+  phase: string;       // Fase ("in_progress", "completed", "failed")
+  message: string;     // Mensagem descritiva
+  progress: number;    // 0-100
+  status: HealthStatus;
+  timestamp: string;   // ISO timestamp
+}
+
+export interface HealthCheckEventsResponse {
+  success: boolean;
+  events: HealthCheckProgress[];
+  count: number;
 }
 
 // Erro genérico da API

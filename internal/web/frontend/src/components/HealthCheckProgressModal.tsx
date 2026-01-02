@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -19,6 +19,7 @@ import {
   Activity,
   X,
   Server,
+  FileText,
 } from "lucide-react";
 import { useHealthCheckProgress } from "@/hooks/useHealthCheckProgress";
 import type { HealthCheckResult, HealthCheckProgress } from "@/types/healthcheck";
@@ -29,6 +30,9 @@ interface HealthCheckProgressModalProps {
   sessionId: string;                           // Base session ID
   clusterSessions: Record<string, string>;     // Map: cluster -> sessionID único
   open: boolean;
+  preloadedEvents?: any[];                     // Eventos pré-carregados (modo visualização)
+  preloadedResult?: HealthCheckResult;         // ✅ Resultado completo pré-carregado (modo visualização)
+  viewMode?: boolean;                          // Modo visualização (não conecta SSE)
   onOpenChange: (open: boolean) => void;
   onComplete: (result: HealthCheckResult) => void;
 }
@@ -38,22 +42,41 @@ interface ClusterTabContentProps {
   cluster: string;
   sessionId: string;
   enabled: boolean;
+  preloadedEvents?: any[];                                // Eventos pré-carregados (modo visualização)
+  preloadedResult?: HealthCheckResult;                    // ✅ Resultado completo pré-carregado (modo visualização)
+  viewMode?: boolean;                                     // Modo visualização (não conecta SSE)
   onComplete: (result: HealthCheckResult) => void;
   onError: (error: string) => void;
+  onDisconnectReady?: (disconnect: () => void) => void;   // ✅ Callback para passar função disconnect ao pai
 }
 
 const ClusterTabContent = ({
   cluster,
   sessionId,
   enabled,
+  preloadedEvents,
+  preloadedResult,
+  viewMode,
   onComplete,
   onError,
+  onDisconnectReady,
 }: ClusterTabContentProps) => {
-  const [result, setResult] = useState<HealthCheckResult | null>(null);
+  // ✅ Inicializar result com preloadedResult se em viewMode
+  const [result, setResult] = useState<HealthCheckResult | null>(preloadedResult || null);
   const [filter, setFilter] = useState<"all" | "healthy" | "warning" | "critical">("all");
+  const [isFetchingResult, setIsFetchingResult] = useState(false);
+  const [localEvents, setLocalEvents] = useState<HealthCheckProgress[]>(preloadedEvents || []);
+
+  // ✅ Sincronizar result com preloadedResult quando mudar
+  useEffect(() => {
+    if (preloadedResult) {
+      console.log(`[${cluster}] Usando resultado pré-carregado:`, preloadedResult);
+      setResult(preloadedResult);
+    }
+  }, [preloadedResult, cluster]);
 
   const {
-    events,
+    events: liveEvents,
     isConnected,
     getProgress,
     getCurrentPhase,
@@ -64,29 +87,92 @@ const ClusterTabContent = ({
     clearEvents,
   } = useHealthCheckProgress({
     sessionId,
-    enabled,
+    enabled: !viewMode && enabled,  // ✅ Desabilitar SSE em viewMode
     onComplete: async () => {
-      // Fetch final result
-      try {
-        const response = await apiClient.getHealthCheckResult(sessionId);
-        if (response.success && response.data) {
-          setResult(response.data);
-          onComplete(response.data);
-        }
-      } catch (error) {
-        console.error(`[${cluster}] Failed to fetch final result:`, error);
-        toast.error(`[${cluster}] Erro ao buscar resultado final`);
+      console.log(`[${cluster}] ✅ onComplete chamado! isFetchingResult:`, isFetchingResult, "result:", result);
+
+      // ✅ Evitar múltiplas chamadas ao buscar resultado
+      if (isFetchingResult || result) {
+        console.log(`[${cluster}] Já buscando ou já tem resultado, ignorando onComplete duplicado`);
+        return;
       }
+
+      console.log(`[${cluster}] Iniciando fetch do resultado final...`);
+      setIsFetchingResult(true);
+
+      // ✅ Retry logic: tentar até 3 vezes com delay progressivo
+      const maxRetries = 3;
+      let lastError: Error | null = null;
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          console.log(`[${cluster}] Tentativa ${attempt}/${maxRetries} - Buscando resultado final para sessionId:`, sessionId);
+
+          const response = await apiClient.getHealthCheckResult(sessionId);
+          console.log(`[${cluster}] Resposta recebida (tentativa ${attempt}):`, response);
+
+          if (response.success && response.data) {
+            console.log(`[${cluster}] ✅ Resultado válido recebido! Salvando no estado...`);
+            setResult(response.data);
+            onComplete(response.data);
+            console.log(`[${cluster}] ✅ Resultado armazenado e callback onComplete chamado`);
+            setIsFetchingResult(false);
+            return; // ✅ Sucesso - sair do loop
+          } else {
+            console.warn(`[${cluster}] ⚠️ Resposta sem sucesso ou sem dados (tentativa ${attempt}):`, response);
+
+            if (attempt < maxRetries) {
+              const delay = attempt * 1000; // 1s, 2s, 3s
+              console.log(`[${cluster}] Aguardando ${delay}ms antes de retry...`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue; // Tentar novamente
+            } else {
+              throw new Error('Resultado final não retornado pelo backend após 3 tentativas');
+            }
+          }
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error('Erro desconhecido');
+          console.error(`[${cluster}] ❌ Erro na tentativa ${attempt}/${maxRetries}:`, lastError.message);
+
+          if (attempt < maxRetries) {
+            const delay = attempt * 1000;
+            console.log(`[${cluster}] Aguardando ${delay}ms antes de retry...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+        }
+      }
+
+      // ❌ Se chegou aqui, todas as tentativas falharam
+      console.error(`[${cluster}] ❌ Todas as ${maxRetries} tentativas falharam. Último erro:`, lastError);
+      toast.error(`[${cluster}] Erro ao buscar resultado final após ${maxRetries} tentativas: ${lastError?.message || 'Erro desconhecido'}`);
+      setIsFetchingResult(false);
     },
     onError: (error) => {
       console.error(`[${cluster}] SSE Error:`, error);
-      onError(error);
+      onError(`SSE connection error for cluster ${cluster}`);
     },
   });
 
   // ❌ REMOVIDO: Não limpar eventos ao trocar de tab
   // Eventos devem persistir entre trocas de tab
   // Só limpar quando modal fechar completamente (gerenciado pelo componente pai)
+
+  // ✅ Atualizar eventos locais com eventos ao vivo (somente se não estiver em viewMode)
+  useEffect(() => {
+    if (!viewMode && liveEvents.length > 0) {
+      setLocalEvents(liveEvents);
+    }
+  }, [liveEvents, viewMode]);
+
+  // ✅ Expor função disconnect ao componente pai (para botão cancelar)
+  useEffect(() => {
+    if (onDisconnectReady) {
+      onDisconnectReady(disconnect);
+    }
+  }, [disconnect, onDisconnectReady]);
+
+  // Usar eventos pré-carregados ou eventos ao vivo
+  const events = viewMode ? localEvents : liveEvents;
 
   // Filtrar eventos baseado no filtro selecionado
   const filteredEvents = events.filter((event) => {
@@ -97,6 +183,10 @@ const ClusterTabContent = ({
   const progress = getProgress();
   const phase = getCurrentPhase();
   const message = getCurrentMessage();
+  const completed = isComplete();
+
+  // ✅ Log de debug - rastrear estado do componente
+  console.log(`[${cluster}] Render - progress: ${progress}, phase: ${phase}, isComplete: ${completed}, hasResult: ${!!result}`);
 
   // Contar eventos em tempo real
   const liveHealthy = events.filter(e => e.status === "healthy").length;
@@ -146,14 +236,23 @@ const ClusterTabContent = ({
     <div className="space-y-4">
       {/* Status Header */}
       <div className="flex items-center gap-2">
-        {getStatusIcon()}
+        {viewMode ? (
+          // ✅ Modo visualização - apenas ícone de arquivo
+          <FileText className="h-5 w-5 text-blue-600" />
+        ) : (
+          getStatusIcon()
+        )}
         <span className="text-sm font-medium">
-          {isComplete() ? `Concluído - ${cluster}` : `Em Progresso - ${cluster}`}
+          {viewMode
+            ? `Logs - ${cluster}`
+            : isComplete()
+            ? `Concluído - ${cluster}`
+            : `Em Progresso - ${cluster}`}
         </span>
       </div>
 
-      {/* Progress Bar */}
-      {!isComplete() && !hasError() && (
+      {/* Progress Bar - ocultar em viewMode */}
+      {!viewMode && !isComplete() && !hasError() && (
         <div className="space-y-2">
           <div className="flex items-center justify-between text-sm">
             <span className="font-medium">{phase}</span>
@@ -163,8 +262,8 @@ const ClusterTabContent = ({
         </div>
       )}
 
-      {/* Current Message */}
-      {!isComplete() && (
+      {/* Current Message - ocultar em viewMode */}
+      {!viewMode && !isComplete() && (
         <div className="text-sm text-muted-foreground break-words whitespace-normal">
           {message}
         </div>
@@ -340,12 +439,18 @@ export const HealthCheckProgressModal = ({
   sessionId,
   clusterSessions,
   open,
+  preloadedEvents,
+  preloadedResult, // ✅ Adicionar preloadedResult
+  viewMode,
   onOpenChange,
   onComplete,
 }: HealthCheckProgressModalProps) => {
   const [activeTab, setActiveTab] = useState<string>("");
   const [completedClusters, setCompletedClusters] = useState<Set<string>>(new Set());
   const [failedClusters, setFailedClusters] = useState<Set<string>>(new Set());
+
+  // ✅ Armazenar referências aos métodos disconnect de cada cluster
+  const disconnectFunctionsRef = useRef<Map<string, () => void>>(new Map());
 
   // Extrair clusters do clusterSessions
   const clusters = Object.keys(clusterSessions);
@@ -378,9 +483,32 @@ export const HealthCheckProgressModal = ({
     toast.error(`[${cluster}] Erro na conexão SSE`);
   };
 
-  // Handle cancel
-  const handleCancel = () => {
-    toast.info("Health check cancelado");
+  // ✅ Callback para registrar função disconnect de cada cluster
+  const handleDisconnectReady = (cluster: string) => (disconnect: () => void) => {
+    disconnectFunctionsRef.current.set(cluster, disconnect);
+    console.log(`[Modal] Disconnect registrado para cluster: ${cluster}`);
+  };
+
+  // ✅ Handle cancel - cancelar no backend E desconectar TODOS os clusters
+  const handleCancel = async () => {
+    console.log("[Modal] Cancelando health check - desconectando todos os clusters");
+
+    // ✅ 1. Cancelar no backend (cancela o contexto, interrompe goroutines)
+    try {
+      await apiClient.cancelHealthCheck(sessionId);
+      console.log(`[Modal] Cancelamento solicitado ao backend para session: ${sessionId}`);
+    } catch (error) {
+      console.error("[Modal] Erro ao cancelar no backend:", error);
+      // Continua para desconectar SSE mesmo se API falhar
+    }
+
+    // ✅ 2. Desconectar todos os SSE de todos os clusters (limpa conexões frontend)
+    disconnectFunctionsRef.current.forEach((disconnect, cluster) => {
+      console.log(`[Modal] Desconectando SSE do cluster: ${cluster}`);
+      disconnect();
+    });
+
+    toast.info("Health check cancelado - análises interrompidas");
     onOpenChange(false);
   };
 
@@ -390,10 +518,16 @@ export const HealthCheckProgressModal = ({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[95vw] sm:max-w-4xl max-h-[90vh] sm:max-h-[85vh] overflow-hidden">
+      <DialogContent
+        className="w-[98vw] sm:max-w-7xl max-h-[90vh] sm:max-h-[85vh] overflow-hidden"
+        onInteractOutside={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <div className="flex items-center gap-2">
-            {allCompleted ? (
+            {viewMode ? (
+              // ✅ Modo Visualização - ícone de arquivo/histórico
+              <FileText className="h-5 w-5 sm:h-6 sm:w-6 text-blue-600" />
+            ) : allCompleted ? (
               <CheckCircle2 className="h-5 w-5 sm:h-6 sm:w-6 text-green-600" />
             ) : hasFailures ? (
               <XCircle className="h-5 w-5 sm:h-6 sm:w-6 text-red-600" />
@@ -401,13 +535,17 @@ export const HealthCheckProgressModal = ({
               <Loader2 className="h-5 w-5 sm:h-6 sm:w-6 text-blue-600 animate-spin" />
             )}
             <DialogTitle className="text-base sm:text-lg">
-              {allCompleted
+              {viewMode
+                ? "Resultados do Health Check"
+                : allCompleted
                 ? "Health Check Concluído"
                 : `Health Check em Progresso (${completedClusters.size}/${clusters.length})`}
             </DialogTitle>
           </div>
           <DialogDescription className="text-xs sm:text-sm">
-            {allCompleted
+            {viewMode
+              ? "Visualização de logs e alertas da análise anterior"
+              : allCompleted
               ? "Análise completa de todos os clusters"
               : "Verificando saúde dos recursos dos clusters..."}
           </DialogDescription>
@@ -421,8 +559,12 @@ export const HealthCheckProgressModal = ({
               cluster={clusters[0]}
               sessionId={clusterSessions[clusters[0]]}
               enabled={open}
+              preloadedEvents={preloadedEvents}
+              preloadedResult={preloadedResult} // ✅ Passar resultado pré-carregado
+              viewMode={viewMode}
               onComplete={handleClusterComplete(clusters[0])}
               onError={handleClusterError(clusters[0])}
+              onDisconnectReady={handleDisconnectReady(clusters[0])}
             />
           ) : (
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
@@ -456,8 +598,12 @@ export const HealthCheckProgressModal = ({
                       cluster={cluster}
                       sessionId={clusterSessions[cluster]}
                       enabled={open}
+                      preloadedEvents={preloadedEvents}
+                      preloadedResult={preloadedResult} // ✅ Passar resultado pré-carregado
+                      viewMode={viewMode}
                       onComplete={handleClusterComplete(cluster)}
                       onError={handleClusterError(cluster)}
+                      onDisconnectReady={handleDisconnectReady(cluster)}
                     />
                   </div>
                 ))}
@@ -467,8 +613,8 @@ export const HealthCheckProgressModal = ({
 
           {/* Actions */}
           <div className="flex flex-col sm:flex-row justify-between gap-2 pt-4 border-t">
-            {/* Cancel/Stop button - only show when in progress */}
-            {!allCompleted && (
+            {/* Cancel/Stop button - only show when in progress and NOT in view mode */}
+            {!viewMode && !allCompleted && (
               <Button
                 variant="destructive"
                 onClick={handleCancel}

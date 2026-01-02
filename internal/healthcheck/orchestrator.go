@@ -24,13 +24,20 @@ type Orchestrator struct {
 	configChecker     *ConfigChecker
 	storage           *HealthCheckStorage
 	progressTracker   *sse.ProgressTracker
+	filterManager     *FilterManager // ✅ Gerenciador de filtros
 }
 
 // NewOrchestrator cria um novo orchestrator
-func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse.ProgressTracker, dbPath string) (*Orchestrator, error) {
+func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse.ProgressTracker, dbPath string, filtersConfigPath string) (*Orchestrator, error) {
 	storage, err := NewHealthCheckStorage(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
+	}
+
+	// ✅ Inicializar FilterManager
+	filterManager, err := NewFilterManager(filtersConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize filter manager: %w", err)
 	}
 
 	return &Orchestrator{
@@ -40,6 +47,7 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 		configChecker:     NewConfigChecker(),
 		storage:           storage,
 		progressTracker:   progressTracker,
+		filterManager:     filterManager,
 	}, nil
 }
 
@@ -97,6 +105,10 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		ID:        sessionID,
 		Cluster:   cluster,
 		StartedAt: time.Now(),
+		// ✅ Sempre inicializar arrays vazios (nunca null)
+		DeploymentResults: []DeploymentHealth{},
+		ServiceResults:    []ServiceHealth{},
+		ConfigResults:     []ConfigHealth{},
 	}
 
 	// Obter cliente Kubernetes
@@ -171,6 +183,17 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 
 			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, namespaces, req.Timeout, deploymentCallback)
 
+			// ✅ Aplicar filtros se habilitado
+			if req.ApplyFilters && o.filterManager != nil {
+				filteredResults := []DeploymentHealth{}
+				for _, dep := range deploymentResults {
+					if !o.filterManager.ShouldFilter(ResourceDeployment, dep.Namespace, dep.Name, dep.Message) {
+						filteredResults = append(filteredResults, dep)
+					}
+				}
+				deploymentResults = filteredResults
+			}
+
 			mu.Lock()
 			result.DeploymentResults = deploymentResults
 			mu.Unlock()
@@ -225,7 +248,18 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 				o.publishProgress(sessionID, cluster, "configs", message, configProgress, status)
 			}
 
-			configResults := o.configChecker.CheckAll(ctx, client, namespaces, configCallback)
+			configResults := o.configChecker.CheckAll(ctx, client, namespaces, false, configCallback) // ✅ Passar false - filtros são aplicados abaixo
+
+			// ✅ Aplicar filtros se habilitado
+			if req.ApplyFilters && o.filterManager != nil {
+				filteredResults := []ConfigHealth{}
+				for _, cfg := range configResults {
+					if !o.filterManager.ShouldFilter(cfg.ResourceType, cfg.Namespace, cfg.Name, cfg.Message) {
+						filteredResults = append(filteredResults, cfg)
+					}
+				}
+				configResults = filteredResults
+			}
 
 			mu.Lock()
 			result.ConfigResults = configResults
@@ -480,26 +514,51 @@ func (o *Orchestrator) calculateSummary(result *HealthCheckResult) {
 	}
 }
 
-// publishProgress publica progresso via SSE
+// publishProgress publica progresso via SSE e salva no banco
 func (o *Orchestrator) publishProgress(sessionID, cluster, phase, message string, progress int, status HealthStatus) {
-	if o.progressTracker == nil {
-		return
+	timestamp := time.Now()
+
+	// ✅ Publicar via SSE
+	if o.progressTracker != nil {
+		// Converter para ProgressEvent do SSE
+		event := sse.ProgressEvent{
+			ID:        sessionID,
+			Type:      phase,
+			Phase:     "in_progress",  // Fase da operação (sempre "in_progress" para health checking)
+			Status:    string(status), // ✅ CORRIGIDO: Status de saúde (healthy/warning/critical)
+			Message:   fmt.Sprintf("[%s] %s", cluster, message),
+			Progress:  float64(progress), // 0-100 direto (frontend espera 0-100)
+			Details:   cluster,
+			Timestamp: timestamp,
+		}
+
+		// Publicar para a sessão específica (não broadcast)
+		o.progressTracker.SendToClient(sessionID, event)
 	}
 
-	// Converter para ProgressEvent do SSE
-	event := sse.ProgressEvent{
-		ID:        sessionID,
-		Type:      phase,
-		Phase:     "in_progress",  // Fase da operação (sempre "in_progress" para health checking)
-		Status:    string(status), // ✅ CORRIGIDO: Status de saúde (healthy/warning/critical)
-		Message:   fmt.Sprintf("[%s] %s", cluster, message),
-		Progress:  float64(progress), // 0-100 direto (frontend espera 0-100)
-		Details:   cluster,
-		Timestamp: time.Now(),
-	}
+	// 🆕 Salvar evento no banco de dados (persistência)
+	if o.storage != nil {
+		ctx := context.Background()
+		progressEvent := &ProgressEvent{
+			SessionID: sessionID,
+			Cluster:   cluster,
+			Type:      phase,
+			Phase:     "in_progress",
+			Message:   message, // Mensagem sem prefixo [cluster] (já salvamos cluster separadamente)
+			Progress:  progress,
+			Status:    string(status),
+			Timestamp: timestamp,
+		}
 
-	// Publicar para a sessão específica (não broadcast)
-	o.progressTracker.SendToClient(sessionID, event)
+		if err := o.storage.SaveEvent(ctx, progressEvent); err != nil {
+			log.Error().Err(err).
+				Str("session_id", sessionID).
+				Str("cluster", cluster).
+				Str("phase", phase).
+				Msg("Failed to save progress event to database")
+			// NÃO BLOQUEAR - apenas logar erro
+		}
+	}
 }
 
 // GetHistory retorna histórico de health checks
@@ -510,6 +569,21 @@ func (o *Orchestrator) GetHistory(ctx context.Context, cluster, namespace string
 // GetResult retorna resultado específico
 func (o *Orchestrator) GetResult(ctx context.Context, id string) (*HealthCheckResult, error) {
 	return o.storage.Get(ctx, id)
+}
+
+// DeleteResult deleta um resultado específico
+func (o *Orchestrator) DeleteResult(ctx context.Context, id string) error {
+	return o.storage.Delete(ctx, id)
+}
+
+// GetStats retorna estatísticas agregadas
+func (o *Orchestrator) GetStats(ctx context.Context, cluster, days string) (map[string]interface{}, error) {
+	return o.storage.GetStats(ctx, cluster, days)
+}
+
+// Storage retorna o storage para acesso direto (usado por handlers)
+func (o *Orchestrator) Storage() *HealthCheckStorage {
+	return o.storage
 }
 
 // getAllNamespaces obtém todos os namespaces do cluster
@@ -636,19 +710,7 @@ func detectEnvironment(clusterName string) string {
 	return "prod"
 }
 
-// DeleteResult deleta um resultado específico de health check
-func (o *Orchestrator) DeleteResult(ctx context.Context, resultID string) error {
-	log.Info().Str("result_id", resultID).Msg("Deleting health check result")
-
-	return o.storage.Delete(ctx, resultID)
-}
-
-// GetStats retorna estatísticas agregadas de health checks
-func (o *Orchestrator) GetStats(ctx context.Context, cluster, daysStr string) (map[string]interface{}, error) {
-	log.Info().
-		Str("cluster", cluster).
-		Str("days", daysStr).
-		Msg("Fetching health check stats")
-
-	return o.storage.GetStats(ctx, cluster, daysStr)
+// GetFilterManager retorna o gerenciador de filtros
+func (o *Orchestrator) GetFilterManager() *FilterManager {
+	return o.filterManager
 }

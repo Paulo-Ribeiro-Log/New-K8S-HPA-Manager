@@ -678,9 +678,10 @@ func (s *Server) setupRoutes() {
 	// Health Checking System
 	fmt.Println("🏥 Inicializando Health Checking System...")
 	healthCheckDBPath := filepath.Join("./build", "health_checks.db")
+	filtersConfigPath := filepath.Join("./build", "health_check_filters.json") // ✅ Config de filtros
 	progressTracker := handlers.GetProgressTracker() // Reutilizar ProgressTracker global
 
-	healthCheckOrchestrator, err := healthcheck.NewOrchestrator(s.kubeManager, progressTracker, healthCheckDBPath)
+	healthCheckOrchestrator, err := healthcheck.NewOrchestrator(s.kubeManager, progressTracker, healthCheckDBPath, filtersConfigPath)
 	if err != nil {
 		fmt.Printf("⚠️  Falha ao criar Health Check Orchestrator: %v\n", err)
 	} else {
@@ -693,10 +694,12 @@ func (s *Server) setupRoutes() {
 			// Rotas públicas (GET)
 			healthCheckGroup.GET("/history", healthCheckHandler.History)
 			healthCheckGroup.GET("/stats", healthCheckHandler.Stats)
+			healthCheckGroup.GET("/events/:sessionId", healthCheckHandler.GetEvents) // 🆕 Buscar eventos persistidos
 			healthCheckGroup.GET("/:id", healthCheckHandler.Get)
 
 			// Rotas de escrita (POST, DELETE) - SRE only
 			healthCheckGroup.POST("/run", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Run)
+			healthCheckGroup.DELETE("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Cancel) // ✅ Cancelar health check
 			healthCheckGroup.DELETE("/:id", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Delete)
 		}
 
@@ -708,6 +711,21 @@ func (s *Server) setupRoutes() {
 		}
 
 		fmt.Println("✅ Health Checking routes registradas")
+
+		// ✅ Rotas de Filtros (Health Check Filters Management)
+		filtersHandler := handlers.NewFiltersHandler(healthCheckOrchestrator)
+		filtersGroup := api.Group("/filters")
+		{
+			// Rotas públicas (GET)
+			filtersGroup.GET("", filtersHandler.ListRules)          // Listar regras
+			filtersGroup.GET("/categories", filtersHandler.GetCategories) // Listar categorias
+
+			// Rotas de escrita (POST, DELETE) - SRE only
+			filtersGroup.POST("", rbacMiddleware.RequireSREGroup(), filtersHandler.AddRule)    // Adicionar regra
+			filtersGroup.DELETE("/:id", rbacMiddleware.RequireSREGroup(), filtersHandler.RemoveRule) // Remover regra
+		}
+
+		fmt.Println("✅ Health Check Filters routes registradas")
 	}
 }
 

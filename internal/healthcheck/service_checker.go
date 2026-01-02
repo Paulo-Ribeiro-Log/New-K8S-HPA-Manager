@@ -2,32 +2,42 @@ package healthcheck
 
 import (
 	"context"
+
+	"github.com/rs/zerolog/log"
+	"k8s.io/client-go/kubernetes"
+)
+
+/* IMPORTS COMENTADOS - apenas necessários quando service checking estiver habilitado
+import (
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/rs/zerolog/log"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-
 	"k8s-hpa-manager/internal/healthcheck/analyzers"
 )
+*/
 
-// ServiceAnalyzer interface para analyzers de serviços externos
+// ServiceChecker testa conectividade de serviços externos (DESABILITADO)
+type ServiceChecker struct{}
+
+// NewServiceChecker cria um novo service checker
+func NewServiceChecker() *ServiceChecker {
+	return &ServiceChecker{}
+}
+
+/* CÓDIGO COMENTADO - ServiceAnalyzer e analyzers
 type ServiceAnalyzer interface {
 	Check(ctx context.Context, connectionString string, timeout int) (bool, int64, error)
 	GetDetails(ctx context.Context, connectionString string) (map[string]interface{}, error)
 }
 
-// ServiceChecker testa conectividade de serviços externos
-type ServiceChecker struct {
+type ServiceCheckerOriginal struct {
 	analyzers map[ServiceType]ServiceAnalyzer
 }
 
-// NewServiceChecker cria um novo service checker
-func NewServiceChecker() *ServiceChecker {
-	return &ServiceChecker{
+func NewServiceCheckerOriginal() *ServiceCheckerOriginal {
+	return &ServiceCheckerOriginal{
 		analyzers: map[ServiceType]ServiceAnalyzer{
 			ServiceMongoDB:  &analyzers.MongoDBAnalyzer{},
 			ServiceRedis:    &analyzers.RedisAnalyzer{},
@@ -38,9 +48,20 @@ func NewServiceChecker() *ServiceChecker {
 		},
 	}
 }
+*/
 
 // CheckAll verifica conectividade de todos os serviços externos
+// ⚠️ DESABILITADO: Testes de conectividade são feitos do servidor web,
+// que não tem acesso aos serviços internos do cluster (DNS, firewalls).
+// Isso gera alarmes falsos (critical) em clusters saudáveis.
 func (c *ServiceChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, timeout int, progressCallback ProgressCallback) []ServiceHealth {
+	// ✅ Retornar array vazio - service checking desabilitado
+	log.Info().Msg("Service checking desabilitado - servidor web não tem acesso a serviços internos do cluster")
+	return []ServiceHealth{}
+}
+
+/* CÓDIGO ORIGINAL - DESABILITADO
+func (c *ServiceChecker) _CheckAllOriginal(ctx context.Context, client kubernetes.Interface, namespaces []string, timeout int, progressCallback ProgressCallback) []ServiceHealth {
 	results := []ServiceHealth{}
 
 	// Primeiro, contar total de services para calcular progresso
@@ -71,7 +92,7 @@ func (c *ServiceChecker) CheckAll(ctx context.Context, client kubernetes.Interfa
 		// Coletar de ConfigMaps
 		for _, cm := range configMaps.Items {
 			for key, value := range cm.Data {
-				serviceType, connStr := c.detectServiceType(value)
+				serviceType, connStr := c._detectServiceType(value)
 				if serviceType != "" {
 					servicesToCheck = append(servicesToCheck, struct {
 						namespace    string
@@ -97,7 +118,7 @@ func (c *ServiceChecker) CheckAll(ctx context.Context, client kubernetes.Interfa
 		for _, secret := range secrets.Items {
 			for key, value := range secret.Data {
 				valueStr := string(value)
-				serviceType, connStr := c.detectServiceType(valueStr)
+				serviceType, connStr := c._detectServiceType(valueStr)
 				if serviceType != "" {
 					servicesToCheck = append(servicesToCheck, struct {
 						namespace    string
@@ -132,13 +153,13 @@ func (c *ServiceChecker) CheckAll(ctx context.Context, client kubernetes.Interfa
 				StatusHealthy, currentService, totalServices)
 		}
 
-		health := c.Check(ctx, svc.namespace, svc.resourceName, svc.key, svc.serviceType, svc.connStr, timeout)
+		health := c._Check(ctx, svc.namespace, svc.resourceName, svc.key, svc.serviceType, svc.connStr, timeout)
 		health.ConfigSource = svc.configSource
 		results = append(results, health)
 
 		// Publicar resultado
 		if progressCallback != nil {
-			summary := c.getHealthSummary(health)
+			summary := c._getHealthSummary(health)
 			progressCallback(svc.namespace, svc.resourceName,
 				fmt.Sprintf("%s: %s", svc.configSource, summary), health.Status, currentService, totalServices)
 		}
@@ -147,8 +168,8 @@ func (c *ServiceChecker) CheckAll(ctx context.Context, client kubernetes.Interfa
 	return results
 }
 
-// getHealthSummary gera resumo compacto do health check
-func (c *ServiceChecker) getHealthSummary(health ServiceHealth) string {
+// _getHealthSummary gera resumo compacto do health check
+func (c *ServiceChecker) _getHealthSummary(health ServiceHealth) string {
 	if health.Status == StatusHealthy {
 		return fmt.Sprintf("Conectado (%dms)", health.LatencyMs)
 	}
@@ -159,8 +180,8 @@ func (c *ServiceChecker) getHealthSummary(health ServiceHealth) string {
 	return health.Message
 }
 
-// detectServiceType detecta tipo de serviço por padrões de connection string
-func (c *ServiceChecker) detectServiceType(value string) (ServiceType, string) {
+// _detectServiceType detecta tipo de serviço por padrões de connection string
+func (c *ServiceChecker) _detectServiceType(value string) (ServiceType, string) {
 	// MongoDB: mongodb://... ou mongodb+srv://...
 	if strings.HasPrefix(value, "mongodb://") || strings.HasPrefix(value, "mongodb+srv://") {
 		return ServiceMongoDB, value
@@ -194,8 +215,8 @@ func (c *ServiceChecker) detectServiceType(value string) (ServiceType, string) {
 	return "", ""
 }
 
-// Check verifica conectividade de um serviço específico
-func (c *ServiceChecker) Check(ctx context.Context, namespace, resourceName, key string, serviceType ServiceType, connStr string, timeout int) ServiceHealth {
+// _Check verifica conectividade de um serviço específico
+func (c *ServiceChecker) _Check(ctx context.Context, namespace, resourceName, key string, serviceType ServiceType, connStr string, timeout int) ServiceHealth {
 	health := ServiceHealth{
 		Name:        fmt.Sprintf("%s/%s", resourceName, key),
 		Namespace:   namespace,
@@ -249,3 +270,4 @@ func (c *ServiceChecker) Check(ctx context.Context, namespace, resourceName, key
 
 	return health
 }
+*/

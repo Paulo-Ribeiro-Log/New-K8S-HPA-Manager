@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Accordion,
   AccordionContent,
@@ -24,9 +25,18 @@ import type {
 interface HealthCheckCardProps {
   health: DeploymentHealth | ServiceHealth | ConfigHealth;
   type: "deployment" | "service" | "config";
+  selectionMode?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: () => void;
 }
 
-export const HealthCheckCard = ({ health, type }: HealthCheckCardProps) => {
+export const HealthCheckCard = ({
+  health,
+  type,
+  selectionMode = false,
+  isSelected = false,
+  onToggleSelect,
+}: HealthCheckCardProps) => {
   const { name, namespace, status, message, suggestions, checked_at } = health;
 
   // Status colors
@@ -180,6 +190,14 @@ export const HealthCheckCard = ({ health, type }: HealthCheckCardProps) => {
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
+            {/* Checkbox (só aparece em modo seleção) */}
+            {selectionMode && (
+              <Checkbox
+                checked={isSelected}
+                onCheckedChange={onToggleSelect}
+                onClick={(e) => e.stopPropagation()} // Evitar propagar clique para card
+              />
+            )}
             {statusIcons[status]}
             <CardTitle className="text-base">{name}</CardTitle>
           </div>

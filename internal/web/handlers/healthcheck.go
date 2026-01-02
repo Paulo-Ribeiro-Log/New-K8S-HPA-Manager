@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"k8s-hpa-manager/internal/config"
@@ -21,6 +22,10 @@ type HealthCheckHandler struct {
 	kubeManager  *config.KubeConfigManager
 	orchestrator *healthcheck.Orchestrator
 	tracker      *sse.ProgressTracker
+
+	// ✅ Map para armazenar funções de cancelamento de cada sessão
+	cancelFuncs map[string]context.CancelFunc
+	cancelMutex sync.RWMutex
 }
 
 // NewHealthCheckHandler cria um novo handler de health checking
@@ -29,6 +34,7 @@ func NewHealthCheckHandler(km *config.KubeConfigManager, orch *healthcheck.Orche
 		kubeManager:  km,
 		orchestrator: orch,
 		tracker:      tracker,
+		cancelFuncs:  make(map[string]context.CancelFunc), // ✅ Inicializar map
 	}
 }
 
@@ -77,9 +83,22 @@ func (h *HealthCheckHandler) Run(c *gin.Context) {
 	// Gerar mapeamento cluster -> sessionID
 	clusterSessions := h.orchestrator.GetClusterSessionMapping(baseSessionID, clusters)
 
+	// ✅ Criar contexto cancelável
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// ✅ Armazenar função cancel (para permitir cancelamento via API)
+	h.cancelMutex.Lock()
+	h.cancelFuncs[baseSessionID] = cancel
+	h.cancelMutex.Unlock()
+
 	// Executar em goroutine (long-running operation)
 	go func() {
-		ctx := context.Background()
+		// ✅ Cleanup: remover cancel function ao finalizar
+		defer func() {
+			h.cancelMutex.Lock()
+			delete(h.cancelFuncs, baseSessionID)
+			h.cancelMutex.Unlock()
+		}()
 
 		log.Info().
 			Str("base_session_id", baseSessionID).
@@ -112,10 +131,54 @@ func (h *HealthCheckHandler) Run(c *gin.Context) {
 	}()
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"success":         true,
-		"session_id":      baseSessionID,
+		"success":          true,
+		"session_id":       baseSessionID,
 		"cluster_sessions": clusterSessions, // Map: cluster -> sessionID
-		"message":         "Health check iniciado",
+		"message":          "Health check iniciado",
+	})
+}
+
+// Cancel cancela um health check em andamento
+// DELETE /api/v1/healthcheck/cancel/:sessionId
+func (h *HealthCheckHandler) Cancel(c *gin.Context) {
+	sessionID := c.Param("sessionId")
+
+	log.Info().Str("session_id", sessionID).Msg("Cancelling health check")
+
+	// Buscar função de cancelamento
+	h.cancelMutex.RLock()
+	cancelFunc, exists := h.cancelFuncs[sessionID]
+	h.cancelMutex.RUnlock()
+
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"message": "Sessão não encontrada ou já finalizada",
+			},
+		})
+		return
+	}
+
+	// Chamar cancel() - isso cancela o contexto e interrompe todas as goroutines
+	cancelFunc()
+
+	// Publicar evento de cancelamento via SSE
+	h.tracker.SendToClient(sessionID, sse.ProgressEvent{
+		ID:        sessionID,
+		Type:      "error",
+		Phase:     "cancelled",
+		Message:   "Health check cancelado pelo usuário",
+		Progress:  0,
+		Status:    "critical",
+		Timestamp: time.Now(),
+	})
+
+	log.Info().Str("session_id", sessionID).Msg("Health check cancelled successfully")
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Health check cancelado com sucesso",
 	})
 }
 
@@ -236,6 +299,58 @@ func (h *HealthCheckHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    result,
+	})
+}
+
+// GetEvents retorna eventos de progresso persistidos de um cluster
+// GET /api/v1/healthcheck/events/:sessionId
+func (h *HealthCheckHandler) GetEvents(c *gin.Context) {
+	sessionID := c.Param("sessionId")
+
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"message": "session ID é obrigatório",
+			},
+		})
+		return
+	}
+
+	log.Info().Str("session_id", sessionID).Msg("Fetching health check events")
+
+	ctx := c.Request.Context()
+	events, err := h.orchestrator.Storage().GetEvents(ctx, sessionID)
+	if err != nil {
+		log.Error().Err(err).Str("session_id", sessionID).Msg("Failed to get events")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"message": "Erro ao buscar eventos",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	// Converter para formato frontend
+	responseEvents := make([]gin.H, len(events))
+	for i, e := range events {
+		responseEvents[i] = gin.H{
+			"id":        e.SessionID,
+			"type":      e.Type,
+			"phase":     e.Phase,
+			"message":   e.Message,
+			"progress":  e.Progress,
+			"status":    e.Status,
+			"timestamp": e.Timestamp.Format(time.RFC3339),
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"events":  responseEvents,
+		"count":   len(responseEvents),
 	})
 }
 

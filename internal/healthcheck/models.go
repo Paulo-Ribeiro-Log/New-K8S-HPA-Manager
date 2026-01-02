@@ -56,6 +56,9 @@ type HealthCheckRequest struct {
 	// Paralelismo (apenas para múltiplos clusters)
 	// Se Clusters > 1: mínimo 2 workers, máximo = NumCPU ou total de clusters
 	MaxParallel int `json:"max_parallel"` // Padrão: min(NumCPU, len(Clusters))
+
+	// Aplicar filtros de falsos positivos (padrão: true)
+	ApplyFilters bool `json:"apply_filters"` // Filtrar ConfigMaps vazios conhecidos, secrets de sistema, etc
 }
 
 // HealthCheckResult resultado de health check
