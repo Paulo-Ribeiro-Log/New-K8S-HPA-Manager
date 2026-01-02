@@ -137,13 +137,15 @@ export interface ConfigHealth {
 
 // Progress de health check (SSE)
 export interface HealthCheckProgress {
-  id: string;        // Session ID
+  id: string;        // Session ID (pode vir como 'ID' do backend Go)
+  ID?: string;       // Alias para compatibilidade com backend Go (capitalizado)
   type: string;      // "init" | "deployments" | "services" | "configs" | "summary" | "complete" | "error"
   phase: string;     // Mantido por compatibilidade (usado em cordon/drain, não em health checking)
   message: string;
   progress: number;  // 0-100
   status: HealthStatus;
   timestamp: string; // ISO timestamp
+  Details?: string;  // Campo adicional para multiplexing SSE (formato: "cluster:nome")
 }
 
 // Response da API
@@ -187,17 +189,7 @@ export interface HealthCheckDeleteResponse {
   message: string;
 }
 
-// Evento de progresso (SSE + Persistido)
-export interface HealthCheckProgress {
-  id: string;          // Session ID
-  type: string;        // Tipo do evento (ex: "deployments", "services", "configs")
-  phase: string;       // Fase ("in_progress", "completed", "failed")
-  message: string;     // Mensagem descritiva
-  progress: number;    // 0-100
-  status: HealthStatus;
-  timestamp: string;   // ISO timestamp
-}
-
+// Lista de eventos persistidos (backend SQLite)
 export interface HealthCheckEventsResponse {
   success: boolean;
   events: HealthCheckProgress[];
