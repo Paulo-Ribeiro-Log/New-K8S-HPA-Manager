@@ -99,13 +99,15 @@ export function useHealthCheckProgressMultiplexed(options: UseHealthCheckProgres
         const event: HealthCheckProgress = JSON.parse(e.data);
 
         // ✅ Extrair cluster do evento
-        // Backend adiciona "cluster:nome" no campo Details
+        // Backend adiciona "cluster:nome" no campo details (lowercase - JSON tag)
         let cluster = '';
-        if (event.Details && event.Details.startsWith('cluster:')) {
-          cluster = event.Details.replace('cluster:', '');
-        } else if (event.ID) {
+        const details = (event as any).details || event.Details;  // Tenta lowercase primeiro, fallback para uppercase
+        if (details && details.startsWith('cluster:')) {
+          cluster = details.replace('cluster:', '');
+        } else if (event.ID || event.id) {
           // Fallback: extrair do sessionID (formato: baseSessionID-clusterName)
-          const parts = event.ID.split('-');
+          const id = event.ID || event.id;
+          const parts = id.split('-');
           if (parts.length > 1) {
             cluster = parts[parts.length - 1];
           }
