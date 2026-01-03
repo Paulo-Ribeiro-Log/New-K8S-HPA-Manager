@@ -78,7 +78,11 @@ const extractIssues = (result: HealthCheckResult): EventMessage[] => {
 // GERAÇÃO DE PDF
 // ============================================================================
 export const generatePDFReport = (data: ReportData): void => {
-  const doc = new jsPDF();
+  const doc = new jsPDF({
+    orientation: "portrait",
+    unit: "mm",
+    format: "a4",
+  });
   const pageWidth = doc.internal.pageSize.getWidth();
   let yPosition = 20;
 
@@ -233,10 +237,16 @@ export const generatePDFReport = (data: ReportData): void => {
         },
         columnStyles: {
           0: { cellWidth: 10, halign: 'center' },
-          1: { cellWidth: 30, fontStyle: 'bold' },
-          2: { cellWidth: 'auto' },
+          1: { cellWidth: 28, fontStyle: 'bold' },
+          2: { cellWidth: 134, overflow: 'linebreak' },
+        },
+        styles: {
+          overflow: 'linebreak',
+          cellPadding: 2,
+          minCellHeight: 8,
         },
         margin: { left: 24, right: 14 },
+        tableWidth: 'auto',
       });
 
       yPosition = (doc as any).lastAutoTable.finalY + 8;
@@ -276,10 +286,16 @@ export const generatePDFReport = (data: ReportData): void => {
         },
         columnStyles: {
           0: { cellWidth: 10, halign: 'center' },
-          1: { cellWidth: 30, fontStyle: 'bold' },
-          2: { cellWidth: 'auto' },
+          1: { cellWidth: 28, fontStyle: 'bold' },
+          2: { cellWidth: 134, overflow: 'linebreak' },
+        },
+        styles: {
+          overflow: 'linebreak',
+          cellPadding: 2,
+          minCellHeight: 8,
         },
         margin: { left: 24, right: 14 },
+        tableWidth: 'auto',
       });
 
       yPosition = (doc as any).lastAutoTable.finalY + 8;

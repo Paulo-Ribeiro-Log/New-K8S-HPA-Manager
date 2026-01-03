@@ -675,11 +675,18 @@ func (s *Server) setupRoutes() {
 		fmt.Println("✅ AI Tokens routes registradas")
 	}
 
+	// Predictive Analysis (análise preditiva de deployments)
+	predictionsHandler := handlers.NewPredictionsHandler(s.kubeManager)
+	api.POST("/predictions/analyze", predictionsHandler.AnalyzeDeployment)
+	api.POST("/predictions/export", predictionsHandler.ExportReport)
+	api.GET("/predictions/health", predictionsHandler.GetHealthScore)
+	fmt.Println("✅ Predictions routes registradas")
+
 	// Health Checking System
 	fmt.Println("🏥 Inicializando Health Checking System...")
 	healthCheckDBPath := filepath.Join("./build", "health_checks.db")
 	filtersConfigPath := filepath.Join("./build", "health_check_filters.json") // ✅ Config de filtros
-	progressTracker := handlers.GetProgressTracker() // Reutilizar ProgressTracker global
+	progressTracker := handlers.GetProgressTracker()                           // Reutilizar ProgressTracker global
 
 	healthCheckOrchestrator, err := healthcheck.NewOrchestrator(s.kubeManager, progressTracker, healthCheckDBPath, filtersConfigPath)
 	if err != nil {
@@ -707,7 +714,7 @@ func (s *Server) setupRoutes() {
 		sseGroup := s.router.Group("/api/v1/healthcheck")
 		sseGroup.Use(middleware.WebSocketAuthMiddleware(s.token))
 		{
-			sseGroup.GET("/progress", healthCheckHandler.Progress)                       // Original: 1 conexão por cluster
+			sseGroup.GET("/progress", healthCheckHandler.Progress)                      // Original: 1 conexão por cluster
 			sseGroup.GET("/progress-multiplex", healthCheckHandler.ProgressMultiplexed) // 🆕 Multiplexado: 1 conexão para TODOS os clusters
 		}
 
@@ -718,11 +725,11 @@ func (s *Server) setupRoutes() {
 		filtersGroup := api.Group("/filters")
 		{
 			// Rotas públicas (GET)
-			filtersGroup.GET("", filtersHandler.ListRules)          // Listar regras
+			filtersGroup.GET("", filtersHandler.ListRules)                // Listar regras
 			filtersGroup.GET("/categories", filtersHandler.GetCategories) // Listar categorias
 
 			// Rotas de escrita (POST, DELETE) - SRE only
-			filtersGroup.POST("", rbacMiddleware.RequireSREGroup(), filtersHandler.AddRule)    // Adicionar regra
+			filtersGroup.POST("", rbacMiddleware.RequireSREGroup(), filtersHandler.AddRule)          // Adicionar regra
 			filtersGroup.DELETE("/:id", rbacMiddleware.RequireSREGroup(), filtersHandler.RemoveRule) // Remover regra
 		}
 

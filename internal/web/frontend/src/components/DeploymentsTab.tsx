@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 
@@ -70,6 +70,9 @@ export const DeploymentsTab = ({
   const [describeModalOpen, setDescribeModalOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
+  const [predictionModalOpen, setPredictionModalOpen] = useState(false);
+  const [predictionLoading, setPredictionLoading] = useState(false);
+  const [predictionResult, setPredictionResult] = useState<any>(null);
 
   // Helper: Detectar deployment problemático
   const isDeploymentProblematic = (dep: DeploymentSummary): boolean => {
@@ -410,6 +413,47 @@ export const DeploymentsTab = ({
     }
   };
 
+  // Nova função para análise preditiva
+  const handlePredictiveAnalysis = async () => {
+    if (!selectedDeployment) return;
+
+    setPredictionLoading(true);
+    setPredictionModalOpen(true);
+    setPredictionResult(null);
+
+    try {
+      const response = await fetch("/api/predictions/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          cluster: selectedDeployment.cluster,
+          namespace: selectedDeployment.namespace,
+          deployment: selectedDeployment.name,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      setPredictionResult(result);
+      
+      toast.success("Análise preditiva concluída!", {
+        description: `Health Score: ${result.health_score.overall}/100 (${result.health_score.category})`,
+      });
+    } catch (err) {
+      toast.error("Erro na análise preditiva", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+      setPredictionResult({ error: err instanceof Error ? err.message : "Unknown error" });
+    } finally {
+      setPredictionLoading(false);
+    }
+  };
+
   const collapseButton = (
     <Button
       variant="ghost"
@@ -461,15 +505,29 @@ export const DeploymentsTab = ({
 
   const rightTitleAction = (
     <div className="flex gap-2">
-      {selectedDeployment && isDeploymentProblematic(selectedDeployment) && (
-        <AITriggerButton
-          resourceType="Deployment"
-          cluster={cluster}
-          namespace={selectedDeployment.namespace}
-          resourceName={selectedDeployment.name}
-          size="sm"
-          variant="outline"
-        />
+      {selectedDeployment && (
+        <>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={handlePredictiveAnalysis}
+            disabled={manifestLoading}
+            className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700"
+          >
+            <TrendingUp className="w-4 h-4 mr-2" />
+            Análise Preditiva
+          </Button>
+          {isDeploymentProblematic(selectedDeployment) && (
+            <AITriggerButton
+              resourceType="Deployment"
+              cluster={cluster}
+              namespace={selectedDeployment.namespace}
+              resourceName={selectedDeployment.name}
+              size="sm"
+              variant="outline"
+            />
+          )}
+        </>
       )}
       <Button
         variant="outline"
@@ -1204,6 +1262,163 @@ export const DeploymentsTab = ({
         {renderDiffDialog()}
         {renderEditorFullScreen()}
         {renderApplyConfirmDialog()}
+
+        {/* Modal Describe */}
+        <Dialog open={describeModalOpen} onOpenChange={setDescribeModalOpen}>
+          <DialogContent className="max-w-6xl max-h-[90vh]">
+            <DialogHeader>
+              <DialogTitle>Kubectl Describe - {selectedDeployment?.name}</DialogTitle>
+              <DialogDescription className="text-sm text-muted-foreground">
+                {selectedDeployment?.namespace}/{selectedDeployment?.name}
+              </DialogDescription>
+            </DialogHeader>
+            <ScrollArea className="h-[70vh]">
+              {describeLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                </div>
+              ) : (
+                <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
+              )}
+            </ScrollArea>
+          </DialogContent>
+        </Dialog>
+
+        {/* Modal de Análise Preditiva */}
+        <Dialog open={predictionModalOpen} onOpenChange={setPredictionModalOpen}>
+          <DialogContent className="max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <TrendingUp className="w-5 h-5 text-blue-500" />
+                Análise Preditiva - {selectedDeployment?.name}
+              </DialogTitle>
+              <DialogDescription>
+                Análise baseada em métricas históricas, tendências e IA
+              </DialogDescription>
+            </DialogHeader>
+            
+            <ScrollArea className="flex-1 pr-4">
+              {predictionLoading ? (
+                <div className="flex items-center justify-center py-20">
+                  <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                  <span className="ml-3 text-muted-foreground">Analisando deployment...</span>
+                </div>
+              ) : predictionResult?.error ? (
+                <div className="bg-destructive/10 border border-destructive/50 rounded-lg p-4">
+                  <p className="text-destructive font-semibold">Erro na análise:</p>
+                  <p className="text-sm text-muted-foreground mt-2">{predictionResult.error}</p>
+                </div>
+              ) : predictionResult ? (
+                <div className="space-y-6">
+                  {/* Health Score */}
+                  <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                    <h3 className="font-semibold text-lg mb-3 flex items-center gap-2">
+                      <CheckCircle2 className="w-5 h-5 text-primary" />
+                      Health Score
+                    </h3>
+                    <div className="flex items-center gap-4">
+                      <div className={`text-5xl font-bold ${
+                        predictionResult.health_score.overall >= 75 ? 'text-green-500' :
+                        predictionResult.health_score.overall >= 50 ? 'text-yellow-500' :
+                        'text-red-500'
+                      }`}>
+                        {predictionResult.health_score.overall}
+                        <span className="text-2xl text-muted-foreground">/100</span>
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-sm text-muted-foreground mb-2">Categoria: 
+                          <span className="ml-2 font-semibold capitalize">{predictionResult.health_score.category}</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div>Availability: {predictionResult.health_score.breakdown.availability}/100</div>
+                          <div>Performance: {predictionResult.health_score.breakdown.performance}/100</div>
+                          <div>Stability: {predictionResult.health_score.breakdown.stability}/100</div>
+                          <div>Efficiency: {predictionResult.health_score.breakdown.efficiency}/100</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Executive Summary */}
+                  <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                    <h3 className="font-semibold text-lg mb-3">Resumo Executivo</h3>
+                    <p className="text-sm mb-3">{predictionResult.executive_summary.current_state}</p>
+                    <div className="mb-3">
+                      <span className="text-xs font-semibold text-muted-foreground">Nível de Risco:</span>
+                      <span className={`ml-2 px-2 py-1 rounded text-xs font-semibold ${
+                        predictionResult.executive_summary.risk_level === 'critical' ? 'bg-red-500/20 text-red-400' :
+                        predictionResult.executive_summary.risk_level === 'high' ? 'bg-orange-500/20 text-orange-400' :
+                        predictionResult.executive_summary.risk_level === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                        'bg-green-500/20 text-green-400'
+                      }`}>
+                        {predictionResult.executive_summary.risk_level}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-xs font-semibold text-muted-foreground">Principais Descobertas:</span>
+                      <ul className="list-disc list-inside text-sm mt-2 space-y-1">
+                        {predictionResult.executive_summary.key_findings.map((finding: string, idx: number) => (
+                          <li key={idx}>{finding}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+
+                  {/* Predictions */}
+                  {(predictionResult.predictions.short_term.length > 0 || 
+                    predictionResult.predictions.medium_term.length > 0 || 
+                    predictionResult.predictions.long_term.length > 0) && (
+                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                      <h3 className="font-semibold text-lg mb-3">Previsões</h3>
+                      
+                      {predictionResult.predictions.short_term.length > 0 && (
+                        <div className="mb-4">
+                          <h4 className="font-semibold text-sm mb-2 text-orange-400">Curto Prazo (4h)</h4>
+                          {predictionResult.predictions.short_term.map((pred: any, idx: number) => (
+                            <div key={idx} className="bg-background/50 rounded p-3 mb-2">
+                              <div className="flex items-start justify-between mb-1">
+                                <span className="font-semibold text-sm">{pred.event}</span>
+                                <span className={`text-xs px-2 py-1 rounded ${
+                                  pred.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
+                                  pred.severity === 'high' ? 'bg-orange-500/20 text-orange-400' :
+                                  pred.severity === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                                  'bg-blue-500/20 text-blue-400'
+                                }`}>{pred.severity}</span>
+                              </div>
+                              <p className="text-xs text-muted-foreground mb-2">{pred.impact}</p>
+                              <div className="text-xs">Probabilidade: {Math.round(pred.probability * 100)}%</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Recommendations */}
+                  {predictionResult.recommendations.length > 0 && (
+                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                      <h3 className="font-semibold text-lg mb-3">Recomendações</h3>
+                      {predictionResult.recommendations.map((rec: any, idx: number) => (
+                        <div key={idx} className="bg-background/50 rounded p-3 mb-3 border-l-4 border-primary">
+                          <div className="flex items-start justify-between mb-2">
+                            <span className="font-semibold">#{rec.priority} - {rec.title}</span>
+                            <span className="text-xs px-2 py-1 bg-primary/20 rounded">{rec.category}</span>
+                          </div>
+                          <p className="text-sm text-muted-foreground mb-2">{rec.description}</p>
+                          <div className="flex gap-4 text-xs text-muted-foreground">
+                            <span>⏱️ {rec.implementation_estimate.time_required}</span>
+                            <span>📊 Complexidade: {rec.implementation_estimate.complexity}</span>
+                            <span>⚠️ Risco: {rec.implementation_estimate.risk_level}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </ScrollArea>
+          </DialogContent>
+        </Dialog>
       </>
     );
   }
@@ -1244,6 +1459,142 @@ export const DeploymentsTab = ({
             ) : (
               <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
             )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Análise Preditiva */}
+      <Dialog open={predictionModalOpen} onOpenChange={setPredictionModalOpen}>
+        <DialogContent className="max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <TrendingUp className="w-5 h-5 text-blue-500" />
+              Análise Preditiva - {selectedDeployment?.name}
+            </DialogTitle>
+            <DialogDescription>
+              Análise baseada em métricas históricas, tendências e IA
+            </DialogDescription>
+          </DialogHeader>
+          
+          <ScrollArea className="flex-1 pr-4">
+            {predictionLoading ? (
+              <div className="flex items-center justify-center py-20">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                <span className="ml-3 text-muted-foreground">Analisando deployment...</span>
+              </div>
+            ) : predictionResult?.error ? (
+              <div className="bg-destructive/10 border border-destructive/50 rounded-lg p-4">
+                <p className="text-destructive font-semibold">Erro na análise:</p>
+                <p className="text-sm text-muted-foreground mt-2">{predictionResult.error}</p>
+              </div>
+            ) : predictionResult ? (
+              <div className="space-y-6">
+                {/* Health Score */}
+                <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                  <h3 className="font-semibold text-lg mb-3 flex items-center gap-2">
+                    <CheckCircle2 className="w-5 h-5 text-primary" />
+                    Health Score
+                  </h3>
+                  <div className="flex items-center gap-4">
+                    <div className={`text-5xl font-bold ${
+                      predictionResult.health_score.overall >= 75 ? 'text-green-500' :
+                      predictionResult.health_score.overall >= 50 ? 'text-yellow-500' :
+                      'text-red-500'
+                    }`}>
+                      {predictionResult.health_score.overall}
+                      <span className="text-2xl text-muted-foreground">/100</span>
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-sm text-muted-foreground mb-2">Categoria: 
+                        <span className="ml-2 font-semibold capitalize">{predictionResult.health_score.category}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div>Availability: {predictionResult.health_score.breakdown.availability}/100</div>
+                        <div>Performance: {predictionResult.health_score.breakdown.performance}/100</div>
+                        <div>Stability: {predictionResult.health_score.breakdown.stability}/100</div>
+                        <div>Efficiency: {predictionResult.health_score.breakdown.efficiency}/100</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Executive Summary */}
+                <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                  <h3 className="font-semibold text-lg mb-3">Resumo Executivo</h3>
+                  <p className="text-sm mb-3">{predictionResult.executive_summary.current_state}</p>
+                  <div className="mb-3">
+                    <span className="text-xs font-semibold text-muted-foreground">Nível de Risco:</span>
+                    <span className={`ml-2 px-2 py-1 rounded text-xs font-semibold ${
+                      predictionResult.executive_summary.risk_level === 'critical' ? 'bg-red-500/20 text-red-400' :
+                      predictionResult.executive_summary.risk_level === 'high' ? 'bg-orange-500/20 text-orange-400' :
+                      predictionResult.executive_summary.risk_level === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                      'bg-green-500/20 text-green-400'
+                    }`}>
+                      {predictionResult.executive_summary.risk_level}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-xs font-semibold text-muted-foreground">Principais Descobertas:</span>
+                    <ul className="list-disc list-inside text-sm mt-2 space-y-1">
+                      {predictionResult.executive_summary.key_findings.map((finding: string, idx: number) => (
+                        <li key={idx}>{finding}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Predictions */}
+                {(predictionResult.predictions.short_term.length > 0 || 
+                  predictionResult.predictions.medium_term.length > 0 || 
+                  predictionResult.predictions.long_term.length > 0) && (
+                  <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                    <h3 className="font-semibold text-lg mb-3">Previsões</h3>
+                    
+                    {predictionResult.predictions.short_term.length > 0 && (
+                      <div className="mb-4">
+                        <h4 className="font-semibold text-sm mb-2 text-orange-400">Curto Prazo (4h)</h4>
+                        {predictionResult.predictions.short_term.map((pred: any, idx: number) => (
+                          <div key={idx} className="bg-background/50 rounded p-3 mb-2">
+                            <div className="flex items-start justify-between mb-1">
+                              <span className="font-semibold text-sm">{pred.event}</span>
+                              <span className={`text-xs px-2 py-1 rounded ${
+                                pred.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
+                                pred.severity === 'high' ? 'bg-orange-500/20 text-orange-400' :
+                                pred.severity === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                                'bg-blue-500/20 text-blue-400'
+                              }`}>{pred.severity}</span>
+                            </div>
+                            <p className="text-xs text-muted-foreground mb-2">{pred.impact}</p>
+                            <div className="text-xs">Probabilidade: {Math.round(pred.probability * 100)}%</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Recommendations */}
+                {predictionResult.recommendations.length > 0 && (
+                  <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                    <h3 className="font-semibold text-lg mb-3">Recomendações</h3>
+                    {predictionResult.recommendations.map((rec: any, idx: number) => (
+                      <div key={idx} className="bg-background/50 rounded p-3 mb-3 border-l-4 border-primary">
+                        <div className="flex items-start justify-between mb-2">
+                          <span className="font-semibold">#{rec.priority} - {rec.title}</span>
+                          <span className="text-xs px-2 py-1 bg-primary/20 rounded">{rec.category}</span>
+                        </div>
+                        <p className="text-sm text-muted-foreground mb-2">{rec.description}</p>
+                        <div className="flex gap-4 text-xs text-muted-foreground">
+                          <span>⏱️ {rec.implementation_estimate.time_required}</span>
+                          <span>📊 Complexidade: {rec.implementation_estimate.complexity}</span>
+                          <span>⚠️ Risco: {rec.implementation_estimate.risk_level}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
           </ScrollArea>
         </DialogContent>
       </Dialog>

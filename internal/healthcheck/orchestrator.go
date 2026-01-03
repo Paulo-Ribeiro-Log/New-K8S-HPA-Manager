@@ -174,6 +174,13 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 
 			// Callback para publicar progresso de cada deployment
 			deploymentCallback := func(namespace, name, message string, status HealthStatus, current, total int) {
+				// ✅ Aplicar filtro ANTES de publicar/salvar (evita eventos filtrados no banco)
+				if req.ApplyFilters && o.filterManager != nil {
+					if o.filterManager.ShouldFilter(ResourceDeployment, namespace, name, message) {
+						return // ⛔ Não publicar nem salvar eventos filtrados
+					}
+				}
+
 				// Calcular progresso proporcional dentro da faixa alocada para deployments
 				// Exemplo: se deploymentStart=5 e deploymentEnd=35 (range=30):
 				//   deployment 15/30 = 5 + (15/30 * 30) = 20%
@@ -215,6 +222,13 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 
 			// Callback para publicar progresso de cada service
 			serviceCallback := func(namespace, name, message string, status HealthStatus, current, total int) {
+				// ✅ Aplicar filtro ANTES de publicar/salvar (evita eventos filtrados no banco)
+				if req.ApplyFilters && o.filterManager != nil {
+					if o.filterManager.ShouldFilter(ResourceService, namespace, name, message) {
+						return // ⛔ Não publicar nem salvar eventos filtrados
+					}
+				}
+
 				// Calcular progresso proporcional dentro da faixa alocada para services
 				serviceProgress := servicesStart + int(float64(current)/float64(total)*float64(rangePerCheck))
 				o.publishProgress(sessionID, cluster, "services", message, serviceProgress, status)
@@ -243,6 +257,13 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 
 			// Callback para publicar progresso de cada config
 			configCallback := func(namespace, name, message string, status HealthStatus, current, total int) {
+				// ✅ Aplicar filtro ANTES de publicar/salvar (evita eventos filtrados no banco)
+				if req.ApplyFilters && o.filterManager != nil {
+					if o.filterManager.ShouldFilter(ResourceConfigMap, namespace, name, message) {
+						return // ⛔ Não publicar nem salvar eventos filtrados
+					}
+				}
+
 				// Calcular progresso proporcional dentro da faixa alocada para configs
 				configProgress := configsStart + int(float64(current)/float64(total)*float64(rangePerCheck))
 				o.publishProgress(sessionID, cluster, "configs", message, configProgress, status)
