@@ -240,14 +240,30 @@ Você é um especialista sênior em análise de infraestrutura Kubernetes e otim
 - CPU média fora de pico: {offpeak_cpu}m
 - Variação semanal: {weekly_pattern}
 
-## DISTRIBUIÇÃO EM NODES
+## DISTRIBUIÇÃO EM NODES E ANÁLISE DE VM SIZING
 - Nodes utilizados: {nodes_used}
-- Distribuição: {node_distribution}
+- Distribuição atual: {node_distribution}
+  * Node-1: {pods_count} pods, CPU: {node_cpu_usage}/{node_cpu_capacity}, Mem: {node_mem_usage}/{node_mem_capacity}
+  * Node-2: {pods_count} pods, CPU: {node_cpu_usage}/{node_cpu_capacity}, Mem: {node_mem_usage}/{node_mem_capacity}
 - Nodes disponíveis no cluster: {total_nodes}
-- CPU total disponível: {total_cpu_available} cores
-- CPU já alocada: {total_cpu_allocated} cores ({cpu_utilization}%)
-- Memória disponível: {total_mem_available} GB
-- Memória alocada: {total_mem_allocated} GB ({mem_utilization}%)
+- VM Sizing por node:
+  * Instance type predominante: {instance_type} (ex: t3.large, m5.xlarge)
+  * CPU por VM: {cpu_per_vm} cores
+  * Memória por VM: {mem_per_vm} GB
+  * Pods max por node: {max_pods_per_node}
+- Capacidade Total do Cluster:
+  * CPU total disponível: {total_cpu_available} cores
+  * CPU já alocada: {total_cpu_allocated} cores ({cpu_utilization}%)
+  * Memória disponível: {total_mem_available} GB
+  * Memória alocada: {total_mem_allocated} GB ({mem_utilization}%)
+- Análise de Bin-Packing:
+  * Fator de empacotamento atual: {bin_packing_efficiency}%
+  * Desperdício estimado: {wasted_resources}
+  * Fragmentação de recursos: {fragmentation_level}
+- Pod Placement Analysis:
+  * Anti-affinity rules: {anti_affinity_rules}
+  * Topology spread constraints: {topology_constraints}
+  * Node selector/taints: {node_selectors}
 
 ## APLICAÇÕES CONCORRENTES (top 5 consumidores de recursos)
 {competing_apps_list}
@@ -302,11 +318,25 @@ Por favor, forneça uma análise preditiva detalhada incluindo:
      * Riscos da mudança
      * Estimativa de tempo de implementação
 
-6. **PREVISÃO DE CAPACIDADE**:
+6. **PREVISÃO DE CAPACIDADE E ANÁLISE DE VM SIZING**:
    - Esse deployment pode escalar com a infraestrutura atual?
-   - Quantas réplicas adicionais são suportadas?
-   - Qual seria o impacto nos nodes?
-   - Quando atingiremos limites de capacidade?
+   - Quantas réplicas adicionais são suportadas CONSIDERANDO:
+     * Recursos disponíveis por node (CPU, Memória)
+     * Limites de pods por node (kubelet max-pods)
+     * Fragmentação de recursos entre nodes
+     * Requisições vs Limites configurados
+   - Análise por Node:
+     * Quantas réplicas cabem em cada node atual?
+     * Qual node está mais saturado?
+     * Qual node tem mais capacidade livre?
+   - Impacto no Cluster:
+     * Será necessário adicionar novos nodes? Quantos?
+     * Qual o sizing ideal para novos nodes?
+     * Impacto em outras aplicações (bin-packing)
+   - Timeline de Saturação:
+     * Quando atingiremos 80% de capacidade?
+     * Quando atingiremos 100% de capacidade?
+     * Baseado no crescimento atual, quando precisaremos escalar a infra?
 
 7. **OTIMIZAÇÕES RECOMENDADAS**:
    - Ajustes em requests/limits
@@ -522,8 +552,31 @@ Formato da resposta: JSON estruturado
         "potential_issues": [
           "Brief downtime during rolling update (~30s per pod)",
           "Memory increase may trigger node pressure temporarily"
-        ],
-        "mitigation": "Apply during low-traffic window (03:00-05:00)"
+        ],analysis": {
+      "current_distribution": {
+        "node-1": {"pods": 3, "cpu_available": "500m", "mem_available": "2Gi", "can_fit": 1},
+        "node-2": {"pods": 2, "cpu_available": "1000m", "mem_available": "3Gi", "can_fit": 2},
+        "node-3": {"pods": 4, "cpu_available": "200m", "mem_available": "1Gi", "can_fit": 0}
+      },
+      "most_saturated_node": "node-3 (95% CPU, 90% Memory)",
+      "best_candidate_node": "node-2 (50% CPU, 60% Memory)",
+      "total_capacity_per_node": "6 pods max (considering 800m CPU request per pod)"
+    },
+    "vm_sizing_recommendations": {
+      "current_instance_type": "t3.large (2 vCPU, 8GB RAM)",
+      "recommended_for_scaling": "t3.xlarge (4 vCPU, 16GB RAM)",
+      "reason": "Current nodes reaching capacity, larger instances provide better pod density",
+      "cost_efficiency": "Better utilization with fewer, larger nodes vs many small nodes"
+    },
+    "scaling_timeline": {
+      "reach_80_percent": "3 days at current growth rate",
+      "reach_100_percent": "7 days at current growth rate",
+      "new_nodes_needed_date": "2026-01-09 (7 days)",
+      "recommended_action_date": "2026-01-05 (3 days) - provision before saturation"
+    },
+    "node_impact": "Would require 3 more nodes to be fully utilized OR 2 larger nodes (t3.xlarge)",
+    "competing_apps_consideration": "app-backend is primary competitor for CPU resources",
+    "bin_packing_efficiency": "Current: 68%, After optimization: 82% (better resource utilization)
       },
       "implementation_estimate": {
         "effort": "2 hours engineering time",
@@ -1425,13 +1478,166 @@ const exportReport = async (format: 'markdown' | 'pdf' | 'json') => {
 
 ---
 
-## �🔐 Considerações de Segurança
+## 🔐 Considerações de Segurança e Sanitização
 
+### Segurança Geral
 1. **Autenticação**: Reutilizar sistema RBAC existente
 2. **Rate Limiting**: Máximo 1 análise por deployment a cada 5 minutos
 3. **Validação**: Validar todos os inputs (cluster, namespace, deployment)
-4. **Sanitização**: Limpar dados antes de enviar para IA
-5. **Logs**: Registrar todas as análises para auditoria
+4. **Logs**: Registrar todas as análises para auditoria
+
+### 🔒 Sanitização de Dados Sensíveis (CRÍTICO)
+
+**IMPORTANTE**: Todos os dados coletados devem passar pelo sistema **Sanitizer** antes de serem:
+- Enviados para IA
+- Exibidos na interface
+- Exportados em relatórios
+- Armazenados em cache/logs
+
+#### Dados que DEVEM ser Sanitizados:
+
+1. **Informações de Identificação**:
+   - Nomes de clusters (mascarar para "cluster-xxx")
+   - Nomes de namespaces sensíveis (produção, staging)
+   - IPs internos e ranges de rede
+   - Nomes de nodes (mascarar identificadores únicos)
+   - Nomes de VMs e instance IDs
+
+2. **Métricas e Valores**:
+   - URLs de serviços externos
+   - Connection strings
+   - Tokens ou secrets acidentalmente expostos em variáveis de ambiente
+   - Credenciais em annotations ou labels
+
+3. **Logs e Eventos**:
+   - Stack traces com paths internos
+   - Mensagens de erro com informações sensíveis
+   - Nomes de usuários ou emails
+
+4. **Relatórios Exportados**:
+   - Todos os dados devem ser sanitizados antes da exportação
+   - PDF, Markdown e JSON devem conter apenas dados mascarados
+
+#### Implementação da Sanitização:
+
+**No Backend (Go)**:
+
+```go
+import "your-project/internal/sanitizer"
+
+// Antes de enviar para IA
+func (a *Analyzer) AnalyzeDeployment(ctx context.Context, req PredictionRequest) (*PredictionResult, error) {
+    // 1. Coletar métricas
+    metrics := a.collectMetrics(ctx, req)
+    
+    // 2. SANITIZAR dados antes de enviar para IA
+    sanitizedMetrics := sanitizer.SanitizeMetrics(metrics)
+    
+    // 3. Enviar para IA
+    result := a.aiIntegrator.AnalyzeMetrics(ctx, req, sanitizedMetrics)
+    
+    // 4. SANITIZAR resposta da IA (pode conter dados refletidos)
+    sanitizedResult := sanitizer.SanitizeResult(result)
+    
+    return sanitizedResult, nil
+}
+
+// Antes de exportar relatórios
+func (rg *ReportGenerator) GenerateMarkdown() (string, error) {
+    // Sanitizar todos os campos antes de gerar relatório
+    sanitizedResult := sanitizer.SanitizeForExport(rg.result)
+    return rg.templateMarkdown(sanitizedResult)
+}
+```
+
+**No Frontend (TypeScript)**:
+
+```tsx
+import { sanitizeForDisplay } from '@/lib/sanitizer';
+
+// Antes de exibir na UI
+const displayMetrics = sanitizeForDisplay(result.raw_metrics);
+
+// Antes de exportar
+const exportReport = async (format: string) => {
+    const sanitizedData = sanitizeForExport(result);
+    // ... proceder com exportação
+};
+```
+
+#### Configuração do Sanitizer:
+
+```yaml
+# config/sanitizer.yaml
+sanitization:
+  enabled: true
+  mode: strict  # strict, moderate, permissive
+  
+  patterns:
+    # IPs
+    - pattern: '\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'
+      replacement: '***.***.***.***.***'
+      
+    # Cluster names (preservar prefixo)
+    - pattern: 'cluster-(prod|staging|dev)-[a-z0-9]+'
+      replacement: 'cluster-$1-***'
+      
+    # Node names / VM IDs
+    - pattern: '(node|ip|vm|instance)-[a-z0-9-]+'
+      replacement: '$1-***'
+      
+    # Email addresses
+    - pattern: '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+      replacement: '***@***'
+      
+    # Secrets/Tokens
+    - pattern: '(token|secret|password|key)[:=]\s*["\']?[^\s"\',}]+'
+      replacement: '$1=***REDACTED***'
+  
+  preserve_structure: true  # Manter estrutura dos dados
+  audit_log: true          # Logar todas as sanitizações
+```
+
+#### Checklist de Sanitização:
+
+- [ ] Integrar chamadas ao Sanitizer em todos os pontos de coleta
+- [ ] Sanitizar antes de enviar para IA
+- [ ] Sanitizar resposta da IA
+- [ ] Sanitizar antes de exibir na UI
+- [ ] Sanitizar antes de exportar relatórios
+- [ ] Sanitizar logs e audit trails
+- [ ] Testar com dados reais para validar eficácia
+- [ ] Documentar padrões de sanitização para o time
+
+#### Exemplo de Dados Sanitizados:
+
+**Antes**:
+```json
+{
+  "cluster": "production-us-east-1-kubernetes-v1.28",
+  "node": "ip-10-0-1-45.ec2.internal",
+  "namespace": "payment-processing",
+  "event": "Failed to connect to database at mysql://admin:pass123@10.0.2.100:3306"
+}
+```
+
+**Depois**:
+```json
+{
+  "cluster": "cluster-prod-***",
+  "node": "node-***",
+  "namespace": "namespace-***",
+  "event": "Failed to connect to database at ***://***:***@***.***.***.***.***:***"
+}
+```
+
+### Benefícios da Sanitização:
+
+1. ✅ **Conformidade**: Atende requisitos de segurança e compliance
+2. ✅ **Proteção de Dados**: Impede vazamento de informações sensíveis
+3. ✅ **Segurança da IA**: Evita exposição de dados em prompts enviados para IA externa
+4. ✅ **Auditoria**: Facilita compartilhamento de relatórios sem riscos
+5. ✅ **Confiança**: Permite uso seguro da funcionalidade em ambientes críticos
 
 ---
 

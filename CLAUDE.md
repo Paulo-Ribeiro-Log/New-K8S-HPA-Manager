@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **31 de dezembro de 2025** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **03 de janeiro de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -508,6 +508,18 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
       - `HealthCheckingTab.tsx` - Botão no painel Resultados
       - `HealthCheckHistoryModal.tsx` - Botão no header do histórico
     - Dependências: jspdf 2.5.2, jspdf-autotable 3.8.4, react-day-picker 9.4.3
+  - **Correções Críticas (03/01/2026)**:
+    - ✅ **Fix UTF-8 em PDF**: Emojis (⚠️, ✅, ❌) quebravam encoding do jsPDF
+      - Solução: Função `removeEmojis()` com Unicode ranges específicos
+      - Remove apenas emojis, preserva texto completo (português, acentos, etc)
+      - Aplicado em: modal de visualização + todas as exportações (PDF/MD/CSV)
+      - Regex: `[\u{1F300}-\u{1F9FF}]`, `[\u{2600}-\u{26FF}]`, `[\u{2700}-\u{27BF}]`, `\uFE0F`
+    - ✅ **Fix Crítico - Filtros Aplicados Após Salvar**: Alertas da whitelist apareciam no banco/exportações
+      - **Root Cause**: `publishProgress()` salvava eventos ANTES de aplicar filtros (orchestrator.go:553)
+      - **Solução**: Aplicar filtros nos callbacks ANTES de chamar `publishProgress()`
+      - **Modificações**: Callbacks de deployments (176-189), services (224-235), configs (259-270)
+      - **Resultado**: Eventos filtrados NÃO são publicados via SSE, NÃO salvos no banco, NÃO aparecem em exportações
+      - **Arquivos**: `internal/healthcheck/orchestrator.go`, `HealthCheckAlertsExportModal.tsx`, `HealthCheckAlertsReport.tsx`
 
 ---
 
