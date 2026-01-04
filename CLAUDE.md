@@ -398,6 +398,40 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
       - Comandos de investigação (kubectl get configmap/secret/service, nslookup, nc)
       - Evita workarounds temporários (restart sem investigar causa)
   - **Documentação**: [PLANO_AI_DIAGNOSTICS.md](PLANO_AI_DIAGNOSTICS.md) | [PROGRESSO_AI_DIAGNOSTICS.md](PROGRESSO_AI_DIAGNOSTICS.md)
+✅ **Análise Preditiva (v1.3.8+ - Produção desde 04/01/2026)** - Sistema completo de análise preditiva de deployments
+  - **Status**: ✅ Backend 100% | ✅ Frontend 100% | ✅ IA Integration 100% | ✅ Exportação PDF/MD 100%
+  - **Funcionalidades Principais**:
+    - ✅ **Métricas Temporais**: Coleta de snapshots em 5 pontos (atual, D-3, D-7, D-10, D-14)
+    - ✅ **Análise de Tendências**: CPU/Memory/ErrorRate/Latency com detecção automática de direção
+    - ✅ **Health Score 0-100**: Breakdown por componente (Availability 30%, Performance 30%, Stability 25%, Efficiency 15%)
+    - ✅ **Previsões com IA**: Short/Medium/Long term predictions com severidade e probabilidade
+    - ✅ **Root Cause Analysis**: Análise de causa raiz com evidências e remediação
+    - ✅ **Análise de Capacidade para Crescimento**: Cálculo realista de max réplicas
+      - Min/Max/Current nodes do node pool
+      - Aplicações concorrentes com réplicas e consumo per-replica
+      - 3 cenários: nodes atuais, max nodes, remover concorrentes
+      - Identificação de bottleneck resource (CPU/Memory)
+    - ✅ **Recomendações Priorizadas**: Sistema 1-5 com estimativa de implementação e ganho de eficiência
+    - ✅ **Relatórios Profissionais**: PDF e Markdown sem emojis (jsPDF compatible)
+    - ✅ **Modal Completo**: Todas informações dos relatórios também no modal (DADOS ANALISADOS + ANÁLISE DE CRESCIMENTO)
+    - ✅ **Histórico Persistente**: SQLite com filtros avançados e busca
+  - **Queries Prometheus Corrigidas** (Bug Crítico Resolvido):
+    - ❌ ANTES: `avg() by (pod)` retornava vetor → queryScalar() pegava v[0] → 0.00
+    - ✅ DEPOIS: `sum()` com filtros `container!="",container!="POD"` → escalar único
+    - ✅ Compatibilidade v1.x/v2.x: `kube_node_status_capacity_cpu_cores or kube_node_status_capacity{resource="cpu"}`
+  - **Arquivos Principais**:
+    - `internal/monitoring/predictions/collector.go` (~960 linhas) - Coleta de métricas e capacidade
+    - `internal/monitoring/predictions/queries.go` - Queries Prometheus corrigidas
+    - `internal/monitoring/predictions/models.go` - Estruturas GrowthCapacityAnalysis
+    - `internal/web/handlers/predictions.go` - API REST + geração de relatórios MD
+    - `internal/web/frontend/src/components/DeploymentsTab.tsx` (~2800 linhas) - Modal completo
+    - `internal/storage/predictions_store.go` - Persistência SQLite
+  - **API REST**:
+    - `POST /api/v1/predictions/analyze` - Iniciar análise
+    - `GET /api/v1/predictions/report/:id/markdown` - Exportar MD
+    - `GET /api/v1/predictions/history` - Histórico com filtros
+  - **Documentação**: [PREDICTIVE_ANALYSIS_FEATURES.md](PREDICTIVE_ANALYSIS_FEATURES.md)
+
 ✅ **Health Checking (v1.3.7+ - Produção desde 28/12/2025)** - Sistema completo de verificação de saúde de clusters
   - **Status**: ✅ Backend 100% | ✅ Frontend 100% | ✅ SSE Progress 100% | ✅ **Multi-Cluster com Tabs** 100% | ✅ **Logs Persistentes** 100%
   - **Funcionalidades**:
@@ -536,6 +570,37 @@ Tech: Go 1.24.0+ + React 18.3.1 + TypeScript 5.8.3
 Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 Servidor Web: ./build/new-k8s-hpa web (porta 8080)
+
+Recent Updates (v1.3.8 - 04/01/2026):
+- **Análise Preditiva - Sistema Completo em Produção**:
+  - **Problema Resolvido**: Métricas retornando 0.00 (CPU/Memory)
+    - Root Cause: Queries `avg() by (pod)` retornavam vetor, `queryScalar()` pegava apenas v[0]
+    - Solução: Mudança para `sum()` com filtros `container!="",container!="POD"` → escalar único
+  - **Compatibilidade Prometheus v1.x/v2.x**:
+    - Queries com OR operator: `kube_node_status_capacity_cpu_cores or kube_node_status_capacity{resource="cpu"}`
+    - Fallback automático entre formatos de métricas
+  - **Análise de Capacidade para Crescimento Horizontal**:
+    - Implementação completa com GrowthCapacityAnalysis
+    - Min/Max/Current nodes do node pool (Azure AKS)
+    - Aplicações concorrentes com réplicas e consumo per-replica
+    - 3 cenários de escalabilidade: nodes atuais, max nodes, remover concorrentes
+    - Identificação automática de bottleneck resource (CPU vs Memory)
+  - **Modal Enriquecido**: Adicionadas seções "DADOS ANALISADOS" e "ANÁLISE DE CRESCIMENTO"
+    - Grid de métricas de réplicas (4 cards)
+    - Consumo de recursos com trends coloridos
+    - Capacidade do cluster (total, utilização, nodes)
+    - Node Pool configuration (min/max/current)
+    - Tabela de aplicações concorrentes (scrollable, 7 colunas)
+    - Tabela de cenários de escalabilidade (3 rows)
+    - Recomendação final destacada com max réplicas sugeridas
+  - **Relatórios Profissionais**: Exportação PDF e Markdown sem emojis (jsPDF compatible)
+    - Seção completa de análise de crescimento com tabelas formatadas
+    - Filename: `predicao_{deployment}_{timestamp}.{pdf|md}`
+  - **Health Score Detalhado**: 0-100 com breakdown (Availability/Performance/Stability/Efficiency)
+  - **IA Integration**: Previsões short/medium/long term + Root Cause Analysis
+  - **Histórico Persistente**: SQLite (predictions.db) com filtros avançados
+  - Arquivos: `collector.go` (~960 linhas), `DeploymentsTab.tsx` (~2800 linhas), `queries.go` (queries corrigidas)
+  - Documentação: [PREDICTIVE_ANALYSIS_FEATURES.md](PREDICTIVE_ANALYSIS_FEATURES.md)
 
 Recent Updates (v1.3.7 - 03/01/2026):
 - **Fix Crítico: Requisições ao Cluster Antigo Após Troca de Contexto**:

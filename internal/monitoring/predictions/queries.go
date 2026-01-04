@@ -17,12 +17,12 @@ func NewPrometheusQueries() *PrometheusQueries {
 func (q *PrometheusQueries) GetCPUUsageQuery(namespace, deployment string, offset time.Duration) string {
 	if offset == 0 {
 		return fmt.Sprintf(
-			`avg(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s-.*"}[5m])) by (pod)`,
+			`sum(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s-.*",container!="",container!="POD"}[5m]))`,
 			namespace, deployment,
 		)
 	}
 	return fmt.Sprintf(
-		`avg(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s-.*"}[5m] offset %s)) by (pod)`,
+		`sum(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s-.*",container!="",container!="POD"}[5m] offset %s))`,
 		namespace, deployment, formatDuration(offset),
 	)
 }
@@ -31,12 +31,12 @@ func (q *PrometheusQueries) GetCPUUsageQuery(namespace, deployment string, offse
 func (q *PrometheusQueries) GetCPUUsageP95Query(namespace, deployment string, offset time.Duration) string {
 	if offset == 0 {
 		return fmt.Sprintf(
-			`quantile(0.95, rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s-.*"}[5m]))`,
+			`quantile(0.95, rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s-.*",container!="",container!="POD"}[5m]))`,
 			namespace, deployment,
 		)
 	}
 	return fmt.Sprintf(
-		`quantile(0.95, rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s-.*"}[5m] offset %s))`,
+		`quantile(0.95, rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s-.*",container!="",container!="POD"}[5m] offset %s))`,
 		namespace, deployment, formatDuration(offset),
 	)
 }
@@ -45,12 +45,12 @@ func (q *PrometheusQueries) GetCPUUsageP95Query(namespace, deployment string, of
 func (q *PrometheusQueries) GetMemoryUsageQuery(namespace, deployment string, offset time.Duration) string {
 	if offset == 0 {
 		return fmt.Sprintf(
-			`avg(container_memory_working_set_bytes{namespace="%s",pod=~"%s-.*"}) by (pod)`,
+			`sum(container_memory_working_set_bytes{namespace="%s",pod=~"%s-.*",container!="",container!="POD"})`,
 			namespace, deployment,
 		)
 	}
 	return fmt.Sprintf(
-		`avg(container_memory_working_set_bytes{namespace="%s",pod=~"%s-.*"} offset %s) by (pod)`,
+		`sum(container_memory_working_set_bytes{namespace="%s",pod=~"%s-.*",container!="",container!="POD"} offset %s)`,
 		namespace, deployment, formatDuration(offset),
 	)
 }
@@ -59,12 +59,12 @@ func (q *PrometheusQueries) GetMemoryUsageQuery(namespace, deployment string, of
 func (q *PrometheusQueries) GetMemoryUsageP95Query(namespace, deployment string, offset time.Duration) string {
 	if offset == 0 {
 		return fmt.Sprintf(
-			`quantile(0.95, container_memory_working_set_bytes{namespace="%s",pod=~"%s-.*"})`,
+			`quantile(0.95, container_memory_working_set_bytes{namespace="%s",pod=~"%s-.*",container!="",container!="POD"})`,
 			namespace, deployment,
 		)
 	}
 	return fmt.Sprintf(
-		`quantile(0.95, container_memory_working_set_bytes{namespace="%s",pod=~"%s-.*"} offset %s)`,
+		`quantile(0.95, container_memory_working_set_bytes{namespace="%s",pod=~"%s-.*",container!="",container!="POD"} offset %s)`,
 		namespace, deployment, formatDuration(offset),
 	)
 }
@@ -221,22 +221,26 @@ func (q *PrometheusQueries) GetCompetingAppsQuery(namespace string, limit int) s
 
 // GetClusterTotalCPUQuery retorna query para CPU total do cluster
 func (q *PrometheusQueries) GetClusterTotalCPUQuery() string {
-	return `sum(kube_node_status_capacity{resource="cpu"})`
+	// Tentar formato v2.x primeiro, depois v1.x como fallback
+	return `sum(kube_node_status_capacity_cpu_cores) or sum(kube_node_status_capacity{resource="cpu"})`
 }
 
 // GetClusterTotalMemoryQuery retorna query para memória total do cluster
 func (q *PrometheusQueries) GetClusterTotalMemoryQuery() string {
-	return `sum(kube_node_status_capacity{resource="memory"})`
+	// Tentar formato v2.x primeiro, depois v1.x como fallback
+	return `sum(kube_node_status_capacity_memory_bytes) or sum(kube_node_status_capacity{resource="memory"})`
 }
 
 // GetClusterAllocatedCPUQuery retorna query para CPU alocada no cluster
 func (q *PrometheusQueries) GetClusterAllocatedCPUQuery() string {
-	return `sum(kube_pod_container_resource_requests{resource="cpu"})`
+	// Tentar formato v2.x primeiro, depois v1.x como fallback
+	return `sum(kube_pod_container_resource_requests_cpu_cores) or sum(kube_pod_container_resource_requests{resource="cpu"})`
 }
 
 // GetClusterAllocatedMemoryQuery retorna query para memória alocada no cluster
 func (q *PrometheusQueries) GetClusterAllocatedMemoryQuery() string {
-	return `sum(kube_pod_container_resource_requests{resource="memory"})`
+	// Tentar formato v2.x primeiro, depois v1.x como fallback
+	return `sum(kube_pod_container_resource_requests_memory_bytes) or sum(kube_pod_container_resource_requests{resource="memory"})`
 }
 
 // GetReplicaCountQuery retorna query para contagem de réplicas

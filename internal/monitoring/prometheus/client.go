@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"k8s-hpa-manager/internal/monitoring/models"
+
 	"github.com/prometheus/client_golang/api"
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"

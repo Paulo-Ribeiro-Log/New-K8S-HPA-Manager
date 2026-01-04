@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"k8s-hpa-manager/internal/kubernetes"
@@ -112,7 +113,7 @@ func (c *MetricsCollector) collectK8sDeploymentInfo(ctx context.Context, req Pre
 	metrics.CurrentReplicas = int32(foundDeploy.Replicas)
 	metrics.AvailableReplicas = int32(foundDeploy.AvailableReplicas)
 	metrics.ReadyReplicas = int32(foundDeploy.ReadyReplicas)
-	
+
 	// Resources não estão disponíveis no DeploymentSummary, usar valores padrão
 	// Seria necessário buscar o deployment completo ou parsear o YAML
 	metrics.Resources = ResourceRequests{
@@ -121,7 +122,7 @@ func (c *MetricsCollector) collectK8sDeploymentInfo(ctx context.Context, req Pre
 		MemoryRequest: "",
 		MemoryLimit:   "",
 	}
-		log.Debug().
+	log.Debug().
 		Int("desired", int(metrics.DesiredReplicas)).
 		Int("current", int(metrics.CurrentReplicas)).
 		Int("available", int(metrics.AvailableReplicas)).
@@ -301,20 +302,80 @@ func (c *MetricsCollector) collectNodeMetrics(ctx context.Context, req Predictio
 		RebalancingNeeded:   currentEfficiency < 40 || currentEfficiency > 85,
 	}
 
-	// VM sizing info (calculado com base na capacidade do cluster)
-	// Estimar número de nodes baseado na capacidade total
-	estimatedNodes := int(totalCPU / 4) // Assumir ~4 CPUs por node em média
-	if estimatedNodes == 0 {
-		estimatedNodes = 1
+	// Coletar distribuição de pods por node para este deployment
+	if err := c.collectNodeDistribution(ctx, req, &nodeMetrics); err != nil {
+		log.Warn().Err(err).Msg("Failed to collect node distribution")
 	}
-	cpuPerVM := totalCPU / float64(estimatedNodes)
-	memPerVM := (totalMem / (1024 * 1024 * 1024)) / float64(estimatedNodes)
+
+	// VM sizing info - extrair do node real onde os pods estão rodando
+	predominantType := "unknown"
+	cpuPerVM := 0
+	memPerVM := 0
+	maxPods := 110 // Padrão K8s
+	
+	// Coletar min/max/current nodes do cluster
+	minNodes := 1
+	maxNodes := 10 // Padrão conservador
+	currentNodes := nodeMetrics.TotalNodesInCluster
+	
+	// Tentar buscar do kube-state-metrics ou labels
+	// Azure AKS: kube_node_labels com agentpool label
+	if minMaxInfo := c.getNodePoolMinMax(ctx); minMaxInfo != nil {
+		minNodes = minMaxInfo.Min
+		maxNodes = minMaxInfo.Max
+	}
+
+	// Se temos nodes com pods do deployment, pegar dados do primeiro node real
+	if len(nodeMetrics.NodeDistribution) > 0 {
+		// Pegar o primeiro node com pods
+		for _, nodeInfo := range nodeMetrics.NodeDistribution {
+			if nodeInfo.InstanceType != "" && nodeInfo.InstanceType != "unknown" {
+				predominantType = nodeInfo.InstanceType
+				// Extrair CPU/Memory do node real
+				cpuCap := 0.0
+				fmt.Sscanf(nodeInfo.CPUCapacity, "%f", &cpuCap)
+				cpuPerVM = int(cpuCap)
+				
+				memCap := 0.0
+				fmt.Sscanf(nodeInfo.MemCapacity, "%fGi", &memCap)
+				memPerVM = int(memCap)
+				break
+			}
+		}
+	}
+
+	// Fallback: calcular média se não conseguimos dados reais
+	if cpuPerVM == 0 || memPerVM == 0 {
+		estimatedNodes := len(nodeMetrics.NodeDistribution)
+		if estimatedNodes == 0 {
+			estimatedNodes = int(totalCPU / 4) // Fallback: assumir ~4 CPUs por node
+			if estimatedNodes == 0 {
+				estimatedNodes = 1
+			}
+		}
+		cpuPerVM = int(totalCPU / float64(estimatedNodes))
+		memPerVM = int((totalMem / (1024 * 1024 * 1024)) / float64(estimatedNodes))
+		predominantType = determineInstanceType(float64(cpuPerVM), float64(memPerVM))
+	}
 
 	nodeMetrics.VMSizing = VMSizingInfo{
-		PredominantInstanceType: determineInstanceType(cpuPerVM, memPerVM),
-		CPUPerVM:                int(cpuPerVM),
-		MemoryPerVM:             int(memPerVM),
-		MaxPodsPerNode:          110, // Padrão K8s
+		PredominantInstanceType: predominantType,
+		CPUPerVM:                cpuPerVM,
+		MemoryPerVM:             memPerVM,
+		MaxPodsPerNode:          maxPods,
+		MinNodes:                minNodes,
+		MaxNodes:                maxNodes,
+		CurrentNodes:            currentNodes,
+	}
+
+	nodeMetrics.NodesUsed = len(nodeMetrics.NodeDistribution)
+	// Buscar total de nodes do cluster
+	totalNodesQuery := `count(kube_node_info)`
+	totalNodesResult, err := c.queryScalar(ctx, totalNodesQuery)
+	if err == nil && totalNodesResult > 0 {
+		nodeMetrics.TotalNodesInCluster = int(totalNodesResult)
+	} else {
+		nodeMetrics.TotalNodesInCluster = nodeMetrics.NodesUsed
 	}
 
 	metrics.NodeMetrics = nodeMetrics
@@ -323,12 +384,173 @@ func (c *MetricsCollector) collectNodeMetrics(ctx context.Context, req Predictio
 
 // collectCompetingApps coleta aplicações que competem por recursos
 func (c *MetricsCollector) collectCompetingApps(ctx context.Context, req PredictionRequest, metrics *DeploymentMetrics) error {
-	// Query top 5 apps consumindo CPU no mesmo namespace
-	// query := c.queries.GetCompetingAppsQuery(req.Namespace, 5)
+	// Query top 5 apps consumindo CPU no mesmo namespace (excluindo o deployment atual)
+	query := fmt.Sprintf(
+		`topk(5, sum(rate(container_cpu_usage_seconds_total{namespace="%s",pod!~"%s-.*"}[5m])) by (pod))`,
+		req.Namespace, req.Deployment,
+	)
 
-	// Aqui seria executada a query e processados os resultados
-	// Por ora, retornar lista vazia
-	metrics.CompetingApps = []CompetingApp{}
+	result, err := c.promClient.Query(ctx, query)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to query competing apps, continuing without")
+		metrics.CompetingApps = []CompetingApp{}
+		return nil
+	}
+
+	competingApps := []CompetingApp{}
+
+	// Processar resultados
+	if vec, ok := result.(model.Vector); ok {
+		for _, sample := range vec {
+			podName := string(sample.Metric["pod"])
+			cpuUsage := float64(sample.Value)
+
+			// Buscar memória deste pod
+			memQuery := fmt.Sprintf(
+				`avg(container_memory_working_set_bytes{namespace="%s",pod="%s"})`,
+				req.Namespace, podName,
+			)
+			memResult, memErr := c.promClient.Query(ctx, memQuery)
+			memUsage := 0.0
+			if memErr == nil {
+				if memVec, ok := memResult.(model.Vector); ok && len(memVec) > 0 {
+					memUsage = float64(memVec[0].Value) / (1024 * 1024 * 1024) // Convert to GB
+				}
+			}
+
+			// Determinar nível de impacto
+			impactLevel := "low"
+			if cpuUsage > 2.0 {
+				impactLevel = "high"
+			} else if cpuUsage > 1.0 {
+				impactLevel = "medium"
+			}
+
+			// Extrair deployment name do pod e buscar réplicas
+			appName := extractAppNameFromPod(podName)
+			replicas := c.getDeploymentReplicas(ctx, req.Namespace, appName)
+
+			competingApps = append(competingApps, CompetingApp{
+				Name:        appName,
+				Namespace:   req.Namespace,
+				Replicas:    replicas,
+				CPUUsage:    cpuUsage,
+				MemoryUsage: memUsage,
+				ImpactLevel: impactLevel,
+			})
+		}
+	}
+
+	metrics.CompetingApps = competingApps
+	log.Debug().Int("count", len(competingApps)).Msg("Competing apps collected")
+
+	return nil
+}
+
+// collectNodeDistribution coleta distribuição de pods e recursos por node
+func (c *MetricsCollector) collectNodeDistribution(ctx context.Context, req PredictionRequest, nodeMetrics *NodeMetrics) error {
+	// Query para listar nodes onde os pods do deployment estão
+	query := fmt.Sprintf(
+		`count(kube_pod_info{namespace="%s",pod=~"%s-.*"}) by (node)`,
+		req.Namespace, req.Deployment,
+	)
+
+	result, err := c.promClient.Query(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to query node distribution: %w", err)
+	}
+
+	// Processar resultado
+	if vec, ok := result.(model.Vector); ok {
+		for _, sample := range vec {
+			nodeName := string(sample.Metric["node"])
+			podCount := int(sample.Value)
+
+			// Buscar capacidade do node
+			cpuCapQuery := fmt.Sprintf(`kube_node_status_capacity{node="%s",resource="cpu"}`, nodeName)
+			cpuCap, _ := c.queryScalar(ctx, cpuCapQuery)
+
+			memCapQuery := fmt.Sprintf(`kube_node_status_capacity{node="%s",resource="memory"}`, nodeName)
+			memCap, _ := c.queryScalar(ctx, memCapQuery)
+
+			// Buscar CPU/Memory alocável
+			cpuAllocQuery := fmt.Sprintf(`kube_node_status_allocatable{node="%s",resource="cpu"}`, nodeName)
+			cpuAlloc, _ := c.queryScalar(ctx, cpuAllocQuery)
+
+			memAllocQuery := fmt.Sprintf(`kube_node_status_allocatable{node="%s",resource="memory"}`, nodeName)
+			memAlloc, _ := c.queryScalar(ctx, memAllocQuery)
+
+			// Buscar uso atual de CPU do node
+			cpuUsageQuery := fmt.Sprintf(
+				`sum(rate(node_cpu_seconds_total{instance=~".*%s.*",mode!="idle"}[5m])) / %f * 100`,
+				nodeName, cpuCap,
+			)
+			cpuUsage, _ := c.queryScalar(ctx, cpuUsageQuery)
+
+			// Buscar uso atual de memória do node
+			memUsageQuery := fmt.Sprintf(
+				`(kube_node_status_capacity{node="%s",resource="memory"} - node_memory_MemAvailable_bytes{instance=~".*%s.*"}) / kube_node_status_capacity{node="%s",resource="memory"} * 100`,
+				nodeName, nodeName, nodeName,
+			)
+			memUsage, _ := c.queryScalar(ctx, memUsageQuery)
+
+			// Calcular quantas réplicas cabem (estimativa baseada em uso médio por réplica)
+			canFitReplicas := 0
+			if podCount > 0 && cpuAlloc > 0 {
+				cpuAvailable := cpuAlloc * (100 - cpuUsage) / 100
+				cpuPerPod := cpuUsage * cpuCap / 100 / float64(podCount)
+				if cpuPerPod > 0 {
+					canFitReplicas = int(cpuAvailable / cpuPerPod)
+				}
+			}
+
+			// Sanitizar nome do node
+			sanitizedNodeName := fmt.Sprintf("node-%d", len(nodeMetrics.NodeDistribution)+1)
+
+			// Buscar o tipo de instância real dos labels do Kubernetes
+			instanceType := ""
+			
+			// Query para pegar os labels do node via kube_node_labels
+			labelsQuery := fmt.Sprintf(`kube_node_labels{node="%s"}`, nodeName)
+			if result, err := c.promClient.Query(ctx, labelsQuery); err == nil {
+				if vec, ok := result.(model.Vector); ok && len(vec) > 0 {
+					// Tentar vários labels possíveis
+					labels := vec[0].Metric
+					
+					// Azure usa: node.kubernetes.io/instance-type ou beta.kubernetes.io/instance-type
+					// AWS usa: node.kubernetes.io/instance-type
+					// GCP usa: cloud.google.com/gke-nodepool ou node.kubernetes.io/instance-type
+					
+					if val, ok := labels["label_node_kubernetes_io_instance_type"]; ok && val != "" {
+						instanceType = string(val)
+					} else if val, ok := labels["label_beta_kubernetes_io_instance_type"]; ok && val != "" {
+						instanceType = string(val)
+					} else if val, ok := labels["label_agentpool"]; ok && val != "" {
+						// Azure específico: label agentpool identifica o node pool
+						instanceType = string(val)
+					}
+				}
+			}
+			
+			// Se não encontrou via labels, tenta inferir pelo tamanho
+			if instanceType == "" || instanceType == "unknown" {
+				instanceType = determineInstanceType(cpuCap, memCap/(1024*1024*1024))
+			}
+
+			nodeMetrics.NodeDistribution[sanitizedNodeName] = NodeInfo{
+				NodeName:       sanitizedNodeName,
+				PodCount:       podCount,
+				CPUAvailable:   fmt.Sprintf("%.2f", cpuAlloc),
+				CPUCapacity:    fmt.Sprintf("%.2f", cpuCap),
+				CPUUsage:       cpuUsage,
+				MemAvailable:   fmt.Sprintf("%.2fGi", memAlloc/(1024*1024*1024)),
+				MemCapacity:    fmt.Sprintf("%.2fGi", memCap/(1024*1024*1024)),
+				MemUsage:       memUsage,
+				CanFitReplicas: canFitReplicas,
+				InstanceType:   instanceType,
+			}
+		}
+	}
 
 	return nil
 }
@@ -470,6 +692,9 @@ func (c *MetricsCollector) calculateCapacityForecast(metrics *DeploymentMetrics)
 		},
 		NewNodesNeeded: newNodesNeeded,
 		NewNodesReason: newNodesReason,
+		
+		// Adicionar análise detalhada de crescimento
+		GrowthAnalysis: c.calculateGrowthAnalysis(metrics),
 	}
 
 	metrics.CapacityForecast = forecast
@@ -574,4 +799,185 @@ func determineInstanceType(cpu, mem float64) string {
 	} else {
 		return "t3.2xlarge"
 	}
+}
+
+func extractAppNameFromPod(podName string) string {
+	// Extrair nome da aplicação do pod (remove sufixo hash)
+	// Ex: "nginx-deployment-6d4cf56db6-abc12" -> "nginx-deployment"
+	parts := strings.Split(podName, "-")
+	if len(parts) >= 3 {
+		// Remove últimos 2 segmentos (replicaset hash + pod hash)
+		return strings.Join(parts[:len(parts)-2], "-")
+	}
+	return podName
+}
+
+// getDeploymentReplicas busca o número de réplicas de um deployment
+func (c *MetricsCollector) getDeploymentReplicas(ctx context.Context, namespace, deploymentName string) int {
+	query := fmt.Sprintf(
+		`kube_deployment_status_replicas{namespace="%s",deployment="%s"}`,
+		namespace, deploymentName,
+	)
+	
+	result, err := c.queryScalar(ctx, query)
+	if err != nil {
+		// Fallback: tentar contar pods
+		podQuery := fmt.Sprintf(
+			`count(kube_pod_info{namespace="%s",pod=~"%s-.*"})`,
+			namespace, deploymentName,
+		)
+		if podResult, podErr := c.queryScalar(ctx, podQuery); podErr == nil {
+			return int(podResult)
+		}
+		return 1 // Fallback: assumir 1 réplica
+	}
+	
+	return int(result)
+}
+
+// NodePoolMinMax informações de min/max nodes
+type NodePoolMinMax struct {
+	Min int
+	Max int
+}
+
+// getNodePoolMinMax tenta descobrir min/max nodes do node pool
+func (c *MetricsCollector) getNodePoolMinMax(ctx context.Context) *NodePoolMinMax {
+	// Tentar buscar do Azure AKS através de annotations/labels
+	// kube_node_labels com agentpool annotations
+	
+	// Por enquanto, retornar valores conservadores
+	// TODO: Integrar com Azure API ou buscar de annotations específicas
+	return &NodePoolMinMax{
+		Min: 1,
+		Max: 10, // Padrão conservador
+	}
+}
+
+// calculateGrowthAnalysis calcula análise detalhada de capacidade para crescimento
+func (c *MetricsCollector) calculateGrowthAnalysis(metrics *DeploymentMetrics) GrowthCapacityAnalysis {
+	// 1. Aplicação em análise
+	targetApp := ApplicationCapacity{
+		Name:      metrics.Deployment,
+		Namespace: metrics.Namespace,
+		Replicas:  int(metrics.CurrentReplicas),
+		Usage: ResourceUsage{
+			CPUCores: metrics.Current.CPUUsageAvg,
+			MemoryGB: metrics.Current.MemoryUsageAvg / (1024 * 1024 * 1024),
+		},
+	}
+	
+	// 2. Aplicações concorrentes
+	competingApps := make([]ApplicationCapacity, 0, len(metrics.CompetingApps))
+	totalCompetingCPU := 0.0
+	totalCompetingMem := 0.0
+	
+	for _, comp := range metrics.CompetingApps {
+		competingApps = append(competingApps, ApplicationCapacity{
+			Name:      comp.Name,
+			Namespace: comp.Namespace,
+			Replicas:  comp.Replicas,
+			Usage: ResourceUsage{
+				CPUCores: comp.CPUUsage,
+				MemoryGB: comp.MemoryUsage,
+			},
+		})
+		totalCompetingCPU += comp.CPUUsage
+		totalCompetingMem += comp.MemoryUsage
+	}
+	
+	// 3. Capacidade atual e máxima
+	currentCapacity := CapacityInfo{
+		Nodes: metrics.NodeMetrics.VMSizing.CurrentNodes,
+		Resources: ResourceUsage{
+			CPUCores: metrics.NodeMetrics.TotalCapacity.CPUTotal,
+			MemoryGB: metrics.NodeMetrics.TotalCapacity.MemTotal,
+		},
+	}
+	
+	maxCapacity := CapacityInfo{
+		Nodes: metrics.NodeMetrics.VMSizing.MaxNodes,
+		Resources: ResourceUsage{
+			CPUCores: float64(metrics.NodeMetrics.VMSizing.MaxNodes * metrics.NodeMetrics.VMSizing.CPUPerVM),
+			MemoryGB: float64(metrics.NodeMetrics.VMSizing.MaxNodes * metrics.NodeMetrics.VMSizing.MemoryPerVM),
+		},
+	}
+	
+	// 4. Capacidade disponível para crescimento
+	availableCPU := currentCapacity.Resources.CPUCores - metrics.NodeMetrics.TotalCapacity.CPUAllocated
+	availableMem := currentCapacity.Resources.MemoryGB - metrics.NodeMetrics.TotalCapacity.MemAllocated
+	
+	availableForGrowth := ResourceUsage{
+		CPUCores: availableCPU,
+		MemoryGB: availableMem,
+	}
+	
+	// 5. Calcular máximo de réplicas
+	cpuPerReplica := targetApp.Usage.CPUCores / float64(targetApp.Replicas)
+	memPerReplica := targetApp.Usage.MemoryGB / float64(targetApp.Replicas)
+	if targetApp.Replicas == 0 {
+		cpuPerReplica = 0.5 // Padrão conservador
+		memPerReplica = 0.5
+	}
+	
+	maxReplicasByCPU := int(availableCPU / cpuPerReplica)
+	maxReplicasByMem := int(availableMem / memPerReplica)
+	maxReplicasCurrentNodes := targetApp.Replicas + minInt(maxReplicasByCPU, maxReplicasByMem)
+	
+	// Máximo com max nodes
+	maxCPU := maxCapacity.Resources.CPUCores - metrics.NodeMetrics.TotalCapacity.CPUAllocated + availableCPU
+	maxMem := maxCapacity.Resources.MemoryGB - metrics.NodeMetrics.TotalCapacity.MemAllocated + availableMem
+	maxReplicasWithMaxNodes := int(min(maxCPU/cpuPerReplica, maxMem/memPerReplica))
+	
+	// Réplicas se remover competidores
+	replicasIfRemoveCompeting := int(min(
+		(availableCPU+totalCompetingCPU)/cpuPerReplica,
+		(availableMem+totalCompetingMem)/memPerReplica,
+	))
+	
+	// 6. Recomendação
+	bottleneckResource := "cpu"
+	if memPerReplica/availableMem > cpuPerReplica/availableCPU {
+		bottleneckResource = "memory"
+	}
+	
+	recommendedMax := maxReplicasCurrentNodes
+	recommendation := fmt.Sprintf("Pode escalar até %d réplicas nos nodes atuais", maxReplicasCurrentNodes)
+	
+	if maxReplicasCurrentNodes < targetApp.Replicas*2 {
+		recommendation = fmt.Sprintf("Capacidade limitada: apenas %d réplicas adicionais. Considere escalar nodes para %d (max: %d réplicas)",
+			maxReplicasCurrentNodes-targetApp.Replicas,
+			metrics.NodeMetrics.VMSizing.MaxNodes,
+			maxReplicasWithMaxNodes)
+		recommendedMax = maxReplicasWithMaxNodes
+	}
+	
+	return GrowthCapacityAnalysis{
+		TargetApp:                 targetApp,
+		CompetingApps:             competingApps,
+		TotalCompetingUsage:       ResourceUsage{CPUCores: totalCompetingCPU, MemoryGB: totalCompetingMem},
+		CurrentCapacity:           currentCapacity,
+		MaxCapacity:               maxCapacity,
+		AvailableForGrowth:        availableForGrowth,
+		MaxReplicasCurrentNodes:   maxReplicasCurrentNodes,
+		MaxReplicasWithMaxNodes:   maxReplicasWithMaxNodes,
+		ReplicasIfRemoveCompeting: replicasIfRemoveCompeting,
+		RecommendedMaxReplicas:    recommendedMax,
+		GrowthRecommendation:      recommendation,
+		BottleneckResource:        bottleneckResource,
+	}
+}
+
+func min(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
