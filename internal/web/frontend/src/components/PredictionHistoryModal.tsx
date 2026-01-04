@@ -187,7 +187,10 @@ export const PredictionHistoryModal = ({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-7xl h-[90vh] flex flex-col p-0">
+        <DialogContent 
+          className="max-w-7xl h-[90vh] flex flex-col p-0"
+          onInteractOutside={(e) => e.preventDefault()}
+        >
           <DialogHeader className="flex-shrink-0 px-6 pt-6 pb-4 border-b">
             <DialogTitle className="flex items-center gap-2">
               <History className="w-5 h-5 text-blue-500" />
@@ -219,12 +222,11 @@ export const PredictionHistoryModal = ({
                 onChange={(e) => setFilterDeployment(e.target.value)}
                 className="text-sm"
               />
-              <Select value={filterRiskLevel} onValueChange={setFilterRiskLevel}>
+              <Select value={filterRiskLevel || undefined} onValueChange={(value) => setFilterRiskLevel(value)}>
                 <SelectTrigger className="text-sm">
-                  <SelectValue placeholder="Risk Level" />
+                  <SelectValue placeholder="Todos os Risk Levels" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Todos</SelectItem>
                   <SelectItem value="critical">Critical</SelectItem>
                   <SelectItem value="high">High</SelectItem>
                   <SelectItem value="medium">Medium</SelectItem>
@@ -366,7 +368,10 @@ export const PredictionHistoryModal = ({
 
       {/* Modal de Detalhes */}
       <Dialog open={viewDetailsOpen} onOpenChange={setViewDetailsOpen}>
-        <DialogContent className="max-w-4xl h-[80vh] flex flex-col p-0">
+        <DialogContent 
+          className="max-w-4xl h-[80vh] flex flex-col p-0"
+          onInteractOutside={(e) => e.preventDefault()}
+        >
           <DialogHeader className="flex-shrink-0 px-6 pt-6 pb-4 border-b">
             <DialogTitle>Detalhes da Análise</DialogTitle>
             <DialogDescription>

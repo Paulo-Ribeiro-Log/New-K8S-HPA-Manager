@@ -200,7 +200,7 @@ func (h *PredictionsHandler) AnalyzeDeployment(c *gin.Context) {
 			userEmail,
 			result.AnalyzedAt,
 		)
-		
+
 		if err != nil {
 			// Log erro mas não falha a requisição
 			log.Error().Err(err).Msg("Failed to save prediction to database")
@@ -411,22 +411,22 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 	// Dados Analisados - Nova seção explicativa
 	report.WriteString("## DADOS ANALISADOS\n\n")
 	report.WriteString("Esta análise foi baseada nas seguintes métricas e observações do deployment:\n\n")
-	
+
 	report.WriteString("### Métricas de Réplicas\n")
 	report.WriteString(fmt.Sprintf("- Réplicas Desejadas: %d\n", result.RawMetrics.DesiredReplicas))
 	report.WriteString(fmt.Sprintf("- Réplicas Disponíveis: %d\n", result.RawMetrics.AvailableReplicas))
 	report.WriteString(fmt.Sprintf("- Réplicas Prontas: %d\n", result.RawMetrics.ReadyReplicas))
 	disponibilidade := float64(result.RawMetrics.AvailableReplicas) / float64(result.RawMetrics.DesiredReplicas) * 100
 	report.WriteString(fmt.Sprintf("- Taxa de Disponibilidade: %.1f%%\n\n", disponibilidade))
-	
+
 	report.WriteString("### Consumo de Recursos\n")
 	report.WriteString(fmt.Sprintf("- CPU Média: %.2f cores (P95: %.2f cores)\n", result.RawMetrics.Current.CPUUsageAvg, result.RawMetrics.Current.CPUUsageP95))
-	report.WriteString(fmt.Sprintf("- Memória Média: %.2f GB (P95: %.2f GB)\n", 
+	report.WriteString(fmt.Sprintf("- Memória Média: %.2f GB (P95: %.2f GB)\n",
 		result.RawMetrics.Current.MemoryUsageAvg/(1024*1024*1024),
 		result.RawMetrics.Current.MemoryUsageP95/(1024*1024*1024)))
 	report.WriteString(fmt.Sprintf("- Tendência CPU (7 dias): %.1f%%\n", result.RawMetrics.Trends.CPUChange7d))
 	report.WriteString(fmt.Sprintf("- Tendência Memória (7 dias): %.1f%%\n\n", result.RawMetrics.Trends.MemoryChange7d))
-	
+
 	report.WriteString("### Capacidade do Cluster\n")
 	report.WriteString(fmt.Sprintf("- CPU Total Disponível: %.2f cores (Utilização: %.1f%%)\n",
 		result.RawMetrics.NodeMetrics.TotalCapacity.CPUTotal,
@@ -465,12 +465,12 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 		report.WriteString("### Aplicações Concorrentes nas Mesmas VMs\n\n")
 		report.WriteString("**IMPORTANTE**: As VMs/Nodes não dispõem de recursos totais para este deployment.\n")
 		report.WriteString("Os recursos são compartilhados e há concorrência com outras aplicações:\n\n")
-		
+
 		// Ordenar por impacto
 		highImpact := []predictions.CompetingApp{}
 		mediumImpact := []predictions.CompetingApp{}
 		lowImpact := []predictions.CompetingApp{}
-		
+
 		for _, app := range result.RawMetrics.CompetingApps {
 			switch app.ImpactLevel {
 			case "high":
@@ -481,7 +481,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 				lowImpact = append(lowImpact, app)
 			}
 		}
-		
+
 		if len(highImpact) > 0 {
 			report.WriteString("**Impacto Alto:**\n\n")
 			for _, app := range highImpact {
@@ -491,7 +491,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 			}
 			report.WriteString("\n")
 		}
-		
+
 		if len(mediumImpact) > 0 {
 			report.WriteString("**Impacto Médio:**\n\n")
 			for _, app := range mediumImpact {
@@ -500,7 +500,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 			}
 			report.WriteString("\n")
 		}
-		
+
 		if len(lowImpact) > 0 {
 			report.WriteString("**Impacto Baixo:**\n\n")
 			for _, app := range lowImpact {
@@ -508,7 +508,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 			}
 			report.WriteString("\n")
 		}
-		
+
 		// Totais
 		totalCPU := 0.0
 		totalMem := 0.0
@@ -518,33 +518,33 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 		}
 		report.WriteString(fmt.Sprintf("**Total Consumido por Aplicações Concorrentes**: %.2f cores CPU | %.2f GB Memória\n\n", totalCPU, totalMem))
 	}
-	
+
 	// Análise de Capacidade para Crescimento
 	growth := result.RawMetrics.CapacityForecast.GrowthAnalysis
 	report.WriteString("### ANÁLISE DE CAPACIDADE PARA CRESCIMENTO HORIZONTAL\n\n")
-	
+
 	// Node Pool Info
 	report.WriteString("**Configuração do Node Pool:**\n")
 	report.WriteString(fmt.Sprintf("- Nodes Mínimos: %d\n", result.RawMetrics.NodeMetrics.VMSizing.MinNodes))
 	report.WriteString(fmt.Sprintf("- Nodes Máximos: %d\n", result.RawMetrics.NodeMetrics.VMSizing.MaxNodes))
 	report.WriteString(fmt.Sprintf("- Nodes Atuais: %d\n\n", result.RawMetrics.NodeMetrics.VMSizing.CurrentNodes))
-	
+
 	// Aplicação em Análise
 	report.WriteString("**Aplicação em Análise:**\n")
 	report.WriteString(fmt.Sprintf("- Réplicas Atuais: %d\n", growth.TargetApp.Replicas))
-	report.WriteString(fmt.Sprintf("- CPU Total: %.2f cores (%.3f cores/réplica)\n", 
+	report.WriteString(fmt.Sprintf("- CPU Total: %.2f cores (%.3f cores/réplica)\n",
 		growth.TargetApp.Usage.CPUCores,
 		growth.TargetApp.Usage.CPUCores/float64(growth.TargetApp.Replicas)))
 	report.WriteString(fmt.Sprintf("- Memória Total: %.2f GB (%.2f GB/réplica)\n\n",
 		growth.TargetApp.Usage.MemoryGB,
 		growth.TargetApp.Usage.MemoryGB/float64(growth.TargetApp.Replicas)))
-	
+
 	// Aplicações Concorrentes - Resumo com Réplicas
 	if len(growth.CompetingApps) > 0 {
 		report.WriteString("**Aplicações Concorrentes (com Réplicas):**\n\n")
 		report.WriteString("| Aplicação | Namespace | Réplicas | CPU Total | Memory Total | CPU/Réplica | Mem/Réplica |\n")
 		report.WriteString("|-----------|-----------|----------|-----------|--------------|-------------|-------------|\n")
-		
+
 		for _, app := range growth.CompetingApps {
 			cpuPerReplica := app.Usage.CPUCores
 			memPerReplica := app.Usage.MemoryGB
@@ -553,7 +553,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 				memPerReplica = app.Usage.MemoryGB / float64(app.Replicas)
 			}
 			report.WriteString(fmt.Sprintf("| %s | %s | %d | %.2f cores | %.2f GB | %.3f cores | %.2f GB |\n",
-				app.Name, app.Namespace, app.Replicas, 
+				app.Name, app.Namespace, app.Replicas,
 				app.Usage.CPUCores, app.Usage.MemoryGB,
 				cpuPerReplica, memPerReplica))
 		}
@@ -561,27 +561,27 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 		report.WriteString(fmt.Sprintf("**Total Concorrentes**: %.2f cores CPU | %.2f GB Memória\n\n",
 			growth.TotalCompetingUsage.CPUCores, growth.TotalCompetingUsage.MemoryGB))
 	}
-	
+
 	// Capacidade Total
 	report.WriteString("**Capacidade do Cluster:**\n\n")
 	report.WriteString("| Cenário | Nodes | CPU Total | Memória Total |\n")
 	report.WriteString("|---------|-------|-----------|---------------|\n")
-	report.WriteString(fmt.Sprintf("| Atual | %d | %.2f cores | %.2f GB |\n", 
+	report.WriteString(fmt.Sprintf("| Atual | %d | %.2f cores | %.2f GB |\n",
 		growth.CurrentCapacity.Nodes, growth.CurrentCapacity.Resources.CPUCores, growth.CurrentCapacity.Resources.MemoryGB))
 	report.WriteString(fmt.Sprintf("| Máximo (se escalar) | %d | %.2f cores | %.2f GB |\n\n",
 		growth.MaxCapacity.Nodes, growth.MaxCapacity.Resources.CPUCores, growth.MaxCapacity.Resources.MemoryGB))
-	
+
 	// Disponível para Crescimento
 	report.WriteString("**Capacidade Disponível para Crescimento:**\n")
 	report.WriteString(fmt.Sprintf("- CPU Disponível: %.2f cores\n", growth.AvailableForGrowth.CPUCores))
 	report.WriteString(fmt.Sprintf("- Memória Disponível: %.2f GB\n", growth.AvailableForGrowth.MemoryGB))
 	report.WriteString(fmt.Sprintf("- Recurso Gargalo: **%s**\n\n", growth.BottleneckResource))
-	
+
 	// Cenários de Crescimento
 	report.WriteString("**Cenários de Escalabilidade:**\n\n")
 	report.WriteString("| Cenário | Máximo de Réplicas |\n")
 	report.WriteString("|---------|--------------------|\n")
-	report.WriteString(fmt.Sprintf("| Nodes Atuais (%d) | **%d réplicas** |\n", 
+	report.WriteString(fmt.Sprintf("| Nodes Atuais (%d) | **%d réplicas** |\n",
 		growth.CurrentCapacity.Nodes, growth.MaxReplicasCurrentNodes))
 	report.WriteString(fmt.Sprintf("| Escalando para Max Nodes (%d) | **%d réplicas** |\n",
 		growth.MaxCapacity.Nodes, growth.MaxReplicasWithMaxNodes))
@@ -590,7 +590,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 			growth.ReplicasIfRemoveCompeting))
 	}
 	report.WriteString("\n")
-	
+
 	// Recomendação Final
 	report.WriteString("**RECOMENDAÇÃO:**\n")
 	report.WriteString(fmt.Sprintf("- %s\n", growth.GrowthRecommendation))
@@ -602,11 +602,11 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 	report.WriteString("## HEALTH SCORE DETALHADO\n\n")
 	report.WriteString("O Health Score é calculado com base em 4 dimensões principais:\n\n")
 	report.WriteString(fmt.Sprintf("**Overall**: %d/100 (%s)\n\n", result.HealthScore.Overall, result.HealthScore.Category))
-	
+
 	report.WriteString("### Breakdown por Dimensão\n\n")
 	report.WriteString("| Metrica | Score | Interpretação |\n")
 	report.WriteString("|---------|-------|---------------|\n")
-	
+
 	availInterpretation := "Excelente"
 	if result.HealthScore.Breakdown.Availability < 75 {
 		availInterpretation = "Precisa atenção"
@@ -614,7 +614,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 		availInterpretation = "Bom, mas melhorável"
 	}
 	report.WriteString(fmt.Sprintf("| Availability | %d/100 | %s |\n", result.HealthScore.Breakdown.Availability, availInterpretation))
-	
+
 	perfInterpretation := "Excelente"
 	if result.HealthScore.Breakdown.Performance < 75 {
 		perfInterpretation = "Precisa atenção"
@@ -622,7 +622,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 		perfInterpretation = "Bom, mas melhorável"
 	}
 	report.WriteString(fmt.Sprintf("| Performance | %d/100 | %s |\n", result.HealthScore.Breakdown.Performance, perfInterpretation))
-	
+
 	stabInterpretation := "Excelente"
 	if result.HealthScore.Breakdown.Stability < 75 {
 		stabInterpretation = "Precisa atenção"
@@ -630,7 +630,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 		stabInterpretation = "Bom, mas melhorável"
 	}
 	report.WriteString(fmt.Sprintf("| Stability | %d/100 | %s |\n", result.HealthScore.Breakdown.Stability, stabInterpretation))
-	
+
 	effInterpretation := "Excelente"
 	if result.HealthScore.Breakdown.Efficiency < 75 {
 		effInterpretation = "Precisa atenção"
@@ -638,7 +638,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 		effInterpretation = "Bom, mas melhorável"
 	}
 	report.WriteString(fmt.Sprintf("| Efficiency | %d/100 | %s |\n\n", result.HealthScore.Breakdown.Efficiency, effInterpretation))
-	
+
 	report.WriteString("**Como interpretamos estes scores:**\n\n")
 	report.WriteString("- **Availability**: Mede a taxa de réplicas disponíveis vs. desejadas e histórico de downtime\n")
 	report.WriteString("- **Performance**: Avalia utilização de CPU/memória, latência e capacidade de resposta\n")
@@ -778,12 +778,12 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 
 		for _, rec := range result.Recommendations {
 			report.WriteString(fmt.Sprintf("### %d. %s\n\n", rec.Priority, rec.Title))
-			
+
 			// Destacar economia de custos
 			if rec.Category == "cost-optimization" || rec.Category == "downsizing" {
 				report.WriteString("💰 **ECONOMIA DE CUSTOS** 💰\n\n")
 			}
-			
+
 			report.WriteString("**Categoria**: " + rec.Category + "\n\n")
 			report.WriteString("**Por que esta recomendação?**\n")
 			report.WriteString(rec.Description + "\n\n")
@@ -860,20 +860,20 @@ func (h *PredictionsHandler) generatePDFReport(result *predictions.PredictionRes
 	pdfContent += "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
 	pdfContent += "3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources 4 0 R /MediaBox [0 0 612 792] /Contents 5 0 R >>\nendobj\n"
 	pdfContent += "4 0 obj\n<< /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Courier >> >> >>\nendobj\n"
-	
+
 	// Conteúdo simplificado
 	streamContent := fmt.Sprintf("BT\n/F1 12 Tf\n50 750 Td\n15 TL\n")
-	
+
 	// Adicionar título
 	streamContent += fmt.Sprintf("(%s - Analise Preditiva) Tj\nT*\nT*\n", escapeForPDF(result.Deployment))
 	streamContent += fmt.Sprintf("(Cluster: %s | Namespace: %s) Tj\nT*\n", escapeForPDF(result.Cluster), escapeForPDF(result.Namespace))
 	streamContent += fmt.Sprintf("(Data: %s) Tj\nT*\nT*\n", result.AnalyzedAt.Format("02/01/2006 15:04:05"))
-	
+
 	// Health Score
-	streamContent += fmt.Sprintf("(Health Score: %d/100 - %s) Tj\nT*\nT*\n", 
-		result.HealthScore.Overall, 
+	streamContent += fmt.Sprintf("(Health Score: %d/100 - %s) Tj\nT*\nT*\n",
+		result.HealthScore.Overall,
 		result.HealthScore.Category)
-	
+
 	// Executive Summary
 	streamContent += "(Resumo Executivo:) Tj\nT*\n"
 	streamContent += fmt.Sprintf("(Risk Level: %s) Tj\nT*\n", result.ExecutiveSummary.RiskLevel)
@@ -883,7 +883,7 @@ func (h *PredictionsHandler) generatePDFReport(result *predictions.PredictionRes
 		summary = summary[:500] + "..."
 	}
 	streamContent += fmt.Sprintf("(%s) Tj\nT*\nT*\n", escapeForPDF(summary))
-	
+
 	// Previsões - ShortTerm
 	streamContent += "(Previsoes Curto Prazo:) Tj\nT*\n"
 	for i, pred := range result.Predictions.ShortTerm {
@@ -893,7 +893,7 @@ func (h *PredictionsHandler) generatePDFReport(result *predictions.PredictionRes
 		streamContent += fmt.Sprintf("(- %s: %s) Tj\nT*\n", pred.Timeframe, escapeForPDF(pred.Event))
 	}
 	streamContent += "T*\n"
-	
+
 	// Recomendações
 	streamContent += "(Recomendacoes:) Tj\nT*\n"
 	for i, rec := range result.Recommendations {
@@ -902,13 +902,13 @@ func (h *PredictionsHandler) generatePDFReport(result *predictions.PredictionRes
 		}
 		streamContent += fmt.Sprintf("(- %s) Tj\nT*\n", escapeForPDF(rec.Title))
 	}
-	
+
 	streamContent += "ET\n"
-	
+
 	// Stream object
-	pdfContent += fmt.Sprintf("5 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\n", 
+	pdfContent += fmt.Sprintf("5 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\n",
 		len(streamContent), streamContent)
-	
+
 	// Xref table
 	pdfContent += "xref\n0 6\n"
 	pdfContent += "0000000000 65535 f \n"
@@ -917,13 +917,13 @@ func (h *PredictionsHandler) generatePDFReport(result *predictions.PredictionRes
 	pdfContent += "0000000115 00000 n \n"
 	pdfContent += "0000000229 00000 n \n"
 	pdfContent += "0000000329 00000 n \n"
-	
+
 	// Trailer
 	pdfContent += "trailer\n<< /Size 6 /Root 1 0 R >>\n"
 	pdfContent += "startxref\n"
 	pdfContent += fmt.Sprintf("%d\n", len(pdfContent)-200) // Aproximação
 	pdfContent += "%%EOF\n"
-	
+
 	return []byte(pdfContent)
 }
 
