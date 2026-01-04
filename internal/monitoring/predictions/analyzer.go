@@ -117,7 +117,7 @@ func (a *Analyzer) calculateHealthScore(metrics *DeploymentMetrics) HealthScore 
 	}
 
 	// Stability (baseado em restarts e error rate)
-	restartDelta := metrics.Current.RestartCount - metrics.Week7Ago.RestartCount
+	restartDelta := metrics.Current.RestartCount - metrics.Day7Ago.RestartCount
 	if restartDelta == 0 && metrics.Current.ErrorRate < 1.0 {
 		score.Stability = 100
 	} else if restartDelta < 3 && metrics.Current.ErrorRate < 5.0 {
@@ -189,6 +189,8 @@ func (a *Analyzer) buildAIPrompt(metrics *DeploymentMetrics) string {
 
 Analise as métricas abaixo e forneça uma análise preditiva completa em formato JSON.
 
+**IMPORTANTE: Toda a análise DEVE ser escrita em PORTUGUÊS BRASILEIRO (PT-BR). Todos os textos, descrições, recomendações e mensagens devem estar em português.**
+
 # MÉTRICAS COLETADAS:
 %s
 
@@ -202,11 +204,11 @@ Retorne um JSON seguindo esta estrutura:
       {
         "timeframe": "4h",
         "timestamp": "2026-01-02T18:00:00Z",
-        "event": "CPU usage will reach 85%% of capacity",
+        "event": "Uso de CPU atingirá 85%% da capacidade",
         "probability": 0.75,
         "severity": "medium",
-        "impact": "Response times may increase by 20-30%%",
-        "indicators": ["CPU trend increasing 15%% last 7 days", "Memory pressure detected"]
+        "impact": "Tempos de resposta podem aumentar em 20-30%%",
+        "indicators": ["Tendência de CPU aumentando 15%% nos últimos 7 dias", "Pressão de memória detectada"]
       }
     ],
     "medium_term": [],
@@ -273,12 +275,15 @@ Retorne um JSON seguindo esta estrutura:
 }
 
 IMPORTANTE:
+- **ESCREVA TUDO EM PORTUGUÊS BRASILEIRO (PT-BR)**
 - Seja específico com números e percentuais
 - Base as previsões nas tendências observadas
 - Considere o contexto de nodes e capacidade do cluster
 - Priorize ações de maior impacto
 - Use probabilidades realistas (0.0 a 1.0)
-- Retorne APENAS o JSON, sem texto adicional`, string(metricsJSON))
+- Use terminologia técnica em português (ex: "réplicas" ao invés de "replicas", "uso de CPU" ao invés de "CPU usage")
+- Retorne APENAS o JSON, sem texto adicional
+- Todos os campos de texto devem estar em português brasileiro`, string(metricsJSON))
 }
 
 // fallbackAnalysis análise de fallback quando IA falha

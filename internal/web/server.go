@@ -70,6 +70,9 @@ type Server struct {
 
 	// AI Tokens Handler (gerencia tokens AI dos usuários)
 	aiTokensHandler *handlers.AITokensHandler
+
+	// KubeManager wrapper para AI (pode ser nil se AI estiver desabilitado)
+	kubeManagerWrapper *kubernetes.KubeManager
 }
 
 // NewServer cria uma nova instância do servidor web
@@ -158,6 +161,8 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 	var aiHandler *handlers.AIDiagnosticsHandler
 	var aiTokensStore *storage.UserTokensStore
 	var aiTokensHandler *handlers.AITokensHandler
+	var kubeManagerWrapper *kubernetes.KubeManager
+	var aiConfig *ai.Config
 
 	if sqliteClient != nil {
 		aiHistoryStore = storage.NewAIHistoryStore(sqliteClient)
@@ -172,7 +177,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		}
 
 		// 2. Criar AI config
-		aiConfig := &ai.Config{
+		aiConfig = &ai.Config{
 			Provider:      aiProvider,
 			OllamaBaseURL: ollamaURL,
 			OllamaModel:   ollamaModel,
@@ -182,7 +187,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		}
 
 		// 3. Criar KubeManager wrapper
-		kubeManagerWrapper := kubernetes.NewKubeManager(
+		kubeManagerWrapper = kubernetes.NewKubeManager(
 			kubeManager.GetClient,
 			nil, // kubectl describe será implementado depois
 		)
@@ -235,8 +240,9 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		// monitoringCtx:      monitoringCtx,
 		// monitoringCancel:   monitoringCancel,
 		monitoringEngineV2: monitoringEngineV2,
-		aiHandler:          aiHandler,       // Pode ser nil se AI estiver desabilitado
-		aiTokensHandler:    aiTokensHandler, // Gerencia tokens AI dos usuários
+		aiHandler:          aiHandler,          // Pode ser nil se AI estiver desabilitado
+		aiTokensHandler:    aiTokensHandler,    // Gerencia tokens AI dos usuários
+		kubeManagerWrapper: kubeManagerWrapper, // Para predictions RBAC
 	}
 
 	server.setupMiddleware()
@@ -676,8 +682,32 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Predictive Analysis (análise preditiva de deployments)
-	predictionsHandler := handlers.NewPredictionsHandler(s.kubeManager)
-	api.POST("/predictions/analyze", predictionsHandler.AnalyzeDeployment)
+	// Reutilizar analyzer, tokensStore e config do AI Diagnostics
+	var predictionsHandler *handlers.PredictionsHandler
+	if s.aiHandler != nil && s.kubeManagerWrapper != nil {
+		// Se AI está habilitado, predictions pode usar os mesmos recursos
+		predictionsHandler = handlers.NewPredictionsHandler(
+			s.kubeManager,                  // KubeConfigManager para pegar clients
+			s.kubeManagerWrapper,           // KubeManager para criar AI analyzers
+			s.aiHandler.GetAnalyzer(),      // Compartilhar analyzer
+			s.aiHandler.GetTokensStore(),   // Compartilhar tokensStore
+			s.aiHandler.GetDefaultConfig(), // Compartilhar config
+		)
+	} else {
+		// Se AI desabilitado, criar handler básico (sem AI)
+		predictionsHandler = handlers.NewPredictionsHandler(s.kubeManager, nil, nil, nil, nil)
+		fmt.Println("⚠️  Predictions sem AI (AI Diagnostics desabilitado)")
+	}
+
+	// Middleware de debug para predictions
+	api.POST("/predictions/analyze", func(c *gin.Context) {
+		fmt.Println("🔍 [MIDDLEWARE] POST /predictions/analyze - Request chegou!")
+		fmt.Printf("   Headers: %+v\n", c.Request.Header)
+		fmt.Printf("   ContentType: %s\n", c.ContentType())
+		c.Next()
+		fmt.Printf("   Response Status: %d\n", c.Writer.Status())
+	}, predictionsHandler.AnalyzeDeployment)
+
 	api.POST("/predictions/export", predictionsHandler.ExportReport)
 	api.GET("/predictions/health", predictionsHandler.GetHealthScore)
 	fmt.Println("✅ Predictions routes registradas")

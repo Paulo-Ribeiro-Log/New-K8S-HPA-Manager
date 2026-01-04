@@ -45,14 +45,27 @@ export interface AlertSummary {
 
 // Hook para buscar alertas de HPA
 export function useHPAAlerts(cluster: string, enabled = true) {
+  console.log(`[useHPAAlerts] cluster=${cluster}, enabled=${enabled}`);
   return useQuery<HPAAlert[]>({
     queryKey: ["hpa-alerts", cluster],
     queryFn: async () => {
+      console.log(`[useHPAAlerts] Fetching alerts for cluster: ${cluster}`);
       const response: any = await api.getHPAAlerts(cluster);
       return response.alerts || [];
     },
     enabled: enabled && !!cluster,
-    refetchInterval: 30000, // Atualizar a cada 30 segundos
+    refetchInterval: (data, query) => {
+      // ✅ FIX: Guard contra query undefined na primeira renderização
+      if (!query) return 30000;
+
+      // ✅ FIX: Desabilitar refetch se query key não corresponde ao cluster atual
+      const queryCluster = query.queryKey[1];
+      if (queryCluster !== cluster) {
+        console.log(`[useHPAAlerts] Disabling refetch for old cluster: ${queryCluster} (current: ${cluster})`);
+        return false;
+      }
+      return 30000;
+    },
     staleTime: 25000,
   });
 }
@@ -103,28 +116,54 @@ export function useHPASpecificAlerts(
 
 // Hook para buscar alertas de Node Pool
 export function useNodePoolAlerts(cluster: string, enabled = true) {
+  console.log(`[useNodePoolAlerts] cluster=${cluster}, enabled=${enabled}`);
   return useQuery<NodePoolAlert[]>({
     queryKey: ["nodepool-alerts", cluster],
     queryFn: async () => {
+      console.log(`[useNodePoolAlerts] Fetching alerts for cluster: ${cluster}`);
       const response: any = await api.getNodePoolAlerts(cluster);
       return response.alerts || [];
     },
     enabled: enabled && !!cluster,
-    refetchInterval: 30000,
+    refetchInterval: (data, query) => {
+      // ✅ FIX: Guard contra query undefined na primeira renderização
+      if (!query) return 30000;
+
+      // ✅ FIX: Desabilitar refetch se query key não corresponde ao cluster atual
+      const queryCluster = query.queryKey[1];
+      if (queryCluster !== cluster) {
+        console.log(`[useNodePoolAlerts] Disabling refetch for old cluster: ${queryCluster} (current: ${cluster})`);
+        return false;
+      }
+      return 30000;
+    },
     staleTime: 25000,
   });
 }
 
 // Hook para buscar resumo de alertas
 export function useAlertSummary(cluster: string, enabled = true) {
+  console.log(`[useAlertSummary] cluster=${cluster}, enabled=${enabled}`);
   return useQuery<AlertSummary>({
     queryKey: ["alert-summary", cluster],
     queryFn: async () => {
+      console.log(`[useAlertSummary] Fetching summary for cluster: ${cluster}`);
       const response: any = await api.getAlertSummary(cluster);
       return response.summary || { critical: 0, warning: 0, info: 0, total: 0 };
     },
     enabled: enabled && !!cluster,
-    refetchInterval: 30000,
+    refetchInterval: (data, query) => {
+      // ✅ FIX: Guard contra query undefined na primeira renderização
+      if (!query) return 30000;
+
+      // ✅ FIX: Desabilitar refetch se query key não corresponde ao cluster atual
+      const queryCluster = query.queryKey[1];
+      if (queryCluster !== cluster) {
+        console.log(`[useAlertSummary] Disabling refetch for old cluster: ${queryCluster} (current: ${cluster})`);
+        return false;
+      }
+      return 30000;
+    },
     staleTime: 25000,
   });
 }

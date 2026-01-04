@@ -46,10 +46,12 @@ type DeploymentMetrics struct {
 	ReadyReplicas     int32            `json:"ready_replicas"`
 	Resources         ResourceRequests `json:"resources"`
 
-	// Métricas temporais (current, 7d ago, 30d ago)
+	// Métricas temporais (current, 3d, 7d, 10d, 14d ago)
 	Current  MetricSnapshot `json:"current"`
-	Week7Ago MetricSnapshot `json:"week_7_ago"`
-	Day30Ago MetricSnapshot `json:"day_30_ago"`
+	Day3Ago  MetricSnapshot `json:"day_3_ago"`
+	Day7Ago  MetricSnapshot `json:"day_7_ago"`
+	Day10Ago MetricSnapshot `json:"day_10_ago"`
+	Day14Ago MetricSnapshot `json:"day_14_ago"`
 
 	// Tendências calculadas
 	Trends TrendAnalysis `json:"trends"`
@@ -97,10 +99,12 @@ type TrendAnalysis struct {
 	LatencyTrend   TrendDirection `json:"latency_trend"`
 
 	// Mudanças percentuais
+	CPUChange3d       float64 `json:"cpu_change_3d_percent"`
 	CPUChange7d       float64 `json:"cpu_change_7d_percent"`
-	CPUChange30d      float64 `json:"cpu_change_30d_percent"`
+	CPUChange10d      float64 `json:"cpu_change_10d_percent"`
+	CPUChange14d      float64 `json:"cpu_change_14d_percent"`
 	MemoryChange7d    float64 `json:"memory_change_7d_percent"`
-	MemoryChange30d   float64 `json:"memory_change_30d_percent"`
+	MemoryChange14d   float64 `json:"memory_change_14d_percent"`
 	ErrorRateChange7d float64 `json:"error_rate_change_7d_percent"`
 	LatencyChange7d   float64 `json:"latency_change_7d_percent"`
 }

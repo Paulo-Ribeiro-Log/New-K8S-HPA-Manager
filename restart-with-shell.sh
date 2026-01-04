@@ -19,7 +19,7 @@ echo "   ✅ Servidor parado"
 # Recompilar
 echo ""
 echo "2. Recompilando backend..."
-go build -o build/k8s-hpa-manager ./main.go
+go build -o build/new-k8s-hpa ./main.go
 if [ $? -ne 0 ]; then
     echo "   ❌ Erro na compilação do backend"
     exit 1
@@ -41,7 +41,7 @@ echo "   ✅ Frontend compilado"
 # Iniciar servidor
 echo ""
 echo "4. Iniciando servidor..."
-./build/k8s-hpa-manager web &
+./build/new-k8s-hpa web &
 SERVER_PID=$!
 sleep 3
 
