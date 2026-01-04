@@ -683,19 +683,30 @@ func (s *Server) setupRoutes() {
 
 	// Predictive Analysis (análise preditiva de deployments)
 	// Reutilizar analyzer, tokensStore e config do AI Diagnostics
+	fmt.Println("🔮 Inicializando Predictions Store...")
+	predictionsDBPath := filepath.Join("./build", "predictions.db")
+	predictionsDB, err := storage.NewSQLiteClient(predictionsDBPath)
+	if err != nil {
+		fmt.Printf("⚠️  Erro ao criar Predictions DB: %v\n", err)
+	} else {
+		fmt.Println("✅ Predictions DB criado com sucesso")
+	}
+	
 	var predictionsHandler *handlers.PredictionsHandler
 	if s.aiHandler != nil && s.kubeManagerWrapper != nil {
 		// Se AI está habilitado, predictions pode usar os mesmos recursos
+		predictionsStore := storage.NewPredictionsStore(predictionsDB)
 		predictionsHandler = handlers.NewPredictionsHandler(
 			s.kubeManager,                  // KubeConfigManager para pegar clients
 			s.kubeManagerWrapper,           // KubeManager para criar AI analyzers
 			s.aiHandler.GetAnalyzer(),      // Compartilhar analyzer
 			s.aiHandler.GetTokensStore(),   // Compartilhar tokensStore
+			predictionsStore,               // Store para histórico
 			s.aiHandler.GetDefaultConfig(), // Compartilhar config
 		)
 	} else {
 		// Se AI desabilitado, criar handler básico (sem AI)
-		predictionsHandler = handlers.NewPredictionsHandler(s.kubeManager, nil, nil, nil, nil)
+		predictionsHandler = handlers.NewPredictionsHandler(s.kubeManager, nil, nil, nil, nil, nil)
 		fmt.Println("⚠️  Predictions sem AI (AI Diagnostics desabilitado)")
 	}
 
@@ -710,6 +721,13 @@ func (s *Server) setupRoutes() {
 
 	api.POST("/predictions/export", predictionsHandler.ExportReport)
 	api.GET("/predictions/health", predictionsHandler.GetHealthScore)
+	
+	// Rotas de histórico de predictions
+	api.GET("/predictions/history", predictionsHandler.GetHistory)
+	api.GET("/predictions/history/:id", predictionsHandler.GetHistoryByID)
+	api.GET("/predictions/history/latest", predictionsHandler.GetLatestForDeployment)
+	api.GET("/predictions/statistics", predictionsHandler.GetStatistics)
+	
 	fmt.Println("✅ Predictions routes registradas")
 
 	// Health Checking System

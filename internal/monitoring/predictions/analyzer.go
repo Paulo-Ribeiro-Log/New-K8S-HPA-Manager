@@ -283,7 +283,51 @@ IMPORTANTE:
 - Use probabilidades realistas (0.0 a 1.0)
 - Use terminologia técnica em português (ex: "réplicas" ao invés de "replicas", "uso de CPU" ao invés de "CPU usage")
 - Retorne APENAS o JSON, sem texto adicional
-- Todos os campos de texto devem estar em português brasileiro`, string(metricsJSON))
+- Todos os campos de texto devem estar em português brasileiro
+
+## ANÁLISE DE ECONOMIA DE CUSTOS (DOWNSIZING):
+
+**ATENÇÃO ESPECIAL**: Analise se há DESPERDÍCIO DE RECURSOS e oportunidades de REDUÇÃO DE CUSTOS:
+
+1. **SOBREPROVISIONAMENTO**: Se o uso de CPU está consistentemente abaixo de 30%% dos requests/limits ou memória abaixo de 40%%, há sobreprovisionamento
+2. **CUSTOS DESNECESSÁRIOS**: Recursos alocados mas não utilizados geram custos sem benefício
+3. **DOWNSIZING**: Quando identificar sobreprovisionamento:
+   - Recomende redução de CPU/memória requests e limits
+   - Calcule economia estimada em percentual (resource_efficiency_gain_percent)
+   - Explique impacto positivo na redução de custos
+   - Prioridade ALTA se economia > 30%%
+4. **RIGHTSIZING**: Ajuste recursos para o uso real + margem de segurança (20-30%%)
+5. **ECONOMIA ESTIMADA**: 
+   - Se CPU usage < 30%% do limit: "Economia de até X%% nos custos de computação"
+   - Se memória usage < 40%% do limit: "Economia de até Y%% nos custos de memória"
+   - Considere custo de VMs compartilhadas (competing_apps)
+
+**CATEGORIAS DE RECOMENDAÇÕES**:
+- "cost-optimization" ou "downsizing": Para redução de recursos e custos
+- "scaling": Para aumento de réplicas ou recursos
+- "performance": Para otimizações de performance
+- "reliability": Para melhorias de estabilidade
+
+**EXEMPLO DE RECOMENDAÇÃO DE DOWNSIZING**:
+{
+  "priority": 1,
+  "title": "Reduzir alocação de CPU - Sobreprovisionamento detectado",
+  "description": "O deployment está usando apenas 15%% da CPU alocada (0.3 de 2 cores). Recursos ociosos geram custos desnecessários de aproximadamente R$ XXX/mês por réplica.",
+  "category": "cost-optimization",
+  "actions": [
+    "Reduzir CPU requests de 2 cores para 0.5 cores",
+    "Reduzir CPU limits de 4 cores para 1 core",
+    "Monitorar por 48h após ajuste"
+  ],
+  "expected_impact": "Economia de 75%% nos custos de CPU sem impacto em performance. Redução de ~R$ XXX/mês no custo total.",
+  "implementation_estimate": {
+    "time_required": "10 minutos",
+    "complexity": "low",
+    "risk_level": "low",
+    "requires_downtime": false,
+    "resource_efficiency_gain_percent": 75.0
+  }
+}`, string(metricsJSON))
 }
 
 // fallbackAnalysis análise de fallback quando IA falha

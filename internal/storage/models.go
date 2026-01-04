@@ -33,3 +33,36 @@ type QueryFilters struct {
 	Limit        int
 	Offset       int
 }
+
+// PredictionRecord representa um registro de análise preditiva
+type PredictionRecord struct {
+	ID               string    `json:"id"`
+	Cluster          string    `json:"cluster"`
+	Namespace        string    `json:"namespace"`
+	Deployment       string    `json:"deployment"`
+	HealthScore      int       `json:"health_score"`
+	RiskLevel        string    `json:"risk_level"`
+	ExecutiveSummary string    `json:"executive_summary"` // JSON
+	Predictions      string    `json:"predictions"`       // JSON
+	Recommendations  string    `json:"recommendations"`   // JSON
+	RawMetrics       string    `json:"raw_metrics"`       // JSON completo
+	Provider         string    `json:"provider"`
+	Model            string    `json:"model,omitempty"`
+	DurationMs       int64     `json:"duration_ms"`
+	UserEmail        string    `json:"user_email,omitempty"`
+	AnalyzedAt       time.Time `json:"analyzed_at"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// PredictionQueryFilters filtros para consultas de predictions
+type PredictionQueryFilters struct {
+	Cluster    string
+	Namespace  string
+	Deployment string
+	RiskLevel  string
+	UserEmail  string
+	StartDate  *time.Time
+	EndDate    *time.Time
+	Limit      int
+	Offset     int
+}

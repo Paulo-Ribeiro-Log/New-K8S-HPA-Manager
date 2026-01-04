@@ -159,6 +159,12 @@ type VMSizingInfo struct {
 	CPUPerVM                int    `json:"cpu_per_vm_cores"`
 	MemoryPerVM             int    `json:"memory_per_vm_gb"`
 	MaxPodsPerNode          int    `json:"max_pods_per_node"`
+	
+	// Node Pool Scaling Info
+	MinNodes     int `json:"min_nodes"`
+	MaxNodes     int `json:"max_nodes"`
+	CurrentNodes int `json:"current_nodes"`
+	
 	RecommendedInstanceType string `json:"recommended_instance_type,omitempty"`
 	RecommendationReason    string `json:"recommendation_reason,omitempty"`
 }
@@ -176,6 +182,7 @@ type BinPackingAnalysis struct {
 type CompetingApp struct {
 	Name        string  `json:"name"`
 	Namespace   string  `json:"namespace"`
+	Replicas    int     `json:"replicas"`
 	CPUUsage    float64 `json:"cpu_usage_cores"`
 	MemoryUsage float64 `json:"memory_usage_gb"`
 	ImpactLevel string  `json:"impact_level"` // low, medium, high
@@ -190,6 +197,9 @@ type CapacityForecast struct {
 	ScalingTimeline       ScalingTimeline    `json:"scaling_timeline"`
 	NewNodesNeeded        int                `json:"new_nodes_needed"`
 	NewNodesReason        string             `json:"new_nodes_reason,omitempty"`
+	
+	// Análise de Capacidade Detalhada
+	GrowthAnalysis GrowthCapacityAnalysis `json:"growth_analysis"`
 }
 
 // NodeAnalysisDetail análise detalhada por node
@@ -303,4 +313,49 @@ type ImplementationEstimate struct {
 	RiskLevel              string  `json:"risk_level"`    // low, medium, high
 	RequiresDowntime       bool    `json:"requires_downtime"`
 	ResourceEfficiencyGain float64 `json:"resource_efficiency_gain_percent"`
+}
+
+// GrowthCapacityAnalysis análise detalhada de capacidade para crescimento
+type GrowthCapacityAnalysis struct {
+	// Aplicação em Análise
+	TargetApp ApplicationCapacity `json:"target_app"`
+	
+	// Aplicações Concorrentes
+	CompetingApps       []ApplicationCapacity `json:"competing_apps"`
+	TotalCompetingUsage ResourceUsage         `json:"total_competing_usage"`
+	
+	// Capacidade do Cluster
+	CurrentCapacity CapacityInfo `json:"current_capacity"`
+	MaxCapacity     CapacityInfo `json:"max_capacity"` // Se escalar até max nodes
+	
+	// Análise de Crescimento
+	AvailableForGrowth        ResourceUsage `json:"available_for_growth"`
+	MaxReplicasCurrentNodes   int           `json:"max_replicas_current_nodes"`
+	MaxReplicasWithMaxNodes   int           `json:"max_replicas_with_max_nodes"`
+	ReplicasIfRemoveCompeting int           `json:"replicas_if_remove_competing"`
+	
+	// Recomendações
+	RecommendedMaxReplicas int    `json:"recommended_max_replicas"`
+	GrowthRecommendation   string `json:"growth_recommendation"`
+	BottleneckResource     string `json:"bottleneck_resource"` // cpu, memory, nodes
+}
+
+// ApplicationCapacity representa capacidade de uma aplicação
+type ApplicationCapacity struct {
+	Name      string        `json:"name"`
+	Namespace string        `json:"namespace"`
+	Replicas  int           `json:"replicas"`
+	Usage     ResourceUsage `json:"usage"`
+}
+
+// ResourceUsage representa uso de recursos
+type ResourceUsage struct {
+	CPUCores float64 `json:"cpu_cores"`
+	MemoryGB float64 `json:"memory_gb"`
+}
+
+// CapacityInfo representa capacidade total ou disponível
+type CapacityInfo struct {
+	Nodes     int           `json:"nodes"`
+	Resources ResourceUsage `json:"resources"`
 }
