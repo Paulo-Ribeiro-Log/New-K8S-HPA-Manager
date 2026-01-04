@@ -159,12 +159,12 @@ type VMSizingInfo struct {
 	CPUPerVM                int    `json:"cpu_per_vm_cores"`
 	MemoryPerVM             int    `json:"memory_per_vm_gb"`
 	MaxPodsPerNode          int    `json:"max_pods_per_node"`
-	
+
 	// Node Pool Scaling Info
 	MinNodes     int `json:"min_nodes"`
 	MaxNodes     int `json:"max_nodes"`
 	CurrentNodes int `json:"current_nodes"`
-	
+
 	RecommendedInstanceType string `json:"recommended_instance_type,omitempty"`
 	RecommendationReason    string `json:"recommendation_reason,omitempty"`
 }
@@ -197,7 +197,7 @@ type CapacityForecast struct {
 	ScalingTimeline       ScalingTimeline    `json:"scaling_timeline"`
 	NewNodesNeeded        int                `json:"new_nodes_needed"`
 	NewNodesReason        string             `json:"new_nodes_reason,omitempty"`
-	
+
 	// Análise de Capacidade Detalhada
 	GrowthAnalysis GrowthCapacityAnalysis `json:"growth_analysis"`
 }
@@ -319,21 +319,21 @@ type ImplementationEstimate struct {
 type GrowthCapacityAnalysis struct {
 	// Aplicação em Análise
 	TargetApp ApplicationCapacity `json:"target_app"`
-	
+
 	// Aplicações Concorrentes
 	CompetingApps       []ApplicationCapacity `json:"competing_apps"`
 	TotalCompetingUsage ResourceUsage         `json:"total_competing_usage"`
-	
+
 	// Capacidade do Cluster
 	CurrentCapacity CapacityInfo `json:"current_capacity"`
 	MaxCapacity     CapacityInfo `json:"max_capacity"` // Se escalar até max nodes
-	
+
 	// Análise de Crescimento
 	AvailableForGrowth        ResourceUsage `json:"available_for_growth"`
 	MaxReplicasCurrentNodes   int           `json:"max_replicas_current_nodes"`
 	MaxReplicasWithMaxNodes   int           `json:"max_replicas_with_max_nodes"`
 	ReplicasIfRemoveCompeting int           `json:"replicas_if_remove_competing"`
-	
+
 	// Recomendações
 	RecommendedMaxReplicas int    `json:"recommended_max_replicas"`
 	GrowthRecommendation   string `json:"growth_recommendation"`

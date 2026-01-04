@@ -2120,7 +2120,18 @@ export const DeploymentsTab = ({
                   {collapseButton}
                   <p className="text-base font-semibold text-primary">Visualização</p>
                 </div>
-                {rightTitleAction}
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setHistoryModalOpen(true)}
+                    className="gap-2"
+                  >
+                    <History className="h-4 w-4" />
+                    Histórico de Análises
+                  </Button>
+                  {rightTitleAction}
+                </div>
               </div>
               <div className="flex-1 overflow-auto min-h-0">
                 {renderManifestPanel()}

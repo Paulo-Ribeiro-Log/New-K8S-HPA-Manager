@@ -316,12 +316,12 @@ func (s *PredictionsStore) GetStatistics(cluster string) (map[string]interface{}
 	var total int
 	query := "SELECT COUNT(*) FROM predictions_history"
 	args := []interface{}{}
-	
+
 	if cluster != "" {
 		query += " WHERE cluster = ?"
 		args = append(args, cluster)
 	}
-	
+
 	err := s.client.QueryRow(query, args...).Scan(&total)
 	if err != nil {
 		return nil, err

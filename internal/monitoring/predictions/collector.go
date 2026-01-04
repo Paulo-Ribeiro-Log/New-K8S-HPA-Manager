@@ -312,12 +312,12 @@ func (c *MetricsCollector) collectNodeMetrics(ctx context.Context, req Predictio
 	cpuPerVM := 0
 	memPerVM := 0
 	maxPods := 110 // Padrão K8s
-	
+
 	// Coletar min/max/current nodes do cluster
 	minNodes := 1
 	maxNodes := 10 // Padrão conservador
 	currentNodes := nodeMetrics.TotalNodesInCluster
-	
+
 	// Tentar buscar do kube-state-metrics ou labels
 	// Azure AKS: kube_node_labels com agentpool label
 	if minMaxInfo := c.getNodePoolMinMax(ctx); minMaxInfo != nil {
@@ -335,7 +335,7 @@ func (c *MetricsCollector) collectNodeMetrics(ctx context.Context, req Predictio
 				cpuCap := 0.0
 				fmt.Sscanf(nodeInfo.CPUCapacity, "%f", &cpuCap)
 				cpuPerVM = int(cpuCap)
-				
+
 				memCap := 0.0
 				fmt.Sscanf(nodeInfo.MemCapacity, "%fGi", &memCap)
 				memPerVM = int(memCap)
@@ -509,18 +509,18 @@ func (c *MetricsCollector) collectNodeDistribution(ctx context.Context, req Pred
 
 			// Buscar o tipo de instância real dos labels do Kubernetes
 			instanceType := ""
-			
+
 			// Query para pegar os labels do node via kube_node_labels
 			labelsQuery := fmt.Sprintf(`kube_node_labels{node="%s"}`, nodeName)
 			if result, err := c.promClient.Query(ctx, labelsQuery); err == nil {
 				if vec, ok := result.(model.Vector); ok && len(vec) > 0 {
 					// Tentar vários labels possíveis
 					labels := vec[0].Metric
-					
+
 					// Azure usa: node.kubernetes.io/instance-type ou beta.kubernetes.io/instance-type
 					// AWS usa: node.kubernetes.io/instance-type
 					// GCP usa: cloud.google.com/gke-nodepool ou node.kubernetes.io/instance-type
-					
+
 					if val, ok := labels["label_node_kubernetes_io_instance_type"]; ok && val != "" {
 						instanceType = string(val)
 					} else if val, ok := labels["label_beta_kubernetes_io_instance_type"]; ok && val != "" {
@@ -531,7 +531,7 @@ func (c *MetricsCollector) collectNodeDistribution(ctx context.Context, req Pred
 					}
 				}
 			}
-			
+
 			// Se não encontrou via labels, tenta inferir pelo tamanho
 			if instanceType == "" || instanceType == "unknown" {
 				instanceType = determineInstanceType(cpuCap, memCap/(1024*1024*1024))
@@ -692,7 +692,7 @@ func (c *MetricsCollector) calculateCapacityForecast(metrics *DeploymentMetrics)
 		},
 		NewNodesNeeded: newNodesNeeded,
 		NewNodesReason: newNodesReason,
-		
+
 		// Adicionar análise detalhada de crescimento
 		GrowthAnalysis: c.calculateGrowthAnalysis(metrics),
 	}
@@ -818,7 +818,7 @@ func (c *MetricsCollector) getDeploymentReplicas(ctx context.Context, namespace,
 		`kube_deployment_status_replicas{namespace="%s",deployment="%s"}`,
 		namespace, deploymentName,
 	)
-	
+
 	result, err := c.queryScalar(ctx, query)
 	if err != nil {
 		// Fallback: tentar contar pods
@@ -831,7 +831,7 @@ func (c *MetricsCollector) getDeploymentReplicas(ctx context.Context, namespace,
 		}
 		return 1 // Fallback: assumir 1 réplica
 	}
-	
+
 	return int(result)
 }
 
@@ -845,7 +845,7 @@ type NodePoolMinMax struct {
 func (c *MetricsCollector) getNodePoolMinMax(ctx context.Context) *NodePoolMinMax {
 	// Tentar buscar do Azure AKS através de annotations/labels
 	// kube_node_labels com agentpool annotations
-	
+
 	// Por enquanto, retornar valores conservadores
 	// TODO: Integrar com Azure API ou buscar de annotations específicas
 	return &NodePoolMinMax{
@@ -866,12 +866,12 @@ func (c *MetricsCollector) calculateGrowthAnalysis(metrics *DeploymentMetrics) G
 			MemoryGB: metrics.Current.MemoryUsageAvg / (1024 * 1024 * 1024),
 		},
 	}
-	
+
 	// 2. Aplicações concorrentes
 	competingApps := make([]ApplicationCapacity, 0, len(metrics.CompetingApps))
 	totalCompetingCPU := 0.0
 	totalCompetingMem := 0.0
-	
+
 	for _, comp := range metrics.CompetingApps {
 		competingApps = append(competingApps, ApplicationCapacity{
 			Name:      comp.Name,
@@ -885,7 +885,7 @@ func (c *MetricsCollector) calculateGrowthAnalysis(metrics *DeploymentMetrics) G
 		totalCompetingCPU += comp.CPUUsage
 		totalCompetingMem += comp.MemoryUsage
 	}
-	
+
 	// 3. Capacidade atual e máxima
 	currentCapacity := CapacityInfo{
 		Nodes: metrics.NodeMetrics.VMSizing.CurrentNodes,
@@ -894,7 +894,7 @@ func (c *MetricsCollector) calculateGrowthAnalysis(metrics *DeploymentMetrics) G
 			MemoryGB: metrics.NodeMetrics.TotalCapacity.MemTotal,
 		},
 	}
-	
+
 	maxCapacity := CapacityInfo{
 		Nodes: metrics.NodeMetrics.VMSizing.MaxNodes,
 		Resources: ResourceUsage{
@@ -902,16 +902,16 @@ func (c *MetricsCollector) calculateGrowthAnalysis(metrics *DeploymentMetrics) G
 			MemoryGB: float64(metrics.NodeMetrics.VMSizing.MaxNodes * metrics.NodeMetrics.VMSizing.MemoryPerVM),
 		},
 	}
-	
+
 	// 4. Capacidade disponível para crescimento
 	availableCPU := currentCapacity.Resources.CPUCores - metrics.NodeMetrics.TotalCapacity.CPUAllocated
 	availableMem := currentCapacity.Resources.MemoryGB - metrics.NodeMetrics.TotalCapacity.MemAllocated
-	
+
 	availableForGrowth := ResourceUsage{
 		CPUCores: availableCPU,
 		MemoryGB: availableMem,
 	}
-	
+
 	// 5. Calcular máximo de réplicas
 	cpuPerReplica := targetApp.Usage.CPUCores / float64(targetApp.Replicas)
 	memPerReplica := targetApp.Usage.MemoryGB / float64(targetApp.Replicas)
@@ -919,31 +919,31 @@ func (c *MetricsCollector) calculateGrowthAnalysis(metrics *DeploymentMetrics) G
 		cpuPerReplica = 0.5 // Padrão conservador
 		memPerReplica = 0.5
 	}
-	
+
 	maxReplicasByCPU := int(availableCPU / cpuPerReplica)
 	maxReplicasByMem := int(availableMem / memPerReplica)
 	maxReplicasCurrentNodes := targetApp.Replicas + minInt(maxReplicasByCPU, maxReplicasByMem)
-	
+
 	// Máximo com max nodes
 	maxCPU := maxCapacity.Resources.CPUCores - metrics.NodeMetrics.TotalCapacity.CPUAllocated + availableCPU
 	maxMem := maxCapacity.Resources.MemoryGB - metrics.NodeMetrics.TotalCapacity.MemAllocated + availableMem
 	maxReplicasWithMaxNodes := int(min(maxCPU/cpuPerReplica, maxMem/memPerReplica))
-	
+
 	// Réplicas se remover competidores
 	replicasIfRemoveCompeting := int(min(
 		(availableCPU+totalCompetingCPU)/cpuPerReplica,
 		(availableMem+totalCompetingMem)/memPerReplica,
 	))
-	
+
 	// 6. Recomendação
 	bottleneckResource := "cpu"
 	if memPerReplica/availableMem > cpuPerReplica/availableCPU {
 		bottleneckResource = "memory"
 	}
-	
+
 	recommendedMax := maxReplicasCurrentNodes
 	recommendation := fmt.Sprintf("Pode escalar até %d réplicas nos nodes atuais", maxReplicasCurrentNodes)
-	
+
 	if maxReplicasCurrentNodes < targetApp.Replicas*2 {
 		recommendation = fmt.Sprintf("Capacidade limitada: apenas %d réplicas adicionais. Considere escalar nodes para %d (max: %d réplicas)",
 			maxReplicasCurrentNodes-targetApp.Replicas,
@@ -951,7 +951,7 @@ func (c *MetricsCollector) calculateGrowthAnalysis(metrics *DeploymentMetrics) G
 			maxReplicasWithMaxNodes)
 		recommendedMax = maxReplicasWithMaxNodes
 	}
-	
+
 	return GrowthCapacityAnalysis{
 		TargetApp:                 targetApp,
 		CompetingApps:             competingApps,

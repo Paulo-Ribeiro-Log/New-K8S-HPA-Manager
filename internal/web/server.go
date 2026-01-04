@@ -691,7 +691,7 @@ func (s *Server) setupRoutes() {
 	} else {
 		fmt.Println("✅ Predictions DB criado com sucesso")
 	}
-	
+
 	var predictionsHandler *handlers.PredictionsHandler
 	if s.aiHandler != nil && s.kubeManagerWrapper != nil {
 		// Se AI está habilitado, predictions pode usar os mesmos recursos
@@ -721,13 +721,13 @@ func (s *Server) setupRoutes() {
 
 	api.POST("/predictions/export", predictionsHandler.ExportReport)
 	api.GET("/predictions/health", predictionsHandler.GetHealthScore)
-	
+
 	// Rotas de histórico de predictions
 	api.GET("/predictions/history", predictionsHandler.GetHistory)
 	api.GET("/predictions/history/:id", predictionsHandler.GetHistoryByID)
 	api.GET("/predictions/history/latest", predictionsHandler.GetLatestForDeployment)
 	api.GET("/predictions/statistics", predictionsHandler.GetStatistics)
-	
+
 	fmt.Println("✅ Predictions routes registradas")
 
 	// Health Checking System
