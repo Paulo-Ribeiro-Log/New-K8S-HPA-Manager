@@ -32,6 +32,7 @@ import { toast } from "sonner";
 import type { HealthCheckResult } from "@/types/healthcheck";
 import { cn } from "@/lib/utils";
 import { ExportReportModal } from "@/components/ExportReportModal";
+import { HealthCheckAlertsExportModal } from "@/components/HealthCheckAlertsExportModal";
 
 interface HealthCheckHistoryModalProps {
   open: boolean;
@@ -55,6 +56,8 @@ export const HealthCheckHistoryModal = ({
   const [customDateRange, setCustomDateRange] = useState<DateRange | undefined>();
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [alertsExportModalOpen, setAlertsExportModalOpen] = useState(false);
+  const [alertsToExport, setAlertsToExport] = useState<{cluster: string, events: any[]}>({ cluster: "", events: [] });
 
   // Carregar histórico ao abrir modal
   useEffect(() => {
@@ -494,17 +497,66 @@ export const HealthCheckHistoryModal = ({
                           <span>Duração: {formatDuration(result.duration_ms)}</span>
                         </div>
                       </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          onSelectHistory(result);
-                          onOpenChange(false);
-                        }}
-                      >
-                        <Eye className="mr-1.5 h-3.5 w-3.5" />
-                        Visualizar
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            onSelectHistory(result);
+                            onOpenChange(false);
+                          }}
+                        >
+                          <Eye className="mr-1.5 h-3.5 w-3.5" />
+                          Visualizar
+                        </Button>
+                        {/* Botão Exportar Alertas - só aparece se houver warnings/criticals */}
+                        {(result.warning_count > 0 || result.critical_count > 0) && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={async () => {
+                              try {
+                                toast.loading("Carregando alertas...", { id: "export-alerts" });
+
+                                // Buscar eventos do banco
+                                const response = await apiClient.getHealthCheckEvents(result.id);
+
+                                if (!response.success || !response.events) {
+                                  toast.error("Nenhum alerta encontrado", { id: "export-alerts" });
+                                  return;
+                                }
+
+                                // Filtrar apenas warnings e criticals
+                                const alerts = response.events.filter(
+                                  (e: any) => e.status === "warning" || e.status === "critical"
+                                );
+
+                                if (alerts.length === 0) {
+                                  toast.info("Nenhum alerta encontrado", { id: "export-alerts" });
+                                  return;
+                                }
+
+                                toast.dismiss("export-alerts");
+
+                                // Preparar dados para exportação
+                                setAlertsToExport({
+                                  cluster: result.cluster,
+                                  events: alerts
+                                });
+                                setAlertsExportModalOpen(true);
+
+                              } catch (error) {
+                                console.error("Erro ao exportar alertas:", error);
+                                toast.error("Erro ao carregar alertas", { id: "export-alerts" });
+                              }
+                            }}
+                            className="text-xs"
+                          >
+                            <Download className="mr-1.5 h-3.5 w-3.5" />
+                            Exportar Alertas
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   </CardHeader>
                   <CardContent className="pt-0">
@@ -546,6 +598,16 @@ export const HealthCheckHistoryModal = ({
           return acc;
         }, {} as Record<string, HealthCheckResult>)}
       />
+
+      {/* Alerts Export Modal */}
+      {alertsExportModalOpen && alertsToExport.events.length > 0 && (
+        <HealthCheckAlertsExportModal
+          open={alertsExportModalOpen}
+          onOpenChange={setAlertsExportModalOpen}
+          cluster={alertsToExport.cluster}
+          alerts={alertsToExport.events}
+        />
+      )}
     </Dialog>
   );
 };

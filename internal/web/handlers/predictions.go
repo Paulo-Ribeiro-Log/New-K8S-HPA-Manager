@@ -1,13 +1,18 @@
 package handlers
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"time"
 
 	"k8s-hpa-manager/internal/ai"
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/kubernetes"
+	"k8s-hpa-manager/internal/monitoring/discovery"
 	"k8s-hpa-manager/internal/monitoring/predictions"
 	"k8s-hpa-manager/internal/monitoring/prometheus"
+	"k8s-hpa-manager/internal/storage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
@@ -15,13 +20,27 @@ import (
 
 // PredictionsHandler gerencia análises preditivas
 type PredictionsHandler struct {
-	kubeManager *config.KubeConfigManager
+	kubeConfigMgr *config.KubeConfigManager // Para pegar k8s clients
+	kubeManager   *kubernetes.KubeManager   // Para criar AI analyzers
+	analyzer      *ai.Analyzer              // Analyzer padrão (fallback)
+	tokensStore   *storage.UserTokensStore
+	defaultConfig *ai.Config // Config padrão (flags do servidor)
 }
 
 // NewPredictionsHandler cria novo handler
-func NewPredictionsHandler(kubeManager *config.KubeConfigManager) *PredictionsHandler {
+func NewPredictionsHandler(
+	kubeConfigMgr *config.KubeConfigManager,
+	kubeManager *kubernetes.KubeManager,
+	analyzer *ai.Analyzer,
+	tokensStore *storage.UserTokensStore,
+	defaultConfig *ai.Config,
+) *PredictionsHandler {
 	return &PredictionsHandler{
-		kubeManager: kubeManager,
+		kubeConfigMgr: kubeConfigMgr,
+		kubeManager:   kubeManager,
+		analyzer:      analyzer,
+		tokensStore:   tokensStore,
+		defaultConfig: defaultConfig,
 	}
 }
 
@@ -44,11 +63,38 @@ type AnalyzeDeploymentRequest struct {
 // @Failure 500 {object} map[string]string
 // @Router /api/predictions/analyze [post]
 func (h *PredictionsHandler) AnalyzeDeployment(c *gin.Context) {
+	// Log ANTES de tudo para confirmar que chegou até aqui
+	log.Info().Msg("========== PREDICTIONS HANDLER CALLED ==========")
+
+	// Log headers e content type
+	log.Info().
+		Str("content_type", c.ContentType()).
+		Str("method", c.Request.Method).
+		Msg("Request details")
+
+	// Ler body manualmente para debug
+	bodyBytes, _ := c.GetRawData()
+	log.Info().Str("raw_body", string(bodyBytes)).Msg("Raw request body")
+
+	// Restaurar body para ShouldBindJSON poder ler
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
 	var req AnalyzeDeploymentRequest
+
+	// Log do body recebido para debug
+	log.Info().Msg("About to bind JSON request")
+
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		log.Error().Err(err).Str("error_detail", err.Error()).Msg("FAILED TO BIND JSON REQUEST")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
 		return
 	}
+
+	log.Info().
+		Str("cluster", req.Cluster).
+		Str("namespace", req.Namespace).
+		Str("deployment", req.Deployment).
+		Msg("Request parsed successfully")
 
 	// Obter user email do contexto (RBAC)
 	userEmail := c.GetString("user_email")
@@ -70,9 +116,19 @@ func (h *PredictionsHandler) AnalyzeDeployment(c *gin.Context) {
 		return
 	}
 
-	// 2. Obter provider AI do usuário
-	aiProvider := h.getAIProviderForUser(userEmail)
-	if aiProvider == nil {
+	// 1.1. Testar conexão com Prometheus (lazy connection)
+	ctx := c.Request.Context()
+	if err := promClient.TestConnection(ctx); err != nil {
+		log.Error().Err(err).Msg("Failed to connect to Prometheus")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to connect to Prometheus: " + err.Error(),
+		})
+		return
+	}
+
+	// 2. Obter analyzer AI do usuário (com provider configurado)
+	userAnalyzer := h.getAnalyzerForUser(userEmail)
+	if userAnalyzer == nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "AI provider not configured. Please configure your AI tokens first.",
 		})
@@ -80,7 +136,7 @@ func (h *PredictionsHandler) AnalyzeDeployment(c *gin.Context) {
 	}
 
 	// 3. Obter KubeManager wrapper
-	kubeClient, err := h.kubeManager.GetK8sClient(req.Cluster)
+	kubeClient, err := h.kubeConfigMgr.GetK8sClient(req.Cluster)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get Kubernetes client")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -89,11 +145,18 @@ func (h *PredictionsHandler) AnalyzeDeployment(c *gin.Context) {
 		return
 	}
 
-	// 4. Criar analyzer
+	// 4. Criar predictions analyzer com provider do usuário
+	aiProvider := userAnalyzer.GetProvider()
+	if aiProvider == nil {
+		log.Error().Msg("AI provider is nil")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "AI provider not properly configured. Please check your AI settings.",
+		})
+		return
+	}
 	analyzer := predictions.NewAnalyzer(promClient, aiProvider, kubeClient)
 
 	// 5. Executar análise
-	ctx := c.Request.Context()
 	result, err := analyzer.Analyze(ctx, predictions.PredictionRequest{
 		Cluster:    req.Cluster,
 		Namespace:  req.Namespace,
@@ -154,23 +217,110 @@ func (h *PredictionsHandler) ExportReport(c *gin.Context) {
 
 // getPrometheusClient obtém cliente Prometheus para cluster
 func (h *PredictionsHandler) getPrometheusClient(cluster string) (*prometheus.Client, error) {
-	// Obter configuração de Prometheus do cluster
-	// Por ora, assumir endpoint padrão
-	endpoint := "http://prometheus-server.monitoring.svc.cluster.local:9090"
+	// Descobrir endpoint Prometheus para o cluster
+	endpoint, err := discovery.DiscoverEndpoint(cluster)
+	if err != nil {
+		return nil, err
+	}
 
-	// TODO: Buscar endpoint real da configuração do cluster
-
-	return prometheus.NewClient(cluster, endpoint)
+	// Criar cliente Prometheus com endpoint descoberto
+	return prometheus.NewClient(cluster, endpoint.URL)
 }
 
-// getAIProviderForUser obtém provider AI configurado pelo usuário
-func (h *PredictionsHandler) getAIProviderForUser(userEmail string) ai.Provider {
-	// Reutilizar lógica do AIDiagnosticsHandler
-	// Por ora, retornar provider padrão
+// getAnalyzerForUser obtém analyzer AI configurado pelo usuário
+func (h *PredictionsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer {
+	// Se não tiver user email ou tokensStore, usar analyzer padrão
+	if userEmail == "" || h.tokensStore == nil || h.analyzer == nil {
+		log.Debug().Msg("Using default analyzer (no user email or tokens store)")
+		return h.analyzer
+	}
 
-	// TODO: Buscar tokens configurados pelo usuário e instanciar provider correto
+	// Buscar tokens/preferências do usuário
+	tokens, err := h.tokensStore.GetTokens(userEmail)
+	if err != nil || tokens == nil {
+		// Se erro ou usuário não tem preferências, usar padrão
+		log.Debug().
+			Str("user_email", userEmail).
+			Msg("Using default analyzer (no user preferences found)")
+		return h.analyzer
+	}
 
-	return nil
+	// Criar config personalizado baseado nas preferências do usuário
+	config := &ai.Config{
+		Provider: tokens.PreferredProvider,
+		Timeout:  h.defaultConfig.Timeout,
+	}
+
+	// Configurar provider específico com modelo selecionado
+	switch tokens.PreferredProvider {
+	case "gemini":
+		if tokens.GeminiAPIKey != "" {
+			config.GeminiAPIKey = tokens.GeminiAPIKey
+			if tokens.GeminiModel != "" {
+				config.GeminiModel = tokens.GeminiModel
+			} else {
+				config.GeminiModel = "gemini-2.0-flash-exp"
+			}
+		} else {
+			return h.analyzer
+		}
+	case "claude":
+		if tokens.ClaudeAPIKey != "" {
+			config.ClaudeAPIKey = tokens.ClaudeAPIKey
+			if tokens.ClaudeModel != "" {
+				config.ClaudeModel = tokens.ClaudeModel
+			} else {
+				config.ClaudeModel = "claude-3-5-sonnet-20241022"
+			}
+		} else {
+			return h.analyzer
+		}
+	case "openai":
+		if tokens.OpenAIAPIKey != "" {
+			config.OpenAIAPIKey = tokens.OpenAIAPIKey
+			if tokens.OpenAIModel != "" {
+				config.OpenAIModel = tokens.OpenAIModel
+			} else {
+				config.OpenAIModel = "gpt-4o-mini"
+			}
+		} else {
+			return h.analyzer
+		}
+	case "ollama":
+		// Ollama não precisa de API key
+		config.OllamaBaseURL = h.defaultConfig.OllamaBaseURL
+		if tokens.OllamaModel != "" {
+			config.OllamaModel = tokens.OllamaModel
+		} else {
+			config.OllamaModel = "llama3.2:3b"
+		}
+	default:
+		// Provider desconhecido, usar padrão
+		return h.analyzer
+	}
+
+	// Criar provider personalizado
+	provider, err := ai.NewProvider(config)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("user_email", userEmail).
+			Str("provider", tokens.PreferredProvider).
+			Msg("Failed to create user-specific provider, using default")
+		return h.analyzer
+	}
+
+	// Criar analyzer com provider personalizado
+	// ai.NewAnalyzer precisa de (provider, kubeManager, historyStore)
+	// Mas no contexto de predictions, não temos historyStore aqui
+	// Vamos retornar o analyzer padrão se não pudermos criar um novo
+	analyzer := ai.NewAnalyzer(provider, h.kubeManager, nil)
+	log.Info().
+		Str("user_email", userEmail).
+		Str("provider", tokens.PreferredProvider).
+		Msg("User-specific analyzer created successfully")
+
+	return analyzer
 }
 
 // generateMarkdownReport gera relatório em formato Markdown
@@ -237,7 +387,7 @@ func (h *PredictionsHandler) GetHealthScore(c *gin.Context) {
 		return
 	}
 
-	kubeClient, err := h.kubeManager.GetK8sClient(cluster)
+	kubeClient, err := h.kubeConfigMgr.GetK8sClient(cluster)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to connect to cluster"})
 		return

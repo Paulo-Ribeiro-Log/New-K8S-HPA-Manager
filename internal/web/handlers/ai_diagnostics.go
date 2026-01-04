@@ -16,11 +16,11 @@ import (
 
 // AIDiagnosticsHandler handler para diagnósticos AI
 type AIDiagnosticsHandler struct {
-	analyzer       *ai.Analyzer          // Analyzer padrão (fallback)
-	historyStore   *storage.AIHistoryStore
-	tokensStore    *storage.UserTokensStore
-	kubeManager    *kubernetes.KubeManager
-	defaultConfig  *ai.Config            // Config padrão (flags do servidor)
+	analyzer      *ai.Analyzer // Analyzer padrão (fallback)
+	historyStore  *storage.AIHistoryStore
+	tokensStore   *storage.UserTokensStore
+	kubeManager   *kubernetes.KubeManager
+	defaultConfig *ai.Config // Config padrão (flags do servidor)
 }
 
 // NewAIDiagnosticsHandler cria um novo AIDiagnosticsHandler
@@ -103,8 +103,8 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 
 	// Criar config personalizado baseado nas preferências do usuário
 	config := &ai.Config{
-		Provider:      tokens.PreferredProvider,
-		Timeout:       h.defaultConfig.Timeout,
+		Provider: tokens.PreferredProvider,
+		Timeout:  h.defaultConfig.Timeout,
 	}
 
 	// Configurar provider específico com modelo selecionado
@@ -367,4 +367,17 @@ func (h *AIDiagnosticsHandler) RegisterRoutes(r *gin.RouterGroup, kubeManager *k
 	// Rotas protegidas (POST, DELETE) - apenas leitura por enquanto
 	r.POST("/ai/analyze", h.Analyze)
 	r.DELETE("/ai/history/:id", h.DeleteAnalysis)
+}
+
+// Getters para compartilhar recursos com outros handlers (como PredictionsHandler)
+func (h *AIDiagnosticsHandler) GetAnalyzer() *ai.Analyzer {
+	return h.analyzer
+}
+
+func (h *AIDiagnosticsHandler) GetTokensStore() *storage.UserTokensStore {
+	return h.tokensStore
+}
+
+func (h *AIDiagnosticsHandler) GetDefaultConfig() *ai.Config {
+	return h.defaultConfig
 }

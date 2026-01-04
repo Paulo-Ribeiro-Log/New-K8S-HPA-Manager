@@ -1,10 +1,11 @@
 import { Card } from "@/components/ui/card";
 import { Activity, Server, Cpu, HardDrive, Monitor, Package } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { apiClient } from "@/lib/api/client";
 import { ClusterInfo } from "@/lib/api/types";
 import { MetricsGauge } from "@/components/MetricsGauge";
 import { TopNamespacesCard } from "@/components/TopNamespacesCard";
+import { useQueryClient } from "@tanstack/react-query";
 
 
 
@@ -16,6 +17,8 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
   const [clusterInfo, setClusterInfo] = useState<ClusterInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const previousClusterRef = useRef<string | undefined>();
 
   const fetchClusterInfo = async (isRefresh: boolean = false) => {
     // ✅ FIX: Não buscar se selectedCluster estiver vazio (aguardando auto-select)
@@ -44,6 +47,35 @@ export const DashboardCharts = ({ selectedCluster }: DashboardChartsProps) => {
       }
     }
   };
+
+  // ✅ FIX: Cancelar queries antigas quando cluster muda
+  useEffect(() => {
+    if (previousClusterRef.current && previousClusterRef.current !== selectedCluster) {
+      console.log(`[DashboardCharts] Cluster changed from ${previousClusterRef.current} to ${selectedCluster} - cancelling old queries`);
+
+      // Cancelar todas as queries com o cluster antigo
+      const oldCluster = previousClusterRef.current;
+
+      // ✅ CRITICAL: Cancelar queries em andamento
+      queryClient.cancelQueries({ queryKey: ["hpa-alerts", oldCluster] });
+      queryClient.cancelQueries({ queryKey: ["nodepool-alerts", oldCluster] });
+      queryClient.cancelQueries({ queryKey: ["alert-summary", oldCluster] });
+
+      // ✅ CRITICAL: Remover queries do cache (para desabilitar refetchInterval)
+      queryClient.removeQueries({ queryKey: ["hpa-alerts", oldCluster] });
+      queryClient.removeQueries({ queryKey: ["nodepool-alerts", oldCluster] });
+      queryClient.removeQueries({ queryKey: ["alert-summary", oldCluster] });
+
+      // ✅ CRITICAL: Invalidar TODAS as queries para forçar refetch imediato do novo cluster
+      queryClient.invalidateQueries({ queryKey: ["hpa-alerts", selectedCluster] });
+      queryClient.invalidateQueries({ queryKey: ["nodepool-alerts", selectedCluster] });
+      queryClient.invalidateQueries({ queryKey: ["alert-summary", selectedCluster] });
+
+      console.log(`[DashboardCharts] Cancelled and removed all queries for cluster: ${oldCluster}`);
+    }
+
+    previousClusterRef.current = selectedCluster;
+  }, [selectedCluster, queryClient]);
 
   useEffect(() => {
     console.log('[DashboardCharts] useEffect triggered - selectedCluster:', selectedCluster);

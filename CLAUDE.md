@@ -537,6 +537,42 @@ Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 Servidor Web: ./build/new-k8s-hpa web (porta 8080)
 
+Recent Updates (v1.3.7 - 03/01/2026):
+- **Fix Crítico: Requisições ao Cluster Antigo Após Troca de Contexto**:
+  - **Problema**: Ao trocar de cluster (ex: abastecimento-hlg → faturamento-prd), React Query continuava fazendo requisições ao cluster antigo
+  - **Root Cause**: Hook `refetchInterval` de `useQuery` recebe `query` como `undefined` na primeira renderização
+  - **Solução**: Adicionado guard `if (!query) return 30000` nos 3 hooks de alertas antes de acessar `query.queryKey`
+  - **Arquivos Modificados**: `internal/web/frontend/src/hooks/useAlerts.ts`
+    - `useHPAAlerts()` - linhas 57-68
+    - `useNodePoolAlerts()` - linhas 128-139
+    - `useAlertSummary()` - linhas 155-166
+  - **Fix Aplicado**:
+    ```typescript
+    refetchInterval: (data, query) => {
+      // ✅ FIX: Guard contra query undefined na primeira renderização
+      if (!query) return 30000;
+
+      // ✅ FIX: Desabilitar refetch se query key não corresponde ao cluster atual
+      const queryCluster = query.queryKey[1];
+      if (queryCluster !== cluster) {
+        console.log(`[useHPAAlerts] Disabling refetch for old cluster: ${queryCluster} (current: ${cluster})`);
+        return false;
+      }
+      return 30000;
+    }
+    ```
+  - **Impacto**: Elimina requisições espúrias ao cluster antigo, melhora performance e evita erros 500
+
+- **Erros do Monaco Editor (Documentação)**:
+  - **Erros comuns em aba anônima** (INOFENSIVOS - podem ser ignorados):
+    - "Tracking Prevention blocked access to storage" - localStorage bloqueado
+    - "Could not create web worker(s)" - Web Workers bloqueados, fallback para main thread
+    - "Cannot use 'in' operator to search for 'then' in undefined" - Workers retornam undefined
+    - "Missing requestHandler or method: doValidation/getFoldingRanges/getCodeAction" - Métodos de workers não disponíveis
+  - **Funcionalidade NÃO afetada**: Editor YAML, syntax highlighting básico, autocomplete e edição funcionam normalmente
+  - **Apenas se preocupar se**: Editor não aparecer, não conseguir digitar YAML, ou Apply não funcionar
+  - **Solução**: Nenhuma necessária - Monaco tem fallbacks automáticos para modo síncrono
+
 Recent Updates (v1.3.6 - 24/12/2025):
 - **AI Diagnostics em Produção**: Sistema completo integrado ao servidor web
   - Frontend: Botão "Analisar com AI" no painel de detalhes de Pods

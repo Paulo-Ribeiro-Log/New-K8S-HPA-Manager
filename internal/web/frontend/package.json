@@ -50,6 +50,7 @@
     "date-fns": "^3.6.0",
     "diff2html": "^3.4.52",
     "embla-carousel-react": "^8.6.0",
+    "html2pdf.js": "^0.12.1",
     "input-otp": "^1.4.2",
     "js-yaml": "^4.1.1",
     "jspdf": "^3.0.3",

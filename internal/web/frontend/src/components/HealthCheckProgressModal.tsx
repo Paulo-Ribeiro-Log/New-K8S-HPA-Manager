@@ -425,6 +425,9 @@ export const HealthCheckProgressModal = ({
   const [failedClusters, setFailedClusters] = useState<Set<string>>(new Set());
   const [showAlertsReport, setShowAlertsReport] = useState(false);
 
+  // ✅ Estado persistente de eventos - NÃO é resetado quando modal fecha
+  const [persistedEventsPerCluster, setPersistedEventsPerCluster] = useState<Record<string, HealthCheckProgress[]>>({});
+
   // ✅ Memoizar clusters para evitar loop infinito de reconexão SSE
   const clusters = useMemo(() => Object.keys(clusterSessions), [clusterSessions]);
 
@@ -452,12 +455,22 @@ export const HealthCheckProgressModal = ({
     },
   });
 
-  // ✅ Resetar estado quando modal fechar
+  // ✅ CRÍTICO: Sincronizar CONTINUAMENTE eventos do hook com estado persistente
+  useEffect(() => {
+    // Atualizar estado persistente sempre que eventsPerCluster mudar
+    if (Object.keys(eventsPerCluster).length > 0) {
+      console.log('[HealthCheckProgressModal] Sincronizando eventos para persistência:', eventsPerCluster);
+      setPersistedEventsPerCluster(eventsPerCluster);
+    }
+  }, [eventsPerCluster]);
+
+  // ✅ Resetar estado quando modal fechar (mas NÃO limpa eventos persistidos!)
   useEffect(() => {
     if (!open) {
       setCompletedClusters(new Set());
       setFailedClusters(new Set());
       setActiveTab("");
+      // ⚠️ NÃO resetar persistedEventsPerCluster aqui!
     } else {
       // Auto-select primeiro cluster ao abrir
       if (clusters.length > 0 && !activeTab) {
@@ -634,12 +647,13 @@ export const HealthCheckProgressModal = ({
         </div>
       </DialogContent>
 
-      {/* Modal de Relatório de Alertas */}
+      {/* Modal de Relatório de Alertas - Usa eventos persistidos + busca do banco */}
       <HealthCheckAlertsReport
         open={showAlertsReport}
         onOpenChange={setShowAlertsReport}
-        eventsPerCluster={eventsPerCluster}
+        eventsPerCluster={persistedEventsPerCluster}
         clusters={clusters}
+        clusterSessions={clusterSessions}
       />
     </Dialog>
   );
