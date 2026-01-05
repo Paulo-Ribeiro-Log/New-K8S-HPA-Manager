@@ -86,6 +86,11 @@ func NewClient(clientset kubernetes.Interface, clusterName string) *Client {
 	}
 }
 
+// GetClientset retorna o clientset do Kubernetes
+func (c *Client) GetClientset() kubernetes.Interface {
+	return c.clientset
+}
+
 // SetHistoryTracker configura o historyTracker para audit logging
 func (c *Client) SetHistoryTracker(tracker *history.HistoryTracker) {
 	c.historyTracker = tracker

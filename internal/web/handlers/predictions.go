@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -1059,6 +1060,10 @@ func (h *PredictionsHandler) GetHistory(c *gin.Context) {
 		return
 	}
 
+	log.Error().
+		Int("records_count", len(records)).
+		Msg("=== PREDICTIONS HISTORY: Records retrieved from database ===")
+
 	// Contar total para pagination
 	total, err := h.predictionsStore.Count(&filters)
 	if err != nil {
@@ -1066,8 +1071,25 @@ func (h *PredictionsHandler) GetHistory(c *gin.Context) {
 		total = len(records) // Fallback
 	}
 
+	// Converter records para formato adequado para frontend (parse JSON strings)
+	frontendRecords := make([]map[string]interface{}, len(records))
+	for i, rec := range records {
+		log.Error().
+			Str("id", rec.ID).
+			Str("deployment", rec.Deployment).
+			Int("predictions_len", len(rec.Predictions)).
+			Int("recommendations_len", len(rec.Recommendations)).
+			Str("predictions_preview", rec.Predictions[:min(50, len(rec.Predictions))]).
+			Msg("=== PREDICTIONS HISTORY: Converting record ===")
+		frontendRecords[i] = h.convertRecordForFrontend(rec)
+	}
+
+	log.Error().
+		Int("frontend_records_count", len(frontendRecords)).
+		Msg("=== PREDICTIONS HISTORY: Conversion complete ===")
+
 	c.JSON(http.StatusOK, gin.H{
-		"records": records,
+		"records": frontendRecords,
 		"total":   total,
 		"limit":   filters.Limit,
 		"offset":  filters.Offset,
@@ -1202,3 +1224,91 @@ func parseInt(s string) (int, error) {
 	_, err := fmt.Sscanf(s, "%d", &n)
 	return n, err
 }
+
+// convertRecordForFrontend converte PredictionRecord com JSON strings para formato adequado
+func (h *PredictionsHandler) convertRecordForFrontend(rec *storage.PredictionRecord) map[string]interface{} {
+	result := map[string]interface{}{
+		"id":           rec.ID,
+		"cluster":      rec.Cluster,
+		"namespace":    rec.Namespace,
+		"deployment":   rec.Deployment,
+		"health_score": rec.HealthScore,
+		"risk_level":   rec.RiskLevel,
+		"provider":     rec.Provider,
+		"model":        rec.Model,
+		"duration_ms":  rec.DurationMs,
+		"user_email":   rec.UserEmail,
+		"analyzed_at":  rec.AnalyzedAt,
+		"created_at":   rec.CreatedAt,
+	}
+
+	// Log para debug
+	log.Debug().
+		Str("id", rec.ID).
+		Str("deployment", rec.Deployment).
+		Int("predictions_length", len(rec.Predictions)).
+		Int("recommendations_length", len(rec.Recommendations)).
+		Int("raw_metrics_length", len(rec.RawMetrics)).
+		Msg("Converting record for frontend")
+
+	// Parse executive_summary JSON string
+	var executiveSummary interface{}
+	if err := parseJSONField(rec.ExecutiveSummary, &executiveSummary); err != nil {
+		log.Warn().Err(err).Str("raw", rec.ExecutiveSummary[:min(100, len(rec.ExecutiveSummary))]).Msg("Failed to parse executive_summary")
+		result["executive_summary"] = map[string]interface{}{}
+	} else {
+		result["executive_summary"] = executiveSummary
+	}
+
+	// Parse predictions JSON string
+	var predictions interface{}
+	if err := parseJSONField(rec.Predictions, &predictions); err != nil {
+		log.Warn().Err(err).Str("raw", rec.Predictions[:min(100, len(rec.Predictions))]).Msg("Failed to parse predictions")
+		result["predictions"] = map[string]interface{}{
+			"short_term":  []interface{}{},
+			"medium_term": []interface{}{},
+			"long_term":   []interface{}{},
+		}
+	} else {
+		log.Debug().Interface("predictions", predictions).Msg("Predictions parsed successfully")
+		result["predictions"] = predictions
+	}
+
+	// Parse recommendations JSON string
+	var recommendations interface{}
+	if err := parseJSONField(rec.Recommendations, &recommendations); err != nil {
+		log.Warn().Err(err).Str("raw", rec.Recommendations[:min(100, len(rec.Recommendations))]).Msg("Failed to parse recommendations")
+		result["recommendations"] = []interface{}{}
+	} else {
+		log.Debug().Interface("recommendations", recommendations).Msg("Recommendations parsed successfully")
+		result["recommendations"] = recommendations
+	}
+
+	// Parse raw_metrics JSON string
+	var rawMetrics interface{}
+	if err := parseJSONField(rec.RawMetrics, &rawMetrics); err != nil {
+		log.Warn().Err(err).Str("raw", rec.RawMetrics[:min(100, len(rec.RawMetrics))]).Msg("Failed to parse raw_metrics")
+		result["raw_metrics"] = map[string]interface{}{}
+	} else {
+		result["raw_metrics"] = rawMetrics
+	}
+
+	return result
+}
+
+// min helper function
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// parseJSONField helper para fazer parse de um campo JSON string
+func parseJSONField(jsonStr string, target interface{}) error {
+	if jsonStr == "" {
+		return fmt.Errorf("empty JSON string")
+	}
+	return json.Unmarshal([]byte(jsonStr), target)
+}
+

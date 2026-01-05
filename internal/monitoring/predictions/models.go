@@ -46,6 +46,9 @@ type DeploymentMetrics struct {
 	ReadyReplicas     int32            `json:"ready_replicas"`
 	Resources         ResourceRequests `json:"resources"`
 
+	// Configuração do HPA (se existir)
+	HPAConfig *HPAConfiguration `json:"hpa_config,omitempty"`
+
 	// Métricas temporais (current, 3d, 7d, 10d, 14d ago)
 	Current  MetricSnapshot `json:"current"`
 	Day3Ago  MetricSnapshot `json:"day_3_ago"`
@@ -68,6 +71,26 @@ type ResourceRequests struct {
 	CPULimit      string `json:"cpu_limit"`
 	MemoryRequest string `json:"memory_request"`
 	MemoryLimit   string `json:"memory_limit"`
+}
+
+// HPAConfiguration contém configuração do HPA
+type HPAConfiguration struct {
+	Exists               bool    `json:"exists"`                 // Se HPA existe
+	MinReplicas          int32   `json:"min_replicas"`
+	MaxReplicas          int32   `json:"max_replicas"`
+	TargetCPUPercent     *int32  `json:"target_cpu_percent,omitempty"`     // threshold CPU (ex: 80)
+	TargetMemoryPercent  *int32  `json:"target_memory_percent,omitempty"`  // threshold Memory (ex: 80)
+	CurrentCPUPercent    float64 `json:"current_cpu_percent"`              // uso atual vs request
+	CurrentMemoryPercent float64 `json:"current_memory_percent"`           // uso atual vs request
+
+	// Análise de proximidade ao threshold
+	CPUProximityToThreshold    float64 `json:"cpu_proximity_to_threshold"`    // % até atingir threshold (0-100)
+	MemoryProximityToThreshold float64 `json:"memory_proximity_to_threshold"` // % até atingir threshold (0-100)
+
+	// Previsões
+	WillTriggerScaleInHours   *int    `json:"will_trigger_scale_in_hours,omitempty"`   // quantas horas até disparar
+	RecommendedCPUThreshold   *int32  `json:"recommended_cpu_threshold,omitempty"`     // threshold sugerido
+	RecommendedMemoryThreshold *int32 `json:"recommended_memory_threshold,omitempty"`  // threshold sugerido
 }
 
 // MetricSnapshot é uma foto das métricas em um momento
