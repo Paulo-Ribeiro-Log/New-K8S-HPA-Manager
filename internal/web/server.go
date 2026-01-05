@@ -183,7 +183,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 			OllamaModel:   ollamaModel,
 			ClaudeAPIKey:  claudeAPIKey,
 			ClaudeModel:   claudeModel,
-			Timeout:       120,
+			Timeout:       300, // 5 minutos para análises preditivas complexas
 		}
 
 		// 3. Criar KubeManager wrapper

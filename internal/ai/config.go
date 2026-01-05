@@ -46,7 +46,7 @@ type Config struct {
 	// CopilotAPIVersion versão da API Azure OpenAI (padrão: 2024-02-15-preview)
 	CopilotAPIVersion string
 
-	// Timeout timeout para requisições AI em segundos (padrão: 120)
+	// Timeout timeout para requisições AI em segundos (padrão: 300 - 5 minutos)
 	Timeout int
 }
 
@@ -161,7 +161,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Timeout <= 0 {
-		c.Timeout = 120
+		c.Timeout = 300 // 5 minutos para análises preditivas complexas
 	}
 
 	return nil

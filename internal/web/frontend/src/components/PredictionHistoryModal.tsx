@@ -135,6 +135,78 @@ export const PredictionHistoryModal = ({
   // Usar análise no modal principal
   const handleUseAnalysis = (record: PredictionRecord) => {
     if (onSelectRecord) {
+      // Reconstituir estrutura completa do raw_metrics se necessário
+      let rawMetrics = record.raw_metrics;
+      
+      // Se raw_metrics não tem a estrutura esperada, criar estrutura padrão
+      if (!rawMetrics?.current || !rawMetrics?.trends || !rawMetrics?.node_metrics) {
+        console.warn("raw_metrics com estrutura incompleta, criando estrutura padrão");
+        rawMetrics = {
+          current: {
+            cpu_usage_avg: 0,
+            cpu_usage_p95: 0,
+            memory_usage_avg: 0,
+            memory_usage_p95: 0,
+            cpu_requests: 0,
+            cpu_limits: 0,
+            memory_requests: 0,
+            memory_limits: 0,
+            replicas_desired: 0,
+            replicas_available: 0,
+            replicas_unavailable: 0,
+          },
+          day_3_ago: {
+            cpu_usage_avg: 0,
+            cpu_usage_p95: 0,
+            memory_usage_avg: 0,
+            memory_usage_p95: 0,
+          },
+          day_7_ago: {
+            cpu_usage_avg: 0,
+            cpu_usage_p95: 0,
+            memory_usage_avg: 0,
+            memory_usage_p95: 0,
+          },
+          day_10_ago: {
+            cpu_usage_avg: 0,
+            cpu_usage_p95: 0,
+            memory_usage_avg: 0,
+            memory_usage_p95: 0,
+          },
+          day_14_ago: {
+            cpu_usage_avg: 0,
+            cpu_usage_p95: 0,
+            memory_usage_avg: 0,
+            memory_usage_p95: 0,
+          },
+          trends: {
+            cpu_change_7d_percent: 0,
+            memory_change_7d_percent: 0,
+            cpu_change_14d_percent: 0,
+            memory_change_14d_percent: 0,
+            replicas_stability_score: 100,
+          },
+          node_metrics: {
+            total_capacity: {
+              cpu_total_cores: 0,
+              cpu_allocatable_cores: 0,
+              cpu_utilization_percent: 0,
+              memory_total_bytes: 0,
+              memory_allocatable_bytes: 0,
+              memory_utilization_percent: 0,
+            },
+            headroom: {
+              cpu_available_cores: 0,
+              memory_available_bytes: 0,
+              cpu_headroom_percent: 0,
+              memory_headroom_percent: 0,
+            },
+          },
+          competing_apps: [],
+          ...rawMetrics, // Merge com o que vier do banco
+        };
+      }
+
       onSelectRecord({
         request_id: record.id,
         cluster: record.cluster,
@@ -153,7 +225,7 @@ export const PredictionHistoryModal = ({
         executive_summary: record.executive_summary,
         predictions: record.predictions,
         recommendations: record.recommendations,
-        raw_metrics: record.raw_metrics,
+        raw_metrics: rawMetrics,
         analyzed_at: record.analyzed_at,
         duration_ms: record.duration_ms,
       });
@@ -412,29 +484,105 @@ export const PredictionHistoryModal = ({
                 </div>
 
                 {/* Predictions */}
-                {selectedRecord.predictions && selectedRecord.predictions.length > 0 && (
+                {selectedRecord.predictions && (
                   <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
                     <h3 className="font-semibold mb-2">Previsões</h3>
-                    <div className="space-y-2">
-                      {selectedRecord.predictions.map((pred: any, idx: number) => (
-                        <div key={idx} className="text-sm">
-                          <div className="font-medium">{pred.timeframe}</div>
-                          <div className="text-muted-foreground">{pred.description}</div>
+                    <div className="space-y-3">
+                      {/* Se predictions é um objeto com short_term, medium_term, long_term */}
+                      {!Array.isArray(selectedRecord.predictions) && typeof selectedRecord.predictions === 'object' && (
+                        <>
+                          {/* Short Term */}
+                          {Array.isArray((selectedRecord.predictions as any).short_term) && (selectedRecord.predictions as any).short_term.length > 0 && (
+                            <div>
+                              <div className="font-semibold text-xs text-muted-foreground mb-1">Curto Prazo (1-7 dias)</div>
+                              <div className="space-y-1">
+                                {(selectedRecord.predictions as any).short_term.map((pred: any, idx: number) => (
+                                  <div key={idx} className="text-sm pl-3 border-l-2 border-blue-500">
+                                    <div className="font-medium text-blue-400">{pred.timeframe} - {pred.event}</div>
+                                    <div className="text-muted-foreground">{pred.impact}</div>
+                                    {pred.probability && <div className="text-xs text-muted-foreground">Probabilidade: {(pred.probability * 100).toFixed(0)}%</div>}
+                                    {pred.severity && <div className="text-xs text-yellow-400">Severidade: {pred.severity}</div>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          
+                          {/* Medium Term */}
+                          {Array.isArray((selectedRecord.predictions as any).medium_term) && (selectedRecord.predictions as any).medium_term.length > 0 && (
+                            <div>
+                              <div className="font-semibold text-xs text-muted-foreground mb-1">Médio Prazo (1-4 semanas)</div>
+                              <div className="space-y-1">
+                                {(selectedRecord.predictions as any).medium_term.map((pred: any, idx: number) => (
+                                  <div key={idx} className="text-sm pl-3 border-l-2 border-yellow-500">
+                                    <div className="font-medium text-yellow-400">{pred.timeframe} - {pred.event}</div>
+                                    <div className="text-muted-foreground">{pred.impact}</div>
+                                    {pred.probability && <div className="text-xs text-muted-foreground">Probabilidade: {(pred.probability * 100).toFixed(0)}%</div>}
+                                    {pred.severity && <div className="text-xs text-yellow-400">Severidade: {pred.severity}</div>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          
+                          {/* Long Term */}
+                          {Array.isArray((selectedRecord.predictions as any).long_term) && (selectedRecord.predictions as any).long_term.length > 0 && (
+                            <div>
+                              <div className="font-semibold text-xs text-muted-foreground mb-1">Longo Prazo (1-3 meses)</div>
+                              <div className="space-y-1">
+                                {(selectedRecord.predictions as any).long_term.map((pred: any, idx: number) => (
+                                  <div key={idx} className="text-sm pl-3 border-l-2 border-orange-500">
+                                    <div className="font-medium text-orange-400">{pred.timeframe} - {pred.event}</div>
+                                    <div className="text-muted-foreground">{pred.impact}</div>
+                                    {pred.probability && <div className="text-xs text-muted-foreground">Probabilidade: {(pred.probability * 100).toFixed(0)}%</div>}
+                                    {pred.severity && <div className="text-xs text-orange-400">Severidade: {pred.severity}</div>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                      
+                      {/* Fallback: se predictions é um array simples */}
+                      {Array.isArray(selectedRecord.predictions) && selectedRecord.predictions.length > 0 && (
+                        <div className="space-y-2">
+                          {selectedRecord.predictions.map((pred: any, idx: number) => (
+                            <div key={idx} className="text-sm pl-3 border-l-2 border-blue-500">
+                              <div className="font-medium text-blue-400">{pred.timeframe} - {pred.event || pred.description}</div>
+                              <div className="text-muted-foreground">{pred.impact || pred.description}</div>
+                              {pred.probability && <div className="text-xs text-muted-foreground">Probabilidade: {(pred.probability * 100).toFixed(0)}%</div>}
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      )}
                     </div>
                   </div>
                 )}
 
                 {/* Recommendations */}
-                {selectedRecord.recommendations && selectedRecord.recommendations.length > 0 && (
+                {Array.isArray(selectedRecord.recommendations) && selectedRecord.recommendations.length > 0 && (
                   <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
                     <h3 className="font-semibold mb-2">Recomendações</h3>
                     <div className="space-y-2">
                       {selectedRecord.recommendations.map((rec: any, idx: number) => (
-                        <div key={idx} className="text-sm">
-                          <div className="font-medium">{rec.action}</div>
-                          <div className="text-muted-foreground">{rec.reason}</div>
+                        <div key={idx} className="text-sm border-l-2 border-green-500 pl-3 py-1">
+                          <div className="font-medium text-green-400">{rec.title}</div>
+                          <div className="text-muted-foreground mt-0.5">{rec.description}</div>
+                          {rec.priority && (
+                            <span className={`inline-block mt-1 px-2 py-0.5 rounded text-xs font-semibold ${
+                              rec.priority === 1 ? 'bg-red-500/20 text-red-400' :
+                              rec.priority === 2 ? 'bg-yellow-500/20 text-yellow-400' :
+                              'bg-blue-500/20 text-blue-400'
+                            }`}>
+                              Prioridade: {rec.priority}
+                            </span>
+                          )}
+                          {rec.expected_impact && (
+                            <div className="text-xs text-muted-foreground mt-1">
+                              Impacto: {rec.expected_impact}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>

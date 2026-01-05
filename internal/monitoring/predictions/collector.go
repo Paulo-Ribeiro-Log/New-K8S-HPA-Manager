@@ -14,6 +14,8 @@ import (
 
 	"github.com/prometheus/common/model"
 	"github.com/rs/zerolog/log"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // MetricsCollector coleta métricas do Prometheus e Kubernetes
@@ -56,6 +58,11 @@ func (c *MetricsCollector) CollectMetrics(ctx context.Context, req PredictionReq
 		return nil, fmt.Errorf("falha ao coletar informações do deployment K8s: %w", err)
 	}
 
+	// 1.5. Coletar configuração do HPA (se existir)
+	if err := c.collectHPAConfiguration(ctx, req, metrics); err != nil {
+		log.Warn().Err(err).Msg("Falha ao coletar configuração do HPA (deployment pode não ter HPA)")
+	}
+
 	// 2. Coletar métricas temporais (current, 7d ago, 30d ago)
 	if err := c.collectTemporalMetrics(ctx, req, metrics); err != nil {
 		return nil, fmt.Errorf("falha ao coletar métricas temporais: %w", err)
@@ -63,6 +70,9 @@ func (c *MetricsCollector) CollectMetrics(ctx context.Context, req PredictionReq
 
 	// 3. Calcular tendências
 	c.calculateTrends(metrics)
+
+	// 3.5. Analisar thresholds do HPA (se existir) - chamado DEPOIS de collectTemporalMetrics
+	c.analyzeHPAThresholds(metrics)
 
 	// 4. Coletar métricas de nodes
 	if err := c.collectNodeMetrics(ctx, req, metrics); err != nil {
@@ -307,16 +317,22 @@ func (c *MetricsCollector) collectNodeMetrics(ctx context.Context, req Predictio
 		log.Warn().Err(err).Msg("Failed to collect node distribution")
 	}
 
+	// ✅ Buscar total de nodes do cluster (para contexto geral)
+	totalNodesQuery := `count(kube_node_info)`
+	totalNodesResult, err := c.queryScalar(ctx, totalNodesQuery)
+	if err == nil && totalNodesResult > 0 {
+		nodeMetrics.TotalNodesInCluster = int(totalNodesResult)
+	}
+
 	// VM sizing info - extrair do node real onde os pods estão rodando
 	predominantType := "unknown"
 	cpuPerVM := 0
 	memPerVM := 0
 	maxPods := 110 // Padrão K8s
 
-	// Coletar min/max/current nodes do cluster
+	// Coletar min/max nodes do node pool
 	minNodes := 1
 	maxNodes := 10 // Padrão conservador
-	currentNodes := nodeMetrics.TotalNodesInCluster
 
 	// Tentar buscar do kube-state-metrics ou labels
 	// Azure AKS: kube_node_labels com agentpool label
@@ -358,6 +374,22 @@ func (c *MetricsCollector) collectNodeMetrics(ctx context.Context, req Predictio
 		predominantType = determineInstanceType(float64(cpuPerVM), float64(memPerVM))
 	}
 
+	// ✅ NodesUsed = nodes onde ESTA aplicação está rodando (não o total do cluster)
+	nodeMetrics.NodesUsed = len(nodeMetrics.NodeDistribution)
+
+	// Se NodeDistribution está vazio, tentar via K8s API como fallback
+	if nodeMetrics.NodesUsed == 0 {
+		log.Warn().
+			Str("deployment", req.Deployment).
+			Str("namespace", req.Namespace).
+			Msg("NodeDistribution is empty, trying K8s API fallback")
+
+		if err := c.collectNodeDistributionViaK8sAPI(ctx, req, &nodeMetrics); err != nil {
+			log.Error().Err(err).Msg("K8s API fallback also failed")
+		}
+		nodeMetrics.NodesUsed = len(nodeMetrics.NodeDistribution)
+	}
+
 	nodeMetrics.VMSizing = VMSizingInfo{
 		PredominantInstanceType: predominantType,
 		CPUPerVM:                cpuPerVM,
@@ -365,21 +397,260 @@ func (c *MetricsCollector) collectNodeMetrics(ctx context.Context, req Predictio
 		MaxPodsPerNode:          maxPods,
 		MinNodes:                minNodes,
 		MaxNodes:                maxNodes,
-		CurrentNodes:            currentNodes,
+		CurrentNodes:            nodeMetrics.NodesUsed, // ✅ USA NodesUsed, não TotalNodesInCluster
 	}
 
-	nodeMetrics.NodesUsed = len(nodeMetrics.NodeDistribution)
-	// Buscar total de nodes do cluster
-	totalNodesQuery := `count(kube_node_info)`
-	totalNodesResult, err := c.queryScalar(ctx, totalNodesQuery)
-	if err == nil && totalNodesResult > 0 {
-		nodeMetrics.TotalNodesInCluster = int(totalNodesResult)
-	} else {
-		nodeMetrics.TotalNodesInCluster = nodeMetrics.NodesUsed
-	}
+	println("\n========== 🔍 DEBUG [Final Values] ==========")
+	println("NodesUsed (where app runs):", nodeMetrics.NodesUsed)
+	println("TotalNodesInCluster:", nodeMetrics.TotalNodesInCluster)
+	println("CurrentNodes (VMSizing):", nodeMetrics.VMSizing.CurrentNodes)
+	println("deployment:", req.Deployment)
+	println("NodeDistribution:", nodeMetrics.NodeDistribution)
+	println("=================================================\n")
 
 	metrics.NodeMetrics = nodeMetrics
 	return nil
+}
+
+// collectHPAConfiguration busca e analisa configuração do HPA para o deployment
+func (c *MetricsCollector) collectHPAConfiguration(ctx context.Context, req PredictionRequest, metrics *DeploymentMetrics) error {
+	// Buscar HPA do deployment via Kubernetes API
+	clientset := c.kubeClient.GetClientset()
+	hpaList, err := clientset.AutoscalingV2().HorizontalPodAutoscalers(req.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("falha ao listar HPAs: %w", err)
+	}
+
+	// Procurar HPA que referencia este deployment
+	var targetHPA *autoscalingv2.HorizontalPodAutoscaler
+	for i := range hpaList.Items {
+		hpa := &hpaList.Items[i]
+		if hpa.Spec.ScaleTargetRef.Kind == "Deployment" && hpa.Spec.ScaleTargetRef.Name == req.Deployment {
+			targetHPA = hpa
+			break
+		}
+	}
+
+	// Se não encontrou HPA, marcar como não existente
+	if targetHPA == nil {
+		metrics.HPAConfig = &HPAConfiguration{
+			Exists: false,
+		}
+		log.Debug().
+			Str("deployment", req.Deployment).
+			Msg("Deployment não possui HPA configurado")
+		return nil
+	}
+
+	// HPA existe - extrair configuração
+	hpaConfig := &HPAConfiguration{
+		Exists:      true,
+		MinReplicas: *targetHPA.Spec.MinReplicas,
+		MaxReplicas: targetHPA.Spec.MaxReplicas,
+	}
+
+	// Extrair targets de CPU e Memory
+	for _, metric := range targetHPA.Spec.Metrics {
+		if metric.Type == autoscalingv2.ResourceMetricSourceType {
+			if metric.Resource.Name == "cpu" && metric.Resource.Target.AverageUtilization != nil {
+				hpaConfig.TargetCPUPercent = metric.Resource.Target.AverageUtilization
+			}
+			if metric.Resource.Name == "memory" && metric.Resource.Target.AverageUtilization != nil {
+				hpaConfig.TargetMemoryPercent = metric.Resource.Target.AverageUtilization
+			}
+		}
+	}
+
+	// Calcular uso atual vs request (em percentual)
+	// Nota: metrics.Current será populado depois, então vamos recalcular isso no método analyzeHPAThresholds()
+
+	metrics.HPAConfig = hpaConfig
+
+	log.Info().
+		Str("deployment", req.Deployment).
+		Int("min_replicas", int(hpaConfig.MinReplicas)).
+		Int("max_replicas", int(hpaConfig.MaxReplicas)).
+		Interface("target_cpu", hpaConfig.TargetCPUPercent).
+		Interface("target_memory", hpaConfig.TargetMemoryPercent).
+		Msg("Configuração do HPA coletada")
+
+	return nil
+}
+
+// analyzeHPAThresholds analisa proximidade aos thresholds do HPA e faz previsões
+// Este método deve ser chamado DEPOIS de collectTemporalMetrics (para ter metrics.Current)
+func (c *MetricsCollector) analyzeHPAThresholds(metrics *DeploymentMetrics) {
+	if metrics.HPAConfig == nil || !metrics.HPAConfig.Exists {
+		return
+	}
+
+	// Buscar CPU/Memory request do deployment para calcular percentuais
+	cpuRequest := c.parseResourceQuantity(metrics.Resources.CPURequest)    // em cores
+	memRequest := c.parseResourceQuantity(metrics.Resources.MemoryRequest) // em bytes
+
+	if cpuRequest == 0 || memRequest == 0 {
+		log.Warn().Msg("CPU/Memory request não disponíveis, usando fallback")
+		// Fallback: assumir uso vs capacity total
+		cpuRequest = metrics.Current.CPUUsageAvg
+		memRequest = metrics.Current.MemoryUsageAvg
+	}
+
+	// Calcular percentual de uso atual vs request
+	metrics.HPAConfig.CurrentCPUPercent = (metrics.Current.CPUUsageAvg / cpuRequest) * 100
+	metrics.HPAConfig.CurrentMemoryPercent = (metrics.Current.MemoryUsageAvg / (memRequest / (1024 * 1024 * 1024))) * 100
+
+	// Calcular proximidade ao threshold (quanto falta para atingir)
+	if metrics.HPAConfig.TargetCPUPercent != nil {
+		targetCPU := float64(*metrics.HPAConfig.TargetCPUPercent)
+		proximityCPU := ((targetCPU - metrics.HPAConfig.CurrentCPUPercent) / targetCPU) * 100
+		if proximityCPU < 0 {
+			proximityCPU = 0 // Já ultrapassou o threshold
+		}
+		metrics.HPAConfig.CPUProximityToThreshold = proximityCPU
+	}
+
+	if metrics.HPAConfig.TargetMemoryPercent != nil {
+		targetMem := float64(*metrics.HPAConfig.TargetMemoryPercent)
+		proximityMem := ((targetMem - metrics.HPAConfig.CurrentMemoryPercent) / targetMem) * 100
+		if proximityMem < 0 {
+			proximityMem = 0 // Já ultrapassou o threshold
+		}
+		metrics.HPAConfig.MemoryProximityToThreshold = proximityMem
+	}
+
+	// Prever quando vai atingir o threshold (baseado em tendência)
+	c.predictThresholdReach(metrics)
+
+	// Recomendar novo threshold baseado em uso histórico
+	c.recommendHPAThresholds(metrics)
+
+	log.Info().
+		Float64("current_cpu_percent", metrics.HPAConfig.CurrentCPUPercent).
+		Float64("current_memory_percent", metrics.HPAConfig.CurrentMemoryPercent).
+		Float64("cpu_proximity", metrics.HPAConfig.CPUProximityToThreshold).
+		Float64("memory_proximity", metrics.HPAConfig.MemoryProximityToThreshold).
+		Msg("Análise de thresholds do HPA concluída")
+}
+
+// predictThresholdReach prevê quando o threshold será atingido baseado em tendências
+func (c *MetricsCollector) predictThresholdReach(metrics *DeploymentMetrics) {
+	if metrics.HPAConfig.TargetCPUPercent == nil {
+		return
+	}
+
+	targetCPU := float64(*metrics.HPAConfig.TargetCPUPercent)
+	currentCPU := metrics.HPAConfig.CurrentCPUPercent
+
+	// Se já ultrapassou, marcar como 0 horas
+	if currentCPU >= targetCPU {
+		hours := 0
+		metrics.HPAConfig.WillTriggerScaleInHours = &hours
+		return
+	}
+
+	// Calcular taxa de crescimento (mudança % por dia)
+	growthRatePerDay := metrics.Trends.CPUChange7d / 7.0 // % por dia
+
+	if growthRatePerDay <= 0 {
+		// Tendência estável ou decrescente - não vai atingir
+		return
+	}
+
+	// Calcular quantos % faltam para atingir o threshold
+	percentToGo := targetCPU - currentCPU
+
+	// Calcular quantos dias até atingir (percentToGo / growthRatePerDay)
+	daysToReach := percentToGo / growthRatePerDay
+	hoursToReach := int(daysToReach * 24)
+
+	if hoursToReach > 0 && hoursToReach < 24*30 { // Só avisar se for dentro de 30 dias
+		metrics.HPAConfig.WillTriggerScaleInHours = &hoursToReach
+		log.Info().
+			Int("hours_to_reach_threshold", hoursToReach).
+			Float64("growth_rate_per_day", growthRatePerDay).
+			Msg("HPA threshold será atingido em breve")
+	}
+}
+
+// recommendHPAThresholds recomenda ajustes nos thresholds baseado em uso histórico
+func (c *MetricsCollector) recommendHPAThresholds(metrics *DeploymentMetrics) {
+	// Recomendar CPU threshold baseado em P95 histórico
+	if metrics.HPAConfig.TargetCPUPercent != nil {
+		// Se P95 está sempre abaixo do threshold, pode aumentar o threshold
+		p95CPU := metrics.Current.CPUUsageP95
+		cpuRequest := c.parseResourceQuantity(metrics.Resources.CPURequest)
+
+		if cpuRequest > 0 {
+			p95Percent := (p95CPU / cpuRequest) * 100
+
+			// Se P95 está 20% abaixo do threshold, recomendar threshold maior
+			currentThreshold := float64(*metrics.HPAConfig.TargetCPUPercent)
+			if p95Percent < currentThreshold*0.8 {
+				recommendedThreshold := int32(p95Percent * 1.2) // 20% acima do P95
+				metrics.HPAConfig.RecommendedCPUThreshold = &recommendedThreshold
+			}
+
+			// Se P95 está acima do threshold, recomendar threshold menor
+			if p95Percent > currentThreshold {
+				recommendedThreshold := int32(p95Percent * 0.9) // 10% abaixo do P95
+				metrics.HPAConfig.RecommendedCPUThreshold = &recommendedThreshold
+			}
+		}
+	}
+
+	// Lógica similar para Memory
+	if metrics.HPAConfig.TargetMemoryPercent != nil {
+		p95Mem := metrics.Current.MemoryUsageP95
+		memRequest := c.parseResourceQuantity(metrics.Resources.MemoryRequest)
+
+		if memRequest > 0 {
+			p95Percent := (p95Mem / (memRequest / (1024 * 1024 * 1024))) * 100
+
+			currentThreshold := float64(*metrics.HPAConfig.TargetMemoryPercent)
+			if p95Percent < currentThreshold*0.8 {
+				recommendedThreshold := int32(p95Percent * 1.2)
+				metrics.HPAConfig.RecommendedMemoryThreshold = &recommendedThreshold
+			}
+
+			if p95Percent > currentThreshold {
+				recommendedThreshold := int32(p95Percent * 0.9)
+				metrics.HPAConfig.RecommendedMemoryThreshold = &recommendedThreshold
+			}
+		}
+	}
+}
+
+// parseResourceQuantity converte string de recurso K8s para float64
+// Ex: "500m" -> 0.5 (cores), "1Gi" -> 1073741824 (bytes)
+func (c *MetricsCollector) parseResourceQuantity(qty string) float64 {
+	if qty == "" {
+		return 0
+	}
+
+	// CPU (millicores ou cores)
+	if strings.HasSuffix(qty, "m") {
+		val, _ := strconv.ParseFloat(strings.TrimSuffix(qty, "m"), 64)
+		return val / 1000.0 // Converter millicores para cores
+	}
+
+	// Memory (Ki, Mi, Gi, etc)
+	multipliers := map[string]float64{
+		"Ki": 1024,
+		"Mi": 1024 * 1024,
+		"Gi": 1024 * 1024 * 1024,
+		"Ti": 1024 * 1024 * 1024 * 1024,
+	}
+
+	for suffix, multiplier := range multipliers {
+		if strings.HasSuffix(qty, suffix) {
+			val, _ := strconv.ParseFloat(strings.TrimSuffix(qty, suffix), 64)
+			return val * multiplier
+		}
+	}
+
+	// Número puro (cores de CPU ou bytes de memória)
+	val, _ := strconv.ParseFloat(qty, 64)
+	return val
 }
 
 // collectCompetingApps coleta aplicações que competem por recursos
@@ -449,19 +720,63 @@ func (c *MetricsCollector) collectCompetingApps(ctx context.Context, req Predict
 
 // collectNodeDistribution coleta distribuição de pods e recursos por node
 func (c *MetricsCollector) collectNodeDistribution(ctx context.Context, req PredictionRequest, nodeMetrics *NodeMetrics) error {
-	// Query para listar nodes onde os pods do deployment estão
+	// Query para listar NODES DISTINTOS onde os pods do deployment estão
+	// Tentamos múltiplas fontes em ordem de preferência
+
+	// 1. Tentar kube_pod_info (mais confiável, vem do kube-state-metrics)
 	query := fmt.Sprintf(
-		`count(kube_pod_info{namespace="%s",pod=~"%s-.*"}) by (node)`,
+		`count(kube_pod_info{namespace="%s",pod=~"%s-.*",created_by_kind="ReplicaSet"}) by (node)`,
 		req.Namespace, req.Deployment,
 	)
 
+	log.Debug().
+		Str("namespace", req.Namespace).
+		Str("deployment", req.Deployment).
+		Str("query", query).
+		Msg("Querying node distribution (attempt 1: kube_pod_info)")
+
 	result, err := c.promClient.Query(ctx, query)
-	if err != nil {
-		return fmt.Errorf("failed to query node distribution: %w", err)
+
+	// Se falhou, tentar sem o filtro created_by_kind
+	if err != nil || (result != nil && len(result.(model.Vector)) == 0) {
+		log.Warn().Msg("kube_pod_info query failed or returned empty, trying without created_by_kind filter")
+		query = fmt.Sprintf(
+			`count(kube_pod_info{namespace="%s",pod=~"%s-.*"}) by (node)`,
+			req.Namespace, req.Deployment,
+		)
+		result, err = c.promClient.Query(ctx, query)
+	}
+
+	// Se ainda falhou, tentar com métricas de container (agrupando por node)
+	if err != nil || (result != nil && len(result.(model.Vector)) == 0) {
+		log.Warn().Msg("kube_pod_info not available, trying container metrics grouped by node")
+		query = fmt.Sprintf(
+			`count(rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"%s-.*",container!="POD",container!=""}[5m])) by (node)`,
+			req.Namespace, req.Deployment,
+		)
+		result, err = c.promClient.Query(ctx, query)
+	}
+
+	// Se todas queries Prometheus falharam, usar API Kubernetes diretamente
+	if err != nil || (result != nil && len(result.(model.Vector)) == 0) {
+		log.Warn().Msg("All Prometheus queries failed, falling back to Kubernetes API")
+		return c.collectNodeDistributionViaK8sAPI(ctx, req, nodeMetrics)
 	}
 
 	// Processar resultado
 	if vec, ok := result.(model.Vector); ok {
+		log.Info().
+			Int("nodes_found", len(vec)).
+			Str("deployment", req.Deployment).
+			Msg("Node distribution result")
+
+		if len(vec) == 0 {
+			log.Error().
+				Str("namespace", req.Namespace).
+				Str("deployment", req.Deployment).
+				Msg("CRITICAL: No nodes found for running deployment - metrics may be unavailable")
+		}
+
 		for _, sample := range vec {
 			nodeName := string(sample.Metric["node"])
 			podCount := int(sample.Value)
@@ -551,6 +866,12 @@ func (c *MetricsCollector) collectNodeDistribution(ctx context.Context, req Pred
 			}
 		}
 	}
+
+	// Log final do resultado
+	log.Info().
+		Int("nodes_used", len(nodeMetrics.NodeDistribution)).
+		Str("deployment", req.Deployment).
+		Msg("Node distribution collection completed")
 
 	return nil
 }
@@ -895,6 +1216,13 @@ func (c *MetricsCollector) calculateGrowthAnalysis(metrics *DeploymentMetrics) G
 		},
 	}
 
+	println("\n========== 🔍 DEBUG [Growth Analysis] ==========")
+	println("currentCapacity.Nodes:", currentCapacity.Nodes)
+	println("VMSizing.CurrentNodes:", metrics.NodeMetrics.VMSizing.CurrentNodes)
+	println("CPUCores:", currentCapacity.Resources.CPUCores)
+	println("MemoryGB:", currentCapacity.Resources.MemoryGB)
+	println("=================================================\n")
+
 	maxCapacity := CapacityInfo{
 		Nodes: metrics.NodeMetrics.VMSizing.MaxNodes,
 		Resources: ResourceUsage{
@@ -980,4 +1308,71 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// collectNodeDistributionViaK8sAPI usa a API do Kubernetes como fallback
+// quando Prometheus não está disponível ou não retorna dados
+func (c *MetricsCollector) collectNodeDistributionViaK8sAPI(ctx context.Context, req PredictionRequest, nodeMetrics *NodeMetrics) error {
+	log.Info().
+		Str("namespace", req.Namespace).
+		Str("deployment", req.Deployment).
+		Msg("Collecting node distribution via Kubernetes API")
+
+	// Buscar pods do deployment via clientset
+	pods, err := c.kubeClient.GetClientset().CoreV1().Pods(req.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=%s", req.Deployment),
+	})
+
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to list pods via K8s API")
+		return fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	// Agrupar pods por node
+	nodePodsCount := make(map[string]int)
+	for _, pod := range pods.Items {
+		if pod.Spec.NodeName != "" && (pod.Status.Phase == "Running" || pod.Status.Phase == "Pending") {
+			nodePodsCount[pod.Spec.NodeName]++
+		}
+	}
+
+	log.Info().
+		Int("nodes_found", len(nodePodsCount)).
+		Int("total_pods", len(pods.Items)).
+		Msg("Nodes found via K8s API")
+
+	if len(nodePodsCount) == 0 {
+		log.Error().Msg("No nodes found with running pods")
+		return fmt.Errorf("no nodes found for deployment %s in namespace %s", req.Deployment, req.Namespace)
+	}
+
+	// Popular NodeDistribution
+	nodeIndex := 1
+	for nodeName, podCount := range nodePodsCount {
+		sanitizedNodeName := fmt.Sprintf("node-%d", nodeIndex)
+
+		// Criar entrada simplificada (sem métricas detalhadas de Prometheus)
+		nodeMetrics.NodeDistribution[sanitizedNodeName] = NodeInfo{
+			NodeName:       sanitizedNodeName,
+			PodCount:       podCount,
+			CPUAvailable:   "N/A",
+			CPUCapacity:    "N/A",
+			CPUUsage:       0,
+			MemAvailable:   "N/A",
+			MemCapacity:    "N/A",
+			MemUsage:       0,
+			CanFitReplicas: 0,
+			InstanceType:   "unknown",
+		}
+
+		log.Debug().
+			Str("node", nodeName).
+			Str("sanitized", sanitizedNodeName).
+			Int("pod_count", podCount).
+			Msg("Node added to distribution")
+
+		nodeIndex++
+	}
+
+	return nil
 }

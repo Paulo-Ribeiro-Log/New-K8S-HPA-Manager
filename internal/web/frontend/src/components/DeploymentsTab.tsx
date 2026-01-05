@@ -763,7 +763,7 @@ export const DeploymentsTab = ({
     // Box com score
     const score = predictionResult.health_score?.overall || 0;
     const scoreColor = score >= 75 ? [34, 197, 94] : score >= 50 ? [234, 179, 8] : [239, 68, 68];
-    doc.setFillColor(...scoreColor);
+    doc.setFillColor(...(scoreColor as [number, number, number]));
     doc.roundedRect(14, yPosition, 40, 20, 3, 3, "F");
     doc.setFontSize(28);
     doc.setFont("helvetica", "bold");
@@ -821,7 +821,7 @@ export const DeploymentsTab = ({
       low: [34, 197, 94],
     };
     const riskColor = riskColors[riskLevel] || [100, 100, 100];
-    doc.setFillColor(...riskColor);
+    doc.setFillColor(...(riskColor as [number, number, number]));
     doc.roundedRect(14, yPosition, 30, 6, 2, 2, "F");
     doc.setFontSize(9);
     doc.setFont("helvetica", "bold");
@@ -1386,6 +1386,15 @@ export const DeploymentsTab = ({
                 Análise Preditiva
               </>
             )}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setHistoryModalOpen(true)}
+            disabled={!selectedDeployment}
+          >
+            <History className="w-4 h-4 mr-2" />
+            Histórico de Análises
           </Button>
           {isDeploymentProblematic(selectedDeployment) && (
             <AITriggerButton
@@ -2120,18 +2129,7 @@ export const DeploymentsTab = ({
                   {collapseButton}
                   <p className="text-base font-semibold text-primary">Visualização</p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setHistoryModalOpen(true)}
-                    className="gap-2"
-                  >
-                    <History className="h-4 w-4" />
-                    Histórico de Análises
-                  </Button>
-                  {rightTitleAction}
-                </div>
+                {rightTitleAction}
               </div>
               <div className="flex-1 overflow-auto min-h-0">
                 {renderManifestPanel()}
@@ -2210,7 +2208,10 @@ export const DeploymentsTab = ({
 
       {/* Modal de Análise Preditiva */}
       <Dialog open={predictionModalOpen} onOpenChange={setPredictionModalOpen}>
-        <DialogContent className="max-w-6xl h-[90vh] flex flex-col p-0">
+        <DialogContent 
+          className="max-w-6xl h-[90vh] flex flex-col p-0"
+          onInteractOutside={(e) => e.preventDefault()}
+        >
           <DialogHeader className="flex-shrink-0 px-6 pt-6 pb-4 border-b">
             <div className="flex items-center justify-between">
               <div>
@@ -2878,16 +2879,16 @@ export const DeploymentsTab = ({
                   )}
 
                   {/* Predictions */}
-                  {((predictionResult.predictions?.short_term?.length || 0) > 0 ||
-                    (predictionResult.predictions?.medium_term?.length || 0) > 0 ||
-                    (predictionResult.predictions?.long_term?.length || 0) > 0) && (
+                  {((Array.isArray(predictionResult.predictions?.short_term) && predictionResult.predictions.short_term.length > 0) ||
+                    (Array.isArray(predictionResult.predictions?.medium_term) && predictionResult.predictions.medium_term.length > 0) ||
+                    (Array.isArray(predictionResult.predictions?.long_term) && predictionResult.predictions.long_term.length > 0)) && (
                     <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
                       <h3 className="font-semibold text-lg mb-3">Previsões</h3>
 
-                      {(predictionResult.predictions?.short_term?.length || 0) > 0 && (
+                      {Array.isArray(predictionResult.predictions?.short_term) && predictionResult.predictions.short_term.length > 0 && (
                         <div className="mb-4">
                           <h4 className="font-semibold text-sm mb-2 text-orange-400">Curto Prazo (4h)</h4>
-                          {predictionResult.predictions.short_term?.map((pred: any, idx: number) => (
+                          {predictionResult.predictions.short_term.map((pred: any, idx: number) => (
                             <div key={idx} className="bg-background/50 rounded p-3 mb-2">
                               <div className="flex items-start justify-between mb-1">
                                 <span className="font-semibold text-sm">{pred.event}</span>
@@ -2908,12 +2909,12 @@ export const DeploymentsTab = ({
                   )}
 
                   {/* Recommendations */}
-                  {(predictionResult.recommendations?.length || 0) > 0 && (
+                  {Array.isArray(predictionResult.recommendations) && predictionResult.recommendations.length > 0 && (
                     <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
                       <h3 className="font-semibold text-lg mb-3">Recomendações</h3>
                       
                       {/* Alerta de Economia de Custos */}
-                      {predictionResult.recommendations?.some((rec: any) => 
+                      {predictionResult.recommendations.some((rec: any) => 
                         rec.category === 'cost-optimization' || rec.category === 'downsizing'
                       ) && (
                         <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 mb-4">
@@ -2932,7 +2933,7 @@ export const DeploymentsTab = ({
                         </div>
                       )}
 
-                      {predictionResult.recommendations?.map((rec: any, idx: number) => (
+                      {predictionResult.recommendations.map((rec: any, idx: number) => (
                         <div 
                           key={idx} 
                           className={`bg-background/50 rounded p-3 mb-3 border-l-4 ${
@@ -2978,7 +2979,10 @@ export const DeploymentsTab = ({
 
       {/* Modal de Exportação de Relatório */}
       <Dialog open={exportModalOpen} onOpenChange={setExportModalOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent 
+          className="max-w-md"
+          onInteractOutside={(e) => e.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Download className="h-5 w-5 text-blue-600" />
