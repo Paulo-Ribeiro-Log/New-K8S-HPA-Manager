@@ -1,11 +1,10 @@
 package handlers
 
 import (
-	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
-	"k8s-hpa-manager/internal/ai"
 	"k8s-hpa-manager/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -47,6 +46,7 @@ type TokensResponse struct {
 	HasClaude         bool   `json:"has_claude"`
 	ClaudeModel       string `json:"claude_model,omitempty"`
 	HasCopilot        bool   `json:"has_copilot"`
+	CopilotEndpoint   string `json:"copilot_endpoint,omitempty"`
 	CopilotDeployment string `json:"copilot_deployment,omitempty"`
 	OllamaModel       string `json:"ollama_model,omitempty"`
 	PreferredProvider string `json:"preferred_provider"`
@@ -76,14 +76,6 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 		return
 	}
 
-	// Validar que pelo menos um token foi fornecido
-	if req.GeminiAPIKey == "" && req.OpenAIAPIKey == "" && req.ClaudeAPIKey == "" && req.CopilotAPIKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "at least one API key must be provided",
-		})
-		return
-	}
-
 	// Validar preferred provider
 	if req.PreferredProvider == "" {
 		req.PreferredProvider = "ollama" // Padrão
@@ -97,7 +89,23 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 		return
 	}
 
-	// Validar tokens (testar se são válidos)
+	// Buscar tokens existentes para fazer merge (manter chaves existentes se novas não forem fornecidas)
+	existingTokens, err := h.tokensStore.GetTokens(userEmailStr)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to get existing tokens",
+		})
+		return
+	}
+
+	// Se não existir, criar novo
+	if existingTokens == nil {
+		existingTokens = &storage.UserTokens{
+			UserEmail: userEmailStr,
+		}
+	}
+
+	// Validar tokens (testar se são válidos) - apenas se novos tokens forem fornecidos
 	validationErrors := make(map[string]string)
 
 	if req.GeminiAPIKey != "" {
@@ -132,20 +140,70 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 		return
 	}
 
-	// Salvar tokens
+	// Fazer merge: manter valores existentes se novos não forem fornecidos
 	tokens := &storage.UserTokens{
 		UserEmail:         userEmailStr,
-		GeminiAPIKey:      req.GeminiAPIKey,
-		GeminiModel:       req.GeminiModel,
-		OpenAIAPIKey:      req.OpenAIAPIKey,
-		OpenAIModel:       req.OpenAIModel,
-		ClaudeAPIKey:      req.ClaudeAPIKey,
-		ClaudeModel:       req.ClaudeModel,
-		CopilotAPIKey:     req.CopilotAPIKey,
-		CopilotEndpoint:   req.CopilotEndpoint,
-		CopilotDeployment: req.CopilotDeployment,
-		OllamaModel:       req.OllamaModel,
 		PreferredProvider: req.PreferredProvider,
+	}
+
+	// Gemini
+	if req.GeminiAPIKey != "" {
+		tokens.GeminiAPIKey = req.GeminiAPIKey
+	} else {
+		tokens.GeminiAPIKey = existingTokens.GeminiAPIKey
+	}
+	if req.GeminiModel != "" {
+		tokens.GeminiModel = req.GeminiModel
+	} else {
+		tokens.GeminiModel = existingTokens.GeminiModel
+	}
+
+	// OpenAI
+	if req.OpenAIAPIKey != "" {
+		tokens.OpenAIAPIKey = req.OpenAIAPIKey
+	} else {
+		tokens.OpenAIAPIKey = existingTokens.OpenAIAPIKey
+	}
+	if req.OpenAIModel != "" {
+		tokens.OpenAIModel = req.OpenAIModel
+	} else {
+		tokens.OpenAIModel = existingTokens.OpenAIModel
+	}
+
+	// Claude
+	if req.ClaudeAPIKey != "" {
+		tokens.ClaudeAPIKey = req.ClaudeAPIKey
+	} else {
+		tokens.ClaudeAPIKey = existingTokens.ClaudeAPIKey
+	}
+	if req.ClaudeModel != "" {
+		tokens.ClaudeModel = req.ClaudeModel
+	} else {
+		tokens.ClaudeModel = existingTokens.ClaudeModel
+	}
+
+	// Copilot
+	if req.CopilotAPIKey != "" {
+		tokens.CopilotAPIKey = req.CopilotAPIKey
+	} else {
+		tokens.CopilotAPIKey = existingTokens.CopilotAPIKey
+	}
+	if req.CopilotEndpoint != "" {
+		tokens.CopilotEndpoint = req.CopilotEndpoint
+	} else {
+		tokens.CopilotEndpoint = existingTokens.CopilotEndpoint
+	}
+	if req.CopilotDeployment != "" {
+		tokens.CopilotDeployment = req.CopilotDeployment
+	} else {
+		tokens.CopilotDeployment = existingTokens.CopilotDeployment
+	}
+
+	// Ollama
+	if req.OllamaModel != "" {
+		tokens.OllamaModel = req.OllamaModel
+	} else {
+		tokens.OllamaModel = existingTokens.OllamaModel
 	}
 
 	if err := h.tokensStore.SaveTokens(userEmailStr, tokens); err != nil {
@@ -205,6 +263,7 @@ func (h *AITokensHandler) GetTokens(c *gin.Context) {
 		HasClaude:         tokens.ClaudeAPIKey != "",
 		ClaudeModel:       tokens.ClaudeModel,
 		HasCopilot:        tokens.CopilotAPIKey != "",
+		CopilotEndpoint:   tokens.CopilotEndpoint,
 		CopilotDeployment: tokens.CopilotDeployment,
 		OllamaModel:       tokens.OllamaModel,
 		PreferredProvider: tokens.PreferredProvider,
@@ -293,24 +352,22 @@ func validateGeminiToken(apiKey string) error {
 		return fmt.Errorf("API key is empty")
 	}
 
-	// Criar config temporário
-	config := &ai.Config{
-		Provider:     "gemini",
-		GeminiAPIKey: apiKey,
-		GeminiModel:  "gemini-2.0-flash-exp",
-		Timeout:      10,
+	// ⚠️ IMPORTANTE: NÃO fazer chamadas à API para validar!
+	// Cada chamada consome quota (mesmo IsAvailable)
+	// Validar apenas formato básico
+	
+	// Gemini API keys geralmente têm ~39 caracteres e formato "AIzaSy..."
+	if len(apiKey) < 20 {
+		return fmt.Errorf("API key is too short (minimum 20 characters)")
+	}
+	
+	if len(apiKey) > 100 {
+		return fmt.Errorf("API key is too long (maximum 100 characters)")
 	}
 
-	// Criar provider
-	provider, err := ai.NewProvider(config)
-	if err != nil {
-		return fmt.Errorf("failed to create provider: %w", err)
-	}
-
-	// Testar disponibilidade (não consome quota significativa)
-	ctx := context.Background()
-	if !provider.IsAvailable(ctx) {
-		return fmt.Errorf("API key is invalid or Gemini service is unavailable")
+	// Validação de formato básica (Gemini keys começam com "AIza")
+	if !strings.HasPrefix(apiKey, "AIza") {
+		return fmt.Errorf("Gemini API key deve começar com 'AIza'")
 	}
 
 	return nil
@@ -322,30 +379,17 @@ func validateClaudeToken(apiKey string) error {
 		return fmt.Errorf("API key is empty")
 	}
 
-	// Validar formato básico do token Claude
+	// ⚠️ IMPORTANTE: NÃO fazer chamadas à API para validar!
+	// Cada chamada pode consumir quota dependendo do plano
+	// Validar apenas formato básico
+	
 	// Claude API keys começam com "sk-ant-api03-"
 	if len(apiKey) < 20 {
 		return fmt.Errorf("API key is too short (minimum 20 characters)")
 	}
-
-	// Criar config temporário
-	config := &ai.Config{
-		Provider:     "claude",
-		ClaudeAPIKey: apiKey,
-		ClaudeModel:  "claude-3-5-sonnet-20241022",
-		Timeout:      10,
-	}
-
-	// Criar provider
-	provider, err := ai.NewProvider(config)
-	if err != nil {
-		return fmt.Errorf("failed to create provider: %w", err)
-	}
-
-	// Testar disponibilidade (faz requisição mínima para validar token)
-	ctx := context.Background()
-	if !provider.IsAvailable(ctx) {
-		return fmt.Errorf("API key is invalid or Claude service is unavailable")
+	
+	if !strings.HasPrefix(apiKey, "sk-ant-") {
+		return fmt.Errorf("Claude API key deve começar com 'sk-ant-'")
 	}
 
 	return nil
@@ -362,25 +406,13 @@ func validateOpenAIToken(apiKey string) error {
 	if len(apiKey) < 20 {
 		return fmt.Errorf("API key is too short (minimum 20 characters)")
 	}
-
-	// Criar config temporário
-	config := &ai.Config{
-		Provider:     "openai",
-		OpenAIAPIKey: apiKey,
-		OpenAIModel:  "gpt-4o-mini",
-		Timeout:      10,
-	}
-
-	// Criar provider
-	provider, err := ai.NewProvider(config)
-	if err != nil {
-		return fmt.Errorf("failed to create provider: %w", err)
-	}
-
-	// Testar disponibilidade (faz requisição mínima para validar token)
-	ctx := context.Background()
-	if !provider.IsAvailable(ctx) {
-		return fmt.Errorf("API key is invalid or OpenAI service is unavailable")
+	
+	// ⚠️ IMPORTANTE: NÃO fazer chamadas à API para validar!
+	// Cada chamada pode consumir quota dependendo do plano
+	// Validar apenas formato básico
+	
+	if !strings.HasPrefix(apiKey, "sk-") {
+		return fmt.Errorf("OpenAI API key deve começar com 'sk-'")
 	}
 
 	return nil
@@ -404,27 +436,19 @@ func validateCopilotToken(apiKey, endpoint, deployment string) error {
 	if len(apiKey) < 20 {
 		return fmt.Errorf("API key is too short (minimum 20 characters)")
 	}
-
-	// Criar config temporário
-	config := &ai.Config{
-		Provider:          "copilot",
-		CopilotAPIKey:     apiKey,
-		CopilotEndpoint:   endpoint,
-		CopilotDeployment: deployment,
-		CopilotAPIVersion: "2024-02-15-preview",
-		Timeout:           10,
+	
+	// ⚠️ IMPORTANTE: NÃO fazer chamadas à API para validar!
+	// Cada chamada pode consumir quota dependendo do plano
+	// Validar apenas formato básico
+	
+	// Validar formato do endpoint (deve ser URL HTTPS)
+	if !strings.HasPrefix(endpoint, "https://") {
+		return fmt.Errorf("Endpoint must be an HTTPS URL")
 	}
-
-	// Criar provider
-	provider, err := ai.NewProvider(config)
-	if err != nil {
-		return fmt.Errorf("failed to create provider: %w", err)
-	}
-
-	// Testar disponibilidade (faz requisição mínima para validar token)
-	ctx := context.Background()
-	if !provider.IsAvailable(ctx) {
-		return fmt.Errorf("API key is invalid or Copilot service is unavailable")
+	
+	// Validar que deployment não está vazio
+	if len(deployment) < 3 {
+		return fmt.Errorf("Deployment name is too short")
 	}
 
 	return nil

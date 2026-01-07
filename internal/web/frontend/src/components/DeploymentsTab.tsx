@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
@@ -29,9 +29,16 @@ import { PredictionHistoryModal } from "@/components/PredictionHistoryModal";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
 import "@/styles/diff2html-dark.css";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProtectedAction } from "@/components/rbac";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 
 interface DeploymentsTabProps {
@@ -81,6 +88,10 @@ export const DeploymentsTab = ({
   const [exportFormat, setExportFormat] = useState<"pdf" | "markdown" | "json">("markdown");
   const [isExporting, setIsExporting] = useState(false);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [rolloutConfirmOpen, setRolloutConfirmOpen] = useState(false);
+  const [isRestarting, setIsRestarting] = useState(false);
 
   // Debug: monitor modal state changes
   useEffect(() => {
@@ -430,12 +441,27 @@ export const DeploymentsTab = ({
     }
   };
 
+  // Handler customizado para controlar quando o modal de predição pode fechar
+  const handlePredictionModalChange = useCallback((open: boolean) => {
+    console.log("[PredictiveAnalysis] onOpenChange called with:", open);
+    console.log("[PredictiveAnalysis] Current states:", { predictionLoading, predictionResult });
+
+    // Só permitir fechar o modal se não estiver carregando
+    if (!open && predictionLoading) {
+      console.log("[PredictiveAnalysis] Prevented closing while loading");
+      return;
+    }
+
+    console.log("[PredictiveAnalysis] Setting predictionModalOpen to:", open);
+    setPredictionModalOpen(open);
+  }, [predictionLoading, predictionResult]);
+
   // Nova função para análise preditiva
   const handlePredictiveAnalysis = async () => {
     console.log("[PredictiveAnalysis] Button clicked");
     console.log("[PredictiveAnalysis] selectedDeployment:", selectedDeployment);
     console.log("[PredictiveAnalysis] Current predictionModalOpen:", predictionModalOpen);
-    
+
     if (!selectedDeployment) {
       console.error("[PredictiveAnalysis] No deployment selected!");
       return;
@@ -448,12 +474,15 @@ export const DeploymentsTab = ({
     });
 
     setPredictionLoading(true);
-    setPredictionModalOpen(true);
     setPredictionResult(null);
-    
-    console.log("[PredictiveAnalysis] Modal should be open now");
-    console.log("[PredictiveAnalysis] State after set:", { predictionModalOpen: true, predictionLoading: true });
 
+    // Usar setTimeout para garantir que o modal abre DEPOIS do estado ser atualizado
+    setTimeout(() => {
+      console.log("[PredictiveAnalysis] Opening modal via setTimeout");
+      setPredictionModalOpen(true);
+    }, 50);
+
+    console.log("[PredictiveAnalysis] State after set:", { predictionLoading: true });
     console.log("[PredictiveAnalysis] Sending request...");
 
     try {
@@ -462,9 +491,9 @@ export const DeploymentsTab = ({
         namespace: selectedDeployment.namespace,
         deployment: selectedDeployment.name,
       };
-      
+
       console.log("[PredictiveAnalysis] Request body:", requestBody);
-      
+
       const response = await fetch("/api/v1/predictions/analyze", {
         method: "POST",
         headers: {
@@ -489,7 +518,7 @@ export const DeploymentsTab = ({
       console.log("[PredictiveAnalysis] predictions:", result.predictions);
       console.log("[PredictiveAnalysis] recommendations:", result.recommendations);
       setPredictionResult(result);
-      
+
       toast.success("Análise preditiva concluída!", {
         description: `Health Score: ${result.health_score.overall}/100 (${result.health_score.category})`,
       });
@@ -501,6 +530,91 @@ export const DeploymentsTab = ({
       setPredictionResult({ error: err instanceof Error ? err.message : "Unknown error" });
     } finally {
       setPredictionLoading(false);
+    }
+  };
+
+  // Handler para deletar deployment
+  const handleDeleteDeployment = async () => {
+    if (!selectedDeployment) return;
+
+    setIsDeleting(true);
+
+    try {
+      const response = await fetch(
+        `/api/v1/deployments/${selectedDeployment.cluster}/${selectedDeployment.namespace}/${selectedDeployment.name}`,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || `HTTP ${response.status}`);
+      }
+
+      toast.success("Deployment deletado com sucesso!", {
+        description: `${selectedDeployment.namespace}/${selectedDeployment.name}`,
+      });
+
+      // Limpar seleção e recarregar lista
+      setSelectedDeployment(null);
+      setManifest(null);
+      setEditorValue("");
+      setOriginalYaml("");
+      setDeleteConfirmOpen(false);
+      await refetch();
+    } catch (err) {
+      console.error("[DeleteDeployment] Error:", err);
+      toast.error("Erro ao deletar deployment", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  // Handler para rollout restart deployment
+  const handleRolloutRestart = async () => {
+    if (!selectedDeployment) return;
+
+    setIsRestarting(true);
+
+    try {
+      const response = await fetch(
+        `/api/v1/deployments/${selectedDeployment.cluster}/${selectedDeployment.namespace}/${selectedDeployment.name}/restart`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || `HTTP ${response.status}`);
+      }
+
+      toast.success("Rollout restart iniciado com sucesso!", {
+        description: `${selectedDeployment.namespace}/${selectedDeployment.name}`,
+      });
+
+      setRolloutConfirmOpen(false);
+
+      // Recarregar manifest após alguns segundos para ver o restart
+      setTimeout(async () => {
+        await refreshManifest();
+      }, 2000);
+    } catch (err) {
+      console.error("[RolloutRestart] Error:", err);
+      toast.error("Erro ao reiniciar deployment", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setIsRestarting(false);
     }
   };
 
@@ -1417,6 +1531,39 @@ export const DeploymentsTab = ({
         <RefreshCcw className="w-4 h-4 mr-2" />
         Recarregar YAML
       </Button>
+      {selectedDeployment && (
+        <ProtectedAction>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={manifestLoading}
+              >
+                <MoreVertical className="w-4 h-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => setRolloutConfirmOpen(true)}
+                disabled={isRestarting}
+              >
+                <RotateCw className="w-4 h-4 mr-2" />
+                Rollout Restart
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => setDeleteConfirmOpen(true)}
+                disabled={isDeleting}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Deletar Deployment
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </ProtectedAction>
+      )}
     </div>
   );
 
@@ -2207,10 +2354,16 @@ export const DeploymentsTab = ({
       </Dialog>
 
       {/* Modal de Análise Preditiva */}
-      <Dialog open={predictionModalOpen} onOpenChange={setPredictionModalOpen}>
-        <DialogContent 
+      <Dialog open={predictionModalOpen} onOpenChange={handlePredictionModalChange}>
+        <DialogContent
           className="max-w-6xl h-[90vh] flex flex-col p-0"
           onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => {
+            if (predictionLoading) {
+              e.preventDefault();
+              console.log("[PredictiveAnalysis] Prevented ESC while loading");
+            }
+          }}
         >
           <DialogHeader className="flex-shrink-0 px-6 pt-6 pb-4 border-b">
             <div className="flex items-center justify-between">
@@ -3158,6 +3311,138 @@ export const DeploymentsTab = ({
           setHistoryModalOpen(false);
         }}
       />
+
+      {/* Modal de Confirmação - Delete Deployment */}
+      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <Trash2 className="w-5 h-5" />
+              Deletar Deployment
+            </DialogTitle>
+            <DialogDescription>
+              Você está prestes a deletar o deployment permanentemente. Esta ação não pode ser desfeita.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="bg-destructive/10 border border-destructive/20 rounded-md p-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Cluster:</span>
+                  <span className="text-sm text-muted-foreground">{selectedDeployment?.cluster}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Namespace:</span>
+                  <span className="text-sm text-muted-foreground">{selectedDeployment?.namespace}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Deployment:</span>
+                  <span className="text-sm font-semibold">{selectedDeployment?.name}</span>
+                </div>
+              </div>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              <strong>Atenção:</strong> Todos os pods associados serão terminados e o deployment será removido do cluster.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteConfirmOpen(false)}
+              disabled={isDeleting}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteDeployment}
+              disabled={isDeleting}
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Deletando...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Deletar Deployment
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Confirmação - Rollout Restart */}
+      <Dialog open={rolloutConfirmOpen} onOpenChange={setRolloutConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RotateCw className="w-5 h-5" />
+              Rollout Restart
+            </DialogTitle>
+            <DialogDescription>
+              Reiniciar o deployment forçará a recriação de todos os pods.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="bg-blue-500/10 border border-blue-500/20 rounded-md p-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Cluster:</span>
+                  <span className="text-sm text-muted-foreground">{selectedDeployment?.cluster}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Namespace:</span>
+                  <span className="text-sm text-muted-foreground">{selectedDeployment?.namespace}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Deployment:</span>
+                  <span className="text-sm font-semibold">{selectedDeployment?.name}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Réplicas:</span>
+                  <span className="text-sm text-muted-foreground">{selectedDeployment?.replicas}</span>
+                </div>
+              </div>
+            </div>
+            <div className="text-sm text-muted-foreground space-y-2">
+              <p><strong>O que vai acontecer:</strong></p>
+              <ul className="list-disc list-inside space-y-1 ml-2">
+                <li>Uma annotation de restart será adicionada ao deployment</li>
+                <li>Todos os pods serão recriados com a estratégia de rolling update</li>
+                <li>O downtime será mínimo (respeitando readiness probes)</li>
+              </ul>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRolloutConfirmOpen(false)}
+              disabled={isRestarting}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleRolloutRestart}
+              disabled={isRestarting}
+            >
+              {isRestarting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Reiniciando...
+                </>
+              ) : (
+                <>
+                  <RotateCw className="w-4 h-4 mr-2" />
+                  Reiniciar Deployment
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
     </>
   );

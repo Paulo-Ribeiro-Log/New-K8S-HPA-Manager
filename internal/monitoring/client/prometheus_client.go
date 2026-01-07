@@ -894,6 +894,45 @@ func (c *PrometheusClient) GetNamespaceMetrics(ctx context.Context) ([]Namespace
 	return metrics, nil
 }
 
+// QueryScalar executa uma query e retorna um único valor escalar (float64)
+// Útil para métricas agregadas como avg(), sum(), etc
+func (c *PrometheusClient) QueryScalar(ctx context.Context, query string) (float64, error) {
+	result, err := c.Query(ctx, query)
+	if err != nil {
+		return 0, err
+	}
+
+	// Verifica se há resultados
+	if len(result.Data.Result) == 0 {
+		return 0, fmt.Errorf("query returned no results")
+	}
+
+	// Pega o primeiro resultado (queries agregadas retornam 1 valor)
+	firstResult := result.Data.Result[0]
+	if len(firstResult.Value) < 2 {
+		return 0, fmt.Errorf("invalid value format")
+	}
+
+	// Valor está na posição [1] do array [timestamp, "value"]
+	valueStr, ok := firstResult.Value[1].(string)
+	if !ok {
+		return 0, fmt.Errorf("value is not a string: %T", firstResult.Value[1])
+	}
+
+	// Converter string para float64
+	value, err := strconv.ParseFloat(valueStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse value: %w", err)
+	}
+
+	log.Debug().
+		Str("query", query).
+		Float64("value", value).
+		Msg("Query scalar executada com sucesso")
+
+	return value, nil
+}
+
 // parseFloat helper para converter interface{} para float64
 func parseFloat(value string) float64 {
 	f, err := strconv.ParseFloat(value, 64)

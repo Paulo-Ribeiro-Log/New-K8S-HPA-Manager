@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 
 	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
@@ -38,6 +39,8 @@ type KubeConfigManager struct {
 	config         *api.Config
 	clients        map[string]kubernetes.Interface
 	clientMutex    sync.RWMutex // Protege acesso concorrente aos clients
+	metricsClients map[string]*metricsclientset.Clientset
+	metricsMutex   sync.RWMutex
 	historyTracker *history.HistoryTracker
 }
 
@@ -52,6 +55,7 @@ func NewKubeConfigManager(configPath string) (*KubeConfigManager, error) {
 		configPath:     configPath,
 		config:         config,
 		clients:        make(map[string]kubernetes.Interface),
+		metricsClients: make(map[string]*metricsclientset.Clientset),
 		historyTracker: nil, // Será configurado via SetHistoryTracker
 	}, nil
 }
@@ -169,6 +173,37 @@ func (k *KubeConfigManager) TestClusterConnection(ctx context.Context, clusterNa
 // GetClient retorna um cliente Kubernetes para o cluster especificado
 func (k *KubeConfigManager) GetClient(clusterName string) (kubernetes.Interface, error) {
 	return k.getClient(clusterName)
+}
+
+// GetMetricsClient retorna um client para a API de métricas do cluster
+func (k *KubeConfigManager) GetMetricsClient(clusterName string) (metricsclientset.Interface, error) {
+	k.metricsMutex.RLock()
+	if client, exists := k.metricsClients[clusterName]; exists {
+		k.metricsMutex.RUnlock()
+		return client, nil
+	}
+	k.metricsMutex.RUnlock()
+
+	restConfig, err := k.GetRestConfig(clusterName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get rest config for metrics of %s: %w", clusterName, err)
+	}
+
+	cfgCopy := rest.CopyConfig(restConfig)
+	cfgCopy.Timeout = 15 * time.Second
+
+	metricsClient, err := metricsclientset.NewForConfig(cfgCopy)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create metrics client for %s: %w", clusterName, err)
+	}
+
+	k.metricsMutex.Lock()
+	defer k.metricsMutex.Unlock()
+	if existing, exists := k.metricsClients[clusterName]; exists {
+		return existing, nil
+	}
+	k.metricsClients[clusterName] = metricsClient
+	return metricsClient, nil
 }
 
 // GetRestConfig retorna a configuração REST para o cluster especificado

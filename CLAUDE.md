@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **03 de janeiro de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **07 de janeiro de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -399,6 +399,13 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
       - Evita workarounds temporários (restart sem investigar causa)
   - **Documentação**: [PLANO_AI_DIAGNOSTICS.md](PLANO_AI_DIAGNOSTICS.md) | [PROGRESSO_AI_DIAGNOSTICS.md](PROGRESSO_AI_DIAGNOSTICS.md)
 ✅ **Análise Preditiva (v1.3.8+ - Produção desde 04/01/2026)** - Sistema completo de análise preditiva de deployments
+✅ **Health Checking Aprimorado (v1.3.9)** - Melhorias de precisão, métricas e resiliência
+  - Seletores de pods agora usam `LabelSelectorAsSelector`, respeitando `matchLabels` e `matchExpressions`
+  - Deployments sem `spec.replicas` deixam de causar panic (assume 1 réplica e registra aviso)
+  - Coleta de métricas via Metrics Server/Prometheus para preencher `CPUUsagePercent` e `MemoryUsagePercent`
+  - Reaproveitamento da listagem inicial de deployments, reduzindo chamadas redundantes à API Kubernetes
+  - Timeouts configuráveis propagados para listagem de deployments/pods, coleta de métricas e análise individual
+  - Eventos SSE sem emojis; modal de progresso exibe mensagens textuais "Crítico/Aviso" alinhadas ao novo guia de UI
   - **Status**: ✅ Backend 100% | ✅ Frontend 100% | ✅ IA Integration 100% | ✅ Exportação PDF/MD 100%
   - **Funcionalidades Principais**:
     - ✅ **Métricas Temporais**: Coleta de snapshots em 5 pontos (atual, D-3, D-7, D-10, D-14)
@@ -570,6 +577,77 @@ Tech: Go 1.24.0+ + React 18.3.1 + TypeScript 5.8.3
 Build: make build && make web-build
 Binary: ./build/new-k8s-hpa
 Servidor Web: ./build/new-k8s-hpa web (porta 8080)
+
+Recent Updates (v1.3.9 - 05/01/2026):
+- **Refatoração Crítica: Cálculo de Crescimento de Réplicas (Growth Analysis)**:
+  - **Problema**: Cálculo incorreto usando capacidade total do cluster ao invés de cálculo per-node
+    - Ignorava que aplicações concorrentes também escalam proporcionalmente com nodes
+    - Não considerava overhead de sistema (kubelet, kube-system) → estimativas irreais
+  - **Solução**: Refatoração completa da função `calculateGrowthAnalysis()` (`collector.go:1222-1473`)
+    - ✅ **Cálculo per-node**: CPU/Memory calculados por VM individual, não cluster-wide
+    - ✅ **Safety Margin 15%**: Reserva automática para kubelet e pods do sistema (`const safetyMargin = 0.85`)
+    - ✅ **Competing Apps Scaling**: Aplicações concorrentes escalam proporcionalmente ao número de nodes
+      - Cenário 1 (current nodes): usa valores atuais de competing apps
+      - Cenário 2 (max nodes): aplica `scaleFactor = maxNodes/currentNodes` para competing apps
+    - ✅ **Logging Detalhado**: 30+ linhas de log explicando cada passo do cálculo
+  - **Fórmula Corrigida**:
+    ```go
+    // ANTES (INCORRETO)
+    maxReplicas = totalClusterCPU / appCPUPerReplica
+
+    // DEPOIS (CORRETO)
+    usableCPUPerNode := cpuPerVM * 0.85 // 15% overhead
+    availableCPUPerNode := usableCPUPerNode - competingCPUPerNode
+    maxReplicasPerNode := availableCPUPerNode / appCPUPerReplica
+    maxReplicasTotal := maxReplicasPerNode * numberOfNodes
+    ```
+  - **Impacto**: Estimativas de capacidade agora são realistas e consideram limitações de infraestrutura
+  - Arquivo: `internal/monitoring/predictions/collector.go` (linhas 1222-1473)
+
+- **Menu de Operações em Deployments (3-dot menu)**:
+  - **Feature**: Menu dropdown com operações destrutivas protegidas por RBAC
+  - **Backend (Go)**:
+    - ✅ Endpoint `DELETE /deployments/:cluster/:namespace/:name` - Deletar deployment
+    - ✅ Endpoint `POST /deployments/:cluster/:namespace/:name/restart` - Rollout restart
+    - ✅ RBAC: Ambos endpoints protegidos com `rbacMiddleware.RequireSREGroup()`
+    - ✅ Handlers: `deployments.go:Delete()` (416-495), `RolloutRestart()` (497-536)
+    - ✅ Client methods: `client.go:DeleteDeployment()` (1732-1740), `RolloutRestartDeployment()` (1727-1730)
+  - **Frontend (React/TypeScript)**:
+    - ✅ Dropdown menu com ícone `MoreVertical` (3 pontos) no header do painel "Visualização"
+    - ✅ 2 opções: **Rollout Restart** (ícone RotateCw) + **Deletar Deployment** (ícone Trash2, cor vermelha)
+    - ✅ Modais de confirmação para ambas operações com detalhes do deployment
+    - ✅ Loading states: `isDeleting`, `isRestarting` com spinners e botões desabilitados
+    - ✅ Toast notifications: Sucesso/erro com descrição detalhada
+    - ✅ Auto-refresh: Lista de deployments atualizada após delete, manifest recarregado após restart
+    - ✅ Protected actions: Menu completo encapsulado em `<ProtectedAction requiredGroup="SRE">`
+  - **Segurança**: Operações destrutivas disponíveis apenas para usuários do grupo SRE do Azure AD
+  - Arquivos modificados:
+    - Backend: `deployments.go`, `client.go`, `server.go` (rotas 509-510)
+    - Frontend: `DeploymentsTab.tsx` (imports, state, handlers, modals em ~100 linhas adicionadas)
+
+- **Fix Crítico: Timestamps Incorretos na Análise Preditiva**:
+  - **Problema**: Previsões mostravam datas futuras irreais (ex: aplicação de 2024 com previsão para 2026)
+    - Root Cause: Timestamps eram calculados pela IA usando `time.Now()` ao invés do timestamp real das métricas
+    - Timestamps não eram validados nem calculados pelo backend, dependendo da IA
+  - **Solução**: Implementação de cálculo determinístico de timestamps no backend
+    - ✅ **Novo campo**: Adicionado `Timestamp *time.Time` ao struct `Prediction` (`models.go:277`)
+    - ✅ **Função de enriquecimento**: `enrichPredictionsWithTimestamps()` no analyzer (`analyzer.go:542-596`)
+      - Calcula timestamps baseados em `metrics.Current.Timestamp` (timestamp real das métricas)
+      - Suporta múltiplos formatos: "4h", "24h", "7d", "próximas 4 horas", "curto prazo", etc
+      - Parsing automático de formatos dinâmicos ("Xh", "Xd")
+    - ✅ **Integração**: Enriquecimento automático após análise da IA (`analyzer.go:96`)
+      - `a.enrichPredictionsWithTimestamps(&result.Predictions, metrics.Current.Timestamp)`
+      - Predictions agora têm timestamps precisos: `baseTimestamp + timeframe_offset`
+  - **Lógica Correta**:
+    ```go
+    // Short-term (4h): metrics.Current.Timestamp + 4 horas
+    // Medium-term (24h): metrics.Current.Timestamp + 24 horas
+    // Long-term (7d): metrics.Current.Timestamp + 7 dias
+    ```
+  - **Impacto**: Previsões agora exibem timestamps corretos relativos ao momento da coleta das métricas
+  - Arquivos modificados:
+    - `internal/monitoring/predictions/models.go` (linha 277)
+    - `internal/monitoring/predictions/analyzer.go` (linhas 96, 542-596)
 
 Recent Updates (v1.3.8 - 04/01/2026):
 - **Análise Preditiva - Sistema Completo em Produção**:

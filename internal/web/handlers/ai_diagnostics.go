@@ -2,17 +2,44 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	"k8s-hpa-manager/internal/ai"
+	"k8s-hpa-manager/internal/ai/reports"
+	"k8s-hpa-manager/internal/aierrors"
 	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/storage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 )
+
+// RecordGlobalAIError é um wrapper para aierrors.RecordGlobalAIError
+func RecordGlobalAIError(userEmail, provider, model string, err error) {
+	if err == nil {
+		aierrors.RecordGlobalAIError(userEmail, provider, model, nil)
+		return
+	}
+	
+	errMsg := err.Error()
+	// Truncar se muito longo
+	if len(errMsg) > 300 {
+		errMsg = errMsg[:300] + "..."
+	}
+	
+	aierrors.RecordGlobalAIError(userEmail, provider, model, err)
+}
+
+// GetGlobalAIError é um wrapper para aierrors.GetGlobalAIError
+func GetGlobalAIError(userEmail string) *aierrors.ErrorRecord {
+	if userEmail == "" {
+		userEmail = "default"
+	}
+	return aierrors.GetGlobalAIError(userEmail)
+}
 
 // AIDiagnosticsHandler handler para diagnósticos AI
 type AIDiagnosticsHandler struct {
@@ -68,12 +95,47 @@ func (h *AIDiagnosticsHandler) Analyze(c *gin.Context) {
 	// Buscar analyzer apropriado (preferências do usuário ou padrão)
 	analyzer := h.getAnalyzerForUser(userEmail)
 
+	// 🔒 SECURITY: Log qual provider será usado ANTES de executar
+	provider := analyzer.GetProvider()
+	if provider != nil {
+		providerName := provider.GetName()
+		modelName := provider.GetModel()
+
+		log.Warn().
+			Str("user_email", userEmail).
+			Str("provider", providerName).
+			Str("model", modelName).
+			Str("resource", fmt.Sprintf("%s/%s/%s", req.Cluster, req.Namespace, req.ResourceName)).
+			Msg("🔒 SECURITY: AI analysis will use the following provider")
+
+		// 🚨 WARNING CRÍTICO para providers pagos
+		if providerName == "claude" || providerName == "openai" {
+			log.Warn().
+				Str("provider", providerName).
+				Str("model", modelName).
+				Msg("⚠️ WARNING: Using PAID AI provider - charges may apply!")
+		}
+	}
+
 	// Executar análise (com timeout do Gin context)
 	result, err := analyzer.Analyze(c.Request.Context(), &req)
 	if err != nil {
 		log.Error().Err(err).Msg("AI analysis failed")
+		
+		// Registrar erro globalmente para exibir no painel
+		provider := analyzer.GetProvider()
+		if provider != nil {
+			RecordGlobalAIError(userEmail, provider.GetName(), provider.GetModel(), err)
+		}
+		
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "analysis failed: " + err.Error()})
 		return
+	}
+
+	// Limpar erro global pois análise foi bem-sucedida
+	provider = analyzer.GetProvider()
+	if provider != nil {
+		RecordGlobalAIError(userEmail, provider.GetName(), provider.GetModel(), nil)
 	}
 
 	log.Info().
@@ -107,21 +169,33 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 		Timeout:  h.defaultConfig.Timeout,
 	}
 
-	// Configurar provider específico com modelo selecionado
+	// 🔒 SECURITY: Garantir que APENAS o provider configurado seja usado
+	// NUNCA usar API keys de outros providers, mesmo se estiverem salvas no banco
+
 	switch tokens.PreferredProvider {
 	case "gemini":
 		if tokens.GeminiAPIKey != "" {
 			config.GeminiAPIKey = tokens.GeminiAPIKey
-			// Usar modelo selecionado ou padrão
 			if tokens.GeminiModel != "" {
 				config.GeminiModel = tokens.GeminiModel
 			} else {
 				config.GeminiModel = "gemini-2.0-flash-exp"
 			}
+
+			// 🚨 SECURITY: Log uso de Gemini (gratuito com quota)
+			log.Warn().
+				Str("user_email", userEmail).
+				Str("provider", "gemini").
+				Str("model", config.GeminiModel).
+				Msg("⚠️ Using Gemini API - quota-limited free tier")
 		} else {
-			// Sem API key, usar padrão
+			// Sem API key, usar analyzer padrão
+			log.Debug().
+				Str("user_email", userEmail).
+				Msg("Gemini selected but no API key - using default analyzer")
 			return h.analyzer
 		}
+
 	case "claude":
 		if tokens.ClaudeAPIKey != "" {
 			config.ClaudeAPIKey = tokens.ClaudeAPIKey
@@ -130,9 +204,20 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 			} else {
 				config.ClaudeModel = "claude-3-5-sonnet-20241022"
 			}
+
+			// 🚨 CRITICAL: Log uso de Claude (PAGO!)
+			log.Warn().
+				Str("user_email", userEmail).
+				Str("provider", "claude").
+				Str("model", config.ClaudeModel).
+				Msg("🚨 CRITICAL: Using Claude API - PAID SERVICE - charges will apply!")
 		} else {
+			log.Debug().
+				Str("user_email", userEmail).
+				Msg("Claude selected but no API key - using default analyzer")
 			return h.analyzer
 		}
+
 	case "openai":
 		if tokens.OpenAIAPIKey != "" {
 			config.OpenAIAPIKey = tokens.OpenAIAPIKey
@@ -141,7 +226,17 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 			} else {
 				config.OpenAIModel = "gpt-4o-mini"
 			}
+
+			// 🚨 CRITICAL: Log uso de OpenAI (PAGO!)
+			log.Warn().
+				Str("user_email", userEmail).
+				Str("provider", "openai").
+				Str("model", config.OpenAIModel).
+				Msg("🚨 CRITICAL: Using OpenAI API - PAID SERVICE - charges will apply!")
 		} else {
+			log.Debug().
+				Str("user_email", userEmail).
+				Msg("OpenAI selected but no API key - using default analyzer")
 			return h.analyzer
 		}
 	case "copilot":
@@ -154,19 +249,41 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 				config.CopilotDeployment = "gpt-4o"
 			}
 			config.CopilotAPIVersion = "2024-02-15-preview"
+
+			// 🚨 CRITICAL: Log uso de Copilot (PAGO - Azure OpenAI!)
+			log.Warn().
+				Str("user_email", userEmail).
+				Str("provider", "copilot").
+				Str("deployment", config.CopilotDeployment).
+				Msg("🚨 CRITICAL: Using Azure OpenAI (Copilot) - PAID SERVICE - charges will apply!")
 		} else {
+			log.Debug().
+				Str("user_email", userEmail).
+				Msg("Copilot selected but missing API key or endpoint - using default analyzer")
 			return h.analyzer
 		}
+
 	case "ollama":
-		// Ollama não precisa de API key
+		// Ollama é local e gratuito - sem preocupação com custos
 		config.OllamaBaseURL = h.defaultConfig.OllamaBaseURL
 		if tokens.OllamaModel != "" {
 			config.OllamaModel = tokens.OllamaModel
 		} else {
 			config.OllamaModel = "llama3.2:3b"
 		}
+
+		log.Info().
+			Str("user_email", userEmail).
+			Str("provider", "ollama").
+			Str("model", config.OllamaModel).
+			Msg("✅ Using Ollama (local) - FREE, no API costs")
+
 	default:
 		// Provider desconhecido, usar padrão
+		log.Warn().
+			Str("user_email", userEmail).
+			Str("provider", tokens.PreferredProvider).
+			Msg("Unknown provider - falling back to default analyzer")
 		return h.analyzer
 	}
 
@@ -323,9 +440,39 @@ func (h *AIDiagnosticsHandler) GetProviderStatus(c *gin.Context) {
 	// Buscar analyzer apropriado (preferências do usuário ou padrão do servidor)
 	analyzer := h.getAnalyzerForUser(userEmail)
 
-	// Obter status do provider (com chamada de teste para detectar erros)
+	// Obter status do provider
 	status := analyzer.GetProviderStatus(c.Request.Context())
+	
+	// Verificar se existe erro global recente para este usuário
+	if errorRecord := GetGlobalAIError(userEmail); errorRecord != nil {
+		// Se não tiver erro no analyzer, usar erro global
+		if status.Error == "" {
+			duration := time.Since(errorRecord.Timestamp)
+			status.Error = formatErrorWithTime(errorRecord.Error, duration)
+			status.Available = false
+		}
+	}
+	
+	// Adicionar estatísticas de chamadas
+	stats := aierrors.GetAICallStats(userEmail)
+	status.TotalCalls = stats.TotalCalls
+	status.SuccessfulCalls = stats.SuccessfulCalls
+	status.FailedCalls = stats.FailedCalls
+	
 	c.JSON(http.StatusOK, status)
+}
+
+// formatErrorWithTime formata erro com timestamp
+func formatErrorWithTime(errMsg string, duration time.Duration) string {
+	if duration < time.Minute {
+		return errMsg + " (agora)"
+	}
+	if duration < time.Hour {
+		minutes := int(duration.Minutes())
+		return errMsg + " (há " + strconv.Itoa(minutes) + "min)"
+	}
+	hours := int(duration.Hours())
+	return errMsg + " (há " + strconv.Itoa(hours) + "h)"
 }
 
 // GetStats obtém estatísticas do histórico
@@ -356,6 +503,175 @@ func (h *AIDiagnosticsHandler) DeleteAnalysis(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "analysis deleted"})
 }
 
+// GetReportPDF exporta análise como PDF
+// GET /api/v1/ai/report/:id/pdf
+func (h *AIDiagnosticsHandler) GetReportPDF(c *gin.Context) {
+	id := c.Param("id")
+
+	// Buscar análise no banco
+	record, err := h.historyStore.GetByID(id)
+	if err != nil {
+		log.Error().Err(err).Str("id", id).Msg("Failed to get analysis for PDF export")
+		c.JSON(http.StatusNotFound, gin.H{"error": "analysis not found"})
+		return
+	}
+
+	// Converter HistoryRecord para AnalysisResult
+	result, err := historyRecordToAnalysisResult(record)
+	if err != nil {
+		log.Error().Err(err).Str("id", id).Msg("Failed to convert record to AnalysisResult")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to convert analysis"})
+		return
+	}
+
+	// Gerar PDF
+	pdfBytes, err := reports.GeneratePDF(result)
+	if err != nil {
+		log.Error().Err(err).Str("id", id).Msg("Failed to generate PDF")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PDF"})
+		return
+	}
+
+	// Filename: diagnostico_{resourceName}_{date}.pdf
+	filename := fmt.Sprintf("diagnostico_%s_%s.pdf",
+		result.ResourceName,
+		result.AnalyzedAt.Format("2006-01-02_15-04-05"),
+	)
+
+	c.Header("Content-Type", "application/pdf")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	c.Data(http.StatusOK, "application/pdf", pdfBytes)
+
+	log.Info().Str("id", id).Str("filename", filename).Msg("PDF report generated")
+}
+
+// GetReportMarkdown exporta análise como Markdown
+// GET /api/v1/ai/report/:id/markdown
+func (h *AIDiagnosticsHandler) GetReportMarkdown(c *gin.Context) {
+	id := c.Param("id")
+
+	// Buscar análise no banco
+	record, err := h.historyStore.GetByID(id)
+	if err != nil {
+		log.Error().Err(err).Str("id", id).Msg("Failed to get analysis for Markdown export")
+		c.JSON(http.StatusNotFound, gin.H{"error": "analysis not found"})
+		return
+	}
+
+	// Converter HistoryRecord para AnalysisResult
+	result, err := historyRecordToAnalysisResult(record)
+	if err != nil {
+		log.Error().Err(err).Str("id", id).Msg("Failed to convert record to AnalysisResult")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to convert analysis"})
+		return
+	}
+
+	// Gerar Markdown
+	markdownBytes, err := reports.GenerateMarkdown(result)
+	if err != nil {
+		log.Error().Err(err).Str("id", id).Msg("Failed to generate Markdown")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate Markdown"})
+		return
+	}
+
+	// Filename: diagnostico_{resourceName}_{date}.md
+	filename := fmt.Sprintf("diagnostico_%s_%s.md",
+		result.ResourceName,
+		result.AnalyzedAt.Format("2006-01-02_15-04-05"),
+	)
+
+	c.Header("Content-Type", "text/markdown")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	c.Data(http.StatusOK, "text/markdown", markdownBytes)
+
+	log.Info().Str("id", id).Str("filename", filename).Msg("Markdown report generated")
+}
+
+// GetReportCSV exporta análise como CSV
+// GET /api/v1/ai/report/:id/csv
+func (h *AIDiagnosticsHandler) GetReportCSV(c *gin.Context) {
+	id := c.Param("id")
+
+	// Buscar análise no banco
+	record, err := h.historyStore.GetByID(id)
+	if err != nil {
+		log.Error().Err(err).Str("id", id).Msg("Failed to get analysis for CSV export")
+		c.JSON(http.StatusNotFound, gin.H{"error": "analysis not found"})
+		return
+	}
+
+	// Converter HistoryRecord para AnalysisResult
+	result, err := historyRecordToAnalysisResult(record)
+	if err != nil {
+		log.Error().Err(err).Str("id", id).Msg("Failed to convert record to AnalysisResult")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to convert analysis"})
+		return
+	}
+
+	// Gerar CSV
+	csvBytes, err := reports.GenerateCSV(result)
+	if err != nil {
+		log.Error().Err(err).Str("id", id).Msg("Failed to generate CSV")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate CSV"})
+		return
+	}
+
+	// Filename: diagnostico_{resourceName}_{date}.csv
+	filename := fmt.Sprintf("diagnostico_%s_%s.csv",
+		result.ResourceName,
+		result.AnalyzedAt.Format("2006-01-02_15-04-05"),
+	)
+
+	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	c.Data(http.StatusOK, "text/csv", csvBytes)
+
+	log.Info().Str("id", id).Str("filename", filename).Msg("CSV report generated")
+}
+
+// historyRecordToAnalysisResult converte HistoryRecord para AnalysisResult
+func historyRecordToAnalysisResult(record *storage.HistoryRecord) (*ai.AnalysisResult, error) {
+	result := &ai.AnalysisResult{
+		ID:           record.ID,
+		ResourceType: record.ResourceType,
+		Cluster:      record.Cluster,
+		Namespace:    record.Namespace,
+		ResourceName: record.ResourceName,
+		Provider:     record.Provider,
+		Model:        record.Model,
+		Analysis:     record.Analysis,
+		TokensUsed:   record.TokensUsed,
+		ResponseTime: record.ResponseTime,
+		AnalyzedAt:   record.AnalyzedAt,
+		Error:        "",
+	}
+
+	// Parse Suggestions (JSON array)
+	if record.Suggestions != "" {
+		var suggestions []ai.Suggestion
+		if err := json.Unmarshal([]byte(record.Suggestions), &suggestions); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse suggestions, using empty array")
+		} else {
+			result.Suggestions = suggestions
+		}
+	}
+
+	// Parse Prometheus Metrics (JSON object)
+	if record.PrometheusMetrics != "" {
+		var metrics ai.ResourceMetrics
+		if err := json.Unmarshal([]byte(record.PrometheusMetrics), &metrics); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse Prometheus metrics")
+		} else {
+			result.CurrentMetrics = &metrics
+		}
+	}
+
+	// TODO FASE 3.5: Parse campos estruturados (ExecutiveSummary, RootCauseAnalysis, etc)
+	// Isso será adicionado quando o banco for atualizado com os novos campos
+
+	return result, nil
+}
+
 // RegisterRoutes registra rotas do handler
 func (h *AIDiagnosticsHandler) RegisterRoutes(r *gin.RouterGroup, kubeManager *kubernetes.KubeManager) {
 	// Rotas públicas (GET)
@@ -363,6 +679,11 @@ func (h *AIDiagnosticsHandler) RegisterRoutes(r *gin.RouterGroup, kubeManager *k
 	r.GET("/ai/history", h.GetHistory)
 	r.GET("/ai/history/:id", h.GetAnalysisByID)
 	r.GET("/ai/stats", h.GetStats)
+
+	// Rotas de exportação (GET)
+	r.GET("/ai/report/:id/pdf", h.GetReportPDF)
+	r.GET("/ai/report/:id/markdown", h.GetReportMarkdown)
+	r.GET("/ai/report/:id/csv", h.GetReportCSV)
 
 	// Rotas protegidas (POST, DELETE) - apenas leitura por enquanto
 	r.POST("/ai/analyze", h.Analyze)

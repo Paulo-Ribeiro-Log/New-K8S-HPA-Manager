@@ -162,6 +162,25 @@ func (h *PredictionsHandler) AnalyzeDeployment(c *gin.Context) {
 	}
 	analyzer := predictions.NewAnalyzer(promClient, aiProvider, kubeClient)
 
+	// 🔒 SECURITY: Log qual provider será usado ANTES de executar
+	providerName := aiProvider.GetName()
+	modelName := aiProvider.GetModel()
+
+	log.Warn().
+		Str("user_email", userEmail).
+		Str("provider", providerName).
+		Str("model", modelName).
+		Str("deployment", fmt.Sprintf("%s/%s/%s", req.Cluster, req.Namespace, req.Deployment)).
+		Msg("🔒 SECURITY: Predictive analysis will use the following AI provider")
+
+	// 🚨 WARNING CRÍTICO para providers pagos
+	if providerName == "claude" || providerName == "openai" || providerName == "copilot" {
+		log.Warn().
+			Str("provider", providerName).
+			Str("model", modelName).
+			Msg("⚠️ WARNING: Using PAID AI provider for predictions - charges may apply!")
+	}
+
 	// 5. Executar análise
 	result, err := analyzer.Analyze(ctx, predictions.PredictionRequest{
 		Cluster:    req.Cluster,
@@ -172,6 +191,12 @@ func (h *PredictionsHandler) AnalyzeDeployment(c *gin.Context) {
 
 	if err != nil {
 		log.Error().Err(err).Msg("Prediction analysis failed")
+		
+		// Registrar erro globalmente para exibir no painel AI Provider Status
+		providerName := aiProvider.GetName()
+		modelName := aiProvider.GetModel()
+		RecordGlobalAIError(userEmail, providerName, modelName, err)
+		
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Analysis failed: " + err.Error(),
 		})
@@ -183,6 +208,9 @@ func (h *PredictionsHandler) AnalyzeDeployment(c *gin.Context) {
 		// Obter provider e model usado
 		providerName := aiProvider.GetName()
 		modelName := aiProvider.GetModel()
+		
+		// Limpar erro global pois análise foi bem-sucedida
+		RecordGlobalAIError(userEmail, providerName, modelName, nil)
 
 		err := h.predictionsStore.SavePrediction(
 			result.RequestID,
@@ -284,9 +312,19 @@ func (h *PredictionsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer {
 		// Se erro ou usuário não tem preferências, usar padrão
 		log.Debug().
 			Str("user_email", userEmail).
+			Err(err).
 			Msg("Using default analyzer (no user preferences found)")
 		return h.analyzer
 	}
+
+	log.Debug().
+		Str("user_email", userEmail).
+		Str("preferred_provider", tokens.PreferredProvider).
+		Bool("has_gemini_key", tokens.GeminiAPIKey != "").
+		Bool("has_claude_key", tokens.ClaudeAPIKey != "").
+		Bool("has_openai_key", tokens.OpenAIAPIKey != "").
+		Str("gemini_model", tokens.GeminiModel).
+		Msg("Retrieved user tokens from database")
 
 	// Criar config personalizado baseado nas preferências do usuário
 	config := &ai.Config{
@@ -349,6 +387,8 @@ func (h *PredictionsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer {
 			Err(err).
 			Str("user_email", userEmail).
 			Str("provider", tokens.PreferredProvider).
+			Str("gemini_api_key_length", fmt.Sprintf("%d", len(config.GeminiAPIKey))).
+			Str("gemini_model", config.GeminiModel).
 			Msg("Failed to create user-specific provider, using default")
 		return h.analyzer
 	}
@@ -657,7 +697,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 		report.WriteString("### Curto Prazo (proximas 4 horas)\n\n")
 		for i, pred := range result.Predictions.ShortTerm {
 			report.WriteString(fmt.Sprintf("%d. [%s] **%s** (Probabilidade: %.0f%%)\n", i+1, strings.ToUpper(pred.Severity), pred.Event, pred.Probability*100))
-			report.WriteString("   - **Timestamp**: " + pred.Timestamp.Format("02/01/2006 15:04") + "\n")
+			report.WriteString("   - **Timeframe**: " + pred.Timeframe + "\n")
 			report.WriteString("   - **Impacto**: " + pred.Impact + "\n")
 			if len(pred.Indicators) > 0 {
 				report.WriteString("   - **Indicadores**:\n")
@@ -673,7 +713,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 		report.WriteString("### Medio Prazo (proximas 24 horas)\n\n")
 		for i, pred := range result.Predictions.MediumTerm {
 			report.WriteString(fmt.Sprintf("%d. [%s] **%s** (Probabilidade: %.0f%%)\n", i+1, strings.ToUpper(pred.Severity), pred.Event, pred.Probability*100))
-			report.WriteString("   - **Timestamp**: " + pred.Timestamp.Format("02/01/2006 15:04") + "\n")
+			report.WriteString("   - **Timeframe**: " + pred.Timeframe + "\n")
 			report.WriteString("   - **Impacto**: " + pred.Impact + "\n\n")
 		}
 	}
@@ -682,7 +722,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 		report.WriteString("### Longo Prazo (proximos 7 dias)\n\n")
 		for i, pred := range result.Predictions.LongTerm {
 			report.WriteString(fmt.Sprintf("%d. [%s] **%s** (Probabilidade: %.0f%%)\n", i+1, strings.ToUpper(pred.Severity), pred.Event, pred.Probability*100))
-			report.WriteString("   - **Timestamp**: " + pred.Timestamp.Format("02/01/2006") + "\n")
+			report.WriteString("   - **Timeframe**: " + pred.Timeframe + "\n")
 			report.WriteString("   - **Impacto**: " + pred.Impact + "\n\n")
 		}
 	}

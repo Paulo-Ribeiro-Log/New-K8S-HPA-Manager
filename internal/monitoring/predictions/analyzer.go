@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s-hpa-manager/internal/ai"
+	"k8s-hpa-manager/internal/aierrors"
 	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/monitoring/prometheus"
 
@@ -68,8 +70,23 @@ func (a *Analyzer) Analyze(ctx context.Context, req PredictionRequest) (*Predict
 	aiAnalysis, err := a.performAIAnalysis(ctx, req, metrics)
 	if err != nil {
 		log.Warn().Err(err).Msg("AI analysis failed, using fallback")
+		
+		// Registrar erro globalmente para exibir no painel AI Provider Status
+		if a.aiProvider != nil {
+			aierrors.RecordGlobalAIError(req.UserEmail, a.aiProvider.GetName(), a.aiProvider.GetModel(), err)
+			// Incrementar contador de chamadas (falha)
+			aierrors.IncrementAICall(req.UserEmail, false)
+		}
+		
 		// Usar análise de fallback (baseada em regras)
 		aiAnalysis = a.fallbackAnalysis(metrics)
+	} else {
+		// Limpar erro em caso de sucesso
+		if a.aiProvider != nil {
+			aierrors.RecordGlobalAIError(req.UserEmail, a.aiProvider.GetName(), a.aiProvider.GetModel(), nil)
+			// Incrementar contador de chamadas (sucesso)
+			aierrors.IncrementAICall(req.UserEmail, true)
+		}
 	}
 
 	// 4. Extrair análises da resposta da IA
@@ -78,6 +95,9 @@ func (a *Analyzer) Analyze(ctx context.Context, req PredictionRequest) (*Predict
 	result.ImpactAnalysis = aiAnalysis.Impact
 	result.ExecutiveSummary = aiAnalysis.ExecutiveSummary
 	result.Recommendations = aiAnalysis.Recommendations
+
+	// 4.1. Enriquecer predictions com timestamps calculados (baseado no timestamp das métricas atuais)
+	a.enrichPredictionsWithTimestamps(&result.Predictions, metrics.Current.Timestamp)
 
 	// 5. Calcular duração
 	result.DurationMs = time.Since(startTime).Milliseconds()
@@ -185,11 +205,16 @@ func (a *Analyzer) performAIAnalysis(ctx context.Context, req PredictionRequest,
 func (a *Analyzer) buildAIPrompt(metrics *DeploymentMetrics) string {
 	metricsJSON, _ := json.MarshalIndent(metrics, "", "  ")
 
+	// ✅ NOVO: Construir contexto temporal para análise preditiva verdadeira
+	temporalContext := a.buildTemporalContext(metrics)
+
 	return fmt.Sprintf(`Você é um especialista em análise preditiva de deployments Kubernetes.
 
 Analise as métricas abaixo e forneça uma análise preditiva completa em formato JSON.
 
 **IMPORTANTE: Toda a análise DEVE ser escrita em PORTUGUÊS BRASILEIRO (PT-BR). Todos os textos, descrições, recomendações e mensagens devem estar em português.**
+
+%s
 
 # MÉTRICAS COLETADAS:
 %s
@@ -203,7 +228,6 @@ Retorne um JSON seguindo esta estrutura:
     "short_term": [
       {
         "timeframe": "4h",
-        "timestamp": "2026-01-02T18:00:00Z",
         "event": "Uso de CPU atingirá 85%% da capacidade",
         "probability": 0.75,
         "severity": "medium",
@@ -284,6 +308,7 @@ IMPORTANTE:
 - Use terminologia técnica em português (ex: "réplicas" ao invés de "replicas", "uso de CPU" ao invés de "CPU usage")
 - Retorne APENAS o JSON, sem texto adicional
 - Todos os campos de texto devem estar em português brasileiro
+- **NÃO INCLUA o campo "timestamp" nas previsões** - apenas "timeframe" (ex: "4h", "24h", "7d")
 
 ## ANÁLISE DE ECONOMIA DE CUSTOS (DOWNSIZING):
 
@@ -327,7 +352,7 @@ IMPORTANTE:
     "requires_downtime": false,
     "resource_efficiency_gain_percent": 75.0
   }
-}`, string(metricsJSON))
+}`, temporalContext, string(metricsJSON))
 }
 
 // fallbackAnalysis análise de fallback quando IA falha
@@ -397,6 +422,98 @@ func (a *Analyzer) fallbackAnalysis(metrics *DeploymentMetrics) *AIAnalysisResul
 	return result
 }
 
+// buildTemporalContext constrói contexto temporal para análise preditiva verdadeira
+func (a *Analyzer) buildTemporalContext(metrics *DeploymentMetrics) string {
+	var context strings.Builder
+
+	context.WriteString("# ⏰ CONTEXTO TEMPORAL - ANÁLISE PREDITIVA VERDADEIRA\n\n")
+
+	// Idade do deployment
+	if metrics.IsNew {
+		context.WriteString(fmt.Sprintf(`⚠️  **DEPLOYMENT NOVO - HISTÓRICO LIMITADO**
+- **Idade**: %d dias (criado em %s)
+- **Status**: Deployment recente - menos de 7 dias de histórico
+- **Impacto na Análise**:
+  - Padrões de uso ainda não estabelecidos
+  - Tendências podem não ser representativas
+  - Previsões devem ser feitas com CAUTELA e menor confiança
+  - Recomende monitoramento intensivo nas primeiras 2 semanas
+  - Evite previsões de longo prazo (>7d) - dados insuficientes
+
+`, metrics.AgeInDays, metrics.CreationTimestamp.Format("02/01/2006")))
+	} else if !metrics.HasSufficientHistory {
+		context.WriteString(fmt.Sprintf(`⚠️  **DEPLOYMENT RECENTE - HISTÓRICO PARCIAL**
+- **Idade**: %d dias (criado em %s)
+- **Status**: Entre 7-14 dias - histórico em formação
+- **Impacto na Análise**:
+  - Alguns padrões começam a aparecer
+  - Tendências devem ser validadas com cautela
+  - Previsões de médio prazo (24h) são confiáveis
+  - Previsões de longo prazo (7d) devem ser marcadas como "preliminares"
+
+`, metrics.AgeInDays, metrics.CreationTimestamp.Format("02/01/2006")))
+	} else {
+		context.WriteString(fmt.Sprintf(`✅ **DEPLOYMENT MADURO - HISTÓRICO CONFIÁVEL**
+- **Idade**: %d dias (criado em %s)
+- **Status**: Mais de 14 dias de histórico - padrões estabelecidos
+- **Impacto na Análise**:
+  - Tendências são representativas do comportamento real
+  - Previsões de curto, médio e longo prazo são confiáveis
+  - Dados históricos permitem análise preditiva profunda
+  - Sazonalidades podem ser identificadas
+
+`, metrics.AgeInDays, metrics.CreationTimestamp.Format("02/01/2006")))
+	}
+
+	// Predecessores
+	context.WriteString("## 🔄 Histórico de Deployments\n\n")
+	if strings.Contains(metrics.PredecessorInfo, "Nenhum predecessor") {
+		context.WriteString(fmt.Sprintf(`- **Predecessor**: %s
+- **Interpretação**: Este é o primeiro deployment deste tipo ou não há histórico anterior detectado
+- **Recomendação**: Compare com benchmarks da indústria ou deployments similares em outros namespaces
+
+`, metrics.PredecessorInfo))
+	} else {
+		context.WriteString(fmt.Sprintf(`- **Predecessor**: %s
+- **Interpretação**: Este deployment substitui uma versão anterior - possível migração/upgrade
+- **Recomendação**:
+  - Se houver degradação de performance vs predecessor, investigue regressões
+  - Se houver melhoria, documente otimizações aplicadas
+  - Considere que padrões de uso podem mudar após migração
+
+`, metrics.PredecessorInfo))
+	}
+
+	context.WriteString("\n---\n\n")
+	context.WriteString("**INSTRUÇÕES DE ANÁLISE BASEADAS NO CONTEXTO TEMPORAL:**\n\n")
+
+	if metrics.IsNew {
+		context.WriteString(`1. **Confiança das Previsões**: Marque todas as previsões como "baixa confiança" ou "preliminar"
+2. **Recomendações Priorizadas**:
+   - Prioridade 1: Configurar alertas de monitoramento intensivo
+   - Prioridade 2: Estabelecer baselines de performance
+   - Evite recomendações de rightsizing agressivo (aguardar 14 dias)
+3. **Timeframes Sugeridos**: Foque em previsões de curto prazo (4h) e médio prazo (24h) apenas
+4. **Mensagem de Aviso**: Inclua no executive summary que análise é preliminar devido à idade do deployment
+
+`)
+	} else if !metrics.HasSufficientHistory {
+		context.WriteString(`1. **Confiança das Previsões**: Marque previsões curto/médio prazo como "moderada", longo prazo como "preliminar"
+2. **Recomendações Priorizadas**: Validar tendências observadas com monitoramento contínuo
+3. **Timeframes Sugeridos**: Curto prazo (4h) e médio prazo (24h) são confiáveis, longo prazo (7d) com ressalvas
+
+`)
+	} else {
+		context.WriteString(`1. **Confiança das Previsões**: Alta confiança em todos os timeframes (4h, 24h, 7d)
+2. **Recomendações Priorizadas**: Análise preditiva completa - rightsizing, scaling, otimizações
+3. **Timeframes Sugeridos**: Utilize todos os timeframes disponíveis com confiança
+
+`)
+	}
+
+	return context.String()
+}
+
 // AIAnalysisResult estrutura da resposta da IA
 type AIAnalysisResult struct {
 	Predictions      PredictionsAnalysis `json:"predictions"`
@@ -427,4 +544,60 @@ func extractJSON(text string) string {
 	}
 
 	return text
+}
+
+// enrichPredictionsWithTimestamps adiciona timestamps às predictions baseado no timestamp atual das métricas
+func (a *Analyzer) enrichPredictionsWithTimestamps(predictions *PredictionsAnalysis, baseTimestamp time.Time) {
+	// Helper para calcular timestamp baseado em timeframe
+	calculateTimestamp := func(timeframe string) *time.Time {
+		var duration time.Duration
+
+		switch timeframe {
+		case "4h", "próximas 4 horas", "curto prazo":
+			duration = 4 * time.Hour
+		case "24h", "próximas 24 horas", "médio prazo", "medio prazo":
+			duration = 24 * time.Hour
+		case "7d", "próximos 7 dias", "longo prazo":
+			duration = 7 * 24 * time.Hour
+		default:
+			// Tentar parsear tempo do formato "Xh" ou "Xd"
+			if len(timeframe) > 0 {
+				last := timeframe[len(timeframe)-1]
+				if last == 'h' || last == 'H' {
+					// Formato "4h"
+					hours := 0
+					fmt.Sscanf(timeframe, "%dh", &hours)
+					duration = time.Duration(hours) * time.Hour
+				} else if last == 'd' || last == 'D' {
+					// Formato "7d"
+					days := 0
+					fmt.Sscanf(timeframe, "%dd", &days)
+					duration = time.Duration(days) * 24 * time.Hour
+				}
+			}
+		}
+
+		if duration == 0 {
+			// Fallback: retornar nil se não conseguiu parsear
+			return nil
+		}
+
+		timestamp := baseTimestamp.Add(duration)
+		return &timestamp
+	}
+
+	// Enriquecer short_term
+	for i := range predictions.ShortTerm {
+		predictions.ShortTerm[i].Timestamp = calculateTimestamp(predictions.ShortTerm[i].Timeframe)
+	}
+
+	// Enriquecer medium_term
+	for i := range predictions.MediumTerm {
+		predictions.MediumTerm[i].Timestamp = calculateTimestamp(predictions.MediumTerm[i].Timeframe)
+	}
+
+	// Enriquecer long_term
+	for i := range predictions.LongTerm {
+		predictions.LongTerm[i].Timestamp = calculateTimestamp(predictions.LongTerm[i].Timeframe)
+	}
 }

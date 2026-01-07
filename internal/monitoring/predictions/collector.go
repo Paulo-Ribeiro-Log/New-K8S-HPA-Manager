@@ -2,7 +2,12 @@ package predictions
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -99,46 +104,129 @@ func (c *MetricsCollector) CollectMetrics(ctx context.Context, req PredictionReq
 
 // collectK8sDeploymentInfo coleta informações do deployment via API do Kubernetes
 func (c *MetricsCollector) collectK8sDeploymentInfo(ctx context.Context, req PredictionRequest, metrics *DeploymentMetrics) error {
-	// Listar deployments do namespace específico (usando busca pelo nome)
-	deployments, err := c.kubeClient.ListDeployments(ctx, []string{req.Namespace}, req.Deployment, false)
+	// Buscar deployment completo via clientset para obter metadata completa
+	clientset := c.kubeClient.GetClientset()
+	deployment, err := clientset.AppsV1().Deployments(req.Namespace).Get(ctx, req.Deployment, metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("falha ao obter deployment da API K8s: %w", err)
+		return fmt.Errorf("falha ao obter deployment %s/%s: %w", req.Namespace, req.Deployment, err)
 	}
 
-	// Buscar o deployment específico na lista
-	var foundDeploy *models.DeploymentSummary
-	for i := range deployments {
-		if deployments[i].Name == req.Deployment && deployments[i].Namespace == req.Namespace {
-			foundDeploy = &deployments[i]
-			break
+	// Extrair informações básicas
+	metrics.DesiredReplicas = *deployment.Spec.Replicas
+	metrics.CurrentReplicas = deployment.Status.Replicas
+	metrics.AvailableReplicas = deployment.Status.AvailableReplicas
+	metrics.ReadyReplicas = deployment.Status.ReadyReplicas
+
+	// ✅ NOVO: Extrair contexto temporal para análise preditiva verdadeira
+	creationTime := deployment.CreationTimestamp.Time
+	now := time.Now()
+	ageInDays := int(now.Sub(creationTime).Hours() / 24)
+
+	metrics.CreationTimestamp = creationTime
+	metrics.AgeInDays = ageInDays
+	metrics.IsNew = ageInDays < 7                 // < 7 dias = deployment novo
+	metrics.HasSufficientHistory = ageInDays >= 14 // >= 14 dias = histórico confiável
+
+	// ✅ NOVO: Buscar predecessores (deployments similares que foram substituídos)
+	predecessorInfo := c.findPredecessorDeployments(ctx, req.Cluster, req.Namespace, req.Deployment, creationTime)
+	metrics.PredecessorInfo = predecessorInfo
+
+	// Resources (extrair do primeiro container)
+	if len(deployment.Spec.Template.Spec.Containers) > 0 {
+		container := deployment.Spec.Template.Spec.Containers[0]
+		metrics.Resources = ResourceRequests{
+			CPURequest:    container.Resources.Requests.Cpu().String(),
+			CPULimit:      container.Resources.Limits.Cpu().String(),
+			MemoryRequest: container.Resources.Requests.Memory().String(),
+			MemoryLimit:   container.Resources.Limits.Memory().String(),
 		}
 	}
 
-	if foundDeploy == nil {
-		return fmt.Errorf("deployment %s/%s não encontrado", req.Namespace, req.Deployment)
-	}
-
-	// Extrair informações do deployment
-	metrics.DesiredReplicas = int32(foundDeploy.Replicas)
-	metrics.CurrentReplicas = int32(foundDeploy.Replicas)
-	metrics.AvailableReplicas = int32(foundDeploy.AvailableReplicas)
-	metrics.ReadyReplicas = int32(foundDeploy.ReadyReplicas)
-
-	// Resources não estão disponíveis no DeploymentSummary, usar valores padrão
-	// Seria necessário buscar o deployment completo ou parsear o YAML
-	metrics.Resources = ResourceRequests{
-		CPURequest:    "",
-		CPULimit:      "",
-		MemoryRequest: "",
-		MemoryLimit:   "",
-	}
-	log.Debug().
-		Int("desired", int(metrics.DesiredReplicas)).
-		Int("current", int(metrics.CurrentReplicas)).
-		Int("available", int(metrics.AvailableReplicas)).
-		Msg("Informações do deployment K8s coletadas")
+	log.Info().
+		Str("deployment", req.Deployment).
+		Int("age_days", ageInDays).
+		Bool("is_new", metrics.IsNew).
+		Bool("has_history", metrics.HasSufficientHistory).
+		Str("predecessor", predecessorInfo).
+		Msg("Contexto temporal do deployment coletado")
 
 	return nil
+}
+
+// findPredecessorDeployments busca deployments predecessores que foram substituídos
+// Retorna string descritiva sobre o predecessor encontrado (se houver)
+func (c *MetricsCollector) findPredecessorDeployments(ctx context.Context, cluster, namespace, deploymentName string, currentCreationTime time.Time) string {
+	clientset := c.kubeClient.GetClientset()
+
+	// Buscar todos os deployments do namespace
+	allDeployments, err := clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		log.Debug().Err(err).Msg("Não foi possível buscar predecessores")
+		return "Nenhum predecessor identificado (erro ao buscar)"
+	}
+
+	// Estratégias para encontrar predecessores:
+	// 1. Mesmo nome base mas com sufixo diferente (ex: api-v1 → api-v2)
+	// 2. Labels indicando versão anterior (app.kubernetes.io/version)
+	// 3. Annotations de rollout history
+
+	var predecessors []string
+	baseName := extractBaseName(deploymentName)
+
+	for _, deploy := range allDeployments.Items {
+		// Ignorar o próprio deployment
+		if deploy.Name == deploymentName {
+			continue
+		}
+
+		// Verificar se é predecessor (criado antes E nome similar)
+		deployBase := extractBaseName(deploy.Name)
+		createdBefore := deploy.CreationTimestamp.Time.Before(currentCreationTime)
+
+		if createdBefore && deployBase == baseName {
+			ageDiff := int(currentCreationTime.Sub(deploy.CreationTimestamp.Time).Hours() / 24)
+			predecessors = append(predecessors, fmt.Sprintf("%s (criado %d dias antes)", deploy.Name, ageDiff))
+		}
+	}
+
+	if len(predecessors) == 0 {
+		return "Nenhum predecessor identificado - primeira implementação ou deployment único"
+	}
+
+	if len(predecessors) == 1 {
+		return fmt.Sprintf("Predecessor encontrado: %s", predecessors[0])
+	}
+
+	return fmt.Sprintf("Múltiplos predecessores: %s", strings.Join(predecessors, ", "))
+}
+
+// extractBaseName extrai nome base removendo sufixos de versão comuns
+// Ex: "api-v2" → "api", "backend-prod" → "backend", "service-1.2" → "service"
+func extractBaseName(name string) string {
+	// Padrões comuns de sufixo: -v1, -v2, -prod, -stg, -1.0, -2024
+	patterns := []string{
+		`-v\d+$`,        // -v1, -v2, etc
+		`-\d+\.\d+$`,    // -1.0, -2.3, etc
+		`-\d{4}$`,       // -2024, -2025, etc
+		`-prod$`,        // -prod
+		`-stg$`,         // -stg
+		`-staging$`,     // -staging
+		`-production$`,  // -production
+		`-canary$`,      // -canary
+		`-blue$`,        // -blue
+		`-green$`,       // -green
+	}
+
+	baseName := name
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		if re.MatchString(baseName) {
+			baseName = re.ReplaceAllString(baseName, "")
+			break // Remove apenas o primeiro match
+		}
+	}
+
+	return baseName
 }
 
 // collectTemporalMetrics coleta métricas em diferentes pontos temporais
@@ -341,37 +429,76 @@ func (c *MetricsCollector) collectNodeMetrics(ctx context.Context, req Predictio
 		maxNodes = minMaxInfo.Max
 	}
 
-	// Se temos nodes com pods do deployment, pegar dados do primeiro node real
+	// ✅ NOVA LÓGICA: Usar mapeamento de VM specs do Azure (fonte confiável)
 	if len(nodeMetrics.NodeDistribution) > 0 {
-		// Pegar o primeiro node com pods
+		// Pegar VM size do primeiro node com pods
 		for _, nodeInfo := range nodeMetrics.NodeDistribution {
 			if nodeInfo.InstanceType != "" && nodeInfo.InstanceType != "unknown" {
 				predominantType = nodeInfo.InstanceType
-				// Extrair CPU/Memory do node real
-				cpuCap := 0.0
-				fmt.Sscanf(nodeInfo.CPUCapacity, "%f", &cpuCap)
-				cpuPerVM = int(cpuCap)
-
-				memCap := 0.0
-				fmt.Sscanf(nodeInfo.MemCapacity, "%fGi", &memCap)
-				memPerVM = int(memCap)
 				break
 			}
 		}
 	}
 
-	// Fallback: calcular média se não conseguimos dados reais
-	if cpuPerVM == 0 || memPerVM == 0 {
-		estimatedNodes := len(nodeMetrics.NodeDistribution)
-		if estimatedNodes == 0 {
-			estimatedNodes = int(totalCPU / 4) // Fallback: assumir ~4 CPUs por node
-			if estimatedNodes == 0 {
-				estimatedNodes = 1
+	// Buscar specs reais da VM no mapeamento do Azure
+	if vmSpec := GetVMSpecs(predominantType); vmSpec != nil {
+		cpuPerVM = vmSpec.VCPUs
+		memPerVM = vmSpec.MemoryGiB
+		log.Info().
+			Str("vm_size", predominantType).
+			Int("vcpus", cpuPerVM).
+			Int("memory_gib", memPerVM).
+			Msg("VM specs obtidas do mapeamento Azure")
+	} else {
+		// Fallback 1: Buscar via Azure CLI (fonte oficial)
+		log.Warn().
+			Str("vm_size", predominantType).
+			Msg("VM specs não encontradas no mapeamento, consultando Azure CLI")
+
+		if specs := c.getVMSpecsFromAzureCLI(ctx, req.Cluster, predominantType); specs != nil {
+			cpuPerVM = specs.VCPUs
+			memPerVM = specs.MemoryGiB
+			log.Info().
+				Str("vm_size", predominantType).
+				Int("vcpus", cpuPerVM).
+				Int("memory_gib", memPerVM).
+				Msg("VM specs obtidas via Azure CLI")
+		} else {
+			// Fallback 2: Tentar extrair do Prometheus (menos confiável)
+			log.Warn().Msg("Azure CLI falhou, tentando extrair do Prometheus")
+
+			if len(nodeMetrics.NodeDistribution) > 0 {
+				for _, nodeInfo := range nodeMetrics.NodeDistribution {
+					if nodeInfo.InstanceType != "" {
+						cpuCap := 0.0
+						fmt.Sscanf(nodeInfo.CPUCapacity, "%f", &cpuCap)
+						cpuPerVM = int(cpuCap)
+
+						memCap := 0.0
+						fmt.Sscanf(nodeInfo.MemCapacity, "%fGi", &memCap)
+						memPerVM = int(memCap)
+
+						if cpuPerVM > 0 && memPerVM > 0 {
+							log.Info().
+								Int("vcpus", cpuPerVM).
+								Int("memory_gib", memPerVM).
+								Msg("VM specs extraídas do Prometheus")
+							break
+						}
+					}
+				}
+			}
+
+			// ❌ ÚLTIMO RECURSO: Retornar ERRO ao invés de valor mockado
+			if cpuPerVM == 0 || memPerVM == 0 {
+				log.Error().
+					Str("vm_size", predominantType).
+					Msg("ERRO CRÍTICO: Não foi possível determinar specs da VM. Análise preditiva será imprecisa!")
+				// Deixar zerado para sinalizar erro - NÃO mockar valores incorretos
+				cpuPerVM = 0
+				memPerVM = 0
 			}
 		}
-		cpuPerVM = int(totalCPU / float64(estimatedNodes))
-		memPerVM = int((totalMem / (1024 * 1024 * 1024)) / float64(estimatedNodes))
-		predominantType = determineInstanceType(float64(cpuPerVM), float64(memPerVM))
 	}
 
 	// ✅ NodesUsed = nodes onde ESTA aplicação está rodando (não o total do cluster)
@@ -995,6 +1122,10 @@ func (c *MetricsCollector) calculateCapacityForecast(metrics *DeploymentMetrics)
 		newNodesReason = "Sem capacidade disponível para escalar réplicas adicionais"
 	}
 
+	// ✅ IMPORTANTE: Usar timestamp dos dados REAIS, não data atual do sistema
+	// Isso garante que previsões sejam relativas ao momento da coleta de métricas
+	baseTimestamp := metrics.Current.Timestamp
+
 	forecast := CapacityForecast{
 		CanScale:              canScale,
 		MaxAdditionalReplicas: maxAdditionalReplicas,
@@ -1005,11 +1136,11 @@ func (c *MetricsCollector) calculateCapacityForecast(metrics *DeploymentMetrics)
 			TotalCapacityPerNode: replicasPerNode,
 		},
 		ScalingTimeline: ScalingTimeline{
-			Reach80PercentDate:    time.Now().Add(time.Duration(daysUntil80) * 24 * time.Hour),
-			Reach100PercentDate:   time.Now().Add(time.Duration(daysUntil100) * 24 * time.Hour),
+			Reach80PercentDate:    baseTimestamp.Add(time.Duration(daysUntil80) * 24 * time.Hour),
+			Reach100PercentDate:   baseTimestamp.Add(time.Duration(daysUntil100) * 24 * time.Hour),
 			DaysUntil80Percent:    daysUntil80,
 			DaysUntil100Percent:   daysUntil100,
-			RecommendedActionDate: time.Now().Add(time.Duration(daysUntil80-1) * 24 * time.Hour),
+			RecommendedActionDate: baseTimestamp.Add(time.Duration(daysUntil80-1) * 24 * time.Hour),
 		},
 		NewNodesNeeded: newNodesNeeded,
 		NewNodesReason: newNodesReason,
@@ -1177,6 +1308,17 @@ func (c *MetricsCollector) getNodePoolMinMax(ctx context.Context) *NodePoolMinMa
 
 // calculateGrowthAnalysis calcula análise detalhada de capacidade para crescimento
 func (c *MetricsCollector) calculateGrowthAnalysis(metrics *DeploymentMetrics) GrowthCapacityAnalysis {
+	// ========================================
+	// CÁLCULO POR NODE (REFATORADO - 05/01/2026)
+	// ========================================
+	// Lógica correta:
+	// 1. Calcular capacidade de 1 node (cpuPerVM, memPerVM)
+	// 2. Aplicar margem de segurança de 15% (0.85 utilizável)
+	// 3. Calcular uso per-replica (aplicação alvo + concorrentes)
+	// 4. IMPORTANTE: Aplicações concorrentes escalam proporcionalmente ao número de nodes
+	// 5. Capacidade por node = (nodeCapacity * 0.85) - competingApps
+	// 6. Max réplicas = (capacidade por node / appPerReplica) * numberOfNodes
+
 	// 1. Aplicação em análise
 	targetApp := ApplicationCapacity{
 		Name:      metrics.Deployment,
@@ -1207,78 +1349,200 @@ func (c *MetricsCollector) calculateGrowthAnalysis(metrics *DeploymentMetrics) G
 		totalCompetingMem += comp.MemoryUsage
 	}
 
-	// 3. Capacidade atual e máxima
-	currentCapacity := CapacityInfo{
-		Nodes: metrics.NodeMetrics.VMSizing.CurrentNodes,
-		Resources: ResourceUsage{
-			CPUCores: metrics.NodeMetrics.TotalCapacity.CPUTotal,
-			MemoryGB: metrics.NodeMetrics.TotalCapacity.MemTotal,
-		},
+	// 3. Constantes
+	const safetyMargin = 0.85 // 15% reservado para kubelet, kube-system, etc
+
+	// 4. Specs de VM e nodes
+	cpuPerVM := float64(metrics.NodeMetrics.VMSizing.CPUPerVM)
+	memPerVM := float64(metrics.NodeMetrics.VMSizing.MemoryPerVM)
+	currentNodes := metrics.NodeMetrics.VMSizing.CurrentNodes
+	maxNodes := metrics.NodeMetrics.VMSizing.MaxNodes
+
+	// Validação: Se não temos specs de VM, retornar análise vazia
+	if cpuPerVM == 0 || memPerVM == 0 {
+		log.Warn().
+			Str("deployment", metrics.Deployment).
+			Msg("VM specs não disponíveis - análise de crescimento será incompleta")
+
+		return GrowthCapacityAnalysis{
+			TargetApp:     targetApp,
+			CompetingApps: competingApps,
+			CurrentCapacity: CapacityInfo{
+				Nodes:     currentNodes,
+				Resources: ResourceUsage{CPUCores: 0, MemoryGB: 0},
+			},
+			MaxCapacity: CapacityInfo{
+				Nodes:     maxNodes,
+				Resources: ResourceUsage{CPUCores: 0, MemoryGB: 0},
+			},
+			GrowthRecommendation: "ERRO: Não foi possível determinar especificações da VM. Análise de crescimento indisponível.",
+			BottleneckResource:   "unknown",
+		}
 	}
 
-	println("\n========== 🔍 DEBUG [Growth Analysis] ==========")
-	println("currentCapacity.Nodes:", currentCapacity.Nodes)
-	println("VMSizing.CurrentNodes:", metrics.NodeMetrics.VMSizing.CurrentNodes)
-	println("CPUCores:", currentCapacity.Resources.CPUCores)
-	println("MemoryGB:", currentCapacity.Resources.MemoryGB)
-	println("=================================================\n")
-
-	maxCapacity := CapacityInfo{
-		Nodes: metrics.NodeMetrics.VMSizing.MaxNodes,
-		Resources: ResourceUsage{
-			CPUCores: float64(metrics.NodeMetrics.VMSizing.MaxNodes * metrics.NodeMetrics.VMSizing.CPUPerVM),
-			MemoryGB: float64(metrics.NodeMetrics.VMSizing.MaxNodes * metrics.NodeMetrics.VMSizing.MemoryPerVM),
-		},
+	// 5. Uso per-replica da aplicação alvo
+	cpuPerReplica := 0.0
+	memPerReplica := 0.0
+	if targetApp.Replicas > 0 {
+		cpuPerReplica = targetApp.Usage.CPUCores / float64(targetApp.Replicas)
+		memPerReplica = targetApp.Usage.MemoryGB / float64(targetApp.Replicas)
+	} else {
+		// Fallback conservador: usar requests ou defaults
+		cpuPerReplica = 0.5 // 500m
+		memPerReplica = 0.5 // 512Mi
+		log.Warn().
+			Str("deployment", metrics.Deployment).
+			Msg("Deployment sem réplicas - usando valores padrão conservadores")
 	}
 
-	// 4. Capacidade disponível para crescimento
-	availableCPU := currentCapacity.Resources.CPUCores - metrics.NodeMetrics.TotalCapacity.CPUAllocated
-	availableMem := currentCapacity.Resources.MemoryGB - metrics.NodeMetrics.TotalCapacity.MemAllocated
-
-	availableForGrowth := ResourceUsage{
-		CPUCores: availableCPU,
-		MemoryGB: availableMem,
+	// 6. Uso per-replica das aplicações concorrentes (POR NODE)
+	competingCPUPerNode := 0.0
+	competingMemPerNode := 0.0
+	if currentNodes > 0 {
+		// Aplicações concorrentes distribuídas pelos nodes atuais
+		competingCPUPerNode = totalCompetingCPU / float64(currentNodes)
+		competingMemPerNode = totalCompetingMem / float64(currentNodes)
 	}
 
-	// 5. Calcular máximo de réplicas
-	cpuPerReplica := targetApp.Usage.CPUCores / float64(targetApp.Replicas)
-	memPerReplica := targetApp.Usage.MemoryGB / float64(targetApp.Replicas)
-	if targetApp.Replicas == 0 {
-		cpuPerReplica = 0.5 // Padrão conservador
-		memPerReplica = 0.5
+	log.Debug().
+		Float64("cpu_per_vm", cpuPerVM).
+		Float64("mem_per_vm", memPerVM).
+		Float64("cpu_per_replica", cpuPerReplica).
+		Float64("mem_per_replica", memPerReplica).
+		Float64("competing_cpu_per_node", competingCPUPerNode).
+		Float64("competing_mem_per_node", competingMemPerNode).
+		Msg("Growth analysis - per-node calculations")
+
+	// ========================================
+	// CENÁRIO 1: NODES ATUAIS
+	// ========================================
+	// Capacidade utilizável por node (com margem de segurança)
+	usableCPUPerNode := cpuPerVM * safetyMargin
+	usableMemPerNode := memPerVM * safetyMargin
+
+	// Capacidade disponível por node (descontando concorrentes)
+	availableCPUPerNode := usableCPUPerNode - competingCPUPerNode
+	availableMemPerNode := usableMemPerNode - competingMemPerNode
+
+	// Max réplicas por node
+	maxReplicasPerNodeByCPU := int(availableCPUPerNode / cpuPerReplica)
+	maxReplicasPerNodeByMem := int(availableMemPerNode / memPerReplica)
+	maxReplicasPerNode := minInt(maxReplicasPerNodeByCPU, maxReplicasPerNodeByMem)
+
+	// Total de réplicas com nodes atuais
+	maxReplicasCurrentNodes := maxReplicasPerNode * currentNodes
+	if maxReplicasCurrentNodes < 0 {
+		maxReplicasCurrentNodes = 0 // Não pode ser negativo
 	}
 
-	maxReplicasByCPU := int(availableCPU / cpuPerReplica)
-	maxReplicasByMem := int(availableMem / memPerReplica)
-	maxReplicasCurrentNodes := targetApp.Replicas + minInt(maxReplicasByCPU, maxReplicasByMem)
+	// ========================================
+	// CENÁRIO 2: NODES MÁXIMOS
+	// ========================================
+	// IMPORTANTE: Aplicações concorrentes também escalam proporcionalmente!
+	// Se tenho 3 réplicas de competing app em 1 node, terei ~30 em 10 nodes
+	competingCPUPerNodeAtMax := 0.0
+	competingMemPerNodeAtMax := 0.0
+	if maxNodes > 0 && currentNodes > 0 {
+		// Proporção de crescimento: maxNodes / currentNodes
+		// Exemplo: 10 maxNodes / 1 currentNode = 10x mais réplicas de competing apps
+		scaleFactor := float64(maxNodes) / float64(currentNodes)
+		competingCPUPerNodeAtMax = competingCPUPerNode * scaleFactor / float64(maxNodes)
+		competingMemPerNodeAtMax = competingMemPerNode * scaleFactor / float64(maxNodes)
+	}
 
-	// Máximo com max nodes
-	maxCPU := maxCapacity.Resources.CPUCores - metrics.NodeMetrics.TotalCapacity.CPUAllocated + availableCPU
-	maxMem := maxCapacity.Resources.MemoryGB - metrics.NodeMetrics.TotalCapacity.MemAllocated + availableMem
-	maxReplicasWithMaxNodes := int(min(maxCPU/cpuPerReplica, maxMem/memPerReplica))
+	// Capacidade disponível por node com max nodes
+	availableCPUPerNodeAtMax := usableCPUPerNode - competingCPUPerNodeAtMax
+	availableMemPerNodeAtMax := usableMemPerNode - competingMemPerNodeAtMax
 
-	// Réplicas se remover competidores
-	replicasIfRemoveCompeting := int(min(
-		(availableCPU+totalCompetingCPU)/cpuPerReplica,
-		(availableMem+totalCompetingMem)/memPerReplica,
-	))
+	// Max réplicas por node com max nodes
+	maxReplicasPerNodeByCPUAtMax := int(availableCPUPerNodeAtMax / cpuPerReplica)
+	maxReplicasPerNodeByMemAtMax := int(availableMemPerNodeAtMax / memPerReplica)
+	maxReplicasPerNodeAtMax := minInt(maxReplicasPerNodeByCPUAtMax, maxReplicasPerNodeByMemAtMax)
 
-	// 6. Recomendação
+	// Total de réplicas com max nodes
+	maxReplicasWithMaxNodes := maxReplicasPerNodeAtMax * maxNodes
+	if maxReplicasWithMaxNodes < 0 {
+		maxReplicasWithMaxNodes = 0
+	}
+
+	// ========================================
+	// CENÁRIO 3: SEM APLICAÇÕES CONCORRENTES
+	// ========================================
+	// Capacidade total disponível por node (sem concorrentes)
+	maxReplicasPerNodeNoConcurrentsByCPU := int(usableCPUPerNode / cpuPerReplica)
+	maxReplicasPerNodeNoConcurrentsByMem := int(usableMemPerNode / memPerReplica)
+	maxReplicasPerNodeNoConcurrents := minInt(maxReplicasPerNodeNoConcurrentsByCPU, maxReplicasPerNodeNoConcurrentsByMem)
+
+	// Total de réplicas sem concorrentes (usando nodes atuais)
+	replicasIfRemoveCompeting := maxReplicasPerNodeNoConcurrents * currentNodes
+	if replicasIfRemoveCompeting < 0 {
+		replicasIfRemoveCompeting = 0
+	}
+
+	// ========================================
+	// IDENTIFICAR BOTTLENECK
+	// ========================================
 	bottleneckResource := "cpu"
-	if memPerReplica/availableMem > cpuPerReplica/availableCPU {
+	if maxReplicasPerNodeByMem < maxReplicasPerNodeByCPU {
 		bottleneckResource = "memory"
 	}
 
+	// ========================================
+	// RECOMENDAÇÃO
+	// ========================================
 	recommendedMax := maxReplicasCurrentNodes
-	recommendation := fmt.Sprintf("Pode escalar até %d réplicas nos nodes atuais", maxReplicasCurrentNodes)
+	recommendation := ""
 
-	if maxReplicasCurrentNodes < targetApp.Replicas*2 {
-		recommendation = fmt.Sprintf("Capacidade limitada: apenas %d réplicas adicionais. Considere escalar nodes para %d (max: %d réplicas)",
-			maxReplicasCurrentNodes-targetApp.Replicas,
-			metrics.NodeMetrics.VMSizing.MaxNodes,
-			maxReplicasWithMaxNodes)
+	if maxReplicasCurrentNodes == 0 {
+		recommendation = "ALERTA: Capacidade esgotada! Aplicações concorrentes estão consumindo 100% dos recursos. Ação necessária: (1) Escalar nodes ou (2) Reduzir réplicas de outras aplicações."
+	} else if maxReplicasCurrentNodes < targetApp.Replicas {
+		recommendation = fmt.Sprintf("CRÍTICO: Capacidade atual (%d réplicas) é MENOR que réplicas existentes (%d). Cluster está sobrecarregado!",
+			maxReplicasCurrentNodes, targetApp.Replicas)
+	} else if maxReplicasCurrentNodes < targetApp.Replicas*2 {
+		additionalReplicas := maxReplicasCurrentNodes - targetApp.Replicas
+		recommendation = fmt.Sprintf("Capacidade limitada: apenas %d réplicas adicionais nos nodes atuais (%d total). "+
+			"Para maior margem, escalar para %d nodes permite até %d réplicas.",
+			additionalReplicas, maxReplicasCurrentNodes, maxNodes, maxReplicasWithMaxNodes)
+		recommendedMax = maxReplicasWithMaxNodes
+	} else {
+		recommendation = fmt.Sprintf("Capacidade saudável: pode escalar até %d réplicas nos %d nodes atuais (%.1fx da carga atual). "+
+			"Com %d nodes (máx), suporta até %d réplicas.",
+			maxReplicasCurrentNodes, currentNodes,
+			float64(maxReplicasCurrentNodes)/float64(targetApp.Replicas),
+			maxNodes, maxReplicasWithMaxNodes)
 		recommendedMax = maxReplicasWithMaxNodes
 	}
+
+	// ========================================
+	// CAPACIDADES PARA EXIBIÇÃO
+	// ========================================
+	currentCapacity := CapacityInfo{
+		Nodes: currentNodes,
+		Resources: ResourceUsage{
+			CPUCores: float64(currentNodes) * cpuPerVM,
+			MemoryGB: float64(currentNodes) * memPerVM,
+		},
+	}
+
+	maxCapacity := CapacityInfo{
+		Nodes: maxNodes,
+		Resources: ResourceUsage{
+			CPUCores: float64(maxNodes) * cpuPerVM,
+			MemoryGB: float64(maxNodes) * memPerVM,
+		},
+	}
+
+	availableForGrowth := ResourceUsage{
+		CPUCores: availableCPUPerNode * float64(currentNodes),
+		MemoryGB: availableMemPerNode * float64(currentNodes),
+	}
+
+	log.Info().
+		Int("max_replicas_current", maxReplicasCurrentNodes).
+		Int("max_replicas_max_nodes", maxReplicasWithMaxNodes).
+		Int("replicas_no_competing", replicasIfRemoveCompeting).
+		Str("bottleneck", bottleneckResource).
+		Msg("Growth analysis completed")
 
 	return GrowthCapacityAnalysis{
 		TargetApp:                 targetApp,
@@ -1375,4 +1639,175 @@ func (c *MetricsCollector) collectNodeDistributionViaK8sAPI(ctx context.Context,
 	}
 
 	return nil
+}
+
+// getVMSpecsFromAzureCLI busca especificações de VM via Azure CLI
+// Fallback para quando o mapeamento estático não contém o VM size
+func (c *MetricsCollector) getVMSpecsFromAzureCLI(ctx context.Context, cluster string, vmSize string) *VMSpec {
+	if vmSize == "" || vmSize == "unknown" {
+		return nil
+	}
+
+	// 1. Carregar configuração do cluster do arquivo clusters-config.json
+	clusterConfig, err := c.loadClusterConfig(cluster)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("cluster", cluster).
+			Msg("Não foi possível carregar configuração do cluster para buscar VM specs via Azure CLI")
+		return nil
+	}
+
+	// 2. Configurar subscription (obrigatório para az aks show funcionar)
+	if clusterConfig.Subscription == "" {
+		log.Warn().
+			Str("cluster", cluster).
+			Msg("Subscription não encontrada na configuração do cluster - não é possível buscar VM specs via Azure CLI")
+		return nil
+	}
+
+	cmd := exec.Command("az", "account", "set", "--subscription", clusterConfig.Subscription)
+	if err := cmd.Run(); err != nil {
+		log.Warn().
+			Err(err).
+			Str("subscription", clusterConfig.Subscription).
+			Msg("Falha ao configurar subscription - não é possível buscar VM specs via Azure CLI")
+		return nil
+	}
+
+	// 3. Obter location do cluster via az aks show
+	// Remover sufixo -admin do nome do cluster para Azure CLI
+	aksClusterName := strings.TrimSuffix(cluster, "-admin")
+
+	locationCmd := exec.Command("az", "aks", "show",
+		"--name", aksClusterName,
+		"--resource-group", clusterConfig.ResourceGroup,
+		"--query", "location",
+		"--output", "tsv")
+
+	locationOutput, err := locationCmd.Output()
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("cluster", aksClusterName).
+			Str("resource_group", clusterConfig.ResourceGroup).
+			Msg("Falha ao obter location do cluster via az aks show")
+		return nil
+	}
+
+	location := strings.TrimSpace(string(locationOutput))
+	if location == "" {
+		log.Warn().
+			Str("cluster", cluster).
+			Msg("Location vazia retornada por az aks show")
+		return nil
+	}
+
+	// 4. Executar az vm list-sizes com filtro por nome do VM size
+	// Formato: az vm list-sizes --location <location> --query "[?name=='<vmSize>']" --output json
+	query := fmt.Sprintf("[?name=='%s']", vmSize)
+	vmSizesCmd := exec.Command("az", "vm", "list-sizes",
+		"--location", location,
+		"--query", query,
+		"--output", "json")
+
+	output, err := vmSizesCmd.Output()
+	if err != nil {
+		// Capturar stderr para melhor debugging
+		if exitError, ok := err.(*exec.ExitError); ok {
+			stderr := string(exitError.Stderr)
+			log.Error().
+				Err(err).
+				Str("stderr", stderr).
+				Str("vm_size", vmSize).
+				Str("location", location).
+				Msg("Azure CLI falhou ao buscar VM specs")
+		} else {
+			log.Error().
+				Err(err).
+				Str("vm_size", vmSize).
+				Str("location", location).
+				Msg("Falha ao executar comando az vm list-sizes")
+		}
+		return nil
+	}
+
+	// 5. Parse do JSON retornado
+	// Azure CLI retorna array de objetos: [{"name": "...", "numberOfCores": X, "memoryInMB": Y, ...}]
+	var azureVMs []struct {
+		Name         string `json:"name"`
+		NumberOfCores int    `json:"numberOfCores"`
+		MemoryInMB   int    `json:"memoryInMB"`
+	}
+
+	if err := json.Unmarshal(output, &azureVMs); err != nil {
+		log.Error().
+			Err(err).
+			Str("vm_size", vmSize).
+			Str("output", string(output)).
+			Msg("Falha ao fazer parse do JSON retornado pela Azure CLI")
+		return nil
+	}
+
+	// 6. Validar que encontrou o VM size
+	if len(azureVMs) == 0 {
+		log.Warn().
+			Str("vm_size", vmSize).
+			Str("location", location).
+			Msg("VM size não encontrado na Azure (location incompatível ou VM size inexistente)")
+		return nil
+	}
+
+	// 7. Converter para VMSpec (memória de MB para GB)
+	vm := azureVMs[0]
+	vmSpec := &VMSpec{
+		Size:      vm.Name,
+		VCPUs:     vm.NumberOfCores,
+		MemoryGiB: vm.MemoryInMB / 1024, // Converter MB para GB
+		Family:    "", // Azure CLI não retorna family, deixar vazio
+	}
+
+	log.Info().
+		Str("vm_size", vmSpec.Size).
+		Int("vcpus", vmSpec.VCPUs).
+		Int("memory_gib", vmSpec.MemoryGiB).
+		Str("location", location).
+		Msg("VM specs obtidas via Azure CLI com sucesso")
+
+	return vmSpec
+}
+
+// loadClusterConfig carrega configuração do cluster do arquivo clusters-config.json
+func (c *MetricsCollector) loadClusterConfig(cluster string) (*models.ClusterConfig, error) {
+	// Remover sufixo -admin se existir (normalização)
+	clusterName := strings.TrimSuffix(cluster, "-admin")
+
+	// Caminho do arquivo de configuração
+	homeConfigPath := filepath.Join(os.Getenv("HOME"), ".k8s-hpa-manager", "clusters-config.json")
+
+	// Verificar se arquivo existe
+	if _, err := os.Stat(homeConfigPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("clusters-config.json não encontrado em %s - execute 'autodiscover' primeiro", homeConfigPath)
+	}
+
+	// Ler arquivo
+	data, err := os.ReadFile(homeConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao ler clusters-config.json: %w", err)
+	}
+
+	// Parse do JSON
+	var clusters []models.ClusterConfig
+	if err := json.Unmarshal(data, &clusters); err != nil {
+		return nil, fmt.Errorf("falha ao fazer parse de clusters-config.json: %w", err)
+	}
+
+	// Buscar cluster específico
+	for _, cfg := range clusters {
+		if cfg.ClusterName == clusterName {
+			return &cfg, nil
+		}
+	}
+
+	return nil, fmt.Errorf("cluster '%s' não encontrado em clusters-config.json", clusterName)
 }

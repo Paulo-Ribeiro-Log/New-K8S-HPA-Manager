@@ -2,14 +2,18 @@ package healthcheck
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/rs/zerolog/log"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 // ProgressCallback é chamado para publicar progresso de cada deployment
@@ -24,44 +28,69 @@ func NewDeploymentChecker() *DeploymentChecker {
 }
 
 // CheckAll verifica todos os deployments nos namespaces especificados
-func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, timeout int, progressCallback ProgressCallback) []DeploymentHealth {
+func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespaces []string, timeout int, progressCallback ProgressCallback) []DeploymentHealth {
 	results := []DeploymentHealth{}
 
-	// Primeiro, contar total de deployments para calcular progresso
+	type nsDeployments struct {
+		namespace   string
+		deployments []appsv1.Deployment
+	}
+
+	batches := make([]nsDeployments, 0, len(namespaces))
 	totalDeployments := 0
+
 	for _, ns := range namespaces {
-		deployments, err := client.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
+		listCtx, cancel := c.withTimeout(ctx, timeout)
+		deployments, err := client.AppsV1().Deployments(ns).List(listCtx, metav1.ListOptions{})
+
 		if err != nil {
-			log.Error().Err(err).Str("namespace", ns).Msg("Failed to list deployments")
+			if isTimeoutError(err, listCtx) {
+				log.Warn().Err(err).Str("namespace", ns).Msg("Timeout listing deployments")
+			} else {
+				log.Error().Err(err).Str("namespace", ns).Msg("Failed to list deployments")
+			}
+			if cancel != nil {
+				cancel()
+			}
 			continue
 		}
+
+		if cancel != nil {
+			cancel()
+		}
+
+		batches = append(batches, nsDeployments{
+			namespace:   ns,
+			deployments: deployments.Items,
+		})
 		totalDeployments += len(deployments.Items)
+	}
+
+	if totalDeployments == 0 {
+		return results
 	}
 
 	currentDeployment := 0
 
-	for _, ns := range namespaces {
-		deployments, err := client.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			log.Error().Err(err).Str("namespace", ns).Msg("Failed to list deployments")
-			continue
-		}
-
-		for _, d := range deployments.Items {
+	for _, batch := range batches {
+		for _, deployment := range batch.deployments {
 			currentDeployment++
 
-			// Publicar evento: verificando deployment
 			if progressCallback != nil {
-				progressCallback(ns, d.Name, fmt.Sprintf("Verificando deployment %s/%s...", ns, d.Name), StatusHealthy, currentDeployment, totalDeployments)
+				progressCallback(batch.namespace, deployment.Name, fmt.Sprintf("Verificando deployment %s/%s...", batch.namespace, deployment.Name), StatusHealthy, currentDeployment, totalDeployments)
 			}
 
-			health := c.Check(ctx, client, ns, d.Name, timeout)
+			deploymentCtx, cancel := c.withTimeout(ctx, timeout)
+			health := c.Check(deploymentCtx, client, metricsClient, batch.namespace, deployment.Name, timeout)
+			if cancel != nil {
+				cancel()
+			}
+
 			results = append(results, health)
 
-			// Publicar resultado do deployment
 			if progressCallback != nil {
 				summary := c.getHealthSummary(health)
-				progressCallback(ns, d.Name, fmt.Sprintf("%s/%s: %s", ns, d.Name, summary), health.Status, currentDeployment, totalDeployments)
+				progressCallback(batch.namespace, deployment.Name, fmt.Sprintf("%s/%s: %s", batch.namespace, deployment.Name, summary), health.Status, currentDeployment, totalDeployments)
 			}
 		}
 	}
@@ -79,23 +108,44 @@ func (c *DeploymentChecker) getHealthSummary(health DeploymentHealth) string {
 }
 
 // Check verifica a saúde de um deployment específico
-func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interface, namespace, name string, timeout int) DeploymentHealth {
+func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespace, name string, timeout int) DeploymentHealth {
 	deployment, err := client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return DeploymentHealth{
-			Name:      name,
-			Namespace: namespace,
-			Status:    StatusCritical,
-			Message:   fmt.Sprintf("Failed to get deployment: %v", err),
-			CheckedAt: time.Now(),
+		status := StatusCritical
+		message := fmt.Sprintf("Falha ao buscar deployment: %v", err)
+
+		if isTimeoutError(err, ctx) {
+			status = StatusWarning
+			message = "Timeout ao obter manifesto do deployment"
 		}
+
+		suggestions := []string{"Verificar conectividade com a API Kubernetes"}
+		if timeout > 0 {
+			suggestions = append(suggestions, fmt.Sprintf("Aumentar timeout acima de %ds se necessário", timeout))
+		}
+
+		return DeploymentHealth{
+			Name:        name,
+			Namespace:   namespace,
+			Status:      status,
+			Message:     message,
+			Suggestions: suggestions,
+			CheckedAt:   time.Now(),
+		}
+	}
+
+	desiredReplicas := int32(1)
+	if deployment.Spec.Replicas != nil {
+		desiredReplicas = *deployment.Spec.Replicas
+	} else {
+		log.Warn().Str("namespace", namespace).Str("deployment", name).Msg("Deployment sem replicas explícitas; assumindo padrão 1")
 	}
 
 	health := DeploymentHealth{
 		Name:            name,
 		Namespace:       namespace,
 		ReplicasReady:   deployment.Status.ReadyReplicas,
-		ReplicasDesired: *deployment.Spec.Replicas,
+		ReplicasDesired: desiredReplicas,
 		CheckedAt:       time.Now(),
 		Suggestions:     []string{},
 	}
@@ -117,18 +167,15 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 	}
 
 	// 2. Buscar pods do deployment usando label selector
-	var selector string
-	if deployment.Spec.Selector != nil && deployment.Spec.Selector.MatchLabels != nil && len(deployment.Spec.Selector.MatchLabels) > 0 {
-		// Construir selector a partir de todas as labels
-		labels := []string{}
-		for k, v := range deployment.Spec.Selector.MatchLabels {
-			labels = append(labels, fmt.Sprintf("%s=%s", k, v))
+	selector := fmt.Sprintf("app=%s", name)
+
+	if deployment.Spec.Selector != nil {
+		compiledSelector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+		if err != nil {
+			log.Error().Err(err).Str("namespace", namespace).Str("deployment", name).Msg("Failed to compile label selector for deployment")
+		} else if !compiledSelector.Empty() {
+			selector = compiledSelector.String()
 		}
-		// Juntar todas as labels com vírgula (AND lógico no Kubernetes)
-		selector = labels[0]
-	} else {
-		// Fallback: usar nome do deployment
-		selector = fmt.Sprintf("app=%s", name)
 	}
 
 	pods, err := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
@@ -136,7 +183,16 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 	})
 
 	if err != nil {
-		log.Error().Err(err).Str("namespace", namespace).Str("deployment", name).Msg("Failed to list pods")
+		if isTimeoutError(err, ctx) {
+			log.Warn().Err(err).Str("namespace", namespace).Str("deployment", name).Msg("Timeout listing pods for deployment")
+			if health.Status == "" || health.Status == StatusHealthy {
+				health.Status = StatusWarning
+				health.Message = "Timeout ao listar pods do deployment"
+			}
+			health.Suggestions = appendSuggestionOnce(health.Suggestions, "Reexecutar análise ou aumentar o timeout configurado")
+		} else {
+			log.Error().Err(err).Str("namespace", namespace).Str("deployment", name).Msg("Failed to list pods")
+		}
 	} else {
 		// 3. Contar containers em crash e image pull errors
 		crashCount := 0
@@ -180,6 +236,7 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 
 		// 5. Analisar Liveness e Readiness Probes
 		c.analyzeProbes(deployment, pods.Items, &health)
+		c.enrichWithMetrics(ctx, metricsClient, deployment, selector, timeout, &health)
 	}
 
 	// 6. Verificar condições do deployment
@@ -300,4 +357,134 @@ func (c *DeploymentChecker) analyzeProbes(deployment *appsv1.Deployment, pods []
 		health.Suggestions = append(health.Suggestions, "Liveness probe pode estar muito agressivo (timeout/threshold)")
 		health.Suggestions = append(health.Suggestions, "Verificar se aplicação responde dentro do timeout configurado")
 	}
+}
+
+func (c *DeploymentChecker) enrichWithMetrics(ctx context.Context, metricsClient metricsclientset.Interface, deployment *appsv1.Deployment, selector string, timeout int, health *DeploymentHealth) {
+	if metricsClient == nil {
+		return
+	}
+
+	metricsCtx := ctx
+	var cancel context.CancelFunc
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		duration := 5 * time.Second
+		if timeout > 0 {
+			duration = time.Duration(timeout) * time.Second
+		}
+		metricsCtx, cancel = context.WithTimeout(ctx, duration)
+	}
+	if cancel != nil {
+		defer cancel()
+	}
+
+	podMetrics, err := metricsClient.MetricsV1beta1().PodMetricses(deployment.Namespace).List(metricsCtx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		if metricsCtx.Err() == context.DeadlineExceeded {
+			log.Warn().Str("namespace", deployment.Namespace).Str("deployment", deployment.Name).Msg("Timeout ao buscar métricas de pods para deployment")
+		} else {
+			log.Warn().Err(err).Str("namespace", deployment.Namespace).Str("deployment", deployment.Name).Msg("Falha ao buscar métricas de pods para deployment")
+		}
+		return
+	}
+
+	if len(podMetrics.Items) == 0 {
+		return
+	}
+
+	containerResources := make(map[string]corev1.ResourceRequirements, len(deployment.Spec.Template.Spec.Containers))
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		containerResources[container.Name] = container.Resources
+	}
+
+	var usedCPUMilli, baseCPUMilli int64
+	var usedMemoryBytes, baseMemoryBytes int64
+
+	for _, podMetric := range podMetrics.Items {
+		for _, containerMetric := range podMetric.Containers {
+			usage := containerMetric.Usage
+			usedCPUMilli += usage.Cpu().MilliValue()
+			usedMemoryBytes += usage.Memory().Value()
+
+			if resources, ok := containerResources[containerMetric.Name]; ok {
+				var cpuBase int64
+				var memBase int64
+
+				if resources.Requests != nil {
+					cpuBase = resources.Requests.Cpu().MilliValue()
+					memBase = resources.Requests.Memory().Value()
+				}
+
+				if cpuBase == 0 && resources.Limits != nil {
+					cpuBase = resources.Limits.Cpu().MilliValue()
+				}
+
+				if memBase == 0 && resources.Limits != nil {
+					memBase = resources.Limits.Memory().Value()
+				}
+
+				baseCPUMilli += cpuBase
+				baseMemoryBytes += memBase
+			}
+		}
+	}
+
+	if baseCPUMilli > 0 {
+		cpuPercent := (float64(usedCPUMilli) / float64(baseCPUMilli)) * 100
+		health.CPUUsagePercent = math.Round(cpuPercent*10) / 10
+	} else if usedCPUMilli > 0 {
+		health.Suggestions = appendSuggestionOnce(health.Suggestions, "Definir requests/limits de CPU para visibilidade de uso")
+	}
+
+	if baseMemoryBytes > 0 {
+		memPercent := (float64(usedMemoryBytes) / float64(baseMemoryBytes)) * 100
+		health.MemoryUsagePercent = math.Round(memPercent*10) / 10
+	} else if usedMemoryBytes > 0 {
+		health.Suggestions = appendSuggestionOnce(health.Suggestions, "Definir requests/limits de memória para visibilidade de uso")
+	}
+}
+
+func appendSuggestionOnce(list []string, suggestion string) []string {
+	for _, existing := range list {
+		if existing == suggestion {
+			return list
+		}
+	}
+	return append(list, suggestion)
+}
+
+func (c *DeploymentChecker) withTimeout(ctx context.Context, timeoutSec int) (context.Context, context.CancelFunc) {
+	if timeoutSec <= 0 {
+		return ctx, nil
+	}
+
+	timeoutDuration := time.Duration(timeoutSec) * time.Second
+
+	if deadline, hasDeadline := ctx.Deadline(); hasDeadline {
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining <= timeoutDuration {
+			return ctx, nil
+		}
+	}
+
+	return context.WithTimeout(ctx, timeoutDuration)
+}
+
+func isTimeoutError(err error, ctx context.Context) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	if ctx != nil && ctx.Err() == context.DeadlineExceeded {
+		return true
+	}
+
+	if apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err) {
+		return true
+	}
+
+	return false
 }

@@ -56,6 +56,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
     results,
     runHealthCheck,
     markCompleted,
+    markCancelled,
   } = useHealthChecking();
 
   // Filters hook
@@ -615,18 +616,18 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                   {selectedClusters.length} cluster{selectedClusters.length > 1 ? 's' : ''}
                 </Badge>
               )}
-              {/* Botão Ver Progresso - Aparece quando está executando */}
-              {isRunning && sessionId && (
+              {/* Botão Ver Progresso - Aparece quando está executando OU quando há resultados */}
+              {(isRunning && sessionId) || Object.keys(results).length > 0 ? (
                 <Button
                   variant="default"
                   size="sm"
                   onClick={() => setShowProgressModal(true)}
-                  className="h-7 animate-pulse"
+                  className={isRunning ? "h-7 animate-pulse" : "h-7"}
                 >
                   <Activity className="mr-1.5 h-3.5 w-3.5" />
                   <span className="text-xs">Ver Progresso</span>
                 </Button>
-              )}
+              ) : null}
               {/* Botão Exportar Relatório - Aparece quando há resultados */}
               {Object.keys(results).length > 0 && (
                 <Button
@@ -697,6 +698,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
             markCompleted(result);
             toast.success(`Health check concluído para cluster: ${result.cluster}`);
           }}
+          onCancel={markCancelled}
         />
       )}
 
