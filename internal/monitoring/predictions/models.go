@@ -39,6 +39,13 @@ type DeploymentMetrics struct {
 	Namespace  string `json:"namespace"`
 	Cluster    string `json:"cluster"`
 
+	// Contexto Temporal (NOVO - para análise preditiva verdadeira)
+	CreationTimestamp    time.Time `json:"creation_timestamp"`      // Quando deployment foi criado
+	AgeInDays            int       `json:"age_in_days"`             // Idade em dias
+	IsNew                bool      `json:"is_new"`                  // < 7 dias (sem histórico suficiente)
+	HasSufficientHistory bool      `json:"has_sufficient_history"`  // >= 14 dias de métricas disponíveis
+	PredecessorInfo      string    `json:"predecessor_info"`        // Info sobre deployment anterior (se houver)
+
 	// Configuração
 	DesiredReplicas   int32            `json:"desired_replicas"`
 	CurrentReplicas   int32            `json:"current_replicas"`
@@ -266,13 +273,13 @@ type PredictionsAnalysis struct {
 
 // Prediction representa uma previsão individual
 type Prediction struct {
-	Timeframe   string    `json:"timeframe"` // "4h", "24h", "7d"
-	Timestamp   time.Time `json:"timestamp"`
-	Event       string    `json:"event"`       // descrição do evento previsto
-	Probability float64   `json:"probability"` // 0.0 a 1.0
-	Severity    string    `json:"severity"`    // low, medium, high, critical
-	Impact      string    `json:"impact"`      // descrição do impacto
-	Indicators  []string  `json:"indicators"`  // sinais que levam a esta previsão
+	Timeframe   string     `json:"timeframe"` // "4h", "24h", "7d"
+	Timestamp   *time.Time `json:"timestamp,omitempty"` // Timestamp exato da previsão (calculado no backend baseado em metrics.Current.Timestamp + offset)
+	Event       string     `json:"event"`     // descrição do evento previsto
+	Probability float64    `json:"probability"` // 0.0 a 1.0
+	Severity    string     `json:"severity"`    // low, medium, high, critical
+	Impact      string     `json:"impact"`      // descrição do impacto
+	Indicators  []string   `json:"indicators"`  // sinais que levam a esta previsão
 }
 
 // RootCauseAnalysis análise de causa raiz

@@ -119,6 +119,11 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		return nil, fmt.Errorf("failed to get kubernetes client for %s: %w", cluster, err)
 	}
 
+	metricsClient, err := o.kubeManager.GetMetricsClient(cluster)
+	if err != nil {
+		log.Warn().Err(err).Str("cluster", cluster).Msg("Falha ao inicializar metrics client; seguindo sem percentuais de uso")
+	}
+
 	// Determinar namespaces
 	namespaces := req.Namespaces
 	if len(namespaces) == 0 {
@@ -140,9 +145,9 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 
 	// ✅ Calcular faixas de progresso DINÂMICAS baseadas nos checks habilitados
 	const (
-		progressInit     = 5  // 0-5%: Inicialização
-		progressSummary  = 95 // 95-100%: Summary
-		availableRange   = 90 // 5-95% disponível para dividir entre checks
+		progressInit    = 5  // 0-5%: Inicialização
+		progressSummary = 95 // 95-100%: Summary
+		availableRange  = 90 // 5-95% disponível para dividir entre checks
 	)
 
 	// Contar quantos checks estão habilitados
@@ -188,7 +193,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 				o.publishProgress(sessionID, cluster, "deployments", message, deploymentProgress, status)
 			}
 
-			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, namespaces, req.Timeout, deploymentCallback)
+			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, metricsClient, namespaces, req.Timeout, deploymentCallback)
 
 			// ✅ Aplicar filtros se habilitado
 			if req.ApplyFilters && o.filterManager != nil {
@@ -313,7 +318,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		for _, d := range result.DeploymentResults {
 			if d.Status == StatusCritical && criticalShown < maxCritical {
 				o.publishProgress(sessionID, cluster, "summary",
-					fmt.Sprintf("❌ Deployment %s/%s: %s", d.Namespace, d.Name, d.Message), 97, StatusCritical)
+					fmt.Sprintf("Crítico: Deployment %s/%s - %s", d.Namespace, d.Name, d.Message), 97, StatusCritical)
 				criticalShown++
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -323,7 +328,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		for _, s := range result.ServiceResults {
 			if s.Status == StatusCritical && criticalShown < maxCritical {
 				o.publishProgress(sessionID, cluster, "summary",
-					fmt.Sprintf("❌ Service %s/%s: %s", s.Namespace, s.Name, s.Message), 97, StatusCritical)
+					fmt.Sprintf("Crítico: Service %s/%s - %s", s.Namespace, s.Name, s.Message), 97, StatusCritical)
 				criticalShown++
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -333,7 +338,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		for _, c := range result.ConfigResults {
 			if c.Status == StatusCritical && criticalShown < maxCritical {
 				o.publishProgress(sessionID, cluster, "summary",
-					fmt.Sprintf("❌ Config %s/%s: %s", c.Namespace, c.Name, c.Message), 97, StatusCritical)
+					fmt.Sprintf("Crítico: Config %s/%s - %s", c.Namespace, c.Name, c.Message), 97, StatusCritical)
 				criticalShown++
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -357,7 +362,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		for _, d := range result.DeploymentResults {
 			if d.Status == StatusWarning && warningShown < maxWarning {
 				o.publishProgress(sessionID, cluster, "summary",
-					fmt.Sprintf("⚠️ Deployment %s/%s: %s", d.Namespace, d.Name, d.Message), 98, StatusWarning)
+					fmt.Sprintf("Aviso: Deployment %s/%s - %s", d.Namespace, d.Name, d.Message), 98, StatusWarning)
 				warningShown++
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -367,7 +372,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		for _, s := range result.ServiceResults {
 			if s.Status == StatusWarning && warningShown < maxWarning {
 				o.publishProgress(sessionID, cluster, "summary",
-					fmt.Sprintf("⚠️ Service %s/%s: %s", s.Namespace, s.Name, s.Message), 98, StatusWarning)
+					fmt.Sprintf("Aviso: Service %s/%s - %s", s.Namespace, s.Name, s.Message), 98, StatusWarning)
 				warningShown++
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -377,7 +382,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		for _, c := range result.ConfigResults {
 			if c.Status == StatusWarning && warningShown < maxWarning {
 				o.publishProgress(sessionID, cluster, "summary",
-					fmt.Sprintf("⚠️ Config %s/%s: %s", c.Namespace, c.Name, c.Message), 98, StatusWarning)
+					fmt.Sprintf("Aviso: Config %s/%s - %s", c.Namespace, c.Name, c.Message), 98, StatusWarning)
 				warningShown++
 				time.Sleep(50 * time.Millisecond)
 			}

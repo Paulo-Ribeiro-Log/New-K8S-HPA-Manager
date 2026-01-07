@@ -1,14 +1,16 @@
 package sanitizer
 
 import (
+	"net"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
 // Regex patterns para detecção de dados sensíveis
 var (
-	// IPv4Pattern - DESABILITADO (IPs não são mascarados)
-	// IPv4Pattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+	// IPv4Pattern detecta endereços IPv4
+	IPv4Pattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
 
 	// EmailPattern - DESABILITADO (emails não são mascarados)
 	// EmailPattern = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
@@ -71,27 +73,27 @@ func MaskPartial(value string, showChars int) string {
 	return prefix + mask + suffix
 }
 
-// MaskPassword mascara senha de connection string (4 primeiros + 3 últimos)
-// Ex: "s6Yxbn1I9i98GHIJcJdc" -> "s6Yx*************Jdc"
+// MaskPassword mascara senha de connection string (3 primeiros + 3 últimos)
+// Ex: "s6Yxbn1I9i98GHIJcJdc" -> "s6Y***Jdc"
 func MaskPassword(password string) string {
-	showPrefix := 4
+	showPrefix := 3
 	showSuffix := 3
 
 	if len(password) <= showPrefix+showSuffix {
-		// Se muito curto, mostra tudo
-		return password
+		// Se muito curto, mostra apenas "***"
+		return "***"
 	}
 
 	prefix := password[:showPrefix]
 	suffix := password[len(password)-showSuffix:]
-	middle := len(password) - (showPrefix + showSuffix)
-	mask := strings.Repeat("*", middle)
+	// SEMPRE usa exatamente 3 asteriscos (não depende do tamanho)
+	mask := "***"
 
 	return prefix + mask + suffix
 }
 
-// MaskBase64 mascara base64 mostrando 3 primeiros + 3/4 últimos (mantém "=" se existir)
-// Ex: "MDFhghthghthghthghthghthghthghtTRk4=" -> "MDF*****************************Rk4="
+// MaskBase64 mascara base64 mostrando 3 primeiros + 4 últimos (mantém "=" se existir)
+// Ex: "MDFhghthghthghthghthghthghthghtTRk4=" -> "MDF***Rk4="
 func MaskBase64(value string) string {
 	showPrefix := 3
 	showSuffix := 3
@@ -108,8 +110,8 @@ func MaskBase64(value string) string {
 
 	prefix := value[:showPrefix]
 	suffix := value[len(value)-showSuffix:]
-	middle := len(value) - (showPrefix + showSuffix)
-	mask := strings.Repeat("*", middle)
+	// SEMPRE usa exatamente 3 asteriscos (não depende do tamanho)
+	mask := "***"
 
 	return prefix + mask + suffix
 }
@@ -167,6 +169,66 @@ func MaskConnectionString(connStr string) string {
 	maskedPassword := MaskPassword(password)
 
 	return protocol + user + ":" + maskedPassword + "@" + afterAt
+}
+
+// IsInternalIP verifica se um IP pertence a ranges privados (RFC 1918 + localhost)
+// Ranges internos: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8
+func IsInternalIP(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false // IP inválido
+	}
+
+	// Define CIDRs de redes privadas
+	privateCIDRs := []string{
+		"10.0.0.0/8",       // Classe A privada
+		"172.16.0.0/12",    // Classe B privada (172.16.0.0 - 172.31.255.255)
+		"192.168.0.0/16",   // Classe C privada
+		"127.0.0.0/8",      // Localhost
+		"169.254.0.0/16",   // Link-local
+		"::1/128",          // IPv6 localhost
+		"fc00::/7",         // IPv6 unique local
+		"fe80::/10",        // IPv6 link-local
+	}
+
+	for _, cidr := range privateCIDRs {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if network.Contains(ip) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// MaskExternalIP mascara IP externo preservando primeiro e último octeto
+// Ex: "172.168.1.213" -> "172.***.***.213"
+// IPs internos (10.x, 172.16-31.x, 192.168.x, 127.x) NÃO são mascarados
+func MaskExternalIP(ipStr string) string {
+	// Verifica se é IP interno (não mascara)
+	if IsInternalIP(ipStr) {
+		return ipStr
+	}
+
+	// Divide IP em octetos
+	parts := strings.Split(ipStr, ".")
+	if len(parts) != 4 {
+		return ipStr // IP inválido, não mascara
+	}
+
+	// Valida cada octeto
+	for _, part := range parts {
+		num, err := strconv.Atoi(part)
+		if err != nil || num < 0 || num > 255 {
+			return ipStr // IP inválido, não mascara
+		}
+	}
+
+	// Mascara: primeiro + "***" + "***" + último
+	return parts[0] + ".***.***."+parts[3]
 }
 
 // IsSensitiveKey verifica se uma chave é considerada sensível

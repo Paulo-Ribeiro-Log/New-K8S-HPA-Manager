@@ -66,6 +66,12 @@ CREATE INDEX IF NOT EXISTS idx_pred_risk_level ON predictions_history(risk_level
 CREATE INDEX IF NOT EXISTS idx_pred_user_email ON predictions_history(user_email);
 CREATE INDEX IF NOT EXISTS idx_pred_health_score ON predictions_history(health_score);
 `
+
+	// Migration: Adicionar coluna prometheus_metrics (FASE 2.1 - 06/01/2026)
+	addPrometheusMetricsColumnSQL = `
+ALTER TABLE ai_analysis_history
+ADD COLUMN prometheus_metrics TEXT;
+`
 )
 
 // runMigrations executa migrations do banco de dados
@@ -88,6 +94,26 @@ func (c *SQLiteClient) runMigrations() error {
 	// Criar índices de predictions
 	if _, err := c.db.Exec(createPredictionsIndexesSQL); err != nil {
 		return err
+	}
+
+	// Migration: Adicionar coluna prometheus_metrics (se não existir)
+	// Verificar se coluna já existe antes de tentar adicionar
+	var columnExists int
+	err := c.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('ai_analysis_history')
+		WHERE name='prometheus_metrics'
+	`).Scan(&columnExists)
+
+	if err != nil {
+		return err
+	}
+
+	// Adicionar coluna apenas se não existir
+	if columnExists == 0 {
+		if _, err := c.db.Exec(addPrometheusMetricsColumnSQL); err != nil {
+			return err
+		}
 	}
 
 	return nil

@@ -1724,6 +1724,21 @@ func (c *Client) RolloutDeployment(ctx context.Context, namespace, deploymentNam
 	return nil
 }
 
+// RolloutRestartDeployment reinicia um deployment (alias para RolloutDeployment)
+func (c *Client) RolloutRestartDeployment(ctx context.Context, namespace, deploymentName string) error {
+	return c.RolloutDeployment(ctx, namespace, deploymentName)
+}
+
+// DeleteDeployment deleta um deployment específico
+func (c *Client) DeleteDeployment(ctx context.Context, namespace, deploymentName string) error {
+	err := c.clientset.AppsV1().Deployments(namespace).Delete(ctx, deploymentName, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete deployment %s/%s/%s: %w", c.cluster, namespace, deploymentName, err)
+	}
+
+	return nil
+}
+
 // GetDeploymentFromHPA obtém o nome do deployment associado ao HPA
 func (c *Client) GetDeploymentFromHPA(ctx context.Context, namespace, hpaName string) (string, error) {
 	hpa, err := c.clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).Get(ctx, hpaName, metav1.GetOptions{})

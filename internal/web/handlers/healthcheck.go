@@ -19,6 +19,11 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+type cancelEntry struct {
+	cancel          context.CancelFunc
+	clusterSessions map[string]string
+}
+
 // HealthCheckHandler gerencia requisições de health checking
 type HealthCheckHandler struct {
 	kubeManager  *config.KubeConfigManager
@@ -26,7 +31,7 @@ type HealthCheckHandler struct {
 	tracker      *sse.ProgressTracker
 
 	// ✅ Map para armazenar funções de cancelamento de cada sessão
-	cancelFuncs map[string]context.CancelFunc
+	cancelFuncs map[string]*cancelEntry
 	cancelMutex sync.RWMutex
 }
 
@@ -36,7 +41,7 @@ func NewHealthCheckHandler(km *config.KubeConfigManager, orch *healthcheck.Orche
 		kubeManager:  km,
 		orchestrator: orch,
 		tracker:      tracker,
-		cancelFuncs:  make(map[string]context.CancelFunc), // ✅ Inicializar map
+		cancelFuncs:  make(map[string]*cancelEntry), // ✅ Inicializar map
 	}
 }
 
@@ -89,8 +94,16 @@ func (h *HealthCheckHandler) Run(c *gin.Context) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// ✅ Armazenar função cancel (para permitir cancelamento via API)
+	sessionsCopy := make(map[string]string, len(clusterSessions))
+	for cluster, session := range clusterSessions {
+		sessionsCopy[cluster] = session
+	}
+
 	h.cancelMutex.Lock()
-	h.cancelFuncs[baseSessionID] = cancel
+	h.cancelFuncs[baseSessionID] = &cancelEntry{
+		cancel:          cancel,
+		clusterSessions: sessionsCopy,
+	}
 	h.cancelMutex.Unlock()
 
 	// Executar em goroutine (long-running operation)
@@ -148,9 +161,12 @@ func (h *HealthCheckHandler) Cancel(c *gin.Context) {
 	log.Info().Str("session_id", sessionID).Msg("Cancelling health check")
 
 	// Buscar função de cancelamento
-	h.cancelMutex.RLock()
-	cancelFunc, exists := h.cancelFuncs[sessionID]
-	h.cancelMutex.RUnlock()
+	h.cancelMutex.Lock()
+	entry, exists := h.cancelFuncs[sessionID]
+	if exists {
+		delete(h.cancelFuncs, sessionID)
+	}
+	h.cancelMutex.Unlock()
 
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{
@@ -163,18 +179,21 @@ func (h *HealthCheckHandler) Cancel(c *gin.Context) {
 	}
 
 	// Chamar cancel() - isso cancela o contexto e interrompe todas as goroutines
-	cancelFunc()
+	entry.cancel()
 
-	// Publicar evento de cancelamento via SSE
-	h.tracker.SendToClient(sessionID, sse.ProgressEvent{
-		ID:        sessionID,
-		Type:      "error",
-		Phase:     "cancelled",
-		Message:   "Health check cancelado pelo usuário",
-		Progress:  0,
-		Status:    "critical",
-		Timestamp: time.Now(),
-	})
+	// Publicar evento de cancelamento via SSE para cada cluster
+	for cluster, clusterSessionID := range entry.clusterSessions {
+		h.tracker.SendToClient(clusterSessionID, sse.ProgressEvent{
+			ID:        clusterSessionID,
+			Type:      "error",
+			Phase:     "cancelled",
+			Message:   "Health check cancelado pelo usuário",
+			Progress:  0,
+			Status:    "critical",
+			Details:   fmt.Sprintf("cluster:%s", cluster),
+			Timestamp: time.Now(),
+		})
+	}
 
 	log.Info().Str("session_id", sessionID).Msg("Health check cancelled successfully")
 
@@ -235,7 +254,7 @@ func (h *HealthCheckHandler) Progress(c *gin.Context) {
 			c.SSEvent("progress", event)
 
 			// Fechar stream se tipo for "complete" ou "error"
-			if (event.Type == "complete" || event.Type == "error") {
+			if event.Type == "complete" || event.Type == "error" {
 				log.Info().Str("session_id", sessionID).Str("type", event.Type).Msg("[SSE] Closing stream (complete/error)")
 				return false
 			}
@@ -259,7 +278,7 @@ func (h *HealthCheckHandler) ProgressMultiplexed(c *gin.Context) {
 	if baseSessionID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{"message": "base session ID é obrigatório"},
+			"error":   gin.H{"message": "base session ID é obrigatório"},
 		})
 		return
 	}
@@ -267,7 +286,7 @@ func (h *HealthCheckHandler) ProgressMultiplexed(c *gin.Context) {
 	if clustersParam == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{"message": "lista de clusters é obrigatória"},
+			"error":   gin.H{"message": "lista de clusters é obrigatória"},
 		})
 		return
 	}
@@ -277,7 +296,7 @@ func (h *HealthCheckHandler) ProgressMultiplexed(c *gin.Context) {
 	if len(clusters) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{"message": "lista de clusters vazia"},
+			"error":   gin.H{"message": "lista de clusters vazia"},
 		})
 		return
 	}

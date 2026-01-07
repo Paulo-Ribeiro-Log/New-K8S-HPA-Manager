@@ -1472,6 +1472,7 @@ class APIClient {
     has_claude: boolean;
     claude_model?: string;
     has_copilot: boolean;
+    copilot_endpoint?: string;
     copilot_deployment?: string;
     ollama_model?: string;
     preferred_provider: string;
@@ -1543,6 +1544,60 @@ class APIClient {
     }>;
   }> {
     return this.request(`/ai/models?provider=${provider}`);
+  }
+
+  /**
+   * Export AI analysis as PDF
+   */
+  async exportAIPDF(analysisId: string): Promise<Blob> {
+    const response = await fetch(`/api/v1/ai/report/${analysisId}/pdf`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/pdf",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to export PDF: ${response.statusText}`);
+    }
+
+    return response.blob();
+  }
+
+  /**
+   * Export AI analysis as Markdown
+   */
+  async exportAIMarkdown(analysisId: string): Promise<Blob> {
+    const response = await fetch(`/api/v1/ai/report/${analysisId}/markdown`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "text/markdown",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to export Markdown: ${response.statusText}`);
+    }
+
+    return response.blob();
+  }
+
+  /**
+   * Export AI analysis as CSV
+   */
+  async exportAICSV(analysisId: string): Promise<Blob> {
+    const response = await fetch(`/api/v1/ai/report/${analysisId}/csv`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "text/csv",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to export CSV: ${response.statusText}`);
+    }
+
+    return response.blob();
   }
 
   // ========================

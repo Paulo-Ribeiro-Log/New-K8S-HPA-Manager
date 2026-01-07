@@ -33,6 +33,15 @@ export function AIDiagnosticsTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Executar apenas no mount
 
+  // Auto-refresh provider status a cada 30 segundos para capturar erros recentes
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchProviderStatus();
+    }, 30000); // 30 segundos
+
+    return () => clearInterval(interval);
+  }, [fetchProviderStatus]);
+
   return (
     <div className="space-y-6 p-6">
       <Tabs defaultValue="diagnostics" className="w-full">

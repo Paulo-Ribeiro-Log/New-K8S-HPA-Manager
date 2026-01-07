@@ -45,6 +45,9 @@ type DiagnosticContext struct {
 	// DescribeOutput output do kubectl describe
 	DescribeOutput string `json:"describe_output,omitempty"`
 
+	// PrometheusMetrics métricas coletadas do Prometheus (NOVO)
+	PrometheusMetrics *PrometheusMetrics `json:"prometheus_metrics,omitempty"`
+
 	// Investigation resultados da investigação automática de recursos faltantes
 	Investigation *InvestigationResult `json:"investigation,omitempty"`
 }
@@ -262,4 +265,27 @@ type ContextRequest struct {
 
 	// LogTailLines número de linhas de log para coletar (padrão: 500)
 	LogTailLines int64
+}
+
+// PrometheusMetrics métricas coletadas do Prometheus
+type PrometheusMetrics struct {
+	// CollectedAt timestamp da coleta
+	CollectedAt time.Time `json:"collected_at"`
+
+	// CPU metrics (millicores)
+	CPUUsageCurrent float64 `json:"cpu_usage_current,omitempty"`
+	CPURequest      float64 `json:"cpu_request,omitempty"`
+	CPULimit        float64 `json:"cpu_limit,omitempty"`
+
+	// Memory metrics (MB)
+	MemoryUsageCurrent float64 `json:"memory_usage_current,omitempty"`
+	MemoryRequest      float64 `json:"memory_request,omitempty"`
+	MemoryLimit        float64 `json:"memory_limit,omitempty"`
+
+	// Replica metrics
+	ReadyReplicas   int32 `json:"ready_replicas,omitempty"`
+	DesiredReplicas int32 `json:"desired_replicas,omitempty"`
+
+	// Pod metrics
+	RestartCount int32 `json:"restart_count,omitempty"`
 }

@@ -343,18 +343,16 @@ func (pb *PromptBuilder) addInvestigationResults(builder *strings.Builder, inves
 	}
 }
 
-// Template para análise de Pods
+// Template para análise de Pods (FASE 3 - JSON Estruturado)
 const podTemplate = `Você é um especialista sênior em Kubernetes e troubleshooting de aplicações.
 
-═══════════════════════════════════════════════════════════════
-⛔ REGRAS ABSOLUTAS ⛔
-═══════════════════════════════════════════════════════════════
-1. COPIE trechos literais dos logs fornecidos no contexto
-2. Se não há logs: escreva "LOGS NÃO DISPONÍVEIS"
-3. NUNCA invente dados ou use exemplos genéricos
-4. NUNCA peça: kubectl logs, kubectl describe, kubectl get
+REGRAS ABSOLUTAS:
+1. RETORNE APENAS JSON VÁLIDO (sem markdown, sem '''json''')
+2. COPIE trechos literais dos logs fornecidos no contexto
+3. Se não há logs: escreva "LOGS NÃO DISPONÍVEIS"
+4. NUNCA invente dados ou use exemplos genéricos
 5. INVESTIGUE PROFUNDAMENTE - não pare no sintoma, encontre a CAUSA RAIZ
-═══════════════════════════════════════════════════════════════
+6. NÃO USE EMOJIS nos textos do JSON
 
 **INSTRUÇÕES DE ANÁLISE PROFUNDA:**
 
@@ -366,7 +364,6 @@ Quando encontrar ERROS DE CONEXÃO (timeout, connection refused, unreachable):
    - Serviço de destino está disponível? (kubectl get service)
    - Network policies estão bloqueando? (kubectl get networkpolicy)
    - DNS está resolvendo? (kubectl exec pod -- nslookup <service>)
-   - Resource limits podem estar causando lentidão?
 
 Quando encontrar ERROS DE APLICAÇÃO (exceptions, stack traces):
 1. Identifique o erro EXATO da stack trace (linha, método, mensagem)
@@ -374,55 +371,71 @@ Quando encontrar ERROS DE APLICAÇÃO (exceptions, stack traces):
 3. Verifique se ConfigMaps/Secrets necessários existem
 4. Sugira comandos para verificar cada hipótese
 
-**FORMATO DA RESPOSTA:**
+**FORMATO DA RESPOSTA (JSON OBRIGATÓRIO):**
 
-## 🔴 Problema
-Container [nome] com [X] restarts - [descreva baseado nos dados reais]
+Retorne APENAS este JSON (sem texto adicional, sem markdown wrappers):
 
-## 📋 Logs Analisados
-[Cole EXATAMENTE as linhas dos logs que mostram erro]
-[OU escreva: "LOGS NÃO DISPONÍVEIS NO CONTEXTO"]
+{
+  "executive_summary": {
+    "severity": "critical|high|medium|low",
+    "status": "unhealthy|degraded|healthy",
+    "quick_summary": "Resumo de 1-2 frases do problema principal",
+    "time_to_resolve": "estimativa de tempo (ex: 15 minutes, 1 hour)"
+  },
+  "root_cause_analysis": {
+    "symptom": "Descrição do sintoma observado (ex: CrashLoopBackOff com 15 restarts)",
+    "probable_causes": [
+      "Causa provável 1 (ex: Connection string incorreta no ConfigMap)",
+      "Causa provável 2 (ex: MongoDB service não está disponível)",
+      "Causa provável 3 (ex: Credenciais inválidas no Secret)"
+    ],
+    "evidence": [
+      "Evidência 1: trecho literal do log mostrando erro",
+      "Evidência 2: evento K8s relevante",
+      "Evidência 3: estado do container"
+    ],
+    "confidence": "high|medium|low"
+  },
+  "impact_assessment": {
+    "severity": "critical|high|medium|low",
+    "affected_users": "Descrição de quem é afetado (ex: Todos os usuários, 50%, Nenhum)",
+    "downtime_estimate": "Estimativa de downtime (ex: 30 minutes, ongoing)",
+    "sla_breach": true|false,
+    "business_impact": "Descrição do impacto no negócio"
+  },
+  "recommendations": [
+    {
+      "priority": 1,
+      "title": "Título da ação (ex: Corrigir connection string no ConfigMap)",
+      "description": "Descrição detalhada do que fazer e por quê",
+      "commands": [
+        "kubectl get configmap <nome> -n <namespace> -o yaml",
+        "kubectl edit configmap <nome> -n <namespace>"
+      ],
+      "time_estimate": "estimativa (ex: 5 minutes, 30 minutes)",
+      "risk_level": "low|medium|high",
+      "impact_level": "high|medium|low"
+    }
+  ]
+}
 
-## 📊 Causa Raiz
-[NÃO apenas repita o erro - INVESTIGUE PROFUNDAMENTE:]
+**REGRAS DE SEVERITY:**
+- critical: Pod completamente inoperante, serviço down
+- high: Pod em CrashLoopBackOff, serviço degradado
+- medium: Warnings, restarts ocasionais, performance degradada
+- low: Pod healthy mas com otimizações possíveis
 
-### 🔍 Sintoma
-[O que está acontecendo - ex: MongoTimeoutException após 5000ms]
-
-### 🎯 Causa Provável
-[PORQUÊ está acontecendo - analise as possibilidades:]
-- Opção 1: [ex: Connection string incorreta no ConfigMap]
-- Opção 2: [ex: MongoDB service não está disponível]
-- Opção 3: [ex: Network policy bloqueando tráfego]
-- Opção 4: [ex: Credenciais inválidas no Secret]
-
-### 🔬 Investigação Necessária
-[Comandos para verificar cada hipótese:]
-$ kubectl get configmap <nome> -n <namespace> -o yaml
-$ kubectl get secret <nome> -n <namespace>
-$ kubectl get service mongodb -n <namespace>
-$ kubectl exec <pod> -- nslookup mongodb-service
-$ kubectl exec <pod> -- nc -zv mongodb-service 27017
-
-## ⚡ Impacto
-Severidade: [critical/high/medium/low]
-
-## ✅ Solução
-[SOLUÇÃO REAL - não workaround temporário:]
-
-1. [Passo específico baseado na causa raiz]
-2. [Comando kubectl de correção]
-3. [Validação da correção]
-
-**❌ EVITE:**
-- Sugerir "kubectl rollout restart" sem investigar a causa
-- Soluções genéricas que não resolvem o problema real
-- Ignorar evidências nos logs
+**REGRAS DE PRIORITY:**
+- 1: Ação crítica, resolver imediatamente
+- 2: Ação importante, resolver hoje
+- 3: Ação recomendada, resolver esta semana
+- 4-5: Otimizações, não urgente
 
 **CONTEXTO COM OS DADOS REAIS:**
 {{CONTEXT}}
 
-**PORTUGUÊS BRASILEIRO.**`
+RETORNE APENAS O JSON ACIMA (SEM TEXTO ADICIONAL, SEM MARKDOWN WRAPPERS).
+PORTUGUÊS BRASILEIRO NOS TEXTOS DO JSON.`
 
 // Template para análise de Deployments
 const deploymentTemplate = `Você é um especialista em Kubernetes especializado em troubleshooting de Deployments.

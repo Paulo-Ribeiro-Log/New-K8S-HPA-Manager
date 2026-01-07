@@ -24,6 +24,7 @@ interface TokenStatus {
   has_claude: boolean;
   claude_model?: string;
   has_copilot: boolean;
+  copilot_endpoint?: string;
   copilot_deployment?: string;
   ollama_model?: string;
   preferred_provider: string;
@@ -98,6 +99,7 @@ export function AISettingsTab() {
       if (response.claude_model) setClaudeModel(response.claude_model);
       if (response.openai_model) setOpenaiModel(response.openai_model);
       if (response.ollama_model) setOllamaModel(response.ollama_model);
+      if (response.copilot_endpoint) setCopilotEndpoint(response.copilot_endpoint);
       if (response.copilot_deployment) setCopilotDeployment(response.copilot_deployment);
     } catch (error) {
       console.error("Failed to load token status:", error);
@@ -179,13 +181,13 @@ export function AISettingsTab() {
 
       if (response.valid) {
         toast({
-          title: "✅ Token válido",
-          description: `${provider} API key validada com sucesso`,
+          title: "✅ Formato válido",
+          description: `${provider} API key tem formato correto. Será testada na primeira análise.`,
         });
       } else {
         toast({
-          title: "❌ Token inválido",
-          description: response.error || "Token não é válido",
+          title: "❌ Formato inválido",
+          description: response.error || "Token não tem formato válido",
           variant: "destructive",
         });
       }
@@ -206,16 +208,6 @@ export function AISettingsTab() {
   };
 
   const handleSave = async () => {
-    // Validar que pelo menos um token foi fornecido (permitir Ollama sem tokens)
-    // if (!geminiKey && !openaiKey && !claudeKey && !copilotKey) {
-    //   toast({
-    //     title: "⚠️ Atenção",
-    //     description: "Você precisa configurar pelo menos um token AI (ou usar Ollama local)",
-    //     variant: "destructive",
-    //   });
-    //   return;
-    // }
-
     setSaving(true);
 
     try {
@@ -238,13 +230,12 @@ export function AISettingsTab() {
         description: "Seus tokens AI foram salvos com sucesso",
       });
 
-      // Limpar campos de senha após salvar
+      // Limpar apenas campos de senha (API keys) após salvar
+      // Manter endpoint e deployment pois são necessários para validação/uso posterior
       setGeminiKey("");
       setOpenaiKey("");
       setClaudeKey("");
       setCopilotKey("");
-      setCopilotEndpoint("");
-      setCopilotDeployment("");
 
       // Recarregar status
       await loadTokenStatus();
@@ -316,6 +307,23 @@ export function AISettingsTab() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
+          {/* Aviso Importante sobre Validação */}
+          <div className="rounded-lg border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950 p-4">
+            <div className="flex items-start gap-3">
+              <div className="text-yellow-600 dark:text-yellow-400 mt-0.5">⚠️</div>
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-yellow-900 dark:text-yellow-100">
+                  Importante: Validação de Formato Apenas
+                </p>
+                <p className="text-xs text-yellow-800 dark:text-yellow-200">
+                  O botão "Validar Formato" verifica apenas se a chave tem formato correto, <strong>sem fazer chamadas à API</strong>.
+                  A validação real (e consumo de quota) acontece apenas quando você usar o provider em uma análise real.
+                  Isso previne consumo desnecessário de quota da sua API.
+                </p>
+              </div>
+            </div>
+          </div>
+
           {/* Status Atual */}
           {tokenStatus && (
             <div className="space-y-2">
@@ -387,7 +395,7 @@ export function AISettingsTab() {
                 {validating === "gemini" ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  "Validar"
+                  "Validar Formato"
                 )}
               </Button>
             </div>
@@ -460,7 +468,7 @@ export function AISettingsTab() {
                 {validating === "openai" ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  "Validar"
+                  "Validar Formato"
                 )}
               </Button>
             </div>
@@ -533,7 +541,7 @@ export function AISettingsTab() {
                 {validating === "claude" ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  "Validar"
+                  "Validar Formato"
                 )}
               </Button>
             </div>
@@ -606,7 +614,7 @@ export function AISettingsTab() {
                 {validating === "copilot" ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  "Validar"
+                  "Validar Formato"
                 )}
               </Button>
             </div>

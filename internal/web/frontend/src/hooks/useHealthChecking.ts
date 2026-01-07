@@ -215,6 +215,12 @@ export function useHealthChecking() {
     setResults((prev) => [...prev, result]);
   }, []);
 
+  const markCancelled = useCallback(() => {
+    setIsRunning(false);
+    setSessionId(null);
+    setClusterSessions({});
+  }, []);
+
   return {
     // State
     isRunning,
@@ -232,5 +238,6 @@ export function useHealthChecking() {
     deleteResult,
     reset,
     markCompleted,
+    markCancelled,
   };
 }

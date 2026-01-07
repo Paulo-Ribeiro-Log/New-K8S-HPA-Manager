@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"k8s-hpa-manager/internal/kubernetes"
+	promclient "k8s-hpa-manager/internal/monitoring/client"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -102,8 +103,18 @@ func (cb *ContextBuilder) BuildContext(ctx context.Context, req *ContextRequest)
 		}
 	}
 
-	// TODO: Coletar alertas do Prometheus (req.IncludeMetrics)
-	// Isso será implementado quando integrarmos com o módulo de monitoramento
+	// Coletar métricas do Prometheus (se habilitado e for Pod)
+	if req.IncludeMetrics && req.ResourceType == "Pod" {
+		prometheusMetrics, err := cb.collectPrometheusMetrics(ctx, req.Cluster, req.Namespace, req.ResourceName)
+		if err != nil {
+			// Log warning mas não falha a análise se Prometheus não disponível
+			fmt.Printf("⚠️  [PROMETHEUS] Falha ao coletar métricas: %v\n", err)
+		} else {
+			diagCtx.PrometheusMetrics = prometheusMetrics
+			fmt.Printf("✅ [PROMETHEUS] Métricas coletadas: CPU=%.2fm, Memory=%.2fMB\n",
+				prometheusMetrics.CPUUsageCurrent, prometheusMetrics.MemoryUsageCurrent)
+		}
+	}
 
 	return diagCtx, nil
 }
@@ -162,4 +173,83 @@ func (cb *ContextBuilder) investigatePodResources(ctx context.Context, clientset
 
 	collector := NewPodCollector(clientset)
 	return collector.InvestigateResources(ctx, podCtx.Manifest, podCtx)
+}
+
+// collectPrometheusMetrics coleta métricas do Prometheus para um Pod
+func (cb *ContextBuilder) collectPrometheusMetrics(ctx context.Context, cluster, namespace, podName string) (*PrometheusMetrics, error) {
+	// Criar prometheus client
+	promClient, err := promclient.NewPrometheusClient(cluster)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Prometheus client: %w", err)
+	}
+	defer promClient.Close()
+
+	metrics := &PrometheusMetrics{
+		CollectedAt: time.Now(),
+	}
+
+	// CPU atual (média 5 min) em millicores
+	cpuQuery := fmt.Sprintf(
+		`avg(rate(container_cpu_usage_seconds_total{namespace="%s",pod="%s",container!="POD",container!=""}[5m])) * 1000`,
+		namespace, podName,
+	)
+	if cpuUsage, err := promClient.QueryScalar(ctx, cpuQuery); err == nil {
+		metrics.CPUUsageCurrent = cpuUsage
+	}
+
+	// Memory atual em MB
+	memQuery := fmt.Sprintf(
+		`avg(container_memory_working_set_bytes{namespace="%s",pod="%s",container!="POD",container!=""}) / (1024 * 1024)`,
+		namespace, podName,
+	)
+	if memUsage, err := promClient.QueryScalar(ctx, memQuery); err == nil {
+		metrics.MemoryUsageCurrent = memUsage
+	}
+
+	// CPU Request em millicores
+	cpuReqQuery := fmt.Sprintf(
+		`sum(kube_pod_container_resource_requests{namespace="%s",pod="%s",resource="cpu"}) * 1000`,
+		namespace, podName,
+	)
+	if cpuReq, err := promClient.QueryScalar(ctx, cpuReqQuery); err == nil {
+		metrics.CPURequest = cpuReq
+	}
+
+	// CPU Limit em millicores
+	cpuLimitQuery := fmt.Sprintf(
+		`sum(kube_pod_container_resource_limits{namespace="%s",pod="%s",resource="cpu"}) * 1000`,
+		namespace, podName,
+	)
+	if cpuLimit, err := promClient.QueryScalar(ctx, cpuLimitQuery); err == nil {
+		metrics.CPULimit = cpuLimit
+	}
+
+	// Memory Request em MB
+	memReqQuery := fmt.Sprintf(
+		`sum(kube_pod_container_resource_requests{namespace="%s",pod="%s",resource="memory"}) / (1024 * 1024)`,
+		namespace, podName,
+	)
+	if memReq, err := promClient.QueryScalar(ctx, memReqQuery); err == nil {
+		metrics.MemoryRequest = memReq
+	}
+
+	// Memory Limit em MB
+	memLimitQuery := fmt.Sprintf(
+		`sum(kube_pod_container_resource_limits{namespace="%s",pod="%s",resource="memory"}) / (1024 * 1024)`,
+		namespace, podName,
+	)
+	if memLimit, err := promClient.QueryScalar(ctx, memLimitQuery); err == nil {
+		metrics.MemoryLimit = memLimit
+	}
+
+	// Restart count
+	restartQuery := fmt.Sprintf(
+		`sum(kube_pod_container_status_restarts_total{namespace="%s",pod="%s"})`,
+		namespace, podName,
+	)
+	if restarts, err := promClient.QueryScalar(ctx, restartQuery); err == nil {
+		metrics.RestartCount = int32(restarts)
+	}
+
+	return metrics, nil
 }

@@ -36,6 +36,7 @@ interface HealthCheckProgressModalProps {
   viewMode?: boolean;                          // Modo visualização (não conecta SSE)
   onOpenChange: (open: boolean) => void;
   onComplete: (result: HealthCheckResult) => void;
+  onCancel?: () => void;
 }
 
 // Componente filho para cada cluster tab (REFATORADO - sem hooks, recebe eventos via props)
@@ -419,6 +420,7 @@ export const HealthCheckProgressModal = ({
   viewMode,
   onOpenChange,
   onComplete,
+  onCancel,
 }: HealthCheckProgressModalProps) => {
   const [activeTab, setActiveTab] = useState<string>("");
   const [completedClusters, setCompletedClusters] = useState<Set<string>>(new Set());
@@ -501,6 +503,9 @@ export const HealthCheckProgressModal = ({
     disconnect();
 
     toast.info("Health check cancelado - análises interrompidas");
+    if (onCancel) {
+      onCancel();
+    }
     onOpenChange(false);
   };
 
@@ -571,22 +576,35 @@ export const HealthCheckProgressModal = ({
             />
           ) : (
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-              <TabsList className="inline-flex w-full overflow-x-auto" style={{ gridTemplateColumns: clusters.length <= 3 ? `repeat(${clusters.length}, 1fr)` : undefined }}>
-                {clusters.map((cluster) => (
-                  <TabsTrigger key={cluster} value={cluster} className="relative flex-shrink-0">
-                    <div className="flex items-center gap-1 sm:gap-2">
-                      <Server className="h-3 w-3 sm:h-4 sm:w-4" />
-                      <span className="truncate max-w-[80px] sm:max-w-[150px] text-xs sm:text-sm">{cluster}</span>
-                      {completedClusters.has(cluster) && (
-                        <CheckCircle2 className="h-3 w-3 text-green-600 absolute -top-1 -right-1" />
-                      )}
-                      {failedClusters.has(cluster) && (
-                        <XCircle className="h-3 w-3 text-red-600 absolute -top-1 -right-1" />
-                      )}
-                    </div>
-                  </TabsTrigger>
-                ))}
-              </TabsList>
+              <div className="relative">
+                <div className="overflow-x-auto rounded-lg border border-zinc-800/80 bg-background/90 px-2 py-1 [&::-webkit-scrollbar]:h-[6px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[#2f2f3d]">
+                  <TabsList
+                    className="flex w-max gap-2 rounded-md bg-transparent"
+                    style={{ gridTemplateColumns: clusters.length <= 3 ? `repeat(${clusters.length}, 1fr)` : undefined }}
+                  >
+                    {clusters.map((cluster) => (
+                      <TabsTrigger
+                        key={cluster}
+                        value={cluster}
+                        className="relative flex-shrink-0 h-[41.8px] rounded-md border border-transparent bg-[#1f1f31] px-4 py-2 text-xs sm:text-sm font-medium text-muted-foreground transition-all hover:bg-[#27273a] hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-background data-[state=active]:text-primary data-[state=active]:shadow-md"
+                      >
+                        <div className="flex items-center gap-1 sm:gap-2">
+                          <Server className="h-3 w-3 sm:h-4 sm:w-4" />
+                          <span className="truncate max-w-[90px] sm:max-w-[150px]">
+                            {cluster}
+                          </span>
+                          {completedClusters.has(cluster) && (
+                            <CheckCircle2 className="h-3 w-3 text-green-600 absolute -top-1 -right-1 drop-shadow" />
+                          )}
+                          {failedClusters.has(cluster) && (
+                            <XCircle className="h-3 w-3 text-red-600 absolute -top-1 -right-1 drop-shadow" />
+                          )}
+                        </div>
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </div>
+              </div>
 
               {/* ✅ Renderizar TODOS os ClusterTabContent simultaneamente (não desmontar ao trocar tab)
                   Usar className para ocultar visualmente as tabs inativas (display: none)

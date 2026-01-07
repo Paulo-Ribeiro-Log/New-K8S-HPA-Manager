@@ -148,8 +148,9 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 	// Inicializar AI Diagnostics System
 	fmt.Println("🤖 Inicializando AI Diagnostics System...")
 
-	// 1. Criar SQLite client para histórico AI
-	aiDBPath := filepath.Join("./build", "ai_diagnostics.db")
+	// 1. Criar SQLite client para histórico AI (em ~/.k8s-hpa-manager/)
+	// Reutilizar baseDir que já foi criado anteriormente
+	aiDBPath := filepath.Join(baseDir, "ai_diagnostics.db")
 	sqliteClient, err := storage.NewSQLiteClient(aiDBPath)
 	if err != nil {
 		fmt.Printf("⚠️  Falha ao criar SQLite client para AI: %v\n", err)
@@ -310,6 +311,14 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 
 // setupRoutes configura as rotas da API
 func (s *Server) setupRoutes() {
+	// Obter baseDir para caminhos de bancos SQLite (necessário para predictions e health checks)
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Printf("❌ Erro ao obter diretório home: %v\n", err)
+		return
+	}
+	baseDir := filepath.Join(homeDir, ".k8s-hpa-manager")
+
 	// Health check (sem auth)
 	s.router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
@@ -497,6 +506,8 @@ func (s *Server) setupRoutes() {
 
 		// Deployments - Write Operations (SRE-only)
 		deployments.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), deploymentHandler.Apply)
+		deployments.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), deploymentHandler.Delete)
+		deployments.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), deploymentHandler.RolloutRestart)
 	}
 
 	// Pods/Containers
@@ -684,7 +695,7 @@ func (s *Server) setupRoutes() {
 	// Predictive Analysis (análise preditiva de deployments)
 	// Reutilizar analyzer, tokensStore e config do AI Diagnostics
 	fmt.Println("🔮 Inicializando Predictions Store...")
-	predictionsDBPath := filepath.Join("./build", "predictions.db")
+	predictionsDBPath := filepath.Join(baseDir, "predictions.db")
 	predictionsDB, err := storage.NewSQLiteClient(predictionsDBPath)
 	if err != nil {
 		fmt.Printf("⚠️  Erro ao criar Predictions DB: %v\n", err)
@@ -711,29 +722,31 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Middleware de debug para predictions
-	api.POST("/predictions/analyze", func(c *gin.Context) {
+	api.POST("/predictions/analyze", rbacMiddleware.InjectUserEmail(), func(c *gin.Context) {
 		fmt.Println("🔍 [MIDDLEWARE] POST /predictions/analyze - Request chegou!")
 		fmt.Printf("   Headers: %+v\n", c.Request.Header)
 		fmt.Printf("   ContentType: %s\n", c.ContentType())
+		userEmail := c.GetString("user_email")
+		fmt.Printf("   User Email (from RBAC): %s\n", userEmail)
 		c.Next()
 		fmt.Printf("   Response Status: %d\n", c.Writer.Status())
 	}, predictionsHandler.AnalyzeDeployment)
 
-	api.POST("/predictions/export", predictionsHandler.ExportReport)
-	api.GET("/predictions/health", predictionsHandler.GetHealthScore)
+	api.POST("/predictions/export", rbacMiddleware.InjectUserEmail(), predictionsHandler.ExportReport)
+	api.GET("/predictions/health", rbacMiddleware.InjectUserEmail(), predictionsHandler.GetHealthScore)
 
 	// Rotas de histórico de predictions
-	api.GET("/predictions/history", predictionsHandler.GetHistory)
-	api.GET("/predictions/history/:id", predictionsHandler.GetHistoryByID)
-	api.GET("/predictions/history/latest", predictionsHandler.GetLatestForDeployment)
-	api.GET("/predictions/statistics", predictionsHandler.GetStatistics)
+	api.GET("/predictions/history", rbacMiddleware.InjectUserEmail(), predictionsHandler.GetHistory)
+	api.GET("/predictions/history/:id", rbacMiddleware.InjectUserEmail(), predictionsHandler.GetHistoryByID)
+	api.GET("/predictions/history/latest", rbacMiddleware.InjectUserEmail(), predictionsHandler.GetLatestForDeployment)
+	api.GET("/predictions/statistics", rbacMiddleware.InjectUserEmail(), predictionsHandler.GetStatistics)
 
 	fmt.Println("✅ Predictions routes registradas")
 
 	// Health Checking System
 	fmt.Println("🏥 Inicializando Health Checking System...")
-	healthCheckDBPath := filepath.Join("./build", "health_checks.db")
-	filtersConfigPath := filepath.Join("./build", "health_check_filters.json") // ✅ Config de filtros
+	healthCheckDBPath := filepath.Join(baseDir, "health_checks.db")
+	filtersConfigPath := filepath.Join(baseDir, "health_check_filters.json") // ✅ Config de filtros
 	progressTracker := handlers.GetProgressTracker()                           // Reutilizar ProgressTracker global
 
 	healthCheckOrchestrator, err := healthcheck.NewOrchestrator(s.kubeManager, progressTracker, healthCheckDBPath, filtersConfigPath)
