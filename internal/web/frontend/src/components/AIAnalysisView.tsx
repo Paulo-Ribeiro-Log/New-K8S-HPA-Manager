@@ -19,9 +19,13 @@ import {
   TrendingUp,
   Info
 } from "lucide-react";
-import { apiClient } from "@/lib/api/client";
-import { useToast } from "@/hooks/use-toast";
+import { useToast } from "@/components/ui/use-toast";
 import ReactMarkdown from "react-markdown";
+import {
+  generateAIDiagnosticsPDF,
+  generateAIDiagnosticsMarkdown,
+  generateAIDiagnosticsCSV,
+} from "@/lib/aiReportGenerator";
 
 interface AIAnalysisViewProps {
   analysis: AnalysisResult;
@@ -47,16 +51,14 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  // Export handlers
-  const handleExportPDF = async () => {
+  // Export handlers (usando jsPDF no frontend - suporte UTF-8 nativo!)
+  const handleExportPDF = () => {
     setIsExporting(true);
     try {
-      const blob = await apiClient.exportAIPDF(analysis.id);
-      const filename = `diagnostico_${analysis.resource_name}_${new Date().toISOString().split('T')[0]}.pdf`;
-      downloadBlob(blob, filename);
+      generateAIDiagnosticsPDF(analysis);
       toast({
         title: "PDF exportado com sucesso",
-        description: `Arquivo ${filename} baixado`,
+        description: `Arquivo gerado com suporte completo a UTF-8`,
       });
     } catch (error) {
       toast({
@@ -69,11 +71,12 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
     }
   };
 
-  const handleExportMarkdown = async () => {
+  const handleExportMarkdown = () => {
     setIsExporting(true);
     try {
-      const blob = await apiClient.exportAIMarkdown(analysis.id);
+      const content = generateAIDiagnosticsMarkdown(analysis);
       const filename = `diagnostico_${analysis.resource_name}_${new Date().toISOString().split('T')[0]}.md`;
+      const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
       downloadBlob(blob, filename);
       toast({
         title: "Markdown exportado com sucesso",
@@ -90,11 +93,12 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
     }
   };
 
-  const handleExportCSV = async () => {
+  const handleExportCSV = () => {
     setIsExporting(true);
     try {
-      const blob = await apiClient.exportAICSV(analysis.id);
+      const content = generateAIDiagnosticsCSV(analysis);
       const filename = `diagnostico_${analysis.resource_name}_${new Date().toISOString().split('T')[0]}.csv`;
+      const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
       downloadBlob(blob, filename);
       toast({
         title: "CSV exportado com sucesso",
@@ -349,19 +353,19 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
                 <AccordionTrigger>Causas Provaveis</AccordionTrigger>
                 <AccordionContent>
                   <ol className="list-decimal list-inside space-y-2">
-                    {analysis.root_cause_analysis.probable_causes.map((cause, idx) => (
+                    {(analysis.root_cause_analysis.probable_causes || []).map((cause, idx) => (
                       <li key={idx} className="text-base">{cause}</li>
                     ))}
                   </ol>
                 </AccordionContent>
               </AccordionItem>
 
-              {analysis.root_cause_analysis.evidence.length > 0 && (
+              {analysis.root_cause_analysis.evidence && analysis.root_cause_analysis.evidence.length > 0 && (
                 <AccordionItem value="evidence">
                   <AccordionTrigger>Evidencias</AccordionTrigger>
                   <AccordionContent>
                     <ul className="list-disc list-inside space-y-1">
-                      {analysis.root_cause_analysis.evidence.map((ev, idx) => (
+                      {(analysis.root_cause_analysis.evidence || []).map((ev, idx) => (
                         <li key={idx} className="text-sm font-mono bg-muted p-2 rounded">{ev}</li>
                       ))}
                     </ul>
@@ -439,7 +443,7 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {analysis.recommendations
+            {(analysis.recommendations || [])
               .sort((a, b) => a.priority - b.priority) // Sort by priority (1 = highest)
               .map((rec, idx) => (
                 <Card key={idx} className="border-l-4 border-l-blue-500">
@@ -462,9 +466,9 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
                   <CardContent>
                     <p className="text-base mb-3">{rec.description}</p>
 
-                    {rec.commands.length > 0 && (
+                    {rec.commands && rec.commands.length > 0 && (
                       <div className="bg-muted p-3 rounded font-mono text-xs space-y-1">
-                        {rec.commands.map((cmd, cmdIdx) => (
+                        {(rec.commands || []).map((cmd, cmdIdx) => (
                           <div key={cmdIdx}>$ {cmd}</div>
                         ))}
                       </div>

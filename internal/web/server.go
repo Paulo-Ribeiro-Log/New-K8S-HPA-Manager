@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog"
 
 	"k8s-hpa-manager/internal/ai"
 	"k8s-hpa-manager/internal/config"
@@ -29,7 +30,9 @@ import (
 	// "k8s-hpa-manager/internal/monitoring/engine"
 	enginev2 "k8s-hpa-manager/internal/monitoring/engine"
 	// "k8s-hpa-manager/internal/monitoring/models"
+	helmservice "k8s-hpa-manager/internal/helm"
 	"k8s-hpa-manager/internal/monitoring/scanner"
+	helmclient "k8s-hpa-manager/internal/pkg/helm"
 	"k8s-hpa-manager/internal/web/handlers"
 	"k8s-hpa-manager/internal/web/middleware"
 )
@@ -558,6 +561,29 @@ func (s *Server) setupRoutes() {
 		services.GET("", serviceHandler.List)
 	}
 
+	// Helm
+	helmLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "helm-cli").Logger()
+	helmOptions := []helmclient.Option{helmclient.WithLogger(helmLogger)}
+	if resolved, err := helmclient.ResolveBinary(""); err == nil {
+		helmOptions = append(helmOptions, helmclient.WithBinary(resolved))
+	} else {
+		fmt.Printf("⚠️  Helm binary not found in PATH (continuing with default name): %v\n", err)
+	}
+	helmCLI := helmclient.NewCLIClient(helmOptions...)
+	helmService := helmservice.NewService(s.kubeManager, helmCLI)
+	helmHandler := handlers.NewHelmHandler(helmService)
+	helmRoutes := api.Group("/helm")
+	{
+		helmRoutes.GET("/releases", helmHandler.List)
+		helmRoutes.GET("/releases/:release", helmHandler.Get)
+		helmRoutes.GET("/releases/:release/history", helmHandler.History)
+		helmRoutes.POST("/releases", rbacMiddleware.RequireSREGroup(), helmHandler.Install)
+		helmRoutes.PUT("/releases/:release", rbacMiddleware.RequireSREGroup(), helmHandler.Upgrade)
+		helmRoutes.POST("/releases/:release/rollback", rbacMiddleware.RequireSREGroup(), helmHandler.Rollback)
+		helmRoutes.DELETE("/releases/:release", rbacMiddleware.RequireSREGroup(), helmHandler.Uninstall)
+		helmRoutes.GET("/operations/:operationId/stream", helmHandler.StreamOperation)
+	}
+
 	// Secrets
 	secretHandler := handlers.NewSecretHandler(s.kubeManager, s.historyTracker)
 	secrets := api.Group("/secrets")
@@ -679,6 +705,11 @@ func (s *Server) setupRoutes() {
 		api.GET("/ai/history/:id", s.aiHandler.GetAnalysisByID)
 		api.GET("/ai/stats", s.aiHandler.GetStats)
 
+		// Rotas de exportação de relatórios (PDF, Markdown, CSV)
+		api.GET("/ai/report/:id/pdf", s.aiHandler.GetReportPDF)
+		api.GET("/ai/report/:id/markdown", s.aiHandler.GetReportMarkdown)
+		api.GET("/ai/report/:id/csv", s.aiHandler.GetReportCSV)
+
 		// Rotas de escrita (POST, DELETE) - podem adicionar RBAC depois se necessário
 		api.POST("/ai/analyze", s.aiHandler.Analyze)
 		api.DELETE("/ai/history/:id", s.aiHandler.DeleteAnalysis)
@@ -747,7 +778,7 @@ func (s *Server) setupRoutes() {
 	fmt.Println("🏥 Inicializando Health Checking System...")
 	healthCheckDBPath := filepath.Join(baseDir, "health_checks.db")
 	filtersConfigPath := filepath.Join(baseDir, "health_check_filters.json") // ✅ Config de filtros
-	progressTracker := handlers.GetProgressTracker()                           // Reutilizar ProgressTracker global
+	progressTracker := handlers.GetProgressTracker()                         // Reutilizar ProgressTracker global
 
 	healthCheckOrchestrator, err := healthcheck.NewOrchestrator(s.kubeManager, progressTracker, healthCheckDBPath, filtersConfigPath)
 	if err != nil {

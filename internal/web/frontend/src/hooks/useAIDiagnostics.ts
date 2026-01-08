@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { apiClient } from "@/lib/api/client";
 import type {
   AnalyzeRequest,
@@ -19,6 +19,9 @@ export function useAIDiagnostics() {
   const [stats, setStats] = useState<AIStats | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isLoadingStatus, setIsLoadingStatus] = useState(false);
+
+  // AbortController para cancelar análise em andamento
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   /**
    * Fetch AI provider status
@@ -81,20 +84,28 @@ export function useAIDiagnostics() {
    */
   const analyzeResource = useCallback(
     async (request: AnalyzeRequest): Promise<AnalysisResult | null> => {
+      // Cancelar análise anterior se existir
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+
+      // Criar novo AbortController
+      abortControllerRef.current = new AbortController();
+
       setIsAnalyzing(true);
       setCurrentAnalysis(null);
 
       try {
         toast({
-          title: "🤖 Analisando com AI...",
+          title: "Analisando com AI...",
           description: `Analisando ${request.resourceType}: ${request.resourceName}`,
         });
 
-        const result = await apiClient.analyzeResource(request);
+        const result = await apiClient.analyzeResource(request, abortControllerRef.current.signal);
         setCurrentAnalysis(result);
 
         toast({
-          title: "✅ Análise concluída",
+          title: "Análise concluída",
           description: `${request.resourceType} analisado com sucesso`,
         });
 
@@ -103,19 +114,41 @@ export function useAIDiagnostics() {
 
         return result;
       } catch (error) {
+        // Ignorar erro se foi cancelamento
+        if (error instanceof Error && error.name === "AbortError") {
+          console.log("Analysis was cancelled by user");
+          toast({
+            title: "Análise cancelada",
+            description: "A análise foi cancelada pelo usuário",
+          });
+          return null;
+        }
+
         console.error("Failed to analyze resource:", error);
         toast({
-          title: "❌ Erro na análise AI",
+          title: "Erro na análise AI",
           description: error instanceof Error ? error.message : "Erro desconhecido",
           variant: "destructive",
         });
         return null;
       } finally {
         setIsAnalyzing(false);
+        abortControllerRef.current = null;
       }
     },
     [toast, fetchHistory]
   );
+
+  /**
+   * Cancel ongoing analysis
+   */
+  const cancelAnalysis = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setIsAnalyzing(false);
+    }
+  }, []);
 
   /**
    * Get a specific analysis by ID
@@ -229,6 +262,7 @@ export function useAIDiagnostics() {
 
     // Actions
     analyzeResource,
+    cancelAnalysis,
     fetchHistory,
     getAnalysisById,
     fetchProviderStatus,

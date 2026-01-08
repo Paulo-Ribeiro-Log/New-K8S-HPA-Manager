@@ -1404,10 +1404,11 @@ class APIClient {
   /**
    * Analyze a Kubernetes resource with AI
    */
-  async analyzeResource(request: AnalyzeRequest): Promise<AnalysisResult> {
+  async analyzeResource(request: AnalyzeRequest, signal?: AbortSignal): Promise<AnalysisResult> {
     return this.request(`/ai/analyze`, {
       method: "POST",
       body: JSON.stringify(request),
+      signal, // Pass signal to fetch for cancellation
     });
   }
 
@@ -1550,11 +1551,19 @@ class APIClient {
    * Export AI analysis as PDF
    */
   async exportAIPDF(analysisId: string): Promise<Blob> {
+    const headers: HeadersInit = {
+      "Content-Type": "application/pdf",
+    };
+
+    // Add auth token if available
+    const token = localStorage.getItem("auth_token");
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
     const response = await fetch(`/api/v1/ai/report/${analysisId}/pdf`, {
       method: "GET",
-      headers: {
-        "Content-Type": "application/pdf",
-      },
+      headers,
     });
 
     if (!response.ok) {
@@ -1568,11 +1577,19 @@ class APIClient {
    * Export AI analysis as Markdown
    */
   async exportAIMarkdown(analysisId: string): Promise<Blob> {
+    const headers: HeadersInit = {
+      "Content-Type": "text/markdown",
+    };
+
+    // Add auth token if available
+    const token = localStorage.getItem("auth_token");
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
     const response = await fetch(`/api/v1/ai/report/${analysisId}/markdown`, {
       method: "GET",
-      headers: {
-        "Content-Type": "text/markdown",
-      },
+      headers,
     });
 
     if (!response.ok) {
@@ -1586,11 +1603,19 @@ class APIClient {
    * Export AI analysis as CSV
    */
   async exportAICSV(analysisId: string): Promise<Blob> {
+    const headers: HeadersInit = {
+      "Content-Type": "text/csv",
+    };
+
+    // Add auth token if available
+    const token = localStorage.getItem("auth_token");
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
     const response = await fetch(`/api/v1/ai/report/${analysisId}/csv`, {
       method: "GET",
-      headers: {
-        "Content-Type": "text/csv",
-      },
+      headers,
     });
 
     if (!response.ok) {

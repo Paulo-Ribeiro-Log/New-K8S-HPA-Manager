@@ -44,6 +44,7 @@ import { MonitoringPage } from "./MonitoringPage";
 import { ServiceMeshGraph } from "@/components/ServiceMeshGraph";
 import { AIDiagnosticsTab } from "@/components/AIDiagnosticsTab";
 import { HealthCheckingTab } from "@/components/HealthCheckingTab";
+import { HelmTab } from "@/components/HelmTab";
 import {
   LayoutDashboard,
   Scale,
@@ -61,7 +62,8 @@ import {
   RefreshCcw,
   Network,
   Brain,
-  Activity
+  Activity,
+  PackageOpen
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -410,6 +412,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
     { id: "servicemesh", label: "Service Mesh", icon: Network },
     { id: "healthcheck", label: "Health Checking", icon: Activity },
+    { id: "helm", label: "Helm", icon: PackageOpen },
     { id: "namespaces", label: "Namespaces", icon: Database },
     { id: "ai-diagnostics", label: "AI Diagnostics", icon: Brain },
   ];
@@ -744,6 +747,13 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
+      case "helm":
+        return (
+          <ErrorBoundary componentName="Helm Tab">
+            <HelmTab selectedCluster={selectedCluster} />
+          </ErrorBoundary>
+        );
+
       case "events":
         return (
           <ErrorBoundary componentName="Events Tab">
@@ -1000,8 +1010,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking e AI Diagnostics */}
-      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "ai-diagnostics" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm e AI Diagnostics */}
+      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "ai-diagnostics" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (

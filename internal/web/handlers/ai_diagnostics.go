@@ -657,17 +657,50 @@ func historyRecordToAnalysisResult(record *storage.HistoryRecord) (*ai.AnalysisR
 	}
 
 	// Parse Prometheus Metrics (JSON object)
-	if record.PrometheusMetrics != "" {
+	if record.PrometheusMetrics.Valid && record.PrometheusMetrics.String != "" {
 		var metrics ai.ResourceMetrics
-		if err := json.Unmarshal([]byte(record.PrometheusMetrics), &metrics); err != nil {
+		if err := json.Unmarshal([]byte(record.PrometheusMetrics.String), &metrics); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse Prometheus metrics")
 		} else {
 			result.CurrentMetrics = &metrics
 		}
 	}
 
-	// TODO FASE 3.5: Parse campos estruturados (ExecutiveSummary, RootCauseAnalysis, etc)
-	// Isso será adicionado quando o banco for atualizado com os novos campos
+	// Parse Resource Metadata (JSON object - FASE 3.5 - 08/01/2026)
+	if record.ResourceMetadata.Valid && record.ResourceMetadata.String != "" {
+		var metadata ai.ResourceMetadata
+		if err := json.Unmarshal([]byte(record.ResourceMetadata.String), &metadata); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse Resource metadata")
+		} else {
+			result.ResourceMetadata = &metadata
+		}
+	}
+
+	// Parse campos estruturados do JSON em Analysis
+	// Tentar fazer parse do Analysis como JSON estruturado
+	if record.Analysis != "" {
+		// Tentar parse como estrutura completa
+		var structuredAnalysis struct {
+			ExecutiveSummary  ai.ExecutiveSummary           `json:"executive_summary"`
+			RootCauseAnalysis ai.RootCauseAnalysis          `json:"root_cause_analysis"`
+			ImpactAssessment  ai.ImpactAssessment           `json:"impact_assessment"`
+			Recommendations   []ai.ActionableRecommendation `json:"recommendations"`
+		}
+
+		if err := json.Unmarshal([]byte(record.Analysis), &structuredAnalysis); err == nil {
+			// Parse bem-sucedido - usar campos estruturados
+			result.ExecutiveSummary = structuredAnalysis.ExecutiveSummary
+			result.RootCauseAnalysis = structuredAnalysis.RootCauseAnalysis
+			result.ImpactAssessment = structuredAnalysis.ImpactAssessment
+			result.Recommendations = structuredAnalysis.Recommendations
+
+			// Limpar Analysis para não duplicar informação
+			result.Analysis = ""
+		} else {
+			// Parse falhou - manter Analysis como texto (formato legado)
+			log.Debug().Err(err).Msg("Analysis is not structured JSON, keeping as legacy format")
+		}
+	}
 
 	return result, nil
 }

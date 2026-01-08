@@ -24,10 +24,25 @@ func (s *AIHistoryStore) Save(record *HistoryRecord) error {
 	query := `
 INSERT INTO ai_analysis_history (
     id, resource_type, cluster, namespace, resource_name,
-    provider, model, analysis, suggestions, prometheus_metrics,
+    provider, model, analysis, suggestions, prometheus_metrics, resource_metadata,
     tokens_used, response_time, analyzed_at, user_email
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
+
+	// Converter sql.NullString para valores compatíveis com SQLite
+	var prometheusMetrics interface{}
+	if record.PrometheusMetrics.Valid {
+		prometheusMetrics = record.PrometheusMetrics.String
+	} else {
+		prometheusMetrics = nil
+	}
+
+	var resourceMetadata interface{}
+	if record.ResourceMetadata.Valid {
+		resourceMetadata = record.ResourceMetadata.String
+	} else {
+		resourceMetadata = nil
+	}
 
 	_, err := s.client.Exec(query,
 		record.ID,
@@ -39,7 +54,8 @@ INSERT INTO ai_analysis_history (
 		record.Model,
 		record.Analysis,
 		record.Suggestions,
-		record.PrometheusMetrics, // NOVO - FASE 2.1
+		prometheusMetrics, // FASE 2.1
+		resourceMetadata,  // FASE 3.5 - 08/01/2026
 		record.TokensUsed,
 		record.ResponseTime,
 		record.AnalyzedAt,
@@ -53,7 +69,7 @@ INSERT INTO ai_analysis_history (
 func (s *AIHistoryStore) GetByID(id string) (*HistoryRecord, error) {
 	query := `
 SELECT id, resource_type, cluster, namespace, resource_name,
-       provider, model, analysis, suggestions, prometheus_metrics,
+       provider, model, analysis, suggestions, prometheus_metrics, resource_metadata,
        tokens_used, response_time, analyzed_at, user_email, created_at
 FROM ai_analysis_history
 WHERE id = ?
@@ -72,7 +88,8 @@ WHERE id = ?
 		&record.Model,
 		&record.Analysis,
 		&record.Suggestions,
-		&record.PrometheusMetrics, // NOVO - FASE 2.1
+		&record.PrometheusMetrics, // FASE 2.1
+		&record.ResourceMetadata,  // FASE 3.5 - 08/01/2026
 		&record.TokensUsed,
 		&record.ResponseTime,
 		&record.AnalyzedAt,
@@ -95,7 +112,7 @@ WHERE id = ?
 func (s *AIHistoryStore) Query(filters *QueryFilters) ([]*HistoryRecord, error) {
 	query := `
 SELECT id, resource_type, cluster, namespace, resource_name,
-       provider, model, analysis, suggestions, prometheus_metrics,
+       provider, model, analysis, suggestions, prometheus_metrics, resource_metadata,
        tokens_used, response_time, analyzed_at, user_email, created_at
 FROM ai_analysis_history
 WHERE 1=1
@@ -176,7 +193,8 @@ WHERE 1=1
 			&record.Model,
 			&record.Analysis,
 			&record.Suggestions,
-			&record.PrometheusMetrics, // NOVO - FASE 2.1
+			&record.PrometheusMetrics, // FASE 2.1
+			&record.ResourceMetadata,  // FASE 3.5 - 08/01/2026
 			&record.TokensUsed,
 			&record.ResponseTime,
 			&record.AnalyzedAt,
@@ -352,7 +370,7 @@ func (s *AIHistoryStore) Vacuum() error {
 func (s *AIHistoryStore) GetRecentByResource(cluster, namespace, resourceName string, limit int) ([]*HistoryRecord, error) {
 	query := `
 SELECT id, resource_type, cluster, namespace, resource_name,
-       provider, model, analysis, suggestions, prometheus_metrics,
+       provider, model, analysis, suggestions, prometheus_metrics, resource_metadata,
        tokens_used, response_time, analyzed_at, user_email, created_at
 FROM ai_analysis_history
 WHERE cluster = ? AND namespace = ? AND resource_name = ?
@@ -379,7 +397,8 @@ LIMIT ?
 			&record.Model,
 			&record.Analysis,
 			&record.Suggestions,
-			&record.PrometheusMetrics, // NOVO - FASE 2.1
+			&record.PrometheusMetrics, // FASE 2.1
+			&record.ResourceMetadata,  // FASE 3.5 - 08/01/2026
 			&record.TokensUsed,
 			&record.ResponseTime,
 			&record.AnalyzedAt,
@@ -400,7 +419,7 @@ LIMIT ?
 func (s *AIHistoryStore) Search(searchTerm string, limit int) ([]*HistoryRecord, error) {
 	query := `
 SELECT id, resource_type, cluster, namespace, resource_name,
-       provider, model, analysis, suggestions, prometheus_metrics,
+       provider, model, analysis, suggestions, prometheus_metrics, resource_metadata,
        tokens_used, response_time, analyzed_at, user_email, created_at
 FROM ai_analysis_history
 WHERE analysis LIKE ? OR suggestions LIKE ?
@@ -428,7 +447,8 @@ LIMIT ?
 			&record.Model,
 			&record.Analysis,
 			&record.Suggestions,
-			&record.PrometheusMetrics, // NOVO - FASE 2.1
+			&record.PrometheusMetrics, // FASE 2.1
+			&record.ResourceMetadata,  // FASE 3.5 - 08/01/2026
 			&record.TokensUsed,
 			&record.ResponseTime,
 			&record.AnalyzedAt,

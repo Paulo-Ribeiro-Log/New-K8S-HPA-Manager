@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **07 de janeiro de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **08 de janeiro de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -44,8 +44,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 17. [🧠 Plano AI Diagnostics](PLANO_AI_DIAGNOSTICS.md) - **Plano completo de implementação** (8 dias)
 18. [📊 Progresso AI Diagnostics](PROGRESSO_AI_DIAGNOSTICS.md) - **Status: 100% Completo** (v1.3.6)
 
+### ⎈ Helm Tab (✅ Produção desde 08/01/2026)
+19. [🎯 Plano Aba Helm](PLANO_ABA_HELM.md) - **Implementação completa da aba Helm** (v1.3.7+)
+
 ### 📋 Health Checking (✅ Produção desde 28/12/2025)
-19. [📊 Implementação Logs Persistentes](IMPLEMENTACAO_LOGS_PERSISTENTES.md) - **Sistema de persistência e visualização de logs históricos** (v1.3.7+)
+20. [📊 Implementação Logs Persistentes](IMPLEMENTACAO_LOGS_PERSISTENTES.md) - **Sistema de persistência e visualização de logs históricos** (v1.3.7+)
 
 ---
 
@@ -1808,3 +1811,42 @@ make release                     # Gera binários em build/release/
 ---
 
 **Happy coding!** 🚀
+
+---
+
+## 📝 Histórico de Sessões Recentes
+
+### Sessão 08/01/2026 - Refinamento Aba Helm
+**Contexto**: Melhorias de UX e organização da interface Helm
+**Alterações**:
+- ✅ Corrigido bug: namespace não estava sendo passado ao selecionar release
+- ✅ Reorganizado menu de ações em dropdown (⋮) no header de detalhes
+- ✅ Movido Install, Upgrade, Rollback, Uninstall para menu de 3 pontos
+- ✅ Mantido Export Values como botão independente
+- ✅ Implementado filtro de namespaces de sistema (igual aba Namespaces)
+- ✅ Adicionado botão "Sistema" (Eye/EyeOff) para toggle no header
+- ✅ Select de namespaces movido para header e tornado dinâmico
+- ✅ Namespaces carregados automaticamente dos releases disponíveis
+- ✅ Filtro aplicado em releases e select (oculta kube-system, istio, etc)
+- ✅ Auto-reset de namespace selecionado quando se torna indisponível
+- ✅ Removidos cards de estatísticas (Contexto, Namespaces, HPAs, etc) da aba Helm
+- ✅ Implementado MonacoYamlEditor nas abas Values e Manifest
+- ✅ Habilitada edição no Monaco (substituindo `<pre>` tags read-only)
+- ✅ Edição funcional: Values (Raw editável, Renderizado read-only), Manifest (editável)
+
+**Arquivos Modificados**:
+- `internal/web/frontend/src/components/HelmTab.tsx` - Filtros e select dinâmico
+- `internal/web/frontend/src/components/HelmReleaseList.tsx` - Filtro de releases
+- `internal/web/frontend/src/components/HelmReleaseDetails.tsx` - Menu dropdown e Monaco editor
+- `internal/web/frontend/src/store/helmStore.tsx` - Estado de namespace
+- `internal/web/frontend/src/pages/Index.tsx` - Ocultar cards na aba Helm
+- `PLANO_ABA_HELM.md` - Atualização de progresso e critérios de aceite
+
+**Pendências Identificadas**:
+- [ ] Implementar botões Apply/Validate para aplicar edições do Monaco
+- [ ] Validação YAML inline no editor
+- [ ] Modal de confirmação antes de aplicar mudanças
+- [ ] Diff visual (original vs editado) antes de upgrade
+- [ ] Feedback de progresso ao aplicar mudanças
+
+---
