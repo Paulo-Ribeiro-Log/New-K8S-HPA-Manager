@@ -60,6 +60,11 @@ func NewKubeConfigManager(configPath string) (*KubeConfigManager, error) {
 	}, nil
 }
 
+// ConfigPath retorna o caminho configurado do kubeconfig.
+func (k *KubeConfigManager) ConfigPath() string {
+	return k.configPath
+}
+
 // SetHistoryTracker configura o historyTracker para audit logging
 func (k *KubeConfigManager) SetHistoryTracker(tracker *history.HistoryTracker) {
 	k.historyTracker = tracker

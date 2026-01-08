@@ -53,7 +53,7 @@ export const PodsPanel = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
 }: PodsPanelProps) => {
-  const { analyzeResource, isAnalyzing } = useAIDiagnostics();
+  const { analyzeResource, isAnalyzing, cancelAnalysis } = useAIDiagnostics();
 
   // ✅ Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('pods', 'searchQuery', "");
@@ -1149,6 +1149,7 @@ export const PodsPanel = ({
                         variant="default"
                         size="sm"
                         onClick={async () => {
+                          console.log("[PodsPanel] Starting AI analysis...");
                           try {
                             const analysis = await analyzeResource({
                               resourceType: "Pod",
@@ -1159,17 +1160,30 @@ export const PodsPanel = ({
                               includeMetrics: false,
                               includeLogs: true,
                             });
-                            
+
+                            console.log("[PodsPanel] Analysis result:", analysis);
+
                             if (analysis) {
+                              console.log("[PodsPanel] Saving to sessionStorage with key:", `ai-analysis-${analysis.id}`);
                               sessionStorage.setItem(`ai-analysis-${analysis.id}`, JSON.stringify(analysis));
+
+                              // Verificar se foi salvo
+                              const saved = sessionStorage.getItem(`ai-analysis-${analysis.id}`);
+                              console.log("[PodsPanel] Verification - saved data exists:", !!saved);
+
+                              console.log("[PodsPanel] Opening new window:", `/ai-analysis/${analysis.id}`);
                               const newWindow = window.open(`/ai-analysis/${analysis.id}`, '_blank');
                               if (newWindow) {
                                 toast.success('Análise aberta em nova aba');
                               } else {
                                 toast.error('Popup bloqueado! Permita popups para este site.');
                               }
+                            } else {
+                              console.warn("[PodsPanel] Analysis is null or undefined");
+                              toast.error('Análise retornou vazia');
                             }
                           } catch (error) {
+                            console.error("[PodsPanel] Analysis failed:", error);
                             toast.error('Falha ao analisar recurso');
                           }
                         }}
@@ -1187,6 +1201,21 @@ export const PodsPanel = ({
                             Analisar com AI
                           </>
                         )}
+                      </Button>
+                    )}
+
+                    {/* Botão Cancelar (apenas durante análise) */}
+                    {isAnalyzing && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => {
+                          cancelAnalysis();
+                          toast.info('Cancelando análise...');
+                        }}
+                      >
+                        <X className="w-4 h-4 mr-2" />
+                        Cancelar
                       </Button>
                     )}
 

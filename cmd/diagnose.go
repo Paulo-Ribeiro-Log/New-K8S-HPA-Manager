@@ -26,7 +26,8 @@ Exemplo:
 			testURL = args[0]
 		}
 
-		fmt.Println("=== Diagnóstico de Certificados CA Customizados ===\n")
+		fmt.Println("=== Diagnóstico de Certificados CA Customizados ===")
+		fmt.Println()
 
 		// 1. Verificar variável de ambiente
 		fmt.Println("1. Verificando variável de ambiente CUSTOM_CA_BUNDLE...")
@@ -158,7 +159,8 @@ Exemplo:
 		// 5. Recomendações
 		fmt.Println("=== Recomendações ===")
 		if certFile == "" {
-			fmt.Println("⚠ Nenhum certificado CA customizado encontrado\n")
+			fmt.Println("⚠ Nenhum certificado CA customizado encontrado")
+			fmt.Println()
 			fmt.Println("Passos recomendados:")
 			fmt.Println("1. Obter o certificado CA raiz da empresa (exportar do navegador ou solicitar ao time de infra)")
 			fmt.Println()

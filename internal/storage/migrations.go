@@ -72,6 +72,12 @@ CREATE INDEX IF NOT EXISTS idx_pred_health_score ON predictions_history(health_s
 ALTER TABLE ai_analysis_history
 ADD COLUMN prometheus_metrics TEXT;
 `
+
+	// Migration: Adicionar coluna resource_metadata (FASE 3.5 - 08/01/2026)
+	addResourceMetadataColumnSQL = `
+ALTER TABLE ai_analysis_history
+ADD COLUMN resource_metadata TEXT;
+`
 )
 
 // runMigrations executa migrations do banco de dados
@@ -112,6 +118,25 @@ func (c *SQLiteClient) runMigrations() error {
 	// Adicionar coluna apenas se não existir
 	if columnExists == 0 {
 		if _, err := c.db.Exec(addPrometheusMetricsColumnSQL); err != nil {
+			return err
+		}
+	}
+
+	// Migration: Adicionar coluna resource_metadata (se não existir)
+	var resourceMetadataExists int
+	err = c.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM pragma_table_info('ai_analysis_history')
+		WHERE name='resource_metadata'
+	`).Scan(&resourceMetadataExists)
+
+	if err != nil {
+		return err
+	}
+
+	// Adicionar coluna apenas se não existir
+	if resourceMetadataExists == 0 {
+		if _, err := c.db.Exec(addResourceMetadataColumnSQL); err != nil {
 			return err
 		}
 	}

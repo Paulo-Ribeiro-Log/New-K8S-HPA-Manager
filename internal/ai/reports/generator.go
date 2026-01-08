@@ -11,9 +11,37 @@ import (
 	"github.com/jung-kurt/gofpdf"
 )
 
+// utf8ToLatin1 converte string UTF-8 para Latin-1 (compatível com gofpdf)
+func utf8ToLatin1(s string) string {
+	// gofpdf não suporta UTF-8 nativamente com fontes built-in
+	// Fazer conversão básica de caracteres acentuados
+	replacements := map[string]string{
+		"ç": "c", "Ç": "C",
+		"ã": "a", "Ã": "A",
+		"õ": "o", "Õ": "O",
+		"á": "a", "Á": "A",
+		"é": "e", "É": "E",
+		"í": "i", "Í": "I",
+		"ó": "o", "Ó": "O",
+		"ú": "u", "Ú": "U",
+		"â": "a", "Â": "A",
+		"ê": "e", "Ê": "E",
+		"ô": "o", "Ô": "O",
+		"à": "a", "À": "A",
+	}
+
+	result := s
+	for utf8Char, latin1Char := range replacements {
+		result = strings.ReplaceAll(result, utf8Char, latin1Char)
+	}
+	return result
+}
+
 // GeneratePDF gera relatório PDF profissional (sem emojis)
 func GeneratePDF(result *ai.AnalysisResult) ([]byte, error) {
 	pdf := gofpdf.New("P", "mm", "A4", "")
+	// Usar fontes built-in do gofpdf ao invés de arquivos externos
+	pdf.SetFont("Arial", "", 12)
 	pdf.AddPage()
 
 	// Header azul (padrão Health Check)
@@ -156,7 +184,9 @@ func GeneratePDF(result *ai.AnalysisResult) ([]byte, error) {
 
 	pdf.SetFont("Arial", "", 10)
 	if result.ExecutiveSummary.QuickSummary != "" {
-		pdf.MultiCell(0, 6, result.ExecutiveSummary.QuickSummary, "", "L", false)
+		// Converter UTF-8 corretamente
+		quickSummary := utf8ToLatin1(result.ExecutiveSummary.QuickSummary)
+		pdf.MultiCell(0, 6, quickSummary, "", "L", false)
 		pdf.Ln(4)
 
 		// Grid de métricas
@@ -172,11 +202,14 @@ func GeneratePDF(result *ai.AnalysisResult) ([]byte, error) {
 		pdf.SetFont("Arial", "", 10)
 		pdf.Cell(40, 6, "Tempo Estimado:")
 		pdf.SetFont("Arial", "B", 10)
-		pdf.Cell(0, 6, result.ExecutiveSummary.TimeToResolve)
+		timeToResolve := utf8ToLatin1(result.ExecutiveSummary.TimeToResolve)
+		pdf.Cell(0, 6, timeToResolve)
 		pdf.Ln(8)
 	} else {
-		// Fallback: usar Analysis legado
-		pdf.MultiCell(0, 6, result.Analysis, "", "L", false)
+		// Fallback: usar Analysis legado (NUNCA DEVE CHEGAR AQUI)
+		// Não exibir JSON cru - avisar que dados estruturados não disponíveis
+		pdf.SetFont("Arial", "I", 10)
+		pdf.Cell(0, 6, "Analise estruturada nao disponivel (formato legado)")
 		pdf.Ln(8)
 	}
 

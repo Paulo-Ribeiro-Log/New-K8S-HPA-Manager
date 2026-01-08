@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -128,13 +129,24 @@ func (a *Analyzer) Analyze(ctx context.Context, req *AnalysisRequest) (*Analysis
 		suggestionsJSON, _ := json.Marshal(result.Suggestions)
 
 		// FASE 2.1: Serializar métricas Prometheus para persistência
-		var prometheusMetricsJSON string
+		var prometheusMetricsNullable sql.NullString
 		if diagCtx.PrometheusMetrics != nil {
 			metricsData, err := json.Marshal(diagCtx.PrometheusMetrics)
 			if err == nil {
-				prometheusMetricsJSON = string(metricsData)
+				prometheusMetricsNullable = sql.NullString{String: string(metricsData), Valid: true}
 			} else {
 				fmt.Printf("Warning: failed to serialize Prometheus metrics: %v\n", err)
+			}
+		}
+
+		// FASE 3.5: Serializar metadados do recurso para persistência
+		var resourceMetadataNullable sql.NullString
+		if result.ResourceMetadata != nil {
+			metadataData, err := json.Marshal(result.ResourceMetadata)
+			if err == nil {
+				resourceMetadataNullable = sql.NullString{String: string(metadataData), Valid: true}
+			} else {
+				fmt.Printf("Warning: failed to serialize Resource metadata: %v\n", err)
 			}
 		}
 
@@ -148,7 +160,8 @@ func (a *Analyzer) Analyze(ctx context.Context, req *AnalysisRequest) (*Analysis
 			Model:             result.Model,
 			Analysis:          result.Analysis,
 			Suggestions:       string(suggestionsJSON),
-			PrometheusMetrics: prometheusMetricsJSON, // NOVO - FASE 2.1
+			PrometheusMetrics: prometheusMetricsNullable, // FASE 2.1
+			ResourceMetadata:  resourceMetadataNullable,  // FASE 3.5 - 08/01/2026
 			TokensUsed:        result.TokensUsed,
 			ResponseTime:      result.ResponseTime,
 			AnalyzedAt:        result.AnalyzedAt,
