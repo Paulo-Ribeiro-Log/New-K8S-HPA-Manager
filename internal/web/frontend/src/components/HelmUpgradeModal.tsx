@@ -47,7 +47,8 @@ export const HelmUpgradeModal = ({
   // Initialize values when release changes
   useEffect(() => {
     if (release && open) {
-      setChartRef(release.chart || '');
+      // Leave chartRef empty - user must provide full repo/chart format
+      setChartRef('');
       setVersion('');
       setValuesYaml(release.valuesRaw || '');
       setOperationStatus('idle');
@@ -133,13 +134,13 @@ export const HelmUpgradeModal = ({
           </TabsList>
 
           <TabsContent value="values" className="flex-1 overflow-hidden mt-4">
-            <div className="space-y-2 h-full flex flex-col">
+            <div className="space-y-2 h-full flex flex-col min-h-[500px]">
               <Label>YAML Values</Label>
-              <div className="flex-1 border rounded-md overflow-hidden">
+              <div className="flex-1 border rounded-md overflow-hidden min-h-[450px]">
                 <MonacoYamlEditor
                   value={valuesYaml}
                   onChange={setValuesYaml}
-                  height="100%"
+                  height={450}
                   readOnly={isExecuting}
                 />
               </div>
@@ -148,14 +149,21 @@ export const HelmUpgradeModal = ({
 
           <TabsContent value="settings" className="space-y-4 mt-4 overflow-auto">
             <div className="space-y-2">
-              <Label htmlFor="chart">Chart Reference</Label>
+              <Label htmlFor="chart">
+                Chart Reference <span className="text-muted-foreground text-xs">(opcional)</span>
+              </Label>
               <Input
                 id="chart"
                 value={chartRef}
                 onChange={(e) => setChartRef(e.target.value)}
-                placeholder="e.g., stable/nginx-ingress"
+                placeholder="Deixe vazio para manter o chart atual"
                 disabled={isExecuting}
               />
+              <div className="text-xs text-muted-foreground space-y-1">
+                <p>💡 <strong>Vazio:</strong> mantém o chart <code className="bg-muted px-1 rounded">{release?.chart}</code> e atualiza apenas os values</p>
+                <p>💡 <strong>Preenchido:</strong> muda para outro chart (formato: <code className="bg-muted px-1 rounded">repositorio/chart</code>)</p>
+                <p>Exemplos: <code className="bg-muted px-1 rounded">bitnami/nginx</code>, <code className="bg-muted px-1 rounded">stable/mysql</code></p>
+              </div>
             </div>
 
             <div className="space-y-2">
