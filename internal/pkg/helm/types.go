@@ -17,12 +17,24 @@ type ReleaseSummary struct {
 // ReleaseDetail enriches ReleaseSummary with values, manifests and hooks information.
 type ReleaseDetail struct {
 	ReleaseSummary
-	ValuesRaw      string     `json:"valuesRaw"`
-	ValuesRendered string     `json:"valuesRendered"`
-	Manifest       string     `json:"manifest"`
-	Notes          string     `json:"notes"`
-	Hooks          []Hook     `json:"hooks"`
-	Resources      []Resource `json:"resources"`
+	ValuesRaw      string              `json:"valuesRaw"`
+	ValuesRendered string              `json:"valuesRendered"`
+	Manifest       string              `json:"manifest"`
+	Notes          string              `json:"notes"`
+	Hooks          []Hook              `json:"hooks"`
+	Resources      []Resource          `json:"resources"`
+	ChartMetadata  *ChartMetadata      `json:"chartMetadata,omitempty"`
+}
+
+// ChartMetadata contains extended information about the chart
+type ChartMetadata struct {
+	Name        string            `json:"name"`
+	Version     string            `json:"version"`
+	Description string            `json:"description"`
+	Home        string            `json:"home,omitempty"`
+	Sources     []string          `json:"sources,omitempty"`
+	Icon        string            `json:"icon,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // Hook represents a Helm hook entry.

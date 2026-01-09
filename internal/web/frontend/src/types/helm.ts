@@ -23,6 +23,16 @@ export interface Hook {
   lastRun: string;
 }
 
+export interface ChartMetadata {
+  name: string;
+  version: string;
+  description: string;
+  home?: string;
+  sources?: string[];
+  icon?: string;
+  annotations?: Record<string, string>;
+}
+
 export interface ReleaseDetail extends ReleaseSummary {
   valuesRaw: string;
   valuesRendered: string;
@@ -30,6 +40,7 @@ export interface ReleaseDetail extends ReleaseSummary {
   notes: string;
   hooks: Hook[];
   resources?: string[];
+  chartMetadata?: ChartMetadata;
 }
 
 export interface RevisionEntry {

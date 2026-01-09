@@ -147,6 +147,32 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick }: HelmRel
               <span className="font-medium">Namespace:</span>
               <span className="text-foreground">{releaseDetail.namespace}</span>
             </div>
+            {releaseDetail.chartMetadata?.sources && releaseDetail.chartMetadata.sources.length > 0 && (
+              <div className="flex items-center gap-1">
+                <span className="font-medium">Source:</span>
+                <a 
+                  href={releaseDetail.chartMetadata.sources[0]} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-blue-500 hover:underline"
+                >
+                  {new URL(releaseDetail.chartMetadata.sources[0]).hostname}
+                </a>
+              </div>
+            )}
+            {releaseDetail.chartMetadata?.home && (
+              <div className="flex items-center gap-1">
+                <span className="font-medium">Home:</span>
+                <a 
+                  href={releaseDetail.chartMetadata.home} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-blue-500 hover:underline"
+                >
+                  {new URL(releaseDetail.chartMetadata.home).hostname}
+                </a>
+              </div>
+            )}
           </div>
         </div>
         

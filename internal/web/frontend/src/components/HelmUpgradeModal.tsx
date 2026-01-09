@@ -224,7 +224,7 @@ export const HelmUpgradeModal = ({
           <Button variant="outline" onClick={handleClose} disabled={isExecuting}>
             Cancel
           </Button>
-          <Button onClick={handleUpgrade} disabled={isExecuting || !chartRef}>
+          <Button onClick={handleUpgrade} disabled={isExecuting}>
             {isExecuting ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
