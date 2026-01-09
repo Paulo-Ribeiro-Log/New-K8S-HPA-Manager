@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useHelmStore } from '../store/helmStore.tsx';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Card } from './ui/card';
@@ -17,11 +17,21 @@ import {
   Trash2,
   MoreVertical,
   Plus,
+  CheckCircle2,
+  RotateCw,
+  AlertTriangle,
+  Undo2,
+  Redo2,
+  Maximize2,
+  GitCompare,
+  X,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { MonacoYamlEditor } from './MonacoYamlEditor';
 import { HelmUpgradeModal } from './HelmUpgradeModal.tsx';
 import { HelmRollbackModal, HelmUninstallModal } from './HelmActionModals.tsx';
+import { ApplyValuesModal } from './ApplyValuesModal';
+import yaml from 'js-yaml';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,6 +40,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from './ui/dialog';
 
 interface HelmReleaseDetailsProps {
   cluster: string;
@@ -236,6 +253,13 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick }: HelmRel
           <ValuesTab
             valuesRaw={releaseDetail.valuesRaw}
             valuesRendered={releaseDetail.valuesRendered}
+            releaseName={releaseDetail.name}
+            namespace={releaseDetail.namespace}
+            cluster={cluster}
+            onApplySuccess={() => {
+              // Trigger refresh
+              window.location.reload();
+            }}
           />
         </TabsContent>
 
@@ -256,50 +280,329 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick }: HelmRel
 };
 
 // Values Tab Component
-const ValuesTab = ({ valuesRaw, valuesRendered }: { valuesRaw: string; valuesRendered: string }) => {
+const ValuesTab = ({ 
+  valuesRaw, 
+  valuesRendered,
+  releaseName,
+  namespace,
+  cluster,
+  onApplySuccess,
+}: { 
+  valuesRaw: string; 
+  valuesRendered: string;
+  releaseName: string;
+  namespace: string;
+  cluster: string;
+  onApplySuccess: () => void;
+}) => {
   const [showRendered, setShowRendered] = useState(false);
   const [editedValue, setEditedValue] = useState(valuesRaw);
+  const [originalValue, setOriginalValue] = useState(valuesRaw);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
+  const [showApplyModal, setShowApplyModal] = useState(false);
+  const [viewMode, setViewMode] = useState<'editor' | 'diff'>('editor');
+  const [editorFullScreen, setEditorFullScreen] = useState(false);
+  
+  // History management
+  const [history, setHistory] = useState<string[]>([valuesRaw]);
+  const [historyIndex, setHistoryIndex] = useState(0);
 
   // Sync with props when changed
-  useState(() => {
+  useEffect(() => {
     setEditedValue(valuesRaw);
-  });
+    setOriginalValue(valuesRaw);
+    setHistory([valuesRaw]);
+    setHistoryIndex(0);
+    setValidationError(null);
+  }, [valuesRaw]);
 
-  return (
+  const hasChanges = editedValue !== originalValue;
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex < history.length - 1;
+
+  const handleEditorChange = (value: string | undefined) => {
+    if (showRendered) return;
+    
+    const newValue = value || '';
+    setEditedValue(newValue);
+    setValidationError(null);
+
+    // Add to history
+    setHistoryIndex((currentIndex) => {
+      setHistory((currentHistory) => {
+        const newHistory = currentHistory.slice(0, currentIndex + 1);
+        if (newHistory[newHistory.length - 1] !== newValue) {
+          newHistory.push(newValue);
+          if (newHistory.length > 50) {
+            newHistory.shift();
+            return newHistory;
+          }
+        }
+        return newHistory;
+      });
+      return Math.min(currentIndex + 1, 49);
+    });
+  };
+
+  const handleUndo = () => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      setHistoryIndex(newIndex);
+      setEditedValue(history[newIndex]);
+    }
+  };
+
+  const handleRedo = () => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1;
+      setHistoryIndex(newIndex);
+      setEditedValue(history[newIndex]);
+    }
+  };
+
+  const handleToggleView = (mode: 'editor' | 'diff') => {
+    if (mode === 'diff' && !hasChanges) return;
+    setViewMode(mode);
+  };
+
+  const validateYaml = () => {
+    setIsValidating(true);
+    setValidationError(null);
+
+    try {
+      yaml.load(editedValue);
+      setValidationError(null);
+      // Show success message
+      setTimeout(() => {
+        const successDiv = document.createElement('div');
+        successDiv.className = 'fixed top-4 right-4 bg-green-500/10 border border-green-500/20 text-green-500 px-4 py-2 rounded-lg shadow-lg z-50';
+        successDiv.textContent = '✓ YAML válido';
+        document.body.appendChild(successDiv);
+        setTimeout(() => successDiv.remove(), 2000);
+      }, 0);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Invalid YAML';
+      setValidationError(message);
+      return false;
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  const handleApply = () => {
+    if (validateYaml()) {
+      setShowApplyModal(true);
+    }
+  };
+
+  const handleCancel = () => {
+    setEditedValue(originalValue);
+    setHistory([originalValue]);
+    setHistoryIndex(0);
+    setValidationError(null);
+    setViewMode('editor');
+  };
+
+  const editorContent = (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h4 className="text-sm font-semibold">Valores do Release</h4>
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-medium">Valores do Release</p>
+          <div className="flex items-center gap-2">
+            {!showRendered && (
+              <>
+                <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={handleUndo}
+                    disabled={!canUndo}
+                    className={`px-2 py-1 text-xs font-medium ${
+                      canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                    }`}
+                    title="Desfazer (Ctrl+Z)"
+                  >
+                    <Undo2 className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRedo}
+                    disabled={!canRedo}
+                    className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                      canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                    }`}
+                    title="Refazer (Ctrl+Y)"
+                  >
+                    <Redo2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleView('editor')}
+                    className={`px-3 py-1 text-xs font-medium ${
+                      viewMode === 'editor' ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                    }`}
+                  >
+                    Editor
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleView('diff')}
+                    className={`px-3 py-1 text-xs font-medium ${
+                      viewMode === 'diff' ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                    } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                    disabled={!hasChanges}
+                  >
+                    Diff
+                  </button>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditorFullScreen(true)}
+                  title="Abrir editor em tela cheia"
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                </Button>
+              </>
+            )}
+            <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowRendered(false)}
+                className={`px-3 py-1 text-xs font-medium ${
+                  !showRendered ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                }`}
+              >
+                Raw
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowRendered(true)}
+                className={`px-3 py-1 text-xs font-medium ${
+                  showRendered ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                }`}
+              >
+                Renderizado
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Validation Error */}
+        {validationError && (
+          <div className="flex items-start gap-2 p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
+            <AlertTriangle className="h-4 w-4 text-destructive mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-destructive">Erro de validação YAML</p>
+              <p className="text-xs text-destructive/80 mt-1">{validationError}</p>
+            </div>
+          </div>
+        )}
+
+        {viewMode === 'editor' && (
+          <div className="border rounded-lg overflow-hidden" style={{ height: editorFullScreen ? 'calc(100vh - 200px)' : '520px' }}>
+            <MonacoYamlEditor
+              value={showRendered ? valuesRendered || '# Nenhum valor renderizado' : editedValue || '# Nenhum valor customizado'}
+              readOnly={showRendered}
+              onChange={handleEditorChange}
+              height={editorFullScreen ? window.innerHeight - 200 : 520}
+            />
+          </div>
+        )}
+        {viewMode === 'diff' && (
+          <div className="border rounded-lg overflow-hidden" style={{ height: editorFullScreen ? 'calc(100vh - 200px)' : '520px' }}>
+            <MonacoYamlEditor
+              mode="diff"
+              originalValue={originalValue}
+              value={editedValue}
+              height={editorFullScreen ? window.innerHeight - 200 : 520}
+              readOnly
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Action Buttons */}
+      {!showRendered && (
+        <div className="flex flex-wrap gap-2">
           <Button
             size="sm"
-            variant={!showRendered ? 'default' : 'outline'}
-            onClick={() => setShowRendered(false)}
+            variant="outline"
+            onClick={validateYaml}
+            disabled={isValidating || !hasChanges}
+            className="gap-1"
           >
-            Raw
+            {isValidating ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <CheckCircle2 className="h-3 w-3" />
+            )}
+            Validar
           </Button>
           <Button
             size="sm"
-            variant={showRendered ? 'default' : 'outline'}
-            onClick={() => setShowRendered(true)}
+            variant="outline"
+            onClick={handleCancel}
+            disabled={!hasChanges}
+            className="gap-1"
           >
-            Renderizado
+            <X className="h-3 w-3" />
+            Cancelar
+          </Button>
+          <Button
+            size="sm"
+            onClick={handleApply}
+            disabled={!hasChanges}
+            className="gap-1"
+          >
+            <Upload className="h-3 w-3" />
+            Aplicar
           </Button>
         </div>
-      </div>
+      )}
 
-      <div className="border rounded-lg overflow-hidden" style={{ height: 'calc(100vh - 400px)' }}>
-        <MonacoYamlEditor
-          value={showRendered ? valuesRendered || '# Nenhum valor renderizado' : editedValue || '# Nenhum valor customizado'}
-          readOnly={showRendered}
-          onChange={(value) => {
-            if (!showRendered) {
-              setEditedValue(value || '');
-            }
-          }}
-        />
-      </div>
+      {/* Apply Confirmation Modal */}
+      <ApplyValuesModal
+        open={showApplyModal}
+        onOpenChange={setShowApplyModal}
+        releaseName={releaseName}
+        namespace={namespace}
+        cluster={cluster}
+        originalValues={originalValue}
+        newValues={editedValue}
+        onSuccess={() => {
+          onApplySuccess();
+          setShowApplyModal(false);
+        }}
+      />
     </div>
   );
+
+  // Fullscreen Dialog
+  if (editorFullScreen) {
+    return (
+      <Dialog open={editorFullScreen} onOpenChange={setEditorFullScreen}>
+        <DialogContent className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none">
+          <DialogHeader className="border-b border-border pb-4">
+            <DialogTitle className="text-xl font-semibold text-primary">
+              Editor de Valores - {releaseName}
+            </DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">
+              {namespace} • Modo tela cheia
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto">
+            {editorContent}
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  return editorContent;
 };
 
 // History Tab Component
