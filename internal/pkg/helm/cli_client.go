@@ -289,6 +289,11 @@ func (c *CLIClient) GetRelease(ctx context.Context, opts GetReleaseOptions) (*Re
 		Resources:      nil,
 	}
 
+	// Try to fetch chart metadata for additional info (sources, home, etc.)
+	if metadata, err := c.getChartMetadata(ctx, opts.Cluster, opts.Namespace, opts.Release); err == nil {
+		detail.ChartMetadata = metadata
+	}
+
 	return detail, nil
 }
 
@@ -499,6 +504,44 @@ func (c *CLIClient) getManifest(ctx context.Context, cluster ClusterTarget, name
 	return string(stdout), nil
 }
 
+func (c *CLIClient) getChartMetadata(ctx context.Context, cluster ClusterTarget, namespace, release string) (*ChartMetadata, error) {
+	args := []string{"get", "metadata", release, "--output", "json"}
+	if namespace != "" {
+		args = append(args, "--namespace", namespace)
+	}
+
+	stdout, stderr, err := c.runCommand(ctx, cluster, args...)
+	if err != nil {
+		// Metadata command may not be available in older helm versions
+		return nil, fmt.Errorf("helm get metadata failed: %w (stderr: %s)", err, strings.TrimSpace(stderr))
+	}
+
+	type helmMetadata struct {
+		Name        string            `json:"name"`
+		Version     string            `json:"version"`
+		Description string            `json:"description"`
+		Home        string            `json:"home"`
+		Sources     []string          `json:"sources"`
+		Icon        string            `json:"icon"`
+		Annotations map[string]string `json:"annotations"`
+	}
+
+	var parsed helmMetadata
+	if err := json.Unmarshal(stdout, &parsed); err != nil {
+		return nil, fmt.Errorf("unable to parse helm metadata output: %w", err)
+	}
+
+	return &ChartMetadata{
+		Name:        parsed.Name,
+		Version:     parsed.Version,
+		Description: parsed.Description,
+		Home:        parsed.Home,
+		Sources:     parsed.Sources,
+		Icon:        parsed.Icon,
+		Annotations: parsed.Annotations,
+	}, nil
+}
+
 func (c *CLIClient) buildInstallArgs(req HelmActionRequest) ([]string, func(), error) {
 	if req.ChartRef == "" {
 		return nil, nil, errors.New("chartRef is required for install")
@@ -517,15 +560,49 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 		return nil, nil, errors.New("releaseName is required for upgrade")
 	}
 
-	// ChartRef is optional - if empty, reuse the existing chart from the release
-	var args []string
-	if req.ChartRef != "" {
-		args = []string{"upgrade", req.ReleaseName, req.ChartRef}
-	} else {
-		// Upgrade without changing the chart (values-only update)
-		args = []string{"upgrade", req.ReleaseName, req.ReleaseName, "--reuse-values"}
+	chartRef := req.ChartRef
+	
+	// If ChartRef is empty, extract chart name from existing release
+	if chartRef == "" {
+		listArgs := []string{"list", "--output", "json", "--filter", "^" + req.ReleaseName + "$"}
+		if req.Namespace != "" {
+			listArgs = append(listArgs, "--namespace", req.Namespace)
+		}
+		
+		stdout, stderr, err := c.runCommand(context.Background(), req.Cluster, listArgs...)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to fetch release info: %w (stderr: %s)", err, strings.TrimSpace(stderr))
+		}
+		
+		type helmListEntry struct {
+			Chart string `json:"chart"`
+		}
+		var entries []helmListEntry
+		if err := json.Unmarshal(stdout, &entries); err != nil || len(entries) == 0 {
+			return nil, nil, errors.New("unable to determine chart from existing release. Please provide chartRef in format: repo/chart")
+		}
+		
+		fullChart := entries[0].Chart
+		
+		// Extract chart name without version (e.g., "convair-helm-v0.9.0" -> "convair-helm")
+		chartName := fullChart
+		if lastDash := strings.LastIndex(fullChart, "-"); lastDash > 0 {
+			afterDash := fullChart[lastDash+1:]
+			// Check if it looks like a version (starts with 'v' or digit)
+			if len(afterDash) > 0 && (afterDash[0] == 'v' || (afterDash[0] >= '0' && afterDash[0] <= '9')) {
+				chartName = fullChart[:lastDash]
+			}
+		}
+		
+		chartRef = chartName
+		
+		c.logger.Info().
+			Str("originalChart", fullChart).
+			Str("extractedChart", chartName).
+			Msg("chartRef not provided - using chart name from existing release")
 	}
 	
+	args := []string{"upgrade", req.ReleaseName, chartRef}
 	cleanup, err := c.appendCommonActionArgs(&args, req)
 	return args, cleanup, err
 }
