@@ -562,7 +562,7 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 
 	chartRef := req.ChartRef
 	
-	// If ChartRef is empty, extract chart name from existing release
+	// If ChartRef is empty, try to find chart locally or from existing release
 	if chartRef == "" {
 		listArgs := []string{"list", "--output", "json", "--filter", "^" + req.ReleaseName + "$"}
 		if req.Namespace != "" {
@@ -579,12 +579,12 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 		}
 		var entries []helmListEntry
 		if err := json.Unmarshal(stdout, &entries); err != nil || len(entries) == 0 {
-			return nil, nil, errors.New("unable to determine chart from existing release. Please provide chartRef in format: repo/chart")
+			return nil, nil, errors.New("unable to determine chart from existing release. Please provide chartRef in format: repo/chart or local path")
 		}
 		
 		fullChart := entries[0].Chart
 		
-		// Extract chart name without version (e.g., "convair-helm-v0.9.0" -> "convair-helm")
+		// Extract chart name (e.g., "convair-helm-v0.9.0" -> "convair-helm")
 		chartName := fullChart
 		if lastDash := strings.LastIndex(fullChart, "-"); lastDash > 0 {
 			afterDash := fullChart[lastDash+1:]
@@ -594,13 +594,27 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 			}
 		}
 		
-		chartRef = chartName
+		// Try to find chart in local storage directory
+		localChartDir := ExpandHome("~/.k8s-hpa-manager/storaged-helm")
+		localChartPath := filepath.Join(localChartDir, fullChart+".tgz")
 		
-		c.logger.Warn().
-			Str("originalChart", fullChart).
-			Str("extractedChart", chartName).
-			Str("suggestion", "Configure the chart repository or provide chartRef manually").
-			Msg("chartRef not provided - attempting to use chart name from existing release (may fail if repo not configured)")
+		if _, err := os.Stat(localChartPath); err == nil {
+			// Local chart found
+			chartRef = localChartPath
+			c.logger.Info().
+				Str("chartPath", localChartPath).
+				Str("releaseName", req.ReleaseName).
+				Msg("using local chart from storaged-helm directory")
+		} else {
+			// Fallback to chart name (will require configured repo)
+			chartRef = chartName
+			c.logger.Warn().
+				Str("originalChart", fullChart).
+				Str("extractedChart", chartName).
+				Str("localChartPath", localChartPath).
+				Str("suggestion", "Place chart .tgz in ~/.k8s-hpa-manager/storaged-helm/ or configure helm repository").
+				Msg("local chart not found - attempting to use chart name from existing release (may fail if repo not configured)")
+		}
 	}
 	
 	args := []string{"upgrade", req.ReleaseName, chartRef}
