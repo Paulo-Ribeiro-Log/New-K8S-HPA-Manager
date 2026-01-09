@@ -8,6 +8,8 @@ import {
   DialogTitle,
 } from './ui/dialog';
 import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
@@ -29,6 +31,7 @@ interface ApplyValuesModalProps {
   releaseName: string;
   namespace: string;
   cluster: string;
+  chart: string;
   originalValues: string;
   newValues: string;
   onSuccess?: () => void;
@@ -40,6 +43,7 @@ export const ApplyValuesModal = ({
   releaseName,
   namespace,
   cluster,
+  chart,
   originalValues,
   newValues,
   onSuccess,
@@ -50,6 +54,7 @@ export const ApplyValuesModal = ({
   const [logs, setLogs] = useState<string[]>([]);
   const [isComplete, setIsComplete] = useState(false);
   const [activeTab, setActiveTab] = useState<'diff' | 'preview'>('diff');
+  const [chartRef, setChartRef] = useState('');
 
   const { executeOperation, streamOperation } = useHelmOperation();
 
@@ -86,19 +91,23 @@ export const ApplyValuesModal = ({
       setLogs([]);
       setIsComplete(false);
       setActiveTab('diff');
+      setChartRef(''); // Empty by default, user must provide repo/chart format
     }
-  }, [open]);
+  }, [open, chart]);
 
   const handleApply = async () => {
     setLoading(true);
     setError(null);
     setLogs([]);
 
+    console.log('🚀 Applying with chartRef:', chartRef);
+
     try {
       const opId = await executeOperation(cluster, {
         action: 'upgrade',
         releaseName,
         namespace,
+        chartRef: chartRef,
         valuesYaml: newValues,
         dryRun: false,
         force: false,
@@ -145,6 +154,25 @@ export const ApplyValuesModal = ({
 
         {!operationId ? (
           <>
+            {/* Chart Reference Input */}
+            <div className="space-y-2 pb-2">
+              <Label htmlFor="chartRef" className="text-sm font-medium">
+                Chart Reference <span className="text-muted-foreground text-xs">(opcional)</span>
+              </Label>
+              <Input
+                id="chartRef"
+                value={chartRef}
+                onChange={(e) => setChartRef(e.target.value)}
+                placeholder="Deixe vazio para manter o chart atual"
+                disabled={loading}
+                className="font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                💡 <strong>Vazio:</strong> mantém o chart <code className="bg-muted px-1 rounded">{chart}</code> e atualiza apenas os values<br/>
+                💡 <strong>Preenchido:</strong> muda para outro chart (formato: <code className="bg-muted px-1 rounded">repositorio/chart</code>)
+              </p>
+            </div>
+
             {/* Stats */}
             <div className="flex items-center gap-3 py-3 border-y">
               <Badge variant="outline" className="gap-1">

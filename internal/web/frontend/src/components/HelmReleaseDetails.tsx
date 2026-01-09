@@ -129,6 +129,25 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick }: HelmRel
               {releaseDetail.status}
             </Badge>
           </div>
+          <div className="flex flex-wrap items-center gap-3 mt-2 text-xs text-muted-foreground">
+            <div className="flex items-center gap-1">
+              <Package className="h-3.5 w-3.5" />
+              <span className="font-medium">Chart:</span>
+              <span className="text-foreground">{releaseDetail.chart}</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="font-medium">App:</span>
+              <span className="text-foreground">{releaseDetail.appVersion}</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="font-medium">Revisão:</span>
+              <span className="text-foreground">#{releaseDetail.revision}</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="font-medium">Namespace:</span>
+              <span className="text-foreground">{releaseDetail.namespace}</span>
+            </div>
+          </div>
         </div>
         
         {/* Actions Menu */}
@@ -256,6 +275,7 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick }: HelmRel
             releaseName={releaseDetail.name}
             namespace={releaseDetail.namespace}
             cluster={cluster}
+            chart={releaseDetail.chart}
             onApplySuccess={() => {
               // Trigger refresh
               window.location.reload();
@@ -286,6 +306,7 @@ const ValuesTab = ({
   releaseName,
   namespace,
   cluster,
+  chart,
   onApplySuccess,
 }: { 
   valuesRaw: string; 
@@ -293,13 +314,16 @@ const ValuesTab = ({
   releaseName: string;
   namespace: string;
   cluster: string;
+  chart: string;
   onApplySuccess: () => void;
 }) => {
   const [showRendered, setShowRendered] = useState(false);
   const [editedValue, setEditedValue] = useState(valuesRaw);
   const [originalValue, setOriginalValue] = useState(valuesRaw);
+  const [savedRawValue, setSavedRawValue] = useState(valuesRaw);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isValidating, setIsValidating] = useState(false);
+  const [validationSuccess, setValidationSuccess] = useState(false);
   const [showApplyModal, setShowApplyModal] = useState(false);
   const [viewMode, setViewMode] = useState<'editor' | 'diff'>('editor');
   const [editorFullScreen, setEditorFullScreen] = useState(false);
@@ -312,6 +336,7 @@ const ValuesTab = ({
   useEffect(() => {
     setEditedValue(valuesRaw);
     setOriginalValue(valuesRaw);
+    setSavedRawValue(valuesRaw);
     setHistory([valuesRaw]);
     setHistoryIndex(0);
     setValidationError(null);
@@ -320,6 +345,16 @@ const ValuesTab = ({
   const hasChanges = editedValue !== originalValue;
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
+
+  // Debug log
+  useEffect(() => {
+    console.log('🔍 Values Debug:', {
+      hasChanges,
+      editedLength: editedValue.length,
+      originalLength: originalValue.length,
+      areEqual: editedValue === originalValue
+    });
+  }, [editedValue, originalValue, hasChanges]);
 
   const handleEditorChange = (value: string | undefined) => {
     if (showRendered) return;
@@ -367,23 +402,24 @@ const ValuesTab = ({
   };
 
   const validateYaml = () => {
+    console.log('🔍 validateYaml chamado!');
     setIsValidating(true);
     setValidationError(null);
+    setValidationSuccess(false);
 
     try {
       yaml.load(editedValue);
       setValidationError(null);
-      // Show success message
+      console.log('✅ YAML válido!');
+      setValidationSuccess(true);
+      // Reset after 2 seconds
       setTimeout(() => {
-        const successDiv = document.createElement('div');
-        successDiv.className = 'fixed top-4 right-4 bg-green-500/10 border border-green-500/20 text-green-500 px-4 py-2 rounded-lg shadow-lg z-50';
-        successDiv.textContent = '✓ YAML válido';
-        document.body.appendChild(successDiv);
-        setTimeout(() => successDiv.remove(), 2000);
-      }, 0);
+        setValidationSuccess(false);
+      }, 2000);
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Invalid YAML';
+      console.log('❌ YAML inválido:', message);
       setValidationError(message);
       return false;
     } finally {
@@ -471,7 +507,11 @@ const ValuesTab = ({
             <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
               <button
                 type="button"
-                onClick={() => setShowRendered(false)}
+                onClick={() => {
+                  setSavedRawValue(editedValue);
+                  setShowRendered(false);
+                  setEditedValue(savedRawValue);
+                }}
                 className={`px-3 py-1 text-xs font-medium ${
                   !showRendered ? "bg-primary text-white" : "bg-background text-muted-foreground"
                 }`}
@@ -480,7 +520,10 @@ const ValuesTab = ({
               </button>
               <button
                 type="button"
-                onClick={() => setShowRendered(true)}
+                onClick={() => {
+                  setSavedRawValue(editedValue);
+                  setShowRendered(true);
+                }}
                 className={`px-3 py-1 text-xs font-medium ${
                   showRendered ? "bg-primary text-white" : "bg-background text-muted-foreground"
                 }`}
@@ -507,7 +550,7 @@ const ValuesTab = ({
             <MonacoYamlEditor
               value={showRendered ? valuesRendered || '# Nenhum valor renderizado' : editedValue || '# Nenhum valor customizado'}
               readOnly={showRendered}
-              onChange={handleEditorChange}
+              onChange={showRendered ? undefined : handleEditorChange}
               height={editorFullScreen ? window.innerHeight - 200 : 520}
             />
           </div>
@@ -530,17 +573,28 @@ const ValuesTab = ({
         <div className="flex flex-wrap gap-2">
           <Button
             size="sm"
-            variant="outline"
-            onClick={validateYaml}
-            disabled={isValidating || !hasChanges}
-            className="gap-1"
+            variant={validationSuccess ? "default" : (hasChanges ? "default" : "outline")}
+            onClick={() => {
+              console.log('🖱️ Botão Validar clicado!');
+              validateYaml();
+            }}
+            disabled={isValidating || validationSuccess}
+            className={`gap-1 transition-all duration-300 ${
+              validationSuccess 
+                ? 'bg-green-600 hover:bg-green-600 text-white' 
+                : hasChanges 
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white' 
+                  : ''
+            }`}
           >
             {isValidating ? (
               <Loader2 className="h-3 w-3 animate-spin" />
+            ) : validationSuccess ? (
+              <CheckCircle2 className="h-3 w-3" />
             ) : (
               <CheckCircle2 className="h-3 w-3" />
             )}
-            Validar
+            {validationSuccess ? 'Válido ✓' : `Validar${hasChanges ? ' ●' : ''}`}
           </Button>
           <Button
             size="sm"
@@ -571,6 +625,7 @@ const ValuesTab = ({
         releaseName={releaseName}
         namespace={namespace}
         cluster={cluster}
+        chart={chart}
         originalValues={originalValue}
         newValues={editedValue}
         onSuccess={() => {

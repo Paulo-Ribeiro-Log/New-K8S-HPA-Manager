@@ -513,14 +513,19 @@ func (c *CLIClient) buildInstallArgs(req HelmActionRequest) ([]string, func(), e
 }
 
 func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), error) {
-	if req.ChartRef == "" {
-		return nil, nil, errors.New("chartRef is required for upgrade")
-	}
 	if req.ReleaseName == "" {
 		return nil, nil, errors.New("releaseName is required for upgrade")
 	}
 
-	args := []string{"upgrade", req.ReleaseName, req.ChartRef}
+	// ChartRef is optional - if empty, reuse the existing chart from the release
+	var args []string
+	if req.ChartRef != "" {
+		args = []string{"upgrade", req.ReleaseName, req.ChartRef}
+	} else {
+		// Upgrade without changing the chart (values-only update)
+		args = []string{"upgrade", req.ReleaseName, req.ReleaseName, "--reuse-values"}
+	}
+	
 	cleanup, err := c.appendCommonActionArgs(&args, req)
 	return args, cleanup, err
 }
