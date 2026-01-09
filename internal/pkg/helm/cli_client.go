@@ -596,10 +596,11 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 		
 		chartRef = chartName
 		
-		c.logger.Info().
+		c.logger.Warn().
 			Str("originalChart", fullChart).
 			Str("extractedChart", chartName).
-			Msg("chartRef not provided - using chart name from existing release")
+			Str("suggestion", "Configure the chart repository or provide chartRef manually").
+			Msg("chartRef not provided - attempting to use chart name from existing release (may fail if repo not configured)")
 	}
 	
 	args := []string{"upgrade", req.ReleaseName, chartRef}
