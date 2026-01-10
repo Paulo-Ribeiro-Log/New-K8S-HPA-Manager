@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -1017,4 +1018,116 @@ func (h *PodHandler) GetMetrics(c *gin.Context) {
 			},
 		},
 	})
+}
+
+// DownloadFromPod faz download de arquivo/diretório do pod
+// GET /api/v1/pods/:cluster/:namespace/:name/download?container=nginx&path=/path/to/file&type=file
+func (h *PodHandler) DownloadFromPod(c *gin.Context) {
+	startTime := time.Now()
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	podName := c.Param("name")
+	container := c.Query("container")
+	remotePath := c.Query("path")
+	transferType := c.DefaultQuery("type", "file") // file ou directory
+
+	// Obter informações do usuário (se disponível via RBAC/SSO)
+	userEmail := c.GetString("user_email")
+	userName := c.GetString("user_name")
+	if userEmail == "" {
+		userEmail = "anonymous"
+	}
+
+	// Helper para log de auditoria
+	logAudit := func(status string, errorMsg string, fileInfo map[string]interface{}) {
+		entry := history.HistoryEntry{
+			Timestamp: startTime,
+			UserEmail: userEmail,
+			UserName:  userName,
+			Action:    "download_file_from_pod",
+			Resource:  fmt.Sprintf("%s/%s", namespace, podName),
+			Cluster:   cluster,
+			Before: map[string]interface{}{
+				"remote_path":   remotePath,
+				"container":     container,
+				"transfer_type": transferType,
+			},
+			After:    fileInfo,
+			Status:   status,
+			ErrorMsg: errorMsg,
+			Duration: time.Since(startTime).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("Warning: failed to log download audit: %v\n", err)
+		}
+	}
+
+	if remotePath == "" {
+		logAudit("failed", "Parâmetro 'path' é obrigatório", nil)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Parâmetro 'path' é obrigatório",
+		})
+		return
+	}
+
+	// Obter client Kubernetes
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		logAudit("failed", fmt.Sprintf("Erro ao obter client: %v", err), nil)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("Erro ao obter client: %v", err),
+		})
+		return
+	}
+
+	// Criar wrapper com métodos customizados
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+
+	// Executar kubectl cp via client wrapper (validação de pod existe é feita pelo kubectl)
+	tempFile, err := kubeClient.CopyFromPod(namespace, podName, container, remotePath, transferType == "directory")
+	if err != nil {
+		logAudit("failed", fmt.Sprintf("kubectl cp failed: %v", err), nil)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("Erro ao copiar arquivo: %v", err),
+		})
+		return
+	}
+
+	// Garantir cleanup do arquivo temporário após download
+	defer kubeClient.CleanupTempFile(tempFile)
+
+	// Obter informações do arquivo transferido
+	fileInfo, err := os.Stat(tempFile)
+	var fileSize int64 = 0
+	if err == nil {
+		fileSize = fileInfo.Size()
+	}
+
+	// Determinar nome do arquivo para download
+	filename := remotePath
+	if strings.Contains(filename, "/") {
+		parts := strings.Split(filename, "/")
+		filename = parts[len(parts)-1]
+	}
+	if transferType == "directory" {
+		filename = filename + ".tar.gz"
+	}
+
+	// Log de auditoria com sucesso
+	logAudit("success", "", map[string]interface{}{
+		"filename":      filename,
+		"file_size":     fileSize,
+		"transfer_type": transferType,
+		"download_time": time.Since(startTime).String(),
+	})
+
+	// Stream file para download
+	c.Header("Content-Description", "File Transfer")
+	c.Header("Content-Transfer-Encoding", "binary")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Header("Content-Type", "application/octet-stream")
+	c.File(tempFile)
 }

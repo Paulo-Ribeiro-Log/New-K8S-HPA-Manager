@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -3451,4 +3452,55 @@ func (c *Client) GetPodMetricsFromServer(ctx context.Context, namespace, name st
 	}
 
 	return &metrics, nil
+}
+
+// CopyFromPod copia arquivo/diretório do pod para arquivo temporário local
+// Retorna o caminho do arquivo temporário criado
+func (c *Client) CopyFromPod(namespace, podName, container, remotePath string, isDirectory bool) (string, error) {
+	// Criar arquivo temporário
+	tmpFile, err := os.CreateTemp("", "pod-download-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+
+	// Se for diretório, criar tar.gz
+	if isDirectory {
+		tmpPath = tmpPath + ".tar.gz"
+	}
+
+	// Construir comando kubectl cp
+	// Formato: kubectl cp namespace/pod:/path /local/path -c container
+	source := fmt.Sprintf("%s/%s:%s", namespace, podName, remotePath)
+
+	args := []string{"cp", source, tmpPath}
+	if container != "" {
+		args = append(args, "-c", container)
+	}
+
+	// Se for diretório, adicionar flag para tar
+	if isDirectory {
+		// kubectl cp automaticamente cria tar.gz para diretórios
+		// Não precisa de flag especial
+	}
+
+	// Executar kubectl cp
+	cmd := exec.Command("kubectl", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Limpar arquivo temporário em caso de erro
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("kubectl cp failed: %v - output: %s", err, string(output))
+	}
+
+	return tmpPath, nil
+}
+
+// CleanupTempFile remove arquivo temporário criado por CopyFromPod
+func (c *Client) CleanupTempFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	return os.Remove(path)
 }
