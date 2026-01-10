@@ -158,15 +158,25 @@ export function useHealthCheckProgressMultiplexed(options: UseHealthCheckProgres
 
     // Handler de erros
     eventSource.onerror = (error) => {
-      console.error('[useHealthCheckProgressMultiplexed] Erro na conexão SSE:', {
-        readyState: eventSource.readyState,
-        error,
-      });
-      setIsConnected(false);
-
-      if (onErrorRef.current) {
-        onErrorRef.current(error);
+      // ✅ Ignorar erro se todos os clusters já completaram (fechamento normal)
+      const allCompleted = completedClusters.size === clusters.length;
+      
+      if (allCompleted) {
+        console.log('[useHealthCheckProgressMultiplexed] Conexão SSE fechada - todos os clusters completaram');
+      } else {
+        console.error('[useHealthCheckProgressMultiplexed] Erro na conexão SSE:', {
+          readyState: eventSource.readyState,
+          error,
+          completedClusters: completedClusters.size,
+          totalClusters: clusters.length,
+        });
+        
+        if (onErrorRef.current) {
+          onErrorRef.current(error);
+        }
       }
+      
+      setIsConnected(false);
 
       // Só fechar se não estiver já fechado
       if (eventSource.readyState !== EventSource.CLOSED) {
