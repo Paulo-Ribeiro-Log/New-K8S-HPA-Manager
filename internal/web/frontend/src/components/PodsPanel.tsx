@@ -24,6 +24,7 @@ import {
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { ProtectedAction } from "@/components/rbac";
 import { PodTerminal } from "@/components/PodTerminal";
+import { PodFileTransferModal } from "@/components/PodFileTransferModal";
 import ResourceGauge from "@/components/ResourceGauge";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -85,6 +86,7 @@ export const PodsPanel = ({
   const [useEphemeralDebug, setUseEphemeralDebug] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalFullscreen, setTerminalFullscreen] = useState(false);
+  const [showFileTransferModal, setShowFileTransferModal] = useState(false);
 
   // Estados para edição de YAML
   const [editedYaml, setEditedYaml] = useState("");
@@ -824,6 +826,13 @@ export const PodsPanel = ({
           <Terminal className="w-4 h-4 mr-2" />
           Abrir Shell
         </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => setShowFileTransferModal(true)}
+        >
+          <Download className="w-4 h-4 mr-2" />
+          Transferir Arquivos
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         <ProtectedAction showWarning={false}>
           <DropdownMenuItem
             onClick={() => {
@@ -2075,7 +2084,7 @@ export const PodsPanel = ({
             </DialogDescription>
           </DialogHeader>
           <ScrollArea className="h-[70vh]">
-            <div 
+            <div
               className="diff-container text-xs"
               dangerouslySetInnerHTML={{ __html: diffHtml }}
             />
@@ -2087,6 +2096,18 @@ export const PodsPanel = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Modal de Transferência de Arquivos */}
+      {selectedPod && (
+        <PodFileTransferModal
+          open={showFileTransferModal}
+          onOpenChange={setShowFileTransferModal}
+          cluster={cluster}
+          namespace={selectedPod.namespace}
+          podName={selectedPod.name}
+          containers={selectedPod.containers.map(c => c.name)}
+        />
+      )}
     </>
   );
 };
