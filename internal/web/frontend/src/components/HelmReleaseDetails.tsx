@@ -52,9 +52,10 @@ interface HelmReleaseDetailsProps {
   cluster: string;
   release: string | null;
   onInstallClick?: () => void;
+  onRefreshNeeded?: () => void;
 }
 
-export const HelmReleaseDetails = ({ cluster, release, onInstallClick }: HelmReleaseDetailsProps) => {
+export const HelmReleaseDetails = ({ cluster, release, onInstallClick, onRefreshNeeded }: HelmReleaseDetailsProps) => {
   const {
     releaseDetail,
     releaseDetailLoading,
@@ -246,8 +247,8 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick }: HelmRel
         release={releaseDetail}
         cluster={cluster}
         onSuccess={() => {
-          // Trigger refresh
-          window.location.reload();
+          // Trigger refresh without reloading page
+          onRefreshNeeded?.();
         }}
       />
 
@@ -260,8 +261,8 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick }: HelmRel
         revisions={revisions}
         currentRevision={releaseDetail.revision}
         onSuccess={() => {
-          // Trigger refresh
-          window.location.reload();
+          // Trigger refresh without reloading page
+          onRefreshNeeded?.();
         }}
       />
 
@@ -272,8 +273,8 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick }: HelmRel
         namespace={releaseDetail.namespace}
         cluster={cluster}
         onSuccess={() => {
-          // Trigger refresh and deselect
-          window.location.reload();
+          // Trigger refresh and deselect without reloading page
+          onRefreshNeeded?.();
         }}
       />
 
@@ -303,8 +304,8 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick }: HelmRel
             cluster={cluster}
             chart={releaseDetail.chart}
             onApplySuccess={() => {
-              // Trigger refresh
-              window.location.reload();
+              // Trigger refresh without reloading page
+              onRefreshNeeded?.();
             }}
           />
         </TabsContent>
@@ -318,7 +319,18 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick }: HelmRel
         </TabsContent>
 
         <TabsContent value="manifest" className="flex-1 overflow-auto mt-4">
-          <ManifestTab manifest={releaseDetail.manifest} notes={releaseDetail.notes} />
+          <ManifestTab
+            manifest={releaseDetail.manifest}
+            notes={releaseDetail.notes}
+            releaseName={releaseDetail.name}
+            namespace={releaseDetail.namespace}
+            cluster={cluster}
+            chart={releaseDetail.chart}
+            onApplySuccess={() => {
+              // Trigger refresh without reloading page
+              onRefreshNeeded?.();
+            }}
+          />
         </TabsContent>
       </Tabs>
     </div>
@@ -754,16 +766,130 @@ const HistoryTab = ({
 };
 
 // Manifest Tab Component
-const ManifestTab = ({ manifest, notes }: { manifest: string; notes: string }) => {
+const ManifestTab = ({
+  manifest,
+  notes,
+  releaseName,
+  namespace,
+  cluster,
+  chart,
+  onApplySuccess,
+}: {
+  manifest: string;
+  notes: string;
+  releaseName: string;
+  namespace: string;
+  cluster: string;
+  chart: string;
+  onApplySuccess: () => void;
+}) => {
   const [showNotes, setShowNotes] = useState(true);
   const [editedManifest, setEditedManifest] = useState(manifest);
+  const [originalManifest, setOriginalManifest] = useState(manifest);
+  const [manifestFullScreen, setManifestFullScreen] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationSuccess, setValidationSuccess] = useState(false);
+  const [showApplyModal, setShowApplyModal] = useState(false);
+  const [viewMode, setViewMode] = useState<'editor' | 'diff'>('editor');
+
+  // History management
+  const [history, setHistory] = useState<string[]>([manifest]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex < history.length - 1;
+  const hasChanges = editedManifest !== originalManifest;
 
   // Sync with props when changed
-  useState(() => {
+  useEffect(() => {
     setEditedManifest(manifest);
-  });
+    setOriginalManifest(manifest);
+    setHistory([manifest]);
+    setHistoryIndex(0);
+    setValidationError(null);
+    setValidationSuccess(false);
+  }, [manifest]);
 
-  return (
+  const handleEditorChange = (value: string | undefined) => {
+    const newValue = value || '';
+    setEditedManifest(newValue);
+
+    // Add to history
+    setHistoryIndex((currentIndex) => {
+      setHistory((currentHistory) => {
+        const newHistory = currentHistory.slice(0, currentIndex + 1);
+        if (newHistory[newHistory.length - 1] !== newValue) {
+          newHistory.push(newValue);
+          if (newHistory.length > 50) {
+            newHistory.shift();
+            return newHistory;
+          }
+        }
+        return newHistory;
+      });
+      return Math.min(currentIndex + 1, 49);
+    });
+  };
+
+  const handleUndo = () => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      setHistoryIndex(newIndex);
+      setEditedManifest(history[newIndex]);
+    }
+  };
+
+  const handleRedo = () => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1;
+      setHistoryIndex(newIndex);
+      setEditedManifest(history[newIndex]);
+    }
+  };
+
+  const handleToggleView = (mode: 'editor' | 'diff') => {
+    if (mode === 'diff' && !hasChanges) return;
+    setViewMode(mode);
+  };
+
+  const validateYaml = () => {
+    setIsValidating(true);
+    setValidationError(null);
+    setValidationSuccess(false);
+
+    try {
+      yaml.load(editedManifest);
+      setValidationError(null);
+      setValidationSuccess(true);
+      setTimeout(() => {
+        setValidationSuccess(false);
+      }, 2000);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Invalid YAML';
+      setValidationError(message);
+      return false;
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  const handleApply = () => {
+    if (validateYaml()) {
+      setShowApplyModal(true);
+    }
+  };
+
+  const handleCancel = () => {
+    setEditedManifest(originalManifest);
+    setHistory([originalManifest]);
+    setHistoryIndex(0);
+    setValidationError(null);
+    setViewMode('editor');
+  };
+
+  const manifestContent = (
     <div className="space-y-3">
       {notes && (
         <div>
@@ -787,18 +913,187 @@ const ManifestTab = ({ manifest, notes }: { manifest: string; notes: string }) =
         </div>
       )}
 
-      <div>
-        <h4 className="text-sm font-semibold mb-2">Kubernetes Manifest</h4>
-        <div className="border rounded-lg overflow-hidden" style={{ height: 'calc(100vh - 480px)' }}>
-          <MonacoYamlEditor
-            value={editedManifest || '# Nenhum manifest disponível'}
-            readOnly={false}
-            onChange={(value) => setEditedManifest(value || '')}
-          />
+      <div className="space-y-3">
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">Manifest do Release</p>
+            <div className="flex items-center gap-2">
+              <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={handleUndo}
+                  disabled={!canUndo}
+                  className={`px-2 py-1 text-xs font-medium ${
+                    canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                  }`}
+                  title="Desfazer (Ctrl+Z)"
+                >
+                  <Undo2 className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRedo}
+                  disabled={!canRedo}
+                  className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                    canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                  }`}
+                  title="Refazer (Ctrl+Y)"
+                >
+                  <Redo2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => handleToggleView('editor')}
+                  className={`px-3 py-1 text-xs font-medium ${
+                    viewMode === 'editor' ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                  }`}
+                >
+                  Editor
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleToggleView('diff')}
+                  className={`px-3 py-1 text-xs font-medium ${
+                    viewMode === 'diff' ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                  } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                  disabled={!hasChanges}
+                >
+                  Diff
+                </button>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setManifestFullScreen(true)}
+                title="Abrir editor em tela cheia"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+          </div>
+
+          {/* Validation Error */}
+          {validationError && (
+            <div className="flex items-start gap-2 p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
+              <AlertTriangle className="h-4 w-4 text-destructive mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-destructive">Erro de validação YAML</p>
+                <p className="text-xs text-destructive/80 mt-1">{validationError}</p>
+              </div>
+            </div>
+          )}
+
+          {viewMode === 'editor' && (
+            <div className="border rounded-lg overflow-hidden" style={{ height: manifestFullScreen ? 'calc(100vh - 200px)' : '600px' }}>
+              <MonacoYamlEditor
+                value={editedManifest || '# Nenhum manifest disponível'}
+                readOnly={false}
+                onChange={handleEditorChange}
+                height={manifestFullScreen ? window.innerHeight - 200 : 600}
+              />
+            </div>
+          )}
+          {viewMode === 'diff' && (
+            <div className="border rounded-lg overflow-hidden" style={{ height: manifestFullScreen ? 'calc(100vh - 200px)' : '600px' }}>
+              <MonacoYamlEditor
+                mode="diff"
+                originalValue={originalManifest}
+                value={editedManifest}
+                height={manifestFullScreen ? window.innerHeight - 200 : 600}
+                readOnly
+              />
+            </div>
+          )}
         </div>
+
+        {/* Action Buttons */}
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant={validationSuccess ? "default" : (hasChanges ? "default" : "outline")}
+            onClick={validateYaml}
+            disabled={isValidating || validationSuccess}
+            className={`gap-1 transition-all duration-300 ${
+              validationSuccess
+                ? 'bg-green-600 hover:bg-green-600 text-white'
+                : hasChanges
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                  : ''
+            }`}
+          >
+            {isValidating ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : validationSuccess ? (
+              <CheckCircle2 className="h-3 w-3" />
+            ) : (
+              <CheckCircle2 className="h-3 w-3" />
+            )}
+            {validationSuccess ? 'Válido ✓' : `Validar${hasChanges ? ' ●' : ''}`}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleCancel}
+            disabled={!hasChanges}
+            className="gap-1"
+          >
+            <X className="h-3 w-3" />
+            Cancelar
+          </Button>
+          <Button
+            size="sm"
+            onClick={handleApply}
+            disabled={!hasChanges}
+            className="gap-1"
+          >
+            <Upload className="h-3 w-3" />
+            Aplicar
+          </Button>
+        </div>
+
+        {/* Apply Confirmation Modal */}
+        <ApplyValuesModal
+          open={showApplyModal}
+          onOpenChange={setShowApplyModal}
+          releaseName={releaseName}
+          namespace={namespace}
+          cluster={cluster}
+          chart={chart}
+          originalValues={originalManifest}
+          newValues={editedManifest}
+          onSuccess={() => {
+            onApplySuccess();
+            setShowApplyModal(false);
+          }}
+        />
       </div>
     </div>
   );
+
+  // Fullscreen Dialog
+  if (manifestFullScreen) {
+    return (
+      <Dialog open={manifestFullScreen} onOpenChange={setManifestFullScreen}>
+        <DialogContent className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none">
+          <DialogHeader className="border-b border-border pb-4">
+            <DialogTitle className="text-xl font-semibold text-primary">
+              Editor de Manifest - {releaseName}
+            </DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">
+              {namespace} • Modo tela cheia
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto">
+            {manifestContent}
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  return manifestContent;
 };
 
 // Helper functions

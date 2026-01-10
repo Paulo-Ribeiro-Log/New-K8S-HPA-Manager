@@ -257,9 +257,13 @@ Footer contextual com feedback em tempo real das operações Helm (progresso, lo
 - [x] Select de namespaces dinâmico carregando dos releases
 - [x] Monaco Editor integrado com edição habilitada
 - [x] Interface limpa sem cards duplicados
+- [x] **Busca dinâmica funcionando** (padrão DeploymentsTab) - ✅ 08/01/2026
+- [x] **Botão Apply funcional com SSE streaming** - ✅ Já existia
+- [x] **Invalidação React Query ao invés de window.reload()** - ✅ 08/01/2026
+- [x] **Barra de progresso visual (0-100%)** - ✅ 08/01/2026
 - [ ] Testes automatizados cobrindo casos principais
 - [ ] Documentação publicada e aprovada
-- [ ] Botões Apply/Validate para aplicar mudanças do editor
+- [ ] Dry-run preview antes de aplicar (não prioritário)
 
 ## Funcionalidades Pendentes
 

@@ -6,8 +6,9 @@ import { HelmProvider, useHelmStore } from '../store/helmStore.tsx';
 import { useHelmReleases, useHelmRelease, useHelmHistory } from '../hooks/useHelm';
 import { Input } from './ui/input';
 import { Button } from './ui/button';
-import { Search, RefreshCw, Filter, Plus, Eye, EyeOff } from 'lucide-react';
+import { Search, RefreshCw, Eye, EyeOff, X } from 'lucide-react';
 import { HelmInstallModal } from './HelmInstallModal.tsx';
+import { toast } from 'sonner';
 import {
   Select,
   SelectContent,
@@ -32,7 +33,7 @@ const HelmTabContent = ({ selectedCluster }: HelmTabProps) => {
     selectRelease,
   } = useHelmStore();
 
-  const [searchInput, setSearchInput] = useState(filters.search);
+  const [searchQuery, setSearchQuery] = useState("");
   const [showInstallModal, setShowInstallModal] = useState(false);
   const [showSystemNamespaces, setShowSystemNamespaces] = useState(false);
 
@@ -105,11 +106,6 @@ const HelmTabContent = ({ selectedCluster }: HelmTabProps) => {
       : null
   );
 
-  // Sync search input with store
-  useEffect(() => {
-    setSearchInput(filters.search);
-  }, [filters.search]);
-
   // Clear selection if release detail has error (not found)
   useEffect(() => {
     if (releaseDetailError && releaseDetailError.includes('not found') && selectedRelease) {
@@ -125,19 +121,34 @@ const HelmTabContent = ({ selectedCluster }: HelmTabProps) => {
     }
   }, [availableNamespaces, filters.namespace, setFilters]);
 
-  const handleSearchChange = (value: string) => {
-    setSearchInput(value);
-  };
+  // Filtrar releases client-side (padrão DeploymentsTab)
+  const filteredReleases = useMemo(() => {
+    let filtered = releases;
 
-  const handleSearchSubmit = () => {
-    setFilters({ search: searchInput });
-  };
-
-  const handleSearchKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleSearchSubmit();
+    // Filtro de namespaces de sistema
+    if (!showSystemNamespaces) {
+      filtered = filtered.filter(release => !isSystemNamespace(release.namespace));
     }
-  };
+
+    // Filtro de namespace selecionado
+    if (filters.namespace) {
+      filtered = filtered.filter(release => release.namespace === filters.namespace);
+    }
+
+    // Busca dinâmica (nome, namespace, chart, appVersion, status)
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter(release =>
+        release.name.toLowerCase().includes(query) ||
+        release.namespace.toLowerCase().includes(query) ||
+        release.chart.toLowerCase().includes(query) ||
+        (release.appVersion && release.appVersion.toLowerCase().includes(query)) ||
+        release.status.toLowerCase().includes(query)
+      );
+    }
+
+    return filtered;
+  }, [releases, showSystemNamespaces, filters.namespace, searchQuery]);
 
   const handleRefresh = () => {
     refetchReleases();
@@ -191,39 +202,88 @@ const HelmTabContent = ({ selectedCluster }: HelmTabProps) => {
     ),
     content: (
       <div className="flex flex-col h-full gap-3">
-        {/* Search Filter */}
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1">
-            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Buscar releases..."
-              value={searchInput}
-              onChange={(e) => handleSearchChange(e.target.value)}
-              onKeyDown={handleSearchKeyDown}
-              className="pl-8"
-            />
-          </div>
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={handleSearchSubmit}
-            className="h-10 w-10"
-          >
-            <Filter className="h-4 w-4" />
-          </Button>
+        {/* Search Filter - Busca Dinâmica */}
+        <div className="relative">
+          <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Buscar por nome, namespace, chart, versão..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-8 pr-8"
+          />
+          {searchQuery && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setSearchQuery("")}
+              className="absolute right-0 top-0 h-10 w-10 hover:bg-transparent"
+              title="Limpar busca"
+            >
+              <X className="h-4 w-4 text-muted-foreground hover:text-foreground" />
+            </Button>
+          )}
         </div>
 
         {/* Release List */}
         <div className="flex-1 overflow-auto">
           <HelmReleaseList
             cluster={selectedCluster}
+            releases={filteredReleases}
             onSelectRelease={selectRelease}
-            showSystemNamespaces={showSystemNamespaces}
-            isSystemNamespace={isSystemNamespace}
           />
         </div>
       </div>
     ),
+  };
+
+  const handleRefreshAfterOperation = async () => {
+    // Salvar release atual para re-selecionar depois
+    const currentRelease = selectedRelease;
+    const currentNamespace = selectedReleaseNamespace;
+
+    try {
+      // Atualizar lista de releases
+      await refetchReleases();
+
+      // Toast de sucesso
+      toast.success('Dados atualizados', {
+        description: 'Lista de releases atualizada com sucesso',
+      });
+
+      // Re-selecionar release se ainda existir
+      if (currentRelease && currentNamespace) {
+        // Pequeno delay para garantir que dados foram atualizados
+        setTimeout(() => {
+          selectRelease(currentRelease, currentNamespace);
+        }, 300);
+      }
+    } catch (error) {
+      toast.error('Erro ao atualizar dados', {
+        description: error instanceof Error ? error.message : 'Erro desconhecido',
+      });
+    }
+  };
+
+  const handleRefreshReleaseDetails = async () => {
+    // Força re-fetch dos dados do release atual
+    if (selectedRelease && selectedReleaseNamespace) {
+      try {
+        // Limpar seleção temporariamente
+        selectRelease(null);
+
+        // Pequeno delay para garantir limpeza
+        setTimeout(() => {
+          selectRelease(selectedRelease, selectedReleaseNamespace);
+          toast.success('Release atualizado', {
+            description: 'Dados do release recarregados com sucesso',
+          });
+        }, 100);
+      } catch (error) {
+        toast.error('Erro ao atualizar release', {
+          description: error instanceof Error ? error.message : 'Erro desconhecido',
+        });
+      }
+    }
   };
 
   const rightPanel = {
@@ -232,9 +292,10 @@ const HelmTabContent = ({ selectedCluster }: HelmTabProps) => {
       <Button
         variant="ghost"
         size="sm"
-        onClick={() => selectRelease(null)}
+        onClick={handleRefreshReleaseDetails}
       >
-        Fechar
+        <RefreshCw className="h-4 w-4 mr-1" />
+        Atualizar
       </Button>
     ) : null,
     content: (
@@ -242,6 +303,7 @@ const HelmTabContent = ({ selectedCluster }: HelmTabProps) => {
         cluster={selectedCluster}
         release={selectedRelease}
         onInstallClick={() => setShowInstallModal(true)}
+        onRefreshNeeded={handleRefreshAfterOperation}
       />
     ),
   };

@@ -7,24 +7,16 @@ import type { ReleaseSummary } from '../types/helm';
 
 interface HelmReleaseListProps {
   cluster: string;
+  releases: ReleaseSummary[];
   onSelectRelease: (releaseName: string, namespace: string) => void;
-  showSystemNamespaces: boolean;
-  isSystemNamespace: (namespace: string) => boolean;
 }
 
-export const HelmReleaseList = ({ cluster, onSelectRelease, showSystemNamespaces, isSystemNamespace }: HelmReleaseListProps) => {
+export const HelmReleaseList = ({ cluster, releases, onSelectRelease }: HelmReleaseListProps) => {
   const {
-    releases,
     releasesLoading,
     releasesError,
     selectedRelease,
   } = useHelmStore();
-
-  // Filtrar releases baseado no showSystemNamespaces
-  const filteredReleases = releases.filter(release => {
-    if (showSystemNamespaces) return true;
-    return !isSystemNamespace(release.namespace);
-  });
 
   if (releasesLoading) {
     return (
@@ -49,17 +41,14 @@ export const HelmReleaseList = ({ cluster, onSelectRelease, showSystemNamespaces
     );
   }
 
-  if (!filteredReleases || filteredReleases.length === 0) {
+  if (!releases || releases.length === 0) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="flex flex-col items-center gap-2 text-center">
           <Package className="h-12 w-12 text-muted-foreground/50" />
           <p className="text-sm font-medium text-muted-foreground">Nenhum release encontrado</p>
           <p className="text-xs text-muted-foreground">
-            {!showSystemNamespaces 
-              ? 'Instale um chart Helm, ajuste os filtros ou ative "Sistema" para ver releases de sistema'
-              : 'Instale um chart Helm ou ajuste os filtros'
-            }
+            Instale um chart Helm ou ajuste os filtros
           </p>
         </div>
       </div>
@@ -68,7 +57,7 @@ export const HelmReleaseList = ({ cluster, onSelectRelease, showSystemNamespaces
 
   return (
     <div className="space-y-2">
-      {filteredReleases.map((release) => (
+      {releases.map((release) => (
         <ReleaseCard
           key={`${release.namespace}-${release.name}`}
           release={release}
