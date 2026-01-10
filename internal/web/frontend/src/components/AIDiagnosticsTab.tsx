@@ -33,14 +33,22 @@ export function AIDiagnosticsTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Executar apenas no mount
 
-  // Auto-refresh provider status a cada 30 segundos para capturar erros recentes
-  useEffect(() => {
-    const interval = setInterval(() => {
-      fetchProviderStatus();
-    }, 30000); // 30 segundos
-
-    return () => clearInterval(interval);
-  }, [fetchProviderStatus]);
+  /**
+   * REMOVIDO: Auto-refresh provider status a cada 30 segundos
+   *
+   * MOTIVO: Polling automático pode fazer chamadas desnecessárias ao backend
+   * quando a aba está aberta mas não está sendo ativamente monitorada.
+   * Alguns providers podem fazer chamadas de teste que consomem quota.
+   *
+   * SOLUÇÃO: Status é carregado apenas no mount e pode ser atualizado
+   * manualmente através do botão de refresh.
+   */
+  // useEffect(() => {
+  //   const interval = setInterval(() => {
+  //     fetchProviderStatus();
+  //   }, 30000); // 30 segundos
+  //   return () => clearInterval(interval);
+  // }, [fetchProviderStatus]);
 
   return (
     <div className="space-y-6 p-6">
