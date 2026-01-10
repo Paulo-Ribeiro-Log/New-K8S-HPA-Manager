@@ -65,12 +65,23 @@ export const PodFileTransferModal = ({
 
       const url = `/api/v1/pods/${cluster}/${namespace}/${podName}/download?${params.toString()}`;
 
-      // Fazer download via fetch
-      const response = await fetch(url);
+      // Fazer download via fetch com autenticação
+      const token = localStorage.getItem('auth_token') || 'poc-token-123';
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Erro ao fazer download');
+        let errorMsg = 'Erro ao fazer download';
+        try {
+          const error = await response.json();
+          errorMsg = error.error || errorMsg;
+        } catch {
+          errorMsg = `HTTP ${response.status}: ${response.statusText}`;
+        }
+        throw new Error(errorMsg);
       }
 
       // Obter nome do arquivo do header Content-Disposition
