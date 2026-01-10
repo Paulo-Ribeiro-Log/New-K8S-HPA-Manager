@@ -524,18 +524,30 @@ export const PodsPanel = ({
   }, [cluster, selectedNamespace]);
 
   const filteredPods = useMemo(() => {
-    if (!searchQuery) return pods;
-    const query = searchQuery.toLowerCase();
-    return pods.filter((pod) => {
-      return (
-        pod.name.toLowerCase().includes(query) ||
-        pod.namespace.toLowerCase().includes(query) ||
-        pod.nodeName?.toLowerCase().includes(query) ||
-        pod.phase.toLowerCase().includes(query) ||
-        pod.containers.some(c => c.name.toLowerCase().includes(query))
-      );
-    });
-  }, [pods, searchQuery]);
+    let result = pods;
+    
+    // Filtrar por namespaces permitidos (remove system namespaces quando ocultos)
+    if (!showSystemNamespaces) {
+      const allowedNamespaces = new Set(filteredNamespaces.map(ns => ns.name));
+      result = result.filter(pod => allowedNamespaces.has(pod.namespace));
+    }
+    
+    // Filtrar por busca
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter((pod) => {
+        return (
+          pod.name.toLowerCase().includes(query) ||
+          pod.namespace.toLowerCase().includes(query) ||
+          pod.nodeName?.toLowerCase().includes(query) ||
+          pod.phase.toLowerCase().includes(query) ||
+          pod.containers.some(c => c.name.toLowerCase().includes(query))
+        );
+      });
+    }
+    
+    return result;
+  }, [pods, searchQuery, showSystemNamespaces, filteredNamespaces]);
 
   const handleSelectPod = async (pod: PodSummary) => {
     setSelectedPod(pod);

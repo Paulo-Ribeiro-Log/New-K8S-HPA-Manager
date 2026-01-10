@@ -13,6 +13,7 @@ import { Label } from './ui/label';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
+import { Progress } from './ui/progress';
 import {
   Loader2,
   AlertTriangle,
@@ -55,8 +56,23 @@ export const ApplyValuesModal = ({
   const [isComplete, setIsComplete] = useState(false);
   const [activeTab, setActiveTab] = useState<'diff' | 'preview'>('diff');
   const [chartRef, setChartRef] = useState('');
+  const [progress, setProgress] = useState(0);
+  const [currentPhase, setCurrentPhase] = useState('');
 
   const { executeOperation, streamOperation } = useHelmOperation();
+
+  // Mapear fases do Helm para progresso (0-100%)
+  const phaseProgress: Record<string, number> = {
+    'starting': 5,
+    'preparing': 10,
+    'downloading': 25,
+    'extracting': 40,
+    'validating': 55,
+    'applying': 70,
+    'verifying': 85,
+    'completed': 100,
+    'failed': 100,
+  };
 
   // Calculate diff
   const diffLines = useMemo(() => {
@@ -92,6 +108,8 @@ export const ApplyValuesModal = ({
       setIsComplete(false);
       setActiveTab('diff');
       setChartRef(''); // Empty by default, user must provide repo/chart format
+      setProgress(0);
+      setCurrentPhase('');
     }
   }, [open, chart]);
 
@@ -118,9 +136,16 @@ export const ApplyValuesModal = ({
       const cleanup = streamOperation(opId, (event) => {
         setLogs((prev) => [...prev, `[${event.phase}] ${event.message}`]);
 
+        // Atualizar progresso baseado na fase
+        const phaseKey = event.phase.toLowerCase();
+        const progressValue = phaseProgress[phaseKey] || 50;
+        setProgress(progressValue);
+        setCurrentPhase(event.phase);
+
         if (event.phase === 'completed') {
           setIsComplete(true);
           setLoading(false);
+          setProgress(100);
           setTimeout(() => {
             onOpenChange(false);
             onSuccess?.();
@@ -249,17 +274,36 @@ export const ApplyValuesModal = ({
           <>
             {/* Operation Progress */}
             <div className="flex-1 overflow-auto space-y-3">
-              <div className="flex items-center gap-2 p-3 bg-muted/30 rounded-lg border">
-                {loading ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                ) : isComplete ? (
-                  <CheckCircle2 className="h-4 w-4 text-green-500" />
-                ) : error ? (
-                  <AlertTriangle className="h-4 w-4 text-destructive" />
-                ) : null}
-                <span className="text-sm font-medium">
-                  {loading ? 'Aplicando alterações...' : isComplete ? 'Alterações aplicadas com sucesso!' : 'Operação concluída'}
-                </span>
+              <div className="space-y-2 p-3 bg-muted/30 rounded-lg border">
+                <div className="flex items-center gap-2">
+                  {loading ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                  ) : isComplete ? (
+                    <CheckCircle2 className="h-4 w-4 text-green-500" />
+                  ) : error ? (
+                    <AlertTriangle className="h-4 w-4 text-destructive" />
+                  ) : null}
+                  <span className="text-sm font-medium flex-1">
+                    {loading ? 'Aplicando alterações...' : isComplete ? 'Alterações aplicadas com sucesso!' : 'Operação concluída'}
+                  </span>
+                  {loading && (
+                    <span className="text-xs text-muted-foreground">
+                      {progress}%
+                    </span>
+                  )}
+                </div>
+
+                {/* Progress Bar */}
+                {(loading || isComplete) && (
+                  <>
+                    <Progress value={progress} max={100} className="h-2" />
+                    {currentPhase && (
+                      <p className="text-xs text-muted-foreground">
+                        Fase atual: <span className="font-medium">{currentPhase}</span>
+                      </p>
+                    )}
+                  </>
+                )}
               </div>
 
               {/* Logs */}

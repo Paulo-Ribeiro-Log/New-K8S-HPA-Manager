@@ -46,9 +46,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### ⎈ Helm Tab (✅ Produção desde 08/01/2026)
 19. [🎯 Plano Aba Helm](PLANO_ABA_HELM.md) - **Implementação completa da aba Helm** (v1.3.7+)
+20. [🔧 Plano de Correção Helm](PLANO_CORRECAO_HELM.md) - **Correções críticas da aba Helm** (busca dinâmica, React Query, SSE progress)
+21. [📋 Sumário de Correções Helm](SUMARIO_CORRECOES_HELM.md) - **Resumo executivo das 5 fases de correção**
+22. [✏️ Correções Manifest Tab](CORRECOES_MANIFEST_TAB.md) - **Detalhamento da refatoração do editor Manifest**
 
 ### 📋 Health Checking (✅ Produção desde 28/12/2025)
-20. [📊 Implementação Logs Persistentes](IMPLEMENTACAO_LOGS_PERSISTENTES.md) - **Sistema de persistência e visualização de logs históricos** (v1.3.7+)
+23. [📊 Implementação Logs Persistentes](IMPLEMENTACAO_LOGS_PERSISTENTES.md) - **Sistema de persistência e visualização de logs históricos** (v1.3.7+)
 
 ---
 
