@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **08 de janeiro de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **10 de janeiro de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -334,6 +334,64 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
       - Linha 3: Node, IP, Age, Restarts
       - Linha 4: CPU/R, CPU/L, MEM/R, MEM/L
     - Redução de ~40% na altura do header sem perda de informações
+✅ **Transferência de Arquivos de Pods (v1.3.10 - 10/01/2026)** - Sistema completo de download de arquivos de PVCs
+  - **Fase 1 - Caminho Manual**:
+    - Input de caminho absoluto com validação
+    - Suporte a arquivos individuais e diretórios (tar.gz automático)
+    - Validação de existência do arquivo antes de tentar download
+    - Validação de container existente no pod
+    - Download binário RAW via io.Copy (sem encoding que corrompe)
+    - Audit log completo: user, timestamp, path, filesize, duration
+  - **Fase 2 - File Browser Completo** (implementado 10/01/2026):
+    - **Tela de seleção de diretório inicial** com 6 diretórios comuns:
+      - `/mnt/storage` (PVC Storage) - padrão
+      - `/var/log` (Logs)
+      - `/tmp` (Temporários)
+      - `/app` (Aplicação)
+      - `/etc` (Configurações)
+      - `/` (Raiz)
+    - Input para caminho customizado
+    - Botão "Cancelar" para fechar modal sem navegar
+    - **Navegação completa por diretórios**:
+      - Breadcrumb clicável com path completo
+      - Botão "Voltar para Seleção" (retorna à tela inicial)
+      - Botão "Home" (vai para raiz /)
+      - Botão "Voltar" (pasta anterior)
+      - Click em pasta = navegar, click em arquivo = selecionar
+    - **Tabela de arquivos** com scroll vertical para muitos itens:
+      - Ícones diferenciados (pasta azul, arquivo cinza)
+      - Tamanho formatado (B, KB, MB, GB)
+      - Permissões (formato ls -la)
+      - Data de modificação (pt-BR)
+      - Badge contador de itens
+    - **Multi-seleção via checkboxes**:
+      - Checkbox individual por arquivo/pasta
+      - "Selecionar todos" global
+      - Contador visual "X selecionado(s)"
+    - **Download em Batch** (múltiplos arquivos):
+      - Seleciona 2+ arquivos → clica "Download (X)"
+      - Backend empacota tudo em tar.gz único
+      - Nome: `batch-download-YYYY-MM-DD_HH-MM-SS.tar.gz`
+      - Toast: "X arquivos empacotados em Y.tar.gz"
+      - Auto-cleanup de seleção após sucesso
+    - **Backend** (Go):
+      - `ListDirectory()` - executa ls -la e faz parse inteligente
+      - `CopyFromPod()` - download single file com validação
+      - `CopyMultipleFromPod()` - batch download com temp dir + tar
+      - Handler `BrowseFiles()` - GET endpoint para listar diretórios
+      - Handler `DownloadMultipleFromPod()` - POST endpoint para batch
+      - Parsing robusto: ignora "total X", mensagens de erro ls, linhas vazias
+    - **Frontend** (React):
+      - `PodFileBrowser.tsx` - componente completo com navegação
+      - `PodFileTransferModal.tsx` - tabs: "Navegar Arquivos" vs "Caminho Manual"
+      - Estado dual-mode: tela seleção inicial vs file browser
+      - ScrollArea com altura máxima para scroll vertical
+    - **API REST**:
+      - `GET /api/v1/pods/:cluster/:namespace/:name/browse?path=...` - listar diretório
+      - `GET /api/v1/pods/:cluster/:namespace/:name/download?path=...&type=file|directory` - download simples
+      - `POST /api/v1/pods/:cluster/:namespace/:name/download/batch` - batch download (JSON body: `{paths: []}`)
+    - **Componentes**: `PodFileBrowser.tsx` (navegador completo), `PodFileTransferModal.tsx` (modal com tabs)
+    - **Arquivos Backend**: `kubernetes/client.go` (3 métodos novos), `handlers/pods.go` (3 handlers novos)
 ✅ **RBAC com Azure AD (v1.3.5+)** - Controle de acesso baseado em grupos do Azure AD
   - **Grupo SRE**: `VV_CLOUD_SRE` (ID: `eb865ea5-2672-49be-abc8-74c248c556b0`)
   - **Backend**: Módulo `internal/rbac/azure_ad.go` com verificação via Azure CLI (`az ad user get-member-groups`)

@@ -525,6 +525,8 @@ func (s *Server) setupRoutes() {
 		pods.GET("/:cluster/:namespace/:name/logs", podHandler.GetLogs)
 		pods.GET("/:cluster/:namespace/:name/metrics", podHandler.GetMetrics)
 		pods.GET("/:cluster/:namespace/:name/download", podHandler.DownloadFromPod)
+		pods.POST("/:cluster/:namespace/:name/download/batch", podHandler.DownloadMultipleFromPod)
+		pods.GET("/:cluster/:namespace/:name/browse", podHandler.BrowseFiles)
 
 		// Pods - Write Operations (SRE-only)
 		pods.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Apply)
