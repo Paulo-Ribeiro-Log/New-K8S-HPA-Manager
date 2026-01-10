@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -3457,6 +3458,47 @@ func (c *Client) GetPodMetricsFromServer(ctx context.Context, namespace, name st
 // CopyFromPod copia arquivo/diretório do pod para arquivo temporário local
 // Retorna o caminho do arquivo temporário criado
 func (c *Client) CopyFromPod(namespace, podName, container, remotePath string, isDirectory bool) (string, error) {
+	ctx := context.Background()
+
+	// Validar que o container existe no pod (se especificado)
+	if container != "" {
+		pod, err := c.clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			return "", fmt.Errorf("failed to get pod: %w", err)
+		}
+
+		// Verificar se container existe
+		containerExists := false
+		var availableContainers []string
+		for _, c := range pod.Spec.Containers {
+			availableContainers = append(availableContainers, c.Name)
+			if c.Name == container {
+				containerExists = true
+				break
+			}
+		}
+
+		if !containerExists {
+			return "", fmt.Errorf("container '%s' not found in pod '%s'. Available containers: %s",
+				container, podName, strings.Join(availableContainers, ", "))
+		}
+	}
+
+	// Validar que o arquivo/diretório existe no pod
+	validateArgs := []string{"exec", podName, "-n", namespace, "--context", c.cluster}
+	if container != "" {
+		validateArgs = append(validateArgs, "-c", container)
+	}
+	validateArgs = append(validateArgs, "--", "test", "-e", remotePath)
+
+	validateCmd := exec.Command("kubectl", validateArgs...)
+	if err := validateCmd.Run(); err != nil {
+		if isDirectory {
+			return "", fmt.Errorf("diretório '%s' não encontrado no pod '%s'", remotePath, podName)
+		}
+		return "", fmt.Errorf("arquivo '%s' não encontrado no pod '%s'", remotePath, podName)
+	}
+
 	// Criar arquivo temporário
 	tmpFile, err := os.CreateTemp("", "pod-download-*")
 	if err != nil {
@@ -3465,25 +3507,28 @@ func (c *Client) CopyFromPod(namespace, podName, container, remotePath string, i
 	tmpPath := tmpFile.Name()
 	tmpFile.Close()
 
-	// Se for diretório, criar tar.gz
+	// Se for diretório, deletar arquivo temporário e adicionar .tar.gz
+	// kubectl cp criará o arquivo tar.gz automaticamente
 	if isDirectory {
+		os.Remove(tmpPath) // Remover arquivo vazio criado
 		tmpPath = tmpPath + ".tar.gz"
 	}
 
 	// Construir comando kubectl cp
-	// Formato: kubectl cp namespace/pod:/path /local/path -c container
+	// Formato: kubectl cp namespace/pod:/path /local/path --context cluster -c container
 	source := fmt.Sprintf("%s/%s:%s", namespace, podName, remotePath)
 
 	args := []string{"cp", source, tmpPath}
+
+	// CRÍTICO: Adicionar --context ANTES de outras flags
+	args = append(args, "--context", c.cluster)
+
 	if container != "" {
 		args = append(args, "-c", container)
 	}
 
-	// Se for diretório, adicionar flag para tar
-	if isDirectory {
-		// kubectl cp automaticamente cria tar.gz para diretórios
-		// Não precisa de flag especial
-	}
+	// Log do comando para debug
+	fmt.Printf("[DEBUG] kubectl command: kubectl %v\n", strings.Join(args, " "))
 
 	// Executar kubectl cp
 	cmd := exec.Command("kubectl", args...)
@@ -3494,6 +3539,9 @@ func (c *Client) CopyFromPod(namespace, podName, container, remotePath string, i
 		return "", fmt.Errorf("kubectl cp failed: %v - output: %s", err, string(output))
 	}
 
+	// Log de sucesso
+	fmt.Printf("[DEBUG] kubectl cp success, file created: %s\n", tmpPath)
+
 	return tmpPath, nil
 }
 
@@ -3503,4 +3551,176 @@ func (c *Client) CleanupTempFile(path string) error {
 		return nil
 	}
 	return os.Remove(path)
+}
+
+// CopyMultipleFromPod copia múltiplos arquivos/diretórios do pod e empacota em tar.gz
+// Retorna o caminho do arquivo tar.gz criado
+func (c *Client) CopyMultipleFromPod(namespace, podName, container string, remotePaths []string) (string, error) {
+	if len(remotePaths) == 0 {
+		return "", fmt.Errorf("no files specified")
+	}
+
+	// Criar diretório temporário para armazenar os arquivos
+	tempDir, err := os.MkdirTemp("", "pod-batch-download-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir) // Limpar diretório ao final
+
+	fmt.Printf("[DEBUG] Batch download: created temp dir %s\n", tempDir)
+
+	// Copiar cada arquivo para o diretório temporário
+	for i, remotePath := range remotePaths {
+		fmt.Printf("[DEBUG] Copying file %d/%d: %s\n", i+1, len(remotePaths), remotePath)
+
+		// Extrair nome do arquivo do path
+		fileName := remotePath
+		if strings.Contains(fileName, "/") {
+			parts := strings.Split(fileName, "/")
+			fileName = parts[len(parts)-1]
+		}
+
+		// Path de destino no temp dir
+		localPath := fmt.Sprintf("%s/%s", tempDir, fileName)
+
+		// Executar kubectl cp
+		source := fmt.Sprintf("%s/%s:%s", namespace, podName, remotePath)
+		args := []string{"cp", source, localPath, "--context", c.cluster}
+		if container != "" {
+			args = append(args, "-c", container)
+		}
+
+		cmd := exec.Command("kubectl", args...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("failed to copy %s: %v - output: %s", remotePath, err, string(output))
+		}
+	}
+
+	// Criar tar.gz com todos os arquivos
+	tarPath := fmt.Sprintf("%s.tar.gz", tempDir)
+	fmt.Printf("[DEBUG] Creating tar.gz: %s\n", tarPath)
+
+	tarArgs := []string{"-czf", tarPath, "-C", tempDir, "."}
+	tarCmd := exec.Command("tar", tarArgs...)
+	tarOutput, err := tarCmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to create tar.gz: %v - output: %s", err, string(tarOutput))
+	}
+
+	// Verificar se tar.gz foi criado
+	if _, err := os.Stat(tarPath); err != nil {
+		return "", fmt.Errorf("tar.gz file not created: %w", err)
+	}
+
+	fmt.Printf("[DEBUG] Batch download complete: %s (%d files)\n", tarPath, len(remotePaths))
+
+	return tarPath, nil
+}
+
+// FileInfo representa informações de um arquivo/diretório no pod
+type FileInfo struct {
+	Name        string    `json:"name"`
+	Path        string    `json:"path"`
+	Size        int64     `json:"size"`
+	IsDirectory bool      `json:"isDirectory"`
+	Permissions string    `json:"permissions"`
+	ModTime     time.Time `json:"modTime"`
+}
+
+// ListDirectory lista arquivos e diretórios em um caminho do pod
+func (c *Client) ListDirectory(namespace, podName, container, remotePath string) ([]FileInfo, error) {
+	// Comando: ls -la --time-style='+%Y-%m-%d %H:%M:%S' <path>
+	// Output: drwxr-xr-x 2 root root 4096 2024-10-31 13:07:34 dirname
+	//         -rw-r----- 1 root root 214K 2024-10-31 13:07:34 filename.jpg
+
+	lsCmd := fmt.Sprintf("ls -la --time-style='+%%Y-%%m-%%d %%H:%%M:%%S' %s 2>&1", remotePath)
+
+	args := []string{"exec", podName, "-n", namespace, "--context", c.cluster}
+	if container != "" {
+		args = append(args, "-c", container)
+	}
+	args = append(args, "--", "sh", "-c", lsCmd)
+
+	cmd := exec.Command("kubectl", args...)
+	output, err := cmd.CombinedOutput()
+
+	// Se houve erro mas temos output, tentar fazer parse mesmo assim
+	// (alguns erros de ls são não-fatais)
+	outputStr := string(output)
+	if err != nil && len(outputStr) == 0 {
+		return nil, fmt.Errorf("failed to list directory: %v", err)
+	}
+
+	// Parse output do ls
+	lines := strings.Split(outputStr, "\n")
+	var files []FileInfo
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Ignorar linhas vazias, total e mensagens de erro
+		if line == "" ||
+			strings.HasPrefix(line, "total ") ||
+			strings.HasPrefix(line, "ls:") ||
+			strings.HasPrefix(line, "cannot access") {
+			continue
+		}
+
+		// Parse: drwxr-xr-x 2 root root 4096 2024-10-31 13:07:34 filename
+		parts := strings.Fields(line)
+		if len(parts) < 9 {
+			continue // Linha inválida
+		}
+
+		permissions := parts[0]
+		isDir := strings.HasPrefix(permissions, "d")
+		sizeStr := parts[4]
+		dateStr := parts[5] + " " + parts[6]
+		name := strings.Join(parts[7:], " ")
+
+		// Ignorar . e ..
+		if name == "." || name == ".." {
+			continue
+		}
+
+		// Parse size (pode ter sufixo K, M, G)
+		var size int64
+		if strings.HasSuffix(sizeStr, "K") {
+			sizeStr = strings.TrimSuffix(sizeStr, "K")
+			if s, err := strconv.ParseFloat(sizeStr, 64); err == nil {
+				size = int64(s * 1024)
+			}
+		} else if strings.HasSuffix(sizeStr, "M") {
+			sizeStr = strings.TrimSuffix(sizeStr, "M")
+			if s, err := strconv.ParseFloat(sizeStr, 64); err == nil {
+				size = int64(s * 1024 * 1024)
+			}
+		} else if strings.HasSuffix(sizeStr, "G") {
+			sizeStr = strings.TrimSuffix(sizeStr, "G")
+			if s, err := strconv.ParseFloat(sizeStr, 64); err == nil {
+				size = int64(s * 1024 * 1024 * 1024)
+			}
+		} else {
+			if s, err := strconv.ParseInt(sizeStr, 10, 64); err == nil {
+				size = s
+			}
+		}
+
+		// Parse modTime
+		modTime, _ := time.Parse("2006-01-02 15:04:05", dateStr)
+
+		// Construir path completo
+		fullPath := strings.TrimSuffix(remotePath, "/") + "/" + name
+
+		files = append(files, FileInfo{
+			Name:        name,
+			Path:        fullPath,
+			Size:        size,
+			IsDirectory: isDir,
+			Permissions: permissions,
+			ModTime:     modTime,
+		})
+	}
+
+	return files, nil
 }

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -1124,10 +1125,203 @@ func (h *PodHandler) DownloadFromPod(c *gin.Context) {
 		"download_time": time.Since(startTime).String(),
 	})
 
-	// Stream file para download
+	// Abrir arquivo para leitura binária RAW
+	file, err := os.Open(tempFile)
+	if err != nil {
+		logAudit("failed", fmt.Sprintf("Failed to open temp file: %v", err), nil)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("Erro ao abrir arquivo: %v", err),
+		})
+		return
+	}
+	defer file.Close()
+
+	// Headers HTTP para download binário RAW (sem encoding)
 	c.Header("Content-Description", "File Transfer")
-	c.Header("Content-Transfer-Encoding", "binary")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
 	c.Header("Content-Type", "application/octet-stream")
-	c.File(tempFile)
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Header("Content-Transfer-Encoding", "binary")
+	c.Header("Content-Length", fmt.Sprintf("%d", fileSize))
+
+	// Copiar arquivo RAW diretamente para response (sem processamento)
+	c.Status(http.StatusOK)
+	io.Copy(c.Writer, file)
+}
+
+// BrowseFiles lista arquivos e diretórios de um pod
+func (h *PodHandler) BrowseFiles(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	podName := c.Param("name")
+	container := c.Query("container")
+	remotePath := c.DefaultQuery("path", "/")
+
+	if remotePath == "" {
+		remotePath = "/"
+	}
+
+	// Obter client Kubernetes
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("Erro ao obter client: %v", err),
+		})
+		return
+	}
+
+	// Criar wrapper com métodos customizados
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+
+	// Listar arquivos do diretório
+	files, err := kubeClient.ListDirectory(namespace, podName, container, remotePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("Erro ao listar diretório: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"path":  remotePath,
+			"files": files,
+		},
+	})
+}
+
+// batchDownloadRequest representa uma requisição de download em batch
+type batchDownloadRequest struct {
+	Paths []string `json:"paths" binding:"required"`
+}
+
+// DownloadMultipleFromPod faz download de múltiplos arquivos empacotados em tar.gz
+func (h *PodHandler) DownloadMultipleFromPod(c *gin.Context) {
+	startTime := time.Now()
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	podName := c.Param("name")
+	container := c.Query("container")
+
+	// Parse request body
+	var req batchDownloadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("Invalid request: %v", err),
+		})
+		return
+	}
+
+	if len(req.Paths) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Nenhum arquivo especificado",
+		})
+		return
+	}
+
+	// Obter informações do usuário (se disponível via RBAC/SSO)
+	userEmail := c.GetString("user_email")
+	userName := c.GetString("user_name")
+	if userEmail == "" {
+		userEmail = "anonymous"
+	}
+
+	// Helper para log de auditoria
+	logAudit := func(status string, errorMsg string, fileInfo map[string]interface{}) {
+		entry := history.HistoryEntry{
+			Timestamp: startTime,
+			UserEmail: userEmail,
+			UserName:  userName,
+			Action:    "batch_download_from_pod",
+			Resource:  fmt.Sprintf("%s/%s", namespace, podName),
+			Cluster:   cluster,
+			Before: map[string]interface{}{
+				"paths":     req.Paths,
+				"container": container,
+				"count":     len(req.Paths),
+			},
+			After:    fileInfo,
+			Status:   status,
+			ErrorMsg: errorMsg,
+			Duration: time.Since(startTime).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("Warning: failed to log batch download audit: %v\n", err)
+		}
+	}
+
+	// Obter client Kubernetes
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		logAudit("failed", fmt.Sprintf("Erro ao obter client: %v", err), nil)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("Erro ao obter client: %v", err),
+		})
+		return
+	}
+
+	// Criar wrapper com métodos customizados
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+
+	// Executar batch download
+	tempFile, err := kubeClient.CopyMultipleFromPod(namespace, podName, container, req.Paths)
+	if err != nil {
+		logAudit("failed", fmt.Sprintf("Batch download failed: %v", err), nil)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("Erro ao copiar arquivos: %v", err),
+		})
+		return
+	}
+
+	// Garantir cleanup do arquivo temporário após download
+	defer kubeClient.CleanupTempFile(tempFile)
+
+	// Obter informações do arquivo transferido
+	fileInfo, err := os.Stat(tempFile)
+	var fileSize int64 = 0
+	if err == nil {
+		fileSize = fileInfo.Size()
+	}
+
+	// Nome do arquivo de download
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	filename := fmt.Sprintf("batch-download-%s.tar.gz", timestamp)
+
+	// Log de auditoria com sucesso
+	logAudit("success", "", map[string]interface{}{
+		"filename":      filename,
+		"file_size":     fileSize,
+		"file_count":    len(req.Paths),
+		"download_time": time.Since(startTime).String(),
+	})
+
+	// Abrir arquivo para leitura binária RAW
+	file, err := os.Open(tempFile)
+	if err != nil {
+		logAudit("failed", fmt.Sprintf("Failed to open temp file: %v", err), nil)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("Erro ao abrir arquivo: %v", err),
+		})
+		return
+	}
+	defer file.Close()
+
+	// Headers HTTP para download binário RAW (sem encoding)
+	c.Header("Content-Description", "File Transfer")
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Header("Content-Transfer-Encoding", "binary")
+	c.Header("Content-Length", fmt.Sprintf("%d", fileSize))
+
+	// Copiar arquivo RAW diretamente para response (sem processamento)
+	c.Status(http.StatusOK)
+	io.Copy(c.Writer, file)
 }
