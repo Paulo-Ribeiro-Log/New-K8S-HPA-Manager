@@ -815,6 +815,10 @@ const ManifestTab = ({
     const newValue = value || '';
     setEditedManifest(newValue);
 
+    // Reset validation state when content changes
+    setValidationError(null);
+    setValidationSuccess(false);
+
     // Add to history
     setHistoryIndex((currentIndex) => {
       setHistory((currentHistory) => {
