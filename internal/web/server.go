@@ -628,6 +628,30 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/api/v1/servicemesh/namespaces", serviceMeshHandler.GetNamespaces) // GET /api/v1/servicemesh/namespaces?cluster=X
 	s.router.GET("/api/v1/servicemesh/metrics", serviceMeshHandler.GetMetrics)       // GET /api/v1/servicemesh/metrics?cluster=X&namespace=Y
 
+	// GitHub Releases Compare - SEM AUTH (operações de leitura públicas)
+	// Registry pode ser nil (graceful degradation se base não estiver disponível)
+	fmt.Println("🐙 Inicializando GitHub Releases Handler...")
+	var githubRegistry *storage.DeploymentRegistry
+	githubRegistry, err = storage.NewDeploymentRegistry()
+	if err != nil {
+		fmt.Printf("⚠️  Falha ao inicializar Deployment Registry para GitHub: %v\n", err)
+		fmt.Println("   GitHub Releases continuará funcionando com funcionalidade limitada")
+		githubRegistry = nil // Continua sem registry (graceful degradation)
+	} else {
+		fmt.Println("✅ Deployment Registry inicializado (base de conhecimento para GitHub)")
+	}
+
+	// Criar logger para GitHub handler
+	githubLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "github-releases").Logger()
+	githubHandler := handlers.NewGitHubReleasesHandler(githubRegistry, &githubLogger)
+	api.GET("/github/repos", githubHandler.GetRepos)                               // GET /api/v1/github/repos
+	api.GET("/github/repos/:owner/:repo/releases", githubHandler.GetReleases)      // GET /api/v1/github/repos/:owner/:repo/releases
+	api.GET("/github/repos/:owner/:repo/compare/:basehead", githubHandler.CompareReleases) // GET /api/v1/github/repos/:owner/:repo/compare/base...head
+	api.GET("/github/deployments/search", githubHandler.SearchDeployments)         // GET /api/v1/github/deployments/search?app_name=X
+	api.GET("/github/deployments/production", githubHandler.GetProductionDeployment) // GET /api/v1/github/deployments/production?app_name=X
+	api.GET("/github/deployments/all-versions", githubHandler.GetAllVersions)      // GET /api/v1/github/deployments/all-versions?app_name=X
+	fmt.Println("✅ GitHub Releases routes registradas")
+
 	// Sessions
 	sessionHandler := handlers.NewSessionsHandler()
 	api.GET("/sessions", sessionHandler.ListAllSessions)

@@ -13,23 +13,25 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/storage"
 	"k8s-hpa-manager/internal/web/sse"
 )
 
 // Orchestrator coordena todos os health checks
 type Orchestrator struct {
-	kubeManager       *config.KubeConfigManager
-	deploymentChecker *DeploymentChecker
-	serviceChecker    *ServiceChecker
-	configChecker     *ConfigChecker
-	storage           *HealthCheckStorage
-	progressTracker   *sse.ProgressTracker
-	filterManager     *FilterManager // ✅ Gerenciador de filtros
+	kubeManager        *config.KubeConfigManager
+	deploymentChecker  *DeploymentChecker
+	serviceChecker     *ServiceChecker
+	configChecker      *ConfigChecker
+	storage            *HealthCheckStorage
+	progressTracker    *sse.ProgressTracker
+	filterManager      *FilterManager         // ✅ Gerenciador de filtros
+	deploymentRegistry *storage.DeploymentRegistry // ✅ Base de conhecimento de deployments
 }
 
 // NewOrchestrator cria um novo orchestrator
 func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse.ProgressTracker, dbPath string, filtersConfigPath string) (*Orchestrator, error) {
-	storage, err := NewHealthCheckStorage(dbPath)
+	hcStorage, err := NewHealthCheckStorage(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
@@ -40,14 +42,22 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 		return nil, fmt.Errorf("failed to initialize filter manager: %w", err)
 	}
 
+	// ✅ Inicializar DeploymentRegistry (base de conhecimento)
+	deploymentRegistry, err := storage.NewDeploymentRegistry()
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to initialize deployment registry; continuing without it")
+		deploymentRegistry = nil // Continua sem registry (não é crítico)
+	}
+
 	return &Orchestrator{
-		kubeManager:       kubeManager,
-		deploymentChecker: NewDeploymentChecker(),
-		serviceChecker:    NewServiceChecker(),
-		configChecker:     NewConfigChecker(),
-		storage:           storage,
-		progressTracker:   progressTracker,
-		filterManager:     filterManager,
+		kubeManager:        kubeManager,
+		deploymentChecker:  NewDeploymentChecker(),
+		serviceChecker:     NewServiceChecker(),
+		configChecker:      NewConfigChecker(),
+		storage:            hcStorage,
+		progressTracker:    progressTracker,
+		filterManager:      filterManager,
+		deploymentRegistry: deploymentRegistry,
 	}, nil
 }
 
@@ -193,7 +203,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 				o.publishProgress(sessionID, cluster, "deployments", message, deploymentProgress, status)
 			}
 
-			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, metricsClient, namespaces, req.Timeout, deploymentCallback)
+			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, metricsClient, namespaces, req.Timeout, cluster, o.deploymentRegistry, deploymentCallback)
 
 			// ✅ Aplicar filtros se habilitado
 			if req.ApplyFilters && o.filterManager != nil {
