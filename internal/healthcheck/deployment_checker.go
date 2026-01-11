@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
+
+	"k8s-hpa-manager/internal/storage"
 
 	"github.com/rs/zerolog/log"
 	appsv1 "k8s.io/api/apps/v1"
@@ -28,7 +31,8 @@ func NewDeploymentChecker() *DeploymentChecker {
 }
 
 // CheckAll verifica todos os deployments nos namespaces especificados
-func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespaces []string, timeout int, progressCallback ProgressCallback) []DeploymentHealth {
+// clusterName é usado para popular a base de conhecimento de deployments
+func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespaces []string, timeout int, clusterName string, registry *storage.DeploymentRegistry, progressCallback ProgressCallback) []DeploymentHealth {
 	results := []DeploymentHealth{}
 
 	type nsDeployments struct {
@@ -81,7 +85,7 @@ func (c *DeploymentChecker) CheckAll(ctx context.Context, client kubernetes.Inte
 			}
 
 			deploymentCtx, cancel := c.withTimeout(ctx, timeout)
-			health := c.Check(deploymentCtx, client, metricsClient, batch.namespace, deployment.Name, timeout)
+			health := c.Check(deploymentCtx, client, metricsClient, batch.namespace, deployment.Name, timeout, clusterName, registry)
 			if cancel != nil {
 				cancel()
 			}
@@ -108,7 +112,8 @@ func (c *DeploymentChecker) getHealthSummary(health DeploymentHealth) string {
 }
 
 // Check verifica a saúde de um deployment específico
-func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespace, name string, timeout int) DeploymentHealth {
+// clusterName e registry são usados para popular a base de conhecimento
+func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interface, metricsClient metricsclientset.Interface, namespace, name string, timeout int, clusterName string, registry *storage.DeploymentRegistry) DeploymentHealth {
 	deployment, err := client.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		status := StatusCritical
@@ -148,6 +153,11 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 		ReplicasDesired: desiredReplicas,
 		CheckedAt:       time.Now(),
 		Suggestions:     []string{},
+	}
+
+	// ✅ NOVO: Popular base de conhecimento de deployments
+	if registry != nil && clusterName != "" {
+		c.populateDeploymentRegistry(deployment, clusterName, registry)
 	}
 
 	// 1. Verificar réplicas
@@ -487,4 +497,90 @@ func isTimeoutError(err error, ctx context.Context) bool {
 	}
 
 	return false
+}
+
+// populateDeploymentRegistry extrai informações do deployment e popula a base de conhecimento
+func (c *DeploymentChecker) populateDeploymentRegistry(deployment *appsv1.Deployment, clusterName string, registry *storage.DeploymentRegistry) {
+	// Extrair versão de labels
+	version := deployment.Labels["app.kubernetes.io/version"]
+
+	// Extrair app name de labels
+	appName := deployment.Labels["app.kubernetes.io/name"]
+	if appName == "" {
+		appName = deployment.Labels["app"]
+	}
+	if appName == "" {
+		appName = deployment.Name // Fallback para nome do deployment
+	}
+
+	// Extrair squad do label devops.k8s.io/squad
+	squad := deployment.Labels["devops.k8s.io/squad"]
+
+	// Extrair ServiceNow task number do label devops.k8s.io/servicenow-task-number
+	// Formato esperado: "CHG0001234" ou apenas "0001234"
+	servicenowTask := deployment.Labels["devops.k8s.io/servicenow-task-number"]
+	// Garantir prefixo CHG se não estiver presente
+	if servicenowTask != "" && !strings.HasPrefix(servicenowTask, "CHG") {
+		servicenowTask = "CHG" + servicenowTask
+	}
+
+	// Extrair imagem e tag do primeiro container
+	var fullImage, imageTag string
+	if len(deployment.Spec.Template.Spec.Containers) > 0 {
+		fullImage = deployment.Spec.Template.Spec.Containers[0].Image
+		imageTag = storage.ExtractVersionFromImage(fullImage)
+
+		// Se não tem version label, usar tag da imagem
+		if version == "" {
+			version = imageTag
+		}
+	}
+
+	// Determinar status de saúde básico
+	status := "healthy"
+	desiredReplicas := int32(1)
+	if deployment.Spec.Replicas != nil {
+		desiredReplicas = *deployment.Spec.Replicas
+	}
+
+	readyReplicas := deployment.Status.ReadyReplicas
+
+	if readyReplicas == 0 && desiredReplicas > 0 {
+		status = "critical"
+	} else if readyReplicas < desiredReplicas {
+		status = "warning"
+	}
+
+	// Criar registro
+	record := storage.DeploymentRecord{
+		DeploymentName:  deployment.Name,
+		Namespace:       deployment.Namespace,
+		Cluster:         clusterName,
+		Version:         version,
+		ImageTag:        imageTag,
+		FullImage:       fullImage,
+		ReplicasCurrent: int(readyReplicas),
+		ReplicasDesired: int(desiredReplicas),
+		AppName:         appName,
+		Status:          status,
+		Squad:           squad,
+		ServiceNowTask:  servicenowTask,
+	}
+
+	// Upsert na base (ignora erros para não quebrar health check)
+	if err := registry.UpsertDeployment(record); err != nil {
+		log.Warn().
+			Err(err).
+			Str("cluster", clusterName).
+			Str("namespace", deployment.Namespace).
+			Str("deployment", deployment.Name).
+			Msg("Failed to update deployment registry")
+	} else {
+		log.Debug().
+			Str("cluster", clusterName).
+			Str("namespace", deployment.Namespace).
+			Str("deployment", deployment.Name).
+			Str("version", version).
+			Msg("Updated deployment registry")
+	}
 }
