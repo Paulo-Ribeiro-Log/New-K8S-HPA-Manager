@@ -50,6 +50,15 @@ import type {
   SequenceExecuteRequest,
   TopNamespacesResponse,
   NamespaceMetrics,
+  GitHubReposConfig,
+  GitHubReleasesResponse,
+  GitHubComparison,
+  DeploymentSearchResponse,
+  ProductionDeploymentResponse,
+  AllVersionsResponse,
+  TokenStatusResponse,
+  SaveTokenRequest,
+  SaveTokenResponse,
 } from "./types";
 
 import type {
@@ -1746,6 +1755,102 @@ class APIClient {
    */
   async removeFilterRule(id: string): Promise<any> {
     return this.request(`/filters/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  // ========================================
+  // GitHub Releases API
+  // ========================================
+
+  /**
+   * Get configured GitHub repositories
+   * GET /api/v1/github/repos
+   */
+  async getGitHubRepos(): Promise<GitHubReposConfig> {
+    return this.request("/github/repos");
+  }
+
+  /**
+   * Get releases from a GitHub repository
+   * GET /api/v1/github/repos/:owner/:repo/releases
+   */
+  async getGitHubReleases(
+    owner: string,
+    repo: string
+  ): Promise<GitHubReleasesResponse> {
+    return this.request(`/github/repos/${owner}/${repo}/releases`);
+  }
+
+  /**
+   * Compare two GitHub releases (tags)
+   * GET /api/v1/github/repos/:owner/:repo/compare/:base...:head
+   */
+  async compareGitHubReleases(
+    owner: string,
+    repo: string,
+    base: string,
+    head: string
+  ): Promise<GitHubComparison> {
+    return this.request(
+      `/github/repos/${owner}/${repo}/compare/${base}...${head}`
+    );
+  }
+
+  /**
+   * Search deployments by app name
+   * GET /api/v1/github/deployments/search?app_name=X
+   */
+  async searchDeployments(appName: string): Promise<DeploymentSearchResponse> {
+    const params = new URLSearchParams({ app_name: appName });
+    return this.request(`/github/deployments/search?${params}`);
+  }
+
+  /**
+   * Get production deployment version
+   * GET /api/v1/github/deployments/production?app_name=X
+   */
+  async getProductionDeployment(
+    appName: string
+  ): Promise<ProductionDeploymentResponse> {
+    const params = new URLSearchParams({ app_name: appName });
+    return this.request(`/github/deployments/production?${params}`);
+  }
+
+  /**
+   * Get all versions of an app
+   * GET /api/v1/github/deployments/all-versions?app_name=X
+   */
+  async getAllVersions(appName: string): Promise<AllVersionsResponse> {
+    const params = new URLSearchParams({ app_name: appName });
+    return this.request(`/github/deployments/all-versions?${params}`);
+  }
+
+  /**
+   * Get GitHub token status for current user
+   * GET /api/v1/github/token/status
+   */
+  async getGitHubTokenStatus(): Promise<TokenStatusResponse> {
+    return this.request("/github/token/status");
+  }
+
+  /**
+   * Save GitHub token for current user
+   * POST /api/v1/github/token
+   */
+  async saveGitHubToken(token: string): Promise<SaveTokenResponse> {
+    return this.request("/github/token", {
+      method: "POST",
+      body: JSON.stringify({ token } as SaveTokenRequest),
+    });
+  }
+
+  /**
+   * Delete GitHub token for current user
+   * DELETE /api/v1/github/token
+   */
+  async deleteGitHubToken(): Promise<{ success: boolean; message: string }> {
+    return this.request("/github/token", {
       method: "DELETE",
     });
   }

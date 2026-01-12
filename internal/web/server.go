@@ -628,6 +628,18 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/api/v1/servicemesh/namespaces", serviceMeshHandler.GetNamespaces) // GET /api/v1/servicemesh/namespaces?cluster=X
 	s.router.GET("/api/v1/servicemesh/metrics", serviceMeshHandler.GetMetrics)       // GET /api/v1/servicemesh/metrics?cluster=X&namespace=Y
 
+	// GitHub Tokens Store (tokens individuais por usuário)
+	fmt.Println("🔑 Inicializando GitHub Tokens Store...")
+	var githubTokenStore *storage.GitHubTokenStore
+	githubTokenStore, err = storage.NewGitHubTokenStore()
+	if err != nil {
+		fmt.Printf("⚠️  Falha ao inicializar GitHub Tokens Store: %v\n", err)
+		fmt.Println("   Tokens individuais não estarão disponíveis (fallback para GITHUB_TOKEN)")
+		githubTokenStore = nil
+	} else {
+		fmt.Println("✅ GitHub Tokens Store inicializado (AES-256-GCM encryption)")
+	}
+
 	// GitHub Releases Compare - SEM AUTH (operações de leitura públicas)
 	// Registry pode ser nil (graceful degradation se base não estiver disponível)
 	fmt.Println("🐙 Inicializando GitHub Releases Handler...")
@@ -643,14 +655,25 @@ func (s *Server) setupRoutes() {
 
 	// Criar logger para GitHub handler
 	githubLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "github-releases").Logger()
-	githubHandler := handlers.NewGitHubReleasesHandler(githubRegistry, &githubLogger)
+	githubHandler := handlers.NewGitHubReleasesHandler(githubRegistry, githubTokenStore, &githubLogger)
 	api.GET("/github/repos", githubHandler.GetRepos)                               // GET /api/v1/github/repos
 	api.GET("/github/repos/:owner/:repo/releases", githubHandler.GetReleases)      // GET /api/v1/github/repos/:owner/:repo/releases
 	api.GET("/github/repos/:owner/:repo/compare/:basehead", githubHandler.CompareReleases) // GET /api/v1/github/repos/:owner/:repo/compare/base...head
 	api.GET("/github/deployments/search", githubHandler.SearchDeployments)         // GET /api/v1/github/deployments/search?app_name=X
 	api.GET("/github/deployments/production", githubHandler.GetProductionDeployment) // GET /api/v1/github/deployments/production?app_name=X
 	api.GET("/github/deployments/all-versions", githubHandler.GetAllVersions)      // GET /api/v1/github/deployments/all-versions?app_name=X
+	api.GET("/github/deployments/registry", githubHandler.GetDeploymentsRegistry)   // GET /api/v1/github/deployments/registry?cluster=X&namespace=Y&only_valid_versions=true
 	fmt.Println("✅ GitHub Releases routes registradas")
+
+	// GitHub Tokens Management (gerenciamento de tokens individuais)
+	if githubTokenStore != nil {
+		githubTokensHandler := handlers.NewGitHubTokensHandler(githubTokenStore, &githubLogger)
+		// Rotas requerem injeção de user_email via RBAC middleware
+		api.GET("/github/token/status", rbacMiddleware.InjectUserEmail(), githubTokensHandler.GetTokenStatus)
+		api.POST("/github/token", rbacMiddleware.InjectUserEmail(), githubTokensHandler.SaveToken)
+		api.DELETE("/github/token", rbacMiddleware.InjectUserEmail(), githubTokensHandler.DeleteToken)
+		fmt.Println("✅ GitHub Tokens routes registradas")
+	}
 
 	// Sessions
 	sessionHandler := handlers.NewSessionsHandler()

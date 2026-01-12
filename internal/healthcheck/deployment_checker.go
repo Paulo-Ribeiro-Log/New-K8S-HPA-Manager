@@ -513,8 +513,8 @@ func (c *DeploymentChecker) populateDeploymentRegistry(deployment *appsv1.Deploy
 		appName = deployment.Name // Fallback para nome do deployment
 	}
 
-	// Extrair squad do label devops.k8s.io/squad
-	squad := deployment.Labels["devops.k8s.io/squad"]
+	// Extrair squad do label devops.k8s.io/component-squad
+	squad := deployment.Labels["devops.k8s.io/component-squad"]
 
 	// Extrair ServiceNow task number do label devops.k8s.io/servicenow-task-number
 	// Formato esperado: "CHG0001234" ou apenas "0001234"

@@ -45,6 +45,7 @@ import { ServiceMeshGraph } from "@/components/ServiceMeshGraph";
 import { AIDiagnosticsTab } from "@/components/AIDiagnosticsTab";
 import { HealthCheckingTab } from "@/components/HealthCheckingTab";
 import { HelmTab } from "@/components/HelmTab";
+import { GitHubReleasesTab } from "@/components/GitHubReleasesTab";
 import {
   LayoutDashboard,
   Scale,
@@ -63,7 +64,8 @@ import {
   Network,
   Brain,
   Activity,
-  PackageOpen
+  PackageOpen,
+  GitCompareArrows
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -415,6 +417,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "helm", label: "Helm", icon: PackageOpen },
     { id: "namespaces", label: "Namespaces", icon: Database },
     { id: "ai-diagnostics", label: "AI Diagnostics", icon: Brain },
+    { id: "github-releases", label: "GitHub Releases", icon: GitCompareArrows },
   ];
 
   // Filtrar namespaces
@@ -952,6 +955,13 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary>
             <AIDiagnosticsTab />
+          </ErrorBoundary>
+        );
+
+      case "github-releases":
+        return (
+          <ErrorBoundary>
+            <GitHubReleasesTab />
           </ErrorBoundary>
         );
 
