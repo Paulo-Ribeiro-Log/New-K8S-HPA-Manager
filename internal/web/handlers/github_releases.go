@@ -549,3 +549,209 @@ func isValidSemver(version string) bool {
 
 	return true
 }
+
+// CompareReleasesWithRegistry busca versão em produção e compara com nova tag no GitHub
+// GET /api/v1/github/compare?release=vv-retira-geolocalizacao&new_tag=2.5.8-1
+func (h *GitHubReleasesHandler) CompareReleasesWithRegistry(c *gin.Context) {
+	releaseName := c.Query("release")
+	newTag := c.Query("new_tag")
+
+	if releaseName == "" || newTag == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Parâmetros 'release' e 'new_tag' são obrigatórios"})
+		return
+	}
+
+	if h.deploymentRegistry == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Deployment registry not available"})
+		return
+	}
+
+	h.logger.Info().
+		Str("release", releaseName).
+		Str("new_tag", newTag).
+		Msg("Comparing GitHub releases")
+
+	// 1. Buscar versão em produção na base de dados
+	prodDeployment, err := h.findProductionVersion(releaseName)
+	if err != nil {
+		h.logger.Error().Err(err).Str("release", releaseName).Msg("Failed to find production version")
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Versão em produção não encontrada para '%s': %v", releaseName, err)})
+		return
+	}
+
+	h.logger.Info().
+		Str("release", releaseName).
+		Str("production_version", prodDeployment.Version).
+		Str("cluster", prodDeployment.Cluster).
+		Msg("Found production version")
+
+	// 2. Montar informações do repositório GitHub
+	// Por padrão, assume que o nome da release é o nome do repo em viavarejo-internal
+	owner := "viavarejo-internal"
+	repo := releaseName
+
+	// 3. Criar cliente GitHub
+	githubClient := h.getGitHubClient(c)
+	ctx := context.Background()
+
+	// 4. Normalizar versões (converter x-x-x-x para x.x.x-x)
+	baseTag := normalizeVersion(prodDeployment.Version)
+	headTag := normalizeVersion(newTag)
+
+	h.logger.Debug().
+		Str("owner", owner).
+		Str("repo", repo).
+		Str("base", baseTag).
+		Str("base_original", prodDeployment.Version).
+		Str("head", headTag).
+		Str("head_original", newTag).
+		Msg("Fetching comparison from GitHub")
+
+	comparison, _, err := githubClient.Repositories.CompareCommits(
+		ctx,
+		owner,
+		repo,
+		baseTag,
+		headTag,
+		&github.ListOptions{},
+	)
+
+	if err != nil {
+		h.logger.Error().
+			Err(err).
+			Str("owner", owner).
+			Str("repo", repo).
+			Str("base", baseTag).
+			Str("head", headTag).
+			Msg("Failed to compare commits on GitHub")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Erro ao comparar no GitHub: %v", err)})
+		return
+	}
+
+	// 5. Extrair commits
+	commits := make([]map[string]interface{}, 0, len(comparison.Commits))
+	for _, commit := range comparison.Commits {
+		author := "unknown"
+		if commit.Commit != nil && commit.Commit.Author != nil && commit.Commit.Author.Name != nil {
+			author = *commit.Commit.Author.Name
+		}
+
+		date := time.Time{}
+		if commit.Commit != nil && commit.Commit.Author != nil && commit.Commit.Author.Date != nil {
+			date = commit.Commit.Author.Date.Time
+		}
+
+		message := ""
+		if commit.Commit != nil && commit.Commit.Message != nil {
+			message = *commit.Commit.Message
+		}
+
+		url := ""
+		if commit.HTMLURL != nil {
+			url = *commit.HTMLURL
+		}
+
+		commits = append(commits, map[string]interface{}{
+			"sha":     commit.GetSHA(),
+			"message": message,
+			"author":  author,
+			"date":    date,
+			"url":     url,
+		})
+	}
+
+	// 6. Extrair arquivos alterados
+	files := make([]map[string]interface{}, 0, len(comparison.Files))
+	for _, file := range comparison.Files {
+		files = append(files, map[string]interface{}{
+			"filename":  file.GetFilename(),
+			"status":    file.GetStatus(),
+			"additions": file.GetAdditions(),
+			"deletions": file.GetDeletions(),
+			"changes":   file.GetChanges(),
+			"patch":     file.GetPatch(),
+		})
+	}
+
+	// 7. Montar URLs
+	repoURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+	compareURL := fmt.Sprintf("https://github.com/%s/%s/compare/%s...%s", owner, repo, baseTag, headTag)
+
+	// 8. Calcular age do deployment em produção
+	age := calculateAge(prodDeployment.LastSeen, time.Now())
+
+	// 9. Retornar resultado completo
+	c.JSON(http.StatusOK, gin.H{
+		"production_deployment": gin.H{
+			"id":               prodDeployment.ID,
+			"deployment_name":  prodDeployment.DeploymentName,
+			"namespace":        prodDeployment.Namespace,
+			"cluster":          prodDeployment.Cluster,
+			"version":          prodDeployment.Version,
+			"squad":            prodDeployment.Squad,
+			"servicenow_task":  prodDeployment.ServiceNowTask,
+			"last_seen":        prodDeployment.LastSeen,
+			"age":              age,
+		},
+		"base_tag":       baseTag,
+		"head_tag":       headTag,
+		"commits":        commits,
+		"files":          files,
+		"total_commits":  len(commits),
+		"total_files":    len(files),
+		"repository_url": repoURL,
+		"compare_url":    compareURL,
+	})
+}
+
+// findProductionVersion busca deployment em produção na base de dados
+// Prioriza clusters com nome contendo "prod" ou "prd"
+func (h *GitHubReleasesHandler) findProductionVersion(releaseName string) (*storage.DeploymentRecord, error) {
+	// Buscar todos os deployments com esse nome
+	records, err := h.deploymentRegistry.SearchByAppName(releaseName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search deployments: %w", err)
+	}
+
+	if len(records) == 0 {
+		return nil, fmt.Errorf("nenhum deployment encontrado com nome '%s'", releaseName)
+	}
+
+	// Priorizar clusters de produção
+	for _, record := range records {
+		clusterLower := strings.ToLower(record.Cluster)
+		if strings.Contains(clusterLower, "prod") || strings.Contains(clusterLower, "prd") {
+			return &record, nil
+		}
+	}
+
+	// Fallback: retornar primeiro encontrado
+	h.logger.Warn().
+		Str("release", releaseName).
+		Msg("No production cluster found, returning first deployment")
+	return &records[0], nil
+}
+
+// normalizeVersion converte versões com hífen para o padrão GitHub
+// Exemplo: "2-5-5-2" → "2.5.5-2" (substitui os 2 primeiros hífens por pontos)
+func normalizeVersion(version string) string {
+	// Remove prefixo "v" se existir
+	version = strings.TrimPrefix(version, "v")
+
+	// Contar hífens
+	hyphens := strings.Count(version, "-")
+
+	if hyphens >= 3 {
+		// Formato: x-x-x-x → x.x.x-x
+		// Substituir os 3 primeiros hífens por pontos
+		parts := strings.Split(version, "-")
+		if len(parts) >= 4 {
+			return fmt.Sprintf("%s.%s.%s-%s", parts[0], parts[1], parts[2], strings.Join(parts[3:], "-"))
+		}
+	} else if hyphens == 2 {
+		// Formato: x-x-x → x.x.x
+		version = strings.ReplaceAll(version, "-", ".")
+	}
+
+	return version
+}

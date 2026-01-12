@@ -4,195 +4,268 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Info, RefreshCcw, Database, GitBranch, Package, Clock, Users, FileText } from "lucide-react";
+import { Separator } from "@/components/ui/separator";
+import {
+  Info,
+  Search,
+  GitCompare,
+  Database,
+  Package,
+  Users,
+  FileText,
+  Clock,
+  GitBranch,
+  AlertCircle
+} from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { apiClient } from "@/lib/api/client";
 
-interface DeploymentRecord {
+interface ProductionDeployment {
   id: number;
   deployment_name: string;
   namespace: string;
   cluster: string;
   version: string;
-  image_tag: string;
-  full_image: string;
-  replicas_current: number;
-  replicas_desired: number;
-  app_name: string;
-  status: string;
   squad: string;
   servicenow_task: string;
-  first_seen: string;
   last_seen: string;
-  last_health_check: string;
   age: string;
 }
 
-interface DeploymentsRegistryResponse {
-  deployments: DeploymentRecord[];
-  total: number;
-  valid_versions: number;
-  invalid_versions: number;
-  filters_applied: {
-    cluster: string;
-    namespace: string;
-    only_valid_versions: boolean;
-  };
+interface GitHubCommit {
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+  url: string;
 }
 
-// GitHubReleasesTab NÃO depende do cluster selecionado
-// Releases são do GitHub, não específicas de cluster/namespace
+interface GitHubFile {
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  changes: number;
+  patch?: string;
+}
+
+interface ComparisonResult {
+  production_deployment: ProductionDeployment;
+  base_tag: string;
+  head_tag: string;
+  commits: GitHubCommit[];
+  files: GitHubFile[];
+  total_commits: number;
+  total_files: number;
+  repository_url: string;
+  compare_url: string;
+}
+
 export const GitHubReleasesTab = () => {
-  const [clusterFilter, setClusterFilter] = useState("");
-  const [namespaceFilter, setNamespaceFilter] = useState("");
-  const [onlyValidVersions, setOnlyValidVersions] = useState(true);
+  const [releaseName, setReleaseName] = useState("");
+  const [newTag, setNewTag] = useState("");
+  const [showAllFiles, setShowAllFiles] = useState(false);
+  const [searchTriggered, setSearchTriggered] = useState(false);
 
-  // Query para buscar deployments do registry
-  const { data, isLoading, error, refetch } = useQuery<DeploymentsRegistryResponse>({
-    queryKey: ['github-deployments-registry', clusterFilter, namespaceFilter, onlyValidVersions],
+  // Query para buscar e comparar
+  const { data, isLoading, error, refetch } = useQuery<ComparisonResult>({
+    queryKey: ['github-compare', releaseName, newTag],
     queryFn: async () => {
-      const params = new URLSearchParams();
-      if (clusterFilter) params.append('cluster', clusterFilter);
-      if (namespaceFilter) params.append('namespace', namespaceFilter);
-      if (onlyValidVersions) params.append('only_valid_versions', 'true');
+      const response = await fetch(
+        `/api/v1/github/compare?release=${encodeURIComponent(releaseName)}&new_tag=${encodeURIComponent(newTag)}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`
+          }
+        }
+      );
 
-      const response = await fetch(`/api/v1/github/deployments/registry?${params}`);
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
+
       return response.json();
     },
-    refetchInterval: 60000, // Atualizar a cada 1 minuto
+    enabled: searchTriggered && !!releaseName && !!newTag,
   });
+
+  const handleSearch = () => {
+    if (releaseName && newTag) {
+      setSearchTriggered(true);
+      refetch();
+    }
+  };
+
+  // Filtrar arquivos por extensão
+  const filteredFiles = data?.files.filter(file => {
+    if (showAllFiles) return true;
+
+    const filename = file.filename.toLowerCase();
+    return (
+      filename.endsWith('.yml') ||
+      filename.endsWith('.yaml') ||
+      filename.endsWith('.md') ||
+      filename.includes('dockerfile')
+    );
+  }) || [];
 
   return (
     <SplitView
       leftPanel={{
-        title: "Configuração",
-        titleAction: (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => refetch()}
-            disabled={isLoading}
-          >
-            <RefreshCcw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
-            Atualizar
-          </Button>
-        ),
+        title: "Buscar Release",
         content: (
           <div className="h-full flex flex-col space-y-4 p-4">
             <p className="text-sm text-muted-foreground">
-              Base de conhecimento de deployments dos clusters Kubernetes
+              Compare versões de releases do GitHub
             </p>
 
-            {/* Filtros */}
+            {/* Formulário de busca */}
             <div className="space-y-4">
               <div>
-                <Label htmlFor="cluster-filter">Filtrar por Cluster</Label>
+                <Label htmlFor="release-name">Nome da Release</Label>
                 <Input
-                  id="cluster-filter"
-                  placeholder="Ex: abastecimento-hlg"
-                  value={clusterFilter}
-                  onChange={(e) => setClusterFilter(e.target.value)}
+                  id="release-name"
+                  placeholder="Ex: vv-retira-geolocalizacao"
+                  value={releaseName}
+                  onChange={(e) => setReleaseName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                 />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Nome do repositório GitHub
+                </p>
               </div>
 
               <div>
-                <Label htmlFor="namespace-filter">Filtrar por Namespace</Label>
+                <Label htmlFor="new-tag">Tag da Nova Release</Label>
                 <Input
-                  id="namespace-filter"
-                  placeholder="Ex: default"
-                  value={namespaceFilter}
-                  onChange={(e) => setNamespaceFilter(e.target.value)}
+                  id="new-tag"
+                  placeholder="Ex: 2.5.8-1"
+                  value={newTag}
+                  onChange={(e) => setNewTag(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                 />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Versão que deseja comparar com produção
+                </p>
               </div>
 
-              <div className="flex items-center space-x-2">
-                <Checkbox
-                  id="valid-versions"
-                  checked={onlyValidVersions}
-                  onCheckedChange={(checked) => setOnlyValidVersions(checked as boolean)}
-                />
-                <Label
-                  htmlFor="valid-versions"
-                  className="text-sm font-normal cursor-pointer"
-                >
-                  Apenas versões válidas (x.x.x-x)
-                </Label>
-              </div>
+              <Button
+                onClick={handleSearch}
+                disabled={!releaseName || !newTag || isLoading}
+                className="w-full"
+              >
+                <Search className="h-4 w-4 mr-2" />
+                {isLoading ? 'Buscando...' : 'Buscar e Comparar'}
+              </Button>
             </div>
 
-            {/* Estatísticas */}
-            {data && (
-              <div className="space-y-2 pt-4 border-t">
-                <h3 className="text-sm font-medium">Estatísticas</h3>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="bg-muted p-3 rounded-lg">
-                    <div className="text-2xl font-bold">{data.total}</div>
-                    <div className="text-xs text-muted-foreground">Total</div>
-                  </div>
-                  <div className="bg-green-50 p-3 rounded-lg border border-green-200">
-                    <div className="text-2xl font-bold text-green-700">{data.valid_versions}</div>
-                    <div className="text-xs text-green-600">Versões Válidas</div>
-                  </div>
-                </div>
-              </div>
+            {/* Informações de produção */}
+            {data?.production_deployment && (
+              <>
+                <Separator />
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <Database className="h-4 w-4" />
+                      Versão em Produção
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Cluster:</span>
+                      <span className="font-mono">{data.production_deployment.cluster}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Namespace:</span>
+                      <span className="font-mono">{data.production_deployment.namespace}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Deployment:</span>
+                      <span className="font-medium">{data.production_deployment.deployment_name}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Versão Atual:</span>
+                      <Badge variant="secondary" className="font-mono">
+                        {data.production_deployment.version}
+                      </Badge>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Squad:</span>
+                      <span>{data.production_deployment.squad || '-'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">CHG:</span>
+                      <span className="font-mono">{data.production_deployment.servicenow_task || '-'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Age:</span>
+                      <span>{data.production_deployment.age}</span>
+                    </div>
+                  </CardContent>
+                </Card>
+              </>
             )}
 
             {/* Alerta informativo */}
             <Alert>
               <Info className="h-4 w-4" />
-              <AlertTitle>Como Popular a Base</AlertTitle>
+              <AlertTitle>Como funciona</AlertTitle>
               <AlertDescription className="text-xs space-y-2">
-                <div className="mt-2 space-y-1">
-                  <p className="font-medium">Executar Health Check</p>
-                  <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                    <li>Acesse a aba <strong>Health Checking</strong></li>
-                    <li>Selecione os clusters desejados</li>
-                    <li>Marque apenas <strong>"Deployments"</strong></li>
-                    <li>Execute o Health Check</li>
-                  </ul>
-                </div>
-              </AlertDescription>
-            </Alert>
-
-            {/* Informação sobre labels necessários */}
-            <Alert>
-              <Info className="h-4 w-4" />
-              <AlertTitle>Labels Necessários</AlertTitle>
-              <AlertDescription className="text-xs">
-                <p className="mb-2">Os deployments devem ter:</p>
-                <ul className="list-disc list-inside space-y-1 font-mono text-xs">
-                  <li>app.kubernetes.io/name</li>
-                  <li>app.kubernetes.io/version</li>
-                  <li>devops.k8s.io/component-squad</li>
-                  <li>devops.k8s.io/servicenow-task-number</li>
-                </ul>
+                <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                  <li>Digite o nome da release e a nova tag</li>
+                  <li>Sistema busca versão em produção na base</li>
+                  <li>Compara versão atual → nova no GitHub</li>
+                  <li>Exibe commits e arquivos alterados</li>
+                </ol>
               </AlertDescription>
             </Alert>
           </div>
         ),
       }}
       rightPanel={{
-        title: "Deployments do Registry",
+        title: "Comparação",
         titleAction: data && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Database className="h-4 w-4" />
-            <span>{data.deployments.length} deployment(s)</span>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <GitCompare className="h-4 w-4" />
+              <span>{data.total_commits} commit(s)</span>
+              <span className="text-muted-foreground">•</span>
+              <span>{filteredFiles.length} arquivo(s)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Label htmlFor="show-all" className="text-xs cursor-pointer">
+                Mostrar todos
+              </Label>
+              <Switch
+                id="show-all"
+                checked={showAllFiles}
+                onCheckedChange={setShowAllFiles}
+              />
+            </div>
           </div>
         ),
         content: (
           <div className="h-full flex flex-col">
+            {!searchTriggered && (
+              <div className="flex-1 flex items-center justify-center text-center space-y-4 p-8">
+                <div>
+                  <GitCompare className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                  <p className="text-muted-foreground">
+                    Digite o nome da release e a nova tag para comparar
+                  </p>
+                </div>
+              </div>
+            )}
+
             {isLoading && (
               <div className="flex-1 flex items-center justify-center">
                 <div className="text-center space-y-4">
-                  <RefreshCcw className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground">Carregando deployments...</p>
+                  <Search className="h-8 w-8 animate-pulse mx-auto text-muted-foreground" />
+                  <p className="text-sm text-muted-foreground">Buscando e comparando versões...</p>
                 </div>
               </div>
             )}
@@ -200,7 +273,8 @@ export const GitHubReleasesTab = () => {
             {error && (
               <div className="flex-1 flex items-center justify-center p-8">
                 <Alert variant="destructive">
-                  <AlertTitle>Erro ao carregar deployments</AlertTitle>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Erro ao comparar releases</AlertTitle>
                   <AlertDescription className="text-xs">
                     {error instanceof Error ? error.message : 'Erro desconhecido'}
                   </AlertDescription>
@@ -208,102 +282,118 @@ export const GitHubReleasesTab = () => {
               </div>
             )}
 
-            {!isLoading && !error && data && data.deployments.length === 0 && (
-              <div className="flex-1 flex items-center justify-center text-center space-y-4 p-8">
-                <div>
-                  <Database className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                  <p className="text-muted-foreground">
-                    Nenhum deployment encontrado
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-2">
-                    Execute o Health Check para popular a base de dados
-                  </p>
-                </div>
-              </div>
-            )}
+            {!isLoading && !error && data && (
+              <ScrollArea className="flex-1 p-4">
+                <div className="space-y-6">
+                  {/* Informação de comparação */}
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm flex items-center gap-2">
+                        <GitBranch className="h-4 w-4" />
+                        Comparando Versões
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <Badge variant="outline">{data.base_tag}</Badge>
+                        <span className="text-muted-foreground">→</span>
+                        <Badge variant="default">{data.head_tag}</Badge>
+                      </div>
+                      <a
+                        href={data.compare_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                      >
+                        <GitCompare className="h-3 w-3" />
+                        Ver no GitHub
+                      </a>
+                    </CardContent>
+                  </Card>
 
-            {!isLoading && !error && data && data.deployments.length > 0 && (
-              <ScrollArea className="flex-1">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-[150px]">
-                        <div className="flex items-center gap-2">
-                          <Database className="h-4 w-4" />
-                          Cluster
-                        </div>
-                      </TableHead>
-                      <TableHead className="w-[120px]">
-                        <div className="flex items-center gap-2">
-                          <Package className="h-4 w-4" />
-                          Namespace
-                        </div>
-                      </TableHead>
-                      <TableHead className="w-[180px]">
-                        <div className="flex items-center gap-2">
-                          <GitBranch className="h-4 w-4" />
-                          Deployment
-                        </div>
-                      </TableHead>
-                      <TableHead className="w-[100px]">Versão</TableHead>
-                      <TableHead className="w-[80px]">
-                        <div className="flex items-center gap-2">
-                          <Clock className="h-4 w-4" />
-                          Age
-                        </div>
-                      </TableHead>
-                      <TableHead className="w-[120px]">
-                        <div className="flex items-center gap-2">
-                          <Users className="h-4 w-4" />
-                          Squad
-                        </div>
-                      </TableHead>
-                      <TableHead className="w-[120px]">
-                        <div className="flex items-center gap-2">
-                          <FileText className="h-4 w-4" />
-                          CHG
-                        </div>
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {data.deployments.map((deployment) => (
-                      <TableRow key={deployment.id}>
-                        <TableCell className="font-mono text-xs">
-                          {deployment.cluster}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {deployment.namespace}
-                        </TableCell>
-                        <TableCell className="font-medium">
-                          {deployment.deployment_name}
-                        </TableCell>
-                        <TableCell>
-                          {deployment.version ? (
-                            <Badge variant="secondary" className="font-mono text-xs">
-                              {deployment.version}
+                  {/* Commits */}
+                  {data.commits && data.commits.length > 0 && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm">
+                          Commits ({data.commits.length})
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {data.commits.map((commit) => (
+                          <div key={commit.sha} className="border-l-2 border-muted pl-3 py-1">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex-1">
+                                <p className="text-sm font-medium leading-tight">
+                                  {commit.message.split('\n')[0]}
+                                </p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  {commit.author} • {new Date(commit.date).toLocaleString('pt-BR')}
+                                </p>
+                              </div>
+                              <code className="text-xs bg-muted px-2 py-1 rounded">
+                                {commit.sha.substring(0, 7)}
+                              </code>
+                            </div>
+                          </div>
+                        ))}
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Arquivos alterados */}
+                  {filteredFiles.length > 0 && (
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-sm flex items-center justify-between">
+                          <span>Arquivos Alterados ({filteredFiles.length})</span>
+                          {!showAllFiles && (
+                            <Badge variant="secondary" className="text-xs">
+                              .yml, .yaml, .md, Dockerfile
                             </Badge>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">N/A</span>
                           )}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {deployment.age}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          {deployment.squad || (
-                            <span className="text-muted-foreground">-</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {deployment.servicenow_task || (
-                            <span className="text-muted-foreground">-</span>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-2">
+                        {filteredFiles.map((file, index) => (
+                          <div
+                            key={index}
+                            className="flex items-center justify-between p-2 rounded border"
+                          >
+                            <div className="flex-1">
+                              <p className="text-sm font-mono">{file.filename}</p>
+                              <div className="flex items-center gap-3 mt-1 text-xs">
+                                <Badge
+                                  variant={
+                                    file.status === 'added' ? 'default' :
+                                    file.status === 'removed' ? 'destructive' :
+                                    'secondary'
+                                  }
+                                  className="text-xs"
+                                >
+                                  {file.status}
+                                </Badge>
+                                <span className="text-green-600">+{file.additions}</span>
+                                <span className="text-red-600">-{file.deletions}</span>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {filteredFiles.length === 0 && data.files.length > 0 && !showAllFiles && (
+                    <Alert>
+                      <Info className="h-4 w-4" />
+                      <AlertTitle>Nenhum arquivo filtrado encontrado</AlertTitle>
+                      <AlertDescription className="text-xs">
+                        Nenhum arquivo .yml, .yaml, .md ou Dockerfile foi alterado.
+                        Ative "Mostrar todos" para ver os {data.files.length} arquivo(s) alterados.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                </div>
               </ScrollArea>
             )}
           </div>

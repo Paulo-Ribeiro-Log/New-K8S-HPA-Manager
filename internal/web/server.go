@@ -663,6 +663,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/github/deployments/production", githubHandler.GetProductionDeployment) // GET /api/v1/github/deployments/production?app_name=X
 	api.GET("/github/deployments/all-versions", githubHandler.GetAllVersions)      // GET /api/v1/github/deployments/all-versions?app_name=X
 	api.GET("/github/deployments/registry", githubHandler.GetDeploymentsRegistry)   // GET /api/v1/github/deployments/registry?cluster=X&namespace=Y&only_valid_versions=true
+	api.GET("/github/compare", githubHandler.CompareReleasesWithRegistry)           // GET /api/v1/github/compare?release=X&new_tag=Y
 	fmt.Println("✅ GitHub Releases routes registradas")
 
 	// GitHub Tokens Management (gerenciamento de tokens individuais)
