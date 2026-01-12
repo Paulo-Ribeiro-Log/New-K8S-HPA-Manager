@@ -755,3 +755,35 @@ func normalizeVersion(version string) string {
 
 	return version
 }
+
+// ScanDeployments escaneia deployments de um cluster e popula a base de dados
+// POST /api/v1/github/deployments/scan?cluster=X
+func (h *GitHubReleasesHandler) ScanDeployments(c *gin.Context) {
+	clusterName := c.Query("cluster")
+
+	if clusterName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Parâmetro 'cluster' é obrigatório"})
+		return
+	}
+
+	if h.deploymentRegistry == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Deployment registry not available"})
+		return
+	}
+
+	h.logger.Info().Str("cluster", clusterName).Msg("Starting deployment scan")
+
+	// Nota: Precisamos ter acesso ao kubernetes client
+	// Por enquanto, retornar placeholder para frontend funcionar
+	// TODO: Implementar scan real usando o health checking logic
+
+	h.logger.Warn().Msg("ScanDeployments endpoint is a placeholder - real implementation needed")
+
+	c.JSON(http.StatusOK, gin.H{
+		"cluster":            clusterName,
+		"deployments_found":  0,
+		"deployments_saved":  0,
+		"status":             "placeholder",
+		"message":            "Scan implementation pending - use Health Checking tab for now",
+	})
+}
