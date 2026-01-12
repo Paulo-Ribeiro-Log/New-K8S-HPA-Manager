@@ -106,8 +106,8 @@ export const useGitHubTokenStatus = () => {
 export const useSaveGitHubToken = () => {
   const queryClient = useQueryClient();
 
-  return useMutation<SaveTokenResponse, Error, string>({
-    mutationFn: (token: string) => apiClient.saveGitHubToken(token),
+  return useMutation<SaveTokenResponse, Error, { token: string; email: string }>({
+    mutationFn: ({ token, email }) => apiClient.saveGitHubToken(token, email),
     onSuccess: () => {
       // Invalidar cache do status do token
       queryClient.invalidateQueries({ queryKey: ["github-token-status"] });

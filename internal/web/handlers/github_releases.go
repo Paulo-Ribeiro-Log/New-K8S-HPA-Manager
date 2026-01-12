@@ -14,6 +14,9 @@ import (
 	"github.com/rs/zerolog"
 	"golang.org/x/oauth2"
 	"gopkg.in/yaml.v3"
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 
 	"k8s-hpa-manager/internal/storage"
 )
@@ -22,14 +25,20 @@ import (
 type GitHubReleasesHandler struct {
 	deploymentRegistry *storage.DeploymentRegistry
 	tokenStore         *storage.GitHubTokenStore
-	logger             *zerolog.Logger
+	kubeConfigManager  interface {
+		GetClient(cluster string) (kubernetes.Interface, error)
+	}
+	logger *zerolog.Logger
 }
 
 // NewGitHubReleasesHandler cria novo handler
-func NewGitHubReleasesHandler(registry *storage.DeploymentRegistry, tokenStore *storage.GitHubTokenStore, logger *zerolog.Logger) *GitHubReleasesHandler {
+func NewGitHubReleasesHandler(registry *storage.DeploymentRegistry, tokenStore *storage.GitHubTokenStore, kubeManager interface {
+	GetClient(cluster string) (kubernetes.Interface, error)
+}, logger *zerolog.Logger) *GitHubReleasesHandler {
 	return &GitHubReleasesHandler{
 		deploymentRegistry: registry,
 		tokenStore:         tokenStore,
+		kubeConfigManager:  kubeManager,
 		logger:             logger,
 	}
 }
@@ -73,26 +82,42 @@ type GitHubReposConfig struct {
 // Prioridade: 1) Token individual do usuário, 2) GITHUB_TOKEN global, 3) Não autenticado
 func (h *GitHubReleasesHandler) getGitHubClient(c *gin.Context) *github.Client {
 	var token string
+	var tokenSource string
 
 	// 1. Tentar usar token individual do usuário
 	if h.tokenStore != nil {
-		userEmail := c.GetString("user_email")
+		// Prioridade: header X-GitHub-Email > contexto user_email
+		userEmail := c.GetHeader("X-GitHub-Email")
+		if userEmail == "" {
+			userEmail = c.GetString("user_email")
+		}
+		
+		h.logger.Debug().Str("user_email", userEmail).Msg("Checking for user email")
+		
 		if userEmail != "" {
 			userToken, err := h.tokenStore.GetToken(userEmail)
 			if err == nil && userToken != "" {
-				h.logger.Debug().Str("user", userEmail).Msg("Using user's individual GitHub token")
+				h.logger.Info().Str("user", userEmail).Msg("✅ Using user's individual GitHub token")
 				token = userToken
+				tokenSource = fmt.Sprintf("user:%s", userEmail)
 			} else if err != nil {
-				h.logger.Debug().Err(err).Str("user", userEmail).Msg("Failed to get user token, falling back")
+				h.logger.Warn().Err(err).Str("user", userEmail).Msg("Failed to get user token, falling back")
+			} else {
+				h.logger.Warn().Str("user", userEmail).Msg("User token is empty, falling back")
 			}
+		} else {
+			h.logger.Warn().Msg("⚠️ user_email NOT found in header or context")
 		}
+	} else {
+		h.logger.Debug().Msg("Token store is nil")
 	}
 
 	// 2. Fallback para token do ambiente (global)
 	if token == "" {
 		token = os.Getenv("GITHUB_TOKEN")
 		if token != "" {
-			h.logger.Debug().Msg("Using global GITHUB_TOKEN from environment")
+			h.logger.Info().Msg("✅ Using global GITHUB_TOKEN from environment")
+			tokenSource = "environment"
 		}
 	}
 
@@ -100,11 +125,13 @@ func (h *GitHubReleasesHandler) getGitHubClient(c *gin.Context) *github.Client {
 	if token != "" {
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 		tc := oauth2.NewClient(context.Background(), ts)
-		return github.NewClient(tc)
+		client := github.NewClient(tc)
+		h.logger.Info().Str("token_source", tokenSource).Msg("GitHub client authenticated")
+		return client
 	}
 
 	// 4. Cliente não autenticado (rate limit 60 req/h)
-	h.logger.Debug().Msg("Using unauthenticated GitHub client (60 req/h limit)")
+	h.logger.Warn().Msg("⚠️ Using unauthenticated GitHub client (60 req/h limit)")
 	return github.NewClient(nil)
 }
 
@@ -166,6 +193,75 @@ func (h *GitHubReleasesHandler) GetRepos(c *gin.Context) {
 	})
 }
 
+// ListUserRepos retorna repositórios acessíveis pelo token do usuário
+// GET /api/v1/github/user/repos?org=viavarejo-internal&search=geolocalizacao
+func (h *GitHubReleasesHandler) ListUserRepos(c *gin.Context) {
+	org := c.Query("org")
+	search := c.Query("search")
+
+	client := h.getGitHubClient(c)
+	ctx := context.Background()
+
+	var allRepos []*github.Repository
+
+	if org != "" {
+		// Listar repos da organização
+		opts := &github.RepositoryListByOrgOptions{
+			ListOptions: github.ListOptions{PerPage: 100},
+		}
+		repos, _, err := client.Repositories.ListByOrg(ctx, org, opts)
+		if err != nil {
+			h.logger.Error().Err(err).Str("org", org).Msg("Failed to list org repos")
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Sprintf("Falha ao listar repositórios da organização '%s': %v. Verifique se a organização existe e se o token tem acesso.", org, err),
+			})
+			return
+		}
+		allRepos = repos
+	} else {
+		// Listar repos do usuário autenticado
+		opts := &github.RepositoryListOptions{
+			ListOptions: github.ListOptions{PerPage: 100},
+		}
+		repos, _, err := client.Repositories.List(ctx, "", opts)
+		if err != nil {
+			h.logger.Error().Err(err).Msg("Failed to list user repos")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Falha ao listar repositórios: %v", err)})
+			return
+		}
+		allRepos = repos
+	}
+
+	// Filtrar por busca se fornecido
+	var filteredRepos []gin.H
+	for _, repo := range allRepos {
+		repoName := repo.GetName()
+		repoFullName := repo.GetFullName()
+		
+		if search != "" {
+			if !strings.Contains(strings.ToLower(repoName), strings.ToLower(search)) {
+				continue
+			}
+		}
+
+		filteredRepos = append(filteredRepos, gin.H{
+			"name":       repoName,
+			"full_name":  repoFullName,
+			"owner":      repo.GetOwner().GetLogin(),
+			"private":    repo.GetPrivate(),
+			"html_url":   repo.GetHTMLURL(),
+			"clone_url":  repo.GetCloneURL(),
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"repos": filteredRepos,
+		"total": len(filteredRepos),
+		"org":   org,
+		"search": search,
+	})
+}
+
 // GetReleases retorna releases de um repositório
 // GET /api/v1/github/repos/:owner/:repo/releases
 func (h *GitHubReleasesHandler) GetReleases(c *gin.Context) {
@@ -224,7 +320,114 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 	base := parts[0]
 	head := parts[1]
 
+	h.logger.Info().
+		Str("owner", owner).
+		Str("repo", repo).
+		Str("base", base).
+		Str("head", head).
+		Msg("Comparing releases")
+
 	client := h.getGitHubClient(c)
+
+	// Verificar se estamos autenticados e qual usuário
+	user, resp, err := client.Users.Get(context.Background(), "")
+	if err != nil {
+		h.logger.Warn().
+			Err(err).
+			Msg("Failed to get authenticated user - using unauthenticated client")
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Token GitHub inválido ou não configurado. Configure seu token primeiro.",
+			"hint": "Clique no botão 'Token' para configurar seu token GitHub",
+		})
+		return
+	}
+
+	h.logger.Info().
+		Str("github_user", user.GetLogin()).
+		Int("rate_limit_remaining", resp.Rate.Remaining).
+		Msg("Authenticated GitHub request")
+
+	// Construir URL para referência
+	githubWebURL := fmt.Sprintf("https://github.com/%s/%s/compare/%s...%s", owner, repo, base, head)
+
+	// Testar se o repositório existe e é acessível
+	repoInfo, resp, err := client.Repositories.Get(context.Background(), owner, repo)
+	if err != nil {
+		h.logger.Error().
+			Err(err).
+			Str("owner", owner).
+			Str("repo", repo).
+			Int("status_code", resp.StatusCode).
+			Str("github_web_url", githubWebURL).
+			Msg("Failed to access repository")
+		
+		if resp.StatusCode == 404 {
+			// Tentar buscar repositórios do usuário/organização para ajudar no diagnóstico
+			var repoSuggestions []string
+			listOpts := &github.RepositoryListByOrgOptions{
+				ListOptions: github.ListOptions{PerPage: 100},
+			}
+			
+			repos, _, listErr := client.Repositories.ListByOrg(context.Background(), owner, listOpts)
+			if listErr == nil && len(repos) > 0 {
+				h.logger.Info().Int("total_repos", len(repos)).Str("org", owner).Msg("Found accessible repos in org")
+				// Procurar repos com nomes similares
+				for _, r := range repos {
+					repoName := r.GetName()
+					if strings.Contains(strings.ToLower(repoName), strings.ToLower(repo)) ||
+					   strings.Contains(strings.ToLower(repo), strings.ToLower(repoName)) {
+						repoSuggestions = append(repoSuggestions, repoName)
+					}
+					if len(repoSuggestions) >= 5 {
+						break
+					}
+				}
+			} else if listErr != nil {
+				h.logger.Error().Err(listErr).Str("org", owner).Msg("Failed to list org repos")
+			}
+			
+			errorMsg := fmt.Sprintf("Repositório '%s/%s' não encontrado via API do GitHub.\n", owner, repo)
+			errorMsg += fmt.Sprintf("A URL web funciona: %s\n", githubWebURL)
+			errorMsg += "\nPossíveis causas:\n"
+			errorMsg += "1. Token não tem acesso a este repositório específico\n"
+			errorMsg += "2. Token precisa das permissões: 'repo' (full control) ou 'public_repo'\n"
+			errorMsg += "3. Nome do repositório pode estar ligeiramente diferente\n"
+			errorMsg += fmt.Sprintf("\nVocê pode acessar pelo browser: %s", githubWebURL)
+			
+			response := gin.H{
+				"error": errorMsg,
+				"details": gin.H{
+					"owner":      owner,
+					"repo":       repo,
+					"github_web_url": githubWebURL,
+					"api_url":    fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo),
+					"status_code": resp.StatusCode,
+				},
+			}
+			
+			if len(repoSuggestions) > 0 {
+				response["suggestions"] = gin.H{
+					"message": fmt.Sprintf("Encontrados %d repositórios acessíveis com nome similar:", len(repoSuggestions)),
+					"repos":   repoSuggestions,
+				}
+			}
+			
+			c.JSON(http.StatusNotFound, response)
+			return
+		}
+		
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("Falha ao acessar repositório: %v", err),
+			"status_code": resp.StatusCode,
+			"github_web_url": githubWebURL,
+		})
+		return
+	}
+
+	h.logger.Info().
+		Str("repo_full_name", repoInfo.GetFullName()).
+		Bool("private", repoInfo.GetPrivate()).
+		Msg("Repository accessible")
 
 	// Comparar commits
 	comparison, _, err := client.Repositories.CompareCommits(context.Background(), owner, repo, base, head, &github.ListOptions{
@@ -233,7 +436,10 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 
 	if err != nil {
 		h.logger.Error().Err(err).Str("owner", owner).Str("repo", repo).Str("base", base).Str("head", head).Msg("Failed to compare releases")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to compare: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("Falha ao comparar tags '%s' e '%s': %v. Verifique se as tags existem no repositório.", base, head, err),
+			"github_compare_url": fmt.Sprintf("https://github.com/%s/%s/compare/%s...%s", owner, repo, base, head),
+		})
 		return
 	}
 
@@ -368,14 +574,20 @@ func (h *GitHubReleasesHandler) GetProductionDeployment(c *gin.Context) {
 		return
 	}
 
+	// Normalizar versão para formato x.x.x-x (ex: "2-5-5-2" → "2.5.5-2")
+	normalizedVersion := normalizeVersion(record.Version)
+
 	c.JSON(http.StatusOK, gin.H{
-		"deployment": record.DeploymentName,
-		"namespace":  record.Namespace,
-		"cluster":    record.Cluster,
-		"version":    record.Version,
-		"image":      record.FullImage,
-		"status":     record.Status,
-		"last_seen":  record.LastSeen,
+		"deployment":      record.DeploymentName,
+		"namespace":       record.Namespace,
+		"cluster":         record.Cluster,
+		"version":         normalizedVersion,     // ✅ Versão normalizada (x.x.x-x)
+		"image":           record.FullImage,
+		"status":          record.Status,
+		"created_at":      record.CreatedAt,      // ✅ Data de criação real do deployment (sem fallback)
+		"last_seen":       record.LastSeen,       // Data do último scan
+		"squad":           record.Squad,
+		"servicenow_task": record.ServiceNowTask,
 	})
 }
 
@@ -607,6 +819,83 @@ func (h *GitHubReleasesHandler) CompareReleasesWithRegistry(c *gin.Context) {
 		Str("head_original", newTag).
 		Msg("Fetching comparison from GitHub")
 
+	// ✅ VALIDAÇÃO: Verificar se repositório existe e listar tags
+	// Buscar apenas últimas 100 tags (suficiente para validação)
+	tags, resp, err := githubClient.Repositories.ListTags(ctx, owner, repo, &github.ListOptions{PerPage: 100})
+	if err != nil {
+		statusCode := http.StatusInternalServerError
+		errorMsg := "Erro ao buscar tags do repositório"
+
+		if resp != nil && resp.StatusCode == 404 {
+			statusCode = http.StatusNotFound
+			errorMsg = fmt.Sprintf("Repositório '%s/%s' não encontrado no GitHub. Verifique se o mapeamento deployment → repositório está correto.", owner, repo)
+		}
+
+		h.logger.Error().
+			Err(err).
+			Str("owner", owner).
+			Str("repo", repo).
+			Int("status_code", resp.StatusCode).
+			Msg("Failed to list tags from repository")
+
+		c.JSON(statusCode, gin.H{
+			"error":      errorMsg,
+			"details":    err.Error(),
+			"repository": fmt.Sprintf("%s/%s", owner, repo),
+			"suggestion": "Configure o mapeamento correto deployment → repositório GitHub ou verifique se o token tem permissão de acesso",
+		})
+		return
+	}
+
+	h.logger.Info().
+		Str("owner", owner).
+		Str("repo", repo).
+		Int("tags_count", len(tags)).
+		Msg("Repository tags fetched successfully")
+
+	// ✅ VALIDAÇÃO: Verificar se a nova tag (headTag) existe no repositório
+	tagExists := false
+	availableTags := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tagName := tag.GetName()
+		availableTags = append(availableTags, tagName)
+		if tagName == headTag {
+			tagExists = true
+		}
+	}
+
+	if !tagExists {
+		h.logger.Warn().
+			Str("owner", owner).
+			Str("repo", repo).
+			Str("tag", headTag).
+			Str("tag_original", newTag).
+			Int("available_tags", len(availableTags)).
+			Msg("New tag not found in repository")
+
+		// Sugerir tags similares (primeiras 10)
+		suggestedTags := availableTags
+		if len(suggestedTags) > 10 {
+			suggestedTags = suggestedTags[:10]
+		}
+
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":          fmt.Sprintf("Tag '%s' não encontrada no repositório %s/%s", headTag, owner, repo),
+			"tag_searched":   headTag,
+			"tag_original":   newTag,
+			"repository":     fmt.Sprintf("%s/%s", owner, repo),
+			"total_tags":     len(availableTags),
+			"suggested_tags": suggestedTags,
+			"suggestion":     "Verifique se a tag está correta. As tags mais recentes estão listadas em 'suggested_tags'",
+		})
+		return
+	}
+
+	h.logger.Info().
+		Str("tag", headTag).
+		Msg("New tag validated successfully")
+
+	// ✅ Todas as validações passaram, agora comparar
 	comparison, _, err := githubClient.Repositories.CompareCommits(
 		ctx,
 		owner,
@@ -624,7 +913,10 @@ func (h *GitHubReleasesHandler) CompareReleasesWithRegistry(c *gin.Context) {
 			Str("base", baseTag).
 			Str("head", headTag).
 			Msg("Failed to compare commits on GitHub")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Erro ao comparar no GitHub: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   fmt.Sprintf("Erro ao comparar no GitHub: %v", err),
+			"details": "Base e head validadas, mas comparação falhou. Pode ser problema de permissões ou ambas as tags são iguais.",
+		})
 		return
 	}
 
@@ -773,17 +1065,215 @@ func (h *GitHubReleasesHandler) ScanDeployments(c *gin.Context) {
 
 	h.logger.Info().Str("cluster", clusterName).Msg("Starting deployment scan")
 
-	// Nota: Precisamos ter acesso ao kubernetes client
-	// Por enquanto, retornar placeholder para frontend funcionar
-	// TODO: Implementar scan real usando o health checking logic
+	ctx := context.Background()
 
-	h.logger.Warn().Msg("ScanDeployments endpoint is a placeholder - real implementation needed")
+	// 1. Obter cliente Kubernetes para o cluster
+	client, err := h.kubeConfigManager.GetClient(clusterName)
+	if err != nil {
+		h.logger.Error().Err(err).Str("cluster", clusterName).Msg("Failed to get Kubernetes client")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to connect to cluster",
+			"details": err.Error(),
+		})
+		return
+	}
 
-	c.JSON(http.StatusOK, gin.H{
+	// 2. Listar todos os namespaces do cluster
+	namespaceList, err := client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		h.logger.Error().Err(err).Str("cluster", clusterName).Msg("Failed to list namespaces")
+
+		// ✅ VERIFICAÇÃO DE VPN: Detectar erros de conectividade (DNS lookup, no such host, timeout)
+		errorMsg := err.Error()
+		isVPNError := strings.Contains(errorMsg, "no such host") ||
+			strings.Contains(errorMsg, "lookup") ||
+			strings.Contains(errorMsg, "dial tcp") ||
+			strings.Contains(errorMsg, "i/o timeout") ||
+			strings.Contains(errorMsg, "connection refused") ||
+			strings.Contains(errorMsg, "privatelink")
+
+		if isVPNError {
+			h.logger.Warn().
+				Str("cluster", clusterName).
+				Msg("VPN connection issue detected")
+
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":   "VPN desconectada ou cluster inacessível",
+				"details": "Não foi possível resolver o DNS do cluster. Isso geralmente indica que a VPN está desconectada.",
+				"cluster": clusterName,
+				"suggestions": []string{
+					"1. Verifique se você está conectado à VPN corporativa",
+					"2. Tente reconectar à VPN",
+					"3. Verifique se o cluster está ligado e acessível",
+					"4. Execute: kubectl get namespaces --context " + clusterName,
+				},
+				"error_type":    "vpn_disconnected",
+				"technical_error": errorMsg,
+			})
+			return
+		}
+
+		// Outros erros (não relacionados a VPN)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":        "Failed to list namespaces",
+			"details":      errorMsg,
+			"cluster":      clusterName,
+			"error_type":   "kubernetes_api_error",
+		})
+		return
+	}
+
+	namespaces := []string{}
+	for _, ns := range namespaceList.Items {
+		namespaces = append(namespaces, ns.Name)
+	}
+
+	h.logger.Info().
+		Str("cluster", clusterName).
+		Int("namespaces", len(namespaces)).
+		Msg("Found namespaces")
+
+	// 3. Escanear deployments em cada namespace
+	deploymentsFound := 0
+	deploymentsSaved := 0
+	errors := []string{}
+
+	for _, namespace := range namespaces {
+		deploymentList, err := client.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			h.logger.Warn().
+				Err(err).
+				Str("cluster", clusterName).
+				Str("namespace", namespace).
+				Msg("Failed to list deployments in namespace")
+			errors = append(errors, fmt.Sprintf("%s: %v", namespace, err))
+			continue
+		}
+
+		deploymentsFound += len(deploymentList.Items)
+
+		// 4. Popular registry para cada deployment
+		for _, deployment := range deploymentList.Items {
+			record := h.extractDeploymentRecord(&deployment, clusterName)
+
+			if err := h.deploymentRegistry.UpsertDeployment(record); err != nil {
+				h.logger.Warn().
+					Err(err).
+					Str("cluster", clusterName).
+					Str("namespace", namespace).
+					Str("deployment", deployment.Name).
+					Msg("Failed to save deployment to registry")
+				errors = append(errors, fmt.Sprintf("%s/%s: %v", namespace, deployment.Name, err))
+			} else {
+				deploymentsSaved++
+				h.logger.Debug().
+					Str("cluster", clusterName).
+					Str("namespace", namespace).
+					Str("deployment", deployment.Name).
+					Str("version", record.Version).
+					Str("squad", record.Squad).
+					Str("servicenow_task", record.ServiceNowTask).
+					Msg("Saved deployment to registry")
+			}
+		}
+	}
+
+	h.logger.Info().
+		Str("cluster", clusterName).
+		Int("found", deploymentsFound).
+		Int("saved", deploymentsSaved).
+		Int("errors", len(errors)).
+		Msg("Deployment scan completed")
+
+	response := gin.H{
 		"cluster":            clusterName,
-		"deployments_found":  0,
-		"deployments_saved":  0,
-		"status":             "placeholder",
-		"message":            "Scan implementation pending - use Health Checking tab for now",
-	})
+		"namespaces_scanned": len(namespaces),
+		"deployments_found":  deploymentsFound,
+		"deployments_saved":  deploymentsSaved,
+		"status":             "success",
+	}
+
+	if len(errors) > 0 {
+		response["errors"] = errors
+		response["status"] = "partial_success"
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// extractDeploymentRecord extrai informações do deployment para criar um registro
+// Baseado na lógica de internal/healthcheck/deployment_checker.go:populateDeploymentRegistry
+func (h *GitHubReleasesHandler) extractDeploymentRecord(deployment *appsv1.Deployment, clusterName string) storage.DeploymentRecord {
+	// Extrair versão de labels
+	version := deployment.Labels["app.kubernetes.io/version"]
+
+	// Extrair app name de labels
+	appName := deployment.Labels["app.kubernetes.io/name"]
+	if appName == "" {
+		appName = deployment.Labels["app"]
+	}
+	if appName == "" {
+		appName = deployment.Name // Fallback para nome do deployment
+	}
+
+	// Extrair squad do label devops.k8s.io/squad (busca em labels e annotations)
+	squad := deployment.Labels["devops.k8s.io/squad"]
+	if squad == "" && deployment.Annotations != nil {
+		squad = deployment.Annotations["devops.k8s.io/squad"]
+	}
+
+	// Extrair ServiceNow task number (busca em labels e annotations)
+	// Formato esperado: "CHG0001234" ou apenas "0001234"
+	servicenowTask := deployment.Labels["devops.k8s.io/servicenow-task-number"]
+	if servicenowTask == "" && deployment.Annotations != nil {
+		servicenowTask = deployment.Annotations["devops.k8s.io/servicenow-task-number"]
+	}
+	// Garantir prefixo CHG se não estiver presente
+	if servicenowTask != "" && !strings.HasPrefix(servicenowTask, "CHG") {
+		servicenowTask = "CHG" + servicenowTask
+	}
+
+	// Extrair imagem e tag do primeiro container
+	var fullImage, imageTag string
+	if len(deployment.Spec.Template.Spec.Containers) > 0 {
+		fullImage = deployment.Spec.Template.Spec.Containers[0].Image
+		imageTag = storage.ExtractVersionFromImage(fullImage)
+
+		// Se não tem version label, usar tag da imagem
+		if version == "" {
+			version = imageTag
+		}
+	}
+
+	// Determinar status de saúde básico
+	status := "healthy"
+	desiredReplicas := int32(1)
+	if deployment.Spec.Replicas != nil {
+		desiredReplicas = *deployment.Spec.Replicas
+	}
+
+	readyReplicas := deployment.Status.ReadyReplicas
+
+	if readyReplicas == 0 && desiredReplicas > 0 {
+		status = "critical"
+	} else if readyReplicas < desiredReplicas {
+		status = "warning"
+	}
+
+	// Criar registro
+	return storage.DeploymentRecord{
+		DeploymentName:  deployment.Name,
+		Namespace:       deployment.Namespace,
+		Cluster:         clusterName,
+		Version:         version,
+		ImageTag:        imageTag,
+		FullImage:       fullImage,
+		ReplicasCurrent: int(readyReplicas),
+		ReplicasDesired: int(desiredReplicas),
+		AppName:         appName,
+		Status:          status,
+		Squad:           squad,
+		ServiceNowTask:  servicenowTask,
+		CreatedAt:       deployment.CreationTimestamp.Time, // ✅ Data real de criação do deployment do Kubernetes
+	}
 }

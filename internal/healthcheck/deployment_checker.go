@@ -513,12 +513,18 @@ func (c *DeploymentChecker) populateDeploymentRegistry(deployment *appsv1.Deploy
 		appName = deployment.Name // Fallback para nome do deployment
 	}
 
-	// Extrair squad do label devops.k8s.io/component-squad
-	squad := deployment.Labels["devops.k8s.io/component-squad"]
+	// Extrair squad do label devops.k8s.io/squad (busca em labels e annotations)
+	squad := deployment.Labels["devops.k8s.io/squad"]
+	if squad == "" && deployment.Annotations != nil {
+		squad = deployment.Annotations["devops.k8s.io/squad"]
+	}
 
-	// Extrair ServiceNow task number do label devops.k8s.io/servicenow-task-number
+	// Extrair ServiceNow task number (busca em labels e annotations)
 	// Formato esperado: "CHG0001234" ou apenas "0001234"
 	servicenowTask := deployment.Labels["devops.k8s.io/servicenow-task-number"]
+	if servicenowTask == "" && deployment.Annotations != nil {
+		servicenowTask = deployment.Annotations["devops.k8s.io/servicenow-task-number"]
+	}
 	// Garantir prefixo CHG se não estiver presente
 	if servicenowTask != "" && !strings.HasPrefix(servicenowTask, "CHG") {
 		servicenowTask = "CHG" + servicenowTask
@@ -565,6 +571,7 @@ func (c *DeploymentChecker) populateDeploymentRegistry(deployment *appsv1.Deploy
 		Status:          status,
 		Squad:           squad,
 		ServiceNowTask:  servicenowTask,
+		CreatedAt:       deployment.CreationTimestamp.Time, // ✅ Data real de criação do deployment do Kubernetes
 	}
 
 	// Upsert na base (ignora erros para não quebrar health check)

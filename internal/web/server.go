@@ -655,17 +655,20 @@ func (s *Server) setupRoutes() {
 
 	// Criar logger para GitHub handler
 	githubLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "github-releases").Logger()
-	githubHandler := handlers.NewGitHubReleasesHandler(githubRegistry, githubTokenStore, &githubLogger)
-	api.GET("/github/repos", githubHandler.GetRepos)                               // GET /api/v1/github/repos
-	api.GET("/github/repos/:owner/:repo/releases", githubHandler.GetReleases)      // GET /api/v1/github/repos/:owner/:repo/releases
-	api.GET("/github/repos/:owner/:repo/compare/:basehead", githubHandler.CompareReleases) // GET /api/v1/github/repos/:owner/:repo/compare/base...head
-	api.GET("/github/deployments/search", githubHandler.SearchDeployments)         // GET /api/v1/github/deployments/search?app_name=X
-	api.GET("/github/deployments/production", githubHandler.GetProductionDeployment) // GET /api/v1/github/deployments/production?app_name=X
-	api.GET("/github/deployments/all-versions", githubHandler.GetAllVersions)      // GET /api/v1/github/deployments/all-versions?app_name=X
-	api.GET("/github/deployments/registry", githubHandler.GetDeploymentsRegistry)   // GET /api/v1/github/deployments/registry?cluster=X&namespace=Y&only_valid_versions=true
-	api.GET("/github/compare", githubHandler.CompareReleasesWithRegistry)           // GET /api/v1/github/compare?release=X&new_tag=Y
-	api.POST("/github/deployments/scan", githubHandler.ScanDeployments)             // POST /api/v1/github/deployments/scan?cluster=X
-	fmt.Println("✅ GitHub Releases routes registradas")
+	githubHandler := handlers.NewGitHubReleasesHandler(githubRegistry, githubTokenStore, s.kubeManager, &githubLogger)
+	
+	// Rotas que precisam de token individual do usuário (usar middleware InjectUserEmail)
+	api.GET("/github/repos", rbacMiddleware.InjectUserEmail(), githubHandler.GetRepos)
+	api.GET("/github/user/repos", rbacMiddleware.InjectUserEmail(), githubHandler.ListUserRepos)
+	api.GET("/github/repos/:owner/:repo/releases", rbacMiddleware.InjectUserEmail(), githubHandler.GetReleases)
+	api.GET("/github/repos/:owner/:repo/compare/:basehead", rbacMiddleware.InjectUserEmail(), githubHandler.CompareReleases)
+	api.GET("/github/deployments/search", rbacMiddleware.InjectUserEmail(), githubHandler.SearchDeployments)
+	api.GET("/github/deployments/production", rbacMiddleware.InjectUserEmail(), githubHandler.GetProductionDeployment)
+	api.GET("/github/deployments/all-versions", rbacMiddleware.InjectUserEmail(), githubHandler.GetAllVersions)
+	api.GET("/github/deployments/registry", rbacMiddleware.InjectUserEmail(), githubHandler.GetDeploymentsRegistry)
+	api.GET("/github/compare", rbacMiddleware.InjectUserEmail(), githubHandler.CompareReleasesWithRegistry)
+	api.POST("/github/deployments/scan", rbacMiddleware.InjectUserEmail(), githubHandler.ScanDeployments)
+	fmt.Println("✅ GitHub Releases routes registradas (com autenticação de usuário)")
 
 	// GitHub Tokens Management (gerenciamento de tokens individuais)
 	if githubTokenStore != nil {

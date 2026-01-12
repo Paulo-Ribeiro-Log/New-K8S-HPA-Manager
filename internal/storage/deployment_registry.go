@@ -26,6 +26,7 @@ type DeploymentRecord struct {
 	Status          string    `json:"status"`           // healthy, warning, critical
 	Squad           string    `json:"squad"`            // devops.k8s.io/squad
 	ServiceNowTask  string    `json:"servicenow_task"`  // devops.k8s.io/servicenow-task-number (CHG prefix)
+	CreatedAt       time.Time `json:"created_at"`       // ✅ Data de criação real do deployment (metadata.creationTimestamp)
 	FirstSeen       time.Time `json:"first_seen"`
 	LastSeen        time.Time `json:"last_seen"`
 	LastHealthCheck time.Time `json:"last_health_check"`
@@ -84,6 +85,7 @@ func (r *DeploymentRegistry) createSchema() error {
 		status TEXT,
 		squad TEXT,
 		servicenow_task TEXT,
+		created_at TIMESTAMP,
 		first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		last_health_check TIMESTAMP,
@@ -93,6 +95,7 @@ func (r *DeploymentRegistry) createSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_app_name ON deployments(app_name);
 	CREATE INDEX IF NOT EXISTS idx_version ON deployments(version);
 	CREATE INDEX IF NOT EXISTS idx_cluster ON deployments(cluster);
+	CREATE INDEX IF NOT EXISTS idx_created_at ON deployments(created_at);
 	CREATE INDEX IF NOT EXISTS idx_last_seen ON deployments(last_seen);
 	CREATE INDEX IF NOT EXISTS idx_squad ON deployments(squad);
 	CREATE INDEX IF NOT EXISTS idx_servicenow_task ON deployments(servicenow_task);
@@ -107,8 +110,18 @@ func (r *DeploymentRegistry) createSchema() error {
 	);
 	`
 
-	_, err := r.db.Exec(schema)
-	return err
+	if _, err := r.db.Exec(schema); err != nil {
+		return err
+	}
+
+	// ✅ Migração: Adicionar coluna created_at se não existir (para bancos existentes)
+	migration := `
+	ALTER TABLE deployments ADD COLUMN created_at TIMESTAMP;
+	`
+	// Ignorar erro se coluna já existir
+	r.db.Exec(migration)
+
+	return nil
 }
 
 // UpsertDeployment insere ou atualiza um registro de deployment
@@ -126,8 +139,8 @@ func (r *DeploymentRegistry) UpsertDeployment(record DeploymentRecord) error {
 	INSERT INTO deployments (
 		deployment_name, namespace, cluster, version, image_tag, full_image,
 		replicas_current, replicas_desired, app_name, status, squad, servicenow_task,
-		last_seen, last_health_check
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		created_at, last_seen, last_health_check
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(cluster, namespace, deployment_name) DO UPDATE SET
 		version = excluded.version,
 		image_tag = excluded.image_tag,
@@ -140,13 +153,15 @@ func (r *DeploymentRegistry) UpsertDeployment(record DeploymentRecord) error {
 		servicenow_task = excluded.servicenow_task,
 		last_seen = excluded.last_seen,
 		last_health_check = excluded.last_health_check
+		-- ⚠️ NÃO atualizar created_at - manter data original de criação
 	`
 
 	_, err := r.db.Exec(query,
 		record.DeploymentName, record.Namespace, record.Cluster,
 		record.Version, record.ImageTag, record.FullImage,
 		record.ReplicasCurrent, record.ReplicasDesired, record.AppName,
-		record.Status, record.Squad, record.ServiceNowTask, now, now,
+		record.Status, record.Squad, record.ServiceNowTask,
+		record.CreatedAt, now, now,
 	)
 
 	if err != nil {
@@ -173,7 +188,7 @@ func (r *DeploymentRegistry) SearchByAppName(appName string) ([]DeploymentRecord
 	query := `
 	SELECT id, deployment_name, namespace, cluster, version, image_tag, full_image,
 	       replicas_current, replicas_desired, app_name, status, squad, servicenow_task,
-	       first_seen, last_seen, last_health_check
+	       created_at, first_seen, last_seen, last_health_check
 	FROM deployments
 	WHERE app_name = ? OR deployment_name LIKE ? OR deployment_name = ?
 	ORDER BY last_seen DESC
@@ -188,20 +203,23 @@ func (r *DeploymentRegistry) SearchByAppName(appName string) ([]DeploymentRecord
 	var records []DeploymentRecord
 	for rows.Next() {
 		var r DeploymentRecord
-		var firstSeen, lastSeen, lastHealthCheck sql.NullTime
+		var createdAt, firstSeen, lastSeen, lastHealthCheck sql.NullTime
 
 		err := rows.Scan(
 			&r.ID, &r.DeploymentName, &r.Namespace, &r.Cluster,
 			&r.Version, &r.ImageTag, &r.FullImage,
 			&r.ReplicasCurrent, &r.ReplicasDesired, &r.AppName,
 			&r.Status, &r.Squad, &r.ServiceNowTask,
-			&firstSeen, &lastSeen, &lastHealthCheck,
+			&createdAt, &firstSeen, &lastSeen, &lastHealthCheck,
 		)
 
 		if err != nil {
 			continue
 		}
 
+		if createdAt.Valid {
+			r.CreatedAt = createdAt.Time
+		}
 		if firstSeen.Valid {
 			r.FirstSeen = firstSeen.Time
 		}
@@ -224,7 +242,7 @@ func (r *DeploymentRegistry) GetProductionVersion(appName string) (*DeploymentRe
 	query := `
 	SELECT id, deployment_name, namespace, cluster, version, image_tag, full_image,
 	       replicas_current, replicas_desired, app_name, status, squad, servicenow_task,
-	       first_seen, last_seen, last_health_check
+	       created_at, first_seen, last_seen, last_health_check
 	FROM deployments
 	WHERE (app_name = ? OR deployment_name LIKE ? OR deployment_name = ?)
 	  AND (cluster LIKE '%prod%' OR cluster LIKE '%prd%')
@@ -233,14 +251,14 @@ func (r *DeploymentRegistry) GetProductionVersion(appName string) (*DeploymentRe
 	`
 
 	var record DeploymentRecord
-	var firstSeen, lastSeen, lastHealthCheck sql.NullTime
+	var createdAt, firstSeen, lastSeen, lastHealthCheck sql.NullTime
 
 	err := r.db.QueryRow(query, appName, "%"+appName+"%", appName).Scan(
 		&record.ID, &record.DeploymentName, &record.Namespace, &record.Cluster,
 		&record.Version, &record.ImageTag, &record.FullImage,
 		&record.ReplicasCurrent, &record.ReplicasDesired, &record.AppName,
 		&record.Status, &record.Squad, &record.ServiceNowTask,
-		&firstSeen, &lastSeen, &lastHealthCheck,
+		&createdAt, &firstSeen, &lastSeen, &lastHealthCheck,
 	)
 
 	if err == sql.ErrNoRows {
@@ -251,6 +269,9 @@ func (r *DeploymentRegistry) GetProductionVersion(appName string) (*DeploymentRe
 		return nil, fmt.Errorf("failed to get production version: %w", err)
 	}
 
+	if createdAt.Valid {
+		record.CreatedAt = createdAt.Time
+	}
 	if firstSeen.Valid {
 		record.FirstSeen = firstSeen.Time
 	}

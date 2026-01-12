@@ -118,25 +118,26 @@ func (h *GitHubTokensHandler) GetTokenStatus(c *gin.Context) {
 // SaveTokenRequest representa request para salvar token
 type SaveTokenRequest struct {
 	Token string `json:"token" binding:"required"`
+	Email string `json:"email" binding:"required"`
 }
 
 // SaveToken salva token do usuário (com validação)
 // POST /api/v1/github/token
 func (h *GitHubTokensHandler) SaveToken(c *gin.Context) {
-	// Obter email do usuário
-	userEmail := c.GetString("user_email")
-	if userEmail == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": "user_email não encontrado (RBAC middleware necessário)",
-		})
-		return
-	}
-
 	// Parse request
 	var req SaveTokenRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Token é obrigatório",
+			"error": "Token e Email são obrigatórios",
+		})
+		return
+	}
+
+	// Usar email do request ao invés do middleware
+	userEmail := strings.TrimSpace(req.Email)
+	if userEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Email não pode estar vazio",
 		})
 		return
 	}

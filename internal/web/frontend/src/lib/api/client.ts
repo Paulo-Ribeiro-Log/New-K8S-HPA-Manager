@@ -83,10 +83,12 @@ const API_BASE_URL = "/api/v1";
 
 class APIClient {
   private token: string | null = null;
+  private gitHubEmail: string | null = null;
 
   constructor() {
     // Load token from localStorage
     this.token = localStorage.getItem("auth_token") || null;
+    this.gitHubEmail = localStorage.getItem("github_email") || null;
   }
 
   setToken(token: string) {
@@ -97,6 +99,16 @@ class APIClient {
   clearToken() {
     this.token = null;
     localStorage.removeItem("auth_token");
+  }
+
+  setGitHubEmail(email: string) {
+    this.gitHubEmail = email;
+    localStorage.setItem("github_email", email);
+  }
+
+  clearGitHubEmail() {
+    this.gitHubEmail = null;
+    localStorage.removeItem("github_email");
   }
 
   private async request<T>(
@@ -110,6 +122,10 @@ class APIClient {
 
     if (this.token) {
       headers["Authorization"] = `Bearer ${this.token}`;
+    }
+
+    if (this.gitHubEmail) {
+      headers["X-GitHub-Email"] = this.gitHubEmail;
     }
 
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -1838,11 +1854,16 @@ class APIClient {
    * Save GitHub token for current user
    * POST /api/v1/github/token
    */
-  async saveGitHubToken(token: string): Promise<SaveTokenResponse> {
-    return this.request("/github/token", {
+  async saveGitHubToken(token: string, email: string): Promise<SaveTokenResponse> {
+    const response = await this.request<SaveTokenResponse>("/github/token", {
       method: "POST",
-      body: JSON.stringify({ token } as SaveTokenRequest),
+      body: JSON.stringify({ token, email } as SaveTokenRequest),
     });
+    
+    // Store email in localStorage for future requests
+    this.setGitHubEmail(email);
+    
+    return response;
   }
 
   /**
@@ -1850,9 +1871,14 @@ class APIClient {
    * DELETE /api/v1/github/token
    */
   async deleteGitHubToken(): Promise<{ success: boolean; message: string }> {
-    return this.request("/github/token", {
+    const response = await this.request<{ success: boolean; message: string }>("/github/token", {
       method: "DELETE",
     });
+    
+    // Clear email from localStorage
+    this.clearGitHubEmail();
+    
+    return response;
   }
 }
 
