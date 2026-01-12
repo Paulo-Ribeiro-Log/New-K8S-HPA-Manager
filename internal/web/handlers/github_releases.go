@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/go-github/v57/github"
@@ -20,13 +21,15 @@ import (
 // GitHubReleasesHandler lida com comparação de releases do GitHub
 type GitHubReleasesHandler struct {
 	deploymentRegistry *storage.DeploymentRegistry
+	tokenStore         *storage.GitHubTokenStore
 	logger             *zerolog.Logger
 }
 
 // NewGitHubReleasesHandler cria novo handler
-func NewGitHubReleasesHandler(registry *storage.DeploymentRegistry, logger *zerolog.Logger) *GitHubReleasesHandler {
+func NewGitHubReleasesHandler(registry *storage.DeploymentRegistry, tokenStore *storage.GitHubTokenStore, logger *zerolog.Logger) *GitHubReleasesHandler {
 	return &GitHubReleasesHandler{
 		deploymentRegistry: registry,
+		tokenStore:         tokenStore,
 		logger:             logger,
 	}
 }
@@ -67,17 +70,41 @@ type GitHubReposConfig struct {
 }
 
 // getGitHubClient cria cliente GitHub autenticado
+// Prioridade: 1) Token individual do usuário, 2) GITHUB_TOKEN global, 3) Não autenticado
 func (h *GitHubReleasesHandler) getGitHubClient(c *gin.Context) *github.Client {
-	// Tentar usar token do ambiente (fallback)
-	token := os.Getenv("GITHUB_TOKEN")
+	var token string
 
+	// 1. Tentar usar token individual do usuário
+	if h.tokenStore != nil {
+		userEmail := c.GetString("user_email")
+		if userEmail != "" {
+			userToken, err := h.tokenStore.GetToken(userEmail)
+			if err == nil && userToken != "" {
+				h.logger.Debug().Str("user", userEmail).Msg("Using user's individual GitHub token")
+				token = userToken
+			} else if err != nil {
+				h.logger.Debug().Err(err).Str("user", userEmail).Msg("Failed to get user token, falling back")
+			}
+		}
+	}
+
+	// 2. Fallback para token do ambiente (global)
+	if token == "" {
+		token = os.Getenv("GITHUB_TOKEN")
+		if token != "" {
+			h.logger.Debug().Msg("Using global GITHUB_TOKEN from environment")
+		}
+	}
+
+	// 3. Usar token se disponível
 	if token != "" {
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 		tc := oauth2.NewClient(context.Background(), ts)
 		return github.NewClient(tc)
 	}
 
-	// Cliente não autenticado (rate limit 60 req/h)
+	// 4. Cliente não autenticado (rate limit 60 req/h)
+	h.logger.Debug().Msg("Using unauthenticated GitHub client (60 req/h limit)")
 	return github.NewClient(nil)
 }
 
@@ -386,4 +413,139 @@ func (h *GitHubReleasesHandler) GetAllVersions(c *gin.Context) {
 		"total_versions":    len(versionMap),
 		"total_deployments": totalDeployments,
 	})
+}
+
+// GetDeploymentsRegistry retorna todos os deployments do registry
+// GET /api/v1/github/deployments/registry?cluster=X&namespace=Y&only_valid_versions=true
+func (h *GitHubReleasesHandler) GetDeploymentsRegistry(c *gin.Context) {
+	cluster := c.Query("cluster")
+	namespace := c.Query("namespace")
+	onlyValidVersions := c.Query("only_valid_versions") == "true"
+
+	if h.deploymentRegistry == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Deployment registry not available"})
+		return
+	}
+
+	records, err := h.deploymentRegistry.GetAll(cluster, namespace, onlyValidVersions)
+	if err != nil {
+		h.logger.Error().
+			Err(err).
+			Str("cluster", cluster).
+			Str("namespace", namespace).
+			Bool("only_valid_versions", onlyValidVersions).
+			Msg("Failed to get deployments from registry")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Calcular idade (age) para cada deployment
+	now := time.Now()
+	type DeploymentWithAge struct {
+		storage.DeploymentRecord
+		Age string `json:"age"`
+	}
+
+	enrichedRecords := make([]DeploymentWithAge, 0, len(records))
+	for _, record := range records {
+		age := calculateAge(record.LastSeen, now)
+		enrichedRecords = append(enrichedRecords, DeploymentWithAge{
+			DeploymentRecord: record,
+			Age:              age,
+		})
+	}
+
+	// Estatísticas
+	validVersions := 0
+	for _, r := range records {
+		if isValidSemver(r.Version) {
+			validVersions++
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"deployments":           enrichedRecords,
+		"total":                 len(records),
+		"valid_versions":        validVersions,
+		"invalid_versions":      len(records) - validVersions,
+		"filters_applied": gin.H{
+			"cluster":             cluster,
+			"namespace":           namespace,
+			"only_valid_versions": onlyValidVersions,
+		},
+	})
+}
+
+// calculateAge calcula idade humana legível
+func calculateAge(lastSeen time.Time, now time.Time) string {
+	if lastSeen.IsZero() {
+		return "unknown"
+	}
+
+	duration := now.Sub(lastSeen)
+
+	days := int(duration.Hours() / 24)
+	hours := int(duration.Hours()) % 24
+	minutes := int(duration.Minutes()) % 60
+
+	if days > 0 {
+		if hours > 0 {
+			return fmt.Sprintf("%dd%dh", days, hours)
+		}
+		return fmt.Sprintf("%dd", days)
+	}
+
+	if hours > 0 {
+		if minutes > 0 {
+			return fmt.Sprintf("%dh%dm", hours, minutes)
+		}
+		return fmt.Sprintf("%dh", hours)
+	}
+
+	return fmt.Sprintf("%dm", minutes)
+}
+
+// isValidSemver verifica se versão segue padrão semver (x.x.x ou x.x.x-x)
+func isValidSemver(version string) bool {
+	if version == "" {
+		return false
+	}
+
+	// Remover prefixo "v" se existir
+	version = strings.TrimPrefix(version, "v")
+
+	// Padrão: dígitos.dígitos.dígitos ou dígitos.dígitos.dígitos-dígitos
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return false
+	}
+
+	// Verificar se os dois primeiros são números
+	for i := 0; i < 2; i++ {
+		if _, err := fmt.Sscanf(parts[i], "%d", new(int)); err != nil {
+			return false
+		}
+	}
+
+	// Terceiro pode ter -X no final (ex: 5-2)
+	lastPart := parts[2]
+	if strings.Contains(lastPart, "-") {
+		subParts := strings.Split(lastPart, "-")
+		if len(subParts) != 2 {
+			return false
+		}
+		// Validar ambas as partes
+		for _, p := range subParts {
+			if _, err := fmt.Sscanf(p, "%d", new(int)); err != nil {
+				return false
+			}
+		}
+	} else {
+		// Apenas número
+		if _, err := fmt.Sscanf(lastPart, "%d", new(int)); err != nil {
+			return false
+		}
+	}
+
+	return true
 }

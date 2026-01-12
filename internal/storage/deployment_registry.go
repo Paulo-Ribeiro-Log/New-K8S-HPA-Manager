@@ -332,6 +332,80 @@ func (r *DeploymentRegistry) GetStats() (map[string]interface{}, error) {
 	return stats, nil
 }
 
+// GetAll retorna todos os deployments do registry com filtros opcionais
+func (r *DeploymentRegistry) GetAll(cluster, namespace string, onlyValidVersions bool) ([]DeploymentRecord, error) {
+	query := `
+	SELECT id, deployment_name, namespace, cluster, version, image_tag, full_image,
+	       replicas_current, replicas_desired, app_name, status, squad, servicenow_task,
+	       first_seen, last_seen, last_health_check
+	FROM deployments
+	WHERE 1=1
+	`
+
+	args := []interface{}{}
+
+	// Filtro por cluster
+	if cluster != "" {
+		query += " AND cluster = ?"
+		args = append(args, cluster)
+	}
+
+	// Filtro por namespace
+	if namespace != "" {
+		query += " AND namespace = ?"
+		args = append(args, namespace)
+	}
+
+	// Filtro por versões válidas (padrão semver x.x.x ou x.x.x-x)
+	if onlyValidVersions {
+		// Regex SQLite para validar padrão: dígitos.dígitos.dígitos ou dígitos.dígitos.dígitos-dígitos
+		query += ` AND (
+			version GLOB '[0-9]*.[0-9]*.[0-9]*' OR
+			version GLOB '[0-9]*.[0-9]*.[0-9]*-[0-9]*'
+		)`
+	}
+
+	query += " ORDER BY last_seen DESC"
+
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all deployments: %w", err)
+	}
+	defer rows.Close()
+
+	var records []DeploymentRecord
+	for rows.Next() {
+		var r DeploymentRecord
+		var firstSeen, lastSeen, lastHealthCheck sql.NullTime
+
+		err := rows.Scan(
+			&r.ID, &r.DeploymentName, &r.Namespace, &r.Cluster,
+			&r.Version, &r.ImageTag, &r.FullImage,
+			&r.ReplicasCurrent, &r.ReplicasDesired, &r.AppName,
+			&r.Status, &r.Squad, &r.ServiceNowTask,
+			&firstSeen, &lastSeen, &lastHealthCheck,
+		)
+
+		if err != nil {
+			continue
+		}
+
+		if firstSeen.Valid {
+			r.FirstSeen = firstSeen.Time
+		}
+		if lastSeen.Valid {
+			r.LastSeen = lastSeen.Time
+		}
+		if lastHealthCheck.Valid {
+			r.LastHealthCheck = lastHealthCheck.Time
+		}
+
+		records = append(records, r)
+	}
+
+	return records, nil
+}
+
 // Close fecha a conexão com o banco
 func (r *DeploymentRegistry) Close() error {
 	return r.db.Close()

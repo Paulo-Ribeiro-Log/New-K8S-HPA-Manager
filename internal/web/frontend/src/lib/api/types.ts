@@ -763,3 +763,143 @@ export interface TopNamespacesResponse {
   pods_others: NamespaceMetrics;
   total_namespaces: number;
 }
+
+// GitHub Releases Types
+export interface GitHubRepoInfo {
+  owner: string;
+  repo: string;
+}
+
+export interface DeploymentConfig {
+  name: string;
+  app_name: string;
+  github_repo: GitHubRepoInfo;
+  version: string;
+  last_published: string;
+  squad: string;
+  servicenow_task: string;
+  age: string;
+}
+
+export interface NamespaceConfig {
+  name: string;
+  deployments: DeploymentConfig[];
+}
+
+export interface ClusterConfig {
+  name: string;
+  namespaces: NamespaceConfig[];
+}
+
+export interface GitHubReposConfig {
+  clusters: ClusterConfig[];
+  total_clusters: number;
+  total_namespaces: number;
+  total_deployments: number;
+}
+
+export interface GitHubRelease {
+  tag_name: string;
+  name: string;
+  body: string;
+  created_at: string;
+  published_at: string;
+  prerelease: boolean;
+  draft: boolean;
+}
+
+export interface GitHubReleasesResponse {
+  owner: string;
+  repo: string;
+  releases: GitHubRelease[];
+  total: number;
+}
+
+export interface GitHubCommit {
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+  url: string;
+}
+
+export interface GitHubFile {
+  filename: string;
+  status: "added" | "modified" | "deleted" | "renamed";
+  additions: number;
+  deletions: number;
+  extension: string;
+  patch?: string;
+}
+
+export interface GitHubComparison {
+  base_tag: string;
+  head_tag: string;
+  commits: GitHubCommit[];
+  files_changed: GitHubFile[];
+  ahead_by: number;
+  behind_by: number;
+  base_release_notes: string;
+  head_release_notes: string;
+}
+
+// GitHub Deployment Search Types
+export interface DeploymentRecord {
+  deployment_name: string;
+  namespace: string;
+  cluster: string;
+  version: string;
+  full_image: string;
+  status: string;
+  last_seen: string;
+}
+
+export interface DeploymentSearchResponse {
+  app_name: string;
+  deployments: DeploymentRecord[];
+  total: number;
+}
+
+export interface ProductionDeploymentResponse {
+  deployment: string;
+  namespace: string;
+  cluster: string;
+  version: string;
+  image: string;
+  status: string;
+  last_seen: string;
+}
+
+export interface VersionMap {
+  [version: string]: DeploymentRecord[];
+}
+
+export interface AllVersionsResponse {
+  app_name: string;
+  versions: VersionMap;
+  total_versions: number;
+  total_deployments: number;
+}
+
+// GitHub Token Types
+export interface TokenStatusResponse {
+  valid: boolean;
+  username?: string;
+  email?: string;
+  remaining?: number;
+  limit?: number;
+  reset_at?: string;
+  configured: boolean;
+  error?: string;
+}
+
+export interface SaveTokenRequest {
+  token: string;
+}
+
+export interface SaveTokenResponse {
+  success: boolean;
+  message: string;
+  github_user?: string;
+  github_email?: string;
+}
