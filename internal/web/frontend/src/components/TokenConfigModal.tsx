@@ -28,6 +28,7 @@ export const TokenConfigModal = ({
   onOpenChange,
 }: TokenConfigModalProps) => {
   const [token, setToken] = useState("");
+  const [email, setEmail] = useState("");
   const [showToken, setShowToken] = useState(false);
 
   const { data: tokenStatus, isLoading: isLoadingStatus, refetch: refetchStatus } = useGitHubTokenStatus();
@@ -38,6 +39,7 @@ export const TokenConfigModal = ({
   useEffect(() => {
     if (open) {
       setToken("");
+      setEmail("");
       setShowToken(false);
       refetchStatus();
     }
@@ -49,12 +51,18 @@ export const TokenConfigModal = ({
       return;
     }
 
+    if (!email.trim()) {
+      toast.error("Email/Login do GitHub é obrigatório");
+      return;
+    }
+
     try {
-      const result = await saveTokenMutation.mutateAsync(token);
+      const result = await saveTokenMutation.mutateAsync({ token, email });
       toast.success(result.message, {
         description: result.github_user ? `Autenticado como: ${result.github_user}` : undefined,
       });
       setToken("");
+      setEmail("");
       refetchStatus();
     } catch (error) {
       toast.error("Erro ao salvar token", {
@@ -149,6 +157,22 @@ export const TokenConfigModal = ({
                 </AlertDescription>
               </Alert>
             )}
+          </div>
+
+          {/* Input de Email/Login */}
+          <div>
+            <Label htmlFor="email">Email ou Login do GitHub</Label>
+            <Input
+              id="email"
+              type="text"
+              placeholder="seu-usuario-github ou email@empresa.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="font-mono text-sm"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Seu login do GitHub (usado para identificar o token)
+            </p>
           </div>
 
           {/* Input do Token */}

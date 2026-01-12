@@ -30,6 +30,11 @@ export const DeploymentScanModal = ({ open, onOpenChange }: DeploymentScanModalP
   const [scanProgress, setScanProgress] = useState<ScanProgress[]>([]);
   const [isScanning, setIsScanning] = useState(false);
 
+  // ✅ Filtrar apenas clusters de produção (com "-prd" no nome)
+  const productionClusters = clusters.filter(c =>
+    c.context.toLowerCase().includes('-prd')
+  );
+
   const scanMutation = useMutation({
     mutationFn: async (clusters: string[]) => {
       setIsScanning(true);
@@ -79,7 +84,7 @@ export const DeploymentScanModal = ({ open, onOpenChange }: DeploymentScanModalP
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedClusters(clusters.map(c => c.context));
+      setSelectedClusters(productionClusters.map(c => c.context));
     } else {
       setSelectedClusters([]);
     }
@@ -131,31 +136,37 @@ export const DeploymentScanModal = ({ open, onOpenChange }: DeploymentScanModalP
                 <Button
                   variant="link"
                   size="sm"
-                  onClick={() => handleSelectAll(selectedClusters.length !== clusters.length)}
+                  onClick={() => handleSelectAll(selectedClusters.length !== productionClusters.length)}
                 >
-                  {selectedClusters.length === clusters.length ? "Desmarcar todos" : "Selecionar todos"}
+                  {selectedClusters.length === productionClusters.length ? "Desmarcar todos" : "Selecionar todos"}
                 </Button>
               </div>
 
               <ScrollArea className="h-[300px] border rounded-md p-4">
                 <div className="space-y-3">
-                  {clusters.map((cluster) => (
-                    <div key={cluster.context} className="flex items-center space-x-2">
-                      <Checkbox
-                        id={cluster.context}
-                        checked={selectedClusters.includes(cluster.context)}
-                        onCheckedChange={(checked) =>
-                          handleClusterToggle(cluster.context, checked as boolean)
-                        }
-                      />
-                      <Label
-                        htmlFor={cluster.context}
-                        className="text-sm font-normal cursor-pointer flex-1"
-                      >
-                        {cluster.context}
-                      </Label>
+                  {productionClusters.length === 0 ? (
+                    <div className="text-sm text-muted-foreground text-center py-8">
+                      Nenhum cluster de produção (-prd) disponível
                     </div>
-                  ))}
+                  ) : (
+                    productionClusters.map((cluster) => (
+                      <div key={cluster.context} className="flex items-center space-x-2">
+                        <Checkbox
+                          id={cluster.context}
+                          checked={selectedClusters.includes(cluster.context)}
+                          onCheckedChange={(checked) =>
+                            handleClusterToggle(cluster.context, checked as boolean)
+                          }
+                        />
+                        <Label
+                          htmlFor={cluster.context}
+                          className="text-sm font-normal cursor-pointer flex-1"
+                        >
+                          {cluster.context}
+                        </Label>
+                      </div>
+                    ))
+                  )}
                 </div>
               </ScrollArea>
             </div>

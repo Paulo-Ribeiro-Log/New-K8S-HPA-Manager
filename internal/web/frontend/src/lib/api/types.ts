@@ -895,6 +895,7 @@ export interface TokenStatusResponse {
 
 export interface SaveTokenRequest {
   token: string;
+  email: string;
 }
 
 export interface SaveTokenResponse {

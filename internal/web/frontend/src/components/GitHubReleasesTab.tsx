@@ -1,4 +1,5 @@
 import { useState } from "react";
+import * as React from "react";
 import { SplitView } from "@/components/SplitView";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -82,20 +83,32 @@ interface DeploymentRecord {
 }
 
 export const GitHubReleasesTab = () => {
-  const [releaseName, setReleaseName] = useState("");
-  const [newTag, setNewTag] = useState("");
+  const [deploymentName, setDeploymentName] = useState("");  // Nome do deployment na base
+  const [githubRepo, setGithubRepo] = useState("");           // Nome do repositório no GitHub
+  const [productionTag, setProductionTag] = useState("");     // Tag atual em produção
+  const [newTag, setNewTag] = useState("");                   // Tag da nova release
   const [showAllFiles, setShowAllFiles] = useState(false);
   const [searchTriggered, setSearchTriggered] = useState(false);
   const [showTokenModal, setShowTokenModal] = useState(false);
   const [showScanModal, setShowScanModal] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
 
-  // Query para comparar releases
-  const { data: comparisonData, isLoading: isComparing, error: compareError, refetch: refetchComparison } = useQuery<ComparisonResult>({
-    queryKey: ['github-compare', releaseName, newTag],
+  // ✅ Query para buscar versão em produção assim que digitar o nome do deployment
+  const { data: productionData, isLoading: isLoadingProduction, error: productionError } = useQuery<{
+    deployment: string;
+    namespace: string;
+    cluster: string;
+    version: string;
+    image: string;
+    status: string;
+    created_at: string;      // ✅ Data de criação real do deployment
+    last_seen: string;       // Data do último scan
+    squad: string;
+    servicenow_task: string;
+  }>({
+    queryKey: ['github-production-version', deploymentName],
     queryFn: async () => {
       const response = await fetch(
-        `/api/v1/github/compare?release=${encodeURIComponent(releaseName)}&new_tag=${encodeURIComponent(newTag)}`,
+        `/api/v1/github/deployments/production?app_name=${encodeURIComponent(deploymentName)}`,
         {
           headers: {
             'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`
@@ -104,18 +117,17 @@ export const GitHubReleasesTab = () => {
       );
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
+        throw new Error(`HTTP ${response.status}`);
       }
 
       return response.json();
     },
-    enabled: searchTriggered && !!releaseName && !!newTag,
+    enabled: deploymentName.length >= 3, // Só buscar se tiver pelo menos 3 caracteres
   });
 
-  // Query para buscar deployments (search)
+  // ✅ Query para buscar deployments na base (busca geral)
   const { data: searchResults, isLoading: isSearching } = useQuery<{ deployments: DeploymentRecord[] }>({
-    queryKey: ['github-deployments-search', searchQuery],
+    queryKey: ['github-deployments-all'],
     queryFn: async () => {
       const response = await fetch(
         `/api/v1/github/deployments/registry?only_valid_versions=true`,
@@ -130,29 +142,115 @@ export const GitHubReleasesTab = () => {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const data = await response.json();
+      return response.json();
+    },
+    staleTime: 60000, // Cache por 1 minuto
+  });
 
-      // Filtrar localmente por searchQuery
-      if (searchQuery) {
-        const filtered = data.deployments.filter((d: DeploymentRecord) =>
-          d.deployment_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          d.cluster.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          d.namespace.toLowerCase().includes(searchQuery.toLowerCase())
-        );
-        return { deployments: filtered };
+  // Query para comparar releases no GitHub
+  const { data: comparisonData, isLoading: isComparing, error: compareError, refetch: refetchComparison } = useQuery<ComparisonResult>({
+    queryKey: ['github-compare', githubRepo, productionTag, newTag],
+    queryFn: async () => {
+      // Construir URL de comparação no formato: viavarejo-internal/<repo>/compare/<base>...<head>
+      const owner = 'viavarejo-internal';
+      const base = productionTag.replace(/^v/, ''); // Remove 'v' se existir
+      const head = newTag.replace(/^v/, '');
+      
+      const response = await fetch(
+        `/api/v1/github/repos/${owner}/${githubRepo}/compare/${base}...${head}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`
+          }
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
 
-      return data;
+      return response.json();
     },
-    enabled: !!searchQuery,
+    enabled: searchTriggered && !!githubRepo && !!productionTag && !!newTag,
   });
 
   const handleSearch = () => {
-    if (releaseName && newTag) {
+    if (githubRepo && productionTag && newTag) {
       setSearchTriggered(true);
       refetchComparison();
     }
   };
+
+  // Calcular age do deployment
+  const calculateAge = (dateString: string): string => {
+    if (!dateString) return '-';
+
+    const date = new Date(dateString);
+    const now = new Date();
+
+    // ✅ Validar se data é válida (não é 1970-01-01, não é inválida, não é futura)
+    if (isNaN(date.getTime()) || date.getFullYear() < 2020 || date > now) {
+      return '-';
+    }
+
+    const diffMs = now.getTime() - date.getTime();
+    const totalDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+    // ✅ Formatar com anos, meses e dias
+    if (totalDays >= 365) {
+      const years = Math.floor(totalDays / 365);
+      const remainingDays = totalDays % 365;
+      const months = Math.floor(remainingDays / 30);
+      if (months > 0) {
+        return `${years}a ${months}m`;
+      }
+      return `${years}a`;
+    }
+
+    if (totalDays >= 30) {
+      const months = Math.floor(totalDays / 30);
+      const days = totalDays % 30;
+      if (days > 0) {
+        return `${months}m ${days}d`;
+      }
+      return `${months}m`;
+    }
+
+    if (totalDays > 0) {
+      const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+      if (hours > 0) {
+        return `${totalDays}d ${hours}h`;
+      }
+      return `${totalDays}d`;
+    }
+
+    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+    if (hours > 0) {
+      const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+      if (minutes > 0) {
+        return `${hours}h ${minutes}m`;
+      }
+      return `${hours}h`;
+    }
+
+    const minutes = Math.floor(diffMs / (1000 * 60));
+    return `${minutes}m`;
+  };
+
+  // Função para buscar dados (refetch)
+  const handleRefetch = () => {
+    if (deploymentName.length >= 3) {
+      window.location.reload(); // Recarrega a página para buscar dados atualizados
+    }
+  };
+
+  // Auto-preencher tag em produção quando encontrar o deployment
+  React.useEffect(() => {
+    if (productionData?.version) {
+      setProductionTag(productionData.version);
+    }
+  }, [productionData]);
 
   // Filtrar arquivos por extensão
   const filteredFiles = comparisonData?.files.filter(file => {
@@ -177,6 +275,16 @@ export const GitHubReleasesTab = () => {
               <Button
                 variant="outline"
                 size="sm"
+                onClick={handleRefetch}
+                disabled={deploymentName.length < 3}
+                title="Recarregar dados da base"
+              >
+                <Search className="h-4 w-4 mr-2" />
+                Refetch
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => setShowTokenModal(true)}
               >
                 <Key className="h-4 w-4 mr-2" />
@@ -194,140 +302,161 @@ export const GitHubReleasesTab = () => {
           ),
           content: (
             <div className="h-full flex flex-col space-y-4 p-4">
-              {/* Busca Geral */}
+              {/* Campo 1: Nome do Deployment na Base */}
               <div className="space-y-2">
-                <Label htmlFor="search-release">Buscar Release (todos os clusters)</Label>
+                <Label htmlFor="deployment-name">Nome do Deployment (Base de Dados)</Label>
                 <Input
-                  id="search-release"
-                  placeholder="Digite nome da release para buscar..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  id="deployment-name"
+                  placeholder="Ex: vv-geolocalizacao-api"
+                  value={deploymentName}
+                  onChange={(e) => setDeploymentName(e.target.value)}
                 />
-                {isSearching && (
-                  <p className="text-xs text-muted-foreground">Buscando...</p>
+                {isLoadingProduction && deploymentName.length >= 3 && (
+                  <p className="text-xs text-muted-foreground flex items-center gap-2">
+                    <Search className="h-3 w-3 animate-pulse" />
+                    Buscando na base de dados...
+                  </p>
                 )}
-                {searchResults && searchResults.deployments.length > 0 && (
-                  <Card>
+                {productionError && deploymentName.length >= 3 && (
+                  <Alert variant="destructive" className="py-2">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle className="text-sm">Deployment não encontrado</AlertTitle>
+                    <AlertDescription className="text-xs">
+                      Não foi encontrado deployment "{deploymentName}" em produção.
+                      Execute o Scan primeiro.
+                    </AlertDescription>
+                  </Alert>
+                )}
+              </div>
+
+              {/* ✅ Painel de Informações da Release em Produção */}
+              {productionData && (
+                <>
+                  <Card className="border-green-500/50 bg-green-50 dark:bg-green-950/40">
                     <CardHeader className="pb-3">
-                      <CardTitle className="text-sm">
-                        Resultados ({searchResults.deployments.length})
+                      <CardTitle className="text-sm flex items-center gap-2 text-green-700 dark:text-green-400">
+                        <Database className="h-4 w-4" />
+                        Release em Produção
                       </CardTitle>
                     </CardHeader>
-                    <CardContent>
-                      <ScrollArea className="h-[200px]">
-                        <div className="space-y-2">
-                          {searchResults.deployments.map((dep) => (
-                            <div
-                              key={dep.id}
-                              className="p-2 border rounded text-xs cursor-pointer hover:bg-muted"
-                              onClick={() => {
-                                setReleaseName(dep.deployment_name);
-                                setSearchQuery("");
-                              }}
-                            >
-                              <div className="font-medium">{dep.deployment_name}</div>
-                              <div className="text-muted-foreground">
-                                {dep.cluster} / {dep.namespace}
-                              </div>
-                              <div className="flex gap-2 mt-1">
-                                <Badge variant="secondary" className="text-xs">
-                                  {dep.version}
-                                </Badge>
-                                <span className="text-muted-foreground">{dep.age}</span>
-                              </div>
-                            </div>
-                          ))}
+                    <CardContent className="space-y-2 text-xs">
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                        <div>
+                          <span className="text-muted-foreground">Cluster:</span>
+                          <p className="font-mono font-medium mt-0.5 text-foreground">{productionData.cluster}</p>
                         </div>
-                      </ScrollArea>
+                        <div>
+                          <span className="text-muted-foreground">Namespace:</span>
+                          <p className="font-mono font-medium mt-0.5 text-foreground">{productionData.namespace}</p>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Deployment:</span>
+                          <p className="font-medium mt-0.5 text-foreground">{productionData.deployment}</p>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Versão Atual:</span>
+                          <Badge variant="secondary" className="font-mono mt-0.5">
+                            {productionData.version}
+                          </Badge>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Squad:</span>
+                          <p className="mt-0.5 text-foreground">{productionData.squad || '-'}</p>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">ServiceNow CHG:</span>
+                          <p className="font-mono mt-0.5 text-foreground">{productionData.servicenow_task || '-'}</p>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Criado em:</span>
+                          <p className="mt-0.5 text-[10px] text-foreground">
+                            {productionData.created_at ? new Date(productionData.created_at).toLocaleString('pt-BR', {
+                              day: '2-digit',
+                              month: '2-digit',
+                              year: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            }) : '-'}
+                          </p>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Age (Tempo de Vida):</span>
+                          <Badge variant="outline" className="mt-0.5">
+                            {productionData.created_at ? calculateAge(productionData.created_at) : '-'}
+                          </Badge>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Último Scan:</span>
+                          <p className="mt-0.5 text-[10px] text-foreground">
+                            {new Date(productionData.last_seen).toLocaleString('pt-BR', {
+                              day: '2-digit',
+                              month: '2-digit',
+                              year: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            })}
+                          </p>
+                        </div>
+                      </div>
                     </CardContent>
                   </Card>
-                )}
+                  <Separator />
+                </>
+              )}
+
+              {/* Campo 2: Nome do Repositório GitHub */}
+              <div>
+                <Label htmlFor="github-repo">Repositório GitHub</Label>
+                <Input
+                  id="github-repo"
+                  placeholder="Ex: vv-retira-geolocalizacao"
+                  value={githubRepo}
+                  onChange={(e) => setGithubRepo(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Nome do repositório em github.com/viavarejo-internal/
+                </p>
               </div>
 
               <Separator />
 
-              {/* Comparação de Releases */}
-              <div className="space-y-4">
-                <h3 className="text-sm font-medium">Comparar Releases</h3>
-
-                <div>
-                  <Label htmlFor="release-name">Nome da Release</Label>
-                  <Input
-                    id="release-name"
-                    placeholder="Ex: vv-retira-geolocalizacao"
-                    value={releaseName}
-                    onChange={(e) => setReleaseName(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                  />
-                </div>
-
-                <div>
-                  <Label htmlFor="new-tag">Tag da Nova Release</Label>
-                  <Input
-                    id="new-tag"
-                    placeholder="Ex: 2.5.8-1"
-                    value={newTag}
-                    onChange={(e) => setNewTag(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                  />
-                </div>
-
-                <Button
-                  onClick={handleSearch}
-                  disabled={!releaseName || !newTag || isComparing}
-                  className="w-full"
-                >
-                  <GitCompare className="h-4 w-4 mr-2" />
-                  {isComparing ? 'Comparando...' : 'Comparar'}
-                </Button>
+              {/* Campo 3: Tag em Produção (auto-preenchido) */}
+              <div>
+                <Label htmlFor="production-tag">Tag em Produção</Label>
+                <Input
+                  id="production-tag"
+                  placeholder="Ex: 2.5.5-2"
+                  value={productionTag}
+                  onChange={(e) => setProductionTag(e.target.value)}
+                />
+                {productionData?.version && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    ✅ Auto-preenchido com a versão encontrada
+                  </p>
+                )}
               </div>
 
-              {/* Informações de produção */}
-              {comparisonData?.production_deployment && (
-                <>
-                  <Separator />
-                  <Card>
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-sm flex items-center gap-2">
-                        <Database className="h-4 w-4" />
-                        Versão em Produção
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2 text-xs">
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Cluster:</span>
-                        <span className="font-mono">{comparisonData.production_deployment.cluster}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Namespace:</span>
-                        <span className="font-mono">{comparisonData.production_deployment.namespace}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Deployment:</span>
-                        <span className="font-medium">{comparisonData.production_deployment.deployment_name}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Versão Atual:</span>
-                        <Badge variant="secondary" className="font-mono">
-                          {comparisonData.production_deployment.version}
-                        </Badge>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Squad:</span>
-                        <span>{comparisonData.production_deployment.squad || '-'}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">CHG:</span>
-                        <span className="font-mono">{comparisonData.production_deployment.servicenow_task || '-'}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Age:</span>
-                        <span>{comparisonData.production_deployment.age}</span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </>
-              )}
+              {/* Campo 4: Tag da Nova Release */}
+              <div>
+                <Label htmlFor="new-tag">Tag da Nova Release</Label>
+                <Input
+                  id="new-tag"
+                  placeholder="Ex: 2.5.8-1"
+                  value={newTag}
+                  onChange={(e) => setNewTag(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                />
+              </div>
+
+              {/* Botão Comparar */}
+              <Button
+                onClick={handleSearch}
+                disabled={!githubRepo || !productionTag || !newTag || isComparing}
+                className="w-full"
+              >
+                <GitCompare className="h-4 w-4 mr-2" />
+                {isComparing ? 'Comparando...' : 'Comparar com GitHub'}
+              </Button>
 
               {/* Alerta informativo */}
               <Alert>
@@ -336,9 +465,11 @@ export const GitHubReleasesTab = () => {
                 <AlertDescription className="text-xs space-y-2">
                   <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
                     <li>Configure seu token GitHub (botão Token)</li>
-                    <li>Execute Scan para popular a base de dados</li>
-                    <li>Use busca para encontrar releases</li>
-                    <li>Compare versões com o GitHub</li>
+                    <li>Execute Scan dos clusters (botão Scan)</li>
+                    <li>Digite o nome do deployment (ex: vv-geolocalizacao-api)</li>
+                    <li>Digite o nome do repositório GitHub (ex: vv-retira-geolocalizacao)</li>
+                    <li>Confirme/ajuste a tag em produção</li>
+                    <li>Digite a nova tag e clique em Comparar</li>
                   </ol>
                 </AlertDescription>
               </Alert>
