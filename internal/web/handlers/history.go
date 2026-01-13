@@ -5,8 +5,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"k8s-hpa-manager/internal/history"
+
+	"github.com/gin-gonic/gin"
 )
 
 // HistoryHandler gerencia endpoints de histórico
@@ -43,7 +44,7 @@ func (h *HistoryHandler) GetHistory(c *gin.Context) {
 
 	if endDateStr := c.Query("end_date"); endDateStr != "" {
 		if t, err := time.Parse("2006-01-02", endDateStr); err == nil {
-			filter.EndDate = t.Add(24 * time.Hour) // Incluir dia completo
+			filter.EndDate = t // Não adiciona 24h - a comparação será feita apenas por data
 		}
 	}
 
@@ -96,10 +97,10 @@ func (h *HistoryHandler) GetHistoryStats(c *gin.Context) {
 	entries := h.tracker.GetAll()
 
 	stats := map[string]interface{}{
-		"total":    len(entries),
-		"success":  0,
-		"failed":   0,
-		"by_action": make(map[string]int),
+		"total":      len(entries),
+		"success":    0,
+		"failed":     0,
+		"by_action":  make(map[string]int),
 		"by_cluster": make(map[string]int),
 	}
 
@@ -150,15 +151,15 @@ func (h *HistoryHandler) GetCordonDrainHistory(c *gin.Context) {
 		"drain_operations":    []history.HistoryEntry{},
 		"sequence_operations": []history.HistoryEntry{},
 		"stats": gin.H{
-			"total_cordon":    0,
-			"total_drain":     0,
-			"total_sequences": 0,
-			"cordon_success":  0,
-			"cordon_failed":   0,
-			"drain_success":   0,
-			"drain_failed":    0,
-			"sequence_success": 0,
-			"sequence_failed":  0,
+			"total_cordon":      0,
+			"total_drain":       0,
+			"total_sequences":   0,
+			"cordon_success":    0,
+			"cordon_failed":     0,
+			"drain_success":     0,
+			"drain_failed":      0,
+			"sequence_success":  0,
+			"sequence_failed":   0,
 			"total_duration_ms": int64(0),
 			"avg_duration_ms":   int64(0),
 		},

@@ -412,3 +412,125 @@ func (h *DeploymentHandler) Describe(c *gin.Context) {
 		"describe":  output,
 	})
 }
+
+// Delete deleta um Deployment específico
+func (h *DeploymentHandler) Delete(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster, namespace and name must be provided",
+			},
+		})
+		return
+	}
+
+	// Obter clientset
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	// Deletar deployment
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	err = kubeClient.DeleteDeployment(c.Request.Context(), namespace, name)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "NOT_FOUND",
+					"message": fmt.Sprintf("Deployment %s/%s not found", namespace, name),
+				},
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "DELETE_ERROR",
+				"message": fmt.Sprintf("Failed to delete deployment: %v", err),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Deployment %s/%s deleted successfully", namespace, name),
+	})
+}
+
+// RolloutRestart reinicia um Deployment (kubectl rollout restart)
+func (h *DeploymentHandler) RolloutRestart(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster, namespace and name must be provided",
+			},
+		})
+		return
+	}
+
+	// Obter clientset
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	// Executar rollout restart (adicionar annotation para forçar restart)
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	err = kubeClient.RolloutRestartDeployment(c.Request.Context(), namespace, name)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "NOT_FOUND",
+					"message": fmt.Sprintf("Deployment %s/%s not found", namespace, name),
+				},
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "ROLLOUT_ERROR",
+				"message": fmt.Sprintf("Failed to restart deployment: %v", err),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Deployment %s/%s restarted successfully", namespace, name),
+	})
+}

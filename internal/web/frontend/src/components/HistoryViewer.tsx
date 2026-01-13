@@ -17,6 +17,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Calendar as CalendarComponent } from "@/components/ui/calendar";
+import {
   History,
   RefreshCw,
   Trash2,
@@ -30,7 +36,10 @@ import {
   CheckCircle2,
   XCircle,
   AlertCircle,
+  X,
 } from "lucide-react";
+import { format } from "date-fns";
+import { ptBR } from "date-fns/locale";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 
@@ -72,8 +81,8 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
   const [filterCluster, setFilterCluster] = useState<string>("all");
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [filterResource, setFilterResource] = useState<string>("");
-  const [filterStartDate, setFilterStartDate] = useState<string>("");
-  const [filterEndDate, setFilterEndDate] = useState<string>("");
+  const [filterStartDate, setFilterStartDate] = useState<Date | undefined>(undefined);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -81,6 +90,16 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
       fetchStats();
     }
   }, [open]);
+
+  // Buscar histórico quando filtros mudarem
+  useEffect(() => {
+    if (open) {
+      const timer = setTimeout(() => {
+        fetchHistory();
+      }, 300); // Debounce de 300ms para evitar muitas requisições
+      return () => clearTimeout(timer);
+    }
+  }, [open, filterAction, filterCluster, filterStatus, filterResource, filterStartDate]);
 
   const fetchHistory = async () => {
     setLoading(true);
@@ -91,8 +110,12 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
       if (filterCluster !== "all") params.append("cluster", filterCluster);
       if (filterStatus !== "all") params.append("status", filterStatus);
       if (filterResource) params.append("resource", filterResource);
-      if (filterStartDate) params.append("start_date", filterStartDate);
-      if (filterEndDate) params.append("end_date", filterEndDate);
+      if (filterStartDate) {
+        // Formatar data como YYYY-MM-DD e enviar start e end para filtrar apenas o dia específico
+        const dateStr = format(filterStartDate, "yyyy-MM-dd");
+        params.append("start_date", dateStr);
+        params.append("end_date", dateStr);
+      }
 
       const queryString = params.toString();
       const url = `/api/v1/history${queryString ? `?${queryString}` : ""}`;
@@ -303,7 +326,7 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
         )}
 
         {/* Filtros */}
-        <div className="grid grid-cols-6 gap-2 mb-4">
+        <div className="grid grid-cols-5 gap-2 mb-4">
           <div>
             <Label className="text-xs">Ação</Label>
             <Select value={filterAction} onValueChange={setFilterAction}>
@@ -363,23 +386,51 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
           </div>
 
           <div>
-            <Label className="text-xs">Data Início</Label>
-            <Input
-              type="date"
-              value={filterStartDate}
-              onChange={(e) => setFilterStartDate(e.target.value)}
-              className="h-8 text-xs"
-            />
-          </div>
-
-          <div>
-            <Label className="text-xs">Data Fim</Label>
-            <Input
-              type="date"
-              value={filterEndDate}
-              onChange={(e) => setFilterEndDate(e.target.value)}
-              className="h-8 text-xs"
-            />
+            <Label className="text-xs">Data</Label>
+            <Popover open={datePickerOpen} onOpenChange={setDatePickerOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  className={`h-8 w-full justify-start text-left font-normal text-xs ${
+                    !filterStartDate && "text-muted-foreground"
+                  }`}
+                >
+                  <Calendar className="mr-2 h-3 w-3" />
+                  {filterStartDate ? format(filterStartDate, "dd/MM/yyyy") : "Selecionar data"}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <CalendarComponent
+                  mode="single"
+                  selected={filterStartDate}
+                  onSelect={(date) => {
+                    setFilterStartDate(date);
+                    setDatePickerOpen(false);
+                  }}
+                  initialFocus
+                  locale={ptBR}
+                  formatters={{
+                    formatCaption: (date) => format(date, "MMMM yyyy", { locale: ptBR }),
+                  }}
+                />
+                {filterStartDate && (
+                  <div className="p-2 border-t">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="w-full text-xs"
+                      onClick={() => {
+                        setFilterStartDate(undefined);
+                        setDatePickerOpen(false);
+                      }}
+                    >
+                      <X className="w-3 h-3 mr-1" />
+                      Limpar
+                    </Button>
+                  </div>
+                )}
+              </PopoverContent>
+            </Popover>
           </div>
         </div>
 

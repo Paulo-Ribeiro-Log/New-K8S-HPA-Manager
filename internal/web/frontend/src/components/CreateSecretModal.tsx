@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,7 +17,7 @@ interface CreateSecretModalProps {
   onSuccess?: () => void;
 }
 
-type SecretType = "delinea" | "azure-key-vault";
+type SecretType = "delinea" | "normal-secret";
 
 interface Annotation {
   key: string;
@@ -36,6 +36,18 @@ export const CreateSecretModal = ({
   const [namespace, setNamespace] = useState("");
   const [annotations, setAnnotations] = useState<Annotation[]>([{ key: "", value: "" }]);
   const [isCreating, setIsCreating] = useState(false);
+
+  // Atualizar annotations quando o tipo de secret mudar
+  useEffect(() => {
+    if (secretType === "delinea") {
+      setAnnotations([
+        { key: "dsv.delinea.com/credentials", value: "" },
+        { key: "dsv.delinea.com/set-secret", value: "" }
+      ]);
+    } else {
+      setAnnotations([{ key: "", value: "" }]);
+    }
+  }, [secretType]);
 
   const handleAddAnnotation = () => {
     setAnnotations([...annotations, { key: "", value: "" }]);
@@ -59,8 +71,7 @@ export const CreateSecretModal = ({
       }
     });
 
-    if (secretType === "delinea") {
-      return `apiVersion: v1
+    return `apiVersion: v1
 kind: Secret
 metadata:
   name: ${name}
@@ -68,17 +79,6 @@ metadata:
 type: Opaque
 data:
   placeholder: cGxhY2Vob2xkZXI=`;
-    } else {
-      // Azure Key Vault
-      return `apiVersion: v1
-kind: Secret
-metadata:
-  name: ${name}
-  namespace: ${namespace}${Object.keys(annotationsObj).length > 0 ? '\n  annotations:' : ''}${Object.entries(annotationsObj).map(([k, v]) => `\n    ${k}: ${v}`).join('')}
-type: Opaque
-data:
-  placeholder: cGxhY2Vob2xkZXI=`;
-    }
   };
 
   const handleCreate = async () => {
@@ -150,7 +150,7 @@ data:
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="delinea">Delinea</SelectItem>
-                <SelectItem value="azure-key-vault">Azure Key Vault</SelectItem>
+                <SelectItem value="normal-secret">Normal secret</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -186,7 +186,7 @@ data:
           {/* Annotations */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <Label>Annotations (opcional)</Label>
+              <Label>Annotations {secretType === "normal-secret" && "(opcional)"}</Label>
               <Button
                 type="button"
                 variant="outline"
@@ -199,34 +199,42 @@ data:
             </div>
 
             <div className="space-y-2">
-              {annotations.map((annotation, index) => (
-                <div key={index} className="flex gap-2 items-start">
-                  <div className="flex-1">
-                    <Input
-                      placeholder="Chave (ex: app)"
-                      value={annotation.key}
-                      onChange={(e) => handleAnnotationChange(index, "key", e.target.value)}
-                    />
+              {annotations.map((annotation, index) => {
+                // Desabilitar chave apenas para as annotations pré-definidas do Delinea
+                const isDelineaPreset = secretType === "delinea" && 
+                  (annotation.key === "dsv.delinea.com/credentials" || 
+                   annotation.key === "dsv.delinea.com/set-secret");
+                
+                return (
+                  <div key={index} className="flex gap-2 items-start">
+                    <div className="flex-1">
+                      <Input
+                        placeholder="Chave (ex: app)"
+                        value={annotation.key}
+                        onChange={(e) => handleAnnotationChange(index, "key", e.target.value)}
+                        disabled={isDelineaPreset}
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <Input
+                        placeholder="Valor (ex: myapp)"
+                        value={annotation.value}
+                        onChange={(e) => handleAnnotationChange(index, "value", e.target.value)}
+                      />
+                    </div>
+                    {annotations.length > 1 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleRemoveAnnotation(index)}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    )}
                   </div>
-                  <div className="flex-1">
-                    <Input
-                      placeholder="Valor (ex: myapp)"
-                      value={annotation.value}
-                      onChange={(e) => handleAnnotationChange(index, "value", e.target.value)}
-                    />
-                  </div>
-                  {annotations.length > 1 && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleRemoveAnnotation(index)}
-                    >
-                      <X className="w-4 h-4" />
-                    </Button>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 

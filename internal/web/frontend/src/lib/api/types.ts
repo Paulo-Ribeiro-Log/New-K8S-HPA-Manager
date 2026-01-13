@@ -290,6 +290,69 @@ export interface PodManifest {
   metadata: PodMetadata;
 }
 
+export interface InvolvedObjectRef {
+  kind: string;
+  name: string;
+  namespace: string;
+  uid?: string;
+}
+
+export interface EventSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  type: string; // "Normal" ou "Warning"
+  reason: string;
+  message: string;
+  count: number;
+  firstTimestamp: string;
+  lastTimestamp: string;
+  involvedObject: InvolvedObjectRef;
+  sourceComponent: string;
+  sourceHost?: string;
+  age: string;
+}
+
+export interface ResourceQuotaSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  hard: ResourceLimit[];
+}
+
+export interface ResourceLimit {
+  resource: string;
+  hard: string;
+  used: string;
+  percent?: number;
+}
+
+export interface NetworkPolicySummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  podSelector: string;
+  policyTypes: string[];
+  ingress?: string;
+  egress?: string;
+}
+
+export interface ServiceSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  type: string;
+  clusterIP: string;
+  ports: string[];
+}
+
+export interface PodsSummary {
+  total: number;
+  running: number;
+  pending: number;
+  failed: number;
+}
+
 export interface HPA {
   name: string;
   namespace: string;
@@ -699,4 +762,145 @@ export interface TopNamespacesResponse {
   memory_others: NamespaceMetrics;
   pods_others: NamespaceMetrics;
   total_namespaces: number;
+}
+
+// GitHub Releases Types
+export interface GitHubRepoInfo {
+  owner: string;
+  repo: string;
+}
+
+export interface DeploymentConfig {
+  name: string;
+  app_name: string;
+  github_repo: GitHubRepoInfo;
+  version: string;
+  last_published: string;
+  squad: string;
+  servicenow_task: string;
+  age: string;
+}
+
+export interface NamespaceConfig {
+  name: string;
+  deployments: DeploymentConfig[];
+}
+
+export interface ClusterConfig {
+  name: string;
+  namespaces: NamespaceConfig[];
+}
+
+export interface GitHubReposConfig {
+  clusters: ClusterConfig[];
+  total_clusters: number;
+  total_namespaces: number;
+  total_deployments: number;
+}
+
+export interface GitHubRelease {
+  tag_name: string;
+  name: string;
+  body: string;
+  created_at: string;
+  published_at: string;
+  prerelease: boolean;
+  draft: boolean;
+}
+
+export interface GitHubReleasesResponse {
+  owner: string;
+  repo: string;
+  releases: GitHubRelease[];
+  total: number;
+}
+
+export interface GitHubCommit {
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+  url: string;
+}
+
+export interface GitHubFile {
+  filename: string;
+  status: "added" | "modified" | "deleted" | "renamed";
+  additions: number;
+  deletions: number;
+  extension: string;
+  patch?: string;
+}
+
+export interface GitHubComparison {
+  base_tag: string;
+  head_tag: string;
+  commits: GitHubCommit[];
+  files_changed: GitHubFile[];
+  ahead_by: number;
+  behind_by: number;
+  base_release_notes: string;
+  head_release_notes: string;
+}
+
+// GitHub Deployment Search Types
+export interface DeploymentRecord {
+  deployment_name: string;
+  namespace: string;
+  cluster: string;
+  version: string;
+  full_image: string;
+  status: string;
+  last_seen: string;
+}
+
+export interface DeploymentSearchResponse {
+  app_name: string;
+  deployments: DeploymentRecord[];
+  total: number;
+}
+
+export interface ProductionDeploymentResponse {
+  deployment: string;
+  namespace: string;
+  cluster: string;
+  version: string;
+  image: string;
+  status: string;
+  last_seen: string;
+}
+
+export interface VersionMap {
+  [version: string]: DeploymentRecord[];
+}
+
+export interface AllVersionsResponse {
+  app_name: string;
+  versions: VersionMap;
+  total_versions: number;
+  total_deployments: number;
+}
+
+// GitHub Token Types
+export interface TokenStatusResponse {
+  valid: boolean;
+  username?: string;
+  email?: string;
+  remaining?: number;
+  limit?: number;
+  reset_at?: string;
+  configured: boolean;
+  error?: string;
+}
+
+export interface SaveTokenRequest {
+  token: string;
+  email: string;
+}
+
+export interface SaveTokenResponse {
+  success: boolean;
+  message: string;
+  github_user?: string;
+  github_email?: string;
 }

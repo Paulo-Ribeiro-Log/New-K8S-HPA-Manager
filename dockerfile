@@ -23,7 +23,7 @@ COPY . .
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags='-w -s -extldflags "-static"' \
-    -o k8s-hpa-manager .
+    -o new-k8s-hpa .
 
 # Final stage
 FROM scratch
@@ -34,7 +34,7 @@ COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /etc/passwd /etc/passwd
 
 # Copy binary
-COPY --from=builder /build/k8s-hpa-manager /usr/local/bin/k8s-hpa-manager
+COPY --from=builder /build/new-k8s-hpa /usr/local/bin/new-k8s-hpa
 
 # Use appuser
 USER appuser

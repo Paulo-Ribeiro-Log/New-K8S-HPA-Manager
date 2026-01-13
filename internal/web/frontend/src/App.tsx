@@ -8,6 +8,7 @@ import Index from "./pages/Index";
 import { Login } from "./pages/Login";
 import NotFound from "./pages/NotFound";
 import AlertsPage from "./pages/AlertsPage";
+import { AIAnalysisPage } from "./pages/AIAnalysisPage";
 import { apiClient } from "./lib/api/client";
 import { StagingProvider } from "./contexts/StagingContext";
 import { TabProvider } from "./contexts/TabContext";
@@ -97,6 +98,17 @@ const App = () => {
                 element={
                   isAuthenticated ? (
                     <AlertsPage />
+                  ) : (
+                    <Navigate to="/login" replace />
+                  )
+                }
+              />
+              {/* Rota para análise de AI em página dedicada */}
+              <Route
+                path="/ai-analysis/:id"
+                element={
+                  isAuthenticated ? (
+                    <AIAnalysisPage />
                   ) : (
                     <Navigate to="/login" replace />
                   )

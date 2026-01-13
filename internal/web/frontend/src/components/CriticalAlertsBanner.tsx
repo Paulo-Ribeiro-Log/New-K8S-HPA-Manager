@@ -11,6 +11,7 @@ interface CriticalAlertsBannerProps {
 }
 
 export function CriticalAlertsBanner({ cluster }: CriticalAlertsBannerProps) {
+  console.log(`[CriticalAlertsBanner] Rendering with cluster: ${cluster}`);
   const { summary, hpaAlerts, nodePoolAlerts, loading } = useAllAlerts(cluster);
 
   // Não mostrar se carregando ou sem dados

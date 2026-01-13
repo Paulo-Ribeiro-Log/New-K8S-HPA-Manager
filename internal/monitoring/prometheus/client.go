@@ -2,10 +2,13 @@ package prometheus
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net/http"
 	"time"
 
 	"k8s-hpa-manager/internal/monitoring/models"
+
 	"github.com/prometheus/client_golang/api"
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
@@ -24,9 +27,19 @@ type Client struct {
 // NewClient cria um novo client Prometheus (sem teste de conexão)
 // FASE 4: Lazy connection - client inicia desconectado, primeira query testa
 func NewClient(cluster, endpoint string) (*Client, error) {
-	// Cria client da API Prometheus
+	// Criar HTTP client com TLS inseguro (aceita certificados auto-assinados)
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, // Aceita certificados auto-assinados
+			},
+		},
+	}
+
+	// Cria client da API Prometheus com HTTP client customizado
 	apiClient, err := api.NewClient(api.Config{
-		Address: endpoint,
+		Address:      endpoint,
+		RoundTripper: httpClient.Transport,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Prometheus client: %w", err)

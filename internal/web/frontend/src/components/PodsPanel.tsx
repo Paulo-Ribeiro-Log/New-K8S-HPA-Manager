@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2 } from "lucide-react";
+import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -18,10 +18,21 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { ProtectedAction } from "@/components/rbac";
+import { PodTerminal } from "@/components/PodTerminal";
+import { PodFileTransferModal } from "@/components/PodFileTransferModal";
+import ResourceGauge from "@/components/ResourceGauge";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { useAIDiagnostics } from "@/hooks/useAIDiagnostics";
+import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { createTwoFilesPatch } from "diff";
+import { html } from "diff2html";
+import * as yaml from "js-yaml";
 
 import type { Namespace, PodSummary } from "@/lib/api/types";
 import { apiClient } from "@/lib/api/client";
@@ -43,10 +54,17 @@ export const PodsPanel = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
 }: PodsPanelProps) => {
-  const [searchQuery, setSearchQuery] = useState("");
+  const { analyzeResource, isAnalyzing, cancelAnalysis } = useAIDiagnostics();
+
+  // ✅ Estados com persistência entre trocas de aba
+  const [searchQuery, setSearchQuery] = usePersistedTabState<string>('pods', 'searchQuery', "");
+  const [selectedPod, setSelectedPod] = usePersistedTabState<PodSummary | null>('pods', 'selectedPod', null);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = usePersistedTabState<boolean>('pods', 'isSidebarCollapsed', false);
+  const [expandedLabels, setExpandedLabels] = usePersistedTabState<boolean>('pods', 'expandedLabels', false);
+
+  // Estados locais (não persistidos)
   const [pods, setPods] = useState<PodSummary[]>([]);
   const [loading, setLoading] = useState(false);
-  const [selectedPod, setSelectedPod] = useState<PodSummary | null>(null);
   const [podYaml, setPodYaml] = useState("");
   const [yamlLoading, setYamlLoading] = useState(false);
   const [podLogs, setPodLogs] = useState<Record<string, string>>({});
@@ -55,21 +73,83 @@ export const PodsPanel = ({
   const [deletingPod, setDeletingPod] = useState<PodSummary | null>(null);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const [restartingPod, setRestartingPod] = useState<PodSummary | null>(null);
-  const [expandedLabels, setExpandedLabels] = useState(false);
   const [yamlCopied, setYamlCopied] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [selectedContainerForLogs, setSelectedContainerForLogs] = useState<string>("");
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isAutoRefreshingLogs, setIsAutoRefreshingLogs] = useState(false);
-  const [yamlFullScreen, setYamlFullScreen] = useState(false);
   const [describeModalOpen, setDescribeModalOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
+  const [shellModalOpen, setShellModalOpen] = useState(false);
+  const [selectedShellContainer, setSelectedShellContainer] = useState("");
+  const [selectedShellType, setSelectedShellType] = useState("/bin/bash");
+  const [useEphemeralDebug, setUseEphemeralDebug] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalFullscreen, setTerminalFullscreen] = useState(false);
+  const [showFileTransferModal, setShowFileTransferModal] = useState(false);
+
+  // Estados para edição de YAML
+  const [editedYaml, setEditedYaml] = useState("");
+  const [originalYaml, setOriginalYaml] = useState("");
+  const [isApplying, setIsApplying] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
+  const [viewMode, setViewMode] = useState<"editor" | "diff">("editor");
+  const [diffHtml, setDiffHtml] = useState<string>("");
+  const [showDiffModal, setShowDiffModal] = useState(false);
+  const [yamlHistory, setYamlHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [editorFullScreen, setEditorFullScreen] = useState(false);
+
+  // Métricas em tempo real
+  const [metrics, setMetrics] = useState<{
+    available: boolean;
+    cpu?: { current: number; percent: number; limit: number; request: number };
+    memory?: { current: number; percent: number; limit: number; request: number };
+  } | null>(null);
+
+  // Controle de undo/redo
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex < yamlHistory.length - 1;
+  const hasChanges = editedYaml !== originalYaml;
 
   const filteredNamespaces = useMemo(() => {
     if (showSystemNamespaces) return namespaces;
     return namespaces.filter((ns) => !ns.isSystem);
   }, [namespaces, showSystemNamespaces]);
+
+  // Helper: Detectar pods problemáticos para AI analysis
+  const isPodProblematic = (pod: PodSummary): boolean => {
+    // TEMPORÁRIO: Mostrar botão em TODOS os pods para teste
+    return true;
+    
+    /* LÓGICA ORIGINAL (comentada para debug):
+    const problematicStatuses = [
+      'CrashLoopBackOff',
+      'Error',
+      'ImagePullBackOff',
+      'ErrImagePull',
+      'CreateContainerConfigError',
+      'InvalidImageName',
+      'CreateContainerError',
+    ];
+
+    // Status problemático
+    if (problematicStatuses.includes(pod.status)) return true;
+
+    // Muitos restarts
+    if (pod.restarts > 3) return true;
+
+    // Pending por muito tempo (assumindo que age está em seconds ou similar)
+    // Se o pod está Pending e não é recente
+    if (pod.status === 'Pending') {
+      // age format pode ser "5m", "2h", "1d", etc
+      // Simplificação: considerar problemático se não tem "s" (segundos)
+      if (!pod.age.includes('s') && pod.age !== '0s') return true;
+    }
+
+    return false;
+    */
+  };
 
   // Helper: Extrair versão da imagem do container
   const extractImageVersion = (image: string): string => {
@@ -83,6 +163,172 @@ export const PodsPanel = ({
       return slashIndex >= 0 ? versionPart.substring(slashIndex + 1) : versionPart;
     }
     return 'latest';
+  };
+
+  // ===== Funções de Edição YAML =====
+
+  // Adicionar à história de edição
+  const addToHistory = useCallback((yamlContent: string) => {
+    setYamlHistory(prev => {
+      const newHistory = prev.slice(0, historyIndex + 1);
+      newHistory.push(yamlContent);
+      if (newHistory.length > 50) newHistory.shift(); // Limite de 50 versões
+      return newHistory;
+    });
+    setHistoryIndex(prev => Math.min(prev + 1, 49));
+  }, [historyIndex]);
+
+  // Undo
+  const handleUndo = useCallback(() => {
+    if (canUndo) {
+      const newIndex = historyIndex - 1;
+      setHistoryIndex(newIndex);
+      setEditedYaml(yamlHistory[newIndex]);
+    }
+  }, [canUndo, historyIndex, yamlHistory]);
+
+  // Redo
+  const handleRedo = useCallback(() => {
+    if (canRedo) {
+      const newIndex = historyIndex + 1;
+      setHistoryIndex(newIndex);
+      setEditedYaml(yamlHistory[newIndex]);
+    }
+  }, [canRedo, historyIndex, yamlHistory]);
+
+  // Toggle entre editor e diff
+  const handleToggleView = (mode: "editor" | "diff") => {
+    if (mode === "diff" && hasChanges) {
+      const diff = createTwoFilesPatch(
+        "original.yaml",
+        "edited.yaml",
+        originalYaml,
+        editedYaml,
+        "",
+        ""
+      );
+      const diffHtmlContent = html(diff, {
+        drawFileList: false,
+        matching: "lines",
+        outputFormat: "side-by-side",
+      });
+      setDiffHtml(diffHtmlContent);
+    }
+    setViewMode(mode);
+  };
+
+  // Validar YAML (dry-run)
+  const handleValidate = async () => {
+    if (!selectedPod) return;
+
+    setIsValidating(true);
+    try {
+      await apiClient.applyPod(
+        cluster,
+        selectedPod.namespace,
+        selectedPod.name,
+        {
+          yaml: editedYaml,
+          fieldManager: "web-pod-editor",
+          dryRun: true,
+        }
+      );
+      toast.success("✅ YAML válido!", {
+        description: "Validação dry-run passou sem erros",
+      });
+    } catch (err) {
+      toast.error("❌ YAML inválido", {
+        description: err instanceof Error ? err.message : "Erro na validação",
+      });
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
+  // Cancelar edições
+  const handleCancelEdit = () => {
+    setEditedYaml(originalYaml);
+    setViewMode("editor");
+    toast.info("Edições canceladas");
+  };
+
+  // Recarregar YAML do cluster
+  const handleReloadYaml = async () => {
+    if (!selectedPod) return;
+
+    try {
+      setYamlLoading(true);
+      const manifest = await apiClient.getPod(selectedPod.cluster, selectedPod.namespace, selectedPod.name);
+      setPodYaml(manifest.yaml);
+      setEditedYaml(manifest.yaml);
+      setOriginalYaml(manifest.yaml);
+      setYamlHistory([manifest.yaml]);
+      setHistoryIndex(0);
+      toast.success("YAML recarregado do cluster");
+    } catch (err) {
+      toast.error("Erro ao recarregar YAML", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setYamlLoading(false);
+    }
+  };
+
+  // Aplicar mudanças
+  const handleApplyChanges = async () => {
+    if (!selectedPod) return;
+
+    setIsApplying(true);
+    try {
+      await apiClient.applyPod(
+        cluster,
+        selectedPod.namespace,
+        selectedPod.name,
+        {
+          yaml: editedYaml,
+          fieldManager: "web-pod-editor",
+          dryRun: false,
+        }
+      );
+      toast.success("✅ Pod atualizado com sucesso!");
+      setOriginalYaml(editedYaml);
+      setYamlHistory([editedYaml]);
+      setHistoryIndex(0);
+      // Recarregar pod
+      await loadPods();
+      if (selectedPod) {
+        await loadPodYaml(selectedPod);
+      }
+    } catch (err) {
+      toast.error("Erro ao aplicar mudanças", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsApplying(false);
+    }
+  };
+
+  // Visualizar diff em modal
+  const handleViewDiff = () => {
+    if (!hasChanges) {
+      toast.info("Nenhuma mudança para visualizar");
+      return;
+    }
+    const diff = createTwoFilesPatch(
+      "original.yaml",
+      "edited.yaml",
+      originalYaml,
+      editedYaml,
+      "",
+      ""
+    );
+    const diffHtmlContent = html(diff, {
+      drawFileList: false,
+      matching: "lines",
+      outputFormat: "side-by-side",
+    });
+    setDiffHtml(diffHtmlContent);
+    setShowDiffModal(true);
   };
 
   // Helper: Processar e colorir logs
@@ -160,6 +406,70 @@ export const PodsPanel = ({
     }
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
+  // Helper: Converter CPU string para millicores
+  const parseCPU = (cpu: string | undefined): number => {
+    if (!cpu) return 0;
+    const match = cpu.match(/^(\d+)m?$/);
+    if (!match) return 0;
+    return parseInt(match[1], 10);
+  };
+
+  // Helper: Converter Memory string para bytes
+  const parseMemory = (mem: string | undefined): number => {
+    if (!mem) return 0;
+    const units: Record<string, number> = {
+      'Ki': 1024,
+      'Mi': 1024 * 1024,
+      'Gi': 1024 * 1024 * 1024,
+      'K': 1000,
+      'M': 1000 * 1000,
+      'G': 1000 * 1000 * 1000,
+    };
+    const match = mem.match(/^(\d+(?:\.\d+)?)(Ki|Mi|Gi|K|M|G)?$/);
+    if (!match) return 0;
+    const value = parseFloat(match[1]);
+    const unit = match[2] || '';
+    return value * (units[unit] || 1);
+  };
+
+  // Carregar métricas do Pod
+  const loadMetrics = async (pod: PodSummary) => {
+    try {
+      const response = await apiClient.getPodMetrics(pod.cluster, pod.namespace, pod.name);
+      if (response.success && response.data?.available) {
+        setMetrics({
+          available: true,
+          cpu: response.data.cpu,
+          memory: response.data.memory,
+        });
+      } else {
+        setMetrics({ available: false });
+      }
+    } catch (error) {
+      setMetrics({ available: false });
+    }
+  };
+
+  // Auto-refresh de métricas a cada 30 segundos
+  useEffect(() => {
+    if (!selectedPod) {
+      setMetrics(null);
+      return;
+    }
+
+    // Carregar imediatamente
+    loadMetrics(selectedPod);
+
+    // Refresh a cada 30 segundos
+    const interval = setInterval(() => {
+      if (selectedPod) {
+        loadMetrics(selectedPod);
+      }
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [selectedPod]);
+
   const fetchPods = async (silent = false) => {
     if (!cluster) return;
 
@@ -216,18 +526,30 @@ export const PodsPanel = ({
   }, [cluster, selectedNamespace]);
 
   const filteredPods = useMemo(() => {
-    if (!searchQuery) return pods;
-    const query = searchQuery.toLowerCase();
-    return pods.filter((pod) => {
-      return (
-        pod.name.toLowerCase().includes(query) ||
-        pod.namespace.toLowerCase().includes(query) ||
-        pod.nodeName?.toLowerCase().includes(query) ||
-        pod.phase.toLowerCase().includes(query) ||
-        pod.containers.some(c => c.name.toLowerCase().includes(query))
-      );
-    });
-  }, [pods, searchQuery]);
+    let result = pods;
+    
+    // Filtrar por namespaces permitidos (remove system namespaces quando ocultos)
+    if (!showSystemNamespaces) {
+      const allowedNamespaces = new Set(filteredNamespaces.map(ns => ns.name));
+      result = result.filter(pod => allowedNamespaces.has(pod.namespace));
+    }
+    
+    // Filtrar por busca
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter((pod) => {
+        return (
+          pod.name.toLowerCase().includes(query) ||
+          pod.namespace.toLowerCase().includes(query) ||
+          pod.nodeName?.toLowerCase().includes(query) ||
+          pod.phase.toLowerCase().includes(query) ||
+          pod.containers.some(c => c.name.toLowerCase().includes(query))
+        );
+      });
+    }
+    
+    return result;
+  }, [pods, searchQuery, showSystemNamespaces, filteredNamespaces]);
 
   const handleSelectPod = async (pod: PodSummary) => {
     setSelectedPod(pod);
@@ -246,12 +568,36 @@ export const PodsPanel = ({
     try {
       const manifest = await apiClient.getPod(pod.cluster, pod.namespace, pod.name);
       setPodYaml(manifest.yaml);
+      
+      // Inicializar estados de edição
+      setOriginalYaml(manifest.yaml);
+      setEditedYaml(manifest.yaml);
+      setYamlHistory([manifest.yaml]);
+      setHistoryIndex(0);
+      setViewMode("editor");
     } catch (err) {
       setPodYaml("Erro ao carregar manifest");
       toast.error("Erro ao carregar manifest do Pod");
     } finally {
       setYamlLoading(false);
     }
+  };
+
+  const loadPodYaml = async (pod: PodSummary) => {
+    try {
+      const manifest = await apiClient.getPod(pod.cluster, pod.namespace, pod.name);
+      setPodYaml(manifest.yaml);
+      setOriginalYaml(manifest.yaml);
+      setEditedYaml(manifest.yaml);
+      setYamlHistory([manifest.yaml]);
+      setHistoryIndex(0);
+    } catch (err) {
+      toast.error("Erro ao recarregar manifest do Pod");
+    }
+  };
+
+  const loadPods = async () => {
+    await fetchPods(false);
   };
 
   const handleCopyYaml = () => {
@@ -469,6 +815,24 @@ export const PodsPanel = ({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
+        <DropdownMenuItem
+          onClick={() => {
+            if (selectedPod.containers.length > 0) {
+              setSelectedShellContainer(selectedPod.containers[0].name);
+            }
+            setShellModalOpen(true);
+          }}
+        >
+          <Terminal className="w-4 h-4 mr-2" />
+          Abrir Shell
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => setShowFileTransferModal(true)}
+        >
+          <Download className="w-4 h-4 mr-2" />
+          Transferir Arquivos
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         <ProtectedAction showWarning={false}>
           <DropdownMenuItem
             onClick={() => {
@@ -604,130 +968,113 @@ export const PodsPanel = ({
     const age = calculateAge(selectedPod.createdAt);
 
     return (
-      <div className="flex flex-col h-full">
-        {/* Header */}
-        <div className="border-b border-border p-4 space-y-3">
-          <div>
-            <h3 className="font-semibold text-lg">{selectedPod.name}</h3>
-            <div className="flex items-center gap-4 mt-1">
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">Namespace:</span>
-                <span className="text-sm font-mono">{selectedPod.namespace}</span>
-              </div>
-              {selectedPod.containers.length > 0 && (
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground">Versão:</span>
-                  <Badge variant="outline" className="text-xs font-mono">
-                    {extractImageVersion(selectedPod.containers[0].image)}
-                  </Badge>
-                </div>
-              )}
+      <div className="flex flex-col h-full overflow-hidden">
+        {/* Header Compacto */}
+        <div className="border-b border-border px-4 py-2 space-y-2 flex-shrink-0 relative">
+          {/* Gauges - Container Isolado (Posicionamento Absoluto) */}
+          {metrics && metrics.available && (
+            <div className="absolute top-2 right-4 flex items-center gap-2">
+              <ResourceGauge
+                title="CPU"
+                current={metrics.cpu?.current || 0}
+                request={metrics.cpu?.request || 0}
+                limit={metrics.cpu?.limit || 0}
+                unit="m"
+                formatValue={(v) => v.toFixed(0)}
+              />
+              <ResourceGauge
+                title="Memory"
+                current={(metrics.memory?.current || 0) / (1024 * 1024)}
+                request={(metrics.memory?.request || 0) / (1024 * 1024)}
+                limit={(metrics.memory?.limit || 0) / (1024 * 1024)}
+                unit="Mi"
+                formatValue={(v) => v.toFixed(0)}
+              />
             </div>
+          )}
+
+          {/* Linha 1: Nome do Pod */}
+          <div className="pr-48">
+            <h3 className="font-semibold text-base">{selectedPod.name}</h3>
           </div>
 
-          {/* Informações Gerais */}
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <span className="text-muted-foreground">Status:</span>
-              <Badge variant="outline" className={`ml-2 ${getPhaseColor(selectedPod.phase)}`}>
-                {selectedPod.phase}
+          {/* Linha 2: Badges de Namespace, Versão e Status */}
+          <div className="flex items-center gap-2 pr-48">
+            <Badge variant="secondary" className="text-xs">
+              NS: {selectedPod.namespace}
+            </Badge>
+            {selectedPod.containers.length > 0 && extractImageVersion(selectedPod.containers[0].image) && (
+              <Badge variant="secondary" className="text-xs">
+                v{extractImageVersion(selectedPod.containers[0].image)}
               </Badge>
-            </div>
-            <div>
-              <span className="text-muted-foreground">Ready:</span>
+            )}
+            <Badge variant="outline" className={`text-xs ${getPhaseColor(selectedPod.phase)}`}>
+              {selectedPod.phase}
+            </Badge>
+            <Badge
+              variant="outline"
+              className={`text-xs ${
+                selectedPod.readyContainers === selectedPod.totalContainers
+                  ? "bg-green-500/10 text-green-700 dark:text-green-400"
+                  : "bg-red-500/10 text-red-700 dark:text-red-400"
+              }`}
+            >
+              {selectedPod.readyContainers}/{selectedPod.totalContainers}
+            </Badge>
+          </div>
+
+          {/* Linha 3: Node, IP, Age, Restarts */}
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            <span>Node: <span className="font-mono text-foreground">{selectedPod.nodeName || "N/A"}</span></span>
+            <span>IP: <span className="font-mono text-foreground">{selectedPod.podIP || "N/A"}</span></span>
+            <span>Age: <span className="text-foreground">{age}</span></span>
+            <span>Restarts: <span className="text-foreground">{selectedPod.restarts}</span></span>
+          </div>
+
+          {/* Linha 4: CPU e Memória com cores */}
+          <div className="flex items-center gap-4 text-xs">
+            <span className="text-muted-foreground">CPU/R: <span className="font-mono font-semibold text-blue-600 dark:text-blue-400">{selectedPod.cpuRequest || "N/A"}</span></span>
+            <span className="text-muted-foreground">CPU/L: <span className="font-mono font-semibold text-slate-600 dark:text-slate-400">{selectedPod.cpuLimit || "N/A"}</span></span>
+            <span className="text-muted-foreground">MEM/R: <span className="font-mono font-semibold text-blue-600 dark:text-blue-400">{selectedPod.memoryRequest || "N/A"}</span></span>
+            <span className="text-muted-foreground">MEM/L: <span className="font-mono font-semibold text-slate-600 dark:text-slate-400">{selectedPod.memoryLimit || "N/A"}</span></span>
+          </div>
+
+          {/* Containers - Compacto */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-muted-foreground">Containers:</span>
+            {selectedPod.containers.map((container) => (
               <Badge
+                key={container.name}
                 variant="outline"
-                className={`ml-2 ${
-                  selectedPod.readyContainers === selectedPod.totalContainers
-                    ? "bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20"
-                    : "bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20"
-                }`}
+                className={`text-xs ${getContainerStateColor(container.state)}`}
               >
-                {selectedPod.readyContainers}/{selectedPod.totalContainers}
+                {container.name}
+                {container.restartCount > 0 && ` (${container.restartCount}↻)`}
               </Badge>
-            </div>
-            <div>
-              <span className="text-muted-foreground">Node:</span>
-              <span className="ml-2 font-mono text-xs">{selectedPod.nodeName || "N/A"}</span>
-            </div>
-            <div>
-              <span className="text-muted-foreground">IP:</span>
-              <span className="ml-2 font-mono text-xs">{selectedPod.podIP || "N/A"}</span>
-            </div>
-            <div>
-              <span className="text-muted-foreground">Criado em:</span>
-              <span className="ml-2 text-xs">{createdAt}</span>
-            </div>
+            ))}
           </div>
 
-          {/* Recursos e Métricas */}
-          <div className="border border-border/50 rounded-lg p-3 bg-muted/20">
-            <div className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wide">
-              Recursos e Métricas
-            </div>
-            <div className="space-y-2 text-xs">
-              <div className="flex items-center gap-6">
-                <span className="text-muted-foreground font-medium">RESTARTS: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.restarts}</span></span>
-                <span className="text-muted-foreground font-medium">CPU/R: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.cpuRequest || "N/A"}</span></span>
-                <span className="text-muted-foreground font-medium">CPU/L: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.cpuLimit || "N/A"}</span></span>
-              </div>
-              <div className="flex items-center gap-6">
-                <span className="text-muted-foreground font-medium">AGE: <span className="font-mono font-semibold text-foreground ml-1">{age}</span></span>
-                <span className="text-muted-foreground font-medium">MEM/R: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.memoryRequest || "N/A"}</span></span>
-                <span className="text-muted-foreground font-medium">MEM/L: <span className="font-mono font-semibold text-foreground ml-1">{selectedPod.memoryLimit || "N/A"}</span></span>
-              </div>
-            </div>
-          </div>
-
-          {/* Containers */}
-          <div>
-            <div className="text-sm font-medium mb-2">Containers ({selectedPod.containers.length})</div>
-            <div className="space-y-1">
-              {selectedPod.containers.map((container) => (
-                <div
-                  key={container.name}
-                  className="flex items-center gap-2 text-xs bg-muted/50 p-2 rounded"
-                >
-                  <span className={`font-medium ${getContainerStateColor(container.state)}`}>
-                    {container.state}
-                  </span>
-                  <span className="font-mono flex-1">{container.name}</span>
-                  {container.restartCount > 0 && (
-                    <Badge variant="outline" className="text-xs">
-                      {container.restartCount} restarts
-                    </Badge>
-                  )}
-                  {container.stateReason && (
-                    <span className="text-muted-foreground italic">
-                      ({container.stateReason})
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Labels */}
+          {/* Labels - Colapsável */}
           {selectedPod.labels && Object.keys(selectedPod.labels).length > 0 && (
             <div>
               <button
                 onClick={() => setExpandedLabels(!expandedLabels)}
-                className="flex items-center gap-1 text-sm font-medium hover:text-primary transition-colors"
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
               >
                 {expandedLabels ? (
-                  <ChevronDown className="w-4 h-4" />
+                  <ChevronDown className="w-3 h-3" />
                 ) : (
-                  <ChevronRight className="w-4 h-4" />
+                  <ChevronRight className="w-3 h-3" />
                 )}
                 Labels ({Object.keys(selectedPod.labels).length})
               </button>
               {expandedLabels && (
-                <div className="mt-2 flex flex-wrap gap-1">
+                <div className="mt-1 flex flex-wrap gap-1">
                   {Object.entries(selectedPod.labels).map(([key, value]) => (
                     <Badge
                       key={key}
                       variant="outline"
-                      className="text-xs font-mono bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400"
+                      className="text-xs font-mono"
                     >
                       {key}={value}
                     </Badge>
@@ -738,65 +1085,285 @@ export const PodsPanel = ({
           )}
         </div>
 
-        {/* YAML Manifest + Botão Ver Logs */}
-        <div className="flex-1 flex flex-col min-h-0 m-4 mt-2 space-y-2">
-          <div className="flex items-center justify-between flex-shrink-0">
-            <p className="text-sm font-medium">Manifesto YAML (Read-only)</p>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleViewDescribe}
-                disabled={!selectedPod}
-              >
-                <FileText className="w-4 h-4 mr-1" />
-                Describe
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setLogsModalOpen(true)}
-                disabled={!selectedPod}
-              >
-                <Terminal className="w-4 h-4 mr-2" />
-                Ver Logs
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleCopyYaml}
-                disabled={!podYaml || yamlLoading}
-              >
-                {yamlCopied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-                {yamlCopied ? "Copiado!" : "Copiar YAML"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setYamlFullScreen(true)}
-                title="Abrir YAML em tela cheia"
-                disabled={!podYaml || yamlLoading}
-              >
-                <Maximize2 className="w-3.5 h-3.5" />
-              </Button>
-            </div>
-          </div>
+        {/* YAML Manifest + Editor */}
+        <div className="flex-1 overflow-auto">
+          <div className="p-4">
+            {yamlLoading ? (
+              <div className="flex items-center justify-center h-64">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium">Manifesto YAML</p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleReloadYaml}
+                      disabled={yamlLoading}
+                      className="h-6 w-6 p-0"
+                      title="Recarregar YAML do cluster"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${yamlLoading ? "animate-spin" : ""}`} />
+                    </Button>
+                    {hasChanges && (
+                      <Badge variant="outline" className="text-xs bg-orange-500/10 text-orange-700 dark:text-orange-400">
+                        Não salvo
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {/* Undo/Redo */}
+                    <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={handleUndo}
+                        disabled={!canUndo}
+                        className={`px-2 py-1 text-xs font-medium ${
+                          canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                        }`}
+                        title="Desfazer (Ctrl+Z)"
+                      >
+                        <Undo2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRedo}
+                        disabled={!canRedo}
+                        className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                          canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                        }`}
+                        title="Refazer (Ctrl+Y)"
+                      >
+                        <Redo2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
 
-          {yamlLoading ? (
-            <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-              Carregando manifest...
-            </div>
-          ) : (
-            <div className="flex-1 min-h-0">
-              <MonacoYamlEditor
-                key={`pod-manifest-${selectedPod?.name}`}
-                value={podYaml}
-                onChange={() => {}} // Read-only
-                readOnly={true}
-                height="400px"
-              />
-            </div>
-          )}
+                    {/* View Mode Toggle */}
+                    <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleView("editor")}
+                        className={`px-3 py-1 text-xs font-medium ${
+                          viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                        }`}
+                      >
+                        Editor
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleView("diff")}
+                        className={`px-3 py-1 text-xs font-medium ${
+                          viewMode === "diff" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                        } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                        disabled={!hasChanges}
+                      >
+                        Diff
+                      </button>
+                    </div>
+
+                    {/* Botão AI (se pod problemático) */}
+                    {selectedPod && isPodProblematic(selectedPod) && (
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={async () => {
+                          console.log("[PodsPanel] Starting AI analysis...");
+                          try {
+                            const analysis = await analyzeResource({
+                              resourceType: "Pod",
+                              cluster,
+                              namespace: selectedPod.namespace,
+                              resourceName: selectedPod.name,
+                              includeDescribe: true,
+                              includeMetrics: false,
+                              includeLogs: true,
+                            });
+
+                            console.log("[PodsPanel] Analysis result:", analysis);
+
+                            if (analysis) {
+                              console.log("[PodsPanel] Saving to sessionStorage with key:", `ai-analysis-${analysis.id}`);
+                              sessionStorage.setItem(`ai-analysis-${analysis.id}`, JSON.stringify(analysis));
+
+                              // Verificar se foi salvo
+                              const saved = sessionStorage.getItem(`ai-analysis-${analysis.id}`);
+                              console.log("[PodsPanel] Verification - saved data exists:", !!saved);
+
+                              console.log("[PodsPanel] Opening new window:", `/ai-analysis/${analysis.id}`);
+                              const newWindow = window.open(`/ai-analysis/${analysis.id}`, '_blank');
+                              if (newWindow) {
+                                toast.success('Análise aberta em nova aba');
+                              } else {
+                                toast.error('Popup bloqueado! Permita popups para este site.');
+                              }
+                            } else {
+                              console.warn("[PodsPanel] Analysis is null or undefined");
+                              toast.error('Análise retornou vazia');
+                            }
+                          } catch (error) {
+                            console.error("[PodsPanel] Analysis failed:", error);
+                            toast.error('Falha ao analisar recurso');
+                          }
+                        }}
+                        disabled={isAnalyzing}
+                        className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                      >
+                        {isAnalyzing ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Analisando...
+                          </>
+                        ) : (
+                          <>
+                            <Brain className="w-4 h-4 mr-2" />
+                            Analisar com AI
+                          </>
+                        )}
+                      </Button>
+                    )}
+
+                    {/* Botão Cancelar (apenas durante análise) */}
+                    {isAnalyzing && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => {
+                          cancelAnalysis();
+                          toast.info('Cancelando análise...');
+                        }}
+                      >
+                        <X className="w-4 h-4 mr-2" />
+                        Cancelar
+                      </Button>
+                    )}
+
+                    {/* Botões auxiliares */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setLogsModalOpen(true)}
+                      disabled={!selectedPod}
+                    >
+                      <Terminal className="w-4 h-4 mr-2" />
+                      Ver Logs
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleCopyYaml}
+                      disabled={!podYaml || yamlLoading}
+                    >
+                      {yamlCopied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
+                      {yamlCopied ? "Copiado!" : "Copiar YAML"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditorFullScreen(true)}
+                      title="Abrir editor em tela cheia"
+                      disabled={!podYaml || yamlLoading}
+                    >
+                      <Maximize2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Editor / Diff View */}
+                {viewMode === "editor" && (
+                  <MonacoYamlEditor
+                    key={`pod-manifest-${selectedPod?.name}`}
+                    value={editedYaml}
+                    onChange={(value) => {
+                      setEditedYaml(value || "");
+                      if (value && value !== yamlHistory[historyIndex]) {
+                        addToHistory(value);
+                      }
+                    }}
+                    readOnly={false}
+                    height={1200}
+                  />
+                )}
+                {viewMode === "diff" && (
+                  <MonacoYamlEditor
+                    mode="diff"
+                    originalValue={originalYaml}
+                    value={editedYaml}
+                    height={1200}
+                    readOnly
+                  />
+                )}
+              </div>
+
+              {/* Botões de ação na parte inferior */}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleViewDescribe}
+                  disabled={!selectedPod}
+                >
+                  <FileText className="w-4 h-4 mr-1" />
+                  Describe
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleViewDiff}
+                  disabled={!hasChanges}
+                >
+                  <FileDiff className="w-4 h-4 mr-2" />
+                  Visualizar diff
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCancelEdit}
+                  disabled={!hasChanges}
+                >
+                  <X className="w-4 h-4 mr-2" />
+                  Cancelar
+                </Button>
+
+                <ProtectedAction>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleValidate}
+                    disabled={!selectedPod || isValidating}
+                  >
+                    {isValidating ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4 mr-2" />
+                    )}
+                    Dry-run
+                  </Button>
+                </ProtectedAction>
+
+                <ProtectedAction>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={handleApplyChanges}
+                    disabled={!hasChanges || isApplying}
+                  >
+                    {isApplying ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Check className="w-4 h-4 mr-2" />
+                    )}
+                    Aplicar
+                  </Button>
+                  </ProtectedAction>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -1007,6 +1574,166 @@ export const PodsPanel = ({
 
   return (
     <>
+      {/* Modal de Configuração do Shell */}
+      <Dialog open={shellModalOpen} onOpenChange={setShellModalOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Abrir Shell no Container</DialogTitle>
+            <DialogDescription>
+              Escolha o container e o tipo de shell para conectar
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-4">
+            {/* Seleção de Container */}
+            <div className="space-y-2">
+              <Label htmlFor="container-select">Container</Label>
+              <Select
+                value={selectedShellContainer}
+                onValueChange={setSelectedShellContainer}
+              >
+                <SelectTrigger id="container-select">
+                  <SelectValue placeholder="Selecione um container" />
+                </SelectTrigger>
+                <SelectContent>
+                  {selectedPod?.containers.map((container) => (
+                    <SelectItem key={container.name} value={container.name}>
+                      <div className="flex items-center gap-2">
+                        <span>{container.name}</span>
+                        <Badge variant="outline" className="text-xs">
+                          {container.state}
+                        </Badge>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Seleção de Shell */}
+            <div className="space-y-3">
+              <Label>Tipo de Shell</Label>
+              <RadioGroup 
+                value={useEphemeralDebug ? "ephemeral" : selectedShellType} 
+                onValueChange={(value) => {
+                  if (value === "ephemeral") {
+                    setUseEphemeralDebug(true);
+                    setSelectedShellType("/bin/bash");
+                  } else {
+                    setUseEphemeralDebug(false);
+                    setSelectedShellType(value);
+                  }
+                }}
+              >
+                <div className="flex items-start space-x-2 p-2 rounded hover:bg-muted/50 transition-colors">
+                  <RadioGroupItem value="/bin/bash" id="bash" className="mt-0.5" />
+                  <Label htmlFor="bash" className="font-normal cursor-pointer flex-1">
+                    <div className="font-medium">/bin/bash</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      Shell padrão mais comum • Recursos avançados • Presente na maioria dos containers
+                    </div>
+                  </Label>
+                </div>
+                <div className="flex items-start space-x-2 p-2 rounded hover:bg-muted/50 transition-colors">
+                  <RadioGroupItem value="/bin/sh" id="sh" className="mt-0.5" />
+                  <Label htmlFor="sh" className="font-normal cursor-pointer flex-1">
+                    <div className="font-medium">/bin/sh</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      Shell minimalista POSIX • Comum em imagens Alpine e efêmeras • Sempre disponível
+                    </div>
+                  </Label>
+                </div>
+                <div className="flex items-start space-x-2 p-2 rounded bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20 transition-colors">
+                  <RadioGroupItem value="ephemeral" id="ephemeral" className="mt-0.5" />
+                  <Label htmlFor="ephemeral" className="font-normal cursor-pointer flex-1">
+                    <div className="font-medium flex items-center gap-2">
+                      <span>🛠️ Ephemeral Debug Container</span>
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-600 dark:text-blue-400 font-semibold">RECOMENDADO</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      <span className="font-medium">nicolaka/netshoot</span> • Container temporário com arsenal completo de debug
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1 flex flex-wrap gap-1">
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">tcpdump</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">curl</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">nslookup</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">dig</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">netstat</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">iperf</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">mtr</code>
+                      <code className="px-1 py-0.5 bg-black/20 rounded text-[10px]">ethtool</code>
+                    </div>
+                    <div className="text-xs mt-2 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded">
+                      <span className="text-yellow-300">ℹ️ Nota:</span> Ephemeral containers persistem até o pod reiniciar. Containers existentes serão reutilizados automaticamente.
+                    </div>
+                  </Label>
+                </div>
+              </RadioGroup>
+            </div>
+
+            {/* Info sobre o pod */}
+            {selectedPod && (
+              <div className="mt-4 p-3 bg-muted rounded-lg text-sm space-y-1">
+                <div><span className="font-medium">Pod:</span> {selectedPod.name}</div>
+                <div><span className="font-medium">Namespace:</span> {selectedPod.namespace}</div>
+                <div><span className="font-medium">Status:</span> <Badge variant="outline" className={getPhaseColor(selectedPod.phase)}>{selectedPod.phase}</Badge></div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShellModalOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => {
+                if (!selectedShellContainer) {
+                  toast.error("Selecione um container");
+                  return;
+                }
+                setShellModalOpen(false);
+                setTerminalOpen(true);
+              }}
+              disabled={!selectedShellContainer}
+            >
+              <Terminal className="w-4 h-4 mr-2" />
+              Conectar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal do Terminal */}
+      <Dialog open={terminalOpen} onOpenChange={(open) => {
+        setTerminalOpen(open);
+        if (!open) {
+          // Resetar fullscreen ao fechar
+          setTerminalFullscreen(false);
+        }
+      }}>
+        <DialogContent className={terminalFullscreen 
+          ? "w-screen h-screen max-w-none max-h-none p-0 m-0 rounded-none"
+          : "max-w-6xl h-[85vh] p-0"
+        }>
+          {selectedPod && selectedShellContainer && (
+            <PodTerminal
+              cluster={selectedPod.cluster}
+              namespace={selectedPod.namespace}
+              pod={selectedPod.name}
+              container={selectedShellContainer}
+              shell={selectedShellType}
+              ephemeral={useEphemeralDebug}
+              isFullscreen={terminalFullscreen}
+              onToggleFullscreen={() => setTerminalFullscreen(!terminalFullscreen)}
+              onClose={() => setTerminalOpen(false)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
       <SplitView
         leftPanel={{
           title: `Pods (${filteredPods.length})`,
@@ -1173,59 +1900,6 @@ export const PodsPanel = ({
         </DialogContent>
       </Dialog>
 
-      {/* Modal Fullscreen para YAML */}
-      <Dialog open={yamlFullScreen} onOpenChange={setYamlFullScreen}>
-        <DialogContent className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none p-0">
-          <div className="h-full flex flex-col">
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-border flex-shrink-0">
-              <div>
-                <DialogTitle className="text-xl font-semibold">
-                  Manifesto YAML (Read-only)
-                </DialogTitle>
-                <DialogDescription className="text-sm text-muted-foreground mt-1">
-                  {selectedPod?.namespace}/{selectedPod?.name}
-                </DialogDescription>
-              </div>
-              <div className="flex items-center gap-2 pr-8">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleCopyYaml}
-                  disabled={!podYaml || yamlLoading}
-                >
-                  {yamlCopied ? <Check className="w-4 h-4 mr-2" /> : <Copy className="w-4 h-4 mr-2" />}
-                  {yamlCopied ? "Copiado!" : "Copiar YAML"}
-                </Button>
-              </div>
-            </div>
-
-            {/* Monaco Editor */}
-            <div className="flex-1 p-4">
-              {yamlLoading ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="flex flex-col items-center gap-2">
-                    <RefreshCcw className="w-6 h-6 animate-spin text-muted-foreground" />
-                    <span className="text-sm text-muted-foreground">Carregando manifest...</span>
-                  </div>
-                </div>
-              ) : podYaml ? (
-                <MonacoYamlEditor
-                  key={`pod-manifest-fullscreen-${selectedPod?.name}`}
-                  value={podYaml}
-                  readOnly={true}
-                  height="calc(100vh - 140px)"
-                />
-              ) : (
-                <div className="flex items-center justify-center h-full text-muted-foreground">
-                  <p>Nenhum manifest disponível</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
       {/* Modal Describe */}
       <Dialog open={describeModalOpen} onOpenChange={setDescribeModalOpen}>
         <DialogContent className="max-w-6xl max-h-[90vh]">
@@ -1246,6 +1920,194 @@ export const PodsPanel = ({
           </ScrollArea>
         </DialogContent>
       </Dialog>
+
+      {/* Modal Fullscreen de Edição */}
+      <Dialog open={editorFullScreen} onOpenChange={setEditorFullScreen}>
+        <DialogContent 
+          className="max-w-[98vw] max-h-[98vh] w-full h-full p-0"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setEditorFullScreen(false);
+            }
+          }}
+        >
+          <div className="h-full flex flex-col">
+            <DialogHeader className="border-b border-border px-6 py-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <DialogTitle className="text-xl font-semibold text-primary">
+                    Editor YAML - Tela Cheia
+                  </DialogTitle>
+                  <DialogDescription className="text-sm text-muted-foreground">
+                    {selectedPod?.name} • {selectedPod?.namespace} • {cluster}
+                  </DialogDescription>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Undo/Redo */}
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={handleUndo}
+                      disabled={!canUndo}
+                      className={`px-2 py-1 text-xs font-medium ${
+                        canUndo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Desfazer (Ctrl+Z)"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRedo}
+                      disabled={!canRedo}
+                      className={`px-2 py-1 text-xs font-medium border-l border-border/50 ${
+                        canRedo ? "bg-background text-muted-foreground hover:bg-secondary" : "bg-background text-muted-foreground/30 cursor-not-allowed"
+                      }`}
+                      title="Refazer (Ctrl+Y)"
+                    >
+                      <Redo2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* View Mode Toggle */}
+                  <div className="inline-flex rounded-md border border-border/50 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("editor")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "editor" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      }`}
+                    >
+                      Editor
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleView("diff")}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        viewMode === "diff" ? "bg-primary text-white" : "bg-background text-muted-foreground"
+                      } ${hasChanges ? "" : "opacity-50 cursor-not-allowed"}`}
+                      disabled={!hasChanges}
+                    >
+                      Diff
+                    </button>
+                  </div>
+
+                  <ProtectedAction>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={handleValidate}
+                      disabled={!selectedPod || isValidating}
+                    >
+                      {isValidating ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="w-4 h-4 mr-2" />
+                      )}
+                      Dry-run
+                    </Button>
+                  </ProtectedAction>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCancelEdit}
+                    disabled={!hasChanges}
+                  >
+                    <X className="w-4 h-4 mr-2" />
+                    Cancelar
+                  </Button>
+
+                  <ProtectedAction>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={handleApplyChanges}
+                      disabled={!hasChanges || isApplying}
+                    >
+                      {isApplying ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : (
+                        <Check className="w-4 h-4 mr-2" />
+                      )}
+                      Aplicar
+                    </Button>
+                  </ProtectedAction>
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditorFullScreen(false)}
+                  >
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            </DialogHeader>
+
+            <div className="flex-1 p-6 overflow-hidden">
+              <div className="h-full">
+                {viewMode === "editor" ? (
+                  <MonacoYamlEditor
+                    value={editedYaml}
+                    onChange={(value) => {
+                      setEditedYaml(value || "");
+                      if (value && value !== yamlHistory[historyIndex]) {
+                        addToHistory(value);
+                      }
+                    }}
+                    readOnly={false}
+                    height="calc(98vh - 180px)"
+                  />
+                ) : (
+                  <MonacoYamlEditor
+                    mode="diff"
+                    originalValue={originalYaml}
+                    value={editedYaml}
+                    height="calc(98vh - 180px)"
+                    readOnly
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Diff */}
+      <Dialog open={showDiffModal} onOpenChange={setShowDiffModal}>
+        <DialogContent className="max-w-6xl max-h-[90vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>Visualizar Mudanças (Diff)</DialogTitle>
+            <DialogDescription>
+              Comparação entre o YAML original e o editado
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="h-[70vh]">
+            <div
+              className="diff-container text-xs"
+              dangerouslySetInnerHTML={{ __html: diffHtml }}
+            />
+          </ScrollArea>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDiffModal(false)}>
+              Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Transferência de Arquivos */}
+      {selectedPod && (
+        <PodFileTransferModal
+          open={showFileTransferModal}
+          onOpenChange={setShowFileTransferModal}
+          cluster={cluster}
+          namespace={selectedPod.namespace}
+          podName={selectedPod.name}
+          containers={selectedPod.containers.map(c => c.name)}
+        />
+      )}
     </>
   );
 };

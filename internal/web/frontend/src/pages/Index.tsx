@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Header } from "@/components/Header";
 import { StatsCard } from "@/components/StatsCard";
 import { TabNavigation } from "@/components/TabNavigation";
@@ -29,6 +29,7 @@ import { SecretsTab } from "@/components/SecretsTab";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
 import { ContainersTab } from "@/components/ContainersTab";
 import { PodsPanel } from "@/components/PodsPanel";
+import { EventsTab } from "@/components/EventsTab";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { SaveSessionModal } from "@/components/SaveSessionModal";
 import { LoadSessionModal } from "@/components/LoadSessionModal";
@@ -41,6 +42,10 @@ import { CronJobsPage } from "./CronJobsPage";
 import { PrometheusPage } from "./PrometheusPage";
 import { MonitoringPage } from "./MonitoringPage";
 import { ServiceMeshGraph } from "@/components/ServiceMeshGraph";
+import { AIDiagnosticsTab } from "@/components/AIDiagnosticsTab";
+import { HealthCheckingTab } from "@/components/HealthCheckingTab";
+import { HelmTab } from "@/components/HelmTab";
+import { GitHubReleasesTab } from "@/components/GitHubReleasesTab";
 import {
   LayoutDashboard,
   Scale,
@@ -56,7 +61,11 @@ import {
   Settings,
   X,
   RefreshCcw,
-  Network
+  Network,
+  Brain,
+  Activity,
+  PackageOpen,
+  GitCompareArrows
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -76,9 +85,17 @@ interface IndexProps {
 const Index = ({ onLogout }: IndexProps) => {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [selectedCluster, setSelectedCluster] = useState("");
-  const [selectedNamespace, setSelectedNamespace] = useState("");
+  const [selectedNamespace, setSelectedNamespace] = useState(""); // Namespace global (HPAs, Namespaces tab)
   const [selectedHPA, setSelectedHPA] = useState<HPA | null>(null);
   const [selectedNodePool, setSelectedNodePool] = useState<NodePool | null>(null);
+
+  // 🔄 Namespace independente por aba workload (evita interferência ao trocar namespaces em outras abas)
+  const [podsNamespace, setPodsNamespace] = useState("");
+  const [configMapsNamespace, setConfigMapsNamespace] = useState("");
+  const [deploymentsNamespace, setDeploymentsNamespace] = useState("");
+  const [secretsNamespace, setSecretsNamespace] = useState("");
+  const [containersNamespace, setContainersNamespace] = useState("");
+  const [ingressNamespace, setIngressNamespace] = useState("");
   const [showApplyModal, setShowApplyModal] = useState(false);
   const [hpasToApply, setHpasToApply] = useState<Array<{ key: string; current: HPA; original: HPA }>>([]);
   const [showNodePoolApplyModal, setShowNodePoolApplyModal] = useState(false);
@@ -150,6 +167,86 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // TabManager para sincronizar estado com abas
   const { updateActiveTabState } = useTabManager();
+
+  // 🔄 Ref para rastrear cluster anterior (evitar reset ao restaurar aba)
+  const previousClusterRef = useRef<string>("");
+
+  // 🔄 Ref para rastrear quais componentes workload já foram montados (lazy loading)
+  const hasBeenMounted = useRef({
+    pods: false,
+    configmaps: false,
+    deployments: false,
+    secrets: false,
+    containers: false,
+    ingresses: false,
+    healthcheck: false,
+  });
+
+  // 🔄 Marcar componente como montado quando usuário acessa a aba
+  useEffect(() => {
+    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "healthcheck"];
+    if (workloadTabs.includes(activeTab as any)) {
+      hasBeenMounted.current[activeTab as keyof typeof hasBeenMounted.current] = true;
+    }
+  }, [activeTab]);
+
+  // 💾 PERSISTIR ESTADO no TabContext sempre que estados locais mudarem
+  useEffect(() => {
+    updateActiveTabState({
+      activeTab,
+      selectedCluster,
+      selectedNamespace,
+      selectedHPA,
+      selectedNodePool,
+      showApplyModal,
+      hpasToApply,
+      showNodePoolApplyModal,
+      nodePoolsToApply,
+      showSaveSessionModal,
+      showLoadSessionModal,
+      isContextSwitching,
+    });
+  }, [
+    activeTab,
+    selectedCluster,
+    selectedNamespace,
+    selectedHPA,
+    selectedNodePool,
+    showApplyModal,
+    hpasToApply,
+    showNodePoolApplyModal,
+    nodePoolsToApply,
+    showSaveSessionModal,
+    showLoadSessionModal,
+    isContextSwitching,
+    updateActiveTabState,
+  ]);
+
+  // 🧹 RESET DE CONTEXTOS DEPENDENTES quando cluster mudar
+  useEffect(() => {
+    // Ao trocar de cluster, limpar estados dependentes do cluster anterior
+    // Usa ref para evitar reset ao restaurar aba (apenas reset em mudanças manuais)
+
+    if (previousClusterRef.current && previousClusterRef.current !== selectedCluster && selectedCluster) {
+      console.log(`[ClusterChange] Cluster mudou de ${previousClusterRef.current} para ${selectedCluster} - limpando contextos`);
+
+      // Resetar seleções específicas do cluster
+      setSelectedNamespace("");
+      setSelectedHPA(null);
+      setSelectedNodePool(null);
+
+      // Limpar modals que dependem do cluster
+      setShowApplyModal(false);
+      setHpasToApply([]);
+      setShowNodePoolApplyModal(false);
+      setNodePoolsToApply([]);
+
+      toast.info(`Cluster alterado para ${selectedCluster}. Contexto de busca resetado.`);
+    }
+
+    // Atualizar ref para próxima comparação
+    previousClusterRef.current = selectedCluster;
+  }, [selectedCluster]); // Executar sempre que cluster mudar
 
   // Staging context
   const staging = useStaging();
@@ -316,7 +413,11 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "staging", label: "Staging", icon: FileText, badge: staging.getChangesCount().total },
     { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
     { id: "servicemesh", label: "Service Mesh", icon: Network },
+    { id: "healthcheck", label: "Health Checking", icon: Activity },
+    { id: "helm", label: "Helm", icon: PackageOpen },
     { id: "namespaces", label: "Namespaces", icon: Database },
+    { id: "ai-diagnostics", label: "AI Diagnostics", icon: Brain },
+    { id: "github-releases", label: "GitHub Releases", icon: GitCompareArrows },
   ];
 
   // Filtrar namespaces
@@ -649,78 +750,17 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
-      case "configmaps":
+      case "helm":
         return (
-          <ConfigMapsTab
-            cluster={selectedCluster}
-            namespaces={namespaces}
-            selectedNamespace={selectedNamespace}
-            onNamespaceChange={setSelectedNamespace}
-            showSystemNamespaces={showSystemNamespaces}
-            onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
-          />
-        );
-
-      case "ingresses":
-        return (
-          <ErrorBoundary componentName="Ingress Tab">
-            <IngressTab
-              cluster={selectedCluster}
-              namespaces={namespaces}
-              selectedNamespace={selectedNamespace}
-              onNamespaceChange={setSelectedNamespace}
-              showSystemNamespaces={showSystemNamespaces}
-              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
-            />
+          <ErrorBoundary componentName="Helm Tab">
+            <HelmTab selectedCluster={selectedCluster} />
           </ErrorBoundary>
         );
 
-      case "secrets":
+      case "events":
         return (
-          <ErrorBoundary componentName="Secrets Tab">
-            <SecretsTab
-              cluster={selectedCluster}
-              namespaces={namespaces}
-              selectedNamespace={selectedNamespace}
-              onNamespaceChange={setSelectedNamespace}
-              showSystemNamespaces={showSystemNamespaces}
-              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
-            />
-          </ErrorBoundary>
-        );
-
-      case "deployments":
-        return (
-          <ErrorBoundary componentName="Deployments Tab">
-            <DeploymentsTab
-              cluster={selectedCluster}
-              namespaces={namespaces}
-              selectedNamespace={selectedNamespace}
-              onNamespaceChange={setSelectedNamespace}
-              showSystemNamespaces={showSystemNamespaces}
-              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
-            />
-          </ErrorBoundary>
-        );
-
-      case "containers":
-        return (
-          <ErrorBoundary componentName="Containers Tab">
-            <ContainersTab
-              cluster={selectedCluster}
-              namespaces={namespaces}
-              selectedNamespace={selectedNamespace}
-              onNamespaceChange={setSelectedNamespace}
-              showSystemNamespaces={showSystemNamespaces}
-              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
-            />
-          </ErrorBoundary>
-        );
-
-      case "pods":
-        return (
-          <ErrorBoundary componentName="Pods Panel">
-            <PodsPanel
+          <ErrorBoundary componentName="Events Tab">
+            <EventsTab
               cluster={selectedCluster}
               namespaces={namespaces}
               selectedNamespace={selectedNamespace}
@@ -911,6 +951,20 @@ const Index = ({ onLogout }: IndexProps) => {
           />
         );
 
+      case "ai-diagnostics":
+        return (
+          <ErrorBoundary>
+            <AIDiagnosticsTab />
+          </ErrorBoundary>
+        );
+
+      case "github-releases":
+        return (
+          <ErrorBoundary>
+            <GitHubReleasesTab />
+          </ErrorBoundary>
+        );
+
       default:
         return null;
     }
@@ -966,8 +1020,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers, Pods, CronJobs, Prometheus, Ingresses e Service Mesh */}
-      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm, AI Diagnostics e GitHub Releases */}
+      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "ai-diagnostics" && activeTab !== "github-releases" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (
@@ -1018,7 +1072,114 @@ const Index = ({ onLogout }: IndexProps) => {
 
       {/* Conteúdo Principal */}
       <div className="flex-1 min-h-0 overflow-auto">
-        {renderTabContent()}
+        {/* ✅ SOLUÇÃO: Renderizar componentes workload SEMPRE montados, mostrar apenas o ativo */}
+        {/* Isso mantém o estado React naturalmente sem precisar persistir/restaurar */}
+
+        {/* Pods - sempre montado */}
+        <div style={{ display: activeTab === "pods" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "pods" || hasBeenMounted.current.pods) && (
+            <ErrorBoundary componentName="Pods Panel">
+              <PodsPanel
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={podsNamespace}
+                onNamespaceChange={setPodsNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
+        {/* ConfigMaps - sempre montado */}
+        <div style={{ display: activeTab === "configmaps" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "configmaps" || hasBeenMounted.current.configmaps) && (
+            <ConfigMapsTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={configMapsNamespace}
+              onNamespaceChange={setConfigMapsNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          )}
+        </div>
+
+        {/* Deployments - sempre montado */}
+        <div style={{ display: activeTab === "deployments" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "deployments" || hasBeenMounted.current.deployments) && (
+            <ErrorBoundary componentName="Deployments Tab">
+              <DeploymentsTab
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={deploymentsNamespace}
+                onNamespaceChange={setDeploymentsNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
+        {/* Secrets - sempre montado */}
+        <div style={{ display: activeTab === "secrets" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "secrets" || hasBeenMounted.current.secrets) && (
+            <ErrorBoundary componentName="Secrets Tab">
+              <SecretsTab
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={secretsNamespace}
+                onNamespaceChange={setSecretsNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
+        {/* Containers - sempre montado */}
+        <div style={{ display: activeTab === "containers" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "containers" || hasBeenMounted.current.containers) && (
+            <ErrorBoundary componentName="Containers Tab">
+              <ContainersTab
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={containersNamespace}
+                onNamespaceChange={setContainersNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
+        {/* Ingresses - sempre montado */}
+        <div style={{ display: activeTab === "ingresses" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "ingresses" || hasBeenMounted.current.ingresses) && (
+            <ErrorBoundary componentName="Ingress Tab">
+              <IngressTab
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={ingressNamespace}
+                onNamespaceChange={setIngressNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
+        {/* Health Checking - sempre montado */}
+        <div style={{ display: activeTab === "healthcheck" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "healthcheck" || hasBeenMounted.current.healthcheck) && (
+            <ErrorBoundary componentName="Health Checking Tab">
+              <HealthCheckingTab />
+            </ErrorBoundary>
+          )}
+        </div>
+
+        {/* Outras abas - renderização condicional normal (switch/case) */}
+        {!["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "healthcheck"].includes(activeTab) && renderTabContent()}
       </div>
 
       {/* Modal de Confirmação - HPAs */}

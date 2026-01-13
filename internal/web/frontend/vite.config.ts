@@ -3,8 +3,12 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { fileURLToPath } from "url";
 import { componentTagger } from "lovable-tagger";
+import monacoEditorPlugin from "vite-plugin-monaco-editor";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// @ts-ignore - Monaco editor plugin types
+const monacoPlugin = (monacoEditorPlugin as any).default || monacoEditorPlugin;
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
@@ -19,7 +23,19 @@ export default defineConfig(({ mode }) => ({
       },
     },
   },
-  plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+  plugins: [
+    react(),
+    mode === "development" && componentTagger(),
+    monacoPlugin({
+      languageWorkers: ['editorWorkerService'],
+      customWorkers: [
+        {
+          label: 'yaml',
+          entry: 'monaco-yaml/yaml.worker'
+        }
+      ]
+    })
+  ].filter(Boolean),
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

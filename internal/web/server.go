@@ -14,18 +14,25 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog"
 
+	"k8s-hpa-manager/internal/ai"
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/healthcheck"
 	"k8s-hpa-manager/internal/history"
+	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/notifications"
 	"k8s-hpa-manager/internal/rbac"
+	"k8s-hpa-manager/internal/storage"
 
 	// TODO: Remover após migração completa para V2
 	// "k8s-hpa-manager/internal/monitoring/analyzer"
 	// "k8s-hpa-manager/internal/monitoring/engine"
 	enginev2 "k8s-hpa-manager/internal/monitoring/engine"
 	// "k8s-hpa-manager/internal/monitoring/models"
+	helmservice "k8s-hpa-manager/internal/helm"
 	"k8s-hpa-manager/internal/monitoring/scanner"
+	helmclient "k8s-hpa-manager/internal/pkg/helm"
 	"k8s-hpa-manager/internal/web/handlers"
 	"k8s-hpa-manager/internal/web/middleware"
 )
@@ -60,10 +67,19 @@ type Server struct {
 
 	// Notification Manager (Windows Toast via PowerShell)
 	notificationManager *notifications.NotificationManager
+
+	// AI Diagnostics Handler (pode ser nil se AI estiver desabilitado)
+	aiHandler *handlers.AIDiagnosticsHandler
+
+	// AI Tokens Handler (gerencia tokens AI dos usuários)
+	aiTokensHandler *handlers.AITokensHandler
+
+	// KubeManager wrapper para AI (pode ser nil se AI estiver desabilitado)
+	kubeManagerWrapper *kubernetes.KubeManager
 }
 
 // NewServer cria uma nova instância do servidor web
-func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool) (*Server, error) {
+func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiProvider, ollamaURL, ollamaModel, claudeAPIKey, claudeModel string) (*Server, error) {
 	// Reutilizar gerenciador de kube existente
 	kubeManager, err := config.NewKubeConfigManager(kubeconfig)
 	if err != nil {
@@ -132,6 +148,84 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool) (*Se
 	monitoringEngineV2 := enginev2.NewMonitoringEngineV2()
 	fmt.Println("✅ Monitoring Engine V2 criado (sem port-forwards - acesso direto ao Prometheus)")
 
+	// Inicializar AI Diagnostics System
+	fmt.Println("🤖 Inicializando AI Diagnostics System...")
+
+	// 1. Criar SQLite client para histórico AI (em ~/.k8s-hpa-manager/)
+	// Reutilizar baseDir que já foi criado anteriormente
+	aiDBPath := filepath.Join(baseDir, "ai_diagnostics.db")
+	sqliteClient, err := storage.NewSQLiteClient(aiDBPath)
+	if err != nil {
+		fmt.Printf("⚠️  Falha ao criar SQLite client para AI: %v\n", err)
+		fmt.Println("   AI Diagnostics desabilitado")
+		sqliteClient = nil
+	}
+
+	var aiHistoryStore *storage.AIHistoryStore
+	var aiHandler *handlers.AIDiagnosticsHandler
+	var aiTokensStore *storage.UserTokensStore
+	var aiTokensHandler *handlers.AITokensHandler
+	var kubeManagerWrapper *kubernetes.KubeManager
+	var aiConfig *ai.Config
+
+	if sqliteClient != nil {
+		aiHistoryStore = storage.NewAIHistoryStore(sqliteClient)
+		aiTokensStore = storage.NewUserTokensStore(sqliteClient)
+
+		// Criar tabelas
+		if err := aiTokensStore.CreateTable(); err != nil {
+			fmt.Printf("⚠️  Falha ao criar tabela de tokens: %v\n", err)
+		} else {
+			aiTokensHandler = handlers.NewAITokensHandler(aiTokensStore)
+			fmt.Println("✅ AI Tokens Handler criado")
+		}
+
+		// 2. Criar AI config
+		aiConfig = &ai.Config{
+			Provider:      aiProvider,
+			OllamaBaseURL: ollamaURL,
+			OllamaModel:   ollamaModel,
+			ClaudeAPIKey:  claudeAPIKey,
+			ClaudeModel:   claudeModel,
+			Timeout:       300, // 5 minutos para análises preditivas complexas
+		}
+
+		// 3. Criar KubeManager wrapper
+		kubeManagerWrapper = kubernetes.NewKubeManager(
+			kubeManager.GetClient,
+			nil, // kubectl describe será implementado depois
+		)
+
+		// 4. Criar AI provider padrão
+		aiProviderInstance, err := ai.NewProvider(aiConfig)
+		if err != nil {
+			fmt.Printf("⚠️  Falha ao criar AI provider padrão: %v\n", err)
+			fmt.Println("   AI Diagnostics desabilitado")
+		} else {
+			// 5. Criar AI Analyzer padrão (fallback)
+			aiAnalyzer := ai.NewAnalyzer(aiProviderInstance, kubeManagerWrapper, aiHistoryStore)
+
+			// 6. Criar handler (com suporte a preferências de usuário)
+			aiHandler = handlers.NewAIDiagnosticsHandler(
+				aiAnalyzer,
+				aiHistoryStore,
+				aiTokensStore,
+				kubeManagerWrapper,
+				aiConfig,
+			)
+
+			fmt.Printf("✅ AI Diagnostics habilitado (Provider padrão: %s)\n", aiProvider)
+			fmt.Println("   ℹ️  Usuários podem configurar seus próprios modelos em Settings → AI")
+			if aiProvider == "gemini" {
+				if os.Getenv("GEMINI_API_KEY") != "" {
+					fmt.Println("   ✅ GEMINI_API_KEY detectado (env var)")
+				} else {
+					fmt.Println("   ⚠️  GEMINI_API_KEY não encontrado (pode falhar na análise)")
+				}
+			}
+		}
+	}
+
 	server := &Server{
 		router:              router,
 		kubeManager:         kubeManager,
@@ -150,6 +244,9 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool) (*Se
 		// monitoringCtx:      monitoringCtx,
 		// monitoringCancel:   monitoringCancel,
 		monitoringEngineV2: monitoringEngineV2,
+		aiHandler:          aiHandler,          // Pode ser nil se AI estiver desabilitado
+		aiTokensHandler:    aiTokensHandler,    // Gerencia tokens AI dos usuários
+		kubeManagerWrapper: kubeManagerWrapper, // Para predictions RBAC
 	}
 
 	server.setupMiddleware()
@@ -169,7 +266,7 @@ func (s *Server) setupMiddleware() {
 	s.router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-GitHub-Email"}, // ✅ Header customizado para token GitHub
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 	}))
@@ -217,6 +314,14 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 
 // setupRoutes configura as rotas da API
 func (s *Server) setupRoutes() {
+	// Obter baseDir para caminhos de bancos SQLite (necessário para predictions e health checks)
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Printf("❌ Erro ao obter diretório home: %v\n", err)
+		return
+	}
+	baseDir := filepath.Join(homeDir, ".k8s-hpa-manager")
+
 	// Health check (sem auth)
 	s.router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
@@ -235,17 +340,19 @@ func (s *Server) setupRoutes() {
 		s.heartbeatMutex.Unlock()
 
 		// Resetar timer de shutdown (thread-safe)
+		// Usar 25 minutos (margem de 5 minutos sobre os 20 configurados)
+		// Isso garante que heartbeats atrasados não causem shutdown prematuro
 		s.timerMutex.Lock()
 		if s.shutdownTimer != nil {
 			s.shutdownTimer.Stop()
 		}
-		s.shutdownTimer = time.AfterFunc(20*time.Minute, s.autoShutdown)
+		s.shutdownTimer = time.AfterFunc(25*time.Minute, s.autoShutdown)
 		s.timerMutex.Unlock()
 
 		// Log para debugging
 		fmt.Printf("💓 Heartbeat recebido: %s | Próximo shutdown em: %s\n",
 			now.Format("15:04:05"),
-			now.Add(20*time.Minute).Format("15:04:05"))
+			now.Add(25*time.Minute).Format("15:04:05"))
 
 		c.JSON(200, gin.H{
 			"status":         "alive",
@@ -278,6 +385,18 @@ func (s *Server) setupRoutes() {
 	// RBAC - Inicializar manager e middleware
 	rbacManager := rbac.NewRBACManager(s.disableADAuth)
 	rbacMiddleware := middleware.NewRBACMiddleware(rbacManager)
+
+	// WebSocket endpoints (com auth via query param + RBAC SRE-only)
+	// Usa WebSocketAuthMiddleware para aceitar token via query parameter
+	podExecHandler := handlers.NewPodExecHandler(s.kubeManager)
+
+	wsShell := s.router.Group("/api/v1/pods/:cluster/:namespace/:name")
+	wsShell.Use(middleware.WebSocketAuthMiddleware(s.token))
+	wsShell.Use(rbacMiddleware.RequireSREGroup())
+	{
+		wsShell.GET("/shell", podExecHandler.HandleShell)
+		wsShell.GET("/debug", podExecHandler.HandleDebug)
+	}
 
 	// RBAC - Endpoints públicos de permissões (apenas GET, sem proteção extra)
 	api.GET("/permissions", rbacMiddleware.GetUserPermissions())
@@ -392,6 +511,8 @@ func (s *Server) setupRoutes() {
 
 		// Deployments - Write Operations (SRE-only)
 		deployments.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), deploymentHandler.Apply)
+		deployments.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), deploymentHandler.Delete)
+		deployments.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), deploymentHandler.RolloutRestart)
 	}
 
 	// Pods/Containers
@@ -402,26 +523,86 @@ func (s *Server) setupRoutes() {
 		pods.GET("/:cluster/:namespace/:name", podHandler.Get)
 		pods.GET("/:cluster/:namespace/:name/describe", podHandler.Describe)
 		pods.GET("/:cluster/:namespace/:name/logs", podHandler.GetLogs)
+		pods.GET("/:cluster/:namespace/:name/metrics", podHandler.GetMetrics)
+		pods.GET("/:cluster/:namespace/:name/download", podHandler.DownloadFromPod)
+		pods.POST("/:cluster/:namespace/:name/download/batch", podHandler.DownloadMultipleFromPod)
+		pods.GET("/:cluster/:namespace/:name/browse", podHandler.BrowseFiles)
 
 		// Pods - Write Operations (SRE-only)
+		pods.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Apply)
 		pods.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Delete)
 		pods.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), podHandler.Restart)
+		pods.POST("/:cluster/:namespace/debug", rbacMiddleware.RequireSREGroup(), podHandler.CreateDebugPod)
+	}
+
+	// Pods Summary
+	pods.GET("/:cluster/:namespace/summary", podHandler.GetSummary)
+
+	// Events
+	eventHandler := handlers.NewEventHandler(s.kubeManager)
+	events := api.Group("/events")
+	{
+		events.GET("", eventHandler.List)
+	}
+
+	// Resource Quotas
+	quotaHandler := handlers.NewResourceQuotaHandler(s.kubeManager)
+	quotas := api.Group("/resource-quotas")
+	{
+		quotas.GET("", quotaHandler.List)
+	}
+
+	// Network Policies
+	policyHandler := handlers.NewNetworkPolicyHandler(s.kubeManager)
+	policies := api.Group("/network-policies")
+	{
+		policies.GET("", policyHandler.List)
+	}
+
+	// Services
+	serviceHandler := handlers.NewServiceHandler(s.kubeManager)
+	services := api.Group("/services")
+	{
+		services.GET("", serviceHandler.List)
+	}
+
+	// Helm
+	helmLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "helm-cli").Logger()
+	helmOptions := []helmclient.Option{helmclient.WithLogger(helmLogger)}
+	if resolved, err := helmclient.ResolveBinary(""); err == nil {
+		helmOptions = append(helmOptions, helmclient.WithBinary(resolved))
+	} else {
+		fmt.Printf("⚠️  Helm binary not found in PATH (continuing with default name): %v\n", err)
+	}
+	helmCLI := helmclient.NewCLIClient(helmOptions...)
+	helmService := helmservice.NewService(s.kubeManager, helmCLI)
+	helmHandler := handlers.NewHelmHandler(helmService)
+	helmRoutes := api.Group("/helm")
+	{
+		helmRoutes.GET("/releases", helmHandler.List)
+		helmRoutes.GET("/releases/:release", helmHandler.Get)
+		helmRoutes.GET("/releases/:release/history", helmHandler.History)
+		helmRoutes.POST("/releases", rbacMiddleware.RequireSREGroup(), helmHandler.Install)
+		helmRoutes.PUT("/releases/:release", rbacMiddleware.RequireSREGroup(), helmHandler.Upgrade)
+		helmRoutes.POST("/releases/:release/rollback", rbacMiddleware.RequireSREGroup(), helmHandler.Rollback)
+		helmRoutes.DELETE("/releases/:release", rbacMiddleware.RequireSREGroup(), helmHandler.Uninstall)
+		helmRoutes.GET("/operations/:operationId/stream", helmHandler.StreamOperation)
 	}
 
 	// Secrets
 	secretHandler := handlers.NewSecretHandler(s.kubeManager, s.historyTracker)
 	secrets := api.Group("/secrets")
 	{
-	secrets.GET("", secretHandler.List)
-	secrets.GET("/:cluster/:namespace/:name", secretHandler.Get)
-	secrets.GET("/:cluster/:namespace/:name/describe", secretHandler.Describe)
-	secrets.POST("/diff", secretHandler.Diff)
-	secrets.POST("/validate", secretHandler.Validate)
+		secrets.GET("", secretHandler.List)
+		secrets.GET("/:cluster/:namespace/:name", secretHandler.Get)
+		secrets.GET("/:cluster/:namespace/:name/describe", secretHandler.Describe)
+		secrets.POST("/diff", secretHandler.Diff)
+		secrets.POST("/validate", secretHandler.Validate)
 
-	// Secrets - Write Operations (SRE-only)
-	secrets.POST("/:cluster/:namespace", rbacMiddleware.RequireSREGroup(), secretHandler.Create)
-	secrets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), secretHandler.Apply)
-}
+		// Secrets - Write Operations (SRE-only)
+		secrets.POST("/:cluster/:namespace", rbacMiddleware.RequireSREGroup(), secretHandler.Create)
+		secrets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), secretHandler.Apply)
+	}
 
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()
@@ -443,9 +624,61 @@ func (s *Server) setupRoutes() {
 
 	// Service Mesh (Istio/Kiali Integration) - SEM AUTH (operações de leitura públicas)
 	serviceMeshHandler := handlers.NewServiceMeshHandler(s.kubeManager)
-	s.router.GET("/api/v1/servicemesh/graph", serviceMeshHandler.GetServiceGraph)       // GET /api/v1/servicemesh/graph?cluster=X&namespace=Y&duration=60s
-	s.router.GET("/api/v1/servicemesh/namespaces", serviceMeshHandler.GetNamespaces)    // GET /api/v1/servicemesh/namespaces?cluster=X
-	s.router.GET("/api/v1/servicemesh/metrics", serviceMeshHandler.GetMetrics)          // GET /api/v1/servicemesh/metrics?cluster=X&namespace=Y
+	s.router.GET("/api/v1/servicemesh/graph", serviceMeshHandler.GetServiceGraph)    // GET /api/v1/servicemesh/graph?cluster=X&namespace=Y&duration=60s
+	s.router.GET("/api/v1/servicemesh/namespaces", serviceMeshHandler.GetNamespaces) // GET /api/v1/servicemesh/namespaces?cluster=X
+	s.router.GET("/api/v1/servicemesh/metrics", serviceMeshHandler.GetMetrics)       // GET /api/v1/servicemesh/metrics?cluster=X&namespace=Y
+
+	// GitHub Tokens Store (tokens individuais por usuário)
+	fmt.Println("🔑 Inicializando GitHub Tokens Store...")
+	var githubTokenStore *storage.GitHubTokenStore
+	githubTokenStore, err = storage.NewGitHubTokenStore()
+	if err != nil {
+		fmt.Printf("⚠️  Falha ao inicializar GitHub Tokens Store: %v\n", err)
+		fmt.Println("   Tokens individuais não estarão disponíveis (fallback para GITHUB_TOKEN)")
+		githubTokenStore = nil
+	} else {
+		fmt.Println("✅ GitHub Tokens Store inicializado (AES-256-GCM encryption)")
+	}
+
+	// GitHub Releases Compare - SEM AUTH (operações de leitura públicas)
+	// Registry pode ser nil (graceful degradation se base não estiver disponível)
+	fmt.Println("🐙 Inicializando GitHub Releases Handler...")
+	var githubRegistry *storage.DeploymentRegistry
+	githubRegistry, err = storage.NewDeploymentRegistry()
+	if err != nil {
+		fmt.Printf("⚠️  Falha ao inicializar Deployment Registry para GitHub: %v\n", err)
+		fmt.Println("   GitHub Releases continuará funcionando com funcionalidade limitada")
+		githubRegistry = nil // Continua sem registry (graceful degradation)
+	} else {
+		fmt.Println("✅ Deployment Registry inicializado (base de conhecimento para GitHub)")
+	}
+
+	// Criar logger para GitHub handler
+	githubLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "github-releases").Logger()
+	githubHandler := handlers.NewGitHubReleasesHandler(githubRegistry, githubTokenStore, s.kubeManager, &githubLogger)
+
+	// Rotas que precisam de token individual do usuário (usar middleware InjectUserEmail)
+	api.GET("/github/repos", rbacMiddleware.InjectUserEmail(), githubHandler.GetRepos)
+	api.GET("/github/user/repos", rbacMiddleware.InjectUserEmail(), githubHandler.ListUserRepos)
+	api.GET("/github/repos/:owner/:repo/releases", rbacMiddleware.InjectUserEmail(), githubHandler.GetReleases)
+	api.GET("/github/repos/:owner/:repo/compare/:basehead", rbacMiddleware.InjectUserEmail(), githubHandler.CompareReleases)
+	api.GET("/github/deployments/search", rbacMiddleware.InjectUserEmail(), githubHandler.SearchDeployments)
+	api.GET("/github/deployments/production", rbacMiddleware.InjectUserEmail(), githubHandler.GetProductionDeployment)
+	api.GET("/github/deployments/all-versions", rbacMiddleware.InjectUserEmail(), githubHandler.GetAllVersions)
+	api.GET("/github/deployments/registry", rbacMiddleware.InjectUserEmail(), githubHandler.GetDeploymentsRegistry)
+	api.GET("/github/compare", rbacMiddleware.InjectUserEmail(), githubHandler.CompareReleasesWithRegistry)
+	api.POST("/github/deployments/scan", rbacMiddleware.InjectUserEmail(), githubHandler.ScanDeployments)
+	fmt.Println("✅ GitHub Releases routes registradas (com autenticação de usuário)")
+
+	// GitHub Tokens Management (gerenciamento de tokens individuais)
+	if githubTokenStore != nil {
+		githubTokensHandler := handlers.NewGitHubTokensHandler(githubTokenStore, &githubLogger)
+		// Rotas requerem injeção de user_email via RBAC middleware
+		api.GET("/github/token/status", rbacMiddleware.InjectUserEmail(), githubTokensHandler.GetTokenStatus)
+		api.POST("/github/token", rbacMiddleware.InjectUserEmail(), githubTokensHandler.SaveToken)
+		api.DELETE("/github/token", rbacMiddleware.InjectUserEmail(), githubTokensHandler.DeleteToken)
+		fmt.Println("✅ GitHub Tokens routes registradas")
+	}
 
 	// Sessions
 	sessionHandler := handlers.NewSessionsHandler()
@@ -520,6 +753,137 @@ func (s *Server) setupRoutes() {
 	api.PUT("/notifications/in-app/:id/read", notificationHandler.MarkNotificationAsRead)
 	api.PUT("/notifications/in-app/read-all", notificationHandler.MarkAllNotificationsAsRead)
 	api.DELETE("/notifications/in-app", notificationHandler.ClearAllNotifications)
+
+	// AI Diagnostics (se habilitado)
+	if s.aiHandler != nil {
+		// Rotas públicas (GET)
+		api.GET("/ai/status", s.aiHandler.GetProviderStatus)
+		api.GET("/ai/history", s.aiHandler.GetHistory)
+		api.GET("/ai/history/:id", s.aiHandler.GetAnalysisByID)
+		api.GET("/ai/stats", s.aiHandler.GetStats)
+
+		// Rotas de exportação de relatórios (PDF, Markdown, CSV)
+		api.GET("/ai/report/:id/pdf", s.aiHandler.GetReportPDF)
+		api.GET("/ai/report/:id/markdown", s.aiHandler.GetReportMarkdown)
+		api.GET("/ai/report/:id/csv", s.aiHandler.GetReportCSV)
+
+		// Rotas de escrita (POST, DELETE) - podem adicionar RBAC depois se necessário
+		api.POST("/ai/analyze", s.aiHandler.Analyze)
+		api.DELETE("/ai/history/:id", s.aiHandler.DeleteAnalysis)
+
+		fmt.Println("✅ AI Diagnostics routes registradas")
+	}
+
+	// AI Tokens (gerenciamento de tokens por usuário)
+	if s.aiTokensHandler != nil {
+		s.aiTokensHandler.RegisterRoutes(api, rbacMiddleware)
+		fmt.Println("✅ AI Tokens routes registradas")
+	}
+
+	// Predictive Analysis (análise preditiva de deployments)
+	// Reutilizar analyzer, tokensStore e config do AI Diagnostics
+	fmt.Println("🔮 Inicializando Predictions Store...")
+	predictionsDBPath := filepath.Join(baseDir, "predictions.db")
+	predictionsDB, err := storage.NewSQLiteClient(predictionsDBPath)
+	if err != nil {
+		fmt.Printf("⚠️  Erro ao criar Predictions DB: %v\n", err)
+	} else {
+		fmt.Println("✅ Predictions DB criado com sucesso")
+	}
+
+	var predictionsHandler *handlers.PredictionsHandler
+	if s.aiHandler != nil && s.kubeManagerWrapper != nil {
+		// Se AI está habilitado, predictions pode usar os mesmos recursos
+		predictionsStore := storage.NewPredictionsStore(predictionsDB)
+		predictionsHandler = handlers.NewPredictionsHandler(
+			s.kubeManager,                  // KubeConfigManager para pegar clients
+			s.kubeManagerWrapper,           // KubeManager para criar AI analyzers
+			s.aiHandler.GetAnalyzer(),      // Compartilhar analyzer
+			s.aiHandler.GetTokensStore(),   // Compartilhar tokensStore
+			predictionsStore,               // Store para histórico
+			s.aiHandler.GetDefaultConfig(), // Compartilhar config
+		)
+	} else {
+		// Se AI desabilitado, criar handler básico (sem AI)
+		predictionsHandler = handlers.NewPredictionsHandler(s.kubeManager, nil, nil, nil, nil, nil)
+		fmt.Println("⚠️  Predictions sem AI (AI Diagnostics desabilitado)")
+	}
+
+	// Middleware de debug para predictions
+	api.POST("/predictions/analyze", rbacMiddleware.InjectUserEmail(), func(c *gin.Context) {
+		fmt.Println("🔍 [MIDDLEWARE] POST /predictions/analyze - Request chegou!")
+		fmt.Printf("   Headers: %+v\n", c.Request.Header)
+		fmt.Printf("   ContentType: %s\n", c.ContentType())
+		userEmail := c.GetString("user_email")
+		fmt.Printf("   User Email (from RBAC): %s\n", userEmail)
+		c.Next()
+		fmt.Printf("   Response Status: %d\n", c.Writer.Status())
+	}, predictionsHandler.AnalyzeDeployment)
+
+	api.POST("/predictions/export", rbacMiddleware.InjectUserEmail(), predictionsHandler.ExportReport)
+	api.GET("/predictions/health", rbacMiddleware.InjectUserEmail(), predictionsHandler.GetHealthScore)
+
+	// Rotas de histórico de predictions
+	api.GET("/predictions/history", rbacMiddleware.InjectUserEmail(), predictionsHandler.GetHistory)
+	api.GET("/predictions/history/:id", rbacMiddleware.InjectUserEmail(), predictionsHandler.GetHistoryByID)
+	api.GET("/predictions/history/latest", rbacMiddleware.InjectUserEmail(), predictionsHandler.GetLatestForDeployment)
+	api.GET("/predictions/statistics", rbacMiddleware.InjectUserEmail(), predictionsHandler.GetStatistics)
+
+	fmt.Println("✅ Predictions routes registradas")
+
+	// Health Checking System
+	fmt.Println("🏥 Inicializando Health Checking System...")
+	healthCheckDBPath := filepath.Join(baseDir, "health_checks.db")
+	filtersConfigPath := filepath.Join(baseDir, "health_check_filters.json") // ✅ Config de filtros
+	progressTracker := handlers.GetProgressTracker()                         // Reutilizar ProgressTracker global
+
+	healthCheckOrchestrator, err := healthcheck.NewOrchestrator(s.kubeManager, progressTracker, healthCheckDBPath, filtersConfigPath)
+	if err != nil {
+		fmt.Printf("⚠️  Falha ao criar Health Check Orchestrator: %v\n", err)
+	} else {
+		// Criar handler
+		healthCheckHandler := handlers.NewHealthCheckHandler(s.kubeManager, healthCheckOrchestrator, progressTracker)
+
+		// Rotas de health checking
+		healthCheckGroup := api.Group("/healthcheck")
+		{
+			// Rotas públicas (GET)
+			healthCheckGroup.GET("/history", healthCheckHandler.History)
+			healthCheckGroup.GET("/stats", healthCheckHandler.Stats)
+			healthCheckGroup.GET("/events/:sessionId", healthCheckHandler.GetEvents) // 🆕 Buscar eventos persistidos
+			healthCheckGroup.GET("/:id", healthCheckHandler.Get)
+
+			// Rotas de escrita (POST, DELETE) - SRE only
+			healthCheckGroup.POST("/run", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Run)
+			healthCheckGroup.DELETE("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Cancel) // ✅ Cancelar health check
+			healthCheckGroup.DELETE("/:id", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Delete)
+		}
+
+		// SSE stream - requer token via query param (EventSource não suporta headers)
+		sseGroup := s.router.Group("/api/v1/healthcheck")
+		sseGroup.Use(middleware.WebSocketAuthMiddleware(s.token))
+		{
+			sseGroup.GET("/progress", healthCheckHandler.Progress)                      // Original: 1 conexão por cluster
+			sseGroup.GET("/progress-multiplex", healthCheckHandler.ProgressMultiplexed) // 🆕 Multiplexado: 1 conexão para TODOS os clusters
+		}
+
+		fmt.Println("✅ Health Checking routes registradas")
+
+		// ✅ Rotas de Filtros (Health Check Filters Management)
+		filtersHandler := handlers.NewFiltersHandler(healthCheckOrchestrator)
+		filtersGroup := api.Group("/filters")
+		{
+			// Rotas públicas (GET)
+			filtersGroup.GET("", filtersHandler.ListRules)                // Listar regras
+			filtersGroup.GET("/categories", filtersHandler.GetCategories) // Listar categorias
+
+			// Rotas de escrita (POST, DELETE) - SRE only
+			filtersGroup.POST("", rbacMiddleware.RequireSREGroup(), filtersHandler.AddRule)          // Adicionar regra
+			filtersGroup.DELETE("/:id", rbacMiddleware.RequireSREGroup(), filtersHandler.RemoveRule) // Remover regra
+		}
+
+		fmt.Println("✅ Health Check Filters routes registradas")
+	}
 }
 
 // setupStatic configura servir arquivos estáticos
@@ -591,14 +955,14 @@ func (s *Server) setupStatic() {
 // startInactivityMonitor inicia o monitoramento de inatividade
 func (s *Server) startInactivityMonitor() {
 	// Timer inicial de 30 minutos (mais tempo que o normal para dar tempo do primeiro heartbeat)
-	// O primeiro heartbeat do frontend vai resetar para 20 minutos
+	// O primeiro heartbeat do frontend vai resetar para 25 minutos (margem de 5min)
 	s.timerMutex.Lock()
 	s.shutdownTimer = time.AfterFunc(30*time.Minute, s.autoShutdown)
 	s.timerMutex.Unlock()
 
 	fmt.Println("⏰ Monitor de inatividade ativado:")
 	fmt.Println("   - Frontend deve enviar heartbeat a cada 5 minutos")
-	fmt.Println("   - Servidor desligará após 20 minutos sem heartbeat")
+	fmt.Println("   - Servidor desligará após 25 minutos sem heartbeat (margem de segurança)")
 	fmt.Println("   - Timer inicial: 30 minutos (aguardando primeiro heartbeat)")
 }
 
@@ -610,11 +974,28 @@ func (s *Server) autoShutdown() {
 
 	timeSinceLastHeartbeat := time.Since(lastHeartbeat)
 
-	// IMPORTANTE: Verificar se realmente passaram 20 minutos
-	// (proteção contra race conditions ou timers duplicados)
+	// IMPORTANTE: Verificar se realmente passaram pelo menos 20 minutos
+	// Margem de segurança: timer está configurado para 25 minutos,
+	// mas verificamos se passou o mínimo de 20 minutos antes de desligar
+	// Isso protege contra race conditions, atrasos de rede, etc.
 	if timeSinceLastHeartbeat < 20*time.Minute {
 		fmt.Printf("⚠️  Timer de shutdown disparou prematuramente (apenas %.1f minutos)\n", timeSinceLastHeartbeat.Minutes())
 		fmt.Println("✅ Heartbeat ainda ativo, shutdown cancelado")
+
+		// Resetar timer para evitar disparo prematuro novamente
+		s.timerMutex.Lock()
+		if s.shutdownTimer != nil {
+			s.shutdownTimer.Stop()
+		}
+		// Esperar o tempo restante até completar os 20 minutos + margem
+		remaining := (20 * time.Minute) - timeSinceLastHeartbeat + (5 * time.Minute)
+		if remaining < 1*time.Minute {
+			remaining = 1 * time.Minute // Mínimo de 1 minuto
+		}
+		s.shutdownTimer = time.AfterFunc(remaining, s.autoShutdown)
+		s.timerMutex.Unlock()
+
+		fmt.Printf("⏰ Timer resetado para mais %.1f minutos\n", remaining.Minutes())
 		return
 	}
 
