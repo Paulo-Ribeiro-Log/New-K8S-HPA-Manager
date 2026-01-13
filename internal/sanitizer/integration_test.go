@@ -37,9 +37,9 @@ func TestSanitizeLogsIntegration(t *testing.T) {
 			shouldNotContain: "fhfjfurenfndhdhdhdhdhdhf",
 		},
 		{
-			name:             "IP externo mascarado",
-			shouldContain:    "172.***.***.213",
-			shouldNotContain: "172.168.1.213",
+			name:             "IP externo NÃO mascarado (decisão de projeto)",
+			shouldContain:    "172.168.1.213",
+			shouldNotContain: "",
 		},
 		{
 			name:             "IP interno NÃO mascarado",
@@ -136,16 +136,8 @@ func TestSanitizeCrashLoopBackOffScenario(t *testing.T) {
 			shouldNotContain: "sk-live-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
 			description:      "API key deve ser mascarada (base64 pattern)",
 		},
-		{
-			name:             "IP externo 8.8.8.8 mascarado",
-			shouldNotContain: "8.8.8.8",
-			description:      "IP externo deve ser mascarado como 8.***.***.8",
-		},
-		{
-			name:             "IP externo 213.123.45.67 mascarado",
-			shouldNotContain: "213.123.45.67",
-			description:      "IP externo deve ser mascarado como 213.***.***.67",
-		},
+		// ✅ IPs NÃO são mais mascarados (decisão de projeto - análise de conectividade completa)
+		// Testes de IP externo removidos
 		{
 			name:             "Certificado .cert não exposto",
 			shouldNotContain: "production.cert",
