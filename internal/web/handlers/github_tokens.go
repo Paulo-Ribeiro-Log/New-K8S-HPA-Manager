@@ -33,11 +33,11 @@ type TokenStatusResponse struct {
 	Valid      bool   `json:"valid"`
 	Username   string `json:"username,omitempty"`
 	Email      string `json:"email,omitempty"`
-	Remaining  int    `json:"remaining,omitempty"`  // Rate limit remaining
-	Limit      int    `json:"limit,omitempty"`      // Rate limit total
-	ResetAt    string `json:"reset_at,omitempty"`   // Timestamp do reset
-	Configured bool   `json:"configured"`           // Token está configurado?
-	Error      string `json:"error,omitempty"`      // Mensagem de erro
+	Remaining  int    `json:"remaining,omitempty"` // Rate limit remaining
+	Limit      int    `json:"limit,omitempty"`     // Rate limit total
+	ResetAt    string `json:"reset_at,omitempty"`  // Timestamp do reset
+	Configured bool   `json:"configured"`          // Token está configurado?
+	Error      string `json:"error,omitempty"`     // Mensagem de erro
 }
 
 // GetTokenStatus valida token atual do usuário

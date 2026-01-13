@@ -656,7 +656,7 @@ func (s *Server) setupRoutes() {
 	// Criar logger para GitHub handler
 	githubLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "github-releases").Logger()
 	githubHandler := handlers.NewGitHubReleasesHandler(githubRegistry, githubTokenStore, s.kubeManager, &githubLogger)
-	
+
 	// Rotas que precisam de token individual do usuário (usar middleware InjectUserEmail)
 	api.GET("/github/repos", rbacMiddleware.InjectUserEmail(), githubHandler.GetRepos)
 	api.GET("/github/user/repos", rbacMiddleware.InjectUserEmail(), githubHandler.ListUserRepos)
@@ -981,7 +981,7 @@ func (s *Server) autoShutdown() {
 	if timeSinceLastHeartbeat < 20*time.Minute {
 		fmt.Printf("⚠️  Timer de shutdown disparou prematuramente (apenas %.1f minutos)\n", timeSinceLastHeartbeat.Minutes())
 		fmt.Println("✅ Heartbeat ainda ativo, shutdown cancelado")
-		
+
 		// Resetar timer para evitar disparo prematuro novamente
 		s.timerMutex.Lock()
 		if s.shutdownTimer != nil {
@@ -994,7 +994,7 @@ func (s *Server) autoShutdown() {
 		}
 		s.shutdownTimer = time.AfterFunc(remaining, s.autoShutdown)
 		s.timerMutex.Unlock()
-		
+
 		fmt.Printf("⏰ Timer resetado para mais %.1f minutos\n", remaining.Minutes())
 		return
 	}
