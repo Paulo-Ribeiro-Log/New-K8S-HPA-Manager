@@ -88,7 +88,7 @@ func (h *GitHubReleasesHandler) getGitHubClient(c *gin.Context) (*github.Client,
 	if h.tokenStore != nil {
 		userEmail := strings.TrimSpace(c.GetHeader("X-GitHub-Email"))
 		h.logger.Debug().Str("github_email_header", userEmail).Msg("🔍 Checking X-GitHub-Email header")
-		
+
 		if userEmail != "" {
 			h.logger.Info().Str("email", userEmail).Msg("✅ Using X-GitHub-Email header")
 			userToken, err := h.tokenStore.GetToken(userEmail)
@@ -100,7 +100,7 @@ func (h *GitHubReleasesHandler) getGitHubClient(c *gin.Context) (*github.Client,
 				h.logger.Error().Str("user", userEmail).Msg("❌ User token is empty")
 				return nil, fmt.Errorf("token vazio para o email %s. Configure seu token no modal.", userEmail)
 			}
-			
+
 			h.logger.Info().Str("user", userEmail).Msg("✅ Using user's individual GitHub token")
 			token = userToken
 			tokenSource = fmt.Sprintf("user:%s", userEmail)
@@ -244,7 +244,7 @@ func (h *GitHubReleasesHandler) ListUserRepos(c *gin.Context) {
 	for _, repo := range allRepos {
 		repoName := repo.GetName()
 		repoFullName := repo.GetFullName()
-		
+
 		if search != "" {
 			if !strings.Contains(strings.ToLower(repoName), strings.ToLower(search)) {
 				continue
@@ -252,19 +252,19 @@ func (h *GitHubReleasesHandler) ListUserRepos(c *gin.Context) {
 		}
 
 		filteredRepos = append(filteredRepos, gin.H{
-			"name":       repoName,
-			"full_name":  repoFullName,
-			"owner":      repo.GetOwner().GetLogin(),
-			"private":    repo.GetPrivate(),
-			"html_url":   repo.GetHTMLURL(),
-			"clone_url":  repo.GetCloneURL(),
+			"name":      repoName,
+			"full_name": repoFullName,
+			"owner":     repo.GetOwner().GetLogin(),
+			"private":   repo.GetPrivate(),
+			"html_url":  repo.GetHTMLURL(),
+			"clone_url": repo.GetCloneURL(),
 		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"repos": filteredRepos,
-		"total": len(filteredRepos),
-		"org":   org,
+		"repos":  filteredRepos,
+		"total":  len(filteredRepos),
+		"org":    org,
 		"search": search,
 	})
 }
@@ -369,7 +369,7 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 			Msg("Failed to get authenticated user - using unauthenticated client")
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error": "Token GitHub inválido ou não configurado. Configure seu token primeiro.",
-			"hint": "Clique no botão 'Token' para configurar seu token GitHub",
+			"hint":  "Clique no botão 'Token' para configurar seu token GitHub",
 		})
 		return
 	}
@@ -392,14 +392,14 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 			Int("status_code", resp.StatusCode).
 			Str("github_web_url", githubWebURL).
 			Msg("Failed to access repository")
-		
+
 		if resp.StatusCode == 404 {
 			// Tentar buscar repositórios do usuário/organização para ajudar no diagnóstico
 			var repoSuggestions []string
 			listOpts := &github.RepositoryListByOrgOptions{
 				ListOptions: github.ListOptions{PerPage: 100},
 			}
-			
+
 			repos, _, listErr := client.Repositories.ListByOrg(context.Background(), owner, listOpts)
 			if listErr == nil && len(repos) > 0 {
 				h.logger.Info().Int("total_repos", len(repos)).Str("org", owner).Msg("Found accessible repos in org")
@@ -407,7 +407,7 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 				for _, r := range repos {
 					repoName := r.GetName()
 					if strings.Contains(strings.ToLower(repoName), strings.ToLower(repo)) ||
-					   strings.Contains(strings.ToLower(repo), strings.ToLower(repoName)) {
+						strings.Contains(strings.ToLower(repo), strings.ToLower(repoName)) {
 						repoSuggestions = append(repoSuggestions, repoName)
 					}
 					if len(repoSuggestions) >= 5 {
@@ -417,7 +417,7 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 			} else if listErr != nil {
 				h.logger.Error().Err(listErr).Str("org", owner).Msg("Failed to list org repos")
 			}
-			
+
 			errorMsg := fmt.Sprintf("Repositório '%s/%s' não encontrado via API do GitHub.\n", owner, repo)
 			errorMsg += fmt.Sprintf("A URL web funciona: %s\n", githubWebURL)
 			errorMsg += "\nPossíveis causas:\n"
@@ -425,32 +425,32 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 			errorMsg += "2. Token precisa das permissões: 'repo' (full control) ou 'public_repo'\n"
 			errorMsg += "3. Nome do repositório pode estar ligeiramente diferente\n"
 			errorMsg += fmt.Sprintf("\nVocê pode acessar pelo browser: %s", githubWebURL)
-			
+
 			response := gin.H{
 				"error": errorMsg,
 				"details": gin.H{
-					"owner":      owner,
-					"repo":       repo,
+					"owner":          owner,
+					"repo":           repo,
 					"github_web_url": githubWebURL,
-					"api_url":    fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo),
-					"status_code": resp.StatusCode,
+					"api_url":        fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo),
+					"status_code":    resp.StatusCode,
 				},
 			}
-			
+
 			if len(repoSuggestions) > 0 {
 				response["suggestions"] = gin.H{
 					"message": fmt.Sprintf("Encontrados %d repositórios acessíveis com nome similar:", len(repoSuggestions)),
 					"repos":   repoSuggestions,
 				}
 			}
-			
+
 			c.JSON(http.StatusNotFound, response)
 			return
 		}
-		
+
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": fmt.Sprintf("Falha ao acessar repositório: %v", err),
-			"status_code": resp.StatusCode,
+			"error":          fmt.Sprintf("Falha ao acessar repositório: %v", err),
+			"status_code":    resp.StatusCode,
 			"github_web_url": githubWebURL,
 		})
 		return
@@ -469,7 +469,7 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 	if err != nil {
 		h.logger.Error().Err(err).Str("owner", owner).Str("repo", repo).Str("base", base).Str("head", head).Msg("Failed to compare releases")
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": fmt.Sprintf("Falha ao comparar tags '%s' e '%s': %v. Verifique se as tags existem no repositório.", base, head, err),
+			"error":              fmt.Sprintf("Falha ao comparar tags '%s' e '%s': %v. Verifique se as tags existem no repositório.", base, head, err),
 			"github_compare_url": fmt.Sprintf("https://github.com/%s/%s/compare/%s...%s", owner, repo, base, head),
 		})
 		return
@@ -613,11 +613,11 @@ func (h *GitHubReleasesHandler) GetProductionDeployment(c *gin.Context) {
 		"deployment":      record.DeploymentName,
 		"namespace":       record.Namespace,
 		"cluster":         record.Cluster,
-		"version":         normalizedVersion,     // ✅ Versão normalizada (x.x.x-x)
+		"version":         normalizedVersion, // ✅ Versão normalizada (x.x.x-x)
 		"image":           record.FullImage,
 		"status":          record.Status,
-		"created_at":      record.CreatedAt,      // ✅ Data de criação real do deployment (sem fallback)
-		"last_seen":       record.LastSeen,       // Data do último scan
+		"created_at":      record.CreatedAt, // ✅ Data de criação real do deployment (sem fallback)
+		"last_seen":       record.LastSeen,  // Data do último scan
 		"squad":           record.Squad,
 		"servicenow_task": record.ServiceNowTask,
 	})
@@ -708,10 +708,10 @@ func (h *GitHubReleasesHandler) GetDeploymentsRegistry(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"deployments":           enrichedRecords,
-		"total":                 len(records),
-		"valid_versions":        validVersions,
-		"invalid_versions":      len(records) - validVersions,
+		"deployments":      enrichedRecords,
+		"total":            len(records),
+		"valid_versions":   validVersions,
+		"invalid_versions": len(records) - validVersions,
 		"filters_applied": gin.H{
 			"cluster":             cluster,
 			"namespace":           namespace,
@@ -1024,15 +1024,15 @@ func (h *GitHubReleasesHandler) CompareReleasesWithRegistry(c *gin.Context) {
 	// 9. Retornar resultado completo
 	c.JSON(http.StatusOK, gin.H{
 		"production_deployment": gin.H{
-			"id":               prodDeployment.ID,
-			"deployment_name":  prodDeployment.DeploymentName,
-			"namespace":        prodDeployment.Namespace,
-			"cluster":          prodDeployment.Cluster,
-			"version":          prodDeployment.Version,
-			"squad":            prodDeployment.Squad,
-			"servicenow_task":  prodDeployment.ServiceNowTask,
-			"last_seen":        prodDeployment.LastSeen,
-			"age":              age,
+			"id":              prodDeployment.ID,
+			"deployment_name": prodDeployment.DeploymentName,
+			"namespace":       prodDeployment.Namespace,
+			"cluster":         prodDeployment.Cluster,
+			"version":         prodDeployment.Version,
+			"squad":           prodDeployment.Squad,
+			"servicenow_task": prodDeployment.ServiceNowTask,
+			"last_seen":       prodDeployment.LastSeen,
+			"age":             age,
 		},
 		"base_tag":       baseTag,
 		"head_tag":       headTag,
@@ -1156,7 +1156,7 @@ func (h *GitHubReleasesHandler) ScanDeployments(c *gin.Context) {
 					"3. Verifique se o cluster está ligado e acessível",
 					"4. Execute: kubectl get namespaces --context " + clusterName,
 				},
-				"error_type":    "vpn_disconnected",
+				"error_type":      "vpn_disconnected",
 				"technical_error": errorMsg,
 			})
 			return
@@ -1164,10 +1164,10 @@ func (h *GitHubReleasesHandler) ScanDeployments(c *gin.Context) {
 
 		// Outros erros (não relacionados a VPN)
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":        "Failed to list namespaces",
-			"details":      errorMsg,
-			"cluster":      clusterName,
-			"error_type":   "kubernetes_api_error",
+			"error":      "Failed to list namespaces",
+			"details":    errorMsg,
+			"cluster":    clusterName,
+			"error_type": "kubernetes_api_error",
 		})
 		return
 	}
