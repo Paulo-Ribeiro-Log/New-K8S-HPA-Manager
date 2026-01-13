@@ -82,12 +82,9 @@ func (s *Sanitizer) SanitizeText(text string) string {
 			return match // Mantém base64 curtas intactas
 		})
 
-		// 4. IPs externos - mascara preservando primeiro e último octeto
-		// Exemplo: "172.168.1.213" -> "172.***.***.213"
-		// IPs internos (10.x, 172.16-31.x, 192.168.x, 127.x) NÃO são mascarados
-		sanitized = IPv4Pattern.ReplaceAllStringFunc(sanitized, func(match string) string {
-			return MaskExternalIP(match)
-		})
+		// ✅ IPs NÃO são mascarados (decisão de projeto - análise de conectividade completa)
+		// 172.168.1.213 → 172.168.1.213 (preservado)
+		// 192.168.1.100 → 192.168.1.100 (preservado)
 	}
 
 	// Custom patterns (se houver)
@@ -148,19 +145,9 @@ func (s *Sanitizer) SanitizeTextWithResult(text string) *SanitizationResult {
 			result.MaskedItems["base64"] = count
 		}
 
-		// 4. IPs externos - mascara preservando primeiro e último octeto
-		matches = IPv4Pattern.FindAllString(result.Sanitized, -1)
-		count = 0
-		result.Sanitized = IPv4Pattern.ReplaceAllStringFunc(result.Sanitized, func(match string) string {
-			// Só conta se realmente foi mascarado (não é IP interno)
-			if !IsInternalIP(match) {
-				count++
-			}
-			return MaskExternalIP(match)
-		})
-		if count > 0 {
-			result.MaskedItems["external_ip"] = count
-		}
+		// ✅ IPs NÃO são mascarados (decisão de projeto - análise de conectividade completa)
+		// 172.168.1.213 → 172.168.1.213 (preservado)
+		// 8.8.8.8 → 8.8.8.8 (preservado)
 	}
 
 	// Custom patterns
