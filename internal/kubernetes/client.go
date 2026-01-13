@@ -1189,7 +1189,12 @@ func (c *Client) applySecret(ctx context.Context, yamlContent, fieldManager, enf
 		return nil, err
 	}
 
-	options := metav1.PatchOptions{FieldManager: fieldManager}
+	// Force=true to assume ownership of fields previously managed via kubectl/helm/etc.
+	forceFlag := true
+	options := metav1.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        &forceFlag,
+	}
 	if dryRun {
 		options.DryRun = []string{metav1.DryRunAll}
 	}
