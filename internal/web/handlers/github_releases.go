@@ -80,33 +80,32 @@ type GitHubReposConfig struct {
 
 // getGitHubClient cria cliente GitHub autenticado
 // Prioridade: 1) Token individual do usuário, 2) GITHUB_TOKEN global, 3) Não autenticado
-func (h *GitHubReleasesHandler) getGitHubClient(c *gin.Context) *github.Client {
+func (h *GitHubReleasesHandler) getGitHubClient(c *gin.Context) (*github.Client, error) {
 	var token string
 	var tokenSource string
 
 	// 1. Tentar usar token individual do usuário
 	if h.tokenStore != nil {
-		// Prioridade: header X-GitHub-Email > contexto user_email
-		userEmail := c.GetHeader("X-GitHub-Email")
-		if userEmail == "" {
-			userEmail = c.GetString("user_email")
-		}
-		
-		h.logger.Debug().Str("user_email", userEmail).Msg("Checking for user email")
+		userEmail := strings.TrimSpace(c.GetHeader("X-GitHub-Email"))
+		h.logger.Debug().Str("github_email_header", userEmail).Msg("🔍 Checking X-GitHub-Email header")
 		
 		if userEmail != "" {
+			h.logger.Info().Str("email", userEmail).Msg("✅ Using X-GitHub-Email header")
 			userToken, err := h.tokenStore.GetToken(userEmail)
-			if err == nil && userToken != "" {
-				h.logger.Info().Str("user", userEmail).Msg("✅ Using user's individual GitHub token")
-				token = userToken
-				tokenSource = fmt.Sprintf("user:%s", userEmail)
-			} else if err != nil {
-				h.logger.Warn().Err(err).Str("user", userEmail).Msg("Failed to get user token, falling back")
-			} else {
-				h.logger.Warn().Str("user", userEmail).Msg("User token is empty, falling back")
+			if err != nil {
+				h.logger.Error().Err(err).Str("user", userEmail).Msg("❌ Failed to get user token from store")
+				return nil, fmt.Errorf("token não encontrado para o email %s. Configure seu token no modal.", userEmail)
 			}
+			if userToken == "" {
+				h.logger.Error().Str("user", userEmail).Msg("❌ User token is empty")
+				return nil, fmt.Errorf("token vazio para o email %s. Configure seu token no modal.", userEmail)
+			}
+			
+			h.logger.Info().Str("user", userEmail).Msg("✅ Using user's individual GitHub token")
+			token = userToken
+			tokenSource = fmt.Sprintf("user:%s", userEmail)
 		} else {
-			h.logger.Warn().Msg("⚠️ user_email NOT found in header or context")
+			h.logger.Debug().Msg("X-GitHub-Email header not present, trying environment token")
 		}
 	} else {
 		h.logger.Debug().Msg("Token store is nil")
@@ -127,12 +126,12 @@ func (h *GitHubReleasesHandler) getGitHubClient(c *gin.Context) *github.Client {
 		tc := oauth2.NewClient(context.Background(), ts)
 		client := github.NewClient(tc)
 		h.logger.Info().Str("token_source", tokenSource).Msg("GitHub client authenticated")
-		return client
+		return client, nil
 	}
 
 	// 4. Cliente não autenticado (rate limit 60 req/h)
 	h.logger.Warn().Msg("⚠️ Using unauthenticated GitHub client (60 req/h limit)")
-	return github.NewClient(nil)
+	return github.NewClient(nil), nil
 }
 
 // loadReposConfig carrega configuração de repositórios
@@ -199,7 +198,15 @@ func (h *GitHubReleasesHandler) ListUserRepos(c *gin.Context) {
 	org := c.Query("org")
 	search := c.Query("search")
 
-	client := h.getGitHubClient(c)
+	client, err := h.getGitHubClient(c)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("Failed to get GitHub client")
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": err.Error(),
+			"hint":  "Configure seu token GitHub no modal de configurações",
+		})
+		return
+	}
 	ctx := context.Background()
 
 	var allRepos []*github.Repository
@@ -268,7 +275,15 @@ func (h *GitHubReleasesHandler) GetReleases(c *gin.Context) {
 	owner := c.Param("owner")
 	repo := c.Param("repo")
 
-	client := h.getGitHubClient(c)
+	client, err := h.getGitHubClient(c)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("Failed to get GitHub client")
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": err.Error(),
+			"hint":  "Configure seu token GitHub no modal de configurações",
+		})
+		return
+	}
 
 	// Buscar releases
 	releases, _, err := client.Repositories.ListReleases(context.Background(), owner, repo, &github.ListOptions{
@@ -310,6 +325,15 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 	repo := c.Param("repo")
 	basehead := c.Param("basehead") // Formato: "base...head"
 
+	// DEBUG: Log ALL headers
+	h.logger.Debug().Msg("=== ALL REQUEST HEADERS ===")
+	for key, values := range c.Request.Header {
+		for _, value := range values {
+			h.logger.Debug().Str("header", key).Str("value", value).Msg("Header received")
+		}
+	}
+	h.logger.Debug().Msg("=== END HEADERS ===")
+
 	// Parsear base e head
 	parts := strings.Split(basehead, "...")
 	if len(parts) != 2 {
@@ -327,7 +351,15 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 		Str("head", head).
 		Msg("Comparing releases")
 
-	client := h.getGitHubClient(c)
+	client, err := h.getGitHubClient(c)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("Failed to get GitHub client")
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": err.Error(),
+			"hint":  "Configure seu token GitHub no modal de configurações",
+		})
+		return
+	}
 
 	// Verificar se estamos autenticados e qual usuário
 	user, resp, err := client.Users.Get(context.Background(), "")
@@ -778,6 +810,15 @@ func (h *GitHubReleasesHandler) CompareReleasesWithRegistry(c *gin.Context) {
 		return
 	}
 
+	// 🔍 DEBUG: Log ALL headers received
+	h.logger.Debug().Msg("=== ALL REQUEST HEADERS ===")
+	for key, values := range c.Request.Header {
+		for _, value := range values {
+			h.logger.Debug().Str("header", key).Str("value", value).Msg("Header received")
+		}
+	}
+	h.logger.Debug().Msg("=== END HEADERS ===")
+
 	h.logger.Info().
 		Str("release", releaseName).
 		Str("new_tag", newTag).
@@ -803,7 +844,15 @@ func (h *GitHubReleasesHandler) CompareReleasesWithRegistry(c *gin.Context) {
 	repo := releaseName
 
 	// 3. Criar cliente GitHub
-	githubClient := h.getGitHubClient(c)
+	githubClient, err := h.getGitHubClient(c)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("Failed to get GitHub client")
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": err.Error(),
+			"hint":  "Configure seu token GitHub no modal de configurações",
+		})
+		return
+	}
 	ctx := context.Background()
 
 	// 4. Normalizar versões (converter x-x-x-x para x.x.x-x)

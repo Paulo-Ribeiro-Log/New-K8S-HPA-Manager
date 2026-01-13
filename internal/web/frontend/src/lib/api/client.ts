@@ -102,8 +102,14 @@ class APIClient {
   }
 
   setGitHubEmail(email: string) {
+    console.log('🔧 [APIClient] Setting GitHub email:', email);
     this.gitHubEmail = email;
-    localStorage.setItem("github_email", email);
+    try {
+      localStorage.setItem("github_email", email);
+      console.log('✅ [APIClient] GitHub email saved to localStorage');
+    } catch (error) {
+      console.error('❌ [APIClient] Failed to save GitHub email to localStorage:', error);
+    }
   }
 
   clearGitHubEmail() {
@@ -115,22 +121,47 @@ class APIClient {
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
-    const headers: HeadersInit = {
-      "Content-Type": "application/json",
-      ...options.headers,
-    };
+    // ✅ CRÍTICO: Recarregar gitHubEmail do localStorage antes de cada requisição
+    this.gitHubEmail = localStorage.getItem("github_email") || null;
 
-    if (this.token) {
-      headers["Authorization"] = `Bearer ${this.token}`;
+    // Debug para rotas GitHub
+    if (endpoint.includes('/github/')) {
+      console.log('🔍 [APIClient] Request to:', endpoint);
+      console.log('📧 [APIClient] GitHub email from localStorage:', this.gitHubEmail);
     }
 
+    // IMPORTANTE: Construir headers COMPLETO antes de passar para fetch
+    const requestHeaders: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    // Copiar headers do options (se existirem)
+    if (options.headers) {
+      const optHeaders = options.headers as Record<string, string>;
+      Object.keys(optHeaders).forEach(key => {
+        requestHeaders[key] = optHeaders[key];
+      });
+    }
+
+    // Adicionar Authorization se existir
+    if (this.token) {
+      requestHeaders["Authorization"] = `Bearer ${this.token}`;
+    }
+
+    // Adicionar X-GitHub-Email se existir (DEVE ser adicionado AQUI, ANTES do fetch)
     if (this.gitHubEmail) {
-      headers["X-GitHub-Email"] = this.gitHubEmail;
+      requestHeaders["X-GitHub-Email"] = this.gitHubEmail;
+      if (endpoint.includes('/github/')) {
+        console.log('✅ [APIClient] Adding X-GitHub-Email header:', this.gitHubEmail);
+        console.log('🔧 [APIClient] All headers:', requestHeaders);
+      }
+    } else if (endpoint.includes('/github/')) {
+      console.warn('⚠️ [APIClient] No GitHub email found - header NOT added');
     }
 
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
       ...options,
-      headers,
+      headers: requestHeaders, // Usar o objeto completo
     });
 
     if (!response.ok) {

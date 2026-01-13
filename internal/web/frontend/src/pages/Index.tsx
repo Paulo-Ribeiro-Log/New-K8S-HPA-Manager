@@ -1020,8 +1020,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm e AI Diagnostics */}
-      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "ai-diagnostics" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm, AI Diagnostics e GitHub Releases */}
+      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "ai-diagnostics" && activeTab !== "github-releases" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (

@@ -43,11 +43,10 @@ type TokenStatusResponse struct {
 // GetTokenStatus valida token atual do usuário
 // GET /api/v1/github/token/status
 func (h *GitHubTokensHandler) GetTokenStatus(c *gin.Context) {
-	// Obter email do usuário do contexto (injetado pelo RBAC middleware)
-	userEmail := c.GetString("user_email")
+	userEmail := strings.TrimSpace(c.GetHeader("X-GitHub-Email"))
 	if userEmail == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": "user_email não encontrado (RBAC middleware necessário)",
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "X-GitHub-Email header é obrigatório",
 		})
 		return
 	}
@@ -202,11 +201,10 @@ func (h *GitHubTokensHandler) SaveToken(c *gin.Context) {
 // DeleteToken remove token do usuário
 // DELETE /api/v1/github/token
 func (h *GitHubTokensHandler) DeleteToken(c *gin.Context) {
-	// Obter email do usuário
-	userEmail := c.GetString("user_email")
+	userEmail := strings.TrimSpace(c.GetHeader("X-GitHub-Email"))
 	if userEmail == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": "user_email não encontrado (RBAC middleware necessário)",
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "X-GitHub-Email header é obrigatório",
 		})
 		return
 	}
