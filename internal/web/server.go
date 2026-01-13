@@ -266,7 +266,7 @@ func (s *Server) setupMiddleware() {
 	s.router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-GitHub-Email"}, // ✅ Header customizado para token GitHub
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 	}))
