@@ -1,0 +1,117 @@
+# Configuração Hierárquica de Repositórios GitHub para Comparação de Releases
+# Copiar para: ~/.k8s-hpa-manager/github-repos.yaml
+
+clusters:
+  # Cluster de Produção
+  - name: "akspriv-prod-admin"
+    namespaces:
+      - name: "vv-retira"
+        deployments:
+          - name: "vv-retira-geolocalizacao"
+            app_name: "vv-retira-geolocalizacao"  # Deve coincidir com app.kubernetes.io/name
+            github_repo:
+              owner: "viavarejo-internal"
+              repo: "vv-retira-geolocalizacao"
+            version: "2.5.8-1"  # Versão atual em produção (atualizado automaticamente)
+            last_published: "2025-01-08T10:30:00Z"  # Data da última publicação (atualizado automaticamente)
+            squad: "squad-retira"  # Extraído de devops.k8s.io/squad
+            servicenow_task: "CHG0001234"  # Extraído de devops.k8s.io/servicenow-task-number (prefixo CHG)
+            age: "10d5h"  # Calculado automaticamente
+
+      - name: "vv-faturamento"
+        deployments:
+          - name: "vv-faturamento-api"
+            app_name: "faturamento"
+            github_repo:
+              owner: "viavarejo-internal"
+              repo: "vv-faturamento-api"
+            version: "3.2.1"
+            last_published: "2025-01-05T14:20:00Z"
+            squad: "squad-faturamento"
+            servicenow_task: "CHG0005678"
+            age: "13d2h"
+
+  # Cluster de Homologação
+  - name: "akspriv-hlg-admin"
+    namespaces:
+      - name: "vv-retira"
+        deployments:
+          - name: "vv-retira-geolocalizacao"
+            app_name: "vv-retira-geolocalizacao"
+            github_repo:
+              owner: "viavarejo-internal"
+              repo: "vv-retira-geolocalizacao"
+            version: "2.5.9-rc1"
+            last_published: "2025-01-10T09:00:00Z"
+            squad: "squad-retira"
+            servicenow_task: "CHG0009999"
+            age: "1d3h"
+
+  # Exemplo: App público (sem token necessário)
+  - name: "cluster-public"
+    namespaces:
+      - name: "ingress-nginx"
+        deployments:
+          - name: "ingress-nginx-controller"
+            app_name: "ingress-nginx"
+            github_repo:
+              owner: "kubernetes"
+              repo: "ingress-nginx"
+            version: "v1.8.2"
+            last_published: "2024-12-15T08:00:00Z"
+            squad: "infra"
+            servicenow_task: "CHG0000000"
+            age: "27d"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# IMPORTANTE - Auto-detecção e Atualização Automática
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Campos OBRIGATÓRIOS (configuração manual):
+# - name: Nome do deployment no Kubernetes
+# - app_name: Deve corresponder ao label "app.kubernetes.io/name" do Deployment
+# - github_repo.owner: Dono do repositório no GitHub
+# - github_repo.repo: Nome do repositório no GitHub
+#
+# Campos AUTO-ATUALIZADOS (pelo Health Checking):
+# - version: Versão atual extraída do label "app.kubernetes.io/version" ou image tag
+# - last_published: Data/hora da última atualização do Deployment (metadata.creationTimestamp)
+# - age: Tempo desde última atualização (calculado em tempo real)
+# - squad: Extraído automaticamente do label "devops.k8s.io/squad"
+# - servicenow_task: Extraído do label "devops.k8s.io/servicenow-task-number" (com prefixo CHG)
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# Fluxo de Auto-detecção
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# 1. Health Checking varre clusters/namespaces configurados aqui
+# 2. Para cada deployment listado:
+#    - Busca labels: app.kubernetes.io/name, app.kubernetes.io/version,
+#                     devops.k8s.io/squad, devops.k8s.io/servicenow-task-number
+#    - Extrai version da image tag se label version não existir
+#    - Calcula age baseado em metadata.creationTimestamp
+#    - Atualiza base SQLite com essas informações
+# 3. GitHub Compare API usa essa base para auto-detectar versão atual em produção
+# 4. Prioriza clusters com "prod" ou "prd" no nome para detectar versão de produção
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# Exemplo de Labels Kubernetes Esperados
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: vv-retira-geolocalizacao
+#   namespace: vv-retira
+#   labels:
+#     app.kubernetes.io/name: vv-retira-geolocalizacao  # ← Match com app_name
+#     app.kubernetes.io/version: 2.5.8-1                # ← Auto-extraído
+#     devops.k8s.io/squad: squad-retira                 # ← Auto-extraído
+#     devops.k8s.io/servicenow-task-number: CHG0001234  # ← Auto-extraído
+# spec:
+#   template:
+#     spec:
+#       containers:
+#       - name: app
+#         image: gcr.io/project/vv-retira-geolocalizacao:2.5.8-1  # ← Fallback para version
+#

@@ -20,6 +20,13 @@ var (
 	noBrowser     bool
 	foreground    bool
 	disableADAuth bool // Flag oculta para desabilitar verificação AD em caso de erro
+
+	// AI Diagnostics flags
+	aiProvider   string
+	ollamaURL    string
+	ollamaModel  string
+	claudeAPIKey string
+	claudeModel  string
 )
 
 // runInBackground executes the web server as a background process
@@ -47,6 +54,27 @@ func runInBackground() error {
 
 	if disableADAuth {
 		args = append(args, "--ad")
+	}
+
+	// AI Diagnostics flags
+	if aiProvider != "" {
+		args = append(args, "--ai-provider", aiProvider)
+	}
+
+	if ollamaURL != "" {
+		args = append(args, "--ollama-url", ollamaURL)
+	}
+
+	if ollamaModel != "" {
+		args = append(args, "--ollama-model", ollamaModel)
+	}
+
+	if claudeAPIKey != "" {
+		args = append(args, "--claude-api-key", claudeAPIKey)
+	}
+
+	if claudeModel != "" {
+		args = append(args, "--claude-model", claudeModel)
 	}
 
 	// Start process in background
@@ -184,7 +212,7 @@ API Endpoints:
 		}
 
 		// Criar servidor web
-		server, err := web.NewServer(kubeconfig, webPort, debug, disableADAuth)
+		server, err := web.NewServer(kubeconfig, webPort, debug, disableADAuth, aiProvider, ollamaURL, ollamaModel, claudeAPIKey, claudeModel)
 		if err != nil {
 			return fmt.Errorf("failed to create web server: %w", err)
 		}
@@ -215,13 +243,13 @@ API Endpoints:
 		go func() {
 			sig := <-sigChan
 			fmt.Printf("\n⚠️  Recebido sinal: %v\n", sig)
-			
+
 			// Fazer graceful shutdown
 			if err := server.Shutdown(); err != nil {
 				fmt.Printf("❌ Erro durante shutdown: %v\n", err)
 				os.Exit(1)
 			}
-			
+
 			os.Exit(0)
 		}()
 
@@ -242,4 +270,11 @@ func init() {
 	// Flag oculta para desabilitar verificação AD (sem documentação, apenas para emergências)
 	webCmd.Flags().BoolVar(&disableADAuth, "ad", false, "")
 	webCmd.Flags().MarkHidden("ad")
+
+	// AI Diagnostics flags
+	webCmd.Flags().StringVar(&aiProvider, "ai-provider", "gemini", "AI provider (gemini, ollama or claude)")
+	webCmd.Flags().StringVar(&ollamaURL, "ollama-url", "http://localhost:11434", "Ollama base URL")
+	webCmd.Flags().StringVar(&ollamaModel, "ollama-model", "llama3.2", "Ollama model name")
+	webCmd.Flags().StringVar(&claudeAPIKey, "claude-api-key", "", "Claude API key (or set CLAUDE_API_KEY env var)")
+	webCmd.Flags().StringVar(&claudeModel, "claude-model", "claude-3-5-sonnet-20241022", "Claude model name")
 }

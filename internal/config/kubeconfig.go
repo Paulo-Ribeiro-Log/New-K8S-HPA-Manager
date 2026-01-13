@@ -16,8 +16,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 
 	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
@@ -37,6 +39,8 @@ type KubeConfigManager struct {
 	config         *api.Config
 	clients        map[string]kubernetes.Interface
 	clientMutex    sync.RWMutex // Protege acesso concorrente aos clients
+	metricsClients map[string]*metricsclientset.Clientset
+	metricsMutex   sync.RWMutex
 	historyTracker *history.HistoryTracker
 }
 
@@ -51,8 +55,14 @@ func NewKubeConfigManager(configPath string) (*KubeConfigManager, error) {
 		configPath:     configPath,
 		config:         config,
 		clients:        make(map[string]kubernetes.Interface),
+		metricsClients: make(map[string]*metricsclientset.Clientset),
 		historyTracker: nil, // Será configurado via SetHistoryTracker
 	}, nil
+}
+
+// ConfigPath retorna o caminho configurado do kubeconfig.
+func (k *KubeConfigManager) ConfigPath() string {
+	return k.configPath
 }
 
 // SetHistoryTracker configura o historyTracker para audit logging
@@ -168,6 +178,75 @@ func (k *KubeConfigManager) TestClusterConnection(ctx context.Context, clusterNa
 // GetClient retorna um cliente Kubernetes para o cluster especificado
 func (k *KubeConfigManager) GetClient(clusterName string) (kubernetes.Interface, error) {
 	return k.getClient(clusterName)
+}
+
+// GetMetricsClient retorna um client para a API de métricas do cluster
+func (k *KubeConfigManager) GetMetricsClient(clusterName string) (metricsclientset.Interface, error) {
+	k.metricsMutex.RLock()
+	if client, exists := k.metricsClients[clusterName]; exists {
+		k.metricsMutex.RUnlock()
+		return client, nil
+	}
+	k.metricsMutex.RUnlock()
+
+	restConfig, err := k.GetRestConfig(clusterName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get rest config for metrics of %s: %w", clusterName, err)
+	}
+
+	cfgCopy := rest.CopyConfig(restConfig)
+	cfgCopy.Timeout = 15 * time.Second
+
+	metricsClient, err := metricsclientset.NewForConfig(cfgCopy)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create metrics client for %s: %w", clusterName, err)
+	}
+
+	k.metricsMutex.Lock()
+	defer k.metricsMutex.Unlock()
+	if existing, exists := k.metricsClients[clusterName]; exists {
+		return existing, nil
+	}
+	k.metricsClients[clusterName] = metricsClient
+	return metricsClient, nil
+}
+
+// GetRestConfig retorna a configuração REST para o cluster especificado
+func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, error) {
+	// Verificar se o arquivo kubeconfig existe e é válido
+	if k.configPath == "" {
+		return nil, fmt.Errorf("kubeconfig path is empty")
+	}
+
+	// Verificar se o arquivo kubeconfig existe
+	if _, err := os.Stat(k.configPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("kubeconfig file does not exist at path: %s", k.configPath)
+	}
+
+	// Criar configuração do cliente para o contexto específico
+	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: k.configPath}
+	configOverrides := &clientcmd.ConfigOverrides{CurrentContext: clusterName}
+
+	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		loadingRules,
+		configOverrides,
+	)
+
+	// Obter configuração REST
+	restConfig, err := clientConfig.ClientConfig()
+	if err != nil {
+		if strings.Contains(err.Error(), "yaml") || strings.Contains(err.Error(), "unmarshal") {
+			return nil, fmt.Errorf("kubeconfig file has invalid YAML format for cluster %s: %w", clusterName, err)
+		}
+		return nil, fmt.Errorf("failed to create client config for %s: %w", clusterName, err)
+	}
+
+	// Configurar timeouts
+	restConfig.Timeout = 30 * time.Second
+	restConfig.QPS = 50
+	restConfig.Burst = 100
+
+	return restConfig, nil
 }
 
 // getClient cria ou retorna um cliente existente para o cluster

@@ -4,7 +4,6 @@ import { DiffEditor } from "@monaco-editor/react";
 import type { Monaco } from "@monaco-editor/react";
 import type * as MonacoEditorNS from "monaco-editor";
 import { configureMonacoYaml, type MonacoYaml } from "monaco-yaml";
-import configMapSchema from "@/lib/schemas/configmap.schema.json";
 
 interface MonacoYamlEditorProps {
   value: string;
@@ -15,29 +14,24 @@ interface MonacoYamlEditorProps {
   readOnly?: boolean;
 }
 
-const schemaUri = "inmemory://model/configmap-schema.json";
-
 export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "editor", height = 320, readOnly = false }: MonacoYamlEditorProps) => {
   const [mounted, setMounted] = useState(false);
   const editorRef = useRef<MonacoEditorNS.editor.IStandaloneCodeEditor | null>(null);
+  const diffEditorRef = useRef<MonacoEditorNS.editor.IStandaloneDiffEditor | null>(null);
   const yamlConfigRef = useRef<MonacoYaml | null>(null);
 
   const handleBeforeMount: BeforeMount = (monacoInstance: Monaco) => {
+    // Dispose previous config if exists
     yamlConfigRef.current?.dispose();
+    
+    // Configure monaco-yaml with ALL features enabled
     yamlConfigRef.current = configureMonacoYaml(monacoInstance, {
       enableSchemaRequest: false,
-      hover: true,
-      completion: true,
-      format: true,
-      validate: true,
-      isKubernetes: true,
-      schemas: [
-        {
-          uri: schemaUri,
-          fileMatch: ["*"],
-          schema: configMapSchema as any,
-        },
-      ],
+      hover: true,           // ✅ Hover com documentação
+      completion: true,      // ✅ Autocompletar
+      format: true,          // ✅ Formatação
+      validate: true,        // ✅ Validação em tempo real
+      isKubernetes: true,    // ✅ Features Kubernetes
     });
   };
 
@@ -50,6 +44,53 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
     });
     setMounted(true);
   };
+
+  const handleDiffMount = (editor: MonacoEditorNS.editor.IStandaloneDiffEditor) => {
+    diffEditorRef.current = editor;
+    setMounted(true);
+  };
+
+  // Cleanup when switching modes
+  useEffect(() => {
+    if (mode === 'editor' && diffEditorRef.current) {
+      try {
+        diffEditorRef.current.dispose();
+        diffEditorRef.current = null;
+      } catch (error) {
+        console.warn('Error disposing diff editor on mode switch:', error);
+      }
+    } else if (mode === 'diff' && editorRef.current) {
+      try {
+        editorRef.current.dispose();
+        editorRef.current = null;
+      } catch (error) {
+        console.warn('Error disposing editor on mode switch:', error);
+      }
+    }
+  }, [mode]);
+
+  useEffect(() => {
+    return () => {
+      // Cleanup on unmount
+      if (diffEditorRef.current) {
+        try {
+          diffEditorRef.current.dispose();
+        } catch (error) {
+          console.warn('Error disposing diff editor:', error);
+        }
+        diffEditorRef.current = null;
+      }
+      if (editorRef.current) {
+        try {
+          editorRef.current.dispose();
+        } catch (error) {
+          console.warn('Error disposing editor:', error);
+        }
+        editorRef.current = null;
+      }
+      yamlConfigRef.current?.dispose();
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -106,7 +147,6 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
           original={originalValue ?? ""}
           modified={value}
           onMount={() => setMounted(true)}
-          beforeMount={handleBeforeMount}
           theme="vs-dark"
           options={{
             renderSideBySide: false,
@@ -121,7 +161,6 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
           defaultLanguage="yaml"
           value={value}
           onMount={handleMount}
-          beforeMount={handleBeforeMount}
           onChange={handleChange}
           theme="vs-dark"
           options={{

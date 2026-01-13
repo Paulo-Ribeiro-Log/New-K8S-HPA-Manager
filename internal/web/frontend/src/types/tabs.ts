@@ -24,6 +24,11 @@ export interface TabState {
     showSaveSessionModal: boolean;
     showLoadSessionModal: boolean;
     isContextSwitching: boolean;
+
+    // Estados aninhados de cada aba do Workload (Pods, ConfigMaps, Deployments, Secrets, etc)
+    // Estrutura: { [namespace]: { [key]: value } }
+    // Ex: { pods: { selectedPod: {...}, showSystemPods: false }, configmaps: { selectedConfigMap: {...} } }
+    workloadStates?: Record<string, Record<string, any>>;
   };
   
   // Status de mudanças pendentes

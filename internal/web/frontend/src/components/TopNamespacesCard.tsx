@@ -16,32 +16,71 @@ export const TopNamespacesCard = ({ cluster }: TopNamespacesCardProps) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedTab, setSelectedTab] = useState<MetricTab>("cpu");
-
-  const fetchMetrics = async () => {
-    if (!cluster) {
-      setLoading(false);
-      return;
-    }
-
-    try {
-      setError(null);
-      const response = await apiClient.getNamespaceMetrics(cluster, 5);
-      setData(response);
-    } catch (err) {
-      console.error("[TopNamespacesCard] Error fetching metrics:", err);
-      setError(err instanceof Error ? err.message : "Failed to fetch namespace metrics");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [refreshTrigger, setRefreshTrigger] = useState(0); // ✅ Trigger para forçar refresh manual
 
   useEffect(() => {
+    // ✅ FIX: Limpar dados ao trocar cluster
+    setData(null);
+    setError(null);
+    setLoading(true);
+
+    // ✅ FIX: AbortController para cancelar fetch pendente ao trocar cluster
+    const abortController = new AbortController();
+    let isMounted = true;
+    const intervalId = Math.random().toString(36).substring(7); // ID único do intervalo
+
+    const fetchMetrics = async () => {
+      if (!cluster) {
+        setLoading(false);
+        return;
+      }
+
+      console.log(`[TopNamespacesCard:${intervalId}] Fetching metrics for cluster: ${cluster}`);
+      try {
+        setError(null);
+        const response = await apiClient.getNamespaceMetrics(cluster, 5);
+
+        // ✅ Só atualiza estado se componente ainda estiver montado
+        if (isMounted) {
+          setData(response);
+        }
+      } catch (err) {
+        // Ignora erros de abort (quando cluster muda)
+        if (err instanceof Error && err.name === 'AbortError') {
+          console.log(`[TopNamespacesCard:${intervalId}] Fetch aborted for cluster: ${cluster}`);
+          return;
+        }
+
+        console.error(`[TopNamespacesCard:${intervalId}] Error fetching metrics:`, err);
+        if (isMounted) {
+          setError(err instanceof Error ? err.message : "Failed to fetch namespace metrics");
+        }
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    };
+
     fetchMetrics();
 
-    // Auto-refresh a cada 60 segundos
-    const interval = setInterval(fetchMetrics, 60000);
-    return () => clearInterval(interval);
-  }, [cluster]);
+    // Auto-refresh a cada 60 segundos (agora usa cluster correto)
+    console.log(`[TopNamespacesCard:${intervalId}] Creating interval for cluster: ${cluster}`);
+    const interval = setInterval(() => {
+      // ✅ Verifica se não foi abortado antes de fazer novo fetch
+      if (!abortController.signal.aborted && isMounted) {
+        console.log(`[TopNamespacesCard:${intervalId}] Interval tick for cluster: ${cluster}`);
+        fetchMetrics();
+      }
+    }, 60000);
+
+    return () => {
+      console.log(`[TopNamespacesCard:${intervalId}] CLEANUP for cluster: ${cluster} (clearing interval #${interval})`);
+      isMounted = false;
+      abortController.abort(); // ✅ Cancela qualquer fetch pendente
+      clearInterval(interval);
+    };
+  }, [cluster, refreshTrigger]); // ✅ Incluir refreshTrigger nas dependências
 
   if (loading) {
     return (
@@ -188,7 +227,7 @@ export const TopNamespacesCard = ({ cluster }: TopNamespacesCardProps) => {
           </div>
         </div>
         <button
-          onClick={fetchMetrics}
+          onClick={() => setRefreshTrigger((prev) => prev + 1)}
           className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
           title="Atualizar métricas"
         >

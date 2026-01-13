@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +20,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 	"sigs.k8s.io/yaml"
 
 	"k8s-hpa-manager/internal/history"
@@ -57,9 +61,9 @@ var systemNamespaces = map[string]bool{
 	"velero":                        true,
 	"calico-apiserver":              true,
 	"rbac-manager":                  true,
-	"spinnaker":                     true,
-	"aks-command":                   true,
-	"dsv-system":                    true,
+	// "spinnaker":                     true,
+	"aks-command": true,
+	"dsv-system":  true,
 }
 
 // isSystemNamespace verifica se um namespace é de sistema e deve ser filtrado
@@ -70,6 +74,7 @@ func isSystemNamespace(namespace string) bool {
 // Client encapsula as operações do Kubernetes
 type Client struct {
 	clientset      kubernetes.Interface
+	metricsClient  *metricsclientset.Clientset
 	cluster        string
 	historyTracker *history.HistoryTracker
 }
@@ -81,6 +86,11 @@ func NewClient(clientset kubernetes.Interface, clusterName string) *Client {
 		cluster:        clusterName,
 		historyTracker: nil, // Será configurado via SetHistoryTracker se necessário
 	}
+}
+
+// GetClientset retorna o clientset do Kubernetes
+func (c *Client) GetClientset() kubernetes.Interface {
+	return c.clientset
 }
 
 // SetHistoryTracker configura o historyTracker para audit logging
@@ -1179,7 +1189,12 @@ func (c *Client) applySecret(ctx context.Context, yamlContent, fieldManager, enf
 		return nil, err
 	}
 
-	options := metav1.PatchOptions{FieldManager: fieldManager}
+	// Force=true to assume ownership of fields previously managed via kubectl/helm/etc.
+	forceFlag := true
+	options := metav1.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        &forceFlag,
+	}
 	if dryRun {
 		options.DryRun = []string{metav1.DryRunAll}
 	}
@@ -1711,6 +1726,21 @@ func (c *Client) RolloutDeployment(ctx context.Context, namespace, deploymentNam
 	_, err = c.clientset.AppsV1().Deployments(namespace).Update(ctx, deployment, metav1.UpdateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to rollout deployment %s/%s/%s: %w", c.cluster, namespace, deploymentName, err)
+	}
+
+	return nil
+}
+
+// RolloutRestartDeployment reinicia um deployment (alias para RolloutDeployment)
+func (c *Client) RolloutRestartDeployment(ctx context.Context, namespace, deploymentName string) error {
+	return c.RolloutDeployment(ctx, namespace, deploymentName)
+}
+
+// DeleteDeployment deleta um deployment específico
+func (c *Client) DeleteDeployment(ctx context.Context, namespace, deploymentName string) error {
+	err := c.clientset.AppsV1().Deployments(namespace).Delete(ctx, deploymentName, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete deployment %s/%s/%s: %w", c.cluster, namespace, deploymentName, err)
 	}
 
 	return nil
@@ -3191,6 +3221,108 @@ func (c *Client) canDisruptPods(pdb *policyv1.PodDisruptionBudget, affectedPods 
 	return true, ""
 }
 
+// NamespaceEvent representa um evento do Kubernetes relacionado ao namespace
+type NamespaceEvent struct {
+	Type          string    `json:"type"`          // Normal, Warning
+	Reason        string    `json:"reason"`        // Razão do evento (ex: FailedScheduling, Pulled)
+	Message       string    `json:"message"`       // Mensagem descritiva
+	Count         int32     `json:"count"`         // Número de ocorrências
+	FirstTime     time.Time `json:"firstTime"`     // Primeira ocorrência
+	LastTime      time.Time `json:"lastTime"`      // Última ocorrência
+	Source        string    `json:"source"`        // Componente que gerou (ex: kubelet, scheduler)
+	Object        string    `json:"object"`        // Recurso afetado (ex: Pod/nginx-xxx)
+	ObjectKind    string    `json:"objectKind"`    // Tipo do objeto (Pod, Deployment, etc)
+	LastTimestamp string    `json:"lastTimestamp"` // Timestamp formatado para display
+}
+
+// GetNamespaceEvents retorna eventos recentes de um namespace
+func (c *Client) GetNamespaceEvents(ctx context.Context, namespace string, limitStr string) ([]NamespaceEvent, error) {
+	// Parse do limit (padrão: 50, máximo: 200)
+	limit := int64(50)
+	if limitStr != "" {
+		if l := parseInt64(limitStr); l > 0 {
+			limit = l
+			if limit > 200 {
+				limit = 200
+			}
+		}
+	}
+
+	// Buscar eventos do namespace
+	eventList, err := c.clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
+		Limit: limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list events in namespace %s: %w", namespace, err)
+	}
+
+	// Ordenar por LastTimestamp (mais recente primeiro)
+	sort.Slice(eventList.Items, func(i, j int) bool {
+		return eventList.Items[i].LastTimestamp.Time.After(eventList.Items[j].LastTimestamp.Time)
+	})
+
+	// Converter para NamespaceEvent
+	var events []NamespaceEvent
+	for _, event := range eventList.Items {
+		// Formatar timestamp relativo (ex: "2m ago", "1h ago")
+		lastTime := event.LastTimestamp.Time
+		if lastTime.IsZero() {
+			lastTime = event.EventTime.Time
+		}
+
+		timeAgo := formatTimeAgo(lastTime)
+
+		// Determinar objeto afetado
+		objectName := event.InvolvedObject.Name
+		if event.InvolvedObject.Namespace != "" && event.InvolvedObject.Namespace != namespace {
+			objectName = event.InvolvedObject.Namespace + "/" + objectName
+		}
+
+		events = append(events, NamespaceEvent{
+			Type:          event.Type,
+			Reason:        event.Reason,
+			Message:       event.Message,
+			Count:         event.Count,
+			FirstTime:     event.FirstTimestamp.Time,
+			LastTime:      lastTime,
+			Source:        event.Source.Component,
+			Object:        objectName,
+			ObjectKind:    event.InvolvedObject.Kind,
+			LastTimestamp: timeAgo,
+		})
+	}
+
+	return events, nil
+}
+
+// formatTimeAgo formata um timestamp como "5m ago", "2h ago", etc
+func formatTimeAgo(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+
+	duration := time.Since(t)
+
+	if duration < time.Minute {
+		return fmt.Sprintf("%ds ago", int(duration.Seconds()))
+	}
+	if duration < time.Hour {
+		return fmt.Sprintf("%dm ago", int(duration.Minutes()))
+	}
+	if duration < 24*time.Hour {
+		return fmt.Sprintf("%dh ago", int(duration.Hours()))
+	}
+	days := int(duration.Hours() / 24)
+	return fmt.Sprintf("%dd ago", days)
+}
+
+// parseInt64 faz parse de string para int64
+func parseInt64(s string) int64 {
+	var result int64
+	fmt.Sscanf(s, "%d", &result)
+	return result
+}
+
 // ExecuteKubectlDescribe executa kubectl describe para um recurso
 func ExecuteKubectlDescribe(cluster, resourceType, name, namespace string) (string, error) {
 	cmd := exec.Command("kubectl", "describe", resourceType, name,
@@ -3203,4 +3335,397 @@ func ExecuteKubectlDescribe(cluster, resourceType, name, namespace string) (stri
 	}
 
 	return string(output), nil
+}
+
+// ApplyPod aplica um Pod a partir de YAML
+func (c *Client) ApplyPod(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*corev1.Pod, error) {
+	return c.applyPod(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+}
+
+func (c *Client) applyPod(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*corev1.Pod, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("pod yaml content cannot be empty")
+	}
+	if fieldManager == "" {
+		fieldManager = "web-pod-editor"
+	}
+
+	payload, namespace, name, err := preparePodApplyPayload(yamlContent, enforceNamespace, enforceName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Force=true permite assumir ownership de campos gerenciados por outros field managers
+	forceFlag := true
+	options := metav1.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        &forceFlag,
+	}
+	if dryRun {
+		options.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.CoreV1().Pods(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply pod %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	return result, nil
+}
+
+func preparePodApplyPayload(yamlContent, enforceNamespace, enforceName string) ([]byte, string, string, error) {
+	var pod map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &pod); err != nil {
+		return nil, "", "", fmt.Errorf("invalid pod yaml: %w", err)
+	}
+
+	if len(pod) == 0 {
+		return nil, "", "", fmt.Errorf("pod yaml cannot be empty")
+	}
+
+	apiVersion, _ := pod["apiVersion"].(string)
+	if strings.TrimSpace(apiVersion) == "" {
+		pod["apiVersion"] = "v1"
+	}
+	kind, _ := pod["kind"].(string)
+	if strings.TrimSpace(kind) == "" {
+		pod["kind"] = "Pod"
+	} else if !strings.EqualFold(kind, "Pod") {
+		return nil, "", "", fmt.Errorf("expected kind Pod, got %s", kind)
+	}
+
+	metadata, _ := pod["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	name, _ := metadata["name"].(string)
+	name = strings.TrimSpace(name)
+	if enforceName != "" {
+		enforceName = strings.TrimSpace(enforceName)
+		if name == "" {
+			name = enforceName
+		}
+		if name != enforceName {
+			return nil, "", "", fmt.Errorf("pod name mismatch: expected %s, got %s", enforceName, name)
+		}
+	}
+	if name == "" {
+		return nil, "", "", fmt.Errorf("pod metadata.name is required")
+	}
+	metadata["name"] = name
+
+	namespace := strings.TrimSpace(enforceNamespace)
+	if nsRaw, ok := metadata["namespace"].(string); ok {
+		ns := strings.TrimSpace(nsRaw)
+		if namespace == "" {
+			namespace = ns
+		} else if ns != "" && ns != namespace {
+			return nil, "", "", fmt.Errorf("pod namespace mismatch: expected %s, got %s", namespace, ns)
+		}
+	}
+	if namespace == "" {
+		return nil, "", "", fmt.Errorf("pod metadata.namespace is required")
+	}
+	metadata["namespace"] = namespace
+	pod["metadata"] = metadata
+
+	jsonPayload, err := json.Marshal(pod)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to marshal pod payload: %w", err)
+	}
+
+	return jsonPayload, namespace, name, nil
+}
+
+// GetPodMetricsFromServer retorna métricas atuais de um Pod específico usando metrics-server
+func (c *Client) GetPodMetricsFromServer(ctx context.Context, namespace, name string) (*metricsv1beta1.PodMetrics, error) {
+	// Usar raw REST client para acessar metrics.k8s.io API
+	restClient := c.clientset.CoreV1().RESTClient()
+
+	// Buscar via metrics.k8s.io/v1beta1
+	data, err := restClient.Get().
+		AbsPath("/apis/metrics.k8s.io/v1beta1/namespaces/" + namespace + "/pods/" + name).
+		DoRaw(ctx)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pod metrics: %w", err)
+	}
+
+	var metrics metricsv1beta1.PodMetrics
+	if err := json.Unmarshal(data, &metrics); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metrics: %w", err)
+	}
+
+	return &metrics, nil
+}
+
+// CopyFromPod copia arquivo/diretório do pod para arquivo temporário local
+// Retorna o caminho do arquivo temporário criado
+func (c *Client) CopyFromPod(namespace, podName, container, remotePath string, isDirectory bool) (string, error) {
+	ctx := context.Background()
+
+	// Validar que o container existe no pod (se especificado)
+	if container != "" {
+		pod, err := c.clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			return "", fmt.Errorf("failed to get pod: %w", err)
+		}
+
+		// Verificar se container existe
+		containerExists := false
+		var availableContainers []string
+		for _, c := range pod.Spec.Containers {
+			availableContainers = append(availableContainers, c.Name)
+			if c.Name == container {
+				containerExists = true
+				break
+			}
+		}
+
+		if !containerExists {
+			return "", fmt.Errorf("container '%s' not found in pod '%s'. Available containers: %s",
+				container, podName, strings.Join(availableContainers, ", "))
+		}
+	}
+
+	// Validar que o arquivo/diretório existe no pod
+	validateArgs := []string{"exec", podName, "-n", namespace, "--context", c.cluster}
+	if container != "" {
+		validateArgs = append(validateArgs, "-c", container)
+	}
+	validateArgs = append(validateArgs, "--", "test", "-e", remotePath)
+
+	validateCmd := exec.Command("kubectl", validateArgs...)
+	if err := validateCmd.Run(); err != nil {
+		if isDirectory {
+			return "", fmt.Errorf("diretório '%s' não encontrado no pod '%s'", remotePath, podName)
+		}
+		return "", fmt.Errorf("arquivo '%s' não encontrado no pod '%s'", remotePath, podName)
+	}
+
+	// Criar arquivo temporário
+	tmpFile, err := os.CreateTemp("", "pod-download-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+
+	// Se for diretório, deletar arquivo temporário e adicionar .tar.gz
+	// kubectl cp criará o arquivo tar.gz automaticamente
+	if isDirectory {
+		os.Remove(tmpPath) // Remover arquivo vazio criado
+		tmpPath = tmpPath + ".tar.gz"
+	}
+
+	// Construir comando kubectl cp
+	// Formato: kubectl cp namespace/pod:/path /local/path --context cluster -c container
+	source := fmt.Sprintf("%s/%s:%s", namespace, podName, remotePath)
+
+	args := []string{"cp", source, tmpPath}
+
+	// CRÍTICO: Adicionar --context ANTES de outras flags
+	args = append(args, "--context", c.cluster)
+
+	if container != "" {
+		args = append(args, "-c", container)
+	}
+
+	// Log do comando para debug
+	fmt.Printf("[DEBUG] kubectl command: kubectl %v\n", strings.Join(args, " "))
+
+	// Executar kubectl cp
+	cmd := exec.Command("kubectl", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Limpar arquivo temporário em caso de erro
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("kubectl cp failed: %v - output: %s", err, string(output))
+	}
+
+	// Log de sucesso
+	fmt.Printf("[DEBUG] kubectl cp success, file created: %s\n", tmpPath)
+
+	return tmpPath, nil
+}
+
+// CleanupTempFile remove arquivo temporário criado por CopyFromPod
+func (c *Client) CleanupTempFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	return os.Remove(path)
+}
+
+// CopyMultipleFromPod copia múltiplos arquivos/diretórios do pod e empacota em tar.gz
+// Retorna o caminho do arquivo tar.gz criado
+func (c *Client) CopyMultipleFromPod(namespace, podName, container string, remotePaths []string) (string, error) {
+	if len(remotePaths) == 0 {
+		return "", fmt.Errorf("no files specified")
+	}
+
+	// Criar diretório temporário para armazenar os arquivos
+	tempDir, err := os.MkdirTemp("", "pod-batch-download-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir) // Limpar diretório ao final
+
+	fmt.Printf("[DEBUG] Batch download: created temp dir %s\n", tempDir)
+
+	// Copiar cada arquivo para o diretório temporário
+	for i, remotePath := range remotePaths {
+		fmt.Printf("[DEBUG] Copying file %d/%d: %s\n", i+1, len(remotePaths), remotePath)
+
+		// Extrair nome do arquivo do path
+		fileName := remotePath
+		if strings.Contains(fileName, "/") {
+			parts := strings.Split(fileName, "/")
+			fileName = parts[len(parts)-1]
+		}
+
+		// Path de destino no temp dir
+		localPath := fmt.Sprintf("%s/%s", tempDir, fileName)
+
+		// Executar kubectl cp
+		source := fmt.Sprintf("%s/%s:%s", namespace, podName, remotePath)
+		args := []string{"cp", source, localPath, "--context", c.cluster}
+		if container != "" {
+			args = append(args, "-c", container)
+		}
+
+		cmd := exec.Command("kubectl", args...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("failed to copy %s: %v - output: %s", remotePath, err, string(output))
+		}
+	}
+
+	// Criar tar.gz com todos os arquivos
+	tarPath := fmt.Sprintf("%s.tar.gz", tempDir)
+	fmt.Printf("[DEBUG] Creating tar.gz: %s\n", tarPath)
+
+	tarArgs := []string{"-czf", tarPath, "-C", tempDir, "."}
+	tarCmd := exec.Command("tar", tarArgs...)
+	tarOutput, err := tarCmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to create tar.gz: %v - output: %s", err, string(tarOutput))
+	}
+
+	// Verificar se tar.gz foi criado
+	if _, err := os.Stat(tarPath); err != nil {
+		return "", fmt.Errorf("tar.gz file not created: %w", err)
+	}
+
+	fmt.Printf("[DEBUG] Batch download complete: %s (%d files)\n", tarPath, len(remotePaths))
+
+	return tarPath, nil
+}
+
+// FileInfo representa informações de um arquivo/diretório no pod
+type FileInfo struct {
+	Name        string    `json:"name"`
+	Path        string    `json:"path"`
+	Size        int64     `json:"size"`
+	IsDirectory bool      `json:"isDirectory"`
+	Permissions string    `json:"permissions"`
+	ModTime     time.Time `json:"modTime"`
+}
+
+// ListDirectory lista arquivos e diretórios em um caminho do pod
+func (c *Client) ListDirectory(namespace, podName, container, remotePath string) ([]FileInfo, error) {
+	// Comando: ls -la --time-style='+%Y-%m-%d %H:%M:%S' <path>
+	// Output: drwxr-xr-x 2 root root 4096 2024-10-31 13:07:34 dirname
+	//         -rw-r----- 1 root root 214K 2024-10-31 13:07:34 filename.jpg
+
+	lsCmd := fmt.Sprintf("ls -la --time-style='+%%Y-%%m-%%d %%H:%%M:%%S' %s 2>&1", remotePath)
+
+	args := []string{"exec", podName, "-n", namespace, "--context", c.cluster}
+	if container != "" {
+		args = append(args, "-c", container)
+	}
+	args = append(args, "--", "sh", "-c", lsCmd)
+
+	cmd := exec.Command("kubectl", args...)
+	output, err := cmd.CombinedOutput()
+
+	// Se houve erro mas temos output, tentar fazer parse mesmo assim
+	// (alguns erros de ls são não-fatais)
+	outputStr := string(output)
+	if err != nil && len(outputStr) == 0 {
+		return nil, fmt.Errorf("failed to list directory: %v", err)
+	}
+
+	// Parse output do ls
+	lines := strings.Split(outputStr, "\n")
+	var files []FileInfo
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Ignorar linhas vazias, total e mensagens de erro
+		if line == "" ||
+			strings.HasPrefix(line, "total ") ||
+			strings.HasPrefix(line, "ls:") ||
+			strings.HasPrefix(line, "cannot access") {
+			continue
+		}
+
+		// Parse: drwxr-xr-x 2 root root 4096 2024-10-31 13:07:34 filename
+		parts := strings.Fields(line)
+		if len(parts) < 9 {
+			continue // Linha inválida
+		}
+
+		permissions := parts[0]
+		isDir := strings.HasPrefix(permissions, "d")
+		sizeStr := parts[4]
+		dateStr := parts[5] + " " + parts[6]
+		name := strings.Join(parts[7:], " ")
+
+		// Ignorar . e ..
+		if name == "." || name == ".." {
+			continue
+		}
+
+		// Parse size (pode ter sufixo K, M, G)
+		var size int64
+		if strings.HasSuffix(sizeStr, "K") {
+			sizeStr = strings.TrimSuffix(sizeStr, "K")
+			if s, err := strconv.ParseFloat(sizeStr, 64); err == nil {
+				size = int64(s * 1024)
+			}
+		} else if strings.HasSuffix(sizeStr, "M") {
+			sizeStr = strings.TrimSuffix(sizeStr, "M")
+			if s, err := strconv.ParseFloat(sizeStr, 64); err == nil {
+				size = int64(s * 1024 * 1024)
+			}
+		} else if strings.HasSuffix(sizeStr, "G") {
+			sizeStr = strings.TrimSuffix(sizeStr, "G")
+			if s, err := strconv.ParseFloat(sizeStr, 64); err == nil {
+				size = int64(s * 1024 * 1024 * 1024)
+			}
+		} else {
+			if s, err := strconv.ParseInt(sizeStr, 10, 64); err == nil {
+				size = s
+			}
+		}
+
+		// Parse modTime
+		modTime, _ := time.Parse("2006-01-02 15:04:05", dateStr)
+
+		// Construir path completo
+		fullPath := strings.TrimSuffix(remotePath, "/") + "/" + name
+
+		files = append(files, FileInfo{
+			Name:        name,
+			Path:        fullPath,
+			Size:        size,
+			IsDirectory: isDir,
+			Permissions: permissions,
+			ModTime:     modTime,
+		})
+	}
+
+	return files, nil
 }

@@ -41,20 +41,54 @@ import type {
   DeploymentApplyResult,
   PodSummary,
   PodManifest,
+  EventSummary,
+  ResourceQuotaSummary,
+  NetworkPolicySummary,
+  ServiceSummary,
+  PodsSummary,
   VersionInfo,
   SequenceExecuteRequest,
   TopNamespacesResponse,
   NamespaceMetrics,
+  GitHubReposConfig,
+  GitHubReleasesResponse,
+  GitHubComparison,
+  DeploymentSearchResponse,
+  ProductionDeploymentResponse,
+  AllVersionsResponse,
+  TokenStatusResponse,
+  SaveTokenRequest,
+  SaveTokenResponse,
 } from "./types";
+
+import type {
+  AnalyzeRequest,
+  AnalysisResult,
+  ProviderStatus,
+  AIStats,
+  HistoryFilter,
+} from "@/types/ai";
+
+import type {
+  HealthCheckRequest,
+  HealthCheckRunResponse,
+  HealthCheckHistoryResponse,
+  HealthCheckStatsResponse,
+  HealthCheckGetResponse,
+  HealthCheckDeleteResponse,
+  HealthCheckEventsResponse,
+} from "@/types/healthcheck";
 
 const API_BASE_URL = "/api/v1";
 
 class APIClient {
   private token: string | null = null;
+  private gitHubEmail: string | null = null;
 
   constructor() {
     // Load token from localStorage
     this.token = localStorage.getItem("auth_token") || null;
+    this.gitHubEmail = localStorage.getItem("github_email") || null;
   }
 
   setToken(token: string) {
@@ -67,22 +101,67 @@ class APIClient {
     localStorage.removeItem("auth_token");
   }
 
+  setGitHubEmail(email: string) {
+    console.log('🔧 [APIClient] Setting GitHub email:', email);
+    this.gitHubEmail = email;
+    try {
+      localStorage.setItem("github_email", email);
+      console.log('✅ [APIClient] GitHub email saved to localStorage');
+    } catch (error) {
+      console.error('❌ [APIClient] Failed to save GitHub email to localStorage:', error);
+    }
+  }
+
+  clearGitHubEmail() {
+    this.gitHubEmail = null;
+    localStorage.removeItem("github_email");
+  }
+
   private async request<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
-    const headers: HeadersInit = {
+    // ✅ CRÍTICO: Recarregar gitHubEmail do localStorage antes de cada requisição
+    this.gitHubEmail = localStorage.getItem("github_email") || null;
+
+    // Debug para rotas GitHub
+    if (endpoint.includes('/github/')) {
+      console.log('🔍 [APIClient] Request to:', endpoint);
+      console.log('📧 [APIClient] GitHub email from localStorage:', this.gitHubEmail);
+    }
+
+    // IMPORTANTE: Construir headers COMPLETO antes de passar para fetch
+    const requestHeaders: Record<string, string> = {
       "Content-Type": "application/json",
-      ...options.headers,
     };
 
+    // Copiar headers do options (se existirem)
+    if (options.headers) {
+      const optHeaders = options.headers as Record<string, string>;
+      Object.keys(optHeaders).forEach(key => {
+        requestHeaders[key] = optHeaders[key];
+      });
+    }
+
+    // Adicionar Authorization se existir
     if (this.token) {
-      headers["Authorization"] = `Bearer ${this.token}`;
+      requestHeaders["Authorization"] = `Bearer ${this.token}`;
+    }
+
+    // Adicionar X-GitHub-Email se existir (DEVE ser adicionado AQUI, ANTES do fetch)
+    if (this.gitHubEmail) {
+      requestHeaders["X-GitHub-Email"] = this.gitHubEmail;
+      if (endpoint.includes('/github/')) {
+        console.log('✅ [APIClient] Adding X-GitHub-Email header:', this.gitHubEmail);
+        console.log('🔧 [APIClient] All headers:', requestHeaders);
+      }
+    } else if (endpoint.includes('/github/')) {
+      console.warn('⚠️ [APIClient] No GitHub email found - header NOT added');
     }
 
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
       ...options,
-      headers,
+      headers: requestHeaders, // Usar o objeto completo
     });
 
     if (!response.ok) {
@@ -208,6 +287,70 @@ class APIClient {
       }
     );
   }
+
+  async applyPod(
+    cluster: string,
+    namespace: string,
+    name: string,
+    payload: { yaml: string; fieldManager: string; dryRun: boolean }
+  ): Promise<{ success: boolean; message: string; data?: any }> {
+    return await this.request<{ success: boolean; message: string; data?: any }>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }
+    );
+  }
+
+  async getPodMetrics(
+    cluster: string,
+    namespace: string,
+    name: string
+  ): Promise<{ 
+    success: boolean; 
+    data?: {
+      available: boolean;
+      cpu?: {
+        current: number;
+        request: number;
+        limit: number;
+        percent: number;
+        unit: string;
+      };
+      memory?: {
+        current: number;
+        request: number;
+        limit: number;
+        percent: number;
+        unit: string;
+      };
+      message?: string;
+    };
+  }> {
+    try {
+      return await this.request<{ 
+        success: boolean; 
+        data: {
+          available: boolean;
+          cpu?: any;
+          memory?: any;
+          message?: string;
+        };
+      }>(
+        `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/metrics`
+      );
+    } catch (error: any) {
+      return {
+        success: false,
+        data: {
+          available: false,
+          message: "Metrics not available",
+        },
+      };
+    }
+  }
+
 
   // HPAs
   async getHPAs(cluster?: string, namespace?: string, bypassCache: boolean = false, showSystem: boolean = false): Promise<HPA[]> {
@@ -763,6 +906,95 @@ class APIClient {
     return response;
   }
 
+  // Events API Methods
+  async getEvents(
+    cluster?: string,
+    namespaces?: string[],
+    search?: string,
+    type?: "Normal" | "Warning",
+    showSystem: boolean = false,
+    bypassCache: boolean = false
+  ): Promise<EventSummary[]> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (namespaces && namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    if (search) params.append("search", search);
+    if (type) params.append("type", type);
+    if (showSystem) params.append("showSystem", "true");
+    if (bypassCache) params.append("_t", Date.now().toString());
+
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const response = await this.request<APIResponse<{ events: EventSummary[]; count: number }>>(
+      `/events${query}`
+    );
+    return response.data?.events || [];
+  }
+
+  async getResourceQuotas(
+    cluster: string,
+    namespaces: string[]
+  ): Promise<ResourceQuotaSummary[]> {
+    const params = new URLSearchParams({ cluster });
+    if (namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    const response = await this.request<APIResponse<{ quotas: ResourceQuotaSummary[]; count: number }>>(
+      `/resource-quotas?${params}`
+    );
+    return response.data?.quotas || [];
+  }
+
+  async getNetworkPolicies(
+    cluster: string,
+    namespaces: string[]
+  ): Promise<NetworkPolicySummary[]> {
+    const params = new URLSearchParams({ cluster });
+    if (namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    const response = await this.request<APIResponse<{ policies: NetworkPolicySummary[]; count: number }>>(
+      `/network-policies?${params}`
+    );
+    return response.data?.policies || [];
+  }
+
+  async getServices(
+    cluster: string,
+    namespaces: string[]
+  ): Promise<ServiceSummary[]> {
+    const params = new URLSearchParams({ cluster });
+    if (namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    const response = await this.request<APIResponse<{ services: ServiceSummary[]; count: number }>>(
+      `/services?${params}`
+    );
+    return response.data?.services || [];
+  }
+
+  async getPodsSummary(cluster: string, namespace: string): Promise<PodsSummary> {
+    const response = await this.request<APIResponse<PodsSummary>>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/summary`
+    );
+    return response.data as PodsSummary;
+  }
+
+  async createDebugPod(cluster: string, namespace: string, name: string): Promise<{ success: boolean; message: string }> {
+    const response = await this.request<APIResponse<{ success: boolean; message: string }>>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/debug`,
+      {
+        method: "POST",
+        body: JSON.stringify({ name }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    return response.data as { success: boolean; message: string };
+  }
+
   async updateHPA(
     cluster: string,
     namespace: string,
@@ -1171,7 +1403,7 @@ class APIClient {
   // Service Mesh - Istio/Kiali Integration
   async getServiceGraph(
     cluster: string,
-    namespace: string,
+    namespace: string | string[],  // Aceita string ou array
     duration: string = '5m',
     graphType: string = 'workload',
     options?: {
@@ -1181,7 +1413,9 @@ class APIClient {
       appenders?: string;
     }
   ): Promise<import('@/types/servicemesh').ServiceGraphResponse> {
-    let url = `/servicemesh/graph?cluster=${cluster}&namespace=${namespace}&duration=${duration}&graphType=${graphType}`;
+    // Converter array para string separada por vírgulas
+    const namespaceParam = Array.isArray(namespace) ? namespace.join(',') : namespace;
+    let url = `/servicemesh/graph?cluster=${cluster}&namespace=${namespaceParam}&duration=${duration}&graphType=${graphType}`;
     
     if (options?.injectServiceNodes !== undefined) {
       url += `&injectServiceNodes=${options.injectServiceNodes}`;
@@ -1210,6 +1444,472 @@ class APIClient {
     namespace: string
   ): Promise<import('@/types/servicemesh').ServiceMeshMetrics> {
     return this.request(`/servicemesh/metrics?cluster=${cluster}&namespace=${namespace}`);
+  }
+
+  // =============================================================================
+  // AI Diagnostics Methods
+  // =============================================================================
+
+  /**
+   * Get AI provider status
+   */
+  async getAIProviderStatus(): Promise<ProviderStatus> {
+    return this.request(`/ai/status`);
+  }
+
+  /**
+   * Analyze a Kubernetes resource with AI
+   */
+  async analyzeResource(request: AnalyzeRequest, signal?: AbortSignal): Promise<AnalysisResult> {
+    return this.request(`/ai/analyze`, {
+      method: "POST",
+      body: JSON.stringify(request),
+      signal, // Pass signal to fetch for cancellation
+    });
+  }
+
+  /**
+   * Get AI analysis history with optional filters
+   */
+  async getAIHistory(filters?: HistoryFilter): Promise<AnalysisResult[]> {
+    let url = `/ai/history`;
+    const params = new URLSearchParams();
+
+    if (filters) {
+      if (filters.cluster) params.append("cluster", filters.cluster);
+      if (filters.namespace) params.append("namespace", filters.namespace);
+      if (filters.resourceType) params.append("resourceType", filters.resourceType);
+      if (filters.provider) params.append("provider", filters.provider);
+      if (filters.limit !== undefined) params.append("limit", filters.limit.toString());
+      if (filters.offset !== undefined) params.append("offset", filters.offset.toString());
+    }
+
+    const queryString = params.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await this.request<{ records: AnalysisResult[]; total: number }>(url);
+    
+    // Backend retorna { records: [], total: 0 }, mas precisamos apenas do array
+    return Array.isArray(response) ? response : (response.records || []);
+  }
+
+  /**
+   * Get a specific analysis by ID
+   */
+  async getAnalysisById(id: string): Promise<AnalysisResult> {
+    return this.request(`/ai/history/${id}`);
+  }
+
+  /**
+   * Get AI statistics
+   */
+  async getAIStats(): Promise<AIStats> {
+    return this.request(`/ai/stats`);
+  }
+
+  /**
+   * Delete an analysis from history
+   */
+  async deleteAnalysis(id: string): Promise<void> {
+    return this.request(`/ai/history/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Get user's AI tokens status
+   */
+  async getAITokens(): Promise<{
+    has_gemini: boolean;
+    gemini_model?: string;
+    has_openai: boolean;
+    openai_model?: string;
+    has_claude: boolean;
+    claude_model?: string;
+    has_copilot: boolean;
+    copilot_endpoint?: string;
+    copilot_deployment?: string;
+    ollama_model?: string;
+    preferred_provider: string;
+    updated_at?: string;
+  }> {
+    return this.request(`/ai/tokens`);
+  }
+
+  /**
+   * Save user's AI tokens
+   */
+  async saveAITokens(tokens: {
+    gemini_api_key?: string;
+    gemini_model?: string;
+    openai_api_key?: string;
+    openai_model?: string;
+    claude_api_key?: string;
+    claude_model?: string;
+    copilot_api_key?: string;
+    copilot_endpoint?: string;
+    copilot_deployment?: string;
+    ollama_model?: string;
+    preferred_provider: string;
+  }): Promise<{ success: boolean; message: string }> {
+    return this.request(`/ai/tokens`, {
+      method: "POST",
+      body: JSON.stringify(tokens),
+    });
+  }
+
+  /**
+   * Delete user's AI tokens
+   */
+  async deleteAITokens(): Promise<{ success: boolean; message: string }> {
+    return this.request(`/ai/tokens`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Validate an AI token
+   */
+  async validateAIToken(
+    provider: string,
+    apiKey: string,
+    endpoint?: string,
+    deployment?: string
+  ): Promise<{ valid: boolean; error?: string; message?: string }> {
+    const body: any = { provider, api_key: apiKey };
+    if (endpoint) body.endpoint = endpoint;
+    if (deployment) body.deployment = deployment;
+
+    return this.request(`/ai/tokens/validate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Get available models for a specific AI provider
+   */
+  async getAvailableModels(provider: string): Promise<{
+    provider: string;
+    models: Array<{
+      id: string;
+      name: string;
+      description?: string;
+      is_default: boolean;
+    }>;
+  }> {
+    return this.request(`/ai/models?provider=${provider}`);
+  }
+
+  /**
+   * Export AI analysis as PDF
+   */
+  async exportAIPDF(analysisId: string): Promise<Blob> {
+    const headers: HeadersInit = {
+      "Content-Type": "application/pdf",
+    };
+
+    // Add auth token if available
+    const token = localStorage.getItem("auth_token");
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`/api/v1/ai/report/${analysisId}/pdf`, {
+      method: "GET",
+      headers,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to export PDF: ${response.statusText}`);
+    }
+
+    return response.blob();
+  }
+
+  /**
+   * Export AI analysis as Markdown
+   */
+  async exportAIMarkdown(analysisId: string): Promise<Blob> {
+    const headers: HeadersInit = {
+      "Content-Type": "text/markdown",
+    };
+
+    // Add auth token if available
+    const token = localStorage.getItem("auth_token");
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`/api/v1/ai/report/${analysisId}/markdown`, {
+      method: "GET",
+      headers,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to export Markdown: ${response.statusText}`);
+    }
+
+    return response.blob();
+  }
+
+  /**
+   * Export AI analysis as CSV
+   */
+  async exportAICSV(analysisId: string): Promise<Blob> {
+    const headers: HeadersInit = {
+      "Content-Type": "text/csv",
+    };
+
+    // Add auth token if available
+    const token = localStorage.getItem("auth_token");
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`/api/v1/ai/report/${analysisId}/csv`, {
+      method: "GET",
+      headers,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to export CSV: ${response.statusText}`);
+    }
+
+    return response.blob();
+  }
+
+  // ========================
+  // Health Checking Methods
+  // ========================
+
+  /**
+   * Run health check on specified clusters
+   * POST /api/v1/healthcheck/run
+   */
+  async runHealthCheck(request: HealthCheckRequest): Promise<HealthCheckRunResponse> {
+    return this.request(`/healthcheck/run`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
+  /**
+   * Cancel health check
+   * DELETE /api/v1/healthcheck/cancel/:sessionId
+   */
+  async cancelHealthCheck(sessionId: string): Promise<{ success: boolean; message: string }> {
+    return this.request(`/healthcheck/cancel/${sessionId}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Get health check history
+   * GET /api/v1/healthcheck/history?cluster=x&namespace=y
+   */
+  async getHealthCheckHistory(
+    cluster?: string,
+    namespace?: string
+  ): Promise<HealthCheckHistoryResponse> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (namespace) params.append("namespace", namespace);
+
+    const query = params.toString();
+    return this.request(`/healthcheck/history${query ? `?${query}` : ""}`);
+  }
+
+  /**
+   * Get health check statistics
+   * GET /api/v1/healthcheck/stats?cluster=x&days=7
+   */
+  async getHealthCheckStats(
+    cluster?: string,
+    days?: number
+  ): Promise<HealthCheckStatsResponse> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (days) params.append("days", days.toString());
+
+    const query = params.toString();
+    return this.request(`/healthcheck/stats${query ? `?${query}` : ""}`);
+  }
+
+  /**
+   * Get specific health check result by ID
+   * GET /api/v1/healthcheck/:id
+   */
+  async getHealthCheckResult(id: string): Promise<HealthCheckGetResponse> {
+    return this.request(`/healthcheck/${id}`);
+  }
+
+  /**
+   * Delete health check result
+   * DELETE /api/v1/healthcheck/:id
+   */
+  async deleteHealthCheckResult(id: string): Promise<HealthCheckDeleteResponse> {
+    return this.request(`/healthcheck/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Get health check events (logs persistidos) by session ID
+   * GET /api/v1/healthcheck/events/:sessionId
+   */
+  async getHealthCheckEvents(sessionId: string): Promise<HealthCheckEventsResponse> {
+    return this.request(`/healthcheck/events/${sessionId}`);
+  }
+
+  // ===== HEALTH CHECK FILTERS =====
+
+  /**
+   * Get all filter rules
+   * GET /api/v1/filters
+   */
+  async getFilters(): Promise<any> {
+    return this.request("/filters");
+  }
+
+  /**
+   * Get available filter categories
+   * GET /api/v1/filters/categories
+   */
+  async getFilterCategories(): Promise<any> {
+    return this.request("/filters/categories");
+  }
+
+  /**
+   * Add new filter rule
+   * POST /api/v1/filters
+   */
+  async addFilterRule(rule: any): Promise<any> {
+    return this.request("/filters", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(rule),
+    });
+  }
+
+  /**
+   * Remove filter rule
+   * DELETE /api/v1/filters/:id
+   */
+  async removeFilterRule(id: string): Promise<any> {
+    return this.request(`/filters/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  // ========================================
+  // GitHub Releases API
+  // ========================================
+
+  /**
+   * Get configured GitHub repositories
+   * GET /api/v1/github/repos
+   */
+  async getGitHubRepos(): Promise<GitHubReposConfig> {
+    return this.request("/github/repos");
+  }
+
+  /**
+   * Get releases from a GitHub repository
+   * GET /api/v1/github/repos/:owner/:repo/releases
+   */
+  async getGitHubReleases(
+    owner: string,
+    repo: string
+  ): Promise<GitHubReleasesResponse> {
+    return this.request(`/github/repos/${owner}/${repo}/releases`);
+  }
+
+  /**
+   * Compare two GitHub releases (tags)
+   * GET /api/v1/github/repos/:owner/:repo/compare/:base...:head
+   */
+  async compareGitHubReleases(
+    owner: string,
+    repo: string,
+    base: string,
+    head: string
+  ): Promise<GitHubComparison> {
+    return this.request(
+      `/github/repos/${owner}/${repo}/compare/${base}...${head}`
+    );
+  }
+
+  /**
+   * Search deployments by app name
+   * GET /api/v1/github/deployments/search?app_name=X
+   */
+  async searchDeployments(appName: string): Promise<DeploymentSearchResponse> {
+    const params = new URLSearchParams({ app_name: appName });
+    return this.request(`/github/deployments/search?${params}`);
+  }
+
+  /**
+   * Get production deployment version
+   * GET /api/v1/github/deployments/production?app_name=X
+   */
+  async getProductionDeployment(
+    appName: string
+  ): Promise<ProductionDeploymentResponse> {
+    const params = new URLSearchParams({ app_name: appName });
+    return this.request(`/github/deployments/production?${params}`);
+  }
+
+  /**
+   * Get all versions of an app
+   * GET /api/v1/github/deployments/all-versions?app_name=X
+   */
+  async getAllVersions(appName: string): Promise<AllVersionsResponse> {
+    const params = new URLSearchParams({ app_name: appName });
+    return this.request(`/github/deployments/all-versions?${params}`);
+  }
+
+  /**
+   * Get GitHub token status for current user
+   * GET /api/v1/github/token/status
+   */
+  async getGitHubTokenStatus(): Promise<TokenStatusResponse> {
+    return this.request("/github/token/status");
+  }
+
+  /**
+   * Save GitHub token for current user
+   * POST /api/v1/github/token
+   */
+  async saveGitHubToken(token: string, email: string): Promise<SaveTokenResponse> {
+    const response = await this.request<SaveTokenResponse>("/github/token", {
+      method: "POST",
+      body: JSON.stringify({ token, email } as SaveTokenRequest),
+    });
+    
+    // Store email in localStorage for future requests
+    this.setGitHubEmail(email);
+    
+    return response;
+  }
+
+  /**
+   * Delete GitHub token for current user
+   * DELETE /api/v1/github/token
+   */
+  async deleteGitHubToken(): Promise<{ success: boolean; message: string }> {
+    const response = await this.request<{ success: boolean; message: string }>("/github/token", {
+      method: "DELETE",
+    });
+    
+    // Clear email from localStorage
+    this.clearGitHubEmail();
+    
+    return response;
   }
 }
 

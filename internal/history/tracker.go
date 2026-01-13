@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,25 +18,25 @@ import (
 type HistoryEntry struct {
 	ID          string                 `json:"id"`
 	Timestamp   time.Time              `json:"timestamp"`
-	UserEmail   string                 `json:"user_email,omitempty"`   // Email do usuário (via RBAC/SSO)
-	UserName    string                 `json:"user_name,omitempty"`    // Nome do usuário (via RBAC/SSO)
-	Action      string                 `json:"action"`      // update_hpa, apply_nodepool, etc
-	Resource    string                 `json:"resource"`    // namespace/name
+	UserEmail   string                 `json:"user_email,omitempty"` // Email do usuário (via RBAC/SSO)
+	UserName    string                 `json:"user_name,omitempty"`  // Nome do usuário (via RBAC/SSO)
+	Action      string                 `json:"action"`               // update_hpa, apply_nodepool, etc
+	Resource    string                 `json:"resource"`             // namespace/name
 	Cluster     string                 `json:"cluster"`
 	Before      map[string]interface{} `json:"before"`
 	After       map[string]interface{} `json:"after"`
-	Status      string                 `json:"status"`       // success, failed
+	Status      string                 `json:"status"` // success, failed
 	ErrorMsg    string                 `json:"error_msg,omitempty"`
-	Duration    int64                  `json:"duration_ms"`  // Tempo de execução em ms
+	Duration    int64                  `json:"duration_ms"` // Tempo de execução em ms
 	SessionName string                 `json:"session_name,omitempty"`
 }
 
 // HistoryTracker gerencia o histórico de alterações
 type HistoryTracker struct {
-	entries      []HistoryEntry
-	mutex        sync.RWMutex
-	historyDir   string
-	maxEntries   int // Limite de entradas em memória
+	entries    []HistoryEntry
+	mutex      sync.RWMutex
+	historyDir string
+	maxEntries int // Limite de entradas em memória
 }
 
 // NewHistoryTracker cria um novo tracker
@@ -256,7 +257,8 @@ func (f HistoryFilter) Matches(entry HistoryEntry) bool {
 		return false
 	}
 
-	if f.Resource != "" && entry.Resource != f.Resource {
+	// Busca parcial por recurso (case-insensitive)
+	if f.Resource != "" && !strings.Contains(strings.ToLower(entry.Resource), strings.ToLower(f.Resource)) {
 		return false
 	}
 
@@ -268,12 +270,23 @@ func (f HistoryFilter) Matches(entry HistoryEntry) bool {
 		return false
 	}
 
-	if !f.StartDate.IsZero() && entry.Timestamp.Before(f.StartDate) {
-		return false
+	// Comparação de datas: comparar apenas ano, mês e dia (ignorar horário e timezone)
+	if !f.StartDate.IsZero() {
+		// Normalizar ambas as datas para UTC e zerar o horário
+		entryDate := time.Date(entry.Timestamp.Year(), entry.Timestamp.Month(), entry.Timestamp.Day(), 0, 0, 0, 0, time.UTC)
+		startDate := time.Date(f.StartDate.Year(), f.StartDate.Month(), f.StartDate.Day(), 0, 0, 0, 0, time.UTC)
+		if entryDate.Before(startDate) {
+			return false
+		}
 	}
 
-	if !f.EndDate.IsZero() && entry.Timestamp.After(f.EndDate) {
-		return false
+	if !f.EndDate.IsZero() {
+		// Normalizar ambas as datas para UTC e zerar o horário
+		entryDate := time.Date(entry.Timestamp.Year(), entry.Timestamp.Month(), entry.Timestamp.Day(), 0, 0, 0, 0, time.UTC)
+		endDate := time.Date(f.EndDate.Year(), f.EndDate.Month(), f.EndDate.Day(), 0, 0, 0, 0, time.UTC)
+		if entryDate.After(endDate) {
+			return false
+		}
 	}
 
 	if f.SessionName != "" && entry.SessionName != f.SessionName {
@@ -285,22 +298,22 @@ func (f HistoryFilter) Matches(entry HistoryEntry) bool {
 
 // Action constants
 const (
-	ActionUpdateHPA         = "update_hpa"
-	ActionApplyNodePool     = "apply_nodepool"
-	ActionSuspendCronJob    = "suspend_cronjob"
-	ActionResumeCronJob     = "resume_cronjob"
-	ActionRolloutPrometheus = "rollout_prometheus"
-	ActionSaveSession       = "save_session"
-	ActionLoadSession       = "load_session"
-	ActionDeleteSession     = "delete_session"
-	ActionApplyBatch        = "apply_batch"
-	ActionSnapshotCluster   = "snapshot_cluster"
-	ActionCordonNode           = "cordon_node"           // Node marcado como unschedulable
-	ActionDrainNode            = "drain_node"            // Pods evacuados do node
-	ActionNodePoolSequence     = "nodepool_sequence"     // Sequência completa PRE-DRAIN → CORDON → DRAIN → POST-DRAIN
-	ActionRolloutDeployment    = "rollout_deployment"    // Rollout de Deployment executado
-	ActionRolloutDaemonSet     = "rollout_daemonset"     // Rollout de DaemonSet executado
-	ActionRolloutStatefulSet   = "rollout_statefulset"   // Rollout de StatefulSet executado
+	ActionUpdateHPA          = "update_hpa"
+	ActionApplyNodePool      = "apply_nodepool"
+	ActionSuspendCronJob     = "suspend_cronjob"
+	ActionResumeCronJob      = "resume_cronjob"
+	ActionRolloutPrometheus  = "rollout_prometheus"
+	ActionSaveSession        = "save_session"
+	ActionLoadSession        = "load_session"
+	ActionDeleteSession      = "delete_session"
+	ActionApplyBatch         = "apply_batch"
+	ActionSnapshotCluster    = "snapshot_cluster"
+	ActionCordonNode         = "cordon_node"         // Node marcado como unschedulable
+	ActionDrainNode          = "drain_node"          // Pods evacuados do node
+	ActionNodePoolSequence   = "nodepool_sequence"   // Sequência completa PRE-DRAIN → CORDON → DRAIN → POST-DRAIN
+	ActionRolloutDeployment  = "rollout_deployment"  // Rollout de Deployment executado
+	ActionRolloutDaemonSet   = "rollout_daemonset"   // Rollout de DaemonSet executado
+	ActionRolloutStatefulSet = "rollout_statefulset" // Rollout de StatefulSet executado
 )
 
 // Status constants

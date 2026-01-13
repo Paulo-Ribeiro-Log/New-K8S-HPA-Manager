@@ -27,6 +27,7 @@ import "@/styles/diff2html-dark.css";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { CreateSecretModal } from "@/components/CreateSecretModal";
+import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 
 interface SecretsTabProps {
   cluster: string;
@@ -45,23 +46,26 @@ export const SecretsTab = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
 }: SecretsTabProps) => {
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedSecret, setSelectedSecret] = useState<SecretSummary | null>(null);
+  // ✅ Estados com persistência entre trocas de aba
+  const [searchQuery, setSearchQuery] = usePersistedTabState<string>('secrets', 'searchQuery', "");
+  const [selectedSecret, setSelectedSecret] = usePersistedTabState<SecretSummary | null>('secrets', 'selectedSecret', null);
+  const [showLabels, setShowLabels] = usePersistedTabState<boolean>('secrets', 'showLabels', false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = usePersistedTabState<boolean>('secrets', 'isSidebarCollapsed', false);
+  const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">('secrets', 'viewMode', "editor");
+  const [isDecoded, setIsDecoded] = usePersistedTabState<boolean>('secrets', 'isDecoded', false);
+
+  // Estados locais (não persistidos)
   const [manifest, setManifest] = useState<SecretManifest | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
   const [editorValue, setEditorValue] = useState("");
   const [originalYaml, setOriginalYaml] = useState("");
-  const [viewMode, setViewMode] = useState<"editor" | "diff">("editor");
   const [isValidating, setIsValidating] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
-  const [showLabels, setShowLabels] = useState(false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [diffModalOpen, setDiffModalOpen] = useState(false);
   const [diffHtml, setDiffHtml] = useState("");
   const [isDiffLoading, setIsDiffLoading] = useState(false);
   const [diffFullScreen, setDiffFullScreen] = useState(false);
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
-  const [isDecoded, setIsDecoded] = useState(false);
   const [editorFullScreen, setEditorFullScreen] = useState(false);
   const [describeModalOpen, setDescribeModalOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");
@@ -140,6 +144,40 @@ export const SecretsTab = ({
       );
     });
   }, [secrets, searchQuery, showSystemNamespaces]);
+
+  // ===== Funções Utilitárias para Base64 =====
+
+  // Função para validar se uma string é base64 válida
+  const isValidBase64 = (str: string): boolean => {
+    if (!str || str.trim() === '') return false;
+    // Regex para validar base64: só permite caracteres A-Z, a-z, 0-9, +, /, = (padding)
+    const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
+    if (!base64Regex.test(str)) return false;
+
+    try {
+      // Tentar decodificar - se falhar, não é base64 válido
+      const decoded = atob(str);
+      // Re-encodar e comparar para verificar se é base64 legítimo
+      return btoa(decoded) === str;
+    } catch {
+      return false;
+    }
+  };
+
+  // Funções para encode/decode UTF-8 seguro
+  const base64EncodeUtf8 = (str: string): string => {
+    // Converter string para UTF-8 bytes e depois para base64
+    return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (match, p1) => {
+      return String.fromCharCode(parseInt(p1, 16));
+    }));
+  };
+
+  const base64DecodeUtf8 = (str: string): string => {
+    // Decodificar base64 e depois converter UTF-8 bytes para string
+    return decodeURIComponent(Array.prototype.map.call(atob(str), (c: string) => {
+      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+    }).join(''));
+  };
 
   const handleSelectSecret = async (summary: SecretSummary) => {
     // Salvar histórico atual no cache antes de trocar
@@ -297,6 +335,43 @@ export const SecretsTab = ({
       return;
     }
 
+    // Função para detectar se é um certificado ou chave que não deve ser processado
+    const isCertificateOrKey = (key: string, value: string): boolean => {
+      // Verificar se o nome da chave sugere certificado ou chave
+      const keyLower = key.toLowerCase();
+      const certKeyPatterns = ['.crt', '.cert', '.pem', '.key', 'tls.crt', 'tls.key', 'ca.crt', 'ca.key', 'certificate', 'private', 'public'];
+      
+      if (certKeyPatterns.some(pattern => keyLower.includes(pattern))) {
+        return true;
+      }
+
+      // Se o valor for muito longo (certificados geralmente são longos)
+      // e for base64 válido, verificar se contém marcadores de certificado
+      if (value.length > 500 && isValidBase64(value)) {
+        try {
+          const decoded = atob(value);
+          // Verificar se contém marcadores típicos de certificados/chaves
+          const certMarkers = [
+            '-----BEGIN CERTIFICATE-----',
+            '-----BEGIN PRIVATE KEY-----',
+            '-----BEGIN RSA PRIVATE KEY-----',
+            '-----BEGIN PUBLIC KEY-----',
+            '-----BEGIN EC PRIVATE KEY-----',
+            'BEGIN CERTIFICATE',
+            'BEGIN PRIVATE KEY',
+            'BEGIN RSA PRIVATE KEY',
+            'subject=',
+            'issuer=',
+          ];
+          return certMarkers.some(marker => decoded.includes(marker));
+        } catch {
+          return false;
+        }
+      }
+      
+      return false;
+    };
+
     try {
       const yamlObj = yaml.load(editorValue) as any;
 
@@ -307,6 +382,8 @@ export const SecretsTab = ({
 
       // Preservar formatação original alterando apenas os valores
       let newYaml = editorValue;
+      let processedCount = 0;
+      let skippedCount = 0;
 
       if (isDecoded) {
         // RE-ENCODE: texto plano → Base64
@@ -322,18 +399,43 @@ export const SecretsTab = ({
             if (yamlObj.data && key in yamlObj.data) {
               // Pegar o valor atual da linha (pode ser texto plano)
               const currentValue = value.trim();
-              try {
-                // Re-encodificar para Base64
-                const encoded = btoa(currentValue);
-                lines[i] = `${indent}${key}: ${encoded}`;
-              } catch {
-                // Se falhar, manter original
+              
+              // Ignorar certificados e chaves
+              if (isCertificateOrKey(key, currentValue)) {
+                skippedCount++;
+                continue;
+              }
+              
+              // Verificar se já é base64 - se for, não encodificar novamente
+              if (isValidBase64(currentValue)) {
+                // Já está em base64, ignorar
+                skippedCount++;
+              } else {
+                try {
+                  // Re-encodificar para Base64 apenas se não for base64 (com suporte UTF-8)
+                  const encoded = base64EncodeUtf8(currentValue);
+                  lines[i] = `${indent}${key}: ${encoded}`;
+                  processedCount++;
+                } catch (err) {
+                  // Se falhar, manter original
+                  console.error(`Erro ao encodificar ${key}:`, err);
+                  skippedCount++;
+                }
               }
             }
           }
         }
         newYaml = lines.join('\n');
-        toast.success("Valores re-encodificados para Base64");
+        
+        if (processedCount > 0) {
+          toast.success(`${processedCount} valor(es) re-encodificado(s)${skippedCount > 0 ? ` (${skippedCount} já estava(m) em base64)` : ''}`);
+        } else if (skippedCount > 0) {
+          toast.warning(`Todos os valores já estão em base64 (${skippedCount} valor(es))`);
+          return; // Não mudar o estado se nada foi processado
+        } else {
+          toast.warning("Nenhum valor foi re-encodificado");
+          return;
+        }
       } else {
         // DECODE: Base64 → texto plano
         // Processar linha por linha para preservar valores exatos
@@ -348,24 +450,52 @@ export const SecretsTab = ({
             if (yamlObj.data && key in yamlObj.data) {
               // Pegar o valor atual da linha (deve ser base64)
               const currentValue = value.trim();
-              try {
-                // Decodificar de Base64 para texto plano
-                const decoded = atob(currentValue);
-                lines[i] = `${indent}${key}: ${decoded}`;
-              } catch {
-                // Se não for Base64 válido, mantém original
+              
+              // Ignorar certificados e chaves
+              if (isCertificateOrKey(key, currentValue)) {
+                skippedCount++;
+                continue;
+              }
+              
+              // Validar se é realmente base64 antes de decodificar
+              if (isValidBase64(currentValue)) {
+                try {
+                  // Decodificar de Base64 para texto plano (com suporte UTF-8)
+                  const decoded = base64DecodeUtf8(currentValue);
+                  lines[i] = `${indent}${key}: ${decoded}`;
+                  processedCount++;
+                } catch (err) {
+                  // Se não for Base64 válido, mantém original e conta como ignorado
+                  console.error(`Erro ao decodificar ${key}:`, err);
+                  skippedCount++;
+                }
+              } else {
+                // Não é base64 válido, ignorar
+                skippedCount++;
               }
             }
           }
         }
         newYaml = lines.join('\n');
-        toast.success("Valores decodificados para texto plano");
+        
+        if (processedCount > 0) {
+          toast.success(`${processedCount} valor(es) decodificado(s)${skippedCount > 0 ? ` (${skippedCount} ignorado(s) - não são base64)` : ''}`);
+        } else if (skippedCount > 0) {
+          toast.warning(`Nenhum valor base64 válido encontrado (${skippedCount} valor(es) ignorado(s))`);
+          return; // Não mudar o estado se nada foi processado
+        } else {
+          toast.warning("Nenhum valor foi decodificado");
+          return;
+        }
       }
 
       setEditorValue(newYaml);
       setIsDecoded(!isDecoded);
-      // Adicionar ao histórico
-      addToHistory(newYaml);
+      
+      // Não adicionar ao histórico se voltou ao estado original
+      if (newYaml !== originalYaml) {
+        addToHistory(newYaml);
+      }
     } catch (err) {
       toast.error("Erro ao processar YAML", {
         description: err instanceof Error ? err.message : "Erro desconhecido",
@@ -627,7 +757,86 @@ export const SecretsTab = ({
     );
   };
 
-  const hasChanges = editorValue !== originalYaml;
+  // Função para normalizar YAML e verificar se há mudanças reais
+  const hasRealChanges = useMemo(() => {
+    if (!editorValue || !originalYaml) return false;
+    if (editorValue === originalYaml) return false;
+
+    try {
+      // Carregar ambos os YAMLs como objetos
+      const currentObj = yaml.load(editorValue) as any;
+      const originalObj = yaml.load(originalYaml) as any;
+
+      // Comparar estruturas (exceto data que precisa de comparação especial)
+      const currentCopy = { ...currentObj };
+      const originalCopy = { ...originalObj };
+      
+      const currentData = currentCopy.data;
+      const originalData = originalCopy.data;
+      
+      delete currentCopy.data;
+      delete originalCopy.data;
+
+      // Comparar metadados (tudo exceto data)
+      if (JSON.stringify(currentCopy) !== JSON.stringify(originalCopy)) {
+        return true;
+      }
+
+      // Comparar dados normalizando base64
+      if (!currentData && !originalData) return false;
+      if (!currentData || !originalData) return true;
+
+      const currentKeys = Object.keys(currentData).sort();
+      const originalKeys = Object.keys(originalData).sort();
+
+      if (JSON.stringify(currentKeys) !== JSON.stringify(originalKeys)) {
+        return true;
+      }
+
+      // Comparar cada valor, normalizando base64
+      for (const key of currentKeys) {
+        const currentValue = currentData[key];
+        const originalValue = originalData[key];
+
+        if (currentValue === originalValue) continue;
+
+        // Tentar comparar como base64 (pode estar decoded em um e encoded no outro)
+        try {
+          // Se um for base64 e outro texto plano, tentar normalizar
+          const isCurrentBase64 = /^[A-Za-z0-9+/]*={0,2}$/.test(currentValue);
+          const isOriginalBase64 = /^[A-Za-z0-9+/]*={0,2}$/.test(originalValue);
+
+          if (isCurrentBase64 && isOriginalBase64) {
+            // Ambos base64, comparar decodificados
+            const currentDecoded = base64DecodeUtf8(currentValue);
+            const originalDecoded = base64DecodeUtf8(originalValue);
+            if (currentDecoded !== originalDecoded) return true;
+          } else if (isCurrentBase64 && !isOriginalBase64) {
+            // Current é base64, original é texto plano
+            const currentDecoded = base64DecodeUtf8(currentValue);
+            if (currentDecoded !== originalValue) return true;
+          } else if (!isCurrentBase64 && isOriginalBase64) {
+            // Original é base64, current é texto plano
+            const originalDecoded = base64DecodeUtf8(originalValue);
+            if (currentValue !== originalDecoded) return true;
+          } else {
+            // Ambos texto plano
+            if (currentValue !== originalValue) return true;
+          }
+        } catch {
+          // Se falhar a comparação normalizada, comparar direto
+          if (currentValue !== originalValue) return true;
+        }
+      }
+
+      return false;
+    } catch {
+      // Se falhar o parse, comparar strings direto
+      return editorValue !== originalYaml;
+    }
+  }, [editorValue, originalYaml]);
+
+  const hasChanges = hasRealChanges;
 
   const renderManifestPanel = () => {
     if (!cluster) {
