@@ -231,9 +231,9 @@ func TestSanitizeText(t *testing.T) {
 			expected: `Token: MDF***Rk4=`,
 		},
 		{
-			name: "IP externo",
+			name: "IP externo (não mascara - decisão de projeto)",
 			input: `Connection to 172.168.1.213 failed`,
-			expected: `Connection to 172.***.***.213 failed`,
+			expected: `Connection to 172.168.1.213 failed`,
 		},
 		{
 			name: "IP interno (não mascara)",
@@ -253,7 +253,7 @@ func TestSanitizeText(t *testing.T) {
 		{
 			name: "Texto com múltiplos dados sensíveis",
 			input: `mongodb://user:senha123@10.0.0.1:27017/ and external IP 8.8.8.8 with token MDFhghthghthghthghthghthghthghtTRk4=`,
-			expected: `mongodb://user:sen***123@10.0.0.1:27017/ and external IP 8.***.***.8 with token MDF***Rk4=`,
+			expected: `mongodb://user:sen***123@10.0.0.1:27017/ and external IP 8.8.8.8 with token MDF***Rk4=`,
 		},
 	}
 
@@ -275,13 +275,18 @@ func TestSanitizeTextWithResult(t *testing.T) {
 
 	result := sanitizer.SanitizeTextWithResult(input)
 
+	// DEBUG: Log do resultado
+	t.Logf("Input:     %s", input)
+	t.Logf("Sanitized: %s", result.Sanitized)
+
 	// Verifica se sanitizou corretamente
 	if !strings.Contains(result.Sanitized, "sen***123") {
 		t.Error("Connection string não foi sanitizada corretamente")
 	}
 
-	if !strings.Contains(result.Sanitized, "8.***.***.8") {
-		t.Error("IP externo não foi mascarado")
+	// ✅ IPs NÃO são mascarados (decisão de projeto - análise de conectividade completa)
+	if !strings.Contains(result.Sanitized, "8.8.8.8") {
+		t.Errorf("IP deve permanecer intacto (não mascarado). Sanitized: %s", result.Sanitized)
 	}
 
 	if !strings.Contains(result.Sanitized, "MDF***Rk4=") {
@@ -297,8 +302,9 @@ func TestSanitizeTextWithResult(t *testing.T) {
 		t.Errorf("Expected 1 connection_string, got %d", result.MaskedItems["connection_string"])
 	}
 
-	if result.MaskedItems["external_ip"] != 1 {
-		t.Errorf("Expected 1 external_ip, got %d", result.MaskedItems["external_ip"])
+	// ✅ IPs não são mais mascarados (external_ip não deve existir)
+	if result.MaskedItems["external_ip"] != 0 {
+		t.Errorf("Expected 0 external_ip (IPs não mascarados), got %d", result.MaskedItems["external_ip"])
 	}
 
 	if result.MaskedItems["base64"] != 1 {

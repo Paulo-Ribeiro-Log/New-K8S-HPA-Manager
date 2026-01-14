@@ -110,9 +110,28 @@ export const GitHubReleasesTab = () => {
   const [showTokenModal, setShowTokenModal] = useState(false);
   const [showScanModal, setShowScanModal] = useState(false);
 
-  // ✨ NOVO: Estado para lote de comparações
-  const [comparisonBatch, setComparisonBatch] = useState<ComparisonItem[]>([]);
-  const [selectedComparison, setSelectedComparison] = useState<string | null>(null);
+  // ✨ NOVO: Estado para lote de comparações (com persistência em localStorage)
+  const [comparisonBatch, setComparisonBatch] = useState<ComparisonItem[]>(() => {
+    const saved = localStorage.getItem('github-comparison-batch');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [selectedComparison, setSelectedComparison] = useState<string | null>(() => {
+    return localStorage.getItem('github-selected-comparison') || null;
+  });
+
+  // ✅ Persistir lote no localStorage sempre que mudar
+  React.useEffect(() => {
+    localStorage.setItem('github-comparison-batch', JSON.stringify(comparisonBatch));
+  }, [comparisonBatch]);
+
+  // ✅ Persistir comparação selecionada no localStorage
+  React.useEffect(() => {
+    if (selectedComparison) {
+      localStorage.setItem('github-selected-comparison', selectedComparison);
+    } else {
+      localStorage.removeItem('github-selected-comparison');
+    }
+  }, [selectedComparison]);
 
   // ✅ Query para buscar versão em produção assim que digitar o nome do deployment
   const { data: productionData, isLoading: isLoadingProduction, error: productionError, refetch: refetchProduction } = useQuery<{

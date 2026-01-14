@@ -371,6 +371,13 @@ Quando encontrar ERROS DE APLICAÇÃO (exceptions, stack traces):
 3. Verifique se ConfigMaps/Secrets necessários existem
 4. Sugira comandos para verificar cada hipótese
 
+Quando encontrar CONFIGMAP/SECRET NÃO ENCONTRADO (CreateContainerConfigError):
+1. Se o nome tem padrão hash (ex: app-name-abc123), é gerado por Kustomize/Helm
+2. A CAUSA RAIZ é: pipeline de deploy falhou ou ConfigMap não foi criado
+3. VERIFIQUE a seção "INVESTIGAÇÃO AUTOMÁTICA" - ela lista ConfigMaps existentes com mesmo prefixo
+4. SUGIRA: (a) Re-executar pipeline de deploy, (b) Verificar logs CI/CD, (c) Criar ConfigMap manualmente se urgente
+5. NÃO sugira apenas "criar o ConfigMap" - investigue POR QUE não foi criado
+
 **FORMATO DA RESPOSTA (JSON OBRIGATÓRIO):**
 
 Retorne APENAS este JSON (sem texto adicional, sem markdown wrappers):

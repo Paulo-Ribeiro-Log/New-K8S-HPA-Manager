@@ -13,7 +13,7 @@ type Config struct {
 	// GeminiAPIKey chave de API do Gemini
 	GeminiAPIKey string
 
-	// GeminiModel modelo do Gemini (padrão: gemini-pro)
+	// GeminiModel modelo do Gemini (padrão: gemini-2.5-flash)
 	GeminiModel string
 
 	// OllamaBaseURL URL base do Ollama (padrão: http://localhost:11434)
@@ -54,7 +54,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Provider:          "ollama", // Ollama llama3.2 3B
-		GeminiModel:       "gemini-2.0-flash-exp", // Free tier: 15 RPM / 1.5M RPD
+		GeminiModel:       "gemini-2.5-flash", // Modelo estável recomendado (Free tier: 15 RPM / 1M+ tokens/dia)
 		OllamaBaseURL:     "http://localhost:11434",
 		OllamaModel:       "llama3.2:3b", // Llama3.2 3B - melhor qualidade
 		ClaudeModel:       "claude-3-5-sonnet-20241022",
@@ -83,7 +83,7 @@ func (c *Config) Validate() error {
 		}
 
 		if c.GeminiModel == "" {
-			c.GeminiModel = "gemini-2.0-flash-exp" // Modelo padrão (fallback se não especificado)
+			c.GeminiModel = "gemini-2.5-flash" // Modelo padrão (estável, com boa quota no Free Tier)
 		}
 	}
 
