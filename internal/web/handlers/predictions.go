@@ -340,7 +340,7 @@ func (h *PredictionsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer {
 			if tokens.GeminiModel != "" {
 				config.GeminiModel = tokens.GeminiModel
 			} else {
-				config.GeminiModel = "gemini-2.0-flash-exp"
+				config.GeminiModel = "gemini-2.5-flash"
 			}
 		} else {
 			return h.analyzer

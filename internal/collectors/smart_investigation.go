@@ -132,8 +132,12 @@ func (s *SmartInvestigator) InvestigateConfigMap(ctx context.Context, namespace,
 		return result
 	}
 
-	// 2. Busca por pattern (supply-api-config → supply-api*)
+	// 2. Busca por pattern (supply-api-6m6gmhh4tb → supply-api)
 	pattern := extractPattern(name)
+	isKustomizeHash := pattern != name // Se padrão é diferente do nome, provavelmente é hash Kustomize/Helm
+
+	fmt.Printf("    🔍 Buscando ConfigMaps com prefixo '%s' (hash detectado: %v)\n", pattern, isKustomizeHash)
+
 	cmList, err := s.clientset.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		result.Diagnosis = fmt.Sprintf("❌ Erro ao listar ConfigMaps: %v", err)
@@ -141,28 +145,50 @@ func (s *SmartInvestigator) InvestigateConfigMap(ctx context.Context, namespace,
 	}
 
 	var similarCMs []SimilarResource
+	var allWithPrefix []SimilarResource
+
 	for _, cm := range cmList.Items {
+		// Se é padrão Kustomize, listar TODOS com mesmo prefixo (sem filtro de similaridade)
 		if strings.HasPrefix(cm.Name, pattern) {
-			similarity := calculateSimilarityLocal(name, cm.Name)
-			if similarity > 50 { // Apenas > 50% de similaridade
-				age := metav1.Now().Time.Sub(cm.CreationTimestamp.Time).String()
-				similarCMs = append(similarCMs, SimilarResource{
-					Name:       cm.Name,
-					Similarity: similarity,
-					Keys:       extractConfigMapKeys(&cm),
-					Age:        age,
-				})
+			age := metav1.Now().Time.Sub(cm.CreationTimestamp.Time).String()
+			sr := SimilarResource{
+				Name:       cm.Name,
+				Similarity: calculateSimilarityLocal(name, cm.Name),
+				Keys:       extractConfigMapKeys(&cm),
+				Age:        age,
+			}
+			allWithPrefix = append(allWithPrefix, sr)
+
+			if sr.Similarity > 50 {
+				similarCMs = append(similarCMs, sr)
 			}
 		}
 	}
 
-	if len(similarCMs) > 0 {
+	fmt.Printf("    📋 ConfigMaps com prefixo '%s': %d encontrados\n", pattern, len(allWithPrefix))
+
+	// Usar TODOS com prefixo se é hash Kustomize, senão usar apenas similares
+	foundCMs := similarCMs
+	if isKustomizeHash && len(allWithPrefix) > 0 {
+		foundCMs = allWithPrefix
+		fmt.Printf("    ✅ Usando todos ConfigMaps com prefixo (padrão Kustomize detectado)\n")
+	}
+
+	if len(foundCMs) > 0 {
 		result.Found = true
 		result.ExactMatch = false
-		result.SimilarResources = similarCMs
-		result.Diagnosis = fmt.Sprintf("❌ ConfigMap '%s' não existe, mas encontrados %d similares", name, len(similarCMs))
-		result.RootCause = "Nome hardcoded no Pod não corresponde ao hash gerado (Kustomize/Helm)"
-		result.Solution = fmt.Sprintf("Atualizar Pod para referenciar '%s' OU renomear ConfigMap para '%s'", similarCMs[0].Name, name)
+		result.SimilarResources = foundCMs
+
+		// Diagnóstico específico para Kustomize/Helm
+		if isKustomizeHash {
+			result.Diagnosis = fmt.Sprintf("❌ ConfigMap '%s' (hash Kustomize/Helm) não existe. Encontrados %d ConfigMaps com prefixo '%s'", name, len(foundCMs), pattern)
+			result.RootCause = "ConfigMap com hash específico não foi criado. Possíveis causas: (1) Pipeline de deploy falhou, (2) Kustomize não gerou o ConfigMap, (3) ConfigMap foi deletado"
+			result.Solution = fmt.Sprintf("OPÇÕES: (1) Re-executar pipeline de deploy para criar '%s', (2) Usar ConfigMap existente '%s' se aplicável, (3) Verificar logs do pipeline CI/CD", name, foundCMs[0].Name)
+		} else {
+			result.Diagnosis = fmt.Sprintf("❌ ConfigMap '%s' não existe, mas encontrados %d similares", name, len(foundCMs))
+			result.RootCause = "Nome hardcoded no Pod não corresponde ao ConfigMap existente"
+			result.Solution = fmt.Sprintf("Atualizar Pod para referenciar '%s' OU renomear ConfigMap para '%s'", foundCMs[0].Name, name)
+		}
 		return result
 	}
 

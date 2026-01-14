@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -59,20 +60,23 @@ func TestAIHistoryStore_SaveAndRetrieveWithPrometheusMetrics(t *testing.T) {
 
 	// Criar registro de histórico com métricas
 	record := &HistoryRecord{
-		ID:                "test-analysis-001",
-		ResourceType:      "Pod",
-		Cluster:           "test-cluster",
-		Namespace:         "default",
-		ResourceName:      "nginx-pod-123",
-		Provider:          "ollama",
-		Model:             "llama3.2:3b",
-		Analysis:          "Pod está em CrashLoopBackOff devido a falta de memória",
-		Suggestions:       `[{"type":"fix","description":"Aumentar memory limit","priority":"high"}]`,
-		PrometheusMetrics: string(metricsJSON), // NOVO - FASE 2.1
-		TokensUsed:        1500,
-		ResponseTime:      3.5,
-		AnalyzedAt:        time.Now(),
-		UserEmail:         "test@example.com",
+		ID:           "test-analysis-001",
+		ResourceType: "Pod",
+		Cluster:      "test-cluster",
+		Namespace:    "default",
+		ResourceName: "nginx-pod-123",
+		Provider:     "ollama",
+		Model:        "llama3.2:3b",
+		Analysis:     "Pod está em CrashLoopBackOff devido a falta de memória",
+		Suggestions:  `[{"type":"fix","description":"Aumentar memory limit","priority":"high"}]`,
+		PrometheusMetrics: sql.NullString{ // ✅ FIX: sql.NullString ao invés de string
+			String: string(metricsJSON),
+			Valid:  true,
+		},
+		TokensUsed:   1500,
+		ResponseTime: 3.5,
+		AnalyzedAt:   time.Now(),
+		UserEmail:    "test@example.com",
 	}
 
 	// Salvar no banco de dados
@@ -100,13 +104,14 @@ func TestAIHistoryStore_SaveAndRetrieveWithPrometheusMetrics(t *testing.T) {
 	if record.Cluster != retrieved.Cluster {
 		t.Errorf("Cluster mismatch: expected %s, got %s", record.Cluster, retrieved.Cluster)
 	}
-	if retrieved.PrometheusMetrics == "" {
+	// ✅ FIX: Verificar sql.NullString corretamente
+	if !retrieved.PrometheusMetrics.Valid || retrieved.PrometheusMetrics.String == "" {
 		t.Error("Prometheus metrics should not be empty")
 	}
 
 	// Deserializar métricas recuperadas
 	var retrievedMetrics PrometheusMetricsTest
-	err = json.Unmarshal([]byte(retrieved.PrometheusMetrics), &retrievedMetrics)
+	err = json.Unmarshal([]byte(retrieved.PrometheusMetrics.String), &retrievedMetrics)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal retrieved Prometheus metrics: %v", err)
 	}
@@ -162,15 +167,18 @@ func TestAIHistoryStore_QueryWithPrometheusMetrics(t *testing.T) {
 		metricsJSON, _ := json.Marshal(metrics)
 
 		record := &HistoryRecord{
-			ID:                string(rune('A' + i)) + "-test-record",
-			ResourceType:      "Pod",
-			Cluster:           "test-cluster",
-			Namespace:         "default",
-			ResourceName:      "pod-" + string(rune('1'+i)),
-			Provider:          "ollama",
-			Analysis:          "Test analysis",
-			PrometheusMetrics: string(metricsJSON),
-			AnalyzedAt:        time.Now(),
+			ID:           string(rune('A'+i)) + "-test-record",
+			ResourceType: "Pod",
+			Cluster:      "test-cluster",
+			Namespace:    "default",
+			ResourceName: "pod-" + string(rune('1'+i)),
+			Provider:     "ollama",
+			Analysis:     "Test analysis",
+			PrometheusMetrics: sql.NullString{ // ✅ FIX: sql.NullString
+				String: string(metricsJSON),
+				Valid:  true,
+			},
+			AnalyzedAt: time.Now(),
 		}
 
 		err := store.Save(record)
@@ -196,12 +204,13 @@ func TestAIHistoryStore_QueryWithPrometheusMetrics(t *testing.T) {
 
 	// Verificar se todos têm métricas
 	for i, record := range records {
-		if record.PrometheusMetrics == "" {
+		// ✅ FIX: Verificar sql.NullString corretamente
+		if !record.PrometheusMetrics.Valid || record.PrometheusMetrics.String == "" {
 			t.Errorf("Record %d should have Prometheus metrics", i)
 		}
 
 		var metrics PrometheusMetricsTest
-		err := json.Unmarshal([]byte(record.PrometheusMetrics), &metrics)
+		err := json.Unmarshal([]byte(record.PrometheusMetrics.String), &metrics)
 		if err != nil {
 			t.Fatalf("Failed to unmarshal metrics for record %d: %v", i, err)
 		}
@@ -228,15 +237,16 @@ func TestAIHistoryStore_SaveWithoutPrometheusMetrics(t *testing.T) {
 
 	// Criar registro SEM métricas Prometheus (backward compatibility)
 	record := &HistoryRecord{
-		ID:                "test-no-metrics",
-		ResourceType:      "Deployment",
-		Cluster:           "test-cluster",
-		Namespace:         "default",
-		ResourceName:      "nginx-deployment",
-		Provider:          "ollama",
-		Analysis:          "Deployment está healthy",
-		PrometheusMetrics: "", // Vazio - sem métricas
-		AnalyzedAt:        time.Now(),
+		ID:           "test-no-metrics",
+		ResourceType: "Deployment",
+		Cluster:      "test-cluster",
+		Namespace:    "default",
+		ResourceName: "nginx-deployment",
+		Provider:     "ollama",
+		Analysis:     "Deployment está healthy",
+		// ✅ FIX: Omitir PrometheusMetrics (campo opcional sql.NullString)
+		// PrometheusMetrics terá Valid=false por padrão
+		AnalyzedAt: time.Now(),
 	}
 
 	// Salvar no banco de dados
@@ -254,9 +264,10 @@ func TestAIHistoryStore_SaveWithoutPrometheusMetrics(t *testing.T) {
 		t.Fatal("Retrieved record is nil")
 	}
 
-	// Verificar que métricas estão vazias (não null)
-	if retrieved.PrometheusMetrics != "" {
-		t.Errorf("Prometheus metrics should be empty string, got: %s", retrieved.PrometheusMetrics)
+	// ✅ FIX: Verificar que métricas estão vazias (Valid=false ou String vazia)
+	if retrieved.PrometheusMetrics.Valid && retrieved.PrometheusMetrics.String != "" {
+		t.Errorf("Prometheus metrics should be empty, got Valid=%v String=%s",
+			retrieved.PrometheusMetrics.Valid, retrieved.PrometheusMetrics.String)
 	}
 
 	t.Logf("✅ Backward compatibility: Record without metrics saved successfully")
