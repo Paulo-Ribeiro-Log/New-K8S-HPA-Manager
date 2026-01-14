@@ -39,15 +39,17 @@ SCRIPTS_DIR="$HOME/.k8s-hpa-manager/scripts"
 
 # Fetch latest release version from GitHub API
 echo -e "${BLUE}ℹ️  Buscando última versão disponível no GitHub...${NC}"
+
 RELEASE_VERSION=$(curl -s https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 
-if [ -z "$RELEASE_VERSION" ]; then
+if [ -z "$RELEASE_VERSION" ] || [ "$RELEASE_VERSION" = "null" ]; then
     echo -e "${RED}❌ Não foi possível detectar a última release${NC}"
-    echo -e "${BLUE}ℹ️  Usando versão fallback: v1.0.7${NC}"
-    RELEASE_VERSION="v1.0.7"
-else
-    echo -e "${GREEN}✅ Versão detectada: $RELEASE_VERSION${NC}"
+    echo -e "${BLUE}ℹ️  Verifique se existem releases publicadas em:${NC}"
+    echo -e "${BLUE}    https://github.com/$REPO_OWNER/$REPO_NAME/releases${NC}"
+    exit 1
 fi
+
+echo -e "${GREEN}✅ Versão detectada: $RELEASE_VERSION${NC}"
 
 # Function to print colored messages
 print_info() {
