@@ -483,11 +483,10 @@ func (h *AITokensHandler) GetAvailableModels(c *gin.Context) {
 	switch provider {
 	case "gemini":
 		models = []ModelInfo{
-			{ID: "gemini-3-pro-preview", Name: "Gemini 3 Pro (Preview)", Description: "Modelo flagship para tarefas complexas (1M tokens)", IsDefault: true},
-			{ID: "gemini-3-flash-preview", Name: "Gemini 3 Flash (Preview)", Description: "Mais rápido com inteligência Pro-level"},
-			{ID: "gemini-2.0-flash-exp", Name: "Gemini 2.0 Flash (Experimental)", Description: "Versão anterior rápida"},
-			{ID: "gemini-1.5-pro", Name: "Gemini 1.5 Pro", Description: "Modelo mais avançado com maior capacidade"},
-			{ID: "gemini-pro", Name: "Gemini Pro", Description: "Modelo robusto anterior"},
+			{ID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", Description: "Mais recente e rápido (recomendado)", IsDefault: true},
+			{ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", Description: "Mais avançado com maior capacidade"},
+			{ID: "gemini-2.0-flash", Name: "Gemini 2.0 Flash", Description: "Versão estável anterior"},
+			{ID: "gemini-2.0-flash-exp", Name: "Gemini 2.0 Flash (Experimental)", Description: "Experimental - quotas limitadas no Free Tier"},
 		}
 	case "claude":
 		models = []ModelInfo{
