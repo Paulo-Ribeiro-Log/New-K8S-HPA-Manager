@@ -1037,7 +1037,7 @@ export const SecretsTab = ({
               <MonacoYamlEditor
                 value={editorValue}
                 onChange={handleEditorChange}
-                height={520}
+                height={600}
               />
             )}
             {viewMode === "diff" && (
@@ -1045,7 +1045,7 @@ export const SecretsTab = ({
                 mode="diff"
                 originalValue={originalYaml}
                 value={editorValue}
-                height={520}
+                height={600}
                 readOnly
               />
             )}
