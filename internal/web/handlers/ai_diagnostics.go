@@ -179,7 +179,7 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 			if tokens.GeminiModel != "" {
 				config.GeminiModel = tokens.GeminiModel
 			} else {
-				config.GeminiModel = "gemini-2.0-flash-exp"
+				config.GeminiModel = "gemini-2.5-flash"
 			}
 
 			// 🚨 SECURITY: Log uso de Gemini (gratuito com quota)
