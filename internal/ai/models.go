@@ -88,7 +88,11 @@ type AnalysisRequest struct {
 	// IncludeDescribe se verdadeiro, inclui kubectl describe
 	IncludeDescribe bool `json:"includeDescribe"`
 
-	// UserEmail email do usuário que solicitou a análise
+	// AIEmail email usado para buscar configurações AI (independente do Azure AD)
+	// Se vazio, usa provider padrão do servidor
+	AIEmail string `json:"aiEmail,omitempty"`
+
+	// UserEmail email do usuário que solicitou a análise (DEPRECATED - usar AIEmail)
 	UserEmail string `json:"userEmail,omitempty"`
 }
 

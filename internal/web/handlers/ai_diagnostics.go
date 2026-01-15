@@ -81,19 +81,18 @@ func (h *AIDiagnosticsHandler) Analyze(c *gin.Context) {
 		Str("cluster", req.Cluster).
 		Str("namespace", req.Namespace).
 		Str("resource_name", req.ResourceName).
+		Str("ai_email", req.AIEmail).
 		Msg("Starting AI analysis")
 
-	// Obter user email do contexto RBAC (se disponível)
-	var userEmail string
-	if email, exists := c.Get("user_email"); exists {
-		if emailStr, ok := email.(string); ok {
-			userEmail = emailStr
-			req.UserEmail = emailStr
-		}
+	// Usar ai_email do request para buscar configurações AI
+	// Se não foi fornecido, usar analyzer padrão do servidor (Ollama)
+	aiEmail := req.AIEmail
+	if aiEmail == "" {
+		log.Debug().Msg("No ai_email provided, using default analyzer (Ollama)")
 	}
 
 	// Buscar analyzer apropriado (preferências do usuário ou padrão)
-	analyzer := h.getAnalyzerForUser(userEmail)
+	analyzer := h.getAnalyzerForUser(aiEmail)
 
 	// 🔒 SECURITY: Log qual provider será usado ANTES de executar
 	provider := analyzer.GetProvider()
@@ -102,7 +101,7 @@ func (h *AIDiagnosticsHandler) Analyze(c *gin.Context) {
 		modelName := provider.GetModel()
 
 		log.Warn().
-			Str("user_email", userEmail).
+			Str("ai_email", aiEmail).
 			Str("provider", providerName).
 			Str("model", modelName).
 			Str("resource", fmt.Sprintf("%s/%s/%s", req.Cluster, req.Namespace, req.ResourceName)).
@@ -125,7 +124,7 @@ func (h *AIDiagnosticsHandler) Analyze(c *gin.Context) {
 		// Registrar erro globalmente para exibir no painel
 		provider := analyzer.GetProvider()
 		if provider != nil {
-			RecordGlobalAIError(userEmail, provider.GetName(), provider.GetModel(), err)
+			RecordGlobalAIError(aiEmail, provider.GetName(), provider.GetModel(), err)
 		}
 		
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "analysis failed: " + err.Error()})
@@ -135,7 +134,7 @@ func (h *AIDiagnosticsHandler) Analyze(c *gin.Context) {
 	// Limpar erro global pois análise foi bem-sucedida
 	provider = analyzer.GetProvider()
 	if provider != nil {
-		RecordGlobalAIError(userEmail, provider.GetName(), provider.GetModel(), nil)
+		RecordGlobalAIError(aiEmail, provider.GetName(), provider.GetModel(), nil)
 	}
 
 	log.Info().
@@ -147,18 +146,18 @@ func (h *AIDiagnosticsHandler) Analyze(c *gin.Context) {
 }
 
 // getAnalyzerForUser retorna analyzer personalizado baseado nas preferências do usuário
-func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer {
-	// Se não tiver user email ou tokensStore, usar analyzer padrão
-	if userEmail == "" || h.tokensStore == nil {
+func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) *ai.Analyzer {
+	// Se não tiver ai_email ou tokensStore, usar analyzer padrão
+	if aiEmail == "" || h.tokensStore == nil {
 		return h.analyzer
 	}
 
 	// Buscar tokens/preferências do usuário
-	tokens, err := h.tokensStore.GetTokens(userEmail)
+	tokens, err := h.tokensStore.GetTokens(aiEmail)
 	if err != nil || tokens == nil {
 		// Se erro ou usuário não tem preferências, usar padrão
 		log.Debug().
-			Str("user_email", userEmail).
+			Str("ai_email", aiEmail).
 			Msg("Using default analyzer (no user preferences found)")
 		return h.analyzer
 	}
@@ -184,14 +183,14 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 
 			// 🚨 SECURITY: Log uso de Gemini (gratuito com quota)
 			log.Warn().
-				Str("user_email", userEmail).
+				Str("ai_email", aiEmail).
 				Str("provider", "gemini").
 				Str("model", config.GeminiModel).
 				Msg("⚠️ Using Gemini API - quota-limited free tier")
 		} else {
 			// Sem API key, usar analyzer padrão
 			log.Debug().
-				Str("user_email", userEmail).
+				Str("ai_email", aiEmail).
 				Msg("Gemini selected but no API key - using default analyzer")
 			return h.analyzer
 		}
@@ -207,13 +206,13 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 
 			// 🚨 CRITICAL: Log uso de Claude (PAGO!)
 			log.Warn().
-				Str("user_email", userEmail).
+				Str("ai_email", aiEmail).
 				Str("provider", "claude").
 				Str("model", config.ClaudeModel).
 				Msg("🚨 CRITICAL: Using Claude API - PAID SERVICE - charges will apply!")
 		} else {
 			log.Debug().
-				Str("user_email", userEmail).
+				Str("ai_email", aiEmail).
 				Msg("Claude selected but no API key - using default analyzer")
 			return h.analyzer
 		}
@@ -229,13 +228,13 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 
 			// 🚨 CRITICAL: Log uso de OpenAI (PAGO!)
 			log.Warn().
-				Str("user_email", userEmail).
+				Str("ai_email", aiEmail).
 				Str("provider", "openai").
 				Str("model", config.OpenAIModel).
 				Msg("🚨 CRITICAL: Using OpenAI API - PAID SERVICE - charges will apply!")
 		} else {
 			log.Debug().
-				Str("user_email", userEmail).
+				Str("ai_email", aiEmail).
 				Msg("OpenAI selected but no API key - using default analyzer")
 			return h.analyzer
 		}
@@ -252,13 +251,13 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 
 			// 🚨 CRITICAL: Log uso de Copilot (PAGO - Azure OpenAI!)
 			log.Warn().
-				Str("user_email", userEmail).
+				Str("ai_email", aiEmail).
 				Str("provider", "copilot").
 				Str("deployment", config.CopilotDeployment).
 				Msg("🚨 CRITICAL: Using Azure OpenAI (Copilot) - PAID SERVICE - charges will apply!")
 		} else {
 			log.Debug().
-				Str("user_email", userEmail).
+				Str("ai_email", aiEmail).
 				Msg("Copilot selected but missing API key or endpoint - using default analyzer")
 			return h.analyzer
 		}
@@ -273,7 +272,7 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 		}
 
 		log.Info().
-			Str("user_email", userEmail).
+			Str("ai_email", aiEmail).
 			Str("provider", "ollama").
 			Str("model", config.OllamaModel).
 			Msg("✅ Using Ollama (local) - FREE, no API costs")
@@ -281,7 +280,7 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 	default:
 		// Provider desconhecido, usar padrão
 		log.Warn().
-			Str("user_email", userEmail).
+			Str("ai_email", aiEmail).
 			Str("provider", tokens.PreferredProvider).
 			Msg("Unknown provider - falling back to default analyzer")
 		return h.analyzer
@@ -292,7 +291,7 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 	if err != nil {
 		log.Warn().
 			Err(err).
-			Str("user_email", userEmail).
+			Str("ai_email", aiEmail).
 			Str("provider", tokens.PreferredProvider).
 			Msg("Failed to create user-specific provider, using default")
 		return h.analyzer
@@ -302,7 +301,7 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(userEmail string) *ai.Analyzer
 	userAnalyzer := ai.NewAnalyzer(provider, h.kubeManager, h.historyStore)
 
 	log.Info().
-		Str("user_email", userEmail).
+		Str("ai_email", aiEmail).
 		Str("provider", tokens.PreferredProvider).
 		Str("model", h.getModelFromConfig(config)).
 		Msg("Using user-specific AI analyzer")
@@ -427,24 +426,19 @@ func (h *AIDiagnosticsHandler) GetAnalysisByID(c *gin.Context) {
 }
 
 // GetProviderStatus obtém status do provider AI
-// GET /api/v1/ai/status
+// GET /api/v1/ai/status?ai_email=...
 func (h *AIDiagnosticsHandler) GetProviderStatus(c *gin.Context) {
-	// Obter user email do contexto RBAC (se disponível)
-	var userEmail string
-	if email, exists := c.Get("user_email"); exists {
-		if emailStr, ok := email.(string); ok {
-			userEmail = emailStr
-		}
-	}
+	// Obter ai_email via query parameter (opcional)
+	aiEmail := c.Query("ai_email")
 
 	// Buscar analyzer apropriado (preferências do usuário ou padrão do servidor)
-	analyzer := h.getAnalyzerForUser(userEmail)
+	analyzer := h.getAnalyzerForUser(aiEmail)
 
 	// Obter status do provider
 	status := analyzer.GetProviderStatus(c.Request.Context())
-	
+
 	// Verificar se existe erro global recente para este usuário
-	if errorRecord := GetGlobalAIError(userEmail); errorRecord != nil {
+	if errorRecord := GetGlobalAIError(aiEmail); errorRecord != nil {
 		// Se não tiver erro no analyzer, usar erro global
 		if status.Error == "" {
 			duration := time.Since(errorRecord.Timestamp)
@@ -452,13 +446,13 @@ func (h *AIDiagnosticsHandler) GetProviderStatus(c *gin.Context) {
 			status.Available = false
 		}
 	}
-	
+
 	// Adicionar estatísticas de chamadas
-	stats := aierrors.GetAICallStats(userEmail)
+	stats := aierrors.GetAICallStats(aiEmail)
 	status.TotalCalls = stats.TotalCalls
 	status.SuccessfulCalls = stats.SuccessfulCalls
 	status.FailedCalls = stats.FailedCalls
-	
+
 	c.JSON(http.StatusOK, status)
 }
 

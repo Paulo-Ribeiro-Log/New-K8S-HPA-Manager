@@ -25,7 +25,7 @@ export function AIDiagnosticsTab() {
     getAnalysisById,
   } = useAIDiagnostics();
 
-  // Auto-load data on mount
+  // Auto-load data on mount (APENAS no mount - não fazer polling automático)
   useEffect(() => {
     fetchProviderStatus();
     fetchStats();
