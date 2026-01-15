@@ -51,6 +51,7 @@ export function AISettingsTab() {
   const [validating, setValidating] = useState<string | null>(null);
 
   // Form state
+  const [aiEmail, setAiEmail] = useState(""); // Email para identificar configurações AI (independente do Azure AD)
   const [geminiKey, setGeminiKey] = useState("");
   const [geminiModel, setGeminiModel] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
@@ -83,6 +84,12 @@ export function AISettingsTab() {
   const [copilotValid, setCopilotValid] = useState<boolean | null>(null);
 
   useEffect(() => {
+    // Tentar carregar ai_email do localStorage
+    const savedEmail = localStorage.getItem("ai_email");
+    if (savedEmail) {
+      setAiEmail(savedEmail);
+    }
+
     loadTokenStatus();
     loadAvailableModels();
   }, []);
@@ -93,6 +100,9 @@ export function AISettingsTab() {
       const response = await apiClient.getAITokens();
       setTokenStatus(response);
       setPreferredProvider(response.preferred_provider || "ollama");
+
+      // Carregar email AI (se existir)
+      if (response.ai_email) setAiEmail(response.ai_email);
 
       // Carregar modelos salvos
       if (response.gemini_model) setGeminiModel(response.gemini_model);
@@ -208,22 +218,65 @@ export function AISettingsTab() {
   };
 
   const handleSave = async () => {
+    // Validar que ai_email está preenchido
+    if (!aiEmail || aiEmail.trim() === "") {
+      toast({
+        title: "⚠️ Email obrigatório",
+        description: "Por favor, preencha seu email para identificar suas configurações AI",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Validar formato de email básico
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(aiEmail)) {
+      toast({
+        title: "⚠️ Email inválido",
+        description: "Por favor, insira um email válido (ex: seu.email@exemplo.com)",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setSaving(true);
 
     try {
-      await apiClient.saveAITokens({
-        gemini_api_key: geminiKey,
-        gemini_model: geminiModel,
-        openai_api_key: openaiKey,
-        openai_model: openaiModel,
-        claude_api_key: claudeKey,
-        claude_model: claudeModel,
-        copilot_api_key: copilotKey,
-        copilot_endpoint: copilotEndpoint,
-        copilot_deployment: copilotDeployment,
-        ollama_model: ollamaModel,
+      // Preparar payload - enviar apenas campos preenchidos
+      const payload: any = {
+        ai_email: aiEmail.trim(), // Email para identificar configurações (independente do Azure AD)
         preferred_provider: preferredProvider,
+      };
+
+      // API Keys - enviar apenas se foram preenchidas (não vazias)
+      if (geminiKey) payload.gemini_api_key = geminiKey;
+      if (openaiKey) payload.openai_api_key = openaiKey;
+      if (claudeKey) payload.claude_api_key = claudeKey;
+      if (copilotKey) payload.copilot_api_key = copilotKey;
+
+      // Modelos - SEMPRE enviar (permitem trocar modelo sem re-inserir API key)
+      if (geminiModel) payload.gemini_model = geminiModel;
+      if (openaiModel) payload.openai_model = openaiModel;
+      if (claudeModel) payload.claude_model = claudeModel;
+      if (ollamaModel) payload.ollama_model = ollamaModel;
+
+      // Copilot configs - SEMPRE enviar (não são sensíveis)
+      if (copilotEndpoint) payload.copilot_endpoint = copilotEndpoint;
+      if (copilotDeployment) payload.copilot_deployment = copilotDeployment;
+
+      console.log("[AISettingsTab] Salvando configurações:", {
+        ai_email: payload.ai_email,
+        preferred_provider: payload.preferred_provider,
+        gemini_api_key: payload.gemini_api_key ? "***" : undefined,
+        openai_api_key: payload.openai_api_key ? "***" : undefined,
+        claude_api_key: payload.claude_api_key ? "***" : undefined,
+        copilot_api_key: payload.copilot_api_key ? "***" : undefined,
       });
+
+      await apiClient.saveAITokens(payload);
+
+      // Armazenar ai_email no localStorage para uso futuro
+      localStorage.setItem("ai_email", aiEmail.trim());
 
       toast({
         title: "✅ Configurações salvas",
@@ -237,7 +290,7 @@ export function AISettingsTab() {
       setClaudeKey("");
       setCopilotKey("");
 
-      // Recarregar status
+      // Recarregar status (apenas indicadores has_gemini, has_claude, etc)
       await loadTokenStatus();
     } catch (error) {
       toast({
@@ -256,14 +309,18 @@ export function AISettingsTab() {
     }
 
     try {
-      await apiClient.deleteAITokens();
+      await apiClient.deleteAITokens(aiEmail);
 
       toast({
         title: "✅ Tokens removidos",
         description: "Suas configurações AI foram removidas",
       });
 
+      // Limpar localStorage
+      localStorage.removeItem("ai_email");
+
       // Limpar form
+      setAiEmail("");
       setGeminiKey("");
       setOpenaiKey("");
       setClaudeKey("");
@@ -353,6 +410,27 @@ export function AISettingsTab() {
               )}
             </div>
           )}
+
+          <Separator />
+
+          {/* AI Email (identificação das configurações - independente do Azure AD) */}
+          <div className="space-y-2">
+            <Label htmlFor="ai-email" className="flex items-center gap-2">
+              Seu Email (para AI)
+            </Label>
+            <Input
+              id="ai-email"
+              type="email"
+              placeholder="seu.email@exemplo.com"
+              value={aiEmail}
+              onChange={(e) => setAiEmail(e.target.value)}
+              className="font-mono text-sm"
+            />
+            <p className="text-xs text-muted-foreground">
+              Este email identifica suas configurações AI (não precisa ser o mesmo do Azure AD).
+              Todas as suas API keys e preferências ficam vinculadas a este email.
+            </p>
+          </div>
 
           <Separator />
 

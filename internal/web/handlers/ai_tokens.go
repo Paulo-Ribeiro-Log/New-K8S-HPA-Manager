@@ -8,6 +8,7 @@ import (
 	"k8s-hpa-manager/internal/storage"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 )
 
 // AITokensHandler gerencia tokens AI dos usuários
@@ -24,6 +25,7 @@ func NewAITokensHandler(tokensStore *storage.UserTokensStore) *AITokensHandler {
 
 // SaveTokensRequest request para salvar tokens
 type SaveTokensRequest struct {
+	AIEmail             string `json:"ai_email"`                 // Email para identificar configurações (independente do Azure AD)
 	GeminiAPIKey        string `json:"gemini_api_key,omitempty"`
 	GeminiModel         string `json:"gemini_model,omitempty"`
 	OpenAIAPIKey        string `json:"openai_api_key,omitempty"`
@@ -39,6 +41,7 @@ type SaveTokensRequest struct {
 
 // TokensResponse response com tokens (sem expor valores completos)
 type TokensResponse struct {
+	AIEmail           string `json:"ai_email,omitempty"`        // Email usado para identificar configurações
 	HasGemini         bool   `json:"has_gemini"`
 	GeminiModel       string `json:"gemini_model,omitempty"`
 	HasOpenAI         bool   `json:"has_openai"`
@@ -55,19 +58,6 @@ type TokensResponse struct {
 
 // SaveTokens salva tokens do usuário
 func (h *AITokensHandler) SaveTokens(c *gin.Context) {
-	// Obter user email do contexto RBAC
-	userEmail, exists := c.Get("user_email")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
-		return
-	}
-
-	userEmailStr, ok := userEmail.(string)
-	if !ok || userEmailStr == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user email"})
-		return
-	}
-
 	var req SaveTokensRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -75,6 +65,17 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 		})
 		return
 	}
+
+	// Validar que ai_email foi fornecido
+	if req.AIEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "ai_email is required",
+		})
+		return
+	}
+
+	// Usar ai_email do request (independente do Azure AD)
+	userEmailStr := req.AIEmail
 
 	// Validar preferred provider
 	if req.PreferredProvider == "" {
@@ -133,12 +134,28 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 	}
 
 	if len(validationErrors) > 0 {
+		// Log detalhado de erros de validação
+		log.Warn().
+			Str("user_email", userEmailStr).
+			Interface("validation_errors", validationErrors).
+			Msg("❌ Token validation failed")
+
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":             "token validation failed",
 			"validation_errors": validationErrors,
 		})
 		return
 	}
+
+	// Log: tokens validados com sucesso
+	log.Info().
+		Str("user_email", userEmailStr).
+		Str("preferred_provider", req.PreferredProvider).
+		Bool("has_gemini", req.GeminiAPIKey != "").
+		Bool("has_claude", req.ClaudeAPIKey != "").
+		Bool("has_openai", req.OpenAIAPIKey != "").
+		Bool("has_copilot", req.CopilotAPIKey != "").
+		Msg("✅ Tokens validated successfully - saving to database")
 
 	// Fazer merge: manter valores existentes se novos não forem fornecidos
 	tokens := &storage.UserTokens{
@@ -207,11 +224,25 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 	}
 
 	if err := h.tokensStore.SaveTokens(userEmailStr, tokens); err != nil {
+		log.Error().
+			Err(err).
+			Str("user_email", userEmailStr).
+			Msg("❌ Failed to save tokens to database")
+
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "failed to save tokens",
 		})
 		return
 	}
+
+	log.Info().
+		Str("user_email", userEmailStr).
+		Str("preferred_provider", tokens.PreferredProvider).
+		Bool("has_gemini", tokens.GeminiAPIKey != "").
+		Bool("has_claude", tokens.ClaudeAPIKey != "").
+		Bool("has_openai", tokens.OpenAIAPIKey != "").
+		Bool("has_copilot", tokens.CopilotAPIKey != "").
+		Msg("✅ Tokens saved successfully to database")
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -221,20 +252,23 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 
 // GetTokens retorna status dos tokens (sem expor valores)
 func (h *AITokensHandler) GetTokens(c *gin.Context) {
-	// Obter user email do contexto RBAC
-	userEmail, exists := c.Get("user_email")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+	// Aceitar ai_email como query parameter (opcional para retrocompatibilidade)
+	aiEmail := c.Query("ai_email")
+
+	// Se não foi fornecido via query, não retornar erro (retrocompatibilidade)
+	// Frontend vai buscar sem ai_email na primeira vez, depois salva com email
+	if aiEmail == "" {
+		c.JSON(http.StatusOK, TokensResponse{
+			HasGemini:         false,
+			HasOpenAI:         false,
+			HasClaude:         false,
+			HasCopilot:        false,
+			PreferredProvider: "ollama",
+		})
 		return
 	}
 
-	userEmailStr, ok := userEmail.(string)
-	if !ok || userEmailStr == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user email"})
-		return
-	}
-
-	tokens, err := h.tokensStore.GetTokens(userEmailStr)
+	tokens, err := h.tokensStore.GetTokens(aiEmail)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "failed to get tokens",
@@ -245,6 +279,7 @@ func (h *AITokensHandler) GetTokens(c *gin.Context) {
 	// Se não tem tokens configurados, retornar vazio
 	if tokens == nil {
 		c.JSON(http.StatusOK, TokensResponse{
+			AIEmail:           aiEmail,
 			HasGemini:         false,
 			HasOpenAI:         false,
 			HasClaude:         false,
@@ -256,6 +291,7 @@ func (h *AITokensHandler) GetTokens(c *gin.Context) {
 
 	// Retornar apenas status (não expor tokens completos)
 	c.JSON(http.StatusOK, TokensResponse{
+		AIEmail:           tokens.UserEmail,
 		HasGemini:         tokens.GeminiAPIKey != "",
 		GeminiModel:       tokens.GeminiModel,
 		HasOpenAI:         tokens.OpenAIAPIKey != "",
@@ -273,25 +309,25 @@ func (h *AITokensHandler) GetTokens(c *gin.Context) {
 
 // DeleteTokens remove tokens do usuário
 func (h *AITokensHandler) DeleteTokens(c *gin.Context) {
-	// Obter user email do contexto RBAC
-	userEmail, exists := c.Get("user_email")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+	// Obter ai_email via query parameter
+	aiEmail := c.Query("ai_email")
+	if aiEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "ai_email query parameter is required",
+		})
 		return
 	}
 
-	userEmailStr, ok := userEmail.(string)
-	if !ok || userEmailStr == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user email"})
-		return
-	}
-
-	if err := h.tokensStore.DeleteTokens(userEmailStr); err != nil {
+	if err := h.tokensStore.DeleteTokens(aiEmail); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "failed to delete tokens",
 		})
 		return
 	}
+
+	log.Info().
+		Str("ai_email", aiEmail).
+		Msg("✅ AI tokens deleted successfully")
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -529,16 +565,16 @@ func (h *AITokensHandler) GetAvailableModels(c *gin.Context) {
 
 // RegisterRoutes registra rotas do handler
 func (h *AITokensHandler) RegisterRoutes(router *gin.RouterGroup, rbacMiddleware interface{ InjectUserEmail() gin.HandlerFunc }) {
-	// Aplicar middleware de injeção de user_email para todas as rotas de tokens
+	// Rotas de tokens AI - NÃO usam middleware InjectUserEmail
+	// O email é fornecido diretamente no request (ai_email), independente do Azure AD
 	tokens := router.Group("/ai/tokens")
-	tokens.Use(rbacMiddleware.InjectUserEmail())
 	{
-		tokens.GET("", h.GetTokens)               // GET /api/v1/ai/tokens
-		tokens.POST("", h.SaveTokens)             // POST /api/v1/ai/tokens
-		tokens.DELETE("", h.DeleteTokens)         // DELETE /api/v1/ai/tokens
+		tokens.GET("", h.GetTokens)               // GET /api/v1/ai/tokens?ai_email=...
+		tokens.POST("", h.SaveTokens)             // POST /api/v1/ai/tokens (body: {ai_email, ...})
+		tokens.DELETE("", h.DeleteTokens)         // DELETE /api/v1/ai/tokens?ai_email=...
 		tokens.POST("/validate", h.ValidateToken) // POST /api/v1/ai/tokens/validate
 	}
 
-	// Endpoint de modelos disponíveis (não precisa de user_email)
+	// Endpoint de modelos disponíveis (não precisa de ai_email)
 	router.GET("/ai/models", h.GetAvailableModels) // GET /api/v1/ai/models?provider=gemini
 }

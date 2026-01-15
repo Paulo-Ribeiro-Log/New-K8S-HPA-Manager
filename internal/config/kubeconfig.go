@@ -438,11 +438,17 @@ func (k *KubeConfigManager) extractResourceGroupFromKubeconfig(clusterName strin
 
 // discoverSubscriptionViaAzureCLI descobre a subscription buscando em todas as subscriptions disponíveis (paralelo controlado)
 func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourceGroup string) (string, error) {
+	// 0. Validar que o token do Azure está válido antes de tentar qualquer operação
+	validateTokenCmd := exec.Command("az", "account", "get-access-token", "--only-show-errors")
+	if err := validateTokenCmd.Run(); err != nil {
+		return "", fmt.Errorf("token Azure expirado ou inválido - execute 'az login' novamente: %w", err)
+	}
+
 	// 1. Listar todas as subscriptions disponíveis
-	cmd := exec.Command("az", "account", "list", "--query", "[].id", "-o", "tsv")
+	cmd := exec.Command("az", "account", "list", "--query", "[].id", "-o", "tsv", "--only-show-errors")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to list subscriptions: %w", err)
+		return "", fmt.Errorf("failed to list subscriptions (erro 401 indica token expirado - execute 'az login'): %w\nOutput: %s", err, string(output))
 	}
 
 	subscriptions := strings.Split(strings.TrimSpace(string(output)), "\n")
@@ -502,11 +508,19 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 				"--resource-group", resourceGroup,
 				"--subscription", subID,
 				"--query", "id",
-				"-o", "tsv")
+				"-o", "tsv",
+				"--only-show-errors")
 
 			output, err := cmd.CombinedOutput()
 
 			if err != nil {
+				// Verificar se é erro de autenticação (401/Unauthorized)
+				if strings.Contains(strings.ToLower(string(output)), "401") ||
+					strings.Contains(strings.ToLower(string(output)), "unauthorized") ||
+					strings.Contains(strings.ToLower(string(output)), "authentication") {
+					resultChan <- result{subscriptionID: subID, err: fmt.Errorf("erro de autenticação (401) - token Azure expirado. Execute 'az login' novamente")}
+					return
+				}
 				// Cluster não encontrado nesta subscription (esperado)
 				resultChan <- result{subscriptionID: subID, err: err}
 				return
