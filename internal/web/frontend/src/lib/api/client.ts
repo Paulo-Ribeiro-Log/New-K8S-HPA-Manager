@@ -1453,8 +1453,9 @@ class APIClient {
   /**
    * Get AI provider status
    */
-  async getAIProviderStatus(): Promise<ProviderStatus> {
-    return this.request(`/ai/status`);
+  async getAIProviderStatus(aiEmail?: string): Promise<ProviderStatus> {
+    const params = aiEmail ? `?ai_email=${encodeURIComponent(aiEmail)}` : "";
+    return this.request(`/ai/status${params}`);
   }
 
   /**
@@ -1522,6 +1523,7 @@ class APIClient {
    * Get user's AI tokens status
    */
   async getAITokens(): Promise<{
+    ai_email?: string;
     has_gemini: boolean;
     gemini_model?: string;
     has_openai: boolean;
@@ -1542,6 +1544,7 @@ class APIClient {
    * Save user's AI tokens
    */
   async saveAITokens(tokens: {
+    ai_email: string; // Email para identificar configurações (independente do Azure AD)
     gemini_api_key?: string;
     gemini_model?: string;
     openai_api_key?: string;
@@ -1563,8 +1566,8 @@ class APIClient {
   /**
    * Delete user's AI tokens
    */
-  async deleteAITokens(): Promise<{ success: boolean; message: string }> {
-    return this.request(`/ai/tokens`, {
+  async deleteAITokens(aiEmail: string): Promise<{ success: boolean; message: string }> {
+    return this.request(`/ai/tokens?ai_email=${encodeURIComponent(aiEmail)}`, {
       method: "DELETE",
     });
   }

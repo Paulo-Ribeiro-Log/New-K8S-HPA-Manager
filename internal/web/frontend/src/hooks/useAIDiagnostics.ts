@@ -29,7 +29,9 @@ export function useAIDiagnostics() {
   const fetchProviderStatus = useCallback(async () => {
     setIsLoadingStatus(true);
     try {
-      const status = await apiClient.getAIProviderStatus();
+      // Obter ai_email do localStorage
+      const aiEmail = localStorage.getItem("ai_email") || "";
+      const status = await apiClient.getAIProviderStatus(aiEmail);
       setProviderStatus(status);
 
       if (!status.available) {
@@ -101,7 +103,11 @@ export function useAIDiagnostics() {
           description: `Analisando ${request.resourceType}: ${request.resourceName}`,
         });
 
-        const result = await apiClient.analyzeResource(request, abortControllerRef.current.signal);
+        // Obter ai_email do localStorage e adicionar ao request
+        const aiEmail = localStorage.getItem("ai_email") || "";
+        const enrichedRequest = { ...request, aiEmail };
+
+        const result = await apiClient.analyzeResource(enrichedRequest, abortControllerRef.current.signal);
         setCurrentAnalysis(result);
 
         toast({
