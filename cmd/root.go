@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -98,18 +99,29 @@ func validateAzureAuth() error {
 
 	// Verificar se token está válido
 	tokenCmd := exec.CommandContext(ctx, "az", "account", "get-access-token", "--only-show-errors")
-	tokenCmd.Stdout = nil
-	tokenCmd.Stderr = nil
-	if err := tokenCmd.Run(); err != nil {
+	output, err := tokenCmd.CombinedOutput()
+	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			fmt.Println("⚠️  Timeout ao verificar token Azure (ignorando)")
 			return nil
 		}
-		fmt.Println("⚠️  Token Azure AD expirado")
+
+		// Verificar se é erro de autenticação (401/token expirado)
+		outputStr := strings.ToLower(string(output))
+		if strings.Contains(outputStr, "401") ||
+			strings.Contains(outputStr, "unauthorized") ||
+			strings.Contains(outputStr, "expired") ||
+			strings.Contains(outputStr, "authentication") {
+			fmt.Println("⚠️  Token Azure AD expirado ou inválido")
+			return performAzureLogin()
+		}
+
+		// Outro tipo de erro - tentar login de qualquer forma
+		fmt.Printf("⚠️  Erro ao verificar token Azure: %v\n", err)
 		return performAzureLogin()
 	}
 
-	fmt.Println("✅ Azure AD autenticado")
+	fmt.Println("✅ Azure AD autenticado com token válido")
 	return nil
 }
 
