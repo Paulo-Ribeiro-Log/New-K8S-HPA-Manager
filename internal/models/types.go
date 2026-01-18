@@ -116,15 +116,18 @@ type IngressManifest struct {
 
 // DeploymentSummary descreve informações resumidas de um Deployment
 type DeploymentSummary struct {
-	Cluster           string            `json:"cluster"`
-	Namespace         string            `json:"namespace"`
-	Name              string            `json:"name"`
-	Labels            map[string]string `json:"labels,omitempty"`
-	Replicas          int32             `json:"replicas"`
-	ReadyReplicas     int32             `json:"readyReplicas"`
-	AvailableReplicas int32             `json:"availableReplicas"`
-	ResourceVersion   string            `json:"resourceVersion,omitempty"`
-	UpdatedAt         time.Time         `json:"updatedAt"`
+	Cluster             string            `json:"cluster"`
+	Namespace           string            `json:"namespace"`
+	Name                string            `json:"name"`
+	Labels              map[string]string `json:"labels,omitempty"`
+	Replicas            int32             `json:"replicas"`
+	ReadyReplicas       int32             `json:"readyReplicas"`
+	AvailableReplicas   int32             `json:"availableReplicas"`
+	UpdatedReplicas     int32             `json:"updatedReplicas"`
+	UnavailableReplicas int32             `json:"unavailableReplicas"`
+	CurrentReplicas     int32             `json:"currentReplicas"`
+	ResourceVersion     string            `json:"resourceVersion,omitempty"`
+	UpdatedAt           time.Time         `json:"updatedAt"`
 }
 
 // DeploymentMetadata consolida metadados relevantes do Deployment
@@ -389,6 +392,7 @@ type Namespace struct {
 	Cluster  string `json:"cluster"`
 	HPACount int    `json:"hpa_count"`
 	Selected bool   `json:"selected"`
+	IsSystem bool   `json:"isSystem"`
 }
 
 // HPA representa um Horizontal Pod Autoscaler

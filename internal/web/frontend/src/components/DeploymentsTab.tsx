@@ -26,6 +26,7 @@ import { apiClient } from "@/lib/api/client";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { AITriggerButton } from "@/components/AITriggerButton";
 import { PredictionHistoryModal } from "@/components/PredictionHistoryModal";
+import { RolloutProgressGauge } from "@/components/RolloutProgressGauge";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
 import "@/styles/diff2html-dark.css";
@@ -40,6 +41,26 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+
+// Função para formatar versão de x-x-x-x para x.x.x-x (semver)
+const formatVersion = (version: string | undefined): string => {
+  if (!version) return '';
+  // Se a versão tem formato x-x-x-x (4 partes separadas por hífen), converter para x.x.x-x
+  const parts = version.split('-');
+  if (parts.length === 4 && parts.every(p => /^\d+$/.test(p))) {
+    // Formato: major.minor.patch-build
+    return `${parts[0]}.${parts[1]}.${parts[2]}-${parts[3]}`;
+  }
+  // Se tem 3 partes numéricas seguidas de mais, também formata
+  if (parts.length >= 3 && parts.slice(0, 3).every(p => /^\d+$/.test(p))) {
+    const semver = `${parts[0]}.${parts[1]}.${parts[2]}`;
+    if (parts.length > 3) {
+      return `${semver}-${parts.slice(3).join('-')}`;
+    }
+    return semver;
+  }
+  return version;
+};
 
 interface DeploymentsTabProps {
   cluster: string;
@@ -92,6 +113,37 @@ export const DeploymentsTab = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const [rolloutConfirmOpen, setRolloutConfirmOpen] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
+  const [showRolloutGauge, setShowRolloutGauge] = useState(false);
+  const [rolloutProgress, setRolloutProgress] = useState(0);
+  const [rolloutPodsCount, setRolloutPodsCount] = useState({
+    ready: 0,
+    newReady: 0,
+    updated: 0,
+    desired: 0,
+    current: 0,
+    unavailable: 0,
+    oldPods: 0,
+  });
+  const [rolloutState, setRolloutState] = useState<"idle" | "running" | "completed">("idle");
+  const [rolloutSawActivity, setRolloutSawActivity] = useState(false);
+  const [rolloutTargetKey, setRolloutTargetKey] = useState<string | null>(null);
+  const [rolloutStartTime, setRolloutStartTime] = useState<number | null>(null);
+  // Nome do deployment em rollout (para exibir no gauge independente do deployment selecionado)
+  const [rolloutDeploymentName, setRolloutDeploymentName] = useState<string | null>(null);
+  const [rolloutPods, setRolloutPods] = useState<Array<{
+    name: string;
+    phase: "Running" | "Pending" | "Terminating" | "ContainerCreating" | "CrashLoopBackOff" | "Error" | "Unknown";
+    ready: boolean;
+    isNew: boolean;
+    restarts?: number;
+    podTemplateHash?: string;
+  }>>([]);
+  // Hash do ReplicaSet mais recente (para identificar pods novos vs antigos)
+  const [currentReplicaSetHash, setCurrentReplicaSetHash] = useState<string | null>(null);
+  const rolloutPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const selectedDeploymentRef = useRef<DeploymentSummary | null>(null);
+  const rolloutTargetRef = useRef<DeploymentSummary | null>(null);
+
 
   // Debug: monitor modal state changes
   useEffect(() => {
@@ -156,6 +208,29 @@ export const DeploymentsTab = ({
     setHistory([]);
     setHistoryIndex(-1);
   }, [cluster, selectedNamespace]);
+
+  useEffect(() => {
+    selectedDeploymentRef.current = selectedDeployment;
+  }, [selectedDeployment]);
+
+  useEffect(() => {
+    if (!selectedDeployment) return;
+    const latest = deployments.find(
+      (dep) =>
+        dep.cluster === selectedDeployment.cluster &&
+        dep.namespace === selectedDeployment.namespace &&
+        dep.name === selectedDeployment.name
+    );
+    if (!latest) return;
+    const hasChanged =
+      latest.resourceVersion !== selectedDeployment.resourceVersion ||
+      latest.readyReplicas !== selectedDeployment.readyReplicas ||
+      latest.availableReplicas !== selectedDeployment.availableReplicas ||
+      latest.replicas !== selectedDeployment.replicas;
+    if (hasChanged) {
+      setSelectedDeployment(latest);
+    }
+  }, [deployments, selectedDeployment, setSelectedDeployment]);
 
   const filteredDeployments = useMemo(() => {
     if (!searchQuery) return deployments;
@@ -303,6 +378,344 @@ export const DeploymentsTab = ({
       setManifestLoading(false);
     }
   };
+
+  const stopRolloutMonitor = useCallback(() => {
+    if (rolloutPollRef.current) {
+      clearInterval(rolloutPollRef.current);
+      rolloutPollRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopRolloutMonitor();
+    };
+  }, [stopRolloutMonitor]);
+
+  const clearRolloutGauge = useCallback(() => {
+    stopRolloutMonitor();
+    setShowRolloutGauge(false);
+    setRolloutState("idle");
+    setRolloutProgress(0);
+    setRolloutPodsCount({
+      ready: 0,
+      newReady: 0,
+      updated: 0,
+      desired: 0,
+      current: 0,
+      unavailable: 0,
+      oldPods: 0,
+    });
+    setRolloutSawActivity(false);
+    setRolloutTargetKey(null);
+    setRolloutDeploymentName(null);
+    setRolloutStartTime(null);
+    setRolloutPods([]);
+    setCurrentReplicaSetHash(null);
+    rolloutTargetRef.current = null;
+  }, [stopRolloutMonitor]);
+
+  const updateRolloutMetrics = useCallback(
+    (summary: DeploymentSummary) => {
+      const desired = Math.max(summary.replicas ?? 0, 0);
+      const ready = Math.max(summary.readyReplicas ?? 0, 0);
+      const updated = Math.max(summary.updatedReplicas ?? 0, 0);
+      const current = Math.max(summary.currentReplicas ?? summary.replicas ?? 0, 0);
+      const unavailable = Math.max(summary.unavailableReplicas ?? 0, 0);
+      const oldPods = Math.max(current - updated, 0);
+      // CORREÇÃO: newReady = mínimo entre ready e updated (pods novos que estão prontos)
+      // Antes: ready - oldPods era incorreto pois assumia que todos os pods antigos estavam prontos
+      const newReady = Math.min(ready, updated);
+      setRolloutPodsCount({
+        ready,
+        newReady,
+        updated,
+        desired,
+        current,
+        unavailable,
+        oldPods,
+      });
+
+      if (desired === 0) {
+        setRolloutProgress(100);
+        setRolloutState("completed");
+        setRolloutSawActivity(true);
+        stopRolloutMonitor();
+        return;
+      }
+
+      const observedActivity =
+        updated < desired ||
+        newReady < desired ||
+        unavailable > 0 ||
+        oldPods > 0 ||
+        current > desired;
+
+      if (observedActivity && !rolloutSawActivity) {
+        setRolloutSawActivity(true);
+      }
+
+      if (!observedActivity && !rolloutSawActivity) {
+        setRolloutProgress(0);
+        setRolloutState("running");
+        return;
+      }
+
+      const creationPercent = Math.min(updated / desired, 1);
+      const readinessPercent = Math.min(newReady / desired, 1);
+      const removalPercent = Math.min((desired - Math.min(oldPods, desired)) / desired, 1);
+      // Usar média ponderada para refletir progresso real
+      // - Criação de pods novos: 40% do peso
+      // - Prontidão dos pods novos: 40% do peso
+      // - Remoção dos pods antigos: 20% do peso
+      const computedProgress = Math.round(
+        (creationPercent * 0.4 + readinessPercent * 0.4 + removalPercent * 0.2) * 100
+      );
+      setRolloutProgress(computedProgress);
+
+      // Debug: Log do estado do rollout
+      console.log("[RolloutMonitor] Estado:", {
+        desired,
+        ready,
+        updated,
+        newReady,
+        oldPods,
+        unavailable,
+        current,
+        computedProgress,
+      });
+
+      // Condição de conclusão rigorosa:
+      // 1. Todos os pods desejados foram atualizados (updated === desired)
+      // 2. Todos os pods estão prontos (ready === desired)
+      // 3. Não há pods antigos rodando (oldPods === 0)
+      // 4. Não há pods indisponíveis (unavailable === 0)
+      // 5. Precisa ter visto atividade de rollout antes (evita false positive no início)
+      const isRolloutComplete =
+        rolloutSawActivity &&
+        updated === desired &&
+        ready === desired &&
+        oldPods === 0 &&
+        unavailable === 0;
+
+      if (isRolloutComplete) {
+        console.log("[RolloutMonitor] Rollout COMPLETO!");
+        setRolloutProgress(100); // Garantir que mostra 100% ao completar
+        setRolloutState("completed");
+        stopRolloutMonitor();
+      } else {
+        setRolloutState("running");
+      }
+    },
+    [rolloutSawActivity, stopRolloutMonitor]
+  );
+
+  const pollDeploymentProgress = useCallback(async () => {
+    const target = rolloutTargetRef.current;
+    if (!target) return;
+
+    try {
+      const snapshots = await apiClient.getDeployments(
+        target.cluster,
+        [target.namespace],
+        target.name,
+        true,
+        true
+      );
+      const latest = snapshots.find(
+        (dep) =>
+          dep.cluster === target.cluster &&
+          dep.namespace === target.namespace &&
+          dep.name === target.name
+      );
+      if (!latest) {
+        return;
+      }
+
+      const current = selectedDeploymentRef.current;
+      if (
+        current &&
+        current.cluster === target.cluster &&
+        current.namespace === target.namespace &&
+        current.name === target.name
+      ) {
+        const hasChanged =
+          current.resourceVersion !== latest.resourceVersion ||
+          current.readyReplicas !== latest.readyReplicas ||
+          current.availableReplicas !== latest.availableReplicas ||
+          current.replicas !== latest.replicas;
+        if (hasChanged) {
+          setSelectedDeployment(latest);
+        }
+      }
+
+      updateRolloutMetrics(latest);
+
+      // Buscar pods do deployment para exibir status individual
+      try {
+        const pods = await apiClient.getPods(
+          target.cluster,
+          [target.namespace],
+          target.name, // buscar pods que contenham o nome do deployment
+          false,
+          true // bypass cache
+        );
+
+        // Filtrar pods que pertencem a este deployment
+        const deploymentPods = pods.filter(
+          (pod) =>
+            pod.labels?.["app"] === target.name ||
+            pod.labels?.["app.kubernetes.io/name"] === target.name ||
+            pod.name.startsWith(`${target.name}-`)
+        );
+
+        // Identificar o hash do ReplicaSet mais recente
+        // O pod-template-hash identifica a qual ReplicaSet o pod pertence
+        const hashCounts = new Map<string, number>();
+        deploymentPods.forEach((pod) => {
+          const hash = pod.labels?.["pod-template-hash"];
+          if (hash) {
+            hashCounts.set(hash, (hashCounts.get(hash) || 0) + 1);
+          }
+        });
+
+        // Ordenar por data de criação para encontrar o hash mais recente
+        const sortedByDate = [...deploymentPods].sort((a, b) => {
+          const dateA = new Date(a.createdAt).getTime();
+          const dateB = new Date(b.createdAt).getTime();
+          return dateB - dateA; // mais recentes primeiro
+        });
+
+        // O hash mais recente é o dos pods mais novos
+        let newestHash: string | null = null;
+        for (const pod of sortedByDate) {
+          const hash = pod.labels?.["pod-template-hash"];
+          if (hash) {
+            newestHash = hash;
+            break;
+          }
+        }
+
+        // Atualizar o hash atual se detectamos um novo
+        if (newestHash && newestHash !== currentReplicaSetHash) {
+          setCurrentReplicaSetHash(newestHash);
+        }
+
+        const activeHash = newestHash || currentReplicaSetHash;
+
+        // Determinar status de cada pod
+        const podStatuses = deploymentPods.map((pod) => {
+          const podHash = pod.labels?.["pod-template-hash"];
+          // Pod é "novo" se pertence ao ReplicaSet mais recente
+          const isNew = podHash === activeHash;
+
+          // Mapear fase do pod
+          let phase: "Running" | "Pending" | "Terminating" | "ContainerCreating" | "CrashLoopBackOff" | "Error" | "Unknown" = "Unknown";
+          const podPhase = pod.phase?.toLowerCase() || "";
+
+          if (podPhase === "running") {
+            phase = "Running";
+          } else if (podPhase === "pending") {
+            // Verificar se está criando containers
+            const hasContainerCreating = pod.containers?.some(
+              (c) => c.state?.toLowerCase() === "waiting" && c.stateReason?.toLowerCase() === "containercreating"
+            );
+            phase = hasContainerCreating ? "ContainerCreating" : "Pending";
+          } else if (podPhase === "terminating" || podPhase.includes("terminat")) {
+            phase = "Terminating";
+          } else if (podPhase === "failed" || podPhase === "error") {
+            phase = "Error";
+          }
+
+          // Verificar CrashLoopBackOff
+          const hasCrashLoop = pod.containers?.some(
+            (c) => c.stateReason?.toLowerCase().includes("crashloop")
+          );
+          if (hasCrashLoop) {
+            phase = "CrashLoopBackOff";
+          }
+
+          // Pod antigo que não está mais na API provavelmente está terminando
+          // Pods antigos (hash diferente) que ainda estão "Running" estão sendo terminados
+          if (!isNew && phase === "Running") {
+            phase = "Terminating";
+          }
+
+          // Calcular se está pronto
+          const ready = pod.readyContainers === pod.totalContainers && pod.totalContainers > 0;
+
+          return {
+            name: pod.name,
+            phase,
+            ready,
+            isNew,
+            restarts: pod.restarts || 0,
+            podTemplateHash: podHash,
+          };
+        });
+
+        // Ordenar: novos primeiro, depois antigos
+        podStatuses.sort((a, b) => {
+          if (a.isNew && !b.isNew) return -1;
+          if (!a.isNew && b.isNew) return 1;
+          return 0;
+        });
+
+        setRolloutPods(podStatuses);
+      } catch (podErr) {
+        console.warn("[RolloutMonitor] Falha ao buscar pods do deployment", podErr);
+      }
+    } catch (err) {
+      console.error("[RolloutMonitor] Falha ao atualizar progresso do rollout", err);
+    }
+  }, [setSelectedDeployment, updateRolloutMetrics]);
+
+  const startRolloutMonitor = useCallback(
+    (initialSummary?: DeploymentSummary) => {
+      const target = initialSummary || selectedDeploymentRef.current;
+      if (!target) return;
+
+      const desired = Math.max(target.replicas ?? 0, 0);
+      setRolloutTargetKey(`${target.cluster}/${target.namespace}/${target.name}`);
+      // Salvar nome do deployment para exibir no gauge (independente do deployment selecionado)
+      setRolloutDeploymentName(target.name);
+      rolloutTargetRef.current = target;
+      setRolloutSawActivity(false);
+      const ready = Math.max(target.readyReplicas ?? 0, 0);
+      const updated = Math.max(target.updatedReplicas ?? 0, 0);
+      const current = Math.max(target.currentReplicas ?? target.replicas ?? 0, 0);
+      const unavailable = Math.max(target.unavailableReplicas ?? 0, 0);
+      const oldPods = Math.max(current - updated, 0);
+      const newReady = Math.min(ready, updated); // CORREÇÃO: usar Math.min
+      setRolloutPodsCount({
+        ready,
+        newReady,
+        updated,
+        desired,
+        current,
+        unavailable,
+        oldPods,
+      });
+      setRolloutProgress(0);
+      setRolloutState("running");
+      setShowRolloutGauge(true);
+      // Iniciar cronômetro
+      setRolloutStartTime(Date.now());
+      setRolloutPods([]);
+
+      stopRolloutMonitor();
+      const poll = () => {
+        void pollDeploymentProgress();
+      };
+      poll();
+      // CORREÇÃO: Reduzido de 5s para 2s para capturar transições rápidas de rollout
+      rolloutPollRef.current = setInterval(poll, 2000);
+    },
+    [pollDeploymentProgress, stopRolloutMonitor]
+  );
+
+  // O rollout continua em background independente do deployment selecionado
+  // Não há mais cache ou pausa - o polling roda até a conclusão
 
   const handleToggleView = (mode: "editor" | "diff") => {
     if (mode === "diff" && !hasChanges) {
@@ -603,6 +1016,8 @@ export const DeploymentsTab = ({
       });
 
       setRolloutConfirmOpen(false);
+      startRolloutMonitor(selectedDeployment);
+      void refetch();
 
       // Recarregar manifest após alguns segundos para ver o restart
       setTimeout(async () => {
@@ -1694,6 +2109,40 @@ export const DeploymentsTab = ({
     const appVersion = selectedDeployment.labels?.["app.kubernetes.io/version"] ||
                        selectedDeployment.labels?.["version"] ||
                        selectedDeployment.labels?.["app.version"];
+    const gaugeStatusMessage = (() => {
+      if (!showRolloutGauge) {
+        return "";
+      }
+      const remainingToUpdate = Math.max(rolloutPodsCount.desired - rolloutPodsCount.updated, 0);
+      const remainingToReady = Math.max(rolloutPodsCount.desired - rolloutPodsCount.newReady, 0);
+      const oldPods = Math.max(rolloutPodsCount.oldPods, 0);
+      const unavailable = Math.max(rolloutPodsCount.unavailable, 0);
+
+      if (!rolloutSawActivity) {
+        return "Aguardando o controlador iniciar o restart...";
+      }
+
+      if (rolloutState === "completed") {
+        if (oldPods > 0) {
+          return `Encerrando pods antigos (${oldPods} restantes)...`;
+        }
+        if (unavailable > 0) {
+          return `Aguardando ${unavailable} pod(s) ficarem prontos...`;
+        }
+        return "Rollout finalizado e estável";
+      }
+
+      if (remainingToUpdate > 0) {
+        return `Atualizando pods (${rolloutPodsCount.updated}/${rolloutPodsCount.desired})...`;
+      }
+      if (remainingToReady > 0 || unavailable > 0) {
+        return "Esperando os novos pods ficarem prontos...";
+      }
+      if (oldPods > 0) {
+        return `Desligando pods antigos (${oldPods} restantes)...`;
+      }
+      return "Sincronizando rollout...";
+    })();
 
     return (
       <div className="space-y-3" onKeyDown={handleEditorKeyDown} tabIndex={-1}>
@@ -1709,7 +2158,7 @@ export const DeploymentsTab = ({
           {appVersion && (
             <div className="flex flex-col">
               <span className="text-muted-foreground uppercase mb-0.5">Versão</span>
-              <span className="font-mono text-primary">{appVersion}</span>
+              <span className="font-mono text-primary">{formatVersion(appVersion)}</span>
             </div>
           )}
           <div className="flex flex-col">
@@ -1747,6 +2196,24 @@ export const DeploymentsTab = ({
             </div>
           )}
         </div>
+
+        {/* Gauge de rollout - exibido independente do deployment selecionado */}
+        {showRolloutGauge && rolloutDeploymentName && (
+          <RolloutProgressGauge
+            deploymentName={rolloutDeploymentName}
+            progress={rolloutProgress}
+            updated={rolloutPodsCount.updated}
+            newReady={rolloutPodsCount.newReady}
+            desired={rolloutPodsCount.desired}
+            oldPods={rolloutPodsCount.oldPods}
+            unavailable={rolloutPodsCount.unavailable}
+            status={rolloutState === "completed" ? "completed" : "running"}
+            message={gaugeStatusMessage}
+            startTime={rolloutStartTime ?? undefined}
+            pods={rolloutPods}
+            onClose={clearRolloutGauge}
+          />
+        )}
 
         <div className="space-y-3">
           <div className="flex flex-col gap-2">

@@ -202,6 +202,10 @@ class APIClient {
     });
   }
 
+  async delete<T = any>(endpoint: string): Promise<T> {
+    return this.request<T>(endpoint, { method: 'DELETE' });
+  }
+
   // Clusters
   async getClusters(): Promise<Cluster[]> {
     const response = await this.request<APIResponse<Cluster[]>>("/clusters");
@@ -226,8 +230,14 @@ class APIClient {
   }
 
   // Namespaces
+  // Sempre busca TODOS os namespaces (incluindo sistema) com isSystem marcado
+  // A filtragem é feita no frontend para permitir toggle dinâmico
   async getNamespaces(cluster?: string): Promise<Namespace[]> {
-    const query = cluster ? `?cluster=${encodeURIComponent(cluster)}` : "";
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    // Sempre pedir todos os namespaces para ter isSystem disponível
+    params.append("showSystem", "true");
+    const query = params.toString() ? `?${params.toString()}` : "";
     const response = await this.request<APIResponse<Namespace[]>>(
       `/namespaces${query}`
     );

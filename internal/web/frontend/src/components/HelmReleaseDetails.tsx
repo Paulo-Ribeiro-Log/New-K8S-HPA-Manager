@@ -31,6 +31,7 @@ import { MonacoYamlEditor } from './MonacoYamlEditor';
 import { HelmUpgradeModal } from './HelmUpgradeModal.tsx';
 import { HelmRollbackModal, HelmUninstallModal } from './HelmActionModals.tsx';
 import { ApplyValuesModal } from './ApplyValuesModal';
+import { useFetchRevisionValues } from '../hooks/useHelm';
 import yaml from 'js-yaml';
 import {
   DropdownMenu,
@@ -68,6 +69,26 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick, onRefresh
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [showRollbackModal, setShowRollbackModal] = useState(false);
   const [showUninstallModal, setShowUninstallModal] = useState(false);
+
+  // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
+  const formatVersion = (version: string | undefined): string => {
+    if (!version) return '';
+    // Se a versão tem formato x-x-x-x (4 partes separadas por hífen), converter para x.x.x-x
+    const parts = version.split('-');
+    if (parts.length === 4 && parts.every(p => /^\d+$/.test(p))) {
+      // Formato: major.minor.patch-build
+      return `${parts[0]}.${parts[1]}.${parts[2]}-${parts[3]}`;
+    }
+    // Se tem 3 partes numéricas seguidas de mais, também formata
+    if (parts.length >= 3 && parts.slice(0, 3).every(p => /^\d+$/.test(p))) {
+      const semver = `${parts[0]}.${parts[1]}.${parts[2]}`;
+      if (parts.length > 3) {
+        return `${semver}-${parts.slice(3).join('-')}`;
+      }
+      return semver;
+    }
+    return version;
+  };
 
   if (!release) {
     return (
@@ -138,7 +159,7 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick, onRefresh
             </div>
             <div className="flex items-center gap-1">
               <span className="font-medium">App:</span>
-              <span className="text-foreground">{releaseDetail.appVersion}</span>
+              <span className="text-foreground">{formatVersion(releaseDetail.appVersion)}</span>
             </div>
             <div className="flex items-center gap-1">
               <span className="font-medium">Revisão:</span>
@@ -315,6 +336,10 @@ export const HelmReleaseDetails = ({ cluster, release, onInstallClick, onRefresh
             revisions={revisions}
             loading={revisionsLoading}
             currentRevision={releaseDetail.revision}
+            cluster={cluster}
+            release={releaseDetail.name}
+            namespace={releaseDetail.namespace}
+            currentValuesRendered={releaseDetail.valuesRendered}
           />
         </TabsContent>
 
@@ -584,22 +609,22 @@ const ValuesTab = ({
         )}
 
         {viewMode === 'editor' && (
-          <div className="border rounded-lg overflow-hidden" style={{ height: editorFullScreen ? 'calc(100vh - 200px)' : '520px' }}>
+          <div className="border rounded-lg overflow-hidden" style={{ height: editorFullScreen ? 'calc(100vh - 200px)' : '650px' }}>
             <MonacoYamlEditor
               value={showRendered ? valuesRendered || '# Nenhum valor renderizado' : editedValue || '# Nenhum valor customizado'}
               readOnly={showRendered}
               onChange={showRendered ? undefined : handleEditorChange}
-              height={editorFullScreen ? window.innerHeight - 200 : 520}
+              height={editorFullScreen ? window.innerHeight - 200 : 650}
             />
           </div>
         )}
         {viewMode === 'diff' && (
-          <div className="border rounded-lg overflow-hidden" style={{ height: editorFullScreen ? 'calc(100vh - 200px)' : '520px' }}>
+          <div className="border rounded-lg overflow-hidden" style={{ height: editorFullScreen ? 'calc(100vh - 200px)' : '650px' }}>
             <MonacoYamlEditor
               mode="diff"
               originalValue={originalValue}
               value={editedValue}
-              height={editorFullScreen ? window.innerHeight - 200 : 520}
+              height={editorFullScreen ? window.innerHeight - 200 : 650}
               readOnly
             />
           </div>
@@ -698,16 +723,172 @@ const ValuesTab = ({
   return editorContent;
 };
 
+// Revision Values Modal Component
+const RevisionValuesModal = ({
+  open,
+  onOpenChange,
+  cluster,
+  release,
+  namespace,
+  revision,
+  currentRevision,
+  currentValuesRendered,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  cluster: string;
+  release: string;
+  namespace: string;
+  revision: number;
+  currentRevision: number;
+  currentValuesRendered: string;
+}) => {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [valuesRendered, setValuesRendered] = useState('');
+  const [showDiff, setShowDiff] = useState(false);
+  const { fetchRevisionValues } = useFetchRevisionValues();
+
+  useEffect(() => {
+    if (open && revision > 0) {
+      loadRevisionValues();
+      setShowDiff(false);
+    }
+  }, [open, revision]);
+
+  const loadRevisionValues = async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const data = await fetchRevisionValues(cluster, release, namespace, revision);
+      setValuesRendered(data.valuesRendered);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleExport = () => {
+    const blob = new Blob([valuesRendered], { type: 'text/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${release}-revision-${revision}-values.yaml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent 
+        className="max-w-4xl max-h-[90vh] flex flex-col"
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            Values - Revisão {revision}
+            {revision === currentRevision && (
+              <Badge variant="outline" className="text-xs">Atual</Badge>
+            )}
+          </DialogTitle>
+          <DialogDescription>
+            {release} • {namespace}
+          </DialogDescription>
+        </DialogHeader>
+
+        {loading && (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+          </div>
+        )}
+
+        {error && (
+          <div className="flex items-start gap-2 p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
+            <AlertCircle className="h-4 w-4 text-destructive mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-destructive">Erro ao carregar values</p>
+              <p className="text-xs text-destructive/80 mt-1">{error}</p>
+            </div>
+          </div>
+        )}
+
+        {!loading && !error && (
+          <div className="space-y-3 flex-1 overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {revision !== currentRevision && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant={showDiff ? "default" : "outline"}
+                      onClick={() => setShowDiff(!showDiff)}
+                      className="gap-2"
+                    >
+                      <GitCompare className="h-4 w-4" />
+                      {showDiff ? "Ver Values" : "Comparar com Atual"}
+                    </Button>
+                    {showDiff && (
+                      <span className="text-xs text-muted-foreground">
+                        Revisão {revision} vs Revisão {currentRevision} (Atual)
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <Button size="sm" variant="outline" onClick={handleExport} className="gap-2">
+                <Download className="h-4 w-4" />
+                Exportar YAML
+              </Button>
+            </div>
+
+            <div className="border rounded-lg overflow-hidden flex-1" style={{ minHeight: '500px' }}>
+              {showDiff ? (
+                <MonacoYamlEditor
+                  mode="diff"
+                  originalValue={currentValuesRendered}
+                  value={valuesRendered}
+                  readOnly={true}
+                  height={500}
+                />
+              ) : (
+                <MonacoYamlEditor
+                  value={valuesRendered}
+                  readOnly={true}
+                  height={500}
+                />
+              )}
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+};
+
 // History Tab Component
 const HistoryTab = ({
   revisions,
   loading,
   currentRevision,
+  cluster,
+  release,
+  namespace,
+  currentValuesRendered,
 }: {
   revisions: any[];
   loading: boolean;
   currentRevision: number;
+  cluster: string;
+  release: string;
+  namespace: string;
+  currentValuesRendered: string;
 }) => {
+  const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8">
@@ -725,43 +906,67 @@ const HistoryTab = ({
   }
 
   return (
-    <div className="space-y-2">
-      {revisions.map((revision) => (
-        <Card
-          key={revision.revision}
-          className={cn(
-            'p-3',
-            revision.revision === currentRevision && 'border-primary bg-primary/5'
-          )}
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex-1">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-sm font-semibold">Revisão {revision.revision}</span>
-                {revision.revision === currentRevision && (
-                  <Badge variant="outline" className="text-xs">Atual</Badge>
-                )}
-                <Badge className={cn('text-xs', getStatusColor(revision.status))}>
-                  {revision.status}
-                </Badge>
-              </div>
-              <p className="text-xs text-muted-foreground mb-2">
-                {revision.description || 'Sem descrição'}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {formatDate(revision.updatedAt)}
-              </p>
-            </div>
-            {revision.revision !== currentRevision && (
-              <Button size="sm" variant="outline" className="gap-1">
-                <RotateCcw className="h-3 w-3" />
-                Rollback
-              </Button>
+    <>
+      <div className="space-y-2">
+        {revisions.map((revision) => (
+          <Card
+            key={revision.revision}
+            className={cn(
+              'p-3',
+              revision.revision === currentRevision && 'border-primary bg-primary/5'
             )}
-          </div>
-        </Card>
-      ))}
-    </div>
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-sm font-semibold">Revisão {revision.revision}</span>
+                  {revision.revision === currentRevision && (
+                    <Badge variant="outline" className="text-xs">Atual</Badge>
+                  )}
+                  <Badge className={cn('text-xs', getStatusColor(revision.status))}>
+                    {revision.status}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground mb-2">
+                  {revision.description || 'Sem descrição'}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {formatDate(revision.updatedAt)}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1"
+                  onClick={() => setSelectedRevision(revision.revision)}
+                >
+                  <FileCode className="h-3 w-3" />
+                  Ver Values
+                </Button>
+                {revision.revision !== currentRevision && (
+                  <Button size="sm" variant="outline" className="gap-1">
+                    <RotateCcw className="h-3 w-3" />
+                    Rollback
+                  </Button>
+                )}
+              </div>
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      <RevisionValuesModal
+        open={selectedRevision !== null}
+        onOpenChange={(open) => !open && setSelectedRevision(null)}
+        cluster={cluster}
+        release={release}
+        namespace={namespace}
+        revision={selectedRevision || 0}
+        currentRevision={currentRevision}
+        currentValuesRendered={currentValuesRendered}
+      />
+    </>
   );
 };
 

@@ -157,6 +157,9 @@ export interface DeploymentSummary {
   replicas: number;
   readyReplicas: number;
   availableReplicas: number;
+  updatedReplicas: number;
+  unavailableReplicas: number;
+  currentReplicas: number;
   resourceVersion?: string;
   updatedAt: string;
 }

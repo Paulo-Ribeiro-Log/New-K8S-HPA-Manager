@@ -582,11 +582,29 @@ func (s *Server) setupRoutes() {
 		helmRoutes.GET("/releases", helmHandler.List)
 		helmRoutes.GET("/releases/:release", helmHandler.Get)
 		helmRoutes.GET("/releases/:release/history", helmHandler.History)
+		helmRoutes.GET("/releases/:release/revisions/:revision/values", helmHandler.GetRevisionValues)
 		helmRoutes.POST("/releases", rbacMiddleware.RequireSREGroup(), helmHandler.Install)
 		helmRoutes.PUT("/releases/:release", rbacMiddleware.RequireSREGroup(), helmHandler.Upgrade)
 		helmRoutes.POST("/releases/:release/rollback", rbacMiddleware.RequireSREGroup(), helmHandler.Rollback)
 		helmRoutes.DELETE("/releases/:release", rbacMiddleware.RequireSREGroup(), helmHandler.Uninstall)
 		helmRoutes.GET("/operations/:operationId/stream", helmHandler.StreamOperation)
+	}
+
+	// Nexus
+	nexusHandler, err := handlers.NewNexusHandler()
+	if err != nil {
+		fmt.Printf("⚠️  Failed to initialize Nexus handler: %v\n", err)
+	} else {
+		nexusRoutes := api.Group("/nexus")
+		{
+			nexusRoutes.GET("/status", nexusHandler.CheckStatus)
+			nexusRoutes.POST("/test", nexusHandler.TestConnection)
+			nexusRoutes.GET("/config", nexusHandler.LoadConfig)
+			nexusRoutes.POST("/config", nexusHandler.SaveConfig)
+			nexusRoutes.DELETE("/config", nexusHandler.DeleteConfig)
+			nexusRoutes.POST("/values/download", nexusHandler.DownloadValues)
+			nexusRoutes.POST("/values/compare", nexusHandler.CompareValues)
+		}
 	}
 
 	// Secrets

@@ -79,6 +79,7 @@ func (h *NamespaceHandler) List(c *gin.Context) {
 			"name":     ns.Name,
 			"cluster":  ns.Cluster,
 			"hpaCount": ns.HPACount,
+			"isSystem": ns.IsSystem,
 		}
 	}
 

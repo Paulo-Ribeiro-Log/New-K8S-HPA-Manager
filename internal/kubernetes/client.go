@@ -99,6 +99,7 @@ func (c *Client) SetHistoryTracker(tracker *history.HistoryTracker) {
 }
 
 // ListNamespaces lista todos os namespaces do cluster
+// Retorna todos os namespaces com o campo IsSystem marcado, permitindo que o frontend filtre
 func (c *Client) ListNamespaces(ctx context.Context, showSystemNamespaces bool) ([]models.Namespace, error) {
 	namespaces, err := c.clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -107,8 +108,10 @@ func (c *Client) ListNamespaces(ctx context.Context, showSystemNamespaces bool) 
 
 	var result []models.Namespace
 	for _, ns := range namespaces.Items {
+		isSystem := isSystemNamespace(ns.Name)
+
 		// Filtrar namespaces de sistema se showSystemNamespaces for false
-		if !showSystemNamespaces && isSystemNamespace(ns.Name) {
+		if !showSystemNamespaces && isSystem {
 			continue
 		}
 
@@ -116,6 +119,7 @@ func (c *Client) ListNamespaces(ctx context.Context, showSystemNamespaces bool) 
 			Name:     ns.Name,
 			Cluster:  c.cluster,
 			HPACount: -1, // -1 indica "carregando", será contado assincronamente depois
+			IsSystem: isSystem,
 		}
 		result = append(result, namespace)
 	}
@@ -931,15 +935,18 @@ func buildDeploymentSummary(cluster string, dep *appsv1.Deployment) models.Deplo
 
 	updatedAt := dep.CreationTimestamp.Time
 	return models.DeploymentSummary{
-		Cluster:           cluster,
-		Namespace:         dep.Namespace,
-		Name:              dep.Name,
-		Labels:            copyStringMap(dep.Labels),
-		Replicas:          replicas,
-		ReadyReplicas:     dep.Status.ReadyReplicas,
-		AvailableReplicas: dep.Status.AvailableReplicas,
-		ResourceVersion:   dep.ResourceVersion,
-		UpdatedAt:         updatedAt,
+		Cluster:             cluster,
+		Namespace:           dep.Namespace,
+		Name:                dep.Name,
+		Labels:              copyStringMap(dep.Labels),
+		Replicas:            replicas,
+		ReadyReplicas:       dep.Status.ReadyReplicas,
+		AvailableReplicas:   dep.Status.AvailableReplicas,
+		UpdatedReplicas:     dep.Status.UpdatedReplicas,
+		UnavailableReplicas: dep.Status.UnavailableReplicas,
+		CurrentReplicas:     dep.Status.Replicas,
+		ResourceVersion:     dep.ResourceVersion,
+		UpdatedAt:           updatedAt,
 	}
 }
 
