@@ -148,8 +148,9 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
           modified={value}
           onMount={() => setMounted(true)}
           theme="vs-dark"
+          language="yaml"
           options={{
-            renderSideBySide: false,
+            renderSideBySide: true,
             readOnly: true,
             minimap: { enabled: false },
             ...commonOptions,

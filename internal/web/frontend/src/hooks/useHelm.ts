@@ -105,6 +105,14 @@ export function useHelmRelease(params: GetReleaseParams | null) {
       return;
     }
 
+    // DEBUG: Log dos parâmetros da requisição
+    console.log('[useHelmRelease] Fetching release:', {
+      cluster: params.cluster,
+      release: params.release,
+      namespace: params.namespace,
+      hasNamespace: !!params.namespace,
+    });
+
     setReleaseDetailLoading(true);
     setReleaseDetailError(null);
 
@@ -117,7 +125,10 @@ export function useHelmRelease(params: GetReleaseParams | null) {
         queryParams.set('namespace', params.namespace);
       }
 
-      const response = await fetch(`${API_BASE}/releases/${params.release}?${queryParams}`, {
+      const finalUrl = `${API_BASE}/releases/${params.release}?${queryParams}`;
+      console.log('[useHelmRelease] Request URL:', finalUrl);
+
+      const response = await fetch(finalUrl, {
         headers: getAuthHeaders(),
       });
       const data: HelmDetailResponse = await response.json();
@@ -132,6 +143,15 @@ export function useHelmRelease(params: GetReleaseParams | null) {
         }
         throw new Error(data.error?.message || 'Failed to fetch release details');
       }
+
+      // DEBUG: Log dos dados recebidos
+      console.log('[useHelmRelease] Response data:', {
+        success: data.success,
+        releaseName: data.data?.name,
+        valuesRawLength: data.data?.valuesRaw?.length || 0,
+        valuesRenderedLength: data.data?.valuesRendered?.length || 0,
+        valuesRawPreview: data.data?.valuesRaw?.substring(0, 100),
+      });
 
       setReleaseDetail(data.data);
     } catch (error) {
@@ -215,6 +235,41 @@ export function useHelmHistory(params: HistoryParams | null) {
 }
 
 /**
+ * Hook para obter values de uma revisão específica
+ */
+export function useFetchRevisionValues() {
+  const fetchRevisionValues = useCallback(
+    async (cluster: string, release: string, namespace: string, revision: number) => {
+      const queryParams = new URLSearchParams({ cluster });
+      
+      if (namespace) {
+        queryParams.set('namespace', namespace);
+      }
+
+      const response = await fetch(
+        `${API_BASE}/releases/${release}/revisions/${revision}/values?${queryParams}`,
+        { headers: getAuthHeaders() }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error?.message || 'Failed to fetch revision values');
+      }
+
+      return {
+        revision: data.data.revision,
+        valuesRaw: data.data.valuesRaw || '',
+        valuesRendered: data.data.valuesRendered || '',
+      };
+    },
+    []
+  );
+
+  return { fetchRevisionValues };
+}
+
+/**
  * Hook para executar operações Helm com streaming de logs
  */
 export function useHelmOperation() {
@@ -229,6 +284,12 @@ export function useHelmOperation() {
   const executeOperation = useCallback(
     async (cluster: string, request: HelmActionRequest) => {
       const queryParams = new URLSearchParams({ cluster });
+
+      // CRÍTICO: Adicionar namespace ao queryParams para todas as operações
+      // Sem isso, helm uninstall procura no namespace default e falha
+      if (request.namespace) {
+        queryParams.set('namespace', request.namespace);
+      }
 
       let endpoint = `${API_BASE}/releases`;
       let method = 'POST';

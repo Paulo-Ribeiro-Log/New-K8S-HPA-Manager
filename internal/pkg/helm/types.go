@@ -17,13 +17,13 @@ type ReleaseSummary struct {
 // ReleaseDetail enriches ReleaseSummary with values, manifests and hooks information.
 type ReleaseDetail struct {
 	ReleaseSummary
-	ValuesRaw      string              `json:"valuesRaw"`
-	ValuesRendered string              `json:"valuesRendered"`
-	Manifest       string              `json:"manifest"`
-	Notes          string              `json:"notes"`
-	Hooks          []Hook              `json:"hooks"`
-	Resources      []Resource          `json:"resources"`
-	ChartMetadata  *ChartMetadata      `json:"chartMetadata,omitempty"`
+	ValuesRaw      string         `json:"valuesRaw"`
+	ValuesRendered string         `json:"valuesRendered"`
+	Manifest       string         `json:"manifest"`
+	Notes          string         `json:"notes"`
+	Hooks          []Hook         `json:"hooks"`
+	Resources      []Resource     `json:"resources"`
+	ChartMetadata  *ChartMetadata `json:"chartMetadata,omitempty"`
 }
 
 // ChartMetadata contains extended information about the chart
@@ -80,6 +80,7 @@ type GetReleaseOptions struct {
 	Namespace  string
 	Release    string
 	IncludeAll bool
+	Revision   int // 0 = current, >0 = specific revision
 }
 
 // HistoryOptions drives the History operation.

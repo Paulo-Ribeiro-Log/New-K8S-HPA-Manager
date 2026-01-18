@@ -133,6 +133,54 @@ func (h *HelmHandler) History(c *gin.Context) {
 	})
 }
 
+// GetRevisionValues returns the values for a specific revision of a release.
+func (h *HelmHandler) GetRevisionValues(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Query("cluster"))
+	if cluster == "" {
+		h.respondMissingParam(c, "cluster")
+		return
+	}
+
+	release := strings.TrimSpace(c.Param("release"))
+	if release == "" {
+		h.respondMissingParam(c, "release")
+		return
+	}
+
+	revisionStr := strings.TrimSpace(c.Param("revision"))
+	revision, err := strconv.Atoi(revisionStr)
+	if err != nil || revision <= 0 {
+		h.respondBadRequest(c, "INVALID_REVISION", err)
+		return
+	}
+
+	namespace := strings.TrimSpace(c.Query("namespace"))
+
+	// Fetch release details for the specific revision
+	detail, err := h.service.GetRelease(
+		c.Request.Context(),
+		cluster,
+		helm.GetReleaseOptions{
+			Namespace: namespace,
+			Release:   release,
+			Revision:  revision,
+		},
+	)
+	if err != nil {
+		h.respondInternalError(c, "GET_REVISION_VALUES_ERROR", err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"revision":       revision,
+			"valuesRaw":      detail.ValuesRaw,
+			"valuesRendered": detail.ValuesRendered,
+		},
+	})
+}
+
 // Install handles helm install requests.
 func (h *HelmHandler) Install(c *gin.Context) {
 	cluster := strings.TrimSpace(c.Query("cluster"))
