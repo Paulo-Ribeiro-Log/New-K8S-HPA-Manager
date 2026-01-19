@@ -307,6 +307,54 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
   - Auto-refresh de logs a cada 3 segundos (opcional)
   - Download de logs como arquivo .txt
   - Componente: `ContainersTab.tsx`
+✅ **Aba DaemonSets (v1.3.11 - 19/01/2026)** - Gerenciamento completo de DaemonSets Kubernetes
+  - Listagem de DaemonSets com filtros por namespace e busca
+  - Select de namespace dinâmico (filtra namespaces de sistema)
+  - Toggle "Sistema" (Eye/EyeOff) para mostrar/ocultar namespaces de sistema
+  - Status visual com badges (Ready, Desired, Current, Available)
+  - Monaco YAML Editor com edição completa:
+    - Undo/Redo com histórico de 50 versões
+    - Toggle Editor/Diff (side-by-side)
+    - Validação YAML com feedback visual
+    - Aplicar com modal de confirmação
+    - Cancelar (restaura original)
+    - Expandir fullscreen
+  - Menu de ações (3 pontos): Rollout Restart, Delete
+  - kubectl describe integrado
+  - RBAC: Operações destrutivas protegidas com `<ProtectedAction>`
+  - Backend: `internal/web/handlers/daemonsets.go`
+  - API REST:
+    - `GET /api/v1/daemonsets?cluster=...&namespaces=...` - Listar
+    - `GET /api/v1/daemonsets/:cluster/:namespace/:name` - Obter manifesto YAML
+    - `GET /api/v1/daemonsets/:cluster/:namespace/:name/describe` - kubectl describe
+    - `PUT /api/v1/daemonsets/:cluster/:namespace/:name` - Aplicar YAML (com dry-run)
+    - `POST /api/v1/daemonsets/:cluster/:namespace/:name/restart` - Rollout restart
+    - `DELETE /api/v1/daemonsets/:cluster/:namespace/:name` - Deletar
+  - Componente: `DaemonSetsTab.tsx` (~650 linhas)
+✅ **Aba StatefulSets (v1.3.11 - 19/01/2026)** - Gerenciamento completo de StatefulSets Kubernetes
+  - Listagem de StatefulSets com filtros por namespace e busca
+  - Select de namespace dinâmico (filtra namespaces de sistema)
+  - Toggle "Sistema" (Eye/EyeOff) para mostrar/ocultar namespaces de sistema
+  - Status visual com badges (Ready, Replicas, Current, Updated)
+  - Monaco YAML Editor com edição completa:
+    - Undo/Redo com histórico de 50 versões
+    - Toggle Editor/Diff (side-by-side)
+    - Validação YAML com feedback visual
+    - Aplicar com modal de confirmação
+    - Cancelar (restaura original)
+    - Expandir fullscreen
+  - Menu de ações (3 pontos): Rollout Restart, Delete
+  - kubectl describe integrado
+  - RBAC: Operações destrutivas protegidas com `<ProtectedAction>`
+  - Backend: `internal/web/handlers/statefulsets.go`
+  - API REST:
+    - `GET /api/v1/statefulsets?cluster=...&namespaces=...` - Listar
+    - `GET /api/v1/statefulsets/:cluster/:namespace/:name` - Obter manifesto YAML
+    - `GET /api/v1/statefulsets/:cluster/:namespace/:name/describe` - kubectl describe
+    - `PUT /api/v1/statefulsets/:cluster/:namespace/:name` - Aplicar YAML (com dry-run)
+    - `POST /api/v1/statefulsets/:cluster/:namespace/:name/restart` - Rollout restart
+    - `DELETE /api/v1/statefulsets/:cluster/:namespace/:name` - Deletar
+  - Componente: `StatefulSetsTab.tsx` (~650 linhas)
 ✅ **UX Improvements - Pods/Containers (v1.3.3)**
   - **Métricas inline**: Layout horizontal "RESTARTS: 3  CPU/R: 800m  CPU/L: 1" (ao invés de grid vertical)
   - **Badge de versão**: Extrai versão da imagem do container (ex: nginx:1.21.0 → "1.21.0")
@@ -676,6 +724,28 @@ Recent Updates (Aba Helm - 08/01/2026):
     - `SUMARIO_CORRECOES_HELM.md` - Resumo executivo
     - `CORRECOES_MANIFEST_TAB.md` - Detalhamento da refatoração
   - **Pendente**: Fase 4 (dry-run preview) não prioritária
+
+Recent Updates (v1.3.11 - 19/01/2026):
+- **Novas Abas: DaemonSets e StatefulSets** - Gerenciamento completo de workloads Kubernetes
+  - **Aba DaemonSets** (`DaemonSetsTab.tsx`):
+    - Listagem com filtros por namespace e busca dinâmica
+    - Select de namespace dinâmico (integrado com filtro de sistema)
+    - Toggle "Sistema" para mostrar/ocultar namespaces de sistema
+    - Status visual: Ready, Desired, Current, Available
+    - Monaco YAML Editor completo: Undo/Redo, Diff, Validação, Apply, Fullscreen
+    - Menu de ações: Rollout Restart, Delete (protegido por RBAC)
+    - kubectl describe integrado
+  - **Aba StatefulSets** (`StatefulSetsTab.tsx`):
+    - Mesmas funcionalidades da aba DaemonSets
+    - Status visual: Ready, Replicas, Current, Updated
+    - Ideal para workloads stateful (bancos de dados, caches, etc)
+  - **Backend**:
+    - `internal/web/handlers/daemonsets.go` - 6 endpoints REST
+    - `internal/web/handlers/statefulsets.go` - 6 endpoints REST
+    - `internal/kubernetes/client.go` - Métodos ListDaemonSets, ListStatefulSets, etc
+  - **Correção de Build**:
+    - Import de `ProtectedAction` corrigido: `@/components/rbac/ProtectedAction`
+    - Removida prop inexistente `requiredGroup` do componente
 
 Recent Updates (v1.3.9 - 05/01/2026):
 - **Refatoração Crítica: Cálculo de Crescimento de Réplicas (Growth Analysis)**:
@@ -1911,6 +1981,34 @@ make release                     # Gera binários em build/release/
 ---
 
 ## 📝 Histórico de Sessões Recentes
+
+### Sessão 19/01/2026 - Novas Abas DaemonSets e StatefulSets
+**Contexto**: Implementação de duas novas abas para gerenciamento de workloads Kubernetes
+**Alterações**:
+- ✅ Criada aba DaemonSets com funcionalidades completas de CRUD
+- ✅ Criada aba StatefulSets com funcionalidades completas de CRUD
+- ✅ Ambas abas seguem o padrão estabelecido (DeploymentsTab, ConfigMaps)
+- ✅ Monaco YAML Editor com Undo/Redo, Diff, Validação, Apply
+- ✅ Menu de ações (3 pontos): Rollout Restart, Delete
+- ✅ kubectl describe integrado
+- ✅ RBAC com `<ProtectedAction>` para operações destrutivas
+- ✅ Corrigido import de ProtectedAction: `@/components/rbac/ProtectedAction`
+- ✅ Removida prop inexistente `requiredGroup` do componente ProtectedAction
+
+**Arquivos Criados/Modificados**:
+- `internal/web/frontend/src/components/DaemonSetsTab.tsx` (novo, ~650 linhas)
+- `internal/web/frontend/src/components/StatefulSetsTab.tsx` (novo, ~650 linhas)
+- `internal/web/handlers/daemonsets.go` (backend)
+- `internal/web/handlers/statefulsets.go` (backend)
+- `CLAUDE.md` - Documentação atualizada
+
+**Correção de Build**:
+- Erro: `Could not load ProtectedAction (imported by DaemonSetsTab.tsx)`
+- Causa: Import incorreto sem o path `rbac/`
+- Solução: Alterado para `@/components/rbac/ProtectedAction`
+- Também removida prop `requiredGroup="SRE"` que não existia na interface
+
+---
 
 ### Sessão 08/01/2026 - Refinamento Aba Helm
 **Contexto**: Melhorias de UX e organização da interface Helm

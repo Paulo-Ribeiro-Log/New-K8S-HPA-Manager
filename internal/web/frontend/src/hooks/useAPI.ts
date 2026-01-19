@@ -12,6 +12,8 @@ import type {
   ConfigMapSummary,
   SecretSummary,
   DeploymentSummary,
+  DaemonSetSummary,
+  StatefulSetSummary,
   IngressSummary,
   PodSummary,
 } from "@/lib/api/types";
@@ -365,6 +367,74 @@ export function useDeployments(cluster?: string, namespaces?: string[], showSyst
   const refetch = () => fetchDeployments(true);
 
   return { deployments, loading, error, refetch };
+}
+
+export function useDaemonSets(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
+  const [daemonsets, setDaemonSets] = useState<DaemonSetSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
+
+  const fetchDaemonSets = async (bypassCache: boolean = false) => {
+    if (!cluster) {
+      setDaemonSets([]);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await apiClient.getDaemonSets(cluster, namespaces, undefined, showSystem, bypassCache);
+      setDaemonSets(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch daemonsets");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDaemonSets();
+  }, [cluster, namespaceKey, showSystem]);
+
+  const refetch = () => fetchDaemonSets(true);
+
+  return { daemonsets, loading, error, refetch };
+}
+
+export function useStatefulSets(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
+  const [statefulsets, setStatefulSets] = useState<StatefulSetSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
+
+  const fetchStatefulSets = async (bypassCache: boolean = false) => {
+    if (!cluster) {
+      setStatefulSets([]);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await apiClient.getStatefulSets(cluster, namespaces, undefined, showSystem, bypassCache);
+      setStatefulSets(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch statefulsets");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchStatefulSets();
+  }, [cluster, namespaceKey, showSystem]);
+
+  const refetch = () => fetchStatefulSets(true);
+
+  return { statefulsets, loading, error, refetch };
 }
 
 export function useIngresses(cluster?: string, namespaces?: string[], showSystem: boolean = false) {

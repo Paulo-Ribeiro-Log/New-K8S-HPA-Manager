@@ -626,7 +626,7 @@ export const ContainersTab = ({
 
       {/* Manifest Dialog */}
       <Dialog open={manifestModalOpen} onOpenChange={setManifestModalOpen}>
-        <DialogContent className="max-w-6xl h-[90vh] flex flex-col p-0">
+        <DialogContent className="max-w-6xl max-h-[90vh] flex flex-col p-0">
           <DialogHeader className="border-b border-border px-6 py-4 flex-shrink-0">
             <div className="flex items-center justify-between gap-4 pr-8">
               <div>
@@ -665,7 +665,7 @@ export const ContainersTab = ({
           </DialogHeader>
 
           {/* Monaco Editor */}
-          <div className="flex-1 overflow-hidden p-6" style={{ minHeight: 0 }}>
+          <div className="flex-1 overflow-hidden px-6 pb-6 pt-4" style={{ minHeight: '500px' }}>
             {manifestLoading ? (
               <div className="flex items-center justify-center h-full">
                 <div className="flex flex-col items-center gap-2">
@@ -674,14 +674,12 @@ export const ContainersTab = ({
                 </div>
               </div>
             ) : manifest && manifest !== "Error loading manifest" ? (
-              <div className="h-full w-full">
-                <MonacoYamlEditor
-                  key={`manifest-modal-${selectedPod.name}`}
-                  value={manifest}
-                  readOnly={true}
-                  height="100%"
-                />
-              </div>
+              <MonacoYamlEditor
+                key={`manifest-modal-${selectedPod.name}`}
+                value={manifest}
+                readOnly={true}
+                height="calc(90vh - 150px)"
+              />
             ) : (
               <div className="flex items-center justify-center h-full text-muted-foreground">
                 <p>{manifest === "Error loading manifest" ? "Erro ao carregar manifest" : "Nenhum manifest disponível"}</p>
