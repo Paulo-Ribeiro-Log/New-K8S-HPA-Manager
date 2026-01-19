@@ -216,12 +216,12 @@ func (c *CLIClient) GetRelease(ctx context.Context, opts GetReleaseOptions) (*Re
 		return nil, fmt.Errorf("unable to parse helm status output: %w", err)
 	}
 
-	valuesRaw, err := c.getValues(ctx, opts.Cluster, opts.Namespace, opts.Release, true)
+	valuesRaw, err := c.getValues(ctx, opts.Cluster, opts.Namespace, opts.Release, true, opts.Revision)
 	if err != nil {
 		return nil, err
 	}
 
-	valuesRendered, err := c.getValues(ctx, opts.Cluster, opts.Namespace, opts.Release, false)
+	valuesRendered, err := c.getValues(ctx, opts.Cluster, opts.Namespace, opts.Release, false, opts.Revision)
 	if err != nil {
 		return nil, err
 	}
@@ -473,13 +473,16 @@ func (c *CLIClient) appendClusterArgs(cluster ClusterTarget, args []string) []st
 	return args
 }
 
-func (c *CLIClient) getValues(ctx context.Context, cluster ClusterTarget, namespace, release string, includeAll bool) (string, error) {
+func (c *CLIClient) getValues(ctx context.Context, cluster ClusterTarget, namespace, release string, includeAll bool, revision int) (string, error) {
 	args := []string{"get", "values", release, "--output", "yaml"}
 	if includeAll {
 		args = append(args, "--all")
 	}
 	if namespace != "" {
 		args = append(args, "--namespace", namespace)
+	}
+	if revision > 0 {
+		args = append(args, "--revision", strconv.Itoa(revision))
 	}
 
 	stdout, stderr, err := c.runCommand(ctx, cluster, args...)
@@ -488,6 +491,28 @@ func (c *CLIClient) getValues(ctx context.Context, cluster ClusterTarget, namesp
 	}
 
 	return string(stdout), nil
+}
+
+// GetRevisionValues returns only the values for a specific revision without requiring cluster connection.
+// This is useful for viewing historical values of superseded releases.
+func (c *CLIClient) GetRevisionValues(ctx context.Context, cluster ClusterTarget, namespace, release string, revision int) (string, string, error) {
+	if revision <= 0 {
+		return "", "", errors.New("revision must be greater than 0")
+	}
+
+	// Get raw values with --all flag
+	valuesRaw, err := c.getValues(ctx, cluster, namespace, release, true, revision)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get raw values for revision %d: %w", revision, err)
+	}
+
+	// Get rendered values without --all flag
+	valuesRendered, err := c.getValues(ctx, cluster, namespace, release, false, revision)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get rendered values for revision %d: %w", revision, err)
+	}
+
+	return valuesRaw, valuesRendered, nil
 }
 
 func (c *CLIClient) getManifest(ctx context.Context, cluster ClusterTarget, namespace, release string) (string, error) {
@@ -561,19 +586,19 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 	}
 
 	chartRef := req.ChartRef
-	
+
 	// If ChartRef is empty, try to find chart locally or from existing release
 	if chartRef == "" {
 		listArgs := []string{"list", "--output", "json", "--filter", "^" + req.ReleaseName + "$"}
 		if req.Namespace != "" {
 			listArgs = append(listArgs, "--namespace", req.Namespace)
 		}
-		
+
 		stdout, stderr, err := c.runCommand(context.Background(), req.Cluster, listArgs...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to fetch release info: %w (stderr: %s)", err, strings.TrimSpace(stderr))
 		}
-		
+
 		type helmListEntry struct {
 			Chart string `json:"chart"`
 		}
@@ -581,9 +606,9 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 		if err := json.Unmarshal(stdout, &entries); err != nil || len(entries) == 0 {
 			return nil, nil, errors.New("unable to determine chart from existing release. Please provide chartRef in format: repo/chart or local path")
 		}
-		
+
 		fullChart := entries[0].Chart
-		
+
 		// Extract chart name (e.g., "convair-helm-v0.9.0" -> "convair-helm")
 		chartName := fullChart
 		if lastDash := strings.LastIndex(fullChart, "-"); lastDash > 0 {
@@ -593,11 +618,11 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 				chartName = fullChart[:lastDash]
 			}
 		}
-		
+
 		// Try to find chart in local storage directory
 		localChartDir := ExpandHome("~/.k8s-hpa-manager/storaged-helm")
 		localChartPath := filepath.Join(localChartDir, fullChart+".tgz")
-		
+
 		if _, err := os.Stat(localChartPath); err == nil {
 			// Local chart found
 			chartRef = localChartPath
@@ -616,7 +641,7 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 				Msg("local chart not found - attempting to use chart name from existing release (may fail if repo not configured)")
 		}
 	}
-	
+
 	args := []string{"upgrade", req.ReleaseName, chartRef}
 	cleanup, err := c.appendCommonActionArgs(&args, req)
 	return args, cleanup, err

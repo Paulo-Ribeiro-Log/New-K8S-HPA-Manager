@@ -109,6 +109,7 @@ export const GitHubReleasesTab = () => {
   const [searchTriggered, setSearchTriggered] = useState(false);
   const [showTokenModal, setShowTokenModal] = useState(false);
   const [showScanModal, setShowScanModal] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);  // Mostrar dropdown de sugestões
 
   // ✨ NOVO: Estado para lote de comparações (com persistência em localStorage)
   const [comparisonBatch, setComparisonBatch] = useState<ComparisonItem[]>(() => {
@@ -411,6 +412,25 @@ export const GitHubReleasesTab = () => {
     return comparisonData || null;
   }, [selectedComparison, comparisonBatch, comparisonData]);
 
+  // ✨ Filtrar sugestões de deployments baseado no texto digitado
+  const filteredSuggestions = React.useMemo(() => {
+    if (!deploymentName || deploymentName.length < 2) return [];
+    if (!searchResults?.deployments) return [];
+
+    const searchLower = deploymentName.toLowerCase();
+    const searchParts = searchLower.split(/[-_]/); // Dividir por hífen ou underscore
+
+    return searchResults.deployments
+      .filter(d => {
+        const nameLower = d.deployment_name.toLowerCase();
+        // Buscar deployments que contenham QUALQUER parte do termo buscado
+        // ou que o termo esteja contido no nome do deployment
+        return searchParts.some(part => part.length >= 2 && nameLower.includes(part)) ||
+               nameLower.includes(searchLower);
+      })
+      .slice(0, 15); // Limitar a 15 sugestões para performance
+  }, [deploymentName, searchResults?.deployments]);
+
   // Filtrar arquivos por extensão
   const filteredFiles = React.useMemo(() => {
     const files = displayedComparison?.files_changed || [];
@@ -469,22 +489,69 @@ export const GitHubReleasesTab = () => {
           ),
           content: (
             <div className="h-full flex flex-col space-y-4 p-4">
-              {/* Campo 1: Nome do Deployment na Base */}
+              {/* Campo 1: Nome do Deployment na Base - COM AUTOCOMPLETE */}
               <div className="space-y-2">
                 <Label htmlFor="deployment-name">Nome do Deployment (Base de Dados)</Label>
-                <Input
-                  id="deployment-name"
-                  placeholder="Ex: vv-geolocalizacao-api"
-                  value={deploymentName}
-                  onChange={(e) => setDeploymentName(e.target.value)}
-                />
+                <div className="relative">
+                  <Input
+                    id="deployment-name"
+                    placeholder="Ex: vv-geolocalizacao-api"
+                    value={deploymentName}
+                    onChange={(e) => {
+                      setDeploymentName(e.target.value);
+                      setShowSuggestions(true);
+                    }}
+                    onFocus={() => setShowSuggestions(true)}
+                    onBlur={() => {
+                      // Delay para permitir click na sugestão
+                      setTimeout(() => setShowSuggestions(false), 200);
+                    }}
+                    autoComplete="off"
+                  />
+                  {/* Dropdown de sugestões */}
+                  {showSuggestions && filteredSuggestions.length > 0 && (
+                    <div className="absolute z-50 w-full mt-1 bg-popover border border-border rounded-md shadow-lg max-h-[300px] overflow-auto">
+                      <div className="p-1">
+                        <p className="text-[10px] text-muted-foreground px-2 py-1 border-b mb-1">
+                          {filteredSuggestions.length} deployment(s) encontrado(s)
+                        </p>
+                        {filteredSuggestions.map((suggestion, index) => (
+                          <div
+                            key={`${suggestion.deployment_name}-${index}`}
+                            className="flex items-center justify-between px-2 py-1.5 text-sm hover:bg-muted rounded cursor-pointer"
+                            onClick={() => {
+                              setDeploymentName(suggestion.deployment_name);
+                              setShowSuggestions(false);
+                            }}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <p className="font-medium truncate">{suggestion.deployment_name}</p>
+                              <p className="text-[10px] text-muted-foreground truncate">
+                                {suggestion.cluster} / {suggestion.namespace}
+                              </p>
+                            </div>
+                            <Badge variant="secondary" className="ml-2 text-[10px] shrink-0">
+                              {suggestion.version}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* Indicador de carregamento dos deployments */}
+                  {isSearching && (
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    </div>
+                  )}
+                </div>
                 {isLoadingProduction && deploymentName.length >= 3 && (
                   <p className="text-xs text-muted-foreground flex items-center gap-2">
                     <Search className="h-3 w-3 animate-pulse" />
                     Buscando na base de dados...
                   </p>
                 )}
-                {productionError && deploymentName.length >= 3 && (
+                {productionError && deploymentName.length >= 3 && !filteredSuggestions.length && (
                   <Alert variant="destructive" className="py-2">
                     <AlertCircle className="h-4 w-4" />
                     <AlertTitle className="text-sm">Deployment não encontrado</AlertTitle>
@@ -493,6 +560,11 @@ export const GitHubReleasesTab = () => {
                       Execute o Scan primeiro.
                     </AlertDescription>
                   </Alert>
+                )}
+                {filteredSuggestions.length > 0 && !showSuggestions && deploymentName.length >= 2 && (
+                  <p className="text-xs text-muted-foreground">
+                    {filteredSuggestions.length} deployment(s) similar(es) encontrado(s). Clique no campo para ver sugestões.
+                  </p>
                 )}
               </div>
 

@@ -515,6 +515,38 @@ func (s *Server) setupRoutes() {
 		deployments.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), deploymentHandler.RolloutRestart)
 	}
 
+	// DaemonSets
+	daemonSetHandler := handlers.NewDaemonSetHandler(s.kubeManager, s.historyTracker)
+	daemonsets := api.Group("/daemonsets")
+	{
+		daemonsets.GET("", daemonSetHandler.List)
+		daemonsets.GET("/:cluster/:namespace/:name", daemonSetHandler.Get)
+		daemonsets.GET("/:cluster/:namespace/:name/describe", daemonSetHandler.Describe)
+		daemonsets.POST("/diff", daemonSetHandler.Diff)
+		daemonsets.POST("/validate", daemonSetHandler.Validate)
+
+		// DaemonSets - Write Operations (SRE-only)
+		daemonsets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), daemonSetHandler.Apply)
+		daemonsets.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), daemonSetHandler.Delete)
+		daemonsets.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), daemonSetHandler.RolloutRestart)
+	}
+
+	// StatefulSets
+	statefulSetHandler := handlers.NewStatefulSetHandler(s.kubeManager, s.historyTracker)
+	statefulsets := api.Group("/statefulsets")
+	{
+		statefulsets.GET("", statefulSetHandler.List)
+		statefulsets.GET("/:cluster/:namespace/:name", statefulSetHandler.Get)
+		statefulsets.GET("/:cluster/:namespace/:name/describe", statefulSetHandler.Describe)
+		statefulsets.POST("/diff", statefulSetHandler.Diff)
+		statefulsets.POST("/validate", statefulSetHandler.Validate)
+
+		// StatefulSets - Write Operations (SRE-only)
+		statefulsets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), statefulSetHandler.Apply)
+		statefulsets.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), statefulSetHandler.Delete)
+		statefulsets.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), statefulSetHandler.RolloutRestart)
+	}
+
 	// Pods/Containers
 	podHandler := handlers.NewPodHandler(s.kubeManager, s.historyTracker)
 	pods := api.Group("/pods")
@@ -582,11 +614,29 @@ func (s *Server) setupRoutes() {
 		helmRoutes.GET("/releases", helmHandler.List)
 		helmRoutes.GET("/releases/:release", helmHandler.Get)
 		helmRoutes.GET("/releases/:release/history", helmHandler.History)
+		helmRoutes.GET("/releases/:release/revisions/:revision/values", helmHandler.GetRevisionValues)
 		helmRoutes.POST("/releases", rbacMiddleware.RequireSREGroup(), helmHandler.Install)
 		helmRoutes.PUT("/releases/:release", rbacMiddleware.RequireSREGroup(), helmHandler.Upgrade)
 		helmRoutes.POST("/releases/:release/rollback", rbacMiddleware.RequireSREGroup(), helmHandler.Rollback)
 		helmRoutes.DELETE("/releases/:release", rbacMiddleware.RequireSREGroup(), helmHandler.Uninstall)
 		helmRoutes.GET("/operations/:operationId/stream", helmHandler.StreamOperation)
+	}
+
+	// Nexus
+	nexusHandler, err := handlers.NewNexusHandler()
+	if err != nil {
+		fmt.Printf("⚠️  Failed to initialize Nexus handler: %v\n", err)
+	} else {
+		nexusRoutes := api.Group("/nexus")
+		{
+			nexusRoutes.GET("/status", nexusHandler.CheckStatus)
+			nexusRoutes.POST("/test", nexusHandler.TestConnection)
+			nexusRoutes.GET("/config", nexusHandler.LoadConfig)
+			nexusRoutes.POST("/config", nexusHandler.SaveConfig)
+			nexusRoutes.DELETE("/config", nexusHandler.DeleteConfig)
+			nexusRoutes.POST("/values/download", nexusHandler.DownloadValues)
+			nexusRoutes.POST("/values/compare", nexusHandler.CompareValues)
+		}
 	}
 
 	// Secrets

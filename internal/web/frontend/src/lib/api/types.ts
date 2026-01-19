@@ -157,6 +157,9 @@ export interface DeploymentSummary {
   replicas: number;
   readyReplicas: number;
   availableReplicas: number;
+  updatedReplicas: number;
+  unavailableReplicas: number;
+  currentReplicas: number;
   resourceVersion?: string;
   updatedAt: string;
 }
@@ -188,6 +191,107 @@ export interface DeploymentValidateResult {
 }
 
 export interface DeploymentApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  resourceVersion?: string;
+  dryRun?: boolean;
+  appliedAt?: string;
+}
+
+// DaemonSet Types
+export interface DaemonSetSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  labels?: Record<string, string>;
+  desiredNumberScheduled: number;
+  currentNumberScheduled: number;
+  numberReady: number;
+  numberAvailable: number;
+  numberMisscheduled: number;
+  updatedNumberScheduled: number;
+  resourceVersion?: string;
+  updatedAt: string;
+}
+
+export interface DaemonSetMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface DaemonSetManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  yaml: string;
+  metadata: DaemonSetMetadata;
+}
+
+export interface DaemonSetDiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface DaemonSetValidateResult {
+  name: string;
+  namespace: string;
+  resourceVersion?: string;
+}
+
+export interface DaemonSetApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  resourceVersion?: string;
+  dryRun?: boolean;
+  appliedAt?: string;
+}
+
+// StatefulSet Types
+export interface StatefulSetSummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  labels?: Record<string, string>;
+  replicas: number;
+  readyReplicas: number;
+  currentReplicas: number;
+  updatedReplicas: number;
+  availableReplicas: number;
+  resourceVersion?: string;
+  updatedAt: string;
+}
+
+export interface StatefulSetMetadata {
+  uid?: string;
+  resourceVersion?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+}
+
+export interface StatefulSetManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  yaml: string;
+  metadata: StatefulSetMetadata;
+}
+
+export interface StatefulSetDiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface StatefulSetValidateResult {
+  name: string;
+  namespace: string;
+  resourceVersion?: string;
+}
+
+export interface StatefulSetApplyResult {
   name: string;
   namespace: string;
   cluster: string;

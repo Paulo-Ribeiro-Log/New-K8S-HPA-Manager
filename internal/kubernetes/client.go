@@ -99,6 +99,7 @@ func (c *Client) SetHistoryTracker(tracker *history.HistoryTracker) {
 }
 
 // ListNamespaces lista todos os namespaces do cluster
+// Retorna todos os namespaces com o campo IsSystem marcado, permitindo que o frontend filtre
 func (c *Client) ListNamespaces(ctx context.Context, showSystemNamespaces bool) ([]models.Namespace, error) {
 	namespaces, err := c.clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -107,8 +108,10 @@ func (c *Client) ListNamespaces(ctx context.Context, showSystemNamespaces bool) 
 
 	var result []models.Namespace
 	for _, ns := range namespaces.Items {
+		isSystem := isSystemNamespace(ns.Name)
+
 		// Filtrar namespaces de sistema se showSystemNamespaces for false
-		if !showSystemNamespaces && isSystemNamespace(ns.Name) {
+		if !showSystemNamespaces && isSystem {
 			continue
 		}
 
@@ -116,6 +119,7 @@ func (c *Client) ListNamespaces(ctx context.Context, showSystemNamespaces bool) 
 			Name:     ns.Name,
 			Cluster:  c.cluster,
 			HPACount: -1, // -1 indica "carregando", será contado assincronamente depois
+			IsSystem: isSystem,
 		}
 		result = append(result, namespace)
 	}
@@ -931,15 +935,18 @@ func buildDeploymentSummary(cluster string, dep *appsv1.Deployment) models.Deplo
 
 	updatedAt := dep.CreationTimestamp.Time
 	return models.DeploymentSummary{
-		Cluster:           cluster,
-		Namespace:         dep.Namespace,
-		Name:              dep.Name,
-		Labels:            copyStringMap(dep.Labels),
-		Replicas:          replicas,
-		ReadyReplicas:     dep.Status.ReadyReplicas,
-		AvailableReplicas: dep.Status.AvailableReplicas,
-		ResourceVersion:   dep.ResourceVersion,
-		UpdatedAt:         updatedAt,
+		Cluster:             cluster,
+		Namespace:           dep.Namespace,
+		Name:                dep.Name,
+		Labels:              copyStringMap(dep.Labels),
+		Replicas:            replicas,
+		ReadyReplicas:       dep.Status.ReadyReplicas,
+		AvailableReplicas:   dep.Status.AvailableReplicas,
+		UpdatedReplicas:     dep.Status.UpdatedReplicas,
+		UnavailableReplicas: dep.Status.UnavailableReplicas,
+		CurrentReplicas:     dep.Status.Replicas,
+		ResourceVersion:     dep.ResourceVersion,
+		UpdatedAt:           updatedAt,
 	}
 }
 
@@ -1050,6 +1057,478 @@ func prepareDeploymentApplyPayload(yamlContent, enforceNamespace, enforceName st
 	}
 
 	return jsonPayload, namespace, name, nil
+}
+
+// ============================================================================
+// DaemonSet Methods
+// ============================================================================
+
+// ListDaemonSets lista DaemonSets com filtros
+func (c *Client) ListDaemonSets(ctx context.Context, namespaces []string, search string, showSystemNamespaces bool) ([]models.DaemonSetSummary, error) {
+	var result []models.DaemonSetSummary
+	search = strings.ToLower(strings.TrimSpace(search))
+
+	listAllNamespaces := len(namespaces) == 0
+	uniqueNamespaces := make(map[string]struct{})
+	for _, ns := range namespaces {
+		ns = strings.TrimSpace(ns)
+		if ns == "" {
+			continue
+		}
+		uniqueNamespaces[ns] = struct{}{}
+	}
+
+	appendSummaries := func(items []appsv1.DaemonSet) {
+		for _, ds := range items {
+			if !showSystemNamespaces && isSystemNamespace(ds.Namespace) {
+				continue
+			}
+			if search != "" && !matchesDaemonSetSearch(&ds, search) {
+				continue
+			}
+			result = append(result, buildDaemonSetSummary(c.cluster, &ds))
+		}
+	}
+
+	if listAllNamespaces {
+		dss, err := c.clientset.AppsV1().DaemonSets("").List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list daemonsets in cluster %s: %w", c.cluster, err)
+		}
+		appendSummaries(dss.Items)
+		return result, nil
+	}
+
+	for ns := range uniqueNamespaces {
+		dss, err := c.clientset.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list daemonsets in %s/%s: %w", c.cluster, ns, err)
+		}
+		appendSummaries(dss.Items)
+	}
+
+	return result, nil
+}
+
+// GetDaemonSet retorna o manifesto YAML completo do DaemonSet
+func (c *Client) GetDaemonSet(ctx context.Context, namespace, name string) (*models.DaemonSetManifest, error) {
+	ds, err := c.clientset.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get daemonset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	yamlBytes, err := yaml.Marshal(ds)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal daemonset %s/%s: %w", namespace, name, err)
+	}
+
+	manifest := &models.DaemonSetManifest{
+		Cluster:   c.cluster,
+		Namespace: namespace,
+		Name:      name,
+		YAML:      string(yamlBytes),
+		Metadata: models.DaemonSetMetadata{
+			UID:             string(ds.UID),
+			ResourceVersion: ds.ResourceVersion,
+			Labels:          copyStringMap(ds.Labels),
+			Annotations:     copyStringMap(ds.Annotations),
+		},
+	}
+
+	return manifest, nil
+}
+
+func matchesDaemonSetSearch(ds *appsv1.DaemonSet, search string) bool {
+	name := strings.ToLower(ds.Name)
+	if strings.Contains(name, search) {
+		return true
+	}
+	for k, v := range ds.Labels {
+		candidate := strings.ToLower(fmt.Sprintf("%s=%s", k, v))
+		if strings.Contains(candidate, search) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildDaemonSetSummary(cluster string, ds *appsv1.DaemonSet) models.DaemonSetSummary {
+	updatedAt := ds.CreationTimestamp.Time
+	return models.DaemonSetSummary{
+		Cluster:                cluster,
+		Namespace:              ds.Namespace,
+		Name:                   ds.Name,
+		Labels:                 copyStringMap(ds.Labels),
+		DesiredNumberScheduled: ds.Status.DesiredNumberScheduled,
+		CurrentNumberScheduled: ds.Status.CurrentNumberScheduled,
+		NumberReady:            ds.Status.NumberReady,
+		NumberAvailable:        ds.Status.NumberAvailable,
+		NumberMisscheduled:     ds.Status.NumberMisscheduled,
+		UpdatedNumberScheduled: ds.Status.UpdatedNumberScheduled,
+		ResourceVersion:        ds.ResourceVersion,
+		UpdatedAt:              updatedAt,
+	}
+}
+
+// ValidateDaemonSet executa um server-side apply com dry-run
+func (c *Client) ValidateDaemonSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*appsv1.DaemonSet, error) {
+	return c.applyDaemonSet(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+}
+
+// ApplyDaemonSet aplica (ou dry-run opcionalmente) o DaemonSet no cluster
+func (c *Client) ApplyDaemonSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*appsv1.DaemonSet, error) {
+	return c.applyDaemonSet(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+}
+
+func (c *Client) applyDaemonSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*appsv1.DaemonSet, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("daemonset yaml content cannot be empty")
+	}
+	if fieldManager == "" {
+		fieldManager = "web-daemonset-editor"
+	}
+
+	payload, namespace, name, err := prepareDaemonSetApplyPayload(yamlContent, enforceNamespace, enforceName)
+	if err != nil {
+		return nil, err
+	}
+
+	forceFlag := true
+	options := metav1.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        &forceFlag,
+	}
+	if dryRun {
+		options.DryRun = []string{metav1.DryRunAll}
+		fmt.Printf("[DEBUG] Applying daemonset %s/%s in DRY-RUN mode\n", namespace, name)
+	} else {
+		fmt.Printf("[DEBUG] Applying daemonset %s/%s with Force=true\n", namespace, name)
+	}
+
+	result, err := c.clientset.AppsV1().DaemonSets(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply daemonset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	fmt.Printf("[DEBUG] Successfully applied daemonset %s/%s, resourceVersion: %s\n", namespace, name, result.ResourceVersion)
+	return result, nil
+}
+
+func prepareDaemonSetApplyPayload(yamlContent, enforceNamespace, enforceName string) ([]byte, string, string, error) {
+	var ds map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &ds); err != nil {
+		return nil, "", "", fmt.Errorf("invalid daemonset yaml: %w", err)
+	}
+
+	if len(ds) == 0 {
+		return nil, "", "", fmt.Errorf("daemonset yaml cannot be empty")
+	}
+
+	apiVersion, _ := ds["apiVersion"].(string)
+	if strings.TrimSpace(apiVersion) == "" {
+		ds["apiVersion"] = "apps/v1"
+	}
+	kind, _ := ds["kind"].(string)
+	if strings.TrimSpace(kind) == "" {
+		ds["kind"] = "DaemonSet"
+	} else if !strings.EqualFold(kind, "DaemonSet") {
+		return nil, "", "", fmt.Errorf("expected kind DaemonSet, got %s", kind)
+	}
+
+	metadata, _ := ds["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	name, _ := metadata["name"].(string)
+	name = strings.TrimSpace(name)
+	if enforceName != "" {
+		enforceName = strings.TrimSpace(enforceName)
+		if name == "" {
+			name = enforceName
+		}
+		if name != enforceName {
+			return nil, "", "", fmt.Errorf("daemonset name mismatch: expected %s, got %s", enforceName, name)
+		}
+	}
+	if name == "" {
+		return nil, "", "", fmt.Errorf("daemonset metadata.name is required")
+	}
+	metadata["name"] = name
+
+	namespace := strings.TrimSpace(enforceNamespace)
+	if nsRaw, ok := metadata["namespace"].(string); ok {
+		ns := strings.TrimSpace(nsRaw)
+		if namespace == "" {
+			namespace = ns
+		} else if ns != "" && ns != namespace {
+			return nil, "", "", fmt.Errorf("daemonset namespace mismatch: expected %s, got %s", namespace, ns)
+		}
+	}
+	if namespace == "" {
+		return nil, "", "", fmt.Errorf("daemonset metadata.namespace is required")
+	}
+	metadata["namespace"] = namespace
+	ds["metadata"] = metadata
+
+	jsonPayload, err := json.Marshal(ds)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to marshal daemonset payload: %w", err)
+	}
+
+	return jsonPayload, namespace, name, nil
+}
+
+// DeleteDaemonSet deleta um DaemonSet específico
+func (c *Client) DeleteDaemonSet(ctx context.Context, namespace, daemonSetName string) error {
+	err := c.clientset.AppsV1().DaemonSets(namespace).Delete(ctx, daemonSetName, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete daemonset %s/%s/%s: %w", c.cluster, namespace, daemonSetName, err)
+	}
+	return nil
+}
+
+// RolloutRestartDaemonSet reinicia um DaemonSet (alias para RolloutDaemonSet)
+func (c *Client) RolloutRestartDaemonSet(ctx context.Context, namespace, daemonSetName string) error {
+	return c.RolloutDaemonSet(ctx, namespace, daemonSetName)
+}
+
+// ============================================================================
+// StatefulSet Methods
+// ============================================================================
+
+// ListStatefulSets lista StatefulSets com filtros
+func (c *Client) ListStatefulSets(ctx context.Context, namespaces []string, search string, showSystemNamespaces bool) ([]models.StatefulSetSummary, error) {
+	var result []models.StatefulSetSummary
+	search = strings.ToLower(strings.TrimSpace(search))
+
+	listAllNamespaces := len(namespaces) == 0
+	uniqueNamespaces := make(map[string]struct{})
+	for _, ns := range namespaces {
+		ns = strings.TrimSpace(ns)
+		if ns == "" {
+			continue
+		}
+		uniqueNamespaces[ns] = struct{}{}
+	}
+
+	appendSummaries := func(items []appsv1.StatefulSet) {
+		for _, sts := range items {
+			if !showSystemNamespaces && isSystemNamespace(sts.Namespace) {
+				continue
+			}
+			if search != "" && !matchesStatefulSetSearch(&sts, search) {
+				continue
+			}
+			result = append(result, buildStatefulSetSummary(c.cluster, &sts))
+		}
+	}
+
+	if listAllNamespaces {
+		stss, err := c.clientset.AppsV1().StatefulSets("").List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list statefulsets in cluster %s: %w", c.cluster, err)
+		}
+		appendSummaries(stss.Items)
+		return result, nil
+	}
+
+	for ns := range uniqueNamespaces {
+		stss, err := c.clientset.AppsV1().StatefulSets(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list statefulsets in %s/%s: %w", c.cluster, ns, err)
+		}
+		appendSummaries(stss.Items)
+	}
+
+	return result, nil
+}
+
+// GetStatefulSet retorna o manifesto YAML completo do StatefulSet
+func (c *Client) GetStatefulSet(ctx context.Context, namespace, name string) (*models.StatefulSetManifest, error) {
+	sts, err := c.clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get statefulset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	yamlBytes, err := yaml.Marshal(sts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal statefulset %s/%s: %w", namespace, name, err)
+	}
+
+	manifest := &models.StatefulSetManifest{
+		Cluster:   c.cluster,
+		Namespace: namespace,
+		Name:      name,
+		YAML:      string(yamlBytes),
+		Metadata: models.StatefulSetMetadata{
+			UID:             string(sts.UID),
+			ResourceVersion: sts.ResourceVersion,
+			Labels:          copyStringMap(sts.Labels),
+			Annotations:     copyStringMap(sts.Annotations),
+		},
+	}
+
+	return manifest, nil
+}
+
+func matchesStatefulSetSearch(sts *appsv1.StatefulSet, search string) bool {
+	name := strings.ToLower(sts.Name)
+	if strings.Contains(name, search) {
+		return true
+	}
+	for k, v := range sts.Labels {
+		candidate := strings.ToLower(fmt.Sprintf("%s=%s", k, v))
+		if strings.Contains(candidate, search) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildStatefulSetSummary(cluster string, sts *appsv1.StatefulSet) models.StatefulSetSummary {
+	replicas := int32(0)
+	if sts.Spec.Replicas != nil {
+		replicas = *sts.Spec.Replicas
+	}
+
+	updatedAt := sts.CreationTimestamp.Time
+	return models.StatefulSetSummary{
+		Cluster:           cluster,
+		Namespace:         sts.Namespace,
+		Name:              sts.Name,
+		Labels:            copyStringMap(sts.Labels),
+		Replicas:          replicas,
+		ReadyReplicas:     sts.Status.ReadyReplicas,
+		CurrentReplicas:   sts.Status.CurrentReplicas,
+		UpdatedReplicas:   sts.Status.UpdatedReplicas,
+		AvailableReplicas: sts.Status.AvailableReplicas,
+		ResourceVersion:   sts.ResourceVersion,
+		UpdatedAt:         updatedAt,
+	}
+}
+
+// ValidateStatefulSet executa um server-side apply com dry-run
+func (c *Client) ValidateStatefulSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*appsv1.StatefulSet, error) {
+	return c.applyStatefulSet(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+}
+
+// ApplyStatefulSet aplica (ou dry-run opcionalmente) o StatefulSet no cluster
+func (c *Client) ApplyStatefulSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*appsv1.StatefulSet, error) {
+	return c.applyStatefulSet(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+}
+
+func (c *Client) applyStatefulSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*appsv1.StatefulSet, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("statefulset yaml content cannot be empty")
+	}
+	if fieldManager == "" {
+		fieldManager = "web-statefulset-editor"
+	}
+
+	payload, namespace, name, err := prepareStatefulSetApplyPayload(yamlContent, enforceNamespace, enforceName)
+	if err != nil {
+		return nil, err
+	}
+
+	forceFlag := true
+	options := metav1.PatchOptions{
+		FieldManager: fieldManager,
+		Force:        &forceFlag,
+	}
+	if dryRun {
+		options.DryRun = []string{metav1.DryRunAll}
+		fmt.Printf("[DEBUG] Applying statefulset %s/%s in DRY-RUN mode\n", namespace, name)
+	} else {
+		fmt.Printf("[DEBUG] Applying statefulset %s/%s with Force=true\n", namespace, name)
+	}
+
+	result, err := c.clientset.AppsV1().StatefulSets(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply statefulset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
+	fmt.Printf("[DEBUG] Successfully applied statefulset %s/%s, resourceVersion: %s\n", namespace, name, result.ResourceVersion)
+	return result, nil
+}
+
+func prepareStatefulSetApplyPayload(yamlContent, enforceNamespace, enforceName string) ([]byte, string, string, error) {
+	var sts map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &sts); err != nil {
+		return nil, "", "", fmt.Errorf("invalid statefulset yaml: %w", err)
+	}
+
+	if len(sts) == 0 {
+		return nil, "", "", fmt.Errorf("statefulset yaml cannot be empty")
+	}
+
+	apiVersion, _ := sts["apiVersion"].(string)
+	if strings.TrimSpace(apiVersion) == "" {
+		sts["apiVersion"] = "apps/v1"
+	}
+	kind, _ := sts["kind"].(string)
+	if strings.TrimSpace(kind) == "" {
+		sts["kind"] = "StatefulSet"
+	} else if !strings.EqualFold(kind, "StatefulSet") {
+		return nil, "", "", fmt.Errorf("expected kind StatefulSet, got %s", kind)
+	}
+
+	metadata, _ := sts["metadata"].(map[string]interface{})
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+
+	name, _ := metadata["name"].(string)
+	name = strings.TrimSpace(name)
+	if enforceName != "" {
+		enforceName = strings.TrimSpace(enforceName)
+		if name == "" {
+			name = enforceName
+		}
+		if name != enforceName {
+			return nil, "", "", fmt.Errorf("statefulset name mismatch: expected %s, got %s", enforceName, name)
+		}
+	}
+	if name == "" {
+		return nil, "", "", fmt.Errorf("statefulset metadata.name is required")
+	}
+	metadata["name"] = name
+
+	namespace := strings.TrimSpace(enforceNamespace)
+	if nsRaw, ok := metadata["namespace"].(string); ok {
+		ns := strings.TrimSpace(nsRaw)
+		if namespace == "" {
+			namespace = ns
+		} else if ns != "" && ns != namespace {
+			return nil, "", "", fmt.Errorf("statefulset namespace mismatch: expected %s, got %s", namespace, ns)
+		}
+	}
+	if namespace == "" {
+		return nil, "", "", fmt.Errorf("statefulset metadata.namespace is required")
+	}
+	metadata["namespace"] = namespace
+	sts["metadata"] = metadata
+
+	jsonPayload, err := json.Marshal(sts)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to marshal statefulset payload: %w", err)
+	}
+
+	return jsonPayload, namespace, name, nil
+}
+
+// DeleteStatefulSet deleta um StatefulSet específico
+func (c *Client) DeleteStatefulSet(ctx context.Context, namespace, statefulSetName string) error {
+	err := c.clientset.AppsV1().StatefulSets(namespace).Delete(ctx, statefulSetName, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete statefulset %s/%s/%s: %w", c.cluster, namespace, statefulSetName, err)
+	}
+	return nil
+}
+
+// RolloutRestartStatefulSet reinicia um StatefulSet (alias para RolloutStatefulSet)
+func (c *Client) RolloutRestartStatefulSet(ctx context.Context, namespace, statefulSetName string) error {
+	return c.RolloutStatefulSet(ctx, namespace, statefulSetName)
 }
 
 // ============================================================================

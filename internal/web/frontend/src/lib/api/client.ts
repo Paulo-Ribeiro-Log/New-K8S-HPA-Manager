@@ -39,6 +39,16 @@ import type {
   DeploymentDiffResult,
   DeploymentValidateResult,
   DeploymentApplyResult,
+  DaemonSetSummary,
+  DaemonSetManifest,
+  DaemonSetDiffResult,
+  DaemonSetValidateResult,
+  DaemonSetApplyResult,
+  StatefulSetSummary,
+  StatefulSetManifest,
+  StatefulSetDiffResult,
+  StatefulSetValidateResult,
+  StatefulSetApplyResult,
   PodSummary,
   PodManifest,
   EventSummary,
@@ -202,6 +212,10 @@ class APIClient {
     });
   }
 
+  async delete<T = any>(endpoint: string): Promise<T> {
+    return this.request<T>(endpoint, { method: 'DELETE' });
+  }
+
   // Clusters
   async getClusters(): Promise<Cluster[]> {
     const response = await this.request<APIResponse<Cluster[]>>("/clusters");
@@ -226,8 +240,14 @@ class APIClient {
   }
 
   // Namespaces
+  // Sempre busca TODOS os namespaces (incluindo sistema) com isSystem marcado
+  // A filtragem é feita no frontend para permitir toggle dinâmico
   async getNamespaces(cluster?: string): Promise<Namespace[]> {
-    const query = cluster ? `?cluster=${encodeURIComponent(cluster)}` : "";
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    // Sempre pedir todos os namespaces para ter isSystem disponível
+    params.append("showSystem", "true");
+    const query = params.toString() ? `?${params.toString()}` : "";
     const response = await this.request<APIResponse<Namespace[]>>(
       `/namespaces${query}`
     );
@@ -716,6 +736,250 @@ class APIClient {
       `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
     );
     return response;
+  }
+
+  async deleteDeployment(cluster: string, namespace: string, name: string): Promise<void> {
+    await this.request<APIResponse<void>>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    );
+  }
+
+  async restartDeployment(cluster: string, namespace: string, name: string): Promise<void> {
+    await this.request<APIResponse<void>>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/restart`,
+      { method: "POST" }
+    );
+  }
+
+  // DaemonSet API Methods
+  async getDaemonSets(
+    cluster?: string,
+    namespaces?: string[],
+    search?: string,
+    showSystem: boolean = false,
+    bypassCache: boolean = false
+  ): Promise<DaemonSetSummary[]> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (namespaces && namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    if (search) params.append("search", search);
+    if (showSystem) params.append("showSystem", "true");
+    if (bypassCache) params.append("_t", Date.now().toString());
+
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const response = await this.request<APIResponse<DaemonSetSummary[]>>(
+      `/daemonsets${query}`,
+      {
+        headers: bypassCache
+          ? {
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+            }
+          : {},
+      }
+    );
+    return response.data || [];
+  }
+
+  async getDaemonSet(cluster: string, namespace: string, name: string): Promise<DaemonSetManifest> {
+    const response = await this.request<APIResponse<DaemonSetManifest>>(
+      `/daemonsets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) {
+      throw new Error("DaemonSet not found");
+    }
+    return response.data;
+  }
+
+  async diffDaemonSet(originalYaml: string, updatedYaml: string, fileName?: string): Promise<DaemonSetDiffResult> {
+    const response = await this.request<APIResponse<DaemonSetDiffResult>>(
+      `/daemonsets/diff`,
+      {
+        method: "POST",
+        body: JSON.stringify({ originalYaml, updatedYaml, fileName }),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Diff response inválida");
+    }
+    return response.data;
+  }
+
+  async validateDaemonSet(payload: {
+    cluster: string;
+    namespace: string;
+    yaml: string;
+    fieldManager?: string;
+  }): Promise<DaemonSetValidateResult> {
+    const response = await this.request<APIResponse<DaemonSetValidateResult>>(
+      `/daemonsets/validate`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Validação sem retorno");
+    }
+    return response.data;
+  }
+
+  async applyDaemonSet(
+    cluster: string,
+    namespace: string,
+    name: string,
+    body: { yaml: string; fieldManager?: string; dryRun?: boolean }
+  ): Promise<DaemonSetApplyResult> {
+    const response = await this.request<APIResponse<DaemonSetApplyResult>>(
+      `/daemonsets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Aplicação sem retorno");
+    }
+    return response.data;
+  }
+
+  async describeDaemonSet(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/daemonsets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
+  }
+
+  async deleteDaemonSet(cluster: string, namespace: string, name: string): Promise<void> {
+    await this.request<APIResponse<void>>(
+      `/daemonsets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    );
+  }
+
+  async restartDaemonSet(cluster: string, namespace: string, name: string): Promise<void> {
+    await this.request<APIResponse<void>>(
+      `/daemonsets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/restart`,
+      { method: "POST" }
+    );
+  }
+
+  // StatefulSet API Methods
+  async getStatefulSets(
+    cluster?: string,
+    namespaces?: string[],
+    search?: string,
+    showSystem: boolean = false,
+    bypassCache: boolean = false
+  ): Promise<StatefulSetSummary[]> {
+    const params = new URLSearchParams();
+    if (cluster) params.append("cluster", cluster);
+    if (namespaces && namespaces.length > 0) {
+      params.append("namespaces", namespaces.join(","));
+    }
+    if (search) params.append("search", search);
+    if (showSystem) params.append("showSystem", "true");
+    if (bypassCache) params.append("_t", Date.now().toString());
+
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const response = await this.request<APIResponse<StatefulSetSummary[]>>(
+      `/statefulsets${query}`,
+      {
+        headers: bypassCache
+          ? {
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+            }
+          : {},
+      }
+    );
+    return response.data || [];
+  }
+
+  async getStatefulSet(cluster: string, namespace: string, name: string): Promise<StatefulSetManifest> {
+    const response = await this.request<APIResponse<StatefulSetManifest>>(
+      `/statefulsets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) {
+      throw new Error("StatefulSet not found");
+    }
+    return response.data;
+  }
+
+  async diffStatefulSet(originalYaml: string, updatedYaml: string, fileName?: string): Promise<StatefulSetDiffResult> {
+    const response = await this.request<APIResponse<StatefulSetDiffResult>>(
+      `/statefulsets/diff`,
+      {
+        method: "POST",
+        body: JSON.stringify({ originalYaml, updatedYaml, fileName }),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Diff response inválida");
+    }
+    return response.data;
+  }
+
+  async validateStatefulSet(payload: {
+    cluster: string;
+    namespace: string;
+    yaml: string;
+    fieldManager?: string;
+  }): Promise<StatefulSetValidateResult> {
+    const response = await this.request<APIResponse<StatefulSetValidateResult>>(
+      `/statefulsets/validate`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Validação sem retorno");
+    }
+    return response.data;
+  }
+
+  async applyStatefulSet(
+    cluster: string,
+    namespace: string,
+    name: string,
+    body: { yaml: string; fieldManager?: string; dryRun?: boolean }
+  ): Promise<StatefulSetApplyResult> {
+    const response = await this.request<APIResponse<StatefulSetApplyResult>>(
+      `/statefulsets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }
+    );
+    if (!response.data) {
+      throw new Error("Aplicação sem retorno");
+    }
+    return response.data;
+  }
+
+  async describeStatefulSet(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/statefulsets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
+  }
+
+  async deleteStatefulSet(cluster: string, namespace: string, name: string): Promise<void> {
+    await this.request<APIResponse<void>>(
+      `/statefulsets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    );
+  }
+
+  async restartStatefulSet(cluster: string, namespace: string, name: string): Promise<void> {
+    await this.request<APIResponse<void>>(
+      `/statefulsets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/restart`,
+      { method: "POST" }
+    );
   }
 
   // Ingress API Methods
