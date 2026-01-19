@@ -22,6 +22,9 @@ interface HelmTabProps {
 }
 
 const HelmTabContent = ({ selectedCluster }: HelmTabProps) => {
+  // DEBUG: Log quando componente renderiza
+  console.log('🔧 [HelmTab] Componente renderizado - cluster:', selectedCluster);
+
   const {
     releases,
     selectedRelease,
@@ -32,6 +35,15 @@ const HelmTabContent = ({ selectedCluster }: HelmTabProps) => {
     setFilters,
     selectRelease,
   } = useHelmStore();
+
+  // DEBUG: Log do estado atual
+  console.log('🔧 [HelmTab] Estado:', {
+    releasesCount: releases.length,
+    selectedRelease,
+    selectedReleaseNamespace,
+    hasReleaseDetail: !!releaseDetail,
+    valuesRawLength: releaseDetail?.valuesRaw?.length || 0,
+  });
 
   const [searchQuery, setSearchQuery] = useState("");
   const [showInstallModal, setShowInstallModal] = useState(false);

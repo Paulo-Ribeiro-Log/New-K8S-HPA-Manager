@@ -116,15 +116,18 @@ type IngressManifest struct {
 
 // DeploymentSummary descreve informações resumidas de um Deployment
 type DeploymentSummary struct {
-	Cluster           string            `json:"cluster"`
-	Namespace         string            `json:"namespace"`
-	Name              string            `json:"name"`
-	Labels            map[string]string `json:"labels,omitempty"`
-	Replicas          int32             `json:"replicas"`
-	ReadyReplicas     int32             `json:"readyReplicas"`
-	AvailableReplicas int32             `json:"availableReplicas"`
-	ResourceVersion   string            `json:"resourceVersion,omitempty"`
-	UpdatedAt         time.Time         `json:"updatedAt"`
+	Cluster             string            `json:"cluster"`
+	Namespace           string            `json:"namespace"`
+	Name                string            `json:"name"`
+	Labels              map[string]string `json:"labels,omitempty"`
+	Replicas            int32             `json:"replicas"`
+	ReadyReplicas       int32             `json:"readyReplicas"`
+	AvailableReplicas   int32             `json:"availableReplicas"`
+	UpdatedReplicas     int32             `json:"updatedReplicas"`
+	UnavailableReplicas int32             `json:"unavailableReplicas"`
+	CurrentReplicas     int32             `json:"currentReplicas"`
+	ResourceVersion     string            `json:"resourceVersion,omitempty"`
+	UpdatedAt           time.Time         `json:"updatedAt"`
 }
 
 // DeploymentMetadata consolida metadados relevantes do Deployment
@@ -142,6 +145,71 @@ type DeploymentManifest struct {
 	Name      string             `json:"name"`
 	YAML      string             `json:"yaml"`
 	Metadata  DeploymentMetadata `json:"metadata"`
+}
+
+// DaemonSetSummary descreve informações resumidas de um DaemonSet
+type DaemonSetSummary struct {
+	Cluster                string            `json:"cluster"`
+	Namespace              string            `json:"namespace"`
+	Name                   string            `json:"name"`
+	Labels                 map[string]string `json:"labels,omitempty"`
+	DesiredNumberScheduled int32             `json:"desiredNumberScheduled"`
+	CurrentNumberScheduled int32             `json:"currentNumberScheduled"`
+	NumberReady            int32             `json:"numberReady"`
+	NumberAvailable        int32             `json:"numberAvailable"`
+	NumberMisscheduled     int32             `json:"numberMisscheduled"`
+	UpdatedNumberScheduled int32             `json:"updatedNumberScheduled"`
+	ResourceVersion        string            `json:"resourceVersion,omitempty"`
+	UpdatedAt              time.Time         `json:"updatedAt"`
+}
+
+// DaemonSetMetadata consolida metadados relevantes do DaemonSet
+type DaemonSetMetadata struct {
+	UID             string            `json:"uid,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Annotations     map[string]string `json:"annotations,omitempty"`
+}
+
+// DaemonSetManifest contém o YAML bruto e metadados para edição
+type DaemonSetManifest struct {
+	Cluster   string            `json:"cluster"`
+	Namespace string            `json:"namespace"`
+	Name      string            `json:"name"`
+	YAML      string            `json:"yaml"`
+	Metadata  DaemonSetMetadata `json:"metadata"`
+}
+
+// StatefulSetSummary descreve informações resumidas de um StatefulSet
+type StatefulSetSummary struct {
+	Cluster           string            `json:"cluster"`
+	Namespace         string            `json:"namespace"`
+	Name              string            `json:"name"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	Replicas          int32             `json:"replicas"`
+	ReadyReplicas     int32             `json:"readyReplicas"`
+	CurrentReplicas   int32             `json:"currentReplicas"`
+	UpdatedReplicas   int32             `json:"updatedReplicas"`
+	AvailableReplicas int32             `json:"availableReplicas"`
+	ResourceVersion   string            `json:"resourceVersion,omitempty"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
+}
+
+// StatefulSetMetadata consolida metadados relevantes do StatefulSet
+type StatefulSetMetadata struct {
+	UID             string            `json:"uid,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Annotations     map[string]string `json:"annotations,omitempty"`
+}
+
+// StatefulSetManifest contém o YAML bruto e metadados para edição
+type StatefulSetManifest struct {
+	Cluster   string              `json:"cluster"`
+	Namespace string              `json:"namespace"`
+	Name      string              `json:"name"`
+	YAML      string              `json:"yaml"`
+	Metadata  StatefulSetMetadata `json:"metadata"`
 }
 
 // SecretSummary descreve informações resumidas de um Secret
@@ -389,6 +457,7 @@ type Namespace struct {
 	Cluster  string `json:"cluster"`
 	HPACount int    `json:"hpa_count"`
 	Selected bool   `json:"selected"`
+	IsSystem bool   `json:"isSystem"`
 }
 
 // HPA representa um Horizontal Pod Autoscaler

@@ -27,6 +27,8 @@ import { IngressTab } from "@/components/IngressTab";
 import { NamespacesTab } from "@/components/NamespacesTab";
 import { SecretsTab } from "@/components/SecretsTab";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
+import { DaemonSetsTab } from "@/components/DaemonSetsTab";
+import { StatefulSetsTab } from "@/components/StatefulSetsTab";
 import { ContainersTab } from "@/components/ContainersTab";
 import { PodsPanel } from "@/components/PodsPanel";
 import { EventsTab } from "@/components/EventsTab";
@@ -46,6 +48,7 @@ import { AIDiagnosticsTab } from "@/components/AIDiagnosticsTab";
 import { HealthCheckingTab } from "@/components/HealthCheckingTab";
 import { HelmTab } from "@/components/HelmTab";
 import { GitHubReleasesTab } from "@/components/GitHubReleasesTab";
+import { NexusValuesDiffPanel } from "@/components/NexusValuesDiffPanel";
 import {
   LayoutDashboard,
   Scale,
@@ -65,7 +68,8 @@ import {
   Brain,
   Activity,
   PackageOpen,
-  GitCompareArrows
+  GitCompareArrows,
+  FileCode,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -95,6 +99,8 @@ const Index = ({ onLogout }: IndexProps) => {
   const [deploymentsNamespace, setDeploymentsNamespace] = useState("");
   const [secretsNamespace, setSecretsNamespace] = useState("");
   const [containersNamespace, setContainersNamespace] = useState("");
+  const [daemonsetsNamespace, setDaemonsetsNamespace] = useState("");
+  const [statefulsetsNamespace, setStatefulsetsNamespace] = useState("");
   const [ingressNamespace, setIngressNamespace] = useState("");
   const [showApplyModal, setShowApplyModal] = useState(false);
   const [hpasToApply, setHpasToApply] = useState<Array<{ key: string; current: HPA; original: HPA }>>([]);
@@ -176,6 +182,8 @@ const Index = ({ onLogout }: IndexProps) => {
     pods: false,
     configmaps: false,
     deployments: false,
+    daemonsets: false,
+    statefulsets: false,
     secrets: false,
     containers: false,
     ingresses: false,
@@ -184,7 +192,7 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // 🔄 Marcar componente como montado quando usuário acessa a aba
   useEffect(() => {
-    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "healthcheck"];
+    const workloadTabs: Array<keyof typeof hasBeenMounted.current> = ["pods", "configmaps", "deployments", "daemonsets", "statefulsets", "secrets", "containers", "ingresses", "healthcheck"];
     if (workloadTabs.includes(activeTab as any)) {
       hasBeenMounted.current[activeTab as keyof typeof hasBeenMounted.current] = true;
     }
@@ -415,6 +423,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "servicemesh", label: "Service Mesh", icon: Network },
     { id: "healthcheck", label: "Health Checking", icon: Activity },
     { id: "helm", label: "Helm", icon: PackageOpen },
+    { id: "nexus-values", label: "Nexus Values", icon: FileCode },
     { id: "namespaces", label: "Namespaces", icon: Database },
     { id: "ai-diagnostics", label: "AI Diagnostics", icon: Brain },
     { id: "github-releases", label: "GitHub Releases", icon: GitCompareArrows },
@@ -965,6 +974,13 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
+      case "nexus-values":
+        return (
+          <ErrorBoundary>
+            <NexusValuesDiffPanel />
+          </ErrorBoundary>
+        );
+
       default:
         return null;
     }
@@ -1020,8 +1036,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm, AI Diagnostics e GitHub Releases */}
-      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "ai-diagnostics" && activeTab !== "github-releases" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, DaemonSets, StatefulSets, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm, Nexus Values, AI Diagnostics e GitHub Releases */}
+      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "daemonsets" && activeTab !== "statefulsets" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "nexus-values" && activeTab !== "ai-diagnostics" && activeTab !== "github-releases" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (
@@ -1121,6 +1137,38 @@ const Index = ({ onLogout }: IndexProps) => {
           )}
         </div>
 
+        {/* DaemonSets - sempre montado */}
+        <div style={{ display: activeTab === "daemonsets" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "daemonsets" || hasBeenMounted.current.daemonsets) && (
+            <ErrorBoundary componentName="DaemonSets Tab">
+              <DaemonSetsTab
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={daemonsetsNamespace}
+                onNamespaceChange={setDaemonsetsNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
+        {/* StatefulSets - sempre montado */}
+        <div style={{ display: activeTab === "statefulsets" ? "block" : "none", height: "100%" }}>
+          {(activeTab === "statefulsets" || hasBeenMounted.current.statefulsets) && (
+            <ErrorBoundary componentName="StatefulSets Tab">
+              <StatefulSetsTab
+                cluster={selectedCluster}
+                namespaces={namespaces}
+                selectedNamespace={statefulsetsNamespace}
+                onNamespaceChange={setStatefulsetsNamespace}
+                showSystemNamespaces={showSystemNamespaces}
+                onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+
         {/* Secrets - sempre montado */}
         <div style={{ display: activeTab === "secrets" ? "block" : "none", height: "100%" }}>
           {(activeTab === "secrets" || hasBeenMounted.current.secrets) && (
@@ -1179,7 +1227,7 @@ const Index = ({ onLogout }: IndexProps) => {
         </div>
 
         {/* Outras abas - renderização condicional normal (switch/case) */}
-        {!["pods", "configmaps", "deployments", "secrets", "containers", "ingresses", "healthcheck"].includes(activeTab) && renderTabContent()}
+        {!["pods", "configmaps", "deployments", "daemonsets", "statefulsets", "secrets", "containers", "ingresses", "healthcheck"].includes(activeTab) && renderTabContent()}
       </div>
 
       {/* Modal de Confirmação - HPAs */}

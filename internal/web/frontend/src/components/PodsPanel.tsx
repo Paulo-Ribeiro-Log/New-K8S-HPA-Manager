@@ -612,7 +612,7 @@ export const PodsPanel = ({
     }, 2000);
   };
 
-  const handleLoadLogs = async (containerName: string) => {
+  const handleLoadLogs = async (containerName: string, silent = false) => {
     if (!selectedPod) return;
 
     setLogsLoading({ ...logsLoading, [containerName]: true });
@@ -627,7 +627,10 @@ export const PodsPanel = ({
       setPodLogs({ ...podLogs, [containerName]: result.logs });
     } catch (err) {
       setPodLogs({ ...podLogs, [containerName]: "Erro ao carregar logs" });
-      toast.error(`Erro ao carregar logs do container ${containerName}`);
+      // Só exibir toast se não estiver em modo silencioso (auto-refresh)
+      if (!silent) {
+        toast.error(`Erro ao carregar logs do container ${containerName}`);
+      }
     } finally {
       setLogsLoading({ ...logsLoading, [containerName]: false });
     }
@@ -718,11 +721,12 @@ export const PodsPanel = ({
   useEffect(() => {
     if (!isAutoRefreshingLogs || !selectedContainerForLogs || !selectedPod) return;
 
-    // Carrega imediatamente ao iniciar
-    handleLoadLogs(selectedContainerForLogs);
+    // Carrega imediatamente ao iniciar (silencioso para evitar toasts repetidos)
+    handleLoadLogs(selectedContainerForLogs, true);
 
     const interval = setInterval(() => {
-      handleLoadLogs(selectedContainerForLogs);
+      // Auto-refresh em modo silencioso (não exibe toasts de erro)
+      handleLoadLogs(selectedContainerForLogs, true);
     }, 3000);
 
     return () => clearInterval(interval);
