@@ -23,13 +23,13 @@ func RecordGlobalAIError(userEmail, provider, model string, err error) {
 		aierrors.RecordGlobalAIError(userEmail, provider, model, nil)
 		return
 	}
-	
+
 	errMsg := err.Error()
 	// Truncar se muito longo
 	if len(errMsg) > 300 {
 		errMsg = errMsg[:300] + "..."
 	}
-	
+
 	aierrors.RecordGlobalAIError(userEmail, provider, model, err)
 }
 
@@ -85,14 +85,18 @@ func (h *AIDiagnosticsHandler) Analyze(c *gin.Context) {
 		Msg("Starting AI analysis")
 
 	// Usar ai_email do request para buscar configurações AI
-	// Se não foi fornecido, usar analyzer padrão do servidor (Ollama)
 	aiEmail := req.AIEmail
-	if aiEmail == "" {
-		log.Debug().Msg("No ai_email provided, using default analyzer (Ollama)")
-	}
 
-	// Buscar analyzer apropriado (preferências do usuário ou padrão)
-	analyzer := h.getAnalyzerForUser(aiEmail)
+	// Buscar analyzer configurado pelo usuário (SEM FALLBACK)
+	analyzer, err := h.getAnalyzerForUser(aiEmail)
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("ai_email", aiEmail).
+			Msg("Failed to get AI analyzer")
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	// 🔒 SECURITY: Log qual provider será usado ANTES de executar
 	provider := analyzer.GetProvider()
@@ -120,13 +124,13 @@ func (h *AIDiagnosticsHandler) Analyze(c *gin.Context) {
 	result, err := analyzer.Analyze(c.Request.Context(), &req)
 	if err != nil {
 		log.Error().Err(err).Msg("AI analysis failed")
-		
+
 		// Registrar erro globalmente para exibir no painel
 		provider := analyzer.GetProvider()
 		if provider != nil {
 			RecordGlobalAIError(aiEmail, provider.GetName(), provider.GetModel(), err)
 		}
-		
+
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "analysis failed: " + err.Error()})
 		return
 	}
@@ -146,20 +150,29 @@ func (h *AIDiagnosticsHandler) Analyze(c *gin.Context) {
 }
 
 // getAnalyzerForUser retorna analyzer personalizado baseado nas preferências do usuário
-func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) *ai.Analyzer {
-	// Se não tiver ai_email ou tokensStore, usar analyzer padrão
-	if aiEmail == "" || h.tokensStore == nil {
-		return h.analyzer
+// Retorna erro se não encontrar configuração válida (SEM FALLBACK)
+func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer, error) {
+	// ERRO CLARO: ai_email obrigatório
+	if aiEmail == "" {
+		return nil, fmt.Errorf("configuração de AI não encontrada: acesse a aba 'AI Settings', preencha seu email e salve as configurações")
+	}
+
+	if h.tokensStore == nil {
+		return nil, fmt.Errorf("sistema de armazenamento de tokens não está disponível - reinicie o servidor")
 	}
 
 	// Buscar tokens/preferências do usuário
 	tokens, err := h.tokensStore.GetTokens(aiEmail)
-	if err != nil || tokens == nil {
-		// Se erro ou usuário não tem preferências, usar padrão
-		log.Debug().
+	if err != nil {
+		log.Error().
 			Str("ai_email", aiEmail).
-			Msg("Using default analyzer (no user preferences found)")
-		return h.analyzer
+			Err(err).
+			Msg("Failed to fetch user tokens")
+		return nil, fmt.Errorf("erro ao buscar configurações para '%s': %v", aiEmail, err)
+	}
+
+	if tokens == nil {
+		return nil, fmt.Errorf("nenhuma configuração de AI encontrada para '%s' - acesse a aba 'AI Settings' e salve suas configurações", aiEmail)
 	}
 
 	// Criar config personalizado baseado nas preferências do usuário
@@ -173,140 +186,107 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) *ai.Analyzer {
 
 	switch tokens.PreferredProvider {
 	case "gemini":
-		if tokens.GeminiAPIKey != "" {
-			config.GeminiAPIKey = tokens.GeminiAPIKey
-			if tokens.GeminiModel != "" {
-				config.GeminiModel = tokens.GeminiModel
-			} else {
-				config.GeminiModel = "gemini-2.5-flash"
-			}
-
-			// 🚨 SECURITY: Log uso de Gemini (gratuito com quota)
-			log.Warn().
-				Str("ai_email", aiEmail).
-				Str("provider", "gemini").
-				Str("model", config.GeminiModel).
-				Msg("⚠️ Using Gemini API - quota-limited free tier")
-		} else {
-			// Sem API key, usar analyzer padrão
-			log.Debug().
-				Str("ai_email", aiEmail).
-				Msg("Gemini selected but no API key - using default analyzer")
-			return h.analyzer
+		if tokens.GeminiAPIKey == "" {
+			return nil, fmt.Errorf("provider 'gemini' selecionado mas API key não configurada - acesse AI Settings e preencha a chave do Gemini")
 		}
+		config.GeminiAPIKey = tokens.GeminiAPIKey
+		if tokens.GeminiModel != "" {
+			config.GeminiModel = tokens.GeminiModel
+		} else {
+			config.GeminiModel = "gemini-2.5-flash"
+		}
+		log.Info().
+			Str("ai_email", aiEmail).
+			Str("provider", "gemini").
+			Str("model", config.GeminiModel).
+			Msg("Using Gemini API")
 
 	case "claude":
-		if tokens.ClaudeAPIKey != "" {
-			config.ClaudeAPIKey = tokens.ClaudeAPIKey
-			if tokens.ClaudeModel != "" {
-				config.ClaudeModel = tokens.ClaudeModel
-			} else {
-				config.ClaudeModel = "claude-3-5-sonnet-20241022"
-			}
-
-			// 🚨 CRITICAL: Log uso de Claude (PAGO!)
-			log.Warn().
-				Str("ai_email", aiEmail).
-				Str("provider", "claude").
-				Str("model", config.ClaudeModel).
-				Msg("🚨 CRITICAL: Using Claude API - PAID SERVICE - charges will apply!")
-		} else {
-			log.Debug().
-				Str("ai_email", aiEmail).
-				Msg("Claude selected but no API key - using default analyzer")
-			return h.analyzer
+		if tokens.ClaudeAPIKey == "" {
+			return nil, fmt.Errorf("provider 'claude' selecionado mas API key não configurada - acesse AI Settings e preencha a chave do Claude")
 		}
+		config.ClaudeAPIKey = tokens.ClaudeAPIKey
+		if tokens.ClaudeModel != "" {
+			config.ClaudeModel = tokens.ClaudeModel
+		} else {
+			config.ClaudeModel = "claude-3-5-sonnet-20241022"
+		}
+		log.Warn().
+			Str("ai_email", aiEmail).
+			Str("provider", "claude").
+			Str("model", config.ClaudeModel).
+			Msg("Using Claude API - PAID SERVICE")
 
 	case "openai":
-		if tokens.OpenAIAPIKey != "" {
-			config.OpenAIAPIKey = tokens.OpenAIAPIKey
-			if tokens.OpenAIModel != "" {
-				config.OpenAIModel = tokens.OpenAIModel
-			} else {
-				config.OpenAIModel = "gpt-4o-mini"
-			}
-
-			// 🚨 CRITICAL: Log uso de OpenAI (PAGO!)
-			log.Warn().
-				Str("ai_email", aiEmail).
-				Str("provider", "openai").
-				Str("model", config.OpenAIModel).
-				Msg("🚨 CRITICAL: Using OpenAI API - PAID SERVICE - charges will apply!")
-		} else {
-			log.Debug().
-				Str("ai_email", aiEmail).
-				Msg("OpenAI selected but no API key - using default analyzer")
-			return h.analyzer
+		if tokens.OpenAIAPIKey == "" {
+			return nil, fmt.Errorf("provider 'openai' selecionado mas API key não configurada - acesse AI Settings e preencha a chave do OpenAI")
 		}
+		config.OpenAIAPIKey = tokens.OpenAIAPIKey
+		if tokens.OpenAIModel != "" {
+			config.OpenAIModel = tokens.OpenAIModel
+		} else {
+			config.OpenAIModel = "gpt-4o-mini"
+		}
+		log.Warn().
+			Str("ai_email", aiEmail).
+			Str("provider", "openai").
+			Str("model", config.OpenAIModel).
+			Msg("Using OpenAI API - PAID SERVICE")
+
 	case "copilot":
-		if tokens.CopilotAPIKey != "" && tokens.CopilotEndpoint != "" {
-			config.CopilotAPIKey = tokens.CopilotAPIKey
-			config.CopilotEndpoint = tokens.CopilotEndpoint
-			if tokens.CopilotDeployment != "" {
-				config.CopilotDeployment = tokens.CopilotDeployment
-			} else {
-				config.CopilotDeployment = "gpt-4o"
-			}
-			config.CopilotAPIVersion = "2024-02-15-preview"
-
-			// 🚨 CRITICAL: Log uso de Copilot (PAGO - Azure OpenAI!)
-			log.Warn().
-				Str("ai_email", aiEmail).
-				Str("provider", "copilot").
-				Str("deployment", config.CopilotDeployment).
-				Msg("🚨 CRITICAL: Using Azure OpenAI (Copilot) - PAID SERVICE - charges will apply!")
-		} else {
-			log.Debug().
-				Str("ai_email", aiEmail).
-				Msg("Copilot selected but missing API key or endpoint - using default analyzer")
-			return h.analyzer
+		if tokens.CopilotAPIKey == "" {
+			return nil, fmt.Errorf("provider 'copilot' selecionado mas API key não configurada - acesse AI Settings e preencha a chave do Azure OpenAI")
 		}
+		if tokens.CopilotEndpoint == "" {
+			return nil, fmt.Errorf("provider 'copilot' selecionado mas endpoint não configurado - acesse AI Settings e preencha o endpoint do Azure OpenAI")
+		}
+		config.CopilotAPIKey = tokens.CopilotAPIKey
+		config.CopilotEndpoint = tokens.CopilotEndpoint
+		if tokens.CopilotDeployment != "" {
+			config.CopilotDeployment = tokens.CopilotDeployment
+		} else {
+			config.CopilotDeployment = "gpt-4o"
+		}
+		config.CopilotAPIVersion = "2024-02-15-preview"
+		log.Warn().
+			Str("ai_email", aiEmail).
+			Str("provider", "copilot").
+			Str("deployment", config.CopilotDeployment).
+			Msg("Using Azure OpenAI (Copilot) - PAID SERVICE")
 
 	case "ollama":
-		// Ollama é local e gratuito - sem preocupação com custos
 		config.OllamaBaseURL = h.defaultConfig.OllamaBaseURL
 		if tokens.OllamaModel != "" {
 			config.OllamaModel = tokens.OllamaModel
 		} else {
 			config.OllamaModel = "llama3.2:3b"
 		}
-
 		log.Info().
 			Str("ai_email", aiEmail).
 			Str("provider", "ollama").
 			Str("model", config.OllamaModel).
-			Msg("✅ Using Ollama (local) - FREE, no API costs")
+			Msg("Using Ollama (local)")
 
 	default:
-		// Provider desconhecido, usar padrão
-		log.Warn().
-			Str("ai_email", aiEmail).
-			Str("provider", tokens.PreferredProvider).
-			Msg("Unknown provider - falling back to default analyzer")
-		return h.analyzer
+		return nil, fmt.Errorf("provider '%s' não é suportado - providers válidos: gemini, claude, openai, copilot, ollama", tokens.PreferredProvider)
 	}
 
 	// Criar provider personalizado
 	provider, err := ai.NewProvider(config)
 	if err != nil {
-		log.Warn().
-			Err(err).
-			Str("ai_email", aiEmail).
-			Str("provider", tokens.PreferredProvider).
-			Msg("Failed to create user-specific provider, using default")
-		return h.analyzer
+		return nil, fmt.Errorf("falha ao inicializar provider '%s': %v", tokens.PreferredProvider, err)
 	}
 
-	// Criar analyzer temporário para esta requisição
+	// Criar analyzer para esta requisição
 	userAnalyzer := ai.NewAnalyzer(provider, h.kubeManager, h.historyStore)
 
 	log.Info().
 		Str("ai_email", aiEmail).
 		Str("provider", tokens.PreferredProvider).
 		Str("model", h.getModelFromConfig(config)).
-		Msg("Using user-specific AI analyzer")
+		Msg("AI analyzer configured successfully")
 
-	return userAnalyzer
+	return userAnalyzer, nil
 }
 
 // getModelFromConfig extrai o nome do modelo da config
@@ -431,8 +411,17 @@ func (h *AIDiagnosticsHandler) GetProviderStatus(c *gin.Context) {
 	// Obter ai_email via query parameter (opcional)
 	aiEmail := c.Query("ai_email")
 
-	// Buscar analyzer apropriado (preferências do usuário ou padrão do servidor)
-	analyzer := h.getAnalyzerForUser(aiEmail)
+	// Buscar analyzer apropriado (preferências do usuário)
+	analyzer, err := h.getAnalyzerForUser(aiEmail)
+	if err != nil {
+		// Se houver erro, retornar status de erro
+		c.JSON(http.StatusOK, ai.ProviderStatus{
+			Provider:  "unknown",
+			Available: false,
+			Error:     err.Error(),
+		})
+		return
+	}
 
 	// Obter status do provider
 	status := analyzer.GetProviderStatus(c.Request.Context())
