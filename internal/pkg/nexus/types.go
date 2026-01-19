@@ -24,11 +24,11 @@ type ValuesFileRequest struct {
 
 // ValuesFileResponse representa a resposta com o conteúdo de um arquivo
 type ValuesFileResponse struct {
-	Content  string `json:"content"`         // Conteúdo YAML do arquivo
-	FilePath string `json:"filePath"`        // Path relativo no Nexus
-	FullURL  string `json:"fullUrl"`         // URL completa
-	Size     int64  `json:"size"`            // Tamanho em bytes
-	Error    string `json:"error,omitempty"` // Mensagem de erro, se houver
+	Content  string `json:"content"`            // Conteúdo YAML do arquivo
+	FilePath string `json:"filePath"`           // Path relativo no Nexus
+	FullURL  string `json:"fullUrl"`            // URL completa
+	Size     int64  `json:"size"`               // Tamanho em bytes
+	Error    string `json:"error,omitempty"`    // Mensagem de erro, se houver
 }
 
 // CompareValuesRequest representa requisição para comparar dois arquivos
@@ -39,9 +39,9 @@ type CompareValuesRequest struct {
 
 // CompareValuesResponse representa a resposta da comparação
 type CompareValuesResponse struct {
-	File1 ValuesFileResponse `json:"file1"`
-	File2 ValuesFileResponse `json:"file2"`
-	Error string             `json:"error,omitempty"`
+	File1    ValuesFileResponse `json:"file1"`
+	File2    ValuesFileResponse `json:"file2"`
+	Error    string             `json:"error,omitempty"`
 }
 
 // TestConnectionResponse representa a resposta do teste de conexão

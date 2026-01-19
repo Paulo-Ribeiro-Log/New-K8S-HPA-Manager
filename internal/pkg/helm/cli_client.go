@@ -586,19 +586,19 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 	}
 
 	chartRef := req.ChartRef
-
+	
 	// If ChartRef is empty, try to find chart locally or from existing release
 	if chartRef == "" {
 		listArgs := []string{"list", "--output", "json", "--filter", "^" + req.ReleaseName + "$"}
 		if req.Namespace != "" {
 			listArgs = append(listArgs, "--namespace", req.Namespace)
 		}
-
+		
 		stdout, stderr, err := c.runCommand(context.Background(), req.Cluster, listArgs...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to fetch release info: %w (stderr: %s)", err, strings.TrimSpace(stderr))
 		}
-
+		
 		type helmListEntry struct {
 			Chart string `json:"chart"`
 		}
@@ -606,9 +606,9 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 		if err := json.Unmarshal(stdout, &entries); err != nil || len(entries) == 0 {
 			return nil, nil, errors.New("unable to determine chart from existing release. Please provide chartRef in format: repo/chart or local path")
 		}
-
+		
 		fullChart := entries[0].Chart
-
+		
 		// Extract chart name (e.g., "convair-helm-v0.9.0" -> "convair-helm")
 		chartName := fullChart
 		if lastDash := strings.LastIndex(fullChart, "-"); lastDash > 0 {
@@ -618,11 +618,11 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 				chartName = fullChart[:lastDash]
 			}
 		}
-
+		
 		// Try to find chart in local storage directory
 		localChartDir := ExpandHome("~/.k8s-hpa-manager/storaged-helm")
 		localChartPath := filepath.Join(localChartDir, fullChart+".tgz")
-
+		
 		if _, err := os.Stat(localChartPath); err == nil {
 			// Local chart found
 			chartRef = localChartPath
@@ -641,7 +641,7 @@ func (c *CLIClient) buildUpgradeArgs(req HelmActionRequest) ([]string, func(), e
 				Msg("local chart not found - attempting to use chart name from existing release (may fail if repo not configured)")
 		}
 	}
-
+	
 	args := []string{"upgrade", req.ReleaseName, chartRef}
 	cleanup, err := c.appendCommonActionArgs(&args, req)
 	return args, cleanup, err

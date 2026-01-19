@@ -31,7 +31,7 @@ func NewHTTPClient(config Config) *HTTPClient {
 func (c *HTTPClient) TestConnection() (*TestConnectionResponse, error) {
 	// Tenta acessar a API do Nexus para verificar a versão
 	url := fmt.Sprintf("%s/service/rest/v1/status", strings.TrimSuffix(c.config.BaseURL, "/"))
-
+	
 	req, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
 	if err != nil {
 		return &TestConnectionResponse{
@@ -117,7 +117,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 	// Constrói URL
 	url := c.BuildURL(req)
 	fmt.Printf("[Nexus] Downloading from URL: %s\n", url)
-
+	
 	// Cria requisição
 	httpReq, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
 	if err != nil {
@@ -138,7 +138,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 		errMsg := fmt.Sprintf("Request failed: %v", err)
 		fmt.Printf("[Nexus] Error: %s\n", errMsg)
 		return &ValuesFileResponse{
-			Error:   errMsg,
+			Error: errMsg,
 			FullURL: url,
 		}, nil
 	}
@@ -151,7 +151,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 		errMsg := fmt.Sprintf("File not found: %s", url)
 		fmt.Printf("[Nexus] Error: %s\n", errMsg)
 		return &ValuesFileResponse{
-			Error:   errMsg,
+			Error: errMsg,
 			FullURL: url,
 		}, nil
 	}
@@ -160,7 +160,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 		errMsg := "Authentication failed"
 		fmt.Printf("[Nexus] Error: %s\n", errMsg)
 		return &ValuesFileResponse{
-			Error:   errMsg,
+			Error: errMsg,
 			FullURL: url,
 		}, nil
 	}
@@ -169,7 +169,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 		errMsg := fmt.Sprintf("Unexpected status code: %d", resp.StatusCode)
 		fmt.Printf("[Nexus] Error: %s\n", errMsg)
 		return &ValuesFileResponse{
-			Error:   errMsg,
+			Error: errMsg,
 			FullURL: url,
 		}, nil
 	}
@@ -180,7 +180,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 		errMsg := fmt.Sprintf("Failed to read response: %v", err)
 		fmt.Printf("[Nexus] Error: %s\n", errMsg)
 		return &ValuesFileResponse{
-			Error:   errMsg,
+			Error: errMsg,
 			FullURL: url,
 		}, nil
 	}
@@ -232,7 +232,7 @@ func (c *HTTPClient) saveToTemp(req ValuesFileRequest, content []byte) (string, 
 	// Salva arquivo
 	filename := fmt.Sprintf("%s-values.yaml", req.Type)
 	filePath := filepath.Join(tempDir, filename)
-
+	
 	if err := os.WriteFile(filePath, content, 0644); err != nil {
 		return "", err
 	}
@@ -259,7 +259,7 @@ func (c *HTTPClient) DownloadMultipleValues(reqs []ValuesFileRequest) ([]ValuesF
 	// Inicia downloads em paralelo
 	for i, req := range reqs {
 		go func(index int, request ValuesFileRequest) {
-			semaphore <- struct{}{}        // Adquire slot
+			semaphore <- struct{}{} // Adquire slot
 			defer func() { <-semaphore }() // Libera slot
 
 			resp, err := c.DownloadValues(request)
