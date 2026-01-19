@@ -393,6 +393,32 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 			Str("github_web_url", githubWebURL).
 			Msg("Failed to access repository")
 
+		// ✅ Detectar erro SAML específico (403 com mensagem de SAML enforcement)
+		errorStr := err.Error()
+		if resp.StatusCode == 403 && strings.Contains(errorStr, "SAML") {
+			h.logger.Warn().
+				Str("owner", owner).
+				Str("repo", repo).
+				Msg("SAML authorization required for organization")
+
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":      "Token válido, mas não autorizado para a organização com SAML SSO",
+				"error_type": "saml_authorization_required",
+				"message":    fmt.Sprintf("Seu token GitHub está válido, mas precisa ser re-autorizado para a organização '%s' que usa SAML SSO.", owner),
+				"instructions": []string{
+					"1. Acesse: https://github.com/settings/tokens",
+					"2. Encontre seu token e clique em 'Configure SSO'",
+					fmt.Sprintf("3. Procure '%s' e clique em 'Authorize'", owner),
+					"4. Complete a autenticação SSO",
+					"5. Tente novamente a comparação",
+				},
+				"github_settings_url": "https://github.com/settings/tokens",
+				"github_web_url":      githubWebURL,
+				"status_code":         resp.StatusCode,
+			})
+			return
+		}
+
 		if resp.StatusCode == 404 {
 			// Tentar buscar repositórios do usuário/organização para ajudar no diagnóstico
 			var repoSuggestions []string
@@ -427,7 +453,8 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 			errorMsg += fmt.Sprintf("\nVocê pode acessar pelo browser: %s", githubWebURL)
 
 			response := gin.H{
-				"error": errorMsg,
+				"error":      errorMsg,
+				"error_type": "not_found",
 				"details": gin.H{
 					"owner":          owner,
 					"repo":           repo,
@@ -450,6 +477,7 @@ func (h *GitHubReleasesHandler) CompareReleases(c *gin.Context) {
 
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":          fmt.Sprintf("Falha ao acessar repositório: %v", err),
+			"error_type":     "unknown",
 			"status_code":    resp.StatusCode,
 			"github_web_url": githubWebURL,
 		})
