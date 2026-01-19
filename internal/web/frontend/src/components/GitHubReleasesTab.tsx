@@ -28,7 +28,10 @@ import {
   Trash2,
   CheckCircle2,
   XCircle,
-  Loader2
+  Loader2,
+  RefreshCw,
+  ExternalLink,
+  ShieldAlert
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { TokenConfigModal } from "./TokenConfigModal";
@@ -98,6 +101,17 @@ interface ComparisonItem {
   status: 'pending' | 'loading' | 'success' | 'error';
   result?: ComparisonResult;
   error?: string;
+  errorType?: 'saml_authorization_required' | 'not_found' | 'unknown';
+}
+
+// Interface para erros SAML
+interface SAMLError {
+  error: string;
+  error_type: 'saml_authorization_required';
+  message: string;
+  instructions: string[];
+  github_settings_url: string;
+  github_web_url: string;
 }
 
 export const GitHubReleasesTab = () => {
@@ -254,7 +268,7 @@ export const GitHubReleasesTab = () => {
   });
 
   // ✅ Query para buscar deployments na base (busca geral)
-  const { data: searchResults, isLoading: isSearching } = useQuery<{ deployments: DeploymentRecord[] }>({
+  const { data: searchResults, isLoading: isSearching, refetch: refetchDeployments } = useQuery<{ deployments: DeploymentRecord[] }>({
     queryKey: ['github-deployments-all'],
     queryFn: async () => {
       const response = await fetch(
@@ -361,7 +375,7 @@ export const GitHubReleasesTab = () => {
   const handleExecuteComparison = async (item: ComparisonItem) => {
     // Atualizar status para loading
     setComparisonBatch(prev => prev.map(i =>
-      i.id === item.id ? { ...i, status: 'loading' } : i
+      i.id === item.id ? { ...i, status: 'loading', error: undefined, errorType: undefined } : i
     ));
 
     try {
@@ -384,27 +398,63 @@ export const GitHubReleasesTab = () => {
       );
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        const errorData = await response.json().catch(() => ({}));
+
+        // ✅ Detectar erro SAML específico
+        if (errorData.error_type === 'saml_authorization_required') {
+          const samlError = errorData as SAMLError;
+
+          // Mostrar notificação especial para SAML
+          toast.error('Token precisa ser re-autorizado para SAML SSO', {
+            description: samlError.message,
+            duration: 10000,
+            action: {
+              label: 'Abrir GitHub',
+              onClick: () => window.open(samlError.github_settings_url, '_blank'),
+            },
+          });
+
+          setComparisonBatch(prev => prev.map(i =>
+            i.id === item.id ? {
+              ...i,
+              status: 'error',
+              error: samlError.message,
+              errorType: 'saml_authorization_required'
+            } : i
+          ));
+          return;
+        }
+
+        throw new Error(errorData.error || `HTTP ${response.status}`);
       }
 
       const data = await response.json();
 
       // Atualizar com sucesso
       setComparisonBatch(prev => prev.map(i =>
-        i.id === item.id ? { ...i, status: 'success', result: data } : i
+        i.id === item.id ? { ...i, status: 'success', result: data, error: undefined, errorType: undefined } : i
       ));
 
       // Selecionar automaticamente
       setSelectedComparison(item.id);
+
+      toast.success(`Comparação concluída: ${item.githubRepo}`);
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
+
       // Atualizar com erro
       setComparisonBatch(prev => prev.map(i =>
         i.id === item.id ? {
           ...i,
           status: 'error',
-          error: error instanceof Error ? error.message : 'Erro desconhecido'
+          error: errorMessage,
+          errorType: 'unknown'
         } : i
       ));
+
+      toast.error(`Erro ao comparar: ${item.githubRepo}`, {
+        description: errorMessage,
+      });
     }
   };
 
@@ -478,8 +528,27 @@ export const GitHubReleasesTab = () => {
   };
 
   // ✅ CORRIGIDO: Função para buscar dados (refetch silencioso)
-  const handleRefetch = () => {
-    refetchProduction(); // Apenas refetch da query, sem recarregar página
+  const handleRefetch = async () => {
+    toast.loading('Atualizando dados...', { id: 'refetch-toast' });
+
+    try {
+      // Atualizar lista de deployments
+      await refetchDeployments();
+
+      // Atualizar dados de produção (se deployment selecionado)
+      if (deploymentName && deploymentSelected) {
+        await refetchProduction();
+      }
+
+      // Atualizar comparação (se houver)
+      if (searchTriggered && githubRepo && productionTag && newTag) {
+        await refetchComparison();
+      }
+
+      toast.success('Dados atualizados com sucesso', { id: 'refetch-toast' });
+    } catch (error) {
+      toast.error('Erro ao atualizar dados', { id: 'refetch-toast' });
+    }
   };
 
   // ✅ CORRIGIDO: Auto-preencher tag em produção quando encontrar o deployment
@@ -498,6 +567,14 @@ export const GitHubReleasesTab = () => {
     }
     return comparisonData || null;
   }, [selectedComparison, comparisonBatch, comparisonData]);
+
+  // ✨ NOVO: Item selecionado do lote (para verificar erros)
+  const selectedBatchItem = React.useMemo(() => {
+    if (selectedComparison) {
+      return comparisonBatch.find(i => i.id === selectedComparison) || null;
+    }
+    return null;
+  }, [selectedComparison, comparisonBatch]);
 
   // ✨ Normalizar versão de x-x-x-x para x.x.x-x (formato semver)
   const normalizeVersion = (version: string): string => {
@@ -912,6 +989,7 @@ export const GitHubReleasesTab = () => {
                                         handleExecuteComparison(item);
                                       }}
                                       className="h-6 w-6 p-0"
+                                      title="Executar comparação"
                                     >
                                       <Play className="h-3 w-3" />
                                     </Button>
@@ -923,7 +1001,27 @@ export const GitHubReleasesTab = () => {
                                     <CheckCircle2 className="h-4 w-4 text-green-600" />
                                   )}
                                   {item.status === 'error' && (
-                                    <XCircle className="h-4 w-4 text-red-600" />
+                                    <div className="flex items-center gap-1">
+                                      <span title={item.errorType === 'saml_authorization_required' ? "Erro SAML - Re-autorizar token" : "Erro na comparação"}>
+                                        {item.errorType === 'saml_authorization_required' ? (
+                                          <ShieldAlert className="h-4 w-4 text-amber-600" />
+                                        ) : (
+                                          <XCircle className="h-4 w-4 text-red-600" />
+                                        )}
+                                      </span>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleExecuteComparison(item);
+                                        }}
+                                        className="h-6 w-6 p-0 text-blue-600 hover:text-blue-800"
+                                        title="Tentar novamente"
+                                      >
+                                        <RefreshCw className="h-3 w-3" />
+                                      </Button>
+                                    </div>
                                   )}
                                   <Button
                                     size="sm"
@@ -933,6 +1031,7 @@ export const GitHubReleasesTab = () => {
                                       handleRemoveFromBatch(item.id);
                                     }}
                                     className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+                                    title="Remover do lote"
                                   >
                                     <Trash2 className="h-3 w-3" />
                                   </Button>
@@ -995,15 +1094,104 @@ export const GitHubReleasesTab = () => {
                 </div>
               )}
 
-              {compareError && (
+              {/* ✅ Erro SAML do item selecionado no lote */}
+              {selectedBatchItem?.status === 'error' && selectedBatchItem.errorType === 'saml_authorization_required' && (
                 <div className="flex-1 flex items-center justify-center p-8">
-                  <Alert variant="destructive">
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertTitle>Erro ao comparar releases</AlertTitle>
-                    <AlertDescription className="text-xs">
-                      {compareError instanceof Error ? compareError.message : 'Erro desconhecido'}
-                    </AlertDescription>
-                  </Alert>
+                  <Card className="max-w-lg border-amber-500/50 bg-amber-50 dark:bg-amber-950/40">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                        <ShieldAlert className="h-5 w-5" />
+                        Token precisa ser re-autorizado (SAML SSO)
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <p className="text-sm text-foreground">
+                        Seu token GitHub está válido, mas precisa ser re-autorizado para a organização <strong>viavarejo-internal</strong> que usa SAML SSO.
+                      </p>
+                      <Alert className="border-amber-300 bg-amber-100 dark:bg-amber-900/50">
+                        <Info className="h-4 w-4 text-amber-600" />
+                        <AlertDescription className="text-xs space-y-1">
+                          <p><strong>1.</strong> Acesse as configurações de tokens do GitHub</p>
+                          <p><strong>2.</strong> Encontre seu token e clique em "Configure SSO"</p>
+                          <p><strong>3.</strong> Procure "viavarejo-internal" e clique em "Authorize"</p>
+                          <p><strong>4.</strong> Complete a autenticação SSO</p>
+                          <p><strong>5.</strong> Volte aqui e clique em "Tentar Novamente"</p>
+                        </AlertDescription>
+                      </Alert>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => window.open('https://github.com/settings/tokens', '_blank')}
+                          className="flex-1"
+                        >
+                          <ExternalLink className="h-4 w-4 mr-2" />
+                          Abrir GitHub Settings
+                        </Button>
+                        <Button
+                          variant="default"
+                          size="sm"
+                          onClick={() => selectedBatchItem && handleExecuteComparison(selectedBatchItem)}
+                          className="flex-1"
+                        >
+                          <RefreshCw className="h-4 w-4 mr-2" />
+                          Tentar Novamente
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+
+              {/* ✅ Erro genérico do item selecionado no lote */}
+              {selectedBatchItem?.status === 'error' && selectedBatchItem.errorType !== 'saml_authorization_required' && (
+                <div className="flex-1 flex items-center justify-center p-8">
+                  <Card className="max-w-lg">
+                    <CardContent className="pt-6 space-y-4">
+                      <Alert variant="destructive">
+                        <AlertCircle className="h-4 w-4" />
+                        <AlertTitle>Erro ao comparar releases</AlertTitle>
+                        <AlertDescription className="text-xs">
+                          {selectedBatchItem.error || 'Erro desconhecido'}
+                        </AlertDescription>
+                      </Alert>
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={() => handleExecuteComparison(selectedBatchItem)}
+                        className="w-full"
+                      >
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        Tentar Novamente
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+
+              {/* ✅ Erro da comparação direta (não do lote) */}
+              {compareError && !selectedBatchItem && (
+                <div className="flex-1 flex items-center justify-center p-8">
+                  <Card className="max-w-lg">
+                    <CardContent className="pt-6 space-y-4">
+                      <Alert variant="destructive">
+                        <AlertCircle className="h-4 w-4" />
+                        <AlertTitle>Erro ao comparar releases</AlertTitle>
+                        <AlertDescription className="text-xs">
+                          {compareError instanceof Error ? compareError.message : 'Erro desconhecido'}
+                        </AlertDescription>
+                      </Alert>
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={() => refetchComparison()}
+                        className="w-full"
+                      >
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        Tentar Novamente
+                      </Button>
+                    </CardContent>
+                  </Card>
                 </div>
               )}
 
