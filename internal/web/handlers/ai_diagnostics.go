@@ -23,13 +23,13 @@ func RecordGlobalAIError(userEmail, provider, model string, err error) {
 		aierrors.RecordGlobalAIError(userEmail, provider, model, nil)
 		return
 	}
-	
+
 	errMsg := err.Error()
 	// Truncar se muito longo
 	if len(errMsg) > 300 {
 		errMsg = errMsg[:300] + "..."
 	}
-	
+
 	aierrors.RecordGlobalAIError(userEmail, provider, model, err)
 }
 
@@ -124,13 +124,13 @@ func (h *AIDiagnosticsHandler) Analyze(c *gin.Context) {
 	result, err := analyzer.Analyze(c.Request.Context(), &req)
 	if err != nil {
 		log.Error().Err(err).Msg("AI analysis failed")
-		
+
 		// Registrar erro globalmente para exibir no painel
 		provider := analyzer.GetProvider()
 		if provider != nil {
 			RecordGlobalAIError(aiEmail, provider.GetName(), provider.GetModel(), err)
 		}
-		
+
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "analysis failed: " + err.Error()})
 		return
 	}
