@@ -33,6 +33,8 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { TokenConfigModal } from "./TokenConfigModal";
 import { DeploymentScanModal } from "./DeploymentScanModal";
+import { useClusters } from "@/hooks/useAPI";
+import { toast } from "sonner";
 
 interface ProductionDeployment {
   id: number;
@@ -100,6 +102,7 @@ interface ComparisonItem {
 
 export const GitHubReleasesTab = () => {
   const queryClient = useQueryClient();
+  const { clusters: availableClusters } = useClusters();
 
   const [deploymentName, setDeploymentName] = useState("");  // Nome do deployment na base
   const [githubRepo, setGithubRepo] = useState("");           // Nome do repositório no GitHub
@@ -110,6 +113,9 @@ export const GitHubReleasesTab = () => {
   const [showTokenModal, setShowTokenModal] = useState(false);
   const [showScanModal, setShowScanModal] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);  // Mostrar dropdown de sugestões
+  const [deploymentSelected, setDeploymentSelected] = useState(false);  // ✅ Rastreia se usuário selecionou do dropdown
+  const [autoScanRunning, setAutoScanRunning] = useState(false);
+  const autoScanTriggeredRef = React.useRef(false);
 
   // ✨ NOVO: Estado para lote de comparações (com persistência em localStorage)
   const [comparisonBatch, setComparisonBatch] = useState<ComparisonItem[]>(() => {
@@ -133,6 +139,85 @@ export const GitHubReleasesTab = () => {
       localStorage.removeItem('github-selected-comparison');
     }
   }, [selectedComparison]);
+
+  // ✅ Identificar todos os clusters disponíveis (utilizados no scan automático)
+  const scanClusters = React.useMemo(() => {
+    return availableClusters.map((cluster) => cluster.context).filter(Boolean);
+  }, [availableClusters]);
+
+  // ✅ Executar scan automático (1x por dia) ao abrir a aba
+  const runAutoScan = React.useCallback(async () => {
+    if (scanClusters.length === 0) {
+      return;
+    }
+
+    setAutoScanRunning(true);
+    const toastId = "github-auto-scan";
+
+    toast.loading(`Executando scan automático (${scanClusters.length} cluster(s))...`, { id: toastId });
+
+    const failures: string[] = [];
+
+    for (const clusterName of scanClusters) {
+      try {
+        const response = await fetch(`/api/v1/github/deployments/scan?cluster=${encodeURIComponent(clusterName)}`, {
+          method: "POST",
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`,
+          },
+        });
+
+        if (!response.ok) {
+          const details = await response.json().catch(() => ({}));
+          throw new Error(details?.error || `HTTP ${response.status}`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Erro desconhecido";
+        failures.push(`${clusterName}: ${message}`);
+      }
+    }
+
+    if (failures.length === 0) {
+      toast.success("Scan automático concluído com sucesso", { id: toastId });
+      localStorage.setItem("github-deployments-last-scan", Date.now().toString());
+      queryClient.invalidateQueries({ queryKey: ['github-deployments-all'] });
+    } else {
+      toast.error(`Scan automático finalizado com erros em ${failures.length} cluster(s)`, {
+        id: toastId,
+        description: failures.slice(0, 3).join(" • "),
+      });
+    }
+
+    setAutoScanRunning(false);
+  }, [scanClusters, queryClient]);
+
+  React.useEffect(() => {
+    if (autoScanRunning) {
+      return;
+    }
+
+    if (!scanClusters.length) {
+      return;
+    }
+
+    if (autoScanTriggeredRef.current) {
+      return;
+    }
+
+    const lastScan = localStorage.getItem("github-deployments-last-scan");
+    const lastScanTime = lastScan ? parseInt(lastScan, 10) : 0;
+    const now = Date.now();
+    const twentyFourHours = 24 * 60 * 60 * 1000;
+
+    if (!lastScanTime || now - lastScanTime >= twentyFourHours) {
+      autoScanTriggeredRef.current = true;
+      runAutoScan().catch((error) => {
+        console.error("[GitHubReleasesTab] Auto scan failed:", error);
+        toast.error("Falha ao executar scan automático");
+        setAutoScanRunning(false);
+      });
+    }
+  }, [scanClusters, autoScanRunning, runAutoScan]);
 
   // ✅ Query para buscar versão em produção assim que digitar o nome do deployment
   const { data: productionData, isLoading: isLoadingProduction, error: productionError, refetch: refetchProduction } = useQuery<{
@@ -164,7 +249,8 @@ export const GitHubReleasesTab = () => {
 
       return response.json();
     },
-    enabled: deploymentName.length >= 3, // Só buscar se tiver pelo menos 3 caracteres
+    // ✅ CORRIGIDO: Só busca se deployment foi SELECIONADO do dropdown (não enquanto digita)
+    enabled: deploymentName.length >= 3 && deploymentSelected,
   });
 
   // ✅ Query para buscar deployments na base (busca geral)
@@ -172,7 +258,7 @@ export const GitHubReleasesTab = () => {
     queryKey: ['github-deployments-all'],
     queryFn: async () => {
       const response = await fetch(
-        `/api/v1/github/deployments/registry?only_valid_versions=true`,
+        `/api/v1/github/deployments/registry`,
         {
           headers: {
             'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`
@@ -257,6 +343,7 @@ export const GitHubReleasesTab = () => {
     setGithubRepo("");
     setProductionTag("");
     setNewTag("");
+    setDeploymentSelected(false);  // ✅ Reset estado de seleção
 
     // ✅ Invalidar cache da query de produção para permitir nova busca
     queryClient.invalidateQueries({ queryKey: ['github-production-version'] });
@@ -412,23 +499,39 @@ export const GitHubReleasesTab = () => {
     return comparisonData || null;
   }, [selectedComparison, comparisonBatch, comparisonData]);
 
+  // ✨ Normalizar versão de x-x-x-x para x.x.x-x (formato semver)
+  const normalizeVersion = (version: string): string => {
+    if (!version) return version;
+    // Remove prefixo "v" se existir
+    let v = version.replace(/^v/, '');
+    // Contar hífens
+    const hyphens = (v.match(/-/g) || []).length;
+    if (hyphens >= 3) {
+      // Formato: x-x-x-x → x.x.x-x
+      const parts = v.split('-');
+      if (parts.length >= 4) {
+        return `${parts[0]}.${parts[1]}.${parts[2]}-${parts.slice(3).join('-')}`;
+      }
+    } else if (hyphens === 2 && !v.includes('.')) {
+      // Formato: x-x-x → x.x.x
+      v = v.replace(/-/g, '.');
+    }
+    return v;
+  };
+
   // ✨ Filtrar sugestões de deployments baseado no texto digitado
+  // ✅ CORRIGIDO: Busca apenas por substring contígua (não divide em termos)
   const filteredSuggestions = React.useMemo(() => {
-    if (!deploymentName || deploymentName.length < 2) return [];
+    if (!deploymentName || deploymentName.trim().length === 0) return [];
     if (!searchResults?.deployments) return [];
 
-    const searchLower = deploymentName.toLowerCase();
-    const searchParts = searchLower.split(/[-_]/); // Dividir por hífen ou underscore
+    const searchLower = deploymentName.toLowerCase().trim();
 
-    return searchResults.deployments
-      .filter(d => {
-        const nameLower = d.deployment_name.toLowerCase();
-        // Buscar deployments que contenham QUALQUER parte do termo buscado
-        // ou que o termo esteja contido no nome do deployment
-        return searchParts.some(part => part.length >= 2 && nameLower.includes(part)) ||
-               nameLower.includes(searchLower);
-      })
-      .slice(0, 15); // Limitar a 15 sugestões para performance
+    return searchResults.deployments.filter((deployment) => {
+      const nameLower = deployment.deployment_name.toLowerCase();
+      // ✅ Busca APENAS por substring contígua - "order-api" só encontra nomes com "order-api"
+      return nameLower.includes(searchLower);
+    });
   }, [deploymentName, searchResults?.deployments]);
 
   // Filtrar arquivos por extensão
@@ -500,6 +603,9 @@ export const GitHubReleasesTab = () => {
                     onChange={(e) => {
                       setDeploymentName(e.target.value);
                       setShowSuggestions(true);
+                      // ✅ Reset seleção quando usuário digita (força selecionar do dropdown)
+                      setDeploymentSelected(false);
+                      setProductionTag("");  // Limpa tag auto-preenchida
                     }}
                     onFocus={() => setShowSuggestions(true)}
                     onBlur={() => {
@@ -522,6 +628,8 @@ export const GitHubReleasesTab = () => {
                             onClick={() => {
                               setDeploymentName(suggestion.deployment_name);
                               setShowSuggestions(false);
+                              // ✅ Marca que deployment foi selecionado explicitamente
+                              setDeploymentSelected(true);
                             }}
                           >
                             <div className="flex-1 min-w-0">
@@ -531,7 +639,7 @@ export const GitHubReleasesTab = () => {
                               </p>
                             </div>
                             <Badge variant="secondary" className="ml-2 text-[10px] shrink-0">
-                              {suggestion.version}
+                              {normalizeVersion(suggestion.version)}
                             </Badge>
                           </div>
                         ))}
@@ -545,13 +653,13 @@ export const GitHubReleasesTab = () => {
                     </div>
                   )}
                 </div>
-                {isLoadingProduction && deploymentName.length >= 3 && (
+                {isLoadingProduction && deploymentName.length >= 3 && deploymentSelected && (
                   <p className="text-xs text-muted-foreground flex items-center gap-2">
                     <Search className="h-3 w-3 animate-pulse" />
                     Buscando na base de dados...
                   </p>
                 )}
-                {productionError && deploymentName.length >= 3 && !filteredSuggestions.length && (
+                {productionError && deploymentName.length >= 3 && deploymentSelected && (
                   <Alert variant="destructive" className="py-2">
                     <AlertCircle className="h-4 w-4" />
                     <AlertTitle className="text-sm">Deployment não encontrado</AlertTitle>
@@ -561,15 +669,24 @@ export const GitHubReleasesTab = () => {
                     </AlertDescription>
                   </Alert>
                 )}
-                {filteredSuggestions.length > 0 && !showSuggestions && deploymentName.length >= 2 && (
-                  <p className="text-xs text-muted-foreground">
-                    {filteredSuggestions.length} deployment(s) similar(es) encontrado(s). Clique no campo para ver sugestões.
+                {/* ✅ Mensagem quando há sugestões e usuário ainda não selecionou */}
+                {filteredSuggestions.length > 0 && !deploymentSelected && deploymentName.length >= 2 && (
+                  <p className="text-xs text-blue-600 dark:text-blue-400 flex items-center gap-1">
+                    <Info className="h-3 w-3" />
+                    {filteredSuggestions.length} deployment(s) encontrado(s) - selecione um da lista acima
+                  </p>
+                )}
+                {/* ✅ Mensagem quando não há sugestões e não foi selecionado */}
+                {filteredSuggestions.length === 0 && !deploymentSelected && deploymentName.length >= 3 && !isSearching && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                    <AlertCircle className="h-3 w-3" />
+                    Nenhum deployment encontrado com "{deploymentName}". Execute o Scan.
                   </p>
                 )}
               </div>
 
-              {/* ✅ Painel de Informações da Release em Produção */}
-              {productionData && (
+              {/* ✅ Painel de Informações da Release em Produção - Só mostra quando selecionado do dropdown */}
+              {productionData && deploymentSelected && (
                 <>
                   <Card className="border-green-500/50 bg-green-50 dark:bg-green-950/40">
                     <CardHeader className="pb-3">
