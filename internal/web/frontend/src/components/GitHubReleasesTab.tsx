@@ -998,7 +998,21 @@ export const GitHubReleasesTab = () => {
                                     <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
                                   )}
                                   {item.status === 'success' && (
-                                    <CheckCircle2 className="h-4 w-4 text-green-600" />
+                                    <div className="flex items-center gap-1">
+                                      <CheckCircle2 className="h-4 w-4 text-green-600" />
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleExecuteComparison(item);
+                                        }}
+                                        className="h-6 w-6 p-0 text-muted-foreground hover:text-blue-600"
+                                        title="Refazer comparação"
+                                      >
+                                        <RefreshCw className="h-3 w-3" />
+                                      </Button>
+                                    </div>
                                   )}
                                   {item.status === 'error' && (
                                     <div className="flex items-center gap-1">
