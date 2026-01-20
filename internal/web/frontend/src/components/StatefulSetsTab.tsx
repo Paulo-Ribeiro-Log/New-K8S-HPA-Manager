@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Database, MoreVertical, Trash2, RotateCw } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Database, MoreVertical, Trash2, RotateCw, ArrowUpDown } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 
@@ -96,6 +96,9 @@ export const StatefulSetsTab = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const [rolloutConfirmOpen, setRolloutConfirmOpen] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
+  const [scaleModalOpen, setScaleModalOpen] = useState(false);
+  const [isScaling, setIsScaling] = useState(false);
+  const [scaleReplicas, setScaleReplicas] = useState(1);
 
   // Helper: Detectar statefulset problemático
   const isStatefulSetProblematic = (sts: StatefulSetSummary): boolean => {
@@ -300,10 +303,9 @@ export const StatefulSetsTab = ({
     setIsDiffLoading(true);
     try {
       const result = await apiClient.diffStatefulSet({
-        cluster: selectedStatefulSet.cluster,
-        namespace: selectedStatefulSet.namespace,
-        name: selectedStatefulSet.name,
-        yaml: editorValue,
+        originalYaml: originalYaml,
+        updatedYaml: editorValue,
+        fileName: `${selectedStatefulSet.namespace}/${selectedStatefulSet.name}.yaml`,
       });
       const html = diff2html(result.unifiedDiff, {
         drawFileList: false,
@@ -408,6 +410,79 @@ export const StatefulSetsTab = ({
       });
     } finally {
       setIsRestarting(false);
+    }
+  };
+
+  // Handler para Scale do StatefulSet
+  const handleScaleStatefulSet = async () => {
+    if (!selectedStatefulSet) return;
+
+    setIsScaling(true);
+    try {
+      // Garantir que replicas é um número válido
+      const replicasValue = Number(scaleReplicas);
+      
+      if (isNaN(replicasValue) || replicasValue < 0) {
+        toast.error("Número de réplicas inválido", {
+          description: "Por favor, insira um número válido maior ou igual a 0",
+        });
+        setIsScaling(false);
+        return;
+      }
+
+      console.log("[ScaleStatefulSet] Sending request:", {
+        cluster: selectedStatefulSet.cluster,
+        namespace: selectedStatefulSet.namespace,
+        name: selectedStatefulSet.name,
+        replicas: replicasValue,
+      });
+
+      // Usar fetch direto (mesmo padrão do DeploymentsTab)
+      const response = await fetch(
+        `/api/v1/statefulsets/${selectedStatefulSet.cluster}/${selectedStatefulSet.namespace}/${selectedStatefulSet.name}/scale`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
+          },
+          body: JSON.stringify({ replicas: replicasValue }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error?.message || `HTTP ${response.status}`);
+      }
+
+      toast.success(`StatefulSet escalado para ${replicasValue} réplicas`, {
+        description: `${selectedStatefulSet.namespace}/${selectedStatefulSet.name}`,
+      });
+
+      setScaleModalOpen(false);
+      refetch();
+
+      // Recarregar manifest após alguns segundos
+      setTimeout(async () => {
+        await refreshManifest();
+      }, 2000);
+    } catch (err) {
+      console.error("[ScaleStatefulSet] Error:", err);
+      toast.error("Erro ao escalar StatefulSet", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsScaling(false);
+    }
+  };
+
+  // Handler para abrir modal de scale com valor atual
+  const openScaleModal = () => {
+    if (selectedStatefulSet) {
+      // Pegar valor atual de réplicas do StatefulSet
+      const currentReplicas = selectedStatefulSet.replicas || 1;
+      setScaleReplicas(currentReplicas);
+      setScaleModalOpen(true);
     }
   };
 
@@ -593,6 +668,13 @@ export const StatefulSetsTab = ({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem
+                onClick={openScaleModal}
+                disabled={isScaling}
+              >
+                <ArrowUpDown className="w-4 h-4 mr-2" />
+                Scale
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => setRolloutConfirmOpen(true)}
                 disabled={isRestarting}
               >
@@ -638,9 +720,9 @@ export const StatefulSetsTab = ({
                        selectedStatefulSet.labels?.["version"] ||
                        selectedStatefulSet.labels?.["app.version"];
 
-    // Formatar data de atualização
-    const updatedAt = manifest?.metadata?.creationTimestamp
-      ? new Date(manifest.metadata.creationTimestamp).toLocaleString()
+    // Formatar data de atualização (usar do summary, não do metadata)
+    const updatedAt = selectedStatefulSet.updatedAt
+      ? new Date(selectedStatefulSet.updatedAt).toLocaleString()
       : "--";
 
     return (
@@ -965,6 +1047,95 @@ export const StatefulSetsTab = ({
             <Button onClick={handleRolloutRestart} disabled={isRestarting}>
               {isRestarting && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
               Reiniciar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Scale Modal */}
+      <Dialog open={scaleModalOpen} onOpenChange={setScaleModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ArrowUpDown className="w-5 h-5" />
+              Scale StatefulSet
+            </DialogTitle>
+            <DialogDescription>
+              Altere o número de réplicas do StatefulSet.
+            </DialogDescription>
+          </DialogHeader>
+
+          {selectedStatefulSet && (
+            <div className="space-y-4">
+              <div className="bg-muted/50 rounded-lg p-3 space-y-1">
+                <div className="flex items-center gap-2 text-sm">
+                  <Database className="w-4 h-4 text-muted-foreground" />
+                  <span className="font-medium">{selectedStatefulSet.name}</span>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {selectedStatefulSet.namespace} • {selectedStatefulSet.cluster}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Número de Réplicas</label>
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setScaleReplicas(Math.max(0, scaleReplicas - 1))}
+                    disabled={scaleReplicas <= 0}
+                  >
+                    -
+                  </Button>
+                  <input
+                    type="number"
+                    min="0"
+                    value={scaleReplicas}
+                    onChange={(e) => setScaleReplicas(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="w-20 text-center border rounded px-2 py-1 bg-background"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setScaleReplicas(scaleReplicas + 1)}
+                  >
+                    +
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Atual: {selectedStatefulSet.replicas} | Ready: {selectedStatefulSet.readyReplicas}
+                </p>
+              </div>
+
+              {scaleReplicas === 0 && (
+                <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-sm text-yellow-400">
+                  <strong>Atenção:</strong> Escalar para 0 réplicas irá encerrar todas as instâncias deste StatefulSet.
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setScaleModalOpen(false)}
+              disabled={isScaling}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleScaleStatefulSet}
+              disabled={isScaling}
+            >
+              {isScaling ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Escalando...
+                </>
+              ) : (
+                `Escalar para ${scaleReplicas}`
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

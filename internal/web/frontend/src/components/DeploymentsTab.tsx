@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
@@ -113,6 +113,9 @@ export const DeploymentsTab = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const [rolloutConfirmOpen, setRolloutConfirmOpen] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
+  const [scaleModalOpen, setScaleModalOpen] = useState(false);
+  const [isScaling, setIsScaling] = useState(false);
+  const [scaleReplicas, setScaleReplicas] = useState(1);
   const [showRolloutGauge, setShowRolloutGauge] = useState(false);
   const [rolloutProgress, setRolloutProgress] = useState(0);
   const [rolloutPodsCount, setRolloutPodsCount] = useState({
@@ -1030,6 +1033,78 @@ export const DeploymentsTab = ({
       });
     } finally {
       setIsRestarting(false);
+    }
+  };
+
+  // Handler para Scale do deployment
+  const handleScaleDeployment = async () => {
+    if (!selectedDeployment) return;
+
+    setIsScaling(true);
+    try {
+      // Garantir que replicas é um número válido
+      const replicasValue = Number(scaleReplicas);
+      
+      if (isNaN(replicasValue) || replicasValue < 0) {
+        toast.error("Número de réplicas inválido", {
+          description: "Por favor, insira um número válido maior ou igual a 0",
+        });
+        setIsScaling(false);
+        return;
+      }
+
+      console.log("[ScaleDeployment] Sending request:", {
+        cluster: selectedDeployment.cluster,
+        namespace: selectedDeployment.namespace,
+        name: selectedDeployment.name,
+        replicas: replicasValue,
+      });
+
+      const response = await fetch(
+        `/api/v1/deployments/${selectedDeployment.cluster}/${selectedDeployment.namespace}/${selectedDeployment.name}/scale`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
+          },
+          body: JSON.stringify({ replicas: replicasValue }),
+        }
+      );
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData?.error?.message || `HTTP ${response.status}`);
+      }
+
+      toast.success(`Deployment escalado para ${replicasValue} réplicas`, {
+        description: `${selectedDeployment.namespace}/${selectedDeployment.name}`,
+      });
+
+      setScaleModalOpen(false);
+      void refetch();
+
+      // Recarregar manifest após alguns segundos
+      setTimeout(async () => {
+        await refreshManifest();
+      }, 2000);
+    } catch (err) {
+      console.error("[ScaleDeployment] Error:", err);
+      toast.error("Erro ao escalar deployment", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setIsScaling(false);
+    }
+  };
+
+  // Handler para abrir modal de scale com valor atual
+  const openScaleModal = () => {
+    if (selectedDeployment) {
+      // Pegar valor atual de réplicas do deployment
+      const currentReplicas = selectedDeployment.replicas?.desired || selectedDeployment.replicas?.ready || 1;
+      setScaleReplicas(currentReplicas);
+      setScaleModalOpen(true);
     }
   };
 
@@ -1959,6 +2034,13 @@ export const DeploymentsTab = ({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={openScaleModal}
+                disabled={isScaling}
+              >
+                <ArrowUpDown className="w-4 h-4 mr-2" />
+                Scale
+              </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setRolloutConfirmOpen(true)}
                 disabled={isRestarting}
@@ -3904,6 +3986,81 @@ export const DeploymentsTab = ({
                 <>
                   <RotateCw className="w-4 h-4 mr-2" />
                   Reiniciar Deployment
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Scale */}
+      <Dialog open={scaleModalOpen} onOpenChange={setScaleModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ArrowUpDown className="w-5 h-5" />
+              Scale Deployment
+            </DialogTitle>
+            <DialogDescription>
+              Ajustar o número de réplicas do deployment.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="bg-blue-500/10 border border-blue-500/20 rounded-md p-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Cluster:</span>
+                  <span className="text-sm text-muted-foreground">{selectedDeployment?.cluster}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Namespace:</span>
+                  <span className="text-sm text-muted-foreground">{selectedDeployment?.namespace}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Deployment:</span>
+                  <span className="text-sm font-semibold">{selectedDeployment?.name}</span>
+                </div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="replicas" className="text-sm font-medium">
+                Número de Réplicas
+              </label>
+              <Input
+                id="replicas"
+                type="number"
+                min={0}
+                max={100}
+                value={scaleReplicas}
+                onChange={(e) => setScaleReplicas(parseInt(e.target.value) || 0)}
+                className="w-full"
+              />
+              <p className="text-xs text-muted-foreground">
+                Valor atual: {selectedDeployment?.replicas?.desired || selectedDeployment?.replicas?.ready || "N/A"} réplicas
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setScaleModalOpen(false)}
+              disabled={isScaling}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleScaleDeployment}
+              disabled={isScaling}
+            >
+              {isScaling ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Escalando...
+                </>
+              ) : (
+                <>
+                  <ArrowUpDown className="w-4 h-4 mr-2" />
+                  Aplicar Scale
                 </>
               )}
             </Button>
