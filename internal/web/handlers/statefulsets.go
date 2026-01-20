@@ -1,13 +1,16 @@
 package handlers
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pmezard/go-difflib/difflib"
+	"github.com/rs/zerolog/log"
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/yaml"
@@ -535,5 +538,99 @@ func (h *StatefulSetHandler) RolloutRestart(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": fmt.Sprintf("StatefulSet %s/%s restarted successfully", namespace, name),
+	})
+}
+
+// Scale escala um StatefulSet para o número especificado de réplicas
+func (h *StatefulSetHandler) Scale(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	// Log raw request body para debug
+	bodyBytes, _ := c.GetRawData()
+	log.Debug().
+		Str("cluster", cluster).
+		Str("namespace", namespace).
+		Str("name", name).
+		Str("body", string(bodyBytes)).
+		Msg("Scale StatefulSet request received")
+	
+	// Restaurar body para o ShouldBindJSON
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	// Parse request body (usar pointer para aceitar 0 como valor válido)
+	var req struct {
+		Replicas *int32 `json:"replicas" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Error().
+			Err(err).
+			Str("body", string(bodyBytes)).
+			Msg("Failed to parse scale request")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": fmt.Sprintf("Invalid request: %v", err),
+			},
+		})
+		return
+	}
+
+	// Validar que replicas não é negativo
+	if *req.Replicas < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": "Replicas must be >= 0",
+			},
+		})
+		return
+	}
+
+	// Obter clientset
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	// Executar scale
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	err = kubeClient.ScaleStatefulSet(c.Request.Context(), namespace, name, *req.Replicas)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "NOT_FOUND",
+					"message": fmt.Sprintf("StatefulSet %s/%s not found", namespace, name),
+				},
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "SCALE_ERROR",
+				"message": fmt.Sprintf("Failed to scale statefulset: %v", err),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":  true,
+		"message":  fmt.Sprintf("StatefulSet %s/%s scaled to %d replicas", namespace, name, *req.Replicas),
+		"replicas": *req.Replicas,
 	})
 }

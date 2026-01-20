@@ -519,6 +519,36 @@ func (s *Server) setupRoutes() {
 		deployments.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), deploymentHandler.Apply)
 		deployments.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), deploymentHandler.Delete)
 		deployments.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), deploymentHandler.RolloutRestart)
+		deployments.POST("/:cluster/:namespace/:name/scale", rbacMiddleware.RequireSREGroup(), deploymentHandler.Scale)
+	}
+
+	// StatefulSets
+	statefulSetHandler := handlers.NewStatefulSetHandler(s.kubeManager, s.historyTracker)
+	statefulsets := api.Group("/statefulsets")
+	{
+		statefulsets.GET("", statefulSetHandler.List)
+		statefulsets.GET("/:cluster/:namespace/:name", statefulSetHandler.Get)
+		statefulsets.GET("/:cluster/:namespace/:name/describe", statefulSetHandler.Describe)
+
+		// StatefulSets - Write Operations (SRE-only)
+		statefulsets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), statefulSetHandler.Apply)
+		statefulsets.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), statefulSetHandler.Delete)
+		statefulsets.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), statefulSetHandler.RolloutRestart)
+		statefulsets.POST("/:cluster/:namespace/:name/scale", rbacMiddleware.RequireSREGroup(), statefulSetHandler.Scale)
+	}
+
+	// DaemonSets
+	daemonSetHandler := handlers.NewDaemonSetHandler(s.kubeManager, s.historyTracker)
+	daemonsets := api.Group("/daemonsets")
+	{
+		daemonsets.GET("", daemonSetHandler.List)
+		daemonsets.GET("/:cluster/:namespace/:name", daemonSetHandler.Get)
+		daemonsets.GET("/:cluster/:namespace/:name/describe", daemonSetHandler.Describe)
+
+		// DaemonSets - Write Operations (SRE-only)
+		daemonsets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), daemonSetHandler.Apply)
+		daemonsets.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), daemonSetHandler.Delete)
+		daemonsets.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), daemonSetHandler.RolloutRestart)
 	}
 
 	// Pods/Containers
