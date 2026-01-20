@@ -13,13 +13,15 @@ import (
 
 // AITokensHandler gerencia tokens AI dos usuários
 type AITokensHandler struct {
-	tokensStore *storage.UserTokensStore
+	tokensStore        *storage.UserTokensStore
+	localSettingsStore *storage.LocalSettingsStore
 }
 
 // NewAITokensHandler cria nova instância
-func NewAITokensHandler(tokensStore *storage.UserTokensStore) *AITokensHandler {
+func NewAITokensHandler(tokensStore *storage.UserTokensStore, localSettingsStore *storage.LocalSettingsStore) *AITokensHandler {
 	return &AITokensHandler{
-		tokensStore: tokensStore,
+		tokensStore:        tokensStore,
+		localSettingsStore: localSettingsStore,
 	}
 }
 
@@ -235,6 +237,20 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 		return
 	}
 
+	// Salvar último email usado no local_settings para persistência
+	if h.localSettingsStore != nil {
+		if err := h.localSettingsStore.SetLastAIEmail(userEmailStr); err != nil {
+			log.Warn().
+				Err(err).
+				Str("user_email", userEmailStr).
+				Msg("⚠️ Failed to save last_ai_email to local_settings (non-critical)")
+		} else {
+			log.Info().
+				Str("user_email", userEmailStr).
+				Msg("✅ last_ai_email saved to local_settings")
+		}
+	}
+
 	log.Info().
 		Str("user_email", userEmailStr).
 		Str("preferred_provider", tokens.PreferredProvider).
@@ -252,12 +268,27 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 
 // GetTokens retorna status dos tokens (sem expor valores)
 func (h *AITokensHandler) GetTokens(c *gin.Context) {
-	// Aceitar ai_email como query parameter (opcional para retrocompatibilidade)
+	// Aceitar ai_email como query parameter
 	aiEmail := c.Query("ai_email")
 
-	// Se não foi fornecido via query, não retornar erro (retrocompatibilidade)
-	// Frontend vai buscar sem ai_email na primeira vez, depois salva com email
+	// Se não foi fornecido via query, buscar do local_settings (persistência local)
+	if aiEmail == "" && h.localSettingsStore != nil {
+		lastEmail, err := h.localSettingsStore.GetLastAIEmail()
+		if err != nil {
+			log.Warn().
+				Err(err).
+				Msg("⚠️ Failed to get last_ai_email from local_settings")
+		} else if lastEmail != "" {
+			aiEmail = lastEmail
+			log.Info().
+				Str("ai_email", aiEmail).
+				Msg("📧 Using last_ai_email from local_settings")
+		}
+	}
+
+	// Se ainda não temos ai_email, retornar resposta vazia (primeiro uso)
 	if aiEmail == "" {
+		log.Info().Msg("ℹ️ No ai_email found - returning default response (first time setup)")
 		c.JSON(http.StatusOK, TokensResponse{
 			HasGemini:         false,
 			HasOpenAI:         false,
@@ -323,6 +354,20 @@ func (h *AITokensHandler) DeleteTokens(c *gin.Context) {
 			"error": "failed to delete tokens",
 		})
 		return
+	}
+
+	// Remover também do local_settings se for o último email usado
+	if h.localSettingsStore != nil {
+		lastEmail, _ := h.localSettingsStore.GetLastAIEmail()
+		if lastEmail == aiEmail {
+			if err := h.localSettingsStore.Delete(storage.SettingLastAIEmail); err != nil {
+				log.Warn().
+					Err(err).
+					Msg("⚠️ Failed to delete last_ai_email from local_settings")
+			} else {
+				log.Info().Msg("✅ last_ai_email removed from local_settings")
+			}
+		}
 	}
 
 	log.Info().

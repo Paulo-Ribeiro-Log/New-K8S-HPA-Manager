@@ -165,20 +165,26 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 	var aiHandler *handlers.AIDiagnosticsHandler
 	var aiTokensStore *storage.UserTokensStore
 	var aiTokensHandler *handlers.AITokensHandler
+	var localSettingsStore *storage.LocalSettingsStore
 	var kubeManagerWrapper *kubernetes.KubeManager
 	var aiConfig *ai.Config
 
 	if sqliteClient != nil {
 		aiHistoryStore = storage.NewAIHistoryStore(sqliteClient)
 		aiTokensStore = storage.NewUserTokensStore(sqliteClient)
+		localSettingsStore = storage.NewLocalSettingsStore(sqliteClient)
 
 		// Criar tabelas
 		if err := aiTokensStore.CreateTable(); err != nil {
 			fmt.Printf("⚠️  Falha ao criar tabela de tokens: %v\n", err)
-		} else {
-			aiTokensHandler = handlers.NewAITokensHandler(aiTokensStore)
-			fmt.Println("✅ AI Tokens Handler criado")
 		}
+		if err := localSettingsStore.CreateTable(); err != nil {
+			fmt.Printf("⚠️  Falha ao criar tabela local_settings: %v\n", err)
+		}
+
+		// Criar AI Tokens Handler com LocalSettingsStore para persistência
+		aiTokensHandler = handlers.NewAITokensHandler(aiTokensStore, localSettingsStore)
+		fmt.Println("✅ AI Tokens Handler criado com persistência local")
 
 		// 2. Criar AI config
 		aiConfig = &ai.Config{
