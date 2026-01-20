@@ -78,6 +78,15 @@ ADD COLUMN prometheus_metrics TEXT;
 ALTER TABLE ai_analysis_history
 ADD COLUMN resource_metadata TEXT;
 `
+
+	// Schema SQL para tabela de configurações locais (20/01/2026)
+	createLocalSettingsTableSQL = `
+CREATE TABLE IF NOT EXISTS local_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`
 )
 
 // runMigrations executa migrations do banco de dados
@@ -139,6 +148,11 @@ func (c *SQLiteClient) runMigrations() error {
 		if _, err := c.db.Exec(addResourceMetadataColumnSQL); err != nil {
 			return err
 		}
+	}
+
+	// Criar tabela local_settings (20/01/2026)
+	if _, err := c.db.Exec(createLocalSettingsTableSQL); err != nil {
+		return err
 	}
 
 	return nil

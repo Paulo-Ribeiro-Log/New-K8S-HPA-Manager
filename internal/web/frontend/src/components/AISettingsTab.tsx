@@ -98,11 +98,27 @@ export function AISettingsTab() {
     setLoading(true);
     try {
       const response = await apiClient.getAITokens();
+      console.log("[AISettingsTab] Configurações carregadas:", {
+        ai_email: response.ai_email || "(não configurado)",
+        preferred_provider: response.preferred_provider,
+        has_gemini: response.has_gemini,
+        has_claude: response.has_claude,
+        has_openai: response.has_openai,
+      });
+
       setTokenStatus(response);
       setPreferredProvider(response.preferred_provider || "ollama");
 
-      // Carregar email AI (se existir)
-      if (response.ai_email) setAiEmail(response.ai_email);
+      // Carregar email AI (se existir) e sincronizar com localStorage
+      if (response.ai_email) {
+        setAiEmail(response.ai_email);
+        // Sincronizar localStorage com backend (fonte de verdade)
+        const currentLocalEmail = localStorage.getItem("ai_email");
+        if (currentLocalEmail !== response.ai_email) {
+          localStorage.setItem("ai_email", response.ai_email);
+          console.log("[AISettingsTab] localStorage sincronizado com backend:", response.ai_email);
+        }
+      }
 
       // Carregar modelos salvos
       if (response.gemini_model) setGeminiModel(response.gemini_model);
@@ -114,7 +130,7 @@ export function AISettingsTab() {
     } catch (error) {
       console.error("Failed to load token status:", error);
       toast({
-        title: "❌ Erro ao carregar configurações",
+        title: "Erro ao carregar configurações",
         description: error instanceof Error ? error.message : "Erro desconhecido",
         variant: "destructive",
       });
