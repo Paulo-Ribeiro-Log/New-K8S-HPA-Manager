@@ -1547,6 +1547,11 @@ class APIClient {
     preferred_provider: string;
     updated_at?: string;
   }> {
+    // IMPORTANTE: Enviar ai_email para buscar configurações corretas do usuário
+    const aiEmail = localStorage.getItem("ai_email");
+    if (aiEmail) {
+      return this.request(`/ai/tokens?ai_email=${encodeURIComponent(aiEmail)}`);
+    }
     return this.request(`/ai/tokens`);
   }
 
