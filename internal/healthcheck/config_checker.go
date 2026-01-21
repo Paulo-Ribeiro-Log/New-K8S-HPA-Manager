@@ -89,20 +89,28 @@ func (c *ConfigChecker) isKnownEmptyResource(namespace, name string, resourceTyp
 }
 
 // CheckAll valida todos os ConfigMaps e Secrets necessários
-func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, applyFilters bool, progressCallback ProgressCallback) []ConfigHealth {
+func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, timeout int, applyFilters bool, progressCallback ProgressCallback) []ConfigHealth {
 	results := []ConfigHealth{}
+
+	// Criar contexto com timeout se especificado
+	workCtx := ctx
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		workCtx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer cancel()
+	}
 
 	// Primeiro, contar total de configs para calcular progresso
 	totalConfigs := 0
 	for _, ns := range namespaces {
-		configMaps, err := client.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
+		configMaps, err := client.CoreV1().ConfigMaps(ns).List(workCtx, metav1.ListOptions{})
 		if err != nil {
 			log.Error().Err(err).Str("namespace", ns).Msg("Failed to list configmaps")
 			continue
 		}
 		totalConfigs += len(configMaps.Items)
 
-		secrets, err := client.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{})
+		secrets, err := client.CoreV1().Secrets(ns).List(workCtx, metav1.ListOptions{})
 		if err != nil {
 			log.Error().Err(err).Str("namespace", ns).Msg("Failed to list secrets")
 			continue
@@ -114,7 +122,7 @@ func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interfac
 
 	for _, ns := range namespaces {
 		// Validar ConfigMaps
-		configMaps, err := client.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
+		configMaps, err := client.CoreV1().ConfigMaps(ns).List(workCtx, metav1.ListOptions{})
 		if err != nil {
 			log.Error().Err(err).Str("namespace", ns).Msg("Failed to list configmaps")
 			continue
@@ -153,7 +161,7 @@ func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interfac
 		}
 
 		// Validar Secrets
-		secrets, err := client.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{})
+		secrets, err := client.CoreV1().Secrets(ns).List(workCtx, metav1.ListOptions{})
 		if err != nil {
 			log.Error().Err(err).Str("namespace", ns).Msg("Failed to list secrets")
 			continue

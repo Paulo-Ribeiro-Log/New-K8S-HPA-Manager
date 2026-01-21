@@ -49,9 +49,17 @@ type HealthCheckRequest struct {
 	CheckDeployments bool `json:"check_deployments"`
 	CheckServices    bool `json:"check_services"`
 	CheckConfigs     bool `json:"check_configs"`
+	CheckEvents      bool `json:"check_events"` // Verificar eventos do Kubernetes (FailedScheduling, etc.)
 
-	// Timeout por check (segundos)
-	Timeout int `json:"timeout"` // Padrão: 10s
+	// Timeout geral (segundos) - usado como fallback se timeouts específicos não forem definidos
+	Timeout int `json:"timeout"` // Padrão: 30s
+
+	// Timeouts específicos por tipo de check (segundos)
+	// Se 0, usa o valor de Timeout como fallback
+	TimeoutDeployments int `json:"timeout_deployments,omitempty"` // Padrão: 60s (deployments podem ter muitos pods)
+	TimeoutServices    int `json:"timeout_services,omitempty"`    // Padrão: 45s (testes de conectividade)
+	TimeoutConfigs     int `json:"timeout_configs,omitempty"`     // Padrão: 30s (validação rápida)
+	TimeoutEvents      int `json:"timeout_events,omitempty"`      // Padrão: 30s (consulta de eventos)
 
 	// Paralelismo (apenas para múltiplos clusters)
 	// Se Clusters > 1: mínimo 2 workers, máximo = NumCPU ou total de clusters
@@ -74,6 +82,7 @@ type HealthCheckResult struct {
 	DeploymentResults []DeploymentHealth `json:"deployment_results"`
 	ServiceResults    []ServiceHealth    `json:"service_results"`
 	ConfigResults     []ConfigHealth     `json:"config_results"`
+	EventResults      []EventHealth      `json:"event_results"` // Eventos K8s críticos (FailedScheduling, etc.)
 
 	// Resumo
 	TotalChecks   int          `json:"total_checks"`
@@ -163,4 +172,57 @@ type HealthCheckProgress struct {
 	Progress  int          `json:"progress"` // 0-100
 	Status    HealthStatus `json:"status"`
 	Timestamp time.Time    `json:"timestamp"`
+}
+
+// Constantes de timeout padrão
+const (
+	DefaultTimeoutGeneral     = 30 // segundos
+	DefaultTimeoutDeployments = 60 // segundos (deployments podem ter muitos pods)
+	DefaultTimeoutServices    = 45 // segundos (testes de conectividade)
+	DefaultTimeoutConfigs     = 30 // segundos (validação rápida)
+	DefaultTimeoutEvents      = 30 // segundos (consulta de eventos)
+)
+
+// GetTimeoutDeployments retorna o timeout para deployments com fallback
+func (r *HealthCheckRequest) GetTimeoutDeployments() int {
+	if r.TimeoutDeployments > 0 {
+		return r.TimeoutDeployments
+	}
+	if r.Timeout > 0 {
+		return r.Timeout
+	}
+	return DefaultTimeoutDeployments
+}
+
+// GetTimeoutServices retorna o timeout para services com fallback
+func (r *HealthCheckRequest) GetTimeoutServices() int {
+	if r.TimeoutServices > 0 {
+		return r.TimeoutServices
+	}
+	if r.Timeout > 0 {
+		return r.Timeout
+	}
+	return DefaultTimeoutServices
+}
+
+// GetTimeoutConfigs retorna o timeout para configs com fallback
+func (r *HealthCheckRequest) GetTimeoutConfigs() int {
+	if r.TimeoutConfigs > 0 {
+		return r.TimeoutConfigs
+	}
+	if r.Timeout > 0 {
+		return r.Timeout
+	}
+	return DefaultTimeoutConfigs
+}
+
+// GetTimeoutEvents retorna o timeout para events com fallback
+func (r *HealthCheckRequest) GetTimeoutEvents() int {
+	if r.TimeoutEvents > 0 {
+		return r.TimeoutEvents
+	}
+	if r.Timeout > 0 {
+		return r.Timeout
+	}
+	return DefaultTimeoutEvents
 }
