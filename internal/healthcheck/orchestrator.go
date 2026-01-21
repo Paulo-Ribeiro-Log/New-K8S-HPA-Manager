@@ -23,6 +23,7 @@ type Orchestrator struct {
 	deploymentChecker  *DeploymentChecker
 	serviceChecker     *ServiceChecker
 	configChecker      *ConfigChecker
+	eventChecker       *EventChecker              // ✅ Verificador de eventos K8s
 	storage            *HealthCheckStorage
 	progressTracker    *sse.ProgressTracker
 	filterManager      *FilterManager         // ✅ Gerenciador de filtros
@@ -54,6 +55,7 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 		deploymentChecker:  NewDeploymentChecker(),
 		serviceChecker:     NewServiceChecker(),
 		configChecker:      NewConfigChecker(),
+		eventChecker:       NewEventChecker(),
 		storage:            hcStorage,
 		progressTracker:    progressTracker,
 		filterManager:      filterManager,
@@ -75,6 +77,13 @@ func (o *Orchestrator) ExecuteHealthCheck(ctx context.Context, sessionID string,
 		Strs("clusters", clusters).
 		Int("cluster_count", len(clusters)).
 		Msg("Starting health check")
+
+	// Log dos timeouts configurados
+	log.Info().
+		Int("timeout_deployments", req.GetTimeoutDeployments()).
+		Int("timeout_services", req.GetTimeoutServices()).
+		Int("timeout_configs", req.GetTimeoutConfigs()).
+		Msg("Timeouts configuration")
 
 	// ⏱️ Aguardar 500ms para garantir que cliente SSE conecte antes de publicar eventos
 	// (Evita race condition: events publicados antes do cliente registrar no tracker)
@@ -122,6 +131,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		DeploymentResults: []DeploymentHealth{},
 		ServiceResults:    []ServiceHealth{},
 		ConfigResults:     []ConfigHealth{},
+		EventResults:      []EventHealth{},
 	}
 
 	// Obter cliente Kubernetes
@@ -174,6 +184,9 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 	if req.CheckConfigs {
 		enabledChecks++
 	}
+	if req.CheckEvents {
+		enabledChecks++
+	}
 
 	// Calcular quanto cada check vale (dividir 90% entre checks habilitados)
 	rangePerCheck := availableRange / enabledChecks
@@ -206,7 +219,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 				o.publishProgress(sessionID, cluster, "deployments", message, deploymentProgress, status)
 			}
 
-			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, metricsClient, namespaces, req.Timeout, cluster, o.deploymentRegistry, deploymentCallback)
+			deploymentResults := o.deploymentChecker.CheckAll(ctx, client, metricsClient, namespaces, req.GetTimeoutDeployments(), cluster, o.deploymentRegistry, deploymentCallback)
 
 			// ✅ Aplicar filtros se habilitado
 			if req.ApplyFilters && o.filterManager != nil {
@@ -252,7 +265,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 				o.publishProgress(sessionID, cluster, "services", message, serviceProgress, status)
 			}
 
-			serviceResults := o.serviceChecker.CheckAll(ctx, client, namespaces, req.Timeout, serviceCallback)
+			serviceResults := o.serviceChecker.CheckAll(ctx, client, namespaces, req.GetTimeoutServices(), serviceCallback)
 
 			mu.Lock()
 			result.ServiceResults = serviceResults
@@ -287,7 +300,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 				o.publishProgress(sessionID, cluster, "configs", message, configProgress, status)
 			}
 
-			configResults := o.configChecker.CheckAll(ctx, client, namespaces, false, configCallback) // ✅ Passar false - filtros são aplicados abaixo
+			configResults := o.configChecker.CheckAll(ctx, client, namespaces, req.GetTimeoutConfigs(), false, configCallback) // ✅ Passar false - filtros são aplicados abaixo
 
 			// ✅ Aplicar filtros se habilitado
 			if req.ApplyFilters && o.filterManager != nil {
@@ -305,6 +318,43 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			mu.Unlock()
 
 			o.publishProgress(sessionID, cluster, "configs", fmt.Sprintf("%d configuração(ões) validada(s)", len(configResults)), configsEnd, StatusHealthy)
+		}()
+	}
+
+	// Check Events
+	if req.CheckEvents {
+		eventsStart := currentRangeStart
+		eventsEnd := currentRangeStart + rangePerCheck
+		currentRangeStart = eventsEnd
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.publishProgress(sessionID, cluster, "events", fmt.Sprintf("Iniciando verificação de eventos K8s em %d namespace(s)...", len(namespaces)), eventsStart, StatusHealthy)
+
+			// Callback para publicar progresso de cada namespace
+			eventCallback := func(namespace, name, message string, status HealthStatus, current, total int) {
+				// Calcular progresso proporcional dentro da faixa alocada para events
+				eventProgress := eventsStart + int(float64(current)/float64(total)*float64(rangePerCheck))
+				o.publishProgress(sessionID, cluster, "events", message, eventProgress, status)
+			}
+
+			eventResults := o.eventChecker.CheckAll(ctx, client, namespaces, req.GetTimeoutEvents(), eventCallback)
+
+			mu.Lock()
+			result.EventResults = eventResults
+			mu.Unlock()
+
+			// Publicar resumo de eventos
+			criticalEvents := o.eventChecker.GetCriticalCount(eventResults)
+			warningEvents := o.eventChecker.GetWarningCount(eventResults)
+			if criticalEvents > 0 {
+				o.publishProgress(sessionID, cluster, "events", fmt.Sprintf("%d evento(s) crítico(s) encontrado(s)", criticalEvents), eventsEnd, StatusCritical)
+			} else if warningEvents > 0 {
+				o.publishProgress(sessionID, cluster, "events", fmt.Sprintf("%d evento(s) de aviso encontrado(s)", warningEvents), eventsEnd, StatusWarning)
+			} else {
+				o.publishProgress(sessionID, cluster, "events", "Nenhum evento crítico encontrado", eventsEnd, StatusHealthy)
+			}
 		}()
 	}
 
@@ -547,7 +597,12 @@ func (o *Orchestrator) calculateSummary(result *HealthCheckResult) {
 		statusCount[c.Status]++
 	}
 
-	result.TotalChecks = len(result.DeploymentResults) + len(result.ServiceResults) + len(result.ConfigResults)
+	// Contar events
+	for _, e := range result.EventResults {
+		statusCount[e.Status]++
+	}
+
+	result.TotalChecks = len(result.DeploymentResults) + len(result.ServiceResults) + len(result.ConfigResults) + len(result.EventResults)
 	result.HealthyCount = statusCount[StatusHealthy]
 	result.WarningCount = statusCount[StatusWarning]
 	result.CriticalCount = statusCount[StatusCritical]
