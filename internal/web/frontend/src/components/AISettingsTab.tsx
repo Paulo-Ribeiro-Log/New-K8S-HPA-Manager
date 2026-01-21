@@ -292,12 +292,20 @@ export function AISettingsTab() {
       await apiClient.saveAITokens(payload);
 
       // Armazenar ai_email no localStorage para uso futuro
+      console.log("[AISettingsTab] Salvando ai_email no localStorage:", aiEmail.trim());
       localStorage.setItem("ai_email", aiEmail.trim());
 
       toast({
         title: "✅ Configurações salvas",
         description: "Seus tokens AI foram salvos com sucesso",
       });
+
+      // Notificar todos os componentes que usam useAIDiagnostics para atualizarem
+      // seus estados locais. Resolve o problema de cache onde componentes mantinham
+      // o status antigo após salvar novas configurações.
+      console.log("[AISettingsTab] Disparando evento 'ai-settings-updated' para atualizar status...");
+      window.dispatchEvent(new CustomEvent("ai-settings-updated"));
+      console.log("[AISettingsTab] Evento disparado - outros componentes devem atualizar agora");
 
       // Limpar apenas campos de senha (API keys) após salvar
       // Manter endpoint e deployment pois são necessários para validação/uso posterior
@@ -331,6 +339,10 @@ export function AISettingsTab() {
         title: "✅ Tokens removidos",
         description: "Suas configurações AI foram removidas",
       });
+
+      // Notificar todos os componentes que usam useAIDiagnostics
+      window.dispatchEvent(new CustomEvent("ai-settings-updated"));
+      console.log("[AISettingsTab] Evento 'ai-settings-updated' disparado após remoção de tokens");
 
       // Limpar localStorage
       localStorage.removeItem("ai_email");

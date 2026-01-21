@@ -145,6 +145,26 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
     }
   };
 
+  // Helper: Normalizar versão de x-x-x-x para x.x.x-x (formato semver)
+  const normalizeVersion = (version: string): string => {
+    if (!version) return version;
+    // Remove prefixo "v" se existir
+    let v = version.replace(/^v/, '');
+    // Contar hífens
+    const hyphens = (v.match(/-/g) || []).length;
+    if (hyphens >= 3) {
+      // Formato: x-x-x-x → x.x.x-x
+      const parts = v.split('-');
+      if (parts.length >= 4) {
+        return `${parts[0]}.${parts[1]}.${parts[2]}-${parts.slice(3).join('-')}`;
+      }
+    } else if (hyphens === 2 && !v.includes('.')) {
+      // Formato: x-x-x → x.x.x
+      v = v.replace(/-/g, '.');
+    }
+    return v;
+  };
+
   return (
     <div className="space-y-6">
       {/* Export Buttons */}
@@ -208,7 +228,7 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
                 {analysis.resource_metadata.version && (
                   <div>
                     <div className="text-sm font-medium text-muted-foreground">Versao</div>
-                    <Badge variant="outline">{analysis.resource_metadata.version}</Badge>
+                    <Badge variant="outline">{normalizeVersion(analysis.resource_metadata.version)}</Badge>
                   </div>
                 )}
               </div>
@@ -393,41 +413,48 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
               Impacto e Severidade
             </CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <Card className="p-4 text-center">
-                <div className="text-2xl font-bold">{analysis.impact_assessment.affected_users}</div>
-                <div className="text-xs text-muted-foreground">Usuarios Afetados</div>
-              </Card>
-              <Card className="p-4 text-center">
-                <div className="text-2xl font-bold">{analysis.impact_assessment.downtime_estimate}</div>
-                <div className="text-xs text-muted-foreground">Downtime Estimado</div>
-              </Card>
-              <Card className="p-4 text-center">
-                <div className="text-2xl font-bold">
+          <CardContent className="space-y-4">
+            {/* Downtime Estimado - largura total para textos longos */}
+            <Card className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-muted-foreground uppercase font-medium">Downtime Estimado</div>
+                <div className="text-base font-semibold">{analysis.impact_assessment.downtime_estimate}</div>
+              </div>
+            </Card>
+
+            {/* SLA Breach e Severidade - lado a lado */}
+            <div className="grid grid-cols-2 gap-4">
+              <Card className="p-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-muted-foreground uppercase font-medium">SLA Breach</div>
                   {analysis.impact_assessment.sla_breach ? (
                     <Badge variant="destructive">SIM</Badge>
                   ) : (
                     <Badge variant="secondary">NAO</Badge>
                   )}
                 </div>
-                <div className="text-xs text-muted-foreground">SLA Breach</div>
               </Card>
-              <Card className="p-4 text-center">
-                <div className="text-lg font-bold">
+              <Card className="p-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-muted-foreground uppercase font-medium">Severidade</div>
                   <Badge variant={getSeverityVariant(analysis.impact_assessment.severity)}>
                     {analysis.impact_assessment.severity.toUpperCase()}
                   </Badge>
                 </div>
-                <div className="text-xs text-muted-foreground">Severidade</div>
               </Card>
             </div>
 
+            {/* Card de Usuários Afetados em largura total para textos longos */}
+            <Card className="p-4">
+              <div className="text-xs text-muted-foreground uppercase font-medium mb-2">Usuarios Afetados</div>
+              <div className="text-sm break-words">{analysis.impact_assessment.affected_users}</div>
+            </Card>
+
             {analysis.impact_assessment.business_impact && (
-              <div className="mt-4">
-                <div className="font-semibold mb-2">Impacto no Negocio:</div>
-                <p className="text-base">{analysis.impact_assessment.business_impact}</p>
-              </div>
+              <Card className="p-4">
+                <div className="text-xs text-muted-foreground uppercase font-medium mb-2">Impacto no Negocio</div>
+                <p className="text-sm break-words">{analysis.impact_assessment.business_impact}</p>
+              </Card>
             )}
           </CardContent>
         </Card>

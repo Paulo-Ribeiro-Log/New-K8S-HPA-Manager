@@ -31,7 +31,13 @@ export function useAIDiagnostics() {
     try {
       // Obter ai_email do localStorage
       const aiEmail = localStorage.getItem("ai_email") || "";
+      console.log("[useAIDiagnostics] Fetching provider status for ai_email:", aiEmail);
       const status = await apiClient.getAIProviderStatus(aiEmail);
+      console.log("[useAIDiagnostics] Provider status received:", {
+        provider: status.provider,
+        model: status.model,
+        available: status.available,
+      });
       setProviderStatus(status);
 
       if (!status.available) {
@@ -255,6 +261,26 @@ export function useAIDiagnostics() {
   //   }, 60000);
   //   return () => clearInterval(interval);
   // }, [fetchStats]);
+
+  /**
+   * Escuta evento 'ai-settings-updated' disparado pelo AISettingsTab após salvar.
+   * Isso garante que todos os componentes usando este hook atualizem o status
+   * automaticamente quando o usuário salva novas configurações.
+   *
+   * PROBLEMA RESOLVIDO: Antes, cada instância do hook mantinha seu próprio estado
+   * e não era notificada quando outro componente salvava configurações.
+   */
+  useEffect(() => {
+    const handleSettingsUpdated = () => {
+      console.log("[useAIDiagnostics] Configurações AI atualizadas, recarregando status...");
+      fetchProviderStatus();
+    };
+
+    window.addEventListener("ai-settings-updated", handleSettingsUpdated);
+    return () => {
+      window.removeEventListener("ai-settings-updated", handleSettingsUpdated);
+    };
+  }, [fetchProviderStatus]);
 
   return {
     // State
