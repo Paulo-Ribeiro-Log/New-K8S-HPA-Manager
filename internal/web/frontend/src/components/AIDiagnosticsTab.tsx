@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAIDiagnostics } from "@/hooks/useAIDiagnostics";
 import { AIHistoryPanel } from "./AIHistoryPanel";
@@ -10,6 +10,7 @@ import { AIQuickStartGuide } from "./AIQuickStartGuide";
 import { Brain, Settings } from "lucide-react";
 
 export function AIDiagnosticsTab() {
+  const [activeSubTab, setActiveSubTab] = useState("diagnostics");
   const {
     currentAnalysis,
     providerStatus,
@@ -52,7 +53,7 @@ export function AIDiagnosticsTab() {
 
   return (
     <div className="space-y-6 p-6">
-      <Tabs defaultValue="diagnostics" className="w-full">
+      <Tabs value={activeSubTab} onValueChange={setActiveSubTab} className="w-full">
         <TabsList>
           <TabsTrigger value="diagnostics">
             <Brain className="h-4 w-4 mr-2" />
@@ -81,6 +82,7 @@ export function AIDiagnosticsTab() {
               providerStatus={providerStatus}
               isLoading={isLoadingStatus}
               onRefresh={fetchProviderStatus}
+              onNavigateToSettings={() => setActiveSubTab("settings")}
             />
           </div>
 

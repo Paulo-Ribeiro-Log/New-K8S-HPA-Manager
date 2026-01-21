@@ -1182,7 +1182,7 @@ export const PodsPanel = ({
                               namespace: selectedPod.namespace,
                               resourceName: selectedPod.name,
                               includeDescribe: true,
-                              includeMetrics: false,
+                              includeMetrics: true,
                               includeLogs: true,
                             });
 

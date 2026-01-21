@@ -505,6 +505,9 @@ func (a *Analyzer) parseStructuredResponse(response string, result *AnalysisResu
 
 // buildResourceMetadata extrai metadados do recurso para cabeçalho profissional (FASE 3.5)
 func (a *Analyzer) buildResourceMetadata(diagCtx *collectors.DiagnosticContext, req *AnalysisRequest) *ResourceMetadata {
+	fmt.Printf("[DEBUG] buildResourceMetadata called for %s/%s\n", diagCtx.Namespace, diagCtx.ResourceName)
+	fmt.Printf("[DEBUG] IncludeMetrics in request: %v\n", req.IncludeMetrics)
+
 	metadata := &ResourceMetadata{
 		Name:        diagCtx.ResourceName,
 		Namespace:   diagCtx.Namespace,
@@ -533,9 +536,18 @@ func (a *Analyzer) buildResourceMetadata(diagCtx *collectors.DiagnosticContext, 
 		}
 	}
 
-	// Adicionar métricas Prometheus se disponíveis
+	// Adicionar métricas Prometheus/MetricsServer se disponíveis
+	fmt.Printf("[DEBUG] diagCtx.PrometheusMetrics is nil: %v\n", diagCtx.PrometheusMetrics == nil)
 	if diagCtx.PrometheusMetrics != nil {
+		fmt.Printf("[DEBUG] PrometheusMetrics: CPU=%.2fm, Memory=%.2fMi\n",
+			diagCtx.PrometheusMetrics.CPUUsageCurrent,
+			diagCtx.PrometheusMetrics.MemoryUsageCurrent)
 		a.enrichMetadataWithPrometheus(diagCtx.PrometheusMetrics, metadata)
+		fmt.Printf("[DEBUG] After enrichment: CPU=%s, Memory=%s\n",
+			metadata.Resources.CPU.Current,
+			metadata.Resources.Memory.Current)
+	} else {
+		fmt.Println("[DEBUG] PrometheusMetrics is nil - metrics will show N/A")
 	}
 
 	return metadata
