@@ -111,6 +111,9 @@ func (o *Orchestrator) ExecuteHealthCheck(ctx context.Context, sessionID string,
 
 // executeClusterCheck executa health check em um único cluster
 func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, cluster string, req HealthCheckRequest) (*HealthCheckResult, error) {
+	// Resetar circuit breaker de métricas para nova sessão/cluster
+	o.deploymentChecker.ResetMetricsCircuitBreaker()
+
 	result := &HealthCheckResult{
 		ID:        sessionID,
 		Cluster:   cluster,
@@ -423,6 +426,15 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		Int("warning", result.WarningCount).
 		Int("critical", result.CriticalCount).
 		Msg("Health check completed")
+
+	// Log do status do circuit breaker de métricas (observabilidade)
+	if o.deploymentChecker.IsMetricsCircuitOpen() {
+		log.Warn().
+			Str("session_id", sessionID).
+			Str("cluster", cluster).
+			Int("fail_count", o.deploymentChecker.GetMetricsFailCount()).
+			Msg("Circuit breaker de métricas estava ABERTO durante esta sessão - metrics-server pode estar indisponível")
+	}
 
 	return result, nil
 }
