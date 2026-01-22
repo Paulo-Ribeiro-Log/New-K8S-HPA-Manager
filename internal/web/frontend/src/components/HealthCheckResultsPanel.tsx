@@ -30,6 +30,7 @@ import {
   ListChecks,
   X,
   Filter,
+  AlertTriangle,
 } from "lucide-react";
 import type { HealthCheckResult } from "@/types/healthcheck";
 import { HealthCheckCard } from "@/components/HealthCheckCard";
@@ -464,10 +465,10 @@ export const HealthCheckResultsPanel = ({
                       <CollapsibleContent>
                         <CardContent className="pt-0 border-t">
                           <Tabs defaultValue="deployments" className="mt-4">
-                            <TabsList className="grid w-full grid-cols-3">
+                            <TabsList className="grid w-full grid-cols-4">
                               <TabsTrigger value="deployments" className="gap-1 text-xs">
                                 <Server className="h-3 w-3" />
-                                Deployments ({result.deployment_results.length})
+                                Deploys ({result.deployment_results.length})
                               </TabsTrigger>
                               <TabsTrigger value="services" className="gap-1 text-xs">
                                 <Database className="h-3 w-3" />
@@ -476,6 +477,10 @@ export const HealthCheckResultsPanel = ({
                               <TabsTrigger value="configs" className="gap-1 text-xs">
                                 <Settings className="h-3 w-3" />
                                 Configs ({result.config_results.length})
+                              </TabsTrigger>
+                              <TabsTrigger value="events" className="gap-1 text-xs">
+                                <AlertTriangle className="h-3 w-3" />
+                                Events ({result.event_results?.length || 0})
                               </TabsTrigger>
                             </TabsList>
 
@@ -536,6 +541,28 @@ export const HealthCheckResultsPanel = ({
                                       key={i}
                                       health={config}
                                       type="config"
+                                      selectionMode={selectionMode}
+                                      isSelected={selectedAlerts.has(alertKey)}
+                                      onToggleSelect={() => toggleAlert(alertKey)}
+                                    />
+                                  );
+                                })
+                              )}
+                            </TabsContent>
+
+                            <TabsContent value="events" className="space-y-2 mt-3">
+                              {!result.event_results || result.event_results.length === 0 ? (
+                                <div className="text-center py-4 text-xs text-muted-foreground">
+                                  Nenhum evento crítico detectado
+                                </div>
+                              ) : (
+                                result.event_results.map((event, i) => {
+                                  const alertKey = `event-${result.cluster}-${event.namespace}-${event.name}`;
+                                  return (
+                                    <HealthCheckCard
+                                      key={i}
+                                      health={event}
+                                      type="event"
                                       selectionMode={selectionMode}
                                       isSelected={selectedAlerts.has(alertKey)}
                                       onToggleSelect={() => toggleAlert(alertKey)}

@@ -3,20 +3,20 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Brain, RefreshCw, AlertCircle, Settings } from "lucide-react";
 import type { ProviderStatus } from "@/types/ai";
-import { useNavigate } from "react-router-dom";
 
 interface AIProviderStatusCardProps {
   providerStatus: ProviderStatus | null;
   isLoading: boolean;
   onRefresh: () => void;
+  onNavigateToSettings?: () => void;
 }
 
 export function AIProviderStatusCard({
   providerStatus,
   isLoading,
   onRefresh,
+  onNavigateToSettings,
 }: AIProviderStatusCardProps) {
-  const navigate = useNavigate();
   // Format relative time
   const getRelativeTime = (timestamp?: string) => {
     if (!timestamp) return "Nunca";
@@ -108,12 +108,12 @@ export function AIProviderStatusCard({
                 <AlertCircle className="h-4 w-4 text-destructive mt-0.5 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
                   <p className="text-xs text-destructive font-medium break-words">{error}</p>
-                  {isQuotaError && (
+                  {isQuotaError && onNavigateToSettings && (
                     <Button
                       variant="outline"
                       size="sm"
                       className="mt-2 h-7 text-xs"
-                      onClick={() => navigate('/settings?tab=ai')}
+                      onClick={onNavigateToSettings}
                     >
                       <Settings className="h-3 w-3 mr-1" />
                       Trocar Provider

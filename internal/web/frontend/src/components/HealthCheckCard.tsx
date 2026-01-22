@@ -19,12 +19,13 @@ import type {
   DeploymentHealth,
   ServiceHealth,
   ConfigHealth,
+  EventHealth,
   HealthStatus,
 } from "@/types/healthcheck";
 
 interface HealthCheckCardProps {
-  health: DeploymentHealth | ServiceHealth | ConfigHealth;
-  type: "deployment" | "service" | "config";
+  health: DeploymentHealth | ServiceHealth | ConfigHealth | EventHealth;
+  type: "deployment" | "service" | "config" | "event";
   selectionMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: () => void;
@@ -176,6 +177,45 @@ export const HealthCheckCard = ({
           {config.invalid_values && config.invalid_values.length > 0 && (
             <div className="col-span-2 text-red-600 text-xs">
               <span className="font-medium">Valores Inválidos:</span> {config.invalid_values.join(", ")}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (type === "event") {
+      const event = health as EventHealth;
+      const severityColors: Record<string, string> = {
+        critical: "text-red-600 bg-red-100 dark:bg-red-950/30",
+        warning: "text-yellow-600 bg-yellow-100 dark:bg-yellow-950/30",
+        info: "text-blue-600 bg-blue-100 dark:bg-blue-950/30",
+      };
+      return (
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          <div>
+            <span className="text-muted-foreground">Razão:</span>{" "}
+            <span className={`font-medium px-1.5 py-0.5 rounded ${severityColors[event.severity] || ""}`}>
+              {event.reason}
+            </span>
+          </div>
+          <div>
+            <span className="text-muted-foreground">Tipo:</span>{" "}
+            <span className="font-medium">{event.type}</span>
+          </div>
+          <div>
+            <span className="text-muted-foreground">Recurso:</span>{" "}
+            <span className="font-mono text-xs">{event.involved_kind}/{event.involved_name}</span>
+          </div>
+          {event.count > 1 && (
+            <div>
+              <span className="text-muted-foreground">Ocorrências:</span>{" "}
+              <span className="font-bold text-red-600">{event.count}x</span>
+            </div>
+          )}
+          {event.first_timestamp && event.last_timestamp && (
+            <div className="col-span-2 text-xs text-muted-foreground">
+              <span className="font-medium">Período:</span>{" "}
+              {new Date(event.first_timestamp).toLocaleTimeString()} - {new Date(event.last_timestamp).toLocaleTimeString()}
             </div>
           )}
         </div>

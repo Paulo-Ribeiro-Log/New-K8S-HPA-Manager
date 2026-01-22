@@ -31,11 +31,13 @@ import {
   Loader2,
   RefreshCw,
   ExternalLink,
-  ShieldAlert
+  ShieldAlert,
+  Download
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { TokenConfigModal } from "./TokenConfigModal";
 import { DeploymentScanModal } from "./DeploymentScanModal";
+import { ServiceNowImportModal } from "./ServiceNowImportModal";
 import { useClusters } from "@/hooks/useAPI";
 import { toast } from "sonner";
 
@@ -126,6 +128,7 @@ export const GitHubReleasesTab = () => {
   const [searchTriggered, setSearchTriggered] = useState(false);
   const [showTokenModal, setShowTokenModal] = useState(false);
   const [showScanModal, setShowScanModal] = useState(false);
+  const [showServiceNowModal, setShowServiceNowModal] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);  // Mostrar dropdown de sugestões
   const [deploymentSelected, setDeploymentSelected] = useState(false);  // ✅ Rastreia se usuário selecionou do dropdown
   const [autoScanRunning, setAutoScanRunning] = useState(false);
@@ -551,6 +554,34 @@ export const GitHubReleasesTab = () => {
     }
   };
 
+  // ✅ Handler para usar dados importados do ServiceNow
+  const handleServiceNowImport = (data: {
+    deploymentName: string;
+    githubRepo: string;
+    newVersion: string;
+    xlReleaseUrl?: string;
+    changeNumber?: string;
+  }) => {
+    // Preencher campos com os dados extraídos
+    if (data.deploymentName) {
+      setDeploymentName(data.deploymentName);
+      // Marcar como selecionado para buscar dados de produção
+      setDeploymentSelected(true);
+    }
+    if (data.githubRepo) {
+      setGithubRepo(data.githubRepo);
+    }
+    if (data.newVersion) {
+      setNewTag(data.newVersion);
+    }
+
+    toast.success('Dados preenchidos automaticamente!', {
+      description: data.changeNumber
+        ? `CHG: ${data.changeNumber}`
+        : 'Revise os campos antes de comparar.',
+    });
+  };
+
   // ✅ CORRIGIDO: Auto-preencher tag em produção quando encontrar o deployment
   // Só preenche se o campo estiver vazio (evita repreencher após limpar)
   React.useEffect(() => {
@@ -640,6 +671,15 @@ export const GitHubReleasesTab = () => {
           title: "Configuração",
           titleAction: (
             <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowServiceNowModal(true)}
+                title="Importar dados de uma CHG do ServiceNow"
+              >
+                <Download className="h-4 w-4 mr-2" />
+                ServiceNow
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
@@ -998,7 +1038,21 @@ export const GitHubReleasesTab = () => {
                                     <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
                                   )}
                                   {item.status === 'success' && (
-                                    <CheckCircle2 className="h-4 w-4 text-green-600" />
+                                    <div className="flex items-center gap-1">
+                                      <CheckCircle2 className="h-4 w-4 text-green-600" />
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleExecuteComparison(item);
+                                        }}
+                                        className="h-6 w-6 p-0 text-muted-foreground hover:text-blue-600"
+                                        title="Refazer comparação"
+                                      >
+                                        <RefreshCw className="h-3 w-3" />
+                                      </Button>
+                                    </div>
                                   )}
                                   {item.status === 'error' && (
                                     <div className="flex items-center gap-1">
@@ -1428,6 +1482,13 @@ export const GitHubReleasesTab = () => {
 
       {/* Modal de scan de deployments */}
       <DeploymentScanModal open={showScanModal} onOpenChange={setShowScanModal} />
+
+      {/* Modal de importação do ServiceNow */}
+      <ServiceNowImportModal
+        open={showServiceNowModal}
+        onClose={() => setShowServiceNowModal(false)}
+        onImportSuccess={handleServiceNowImport}
+      />
     </>
   );
 };

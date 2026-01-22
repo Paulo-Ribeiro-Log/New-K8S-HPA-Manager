@@ -292,7 +292,7 @@ func (c *PodCollector) findRelatedPVCs(pod *corev1.Pod) []string {
 // getContainerLogs obtém logs de um container
 func (c *PodCollector) getContainerLogs(ctx context.Context, namespace, podName, containerName string, previous bool, tailLines int64) (string, error) {
 	if tailLines == 0 {
-		tailLines = 500 // Padrão: 500 linhas
+		tailLines = 1000 // Padrão: 1000 linhas para capturar ciclo completo de crash
 	}
 
 	logOptions := &corev1.PodLogOptions{

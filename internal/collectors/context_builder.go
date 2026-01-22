@@ -2,6 +2,7 @@ package collectors
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -103,16 +104,42 @@ func (cb *ContextBuilder) BuildContext(ctx context.Context, req *ContextRequest)
 		}
 	}
 
-	// Coletar métricas do Prometheus (se habilitado e for Pod)
+	// Coletar métricas do Prometheus ou Metrics Server (se habilitado e for Pod)
+	fmt.Printf("[DEBUG] Metrics collection check: IncludeMetrics=%v, ResourceType=%s\n", req.IncludeMetrics, req.ResourceType)
 	if req.IncludeMetrics && req.ResourceType == "Pod" {
+		fmt.Println("[DEBUG] Entering metrics collection block...")
+		// Primeiro tentar Prometheus
 		prometheusMetrics, err := cb.collectPrometheusMetrics(ctx, req.Cluster, req.Namespace, req.ResourceName)
 		if err != nil {
-			// Log warning mas não falha a análise se Prometheus não disponível
 			fmt.Printf("⚠️  [PROMETHEUS] Falha ao coletar métricas: %v\n", err)
+			// Fallback: tentar Metrics Server
+			fmt.Println("🔄 [METRICS_SERVER] Tentando coletar métricas via Metrics Server...")
+			metricsServerData, metricsErr := cb.collectMetricsServerMetrics(ctx, clientset, req.Namespace, req.ResourceName)
+			if metricsErr != nil {
+				fmt.Printf("⚠️  [METRICS_SERVER] Falha ao coletar métricas: %v\n", metricsErr)
+			} else {
+				diagCtx.PrometheusMetrics = metricsServerData
+				fmt.Printf("✅ [METRICS_SERVER] Métricas coletadas: CPU=%.2fm, Memory=%.2fMi\n",
+					metricsServerData.CPUUsageCurrent, metricsServerData.MemoryUsageCurrent)
+			}
 		} else {
-			diagCtx.PrometheusMetrics = prometheusMetrics
-			fmt.Printf("✅ [PROMETHEUS] Métricas coletadas: CPU=%.2fm, Memory=%.2fMB\n",
-				prometheusMetrics.CPUUsageCurrent, prometheusMetrics.MemoryUsageCurrent)
+			// Verificar se Prometheus retornou dados válidos
+			if prometheusMetrics.CPUUsageCurrent > 0 || prometheusMetrics.MemoryUsageCurrent > 0 {
+				diagCtx.PrometheusMetrics = prometheusMetrics
+				fmt.Printf("✅ [PROMETHEUS] Métricas coletadas: CPU=%.2fm, Memory=%.2fMi\n",
+					prometheusMetrics.CPUUsageCurrent, prometheusMetrics.MemoryUsageCurrent)
+			} else {
+				// Prometheus retornou 0, tentar Metrics Server
+				fmt.Println("⚠️  [PROMETHEUS] Métricas retornaram 0, tentando Metrics Server...")
+				metricsServerData, metricsErr := cb.collectMetricsServerMetrics(ctx, clientset, req.Namespace, req.ResourceName)
+				if metricsErr != nil {
+					fmt.Printf("⚠️  [METRICS_SERVER] Falha ao coletar métricas: %v\n", metricsErr)
+				} else {
+					diagCtx.PrometheusMetrics = metricsServerData
+					fmt.Printf("✅ [METRICS_SERVER] Métricas coletadas: CPU=%.2fm, Memory=%.2fMi\n",
+						metricsServerData.CPUUsageCurrent, metricsServerData.MemoryUsageCurrent)
+				}
+			}
 		}
 	}
 
@@ -252,4 +279,123 @@ func (cb *ContextBuilder) collectPrometheusMetrics(ctx context.Context, cluster,
 	}
 
 	return metrics, nil
+}
+
+// collectMetricsServerMetrics coleta métricas via Kubernetes Metrics Server (fallback)
+func (cb *ContextBuilder) collectMetricsServerMetrics(ctx context.Context, clientset k8sclient.Interface, namespace, podName string) (*PrometheusMetrics, error) {
+	metrics := &PrometheusMetrics{
+		CollectedAt: time.Now(),
+	}
+
+	// Usar raw REST client para acessar metrics.k8s.io API
+	restClient := clientset.CoreV1().RESTClient()
+
+	// Buscar métricas do pod via metrics.k8s.io/v1beta1
+	data, err := restClient.Get().
+		AbsPath("/apis/metrics.k8s.io/v1beta1/namespaces/" + namespace + "/pods/" + podName).
+		DoRaw(ctx)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pod metrics from metrics-server: %w", err)
+	}
+
+	// Parse JSON response
+	type ContainerMetrics struct {
+		Name  string `json:"name"`
+		Usage struct {
+			CPU    string `json:"cpu"`
+			Memory string `json:"memory"`
+		} `json:"usage"`
+	}
+
+	type PodMetricsResponse struct {
+		Metadata struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+		Containers []ContainerMetrics `json:"containers"`
+	}
+
+	var podMetrics PodMetricsResponse
+	if err := json.Unmarshal(data, &podMetrics); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metrics: %w", err)
+	}
+
+	// Somar métricas de todos os containers
+	var totalCPUNano int64
+	var totalMemoryBytes int64
+
+	for _, container := range podMetrics.Containers {
+		// Parse CPU (formato: "123456789n" para nanocores)
+		cpuStr := container.Usage.CPU
+		if len(cpuStr) > 0 && cpuStr[len(cpuStr)-1] == 'n' {
+			cpuNano, _ := parseInt64(cpuStr[:len(cpuStr)-1])
+			totalCPUNano += cpuNano
+		} else if len(cpuStr) > 0 && cpuStr[len(cpuStr)-1] == 'm' {
+			// Formato millicores: "100m"
+			cpuMilli, _ := parseInt64(cpuStr[:len(cpuStr)-1])
+			totalCPUNano += cpuMilli * 1000000
+		}
+
+		// Parse Memory (formato: "123456789Ki" ou "123456789")
+		memStr := container.Usage.Memory
+		memBytes := parseMemoryString(memStr)
+		totalMemoryBytes += memBytes
+	}
+
+	// Converter para formatos padrão
+	metrics.CPUUsageCurrent = float64(totalCPUNano) / 1000000 // nano para milli
+	metrics.MemoryUsageCurrent = float64(totalMemoryBytes) / (1024 * 1024) // bytes para MiB
+
+	return metrics, nil
+}
+
+// parseInt64 converte string para int64
+func parseInt64(s string) (int64, error) {
+	var result int64
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			result = result*10 + int64(c-'0')
+		}
+	}
+	return result, nil
+}
+
+// parseMemoryString converte string de memória do Kubernetes para bytes
+func parseMemoryString(s string) int64 {
+	if len(s) == 0 {
+		return 0
+	}
+
+	// Remove sufixos e converte
+	var multiplier int64 = 1
+	numStr := s
+
+	if len(s) >= 2 {
+		suffix := s[len(s)-2:]
+		if suffix == "Ki" {
+			multiplier = 1024
+			numStr = s[:len(s)-2]
+		} else if suffix == "Mi" {
+			multiplier = 1024 * 1024
+			numStr = s[:len(s)-2]
+		} else if suffix == "Gi" {
+			multiplier = 1024 * 1024 * 1024
+			numStr = s[:len(s)-2]
+		}
+	}
+
+	if len(numStr) >= 1 && numStr[len(numStr)-1] == 'K' {
+		multiplier = 1000
+		numStr = numStr[:len(numStr)-1]
+	} else if len(numStr) >= 1 && numStr[len(numStr)-1] == 'M' {
+		multiplier = 1000 * 1000
+		numStr = numStr[:len(numStr)-1]
+	} else if len(numStr) >= 1 && numStr[len(numStr)-1] == 'G' {
+		multiplier = 1000 * 1000 * 1000
+		numStr = numStr[:len(numStr)-1]
+	}
+
+	num, _ := parseInt64(numStr)
+	return num * multiplier
 }

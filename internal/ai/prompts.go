@@ -190,15 +190,16 @@ func (pb *PromptBuilder) addPodContext(builder *strings.Builder, podCtx *collect
 
 	// Logs (últimas linhas com erros)
 	if len(podCtx.Logs) > 0 {
-		builder.WriteString("════════════════════════════════════════════════════\n")
-		builder.WriteString("📋 LOGS DO POD - ANALISE AQUI PARA ENCONTRAR ERRO 📋\n")
-		builder.WriteString("════════════════════════════════════════════════════\n")
-		builder.WriteString("⚠️ NÃO peça 'kubectl logs' - OS LOGS ESTÃO ABAIXO\n")
-		builder.WriteString("════════════════════════════════════════════════════\n\n")
+		builder.WriteString("════════════════════════════════════════════════════════════════\n")
+		builder.WriteString("LOGS ATUAIS DO POD - ANALISE PARA ENCONTRAR ERRO\n")
+		builder.WriteString("════════════════════════════════════════════════════════════════\n")
+		builder.WriteString("ATENCAO: Estes sao os logs atuais. Se o container reiniciou,\n")
+		builder.WriteString("veja a secao LOGS ANTERIORES (ANTES DO CRASH) abaixo.\n")
+		builder.WriteString("════════════════════════════════════════════════════════════════\n\n")
 
 		for containerName, logs := range podCtx.Logs {
 			lines := strings.Split(logs, "\n")
-			// Pegar últimas 20 linhas ou linhas com "error", "failed", "exception"
+			// Pegar últimas 50 linhas ou todas as linhas com "error", "failed", "exception"
 			errorLines := []string{}
 			normalLines := []string{}
 
@@ -207,31 +208,36 @@ func (pb *PromptBuilder) addPodContext(builder *strings.Builder, podCtx *collect
 				if strings.Contains(lowerLine, "error") ||
 					strings.Contains(lowerLine, "failed") ||
 					strings.Contains(lowerLine, "exception") ||
-					strings.Contains(lowerLine, "fatal") {
+					strings.Contains(lowerLine, "fatal") ||
+					strings.Contains(lowerLine, "timeout") ||
+					strings.Contains(lowerLine, "refused") ||
+					strings.Contains(lowerLine, "denied") {
 					errorLines = append(errorLines, line)
 				} else if len(line) > 0 {
 					normalLines = append(normalLines, line)
 				}
 			}
 
-			builder.WriteString(fmt.Sprintf("\nContainer: %s\n", containerName))
+			builder.WriteString(fmt.Sprintf("\nContainer: %s (total: %d linhas)\n", containerName, len(lines)))
 			if len(errorLines) > 0 {
-				builder.WriteString("Erros encontrados:\n")
+				builder.WriteString(fmt.Sprintf("Linhas com erros encontradas (%d):\n", len(errorLines)))
+				// Mostrar até 30 linhas de erro
 				for i, line := range errorLines {
-					if i >= 10 {
+					if i >= 30 {
+						builder.WriteString(fmt.Sprintf("  ... (+%d linhas de erro)\n", len(errorLines)-30))
 						break
 					}
 					builder.WriteString(fmt.Sprintf("  %s\n", line))
 				}
-			} else {
-				// Se não há erros, mostrar últimas 10 linhas
-				start := len(normalLines) - 10
-				if start < 0 {
-					start = 0
-				}
-				for _, line := range normalLines[start:] {
-					builder.WriteString(fmt.Sprintf("  %s\n", line))
-				}
+			}
+			// Sempre mostrar últimas 50 linhas normais também para contexto
+			builder.WriteString("\nUltimas 50 linhas do log:\n")
+			start := len(normalLines) - 50
+			if start < 0 {
+				start = 0
+			}
+			for _, line := range normalLines[start:] {
+				builder.WriteString(fmt.Sprintf("  %s\n", line))
 			}
 		}
 		builder.WriteString("\n")
@@ -239,22 +245,22 @@ func (pb *PromptBuilder) addPodContext(builder *strings.Builder, podCtx *collect
 
 	// LOGS ANTERIORES (ANTES DO ÚLTIMO RESTART) - CRÍTICO PARA CRASHLOOP!
 	if len(podCtx.PreviousLogs) > 0 {
-		builder.WriteString("════════════════════════════════════════════════════\n")
-		builder.WriteString("🔥 LOGS ANTERIORES (ANTES DO CRASH) - ANALISE AQUI! 🔥\n")
-		builder.WriteString("════════════════════════════════════════════════════\n")
-		builder.WriteString("⚠️ Container crashou! Estes são os logs DE QUANDO CRASHOU\n")
-		builder.WriteString("⚠️ FOQUE NAS ÚLTIMAS LINHAS - O ERRO ESTÁ AQUI!\n")
-		builder.WriteString("════════════════════════════════════════════════════\n\n")
+		builder.WriteString("════════════════════════════════════════════════════════════════\n")
+		builder.WriteString("LOGS ANTERIORES (ANTES DO CRASH) - O ERRO ESTA AQUI!\n")
+		builder.WriteString("════════════════════════════════════════════════════════════════\n")
+		builder.WriteString("ATENCAO: Container crashou! Analise as ULTIMAS LINHAS abaixo.\n")
+		builder.WriteString("O erro que causa o crash esta nas ultimas linhas deste log.\n")
+		builder.WriteString("════════════════════════════════════════════════════════════════\n\n")
 
 		for containerName, logs := range podCtx.PreviousLogs {
 			lines := strings.Split(logs, "\n")
-			// Pegar últimas 30 linhas - onde geralmente está o erro
-			start := len(lines) - 30
+			// Pegar últimas 100 linhas - onde geralmente está o erro completo com stack trace
+			start := len(lines) - 100
 			if start < 0 {
 				start = 0
 			}
 
-			builder.WriteString(fmt.Sprintf("\n🔥 Container '%s' - ÚLTIMAS 30 LINHAS ANTES DO CRASH:\n", containerName))
+			builder.WriteString(fmt.Sprintf("\nContainer '%s' - ULTIMAS %d LINHAS ANTES DO CRASH:\n", containerName, len(lines)-start))
 			builder.WriteString("────────────────────────────────────────────────────\n")
 			for _, line := range lines[start:] {
 				if len(strings.TrimSpace(line)) > 0 {
@@ -346,39 +352,68 @@ func (pb *PromptBuilder) addInvestigationResults(builder *strings.Builder, inves
 // Template para análise de Pods (FASE 3 - JSON Estruturado)
 const podTemplate = `Você é um especialista sênior em Kubernetes e troubleshooting de aplicações.
 
-REGRAS ABSOLUTAS:
+═══════════════════════════════════════════════════════════════════════════════
+REGRAS ABSOLUTAS - LEIA COM ATENÇÃO:
+═══════════════════════════════════════════════════════════════════════════════
+
 1. RETORNE APENAS JSON VÁLIDO (sem markdown, sem '''json''')
-2. COPIE trechos literais dos logs fornecidos no contexto
-3. Se não há logs: escreva "LOGS NÃO DISPONÍVEIS"
-4. NUNCA invente dados ou use exemplos genéricos
-5. INVESTIGUE PROFUNDAMENTE - não pare no sintoma, encontre a CAUSA RAIZ
-6. NÃO USE EMOJIS nos textos do JSON
+2. NÃO USE EMOJIS nos textos do JSON
+3. PORTUGUÊS BRASILEIRO NOS TEXTOS DO JSON
 
-**INSTRUÇÕES DE ANÁLISE PROFUNDA:**
+═══════════════════════════════════════════════════════════════════════════════
+REGRA CRÍTICA: VOCÊ DEVE ANALISAR OS DADOS - NÃO PEDIR MAIS DADOS!
+═══════════════════════════════════════════════════════════════════════════════
 
-Quando encontrar ERROS DE CONEXÃO (timeout, connection refused, unreachable):
-1. NÃO sugira apenas "restart" - isso é workaround, não solução
-2. INVESTIGUE o PORQUÊ da falha de conexão:
-   - Connection string está correta? (verifique ConfigMap)
-   - Credenciais estão válidas? (verifique Secret)
-   - Serviço de destino está disponível? (kubectl get service)
-   - Network policies estão bloqueando? (kubectl get networkpolicy)
-   - DNS está resolvendo? (kubectl exec pod -- nslookup <service>)
+TODOS OS DADOS NECESSÁRIOS JÁ ESTÃO NO CONTEXTO ABAIXO:
+- Logs ATUAIS do container (últimas 1000 linhas)
+- Logs ANTERIORES (antes do crash/restart)
+- Eventos do Kubernetes
+- Status do Pod e containers
+- ConfigMaps e Secrets referenciados
+- kubectl describe output
 
-Quando encontrar ERROS DE APLICAÇÃO (exceptions, stack traces):
-1. Identifique o erro EXATO da stack trace (linha, método, mensagem)
-2. Analise se é erro de configuração, código ou dependência
-3. Verifique se ConfigMaps/Secrets necessários existem
-4. Sugira comandos para verificar cada hipótese
+VOCÊ DEVE:
+✅ Analisar os logs fornecidos e identificar O ERRO EXATO
+✅ Copiar trechos literais dos logs como evidência
+✅ Identificar a linha/método/classe onde o erro ocorreu
+✅ Determinar a causa raiz baseado nos dados disponíveis
 
-Quando encontrar CONFIGMAP/SECRET NÃO ENCONTRADO (CreateContainerConfigError):
-1. Se o nome tem padrão hash (ex: app-name-abc123), é gerado por Kustomize/Helm
-2. A CAUSA RAIZ é: pipeline de deploy falhou ou ConfigMap não foi criado
-3. VERIFIQUE a seção "INVESTIGAÇÃO AUTOMÁTICA" - ela lista ConfigMaps existentes com mesmo prefixo
-4. SUGIRA: (a) Re-executar pipeline de deploy, (b) Verificar logs CI/CD, (c) Criar ConfigMap manualmente se urgente
-5. NÃO sugira apenas "criar o ConfigMap" - investigue POR QUE não foi criado
+VOCÊ NÃO DEVE:
+❌ Pedir ao usuário para executar "kubectl logs" - OS LOGS JÁ ESTÃO AQUI
+❌ Pedir ao usuário para executar "kubectl get" - OS DADOS JÁ ESTÃO AQUI
+❌ Pedir ao usuário para executar "kubectl describe" - O OUTPUT JÁ ESTÁ AQUI
+❌ Dizer "os logs não mostram o erro" - ANALISE MAIS PROFUNDAMENTE
+❌ Sugerir "aumentar nível de log" como primeira ação - ENCONTRE O ERRO NOS LOGS ATUAIS
 
-**FORMATO DA RESPOSTA (JSON OBRIGATÓRIO):**
+SE OS LOGS MOSTRAM STARTUP MAS NÃO O ERRO:
+- ANALISE a seção "LOGS ANTERIORES (ANTES DO CRASH)" - o erro está LÁ
+- FOQUE nas últimas linhas antes do crash
+- Procure por: Exception, Error, Failed, Timeout, Connection refused, etc.
+
+═══════════════════════════════════════════════════════════════════════════════
+COMO ANALISAR - PASSO A PASSO:
+═══════════════════════════════════════════════════════════════════════════════
+
+1. PRIMEIRO: Leia a seção "LOGS ANTERIORES (ANTES DO CRASH)" se existir
+   - O erro que causa o crash está nas ÚLTIMAS LINHAS desta seção
+
+2. SEGUNDO: Procure por palavras-chave nos logs:
+   - "Exception", "Error", "Failed", "Timeout", "Refused", "Denied"
+   - Stack traces (linhas com "at com.", "Caused by:", etc.)
+   - Mensagens de conexão (MongoDB, Redis, HTTP, etc.)
+
+3. TERCEIRO: Correlacione com os eventos do Kubernetes:
+   - BackOff, Failed, Unhealthy indicam o TIPO de problema
+   - A CAUSA está nos logs
+
+4. QUARTO: Formule a causa raiz ESPECÍFICA:
+   - NÃO diga "erro de conexão" - diga "timeout ao conectar ao MongoDB em mongodb-service:27017"
+   - NÃO diga "aplicação falhou" - diga "NullPointerException na classe OrderService linha 142"
+   - COPIE o trecho exato do log que mostra o erro
+
+═══════════════════════════════════════════════════════════════════════════════
+FORMATO DA RESPOSTA (JSON OBRIGATÓRIO):
+═══════════════════════════════════════════════════════════════════════════════
 
 Retorne APENAS este JSON (sem texto adicional, sem markdown wrappers):
 
@@ -386,40 +421,39 @@ Retorne APENAS este JSON (sem texto adicional, sem markdown wrappers):
   "executive_summary": {
     "severity": "critical|high|medium|low",
     "status": "unhealthy|degraded|healthy",
-    "quick_summary": "Resumo de 1-2 frases do problema principal",
+    "quick_summary": "Resumo de 1-2 frases do problema principal COM O ERRO ESPECÍFICO encontrado nos logs",
     "time_to_resolve": "estimativa de tempo (ex: 15 minutes, 1 hour)"
   },
   "root_cause_analysis": {
     "symptom": "Descrição do sintoma observado (ex: CrashLoopBackOff com 15 restarts)",
     "probable_causes": [
-      "Causa provável 1 (ex: Connection string incorreta no ConfigMap)",
-      "Causa provável 2 (ex: MongoDB service não está disponível)",
-      "Causa provável 3 (ex: Credenciais inválidas no Secret)"
+      "Causa principal IDENTIFICADA NOS LOGS (cite o erro exato)",
+      "Causa secundária se aplicável",
+      "Causa terciária se aplicável"
     ],
     "evidence": [
-      "Evidência 1: trecho literal do log mostrando erro",
-      "Evidência 2: evento K8s relevante",
-      "Evidência 3: estado do container"
+      "COPIE AQUI o trecho literal do log mostrando o erro principal",
+      "COPIE AQUI outro trecho relevante se existir",
+      "Estado do container: (ex: Terminated - Error, Exit Code 1)"
     ],
     "confidence": "high|medium|low"
   },
   "impact_assessment": {
     "severity": "critical|high|medium|low",
-    "affected_users": "Descrição de quem é afetado (ex: Todos os usuários, 50%, Nenhum)",
-    "downtime_estimate": "Estimativa de downtime (ex: 30 minutes, ongoing)",
+    "affected_users": "Descrição de quem é afetado",
+    "downtime_estimate": "Estimativa de downtime",
     "sla_breach": true|false,
     "business_impact": "Descrição do impacto no negócio"
   },
   "recommendations": [
     {
       "priority": 1,
-      "title": "Título da ação (ex: Corrigir connection string no ConfigMap)",
-      "description": "Descrição detalhada do que fazer e por quê",
+      "title": "Ação para corrigir a causa raiz identificada",
+      "description": "Explicação do que fazer baseado no erro encontrado nos logs",
       "commands": [
-        "kubectl get configmap <nome> -n <namespace> -o yaml",
-        "kubectl edit configmap <nome> -n <namespace>"
+        "comando específico para corrigir (se aplicável)"
       ],
-      "time_estimate": "estimativa (ex: 5 minutes, 30 minutes)",
+      "time_estimate": "estimativa",
       "risk_level": "low|medium|high",
       "impact_level": "high|medium|low"
     }
@@ -438,11 +472,17 @@ Retorne APENAS este JSON (sem texto adicional, sem markdown wrappers):
 - 3: Ação recomendada, resolver esta semana
 - 4-5: Otimizações, não urgente
 
-**CONTEXTO COM OS DADOS REAIS:**
+═══════════════════════════════════════════════════════════════════════════════
+CONTEXTO COM TODOS OS DADOS COLETADOS DO CLUSTER:
+═══════════════════════════════════════════════════════════════════════════════
+
 {{CONTEXT}}
 
-RETORNE APENAS O JSON ACIMA (SEM TEXTO ADICIONAL, SEM MARKDOWN WRAPPERS).
-PORTUGUÊS BRASILEIRO NOS TEXTOS DO JSON.`
+═══════════════════════════════════════════════════════════════════════════════
+LEMBRE-SE: ANALISE OS DADOS ACIMA. NÃO PEÇA MAIS DADOS!
+═══════════════════════════════════════════════════════════════════════════════
+
+RETORNE APENAS O JSON (SEM TEXTO ADICIONAL, SEM MARKDOWN WRAPPERS).`
 
 // Template para análise de Deployments
 const deploymentTemplate = `Você é um especialista em Kubernetes especializado em troubleshooting de Deployments.

@@ -25,6 +25,7 @@ import {
   Settings,
   Clock,
   Download,
+  CheckCircle2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useHealthChecking } from "@/hooks/useHealthChecking";
@@ -69,7 +70,13 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   const [checkDeployments, setCheckDeployments] = useState(true);
   const [checkServices, setCheckServices] = useState(true);
   const [checkConfigs, setCheckConfigs] = useState(true);
-  const [timeout, setTimeout] = useState(10);
+  const [checkEvents, setCheckEvents] = useState(false); // Verificar eventos K8s (desabilitado por padrão)
+  const [timeout, setTimeout] = useState(30); // Timeout geral (fallback)
+  const [showAdvancedTimeouts, setShowAdvancedTimeouts] = useState(false);
+  const [timeoutDeployments, setTimeoutDeployments] = useState(60); // Padrão: 60s
+  const [timeoutServices, setTimeoutServices] = useState(45);      // Padrão: 45s
+  const [timeoutConfigs, setTimeoutConfigs] = useState(30);        // Padrão: 30s
+  const [timeoutEvents, setTimeoutEvents] = useState(30);          // Padrão: 30s
   const [applyFilters, setApplyFilters] = useState(true); // ✅ Filtrar falsos positivos por padrão
 
   // Modal state
@@ -240,7 +247,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       return;
     }
 
-    if (!checkDeployments && !checkServices && !checkConfigs) {
+    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents) {
       console.error("[HealthCheckingTab] No check types selected");
       toast.error("Selecione pelo menos um tipo de check");
       return;
@@ -258,7 +265,13 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       check_deployments: checkDeployments,
       check_services: checkServices,
       check_configs: checkConfigs,
+      check_events: checkEvents,
       timeout: timeout,
+      // Timeouts específicos (se modo avançado habilitado)
+      timeout_deployments: showAdvancedTimeouts ? timeoutDeployments : undefined,
+      timeout_services: showAdvancedTimeouts ? timeoutServices : undefined,
+      timeout_configs: showAdvancedTimeouts ? timeoutConfigs : undefined,
+      timeout_events: showAdvancedTimeouts ? timeoutEvents : undefined,
       apply_filters: applyFilters, // ✅ Aplicar filtros de falsos positivos
     };
 
@@ -493,6 +506,19 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                         Validar ConfigMaps/Secrets
                       </Label>
                     </div>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="check-events"
+                        checked={checkEvents}
+                        onCheckedChange={(checked) => setCheckEvents(checked as boolean)}
+                      />
+                      <Label htmlFor="check-events" className="text-sm cursor-pointer">
+                        Verificar Eventos K8s
+                      </Label>
+                      <Badge variant="outline" className="text-xs">
+                        FailedScheduling, OOM, etc.
+                      </Badge>
+                    </div>
                   </CardContent>
                 </Card>
 
@@ -559,18 +585,82 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                   <CardHeader className="pb-3">
                     <CardTitle className="text-sm font-medium">Timeout</CardTitle>
                     <CardDescription className="text-xs">
-                      Timeout por check em segundos (máx: 120s)
+                      {showAdvancedTimeouts
+                        ? "Timeouts específicos por tipo de check"
+                        : "Timeout geral em segundos (máx: 120s)"}
                     </CardDescription>
                   </CardHeader>
-                  <CardContent>
-                    <Input
-                      type="number"
-                      min={5}
-                      max={120}
-                      value={timeout}
-                      onChange={(e) => setTimeout(parseInt(e.target.value) || 10)}
-                      className="h-8"
-                    />
+                  <CardContent className="space-y-3">
+                    {!showAdvancedTimeouts ? (
+                      <Input
+                        type="number"
+                        min={5}
+                        max={120}
+                        value={timeout}
+                        onChange={(e) => setTimeout(parseInt(e.target.value) || 30)}
+                        className="h-8"
+                      />
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Label className="text-xs w-24">Deployments:</Label>
+                          <Input
+                            type="number"
+                            min={10}
+                            max={300}
+                            value={timeoutDeployments}
+                            onChange={(e) => setTimeoutDeployments(parseInt(e.target.value) || 60)}
+                            className="h-7 text-xs"
+                          />
+                          <span className="text-xs text-muted-foreground">s</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Label className="text-xs w-24">Services:</Label>
+                          <Input
+                            type="number"
+                            min={10}
+                            max={300}
+                            value={timeoutServices}
+                            onChange={(e) => setTimeoutServices(parseInt(e.target.value) || 45)}
+                            className="h-7 text-xs"
+                          />
+                          <span className="text-xs text-muted-foreground">s</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Label className="text-xs w-24">Configs:</Label>
+                          <Input
+                            type="number"
+                            min={10}
+                            max={300}
+                            value={timeoutConfigs}
+                            onChange={(e) => setTimeoutConfigs(parseInt(e.target.value) || 30)}
+                            className="h-7 text-xs"
+                          />
+                          <span className="text-xs text-muted-foreground">s</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Label className="text-xs w-24">Eventos:</Label>
+                          <Input
+                            type="number"
+                            min={10}
+                            max={300}
+                            value={timeoutEvents}
+                            onChange={(e) => setTimeoutEvents(parseInt(e.target.value) || 30)}
+                            className="h-7 text-xs"
+                            disabled={!checkEvents}
+                          />
+                          <span className="text-xs text-muted-foreground">s</span>
+                        </div>
+                      </div>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setShowAdvancedTimeouts(!showAdvancedTimeouts)}
+                      className="w-full text-xs h-7"
+                    >
+                      {showAdvancedTimeouts ? "Usar timeout único" : "Configurar por tipo"}
+                    </Button>
                   </CardContent>
                 </Card>
 
@@ -616,20 +706,34 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                   {selectedClusters.length} cluster{selectedClusters.length > 1 ? 's' : ''}
                 </Badge>
               )}
-              {/* Botão Ver Progresso - Aparece quando está executando OU quando há resultados */}
-              {(isRunning && sessionId) || Object.keys(results).length > 0 ? (
+              {/* Botão Ver Progresso/Resultados - Aparece quando está executando OU quando há resultados */}
+              {(isRunning && sessionId) ? (
                 <Button
                   variant="default"
                   size="sm"
                   onClick={() => setShowProgressModal(true)}
-                  className={isRunning ? "h-7 animate-pulse" : "h-7"}
+                  className="h-7 animate-pulse"
                 >
                   <Activity className="mr-1.5 h-3.5 w-3.5" />
                   <span className="text-xs">Ver Progresso</span>
                 </Button>
+              ) : results.length > 0 ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    // Carregar eventos do primeiro resultado antes de abrir o modal
+                    const firstResult = results[0];
+                    await handleShowProgress(firstResult.cluster, firstResult);
+                  }}
+                  className="h-7"
+                >
+                  <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
+                  <span className="text-xs">Ver Resultados</span>
+                </Button>
               ) : null}
               {/* Botão Exportar Relatório - Aparece quando há resultados */}
-              {Object.keys(results).length > 0 && (
+              {results.length > 0 && (
                 <Button
                   variant="outline"
                   size="sm"

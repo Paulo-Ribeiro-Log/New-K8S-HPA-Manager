@@ -610,7 +610,7 @@ func (h *HealthCheckHandler) validateRequest(req *healthcheck.HealthCheckRequest
 	}
 
 	// Pelo menos um tipo de check deve estar habilitado
-	if !req.CheckDeployments && !req.CheckServices && !req.CheckConfigs {
+	if !req.CheckDeployments && !req.CheckServices && !req.CheckConfigs && !req.CheckEvents {
 		return fmt.Errorf("pelo menos um tipo de check deve estar habilitado")
 	}
 

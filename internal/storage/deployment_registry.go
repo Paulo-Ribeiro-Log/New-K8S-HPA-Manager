@@ -237,6 +237,7 @@ func (r *DeploymentRegistry) SearchByAppName(appName string) ([]DeploymentRecord
 }
 
 // GetProductionVersion busca a versão mais provável em produção
+// Prioriza: 1) Match exato de deployment_name/app_name, 2) LIKE como fallback
 // Prioriza clusters com nome contendo "prod"
 func (r *DeploymentRegistry) GetProductionVersion(appName string) (*DeploymentRecord, error) {
 	query := `
@@ -246,14 +247,20 @@ func (r *DeploymentRegistry) GetProductionVersion(appName string) (*DeploymentRe
 	FROM deployments
 	WHERE (app_name = ? OR deployment_name LIKE ? OR deployment_name = ?)
 	  AND (cluster LIKE '%prod%' OR cluster LIKE '%prd%')
-	ORDER BY last_seen DESC
+	ORDER BY
+	  CASE
+	    WHEN deployment_name = ? OR app_name = ? THEN 0
+	    ELSE 1
+	  END,
+	  last_seen DESC
 	LIMIT 1
 	`
 
 	var record DeploymentRecord
 	var createdAt, firstSeen, lastSeen, lastHealthCheck sql.NullTime
 
-	err := r.db.QueryRow(query, appName, "%"+appName+"%", appName).Scan(
+	// Parâmetros: WHERE(app_name=, LIKE, deployment_name=), ORDER BY CASE(deployment_name=, app_name=)
+	err := r.db.QueryRow(query, appName, "%"+appName+"%", appName, appName, appName).Scan(
 		&record.ID, &record.DeploymentName, &record.Namespace, &record.Cluster,
 		&record.Version, &record.ImageTag, &record.FullImage,
 		&record.ReplicasCurrent, &record.ReplicasDesired, &record.AppName,

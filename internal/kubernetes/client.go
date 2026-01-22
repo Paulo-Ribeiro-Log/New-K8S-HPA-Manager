@@ -2225,6 +2225,38 @@ func (c *Client) DeleteDeployment(ctx context.Context, namespace, deploymentName
 	return nil
 }
 
+// ScaleDeployment escala um deployment para o número especificado de réplicas
+func (c *Client) ScaleDeployment(ctx context.Context, namespace, deploymentName string, replicas int32) error {
+	scale, err := c.clientset.AppsV1().Deployments(namespace).GetScale(ctx, deploymentName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get scale for deployment %s/%s/%s: %w", c.cluster, namespace, deploymentName, err)
+	}
+
+	scale.Spec.Replicas = replicas
+	_, err = c.clientset.AppsV1().Deployments(namespace).UpdateScale(ctx, deploymentName, scale, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to scale deployment %s/%s/%s to %d replicas: %w", c.cluster, namespace, deploymentName, replicas, err)
+	}
+
+	return nil
+}
+
+// ScaleStatefulSet escala um statefulset para o número especificado de réplicas
+func (c *Client) ScaleStatefulSet(ctx context.Context, namespace, statefulSetName string, replicas int32) error {
+	scale, err := c.clientset.AppsV1().StatefulSets(namespace).GetScale(ctx, statefulSetName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get scale for statefulset %s/%s/%s: %w", c.cluster, namespace, statefulSetName, err)
+	}
+
+	scale.Spec.Replicas = replicas
+	_, err = c.clientset.AppsV1().StatefulSets(namespace).UpdateScale(ctx, statefulSetName, scale, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to scale statefulset %s/%s/%s to %d replicas: %w", c.cluster, namespace, statefulSetName, replicas, err)
+	}
+
+	return nil
+}
+
 // GetDeploymentFromHPA obtém o nome do deployment associado ao HPA
 func (c *Client) GetDeploymentFromHPA(ctx context.Context, namespace, hpaName string) (string, error) {
 	hpa, err := c.clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).Get(ctx, hpaName, metav1.GetOptions{})

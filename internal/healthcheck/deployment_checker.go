@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"k8s-hpa-manager/internal/storage"
@@ -22,12 +23,26 @@ import (
 // ProgressCallback é chamado para publicar progresso de cada deployment
 type ProgressCallback func(namespace, name, message string, status HealthStatus, current, total int)
 
+// Circuit Breaker constants
+const (
+	// MetricsCircuitBreakerThreshold define quantas falhas consecutivas abrem o circuit breaker
+	MetricsCircuitBreakerThreshold = 3
+)
+
 // DeploymentChecker valida saúde de Deployments
-type DeploymentChecker struct{}
+type DeploymentChecker struct {
+	// Circuit Breaker para métricas (thread-safe)
+	metricsMu          sync.RWMutex // Protege acesso ao circuit breaker
+	metricsFailCount   int          // Contador de falhas consecutivas
+	metricsCircuitOpen bool         // Se true, pula tentativas de métricas
+}
 
 // NewDeploymentChecker cria um novo deployment checker
 func NewDeploymentChecker() *DeploymentChecker {
-	return &DeploymentChecker{}
+	return &DeploymentChecker{
+		metricsFailCount:   0,
+		metricsCircuitOpen: false,
+	}
 }
 
 // CheckAll verifica todos os deployments nos namespaces especificados
@@ -374,6 +389,19 @@ func (c *DeploymentChecker) enrichWithMetrics(ctx context.Context, metricsClient
 		return
 	}
 
+	// Circuit Breaker: verificar se aberto (thread-safe)
+	c.metricsMu.RLock()
+	isOpen := c.metricsCircuitOpen
+	c.metricsMu.RUnlock()
+
+	if isOpen {
+		log.Debug().
+			Str("namespace", deployment.Namespace).
+			Str("deployment", deployment.Name).
+			Msg("Circuit breaker aberto - pulando coleta de métricas")
+		return
+	}
+
 	metricsCtx := ctx
 	var cancel context.CancelFunc
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -389,13 +417,46 @@ func (c *DeploymentChecker) enrichWithMetrics(ctx context.Context, metricsClient
 
 	podMetrics, err := metricsClient.MetricsV1beta1().PodMetricses(deployment.Namespace).List(metricsCtx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
+		// Circuit Breaker: incrementa contador de falhas (thread-safe)
+		c.metricsMu.Lock()
+		c.metricsFailCount++
+		failCount := c.metricsFailCount
+
 		if metricsCtx.Err() == context.DeadlineExceeded {
-			log.Warn().Str("namespace", deployment.Namespace).Str("deployment", deployment.Name).Msg("Timeout ao buscar métricas de pods para deployment")
+			log.Warn().
+				Str("namespace", deployment.Namespace).
+				Str("deployment", deployment.Name).
+				Int("fail_count", failCount).
+				Msg("Timeout ao buscar métricas de pods para deployment")
 		} else {
-			log.Warn().Err(err).Str("namespace", deployment.Namespace).Str("deployment", deployment.Name).Msg("Falha ao buscar métricas de pods para deployment")
+			log.Warn().
+				Err(err).
+				Str("namespace", deployment.Namespace).
+				Str("deployment", deployment.Name).
+				Int("fail_count", failCount).
+				Msg("Falha ao buscar métricas de pods para deployment")
 		}
+
+		// Circuit Breaker: abre após N falhas consecutivas
+		if failCount >= MetricsCircuitBreakerThreshold && !c.metricsCircuitOpen {
+			c.metricsCircuitOpen = true
+			log.Warn().
+				Int("threshold", MetricsCircuitBreakerThreshold).
+				Msg("Circuit breaker ABERTO - métricas desabilitadas para esta sessão de health check")
+		}
+		c.metricsMu.Unlock()
 		return
 	}
+
+	// Circuit Breaker: sucesso - reseta contador de falhas (thread-safe)
+	c.metricsMu.Lock()
+	if c.metricsFailCount > 0 {
+		log.Debug().
+			Int("previous_fail_count", c.metricsFailCount).
+			Msg("Métricas coletadas com sucesso - resetando contador de falhas")
+		c.metricsFailCount = 0
+	}
+	c.metricsMu.Unlock()
 
 	if len(podMetrics.Items) == 0 {
 		return
@@ -460,6 +521,28 @@ func appendSuggestionOnce(list []string, suggestion string) []string {
 		}
 	}
 	return append(list, suggestion)
+}
+
+// IsMetricsCircuitOpen retorna true se o circuit breaker de métricas está aberto (thread-safe)
+func (c *DeploymentChecker) IsMetricsCircuitOpen() bool {
+	c.metricsMu.RLock()
+	defer c.metricsMu.RUnlock()
+	return c.metricsCircuitOpen
+}
+
+// GetMetricsFailCount retorna o número de falhas consecutivas de métricas (thread-safe)
+func (c *DeploymentChecker) GetMetricsFailCount() int {
+	c.metricsMu.RLock()
+	defer c.metricsMu.RUnlock()
+	return c.metricsFailCount
+}
+
+// ResetMetricsCircuitBreaker reseta o circuit breaker de métricas (thread-safe, para nova sessão)
+func (c *DeploymentChecker) ResetMetricsCircuitBreaker() {
+	c.metricsMu.Lock()
+	defer c.metricsMu.Unlock()
+	c.metricsFailCount = 0
+	c.metricsCircuitOpen = false
 }
 
 func (c *DeploymentChecker) withTimeout(ctx context.Context, timeoutSec int) (context.Context, context.CancelFunc) {
