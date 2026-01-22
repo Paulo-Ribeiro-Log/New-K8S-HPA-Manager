@@ -27,6 +27,8 @@ import { IngressTab } from "@/components/IngressTab";
 import { NamespacesTab } from "@/components/NamespacesTab";
 import { SecretsTab } from "@/components/SecretsTab";
 import { DeploymentsTab } from "@/components/DeploymentsTab";
+import { DaemonSetsTab } from "@/components/DaemonSetsTab";
+import { StatefulSetsTab } from "@/components/StatefulSetsTab";
 import { ContainersTab } from "@/components/ContainersTab";
 import { PodsPanel } from "@/components/PodsPanel";
 import { EventsTab } from "@/components/EventsTab";
@@ -975,6 +977,34 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
+      case "daemonsets":
+        return (
+          <ErrorBoundary componentName="DaemonSets Tab">
+            <DaemonSetsTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
+        );
+
+      case "statefulsets":
+        return (
+          <ErrorBoundary componentName="StatefulSets Tab">
+            <StatefulSetsTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
+        );
+
       default:
         return null;
     }
@@ -1030,8 +1060,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm, Nexus Values, AI Diagnostics e GitHub Releases */}
-      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "nexus-values" && activeTab !== "ai-diagnostics" && activeTab !== "github-releases" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, DaemonSets, StatefulSets, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm, Nexus Values, AI Diagnostics e GitHub Releases */}
+      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "daemonsets" && activeTab !== "statefulsets" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "nexus-values" && activeTab !== "ai-diagnostics" && activeTab !== "github-releases" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (

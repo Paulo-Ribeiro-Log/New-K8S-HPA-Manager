@@ -1,0 +1,109 @@
+package handlers
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog"
+
+	"k8s-hpa-manager/internal/servicenow"
+)
+
+// ServiceNowHandler lida com importação de dados do ServiceNow
+type ServiceNowHandler struct {
+	client *servicenow.Client
+	logger *zerolog.Logger
+}
+
+// NewServiceNowHandler cria novo handler
+func NewServiceNowHandler(logger *zerolog.Logger) *ServiceNowHandler {
+	client := servicenow.NewClient("https://viavarejo.service-now.com", logger)
+	return &ServiceNowHandler{
+		client: client,
+		logger: logger,
+	}
+}
+
+// ImportFromURL tenta importar dados de uma CHG a partir da URL via HTTP scraping
+// Se não conseguir (página requer autenticação), sugere usar a aba manual
+// POST /api/v1/servicenow/import
+func (h *ServiceNowHandler) ImportFromURL(c *gin.Context) {
+	var req servicenow.ImportRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "URL é obrigatória",
+		})
+		return
+	}
+
+	h.logger.Info().
+		Str("url", req.URL).
+		Msg("Tentando importar dados do ServiceNow via HTTP")
+
+	response, err := h.client.ImportFromURL(c.Request.Context(), req.URL)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("Erro ao importar do ServiceNow")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// ImportFromDescription importa dados diretamente do texto do description
+// Esta é a opção mais confiável - usuário cola o texto do "Motivo da mudança"
+// POST /api/v1/servicenow/parse
+func (h *ServiceNowHandler) ImportFromDescription(c *gin.Context) {
+	var req struct {
+		Description string `json:"description" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Campo 'description' é obrigatório",
+		})
+		return
+	}
+
+	h.logger.Info().
+		Int("description_length", len(req.Description)).
+		Msg("Parseando description do ServiceNow")
+
+	extractedData := h.client.ImportFromDescription(req.Description)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":        true,
+		"extracted_data": extractedData,
+	})
+}
+
+// ExtractSysID extrai o sys_id de uma URL do ServiceNow
+// GET /api/v1/servicenow/extract-sysid?url=...
+func (h *ServiceNowHandler) ExtractSysID(c *gin.Context) {
+	url := c.Query("url")
+	if url == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Parâmetro 'url' é obrigatório",
+		})
+		return
+	}
+
+	sysID, err := servicenow.ExtractSysIDFromURL(url)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"sys_id":  sysID,
+	})
+}

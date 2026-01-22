@@ -16,6 +16,9 @@ export type ServiceType =
 // Status de health
 export type HealthStatus = "healthy" | "warning" | "critical" | "unknown";
 
+// Severidade de eventos K8s
+export type EventSeverity = "critical" | "warning" | "info";
+
 // Request de health check
 export interface HealthCheckRequest {
   // Modo 1: Filtro por ambiente (prioritário)
@@ -31,9 +34,16 @@ export interface HealthCheckRequest {
   check_deployments: boolean;
   check_services: boolean;
   check_configs: boolean;
+  check_events: boolean; // Verificar eventos K8s (FailedScheduling, etc.)
 
-  // Timeout por check (segundos)
+  // Timeout geral (segundos) - usado como fallback
   timeout: number;
+
+  // Timeouts específicos por tipo de check (opcional)
+  timeout_deployments?: number; // Padrão: 60s
+  timeout_services?: number;    // Padrão: 45s
+  timeout_configs?: number;     // Padrão: 30s
+  timeout_events?: number;      // Padrão: 30s
 
   // Paralelismo máximo (opcional)
   max_parallel?: number;
@@ -55,6 +65,7 @@ export interface HealthCheckResult {
   deployment_results: DeploymentHealth[];
   service_results: ServiceHealth[];
   config_results: ConfigHealth[];
+  event_results: EventHealth[]; // Eventos K8s críticos
 
   // Resumo
   total_checks: number;
@@ -135,11 +146,32 @@ export interface ConfigHealth {
   checked_at: string; // ISO timestamp
 }
 
+// Health de Evento K8s (FailedScheduling, CrashLoopBackOff, etc.)
+export interface EventHealth {
+  name: string;
+  namespace: string;
+  reason: string;           // FailedScheduling, BackOff, etc.
+  message: string;          // Mensagem completa do evento
+  type: string;             // Warning, Normal
+  severity: EventSeverity;  // critical, warning, info
+  count: number;            // Número de ocorrências
+  first_timestamp: string;  // ISO timestamp - Primeira ocorrência
+  last_timestamp: string;   // ISO timestamp - Última ocorrência
+
+  // Recurso relacionado
+  involved_kind: string;    // Pod, Node, Deployment, etc.
+  involved_name: string;    // Nome do recurso
+
+  // Sugestões de correção
+  suggestions: string[];
+  status: HealthStatus;     // Para compatibilidade com outros checkers
+}
+
 // Progress de health check (SSE)
 export interface HealthCheckProgress {
   id: string;        // Session ID (pode vir como 'ID' do backend Go)
   ID?: string;       // Alias para compatibilidade com backend Go (capitalizado)
-  type: string;      // "init" | "deployments" | "services" | "configs" | "summary" | "complete" | "error"
+  type: string;      // "init" | "deployments" | "services" | "configs" | "events" | "summary" | "complete" | "error"
   phase: string;     // Mantido por compatibilidade (usado em cordon/drain, não em health checking)
   message: string;
   progress: number;  // 0-100

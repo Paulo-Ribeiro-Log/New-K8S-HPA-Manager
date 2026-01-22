@@ -519,6 +519,36 @@ func (s *Server) setupRoutes() {
 		deployments.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), deploymentHandler.Apply)
 		deployments.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), deploymentHandler.Delete)
 		deployments.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), deploymentHandler.RolloutRestart)
+		deployments.POST("/:cluster/:namespace/:name/scale", rbacMiddleware.RequireSREGroup(), deploymentHandler.Scale)
+	}
+
+	// StatefulSets
+	statefulSetHandler := handlers.NewStatefulSetHandler(s.kubeManager, s.historyTracker)
+	statefulsets := api.Group("/statefulsets")
+	{
+		statefulsets.GET("", statefulSetHandler.List)
+		statefulsets.GET("/:cluster/:namespace/:name", statefulSetHandler.Get)
+		statefulsets.GET("/:cluster/:namespace/:name/describe", statefulSetHandler.Describe)
+
+		// StatefulSets - Write Operations (SRE-only)
+		statefulsets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), statefulSetHandler.Apply)
+		statefulsets.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), statefulSetHandler.Delete)
+		statefulsets.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), statefulSetHandler.RolloutRestart)
+		statefulsets.POST("/:cluster/:namespace/:name/scale", rbacMiddleware.RequireSREGroup(), statefulSetHandler.Scale)
+	}
+
+	// DaemonSets
+	daemonSetHandler := handlers.NewDaemonSetHandler(s.kubeManager, s.historyTracker)
+	daemonsets := api.Group("/daemonsets")
+	{
+		daemonsets.GET("", daemonSetHandler.List)
+		daemonsets.GET("/:cluster/:namespace/:name", daemonSetHandler.Get)
+		daemonsets.GET("/:cluster/:namespace/:name/describe", daemonSetHandler.Describe)
+
+		// DaemonSets - Write Operations (SRE-only)
+		daemonsets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), daemonSetHandler.Apply)
+		daemonsets.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), daemonSetHandler.Delete)
+		daemonsets.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), daemonSetHandler.RolloutRestart)
 	}
 
 	// Pods/Containers
@@ -703,6 +733,28 @@ func (s *Server) setupRoutes() {
 		api.DELETE("/github/token", rbacMiddleware.InjectUserEmail(), githubTokensHandler.DeleteToken)
 		fmt.Println("✅ GitHub Tokens routes registradas")
 	}
+
+	// ServiceNow Integration (importação de dados de CHG)
+	// Tenta scraping via HTTP, se falhar sugere usar aba "Texto Manual"
+	serviceNowHandler := handlers.NewServiceNowHandler(&githubLogger)
+	servicenow := api.Group("/servicenow")
+	{
+		servicenow.POST("/import", serviceNowHandler.ImportFromURL)
+		servicenow.POST("/parse", serviceNowHandler.ImportFromDescription)
+		servicenow.GET("/extract-sysid", serviceNowHandler.ExtractSysID)
+	}
+	fmt.Println("✅ ServiceNow Integration routes registradas")
+
+	// SRE Approval Integration (aprovação de deployments)
+	sreApprovalHandler := handlers.NewSREApprovalHandler(&githubLogger)
+	sreApproval := api.Group("/sre-approval")
+	{
+		sreApproval.GET("/info", sreApprovalHandler.GetApprovalInfo)
+		sreApproval.POST("/approve", rbacMiddleware.RequireSREGroup(), sreApprovalHandler.Approve)
+		sreApproval.GET("/extract-id", sreApprovalHandler.ExtractApprovalID)
+		sreApproval.GET("/current-user", sreApprovalHandler.GetCurrentUser)
+	}
+	fmt.Println("✅ SRE Approval Integration routes registradas")
 
 	// Sessions
 	sessionHandler := handlers.NewSessionsHandler()
