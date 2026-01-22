@@ -1,4 +1,4 @@
-# github.com/Azure/azure-sdk-for-go/sdk/azcore v1.19.1
+# github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
 ## explicit; go 1.23.0
 github.com/Azure/azure-sdk-for-go/sdk/azcore
 github.com/Azure/azure-sdk-for-go/sdk/azcore/arm/internal/resource
@@ -20,7 +20,7 @@ github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime
 github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming
 github.com/Azure/azure-sdk-for-go/sdk/azcore/to
 github.com/Azure/azure-sdk-for-go/sdk/azcore/tracing
-# github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.12.0
+# github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
 ## explicit; go 1.23.0
 github.com/Azure/azure-sdk-for-go/sdk/azidentity
 github.com/Azure/azure-sdk-for-go/sdk/azidentity/internal
@@ -55,7 +55,7 @@ github.com/Azure/go-amqp/internal/encoding
 github.com/Azure/go-amqp/internal/frames
 github.com/Azure/go-amqp/internal/queue
 github.com/Azure/go-amqp/internal/shared
-# github.com/AzureAD/microsoft-authentication-library-for-go v1.5.0
+# github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0
 ## explicit; go 1.18
 github.com/AzureAD/microsoft-authentication-library-for-go/apps/cache
 github.com/AzureAD/microsoft-authentication-library-for-go/apps/confidential
@@ -123,69 +123,6 @@ github.com/bytedance/sonic/loader/internal/rt
 # github.com/cespare/xxhash/v2 v2.3.0
 ## explicit; go 1.11
 github.com/cespare/xxhash/v2
-# github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327
-## explicit; go 1.23
-github.com/chromedp/cdproto
-github.com/chromedp/cdproto/accessibility
-github.com/chromedp/cdproto/animation
-github.com/chromedp/cdproto/audits
-github.com/chromedp/cdproto/autofill
-github.com/chromedp/cdproto/backgroundservice
-github.com/chromedp/cdproto/bluetoothemulation
-github.com/chromedp/cdproto/browser
-github.com/chromedp/cdproto/cachestorage
-github.com/chromedp/cdproto/cast
-github.com/chromedp/cdproto/cdp
-github.com/chromedp/cdproto/css
-github.com/chromedp/cdproto/debugger
-github.com/chromedp/cdproto/deviceaccess
-github.com/chromedp/cdproto/deviceorientation
-github.com/chromedp/cdproto/dom
-github.com/chromedp/cdproto/domdebugger
-github.com/chromedp/cdproto/domsnapshot
-github.com/chromedp/cdproto/domstorage
-github.com/chromedp/cdproto/emulation
-github.com/chromedp/cdproto/eventbreakpoints
-github.com/chromedp/cdproto/extensions
-github.com/chromedp/cdproto/fedcm
-github.com/chromedp/cdproto/fetch
-github.com/chromedp/cdproto/filesystem
-github.com/chromedp/cdproto/headlessexperimental
-github.com/chromedp/cdproto/heapprofiler
-github.com/chromedp/cdproto/indexeddb
-github.com/chromedp/cdproto/input
-github.com/chromedp/cdproto/inspector
-github.com/chromedp/cdproto/io
-github.com/chromedp/cdproto/layertree
-github.com/chromedp/cdproto/log
-github.com/chromedp/cdproto/media
-github.com/chromedp/cdproto/memory
-github.com/chromedp/cdproto/network
-github.com/chromedp/cdproto/overlay
-github.com/chromedp/cdproto/page
-github.com/chromedp/cdproto/performance
-github.com/chromedp/cdproto/performancetimeline
-github.com/chromedp/cdproto/preload
-github.com/chromedp/cdproto/profiler
-github.com/chromedp/cdproto/pwa
-github.com/chromedp/cdproto/runtime
-github.com/chromedp/cdproto/security
-github.com/chromedp/cdproto/serviceworker
-github.com/chromedp/cdproto/storage
-github.com/chromedp/cdproto/systeminfo
-github.com/chromedp/cdproto/target
-github.com/chromedp/cdproto/tethering
-github.com/chromedp/cdproto/tracing
-github.com/chromedp/cdproto/webaudio
-github.com/chromedp/cdproto/webauthn
-# github.com/chromedp/chromedp v0.14.2
-## explicit; go 1.24
-github.com/chromedp/chromedp
-github.com/chromedp/chromedp/device
-github.com/chromedp/chromedp/kb
-# github.com/chromedp/sysutil v1.1.0
-## explicit; go 1.23
-github.com/chromedp/sysutil
 # github.com/cloudwego/base64x v0.1.6
 ## explicit; go 1.17
 github.com/cloudwego/base64x
@@ -226,14 +163,6 @@ github.com/gin-gonic/gin/codec/json
 github.com/gin-gonic/gin/internal/bytesconv
 github.com/gin-gonic/gin/internal/fs
 github.com/gin-gonic/gin/render
-# github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2
-## explicit; go 1.24
-github.com/go-json-experiment/json
-github.com/go-json-experiment/json/internal
-github.com/go-json-experiment/json/internal/jsonflags
-github.com/go-json-experiment/json/internal/jsonopts
-github.com/go-json-experiment/json/internal/jsonwire
-github.com/go-json-experiment/json/jsontext
 # github.com/go-logr/logr v1.4.3
 ## explicit; go 1.18
 github.com/go-logr/logr
@@ -267,19 +196,6 @@ github.com/go-redis/redis/v8/internal/pool
 github.com/go-redis/redis/v8/internal/proto
 github.com/go-redis/redis/v8/internal/rand
 github.com/go-redis/redis/v8/internal/util
-# github.com/gobwas/httphead v0.1.0
-## explicit; go 1.15
-github.com/gobwas/httphead
-# github.com/gobwas/pool v0.2.1
-## explicit
-github.com/gobwas/pool
-github.com/gobwas/pool/internal/pmath
-github.com/gobwas/pool/pbufio
-github.com/gobwas/pool/pbytes
-# github.com/gobwas/ws v1.4.0
-## explicit; go 1.16
-github.com/gobwas/ws
-github.com/gobwas/ws/wsutil
 # github.com/goccy/go-json v0.10.5
 ## explicit; go 1.19
 github.com/goccy/go-json
