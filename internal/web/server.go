@@ -734,6 +734,28 @@ func (s *Server) setupRoutes() {
 		fmt.Println("✅ GitHub Tokens routes registradas")
 	}
 
+	// ServiceNow Integration (importação de dados de CHG)
+	// Tenta scraping via HTTP, se falhar sugere usar aba "Texto Manual"
+	serviceNowHandler := handlers.NewServiceNowHandler(&githubLogger)
+	servicenow := api.Group("/servicenow")
+	{
+		servicenow.POST("/import", serviceNowHandler.ImportFromURL)
+		servicenow.POST("/parse", serviceNowHandler.ImportFromDescription)
+		servicenow.GET("/extract-sysid", serviceNowHandler.ExtractSysID)
+	}
+	fmt.Println("✅ ServiceNow Integration routes registradas")
+
+	// SRE Approval Integration (aprovação de deployments)
+	sreApprovalHandler := handlers.NewSREApprovalHandler(&githubLogger)
+	sreApproval := api.Group("/sre-approval")
+	{
+		sreApproval.GET("/info", sreApprovalHandler.GetApprovalInfo)
+		sreApproval.POST("/approve", rbacMiddleware.RequireSREGroup(), sreApprovalHandler.Approve)
+		sreApproval.GET("/extract-id", sreApprovalHandler.ExtractApprovalID)
+		sreApproval.GET("/current-user", sreApprovalHandler.GetCurrentUser)
+	}
+	fmt.Println("✅ SRE Approval Integration routes registradas")
+
 	// Sessions
 	sessionHandler := handlers.NewSessionsHandler()
 	api.GET("/sessions", sessionHandler.ListAllSessions)
