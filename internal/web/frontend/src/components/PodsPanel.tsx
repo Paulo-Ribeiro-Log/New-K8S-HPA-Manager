@@ -9,7 +9,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, Skull } from "lucide-react";
+import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, Skull, Square, CheckSquare, XSquare } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -75,6 +76,15 @@ export const PodsPanel = ({
   const [restartingPod, setRestartingPod] = useState<PodSummary | null>(null);
   const [killConfirmOpen, setKillConfirmOpen] = useState(false);
   const [killingPod, setKillingPod] = useState<PodSummary | null>(null);
+
+  // Estados para seleção em lote
+  const [selectedPods, setSelectedPods] = useState<Set<string>>(new Set());
+  const [batchActionType, setBatchActionType] = useState<"delete" | "kill" | "restart" | null>(null);
+  const [batchConfirmOpen, setBatchConfirmOpen] = useState(false);
+  const [batchOperationLoading, setBatchOperationLoading] = useState(false);
+  const [batchResults, setBatchResults] = useState<Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }> | null>(null);
+  const [batchResultsOpen, setBatchResultsOpen] = useState(false);
+
   const [yamlCopied, setYamlCopied] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [selectedContainerForLogs, setSelectedContainerForLogs] = useState<string>("");
@@ -703,6 +713,100 @@ export const PodsPanel = ({
     }
   };
 
+  // === Funções de Seleção em Lote ===
+  const getPodKey = (pod: PodSummary) => `${pod.namespace}/${pod.name}`;
+
+  const togglePodSelection = (pod: PodSummary, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const key = getPodKey(pod);
+    setSelectedPods(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(key)) {
+        newSet.delete(key);
+      } else {
+        newSet.add(key);
+      }
+      return newSet;
+    });
+  };
+
+  const selectAllPods = () => {
+    const allKeys = filteredPods.map(getPodKey);
+    setSelectedPods(new Set(allKeys));
+  };
+
+  const clearSelection = () => {
+    setSelectedPods(new Set());
+  };
+
+  const getSelectedPodsData = () => {
+    return filteredPods.filter(pod => selectedPods.has(getPodKey(pod)));
+  };
+
+  const handleBatchAction = (action: "delete" | "kill" | "restart") => {
+    setBatchActionType(action);
+    setBatchConfirmOpen(true);
+  };
+
+  const executeBatchAction = async () => {
+    if (!batchActionType || selectedPods.size === 0) return;
+
+    setBatchOperationLoading(true);
+    const podsToProcess = getSelectedPodsData().map(p => ({ namespace: p.namespace, name: p.name }));
+
+    try {
+      let result;
+      switch (batchActionType) {
+        case "delete":
+          result = await apiClient.batchDeletePods(cluster, podsToProcess);
+          break;
+        case "kill":
+          result = await apiClient.batchKillPods(cluster, podsToProcess);
+          break;
+        case "restart":
+          result = await apiClient.batchRestartPods(cluster, podsToProcess);
+          break;
+      }
+
+      setBatchResults(result.results);
+      setBatchConfirmOpen(false);
+      setBatchResultsOpen(true);
+
+      if (result.success_count === result.total) {
+        toast.success(`${result.success_count} pod(s) processado(s) com sucesso`);
+      } else if (result.success_count > 0) {
+        toast.warning(`${result.success_count}/${result.total} pod(s) processado(s)`, {
+          description: `${result.failed_count} falha(s)`,
+        });
+      } else {
+        toast.error(`Falha ao processar ${result.total} pod(s)`);
+      }
+
+      clearSelection();
+      setSelectedPod(null);
+      fetchPods();
+    } catch (err) {
+      toast.error("Erro na operação em lote", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setBatchOperationLoading(false);
+    }
+  };
+
+  const getBatchActionConfig = () => {
+    switch (batchActionType) {
+      case "delete":
+        return { label: "Deletar", icon: Trash2, color: "bg-red-600 hover:bg-red-700", description: "Os pods serão deletados permanentemente." };
+      case "kill":
+        return { label: "Kill (Forçar)", icon: Skull, color: "bg-orange-600 hover:bg-orange-700", description: "Os pods serão terminados imediatamente sem graceful shutdown." };
+      case "restart":
+        return { label: "Reiniciar", icon: RotateCw, color: "bg-blue-600 hover:bg-blue-700", description: "Os pods serão reiniciados. Pods gerenciados por controllers serão recriados automaticamente." };
+      default:
+        return { label: "", icon: RotateCw, color: "", description: "" };
+    }
+  };
+
   const handleDownloadLogs = (containerName: string) => {
     const logs = podLogs[containerName];
     if (!logs || !selectedPod) return;
@@ -924,41 +1028,97 @@ export const PodsPanel = ({
       );
     }
 
+    const allSelected = filteredPods.length > 0 && filteredPods.every(pod => selectedPods.has(getPodKey(pod)));
+    const someSelected = selectedPods.size > 0 && !allSelected;
+
     return (
       <div className="space-y-2">
+        {/* Header com seleção em lote */}
+        <div className="flex items-center gap-2 pb-2 border-b border-border/40">
+          <div
+            onClick={(e) => {
+              e.stopPropagation();
+              if (allSelected) {
+                clearSelection();
+              } else {
+                selectAllPods();
+              }
+            }}
+            className="cursor-pointer p-1 hover:bg-muted rounded"
+          >
+            {allSelected ? (
+              <CheckSquare className="w-4 h-4 text-primary" />
+            ) : someSelected ? (
+              <Square className="w-4 h-4 text-primary" />
+            ) : (
+              <Square className="w-4 h-4 text-muted-foreground" />
+            )}
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {selectedPods.size > 0 ? `${selectedPods.size} selecionado(s)` : "Selecionar todos"}
+          </span>
+          {selectedPods.size > 0 && (
+            <Button variant="ghost" size="sm" className="h-6 text-xs ml-auto" onClick={clearSelection}>
+              <X className="w-3 h-3 mr-1" />
+              Limpar
+            </Button>
+          )}
+        </div>
+
+        {/* Lista de pods */}
         {filteredPods.map((pod) => {
           const isSelected =
             selectedPod?.name === pod.name &&
             selectedPod?.namespace === pod.namespace;
+          const isChecked = selectedPods.has(getPodKey(pod));
           const hasWarning = pod.restarts > 3;
 
           return (
-            <button
+            <div
               key={`${pod.cluster}-${pod.namespace}-${pod.name}`}
-              onClick={() => handleSelectPod(pod)}
-              className={`w-full text-left p-3 rounded-lg border transition-colors ${
+              className={`flex items-start gap-2 p-3 rounded-lg border transition-colors ${
                 isSelected
                   ? "border-primary bg-primary/10"
+                  : isChecked
+                  ? "border-primary/50 bg-primary/5"
                   : "border-border/60 hover:border-primary/40"
               }`}
             >
-              <div className="flex items-center gap-2 mb-1">
-                <div className="font-semibold text-sm truncate flex-1">{pod.name}</div>
-                <Badge variant="outline" className={`text-xs ${getPhaseColor(pod.phase)}`}>
-                  {pod.phase}
-                </Badge>
-              </div>
-              <div className="text-xs text-muted-foreground">{pod.namespace}</div>
-              <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
-                <span>{pod.readyContainers}/{pod.totalContainers} ready</span>
-                {hasWarning && (
-                  <Badge variant="outline" className="text-xs bg-orange-500/10 text-orange-700 dark:text-orange-400 border-orange-500/20">
-                    <AlertCircle className="w-3 h-3 mr-1" />
-                    {pod.restarts} restarts
-                  </Badge>
+              {/* Checkbox */}
+              <div
+                onClick={(e) => togglePodSelection(pod, e)}
+                className="cursor-pointer p-0.5 mt-0.5"
+              >
+                {isChecked ? (
+                  <CheckSquare className="w-4 h-4 text-primary" />
+                ) : (
+                  <Square className="w-4 h-4 text-muted-foreground hover:text-primary" />
                 )}
               </div>
-            </button>
+
+              {/* Pod info */}
+              <button
+                onClick={() => handleSelectPod(pod)}
+                className="flex-1 text-left"
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="font-semibold text-sm truncate flex-1">{pod.name}</div>
+                  <Badge variant="outline" className={`text-xs ${getPhaseColor(pod.phase)}`}>
+                    {pod.phase}
+                  </Badge>
+                </div>
+                <div className="text-xs text-muted-foreground">{pod.namespace}</div>
+                <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
+                  <span>{pod.readyContainers}/{pod.totalContainers} ready</span>
+                  {hasWarning && (
+                    <Badge variant="outline" className="text-xs bg-orange-500/10 text-orange-700 dark:text-orange-400 border-orange-500/20">
+                      <AlertCircle className="w-3 h-3 mr-1" />
+                      {pod.restarts} restarts
+                    </Badge>
+                  )}
+                </div>
+              </button>
+            </div>
           );
         })}
       </div>
@@ -1541,6 +1701,130 @@ export const PodsPanel = ({
                   Kill Pod
                 </Button>
               </ProtectedAction>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Modal de Confirmação de Batch */}
+        <Dialog open={batchConfirmOpen} onOpenChange={setBatchConfirmOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                {(() => {
+                  const config = getBatchActionConfig();
+                  const Icon = config.icon;
+                  return Icon ? <Icon className="w-5 h-5" /> : null;
+                })()}
+                {getBatchActionConfig().label} {selectedPods.size} Pod(s)
+              </DialogTitle>
+              <DialogDescription>
+                <div className="mt-2">
+                  {getBatchActionConfig().description}
+                </div>
+                <div className="mt-4 p-3 bg-muted rounded-lg max-h-48 overflow-y-auto">
+                  <div className="text-xs font-medium mb-2">Pods selecionados:</div>
+                  <div className="space-y-1">
+                    {getSelectedPodsData().map(pod => (
+                      <div key={getPodKey(pod)} className="text-xs flex items-center gap-2">
+                        <Badge variant="outline" className={`text-[10px] ${getPhaseColor(pod.phase)}`}>
+                          {pod.phase}
+                        </Badge>
+                        <span className="text-muted-foreground">{pod.namespace}/</span>
+                        <span className="font-medium">{pod.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setBatchConfirmOpen(false)} disabled={batchOperationLoading}>
+                Cancelar
+              </Button>
+              <ProtectedAction>
+                <Button
+                  className={getBatchActionConfig().color}
+                  onClick={executeBatchAction}
+                  disabled={batchOperationLoading}
+                >
+                  {batchOperationLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Processando...
+                    </>
+                  ) : (
+                    (() => {
+                      const config = getBatchActionConfig();
+                      const Icon = config.icon;
+                      return (
+                        <>
+                          {Icon && <Icon className="w-4 h-4 mr-2" />}
+                          {config.label} {selectedPods.size} Pod(s)
+                        </>
+                      );
+                    })()
+                  )}
+                </Button>
+              </ProtectedAction>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Modal de Resultados do Batch */}
+        <Dialog open={batchResultsOpen} onOpenChange={setBatchResultsOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Resultado da Operação</DialogTitle>
+              <DialogDescription>
+                {batchResults && (
+                  <div className="mt-2">
+                    <div className="flex items-center gap-4 mb-4">
+                      <Badge variant="outline" className="bg-green-500/10 text-green-700 border-green-500/20">
+                        <CheckCircle2 className="w-3 h-3 mr-1" />
+                        {batchResults.filter(r => r.success).length} sucesso
+                      </Badge>
+                      {batchResults.filter(r => !r.success).length > 0 && (
+                        <Badge variant="outline" className="bg-red-500/10 text-red-700 border-red-500/20">
+                          <XSquare className="w-3 h-3 mr-1" />
+                          {batchResults.filter(r => !r.success).length} falha(s)
+                        </Badge>
+                      )}
+                    </div>
+                    <ScrollArea className="max-h-64">
+                      <div className="space-y-2">
+                        {batchResults.map((result, idx) => (
+                          <div
+                            key={idx}
+                            className={`p-2 rounded-lg text-xs ${
+                              result.success
+                                ? "bg-green-500/10 border border-green-500/20"
+                                : "bg-red-500/10 border border-red-500/20"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              {result.success ? (
+                                <CheckCircle2 className="w-4 h-4 text-green-600" />
+                              ) : (
+                                <XSquare className="w-4 h-4 text-red-600" />
+                              )}
+                              <span className="font-medium">{result.namespace}/{result.name}</span>
+                            </div>
+                            <div className="ml-6 mt-1 text-muted-foreground">
+                              {result.message}
+                              {result.error && <span className="text-red-600"> - {result.error}</span>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  </div>
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button onClick={() => setBatchResultsOpen(false)}>
+                Fechar
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
