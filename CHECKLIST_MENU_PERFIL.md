@@ -2,7 +2,7 @@
 
 **Data de Inicio**: 22 de Janeiro de 2026
 **Objetivo**: Criar menu dropdown de perfil no header com configuracoes centralizadas
-**Status**: CONCLUIDO (Fases 1-7 completas | Fase 8 opcional para limpeza futura)
+**Status**: CONCLUIDO (Todas as fases completas)
 
 ---
 
@@ -150,10 +150,12 @@ internal/web/frontend/src/
 
 ## Fase 8: Limpeza (Pos-Validacao)
 
-- [ ] **8.1** Remover modais antigos nao utilizados
-- [ ] **8.2** Remover imports orfaos
-- [ ] **8.3** Atualizar CLAUDE.md com nova estrutura
-- [ ] **8.4** Commit final com documentacao
+- [x] **8.1** Remover modais antigos nao utilizados
+  - `TokenConfigModal.tsx` removido (substituido por CredentialRedirectDialog)
+  - `NexusConfigPanel.tsx` removido (substituido por CredentialRedirectDialog)
+- [x] **8.2** Remover imports orfaos (verificado - nenhum import orfao encontrado)
+- [x] **8.3** Atualizar CLAUDE.md com nova estrutura (documentacao atualizada)
+- [x] **8.4** Commit final com documentacao
 
 ---
 
@@ -235,6 +237,7 @@ Legenda:
 | 23/01/2026 | 5 | Integracao no Header + Responsividade | Concluido |
 | 23/01/2026 | 6 | Retrocompatibilidade (Opcao B - Dialog de redirecionamento) | Concluido |
 | 23/01/2026 | 7 | Testes e Polimento (TypeScript, build, verificacao) | Concluido |
+| 23/01/2026 | 8 | Limpeza (remocao de modais orfaos, verificacao de imports) | Concluido |
 
 ---
 
