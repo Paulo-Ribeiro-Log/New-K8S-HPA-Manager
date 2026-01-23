@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, Skull, Square, CheckSquare, XSquare } from "lucide-react";
+import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, Skull, XSquare } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -1035,33 +1035,57 @@ export const PodsPanel = ({
       <div className="space-y-2">
         {/* Header com seleção em lote */}
         <div className="flex items-center gap-2 pb-2 border-b border-border/40">
-          <div
-            onClick={(e) => {
-              e.stopPropagation();
-              if (allSelected) {
-                clearSelection();
-              } else {
+          <Checkbox
+            checked={allSelected ? true : someSelected ? "indeterminate" : false}
+            onCheckedChange={(checked) => {
+              if (checked) {
                 selectAllPods();
+              } else {
+                clearSelection();
               }
             }}
-            className="cursor-pointer p-1 hover:bg-muted rounded"
-          >
-            {allSelected ? (
-              <CheckSquare className="w-4 h-4 text-primary" />
-            ) : someSelected ? (
-              <Square className="w-4 h-4 text-primary" />
-            ) : (
-              <Square className="w-4 h-4 text-muted-foreground" />
-            )}
-          </div>
+            className="data-[state=checked]:bg-primary data-[state=indeterminate]:bg-primary"
+          />
           <span className="text-xs text-muted-foreground">
             {selectedPods.size > 0 ? `${selectedPods.size} selecionado(s)` : "Selecionar todos"}
           </span>
           {selectedPods.size > 0 && (
-            <Button variant="ghost" size="sm" className="h-6 text-xs ml-auto" onClick={clearSelection}>
-              <X className="w-3 h-3 mr-1" />
-              Limpar
-            </Button>
+            <div className="flex items-center gap-1 ml-auto">
+              <ProtectedAction>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-xs text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950"
+                  onClick={() => handleBatchAction("restart")}
+                >
+                  Reiniciar
+                </Button>
+              </ProtectedAction>
+              <ProtectedAction>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-xs text-orange-600 hover:text-orange-700 hover:bg-orange-50 dark:hover:bg-orange-950"
+                  onClick={() => handleBatchAction("kill")}
+                >
+                  Kill
+                </Button>
+              </ProtectedAction>
+              <ProtectedAction>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950"
+                  onClick={() => handleBatchAction("delete")}
+                >
+                  Deletar
+                </Button>
+              </ProtectedAction>
+              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={clearSelection}>
+                <X className="w-3 h-3 mr-1" />
+                Limpar
+              </Button>
+            </div>
           )}
         </div>
 
@@ -1085,16 +1109,23 @@ export const PodsPanel = ({
               }`}
             >
               {/* Checkbox */}
-              <div
-                onClick={(e) => togglePodSelection(pod, e)}
-                className="cursor-pointer p-0.5 mt-0.5"
-              >
-                {isChecked ? (
-                  <CheckSquare className="w-4 h-4 text-primary" />
-                ) : (
-                  <Square className="w-4 h-4 text-muted-foreground hover:text-primary" />
-                )}
-              </div>
+              <Checkbox
+                checked={isChecked}
+                onCheckedChange={() => {
+                  const key = getPodKey(pod);
+                  setSelectedPods(prev => {
+                    const newSet = new Set(prev);
+                    if (newSet.has(key)) {
+                      newSet.delete(key);
+                    } else {
+                      newSet.add(key);
+                    }
+                    return newSet;
+                  });
+                }}
+                onClick={(e) => e.stopPropagation()}
+                className="mt-0.5"
+              />
 
               {/* Pod info */}
               <button
@@ -2193,6 +2224,130 @@ export const PodsPanel = ({
                 Kill Pod
               </Button>
             </ProtectedAction>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Confirmação de Batch */}
+      <Dialog open={batchConfirmOpen} onOpenChange={setBatchConfirmOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {(() => {
+                const config = getBatchActionConfig();
+                const Icon = config.icon;
+                return Icon ? <Icon className="w-5 h-5" /> : null;
+              })()}
+              {getBatchActionConfig().label} {selectedPods.size} Pod(s)
+            </DialogTitle>
+            <DialogDescription>
+              <div className="mt-2">
+                {getBatchActionConfig().description}
+              </div>
+              <div className="mt-4 p-3 bg-muted rounded-lg max-h-48 overflow-y-auto">
+                <div className="text-xs font-medium mb-2">Pods selecionados:</div>
+                <div className="space-y-1">
+                  {getSelectedPodsData().map(pod => (
+                    <div key={getPodKey(pod)} className="text-xs flex items-center gap-2">
+                      <Badge variant="outline" className={`text-[10px] ${getPhaseColor(pod.phase)}`}>
+                        {pod.phase}
+                      </Badge>
+                      <span className="text-muted-foreground">{pod.namespace}/</span>
+                      <span className="font-medium">{pod.name}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBatchConfirmOpen(false)} disabled={batchOperationLoading}>
+              Cancelar
+            </Button>
+            <ProtectedAction>
+              <Button
+                className={getBatchActionConfig().color}
+                onClick={executeBatchAction}
+                disabled={batchOperationLoading}
+              >
+                {batchOperationLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Processando...
+                  </>
+                ) : (
+                  (() => {
+                    const config = getBatchActionConfig();
+                    const Icon = config.icon;
+                    return (
+                      <>
+                        {Icon && <Icon className="w-4 h-4 mr-2" />}
+                        {config.label} {selectedPods.size} Pod(s)
+                      </>
+                    );
+                  })()
+                )}
+              </Button>
+            </ProtectedAction>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Resultados do Batch */}
+      <Dialog open={batchResultsOpen} onOpenChange={setBatchResultsOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Resultado da Operação</DialogTitle>
+            <DialogDescription>
+              {batchResults && (
+                <div className="mt-2">
+                  <div className="flex items-center gap-4 mb-4">
+                    <Badge variant="outline" className="bg-green-500/10 text-green-700 border-green-500/20">
+                      <CheckCircle2 className="w-3 h-3 mr-1" />
+                      {batchResults.filter(r => r.success).length} sucesso
+                    </Badge>
+                    {batchResults.filter(r => !r.success).length > 0 && (
+                      <Badge variant="outline" className="bg-red-500/10 text-red-700 border-red-500/20">
+                        <XSquare className="w-3 h-3 mr-1" />
+                        {batchResults.filter(r => !r.success).length} falha(s)
+                      </Badge>
+                    )}
+                  </div>
+                  <ScrollArea className="max-h-64">
+                    <div className="space-y-2">
+                      {batchResults.map((result, idx) => (
+                        <div
+                          key={idx}
+                          className={`p-2 rounded-lg text-xs ${
+                            result.success
+                              ? "bg-green-500/10 border border-green-500/20"
+                              : "bg-red-500/10 border border-red-500/20"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            {result.success ? (
+                              <CheckCircle2 className="w-4 h-4 text-green-600" />
+                            ) : (
+                              <XSquare className="w-4 h-4 text-red-600" />
+                            )}
+                            <span className="font-medium">{result.namespace}/{result.name}</span>
+                          </div>
+                          <div className="mt-1 text-muted-foreground">{result.message}</div>
+                          {result.error && (
+                            <div className="mt-1 text-red-600">{result.error}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                </div>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => setBatchResultsOpen(false)}>
+              Fechar
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
