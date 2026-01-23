@@ -520,6 +520,9 @@ func (s *Server) setupRoutes() {
 		deployments.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), deploymentHandler.Delete)
 		deployments.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), deploymentHandler.RolloutRestart)
 		deployments.POST("/:cluster/:namespace/:name/scale", rbacMiddleware.RequireSREGroup(), deploymentHandler.Scale)
+		// Deployments - Batch Operations (SRE-only)
+		deployments.POST("/:cluster/batch/delete", rbacMiddleware.RequireSREGroup(), deploymentHandler.BatchDelete)
+		deployments.POST("/:cluster/batch/restart", rbacMiddleware.RequireSREGroup(), deploymentHandler.BatchRestart)
 	}
 
 	// StatefulSets
@@ -570,6 +573,11 @@ func (s *Server) setupRoutes() {
 		pods.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), podHandler.Restart)
 		pods.POST("/:cluster/:namespace/:name/kill", rbacMiddleware.RequireSREGroup(), podHandler.Kill)
 		pods.POST("/:cluster/:namespace/debug", rbacMiddleware.RequireSREGroup(), podHandler.CreateDebugPod)
+
+		// Batch Operations (SRE-only)
+		pods.POST("/:cluster/batch/delete", rbacMiddleware.RequireSREGroup(), podHandler.BatchDelete)
+		pods.POST("/:cluster/batch/kill", rbacMiddleware.RequireSREGroup(), podHandler.BatchKill)
+		pods.POST("/:cluster/batch/restart", rbacMiddleware.RequireSREGroup(), podHandler.BatchRestart)
 	}
 
 	// Pods Summary

@@ -738,6 +738,49 @@ class APIClient {
     return response;
   }
 
+  // Deployments Batch Operations
+  async batchDeleteDeployments(cluster: string, deployments: Array<{ namespace: string; name: string }>): Promise<{
+    results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+    total: number;
+    success_count: number;
+    failed_count: number;
+  }> {
+    const response = await this.request<APIResponse<{
+      results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+      total: number;
+      success_count: number;
+      failed_count: number;
+    }>>(
+      `/deployments/${encodeURIComponent(cluster)}/batch/delete`,
+      {
+        method: "POST",
+        body: JSON.stringify({ deployments }),
+      }
+    );
+    return response.data || { results: [], total: 0, success_count: 0, failed_count: 0 };
+  }
+
+  async batchRestartDeployments(cluster: string, deployments: Array<{ namespace: string; name: string }>): Promise<{
+    results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+    total: number;
+    success_count: number;
+    failed_count: number;
+  }> {
+    const response = await this.request<APIResponse<{
+      results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+      total: number;
+      success_count: number;
+      failed_count: number;
+    }>>(
+      `/deployments/${encodeURIComponent(cluster)}/batch/restart`,
+      {
+        method: "POST",
+        body: JSON.stringify({ deployments }),
+      }
+    );
+    return response.data || { results: [], total: 0, success_count: 0, failed_count: 0 };
+  }
+
   // Ingress API Methods
   async getIngresses(
     cluster?: string,
@@ -1162,6 +1205,70 @@ class APIClient {
       }
     );
     return response.data || { success: false, message: "Unknown error" };
+  }
+
+  // Batch Operations
+  async batchDeletePods(cluster: string, pods: Array<{ namespace: string; name: string }>): Promise<{
+    results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+    total: number;
+    success_count: number;
+    failed_count: number;
+  }> {
+    const response = await this.request<APIResponse<{
+      results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+      total: number;
+      success_count: number;
+      failed_count: number;
+    }>>(
+      `/pods/${encodeURIComponent(cluster)}/batch/delete`,
+      {
+        method: "POST",
+        body: JSON.stringify({ pods }),
+      }
+    );
+    return response.data || { results: [], total: 0, success_count: 0, failed_count: 0 };
+  }
+
+  async batchKillPods(cluster: string, pods: Array<{ namespace: string; name: string }>): Promise<{
+    results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+    total: number;
+    success_count: number;
+    failed_count: number;
+  }> {
+    const response = await this.request<APIResponse<{
+      results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+      total: number;
+      success_count: number;
+      failed_count: number;
+    }>>(
+      `/pods/${encodeURIComponent(cluster)}/batch/kill`,
+      {
+        method: "POST",
+        body: JSON.stringify({ pods }),
+      }
+    );
+    return response.data || { results: [], total: 0, success_count: 0, failed_count: 0 };
+  }
+
+  async batchRestartPods(cluster: string, pods: Array<{ namespace: string; name: string }>): Promise<{
+    results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+    total: number;
+    success_count: number;
+    failed_count: number;
+  }> {
+    const response = await this.request<APIResponse<{
+      results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+      total: number;
+      success_count: number;
+      failed_count: number;
+    }>>(
+      `/pods/${encodeURIComponent(cluster)}/batch/restart`,
+      {
+        method: "POST",
+        body: JSON.stringify({ pods }),
+      }
+    );
+    return response.data || { results: [], total: 0, success_count: 0, failed_count: 0 };
   }
 
   async getPodLogs(
