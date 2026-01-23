@@ -1418,3 +1418,343 @@ func (h *PodHandler) DownloadMultipleFromPod(c *gin.Context) {
 	c.Status(http.StatusOK)
 	io.Copy(c.Writer, file)
 }
+
+// PodReference representa uma referência a um pod para operações em batch
+type PodReference struct {
+	Namespace string `json:"namespace" binding:"required"`
+	Name      string `json:"name" binding:"required"`
+}
+
+// BatchOperationRequest representa uma requisição de operação em batch
+type BatchOperationRequest struct {
+	Pods []PodReference `json:"pods" binding:"required,min=1"`
+}
+
+// BatchOperationResult representa o resultado de uma operação em um pod
+type BatchOperationResult struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Success   bool   `json:"success"`
+	Message   string `json:"message"`
+	Error     string `json:"error,omitempty"`
+}
+
+// BatchDelete deleta múltiplos pods
+func (h *PodHandler) BatchDelete(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster must be provided",
+			},
+		})
+		return
+	}
+
+	var req BatchOperationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": fmt.Sprintf("Invalid request body: %v", err),
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	ctx := c.Request.Context()
+	results := make([]BatchOperationResult, 0, len(req.Pods))
+	successCount := 0
+	start := time.Now()
+
+	for _, podRef := range req.Pods {
+		result := BatchOperationResult{
+			Namespace: podRef.Namespace,
+			Name:      podRef.Name,
+		}
+
+		err := clientset.CoreV1().Pods(podRef.Namespace).Delete(ctx, podRef.Name, metav1.DeleteOptions{})
+		if err != nil {
+			result.Success = false
+			result.Error = err.Error()
+			result.Message = fmt.Sprintf("Falha ao deletar pod %s/%s", podRef.Namespace, podRef.Name)
+		} else {
+			result.Success = true
+			result.Message = fmt.Sprintf("Pod %s/%s deletado com sucesso", podRef.Namespace, podRef.Name)
+			successCount++
+		}
+
+		results = append(results, result)
+	}
+
+	// Registrar no histórico
+	if h.historyTracker != nil {
+		podNames := make([]string, len(req.Pods))
+		for i, p := range req.Pods {
+			podNames[i] = fmt.Sprintf("%s/%s", p.Namespace, p.Name)
+		}
+		entry := history.HistoryEntry{
+			Action:   "batch_delete_pods",
+			Resource: fmt.Sprintf("%d pods", len(req.Pods)),
+			Cluster:  cluster,
+			Before: map[string]interface{}{
+				"pods":  podNames,
+				"count": len(req.Pods),
+			},
+			After: map[string]interface{}{
+				"success_count": successCount,
+				"failed_count":  len(req.Pods) - successCount,
+			},
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"results":       results,
+			"total":         len(req.Pods),
+			"success_count": successCount,
+			"failed_count":  len(req.Pods) - successCount,
+		},
+	})
+}
+
+// BatchKill força a terminação imediata de múltiplos pods
+func (h *PodHandler) BatchKill(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster must be provided",
+			},
+		})
+		return
+	}
+
+	var req BatchOperationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": fmt.Sprintf("Invalid request body: %v", err),
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	ctx := c.Request.Context()
+	results := make([]BatchOperationResult, 0, len(req.Pods))
+	successCount := 0
+	start := time.Now()
+	gracePeriod := int64(0)
+
+	for _, podRef := range req.Pods {
+		result := BatchOperationResult{
+			Namespace: podRef.Namespace,
+			Name:      podRef.Name,
+		}
+
+		err := clientset.CoreV1().Pods(podRef.Namespace).Delete(ctx, podRef.Name, metav1.DeleteOptions{
+			GracePeriodSeconds: &gracePeriod,
+		})
+		if err != nil {
+			result.Success = false
+			result.Error = err.Error()
+			result.Message = fmt.Sprintf("Falha ao matar pod %s/%s", podRef.Namespace, podRef.Name)
+		} else {
+			result.Success = true
+			result.Message = fmt.Sprintf("Pod %s/%s terminado forçadamente", podRef.Namespace, podRef.Name)
+			successCount++
+		}
+
+		results = append(results, result)
+	}
+
+	// Registrar no histórico
+	if h.historyTracker != nil {
+		podNames := make([]string, len(req.Pods))
+		for i, p := range req.Pods {
+			podNames[i] = fmt.Sprintf("%s/%s", p.Namespace, p.Name)
+		}
+		entry := history.HistoryEntry{
+			Action:   "batch_kill_pods",
+			Resource: fmt.Sprintf("%d pods", len(req.Pods)),
+			Cluster:  cluster,
+			Before: map[string]interface{}{
+				"pods":        podNames,
+				"count":       len(req.Pods),
+				"gracePeriod": 0,
+			},
+			After: map[string]interface{}{
+				"success_count": successCount,
+				"failed_count":  len(req.Pods) - successCount,
+			},
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"results":       results,
+			"total":         len(req.Pods),
+			"success_count": successCount,
+			"failed_count":  len(req.Pods) - successCount,
+		},
+	})
+}
+
+// BatchRestart reinicia múltiplos pods
+func (h *PodHandler) BatchRestart(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster must be provided",
+			},
+		})
+		return
+	}
+
+	var req BatchOperationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": fmt.Sprintf("Invalid request body: %v", err),
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	ctx := c.Request.Context()
+	results := make([]BatchOperationResult, 0, len(req.Pods))
+	successCount := 0
+	start := time.Now()
+	gracePeriod := int64(0)
+
+	for _, podRef := range req.Pods {
+		result := BatchOperationResult{
+			Namespace: podRef.Namespace,
+			Name:      podRef.Name,
+		}
+
+		// Verificar se o pod tem owner
+		pod, err := clientset.CoreV1().Pods(podRef.Namespace).Get(ctx, podRef.Name, metav1.GetOptions{})
+		hasOwner := false
+		ownerKind := ""
+		if err == nil && len(pod.OwnerReferences) > 0 {
+			hasOwner = true
+			ownerKind = pod.OwnerReferences[0].Kind
+		}
+
+		err = clientset.CoreV1().Pods(podRef.Namespace).Delete(ctx, podRef.Name, metav1.DeleteOptions{
+			GracePeriodSeconds: &gracePeriod,
+		})
+		if err != nil {
+			result.Success = false
+			result.Error = err.Error()
+			result.Message = fmt.Sprintf("Falha ao reiniciar pod %s/%s", podRef.Namespace, podRef.Name)
+		} else {
+			result.Success = true
+			if hasOwner {
+				result.Message = fmt.Sprintf("Pod %s/%s reiniciado (gerenciado por %s)", podRef.Namespace, podRef.Name, ownerKind)
+			} else {
+				result.Message = fmt.Sprintf("Pod %s/%s deletado (ATENÇÃO: sem owner, não será recriado)", podRef.Namespace, podRef.Name)
+			}
+			successCount++
+		}
+
+		results = append(results, result)
+	}
+
+	// Registrar no histórico
+	if h.historyTracker != nil {
+		podNames := make([]string, len(req.Pods))
+		for i, p := range req.Pods {
+			podNames[i] = fmt.Sprintf("%s/%s", p.Namespace, p.Name)
+		}
+		entry := history.HistoryEntry{
+			Action:   "batch_restart_pods",
+			Resource: fmt.Sprintf("%d pods", len(req.Pods)),
+			Cluster:  cluster,
+			Before: map[string]interface{}{
+				"pods":  podNames,
+				"count": len(req.Pods),
+			},
+			After: map[string]interface{}{
+				"success_count": successCount,
+				"failed_count":  len(req.Pods) - successCount,
+			},
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"results":       results,
+			"total":         len(req.Pods),
+			"success_count": successCount,
+			"failed_count":  len(req.Pods) - successCount,
+		},
+	})
+}
