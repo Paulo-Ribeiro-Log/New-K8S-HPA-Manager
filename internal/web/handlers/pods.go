@@ -342,6 +342,99 @@ func (h *PodHandler) Delete(c *gin.Context) {
 	})
 }
 
+// Kill força a terminação imediata de um pod (gracePeriod=0)
+func (h *PodHandler) Kill(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+	name := strings.TrimSpace(c.Param("name"))
+
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster, namespace and name must be provided",
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// Capturar estado antes do kill
+	var before map[string]interface{}
+	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "NOT_FOUND",
+				"message": fmt.Sprintf("Pod not found: %v", err),
+			},
+		})
+		return
+	}
+
+	before = map[string]interface{}{
+		"name":      pod.Name,
+		"namespace": pod.Namespace,
+		"phase":     string(pod.Status.Phase),
+		"nodeName":  pod.Spec.NodeName,
+	}
+
+	// Kill forçado com GracePeriodSeconds=0
+	start := time.Now()
+	gracePeriod := int64(0)
+	err = clientset.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{
+		GracePeriodSeconds: &gracePeriod,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "KILL_ERROR",
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	if h.historyTracker != nil {
+		entry := history.HistoryEntry{
+			Action:   "kill_pod",
+			Resource: fmt.Sprintf("%s/%s", namespace, name),
+			Cluster:  cluster,
+			Before:   before,
+			After:    map[string]interface{}{"killed": true, "gracePeriod": 0},
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"success": true,
+			"message": fmt.Sprintf("Pod %s killed immediately (forced termination)", name),
+		},
+	})
+}
+
 // Restart reinicia um pod (delete + deixa controller recriar)
 func (h *PodHandler) Restart(c *gin.Context) {
 	cluster := strings.TrimSpace(c.Param("cluster"))
