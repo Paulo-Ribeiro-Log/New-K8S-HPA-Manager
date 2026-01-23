@@ -1056,7 +1056,6 @@ const Index = ({ onLogout }: IndexProps) => {
         onLoadSession={() => setShowLoadSessionModal(true)}
         onViewLogs={() => setShowLogViewer(true)}
         onViewHistory={() => setShowHistoryViewer(true)}
-        userInfo="admin@k8s.local"
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
