@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff } from "lucide-react";
+import { Search, RefreshCcw, RefreshCw, Eye, EyeOff, Trash2, Terminal, ChevronDown, ChevronRight, AlertCircle, Copy, Check, RotateCw, Download, X, PanelLeftClose, PanelLeftOpen, MoreVertical, Maximize2, FileText, Loader2, Brain, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, Skull } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -73,6 +73,8 @@ export const PodsPanel = ({
   const [deletingPod, setDeletingPod] = useState<PodSummary | null>(null);
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
   const [restartingPod, setRestartingPod] = useState<PodSummary | null>(null);
+  const [killConfirmOpen, setKillConfirmOpen] = useState(false);
+  const [killingPod, setKillingPod] = useState<PodSummary | null>(null);
   const [yamlCopied, setYamlCopied] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [selectedContainerForLogs, setSelectedContainerForLogs] = useState<string>("");
@@ -682,6 +684,25 @@ export const PodsPanel = ({
     }
   };
 
+  const handleKillPod = async () => {
+    if (!killingPod) return;
+
+    try {
+      const result = await apiClient.killPod(killingPod.cluster, killingPod.namespace, killingPod.name);
+      toast.success(result.message);
+      setKillConfirmOpen(false);
+      setKillingPod(null);
+      if (selectedPod?.name === killingPod.name && selectedPod?.namespace === killingPod.namespace) {
+        setSelectedPod(null);
+      }
+      fetchPods();
+    } catch (err) {
+      toast.error("Erro ao matar Pod", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    }
+  };
+
   const handleDownloadLogs = (containerName: string) => {
     const logs = podLogs[containerName];
     if (!logs || !selectedPod) return;
@@ -846,6 +867,18 @@ export const PodsPanel = ({
           >
             <RotateCw className="w-4 h-4 mr-2" />
             Restart Pod
+          </DropdownMenuItem>
+        </ProtectedAction>
+        <ProtectedAction showWarning={false}>
+          <DropdownMenuItem
+            onClick={() => {
+              setKillingPod(selectedPod);
+              setKillConfirmOpen(true);
+            }}
+            className="text-orange-600 focus:text-orange-600"
+          >
+            <Skull className="w-4 h-4 mr-2" />
+            Kill Pod (Forçar)
           </DropdownMenuItem>
         </ProtectedAction>
         <ProtectedAction showWarning={false}>
@@ -1475,6 +1508,43 @@ export const PodsPanel = ({
           </DialogContent>
         </Dialog>
 
+        {/* Modal de Confirmação de Kill */}
+        <Dialog open={killConfirmOpen} onOpenChange={setKillConfirmOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-orange-600">
+                <Skull className="w-5 h-5" />
+                Confirmar Kill do Pod
+              </DialogTitle>
+              <DialogDescription>
+                Tem certeza que deseja <strong className="text-orange-600">FORÇAR</strong> a terminação imediata do pod <strong>{killingPod?.name}</strong>?
+                <br />
+                <br />
+                <div className="p-3 bg-orange-500/10 border border-orange-500/20 rounded-lg text-sm">
+                  <strong className="text-orange-600">Atenção:</strong> Esta ação força a terminação imediata do pod (gracePeriod=0),
+                  sem aguardar o shutdown gracioso. O container será encerrado abruptamente.
+                </div>
+                {killingPod && (
+                  <div className="mt-2 p-2 bg-muted rounded text-sm">
+                    <strong>Namespace:</strong> {killingPod.namespace}
+                  </div>
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setKillConfirmOpen(false)}>
+                Cancelar
+              </Button>
+              <ProtectedAction>
+                <Button variant="destructive" className="bg-orange-600 hover:bg-orange-700" onClick={handleKillPod}>
+                  <Skull className="w-4 h-4 mr-2" />
+                  Kill Pod
+                </Button>
+              </ProtectedAction>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         {/* Modal de Logs */}
         <Dialog open={logsModalOpen} onOpenChange={(open) => {
           setLogsModalOpen(open);
@@ -1800,6 +1870,43 @@ export const PodsPanel = ({
               <Button onClick={handleRestartPod}>
                 <RotateCw className="w-4 h-4 mr-2" />
                 Restart Pod
+              </Button>
+            </ProtectedAction>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Confirmação de Kill */}
+      <Dialog open={killConfirmOpen} onOpenChange={setKillConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-orange-600">
+              <Skull className="w-5 h-5" />
+              Confirmar Kill do Pod
+            </DialogTitle>
+            <DialogDescription>
+              Tem certeza que deseja <strong className="text-orange-600">FORÇAR</strong> a terminação imediata do pod <strong>{killingPod?.name}</strong>?
+              <br />
+              <br />
+              <div className="p-3 bg-orange-500/10 border border-orange-500/20 rounded-lg text-sm">
+                <strong className="text-orange-600">Atenção:</strong> Esta ação força a terminação imediata do pod (gracePeriod=0),
+                sem aguardar o shutdown gracioso. O container será encerrado abruptamente.
+              </div>
+              {killingPod && (
+                <div className="mt-2 p-2 bg-muted rounded text-sm">
+                  <strong>Namespace:</strong> {killingPod.namespace}
+                </div>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setKillConfirmOpen(false)}>
+              Cancelar
+            </Button>
+            <ProtectedAction>
+              <Button variant="destructive" className="bg-orange-600 hover:bg-orange-700" onClick={handleKillPod}>
+                <Skull className="w-4 h-4 mr-2" />
+                Kill Pod
               </Button>
             </ProtectedAction>
           </DialogFooter>

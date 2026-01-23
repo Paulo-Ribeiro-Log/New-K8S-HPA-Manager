@@ -1154,6 +1154,16 @@ class APIClient {
     return response.data || { success: false, message: "Unknown error", hasOwner: false };
   }
 
+  async killPod(cluster: string, namespace: string, name: string): Promise<{ success: boolean; message: string }> {
+    const response = await this.request<APIResponse<{ success: boolean; message: string }>>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/kill`,
+      {
+        method: "POST",
+      }
+    );
+    return response.data || { success: false, message: "Unknown error" };
+  }
+
   async getPodLogs(
     cluster: string,
     namespace: string,
