@@ -2303,11 +2303,63 @@ class APIClient {
     const response = await this.request<{ success: boolean; message: string }>("/github/token", {
       method: "DELETE",
     });
-    
+
     // Clear email from localStorage
     this.clearGitHubEmail();
-    
+
     return response;
+  }
+
+  // ==================== ServiceNow Integration ====================
+
+  /**
+   * Import CHG data from ServiceNow URL via HTTP scraping
+   * POST /api/v1/servicenow/import
+   */
+  async importServiceNowCHG(url: string): Promise<ServiceNowImportResponse> {
+    return this.request("/servicenow/import", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    });
+  }
+
+  /**
+   * Parse CHG description text manually
+   * POST /api/v1/servicenow/parse
+   */
+  async parseServiceNowDescription(description: string): Promise<ServiceNowParseResponse> {
+    return this.request("/servicenow/parse", {
+      method: "POST",
+      body: JSON.stringify({ description }),
+    });
+  }
+
+  /**
+   * Extract sys_id from ServiceNow URL
+   * GET /api/v1/servicenow/extract-sysid?url=...
+   */
+  async extractServiceNowSysID(url: string): Promise<{ success: boolean; sys_id?: string; error?: string }> {
+    const params = new URLSearchParams({ url });
+    return this.request(`/servicenow/extract-sysid?${params}`);
+  }
+
+  /**
+   * Extract CHG data using Playwright (browser automation with Azure AD SSO)
+   * POST /api/v1/servicenow/extract-playwright
+   */
+  async extractServiceNowWithPlaywright(url: string): Promise<ServiceNowPlaywrightResponse> {
+    return this.request("/servicenow/extract-playwright", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    });
+  }
+
+  /**
+   * Get Playwright configuration status
+   * GET /api/v1/servicenow/playwright-status
+   */
+  async getPlaywrightStatus(): Promise<PlaywrightStatusResponse> {
+    return this.request("/servicenow/playwright-status");
   }
 }
 

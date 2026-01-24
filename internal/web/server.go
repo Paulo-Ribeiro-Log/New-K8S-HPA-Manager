@@ -745,14 +745,18 @@ func (s *Server) setupRoutes() {
 
 	// ServiceNow Integration (importação de dados de CHG)
 	// Tenta scraping via HTTP, se falhar sugere usar aba "Texto Manual"
+	// Também suporta Playwright para extração via browser com Azure AD SSO
 	serviceNowHandler := handlers.NewServiceNowHandler(&githubLogger)
 	servicenow := api.Group("/servicenow")
 	{
 		servicenow.POST("/import", serviceNowHandler.ImportFromURL)
 		servicenow.POST("/parse", serviceNowHandler.ImportFromDescription)
 		servicenow.GET("/extract-sysid", serviceNowHandler.ExtractSysID)
+		// Playwright (browser automation com Azure AD SSO)
+		servicenow.POST("/extract-playwright", serviceNowHandler.ExtractWithPlaywright)
+		servicenow.GET("/playwright-status", serviceNowHandler.GetPlaywrightStatus)
 	}
-	fmt.Println("✅ ServiceNow Integration routes registradas")
+	fmt.Println("✅ ServiceNow Integration routes registradas (HTTP + Playwright)")
 
 	// SRE Approval Integration (aprovação de deployments)
 	sreApprovalHandler := handlers.NewSREApprovalHandler(&githubLogger)
