@@ -11,16 +11,19 @@ import (
 
 // ServiceNowHandler lida com importação de dados do ServiceNow
 type ServiceNowHandler struct {
-	client *servicenow.Client
-	logger *zerolog.Logger
+	client     *servicenow.Client
+	playwright *servicenow.PlaywrightExtractor
+	logger     *zerolog.Logger
 }
 
 // NewServiceNowHandler cria novo handler
 func NewServiceNowHandler(logger *zerolog.Logger) *ServiceNowHandler {
 	client := servicenow.NewClient("https://viavarejo.service-now.com", logger)
+	playwright := servicenow.NewPlaywrightExtractor(logger)
 	return &ServiceNowHandler{
-		client: client,
-		logger: logger,
+		client:     client,
+		playwright: playwright,
+		logger:     logger,
 	}
 }
 
@@ -106,4 +109,55 @@ func (h *ServiceNowHandler) ExtractSysID(c *gin.Context) {
 		"success": true,
 		"sys_id":  sysID,
 	})
+}
+
+// ExtractWithPlaywright extrai dados de uma CHG usando Playwright (browser automation)
+// Útil quando Azure AD SSO é necessário - abre browser real para o usuário fazer login
+// POST /api/v1/servicenow/extract-playwright
+func (h *ServiceNowHandler) ExtractWithPlaywright(c *gin.Context) {
+	var req servicenow.ImportRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "URL é obrigatória",
+		})
+		return
+	}
+
+	h.logger.Info().
+		Str("url", req.URL).
+		Msg("[ServiceNow] Extraindo CHG via Playwright")
+
+	result, err := h.playwright.Extract(c.Request.Context(), req.URL)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("[ServiceNow] Erro no Playwright")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	// Se temos description, reprocessar com o parser Go para consistência
+	if result.Success && result.Description != "" {
+		extractedData := h.client.ImportFromDescription(result.Description)
+		c.JSON(http.StatusOK, gin.H{
+			"success":           true,
+			"change_number":     result.ChangeNumber,
+			"short_description": result.ShortDescription,
+			"description":       result.Description,
+			"state":             result.State,
+			"extracted_data":    extractedData,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// GetPlaywrightStatus verifica o status da configuração do Playwright
+// GET /api/v1/servicenow/playwright-status
+func (h *ServiceNowHandler) GetPlaywrightStatus(c *gin.Context) {
+	status := h.playwright.GetStatus()
+	c.JSON(http.StatusOK, status)
 }
