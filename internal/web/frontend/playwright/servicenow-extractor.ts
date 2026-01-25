@@ -20,30 +20,31 @@ import * as fs from 'fs';
 const USER_DATA_DIR = path.join(process.env.HOME || '', '.k8s-hpa-manager', 'playwright-session');
 
 // Padrões de extração do template da esteira de CD
+// Nota: Os campos terminam com ".\n" ou ".\t" - usar lookahead para capturar corretamente
 const EXTRACTION_PATTERNS = {
   // * Aplicação(ões): tms-sync-1p-order-management-acl.
-  application: /\* Aplicação\(ões\):\s*(.+?)\./,
+  application: /\* Aplicação\(ões\):\s*([^.\n]+)\./,
 
-  // * Versão: 0.0.6-2.
-  version: /\* Versão:\s*(.+?)\./,
+  // * Versão: 1.1.0-3.  (pode ter pontos no meio, então capturar até o ponto final)
+  version: /\* Versão:\s*([\d]+\.[\d]+\.[\d]+-?[\d]*)\./,
 
   // * Repositório: github.com/viavarejo-internal/tms-sync-1p-order-management-acl.git.
-  repository: /\* Repositório:\s*github\.com\/viavarejo-internal\/(.+?)\.git/,
+  repository: /\* Repositório:\s*github\.com\/viavarejo-internal\/([^.]+)\.git/,
 
-  // * Squad(s): Planejamento.
-  squad: /\* Squad\(s\):\s*(.+?)\./,
+  // * Squad(s): Retira Rápido.
+  squad: /\* Squad\(s\):\s*([^.\n]+)\./,
 
-  // * Branch no GitHub: release/0.0.6.
-  branch: /\* Branch no GitHub:\s*(.+?)\./,
+  // * Branch no GitHub: release/1.1.0.  (pode ter pontos no branch)
+  branch: /\* Branch no GitHub:\s*([^\n]+)\./,
 
-  // * Produto: tms-sync-1p-order-management-acl.
-  product: /\* Produto:\s*(.+?)\./,
+  // * Produto: gcb-order-details-api.
+  product: /\* Produto:\s*([^.\n]+)\./,
 
   // * Link da release no XL-Release: http://release.viavarejo.com.br/#/releases/...
-  xlReleaseUrl: /\* Link da release no XL-Release:\s*(.+)/,
+  xlReleaseUrl: /\* Link da release no XL-Release:\s*(https?:\/\/[^\s\n]+)/,
 
-  // * Titulo da release no XL-Release: [Planejamento] tms-sync-1p-order-management-acl - 0.0.6-2.
-  xlReleaseTitle: /\* Titulo da release no XL-Release:\s*(.+?)\./,
+  // * Titulo da release no XL-Release: [Retira Rápido] gcb-order-details-api - 1.1.0-3.
+  xlReleaseTitle: /\* Titulo da release no XL-Release:\s*([^\n]+)\./,
 
   // Issues do Jira (múltiplas)
   jiraIssues: /([A-Z]+-\d+)/g,
@@ -165,7 +166,7 @@ export async function extractCHGData(chgUrl: string, options: {
   reuseSession?: boolean;
 } = {}): Promise<ExtractedCHGData> {
   const {
-    headless = false, // Não-headless por padrão para permitir login Azure AD
+    headless = true, // Tentar headless primeiro, abrir visível apenas se precisar de login
     timeout = 60000,
     reuseSession = true,
   } = options;
@@ -209,139 +210,290 @@ export async function extractCHGData(chgUrl: string, options: {
       });
     }
 
-    const page = context.pages()[0] || await context.newPage();
+    let page = context.pages()[0] || await context.newPage();
 
     // Navegar para a CHG
     console.log(`[ServiceNow] Navegando para: ${chgUrl}`);
     await page.goto(chgUrl, { waitUntil: 'networkidle', timeout });
 
     // Verificar se precisa de login (Azure AD)
-    const currentUrl = page.url();
-    if (currentUrl.includes('login.microsoftonline.com') || currentUrl.includes('login.windows.net')) {
-      console.log('[ServiceNow] Detectado redirect para Azure AD. Aguardando login do usuário...');
+    const initialUrl = page.url();
+    const needsLogin = initialUrl.includes('login.microsoftonline.com') ||
+                       initialUrl.includes('login.windows.net') ||
+                       initialUrl.includes('saml');
 
-      // Aguardar usuário fazer login manualmente
-      // Espera até voltar para o ServiceNow
-      await page.waitForURL(/service-now\.com/, { timeout: 120000 });
-      console.log('[ServiceNow] Login concluído!');
+    // Se precisa de login e estamos em modo headless, reabrir em modo visível
+    if (needsLogin && headless) {
+      console.log('[ServiceNow] Login necessário - reabrindo browser em modo visível...');
 
-      // Aguardar carregamento completo da página
-      await page.waitForLoadState('networkidle');
-    }
-
-    // Aguardar formulário carregar
-    await page.waitForSelector('form', { timeout: 30000 });
-
-    // Extrair dados da CHG
-    const chgData = await page.evaluate(() => {
-      // Função auxiliar para extrair valor de campo
-      const getFieldValue = (fieldName: string): string => {
-        // Tentar diferentes seletores
-        const selectors = [
-          `input[name="${fieldName}"]`,
-          `textarea[name="${fieldName}"]`,
-          `#${fieldName}`,
-          `[id$="${fieldName}"]`,
-          `[data-field="${fieldName}"]`,
-        ];
-
-        for (const selector of selectors) {
-          const el = document.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement;
-          if (el && el.value) {
-            return el.value;
-          }
-        }
-
-        // Tentar buscar em iframes (ServiceNow usa iframes)
-        const iframes = document.querySelectorAll('iframe');
-        for (const iframe of iframes) {
-          try {
-            const iframeDoc = (iframe as HTMLIFrameElement).contentDocument;
-            if (iframeDoc) {
-              for (const selector of selectors) {
-                const el = iframeDoc.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement;
-                if (el && el.value) {
-                  return el.value;
-                }
-              }
-            }
-          } catch (e) {
-            // Ignorar erros de cross-origin
-          }
-        }
-
-        return '';
-      };
-
-      // Tentar extrair o número da CHG
-      let changeNumber = getFieldValue('number') ||
-                        getFieldValue('sys_readonly.change_request.number') ||
-                        '';
-
-      // Se não encontrou, tentar pelo título da página
-      if (!changeNumber) {
-        const title = document.title;
-        const match = title.match(/(CHG\d+)/i);
-        if (match) {
-          changeNumber = match[1];
-        }
+      // Fechar o contexto atual
+      if (context) {
+        await context.close();
       }
 
-      // Extrair short_description
-      const shortDescription = getFieldValue('short_description') ||
-                              getFieldValue('sys_readonly.change_request.short_description') ||
-                              '';
+      // Reabrir em modo visível para o usuário fazer login
+      context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+        headless: false, // Visível para login
+        args: ['--disable-blink-features=AutomationControlled'],
+        viewport: { width: 1280, height: 800 },
+      });
 
-      // Extrair description (Motivo da mudança)
-      const description = getFieldValue('description') ||
-                         getFieldValue('sys_readonly.change_request.description') ||
-                         getFieldValue('u_motivo_mudanca') ||
-                         '';
+      const newPage = context.pages()[0] || await context.newPage();
+      await newPage.goto(chgUrl, { waitUntil: 'networkidle', timeout });
 
-      // Extrair state
-      const stateEl = document.querySelector('[name="state"]') as HTMLSelectElement;
-      const state = stateEl ? stateEl.options[stateEl.selectedIndex]?.text || '' : '';
+      // Usar a nova página
+      page = newPage;
+    }
 
-      return {
-        changeNumber,
-        shortDescription,
-        description,
-        state,
-      };
-    });
+    // Loop até conseguir acessar o ServiceNow
+    let attempts = 0;
+    const maxAttempts = 60; // 5 minutos (5 segundos por tentativa)
+
+    while (attempts < maxAttempts) {
+      const currentUrl = page.url();
+
+      // Só logar a cada 10 tentativas para não poluir
+      if (attempts % 2 === 0) {
+        console.log(`[ServiceNow] Aguardando... (${attempts * 5}s)`);
+      }
+
+      // Se estamos no ServiceNow, podemos prosseguir
+      if (currentUrl.includes('service-now.com') && !currentUrl.includes('login')) {
+        console.log('[ServiceNow] Acesso ao ServiceNow confirmado!');
+        break;
+      }
+
+      // Se estamos em página de login
+      if (currentUrl.includes('login.microsoftonline.com') || currentUrl.includes('login.windows.net') || currentUrl.includes('saml')) {
+        if (attempts === 0) {
+          console.log('[ServiceNow] Aguardando login do usuário no Azure AD...');
+          console.log('[ServiceNow] Por favor, faça login na janela do navegador.');
+        }
+
+        attempts++;
+        await page.waitForTimeout(5000); // Esperar 5 segundos
+        continue;
+      }
+
+      // URL desconhecida, aguardar um pouco
+      attempts++;
+      await page.waitForTimeout(5000);
+    }
+
+    if (attempts >= maxAttempts) {
+      throw new Error('Timeout aguardando login no Azure AD (5 minutos)');
+    }
+
+    // Aguardar carregamento completo da página
+    console.log('[ServiceNow] Aguardando carregamento completo...');
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(2000); // Dar tempo extra para JavaScript carregar
+
+    // ServiceNow usa iframe gsft_main - aguardar e usar o frame correto
+    console.log('[ServiceNow] Aguardando iframe gsft_main...');
+    await page.waitForTimeout(5000); // Dar mais tempo para iframes carregarem
+
+    // Listar TODOS os frames com mais detalhes
+    const allFrames = page.frames();
+    console.log(`[ServiceNow] Total de frames: ${allFrames.length}`);
+    for (let i = 0; i < allFrames.length; i++) {
+      const f = allFrames[i];
+      const frameName = f.name() || `frame-${i}`;
+      const frameUrl = f.url();
+      console.log(`[ServiceNow] Frame ${i}: name="${frameName}", url="${frameUrl.substring(0, 80)}..."`);
+    }
+
+    // Tentar encontrar o iframe gsft_main
+    let gsftFrame = page.frame('gsft_main');
+
+    // Se não encontrar por nome, procurar por URL que contenha change_request
+    if (!gsftFrame) {
+      for (const f of allFrames) {
+        if (f.url().includes('change_request') || f.url().includes('sys_id')) {
+          gsftFrame = f;
+          console.log('[ServiceNow] Encontrado frame por URL:', f.url().substring(0, 80));
+          break;
+        }
+      }
+    }
+
+    const targetFrame = gsftFrame || page.mainFrame();
+
+    if (gsftFrame) {
+      console.log('[ServiceNow] Usando iframe gsft_main para extração');
+    } else {
+      console.log('[ServiceNow] Usando frame principal');
+    }
+
+    // Debug: listar elementos na página
+    const debugInfo = await targetFrame.evaluate(`
+      (function() {
+        var iframes = document.querySelectorAll('iframe');
+        var textareas = document.querySelectorAll('textarea');
+        var forms = document.querySelectorAll('form');
+
+        return {
+          iframeCount: iframes.length,
+          iframeIds: Array.from(iframes).map(i => i.id || i.name || 'unnamed').slice(0, 5),
+          textareaCount: textareas.length,
+          textareaIds: Array.from(textareas).map(t => t.id || t.name || 'unnamed').slice(0, 10),
+          formCount: forms.length,
+          title: document.title,
+          url: window.location.href.substring(0, 100)
+        };
+      })()
+    `);
+    console.log('[ServiceNow] Debug info:', JSON.stringify(debugInfo, null, 2));
+
+    // Aguardar formulário carregar no frame correto
+    try {
+      await targetFrame.waitForSelector('form, textarea, [aria-label="Motivo da mudança"]', { timeout: 10000 });
+      console.log('[ServiceNow] Formulário encontrado');
+    } catch (e) {
+      console.log('[ServiceNow] Timeout aguardando formulário, continuando...');
+    }
+
+    // Extrair dados da CHG usando JavaScript puro como string
+    // Isso evita que o transpilador processe o código
+    const extractScript = `
+      (function() {
+        function getFieldValue(fieldName) {
+          var selectors = [
+            'input[name="' + fieldName + '"]',
+            'textarea[name="' + fieldName + '"]',
+            '#' + fieldName,
+            '[id$="' + fieldName + '"]',
+            '[data-field="' + fieldName + '"]'
+          ];
+
+          for (var i = 0; i < selectors.length; i++) {
+            var el = document.querySelector(selectors[i]);
+            if (el && el.value) {
+              return el.value;
+            }
+          }
+
+          var iframes = document.querySelectorAll('iframe');
+          for (var j = 0; j < iframes.length; j++) {
+            try {
+              var iframeDoc = iframes[j].contentDocument;
+              if (iframeDoc) {
+                for (var k = 0; k < selectors.length; k++) {
+                  var el2 = iframeDoc.querySelector(selectors[k]);
+                  if (el2 && el2.value) {
+                    return el2.value;
+                  }
+                }
+              }
+            } catch (e) {}
+          }
+          return '';
+        }
+
+        // Número da CHG
+        var changeNumber = '';
+        var numberEl = document.querySelector('#sys_readonly\\.change_request\\.number') ||
+                      document.querySelector('[name="change_request.number"]') ||
+                      document.querySelector('[aria-label="Número"]');
+        if (numberEl) {
+          changeNumber = numberEl.value || numberEl.textContent || '';
+        }
+        if (!changeNumber) {
+          changeNumber = getFieldValue('number') ||
+                        getFieldValue('sys_readonly.change_request.number') || '';
+        }
+        if (!changeNumber) {
+          var match = document.title.match(/(CHG[0-9]+)/i);
+          if (match) changeNumber = match[1];
+        }
+
+        // Short description
+        var shortDescription = '';
+        var shortDescEl = document.querySelector('#sys_readonly\\.change_request\\.short_description') ||
+                         document.querySelector('[name="change_request.short_description"]') ||
+                         document.querySelector('[aria-label="Descrição resumida"]');
+        if (shortDescEl) {
+          shortDescription = shortDescEl.value || shortDescEl.textContent || '';
+        }
+        if (!shortDescription) {
+          shortDescription = getFieldValue('short_description') ||
+                            getFieldValue('sys_readonly.change_request.short_description') || '';
+        }
+
+        // Motivo da mudança / Justification - campo principal
+        var description = '';
+
+        // Seletor específico do ServiceNow para "Motivo da mudança"
+        var justificationEl = document.querySelector('#sys_readonly\\.change_request\\.justification') ||
+                             document.querySelector('[name="change_request.justification"]') ||
+                             document.querySelector('[aria-label="Motivo da mudança"]');
+        if (justificationEl) {
+          description = justificationEl.value || justificationEl.textContent || '';
+        }
+
+        // Fallback para outros campos
+        if (!description) {
+          description = getFieldValue('description') ||
+                       getFieldValue('sys_readonly.change_request.description') ||
+                       getFieldValue('u_motivo_mudanca') || '';
+        }
+
+        var stateEl = document.querySelector('[name="state"]');
+        var state = stateEl && stateEl.options ? (stateEl.options[stateEl.selectedIndex] ? stateEl.options[stateEl.selectedIndex].text : '') : '';
+
+        return {
+          changeNumber: changeNumber,
+          shortDescription: shortDescription,
+          description: description,
+          state: state
+        };
+      })()
+    `;
+    const chgData = await targetFrame.evaluate(extractScript) as {
+      changeNumber: string;
+      shortDescription: string;
+      description: string;
+      state: string;
+    };
 
     // Se não conseguiu extrair description, tentar método alternativo
     if (!chgData.description) {
       console.log('[ServiceNow] Tentando método alternativo para extrair description...');
 
       // Tentar clicar em tab ou expandir campo se necessário
-      const descriptionTab = await page.$('text=Descrição');
-      if (descriptionTab) {
-        await descriptionTab.click();
-        await page.waitForTimeout(1000);
+      try {
+        const descriptionTab = await targetFrame.$('text=Descrição');
+        if (descriptionTab) {
+          await descriptionTab.click();
+          await page.waitForTimeout(1000);
+        }
+      } catch (e) {
+        // Ignorar erro de clique
       }
 
-      // Tentar extrair novamente
-      const altDescription = await page.evaluate(() => {
-        // Buscar qualquer textarea grande
-        const textareas = document.querySelectorAll('textarea');
-        for (const ta of textareas) {
-          if (ta.value && ta.value.length > 200) {
-            return ta.value;
+      // Tentar extrair novamente usando string para evitar transpilação
+      const altScript = `
+        (function() {
+          // Procurar especificamente pelo textarea de justificação
+          var justEl = document.querySelector('#sys_readonly\\.change_request\\.justification') ||
+                      document.querySelector('[name="change_request.justification"]') ||
+                      document.querySelector('[aria-label="Motivo da mudança"]');
+          if (justEl && (justEl.value || justEl.textContent)) {
+            return justEl.value || justEl.textContent;
           }
-        }
 
-        // Buscar em elementos de texto
-        const divs = document.querySelectorAll('div[data-field], span[data-field]');
-        for (const div of divs) {
-          const text = div.textContent || '';
-          if (text.includes('Aplicação') && text.includes('Versão')) {
-            return text;
+          // Fallback: procurar textareas com conteúdo relevante
+          var textareas = document.querySelectorAll('textarea');
+          for (var i = 0; i < textareas.length; i++) {
+            var val = textareas[i].value || '';
+            if (val.length > 100 && (val.indexOf('Aplicação') >= 0 || val.indexOf('Versão') >= 0 || val.indexOf('Squad') >= 0)) {
+              return val;
+            }
           }
-        }
-
-        return '';
-      });
+          return '';
+        })()
+      `;
+      const altDescription = await targetFrame.evaluate(altScript) as string;
 
       if (altDescription) {
         chgData.description = altDescription;
@@ -388,18 +540,22 @@ export async function extractCHGData(chgUrl: string, options: {
 }
 
 // CLI: executar diretamente com URL como argumento
-if (require.main === module) {
+// Detecta se está sendo executado diretamente (compatível com ESM)
+const isMainModule = import.meta.url === `file://${process.argv[1]}` ||
+                     process.argv[1]?.endsWith('servicenow-extractor.ts');
+
+if (isMainModule) {
   const url = process.argv[2];
 
   if (!url) {
-    console.log('Uso: npx ts-node playwright/servicenow-extractor.ts <URL_DA_CHG>');
+    console.log('Uso: npx tsx playwright/servicenow-extractor.ts <URL_DA_CHG>');
     console.log('');
     console.log('Exemplo:');
-    console.log('  npx ts-node playwright/servicenow-extractor.ts "https://viavarejo.service-now.com/change_request.do?sys_id=abc123..."');
+    console.log('  npx tsx playwright/servicenow-extractor.ts "https://viavarejo.service-now.com/change_request.do?sys_id=abc123..."');
     process.exit(1);
   }
 
-  extractCHGData(url, { headless: false, reuseSession: true })
+  extractCHGData(url, { headless: true, reuseSession: true })
     .then((result) => {
       console.log('\n=== RESULTADO ===');
       console.log(JSON.stringify(result, null, 2));

@@ -34,21 +34,51 @@ type PlaywrightResult struct {
 
 // NewPlaywrightExtractor cria um novo extrator Playwright
 func NewPlaywrightExtractor(logger *zerolog.Logger) *PlaywrightExtractor {
-	// Detectar diretório do frontend
+	// Detectar diretório do frontend usando caminhos absolutos
 	frontendDir := ""
+
+	// Obter diretório atual do executável
+	execPath, _ := os.Executable()
+	execDir := filepath.Dir(execPath)
+
+	// Obter diretório de trabalho atual
+	cwd, _ := os.Getwd()
+
 	possiblePaths := []string{
+		// Caminho absoluto a partir do diretório do executável (build/)
+		filepath.Join(execDir, "..", "internal", "web", "frontend"),
+		// Caminho absoluto a partir do CWD
+		filepath.Join(cwd, "internal", "web", "frontend"),
+		// Caminhos relativos
 		"internal/web/frontend",
 		"./internal/web/frontend",
-		filepath.Join(os.Getenv("HOME"), "Scripts/Scripts GO/New-K8s-HPA-Manager/Scale_HPA/internal/web/frontend"),
+		// Caminho hardcoded para desenvolvimento
+		filepath.Join(os.Getenv("HOME"), "Scripts", "Scripts GO", "New-K8s-HPA-Manager", "Scale_HPA", "internal", "web", "frontend"),
 	}
 
 	for _, p := range possiblePaths {
-		scriptPath := filepath.Join(p, "playwright", "servicenow-extractor.ts")
+		// Converter para caminho absoluto
+		absPath, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+
+		scriptPath := filepath.Join(absPath, "playwright", "servicenow-extractor.ts")
 		if _, err := os.Stat(scriptPath); err == nil {
-			frontendDir = p
-			logger.Debug().Str("path", p).Msg("[Playwright] Encontrado diretório do frontend")
+			frontendDir = absPath
+			logger.Info().
+				Str("path", absPath).
+				Str("script", scriptPath).
+				Msg("[Playwright] Encontrado diretório do frontend")
 			break
 		}
+	}
+
+	if frontendDir == "" {
+		logger.Warn().
+			Str("cwd", cwd).
+			Str("execDir", execDir).
+			Msg("[Playwright] Diretório do frontend não encontrado")
 	}
 
 	return &PlaywrightExtractor{
@@ -64,12 +94,17 @@ func (p *PlaywrightExtractor) IsConfigured() bool {
 
 // GetStatus retorna o status da configuração do Playwright
 func (p *PlaywrightExtractor) GetStatus() map[string]interface{} {
+	cwd, _ := os.Getwd()
+	execPath, _ := os.Executable()
+
 	status := map[string]interface{}{
 		"playwright_configured": false,
 		"frontend_dir":          p.frontendDir,
 		"script_exists":         false,
 		"npx_available":         false,
 		"ts_node_available":     false,
+		"cwd":                   cwd,
+		"exec_path":             execPath,
 	}
 
 	if p.frontendDir != "" {
@@ -86,8 +121,9 @@ func (p *PlaywrightExtractor) GetStatus() map[string]interface{} {
 		status["npx_available"] = true
 	}
 
-	// Verificar ts-node
-	cmd := exec.Command("npx", "ts-node", "--version")
+	// Verificar tsx (substitui ts-node)
+	cmd := exec.Command("npx", "tsx", "--version")
+	cmd.Dir = p.frontendDir
 	if err := cmd.Run(); err == nil {
 		status["ts_node_available"] = true
 	}
@@ -116,17 +152,22 @@ func (p *PlaywrightExtractor) Extract(ctx context.Context, chgURL string) (*Play
 	p.logger.Info().
 		Str("url", chgURL).
 		Str("script", scriptPath).
-		Msg("[Playwright] Iniciando extração de CHG")
+		Msg("[Playwright] Iniciando extração de CHG - aguardando até 5 minutos para login Azure AD")
 
-	// Preparar comando
-	cmd := exec.CommandContext(ctx, "npx", "ts-node", scriptPath, chgURL)
+	// Criar contexto com timeout de 5 minutos (independente do request HTTP)
+	// Isso permite tempo suficiente para o usuário fazer login no Azure AD
+	execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Preparar comando (tsx é mais simples que ts-node para ESM)
+	cmd := exec.CommandContext(execCtx, "npx", "tsx", scriptPath, chgURL)
 	cmd.Dir = p.frontendDir
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	// Executar com timeout de 3 minutos (para permitir login Azure AD)
+	// Executar e aguardar
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Run()
@@ -141,12 +182,11 @@ func (p *PlaywrightExtractor) Extract(ctx context.Context, chgURL string) (*Play
 				Msg("[Playwright] Erro na execução")
 			return nil, fmt.Errorf("erro na execução: %v - %s", err, stderr.String())
 		}
-	case <-ctx.Done():
-		cmd.Process.Kill()
-		return nil, fmt.Errorf("operação cancelada")
-	case <-time.After(3 * time.Minute):
-		cmd.Process.Kill()
-		return nil, fmt.Errorf("timeout: extração demorou mais de 3 minutos")
+	case <-execCtx.Done():
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		return nil, fmt.Errorf("timeout: extração demorou mais de 5 minutos - faça login no Azure AD mais rapidamente")
 	}
 
 	// Parse do resultado JSON
