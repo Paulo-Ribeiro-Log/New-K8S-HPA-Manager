@@ -55,7 +55,7 @@ interface ClusterTabContentProps {
 const ClusterTabContent = ({
   cluster,
   sessionId,
-  events,        // ✅ Recebido via props (do hook multiplexado)
+  events: eventsProp,        // ✅ Recebido via props (do hook multiplexado ou preloaded)
   progress,      // ✅ Recebido via props
   isComplete: isCompleteProp,
   hasError: hasErrorProp,
@@ -67,6 +67,73 @@ const ClusterTabContent = ({
   const [result, setResult] = useState<HealthCheckResult | null>(preloadedResult || null);
   const [filter, setFilter] = useState<"all" | "healthy" | "warning" | "critical">("all");
   const [isFetchingResult, setIsFetchingResult] = useState(false);
+  const [localEvents, setLocalEvents] = useState<HealthCheckProgress[]>([]);
+  const [isLoadingEvents, setIsLoadingEvents] = useState(false);
+  const [fetchAttempted, setFetchAttempted] = useState(false); // ✅ Flag para evitar loop infinito
+
+  // ✅ Usar eventos locais (carregados do banco) ou eventos da prop
+  const events = localEvents.length > 0 ? localEvents : eventsProp;
+
+  // ✅ Carregar eventos do banco APENAS quando em viewMode explícito (com preloadedEvents vazios)
+  useEffect(() => {
+    // Só carregar se: viewMode=true, não há eventos, e ainda não tentou
+    if (viewMode && eventsProp.length === 0 && localEvents.length === 0 && !isLoadingEvents && !fetchAttempted) {
+      const loadEvents = async () => {
+        setIsLoadingEvents(true);
+        setFetchAttempted(true); // ✅ Marcar que já tentou (evita loop)
+        try {
+          console.log(`[${cluster}] Carregando eventos do banco para sessionId:`, sessionId);
+          const response = await apiClient.getHealthCheckEvents(sessionId);
+
+          if (response.success && response.events && response.events.length > 0) {
+            const formattedEvents: HealthCheckProgress[] = response.events.map((event: any) => ({
+              id: event.id,
+              type: event.type,
+              phase: event.phase,
+              message: event.message,
+              progress: event.progress,
+              status: event.status,
+              timestamp: event.timestamp, // Manter como string (tipo esperado por HealthCheckProgress)
+            }));
+            console.log(`[${cluster}] ${formattedEvents.length} eventos carregados do banco`);
+            setLocalEvents(formattedEvents);
+          } else {
+            console.log(`[${cluster}] Nenhum evento encontrado no banco`);
+          }
+        } catch (error) {
+          console.error(`[${cluster}] Erro ao carregar eventos:`, error);
+        } finally {
+          setIsLoadingEvents(false);
+        }
+      };
+      loadEvents();
+    }
+  }, [viewMode, eventsProp, localEvents, isLoadingEvents, fetchAttempted, sessionId, cluster]);
+
+  // ✅ Carregar resultado do banco APENAS quando em viewMode explícito
+  useEffect(() => {
+    // Só carregar se: viewMode=true, não há resultado, e ainda não tentou
+    if (viewMode && !result && !isFetchingResult && !fetchAttempted) {
+      const loadResult = async () => {
+        setIsFetchingResult(true);
+        setFetchAttempted(true); // ✅ Marcar que já tentou (evita loop)
+        try {
+          console.log(`[${cluster}] Carregando resultado do banco para sessionId:`, sessionId);
+          const response = await apiClient.getHealthCheckResult(sessionId);
+
+          if (response.success && response.data) {
+            console.log(`[${cluster}] Resultado carregado do banco`);
+            setResult(response.data);
+          }
+        } catch (error) {
+          console.error(`[${cluster}] Erro ao carregar resultado:`, error);
+        } finally {
+          setIsFetchingResult(false);
+        }
+      };
+      loadResult();
+    }
+  }, [viewMode, result, isFetchingResult, fetchAttempted, sessionId, cluster]);
 
   // ✅ Sincronizar result com preloadedResult quando mudar
   useEffect(() => {
@@ -314,7 +381,16 @@ const ClusterTabContent = ({
           <div className="space-y-2 max-w-full overflow-hidden">
             {filteredEvents.length === 0 && events.length === 0 && (
               <div className="text-sm text-muted-foreground text-center py-4">
-                Aguardando eventos...
+                {isLoadingEvents ? (
+                  <div className="flex items-center justify-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Carregando eventos do banco...
+                  </div>
+                ) : viewMode ? (
+                  "Nenhum evento encontrado no banco de dados"
+                ) : (
+                  "Aguardando eventos..."
+                )}
               </div>
             )}
 
