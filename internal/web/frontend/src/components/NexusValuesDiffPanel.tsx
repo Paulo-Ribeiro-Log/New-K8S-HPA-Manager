@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect } from 'react';
 import { useNexusConfig, useNexusValues } from '../hooks/useNexus';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -21,42 +21,43 @@ import {
 import { Loader2, AlertCircle, GitCompare, Download, Settings as SettingsIcon, X } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
 import { MonacoYamlEditor } from './MonacoYamlEditor';
-import { NexusConfigPanel } from './NexusConfigPanel';
-import type { ValuesFileRequest, NexusStatus } from '../types/nexus';
-import { VALID_ENVIRONMENTS, VALID_TYPES, DEFAULT_URL_PATTERN } from '../types/nexus';
+import { CredentialRedirectDialog } from './profile/CredentialRedirectDialog';
+import { VALID_ENVIRONMENTS, VALID_TYPES, DEFAULT_URL_PATTERN, ValuesFileRequest } from '../types/nexus';
+import { NexusProvider, useNexusStore } from '../store/nexusStore';
 
-export const NexusValuesDiffPanel = () => {
+// Componente interno que usa a store
+const NexusValuesDiffPanelContent = () => {
   const { checkStatus } = useNexusConfig();
   const { compareValues, loading, error } = useNexusValues();
 
-  const [status, setStatus] = useState<NexusStatus | null>(null);
-  const [statusLoading, setStatusLoading] = useState(true); // Estado de loading inicial
-  const [showConfigPanel, setShowConfigPanel] = useState(false);
-  const [comparing, setComparing] = useState(false);
-
-  // File 1
-  const [file1, setFile1] = useState<ValuesFileRequest>({
-    release: '',
-    version: '',
-    environment: '' as any,
-    type: '' as any,
-  });
-
-  // File 2
-  const [file2, setFile2] = useState<ValuesFileRequest>({
-    release: '',
-    version: '',
-    environment: '' as any,
-    type: '' as any,
-  });
-
-  // Results
-  const [file1Content, setFile1Content] = useState('');
-  const [file2Content, setFile2Content] = useState('');
-  const [compareError, setCompareError] = useState<string | null>(null);
-  const [file1Url, setFile1Url] = useState('');
-  const [file2Url, setFile2Url] = useState('');
-  const [showDiffModal, setShowDiffModal] = useState(false);
+  // Usar store ao invés de useState local
+  const {
+    status,
+    statusLoading,
+    showConfigPanel,
+    comparing,
+    file1,
+    file2,
+    file1Content,
+    file2Content,
+    compareError,
+    file1Url,
+    file2Url,
+    showDiffModal,
+    setStatus,
+    setStatusLoading,
+    setShowConfigPanel,
+    setComparing,
+    setFile1,
+    setFile2,
+    setFile1Content,
+    setFile2Content,
+    setCompareError,
+    setFile1Url,
+    setFile2Url,
+    setShowDiffModal,
+    clearCompareResults,
+  } = useNexusStore();
 
   // Check Nexus status on mount
   useEffect(() => {
@@ -69,9 +70,7 @@ export const NexusValuesDiffPanel = () => {
       const nexusStatus = await checkStatus();
       console.log('[NexusValuesDiffPanel] Status loaded:', nexusStatus);
       setStatus(nexusStatus);
-      if (!nexusStatus.configured) {
-        setShowConfigPanel(true);
-      }
+      // Não abre mais automaticamente - usuário clica no botão se quiser
     } catch (err) {
       console.error('[NexusValuesDiffPanel] Failed to check Nexus status:', err);
       // Se falhou ao verificar status, assumir que não está configurado
@@ -234,10 +233,10 @@ export const NexusValuesDiffPanel = () => {
           </Button>
         </div>
 
-        <NexusConfigPanel
+        <CredentialRedirectDialog
           open={showConfigPanel}
           onOpenChange={setShowConfigPanel}
-          onConfigSaved={loadStatus}
+          credentialName="Nexus Repository"
         />
       </>
     );
@@ -549,12 +548,21 @@ export const NexusValuesDiffPanel = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Config Panel */}
-      <NexusConfigPanel
+      {/* Dialog de redirecionamento para configuração */}
+      <CredentialRedirectDialog
         open={showConfigPanel}
         onOpenChange={setShowConfigPanel}
-        onConfigSaved={loadStatus}
+        credentialName="Nexus Repository"
       />
     </div>
+  );
+};
+
+// Componente exportado que envolve o Content com o Provider
+export const NexusValuesDiffPanel = () => {
+  return (
+    <NexusProvider>
+      <NexusValuesDiffPanelContent />
+    </NexusProvider>
   );
 };

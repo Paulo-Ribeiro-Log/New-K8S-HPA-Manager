@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog/log"
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
 	"k8s-hpa-manager/internal/config"
@@ -629,5 +630,172 @@ func (h *DeploymentHandler) Scale(c *gin.Context) {
 		"success":  true,
 		"message":  fmt.Sprintf("Deployment %s/%s scaled to %d replicas", namespace, name, *req.Replicas),
 		"replicas": *req.Replicas,
+	})
+}
+
+// DeploymentReference representa uma referência a um deployment para operações em batch
+type DeploymentReference struct {
+	Namespace string `json:"namespace" binding:"required"`
+	Name      string `json:"name" binding:"required"`
+}
+
+// BatchDeploymentRequest representa uma requisição de operação em batch para deployments
+type BatchDeploymentRequest struct {
+	Deployments []DeploymentReference `json:"deployments" binding:"required,min=1"`
+}
+
+// BatchDeploymentResult representa o resultado de uma operação em um deployment
+type BatchDeploymentResult struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Success   bool   `json:"success"`
+	Message   string `json:"message"`
+	Error     string `json:"error,omitempty"`
+}
+
+// BatchDelete deleta múltiplos deployments
+func (h *DeploymentHandler) BatchDelete(c *gin.Context) {
+	cluster := c.Param("cluster")
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster must be provided",
+			},
+		})
+		return
+	}
+
+	var req BatchDeploymentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": fmt.Sprintf("Invalid request body: %v", err),
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	ctx := c.Request.Context()
+	results := make([]BatchDeploymentResult, 0, len(req.Deployments))
+	successCount := 0
+
+	for _, depRef := range req.Deployments {
+		result := BatchDeploymentResult{
+			Namespace: depRef.Namespace,
+			Name:      depRef.Name,
+		}
+
+		err := clientset.AppsV1().Deployments(depRef.Namespace).Delete(ctx, depRef.Name, metav1.DeleteOptions{})
+		if err != nil {
+			result.Success = false
+			result.Error = err.Error()
+			result.Message = fmt.Sprintf("Falha ao deletar deployment %s/%s", depRef.Namespace, depRef.Name)
+		} else {
+			result.Success = true
+			result.Message = fmt.Sprintf("Deployment %s/%s deletado com sucesso", depRef.Namespace, depRef.Name)
+			successCount++
+		}
+
+		results = append(results, result)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"results":       results,
+			"total":         len(req.Deployments),
+			"success_count": successCount,
+			"failed_count":  len(req.Deployments) - successCount,
+		},
+	})
+}
+
+// BatchRestart reinicia múltiplos deployments
+func (h *DeploymentHandler) BatchRestart(c *gin.Context) {
+	cluster := c.Param("cluster")
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster must be provided",
+			},
+		})
+		return
+	}
+
+	var req BatchDeploymentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": fmt.Sprintf("Invalid request body: %v", err),
+			},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get client: %v", err),
+			},
+		})
+		return
+	}
+
+	ctx := c.Request.Context()
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	results := make([]BatchDeploymentResult, 0, len(req.Deployments))
+	successCount := 0
+
+	for _, depRef := range req.Deployments {
+		result := BatchDeploymentResult{
+			Namespace: depRef.Namespace,
+			Name:      depRef.Name,
+		}
+
+		err := kubeClient.RolloutRestartDeployment(ctx, depRef.Namespace, depRef.Name)
+		if err != nil {
+			result.Success = false
+			result.Error = err.Error()
+			result.Message = fmt.Sprintf("Falha ao reiniciar deployment %s/%s", depRef.Namespace, depRef.Name)
+		} else {
+			result.Success = true
+			result.Message = fmt.Sprintf("Deployment %s/%s reiniciado com sucesso", depRef.Namespace, depRef.Name)
+			successCount++
+		}
+
+		results = append(results, result)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"results":       results,
+			"total":         len(req.Deployments),
+			"success_count": successCount,
+			"failed_count":  len(req.Deployments) - successCount,
+		},
 	})
 }

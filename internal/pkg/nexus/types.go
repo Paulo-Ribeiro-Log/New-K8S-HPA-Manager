@@ -11,7 +11,7 @@ type Config struct {
 	TempDir    string `json:"tempDir"`    // Diretório temporário para downloads
 	URLPattern string `json:"urlPattern"` // Padrão de URL customizado (opcional)
 	// Placeholders disponíveis: {baseUrl}, {repository}, {release}, {version}, {environment}, {type}
-	// Padrão: {baseUrl}/repository/{repository}/{release}/{version}/{environment}/helm-values/{type}-values.yaml
+	// Padrão: {baseUrl}/repository/{repository}/{release}/{version}/{environment}/values/{type}-values.yaml
 }
 
 // ValuesFileRequest representa uma requisição para baixar um arquivo de values

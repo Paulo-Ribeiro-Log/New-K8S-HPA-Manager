@@ -31,7 +31,8 @@
       "Bash(new-k8s-hpa-web start)",
       "Bash(git tag:*)",
       "Bash(git push:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(sqlite3:*)"
     ],
     "deny": [],
     "ask": []

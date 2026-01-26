@@ -10,7 +10,7 @@ export interface NexusConfig {
 }
 
 // Padrão de URL default
-export const DEFAULT_URL_PATTERN = '{baseUrl}/repository/{repository}/{release}/{version}/{environment}/helm-values/{type}-values.yaml';
+export const DEFAULT_URL_PATTERN = '{baseUrl}/repository/{repository}/{release}/{version}/{environment}/values/{type}-values.yaml';
 
 export interface ValuesFileRequest {
   release: string;

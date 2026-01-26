@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Loader2,
   Download,
@@ -25,8 +26,10 @@ import {
   ExternalLink,
   Copy,
   ClipboardPaste,
+  Globe,
 } from "lucide-react";
 import { toast } from "sonner";
+import { apiClient } from "@/lib/api/client";
 
 interface ExtractedData {
   application: string;
@@ -75,16 +78,91 @@ export function ServiceNowImportModal({
   onClose,
   onImportSuccess,
 }: ServiceNowImportModalProps) {
+  const [activeTab, setActiveTab] = useState<"playwright" | "manual">("playwright");
   const [chgUrl, setChgUrl] = useState("");
   const [description, setDescription] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<ImportResponse | null>(null);
+  const [playwrightStatus, setPlaywrightStatus] = useState<{
+    configured: boolean;
+    checked: boolean;
+  }>({ configured: false, checked: false });
+
+  // Verificar status do Playwright ao abrir o modal
+  useEffect(() => {
+    if (open && !playwrightStatus.checked) {
+      checkPlaywrightStatus();
+    }
+  }, [open]);
+
+  const checkPlaywrightStatus = async () => {
+    try {
+      const status = await apiClient.getPlaywrightStatus();
+      setPlaywrightStatus({
+        configured: status.playwright_configured && status.script_exists,
+        checked: true,
+      });
+      // Se Playwright não configurado, mudar para aba manual
+      if (!status.playwright_configured || !status.script_exists) {
+        setActiveTab("manual");
+      }
+    } catch {
+      setPlaywrightStatus({ configured: false, checked: true });
+      setActiveTab("manual");
+    }
+  };
 
   const handleOpenServiceNow = () => {
     if (chgUrl.trim()) {
       window.open(chgUrl.trim(), "_blank");
     } else {
       window.open("https://viavarejo.service-now.com/nav_to.do?uri=change_request_list.do", "_blank");
+    }
+  };
+
+  // Extrair via Playwright (browser automation)
+  const handleExtractWithPlaywright = async () => {
+    if (!chgUrl.trim()) {
+      toast.error("URL é obrigatória");
+      return;
+    }
+
+    if (!chgUrl.includes("service-now.com")) {
+      toast.error("URL deve ser do ServiceNow");
+      return;
+    }
+
+    setIsLoading(true);
+    setResult(null);
+
+    try {
+      toast.info("Abrindo browser... Faça login no Azure AD se necessário.", {
+        duration: 10000,
+      });
+
+      const response = await apiClient.extractServiceNowWithPlaywright(chgUrl);
+
+      if (response.success && response.extracted_data) {
+        setResult({
+          success: true,
+          extracted_data: response.extracted_data as ExtractedData,
+          change_request: {
+            sys_id: "",
+            number: response.change_number || "",
+            short_description: response.short_description || "",
+            description: response.description || "",
+            state: response.state || "",
+          },
+        });
+        toast.success(`CHG ${response.change_number || ""} extraída com sucesso!`);
+      } else {
+        toast.error(response.error || "Falha ao extrair dados");
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : "Erro desconhecido";
+      toast.error(errorMsg);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -195,89 +273,144 @@ export function ServiceNowImportModal({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
-          {/* Passo 1: Abrir ServiceNow */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Badge variant="outline" className="rounded-full">1</Badge>
-              <Label className="font-medium">Abrir a CHG no ServiceNow</Label>
-            </div>
-            <div className="flex gap-2">
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "playwright" | "manual")}>
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="playwright" className="flex items-center gap-2" disabled={!playwrightStatus.configured}>
+              <Globe className="h-4 w-4" />
+              Via Browser (Azure AD)
+            </TabsTrigger>
+            <TabsTrigger value="manual" className="flex items-center gap-2">
+              <FileText className="h-4 w-4" />
+              Texto Manual
+            </TabsTrigger>
+          </TabsList>
+
+          {/* Tab: Extração via Playwright */}
+          <TabsContent value="playwright" className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="chg-url-playwright">URL da CHG</Label>
               <Input
-                placeholder="Cole a URL da CHG (opcional)"
+                id="chg-url-playwright"
+                placeholder="https://viavarejo.service-now.com/change_request.do?sys_id=..."
                 value={chgUrl}
                 onChange={(e) => setChgUrl(e.target.value)}
-                className="flex-1"
+                disabled={isLoading}
               />
-              <Button variant="outline" onClick={handleOpenServiceNow}>
-                <ExternalLink className="h-4 w-4 mr-2" />
-                Abrir
-              </Button>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Cole a URL da CHG e clique em "Abrir", ou deixe em branco para abrir a lista de CHGs.
-            </p>
-          </div>
 
-          <Separator />
-
-          {/* Passo 2: Copiar texto */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Badge variant="outline" className="rounded-full">2</Badge>
-              <Label className="font-medium">Copiar o campo "Motivo da mudança"</Label>
-            </div>
-            <Alert>
-              <Copy className="h-4 w-4" />
-              <AlertDescription>
-                Na página da CHG, localize o campo <strong>"Motivo da mudança"</strong> e copie todo o conteúdo (Ctrl+A, Ctrl+C).
-              </AlertDescription>
-            </Alert>
-          </div>
-
-          <Separator />
-
-          {/* Passo 3: Colar e extrair */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="rounded-full">3</Badge>
-                <Label className="font-medium">Colar o texto aqui</Label>
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-3">
+              <div className="text-sm text-blue-800 dark:text-blue-200">
+                <p className="font-medium">Como funciona:</p>
+                <ol className="list-decimal list-inside mt-1 space-y-1 text-blue-700 dark:text-blue-300">
+                  <li>O sistema abre um navegador Chromium</li>
+                  <li>Se necessário, faça login no Azure AD</li>
+                  <li>Os dados serão extraídos automaticamente</li>
+                </ol>
               </div>
-              <Button variant="ghost" size="sm" onClick={handlePasteFromClipboard}>
-                <ClipboardPaste className="h-4 w-4 mr-1" />
-                Colar
-              </Button>
             </div>
-            <Textarea
-              placeholder="Cole aqui o conteúdo do campo 'Motivo da mudança'..."
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              disabled={isLoading}
-              rows={8}
-              className="font-mono text-xs"
-            />
-          </div>
 
-          <Button
-            onClick={handleParseDescription}
-            disabled={isLoading || !description.trim()}
-            className="w-full"
-            size="lg"
-          >
-            {isLoading ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Extraindo dados...
-              </>
-            ) : (
-              <>
-                <FileText className="h-4 w-4 mr-2" />
-                Extrair Dados da CHG
-              </>
-            )}
-          </Button>
-        </div>
+            <Button
+              onClick={handleExtractWithPlaywright}
+              disabled={isLoading || !chgUrl.trim()}
+              className="w-full"
+              size="lg"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Extraindo... (aguarde login se necessário)
+                </>
+              ) : (
+                <>
+                  <Globe className="h-4 w-4 mr-2" />
+                  Extrair via Browser
+                </>
+              )}
+            </Button>
+          </TabsContent>
+
+          {/* Tab: Texto Manual */}
+          <TabsContent value="manual" className="space-y-4">
+            {/* Passo 1: Abrir ServiceNow */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="rounded-full">1</Badge>
+                <Label className="font-medium">Abrir a CHG no ServiceNow</Label>
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="Cole a URL da CHG (opcional)"
+                  value={chgUrl}
+                  onChange={(e) => setChgUrl(e.target.value)}
+                  className="flex-1"
+                />
+                <Button variant="outline" onClick={handleOpenServiceNow}>
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  Abrir
+                </Button>
+              </div>
+            </div>
+
+            <Separator />
+
+            {/* Passo 2: Copiar texto */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="rounded-full">2</Badge>
+                <Label className="font-medium">Copiar o campo "Motivo da mudança"</Label>
+              </div>
+              <Alert>
+                <Copy className="h-4 w-4" />
+                <AlertDescription>
+                  Na página da CHG, localize o campo <strong>"Motivo da mudança"</strong> e copie todo o conteúdo (Ctrl+A, Ctrl+C).
+                </AlertDescription>
+              </Alert>
+            </div>
+
+            <Separator />
+
+            {/* Passo 3: Colar e extrair */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="rounded-full">3</Badge>
+                  <Label className="font-medium">Colar o texto aqui</Label>
+                </div>
+                <Button variant="ghost" size="sm" onClick={handlePasteFromClipboard}>
+                  <ClipboardPaste className="h-4 w-4 mr-1" />
+                  Colar
+                </Button>
+              </div>
+              <Textarea
+                placeholder="Cole aqui o conteúdo do campo 'Motivo da mudança'..."
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                disabled={isLoading}
+                rows={8}
+                className="font-mono text-xs"
+              />
+            </div>
+
+            <Button
+              onClick={handleParseDescription}
+              disabled={isLoading || !description.trim()}
+              className="w-full"
+              size="lg"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Extraindo dados...
+                </>
+              ) : (
+                <>
+                  <FileText className="h-4 w-4 mr-2" />
+                  Extrair Dados da CHG
+                </>
+              )}
+            </Button>
+          </TabsContent>
+        </Tabs>
 
         {/* Resultado */}
         {result && result.success && result.extracted_data && (

@@ -706,8 +706,8 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                   {selectedClusters.length} cluster{selectedClusters.length > 1 ? 's' : ''}
                 </Badge>
               )}
-              {/* Botão Ver Progresso/Resultados - Aparece quando está executando OU quando há resultados */}
-              {(isRunning && sessionId) ? (
+              {/* Botão Ver Progresso - Apenas quando está executando */}
+              {isRunning && sessionId && (
                 <Button
                   variant="default"
                   size="sm"
@@ -717,21 +717,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                   <Activity className="mr-1.5 h-3.5 w-3.5" />
                   <span className="text-xs">Ver Progresso</span>
                 </Button>
-              ) : results.length > 0 ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={async () => {
-                    // Carregar eventos do primeiro resultado antes de abrir o modal
-                    const firstResult = results[0];
-                    await handleShowProgress(firstResult.cluster, firstResult);
-                  }}
-                  className="h-7"
-                >
-                  <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
-                  <span className="text-xs">Ver Resultados</span>
-                </Button>
-              ) : null}
+              )}
               {/* Botão Exportar Relatório - Aparece quando há resultados */}
               {results.length > 0 && (
                 <Button
@@ -778,7 +764,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
           open={showProgressModal}
           preloadedEvents={preloadedLogs?.events}
           preloadedResult={preloadedLogs?.result} // ✅ Passar resultado completo pré-carregado
-          viewMode={!!preloadedLogs}
+          viewMode={!!preloadedLogs} // viewMode apenas quando tem preloadedLogs (visualização de histórico)
           onOpenChange={(open) => {
             // Permitir fechar apenas se não está rodando ou se usuário confirmar
             if (!open && isRunning && !preloadedLogs) {

@@ -74,7 +74,7 @@ func (c *HTTPClient) TestConnection() (*TestConnectionResponse, error) {
 }
 
 // DefaultURLPattern é o padrão de URL padrão para arquivos no Nexus
-const DefaultURLPattern = "{baseUrl}/repository/{repository}/{release}/{version}/{environment}/helm-values/{type}-values.yaml"
+const DefaultURLPattern = "{baseUrl}/repository/{repository}/{release}/{version}/{environment}/values/{type}-values.yaml"
 
 // BuildURL constrói a URL completa para um arquivo de values
 func (c *HTTPClient) BuildURL(req ValuesFileRequest) string {
@@ -207,7 +207,7 @@ func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse,
 
 	return &ValuesFileResponse{
 		Content:  contentStr,
-		FilePath: fmt.Sprintf("%s/%s/%s/helm-values/%s-values.yaml", req.Release, req.Version, req.Environment, req.Type),
+		FilePath: fmt.Sprintf("%s/%s/%s/values/%s-values.yaml", req.Release, req.Version, req.Environment, req.Type),
 		FullURL:  url,
 		Size:     int64(len(content)),
 	}, nil

@@ -11,17 +11,21 @@
 - [ ] Ajustar backend para orquestrar os jobs e coletar os resultados reais.
 - [ ] Validar em cluster de teste que MongoDB/Redis/etc. são verificados com sucesso.
 
-## 2. Timeouts Específicos por Tipo de Check
-- [ ] Atualizar `HealthCheckRequest` (Go + frontend) para aceitar `timeout_deployments`, `timeout_configs`, `timeout_services`.
-- [ ] Propagar valores na UI (HealthCheckingTab) e validar formulário.
-- [ ] Ajustar orchestrator/checkers para usar cada timeout específico.
-- [ ] Adicionar testes (unitários/integrados) garantindo backward compatibility com o timeout único.
+## 2. Timeouts Específicos por Tipo de Check ✅
+- [x] Atualizar `HealthCheckRequest` (Go + frontend) para aceitar `timeout_deployments`, `timeout_configs`, `timeout_services`.
+- [x] Propagar valores na UI (HealthCheckingTab) e validar formulário.
+- [x] Ajustar orchestrator/checkers para usar cada timeout específico.
+- [x] Adicionar testes (unitários/integrados) garantindo backward compatibility com o timeout único.
+  - **Arquivo**: `internal/healthcheck/models_test.go` (18 testes)
+  - **Cobertura**: Fallback para timeout geral, constantes padrão, cenários mistos
 
-## 3. Circuit Breaker de Métricas
-- [ ] Implementar contador de falhas no `DeploymentChecker.enrichWithMetrics`.
-- [ ] Após 3 erros consecutivos, marcar metrics-server como indisponível até o próximo ciclo.
-- [ ] Expor status em logs e eventos para observabilidade.
-- [ ] Testar cenário com metrics-server desligado e confirmar que o checker não degrada o tempo total.
+## 3. Circuit Breaker de Métricas ✅
+- [x] Implementar contador de falhas no `DeploymentChecker.enrichWithMetrics`.
+- [x] Após 3 erros consecutivos, marcar metrics-server como indisponível até o próximo ciclo.
+- [x] Expor status em logs e eventos para observabilidade.
+- [x] Testar cenário com metrics-server desligado e confirmar que o checker não degrada o tempo total.
+  - **Arquivo**: `internal/healthcheck/deployment_checker_test.go` (11 testes)
+  - **Cobertura**: Estado inicial, threshold, reset, thread safety, comportamento entre sessões
 
 ## 4. Replay Buffer + SSE Resiliente
 - [ ] Criar buffer in-memory dos últimos N eventos por sessão no orchestrator.
@@ -29,11 +33,20 @@
 - [ ] Atualizar `useHealthCheckProgressMultiplexed` para implementar retry/backoff e consumir o buffer.
 - [ ] Testar desconexões e verificar se o progresso é retomado sem perda de dados.
 
-## 5. EventChecker
-- [ ] Criar `event_checker.go` para consultar `kubectl events`/API.
-- [ ] Mapear eventos críticos (FailedScheduling, BackOff, FailedMount, etc.) e correlacionar com resources.
-- [ ] Persistir/mostrar resultados no painel de Health Checking (backend + frontend).
+## 5. EventChecker ✅ (Backend)
+- [x] Criar `event_checker.go` para consultar `kubectl events`/API.
+  - **Arquivo**: `internal/healthcheck/event_checker.go` (~300 linhas)
+  - Consulta API de Events via `client.CoreV1().Events(ns).List()`
+- [x] Mapear eventos críticos (FailedScheduling, BackOff, FailedMount, etc.) e correlacionar com resources.
+  - **CriticalEventReasons**: FailedScheduling, CrashLoopBackOff, ErrImagePull, FailedMount, OOMKilling, etc.
+  - **WarningEventReasons**: Unhealthy, Evicted, Preempted, etc.
+  - Sugestões contextuais para cada tipo de evento
+- [x] Persistir/mostrar resultados no painel de Health Checking (backend + frontend).
+  - **Backend**: Integrado no orchestrator.go (seção "Check Events")
+  - **Models**: `EventHealth`, `CheckEvents`, `TimeoutEvents`, `EventResults` adicionados
+  - **Frontend**: ⚠️ PENDENTE - Adicionar checkbox "Verificar Eventos" e exibir resultados
 - [ ] Validar em cluster de teste com eventos sintéticos.
+  - **Testes unitários**: `internal/healthcheck/event_checker_test.go` (20 testes)
 
 ## 6. Revisões Semanais
 - [ ] Registrar avanços/métricas após cada entrega parcial.
