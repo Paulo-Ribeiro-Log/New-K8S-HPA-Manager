@@ -35,7 +35,7 @@ import {
   Download
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { TokenConfigModal } from "./TokenConfigModal";
+import { CredentialRedirectDialog } from "./profile/CredentialRedirectDialog";
 import { DeploymentScanModal } from "./DeploymentScanModal";
 import { ServiceNowImportModal } from "./ServiceNowImportModal";
 import { useClusters } from "@/hooks/useAPI";
@@ -1477,8 +1477,12 @@ export const GitHubReleasesTab = () => {
         }}
       />
 
-      {/* Modal de configuração de token */}
-      <TokenConfigModal open={showTokenModal} onOpenChange={setShowTokenModal} />
+      {/* Dialog de redirecionamento para configuração de token */}
+      <CredentialRedirectDialog
+        open={showTokenModal}
+        onOpenChange={setShowTokenModal}
+        credentialName="GitHub Token"
+      />
 
       {/* Modal de scan de deployments */}
       <DeploymentScanModal open={showScanModal} onOpenChange={setShowScanModal} />

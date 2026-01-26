@@ -1,0 +1,17 @@
+ # 1. Ver configuração atual no banco                                                                                                                       
+   echo "=== BANCO DE DADOS ==="                                                                                                                              
+   sqlite3 ~/.k8s-hpa-manager/ai_diagnostics.db "SELECT user_email, preferred_provider, gemini_model FROM user_ai_tokens;"                                    
+                                                                                                                                                              
+   echo ""                                                                                                                                                    
+   echo "=== LOCAL SETTINGS ==="                                                                                                                              
+   sqlite3 ~/.k8s-hpa-manager/ai_diagnostics.db "SELECT * FROM local_settings;"                                                                               
+                                                                                                                                                              
+   echo ""                                                                                                                                                    
+   echo "=== TESTE API (sem ai_email) ==="                                                                                                                    
+   curl -s -H "Authorization: Bearer poc-token-123" "http://localhost:8080/api/v1/ai/tokens" 2>&1                                                             
+                                                                                                                                                              
+   echo ""                                                                                                                                                    
+   echo "=== TESTE API (com ai_email) ==="                                                                                                                    
+   curl -s -H "Authorization: Bearer poc-token-123" "http://localhost:8080/api/v1/ai/tokens?ai_email=paulo.ribeiro.1168@gmail.com" 2>&1                       
+   Verificar estado completo das configurações                                                                                                                
+                                               

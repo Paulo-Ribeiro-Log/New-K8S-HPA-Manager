@@ -9,7 +9,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
@@ -114,6 +116,14 @@ export const DeploymentsTab = ({
   const [rolloutConfirmOpen, setRolloutConfirmOpen] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
   const [scaleModalOpen, setScaleModalOpen] = useState(false);
+
+  // Estados para seleção em lote
+  const [selectedDeployments, setSelectedDeployments] = useState<Set<string>>(new Set());
+  const [batchActionType, setBatchActionType] = useState<"delete" | "restart" | null>(null);
+  const [batchConfirmOpen, setBatchConfirmOpen] = useState(false);
+  const [batchOperationLoading, setBatchOperationLoading] = useState(false);
+  const [batchResults, setBatchResults] = useState<Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }> | null>(null);
+  const [batchResultsOpen, setBatchResultsOpen] = useState(false);
   const [isScaling, setIsScaling] = useState(false);
   const [scaleReplicas, setScaleReplicas] = useState(1);
   const [showRolloutGauge, setShowRolloutGauge] = useState(false);
@@ -147,6 +157,107 @@ export const DeploymentsTab = ({
   const selectedDeploymentRef = useRef<DeploymentSummary | null>(null);
   const rolloutTargetRef = useRef<DeploymentSummary | null>(null);
 
+
+  // Funções de seleção em lote
+  const getDeploymentKey = (dep: DeploymentSummary) => `${dep.namespace}/${dep.name}`;
+
+  const toggleDeploymentSelection = (dep: DeploymentSummary) => {
+    const key = getDeploymentKey(dep);
+    setSelectedDeployments(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(key)) {
+        newSet.delete(key);
+      } else {
+        newSet.add(key);
+      }
+      return newSet;
+    });
+  };
+
+  const selectAllDeployments = () => {
+    const allKeys = filteredDeployments.map(getDeploymentKey);
+    setSelectedDeployments(new Set(allKeys));
+  };
+
+  const clearSelection = () => {
+    setSelectedDeployments(new Set());
+  };
+
+  const getSelectedDeploymentsData = () => {
+    return Array.from(selectedDeployments).map(key => {
+      const [namespace, name] = key.split('/');
+      return { namespace, name };
+    });
+  };
+
+  const handleBatchAction = (action: "delete" | "restart") => {
+    setBatchActionType(action);
+    setBatchConfirmOpen(true);
+  };
+
+  const executeBatchAction = async () => {
+    if (!batchActionType || selectedDeployments.size === 0) return;
+
+    setBatchOperationLoading(true);
+    const deploymentsToProcess = getSelectedDeploymentsData();
+
+    try {
+      let result;
+      switch (batchActionType) {
+        case "delete":
+          result = await apiClient.batchDeleteDeployments(cluster, deploymentsToProcess);
+          break;
+        case "restart":
+          result = await apiClient.batchRestartDeployments(cluster, deploymentsToProcess);
+          break;
+      }
+
+      setBatchResults(result.results);
+      setBatchConfirmOpen(false);
+      setBatchResultsOpen(true);
+
+      if (result.success_count === result.total) {
+        toast.success(`${result.success_count} deployment(s) processado(s) com sucesso`);
+      } else if (result.success_count > 0) {
+        toast.warning(`${result.success_count}/${result.total} deployment(s) processado(s)`, {
+          description: `${result.failed_count} falha(s)`,
+        });
+      } else {
+        toast.error(`Falha ao processar ${result.total} deployment(s)`);
+      }
+
+      clearSelection();
+      setSelectedDeployment(null);
+      refetch();
+    } catch (err) {
+      toast.error("Erro na operação em lote", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setBatchOperationLoading(false);
+    }
+  };
+
+  const getBatchActionConfig = () => {
+    switch (batchActionType) {
+      case "delete":
+        return {
+          label: "Deletar",
+          icon: Trash2,
+          color: "bg-red-600 hover:bg-red-700",
+          description: "Os deployments serão deletados permanentemente."
+        };
+      case "restart":
+        return {
+          label: "Reiniciar",
+          icon: RotateCw,
+          color: "bg-blue-600 hover:bg-blue-700",
+          description: "Os deployments serão reiniciados via rollout restart."
+        };
+      default:
+        return { label: "", icon: RotateCw, color: "", description: "" };
+    }
+  };
 
   // Debug: monitor modal state changes
   useEffect(() => {
@@ -2091,43 +2202,107 @@ export const DeploymentsTab = ({
       );
     }
 
+    const allSelected = filteredDeployments.length > 0 &&
+      filteredDeployments.every(dep => selectedDeployments.has(getDeploymentKey(dep)));
+    const someSelected = filteredDeployments.some(dep => selectedDeployments.has(getDeploymentKey(dep)));
+
     return (
       <div className="space-y-2">
+        {/* Header com seleção em lote */}
+        <div className="flex items-center gap-2 pb-2 border-b border-border/40">
+          <Checkbox
+            checked={allSelected ? true : someSelected ? "indeterminate" : false}
+            onCheckedChange={(checked) => {
+              if (checked) {
+                selectAllDeployments();
+              } else {
+                clearSelection();
+              }
+            }}
+            className="data-[state=checked]:bg-primary data-[state=indeterminate]:bg-primary"
+          />
+          <span className="text-xs text-muted-foreground">
+            {selectedDeployments.size > 0 ? `${selectedDeployments.size} selecionado(s)` : "Selecionar todos"}
+          </span>
+          {selectedDeployments.size > 0 && (
+            <div className="flex items-center gap-1 ml-auto">
+              <ProtectedAction>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-xs text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950"
+                  onClick={() => handleBatchAction("restart")}
+                >
+                  Reiniciar
+                </Button>
+              </ProtectedAction>
+              <ProtectedAction>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950"
+                  onClick={() => handleBatchAction("delete")}
+                >
+                  Deletar
+                </Button>
+              </ProtectedAction>
+              <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={clearSelection}>
+                <X className="w-3 h-3 mr-1" />
+                Limpar
+              </Button>
+            </div>
+          )}
+        </div>
+
         {filteredDeployments.map((dep) => {
           const isSelected =
             selectedDeployment?.name === dep.name &&
             selectedDeployment?.namespace === dep.namespace;
+          const isChecked = selectedDeployments.has(getDeploymentKey(dep));
           const hasProblems = isDeploymentProblematic(dep);
           const statusColor = hasProblems ? "text-red-400" : "text-green-400";
-          
+
           return (
-            <button
+            <div
               key={`${dep.cluster}-${dep.namespace}-${dep.name}`}
-              onClick={() => handleSelectDeployment(dep)}
-              className={`w-full text-left p-3 rounded-lg border transition-colors relative ${
+              className={`flex items-start gap-2 p-3 rounded-lg border transition-colors relative ${
                 isSelected
                   ? "border-primary bg-primary/10 text-primary-foreground"
+                  : isChecked
+                  ? "border-primary/50 bg-primary/5"
                   : hasProblems
                   ? "border-red-500/40 hover:border-red-500/60 bg-red-500/5"
                   : "border-border/60 hover:border-primary/40"
               }`}
             >
-              {hasProblems && (
-                <div className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full animate-pulse" title="Deployment com problemas" />
-              )}
-              <div className="flex items-center gap-2">
-                <div className="font-semibold text-sm">{dep.name}</div>
+              <Checkbox
+                checked={isChecked}
+                onCheckedChange={() => toggleDeploymentSelection(dep)}
+                onClick={(e) => e.stopPropagation()}
+                className="mt-1"
+                aria-label={`Selecionar ${dep.name}`}
+              />
+              <button
+                onClick={() => handleSelectDeployment(dep)}
+                className="flex-1 text-left"
+              >
                 {hasProblems && (
-                  <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] font-medium rounded">
-                    !
-                  </span>
+                  <div className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full animate-pulse" title="Deployment com problemas" />
                 )}
-              </div>
-              <div className="text-xs text-muted-foreground">{dep.namespace}</div>
-              <div className={`text-[11px] mt-1 font-medium ${statusColor}`}>
-                {dep.readyReplicas}/{dep.replicas} ready • {dep.availableReplicas}/{dep.replicas} available
-              </div>
-            </button>
+                <div className="flex items-center gap-2">
+                  <div className="font-semibold text-sm">{dep.name}</div>
+                  {hasProblems && (
+                    <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] font-medium rounded">
+                      !
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-muted-foreground">{dep.namespace}</div>
+                <div className={`text-[11px] mt-1 font-medium ${statusColor}`}>
+                  {dep.readyReplicas}/{dep.replicas} ready • {dep.availableReplicas}/{dep.replicas} available
+                </div>
+              </button>
+            </div>
           );
         })}
       </div>
@@ -4063,6 +4238,127 @@ export const DeploymentsTab = ({
                   Aplicar Scale
                 </>
               )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Confirmação de Batch */}
+      <Dialog open={batchConfirmOpen} onOpenChange={setBatchConfirmOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {(() => {
+                const config = getBatchActionConfig();
+                const Icon = config.icon;
+                return Icon ? <Icon className="w-5 h-5" /> : null;
+              })()}
+              {getBatchActionConfig().label} {selectedDeployments.size} Deployment(s)
+            </DialogTitle>
+            <DialogDescription>
+              <div className="mt-2">
+                {getBatchActionConfig().description}
+              </div>
+              <div className="mt-4 p-3 bg-muted rounded-lg max-h-48 overflow-y-auto">
+                <div className="text-xs font-medium mb-2">Deployments selecionados:</div>
+                <div className="space-y-1">
+                  {getSelectedDeploymentsData().map((dep, idx) => (
+                    <div key={idx} className="text-xs flex items-center gap-2">
+                      <span className="text-muted-foreground">{dep.namespace}/</span>
+                      <span className="font-medium">{dep.name}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBatchConfirmOpen(false)} disabled={batchOperationLoading}>
+              Cancelar
+            </Button>
+            <ProtectedAction>
+              <Button
+                className={getBatchActionConfig().color}
+                onClick={executeBatchAction}
+                disabled={batchOperationLoading}
+              >
+                {batchOperationLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Processando...
+                  </>
+                ) : (
+                  (() => {
+                    const config = getBatchActionConfig();
+                    const Icon = config.icon;
+                    return (
+                      <>
+                        {Icon && <Icon className="w-4 h-4 mr-2" />}
+                        {config.label} {selectedDeployments.size} Deployment(s)
+                      </>
+                    );
+                  })()
+                )}
+              </Button>
+            </ProtectedAction>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Resultados do Batch */}
+      <Dialog open={batchResultsOpen} onOpenChange={setBatchResultsOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Resultado da Operação</DialogTitle>
+            <DialogDescription>
+              {batchResults && (
+                <div className="mt-2">
+                  <div className="flex items-center gap-4 mb-4">
+                    <Badge variant="outline" className="bg-green-500/10 text-green-700 border-green-500/20">
+                      <CheckCircle2 className="w-3 h-3 mr-1" />
+                      {batchResults.filter(r => r.success).length} sucesso
+                    </Badge>
+                    {batchResults.filter(r => !r.success).length > 0 && (
+                      <Badge variant="outline" className="bg-red-500/10 text-red-700 border-red-500/20">
+                        <XCircle className="w-3 h-3 mr-1" />
+                        {batchResults.filter(r => !r.success).length} falha(s)
+                      </Badge>
+                    )}
+                  </div>
+                  <ScrollArea className="max-h-64">
+                    <div className="space-y-2">
+                      {batchResults.map((result, idx) => (
+                        <div
+                          key={idx}
+                          className={`p-2 rounded-lg text-xs ${
+                            result.success
+                              ? "bg-green-500/10 border border-green-500/20"
+                              : "bg-red-500/10 border border-red-500/20"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            {result.success ? (
+                              <CheckCircle2 className="w-4 h-4 text-green-600" />
+                            ) : (
+                              <XCircle className="w-4 h-4 text-red-600" />
+                            )}
+                            <span className="font-medium">{result.namespace}/{result.name}</span>
+                          </div>
+                          <div className="ml-6 mt-1 text-muted-foreground">
+                            {result.message}
+                            {result.error && <span className="text-red-600"> - {result.error}</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                </div>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => setBatchResultsOpen(false)}>
+              Fechar
             </Button>
           </DialogFooter>
         </DialogContent>

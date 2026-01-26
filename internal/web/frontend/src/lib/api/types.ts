@@ -1008,3 +1008,59 @@ export interface SaveTokenResponse {
   github_user?: string;
   github_email?: string;
 }
+
+// ==================== ServiceNow Integration Types ====================
+
+export interface ServiceNowExtractedData {
+  application?: string;
+  version?: string;
+  github_repo?: string;
+  squad?: string;
+  branch?: string;
+  jira_issues?: string[];
+  product?: string;
+  project?: string;
+  xlrelease_url?: string;
+  xlrelease_title?: string;
+  severity?: string;
+  confidence: number;
+}
+
+export interface ServiceNowChangeRequest {
+  sys_id?: string;
+  number?: string;
+  short_description?: string;
+  description?: string;
+  state?: string;
+}
+
+export interface ServiceNowImportResponse {
+  success: boolean;
+  change_request?: ServiceNowChangeRequest;
+  extracted_data?: ServiceNowExtractedData;
+  error?: string;
+}
+
+export interface ServiceNowParseResponse {
+  success: boolean;
+  extracted_data?: ServiceNowExtractedData;
+  error?: string;
+}
+
+export interface ServiceNowPlaywrightResponse {
+  success: boolean;
+  change_number?: string;
+  short_description?: string;
+  description?: string;
+  state?: string;
+  extracted_data?: ServiceNowExtractedData;
+  error?: string;
+}
+
+export interface PlaywrightStatusResponse {
+  playwright_configured: boolean;
+  frontend_dir: string;
+  script_exists: boolean;
+  npx_available: boolean;
+  ts_node_available: boolean;
+}

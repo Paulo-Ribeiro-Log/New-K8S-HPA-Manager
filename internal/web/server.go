@@ -520,6 +520,9 @@ func (s *Server) setupRoutes() {
 		deployments.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), deploymentHandler.Delete)
 		deployments.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), deploymentHandler.RolloutRestart)
 		deployments.POST("/:cluster/:namespace/:name/scale", rbacMiddleware.RequireSREGroup(), deploymentHandler.Scale)
+		// Deployments - Batch Operations (SRE-only)
+		deployments.POST("/:cluster/batch/delete", rbacMiddleware.RequireSREGroup(), deploymentHandler.BatchDelete)
+		deployments.POST("/:cluster/batch/restart", rbacMiddleware.RequireSREGroup(), deploymentHandler.BatchRestart)
 	}
 
 	// StatefulSets
@@ -568,7 +571,13 @@ func (s *Server) setupRoutes() {
 		pods.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Apply)
 		pods.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), podHandler.Delete)
 		pods.POST("/:cluster/:namespace/:name/restart", rbacMiddleware.RequireSREGroup(), podHandler.Restart)
+		pods.POST("/:cluster/:namespace/:name/kill", rbacMiddleware.RequireSREGroup(), podHandler.Kill)
 		pods.POST("/:cluster/:namespace/debug", rbacMiddleware.RequireSREGroup(), podHandler.CreateDebugPod)
+
+		// Batch Operations (SRE-only)
+		pods.POST("/:cluster/batch/delete", rbacMiddleware.RequireSREGroup(), podHandler.BatchDelete)
+		pods.POST("/:cluster/batch/kill", rbacMiddleware.RequireSREGroup(), podHandler.BatchKill)
+		pods.POST("/:cluster/batch/restart", rbacMiddleware.RequireSREGroup(), podHandler.BatchRestart)
 	}
 
 	// Pods Summary
@@ -736,14 +745,18 @@ func (s *Server) setupRoutes() {
 
 	// ServiceNow Integration (importação de dados de CHG)
 	// Tenta scraping via HTTP, se falhar sugere usar aba "Texto Manual"
+	// Também suporta Playwright para extração via browser com Azure AD SSO
 	serviceNowHandler := handlers.NewServiceNowHandler(&githubLogger)
 	servicenow := api.Group("/servicenow")
 	{
 		servicenow.POST("/import", serviceNowHandler.ImportFromURL)
 		servicenow.POST("/parse", serviceNowHandler.ImportFromDescription)
 		servicenow.GET("/extract-sysid", serviceNowHandler.ExtractSysID)
+		// Playwright (browser automation com Azure AD SSO)
+		servicenow.POST("/extract-playwright", serviceNowHandler.ExtractWithPlaywright)
+		servicenow.GET("/playwright-status", serviceNowHandler.GetPlaywrightStatus)
 	}
-	fmt.Println("✅ ServiceNow Integration routes registradas")
+	fmt.Println("✅ ServiceNow Integration routes registradas (HTTP + Playwright)")
 
 	// SRE Approval Integration (aprovação de deployments)
 	sreApprovalHandler := handlers.NewSREApprovalHandler(&githubLogger)

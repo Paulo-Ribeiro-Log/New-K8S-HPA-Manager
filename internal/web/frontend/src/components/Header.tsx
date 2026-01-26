@@ -13,12 +13,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { LogOut, CheckCircle, Zap, Save, FolderOpen, FileText, ChevronsUpDown, Check, History, AlertCircle } from "lucide-react";
-import { ModeToggle } from "@/components/mode-toggle";
+import { CheckCircle, Zap, Save, FolderOpen, FileText, ChevronsUpDown, Check, History, AlertCircle } from "lucide-react";
 import { NotificationBell } from "@/components/NotificationBell";
 import { NotificationDrawer } from "@/components/NotificationDrawer";
 import { AlertsDialog } from "@/components/AlertsDialog";
-import { SREBadge } from "@/components/rbac";
+import { UserProfileMenu } from "@/components/UserProfileMenu";
 import { useNotifications } from "@/hooks/useNotifications";
 import type { InAppNotification } from "@/hooks/useNotifications";
 import { cn } from "@/lib/utils";
@@ -36,7 +35,6 @@ interface HeaderProps {
   onLoadSession?: () => void;
   onViewLogs?: () => void;
   onViewHistory?: () => void;
-  userInfo: string;
   onLogout: () => void;
 }
 
@@ -51,7 +49,6 @@ export const Header = ({
   onLoadSession,
   onViewLogs,
   onViewHistory,
-  userInfo,
   onLogout,
 }: HeaderProps) => {
   const [open, setOpen] = useState(false);
@@ -246,28 +243,14 @@ export const Header = ({
           </Button>
         )}
 
-        <span className="text-white/90 text-sm">{userInfo}</span>
-
-        {/* SRE Badge */}
-        <SREBadge />
-
         {/* Notification Bell */}
         <NotificationBell
           unreadCount={unreadCount}
           onClick={() => setNotificationDrawerOpen(true)}
         />
 
-        <ModeToggle />
-
-        <Button
-          variant="secondary"
-          size="sm"
-          className="bg-white/20 hover:bg-white/30 text-white border-white/30"
-          onClick={onLogout}
-        >
-          <LogOut className="w-4 h-4 mr-2" />
-          Logout
-        </Button>
+        {/* User Profile Menu - substitui userInfo, SREBadge, ModeToggle e Logout */}
+        <UserProfileMenu onLogout={onLogout} />
       </div>
 
       {/* Notification Drawer */}

@@ -738,6 +738,49 @@ class APIClient {
     return response;
   }
 
+  // Deployments Batch Operations
+  async batchDeleteDeployments(cluster: string, deployments: Array<{ namespace: string; name: string }>): Promise<{
+    results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+    total: number;
+    success_count: number;
+    failed_count: number;
+  }> {
+    const response = await this.request<APIResponse<{
+      results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+      total: number;
+      success_count: number;
+      failed_count: number;
+    }>>(
+      `/deployments/${encodeURIComponent(cluster)}/batch/delete`,
+      {
+        method: "POST",
+        body: JSON.stringify({ deployments }),
+      }
+    );
+    return response.data || { results: [], total: 0, success_count: 0, failed_count: 0 };
+  }
+
+  async batchRestartDeployments(cluster: string, deployments: Array<{ namespace: string; name: string }>): Promise<{
+    results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+    total: number;
+    success_count: number;
+    failed_count: number;
+  }> {
+    const response = await this.request<APIResponse<{
+      results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+      total: number;
+      success_count: number;
+      failed_count: number;
+    }>>(
+      `/deployments/${encodeURIComponent(cluster)}/batch/restart`,
+      {
+        method: "POST",
+        body: JSON.stringify({ deployments }),
+      }
+    );
+    return response.data || { results: [], total: 0, success_count: 0, failed_count: 0 };
+  }
+
   // Ingress API Methods
   async getIngresses(
     cluster?: string,
@@ -1152,6 +1195,80 @@ class APIClient {
       }
     );
     return response.data || { success: false, message: "Unknown error", hasOwner: false };
+  }
+
+  async killPod(cluster: string, namespace: string, name: string): Promise<{ success: boolean; message: string }> {
+    const response = await this.request<APIResponse<{ success: boolean; message: string }>>(
+      `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/kill`,
+      {
+        method: "POST",
+      }
+    );
+    return response.data || { success: false, message: "Unknown error" };
+  }
+
+  // Batch Operations
+  async batchDeletePods(cluster: string, pods: Array<{ namespace: string; name: string }>): Promise<{
+    results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+    total: number;
+    success_count: number;
+    failed_count: number;
+  }> {
+    const response = await this.request<APIResponse<{
+      results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+      total: number;
+      success_count: number;
+      failed_count: number;
+    }>>(
+      `/pods/${encodeURIComponent(cluster)}/batch/delete`,
+      {
+        method: "POST",
+        body: JSON.stringify({ pods }),
+      }
+    );
+    return response.data || { results: [], total: 0, success_count: 0, failed_count: 0 };
+  }
+
+  async batchKillPods(cluster: string, pods: Array<{ namespace: string; name: string }>): Promise<{
+    results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+    total: number;
+    success_count: number;
+    failed_count: number;
+  }> {
+    const response = await this.request<APIResponse<{
+      results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+      total: number;
+      success_count: number;
+      failed_count: number;
+    }>>(
+      `/pods/${encodeURIComponent(cluster)}/batch/kill`,
+      {
+        method: "POST",
+        body: JSON.stringify({ pods }),
+      }
+    );
+    return response.data || { results: [], total: 0, success_count: 0, failed_count: 0 };
+  }
+
+  async batchRestartPods(cluster: string, pods: Array<{ namespace: string; name: string }>): Promise<{
+    results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+    total: number;
+    success_count: number;
+    failed_count: number;
+  }> {
+    const response = await this.request<APIResponse<{
+      results: Array<{ namespace: string; name: string; success: boolean; message: string; error?: string }>;
+      total: number;
+      success_count: number;
+      failed_count: number;
+    }>>(
+      `/pods/${encodeURIComponent(cluster)}/batch/restart`,
+      {
+        method: "POST",
+        body: JSON.stringify({ pods }),
+      }
+    );
+    return response.data || { results: [], total: 0, success_count: 0, failed_count: 0 };
   }
 
   async getPodLogs(
@@ -2186,11 +2303,63 @@ class APIClient {
     const response = await this.request<{ success: boolean; message: string }>("/github/token", {
       method: "DELETE",
     });
-    
+
     // Clear email from localStorage
     this.clearGitHubEmail();
-    
+
     return response;
+  }
+
+  // ==================== ServiceNow Integration ====================
+
+  /**
+   * Import CHG data from ServiceNow URL via HTTP scraping
+   * POST /api/v1/servicenow/import
+   */
+  async importServiceNowCHG(url: string): Promise<ServiceNowImportResponse> {
+    return this.request("/servicenow/import", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    });
+  }
+
+  /**
+   * Parse CHG description text manually
+   * POST /api/v1/servicenow/parse
+   */
+  async parseServiceNowDescription(description: string): Promise<ServiceNowParseResponse> {
+    return this.request("/servicenow/parse", {
+      method: "POST",
+      body: JSON.stringify({ description }),
+    });
+  }
+
+  /**
+   * Extract sys_id from ServiceNow URL
+   * GET /api/v1/servicenow/extract-sysid?url=...
+   */
+  async extractServiceNowSysID(url: string): Promise<{ success: boolean; sys_id?: string; error?: string }> {
+    const params = new URLSearchParams({ url });
+    return this.request(`/servicenow/extract-sysid?${params}`);
+  }
+
+  /**
+   * Extract CHG data using Playwright (browser automation with Azure AD SSO)
+   * POST /api/v1/servicenow/extract-playwright
+   */
+  async extractServiceNowWithPlaywright(url: string): Promise<ServiceNowPlaywrightResponse> {
+    return this.request("/servicenow/extract-playwright", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    });
+  }
+
+  /**
+   * Get Playwright configuration status
+   * GET /api/v1/servicenow/playwright-status
+   */
+  async getPlaywrightStatus(): Promise<PlaywrightStatusResponse> {
+    return this.request("/servicenow/playwright-status");
   }
 }
 
