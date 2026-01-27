@@ -27,7 +27,14 @@ export function useUserProfile() {
     isLoading: githubLoading,
   } = useGitHubTokenStatus();
 
-  // Verificar status do Nexus ao montar
+  // Status do ServiceNow (sessao Playwright)
+  const [serviceNowStatus, setServiceNowStatus] = useState<{
+    valid: boolean;
+    status: string;
+  } | null>(null);
+  const [serviceNowLoading, setServiceNowLoading] = useState(true);
+
+  // Verificar status do Nexus e ServiceNow ao montar
   useEffect(() => {
     const checkNexus = async () => {
       try {
@@ -39,19 +46,47 @@ export function useUserProfile() {
         setNexusLoading(false);
       }
     };
+
+    const checkServiceNow = async () => {
+      try {
+        const status = await apiClient.get<{ valid: boolean; status: string }>('/servicenow/session-status');
+        setServiceNowStatus(status);
+      } catch {
+        setServiceNowStatus(null);
+      } finally {
+        setServiceNowLoading(false);
+      }
+    };
+
     checkNexus();
+    checkServiceNow();
   }, []);
 
   // Funcao para refresh manual do status
   const refreshCredentials = useCallback(async () => {
     setNexusLoading(true);
+    setServiceNowLoading(true);
+
     try {
-      const status = await apiClient.get<NexusStatus>('/nexus/status');
-      setNexusStatus(status);
-    } catch {
-      setNexusStatus(null);
+      const [nexus, servicenow] = await Promise.allSettled([
+        apiClient.get<NexusStatus>('/nexus/status'),
+        apiClient.get<{ valid: boolean; status: string }>('/servicenow/session-status'),
+      ]);
+
+      if (nexus.status === 'fulfilled') {
+        setNexusStatus(nexus.value);
+      } else {
+        setNexusStatus(null);
+      }
+
+      if (servicenow.status === 'fulfilled') {
+        setServiceNowStatus(servicenow.value);
+      } else {
+        setServiceNowStatus(null);
+      }
     } finally {
       setNexusLoading(false);
+      setServiceNowLoading(false);
     }
   }, []);
 
@@ -82,6 +117,16 @@ export function useUserProfile() {
       nexusCredStatus = 'configured';
     }
 
+    // Determinar status do ServiceNow
+    let serviceNowCredStatus: CredentialStatus = 'not_configured';
+    if (serviceNowLoading) {
+      serviceNowCredStatus = 'validating';
+    } else if (serviceNowStatus?.valid) {
+      serviceNowCredStatus = 'configured';
+    } else if (serviceNowStatus?.status === 'expired') {
+      serviceNowCredStatus = 'error'; // Sessao expirada
+    }
+
     return {
       nexus: {
         id: 'nexus',
@@ -97,8 +142,15 @@ export function useUserProfile() {
         status: githubStatus?.valid ? 'configured' : 'not_configured',
         lastChecked: new Date(),
       },
+      servicenow: {
+        id: 'servicenow',
+        name: 'ServiceNow',
+        description: 'Sessao Azure AD para extracao de CHGs',
+        status: serviceNowCredStatus,
+        lastChecked: new Date(),
+      },
     };
-  }, [githubStatus, nexusStatus, nexusLoading]);
+  }, [githubStatus, nexusStatus, nexusLoading, serviceNowStatus, serviceNowLoading]);
 
   const isLoading = permissionsLoading || githubLoading;
 

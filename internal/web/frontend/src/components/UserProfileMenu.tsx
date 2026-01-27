@@ -26,6 +26,7 @@ import { useTheme } from '@/components/theme-provider';
 import { useUserProfile } from '@/hooks/useUserProfile';
 import { NexusCredentialModal } from '@/components/profile/NexusCredentialModal';
 import { GitHubCredentialModal } from '@/components/profile/GitHubCredentialModal';
+import { ServiceNowSessionModal } from '@/components/profile/ServiceNowSessionModal';
 import type { CredentialStatus } from '@/types/profile';
 
 interface UserProfileMenuProps {
@@ -39,6 +40,7 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
   // Estados dos modais de credenciais
   const [nexusModalOpen, setNexusModalOpen] = useState(false);
   const [githubModalOpen, setGithubModalOpen] = useState(false);
+  const [serviceNowModalOpen, setServiceNowModalOpen] = useState(false);
 
   // Renderizar icone de status da credencial
   const renderStatusIcon = (status: CredentialStatus) => {
@@ -179,6 +181,13 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
               <span className="flex-1">GitHub Token</span>
               {renderStatusIcon(credentials.github.status)}
             </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => setServiceNowModalOpen(true)}
+              className="cursor-pointer"
+            >
+              <span className="flex-1">ServiceNow Session</span>
+              {renderStatusIcon(credentials.servicenow?.status || 'not_configured')}
+            </DropdownMenuItem>
           </DropdownMenuGroup>
 
           <DropdownMenuSeparator />
@@ -203,6 +212,11 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
       <GitHubCredentialModal
         open={githubModalOpen}
         onOpenChange={setGithubModalOpen}
+        onSaved={refreshCredentials}
+      />
+      <ServiceNowSessionModal
+        open={serviceNowModalOpen}
+        onOpenChange={setServiceNowModalOpen}
         onSaved={refreshCredentials}
       />
     </>

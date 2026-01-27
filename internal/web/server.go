@@ -755,8 +755,12 @@ func (s *Server) setupRoutes() {
 		// Playwright (browser automation com Azure AD SSO)
 		servicenow.POST("/extract-playwright", serviceNowHandler.ExtractWithPlaywright)
 		servicenow.GET("/playwright-status", serviceNowHandler.GetPlaywrightStatus)
+		// Gerenciamento de sessão do Playwright
+		servicenow.GET("/session-status", serviceNowHandler.GetSessionStatus)
+		servicenow.DELETE("/session", serviceNowHandler.ClearSession)
+		servicenow.POST("/session/test", serviceNowHandler.TestSession)
 	}
-	fmt.Println("✅ ServiceNow Integration routes registradas (HTTP + Playwright)")
+	fmt.Println("✅ ServiceNow Integration routes registradas (HTTP + Playwright + Session)")
 
 	// SRE Approval Integration (aprovação de deployments)
 	sreApprovalHandler := handlers.NewSREApprovalHandler(&githubLogger)
