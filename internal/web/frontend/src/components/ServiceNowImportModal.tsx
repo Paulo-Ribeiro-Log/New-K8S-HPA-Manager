@@ -429,6 +429,19 @@ export function ServiceNowImportModal({
               </div>
 
               <div className="grid grid-cols-2 gap-3 text-sm bg-muted p-4 rounded-lg">
+                {/* Número da CHG */}
+                {result.change_request?.number && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <FileText className="h-4 w-4 text-muted-foreground" />
+                      <span className="text-muted-foreground">Número:</span>
+                    </div>
+                    <span className="font-mono font-medium text-primary">
+                      {result.change_request.number}
+                    </span>
+                  </>
+                )}
+
                 {/* Aplicação */}
                 <div className="flex items-center gap-2">
                   <Package className="h-4 w-4 text-muted-foreground" />
