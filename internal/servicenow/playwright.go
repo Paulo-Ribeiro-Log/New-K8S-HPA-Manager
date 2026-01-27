@@ -34,62 +34,35 @@ type PlaywrightResult struct {
 
 // NewPlaywrightExtractor cria um novo extrator Playwright
 func NewPlaywrightExtractor(logger *zerolog.Logger) *PlaywrightExtractor {
-	// Detectar diretório do frontend usando caminhos absolutos
-	frontendDir := ""
+	// Usar script embarcado no diretório do usuário (~/.k8s-hpa-manager/playwright/)
+	playwrightDir := GetPlaywrightDir()
 
-	// Obter diretório atual do executável
-	execPath, _ := os.Executable()
-	execDir := filepath.Dir(execPath)
-
-	// Obter diretório de trabalho atual
-	cwd, _ := os.Getwd()
-
-	possiblePaths := []string{
-		// Caminho absoluto a partir do diretório do executável (build/)
-		filepath.Join(execDir, "..", "internal", "web", "frontend"),
-		// Caminho absoluto a partir do CWD
-		filepath.Join(cwd, "internal", "web", "frontend"),
-		// Caminhos relativos
-		"internal/web/frontend",
-		"./internal/web/frontend",
-		// Caminho hardcoded para desenvolvimento
-		filepath.Join(os.Getenv("HOME"), "Scripts", "Scripts GO", "New-K8s-HPA-Manager", "Scale_HPA", "internal", "web", "frontend"),
-	}
-
-	for _, p := range possiblePaths {
-		// Converter para caminho absoluto
-		absPath, err := filepath.Abs(p)
-		if err != nil {
-			continue
-		}
-
-		scriptPath := filepath.Join(absPath, "playwright", "servicenow-extractor.ts")
-		if _, err := os.Stat(scriptPath); err == nil {
-			frontendDir = absPath
-			logger.Info().
-				Str("path", absPath).
-				Str("script", scriptPath).
-				Msg("[Playwright] Encontrado diretório do frontend")
-			break
+	// Garantir que o script exista
+	scriptPath, err := EnsurePlaywrightScript()
+	if err != nil {
+		logger.Error().
+			Err(err).
+			Msg("[Playwright] Erro ao configurar script embarcado")
+		return &PlaywrightExtractor{
+			frontendDir: "",
+			logger:      logger,
 		}
 	}
 
-	if frontendDir == "" {
-		logger.Warn().
-			Str("cwd", cwd).
-			Str("execDir", execDir).
-			Msg("[Playwright] Diretório do frontend não encontrado")
-	}
+	logger.Info().
+		Str("path", playwrightDir).
+		Str("script", scriptPath).
+		Msg("[Playwright] Script configurado com sucesso")
 
 	return &PlaywrightExtractor{
-		frontendDir: frontendDir,
+		frontendDir: playwrightDir,
 		logger:      logger,
 	}
 }
 
 // IsConfigured verifica se o Playwright está configurado
 func (p *PlaywrightExtractor) IsConfigured() bool {
-	return p.frontendDir != ""
+	return p.frontendDir != "" && IsPlaywrightInstalled()
 }
 
 // GetStatus retorna o status da configuração do Playwright
@@ -103,16 +76,21 @@ func (p *PlaywrightExtractor) GetStatus() map[string]interface{} {
 		"script_exists":         false,
 		"npx_available":         false,
 		"ts_node_available":     false,
+		"npm_installed":         false,
 		"cwd":                   cwd,
 		"exec_path":             execPath,
 	}
 
 	if p.frontendDir != "" {
-		status["playwright_configured"] = true
-
-		scriptPath := filepath.Join(p.frontendDir, "playwright", "servicenow-extractor.ts")
+		scriptPath := filepath.Join(p.frontendDir, "servicenow-extractor.ts")
 		if _, err := os.Stat(scriptPath); err == nil {
 			status["script_exists"] = true
+		}
+
+		// Verificar se npm dependencies estão instaladas
+		if IsPlaywrightInstalled() {
+			status["npm_installed"] = true
+			status["playwright_configured"] = true
 		}
 	}
 
@@ -121,20 +99,66 @@ func (p *PlaywrightExtractor) GetStatus() map[string]interface{} {
 		status["npx_available"] = true
 	}
 
-	// Verificar tsx (substitui ts-node)
-	cmd := exec.Command("npx", "tsx", "--version")
-	cmd.Dir = p.frontendDir
-	if err := cmd.Run(); err == nil {
-		status["ts_node_available"] = true
+	// Verificar tsx
+	if p.frontendDir != "" {
+		cmd := exec.Command("npx", "tsx", "--version")
+		cmd.Dir = p.frontendDir
+		if err := cmd.Run(); err == nil {
+			status["ts_node_available"] = true
+		}
 	}
 
 	return status
 }
 
+// installDependencies instala as dependências npm necessárias
+func (p *PlaywrightExtractor) installDependencies() error {
+	if IsPlaywrightInstalled() {
+		return nil
+	}
+
+	p.logger.Info().Msg("[Playwright] Instalando dependências npm (primeira execução)...")
+
+	// Executar npm install
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "npm", "install")
+	cmd.Dir = p.frontendDir
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("erro ao instalar dependências: %v - %s", err, stderr.String())
+	}
+
+	// Instalar browsers do Playwright
+	p.logger.Info().Msg("[Playwright] Instalando browsers do Playwright...")
+	cmd2 := exec.CommandContext(ctx, "npx", "playwright", "install", "chromium")
+	cmd2.Dir = p.frontendDir
+	cmd2.Stderr = &stderr
+
+	if err := cmd2.Run(); err != nil {
+		p.logger.Warn().
+			Err(err).
+			Str("stderr", stderr.String()).
+			Msg("[Playwright] Aviso: erro ao instalar browsers (pode já estar instalado)")
+	}
+
+	p.logger.Info().Msg("[Playwright] Dependências instaladas com sucesso")
+	return nil
+}
+
 // Extract executa o script Playwright para extrair dados da CHG
 func (p *PlaywrightExtractor) Extract(ctx context.Context, chgURL string) (*PlaywrightResult, error) {
-	if !p.IsConfigured() {
-		return nil, fmt.Errorf("Playwright não está configurado - diretório do frontend não encontrado")
+	if p.frontendDir == "" {
+		return nil, fmt.Errorf("Playwright não está configurado - diretório não encontrado")
+	}
+
+	// Instalar dependências se necessário
+	if err := p.installDependencies(); err != nil {
+		return nil, fmt.Errorf("erro ao configurar Playwright: %v", err)
 	}
 
 	// Validar URL
@@ -147,7 +171,7 @@ func (p *PlaywrightExtractor) Extract(ctx context.Context, chgURL string) (*Play
 		return nil, fmt.Errorf("URL inválida: sys_id não encontrado")
 	}
 
-	scriptPath := filepath.Join(p.frontendDir, "playwright", "servicenow-extractor.ts")
+	scriptPath := filepath.Join(p.frontendDir, "servicenow-extractor.ts")
 
 	p.logger.Info().
 		Str("url", chgURL).
@@ -357,11 +381,16 @@ func (p *PlaywrightExtractor) ClearSession() error {
 // TestSession abre o browser para o usuário fazer login preventivamente
 // Usa o mesmo script TypeScript com o comando --login
 func (p *PlaywrightExtractor) TestSession(ctx context.Context) (*SessionStatus, error) {
-	if !p.IsConfigured() {
+	if p.frontendDir == "" {
 		return nil, fmt.Errorf("Playwright não está configurado")
 	}
 
-	scriptPath := filepath.Join(p.frontendDir, "playwright", "servicenow-extractor.ts")
+	// Instalar dependências se necessário
+	if err := p.installDependencies(); err != nil {
+		return nil, fmt.Errorf("erro ao configurar Playwright: %v", err)
+	}
+
+	scriptPath := filepath.Join(p.frontendDir, "servicenow-extractor.ts")
 
 	p.logger.Info().
 		Str("script", scriptPath).
