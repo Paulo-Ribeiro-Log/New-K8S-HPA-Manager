@@ -241,3 +241,172 @@ func (p *PlaywrightExtractor) ExtractWithSSE(ctx context.Context, chgURL string,
 
 	return result, err
 }
+
+// SessionStatus representa o status da sessão do Playwright
+type SessionStatus struct {
+	Exists           bool       `json:"exists"`
+	Valid            bool       `json:"valid"`
+	Status           string     `json:"status"` // "valid", "expired", "not_found"
+	SessionDir       string     `json:"session_dir"`
+	LastModified     *time.Time `json:"last_modified,omitempty"`
+	HoursSinceUpdate float64    `json:"hours_since_update,omitempty"`
+	Message          string     `json:"message"`
+}
+
+// getSessionDir retorna o diretório de sessão do Playwright
+func (p *PlaywrightExtractor) getSessionDir() string {
+	homeDir := os.Getenv("HOME")
+	if homeDir == "" {
+		homeDir = os.Getenv("USERPROFILE") // Windows
+	}
+	return filepath.Join(homeDir, ".k8s-hpa-manager", "playwright-session")
+}
+
+// GetSessionStatus retorna o status detalhado da sessão do Playwright
+func (p *PlaywrightExtractor) GetSessionStatus() *SessionStatus {
+	sessionDir := p.getSessionDir()
+
+	status := &SessionStatus{
+		SessionDir: sessionDir,
+	}
+
+	// Verificar se o diretório existe
+	info, err := os.Stat(sessionDir)
+	if os.IsNotExist(err) {
+		status.Exists = false
+		status.Valid = false
+		status.Status = "not_found"
+		status.Message = "Sessão não encontrada. Será necessário fazer login no Azure AD na próxima extração."
+		p.logger.Info().Str("dir", sessionDir).Msg("[Playwright] Diretório de sessão não existe")
+		return status
+	}
+
+	if err != nil {
+		status.Exists = false
+		status.Valid = false
+		status.Status = "error"
+		status.Message = fmt.Sprintf("Erro ao verificar sessão: %v", err)
+		p.logger.Error().Err(err).Msg("[Playwright] Erro ao verificar diretório de sessão")
+		return status
+	}
+
+	status.Exists = true
+	lastMod := info.ModTime()
+	status.LastModified = &lastMod
+
+	// Calcular tempo desde última modificação
+	hoursSince := time.Since(lastMod).Hours()
+	status.HoursSinceUpdate = hoursSince
+
+	// Verificar se existem arquivos de sessão importantes
+	cookiesDir := filepath.Join(sessionDir, "Default")
+	hasCookies := false
+	if _, err := os.Stat(cookiesDir); err == nil {
+		// Verificar se há arquivos dentro
+		entries, _ := os.ReadDir(cookiesDir)
+		hasCookies = len(entries) > 0
+	}
+
+	// Sessões do Azure AD geralmente expiram em 8-12 horas
+	const maxSessionHours = 8.0
+
+	if !hasCookies {
+		status.Valid = false
+		status.Status = "empty"
+		status.Message = "Sessão existe mas está vazia. Login será necessário."
+	} else if hoursSince > maxSessionHours {
+		status.Valid = false
+		status.Status = "expired"
+		status.Message = fmt.Sprintf("Sessão expirada (%.1f horas). Login será necessário na próxima extração.", hoursSince)
+	} else {
+		status.Valid = true
+		status.Status = "valid"
+		status.Message = fmt.Sprintf("Sessão válida (última atualização: %.1f horas atrás).", hoursSince)
+	}
+
+	p.logger.Info().
+		Bool("valid", status.Valid).
+		Str("status", status.Status).
+		Float64("hours", hoursSince).
+		Msg("[Playwright] Status da sessão verificado")
+
+	return status
+}
+
+// ClearSession remove a sessão do Playwright, forçando novo login
+func (p *PlaywrightExtractor) ClearSession() error {
+	sessionDir := p.getSessionDir()
+
+	// Verificar se existe
+	if _, err := os.Stat(sessionDir); os.IsNotExist(err) {
+		p.logger.Info().Str("dir", sessionDir).Msg("[Playwright] Sessão já não existe")
+		return nil
+	}
+
+	// Remover diretório e todo conteúdo
+	err := os.RemoveAll(sessionDir)
+	if err != nil {
+		p.logger.Error().Err(err).Str("dir", sessionDir).Msg("[Playwright] Erro ao limpar sessão")
+		return fmt.Errorf("erro ao limpar sessão: %v", err)
+	}
+
+	p.logger.Info().Str("dir", sessionDir).Msg("[Playwright] Sessão limpa com sucesso")
+	return nil
+}
+
+// TestSession abre o browser para o usuário fazer login preventivamente
+// Usa o mesmo script TypeScript com o comando --login
+func (p *PlaywrightExtractor) TestSession(ctx context.Context) (*SessionStatus, error) {
+	if !p.IsConfigured() {
+		return nil, fmt.Errorf("Playwright não está configurado")
+	}
+
+	scriptPath := filepath.Join(p.frontendDir, "playwright", "servicenow-extractor.ts")
+
+	p.logger.Info().
+		Str("script", scriptPath).
+		Msg("[Playwright] Iniciando login - abrindo browser visível")
+
+	// Contexto com timeout de 3 minutos para login
+	execCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	// Executar script TypeScript com comando --login
+	cmd := exec.CommandContext(execCtx, "npx", "tsx", scriptPath, "--login")
+	cmd.Dir = p.frontendDir
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// Executar e aguardar
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Run()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			p.logger.Warn().
+				Err(err).
+				Str("stderr", stderr.String()).
+				Msg("[Playwright] Login finalizado (pode ser normal se usuário fechou browser)")
+		}
+	case <-execCtx.Done():
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+		p.logger.Warn().Msg("[Playwright] Timeout no login - usuário demorou mais de 3 minutos")
+	}
+
+	// Verificar status após o login
+	status := p.GetSessionStatus()
+
+	p.logger.Info().
+		Bool("valid", status.Valid).
+		Str("status", status.Status).
+		Msg("[Playwright] Status da sessão após login")
+
+	return status, nil
+}
