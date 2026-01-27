@@ -19,6 +19,58 @@ import * as fs from 'fs';
 // Diretório para armazenar sessão do browser (reutilizar login)
 const USER_DATA_DIR = path.join(process.env.HOME || '', '.k8s-hpa-manager', 'playwright-session');
 
+/**
+ * Verifica se existe uma sessão válida (cookies do Azure AD)
+ * Retorna true se há indícios de sessão válida, false caso contrário
+ */
+function hasValidSession(): boolean {
+  try {
+    // Verificar se existe o diretório de sessão e arquivos de estado
+    if (!fs.existsSync(USER_DATA_DIR)) {
+      console.log('[ServiceNow] Diretório de sessão não existe - login será necessário');
+      return false;
+    }
+
+    // Verificar se existem arquivos de cookies/storage
+    const stateFiles = [
+      path.join(USER_DATA_DIR, 'Default', 'Cookies'),
+      path.join(USER_DATA_DIR, 'Default', 'Local Storage'),
+      path.join(USER_DATA_DIR, 'Default', 'Session Storage'),
+    ];
+
+    const hasStateFiles = stateFiles.some(f => {
+      try {
+        return fs.existsSync(f);
+      } catch {
+        return false;
+      }
+    });
+
+    if (!hasStateFiles) {
+      console.log('[ServiceNow] Arquivos de sessão não encontrados - login será necessário');
+      return false;
+    }
+
+    // Verificar timestamp do último acesso ao diretório de sessão
+    const stats = fs.statSync(USER_DATA_DIR);
+    const lastModified = stats.mtime.getTime();
+    const now = Date.now();
+    const hoursSinceLastUse = (now - lastModified) / (1000 * 60 * 60);
+
+    // Se a sessão tem mais de 8 horas, provavelmente expirou
+    if (hoursSinceLastUse > 8) {
+      console.log(`[ServiceNow] Sessão antiga (${hoursSinceLastUse.toFixed(1)}h) - login pode ser necessário`);
+      return false;
+    }
+
+    console.log(`[ServiceNow] Sessão encontrada (${hoursSinceLastUse.toFixed(1)}h atrás)`);
+    return true;
+  } catch (error) {
+    console.log('[ServiceNow] Erro ao verificar sessão:', error);
+    return false;
+  }
+}
+
 // Padrões de extração do template da esteira de CD
 // Nota: Os campos terminam com ".\n" ou ".\t" - usar lookahead para capturar corretamente
 const EXTRACTION_PATTERNS = {
@@ -159,17 +211,39 @@ function calculateConfidence(extracted: ExtractedCHGData['extracted']): Extracte
 
 /**
  * Extrai dados da CHG do ServiceNow usando Playwright
+ * IMPORTANTE: A extração é SEMPRE silenciosa (headless).
+ * Se não houver sessão válida, retorna erro pedindo para fazer login via menu de perfil.
  */
 export async function extractCHGData(chgUrl: string, options: {
   headless?: boolean;
   timeout?: number;
   reuseSession?: boolean;
+  forceVisible?: boolean; // Usado apenas para login via menu de perfil
 } = {}): Promise<ExtractedCHGData> {
+  const sessionValid = hasValidSession();
+
   const {
-    headless = true, // Tentar headless primeiro, abrir visível apenas se precisar de login
+    // Extração é SEMPRE headless (silenciosa)
+    // Login via perfil usa forceVisible=true
+    headless = !options.forceVisible,
     timeout = 60000,
     reuseSession = true,
+    forceVisible = false,
   } = options;
+
+  // Se não tem sessão válida e não está forçando modo visível (login), retornar erro
+  if (!sessionValid && !forceVisible) {
+    console.log('[ServiceNow] Sessão não encontrada ou expirada.');
+    console.log('[ServiceNow] Por favor, faça login via Menu de Perfil > ServiceNow Session > Fazer Login');
+    return {
+      success: false,
+      extracted: {},
+      confidence: { application: 0, version: 0, repository: 0 },
+      error: 'Sessão expirada ou não encontrada. Faça login pelo Menu de Perfil > ServiceNow Session antes de extrair dados.',
+    };
+  }
+
+  console.log(`[ServiceNow] Modo de execução: ${headless ? 'headless (silencioso)' : 'visível (login)'} (sessão válida: ${sessionValid})`);
 
   // Validar URL
   const sysId = extractSysId(chgUrl);
@@ -216,33 +290,61 @@ export async function extractCHGData(chgUrl: string, options: {
     console.log(`[ServiceNow] Navegando para: ${chgUrl}`);
     await page.goto(chgUrl, { waitUntil: 'networkidle', timeout });
 
-    // Verificar se precisa de login (Azure AD)
+    // Verificar se precisa de login (Azure AD) - lista expandida de padrões
     const initialUrl = page.url();
-    const needsLogin = initialUrl.includes('login.microsoftonline.com') ||
-                       initialUrl.includes('login.windows.net') ||
-                       initialUrl.includes('saml');
+    const loginPatterns = [
+      'login.microsoftonline.com',
+      'login.windows.net',
+      'login.live.com',
+      'adfs.',
+      '/adfs/',
+      'saml',
+      'oauth',
+      'authenticate',
+      'signin',
+      'sso.',
+      '/sso/',
+      'identity.',
+      'sts.',
+      'federation',
+      'authn',
+    ];
 
-    // Se precisa de login e estamos em modo headless, reabrir em modo visível
+    const needsLogin = loginPatterns.some(pattern =>
+      initialUrl.toLowerCase().includes(pattern.toLowerCase())
+    );
+
+    console.log(`[ServiceNow] URL inicial: ${initialUrl.substring(0, 100)}...`);
+    console.log(`[ServiceNow] Precisa login: ${needsLogin}`);
+
+    // Se precisa de login e estamos em modo headless (extração silenciosa), retornar erro
+    // O usuário deve fazer login via Menu de Perfil > ServiceNow Session
     if (needsLogin && headless) {
-      console.log('[ServiceNow] Login necessário - reabrindo browser em modo visível...');
+      console.log('[ServiceNow] Login necessário mas extração está em modo silencioso.');
+      console.log('[ServiceNow] Faça login pelo Menu de Perfil > ServiceNow Session antes de extrair.');
 
-      // Fechar o contexto atual
+      // Fechar o contexto
       if (context) {
-        await context.close();
+        try {
+          await context.close();
+        } catch (e) {
+          // Ignorar erro ao fechar
+        }
       }
 
-      // Reabrir em modo visível para o usuário fazer login
-      context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-        headless: false, // Visível para login
-        args: ['--disable-blink-features=AutomationControlled'],
-        viewport: { width: 1280, height: 800 },
-      });
+      return {
+        success: false,
+        extracted: {},
+        confidence: { application: 0, version: 0, repository: 0 },
+        error: 'Login necessário. Faça login pelo Menu de Perfil > ServiceNow Session antes de extrair dados.',
+      };
+    }
 
-      const newPage = context.pages()[0] || await context.newPage();
-      await newPage.goto(chgUrl, { waitUntil: 'networkidle', timeout });
-
-      // Usar a nova página
-      page = newPage;
+    // Se não precisa de login mas não está no ServiceNow, pode ser redirect pendente
+    if (!needsLogin && !page.url().includes('service-now.com')) {
+      console.log('[ServiceNow] Aguardando redirecionamento para ServiceNow...');
+      // Aguardar um pouco mais para possível redirect
+      await page.waitForTimeout(3000);
     }
 
     // Loop até conseguir acessar o ServiceNow
@@ -263,11 +365,34 @@ export async function extractCHGData(chgUrl: string, options: {
         break;
       }
 
-      // Se estamos em página de login
-      if (currentUrl.includes('login.microsoftonline.com') || currentUrl.includes('login.windows.net') || currentUrl.includes('saml')) {
+      // Se estamos em página de login (usando os mesmos padrões expandidos)
+      const isLoginPage = loginPatterns.some(pattern =>
+        currentUrl.toLowerCase().includes(pattern.toLowerCase())
+      );
+
+      if (isLoginPage) {
+        // Se estamos em modo headless (extração silenciosa), não podemos fazer login
+        if (headless) {
+          console.log('[ServiceNow] Página de login detectada durante extração silenciosa.');
+          console.log('[ServiceNow] Faça login pelo Menu de Perfil > ServiceNow Session.');
+
+          if (context) {
+            try { await context.close(); } catch (e) { /* ignorar */ }
+          }
+
+          return {
+            success: false,
+            extracted: {},
+            confidence: { application: 0, version: 0, repository: 0 },
+            error: 'Sessão expirada durante extração. Faça login pelo Menu de Perfil > ServiceNow Session.',
+          };
+        }
+
+        // Modo visível (login via perfil) - aguardar usuário fazer login
         if (attempts === 0) {
           console.log('[ServiceNow] Aguardando login do usuário no Azure AD...');
           console.log('[ServiceNow] Por favor, faça login na janela do navegador.');
+          console.log(`[ServiceNow] URL de login detectada: ${currentUrl.substring(0, 80)}...`);
         }
 
         attempts++;
@@ -539,30 +664,131 @@ export async function extractCHGData(chgUrl: string, options: {
   }
 }
 
+/**
+ * Função para fazer login no ServiceNow via Azure AD
+ * Abre browser VISÍVEL para o usuário fazer login
+ * Usado pelo Menu de Perfil > ServiceNow Session > Fazer Login
+ */
+export async function doLogin(options: {
+  timeout?: number;
+} = {}): Promise<{ success: boolean; message: string }> {
+  const { timeout = 180000 } = options; // 3 minutos
+
+  console.log('[ServiceNow] Iniciando login - abrindo browser visível...');
+
+  // Criar diretório de sessão se não existir
+  if (!fs.existsSync(USER_DATA_DIR)) {
+    fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+  }
+
+  let context: BrowserContext | null = null;
+
+  try {
+    // Sempre abrir visível para login
+    context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+      headless: false, // SEMPRE visível para login
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--no-first-run',
+        '--disable-default-apps',
+      ],
+      viewport: { width: 1280, height: 800 },
+    });
+
+    const page = context.pages()[0] || await context.newPage();
+
+    console.log('[ServiceNow] Navegando para ServiceNow...');
+    await page.goto('https://viavarejo.service-now.com', { waitUntil: 'networkidle', timeout: 60000 });
+
+    // Padrões de URL de login
+    const loginPatterns = [
+      'login.microsoftonline.com',
+      'login.windows.net',
+      'login.live.com',
+      'adfs',
+      'saml',
+      'oauth',
+      'signin',
+      'sso',
+    ];
+
+    // Aguardar login do usuário (máximo 3 minutos)
+    let attempts = 0;
+    const maxAttempts = Math.ceil(timeout / 5000);
+
+    while (attempts < maxAttempts) {
+      const currentUrl = page.url();
+
+      // Se estamos no ServiceNow (não em página de login), sucesso!
+      if (currentUrl.includes('service-now.com') &&
+          !loginPatterns.some(p => currentUrl.toLowerCase().includes(p.toLowerCase()))) {
+        console.log('[ServiceNow] Login realizado com sucesso!');
+        await context.close();
+        return { success: true, message: 'Login realizado com sucesso. Sessão salva.' };
+      }
+
+      if (attempts === 0) {
+        console.log('[ServiceNow] Aguardando login do usuário no Azure AD...');
+        console.log('[ServiceNow] Complete o login na janela do navegador.');
+      }
+
+      attempts++;
+      await page.waitForTimeout(5000);
+    }
+
+    await context.close();
+    return { success: false, message: 'Timeout aguardando login. Tente novamente.' };
+
+  } catch (error) {
+    if (context) {
+      try { await context.close(); } catch (e) { /* ignorar */ }
+    }
+    const errorMsg = error instanceof Error ? error.message : 'Erro desconhecido';
+    console.error('[ServiceNow] Erro no login:', errorMsg);
+    return { success: false, message: errorMsg };
+  }
+}
+
 // CLI: executar diretamente com URL como argumento
 // Detecta se está sendo executado diretamente (compatível com ESM)
 const isMainModule = import.meta.url === `file://${process.argv[1]}` ||
                      process.argv[1]?.endsWith('servicenow-extractor.ts');
 
 if (isMainModule) {
-  const url = process.argv[2];
+  const command = process.argv[2];
 
-  if (!url) {
-    console.log('Uso: npx tsx playwright/servicenow-extractor.ts <URL_DA_CHG>');
+  // Comando especial para login
+  if (command === '--login') {
+    doLogin()
+      .then((result) => {
+        console.log('\n=== RESULTADO ===');
+        console.log(JSON.stringify(result, null, 2));
+        process.exit(result.success ? 0 : 1);
+      })
+      .catch((err) => {
+        console.error('Erro fatal:', err);
+        process.exit(1);
+      });
+  } else if (command && command.includes('service-now.com')) {
+    // Extração de CHG (sempre silenciosa)
+    extractCHGData(command, { reuseSession: true })
+      .then((result) => {
+        console.log('\n=== RESULTADO ===');
+        console.log(JSON.stringify(result, null, 2));
+        process.exit(result.success ? 0 : 1);
+      })
+      .catch((err) => {
+        console.error('Erro fatal:', err);
+        process.exit(1);
+      });
+  } else {
+    console.log('Uso:');
+    console.log('  Extração: npx tsx playwright/servicenow-extractor.ts <URL_DA_CHG>');
+    console.log('  Login:    npx tsx playwright/servicenow-extractor.ts --login');
     console.log('');
-    console.log('Exemplo:');
+    console.log('Exemplos:');
     console.log('  npx tsx playwright/servicenow-extractor.ts "https://viavarejo.service-now.com/change_request.do?sys_id=abc123..."');
+    console.log('  npx tsx playwright/servicenow-extractor.ts --login');
     process.exit(1);
   }
-
-  extractCHGData(url, { headless: true, reuseSession: true })
-    .then((result) => {
-      console.log('\n=== RESULTADO ===');
-      console.log(JSON.stringify(result, null, 2));
-      process.exit(result.success ? 0 : 1);
-    })
-    .catch((err) => {
-      console.error('Erro fatal:', err);
-      process.exit(1);
-    });
 }

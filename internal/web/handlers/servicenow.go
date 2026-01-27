@@ -161,3 +161,55 @@ func (h *ServiceNowHandler) GetPlaywrightStatus(c *gin.Context) {
 	status := h.playwright.GetStatus()
 	c.JSON(http.StatusOK, status)
 }
+
+// GetSessionStatus retorna o status da sessão do Playwright (cookies/login Azure AD)
+// GET /api/v1/servicenow/session-status
+func (h *ServiceNowHandler) GetSessionStatus(c *gin.Context) {
+	status := h.playwright.GetSessionStatus()
+	c.JSON(http.StatusOK, status)
+}
+
+// ClearSession limpa a sessão do Playwright, forçando novo login
+// DELETE /api/v1/servicenow/session
+func (h *ServiceNowHandler) ClearSession(c *gin.Context) {
+	h.logger.Info().Msg("[ServiceNow] Limpando sessão do Playwright")
+
+	err := h.playwright.ClearSession()
+	if err != nil {
+		h.logger.Error().Err(err).Msg("[ServiceNow] Erro ao limpar sessão")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Sessão limpa com sucesso. Novo login será necessário na próxima extração.",
+	})
+}
+
+// TestSession abre o browser para o usuário fazer login preventivamente
+// POST /api/v1/servicenow/session/test
+func (h *ServiceNowHandler) TestSession(c *gin.Context) {
+	h.logger.Info().Msg("[ServiceNow] Iniciando teste de sessão")
+
+	status, err := h.playwright.TestSession(c.Request.Context())
+	if err != nil {
+		h.logger.Warn().Err(err).Msg("[ServiceNow] Teste de sessão finalizado com erro (pode ser normal se usuário fechou browser)")
+	}
+
+	if status == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Não foi possível verificar o status da sessão",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": status.Valid,
+		"status":  status,
+	})
+}
