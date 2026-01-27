@@ -306,7 +306,6 @@ const NexusValuesDiffPanelContent = () => {
                   <SelectValue placeholder="Selecione o ambiente" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="default">DEFAULT</SelectItem>
                   {VALID_ENVIRONMENTS.map((env) => (
                     <SelectItem key={env} value={env}>
                       {env.toUpperCase()}
@@ -374,7 +373,6 @@ const NexusValuesDiffPanelContent = () => {
                   <SelectValue placeholder="Selecione o ambiente" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="default">DEFAULT</SelectItem>
                   {VALID_ENVIRONMENTS.map((env) => (
                     <SelectItem key={env} value={env}>
                       {env.toUpperCase()}
