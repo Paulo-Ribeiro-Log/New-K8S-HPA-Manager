@@ -90,13 +90,24 @@ export const useAllVersions = (appName: string) => {
 
 /**
  * Hook para obter status do token GitHub do usuário
+ * Não faz requisição se não houver email configurado (evita loop de erros 400)
  */
 export const useGitHubTokenStatus = () => {
+  // Verificar se há email configurado antes de fazer a chamada
+  const hasEmail = !!localStorage.getItem("github_email");
+
   return useQuery<TokenStatusResponse>({
     queryKey: ["github-token-status"],
     queryFn: () => apiClient.getGitHubTokenStatus(),
     staleTime: 300000, // 5 minutos
-    retry: 1, // Apenas 1 tentativa (pode não ter token configurado)
+    retry: false, // Não tentar novamente em caso de erro (evita loop)
+    enabled: hasEmail, // Só executa se tiver email configurado
+    // Retorna status padrão quando não há email
+    placeholderData: hasEmail ? undefined : {
+      valid: false,
+      configured: false,
+      error: "Email não configurado",
+    },
   });
 };
 
