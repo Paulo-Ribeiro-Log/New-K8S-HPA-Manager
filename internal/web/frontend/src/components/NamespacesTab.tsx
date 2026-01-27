@@ -689,14 +689,13 @@ export const NamespacesTab = ({
               }`}
             >
               <div className="font-semibold text-sm">{ns.name}</div>
-              <div className="text-[11px] text-muted-foreground mt-1 flex items-center gap-2">
-                {ns.isSystem && (
+              {ns.isSystem && (
+                <div className="text-[11px] text-muted-foreground mt-1">
                   <span className="px-1.5 py-0.5 bg-yellow-500/20 text-yellow-300 rounded text-[10px]">
                     Sistema
                   </span>
-                )}
-                <span>{ns.hpaCount} HPAs</span>
-              </div>
+                </div>
+              )}
             </button>
           );
         })}

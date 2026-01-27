@@ -97,12 +97,6 @@ export function useUserProfile() {
         status: githubStatus?.valid ? 'configured' : 'not_configured',
         lastChecked: new Date(),
       },
-      serviceNow: {
-        id: 'servicenow',
-        name: 'ServiceNow',
-        description: 'Integracao com ITSM',
-        status: 'not_configured' as CredentialStatus, // ServiceNow nao tem config persistente ainda
-      },
     };
   }, [githubStatus, nexusStatus, nexusLoading]);
 
@@ -156,7 +150,7 @@ function extractInitials(displayName: string): string {
 /**
  * Hook para verificar status de uma credencial especifica
  */
-export function useCredentialStatus(credentialId: 'nexus' | 'github' | 'servicenow') {
+export function useCredentialStatus(credentialId: 'nexus' | 'github') {
   const { credentials, isLoading } = useUserProfile();
 
   return {

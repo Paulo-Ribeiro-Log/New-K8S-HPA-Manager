@@ -29,7 +29,6 @@ export interface CredentialInfo {
 export interface CredentialsState {
   nexus: CredentialInfo;
   github: CredentialInfo;
-  serviceNow: CredentialInfo;
 }
 
 // Tema da aplicacao
