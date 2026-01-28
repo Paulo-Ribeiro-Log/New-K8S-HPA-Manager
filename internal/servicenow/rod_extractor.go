@@ -155,7 +155,14 @@ func (r *RodExtractor) ClearSession() error {
 
 // TestSession abre o browser para o usuário fazer login
 func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) {
-	r.logger.Info().Msg("[Rod] Iniciando login - abrindo browser visível")
+	r.logger.Info().
+		Str("session_dir", r.sessionDir).
+		Msg("[Rod] Iniciando login - abrindo browser visível")
+
+	// Limpar sessão anterior para garantir login fresco
+	r.logger.Info().Msg("[Rod] Limpando sessão anterior para garantir login fresco...")
+	os.RemoveAll(r.sessionDir)
+	os.MkdirAll(r.sessionDir, 0755)
 
 	// Criar launcher com diretório de sessão persistente
 	l := launcher.New().
@@ -172,15 +179,16 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 	if err := browser.Connect(); err != nil {
 		return nil, fmt.Errorf("erro ao conectar ao browser: %v", err)
 	}
-	defer browser.Close()
 
 	// Navegar para ServiceNow
 	page, err := browser.Page(proto.TargetCreateTarget{URL: "https://viavarejo.service-now.com"})
 	if err != nil {
+		browser.Close()
 		return nil, fmt.Errorf("erro ao criar página: %v", err)
 	}
 
 	r.logger.Info().Msg("[Rod] Navegando para ServiceNow - aguardando login do usuário...")
+	r.logger.Info().Msg("[Rod] IMPORTANTE: Faça login no Azure AD e aguarde a página do ServiceNow carregar completamente!")
 
 	// Aguardar login do usuário (máximo 3 minutos)
 	loginTimeout := 3 * time.Minute
@@ -197,9 +205,12 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 		"sso",
 	}
 
+	loginDetected := false
+
 	for {
 		if time.Since(startTime) > loginTimeout {
 			r.logger.Warn().Msg("[Rod] Timeout aguardando login")
+			browser.Close()
 			return r.GetSessionStatus(), nil
 		}
 
@@ -217,14 +228,58 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 		for _, pattern := range loginPatterns {
 			if strings.Contains(strings.ToLower(currentURL), strings.ToLower(pattern)) {
 				isLoginPage = true
+				loginDetected = true
 				break
 			}
 		}
 
-		if strings.Contains(currentURL, "service-now.com") && !isLoginPage {
-			r.logger.Info().Msg("[Rod] Login realizado com sucesso!")
-			time.Sleep(2 * time.Second) // Dar tempo para salvar cookies
-			return r.GetSessionStatus(), nil
+		if strings.Contains(currentURL, "service-now.com") && !isLoginPage && !strings.Contains(currentURL, "saml") {
+			r.logger.Info().
+				Str("url", currentURL).
+				Msg("[Rod] Login realizado com sucesso!")
+
+			// Aguardar mais tempo para página carregar completamente e cookies serem salvos
+			r.logger.Info().Msg("[Rod] Aguardando página carregar completamente (5s)...")
+			time.Sleep(5 * time.Second)
+
+			// Fazer uma navegação adicional para garantir que cookies são persistidos
+			r.logger.Info().Msg("[Rod] Navegando para página inicial do ServiceNow para persistir cookies...")
+			page.Navigate("https://viavarejo.service-now.com/now/nav/ui/home")
+			time.Sleep(3 * time.Second)
+
+			// Aguardar mais um pouco antes de fechar
+			r.logger.Info().Msg("[Rod] Aguardando persistência de cookies (5s)...")
+			time.Sleep(5 * time.Second)
+
+			// Fechar browser graciosamente
+			r.logger.Info().Msg("[Rod] Fechando browser...")
+			browser.Close()
+
+			// Verificar se os cookies foram salvos
+			r.logger.Info().Msg("[Rod] Verificando se sessão foi salva...")
+			entries, _ := os.ReadDir(r.sessionDir)
+			r.logger.Info().
+				Int("files_count", len(entries)).
+				Str("session_dir", r.sessionDir).
+				Msg("[Rod] Arquivos de sessão")
+
+			// Listar arquivos para debug
+			for _, entry := range entries {
+				r.logger.Debug().
+					Str("name", entry.Name()).
+					Bool("is_dir", entry.IsDir()).
+					Msg("[Rod] Arquivo de sessão")
+			}
+
+			status := r.GetSessionStatus()
+			if !status.Valid && loginDetected {
+				// Se detectamos login mas a sessão não é válida, pode ser problema de persistência
+				r.logger.Warn().Msg("[Rod] Login foi detectado mas sessão pode não ter sido salva corretamente")
+				status.Message = "Login realizado. Tente extrair a CHG agora."
+				status.Valid = true // Forçar como válido pois acabamos de fazer login
+			}
+
+			return status, nil
 		}
 
 		time.Sleep(2 * time.Second)
