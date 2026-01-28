@@ -484,9 +484,12 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 	}`)
 	if pageDebug != nil {
 		debugData := pageDebug.Value.Map()
+		currentURL := debugData["url"].String()
+		currentTitle := debugData["title"].String()
+
 		r.logger.Info().
-			Str("url", debugData["url"].String()).
-			Str("title", debugData["title"].String()).
+			Str("url", currentURL).
+			Str("title", currentTitle).
 			Int("body_length", int(debugData["bodyLength"].Int())).
 			Int("iframe_count", int(debugData["iframeCount"].Int())).
 			Int("input_count", int(debugData["inputCount"].Int())).
@@ -496,6 +499,47 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 			Bool("has_snc_form", debugData["hasSncForm"].Bool()).
 			Bool("has_form_section", debugData["hasFormSection"].Bool()).
 			Msg("[Rod] Debug da página")
+
+		// VERIFICAÇÃO CRÍTICA: Se ainda estamos na página de login, a sessão expirou!
+		loginIndicators := []string{
+			"login.microsoftonline.com",
+			"login.windows.net",
+			"login.live.com",
+			"Sign in to your account",
+			"adfs",
+			"saml",
+		}
+
+		for _, indicator := range loginIndicators {
+			if strings.Contains(currentURL, indicator) || strings.Contains(currentTitle, indicator) {
+				r.logger.Error().
+					Str("url", currentURL).
+					Str("title", currentTitle).
+					Bool("headless", headless).
+					Msg("[Rod] ERRO: Página de login detectada após carregamento - sessão expirada!")
+
+				// Limpar a sessão inválida
+				r.logger.Info().Msg("[Rod] Limpando sessão inválida...")
+				os.RemoveAll(r.sessionDir)
+				os.MkdirAll(r.sessionDir, 0755)
+
+				return &PlaywrightResult{
+					Success: false,
+					Error:   "Sessão expirada. Por favor, faça login pelo Menu de Perfil > ServiceNow Session antes de extrair dados.",
+				}, nil
+			}
+		}
+
+		// Verificar se realmente estamos no ServiceNow
+		if !strings.Contains(currentURL, "service-now.com") {
+			r.logger.Error().
+				Str("url", currentURL).
+				Msg("[Rod] ERRO: Não estamos no ServiceNow - possível redirect inesperado")
+			return &PlaywrightResult{
+				Success: false,
+				Error:   "Página inesperada. Não foi possível acessar o ServiceNow. Verifique sua conexão e tente novamente.",
+			}, nil
+		}
 	}
 
 	// Extrair dados usando JavaScript com múltiplas estratégias
