@@ -11,19 +11,19 @@ import (
 
 // ServiceNowHandler lida com importação de dados do ServiceNow
 type ServiceNowHandler struct {
-	client     *servicenow.Client
-	playwright *servicenow.PlaywrightExtractor
-	logger     *zerolog.Logger
+	client *servicenow.Client
+	rod    *servicenow.RodExtractor // Usa Rod (Go nativo) - sem dependências externas
+	logger *zerolog.Logger
 }
 
 // NewServiceNowHandler cria novo handler
 func NewServiceNowHandler(logger *zerolog.Logger) *ServiceNowHandler {
 	client := servicenow.NewClient("https://viavarejo.service-now.com", logger)
-	playwright := servicenow.NewPlaywrightExtractor(logger)
+	rod := servicenow.NewRodExtractor(logger) // Rod baixa o browser automaticamente
 	return &ServiceNowHandler{
-		client:     client,
-		playwright: playwright,
-		logger:     logger,
+		client: client,
+		rod:    rod,
+		logger: logger,
 	}
 }
 
@@ -128,7 +128,7 @@ func (h *ServiceNowHandler) ExtractWithPlaywright(c *gin.Context) {
 		Str("url", req.URL).
 		Msg("[ServiceNow] Extraindo CHG via Playwright")
 
-	result, err := h.playwright.Extract(c.Request.Context(), req.URL)
+	result, err := h.rod.Extract(c.Request.Context(), req.URL)
 	if err != nil {
 		h.logger.Error().Err(err).Msg("[ServiceNow] Erro no Playwright")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -158,14 +158,14 @@ func (h *ServiceNowHandler) ExtractWithPlaywright(c *gin.Context) {
 // GetPlaywrightStatus verifica o status da configuração do Playwright
 // GET /api/v1/servicenow/playwright-status
 func (h *ServiceNowHandler) GetPlaywrightStatus(c *gin.Context) {
-	status := h.playwright.GetStatus()
+	status := h.rod.GetStatus()
 	c.JSON(http.StatusOK, status)
 }
 
 // GetSessionStatus retorna o status da sessão do Playwright (cookies/login Azure AD)
 // GET /api/v1/servicenow/session-status
 func (h *ServiceNowHandler) GetSessionStatus(c *gin.Context) {
-	status := h.playwright.GetSessionStatus()
+	status := h.rod.GetSessionStatus()
 	c.JSON(http.StatusOK, status)
 }
 
@@ -174,7 +174,7 @@ func (h *ServiceNowHandler) GetSessionStatus(c *gin.Context) {
 func (h *ServiceNowHandler) ClearSession(c *gin.Context) {
 	h.logger.Info().Msg("[ServiceNow] Limpando sessão do Playwright")
 
-	err := h.playwright.ClearSession()
+	err := h.rod.ClearSession()
 	if err != nil {
 		h.logger.Error().Err(err).Msg("[ServiceNow] Erro ao limpar sessão")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -196,12 +196,12 @@ func (h *ServiceNowHandler) TestSession(c *gin.Context) {
 	h.logger.Info().Msg("[ServiceNow] Iniciando teste de sessão")
 
 	// Verificar status do Playwright primeiro
-	playwrightStatus := h.playwright.GetStatus()
+	playwrightStatus := h.rod.GetStatus()
 	h.logger.Info().
 		Interface("playwright_status", playwrightStatus).
 		Msg("[ServiceNow] Status do Playwright antes do teste")
 
-	status, err := h.playwright.TestSession(c.Request.Context())
+	status, err := h.rod.TestSession(c.Request.Context())
 	if err != nil {
 		h.logger.Error().
 			Err(err).
