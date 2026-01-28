@@ -203,7 +203,14 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 			return r.GetSessionStatus(), nil
 		}
 
-		currentURL := page.MustInfo().URL
+		// Obter URL atual com tratamento de erro
+		pageInfo, err := page.Info()
+		if err != nil {
+			r.logger.Warn().Err(err).Msg("[Rod] Erro ao obter info da página durante login")
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		currentURL := pageInfo.URL
 
 		// Verificar se está no ServiceNow (não em página de login)
 		isLoginPage := false
@@ -293,7 +300,14 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (*PlaywrightR
 			}, nil
 		}
 
-		currentURL := page.MustInfo().URL
+		// Obter URL atual com tratamento de erro
+		pageInfo, err := page.Info()
+		if err != nil {
+			r.logger.Warn().Err(err).Msg("[Rod] Erro ao obter info da página")
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		currentURL := pageInfo.URL
 
 		isLoginPage := false
 		for _, pattern := range loginPatterns {
@@ -321,11 +335,18 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (*PlaywrightR
 
 	// Aguardar carregamento completo
 	time.Sleep(3 * time.Second)
-	page.MustWaitLoad()
+	if err := page.WaitLoad(); err != nil {
+		r.logger.Warn().Err(err).Msg("[Rod] Erro ao aguardar carregamento da página")
+	}
 
 	// Tentar encontrar o iframe gsft_main
 	var targetPage *rod.Page
-	frames := page.MustElements("iframe")
+	frames, err := page.Elements("iframe")
+	if err != nil {
+		r.logger.Warn().Err(err).Msg("[Rod] Erro ao buscar iframes")
+		frames = nil
+	}
+
 	for _, frame := range frames {
 		name, _ := frame.Attribute("name")
 		if name != nil && *name == "gsft_main" {
