@@ -114,10 +114,32 @@ func (p *PlaywrightExtractor) GetStatus() map[string]interface{} {
 // installDependencies instala as dependências npm necessárias
 func (p *PlaywrightExtractor) installDependencies() error {
 	if IsPlaywrightInstalled() {
+		p.logger.Debug().Msg("[Playwright] Dependências já instaladas")
 		return nil
 	}
 
-	p.logger.Info().Msg("[Playwright] Instalando dependências npm (primeira execução)...")
+	// Verificar se npm está disponível
+	if _, err := exec.LookPath("npm"); err != nil {
+		return fmt.Errorf("npm não está instalado. Por favor, instale Node.js: https://nodejs.org/")
+	}
+
+	// Verificar se o diretório existe
+	if _, err := os.Stat(p.frontendDir); os.IsNotExist(err) {
+		return fmt.Errorf("diretório do Playwright não existe: %s", p.frontendDir)
+	}
+
+	// Verificar se package.json existe
+	packagePath := filepath.Join(p.frontendDir, "package.json")
+	if _, err := os.Stat(packagePath); os.IsNotExist(err) {
+		// Recriar package.json se não existir
+		if err := os.WriteFile(packagePath, []byte(PackageJSON), 0644); err != nil {
+			return fmt.Errorf("erro ao criar package.json: %v", err)
+		}
+	}
+
+	p.logger.Info().
+		Str("dir", p.frontendDir).
+		Msg("[Playwright] Instalando dependências npm (primeira execução)...")
 
 	// Executar npm install
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -126,24 +148,42 @@ func (p *PlaywrightExtractor) installDependencies() error {
 	cmd := exec.CommandContext(ctx, "npm", "install")
 	cmd.Dir = p.frontendDir
 
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("erro ao instalar dependências: %v - %s", err, stderr.String())
+		p.logger.Error().
+			Err(err).
+			Str("stdout", stdout.String()).
+			Str("stderr", stderr.String()).
+			Str("dir", p.frontendDir).
+			Msg("[Playwright] Erro ao executar npm install")
+		return fmt.Errorf("erro ao instalar dependências npm: %v - stderr: %s", err, stderr.String())
 	}
 
+	p.logger.Info().
+		Str("stdout", stdout.String()).
+		Msg("[Playwright] npm install concluído")
+
 	// Instalar browsers do Playwright
-	p.logger.Info().Msg("[Playwright] Instalando browsers do Playwright...")
+	p.logger.Info().Msg("[Playwright] Instalando browsers do Playwright (chromium)...")
 	cmd2 := exec.CommandContext(ctx, "npx", "playwright", "install", "chromium")
 	cmd2.Dir = p.frontendDir
-	cmd2.Stderr = &stderr
+
+	var stdout2, stderr2 bytes.Buffer
+	cmd2.Stdout = &stdout2
+	cmd2.Stderr = &stderr2
 
 	if err := cmd2.Run(); err != nil {
 		p.logger.Warn().
 			Err(err).
-			Str("stderr", stderr.String()).
+			Str("stdout", stdout2.String()).
+			Str("stderr", stderr2.String()).
 			Msg("[Playwright] Aviso: erro ao instalar browsers (pode já estar instalado)")
+		// Não retornar erro aqui - o browser pode já estar instalado globalmente
+	} else {
+		p.logger.Info().Msg("[Playwright] Browsers instalados com sucesso")
 	}
 
 	p.logger.Info().Msg("[Playwright] Dependências instaladas com sucesso")

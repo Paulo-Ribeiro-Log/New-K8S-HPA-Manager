@@ -195,15 +195,33 @@ func (h *ServiceNowHandler) ClearSession(c *gin.Context) {
 func (h *ServiceNowHandler) TestSession(c *gin.Context) {
 	h.logger.Info().Msg("[ServiceNow] Iniciando teste de sessão")
 
+	// Verificar status do Playwright primeiro
+	playwrightStatus := h.playwright.GetStatus()
+	h.logger.Info().
+		Interface("playwright_status", playwrightStatus).
+		Msg("[ServiceNow] Status do Playwright antes do teste")
+
 	status, err := h.playwright.TestSession(c.Request.Context())
 	if err != nil {
-		h.logger.Warn().Err(err).Msg("[ServiceNow] Teste de sessão finalizado com erro (pode ser normal se usuário fechou browser)")
+		h.logger.Error().
+			Err(err).
+			Interface("playwright_status", playwrightStatus).
+			Msg("[ServiceNow] Erro ao iniciar teste de sessão")
+
+		// Retornar erro detalhado para o frontend
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success":           false,
+			"error":             err.Error(),
+			"playwright_status": playwrightStatus,
+		})
+		return
 	}
 
 	if status == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Não foi possível verificar o status da sessão",
+			"success":           false,
+			"error":             "Não foi possível verificar o status da sessão",
+			"playwright_status": playwrightStatus,
 		})
 		return
 	}
