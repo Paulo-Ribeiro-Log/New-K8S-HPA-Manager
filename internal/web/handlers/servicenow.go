@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -201,7 +202,11 @@ func (h *ServiceNowHandler) TestSession(c *gin.Context) {
 		Interface("playwright_status", playwrightStatus).
 		Msg("[ServiceNow] Status do Playwright antes do teste")
 
-	status, err := h.rod.TestSession(c.Request.Context())
+	// IMPORTANTE: Usar context.Background() para não ser cancelado pelo timeout do HTTP request
+	// O usuário pode levar até 3 minutos para fazer login no Azure AD
+	ctx := context.Background()
+
+	status, err := h.rod.TestSession(ctx)
 	if err != nil {
 		h.logger.Error().
 			Err(err).

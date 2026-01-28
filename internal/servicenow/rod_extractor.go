@@ -155,7 +155,14 @@ func (r *RodExtractor) ClearSession() error {
 
 // TestSession abre o browser para o usuário fazer login
 func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) {
-	r.logger.Info().Msg("[Rod] Iniciando login - abrindo browser visível")
+	r.logger.Info().
+		Str("session_dir", r.sessionDir).
+		Msg("[Rod] Iniciando login - abrindo browser visível")
+
+	// Limpar sessão anterior para garantir login fresco
+	r.logger.Info().Msg("[Rod] Limpando sessão anterior para garantir login fresco...")
+	os.RemoveAll(r.sessionDir)
+	os.MkdirAll(r.sessionDir, 0755)
 
 	// Criar launcher com diretório de sessão persistente
 	l := launcher.New().
@@ -172,15 +179,19 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 	if err := browser.Connect(); err != nil {
 		return nil, fmt.Errorf("erro ao conectar ao browser: %v", err)
 	}
-	defer browser.Close()
 
 	// Navegar para ServiceNow
 	page, err := browser.Page(proto.TargetCreateTarget{URL: "https://viavarejo.service-now.com"})
 	if err != nil {
+		browser.Close()
 		return nil, fmt.Errorf("erro ao criar página: %v", err)
 	}
 
-	r.logger.Info().Msg("[Rod] Navegando para ServiceNow - aguardando login do usuário...")
+	r.logger.Info().Msg("[Rod] Navegando para ServiceNow...")
+	r.logger.Info().Msg("[Rod] ============================================")
+	r.logger.Info().Msg("[Rod] AGUARDANDO VOCÊ FAZER LOGIN NO AZURE AD...")
+	r.logger.Info().Msg("[Rod] O browser vai ficar aberto por até 3 minutos")
+	r.logger.Info().Msg("[Rod] ============================================")
 
 	// Aguardar login do usuário (máximo 3 minutos)
 	loginTimeout := 3 * time.Minute
@@ -190,41 +201,136 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 		"login.microsoftonline.com",
 		"login.windows.net",
 		"login.live.com",
-		"adfs",
-		"saml",
-		"oauth",
-		"signin",
-		"sso",
 	}
 
-	for {
-		if time.Since(startTime) > loginTimeout {
-			r.logger.Warn().Msg("[Rod] Timeout aguardando login")
-			return r.GetSessionStatus(), nil
-		}
+	// FASE 1: Aguardar 5 segundos iniciais para página carregar e redirecionar
+	r.logger.Info().Msg("[Rod] Fase 1: Aguardando redirect inicial (5s)...")
+	time.Sleep(5 * time.Second)
 
-		// Obter URL atual com tratamento de erro
+	// FASE 2: Aguardar aparecer página de login OU já estar no ServiceNow
+	r.logger.Info().Msg("[Rod] Fase 2: Verificando se precisa de login...")
+	loginPageDetected := false
+
+	for i := 0; i < 10; i++ { // Máximo 20 segundos para detectar página de login
 		pageInfo, err := page.Info()
 		if err != nil {
-			r.logger.Warn().Err(err).Msg("[Rod] Erro ao obter info da página durante login")
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		currentURL := pageInfo.URL
+		r.logger.Debug().Str("url", currentURL).Int("check", i+1).Msg("[Rod] Verificando URL...")
+
+		for _, pattern := range loginPatterns {
+			if strings.Contains(currentURL, pattern) {
+				loginPageDetected = true
+				r.logger.Info().
+					Str("url", currentURL).
+					Msg("[Rod] Página de login do Azure AD detectada!")
+				break
+			}
+		}
+
+		if loginPageDetected {
+			break
+		}
+
+		// Se já está no ServiceNow sem passar por login, a sessão já era válida
+		if strings.Contains(currentURL, "service-now.com") && !strings.Contains(currentURL, "saml") {
+			r.logger.Info().Msg("[Rod] Já está autenticado no ServiceNow (sessão anterior válida)")
+			time.Sleep(3 * time.Second)
+			browser.Close()
+			status := r.GetSessionStatus()
+			status.Valid = true
+			status.Message = "Sessão já está válida."
+			return status, nil
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+
+	if !loginPageDetected {
+		r.logger.Warn().Msg("[Rod] Página de login não detectada após 20s, aguardando mais...")
+	}
+
+	// FASE 3: Aguardar o usuário completar o login (até 3 minutos)
+	r.logger.Info().Msg("[Rod] Fase 3: Aguardando você completar o login no Azure AD...")
+
+	for {
+		elapsed := time.Since(startTime)
+		if elapsed > loginTimeout {
+			r.logger.Warn().Msg("[Rod] Timeout aguardando login (3 minutos)")
+			browser.Close()
+			return &SessionStatus{
+				Valid:   false,
+				Status:  "timeout",
+				Message: "Timeout aguardando login. Tente novamente.",
+			}, nil
+		}
+
+		pageInfo, err := page.Info()
+		if err != nil {
 			time.Sleep(2 * time.Second)
 			continue
 		}
 		currentURL := pageInfo.URL
 
-		// Verificar se está no ServiceNow (não em página de login)
-		isLoginPage := false
+		// Verificar se SAIU da página de login e CHEGOU no ServiceNow
+		isOnLogin := false
 		for _, pattern := range loginPatterns {
-			if strings.Contains(strings.ToLower(currentURL), strings.ToLower(pattern)) {
-				isLoginPage = true
+			if strings.Contains(currentURL, pattern) {
+				isOnLogin = true
 				break
 			}
 		}
 
-		if strings.Contains(currentURL, "service-now.com") && !isLoginPage {
-			r.logger.Info().Msg("[Rod] Login realizado com sucesso!")
-			time.Sleep(2 * time.Second) // Dar tempo para salvar cookies
-			return r.GetSessionStatus(), nil
+		// Sucesso: está no ServiceNow E não está em página de login/saml
+		if strings.Contains(currentURL, "service-now.com") &&
+			!isOnLogin &&
+			!strings.Contains(currentURL, "saml") &&
+			!strings.Contains(currentURL, "login") {
+
+			r.logger.Info().
+				Str("url", currentURL).
+				Dur("elapsed", elapsed).
+				Msg("[Rod] LOGIN COMPLETADO COM SUCESSO!")
+
+			// FASE 4: Persistir cookies (aguardar bastante)
+			r.logger.Info().Msg("[Rod] Fase 4: Aguardando página carregar (5s)...")
+			time.Sleep(5 * time.Second)
+
+			r.logger.Info().Msg("[Rod] Navegando para home do ServiceNow...")
+			page.Navigate("https://viavarejo.service-now.com/now/nav/ui/home")
+			time.Sleep(5 * time.Second)
+
+			r.logger.Info().Msg("[Rod] Aguardando cookies serem salvos (5s)...")
+			time.Sleep(5 * time.Second)
+
+			// Fechar browser
+			r.logger.Info().Msg("[Rod] Fechando browser...")
+			browser.Close()
+
+			// Verificar arquivos salvos
+			entries, _ := os.ReadDir(r.sessionDir)
+			r.logger.Info().
+				Int("files_count", len(entries)).
+				Str("session_dir", r.sessionDir).
+				Msg("[Rod] Sessão salva!")
+
+			return &SessionStatus{
+				Valid:      true,
+				Exists:     true,
+				Status:     "valid",
+				SessionDir: r.sessionDir,
+				Message:    "Login realizado com sucesso! Agora você pode extrair CHGs.",
+			}, nil
+		}
+
+		// Log a cada 10 segundos
+		if int(elapsed.Seconds())%10 == 0 {
+			r.logger.Info().
+				Str("url", currentURL).
+				Dur("elapsed", elapsed).
+				Msg("[Rod] Ainda aguardando login...")
 		}
 
 		time.Sleep(2 * time.Second)
@@ -484,9 +590,12 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 	}`)
 	if pageDebug != nil {
 		debugData := pageDebug.Value.Map()
+		currentURL := debugData["url"].String()
+		currentTitle := debugData["title"].String()
+
 		r.logger.Info().
-			Str("url", debugData["url"].String()).
-			Str("title", debugData["title"].String()).
+			Str("url", currentURL).
+			Str("title", currentTitle).
 			Int("body_length", int(debugData["bodyLength"].Int())).
 			Int("iframe_count", int(debugData["iframeCount"].Int())).
 			Int("input_count", int(debugData["inputCount"].Int())).
@@ -496,6 +605,57 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 			Bool("has_snc_form", debugData["hasSncForm"].Bool()).
 			Bool("has_form_section", debugData["hasFormSection"].Bool()).
 			Msg("[Rod] Debug da página")
+
+		// VERIFICAÇÃO CRÍTICA: Se ainda estamos na página de login, a sessão expirou!
+		loginIndicators := []string{
+			"login.microsoftonline.com",
+			"login.windows.net",
+			"login.live.com",
+			"Sign in to your account",
+		}
+
+		needsLogin := false
+		for _, indicator := range loginIndicators {
+			if strings.Contains(currentURL, indicator) || strings.Contains(currentTitle, indicator) {
+				needsLogin = true
+				break
+			}
+		}
+
+		if needsLogin {
+			r.logger.Warn().
+				Str("url", currentURL).
+				Str("title", currentTitle).
+				Bool("was_headless", headless).
+				Msg("[Rod] Sessão expirada - página de login detectada")
+
+			// Fechar browser headless
+			browser.Close()
+
+			// Limpar sessão inválida
+			r.logger.Info().Msg("[Rod] Limpando sessão inválida e reabrindo browser para login...")
+			os.RemoveAll(r.sessionDir)
+			os.MkdirAll(r.sessionDir, 0755)
+
+			// REABRIR BROWSER EM MODO VISÍVEL PARA LOGIN
+			r.logger.Info().Msg("[Rod] ============================================")
+			r.logger.Info().Msg("[Rod] ABRINDO BROWSER PARA LOGIN NO AZURE AD...")
+			r.logger.Info().Msg("[Rod] Faça login e aguarde a extração continuar")
+			r.logger.Info().Msg("[Rod] ============================================")
+
+			return r.extractWithVisibleLogin(ctx, chgURL)
+		}
+
+		// Verificar se realmente estamos no ServiceNow
+		if !strings.Contains(currentURL, "service-now.com") {
+			r.logger.Error().
+				Str("url", currentURL).
+				Msg("[Rod] ERRO: Não estamos no ServiceNow - possível redirect inesperado")
+			return &PlaywrightResult{
+				Success: false,
+				Error:   "Página inesperada. Não foi possível acessar o ServiceNow. Verifique sua conexão e tente novamente.",
+			}, nil
+		}
 	}
 
 	// Extrair dados usando JavaScript com múltiplas estratégias
@@ -858,4 +1018,204 @@ func (r *RodExtractor) ExtractWithSSE(ctx context.Context, chgURL string, progre
 	}
 
 	return result, err
+}
+
+// extractWithVisibleLogin abre browser visível para login e depois extrai dados
+func (r *RodExtractor) extractWithVisibleLogin(ctx context.Context, chgURL string) (*PlaywrightResult, error) {
+	r.logger.Info().Str("url", chgURL).Msg("[Rod] Iniciando extração com login visível...")
+
+	// Criar launcher em modo VISÍVEL
+	l := launcher.New().
+		UserDataDir(r.sessionDir).
+		Headless(false). // VISÍVEL para login
+		Set("disable-blink-features", "AutomationControlled")
+
+	url, err := l.Launch()
+	if err != nil {
+		return nil, fmt.Errorf("erro ao iniciar browser: %v", err)
+	}
+
+	browser := rod.New().ControlURL(url)
+	if err := browser.Connect(); err != nil {
+		return nil, fmt.Errorf("erro ao conectar ao browser: %v", err)
+	}
+	defer browser.Close()
+
+	// Navegar para a CHG
+	page, err := browser.Page(proto.TargetCreateTarget{URL: chgURL})
+	if err != nil {
+		return nil, fmt.Errorf("erro ao criar página: %v", err)
+	}
+
+	r.logger.Info().Msg("[Rod] Browser aberto - faça login no Azure AD...")
+
+	// Aguardar login (máximo 3 minutos)
+	loginTimeout := 3 * time.Minute
+	startTime := time.Now()
+
+	loginPatterns := []string{
+		"login.microsoftonline.com",
+		"login.windows.net",
+		"login.live.com",
+	}
+
+	for {
+		if time.Since(startTime) > loginTimeout {
+			return &PlaywrightResult{
+				Success: false,
+				Error:   "Timeout aguardando login no Azure AD (3 minutos)",
+			}, nil
+		}
+
+		pageInfo, err := page.Info()
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		currentURL := pageInfo.URL
+
+		// Verificar se saiu da página de login
+		isOnLogin := false
+		for _, pattern := range loginPatterns {
+			if strings.Contains(currentURL, pattern) {
+				isOnLogin = true
+				break
+			}
+		}
+
+		// Se está no ServiceNow e não na página de login, sucesso!
+		if strings.Contains(currentURL, "service-now.com") && !isOnLogin && !strings.Contains(currentURL, "saml") {
+			r.logger.Info().
+				Str("url", currentURL).
+				Msg("[Rod] Login completado! Aguardando página carregar...")
+
+			// Aguardar página carregar
+			time.Sleep(5 * time.Second)
+			page.WaitLoad()
+			time.Sleep(3 * time.Second)
+
+			break
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+
+	r.logger.Info().Msg("[Rod] Extraindo dados da CHG...")
+
+	// Agora extrair os dados
+	var targetPage *rod.Page
+
+	// Buscar iframe gsft_main
+	frames, _ := page.Elements("iframe")
+	for _, frame := range frames {
+		name, _ := frame.Attribute("name")
+		if name != nil && *name == "gsft_main" {
+			framePage, err := frame.Frame()
+			if err == nil {
+				targetPage = framePage
+				r.logger.Info().Msg("[Rod] Usando iframe gsft_main")
+				break
+			}
+		}
+	}
+
+	if targetPage == nil {
+		targetPage = page
+	}
+
+	time.Sleep(2 * time.Second)
+
+	// Executar JavaScript de extração (mesmo código do Extract)
+	jsResult, err := targetPage.Eval(`() => {
+		function getFieldValue(fieldName) {
+			const selectors = [
+				'input[name="' + fieldName + '"]',
+				'textarea[name="' + fieldName + '"]',
+				'#' + fieldName,
+				'[id$="' + fieldName + '"]',
+			];
+			for (const selector of selectors) {
+				try {
+					const el = document.querySelector(selector);
+					if (el && (el.value || el.textContent)) {
+						return el.value || el.textContent.trim();
+					}
+				} catch(e) {}
+			}
+			return '';
+		}
+
+		let changeNumber = '';
+		const titleMatch = document.title.match(/(CHG[0-9]+)/i);
+		if (titleMatch) changeNumber = titleMatch[1];
+		if (!changeNumber) {
+			const allText = document.body.innerText || '';
+			const chgMatch = allText.match(/CHG[0-9]{7,}/i);
+			if (chgMatch) changeNumber = chgMatch[0];
+		}
+
+		let shortDescription = getFieldValue('short_description') ||
+			getFieldValue('sys_readonly.change_request.short_description') || '';
+
+		let description = getFieldValue('justification') ||
+			getFieldValue('sys_readonly.change_request.justification') ||
+			getFieldValue('description') || '';
+
+		if (!description) {
+			const textareas = document.querySelectorAll('textarea');
+			for (const ta of textareas) {
+				const val = ta.value || '';
+				if (val.length > 100 && (val.includes('Aplicação') || val.includes('Squad'))) {
+					description = val;
+					break;
+				}
+			}
+		}
+
+		return {
+			changeNumber: changeNumber,
+			shortDescription: shortDescription,
+			description: description,
+			state: ''
+		};
+	}`)
+
+	if err != nil {
+		return nil, fmt.Errorf("erro ao extrair dados: %v", err)
+	}
+
+	// Parse resultado
+	data := jsResult.Value.Map()
+
+	changeNumber := ""
+	if v, ok := data["changeNumber"]; ok {
+		changeNumber = v.String()
+	}
+
+	shortDescription := ""
+	if v, ok := data["shortDescription"]; ok {
+		shortDescription = v.String()
+	}
+
+	description := ""
+	if v, ok := data["description"]; ok {
+		description = v.String()
+	}
+
+	extracted := r.parseDescription(description)
+
+	r.logger.Info().
+		Str("changeNumber", changeNumber).
+		Str("application", extracted.Application).
+		Str("version", extracted.Version).
+		Msg("[Rod] Extração com login visível concluída!")
+
+	return &PlaywrightResult{
+		Success:          true,
+		ChangeNumber:     changeNumber,
+		ShortDescription: shortDescription,
+		Description:      description,
+		State:            "",
+		Extracted:        extracted,
+	}, nil
 }
