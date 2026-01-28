@@ -612,28 +612,38 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 			"login.windows.net",
 			"login.live.com",
 			"Sign in to your account",
-			"adfs",
-			"saml",
 		}
 
+		needsLogin := false
 		for _, indicator := range loginIndicators {
 			if strings.Contains(currentURL, indicator) || strings.Contains(currentTitle, indicator) {
-				r.logger.Error().
-					Str("url", currentURL).
-					Str("title", currentTitle).
-					Bool("headless", headless).
-					Msg("[Rod] ERRO: Página de login detectada após carregamento - sessão expirada!")
-
-				// Limpar a sessão inválida
-				r.logger.Info().Msg("[Rod] Limpando sessão inválida...")
-				os.RemoveAll(r.sessionDir)
-				os.MkdirAll(r.sessionDir, 0755)
-
-				return &PlaywrightResult{
-					Success: false,
-					Error:   "Sessão expirada. Por favor, faça login pelo Menu de Perfil > ServiceNow Session antes de extrair dados.",
-				}, nil
+				needsLogin = true
+				break
 			}
+		}
+
+		if needsLogin {
+			r.logger.Warn().
+				Str("url", currentURL).
+				Str("title", currentTitle).
+				Bool("was_headless", headless).
+				Msg("[Rod] Sessão expirada - página de login detectada")
+
+			// Fechar browser headless
+			browser.Close()
+
+			// Limpar sessão inválida
+			r.logger.Info().Msg("[Rod] Limpando sessão inválida e reabrindo browser para login...")
+			os.RemoveAll(r.sessionDir)
+			os.MkdirAll(r.sessionDir, 0755)
+
+			// REABRIR BROWSER EM MODO VISÍVEL PARA LOGIN
+			r.logger.Info().Msg("[Rod] ============================================")
+			r.logger.Info().Msg("[Rod] ABRINDO BROWSER PARA LOGIN NO AZURE AD...")
+			r.logger.Info().Msg("[Rod] Faça login e aguarde a extração continuar")
+			r.logger.Info().Msg("[Rod] ============================================")
+
+			return r.extractWithVisibleLogin(ctx, chgURL)
 		}
 
 		// Verificar se realmente estamos no ServiceNow
@@ -1008,4 +1018,204 @@ func (r *RodExtractor) ExtractWithSSE(ctx context.Context, chgURL string, progre
 	}
 
 	return result, err
+}
+
+// extractWithVisibleLogin abre browser visível para login e depois extrai dados
+func (r *RodExtractor) extractWithVisibleLogin(ctx context.Context, chgURL string) (*PlaywrightResult, error) {
+	r.logger.Info().Str("url", chgURL).Msg("[Rod] Iniciando extração com login visível...")
+
+	// Criar launcher em modo VISÍVEL
+	l := launcher.New().
+		UserDataDir(r.sessionDir).
+		Headless(false). // VISÍVEL para login
+		Set("disable-blink-features", "AutomationControlled")
+
+	url, err := l.Launch()
+	if err != nil {
+		return nil, fmt.Errorf("erro ao iniciar browser: %v", err)
+	}
+
+	browser := rod.New().ControlURL(url)
+	if err := browser.Connect(); err != nil {
+		return nil, fmt.Errorf("erro ao conectar ao browser: %v", err)
+	}
+	defer browser.Close()
+
+	// Navegar para a CHG
+	page, err := browser.Page(proto.TargetCreateTarget{URL: chgURL})
+	if err != nil {
+		return nil, fmt.Errorf("erro ao criar página: %v", err)
+	}
+
+	r.logger.Info().Msg("[Rod] Browser aberto - faça login no Azure AD...")
+
+	// Aguardar login (máximo 3 minutos)
+	loginTimeout := 3 * time.Minute
+	startTime := time.Now()
+
+	loginPatterns := []string{
+		"login.microsoftonline.com",
+		"login.windows.net",
+		"login.live.com",
+	}
+
+	for {
+		if time.Since(startTime) > loginTimeout {
+			return &PlaywrightResult{
+				Success: false,
+				Error:   "Timeout aguardando login no Azure AD (3 minutos)",
+			}, nil
+		}
+
+		pageInfo, err := page.Info()
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		currentURL := pageInfo.URL
+
+		// Verificar se saiu da página de login
+		isOnLogin := false
+		for _, pattern := range loginPatterns {
+			if strings.Contains(currentURL, pattern) {
+				isOnLogin = true
+				break
+			}
+		}
+
+		// Se está no ServiceNow e não na página de login, sucesso!
+		if strings.Contains(currentURL, "service-now.com") && !isOnLogin && !strings.Contains(currentURL, "saml") {
+			r.logger.Info().
+				Str("url", currentURL).
+				Msg("[Rod] Login completado! Aguardando página carregar...")
+
+			// Aguardar página carregar
+			time.Sleep(5 * time.Second)
+			page.WaitLoad()
+			time.Sleep(3 * time.Second)
+
+			break
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+
+	r.logger.Info().Msg("[Rod] Extraindo dados da CHG...")
+
+	// Agora extrair os dados
+	var targetPage *rod.Page
+
+	// Buscar iframe gsft_main
+	frames, _ := page.Elements("iframe")
+	for _, frame := range frames {
+		name, _ := frame.Attribute("name")
+		if name != nil && *name == "gsft_main" {
+			framePage, err := frame.Frame()
+			if err == nil {
+				targetPage = framePage
+				r.logger.Info().Msg("[Rod] Usando iframe gsft_main")
+				break
+			}
+		}
+	}
+
+	if targetPage == nil {
+		targetPage = page
+	}
+
+	time.Sleep(2 * time.Second)
+
+	// Executar JavaScript de extração (mesmo código do Extract)
+	jsResult, err := targetPage.Eval(`() => {
+		function getFieldValue(fieldName) {
+			const selectors = [
+				'input[name="' + fieldName + '"]',
+				'textarea[name="' + fieldName + '"]',
+				'#' + fieldName,
+				'[id$="' + fieldName + '"]',
+			];
+			for (const selector of selectors) {
+				try {
+					const el = document.querySelector(selector);
+					if (el && (el.value || el.textContent)) {
+						return el.value || el.textContent.trim();
+					}
+				} catch(e) {}
+			}
+			return '';
+		}
+
+		let changeNumber = '';
+		const titleMatch = document.title.match(/(CHG[0-9]+)/i);
+		if (titleMatch) changeNumber = titleMatch[1];
+		if (!changeNumber) {
+			const allText = document.body.innerText || '';
+			const chgMatch = allText.match(/CHG[0-9]{7,}/i);
+			if (chgMatch) changeNumber = chgMatch[0];
+		}
+
+		let shortDescription = getFieldValue('short_description') ||
+			getFieldValue('sys_readonly.change_request.short_description') || '';
+
+		let description = getFieldValue('justification') ||
+			getFieldValue('sys_readonly.change_request.justification') ||
+			getFieldValue('description') || '';
+
+		if (!description) {
+			const textareas = document.querySelectorAll('textarea');
+			for (const ta of textareas) {
+				const val = ta.value || '';
+				if (val.length > 100 && (val.includes('Aplicação') || val.includes('Squad'))) {
+					description = val;
+					break;
+				}
+			}
+		}
+
+		return {
+			changeNumber: changeNumber,
+			shortDescription: shortDescription,
+			description: description,
+			state: ''
+		};
+	}`)
+
+	if err != nil {
+		return nil, fmt.Errorf("erro ao extrair dados: %v", err)
+	}
+
+	// Parse resultado
+	data := jsResult.Value.Map()
+
+	changeNumber := ""
+	if v, ok := data["changeNumber"]; ok {
+		changeNumber = v.String()
+	}
+
+	shortDescription := ""
+	if v, ok := data["shortDescription"]; ok {
+		shortDescription = v.String()
+	}
+
+	description := ""
+	if v, ok := data["description"]; ok {
+		description = v.String()
+	}
+
+	extracted := r.parseDescription(description)
+
+	r.logger.Info().
+		Str("changeNumber", changeNumber).
+		Str("application", extracted.Application).
+		Str("version", extracted.Version).
+		Msg("[Rod] Extração com login visível concluída!")
+
+	return &PlaywrightResult{
+		Success:          true,
+		ChangeNumber:     changeNumber,
+		ShortDescription: shortDescription,
+		Description:      description,
+		State:            "",
+		Extracted:        extracted,
+	}, nil
 }
