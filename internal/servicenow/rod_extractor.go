@@ -52,12 +52,19 @@ func (r *RodExtractor) IsConfigured() bool {
 }
 
 // GetStatus retorna o status da configuração do Rod
+// Retorna campos compatíveis com o frontend (playwright_configured, script_exists)
 func (r *RodExtractor) GetStatus() map[string]interface{} {
 	status := map[string]interface{}{
-		"configured":   true,
-		"session_dir":  r.sessionDir,
-		"type":         "rod-go-native",
-		"dependencies": "none (Go native)",
+		// Campos para compatibilidade com frontend (espera playwright_configured e script_exists)
+		"playwright_configured": true, // Rod está sempre configurado (Go nativo)
+		"script_exists":         true, // Não precisa de script externo
+		"configured":            true,
+		"session_dir":           r.sessionDir,
+		"type":                  "rod-go-native",
+		"dependencies":          "none (Go native)",
+		"npx_available":         true, // Não precisa de npx
+		"ts_node_available":     true, // Não precisa de ts-node
+		"npm_installed":         true, // Não precisa de npm
 	}
 
 	// Verificar se sessão existe
