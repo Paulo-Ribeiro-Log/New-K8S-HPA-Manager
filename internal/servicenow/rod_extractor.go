@@ -416,12 +416,17 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 		time.Sleep(2 * time.Second)
 	}
 
-	// Aguardar carregamento completo
-	r.logger.Info().Msg("[Rod] Aguardando carregamento completo da página (3s)...")
-	time.Sleep(3 * time.Second)
+	// Aguardar carregamento completo - ServiceNow é lento para carregar formulários
+	r.logger.Info().Msg("[Rod] Aguardando carregamento completo da página (5s)...")
+	time.Sleep(5 * time.Second)
 	if err := page.WaitLoad(); err != nil {
 		r.logger.Warn().Err(err).Msg("[Rod] Aviso: erro ao aguardar WaitLoad (continuando mesmo assim)")
 	}
+
+	// Aguardar elementos dinâmicos carregarem
+	r.logger.Info().Msg("[Rod] Aguardando elementos dinâmicos (3s adicionais)...")
+	time.Sleep(3 * time.Second)
+
 	r.logger.Info().Msg("[Rod] Página carregada, buscando iframes...")
 
 	// Tentar encontrar o iframe gsft_main
@@ -457,95 +462,238 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 	}
 
 	// Aguardar mais um pouco para formulário carregar
-	r.logger.Info().Msg("[Rod] Aguardando formulário carregar (2s)...")
-	time.Sleep(2 * time.Second)
+	r.logger.Info().Msg("[Rod] Aguardando formulário carregar (3s)...")
+	time.Sleep(3 * time.Second)
 
 	r.logger.Info().Msg("[Rod] ========== EXECUTANDO JAVASCRIPT PARA EXTRAIR DADOS ==========")
 
-	// Extrair dados usando JavaScript
+	// Primeiro, vamos capturar informações sobre a página para debug
+	pageDebug, _ := targetPage.Eval(`() => {
+		return {
+			url: window.location.href,
+			title: document.title,
+			bodyLength: document.body ? document.body.innerHTML.length : 0,
+			iframeCount: document.querySelectorAll('iframe').length,
+			inputCount: document.querySelectorAll('input').length,
+			textareaCount: document.querySelectorAll('textarea').length,
+			hasGForm: !!document.querySelector('.g_form'),
+			hasNowForm: !!document.querySelector('now-record-form'),
+			hasSncForm: !!document.querySelector('[data-type="now-record-form"]'),
+			hasFormSection: !!document.querySelector('.form-group, .form_section, .section_header'),
+		};
+	}`)
+	if pageDebug != nil {
+		debugData := pageDebug.Value.Map()
+		r.logger.Info().
+			Str("url", debugData["url"].String()).
+			Str("title", debugData["title"].String()).
+			Int("body_length", int(debugData["bodyLength"].Int())).
+			Int("iframe_count", int(debugData["iframeCount"].Int())).
+			Int("input_count", int(debugData["inputCount"].Int())).
+			Int("textarea_count", int(debugData["textareaCount"].Int())).
+			Bool("has_g_form", debugData["hasGForm"].Bool()).
+			Bool("has_now_form", debugData["hasNowForm"].Bool()).
+			Bool("has_snc_form", debugData["hasSncForm"].Bool()).
+			Bool("has_form_section", debugData["hasFormSection"].Bool()).
+			Msg("[Rod] Debug da página")
+	}
+
+	// Extrair dados usando JavaScript com múltiplas estratégias
 	jsResult, err := targetPage.Eval(`() => {
+		// Helper para buscar valor em múltiplos seletores
 		function getFieldValue(fieldName) {
 			const selectors = [
 				'input[name="' + fieldName + '"]',
 				'textarea[name="' + fieldName + '"]',
 				'#' + fieldName,
 				'[id$="' + fieldName + '"]',
-				'[data-field="' + fieldName + '"]'
+				'[data-field="' + fieldName + '"]',
+				'[ng-model*="' + fieldName + '"]',
+				'[data-name="' + fieldName + '"]',
 			];
 
 			for (const selector of selectors) {
-				const el = document.querySelector(selector);
-				if (el && el.value) {
-					return el.value;
-				}
+				try {
+					const el = document.querySelector(selector);
+					if (el && (el.value || el.textContent)) {
+						return el.value || el.textContent.trim();
+					}
+				} catch(e) {}
 			}
 			return '';
 		}
 
-		// Número da CHG
+		// Helper para buscar em spans/divs de display (UI Next)
+		function getDisplayValue(fieldName) {
+			const selectors = [
+				'[data-field-name="' + fieldName + '"] .display-value',
+				'[data-field-name="' + fieldName + '"]',
+				'.variable-label:contains("' + fieldName + '") + .variable-value',
+				'[aria-label*="' + fieldName + '"]',
+				'label:contains("' + fieldName + '") + *',
+			];
+
+			for (const selector of selectors) {
+				try {
+					const el = document.querySelector(selector);
+					if (el) {
+						return el.value || el.textContent.trim() || '';
+					}
+				} catch(e) {}
+			}
+			return '';
+		}
+
+		// Estratégia 1: Número da CHG pelo título da página
 		let changeNumber = '';
-		let numberEl = document.querySelector('#sys_readonly\\.change_request\\.number') ||
-					  document.querySelector('[name="change_request.number"]') ||
-					  document.querySelector('[aria-label="Número"]');
-		if (numberEl) {
-			changeNumber = numberEl.value || numberEl.textContent || '';
-		}
-		if (!changeNumber) {
-			changeNumber = getFieldValue('number') ||
-						  getFieldValue('sys_readonly.change_request.number') || '';
-		}
-		if (!changeNumber) {
-			const match = document.title.match(/(CHG[0-9]+)/i);
-			if (match) changeNumber = match[1];
+		const titleMatch = document.title.match(/(CHG[0-9]+)/i);
+		if (titleMatch) {
+			changeNumber = titleMatch[1];
 		}
 
-		// Short description
+		// Estratégia 2: Buscar em elementos comuns
+		if (!changeNumber) {
+			const numberSelectors = [
+				'#sys_readonly\\.change_request\\.number',
+				'[name="change_request.number"]',
+				'[aria-label="Número"]',
+				'[data-field-name="number"]',
+				'.form-control[name="number"]',
+				'input[id*="number"]',
+				'span.display-value[data-field="number"]',
+			];
+			for (const sel of numberSelectors) {
+				try {
+					const el = document.querySelector(sel);
+					if (el && (el.value || el.textContent)) {
+						const val = (el.value || el.textContent).trim();
+						if (val.match(/CHG[0-9]+/i)) {
+							changeNumber = val;
+							break;
+						}
+					}
+				} catch(e) {}
+			}
+		}
+
+		// Estratégia 3: Buscar CHG em qualquer lugar visível
+		if (!changeNumber) {
+			const allText = document.body.innerText || '';
+			const chgMatch = allText.match(/CHG[0-9]{7,}/i);
+			if (chgMatch) {
+				changeNumber = chgMatch[0];
+			}
+		}
+
+		// Short description - múltiplas estratégias
 		let shortDescription = '';
-		let shortDescEl = document.querySelector('#sys_readonly\\.change_request\\.short_description') ||
-						 document.querySelector('[name="change_request.short_description"]') ||
-						 document.querySelector('[aria-label="Descrição resumida"]');
-		if (shortDescEl) {
-			shortDescription = shortDescEl.value || shortDescEl.textContent || '';
-		}
-		if (!shortDescription) {
-			shortDescription = getFieldValue('short_description') ||
-							  getFieldValue('sys_readonly.change_request.short_description') || '';
+		const shortDescSelectors = [
+			'#sys_readonly\\.change_request\\.short_description',
+			'[name="change_request.short_description"]',
+			'[aria-label="Descrição resumida"]',
+			'[aria-label="Short description"]',
+			'[data-field-name="short_description"]',
+			'textarea[id*="short_description"]',
+			'input[id*="short_description"]',
+		];
+		for (const sel of shortDescSelectors) {
+			try {
+				const el = document.querySelector(sel);
+				if (el && (el.value || el.textContent)) {
+					shortDescription = (el.value || el.textContent).trim();
+					if (shortDescription) break;
+				}
+			} catch(e) {}
 		}
 
-		// Motivo da mudança / Justification
+		// Motivo da mudança / Justification - múltiplas estratégias
 		let description = '';
-		let justificationEl = document.querySelector('#sys_readonly\\.change_request\\.justification') ||
-							 document.querySelector('[name="change_request.justification"]') ||
-							 document.querySelector('[aria-label="Motivo da mudança"]');
-		if (justificationEl) {
-			description = justificationEl.value || justificationEl.textContent || '';
-		}
-		if (!description) {
-			description = getFieldValue('description') ||
-						 getFieldValue('sys_readonly.change_request.description') ||
-						 getFieldValue('u_motivo_mudanca') || '';
+		const descSelectors = [
+			'#sys_readonly\\.change_request\\.justification',
+			'[name="change_request.justification"]',
+			'[aria-label="Motivo da mudança"]',
+			'[aria-label="Justification"]',
+			'[data-field-name="justification"]',
+			'textarea[id*="justification"]',
+			'#sys_readonly\\.change_request\\.description',
+			'[name="change_request.description"]',
+			'textarea[id*="description"]',
+			'[data-field-name="description"]',
+			'[data-field-name="u_motivo_mudanca"]',
+		];
+		for (const sel of descSelectors) {
+			try {
+				const el = document.querySelector(sel);
+				if (el && (el.value || el.textContent)) {
+					const val = (el.value || el.textContent).trim();
+					if (val.length > 50) {
+						description = val;
+						break;
+					}
+				}
+			} catch(e) {}
 		}
 
-		// Se ainda não achou, procurar textareas com conteúdo relevante
+		// Última tentativa: buscar qualquer textarea grande com conteúdo relevante
 		if (!description) {
 			const textareas = document.querySelectorAll('textarea');
 			for (const ta of textareas) {
-				const val = ta.value || '';
-				if (val.length > 100 && (val.includes('Aplicação') || val.includes('Versão') || val.includes('Squad'))) {
+				const val = ta.value || ta.textContent || '';
+				if (val.length > 100 && (
+					val.includes('Aplicação') ||
+					val.includes('Versão') ||
+					val.includes('Squad') ||
+					val.includes('github') ||
+					val.includes('Repositório')
+				)) {
 					description = val;
 					break;
 				}
 			}
 		}
 
-		const stateEl = document.querySelector('[name="state"]');
-		const state = stateEl && stateEl.options ? (stateEl.options[stateEl.selectedIndex] ? stateEl.options[stateEl.selectedIndex].text : '') : '';
+		// Se ainda não encontrou, buscar em divs com classe específica
+		if (!description) {
+			const contentDivs = document.querySelectorAll('.sn-widget-textblock-body, .activity-stream-message, .sn-card-component_content');
+			for (const div of contentDivs) {
+				const text = div.textContent || '';
+				if (text.length > 100 && (text.includes('Aplicação') || text.includes('Squad'))) {
+					description = text.trim();
+					break;
+				}
+			}
+		}
+
+		// State
+		let state = '';
+		const stateEl = document.querySelector('[name="state"], [data-field-name="state"]');
+		if (stateEl) {
+			if (stateEl.options && stateEl.selectedIndex >= 0) {
+				state = stateEl.options[stateEl.selectedIndex].text;
+			} else {
+				state = stateEl.value || stateEl.textContent || '';
+			}
+		}
+
+		// Debug: listar todos os inputs/textareas encontrados
+		const debugInputs = [];
+		document.querySelectorAll('input[type="text"], textarea').forEach((el, i) => {
+			if (i < 10 && (el.name || el.id)) {
+				debugInputs.push({
+					tag: el.tagName,
+					name: el.name || '',
+					id: el.id || '',
+					valueLength: (el.value || '').length
+				});
+			}
+		});
 
 		return {
 			changeNumber: changeNumber,
 			shortDescription: shortDescription,
 			description: description,
-			state: state
+			state: state,
+			debugInputs: JSON.stringify(debugInputs)
 		};
 	}`)
 
@@ -591,6 +739,11 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 	if v, ok := data["state"]; ok {
 		state = v.String()
 		r.logger.Debug().Str("value", state).Msg("[Rod] Campo state extraído")
+	}
+
+	// Log dos inputs encontrados para debug
+	if v, ok := data["debugInputs"]; ok {
+		r.logger.Debug().Str("inputs", v.String()).Msg("[Rod] Debug: inputs/textareas encontrados na página")
 	}
 
 	// Parse do description para extrair dados estruturados
