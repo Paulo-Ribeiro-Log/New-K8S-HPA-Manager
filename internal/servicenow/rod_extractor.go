@@ -232,16 +232,34 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 }
 
 // Extract extrai dados de uma CHG do ServiceNow
-func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (*PlaywrightResult, error) {
+func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *PlaywrightResult, err error) {
+	// Recover de panic para evitar crash
+	defer func() {
+		if rec := recover(); rec != nil {
+			r.logger.Error().
+				Interface("panic", rec).
+				Str("url", chgURL).
+				Msg("[Rod] PANIC CAPTURADO na extração")
+			err = fmt.Errorf("erro interno durante extração: %v", rec)
+			result = nil
+		}
+	}()
+
+	r.logger.Info().Str("url", chgURL).Msg("[Rod] ========== INICIANDO EXTRAÇÃO ==========")
+
 	// Validar URL
 	if !strings.Contains(chgURL, "service-now.com") {
+		r.logger.Error().Str("url", chgURL).Msg("[Rod] URL inválida - não contém service-now.com")
 		return nil, fmt.Errorf("URL inválida: deve ser uma URL do ServiceNow")
 	}
 
 	sysIDRegex := regexp.MustCompile(`sys_id=([a-f0-9]{32})`)
 	if !sysIDRegex.MatchString(chgURL) {
+		r.logger.Error().Str("url", chgURL).Msg("[Rod] URL inválida - sys_id não encontrado")
 		return nil, fmt.Errorf("URL inválida: sys_id não encontrado")
 	}
+
+	r.logger.Info().Msg("[Rod] URL validada com sucesso")
 
 	// Verificar se tem sessão válida
 	sessionStatus := r.GetSessionStatus()
@@ -251,30 +269,62 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (*PlaywrightR
 		Str("url", chgURL).
 		Bool("headless", headless).
 		Bool("session_valid", sessionStatus.Valid).
-		Msg("[Rod] Iniciando extração de CHG")
+		Str("session_status", sessionStatus.Status).
+		Str("session_dir", r.sessionDir).
+		Msg("[Rod] Configuração de sessão verificada")
 
 	// Criar launcher
+	r.logger.Info().
+		Bool("headless", headless).
+		Str("user_data_dir", r.sessionDir).
+		Msg("[Rod] Criando launcher do browser...")
+
 	l := launcher.New().
 		UserDataDir(r.sessionDir).
 		Headless(headless).
 		Set("disable-blink-features", "AutomationControlled")
 
+	r.logger.Info().Msg("[Rod] Launcher criado, iniciando browser...")
+	r.logger.Info().Msg("[Rod] (Pode baixar Chromium automaticamente na primeira execução - aguarde...)")
+
 	url, err := l.Launch()
 	if err != nil {
+		r.logger.Error().
+			Err(err).
+			Bool("headless", headless).
+			Str("session_dir", r.sessionDir).
+			Msg("[Rod] ERRO ao iniciar browser - verifique se há espaço em disco e permissões")
 		return nil, fmt.Errorf("erro ao iniciar browser: %v", err)
 	}
+	r.logger.Info().Str("control_url", url).Msg("[Rod] Browser iniciado com sucesso")
 
+	r.logger.Info().Str("control_url", url).Msg("[Rod] Conectando ao browser via DevTools Protocol...")
 	browser := rod.New().ControlURL(url)
 	if err := browser.Connect(); err != nil {
+		r.logger.Error().
+			Err(err).
+			Str("control_url", url).
+			Msg("[Rod] ERRO ao conectar ao browser - verifique se o Chromium está instalado corretamente")
 		return nil, fmt.Errorf("erro ao conectar ao browser: %v", err)
 	}
-	defer browser.Close()
+	defer func() {
+		r.logger.Info().Msg("[Rod] Fechando browser...")
+		browser.Close()
+		r.logger.Info().Msg("[Rod] Browser fechado")
+	}()
+	r.logger.Info().Msg("[Rod] Conectado ao browser com sucesso")
 
 	// Navegar para a CHG
+	r.logger.Info().Str("chg_url", chgURL).Msg("[Rod] Criando nova página e navegando para a CHG...")
 	page, err := browser.Page(proto.TargetCreateTarget{URL: chgURL})
 	if err != nil {
+		r.logger.Error().
+			Err(err).
+			Str("chg_url", chgURL).
+			Msg("[Rod] ERRO ao criar página - pode ser problema de conectividade ou timeout")
 		return nil, fmt.Errorf("erro ao criar página: %v", err)
 	}
+	r.logger.Info().Msg("[Rod] Página criada com sucesso, aguardando carregamento...")
 
 	// Timeout de 5 minutos para login se necessário
 	loginTimeout := 5 * time.Minute
@@ -292,8 +342,17 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (*PlaywrightR
 	}
 
 	// Aguardar até chegar no ServiceNow
+	r.logger.Info().Msg("[Rod] Iniciando loop de verificação de login/acesso...")
+	loopCount := 0
 	for {
-		if time.Since(startTime) > loginTimeout {
+		loopCount++
+		elapsed := time.Since(startTime)
+
+		if elapsed > loginTimeout {
+			r.logger.Error().
+				Dur("elapsed", elapsed).
+				Int("loop_count", loopCount).
+				Msg("[Rod] TIMEOUT aguardando login no Azure AD")
 			return &PlaywrightResult{
 				Success: false,
 				Error:   "Timeout aguardando login no Azure AD (5 minutos)",
@@ -303,22 +362,42 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (*PlaywrightR
 		// Obter URL atual com tratamento de erro
 		pageInfo, err := page.Info()
 		if err != nil {
-			r.logger.Warn().Err(err).Msg("[Rod] Erro ao obter info da página")
+			r.logger.Warn().
+				Err(err).
+				Int("loop_count", loopCount).
+				Msg("[Rod] Erro ao obter info da página (tentando novamente...)")
 			time.Sleep(2 * time.Second)
 			continue
 		}
 		currentURL := pageInfo.URL
 
+		// Log a cada 5 iterações ou quando mudar URL
+		if loopCount%5 == 1 {
+			r.logger.Debug().
+				Str("current_url", currentURL).
+				Int("loop_count", loopCount).
+				Dur("elapsed", elapsed).
+				Msg("[Rod] Verificando estado da página...")
+		}
+
 		isLoginPage := false
 		for _, pattern := range loginPatterns {
 			if strings.Contains(strings.ToLower(currentURL), strings.ToLower(pattern)) {
 				isLoginPage = true
+				r.logger.Debug().
+					Str("pattern", pattern).
+					Str("url", currentURL).
+					Msg("[Rod] Detectada página de login")
 				break
 			}
 		}
 
 		if isLoginPage && headless {
 			// Se estamos em headless e precisa de login, avisar o usuário
+			r.logger.Warn().
+				Bool("headless", headless).
+				Str("url", currentURL).
+				Msg("[Rod] Sessão expirada - login necessário mas estamos em modo headless")
 			return &PlaywrightResult{
 				Success: false,
 				Error:   "Sessão expirada. Faça login pelo Menu de Perfil > ServiceNow Session antes de extrair dados.",
@@ -326,7 +405,11 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (*PlaywrightR
 		}
 
 		if strings.Contains(currentURL, "service-now.com") && !isLoginPage && !strings.Contains(currentURL, "login") {
-			r.logger.Info().Msg("[Rod] Acesso ao ServiceNow confirmado!")
+			r.logger.Info().
+				Str("url", currentURL).
+				Dur("elapsed", elapsed).
+				Int("loops", loopCount).
+				Msg("[Rod] Acesso ao ServiceNow confirmado!")
 			break
 		}
 
@@ -334,41 +417,53 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (*PlaywrightR
 	}
 
 	// Aguardar carregamento completo
+	r.logger.Info().Msg("[Rod] Aguardando carregamento completo da página (3s)...")
 	time.Sleep(3 * time.Second)
 	if err := page.WaitLoad(); err != nil {
-		r.logger.Warn().Err(err).Msg("[Rod] Erro ao aguardar carregamento da página")
+		r.logger.Warn().Err(err).Msg("[Rod] Aviso: erro ao aguardar WaitLoad (continuando mesmo assim)")
 	}
+	r.logger.Info().Msg("[Rod] Página carregada, buscando iframes...")
 
 	// Tentar encontrar o iframe gsft_main
 	var targetPage *rod.Page
 	frames, err := page.Elements("iframe")
 	if err != nil {
-		r.logger.Warn().Err(err).Msg("[Rod] Erro ao buscar iframes")
+		r.logger.Warn().Err(err).Msg("[Rod] Aviso: erro ao buscar iframes")
 		frames = nil
+	} else {
+		r.logger.Info().Int("count", len(frames)).Msg("[Rod] Iframes encontrados")
 	}
 
 	for _, frame := range frames {
 		name, _ := frame.Attribute("name")
-		if name != nil && *name == "gsft_main" {
-			framePage, err := frame.Frame()
-			if err == nil {
-				targetPage = framePage
-				r.logger.Info().Msg("[Rod] Usando iframe gsft_main para extração")
-				break
+		if name != nil {
+			r.logger.Debug().Str("iframe_name", *name).Msg("[Rod] Verificando iframe...")
+			if *name == "gsft_main" {
+				framePage, err := frame.Frame()
+				if err == nil {
+					targetPage = framePage
+					r.logger.Info().Msg("[Rod] Usando iframe gsft_main para extração")
+					break
+				} else {
+					r.logger.Warn().Err(err).Msg("[Rod] Erro ao acessar iframe gsft_main")
+				}
 			}
 		}
 	}
 
 	if targetPage == nil {
 		targetPage = page
-		r.logger.Info().Msg("[Rod] Usando página principal para extração")
+		r.logger.Info().Msg("[Rod] Usando página principal para extração (sem iframe)")
 	}
 
 	// Aguardar mais um pouco para formulário carregar
+	r.logger.Info().Msg("[Rod] Aguardando formulário carregar (2s)...")
 	time.Sleep(2 * time.Second)
 
+	r.logger.Info().Msg("[Rod] ========== EXECUTANDO JAVASCRIPT PARA EXTRAIR DADOS ==========")
+
 	// Extrair dados usando JavaScript
-	result, err := targetPage.Eval(`() => {
+	jsResult, err := targetPage.Eval(`() => {
 		function getFieldValue(fieldName) {
 			const selectors = [
 				'input[name="' + fieldName + '"]',
@@ -455,40 +550,61 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (*PlaywrightR
 	}`)
 
 	if err != nil {
+		r.logger.Error().
+			Err(err).
+			Msg("[Rod] ERRO ao executar JavaScript de extração")
 		return nil, fmt.Errorf("erro ao extrair dados: %v", err)
 	}
 
+	r.logger.Info().Msg("[Rod] JavaScript executado com sucesso, processando resultado...")
+
 	// Parse do resultado
-	data := result.Value.Map()
+	if jsResult == nil || jsResult.Value.Nil() {
+		r.logger.Error().Msg("[Rod] Resultado do JavaScript é nil ou vazio")
+		return nil, fmt.Errorf("resultado da extração está vazio")
+	}
+
+	data := jsResult.Value.Map()
+	r.logger.Debug().
+		Int("fields_count", len(data)).
+		Msg("[Rod] Mapa de dados obtido do JavaScript")
 
 	changeNumber := ""
 	if v, ok := data["changeNumber"]; ok {
 		changeNumber = v.String()
+		r.logger.Debug().Str("value", changeNumber).Msg("[Rod] Campo changeNumber extraído")
 	}
 
 	shortDescription := ""
 	if v, ok := data["shortDescription"]; ok {
 		shortDescription = v.String()
+		r.logger.Debug().Str("value", shortDescription).Msg("[Rod] Campo shortDescription extraído")
 	}
 
 	description := ""
 	if v, ok := data["description"]; ok {
 		description = v.String()
+		r.logger.Debug().Int("length", len(description)).Msg("[Rod] Campo description extraído")
 	}
 
 	state := ""
 	if v, ok := data["state"]; ok {
 		state = v.String()
+		r.logger.Debug().Str("value", state).Msg("[Rod] Campo state extraído")
 	}
 
 	// Parse do description para extrair dados estruturados
+	r.logger.Info().Msg("[Rod] Parseando description para extrair dados estruturados...")
 	extracted := r.parseDescription(description)
 
 	r.logger.Info().
 		Str("changeNumber", changeNumber).
 		Str("application", extracted.Application).
 		Str("version", extracted.Version).
-		Msg("[Rod] Extração concluída com sucesso")
+		Str("squad", extracted.Squad).
+		Str("github_repo", extracted.GitHubRepo).
+		Int("jira_issues", len(extracted.JiraIssues)).
+		Msg("[Rod] ========== EXTRAÇÃO CONCLUÍDA COM SUCESSO ==========")
 
 	return &PlaywrightResult{
 		Success:          true,
