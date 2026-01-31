@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -27,16 +29,43 @@ type PodExecHandler struct {
 	upgrader    websocket.Upgrader
 }
 
+// allowedOrigins lista as origens permitidas para WebSocket
+var allowedOrigins = map[string]bool{
+	"http://localhost:8080":  true,
+	"https://localhost:8080": true,
+	"http://localhost:5173":  true, // Vite dev server
+	"https://localhost:5173": true,
+	"http://127.0.0.1:8080":  true,
+	"https://127.0.0.1:8080": true,
+	"http://127.0.0.1:5173":  true,
+	"https://127.0.0.1:5173": true,
+}
+
 // NewPodExecHandler cria um novo handler de exec
 func NewPodExecHandler(km *config.KubeConfigManager) *PodExecHandler {
 	return &PodExecHandler{
 		kubeManager: km,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
-				return true // TODO: Configurar CORS apropriadamente em produção
+				origin := r.Header.Get("Origin")
+				// Se não tem Origin header (ex: conexão direta), permite
+				if origin == "" {
+					return true
+				}
+				// Verifica se a origem está na lista permitida
+				if allowedOrigins[origin] {
+					return true
+				}
+				// Em produção, permitir origens que começam com o mesmo host
+				host := r.Host
+				if strings.HasPrefix(origin, "http://"+host) || strings.HasPrefix(origin, "https://"+host) {
+					return true
+				}
+				log.Printf("[SHELL] Rejected WebSocket connection from origin: %s", origin)
+				return false
 			},
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
+			ReadBufferSize:  8192,  // Aumentado de 1024 para 8KB
+			WriteBufferSize: 8192,  // Aumentado de 1024 para 8KB
 		},
 	}
 }
@@ -348,7 +377,7 @@ func (h *PodExecHandler) execInPod(
 	// Create terminal session wrapper
 	session := &TerminalSession{
 		conn:        conn,
-		sizeCh:      make(chan remotecommand.TerminalSize, 1),
+		sizeCh:      make(chan remotecommand.TerminalSize, 5), // Buffer aumentado para evitar deadlock
 		isEphemeral: isEphemeral,
 		image:       image,
 		isReused:    isReused,
@@ -434,8 +463,14 @@ func (t *TerminalSession) Read(p []byte) (int, error) {
 
 	switch msg.Type {
 	case "input":
-		copy(p, []byte(msg.Data))
-		return len(msg.Data), nil
+		data := []byte(msg.Data)
+		// FIX: Prevenir buffer overflow - truncar se necessário
+		if len(data) > len(p) {
+			log.Printf("[SHELL] Warning: Input truncated from %d to %d bytes", len(data), len(p))
+			data = data[:len(p)]
+		}
+		n := copy(p, data)
+		return n, nil
 	case "resize":
 		if msg.Size != nil {
 			select {
@@ -454,9 +489,16 @@ func (t *TerminalSession) Read(p []byte) (int, error) {
 
 // Write escreve output para o WebSocket
 func (t *TerminalSession) Write(p []byte) (int, error) {
+	// FIX: Validar UTF-8 para evitar JSON corrompido
+	data := string(p)
+	if !utf8.ValidString(data) {
+		// Substituir bytes inválidos por caractere de substituição Unicode
+		data = strings.ToValidUTF8(data, "�")
+	}
+
 	msg := map[string]interface{}{
 		"type": "output",
-		"data": string(p),
+		"data": data,
 	}
 	err := t.conn.WriteJSON(msg)
 	if err != nil {
