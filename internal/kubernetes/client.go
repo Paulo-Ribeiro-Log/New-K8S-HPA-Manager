@@ -4240,3 +4240,224 @@ func (c *Client) ListDirectory(namespace, podName, container, remotePath string)
 
 	return files, nil
 }
+
+// ResourcePatchRequest representa os campos que podem ser atualizados via patch
+type ResourcePatchRequest struct {
+	CPURequest    string
+	MemoryRequest string
+	CPULimit      string
+	MemoryLimit   string
+	Replicas      *int32
+	ContainerName string // Nome do container a atualizar (opcional, padrão: primeiro container)
+}
+
+// PatchDeploymentResources atualiza apenas os recursos (CPU/memória) de um Deployment
+// usando Server-Side Apply para compatibilidade com Helm
+func (c *Client) PatchDeploymentResources(ctx context.Context, namespace, name string, req ResourcePatchRequest) (*appsv1.Deployment, error) {
+	// Buscar deployment atual para obter estrutura
+	deployment, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get deployment %s/%s: %w", namespace, name, err)
+	}
+
+	// Encontrar o container correto
+	containerIdx := 0
+	if req.ContainerName != "" {
+		found := false
+		for i, container := range deployment.Spec.Template.Spec.Containers {
+			if container.Name == req.ContainerName {
+				containerIdx = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("container %s not found in deployment %s/%s", req.ContainerName, namespace, name)
+		}
+	}
+
+	if len(deployment.Spec.Template.Spec.Containers) == 0 {
+		return nil, fmt.Errorf("deployment %s/%s has no containers", namespace, name)
+	}
+
+	// Aplicar mudanças
+	container := &deployment.Spec.Template.Spec.Containers[containerIdx]
+	if container.Resources.Requests == nil {
+		container.Resources.Requests = corev1.ResourceList{}
+	}
+	if container.Resources.Limits == nil {
+		container.Resources.Limits = corev1.ResourceList{}
+	}
+
+	if req.CPURequest != "" {
+		if qty, err := resource.ParseQuantity(req.CPURequest); err == nil {
+			container.Resources.Requests[corev1.ResourceCPU] = qty
+		}
+	}
+	if req.MemoryRequest != "" {
+		if qty, err := resource.ParseQuantity(req.MemoryRequest); err == nil {
+			container.Resources.Requests[corev1.ResourceMemory] = qty
+		}
+	}
+	if req.CPULimit != "" {
+		if qty, err := resource.ParseQuantity(req.CPULimit); err == nil {
+			container.Resources.Limits[corev1.ResourceCPU] = qty
+		}
+	}
+	if req.MemoryLimit != "" {
+		if qty, err := resource.ParseQuantity(req.MemoryLimit); err == nil {
+			container.Resources.Limits[corev1.ResourceMemory] = qty
+		}
+	}
+	if req.Replicas != nil {
+		deployment.Spec.Replicas = req.Replicas
+	}
+
+	// Converter para YAML e usar Apply com Server-Side Apply
+	yamlBytes, err := yaml.Marshal(deployment)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal deployment: %w", err)
+	}
+
+	// Usar ApplyDeployment com Force=true para resolver conflitos com Helm
+	return c.ApplyDeployment(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false)
+}
+
+// PatchStatefulSetResources atualiza apenas os recursos (CPU/memória) de um StatefulSet
+// usando Server-Side Apply para compatibilidade com Helm
+func (c *Client) PatchStatefulSetResources(ctx context.Context, namespace, name string, req ResourcePatchRequest) (*appsv1.StatefulSet, error) {
+	// Buscar statefulset atual
+	sts, err := c.clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get statefulset %s/%s: %w", namespace, name, err)
+	}
+
+	// Encontrar o container correto
+	containerIdx := 0
+	if req.ContainerName != "" {
+		found := false
+		for i, container := range sts.Spec.Template.Spec.Containers {
+			if container.Name == req.ContainerName {
+				containerIdx = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("container %s not found in statefulset %s/%s", req.ContainerName, namespace, name)
+		}
+	}
+
+	if len(sts.Spec.Template.Spec.Containers) == 0 {
+		return nil, fmt.Errorf("statefulset %s/%s has no containers", namespace, name)
+	}
+
+	// Aplicar mudanças
+	container := &sts.Spec.Template.Spec.Containers[containerIdx]
+	if container.Resources.Requests == nil {
+		container.Resources.Requests = corev1.ResourceList{}
+	}
+	if container.Resources.Limits == nil {
+		container.Resources.Limits = corev1.ResourceList{}
+	}
+
+	if req.CPURequest != "" {
+		if qty, err := resource.ParseQuantity(req.CPURequest); err == nil {
+			container.Resources.Requests[corev1.ResourceCPU] = qty
+		}
+	}
+	if req.MemoryRequest != "" {
+		if qty, err := resource.ParseQuantity(req.MemoryRequest); err == nil {
+			container.Resources.Requests[corev1.ResourceMemory] = qty
+		}
+	}
+	if req.CPULimit != "" {
+		if qty, err := resource.ParseQuantity(req.CPULimit); err == nil {
+			container.Resources.Limits[corev1.ResourceCPU] = qty
+		}
+	}
+	if req.MemoryLimit != "" {
+		if qty, err := resource.ParseQuantity(req.MemoryLimit); err == nil {
+			container.Resources.Limits[corev1.ResourceMemory] = qty
+		}
+	}
+	if req.Replicas != nil {
+		sts.Spec.Replicas = req.Replicas
+	}
+
+	// Converter para YAML e usar Apply com Server-Side Apply
+	yamlBytes, err := yaml.Marshal(sts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal statefulset: %w", err)
+	}
+
+	return c.ApplyStatefulSet(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false)
+}
+
+// PatchDaemonSetResources atualiza apenas os recursos (CPU/memória) de um DaemonSet
+// usando Server-Side Apply para compatibilidade com Helm
+func (c *Client) PatchDaemonSetResources(ctx context.Context, namespace, name string, req ResourcePatchRequest) (*appsv1.DaemonSet, error) {
+	// Buscar daemonset atual
+	ds, err := c.clientset.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get daemonset %s/%s: %w", namespace, name, err)
+	}
+
+	// Encontrar o container correto
+	containerIdx := 0
+	if req.ContainerName != "" {
+		found := false
+		for i, container := range ds.Spec.Template.Spec.Containers {
+			if container.Name == req.ContainerName {
+				containerIdx = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("container %s not found in daemonset %s/%s", req.ContainerName, namespace, name)
+		}
+	}
+
+	if len(ds.Spec.Template.Spec.Containers) == 0 {
+		return nil, fmt.Errorf("daemonset %s/%s has no containers", namespace, name)
+	}
+
+	// Aplicar mudanças
+	container := &ds.Spec.Template.Spec.Containers[containerIdx]
+	if container.Resources.Requests == nil {
+		container.Resources.Requests = corev1.ResourceList{}
+	}
+	if container.Resources.Limits == nil {
+		container.Resources.Limits = corev1.ResourceList{}
+	}
+
+	if req.CPURequest != "" {
+		if qty, err := resource.ParseQuantity(req.CPURequest); err == nil {
+			container.Resources.Requests[corev1.ResourceCPU] = qty
+		}
+	}
+	if req.MemoryRequest != "" {
+		if qty, err := resource.ParseQuantity(req.MemoryRequest); err == nil {
+			container.Resources.Requests[corev1.ResourceMemory] = qty
+		}
+	}
+	if req.CPULimit != "" {
+		if qty, err := resource.ParseQuantity(req.CPULimit); err == nil {
+			container.Resources.Limits[corev1.ResourceCPU] = qty
+		}
+	}
+	if req.MemoryLimit != "" {
+		if qty, err := resource.ParseQuantity(req.MemoryLimit); err == nil {
+			container.Resources.Limits[corev1.ResourceMemory] = qty
+		}
+	}
+
+	// Converter para YAML e usar Apply com Server-Side Apply
+	yamlBytes, err := yaml.Marshal(ds)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal daemonset: %w", err)
+	}
+
+	return c.ApplyDaemonSet(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false)
+}

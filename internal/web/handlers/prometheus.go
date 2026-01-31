@@ -14,7 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -147,7 +146,8 @@ func (h *PrometheusHandler) List(c *gin.Context) {
 	})
 }
 
-// Update atualiza recursos de um componente do Prometheus
+// Update atualiza recursos de um componente do Prometheus usando Server-Side Apply
+// para compatibilidade com recursos gerenciados por Helm
 func (h *PrometheusHandler) Update(c *gin.Context) {
 	cluster := c.Param("cluster")
 	namespace := c.Param("namespace")
@@ -160,6 +160,7 @@ func (h *PrometheusHandler) Update(c *gin.Context) {
 		CPULimit      string `json:"cpu_limit"`
 		MemoryLimit   string `json:"memory_limit"`
 		Replicas      *int32 `json:"replicas,omitempty"`
+		ContainerName string `json:"container_name,omitempty"` // Container específico a atualizar
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -173,13 +174,14 @@ func (h *PrometheusHandler) Update(c *gin.Context) {
 		return
 	}
 
-	// Converter para resourceUpdateRequest
-	updateReq := resourceUpdateRequest{
+	// Criar request para o client kubernetes
+	patchReq := kubernetes.ResourcePatchRequest{
 		CPURequest:    req.CPURequest,
 		MemoryRequest: req.MemoryRequest,
 		CPULimit:      req.CPULimit,
 		MemoryLimit:   req.MemoryLimit,
 		Replicas:      req.Replicas,
+		ContainerName: req.ContainerName,
 	}
 
 	// Capturar estado antes da atualização
@@ -191,16 +193,30 @@ func (h *PrometheusHandler) Update(c *gin.Context) {
 		"replicas":      req.Replicas,
 	}
 
-	// Atualizar baseado no tipo
+	// Obter o client kubernetes
+	kubeClient, err := h.kubeManager.GetK8sClient(cluster)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get kubernetes client: %v", err),
+			},
+		})
+		return
+	}
+
+	// Atualizar usando Server-Side Apply (compatível com Helm)
+	ctx := context.Background()
 	start := time.Now()
-	var err error
+
 	switch resourceType {
 	case "deployment":
-		err = h.updateDeployment(h.kubeManager, cluster, namespace, name, updateReq)
+		_, err = kubeClient.PatchDeploymentResources(ctx, namespace, name, patchReq)
 	case "statefulset":
-		err = h.updateStatefulSet(h.kubeManager, cluster, namespace, name, updateReq)
+		_, err = kubeClient.PatchStatefulSetResources(ctx, namespace, name, patchReq)
 	case "daemonset":
-		err = h.updateDaemonSet(h.kubeManager, cluster, namespace, name, updateReq)
+		_, err = kubeClient.PatchDaemonSetResources(ctx, namespace, name, patchReq)
 	default:
 		c.JSON(400, gin.H{
 			"success": false,
@@ -247,7 +263,7 @@ func (h *PrometheusHandler) Update(c *gin.Context) {
 
 	c.JSON(200, gin.H{
 		"success": true,
-		"message": fmt.Sprintf("Resource '%s' updated successfully", name),
+		"message": fmt.Sprintf("Resource '%s' updated successfully using Server-Side Apply", name),
 	})
 }
 
@@ -435,111 +451,6 @@ func getComponentName(name string) string {
 		return strings.ToUpper(string(name[0])) + name[1:]
 	}
 	return name
-}
-
-type resourceUpdateRequest struct {
-	CPURequest    string
-	MemoryRequest string
-	CPULimit      string
-	MemoryLimit   string
-	Replicas      *int32
-}
-
-func (h *PrometheusHandler) updateDeployment(kubeManager *config.KubeConfigManager, cluster, namespace, name string, req resourceUpdateRequest) error {
-	client, err := kubeManager.GetClient(cluster)
-	if err != nil {
-		return err
-	}
-
-	deployment, err := client.AppsV1().Deployments(namespace).Get(context.Background(), name, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-
-	// Atualizar replicas se fornecido
-	if req.Replicas != nil {
-		deployment.Spec.Replicas = req.Replicas
-	}
-
-	// Atualizar recursos do primeiro container
-	if len(deployment.Spec.Template.Spec.Containers) > 0 {
-		updateContainerResources(&deployment.Spec.Template.Spec.Containers[0], req.CPURequest, req.MemoryRequest, req.CPULimit, req.MemoryLimit)
-	}
-
-	_, err = client.AppsV1().Deployments(namespace).Update(context.Background(), deployment, metav1.UpdateOptions{})
-	return err
-}
-
-func (h *PrometheusHandler) updateStatefulSet(kubeManager *config.KubeConfigManager, cluster, namespace, name string, req resourceUpdateRequest) error {
-	client, err := kubeManager.GetClient(cluster)
-	if err != nil {
-		return err
-	}
-
-	sts, err := client.AppsV1().StatefulSets(namespace).Get(context.Background(), name, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-
-	if req.Replicas != nil {
-		sts.Spec.Replicas = req.Replicas
-	}
-
-	if len(sts.Spec.Template.Spec.Containers) > 0 {
-		updateContainerResources(&sts.Spec.Template.Spec.Containers[0], req.CPURequest, req.MemoryRequest, req.CPULimit, req.MemoryLimit)
-	}
-
-	_, err = client.AppsV1().StatefulSets(namespace).Update(context.Background(), sts, metav1.UpdateOptions{})
-	return err
-}
-
-func (h *PrometheusHandler) updateDaemonSet(kubeManager *config.KubeConfigManager, cluster, namespace, name string, req resourceUpdateRequest) error {
-	client, err := kubeManager.GetClient(cluster)
-	if err != nil {
-		return err
-	}
-
-	ds, err := client.AppsV1().DaemonSets(namespace).Get(context.Background(), name, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-
-	if len(ds.Spec.Template.Spec.Containers) > 0 {
-		updateContainerResources(&ds.Spec.Template.Spec.Containers[0], req.CPURequest, req.MemoryRequest, req.CPULimit, req.MemoryLimit)
-	}
-
-	_, err = client.AppsV1().DaemonSets(namespace).Update(context.Background(), ds, metav1.UpdateOptions{})
-	return err
-}
-
-func updateContainerResources(container *corev1.Container, cpuReq, memReq, cpuLim, memLim string) {
-	if container.Resources.Requests == nil {
-		container.Resources.Requests = corev1.ResourceList{}
-	}
-	if container.Resources.Limits == nil {
-		container.Resources.Limits = corev1.ResourceList{}
-	}
-
-	if cpuReq != "" {
-		if qty, err := resource.ParseQuantity(cpuReq); err == nil {
-			container.Resources.Requests[corev1.ResourceCPU] = qty
-		}
-	}
-	if memReq != "" {
-		if qty, err := resource.ParseQuantity(memReq); err == nil {
-			container.Resources.Requests[corev1.ResourceMemory] = qty
-		}
-	}
-	if cpuLim != "" {
-		if qty, err := resource.ParseQuantity(cpuLim); err == nil {
-			container.Resources.Limits[corev1.ResourceCPU] = qty
-		}
-	}
-	if memLim != "" {
-		if qty, err := resource.ParseQuantity(memLim); err == nil {
-			container.Resources.Limits[corev1.ResourceMemory] = qty
-		}
-	}
 }
 
 // Rollout executa rollout de um recurso Prometheus específico (Deployment, StatefulSet ou DaemonSet)
