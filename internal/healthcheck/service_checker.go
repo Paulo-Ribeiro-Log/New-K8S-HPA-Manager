@@ -2,272 +2,363 @@ package healthcheck
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"time"
 
 	"github.com/rs/zerolog/log"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
-/* IMPORTS COMENTADOS - apenas necessários quando service checking estiver habilitado
-import (
-	"fmt"
-	"regexp"
-	"strings"
-	"time"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s-hpa-manager/internal/healthcheck/analyzers"
-)
-*/
+// ServiceChecker verifica conectividade de serviços via Jobs temporários no cluster
+type ServiceChecker struct {
+	// Configurações de segurança
+	jobTTLSeconds       int32 // TTL para auto-delete do Job (default: 60)
+	activeDeadlineSecs  int64 // Timeout máximo do Job (default: 30)
+	backoffLimit        int32 // Tentativas antes de falhar (default: 0)
+	testTimeoutSeconds  int   // Timeout do teste nc (default: 5)
+}
 
-// ServiceChecker testa conectividade de serviços externos (DESABILITADO)
-type ServiceChecker struct{}
-
-// NewServiceChecker cria um novo service checker
+// NewServiceChecker cria um novo service checker com configurações seguras
 func NewServiceChecker() *ServiceChecker {
-	return &ServiceChecker{}
-}
-
-/* CÓDIGO COMENTADO - ServiceAnalyzer e analyzers
-type ServiceAnalyzer interface {
-	Check(ctx context.Context, connectionString string, timeout int) (bool, int64, error)
-	GetDetails(ctx context.Context, connectionString string) (map[string]interface{}, error)
-}
-
-type ServiceCheckerOriginal struct {
-	analyzers map[ServiceType]ServiceAnalyzer
-}
-
-func NewServiceCheckerOriginal() *ServiceCheckerOriginal {
-	return &ServiceCheckerOriginal{
-		analyzers: map[ServiceType]ServiceAnalyzer{
-			ServiceMongoDB:  &analyzers.MongoDBAnalyzer{},
-			ServiceRedis:    &analyzers.RedisAnalyzer{},
-			ServicePostgres: &analyzers.PostgresAnalyzer{},
-			ServiceKafka:    &analyzers.KafkaAnalyzer{},
-			ServiceEventHub: &analyzers.EventHubAnalyzer{},
-			ServiceHTTP:     &analyzers.HTTPAnalyzer{},
-		},
+	return &ServiceChecker{
+		jobTTLSeconds:      60,  // Job deletado 60s após completar
+		activeDeadlineSecs: 30,  // Job cancelado após 30s
+		backoffLimit:       0,   // Sem retries (falha rápida)
+		testTimeoutSeconds: 5,   // nc timeout de 5s
 	}
 }
-*/
 
-// CheckAll verifica conectividade de todos os serviços externos
-// ⚠️ DESABILITADO: Testes de conectividade são feitos do servidor web,
-// que não tem acesso aos serviços internos do cluster (DNS, firewalls).
-// Isso gera alarmes falsos (critical) em clusters saudáveis.
-func (c *ServiceChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, timeout int, progressCallback ProgressCallback) []ServiceHealth {
-	// ✅ Retornar array vazio - service checking desabilitado
-	log.Info().Msg("Service checking desabilitado - servidor web não tem acesso a serviços internos do cluster")
-	return []ServiceHealth{}
+// serviceTarget representa um serviço a ser testado
+type serviceTarget struct {
+	name      string
+	namespace string
+	host      string
+	port      int32
 }
 
-/* CÓDIGO ORIGINAL - DESABILITADO
-func (c *ServiceChecker) _CheckAllOriginal(ctx context.Context, client kubernetes.Interface, namespaces []string, timeout int, progressCallback ProgressCallback) []ServiceHealth {
+// CheckAll verifica conectividade de todos os serviços nos namespaces especificados
+func (sc *ServiceChecker) CheckAll(ctx context.Context, client kubernetes.Interface, namespaces []string, timeout int, progressCallback ProgressCallback) []ServiceHealth {
 	results := []ServiceHealth{}
 
-	// Primeiro, contar total de services para calcular progresso
-	totalServices := 0
-	servicesToCheck := []struct {
-		namespace    string
-		resourceName string
-		key          string
-		serviceType  ServiceType
-		connStr      string
-		configSource string
-	}{}
+	// 1. Descobrir serviços (apenas Services do K8s - KISS)
+	targets := sc.discoverServices(ctx, client, namespaces)
 
-	// Detectar todos os services primeiro
-	for _, ns := range namespaces {
-		configMaps, err := client.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			log.Error().Err(err).Str("namespace", ns).Msg("Failed to list configmaps")
-			continue
-		}
-
-		secrets, err := client.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			log.Error().Err(err).Str("namespace", ns).Msg("Failed to list secrets")
-			continue
-		}
-
-		// Coletar de ConfigMaps
-		for _, cm := range configMaps.Items {
-			for key, value := range cm.Data {
-				serviceType, connStr := c._detectServiceType(value)
-				if serviceType != "" {
-					servicesToCheck = append(servicesToCheck, struct {
-						namespace    string
-						resourceName string
-						key          string
-						serviceType  ServiceType
-						connStr      string
-						configSource string
-					}{
-						namespace:    ns,
-						resourceName: cm.Name,
-						key:          key,
-						serviceType:  serviceType,
-						connStr:      connStr,
-						configSource: fmt.Sprintf("configmap:%s/%s", cm.Name, key),
-					})
-					totalServices++
-				}
-			}
-		}
-
-		// Coletar de Secrets
-		for _, secret := range secrets.Items {
-			for key, value := range secret.Data {
-				valueStr := string(value)
-				serviceType, connStr := c._detectServiceType(valueStr)
-				if serviceType != "" {
-					servicesToCheck = append(servicesToCheck, struct {
-						namespace    string
-						resourceName string
-						key          string
-						serviceType  ServiceType
-						connStr      string
-						configSource string
-					}{
-						namespace:    ns,
-						resourceName: secret.Name,
-						key:          key,
-						serviceType:  serviceType,
-						connStr:      connStr,
-						configSource: fmt.Sprintf("secret:%s/%s", secret.Name, key),
-					})
-					totalServices++
-				}
-			}
-		}
+	if len(targets) == 0 {
+		log.Info().Msg("[ServiceChecker] Nenhum serviço descoberto para testar")
+		return results
 	}
 
-	// Agora verificar todos os services com progresso
-	currentService := 0
-	for _, svc := range servicesToCheck {
-		currentService++
+	log.Info().Int("total", len(targets)).Msg("[ServiceChecker] Serviços descobertos")
 
-		// Publicar evento: testando conectividade
+	// 2. Testar cada serviço via Job
+	for i, target := range targets {
 		if progressCallback != nil {
-			progressCallback(svc.namespace, svc.resourceName,
-				fmt.Sprintf("Testando %s conectividade via %s...", svc.serviceType, svc.configSource),
-				StatusHealthy, currentService, totalServices)
+			progressCallback(target.namespace, target.name,
+				fmt.Sprintf("Testando conectividade %s:%d...", target.host, target.port),
+				StatusHealthy, i+1, len(targets))
 		}
 
-		health := c._Check(ctx, svc.namespace, svc.resourceName, svc.key, svc.serviceType, svc.connStr, timeout)
-		health.ConfigSource = svc.configSource
+		health := sc.testServiceViaJob(ctx, client, target, timeout)
 		results = append(results, health)
 
-		// Publicar resultado
 		if progressCallback != nil {
-			summary := c._getHealthSummary(health)
-			progressCallback(svc.namespace, svc.resourceName,
-				fmt.Sprintf("%s: %s", svc.configSource, summary), health.Status, currentService, totalServices)
+			msg := health.Message
+			if len(msg) > 80 {
+				msg = msg[:80] + "..."
+			}
+			progressCallback(target.namespace, target.name, msg, health.Status, i+1, len(targets))
 		}
 	}
 
 	return results
 }
 
-// _getHealthSummary gera resumo compacto do health check
-func (c *ServiceChecker) _getHealthSummary(health ServiceHealth) string {
-	if health.Status == StatusHealthy {
-		return fmt.Sprintf("Conectado (%dms)", health.LatencyMs)
+// discoverServices descobre serviços K8s nos namespaces (exceto kube-system, etc)
+func (sc *ServiceChecker) discoverServices(ctx context.Context, client kubernetes.Interface, namespaces []string) []serviceTarget {
+	targets := []serviceTarget{}
+
+	// Namespaces de sistema a ignorar
+	systemNS := map[string]bool{
+		"kube-system":     true,
+		"kube-public":     true,
+		"kube-node-lease": true,
+		"istio-system":    true,
+		"cert-manager":    true,
+		"ingress-nginx":   true,
 	}
-	if health.Status == StatusWarning {
-		return fmt.Sprintf("Conectado mas lento (%dms)", health.LatencyMs)
+
+	for _, ns := range namespaces {
+		if systemNS[ns] {
+			continue
+		}
+
+		services, err := client.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			log.Warn().Err(err).Str("namespace", ns).Msg("[ServiceChecker] Erro ao listar services")
+			continue
+		}
+
+		for _, svc := range services.Items {
+			// Ignorar services sem ClusterIP (headless, ExternalName, etc)
+			if svc.Spec.ClusterIP == "" || svc.Spec.ClusterIP == "None" {
+				continue
+			}
+
+			// Ignorar kubernetes default service
+			if svc.Name == "kubernetes" {
+				continue
+			}
+
+			// Pegar primeira porta disponível
+			for _, port := range svc.Spec.Ports {
+				targets = append(targets, serviceTarget{
+					name:      svc.Name,
+					namespace: ns,
+					host:      fmt.Sprintf("%s.%s.svc.cluster.local", svc.Name, ns),
+					port:      port.Port,
+				})
+				break // Apenas primeira porta (KISS)
+			}
+		}
 	}
-	// Para critical, usar mensagem completa
-	return health.Message
+
+	return targets
 }
 
-// _detectServiceType detecta tipo de serviço por padrões de connection string
-func (c *ServiceChecker) _detectServiceType(value string) (ServiceType, string) {
-	// MongoDB: mongodb://... ou mongodb+srv://...
-	if strings.HasPrefix(value, "mongodb://") || strings.HasPrefix(value, "mongodb+srv://") {
-		return ServiceMongoDB, value
-	}
-
-	// Redis: redis://...
-	if strings.HasPrefix(value, "redis://") {
-		return ServiceRedis, value
-	}
-
-	// PostgreSQL: postgresql://... ou postgres://...
-	if strings.HasPrefix(value, "postgresql://") || strings.HasPrefix(value, "postgres://") {
-		return ServicePostgres, value
-	}
-
-	// Kafka: broker:port (formato simples) - apenas se parece com host:port e não é outro protocolo
-	if matched, _ := regexp.MatchString(`^[a-zA-Z0-9\-\.]+:\d+$`, value); matched {
-		return ServiceKafka, value
-	}
-
-	// EventHub: Endpoint=sb://...
-	if strings.Contains(value, "Endpoint=sb://") {
-		return ServiceEventHub, value
-	}
-
-	// HTTP: http://... ou https://...
-	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
-		return ServiceHTTP, value
-	}
-
-	return "", ""
-}
-
-// _Check verifica conectividade de um serviço específico
-func (c *ServiceChecker) _Check(ctx context.Context, namespace, resourceName, key string, serviceType ServiceType, connStr string, timeout int) ServiceHealth {
+// testServiceViaJob cria um Job temporário para testar conectividade
+func (sc *ServiceChecker) testServiceViaJob(ctx context.Context, client kubernetes.Interface, target serviceTarget, timeout int) ServiceHealth {
 	health := ServiceHealth{
-		Name:        fmt.Sprintf("%s/%s", resourceName, key),
-		Namespace:   namespace,
-		ServiceType: serviceType,
+		Name:        target.name,
+		Namespace:   target.namespace,
+		ServiceType: sc.detectServiceType(target.port),
+		Status:      StatusUnknown,
 		CheckedAt:   time.Now(),
 		Suggestions: []string{},
 	}
 
-	analyzer, exists := c.analyzers[serviceType]
-	if !exists {
-		health.Status = StatusUnknown
-		health.Message = fmt.Sprintf("Analyzer não implementado para %s", serviceType)
+	// Gerar nome único para o Job
+	jobName := fmt.Sprintf("hc-%s-%d", target.name, time.Now().Unix())
+	if len(jobName) > 63 {
+		jobName = jobName[:63] // K8s limit
+	}
+
+	// Comando simples: nc -zv -w5 host port
+	cmd := fmt.Sprintf("nc -zv -w%d %s %d 2>&1 && echo SUCCESS || echo FAILED",
+		sc.testTimeoutSeconds, target.host, target.port)
+
+	// Criar Job com máxima segurança
+	job := sc.createSecureJob(jobName, target.namespace, cmd)
+
+	// Criar o Job
+	startTime := time.Now()
+	_, err := client.BatchV1().Jobs(target.namespace).Create(ctx, job, metav1.CreateOptions{})
+	if err != nil {
+		health.Status = StatusCritical
+		health.Message = fmt.Sprintf("Falha ao criar Job de teste: %v", err)
+		health.Suggestions = append(health.Suggestions, "Verificar permissões RBAC para criar Jobs")
 		return health
 	}
 
-	// Executar check com timeout
-	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-	defer cancel()
+	// Garantir cleanup do Job (dupla garantia: TTL + manual)
+	defer sc.cleanupJob(ctx, client, target.namespace, jobName)
 
-	reachable, latency, err := analyzer.Check(timeoutCtx, connStr, timeout)
-
-	health.Reachable = reachable
-	health.LatencyMs = latency
+	// Aguardar conclusão do Job
+	result, err := sc.waitForJob(ctx, client, target.namespace, jobName, timeout)
+	latency := time.Since(startTime).Milliseconds()
 
 	if err != nil {
 		health.Status = StatusCritical
-		health.ConnectionError = err.Error()
-		health.Message = fmt.Sprintf("Falha ao conectar: %v", err)
-		health.Suggestions = append(health.Suggestions, "Verificar se o serviço está acessível")
-		health.Suggestions = append(health.Suggestions, "Validar connection string no ConfigMap/Secret")
-		health.Suggestions = append(health.Suggestions, fmt.Sprintf("Testar conectividade: kubectl exec -n %s <pod> -- curl/nc/telnet", namespace))
+		health.Message = fmt.Sprintf("Timeout ou erro no teste: %v", err)
+		health.LatencyMs = latency
+		health.Suggestions = append(health.Suggestions,
+			fmt.Sprintf("Testar manualmente: kubectl exec -n %s <pod> -- nc -zv %s %d",
+				target.namespace, target.host, target.port))
 		return health
 	}
 
-	// Obter detalhes adicionais (não crítico se falhar)
-	details, err := analyzer.GetDetails(timeoutCtx, connStr)
-	if err == nil {
-		health.Details = details
-	}
-
-	// Determinar status baseado em latência
-	if latency > 1000 {
-		health.Status = StatusWarning
-		health.Message = fmt.Sprintf("Conectado, mas latência alta (%dms)", latency)
-		health.Suggestions = append(health.Suggestions, "Investigar performance da rede")
-		health.Suggestions = append(health.Suggestions, "Verificar se serviço está sobrecarregado")
-	} else {
+	// Analisar resultado
+	health.LatencyMs = latency
+	if strings.Contains(result, "SUCCESS") || strings.Contains(result, "open") {
 		health.Status = StatusHealthy
-		health.Message = fmt.Sprintf("Conectado com sucesso (latência: %dms)", latency)
+		health.Reachable = true
+		health.Message = fmt.Sprintf("Conectado com sucesso (%dms)", latency)
+	} else {
+		health.Status = StatusCritical
+		health.Reachable = false
+		health.ConnectionError = result
+		health.Message = fmt.Sprintf("Falha na conexão: %s", strings.TrimSpace(result))
+		health.Suggestions = append(health.Suggestions,
+			"Verificar se o serviço está rodando",
+			"Validar NetworkPolicies do namespace",
+			fmt.Sprintf("kubectl get endpoints %s -n %s", target.name, target.namespace))
 	}
 
 	return health
 }
-*/
+
+// createSecureJob cria um Job com SecurityContext máximo
+func (sc *ServiceChecker) createSecureJob(name, namespace, cmd string) *batchv1.Job {
+	// Valores para SecurityContext
+	runAsNonRoot := true
+	runAsUser := int64(65534)    // nobody
+	runAsGroup := int64(65534)   // nogroup
+	readOnlyFS := true
+	allowPrivEsc := false
+
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "hpa-manager-healthcheck",
+				"app.kubernetes.io/component":  "service-checker",
+				"app.kubernetes.io/managed-by": "hpa-manager",
+			},
+		},
+		Spec: batchv1.JobSpec{
+			TTLSecondsAfterFinished: &sc.jobTTLSeconds,
+			ActiveDeadlineSeconds:   &sc.activeDeadlineSecs,
+			BackoffLimit:            &sc.backoffLimit,
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					RestartPolicy: corev1.RestartPolicyNever,
+					// Sem ServiceAccount especial - usa default (mínimo privilégio)
+					AutomountServiceAccountToken: boolPtr(false),
+					Containers: []corev1.Container{
+						{
+							Name:  "checker",
+							Image: "busybox:1.36", // Imagem minimal e estável
+							Command: []string{"/bin/sh", "-c", cmd},
+							// Recursos mínimos
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("50m"),
+									corev1.ResourceMemory: resource.MustParse("32Mi"),
+								},
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("10m"),
+									corev1.ResourceMemory: resource.MustParse("16Mi"),
+								},
+							},
+							// SecurityContext máximo
+							SecurityContext: &corev1.SecurityContext{
+								RunAsNonRoot:             &runAsNonRoot,
+								RunAsUser:                &runAsUser,
+								RunAsGroup:               &runAsGroup,
+								ReadOnlyRootFilesystem:   &readOnlyFS,
+								AllowPrivilegeEscalation: &allowPrivEsc,
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+							},
+						},
+					},
+					// SecurityContext do Pod
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: &runAsNonRoot,
+						RunAsUser:    &runAsUser,
+						RunAsGroup:   &runAsGroup,
+						FSGroup:      &runAsGroup,
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// waitForJob aguarda a conclusão do Job e retorna os logs
+func (sc *ServiceChecker) waitForJob(ctx context.Context, client kubernetes.Interface, namespace, jobName string, timeout int) (string, error) {
+	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+
+	for time.Now().Before(deadline) {
+		job, err := client.BatchV1().Jobs(namespace).Get(ctx, jobName, metav1.GetOptions{})
+		if err != nil {
+			return "", fmt.Errorf("erro ao obter Job: %w", err)
+		}
+
+		// Job completou com sucesso
+		if job.Status.Succeeded > 0 {
+			return sc.getJobLogs(ctx, client, namespace, jobName)
+		}
+
+		// Job falhou
+		if job.Status.Failed > 0 {
+			logs, _ := sc.getJobLogs(ctx, client, namespace, jobName)
+			return logs, nil // Retorna logs mesmo em falha
+		}
+
+		// Aguardar um pouco antes de verificar novamente
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+
+	return "", fmt.Errorf("timeout aguardando Job")
+}
+
+// getJobLogs obtém os logs do Pod criado pelo Job
+func (sc *ServiceChecker) getJobLogs(ctx context.Context, client kubernetes.Interface, namespace, jobName string) (string, error) {
+	// Listar pods do Job
+	pods, err := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+	})
+	if err != nil || len(pods.Items) == 0 {
+		return "", fmt.Errorf("nenhum pod encontrado para Job %s", jobName)
+	}
+
+	// Obter logs do primeiro pod
+	podName := pods.Items[0].Name
+	req := client.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{})
+	logs, err := req.Do(ctx).Raw()
+	if err != nil {
+		return "", fmt.Errorf("erro ao obter logs: %w", err)
+	}
+
+	return string(logs), nil
+}
+
+// cleanupJob remove o Job e seus pods (backup caso TTL falhe)
+func (sc *ServiceChecker) cleanupJob(ctx context.Context, client kubernetes.Interface, namespace, jobName string) {
+	propagation := metav1.DeletePropagationBackground
+	err := client.BatchV1().Jobs(namespace).Delete(ctx, jobName, metav1.DeleteOptions{
+		PropagationPolicy: &propagation,
+	})
+	if err != nil {
+		log.Warn().Err(err).Str("job", jobName).Msg("[ServiceChecker] Erro ao limpar Job (TTL irá remover)")
+	}
+}
+
+// detectServiceType detecta tipo de serviço pela porta
+func (sc *ServiceChecker) detectServiceType(port int32) ServiceType {
+	switch port {
+	case 27017:
+		return ServiceMongoDB
+	case 6379:
+		return ServiceRedis
+	case 5432:
+		return ServicePostgres
+	case 9092:
+		return ServiceKafka
+	case 5672, 15672:
+		return ServiceRabbitMQ
+	case 80, 443, 8080, 8443:
+		return ServiceHTTP
+	default:
+		return ServiceHTTP // Default genérico
+	}
+}
+
+// Helpers
+func boolPtr(b bool) *bool {
+	return &b
+}

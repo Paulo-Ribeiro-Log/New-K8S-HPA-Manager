@@ -532,6 +532,8 @@ func (s *Server) setupRoutes() {
 		statefulsets.GET("", statefulSetHandler.List)
 		statefulsets.GET("/:cluster/:namespace/:name", statefulSetHandler.Get)
 		statefulsets.GET("/:cluster/:namespace/:name/describe", statefulSetHandler.Describe)
+		statefulsets.POST("/diff", statefulSetHandler.Diff)
+		statefulsets.POST("/validate", statefulSetHandler.Validate)
 
 		// StatefulSets - Write Operations (SRE-only)
 		statefulsets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), statefulSetHandler.Apply)
@@ -547,6 +549,8 @@ func (s *Server) setupRoutes() {
 		daemonsets.GET("", daemonSetHandler.List)
 		daemonsets.GET("/:cluster/:namespace/:name", daemonSetHandler.Get)
 		daemonsets.GET("/:cluster/:namespace/:name/describe", daemonSetHandler.Describe)
+		daemonsets.POST("/diff", daemonSetHandler.Diff)
+		daemonsets.POST("/validate", daemonSetHandler.Validate)
 
 		// DaemonSets - Write Operations (SRE-only)
 		daemonsets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), daemonSetHandler.Apply)
