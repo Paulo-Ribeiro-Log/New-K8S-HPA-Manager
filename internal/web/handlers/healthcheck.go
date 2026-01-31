@@ -234,7 +234,27 @@ func (h *HealthCheckHandler) Progress(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 
-	// Stream events
+	// ✅ REPLAY BUFFER: Enviar eventos que ocorreram antes do cliente conectar
+	replayEvents := h.tracker.GetReplayEvents(sessionID)
+	if len(replayEvents) > 0 {
+		log.Info().
+			Str("session_id", sessionID).
+			Int("replay_count", len(replayEvents)).
+			Msg("[SSE] Enviando eventos do replay buffer")
+
+		for _, event := range replayEvents {
+			c.SSEvent("progress", event)
+			c.Writer.Flush()
+
+			// Se já tinha evento de conclusão no buffer, não precisa aguardar mais
+			if event.Type == "complete" || event.Type == "error" {
+				log.Info().Str("session_id", sessionID).Msg("[SSE] Replay buffer continha evento final - fechando stream")
+				return
+			}
+		}
+	}
+
+	// Stream eventos em tempo real
 	c.Stream(func(w io.Writer) bool {
 		select {
 		case event, ok := <-client.Channel:

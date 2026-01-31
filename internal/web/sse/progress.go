@@ -77,16 +77,65 @@ func (c *Client) Close() {
 	}
 }
 
+// ReplayBuffer armazena eventos para replay quando cliente reconecta
+type ReplayBuffer struct {
+	events    []ProgressEvent
+	maxEvents int
+	mu        sync.RWMutex
+}
+
+// NewReplayBuffer cria um novo buffer com tamanho máximo
+func NewReplayBuffer(maxEvents int) *ReplayBuffer {
+	return &ReplayBuffer{
+		events:    make([]ProgressEvent, 0, maxEvents),
+		maxEvents: maxEvents,
+	}
+}
+
+// Add adiciona um evento ao buffer (FIFO, remove mais antigo se cheio)
+func (rb *ReplayBuffer) Add(event ProgressEvent) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	if len(rb.events) >= rb.maxEvents {
+		// Remover evento mais antigo (primeiro)
+		rb.events = rb.events[1:]
+	}
+	rb.events = append(rb.events, event)
+}
+
+// GetAll retorna cópia de todos os eventos no buffer
+func (rb *ReplayBuffer) GetAll() []ProgressEvent {
+	rb.mu.RLock()
+	defer rb.mu.RUnlock()
+
+	// Retornar cópia para evitar race conditions
+	result := make([]ProgressEvent, len(rb.events))
+	copy(result, rb.events)
+	return result
+}
+
+// Clear limpa todos os eventos do buffer
+func (rb *ReplayBuffer) Clear() {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.events = rb.events[:0]
+}
+
 // ProgressTracker gerencia múltiplos clientes SSE e rastreia progresso de operações
 type ProgressTracker struct {
-	clients map[string]*Client
-	mu      sync.RWMutex
+	clients       map[string]*Client
+	replayBuffers map[string]*ReplayBuffer // Buffer por sessão
+	mu            sync.RWMutex
+	bufferSize    int // Tamanho máximo do buffer (default: 100)
 }
 
 // NewProgressTracker cria um novo tracker de progresso
 func NewProgressTracker() *ProgressTracker {
 	return &ProgressTracker{
-		clients: make(map[string]*Client),
+		clients:       make(map[string]*Client),
+		replayBuffers: make(map[string]*ReplayBuffer),
+		bufferSize:    100, // Últimos 100 eventos por sessão
 	}
 }
 
@@ -127,18 +176,67 @@ func (pt *ProgressTracker) Broadcast(event ProgressEvent) {
 }
 
 // SendToClient envia um evento para um cliente específico
+// Também salva no replay buffer para permitir reconexão sem perda de eventos
 func (pt *ProgressTracker) SendToClient(clientID string, event ProgressEvent) {
+	// ✅ SEMPRE salvar no replay buffer (mesmo se cliente não conectou ainda)
+	pt.addToReplayBuffer(clientID, event)
+
 	client, exists := pt.GetClient(clientID)
 	if exists {
 		client.Send(event)
 	} else {
-		// Cliente não encontrado - provavelmente ainda não conectou via SSE
-		// Isso pode acontecer se ExecuteHealthCheck começar antes do EventSource conectar
-		log.Warn().
+		// Cliente não encontrado - evento salvo no buffer para replay posterior
+		log.Debug().
 			Str("client_id", clientID).
 			Str("event_type", event.Type).
 			Float64("progress", event.Progress).
-			Msg("[SSE] Cliente não encontrado no tracker - evento perdido")
+			Msg("[SSE] Cliente não conectado - evento salvo no replay buffer")
+	}
+
+	// Limpar buffer se evento é de conclusão
+	if event.Type == "complete" || event.Type == "error" {
+		// Agendar limpeza após 5 minutos (tempo para cliente buscar histórico)
+		go func() {
+			time.Sleep(5 * time.Minute)
+			pt.ClearReplayBuffer(clientID)
+		}()
+	}
+}
+
+// addToReplayBuffer adiciona evento ao buffer da sessão
+func (pt *ProgressTracker) addToReplayBuffer(sessionID string, event ProgressEvent) {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
+	buffer, exists := pt.replayBuffers[sessionID]
+	if !exists {
+		buffer = NewReplayBuffer(pt.bufferSize)
+		pt.replayBuffers[sessionID] = buffer
+	}
+	buffer.Add(event)
+}
+
+// GetReplayEvents retorna todos os eventos do buffer para uma sessão
+func (pt *ProgressTracker) GetReplayEvents(sessionID string) []ProgressEvent {
+	pt.mu.RLock()
+	defer pt.mu.RUnlock()
+
+	buffer, exists := pt.replayBuffers[sessionID]
+	if !exists {
+		return []ProgressEvent{}
+	}
+	return buffer.GetAll()
+}
+
+// ClearReplayBuffer limpa o buffer de uma sessão
+func (pt *ProgressTracker) ClearReplayBuffer(sessionID string) {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
+	if buffer, exists := pt.replayBuffers[sessionID]; exists {
+		buffer.Clear()
+		delete(pt.replayBuffers, sessionID)
+		log.Debug().Str("session_id", sessionID).Msg("[SSE] Replay buffer limpo")
 	}
 }
 
