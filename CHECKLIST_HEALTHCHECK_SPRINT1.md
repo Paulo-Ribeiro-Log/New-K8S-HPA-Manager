@@ -5,11 +5,25 @@
 - [ ] Levantar percentual de falsos positivos / issues ignoradas.
 - [ ] Registrar número de incidentes mensais atribuídos a falta de health checking.
 
-## 1. Service Checker Rodando no Cluster
-- [ ] Definir ServiceAccount/RBAC mínimos e namespaces permitidos para o job de diagnóstico.
-- [ ] Implementar Job/Pod temporário que executa os analisadores (`internal/healthcheck/analyzers`).
-- [ ] Ajustar backend para orquestrar os jobs e coletar os resultados reais.
+## 1. Service Checker via Jobs K8s ✅
+- [x] Definir ServiceAccount/RBAC mínimos e namespaces permitidos para o job de diagnóstico.
+  - **Implementação**: Job usa default ServiceAccount sem token montado (`AutomountServiceAccountToken: false`)
+  - **Segurança**: runAsNonRoot, readOnlyRootFilesystem, drop ALL capabilities, SeccompProfile RuntimeDefault
+  - **User/Group**: 65534 (nobody/nogroup) - sem privilégios
+- [x] Implementar Job/Pod temporário que executa os analisadores.
+  - **Arquivo**: `internal/healthcheck/service_checker.go` (~365 linhas)
+  - **Imagem**: busybox:1.36 (minimal, estável)
+  - **Teste**: `nc -zv -w5 host port` (TCP connect)
+  - **TTL**: 60s auto-delete + cleanup manual (dupla garantia)
+  - **Timeout**: ActiveDeadlineSeconds=30s, BackoffLimit=0
+  - **Recursos**: CPU 10m-50m, Memory 16Mi-32Mi
+- [x] Ajustar backend para orquestrar os jobs e coletar os resultados reais.
+  - **Discovery**: Lista Services K8s por namespace (ignora kube-system, istio-system, etc)
+  - **Filtragem**: Ignora headless services (ClusterIP=None) e service kubernetes
+  - **Logs**: Coleta logs do Pod do Job para analisar resultado
 - [ ] Validar em cluster de teste que MongoDB/Redis/etc. são verificados com sucesso.
+  - **Testes unitários**: `internal/healthcheck/service_checker_test.go` (6 testes)
+  - **Pendente**: Teste de integração em cluster real
 
 ## 2. Timeouts Específicos por Tipo de Check ✅
 - [x] Atualizar `HealthCheckRequest` (Go + frontend) para aceitar `timeout_deployments`, `timeout_configs`, `timeout_services`.
