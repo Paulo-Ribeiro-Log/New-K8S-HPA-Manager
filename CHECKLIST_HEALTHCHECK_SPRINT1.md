@@ -33,9 +33,9 @@
 - [ ] Atualizar `useHealthCheckProgressMultiplexed` para implementar retry/backoff e consumir o buffer.
 - [ ] Testar desconexões e verificar se o progresso é retomado sem perda de dados.
 
-## 5. EventChecker ✅ (Backend)
+## 5. EventChecker ✅ (Backend + Frontend Completo)
 - [x] Criar `event_checker.go` para consultar `kubectl events`/API.
-  - **Arquivo**: `internal/healthcheck/event_checker.go` (~300 linhas)
+  - **Arquivo**: `internal/healthcheck/event_checker.go` (~395 linhas)
   - Consulta API de Events via `client.CoreV1().Events(ns).List()`
 - [x] Mapear eventos críticos (FailedScheduling, BackOff, FailedMount, etc.) e correlacionar com resources.
   - **CriticalEventReasons**: FailedScheduling, CrashLoopBackOff, ErrImagePull, FailedMount, OOMKilling, etc.
@@ -44,7 +44,12 @@
 - [x] Persistir/mostrar resultados no painel de Health Checking (backend + frontend).
   - **Backend**: Integrado no orchestrator.go (seção "Check Events")
   - **Models**: `EventHealth`, `CheckEvents`, `TimeoutEvents`, `EventResults` adicionados
-  - **Frontend**: ⚠️ PENDENTE - Adicionar checkbox "Verificar Eventos" e exibir resultados
+  - **Frontend**: ✅ COMPLETO (verificado 31/01/2026)
+    - Checkbox "Verificar Eventos K8s" em `HealthCheckingTab.tsx` (linhas 509-521)
+    - Estado `checkEvents` com timeout específico (linhas 73, 647-651)
+    - Parâmetro `check_events` enviado no request (linha 268)
+    - Aba "Events" no `HealthCheckResultsPanel.tsx` (linha 483)
+    - Renderização de resultados com detalhes (linhas 554-559)
 - [ ] Validar em cluster de teste com eventos sintéticos.
   - **Testes unitários**: `internal/healthcheck/event_checker_test.go` (20 testes)
 
