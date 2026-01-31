@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import type { HealthCheckProgress } from '@/types/healthcheck';
 
 interface UseHealthCheckProgressOptions {
@@ -7,6 +7,8 @@ interface UseHealthCheckProgressOptions {
   onError?: (error: Event) => void;
   onComplete?: () => void;
   enabled?: boolean;
+  maxRetries?: number;      // Máximo de tentativas de reconexão (default: 3)
+  retryDelayMs?: number;    // Delay inicial entre retries em ms (default: 1000)
 }
 
 /**
@@ -26,14 +28,24 @@ interface UseHealthCheckProgressOptions {
  * ```
  */
 export function useHealthCheckProgress(options: UseHealthCheckProgressOptions) {
-  const { sessionId, onEvent, onError, onComplete, enabled = true } = options;
+  const {
+    sessionId,
+    onEvent,
+    onError,
+    onComplete,
+    enabled = true,
+    maxRetries = 3,
+    retryDelayMs = 1000
+  } = options;
 
   const [events, setEvents] = useState<HealthCheckProgress[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [lastEvent, setLastEvent] = useState<HealthCheckProgress | null>(null);
   const [isCompleted, setIsCompleted] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
 
   const eventSourceRef = useRef<EventSource | null>(null);
+  const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // ✅ Usar refs para callbacks - evita reconexões quando callbacks mudam
   const onEventRef = useRef(onEvent);
@@ -119,21 +131,35 @@ export function useHealthCheckProgress(options: UseHealthCheckProgressOptions) {
       }
     });
 
-    // Handler de erros
+    // Handler de erros com retry automático
     eventSource.onerror = (error) => {
       console.error('[useHealthCheckProgress] Erro na conexão SSE:', {
         readyState: eventSource.readyState,
+        retryCount,
+        maxRetries,
         error,
       });
       setIsConnected(false);
 
-      if (onErrorRef.current) {
-        onErrorRef.current(error);
-      }
-
       // Só fechar se não estiver já fechado
       if (eventSource.readyState !== EventSource.CLOSED) {
         eventSource.close();
+      }
+
+      // ✅ RETRY: Se não completou e ainda tem tentativas, tentar reconectar
+      if (!isCompleted && retryCount < maxRetries) {
+        const delay = retryDelayMs * Math.pow(2, retryCount); // Backoff exponencial
+        console.log(`[useHealthCheckProgress] Tentando reconectar em ${delay}ms (tentativa ${retryCount + 1}/${maxRetries})`);
+
+        retryTimeoutRef.current = setTimeout(() => {
+          setRetryCount((prev) => prev + 1);
+          // O useEffect vai recriar a conexão quando retryCount mudar
+        }, delay);
+      } else if (!isCompleted) {
+        console.error('[useHealthCheckProgress] Máximo de tentativas atingido, desistindo');
+        if (onErrorRef.current) {
+          onErrorRef.current(error);
+        }
       }
     };
 
@@ -143,9 +169,14 @@ export function useHealthCheckProgress(options: UseHealthCheckProgressOptions) {
       if (eventSource.readyState !== EventSource.CLOSED) {
         eventSource.close();
       }
+      // Limpar timeout de retry pendente
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
       setIsConnected(false);
     };
-  }, [sessionId, isCompleted]);  // ✅ REMOVIDO enabled - não queremos desconectar ao trocar de tab
+  }, [sessionId, isCompleted, retryCount, maxRetries, retryDelayMs]);  // ✅ Incluir retryCount para reconexão
 
   /**
    * Fecha conexão SSE manualmente
@@ -166,6 +197,12 @@ export function useHealthCheckProgress(options: UseHealthCheckProgressOptions) {
     setEvents([]);
     setLastEvent(null);
     setIsCompleted(false);  // ✅ Reset flag de conclusão para permitir nova execução
+    setRetryCount(0);       // ✅ Reset contador de retry
+    // Limpar timeout de retry pendente
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
   };
 
   /**
@@ -230,6 +267,7 @@ export function useHealthCheckProgress(options: UseHealthCheckProgressOptions) {
     events,
     lastEvent,
     isConnected,
+    retryCount,  // ✅ Expor para UI mostrar status de reconexão
 
     // Métodos utilitários
     disconnect,

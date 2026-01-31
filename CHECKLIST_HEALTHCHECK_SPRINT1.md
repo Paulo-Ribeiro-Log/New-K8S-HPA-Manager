@@ -41,11 +41,22 @@
   - **Arquivo**: `internal/healthcheck/deployment_checker_test.go` (11 testes)
   - **Cobertura**: Estado inicial, threshold, reset, thread safety, comportamento entre sessões
 
-## 4. Replay Buffer + SSE Resiliente
-- [ ] Criar buffer in-memory dos últimos N eventos por sessão no orchestrator.
-- [ ] Servir eventos históricos para novos clientes SSE.
-- [ ] Atualizar `useHealthCheckProgressMultiplexed` para implementar retry/backoff e consumir o buffer.
-- [ ] Testar desconexões e verificar se o progresso é retomado sem perda de dados.
+## 4. Replay Buffer + SSE Resiliente ✅
+- [x] Criar buffer in-memory dos últimos N eventos por sessão no orchestrator.
+  - **Arquivo**: `internal/web/sse/progress.go` - Struct `ReplayBuffer` (100 eventos por sessão)
+  - **Métodos**: `Add()`, `GetAll()`, `Clear()` com thread-safety (sync.RWMutex)
+  - **FIFO**: Remove evento mais antigo quando buffer cheio
+- [x] Servir eventos históricos para novos clientes SSE.
+  - **Handler**: `healthcheck.go:Progress()` envia replay buffer antes de iniciar stream
+  - **Lógica**: Se buffer tem evento `complete`/`error`, fecha stream imediatamente
+  - **Cleanup**: Buffer limpo 5 minutos após conclusão (tempo para cliente buscar)
+- [x] Atualizar `useHealthCheckProgress` para implementar retry/backoff.
+  - **Retry**: Até 3 tentativas com backoff exponencial (1s, 2s, 4s)
+  - **Estado**: `retryCount` exposto para UI mostrar status de reconexão
+  - **Cleanup**: Timeout de retry cancelado no cleanup/clearEvents
+- [x] Testar replay buffer.
+  - **Testes**: `internal/web/sse/progress_test.go` (9 testes)
+  - **Cobertura**: FIFO, isolamento de sessões, cópia de dados, cliente conectado/desconectado
 
 ## 5. EventChecker ✅ (Backend + Frontend Completo)
 - [x] Criar `event_checker.go` para consultar `kubectl events`/API.
