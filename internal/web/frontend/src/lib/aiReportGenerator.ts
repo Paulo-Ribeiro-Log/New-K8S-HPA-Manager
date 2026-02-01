@@ -1,6 +1,7 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { AnalysisResult } from "@/types/ai";
+import { addLogoHeaderToPDF, getMarkdownHeader, APP_NAME } from "./logoUtils";
 
 // Formatar data para exibição
 const formatDate = (dateStr: string | undefined): string => {
@@ -18,39 +19,29 @@ const formatDate = (dateStr: string | undefined): string => {
 // ============================================================================
 // GERAÇÃO DE PDF - AI Diagnostics
 // ============================================================================
-export const generateAIDiagnosticsPDF = (analysis: AnalysisResult): void => {
+export const generateAIDiagnosticsPDF = async (analysis: AnalysisResult): Promise<void> => {
   const doc = new jsPDF({
     orientation: "portrait",
     unit: "mm",
     format: "a4",
   });
   const pageWidth = doc.internal.pageSize.getWidth();
-  let yPosition = 20;
 
-  // Header box (azul profissional)
-  doc.setFillColor(41, 128, 185);
-  doc.rect(0, 0, pageWidth, 50, "F");
+  // Header com logo (altura maior para caber mais info)
+  let yPosition = await addLogoHeaderToPDF(
+    doc,
+    "ANALISE DE DIAGNOSTICO - AI",
+    `${analysis.resource_type}: ${analysis.namespace}/${analysis.resource_name}`,
+    45
+  );
 
-  // Título principal
-  doc.setFontSize(24);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(255, 255, 255);
-  doc.text("ANALISE DE DIAGNOSTICO - AI", pageWidth / 2, 15, { align: "center" });
-
-  // Subtítulo
-  doc.setFontSize(12);
-  doc.setFont("helvetica", "normal");
-  const subtitle = `${analysis.resource_type}: ${analysis.namespace}/${analysis.resource_name}`;
-  doc.text(subtitle, pageWidth / 2, 28, { align: "center" });
-
-  // Data e hora
-  doc.setFontSize(10);
+  // Data e hora abaixo do header
+  doc.setFontSize(9);
   doc.setFont("helvetica", "italic");
-  doc.text(`Analisado em: ${formatDate(analysis.analyzed_at)}`, pageWidth / 2, 40, { align: "center" });
-
-  // Reset cor do texto
+  doc.setTextColor(100, 100, 100);
+  doc.text(`Analisado em: ${formatDate(analysis.analyzed_at)}`, pageWidth / 2, yPosition - 5, { align: "center" });
   doc.setTextColor(0, 0, 0);
-  yPosition = 60;
+  yPosition += 5;
 
   // ========================================================================
   // SEÇÃO 1: METADADOS DO RECURSO
@@ -504,12 +495,14 @@ export const generateAIDiagnosticsPDF = (analysis: AnalysisResult): void => {
 export const generateAIDiagnosticsMarkdown = (analysis: AnalysisResult): string => {
   let md = "";
 
-  // Header
-  md += "# ANALISE DE DIAGNOSTICO - AI\n\n";
-  md += `**Recurso**: ${analysis.resource_type}/${analysis.namespace}/${analysis.resource_name}\n\n`;
+  // Header com branding
+  md += getMarkdownHeader(
+    "ANALISE DE DIAGNOSTICO - AI",
+    `${analysis.resource_type}: ${analysis.namespace}/${analysis.resource_name}`
+  );
+
   md += `**Cluster**: ${analysis.cluster}\n\n`;
   md += `**Analisado em**: ${formatDate(analysis.analyzed_at)}\n\n`;
-  md += "---\n\n";
 
   // SEÇÃO 1: METADADOS DO RECURSO
   if (analysis.resource_metadata) {

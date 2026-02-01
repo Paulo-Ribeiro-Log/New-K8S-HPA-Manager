@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -12,6 +12,7 @@ import type { HPA } from "@/lib/api/types";
 import { toast } from "sonner";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { addLogoHeaderToPDF, getMarkdownHeader } from "@/lib/logoUtils";
 
 // Extend jsPDF type to include autoTable
 declare module "jspdf" {
@@ -132,11 +133,13 @@ export const HPAExportButton = ({
       return;
     }
 
-    let mdContent = "# HPA Export Report\n\n";
-    mdContent += `**Data de exportação:** ${new Date().toLocaleString("pt-BR")}\n\n`;
+    // Header com branding
+    let mdContent = getMarkdownHeader(
+      "HPA Export Report",
+      `Data de exportacao: ${new Date().toLocaleString("pt-BR")}`
+    );
     mdContent += `**Total de HPAs:** ${hpasToExport.length}\n`;
     mdContent += `**Namespaces:** ${hpasByNamespace.length}\n\n`;
-    mdContent += "---\n\n";
 
     hpasByNamespace.forEach(({ cluster, namespace, hpas: namespaceHPAs }) => {
       mdContent += `## Cluster: ${cluster} | Namespace: ${namespace}\n\n`;
@@ -166,7 +169,7 @@ export const HPAExportButton = ({
     toast.success(`Markdown exportado: ${hpasToExport.length} HPAs em ${hpasByNamespace.length} namespaces`);
   };
 
-  const exportToPDF = () => {
+  const exportToPDF = async () => {
     if (hpasToExport.length === 0) {
       toast.error("Nenhum HPA para exportar");
       return;
@@ -174,19 +177,20 @@ export const HPAExportButton = ({
 
     const doc = new jsPDF();
 
-    // Título
-    doc.setFontSize(18);
-    doc.setFont("helvetica", "bold");
-    doc.text("HPA Export Report", 14, 20);
+    // Header com logo
+    let yPosition = await addLogoHeaderToPDF(
+      doc,
+      "HPA Export Report",
+      `Data: ${new Date().toLocaleString("pt-BR")}`
+    );
 
     // Informações gerais
     doc.setFontSize(10);
     doc.setFont("helvetica", "normal");
-    doc.text(`Data: ${new Date().toLocaleString("pt-BR")}`, 14, 30);
-    doc.text(`Total de HPAs: ${hpasToExport.length}`, 14, 36);
-    doc.text(`Namespaces: ${hpasByNamespace.length}`, 14, 42);
+    doc.text(`Total de HPAs: ${hpasToExport.length}`, 14, yPosition);
+    doc.text(`Namespaces: ${hpasByNamespace.length}`, 14, yPosition + 6);
 
-    let yPosition = 50;
+    yPosition += 15;
 
     hpasByNamespace.forEach(({ cluster, namespace, hpas: namespaceHPAs }, index) => {
       // Adicionar nova página se necessário

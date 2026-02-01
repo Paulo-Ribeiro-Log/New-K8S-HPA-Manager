@@ -1,6 +1,7 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { HealthCheckResult } from "@/types/healthcheck";
+import { addLogoHeaderToPDF, getMarkdownHeader, APP_NAME } from "./logoUtils";
 
 export interface ReportData {
   results: Record<string, HealthCheckResult>;
@@ -77,33 +78,19 @@ const extractIssues = (result: HealthCheckResult): EventMessage[] => {
 // ============================================================================
 // GERAÇÃO DE PDF
 // ============================================================================
-export const generatePDFReport = (data: ReportData): void => {
+export const generatePDFReport = async (data: ReportData): Promise<void> => {
   const doc = new jsPDF({
     orientation: "portrait",
     unit: "mm",
     format: "a4",
   });
-  const pageWidth = doc.internal.pageSize.getWidth();
-  let yPosition = 20;
 
-  // Header box
-  doc.setFillColor(41, 128, 185); // Azul profissional
-  doc.rect(0, 0, pageWidth, 35, "F");
-
-  // Título
-  doc.setFontSize(20);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(255, 255, 255); // Branco
-  doc.text("RELATORIO DE HEALTH CHECKING", pageWidth / 2, 15, { align: "center" });
-
-  // Data do relatório
-  doc.setFontSize(10);
-  doc.setFont("helvetica", "normal");
-  doc.text(`Data de Geracao: ${formatDate(data.timestamp)}`, pageWidth / 2, 25, { align: "center" });
-
-  // Reset cor do texto
-  doc.setTextColor(0, 0, 0);
-  yPosition = 45;
+  // Header com logo
+  let yPosition = await addLogoHeaderToPDF(
+    doc,
+    "RELATORIO DE HEALTH CHECKING",
+    `Data de Geracao: ${formatDate(data.timestamp)}`
+  );
 
   // Resumo geral
   const clusters = Object.keys(data.results);
@@ -336,10 +323,11 @@ export const generateMarkdownReport = (data: ReportData): void => {
 
   let markdown = "";
 
-  // Cabeçalho do documento
-  markdown += `# RELATORIO DE HEALTH CHECKING\n\n`;
-  markdown += `**Data de Geracao:** ${formatDate(data.timestamp)}\n\n`;
-  markdown += `---\n\n`;
+  // Cabeçalho com branding
+  markdown += getMarkdownHeader(
+    "RELATORIO DE HEALTH CHECKING",
+    `Data de Geracao: ${formatDate(data.timestamp)}`
+  );
 
   // Sumário executivo
   markdown += `## SUMARIO EXECUTIVO\n\n`;
