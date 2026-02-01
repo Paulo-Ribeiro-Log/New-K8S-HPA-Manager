@@ -22,6 +22,7 @@ import { apiClient } from "@/lib/api/client";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { cn } from "@/lib/utils";
+import { addLogoHeaderToPDF, getMarkdownHeader } from "@/lib/logoUtils";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
@@ -198,39 +199,28 @@ export const HealthCheckAlertsReport = ({
   };
 
   // Gerar PDF usando jsPDF com autoTable
-  const generatePDF = () => {
+  const generatePDF = async () => {
     const doc = new jsPDF({
       orientation: "portrait",
       unit: "mm",
       format: "a4",
     });
 
+    // Header com logo
+    let yPosition = await addLogoHeaderToPDF(
+      doc,
+      "RELATORIO DE ALERTAS",
+      "Health Check - Warnings e Criticals"
+    );
+
+    // Data abaixo do header
     const pageWidth = doc.internal.pageSize.getWidth();
-    let yPosition = 20;
-
-    // Header azul
-    doc.setFillColor(41, 128, 185);
-    doc.rect(0, 0, pageWidth, 35, "F");
-
-    // Título
-    doc.setFontSize(18);
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(255, 255, 255);
-    doc.text("RELATORIO DE ALERTAS", pageWidth / 2, 15, { align: "center" });
-
-    // Subtítulo
-    doc.setFontSize(12);
-    doc.setFont("helvetica", "normal");
-    doc.text("Health Check - Warnings e Criticals", pageWidth / 2, 22, { align: "center" });
-
-    // Data
     doc.setFontSize(9);
+    doc.setTextColor(100, 100, 100);
     const timestamp = new Date().toLocaleString("pt-BR");
-    doc.text(`Gerado em: ${timestamp}`, pageWidth / 2, 28, { align: "center" });
-
-    // Reset cor do texto
+    doc.text(`Gerado em: ${timestamp}`, pageWidth / 2, yPosition - 5, { align: "center" });
     doc.setTextColor(0, 0, 0);
-    yPosition = 45;
+    yPosition += 5;
 
     // Sumário Executivo
     doc.setFontSize(14);
@@ -345,9 +335,12 @@ export const HealthCheckAlertsReport = ({
   // Gerar Markdown
   const generateMarkdown = () => {
     const timestamp = new Date().toLocaleString("pt-BR");
-    let md = `# RELATÓRIO DE ALERTAS - HEALTH CHECK\n\n`;
-    md += `**Gerado em:** ${timestamp}\n\n`;
-    md += `---\n\n`;
+
+    // Header com branding
+    let md = getMarkdownHeader(
+      "RELATORIO DE ALERTAS - HEALTH CHECK",
+      `Gerado em: ${timestamp}`
+    );
 
     md += `## SUMÁRIO EXECUTIVO\n\n`;
     md += `- **Total de Clusters:** ${clusters.length}\n`;
@@ -433,7 +426,7 @@ export const HealthCheckAlertsReport = ({
 
       switch (exportFormat) {
         case "pdf":
-          generatePDF();
+          await generatePDF();
           toast.success("Relatório PDF gerado com sucesso!");
           break;
         case "markdown":

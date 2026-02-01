@@ -1,6 +1,7 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { HealthCheckResult } from "@/types/healthcheck";
+import { addLogoHeaderToPDF, getMarkdownHeader } from "./logoUtils";
 
 export interface ReportData {
   results: Record<string, HealthCheckResult>;
@@ -38,36 +39,42 @@ interface EventMessage {
 const extractIssues = (result: HealthCheckResult): EventMessage[] => {
   const issues: EventMessage[] = [];
 
-  // Procurar por problemas em deployment_issues
-  if (result.deployment_issues && result.deployment_issues.length > 0) {
-    result.deployment_issues.forEach((issue) => {
-      issues.push({
-        type: issue.severity === "critical" ? "critical" : "warning",
-        message: issue.message,
-        phase: "Deployments",
-      });
+  // Extrair problemas de deployment_results (warning ou critical)
+  if (result.deployment_results && result.deployment_results.length > 0) {
+    result.deployment_results.forEach((deployment) => {
+      if (deployment.status === "critical" || deployment.status === "warning") {
+        issues.push({
+          type: deployment.status === "critical" ? "critical" : "warning",
+          message: `${deployment.name}: ${deployment.message}`,
+          phase: "Deployments",
+        });
+      }
     });
   }
 
-  // Procurar por problemas em service_issues
-  if (result.service_issues && result.service_issues.length > 0) {
-    result.service_issues.forEach((issue) => {
-      issues.push({
-        type: issue.severity === "critical" ? "critical" : "warning",
-        message: issue.message,
-        phase: "Services",
-      });
+  // Extrair problemas de service_results (warning ou critical)
+  if (result.service_results && result.service_results.length > 0) {
+    result.service_results.forEach((service) => {
+      if (service.status === "critical" || service.status === "warning") {
+        issues.push({
+          type: service.status === "critical" ? "critical" : "warning",
+          message: `${service.name}: ${service.message}`,
+          phase: "Services",
+        });
+      }
     });
   }
 
-  // Procurar por problemas em config_issues
-  if (result.config_issues && result.config_issues.length > 0) {
-    result.config_issues.forEach((issue) => {
-      issues.push({
-        type: issue.severity === "critical" ? "critical" : "warning",
-        message: issue.message,
-        phase: "Configs",
-      });
+  // Extrair problemas de config_results (warning ou critical)
+  if (result.config_results && result.config_results.length > 0) {
+    result.config_results.forEach((config) => {
+      if (config.status === "critical" || config.status === "warning") {
+        issues.push({
+          type: config.status === "critical" ? "critical" : "warning",
+          message: `${config.name}: ${config.message}`,
+          phase: "Configs",
+        });
+      }
     });
   }
 
@@ -77,33 +84,20 @@ const extractIssues = (result: HealthCheckResult): EventMessage[] => {
 // ============================================================================
 // GERAÇÃO DE PDF
 // ============================================================================
-export const generatePDFReport = (data: ReportData): void => {
+export const generatePDFReport = async (data: ReportData): Promise<void> => {
   const doc = new jsPDF({
     orientation: "portrait",
     unit: "mm",
     format: "a4",
   });
   const pageWidth = doc.internal.pageSize.getWidth();
-  let yPosition = 20;
 
-  // Header box
-  doc.setFillColor(41, 128, 185); // Azul profissional
-  doc.rect(0, 0, pageWidth, 35, "F");
-
-  // Título
-  doc.setFontSize(20);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(255, 255, 255); // Branco
-  doc.text("RELATORIO DE HEALTH CHECKING", pageWidth / 2, 15, { align: "center" });
-
-  // Data do relatório
-  doc.setFontSize(10);
-  doc.setFont("helvetica", "normal");
-  doc.text(`Data de Geracao: ${formatDate(data.timestamp)}`, pageWidth / 2, 25, { align: "center" });
-
-  // Reset cor do texto
-  doc.setTextColor(0, 0, 0);
-  yPosition = 45;
+  // Header com logo
+  let yPosition = await addLogoHeaderToPDF(
+    doc,
+    "RELATORIO DE HEALTH CHECKING",
+    `Data de Geracao: ${formatDate(data.timestamp)}`
+  );
 
   // Resumo geral
   const clusters = Object.keys(data.results);
@@ -336,10 +330,11 @@ export const generateMarkdownReport = (data: ReportData): void => {
 
   let markdown = "";
 
-  // Cabeçalho do documento
-  markdown += `# RELATORIO DE HEALTH CHECKING\n\n`;
-  markdown += `**Data de Geracao:** ${formatDate(data.timestamp)}\n\n`;
-  markdown += `---\n\n`;
+  // Cabeçalho com branding
+  markdown += getMarkdownHeader(
+    "RELATORIO DE HEALTH CHECKING",
+    `Data de Geracao: ${formatDate(data.timestamp)}`
+  );
 
   // Sumário executivo
   markdown += `## SUMARIO EXECUTIVO\n\n`;
