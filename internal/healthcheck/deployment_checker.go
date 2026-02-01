@@ -261,10 +261,14 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 
 		// 5. Analisar Liveness e Readiness Probes
 		c.analyzeProbes(deployment, pods.Items, &health)
+
+		// 6. Analisar Resources (requests/limits)
+		c.analyzeResources(deployment, &health)
+
 		c.enrichWithMetrics(ctx, metricsClient, deployment, selector, timeout, &health)
 	}
 
-	// 6. Verificar condições do deployment
+	// 7. Verificar condições do deployment
 	for _, condition := range deployment.Status.Conditions {
 		if condition.Type == "Progressing" && condition.Status == "False" {
 			health.Status = StatusWarning
@@ -281,7 +285,7 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 		}
 	}
 
-	// 7. Se nenhum problema detectado
+	// 8. Se nenhum problema detectado
 	if health.Status == "" {
 		health.Status = StatusHealthy
 		health.Message = "Deployment saudável"
@@ -290,23 +294,57 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 	return health
 }
 
-// analyzeProbes verifica se deployment tem probes configurados e se estão falhando
+// Constantes para validação de probes
+const (
+	// Timeouts mínimos recomendados (segundos)
+	MinLivenessTimeout  = 3
+	MinReadinessTimeout = 2
+	MinStartupTimeout   = 3
+
+	// InitialDelaySeconds recomendado para apps lentas
+	MinInitialDelay = 5
+	MaxInitialDelay = 120
+
+	// FailureThreshold mínimo
+	MinFailureThreshold = 3
+)
+
+// analyzeProbes verifica se deployment tem probes configurados, valida configurações e detecta falhas
 func (c *DeploymentChecker) analyzeProbes(deployment *appsv1.Deployment, pods []corev1.Pod, health *DeploymentHealth) {
 	// Verificar se deployment tem probes configurados
 	hasLiveness := false
 	hasReadiness := false
+	hasStartup := false
+
+	probeIssues := []ProbeIssue{}
 
 	for _, container := range deployment.Spec.Template.Spec.Containers {
+		// Liveness Probe
 		if container.LivenessProbe != nil {
 			hasLiveness = true
+			issues := c.validateProbeConfig(container.Name, "liveness", container.LivenessProbe)
+			probeIssues = append(probeIssues, issues...)
 		}
+
+		// Readiness Probe
 		if container.ReadinessProbe != nil {
 			hasReadiness = true
+			issues := c.validateProbeConfig(container.Name, "readiness", container.ReadinessProbe)
+			probeIssues = append(probeIssues, issues...)
+		}
+
+		// Startup Probe
+		if container.StartupProbe != nil {
+			hasStartup = true
+			issues := c.validateProbeConfig(container.Name, "startup", container.StartupProbe)
+			probeIssues = append(probeIssues, issues...)
 		}
 	}
 
 	health.HasLivenessProbe = hasLiveness
 	health.HasReadinessProbe = hasReadiness
+	health.HasStartupProbe = hasStartup
+	health.ProbeIssues = probeIssues
 
 	// Contar falhas de probes nos pods
 	livenessFailures := 0
@@ -382,6 +420,246 @@ func (c *DeploymentChecker) analyzeProbes(deployment *appsv1.Deployment, pods []
 		health.Suggestions = append(health.Suggestions, "Liveness probe pode estar muito agressivo (timeout/threshold)")
 		health.Suggestions = append(health.Suggestions, "Verificar se aplicação responde dentro do timeout configurado")
 	}
+
+	// Adicionar avisos para problemas de configuração de probes
+	if len(probeIssues) > 0 && health.Status != StatusCritical {
+		if health.Status == "" {
+			health.Status = StatusWarning
+		}
+		// Contar problemas críticos
+		criticalCount := 0
+		for _, issue := range probeIssues {
+			if issue.Severity == "critical" {
+				criticalCount++
+			}
+		}
+		if criticalCount > 0 {
+			health.Message = fmt.Sprintf("%d problemas críticos na configuração de probes", criticalCount)
+		} else if health.Message == "" {
+			health.Message = fmt.Sprintf("%d avisos na configuração de probes", len(probeIssues))
+		}
+	}
+}
+
+// validateProbeConfig valida a configuração de um probe e retorna lista de problemas
+func (c *DeploymentChecker) validateProbeConfig(containerName, probeType string, probe *corev1.Probe) []ProbeIssue {
+	issues := []ProbeIssue{}
+
+	// Validar TimeoutSeconds
+	minTimeout := MinReadinessTimeout
+	if probeType == "liveness" {
+		minTimeout = MinLivenessTimeout
+	} else if probeType == "startup" {
+		minTimeout = MinStartupTimeout
+	}
+
+	if probe.TimeoutSeconds > 0 && probe.TimeoutSeconds < int32(minTimeout) {
+		issues = append(issues, ProbeIssue{
+			Container: containerName,
+			ProbeType: probeType,
+			Issue:     fmt.Sprintf("timeoutSeconds=%d muito curto (mínimo recomendado: %d)", probe.TimeoutSeconds, minTimeout),
+			Severity:  "warning",
+		})
+	}
+
+	// Validar InitialDelaySeconds para liveness (pode causar restarts prematuros)
+	if probeType == "liveness" {
+		if probe.InitialDelaySeconds == 0 {
+			issues = append(issues, ProbeIssue{
+				Container: containerName,
+				ProbeType: probeType,
+				Issue:     "initialDelaySeconds=0 pode causar restarts durante inicialização lenta",
+				Severity:  "warning",
+			})
+		} else if probe.InitialDelaySeconds < int32(MinInitialDelay) {
+			issues = append(issues, ProbeIssue{
+				Container: containerName,
+				ProbeType: probeType,
+				Issue:     fmt.Sprintf("initialDelaySeconds=%d pode ser insuficiente para apps lentas", probe.InitialDelaySeconds),
+				Severity:  "warning",
+			})
+		}
+	}
+
+	// Validar FailureThreshold (muito baixo causa restarts desnecessários)
+	if probe.FailureThreshold > 0 && probe.FailureThreshold < int32(MinFailureThreshold) {
+		issues = append(issues, ProbeIssue{
+			Container: containerName,
+			ProbeType: probeType,
+			Issue:     fmt.Sprintf("failureThreshold=%d muito baixo (mínimo recomendado: %d)", probe.FailureThreshold, MinFailureThreshold),
+			Severity:  "warning",
+		})
+	}
+
+	// Validar se liveness probe é igual ao readiness (anti-pattern)
+	// Isso é validado a nível de deployment, não aqui
+
+	// Validar PeriodSeconds muito baixo (pode sobrecarregar endpoints)
+	if probe.PeriodSeconds > 0 && probe.PeriodSeconds < 5 {
+		issues = append(issues, ProbeIssue{
+			Container: containerName,
+			ProbeType: probeType,
+			Issue:     fmt.Sprintf("periodSeconds=%d muito frequente (pode sobrecarregar endpoints)", probe.PeriodSeconds),
+			Severity:  "warning",
+		})
+	}
+
+	return issues
+}
+
+// analyzeResources verifica configuração de requests/limits e determina QoS class
+func (c *DeploymentChecker) analyzeResources(deployment *appsv1.Deployment, health *DeploymentHealth) {
+	containerResources := []ContainerResources{}
+	resourceIssues := []ResourceIssue{}
+
+	// Contadores para determinar QoS class
+	totalContainers := len(deployment.Spec.Template.Spec.Containers)
+	containersWithAllRequestsAndLimits := 0
+	containersWithAnyRequestOrLimit := 0
+
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		cr := ContainerResources{
+			Name: container.Name,
+		}
+
+		// Verificar CPU Request
+		if container.Resources.Requests != nil {
+			if cpuReq := container.Resources.Requests.Cpu(); cpuReq != nil && !cpuReq.IsZero() {
+				cr.HasCPURequest = true
+				cr.CPURequest = cpuReq.String()
+			}
+			if memReq := container.Resources.Requests.Memory(); memReq != nil && !memReq.IsZero() {
+				cr.HasMemoryRequest = true
+				cr.MemoryRequest = memReq.String()
+			}
+		}
+
+		// Verificar CPU/Memory Limits
+		if container.Resources.Limits != nil {
+			if cpuLim := container.Resources.Limits.Cpu(); cpuLim != nil && !cpuLim.IsZero() {
+				cr.HasCPULimit = true
+				cr.CPULimit = cpuLim.String()
+			}
+			if memLim := container.Resources.Limits.Memory(); memLim != nil && !memLim.IsZero() {
+				cr.HasMemoryLimit = true
+				cr.MemoryLimit = memLim.String()
+			}
+		}
+
+		// Verificar se tem todos os requests e limits
+		hasAllRequestsAndLimits := cr.HasCPURequest && cr.HasMemoryRequest && cr.HasCPULimit && cr.HasMemoryLimit
+		hasAnyRequestOrLimit := cr.HasCPURequest || cr.HasMemoryRequest || cr.HasCPULimit || cr.HasMemoryLimit
+
+		if hasAllRequestsAndLimits {
+			containersWithAllRequestsAndLimits++
+		}
+		if hasAnyRequestOrLimit {
+			containersWithAnyRequestOrLimit++
+		}
+
+		// Gerar issues para recursos faltando
+		if !cr.HasCPURequest {
+			resourceIssues = append(resourceIssues, ResourceIssue{
+				Container:    container.Name,
+				ResourceType: "cpu",
+				Issue:        "CPU request não definido",
+				Severity:     "warning",
+			})
+		}
+		if !cr.HasMemoryRequest {
+			resourceIssues = append(resourceIssues, ResourceIssue{
+				Container:    container.Name,
+				ResourceType: "memory",
+				Issue:        "Memory request não definido",
+				Severity:     "warning",
+			})
+		}
+		if !cr.HasCPULimit {
+			resourceIssues = append(resourceIssues, ResourceIssue{
+				Container:    container.Name,
+				ResourceType: "cpu",
+				Issue:        "CPU limit não definido (pode consumir recursos ilimitados)",
+				Severity:     "warning",
+			})
+		}
+		if !cr.HasMemoryLimit {
+			resourceIssues = append(resourceIssues, ResourceIssue{
+				Container:    container.Name,
+				ResourceType: "memory",
+				Issue:        "Memory limit não definido (risco de OOMKill do node)",
+				Severity:     "critical",
+			})
+		}
+
+		// Verificar se requests == limits (Guaranteed QoS para este container)
+		if cr.HasCPURequest && cr.HasCPULimit && cr.CPURequest != cr.CPULimit {
+			// Não é um problema, mas pode ser útil saber
+		}
+
+		containerResources = append(containerResources, cr)
+	}
+
+	// Determinar QoS Class
+	var qosClass QoSClass
+	if containersWithAllRequestsAndLimits == totalContainers && c.allRequestsEqualLimits(deployment) {
+		qosClass = QoSGuaranteed
+	} else if containersWithAnyRequestOrLimit > 0 {
+		qosClass = QoSBurstable
+	} else {
+		qosClass = QoSBestEffort
+	}
+
+	health.QoSClass = qosClass
+	health.ContainerResources = containerResources
+	health.ResourceIssues = resourceIssues
+
+	// Adicionar avisos baseados no QoS class
+	if qosClass == QoSBestEffort && health.Status != StatusCritical {
+		if health.Status == "" || health.Status == StatusHealthy {
+			health.Status = StatusWarning
+		}
+		health.Message = "QoS BestEffort: sem requests/limits definidos"
+		health.Suggestions = append(health.Suggestions, "Definir resources.requests e resources.limits para todos os containers")
+		health.Suggestions = append(health.Suggestions, "QoS BestEffort tem menor prioridade e será evicted primeiro sob pressão")
+	}
+
+	// Contar problemas críticos de recursos
+	criticalResourceIssues := 0
+	for _, issue := range resourceIssues {
+		if issue.Severity == "critical" {
+			criticalResourceIssues++
+		}
+	}
+
+	if criticalResourceIssues > 0 && health.Status != StatusCritical {
+		health.Status = StatusWarning
+		if health.Message == "" || health.Message == "Deployment saudável" {
+			health.Message = fmt.Sprintf("%d problemas críticos de recursos", criticalResourceIssues)
+		}
+	}
+}
+
+// allRequestsEqualLimits verifica se todos os containers têm requests == limits (para QoS Guaranteed)
+func (c *DeploymentChecker) allRequestsEqualLimits(deployment *appsv1.Deployment) bool {
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		if container.Resources.Requests == nil || container.Resources.Limits == nil {
+			return false
+		}
+
+		cpuReq := container.Resources.Requests.Cpu()
+		cpuLim := container.Resources.Limits.Cpu()
+		memReq := container.Resources.Requests.Memory()
+		memLim := container.Resources.Limits.Memory()
+
+		if cpuReq == nil || cpuLim == nil || memReq == nil || memLim == nil {
+			return false
+		}
+
+		if !cpuReq.Equal(*cpuLim) || !memReq.Equal(*memLim) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *DeploymentChecker) enrichWithMetrics(ctx context.Context, metricsClient metricsclientset.Interface, deployment *appsv1.Deployment, selector string, timeout int, health *DeploymentHealth) {

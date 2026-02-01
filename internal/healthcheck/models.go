@@ -92,6 +92,50 @@ type HealthCheckResult struct {
 	OverallStatus HealthStatus `json:"overall_status"`
 }
 
+// ProbeIssue representa um problema na configuração de probes
+type ProbeIssue struct {
+	Container string `json:"container"`
+	ProbeType string `json:"probe_type"` // "liveness", "readiness", "startup"
+	Issue     string `json:"issue"`
+	Severity  string `json:"severity"` // "warning", "critical"
+}
+
+// QoSClass representa a classe de QoS do Kubernetes
+type QoSClass string
+
+const (
+	QoSGuaranteed QoSClass = "Guaranteed" // requests == limits para todos os containers
+	QoSBurstable  QoSClass = "Burstable"  // pelo menos um container tem request ou limit
+	QoSBestEffort QoSClass = "BestEffort" // nenhum container tem request ou limit
+)
+
+// ResourceIssue representa um problema na configuração de recursos
+type ResourceIssue struct {
+	Container    string `json:"container"`
+	ResourceType string `json:"resource_type"` // "cpu", "memory"
+	Issue        string `json:"issue"`
+	Severity     string `json:"severity"` // "warning", "critical"
+}
+
+// ContainerResources representa os recursos configurados de um container
+type ContainerResources struct {
+	Name string `json:"name"`
+
+	// Requests
+	CPURequest    string `json:"cpu_request,omitempty"`    // ex: "100m", "0.5"
+	MemoryRequest string `json:"memory_request,omitempty"` // ex: "128Mi", "1Gi"
+
+	// Limits
+	CPULimit    string `json:"cpu_limit,omitempty"`
+	MemoryLimit string `json:"memory_limit,omitempty"`
+
+	// Flags de configuração
+	HasCPURequest    bool `json:"has_cpu_request"`
+	HasMemoryRequest bool `json:"has_memory_request"`
+	HasCPULimit      bool `json:"has_cpu_limit"`
+	HasMemoryLimit   bool `json:"has_memory_limit"`
+}
+
 // DeploymentHealth saúde de um Deployment
 type DeploymentHealth struct {
 	Name      string       `json:"name"`
@@ -104,15 +148,24 @@ type DeploymentHealth struct {
 	ContainersCrash int32 `json:"containers_crash"`
 	ImagePullErrors int32 `json:"image_pull_errors"`
 
-	// Probes (Liveness/Readiness)
+	// Probes (Liveness/Readiness/Startup)
 	HasLivenessProbe       bool  `json:"has_liveness_probe"`
 	HasReadinessProbe      bool  `json:"has_readiness_probe"`
+	HasStartupProbe        bool  `json:"has_startup_probe"`
 	LivenessProbeFailures  int32 `json:"liveness_probe_failures"`
 	ReadinessProbeFailures int32 `json:"readiness_probe_failures"`
 
-	// Recursos
+	// Problemas de configuração de probes
+	ProbeIssues []ProbeIssue `json:"probe_issues,omitempty"`
+
+	// Recursos - Uso atual
 	CPUUsagePercent    float64 `json:"cpu_usage_percent"`    // 0-100
 	MemoryUsagePercent float64 `json:"memory_usage_percent"` // 0-100
+
+	// Recursos - Configuração
+	QoSClass           QoSClass             `json:"qos_class"`                     // Guaranteed, Burstable, BestEffort
+	ContainerResources []ContainerResources `json:"container_resources,omitempty"` // Recursos por container
+	ResourceIssues     []ResourceIssue      `json:"resource_issues,omitempty"`     // Problemas de configuração
 
 	// Mensagem
 	Message     string    `json:"message"`

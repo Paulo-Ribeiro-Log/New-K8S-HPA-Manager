@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **10 de janeiro de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **31 de janeiro de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -52,6 +52,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 📋 Health Checking (✅ Produção desde 28/12/2025)
 23. [📊 Implementação Logs Persistentes](IMPLEMENTACAO_LOGS_PERSISTENTES.md) - **Sistema de persistência e visualização de logs históricos** (v1.3.7+)
+24. [🏥 Health Checking Overview](docs/HEALTH_CHECKING_OVERVIEW.md) - **Visão geral executiva do sistema de Health Checking** (v1.3.9+)
+25. [✅ Checklist Health Checking](CHECKLIST_HEALTHCHECK_COMPLETO.md) - **Progresso de implementação (53% - Sprint 1+2 completos)**
 
 ---
 
@@ -576,17 +578,34 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
     - ✅ **Progresso Dinâmico**: Barra de progresso adapta-se aos checks selecionados (0-100% para 1 check, divide proporcionalmente para múltiplos)
     - ✅ **Eventos Detalhados**: Log em tempo real com detalhes de cada problema (máximo 10 críticos + 10 warnings)
     - ✅ **Filtros de Status**: Healthy, Warning, Critical com contadores ao vivo
-  - **Backend (5 arquivos, ~800 linhas)**:
-    - `internal/healthcheck/models.go` - Estruturas de dados (HealthStatus, DeploymentHealth, ServiceHealth, ConfigHealth)
+  - **Backend (10 arquivos, ~2000 linhas)**:
+    - `internal/healthcheck/models.go` - Estruturas de dados (HealthStatus, DeploymentHealth, QoSClass, ProbeIssue, ResourceIssue, etc)
     - `internal/healthcheck/orchestrator.go` - Orquestrador principal com worker pool paralelo
       - `executeMultiClusterCheck()` - Worker pool com sessionID único por cluster
       - `GetClusterSessionMapping()` - Retorna map: cluster -> sessionID
       - `ResolveClusters()` - Público (resolve clusters por environment ou lista manual)
-    - `internal/healthcheck/deployment_checker.go` - Valida Deployments (réplicas, crashes, probes)
-    - `internal/healthcheck/service_checker.go` - Testa conectividade de serviços externos (*placeholder*)
-    - `internal/healthcheck/config_checker.go` - Valida ConfigMaps/Secrets (*placeholder*)
+    - `internal/healthcheck/deployment_checker.go` - Valida Deployments (réplicas, crashes, probes, resources)
+      - **Validação de Probes** (v1.3.9+): timeoutSeconds, initialDelaySeconds, failureThreshold, periodSeconds
+      - **Validação de Resources** (v1.3.9+): QoS class (Guaranteed/Burstable/BestEffort), requests/limits faltando
+      - **Circuit Breaker**: Desabilita métricas após 3 falhas consecutivas no metrics-server
+    - `internal/healthcheck/service_checker.go` - Testa conectividade de serviços via Jobs K8s
+      - Cria Jobs temporários com busybox para testar TCP connect (nc -zv)
+      - Segurança máxima: runAsNonRoot, readOnlyRootFilesystem, drop ALL capabilities
+      - TTL auto-delete (60s) + cleanup manual (dupla garantia)
+    - `internal/healthcheck/node_checker.go` - Verifica saúde dos nodes do cluster (v1.3.9+)
+      - Node Conditions: Ready, MemoryPressure, DiskPressure, PIDPressure, NetworkUnavailable
+      - Capacidade vs Alocação: CPU, Memory, Pods, Ephemeral Storage
+      - Alertas de utilização >90% (CPU, Memory, Pods)
+      - Lista de pods afetados em nodes com problemas
+    - `internal/healthcheck/config_crossref_checker.go` - Valida ConfigMaps/Secrets com cross-reference (v1.3.9+)
+      - Detecta recursos órfãos (não referenciados por pods)
+      - Detecta referências faltando (pods apontam para recursos inexistentes)
+      - Filtra recursos de sistema (kube-, istio-, service account tokens)
+    - `internal/healthcheck/event_checker.go` - Monitora eventos críticos do Kubernetes
+    - `internal/healthcheck/config_checker.go` - Validação básica de ConfigMaps/Secrets
     - `internal/web/handlers/healthcheck.go` - REST API + SSE endpoints
       - `Run()` retorna `cluster_sessions: Record<string, string>` na response
+    - `internal/web/handlers/system_health.go` - Endpoints /healthz (liveness, readiness, health detalhado)
   - **Frontend React**:
     - `HealthCheckingTab.tsx` - Tab principal com configuração + execução (multi-select já existia)
     - `HealthCheckProgressModal.tsx` - **REFATORADO para Tabs** (500 linhas)
