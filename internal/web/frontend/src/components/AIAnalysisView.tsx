@@ -33,11 +33,46 @@ interface AIAnalysisViewProps {
 }
 
 export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
-  analysis,
+  analysis: rawAnalysis,
   showExportButtons = true,
 }) => {
   const { toast } = useToast();
   const [isExporting, setIsExporting] = useState(false);
+
+  // Parse structured data from analysis field if it's a JSON string
+  const analysis = React.useMemo(() => {
+    // Se já tem executive_summary, está no formato novo
+    if (rawAnalysis.executive_summary) {
+      return rawAnalysis;
+    }
+
+    // Tenta fazer parse do campo analysis se for JSON estruturado
+    if (rawAnalysis.analysis && typeof rawAnalysis.analysis === 'string') {
+      try {
+        // Verifica se parece ser JSON (começa com {)
+        const trimmed = rawAnalysis.analysis.trim();
+        if (trimmed.startsWith('{')) {
+          const parsed = JSON.parse(trimmed);
+          // Se o parse funcionou e tem os campos estruturados, mescla com o original
+          if (parsed.executive_summary || parsed.root_cause_analysis || parsed.recommendations) {
+            return {
+              ...rawAnalysis,
+              executive_summary: parsed.executive_summary,
+              root_cause_analysis: parsed.root_cause_analysis,
+              impact_assessment: parsed.impact_assessment,
+              recommendations: parsed.recommendations,
+              // Mantém o analysis original como markdown para fallback
+              analysis: parsed.quick_summary || rawAnalysis.analysis,
+            };
+          }
+        }
+      } catch {
+        // Não é JSON, mantém como markdown
+      }
+    }
+
+    return rawAnalysis;
+  }, [rawAnalysis]);
 
   // Helper: Download blob as file
   const downloadBlob = (blob: Blob, filename: string) => {
@@ -167,6 +202,14 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* DEBUG: Verificar se está renderizando */}
+      <div className="bg-yellow-100 p-4 rounded border border-yellow-400 text-yellow-800">
+        <strong>DEBUG:</strong> AIAnalysisView renderizando.
+        executive_summary: {analysis.executive_summary ? "SIM" : "NÃO"},
+        root_cause: {analysis.root_cause_analysis ? "SIM" : "NÃO"},
+        recommendations: {analysis.recommendations?.length ?? 0}
+      </div>
+
       {/* Export Buttons */}
       {showExportButtons && (
         <div className="flex items-center justify-end gap-2">
