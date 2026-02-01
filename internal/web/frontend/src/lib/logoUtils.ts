@@ -47,7 +47,8 @@ export const addLogoHeaderToPDF = async (
   try {
     const img = await logoLoaded;
     // Logo no canto esquerdo (25x25 pixels, posicao 10,5)
-    doc.addImage(img, "PNG", 10, 5, 25, 25);
+    // Nota: O arquivo .png é na verdade JPEG internamente
+    doc.addImage(img, "JPEG", 10, 5, 25, 25);
   } catch (error) {
     console.warn("Nao foi possivel adicionar logo ao PDF:", error);
   }
@@ -91,7 +92,8 @@ export const addLogoToPDF = async (
 ): Promise<void> => {
   try {
     const img = await logoLoaded;
-    doc.addImage(img, "PNG", x, y, width, height);
+    // Nota: O arquivo .png é na verdade JPEG internamente
+    doc.addImage(img, "JPEG", x, y, width, height);
   } catch (error) {
     console.warn("Nao foi possivel adicionar logo ao PDF:", error);
   }
