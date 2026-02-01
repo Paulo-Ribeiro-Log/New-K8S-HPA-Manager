@@ -45,12 +45,12 @@ export function AIAnalysisModal({ analysis, open, onOpenChange }: AIAnalysisModa
                 <div className="p-1.5 sm:p-2 bg-purple-100 dark:bg-purple-900/30 rounded-lg flex-shrink-0">
                   <Brain className="h-4 w-4 sm:h-5 sm:w-5 md:h-6 md:w-6 text-purple-600 dark:text-purple-400" />
                 </div>
-                <span className="truncate">Análise AI - {analysis.resourceType}</span>
+                <span className="truncate">Análise AI - {analysis.resource_type}</span>
               </DialogTitle>
               <DialogDescription className="flex items-center gap-2 flex-wrap text-xs sm:text-sm">
                 <Badge variant="outline" className="font-mono text-[10px] sm:text-xs px-2 sm:px-3 py-0.5 sm:py-1">
                   <span className="truncate max-w-[200px] sm:max-w-[300px]">
-                    {analysis.cluster}/{analysis.namespace}/{analysis.resourceName}
+                    {analysis.cluster}/{analysis.namespace}/{analysis.resource_name}
                   </span>
                 </Badge>
                 <Badge variant="secondary" className="text-[10px] sm:text-xs px-2 sm:px-3 py-0.5 sm:py-1">
@@ -62,21 +62,21 @@ export function AIAnalysisModal({ analysis, open, onOpenChange }: AIAnalysisModa
 
           {/* Metadados */}
           <div className="flex items-center gap-2 sm:gap-4 md:gap-6 flex-wrap text-[10px] sm:text-xs text-muted-foreground mt-3 sm:mt-4 pt-2 sm:pt-3 border-t border-purple-200/50 dark:border-purple-800/50">
-            {analysis.responseTime && (
+            {analysis.response_time && (
               <div className="flex items-center gap-1 sm:gap-2 bg-white/50 dark:bg-black/20 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md">
                 <Clock className="h-3 w-3 sm:h-4 sm:w-4 flex-shrink-0" />
-                <span className="font-medium">{analysis.responseTime.toFixed(1)}s</span>
+                <span className="font-medium">{analysis.response_time.toFixed(1)}s</span>
               </div>
             )}
-            {analysis.tokensUsed && (
+            {analysis.tokens_used && (
               <div className="flex items-center gap-1 sm:gap-2 bg-white/50 dark:bg-black/20 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md">
                 <Cpu className="h-3 w-3 sm:h-4 sm:w-4 flex-shrink-0" />
-                <span className="font-medium">{analysis.tokensUsed} tokens</span>
+                <span className="font-medium">{analysis.tokens_used} tokens</span>
               </div>
             )}
             <div className="flex items-center gap-1 sm:gap-2 bg-white/50 dark:bg-black/20 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md">
               <CheckCircle2 className="h-3 w-3 sm:h-4 sm:w-4 flex-shrink-0" />
-              <span className="font-medium whitespace-nowrap">{new Date(analysis.analyzedAt).toLocaleString("pt-BR")}</span>
+              <span className="font-medium whitespace-nowrap">{new Date(analysis.analyzed_at).toLocaleString("pt-BR")}</span>
             </div>
           </div>
         </DialogHeader>
