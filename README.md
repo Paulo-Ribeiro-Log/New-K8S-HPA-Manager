@@ -12,9 +12,6 @@
 
 **New K8s HPA Manager** é uma solução robusta para gerenciar recursos Kubernetes em larga escala, oferecendo duas interfaces complementares:
 
-- **🖥️ TUI (Terminal)**: Interface interativa Bubble Tea para operações rápidas via CLI
-- **🌐 Web**: Interface React/TypeScript moderna para visualização e edição colaborativa
-
 ---
 
 ## ✨ Principais Funcionalidades
