@@ -3,7 +3,7 @@
 **Ferramenta completa de gerenciamento de HPA (Horizontal Pod Autoscaler) e Node Pools do Kubernetes/Azure AKS com interface TUI e Web.**
 
 [![Release](https://img.shields.io/github/v/release/Paulo-Ribeiro-Log/New-K8S-HPA-Manager?style=flat-square)](https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases)
-[![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat-square&logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat-square&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
 ---
@@ -42,6 +42,21 @@
 - **Diff Visual**: Side-by-side com tema VS Code Dark
 - **Dry-run e Apply**: Validação e aplicação segura
 - **Filtros Avançados**: Por namespace, labels e data keys
+
+### 🏥 Health Checking (v1.3.9+)
+- **Verificação de Deployments**: Réplicas, CrashLoopBackOff, ImagePullErrors, Probes
+- **Validação de Probes**: Detecta timeouts curtos, initialDelaySeconds inadequado, thresholds baixos
+- **Validação de Resources**: QoS class (Guaranteed/Burstable/BestEffort), requests/limits faltando
+- **Node Health**: Conditions (Ready, Pressure), utilização >90%, pods afetados
+- **ConfigMap/Secret Cross-ref**: Detecta órfãos e referências faltando
+- **Service Checker**: Testa conectividade via Jobs K8s seguros
+- **Multi-Cluster**: Execução paralela com tabs independentes
+- **Exportação**: PDF, Markdown, CSV
+
+### 🤖 AI Diagnostics (v1.3.6+)
+- **Análise Inteligente**: Ollama (local) ou Claude API
+- **Sanitização**: Mascara credenciais automaticamente
+- **Sugestões**: Comandos kubectl e remediações contextuais
 
 ---
 
@@ -196,6 +211,7 @@ new-k8s-hpa
 ## 📚 Documentação
 
 - **[CLAUDE.md](CLAUDE.md)** - Guia completo de desenvolvimento
+- **[docs/HEALTH_CHECKING_OVERVIEW.md](docs/HEALTH_CHECKING_OVERVIEW.md)** - Visão geral do sistema de Health Checking
 - **[INSTRUCTIONS_RELEASE.md](INSTRUCTIONS_RELEASE.md)** - Como criar releases com binários pré-compilados
 - **[WINDOWS_SUPPORT.md](WINDOWS_SUPPORT.md)** - Limitações Windows e instalação via WSL2
 - **[GitHub Releases](https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases)** - Release notes e downloads
@@ -219,7 +235,20 @@ Após instalação via script, os seguintes utilitários ficam disponíveis em `
 
 ## 📦 Releases
 
-### v1.3.1 (2025-12-03) - **Versão Atual**
+### v1.3.9+ (2026-01-31) - **Em Desenvolvimento**
+- 🏥 **Health Checking Avançado (Sprint 2)**
+  - ✅ Validação de Probes: Detecta timeouts curtos, initialDelaySeconds inadequado
+  - ✅ Validação de Resources: QoS class (Guaranteed/Burstable/BestEffort)
+  - ✅ Node Health Checker: Conditions, utilização >90%, pods afetados
+  - ✅ ConfigMap/Secret Cross-ref: Detecta órfãos e referências faltando
+  - ✅ Sistema de Endpoints /healthz (liveness/readiness probes)
+
+- 🤖 **AI Diagnostics (v1.3.6+)**
+  - ✅ Análise inteligente com Ollama (local) ou Claude API
+  - ✅ Sanitização automática de credenciais
+  - ✅ Sugestões de comandos kubectl e remediações
+
+### v1.3.1 (2025-12-03) - **Release Estável**
 - 🐛 **Correções Críticas**
   - ✅ Corrigido erro de conflito ao aplicar edições em ConfigMaps
   - ✅ Melhorias na estabilidade do editor de ConfigMaps
