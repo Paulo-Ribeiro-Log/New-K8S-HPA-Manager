@@ -2,17 +2,19 @@ import { useEffect, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAIDiagnostics } from "@/hooks/useAIDiagnostics";
 import { AIHistoryPanel } from "./AIHistoryPanel";
-import { AIAnalysisCard } from "./AIAnalysisCard";
+import { AIAnalysisModal } from "./AIAnalysisModal";
 import { AISettingsTab } from "./AISettingsTab";
 import { AIStatsCard } from "./AIStatsCard";
 import { AIProviderStatusCard } from "./AIProviderStatusCard";
 import { AIQuickStartGuide } from "./AIQuickStartGuide";
 import { Brain, Settings } from "lucide-react";
+import type { AnalysisResult } from "@/types/ai";
 
 export function AIDiagnosticsTab() {
   const [activeSubTab, setActiveSubTab] = useState("diagnostics");
+  const [selectedAnalysis, setSelectedAnalysis] = useState<AnalysisResult | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
   const {
-    currentAnalysis,
     providerStatus,
     stats,
     history,
@@ -22,7 +24,6 @@ export function AIDiagnosticsTab() {
     fetchHistory,
     fetchStats,
     deleteAnalysis,
-    clearCurrentAnalysis,
     getAnalysisById,
   } = useAIDiagnostics();
 
@@ -66,10 +67,15 @@ export function AIDiagnosticsTab() {
         </TabsList>
 
         <TabsContent value="diagnostics" className="space-y-6">
-          {/* Análise atual (se existir) */}
-          {currentAnalysis && (
-            <AIAnalysisCard analysis={currentAnalysis} onClose={clearCurrentAnalysis} />
-          )}
+          {/* Modal de análise detalhada */}
+          <AIAnalysisModal
+            analysis={selectedAnalysis}
+            open={isModalOpen}
+            onOpenChange={(open) => {
+              setIsModalOpen(open);
+              if (!open) setSelectedAnalysis(null);
+            }}
+          />
 
           {/* Grid 2 colunas: Stats + Provider Status */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -94,10 +100,13 @@ export function AIDiagnosticsTab() {
             history={history || []}
             isLoading={isLoadingHistory}
             onRefresh={fetchHistory}
-            onViewAnalysis={(analysis) => {
-              // Carregar análise completa e scroll até o topo
-              getAnalysisById(analysis.id);
-              window.scrollTo({ top: 0, behavior: "smooth" });
+            onViewAnalysis={async (analysis) => {
+              // Carregar análise completa pelo ID e abrir no modal
+              const fullAnalysis = await getAnalysisById(analysis.id);
+              if (fullAnalysis) {
+                setSelectedAnalysis(fullAnalysis);
+                setIsModalOpen(true);
+              }
             }}
             onDeleteAnalysis={deleteAnalysis}
           />
