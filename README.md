@@ -10,7 +10,7 @@
 
 ## 🎯 Visão Geral
 
-**New K8s HPA Manager** é uma solução robusta para gerenciar recursos Kubernetes em larga escala, oferecendo duas interfaces complementares:
+**New K8s HPA Manager** é uma solução robusta para gerenciar recursos Kubernetes em larga escala:
 
 ---
 
