@@ -479,7 +479,16 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
   - **API REST**: `/api/v1/ai/analyze`, `/api/v1/ai/history`, `/api/v1/ai/status`, `/api/v1/ai/stats`
   - **Frontend React**:
     - ✅ Botão "Analisar com AI" integrado ao **painel de detalhes de Pods** (lado direito)
-    - ✅ Modal de análise com markdown formatado, badges de prioridade, sugestões expandíveis
+    - ✅ **AIAnalysisModal** - Modal estruturado para visualização de análises (v1.3.12 - 01/02/2026)
+      - Parse automático de JSON do campo `analysis.analysis` via `useMemo`
+      - 4 seções estruturadas com formatação profissional:
+        - **Sumário Executivo**: Badges de severidade (critical/high/medium/low) e status (unhealthy/degraded/healthy)
+        - **Análise de Causa Raiz**: Accordion com sintoma, causas prováveis, evidências e nível de confiança
+        - **Avaliação de Impacto**: Cards com severidade, violação de SLA, downtime estimado, usuários afetados
+        - **Recomendações**: Lista ordenada por prioridade com comandos kubectl copiáveis (botão copy)
+      - Fallback para texto raw quando análise não é JSON estruturado
+      - Componentes: Card, Accordion, Badge, ScrollArea, CommandCopy (shadcn/ui)
+    - ✅ **AIHistoryPanel** - Clique em análise do histórico abre modal (ao invés de card inline)
     - ✅ Indicador de provider/modelo em uso (Ollama llama3.2:3b ou Claude)
     - ✅ UX otimizada: botão apenas em painel de detalhes (não na lista de cards)
   - **Funcionalidades**:
