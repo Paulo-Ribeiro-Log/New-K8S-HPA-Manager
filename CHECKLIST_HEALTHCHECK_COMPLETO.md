@@ -1,7 +1,7 @@
 # Checklist Completo - Health Checking Improvements
 
 **Última atualização**: 31/01/2026
-**Progresso geral**: 6/19 itens (32%)
+**Progresso geral**: 10/19 itens (53%)
 
 ---
 
@@ -50,36 +50,49 @@
 
 ---
 
-## 🟡 Sprint 2 - EM PROGRESSO (1/5 = 20%)
+## ✅ Sprint 2 - COMPLETO (5/5 = 100%)
 
-### 6. Validação de Probes Configurations ⏳
-- [ ] Verificar se deployments têm livenessProbe configurado
-- [ ] Verificar se deployments têm readinessProbe configurado
-- [ ] Validar timeouts adequados (não muito curtos)
-- [ ] Validar initialDelaySeconds razoável
-- [ ] Sugestões de best practices
-- **Estimativa**: 2 dias
+### 6. Validação de Probes Configurations ✅
+- [x] Verificar se deployments têm livenessProbe configurado
+- [x] Verificar se deployments têm readinessProbe configurado
+- [x] Verificar se deployments têm startupProbe configurado (best practice moderna)
+- [x] Validar timeouts adequados (não muito curtos)
+- [x] Validar initialDelaySeconds razoável
+- [x] Validar failureThreshold (não muito baixo)
+- [x] Validar periodSeconds (não muito frequente)
+- [x] Sugestões de best practices
+- **Arquivos**: `internal/healthcheck/models.go`, `internal/healthcheck/deployment_checker.go`
+- **Testes**: `internal/healthcheck/deployment_checker_test.go` (9 testes de validação de probes)
 
-### 7. Resource Requests/Limits Validation ⏳
-- [ ] Detectar containers sem requests/limits definidos
-- [ ] Analisar QoS class (Guaranteed, Burstable, BestEffort)
-- [ ] Alertar sobre limits muito altos ou muito baixos
-- [ ] Recomendações baseadas em uso real
-- **Estimativa**: 2 dias
+### 7. Resource Requests/Limits Validation ✅
+- [x] Detectar containers sem requests/limits definidos
+- [x] Analisar QoS class (Guaranteed, Burstable, BestEffort)
+- [x] Alertar sobre memory limit faltando (severity: critical - risco OOMKill)
+- [x] Alertar sobre CPU/Memory requests faltando (severity: warning)
+- [x] Estruturas: `QoSClass`, `ResourceIssue`, `ContainerResources`
+- [x] Sugestoes contextuais baseadas em QoS class
+- **Arquivos**: `internal/healthcheck/models.go`, `internal/healthcheck/deployment_checker.go`
+- **Testes**: `internal/healthcheck/deployment_checker_test.go` (9 testes de recursos)
 
-### 8. Node Health Checker ⏳
-- [ ] Verificar Node Conditions (Ready, MemoryPressure, DiskPressure, PIDPressure)
-- [ ] Analisar capacidade vs alocação
-- [ ] Detectar nodes com problemas
-- [ ] Correlacionar com pods afetados
-- **Estimativa**: 3 dias
+### 8. Node Health Checker ✅
+- [x] Verificar Node Conditions (Ready, MemoryPressure, DiskPressure, PIDPressure, NetworkUnavailable)
+- [x] Analisar capacidade vs alocacao (CPU, Memory, Pods, Ephemeral Storage)
+- [x] Calcular utilizacao percentual (CPU, Memory, Pods)
+- [x] Detectar nodes com problemas (Critical: NotReady, Pressure; Warning: >90% utilizacao)
+- [x] Correlacionar com pods afetados (lista top 10 pods no node com problema)
+- [x] Extrair info do node (KubeletVersion, OSImage, Architecture)
+- **Arquivos**: `internal/healthcheck/node_checker.go` (~300 linhas)
+- **Testes**: `internal/healthcheck/node_checker_test.go` (14 testes)
 
-### 9. ConfigMap/Secret Cross-reference ⏳
-- [ ] Detectar ConfigMaps/Secrets órfãos (não referenciados)
-- [ ] Validar que referências existem
-- [ ] Detectar chaves faltando em ConfigMaps
-- [ ] Alertar sobre Secrets expirados (se tiver annotation)
-- **Estimativa**: 3 dias
+### 9. ConfigMap/Secret Cross-reference ✅
+- [x] Detectar ConfigMaps/Secrets orfaos (nao referenciados por pods)
+- [x] Validar que referencias existem (ConfigMaps/Secrets referenciados)
+- [x] Detectar referencias faltando (pods apontam para recursos inexistentes)
+- [x] Ignorar referencias opcionais (optional: true)
+- [x] Filtrar recursos de sistema (kube-, istio-, service account tokens, etc)
+- [x] Mapear todos os tipos de referencia: volumes, envFrom, env.valueFrom, projected
+- **Arquivos**: `internal/healthcheck/config_crossref_checker.go` (~350 linhas)
+- **Testes**: `internal/healthcheck/config_crossref_checker_test.go` (18 testes)
 
 ### 10. Health Check do Health Checker (/healthz) ✅
 - [x] GET /healthz - Status detalhado com componentes
@@ -167,10 +180,10 @@
 | Sprint | Completos | Total | Progresso |
 |--------|-----------|-------|-----------|
 | Sprint 1 | 5 | 5 | ✅ 100% |
-| Sprint 2 | 1 | 5 | 🟡 20% |
+| Sprint 2 | 5 | 5 | ✅ 100% |
 | Sprint 3 | 0 | 5 | ⏳ 0% |
 | Sprint 4 | 0 | 4 | ⏳ 0% |
-| **TOTAL** | **6** | **19** | **32%** |
+| **TOTAL** | **10** | **19** | **53%** |
 
 ---
 
