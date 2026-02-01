@@ -1,6 +1,6 @@
 # New K8s HPA Manager
 
-**Ferramenta completa de gerenciamento de HPA (Horizontal Pod Autoscaler) e Node Pools do Kubernetes/Azure AKS com interface TUI e Web.**
+**Ferramenta completa de gerenciamento de HPA (Horizontal Pod Autoscaler) e Node Pools do Kubernetes/Azure AKS com interface Web.**
 
 [![Release](https://img.shields.io/github/v/release/Paulo-Ribeiro-Log/New-K8S-HPA-Manager?style=flat-square)](https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases)
 [![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat-square&logo=go)](https://go.dev/)
