@@ -941,6 +941,12 @@ func (s *Server) setupRoutes() {
 		// Criar handler
 		healthCheckHandler := handlers.NewHealthCheckHandler(s.kubeManager, healthCheckOrchestrator, progressTracker)
 
+		// System Health endpoints (padrão Kubernetes) - sem auth
+		systemHealthHandler := handlers.NewSystemHealthHandler(s.kubeManager, healthCheckOrchestrator, "v1.3.16")
+		s.router.GET("/healthz", systemHealthHandler.Health)
+		s.router.GET("/healthz/live", systemHealthHandler.Live)
+		s.router.GET("/healthz/ready", systemHealthHandler.Ready)
+
 		// Rotas de health checking
 		healthCheckGroup := api.Group("/healthcheck")
 		{
