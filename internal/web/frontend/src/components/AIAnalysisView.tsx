@@ -87,10 +87,10 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
   };
 
   // Export handlers (usando jsPDF no frontend - suporte UTF-8 nativo!)
-  const handleExportPDF = () => {
+  const handleExportPDF = async () => {
     setIsExporting(true);
     try {
-      generateAIDiagnosticsPDF(analysis);
+      await generateAIDiagnosticsPDF(analysis);
       toast({
         title: "PDF exportado com sucesso",
         description: `Arquivo gerado com suporte completo a UTF-8`,

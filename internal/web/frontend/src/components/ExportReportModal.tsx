@@ -53,7 +53,7 @@ export const ExportReportModal = ({
 
       switch (format) {
         case "pdf":
-          generatePDFReport(reportData);
+          await generatePDFReport(reportData);
           toast.success("Relatório PDF gerado com sucesso!");
           break;
         case "markdown":

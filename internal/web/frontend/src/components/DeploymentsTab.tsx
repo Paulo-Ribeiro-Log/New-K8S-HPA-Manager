@@ -17,6 +17,7 @@ import yaml from "js-yaml";
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { addLogoHeaderToPDF } from "@/lib/logoUtils";
 
 import type {
   Namespace,
@@ -1220,7 +1221,7 @@ export const DeploymentsTab = ({
   };
 
   // Função para gerar PDF profissional usando jsPDF
-  const generatePredictionPDF = () => {
+  const generatePredictionPDF = async () => {
     if (!predictionResult || !selectedDeployment) return;
 
     const doc = new jsPDF({
@@ -1231,7 +1232,22 @@ export const DeploymentsTab = ({
 
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
-    let yPosition = 20;
+
+    // Header com logo
+    let yPosition = await addLogoHeaderToPDF(
+      doc,
+      "ANALISE PREDITIVA",
+      selectedDeployment.name,
+      45
+    );
+
+    // Info adicional abaixo do header
+    doc.setFontSize(9);
+    doc.setTextColor(100, 100, 100);
+    doc.text(`Cluster: ${selectedDeployment.cluster} | Namespace: ${selectedDeployment.namespace}`, pageWidth / 2, yPosition - 8, { align: "center" });
+    doc.text(`Gerado em: ${new Date().toLocaleString("pt-BR")}`, pageWidth / 2, yPosition - 3, { align: "center" });
+    doc.setTextColor(0, 0, 0);
+    yPosition += 5;
 
     // Helper para quebra de página
     const checkPageBreak = (neededSpace: number) => {
@@ -1242,30 +1258,6 @@ export const DeploymentsTab = ({
       }
       return false;
     };
-
-    // Header azul/roxo gradiente (simulated)
-    doc.setFillColor(79, 70, 229); // Indigo
-    doc.rect(0, 0, pageWidth, 40, "F");
-
-    // Título
-    doc.setFontSize(20);
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(255, 255, 255);
-    doc.text("ANALISE PREDITIVA", pageWidth / 2, 15, { align: "center" });
-
-    // Subtítulo - Deployment
-    doc.setFontSize(14);
-    doc.setFont("helvetica", "normal");
-    doc.text(selectedDeployment.name, pageWidth / 2, 24, { align: "center" });
-
-    // Info adicional
-    doc.setFontSize(9);
-    doc.text(`Cluster: ${selectedDeployment.cluster} | Namespace: ${selectedDeployment.namespace}`, pageWidth / 2, 30, { align: "center" });
-    doc.text(`Gerado em: ${new Date().toLocaleString("pt-BR")}`, pageWidth / 2, 35, { align: "center" });
-
-    // Reset cor do texto
-    doc.setTextColor(0, 0, 0);
-    yPosition = 50;
 
     // ===== DADOS ANALISADOS =====
     checkPageBreak(40);
@@ -3971,7 +3963,7 @@ export const DeploymentsTab = ({
               try {
                 if (exportFormat === "pdf") {
                   // Gerar PDF localmente com jsPDF
-                  generatePredictionPDF();
+                  await generatePredictionPDF();
                   toast.success("Relatório PDF gerado com sucesso!");
                   setExportModalOpen(false);
                 } else {
