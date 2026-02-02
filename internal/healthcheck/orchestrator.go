@@ -24,6 +24,7 @@ type Orchestrator struct {
 	serviceChecker     *ServiceChecker
 	configChecker      *ConfigChecker
 	eventChecker       *EventChecker              // ✅ Verificador de eventos K8s
+	hpaChecker         *HPAChecker                // ✅ Verificador de HPAs
 	storage            *HealthCheckStorage
 	progressTracker    *sse.ProgressTracker
 	filterManager      *FilterManager         // ✅ Gerenciador de filtros
@@ -56,6 +57,7 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 		serviceChecker:     NewServiceChecker(),
 		configChecker:      NewConfigChecker(),
 		eventChecker:       NewEventChecker(),
+		hpaChecker:         NewHPAChecker(),
 		storage:            hcStorage,
 		progressTracker:    progressTracker,
 		filterManager:      filterManager,
@@ -185,6 +187,9 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		enabledChecks++
 	}
 	if req.CheckEvents {
+		enabledChecks++
+	}
+	if req.CheckHPAs {
 		enabledChecks++
 	}
 
@@ -358,6 +363,51 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		}()
 	}
 
+	// Check HPAs
+	if req.CheckHPAs {
+		hpasStart := currentRangeStart
+		hpasEnd := currentRangeStart + rangePerCheck
+		currentRangeStart = hpasEnd
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.publishProgress(sessionID, cluster, "hpas", fmt.Sprintf("Iniciando verificação de HPAs em %d namespace(s)...", len(namespaces)), hpasStart, StatusHealthy)
+
+			// Callback para publicar progresso de cada HPA
+			hpaCallback := func(namespace, name, message string, status HealthStatus, current, total int) {
+				// Calcular progresso proporcional dentro da faixa alocada para HPAs
+				hpaProgress := hpasStart + int(float64(current)/float64(total)*float64(rangePerCheck))
+				o.publishProgress(sessionID, cluster, "hpas", message, hpaProgress, status)
+			}
+
+			hpaResults := o.hpaChecker.CheckAll(ctx, client, namespaces, req.GetTimeoutHPAs(), req.ApplyFilters, hpaCallback)
+
+			mu.Lock()
+			result.HPAResults = hpaResults
+			mu.Unlock()
+
+			// Publicar resumo de HPAs
+			criticalHPAs := 0
+			warningHPAs := 0
+			for _, h := range hpaResults {
+				if h.Status == StatusCritical {
+					criticalHPAs++
+				} else if h.Status == StatusWarning {
+					warningHPAs++
+				}
+			}
+
+			if criticalHPAs > 0 {
+				o.publishProgress(sessionID, cluster, "hpas", fmt.Sprintf("%d HPA(s) com problemas criticos encontrado(s)", criticalHPAs), hpasEnd, StatusCritical)
+			} else if warningHPAs > 0 {
+				o.publishProgress(sessionID, cluster, "hpas", fmt.Sprintf("%d HPA(s) com avisos encontrado(s)", warningHPAs), hpasEnd, StatusWarning)
+			} else {
+				o.publishProgress(sessionID, cluster, "hpas", fmt.Sprintf("%d HPA(s) verificado(s) - todos saudaveis", len(hpaResults)), hpasEnd, StatusHealthy)
+			}
+		}()
+	}
+
 	// Aguardar conclusão
 	wg.Wait()
 
@@ -407,6 +457,16 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			}
 		}
 
+		// Publicar primeiros HPAs críticos (se ainda tiver espaço)
+		for _, h := range result.HPAResults {
+			if h.Status == StatusCritical && criticalShown < maxCritical {
+				o.publishProgress(sessionID, cluster, "summary",
+					fmt.Sprintf("Crítico: HPA %s/%s - %s", h.Namespace, h.Name, h.Message), 97, StatusCritical)
+				criticalShown++
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+
 		// Avisar se há mais problemas
 		if result.CriticalCount > maxCritical {
 			o.publishProgress(sessionID, cluster, "summary",
@@ -446,6 +506,16 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			if c.Status == StatusWarning && warningShown < maxWarning {
 				o.publishProgress(sessionID, cluster, "summary",
 					fmt.Sprintf("Aviso: Config %s/%s - %s", c.Namespace, c.Name, c.Message), 98, StatusWarning)
+				warningShown++
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+
+		// Publicar primeiros HPAs warning
+		for _, h := range result.HPAResults {
+			if h.Status == StatusWarning && warningShown < maxWarning {
+				o.publishProgress(sessionID, cluster, "summary",
+					fmt.Sprintf("Aviso: HPA %s/%s - %s", h.Namespace, h.Name, h.Message), 98, StatusWarning)
 				warningShown++
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -602,7 +672,12 @@ func (o *Orchestrator) calculateSummary(result *HealthCheckResult) {
 		statusCount[e.Status]++
 	}
 
-	result.TotalChecks = len(result.DeploymentResults) + len(result.ServiceResults) + len(result.ConfigResults) + len(result.EventResults)
+	// Contar HPAs
+	for _, h := range result.HPAResults {
+		statusCount[h.Status]++
+	}
+
+	result.TotalChecks = len(result.DeploymentResults) + len(result.ServiceResults) + len(result.ConfigResults) + len(result.EventResults) + len(result.HPAResults)
 	result.HealthyCount = statusCount[StatusHealthy]
 	result.WarningCount = statusCount[StatusWarning]
 	result.CriticalCount = statusCount[StatusCritical]
