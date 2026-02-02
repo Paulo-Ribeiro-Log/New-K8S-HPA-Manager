@@ -178,17 +178,17 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 	// 1. Verificar réplicas
 	if health.ReplicasReady == 0 && health.ReplicasDesired > 0 {
 		health.Status = StatusCritical
-		health.Message = "Nenhuma réplica está pronta"
+		health.Message = fmt.Sprintf("INDISPONIVEL: Deployment %s/%s tem 0 de %d replicas prontas. Servico fora do ar.", namespace, name, health.ReplicasDesired)
 		health.Suggestions = append(health.Suggestions, fmt.Sprintf("kubectl describe deployment %s -n %s", name, namespace))
-		health.Suggestions = append(health.Suggestions, "Verificar eventos do deployment")
+		health.Suggestions = append(health.Suggestions, "Verificar eventos do deployment para identificar causa")
 		return health
 	}
 
 	if health.ReplicasReady < health.ReplicasDesired {
 		health.Status = StatusWarning
-		health.Message = fmt.Sprintf("Apenas %d/%d réplicas prontas", health.ReplicasReady, health.ReplicasDesired)
+		health.Message = fmt.Sprintf("DEGRADADO: Deployment %s/%s com %d de %d replicas prontas. Capacidade reduzida.", namespace, name, health.ReplicasReady, health.ReplicasDesired)
 		health.Suggestions = append(health.Suggestions, fmt.Sprintf("kubectl get pods -n %s -l app=%s", namespace, name))
-		health.Suggestions = append(health.Suggestions, "Verificar logs dos pods")
+		health.Suggestions = append(health.Suggestions, "Verificar logs dos pods com problemas")
 	}
 
 	// 2. Buscar pods do deployment usando label selector
@@ -245,17 +245,17 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 		// 4. Atualizar status baseado em problemas encontrados
 		if crashCount > 0 {
 			health.Status = StatusCritical
-			health.Message = fmt.Sprintf("%d containers em CrashLoopBackOff", crashCount)
-			health.Suggestions = append(health.Suggestions, fmt.Sprintf("kubectl logs <pod-name> -n %s --previous", namespace))
-			health.Suggestions = append(health.Suggestions, "Analisar logs anteriores ao crash")
+			health.Message = fmt.Sprintf("CRASHLOOP: Deployment %s/%s tem %d container(s) reiniciando em loop. Aplicacao instavel, verificar logs para causa raiz.", namespace, name, crashCount)
+			health.Suggestions = append(health.Suggestions, fmt.Sprintf("kubectl logs -n %s -l app=%s --previous", namespace, name))
+			health.Suggestions = append(health.Suggestions, "Verificar erros de inicializacao, falta de recursos ou falha de dependencias")
 			return health
 		}
 
 		if imagePullErrors > 0 {
 			health.Status = StatusCritical
-			health.Message = fmt.Sprintf("%d erros ao puxar imagens", imagePullErrors)
-			health.Suggestions = append(health.Suggestions, "Verificar se a imagem existe no registry")
-			health.Suggestions = append(health.Suggestions, "Validar ImagePullSecrets")
+			health.Message = fmt.Sprintf("IMAGEM INACESSIVEL: Deployment %s/%s nao consegue baixar %d imagem(ns). Verificar nome da imagem, tag e credenciais do registry.", namespace, name, imagePullErrors)
+			health.Suggestions = append(health.Suggestions, "Confirmar se a imagem existe no registry com a tag especificada")
+			health.Suggestions = append(health.Suggestions, "Validar ImagePullSecrets e permissoes de acesso ao registry")
 			return health
 		}
 
@@ -272,14 +272,14 @@ func (c *DeploymentChecker) Check(ctx context.Context, client kubernetes.Interfa
 	for _, condition := range deployment.Status.Conditions {
 		if condition.Type == "Progressing" && condition.Status == "False" {
 			health.Status = StatusWarning
-			health.Message = fmt.Sprintf("Deployment não está progredindo: %s", condition.Reason)
+			health.Message = fmt.Sprintf("ROLLOUT PARADO: Deployment %s/%s nao esta progredindo. Motivo: %s. Pode haver falta de recursos ou quota excedida.", namespace, name, condition.Reason)
 			health.Suggestions = append(health.Suggestions, fmt.Sprintf("kubectl describe deployment %s -n %s", name, namespace))
 			return health
 		}
 
 		if condition.Type == "Available" && condition.Status == "False" {
 			health.Status = StatusCritical
-			health.Message = fmt.Sprintf("Deployment não está disponível: %s", condition.Reason)
+			health.Message = fmt.Sprintf("INDISPONIVEL: Deployment %s/%s nao atende minimo de replicas disponiveis. Motivo: %s. Servico pode estar fora do ar.", namespace, name, condition.Reason)
 			health.Suggestions = append(health.Suggestions, fmt.Sprintf("kubectl describe deployment %s -n %s", name, namespace))
 			return health
 		}
@@ -388,37 +388,37 @@ func (c *DeploymentChecker) analyzeProbes(deployment *appsv1.Deployment, pods []
 		if health.Status == "" {
 			health.Status = StatusWarning
 		}
-		health.Message = "Liveness probe não configurado"
-		health.Suggestions = append(health.Suggestions, "Configurar liveness probe para detectar containers travados")
-		health.Suggestions = append(health.Suggestions, "Exemplo: livenessProbe com httpGet, tcpSocket ou exec")
+		health.Message = fmt.Sprintf("SEM LIVENESS PROBE: Deployment %s/%s nao tem liveness probe configurado. Containers travados nao serao reiniciados automaticamente.", health.Namespace, health.Name)
+		health.Suggestions = append(health.Suggestions, "Adicionar livenessProbe com httpGet, tcpSocket ou exec command")
+		health.Suggestions = append(health.Suggestions, "Exemplo: livenessProbe: httpGet: path: /health port: 8080")
 	}
 
 	if !hasReadiness && health.Status != StatusCritical {
 		if health.Status == "" {
 			health.Status = StatusWarning
 		}
-		if health.Message == "Liveness probe não configurado" {
-			health.Message = "Liveness e readiness probes não configurados"
+		if strings.Contains(health.Message, "SEM LIVENESS PROBE") {
+			health.Message = fmt.Sprintf("SEM PROBES: Deployment %s/%s nao tem liveness nem readiness probes. Problemas de saude nao serao detectados automaticamente.", health.Namespace, health.Name)
 		} else {
-			health.Message = "Readiness probe não configurado"
+			health.Message = fmt.Sprintf("SEM READINESS PROBE: Deployment %s/%s nao tem readiness probe. Trafico pode ser enviado para pods nao prontos.", health.Namespace, health.Name)
 		}
-		health.Suggestions = append(health.Suggestions, "Configurar readiness probe para controlar tráfego")
-		health.Suggestions = append(health.Suggestions, "Exemplo: readinessProbe com httpGet para validar app inicializada")
+		health.Suggestions = append(health.Suggestions, "Adicionar readinessProbe para validar quando pod esta pronto para receber trafico")
+		health.Suggestions = append(health.Suggestions, "Exemplo: readinessProbe: httpGet: path: /ready port: 8080")
 	}
 
 	// Adicionar avisos se há falhas de probes
 	if readinessFailures > 0 && health.Status != StatusCritical {
 		health.Status = StatusWarning
-		health.Message = fmt.Sprintf("Readiness probe falhando em %d pods", readinessFailures)
-		health.Suggestions = append(health.Suggestions, "Verificar logs dos pods para entender falhas de readiness")
+		health.Message = fmt.Sprintf("READINESS FALHANDO: Deployment %s/%s tem %d pod(s) com readiness probe falhando. Pods nao estao recebendo trafico.", health.Namespace, health.Name, readinessFailures)
+		health.Suggestions = append(health.Suggestions, "Verificar se aplicacao responde no endpoint de readiness")
 		health.Suggestions = append(health.Suggestions, fmt.Sprintf("kubectl describe pod -n %s -l app=%s", health.Namespace, health.Name))
 	}
 
 	if livenessFailures > 0 && health.Status != StatusCritical {
 		health.Status = StatusWarning
-		health.Message = fmt.Sprintf("Liveness probe causando restarts em %d containers", livenessFailures)
-		health.Suggestions = append(health.Suggestions, "Liveness probe pode estar muito agressivo (timeout/threshold)")
-		health.Suggestions = append(health.Suggestions, "Verificar se aplicação responde dentro do timeout configurado")
+		health.Message = fmt.Sprintf("LIVENESS REINICIANDO: Deployment %s/%s tem %d container(s) sendo reiniciados por liveness probe. Pode indicar travamento ou timeout muito curto.", health.Namespace, health.Name, livenessFailures)
+		health.Suggestions = append(health.Suggestions, "Aumentar timeoutSeconds ou failureThreshold do liveness probe se app demora para responder")
+		health.Suggestions = append(health.Suggestions, "Verificar se aplicacao esta respondendo no endpoint de liveness")
 	}
 
 	// Adicionar avisos para problemas de configuração de probes
