@@ -78,6 +78,7 @@ export const NamespacesTab = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newNamespaceName, setNewNamespaceName] = useState("");
+  const [isSpotInstance, setIsSpotInstance] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
 
   // Estados para deployments
@@ -551,10 +552,12 @@ export const NamespacesTab = ({
 
     setIsCreating(true);
     try {
-      await apiClient.createNamespace(cluster, newNamespaceName.trim());
-      toast.success(`Namespace ${newNamespaceName.trim()} criado com sucesso`);
+      await apiClient.createNamespace(cluster, newNamespaceName.trim(), isSpotInstance);
+      const spotMsg = isSpotInstance ? " (Spot Instance)" : "";
+      toast.success(`Namespace ${newNamespaceName.trim()}${spotMsg} criado com sucesso`);
       setCreateModalOpen(false);
       setNewNamespaceName("");
+      setIsSpotInstance(false);
       onRefresh();
     } catch (err) {
       toast.error("Erro ao criar namespace", {
@@ -563,7 +566,7 @@ export const NamespacesTab = ({
     } finally {
       setIsCreating(false);
     }
-  }, [newNamespaceName, cluster, onRefresh]);
+  }, [newNamespaceName, cluster, isSpotInstance, onRefresh]);
 
   useEffect(() => {
     setSelectedNamespace(null);
@@ -1533,7 +1536,13 @@ export const NamespacesTab = ({
       </Dialog>
 
       {/* Modal Create Namespace */}
-      <Dialog open={createModalOpen} onOpenChange={setCreateModalOpen}>
+      <Dialog open={createModalOpen} onOpenChange={(open) => {
+        setCreateModalOpen(open);
+        if (!open) {
+          setNewNamespaceName("");
+          setIsSpotInstance(false);
+        }
+      }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Criar Novo Namespace</DialogTitle>
@@ -1543,9 +1552,7 @@ export const NamespacesTab = ({
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <label htmlFor="namespace-name" className="text-sm font-medium">
-                Nome do Namespace
-              </label>
+              <Label htmlFor="namespace-name">Nome do Namespace</Label>
               <Input
                 id="namespace-name"
                 value={newNamespaceName}
@@ -1557,6 +1564,32 @@ export const NamespacesTab = ({
                   }
                 }}
               />
+            </div>
+            <div className="space-y-2">
+              <Label>Tipo de Node</Label>
+              <RadioGroup
+                value={isSpotInstance ? "spot" : "normal"}
+                onValueChange={(value) => setIsSpotInstance(value === "spot")}
+                className="flex flex-col gap-2"
+              >
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="normal" id="node-normal" />
+                  <Label htmlFor="node-normal" className="cursor-pointer font-normal">
+                    Normal
+                  </Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="spot" id="node-spot" />
+                  <Label htmlFor="node-spot" className="cursor-pointer font-normal">
+                    Spot Instance
+                  </Label>
+                </div>
+              </RadioGroup>
+              {isSpotInstance && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Adiciona tolerations para pods rodarem em nodes Spot do Azure
+                </p>
+              )}
             </div>
           </div>
           <div className="flex justify-end gap-2">
