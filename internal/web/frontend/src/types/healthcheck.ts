@@ -1,7 +1,7 @@
 // Health Checking Types - Mirror do backend Go
 
 // Tipos de recursos suportados
-export type ResourceType = "Deployment" | "Service" | "ConfigMap" | "Secret";
+export type ResourceType = "Deployment" | "Service" | "ConfigMap" | "Secret" | "HPA";
 
 // Tipos de serviços externos
 export type ServiceType =
@@ -35,6 +35,7 @@ export interface HealthCheckRequest {
   check_services: boolean;
   check_configs: boolean;
   check_events: boolean; // Verificar eventos K8s (FailedScheduling, etc.)
+  check_hpas: boolean;   // Verificar HPAs (min=max, métricas, scaling)
 
   // Timeout geral (segundos) - usado como fallback
   timeout: number;
@@ -44,6 +45,7 @@ export interface HealthCheckRequest {
   timeout_services?: number;    // Padrão: 45s
   timeout_configs?: number;     // Padrão: 30s
   timeout_events?: number;      // Padrão: 30s
+  timeout_hpas?: number;        // Padrão: 45s
 
   // Paralelismo máximo (opcional)
   max_parallel?: number;
@@ -66,6 +68,7 @@ export interface HealthCheckResult {
   service_results: ServiceHealth[];
   config_results: ConfigHealth[];
   event_results: EventHealth[]; // Eventos K8s críticos
+  hpa_results: HPAHealth[];     // HPAs com problemas de configuração
 
   // Resumo
   total_checks: number;
@@ -165,6 +168,80 @@ export interface EventHealth {
   // Sugestões de correção
   suggestions: string[];
   status: HealthStatus;     // Para compatibilidade com outros checkers
+}
+
+// HPA Scaling Issue
+export interface HPAScalingIssue {
+  type: string;        // "config", "metric", "scaling", "target"
+  description: string;
+  severity: string;    // "warning", "critical"
+}
+
+// HPA Metric Config
+export interface HPAMetricConfig {
+  type: string;              // "Resource", "Pods", "Object", "External"
+  name: string;              // "cpu", "memory", "custom-metric"
+  target_type: string;       // "Utilization", "Value", "AverageValue"
+  target_value: string;      // "80%", "100m", "1000"
+  current_value?: string;    // Valor atual se disponível
+  is_healthy: boolean;
+  error_message?: string;
+}
+
+// HPA Scaling Event
+export interface HPAScalingEvent {
+  timestamp: string;    // ISO timestamp
+  type: string;         // "ScaledUp", "ScaledDown", "FailedScaling"
+  old_replicas: number;
+  new_replicas: number;
+  reason: string;
+  message: string;
+}
+
+// Health de HPA (HorizontalPodAutoscaler)
+export interface HPAHealth {
+  name: string;
+  namespace: string;
+  status: HealthStatus;
+
+  // Target Reference
+  target_kind: string;    // "Deployment", "StatefulSet", etc
+  target_name: string;
+  target_exists: boolean;
+
+  // Configuração de Réplicas
+  min_replicas: number;
+  max_replicas: number;
+  current_replicas: number;
+  desired_replicas: number;
+
+  // Flags de Problemas
+  is_min_equals_max: boolean;      // min == max (não escala)
+  is_max_too_low: boolean;         // max < 3 (pouca flexibilidade)
+  is_at_max_replicas: boolean;     // current == max (pode precisar escalar mais)
+  is_at_min_replicas: boolean;     // current == min
+  has_scaling_disabled: boolean;   // Annotations que desabilitam scaling
+
+  // Métricas Configuradas
+  metrics: HPAMetricConfig[];
+  metrics_count: number;
+  metrics_errors: number;
+
+  // Comportamento de Scaling
+  scale_up_stabilization_seconds?: number;
+  scale_down_stabilization_seconds?: number;
+
+  // Eventos Recentes de Scaling
+  recent_scaling_events?: HPAScalingEvent[];
+  last_scale_time?: string; // ISO timestamp
+
+  // Problemas Detectados
+  issues: HPAScalingIssue[];
+
+  // Mensagem e Sugestões
+  message: string;
+  suggestions: string[];
+  checked_at: string; // ISO timestamp
 }
 
 // Progress de health check (SSE)

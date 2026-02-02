@@ -71,12 +71,14 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   const [checkServices, setCheckServices] = useState(true);
   const [checkConfigs, setCheckConfigs] = useState(true);
   const [checkEvents, setCheckEvents] = useState(false); // Verificar eventos K8s (desabilitado por padrão)
+  const [checkHPAs, setCheckHPAs] = useState(true);      // Verificar HPAs (habilitado por padrão)
   const [timeout, setTimeout] = useState(30); // Timeout geral (fallback)
   const [showAdvancedTimeouts, setShowAdvancedTimeouts] = useState(false);
   const [timeoutDeployments, setTimeoutDeployments] = useState(60); // Padrão: 60s
   const [timeoutServices, setTimeoutServices] = useState(45);      // Padrão: 45s
   const [timeoutConfigs, setTimeoutConfigs] = useState(30);        // Padrão: 30s
   const [timeoutEvents, setTimeoutEvents] = useState(30);          // Padrão: 30s
+  const [timeoutHPAs, setTimeoutHPAs] = useState(45);              // Padrão: 45s
   const [applyFilters, setApplyFilters] = useState(true); // ✅ Filtrar falsos positivos por padrão
 
   // Modal state
@@ -247,7 +249,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       return;
     }
 
-    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents) {
+    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents && !checkHPAs) {
       console.error("[HealthCheckingTab] No check types selected");
       toast.error("Selecione pelo menos um tipo de check");
       return;
@@ -266,12 +268,14 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       check_services: checkServices,
       check_configs: checkConfigs,
       check_events: checkEvents,
+      check_hpas: checkHPAs,
       timeout: timeout,
       // Timeouts específicos (se modo avançado habilitado)
       timeout_deployments: showAdvancedTimeouts ? timeoutDeployments : undefined,
       timeout_services: showAdvancedTimeouts ? timeoutServices : undefined,
       timeout_configs: showAdvancedTimeouts ? timeoutConfigs : undefined,
       timeout_events: showAdvancedTimeouts ? timeoutEvents : undefined,
+      timeout_hpas: showAdvancedTimeouts ? timeoutHPAs : undefined,
       apply_filters: applyFilters, // ✅ Aplicar filtros de falsos positivos
     };
 
@@ -519,6 +523,19 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                         FailedScheduling, OOM, etc.
                       </Badge>
                     </div>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="check-hpas"
+                        checked={checkHPAs}
+                        onCheckedChange={(checked) => setCheckHPAs(checked as boolean)}
+                      />
+                      <Label htmlFor="check-hpas" className="text-sm cursor-pointer">
+                        Validar HPAs
+                      </Label>
+                      <Badge variant="outline" className="text-xs">
+                        min=max, métricas, scaling
+                      </Badge>
+                    </div>
                   </CardContent>
                 </Card>
 
@@ -648,6 +665,19 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                             onChange={(e) => setTimeoutEvents(parseInt(e.target.value) || 30)}
                             className="h-7 text-xs"
                             disabled={!checkEvents}
+                          />
+                          <span className="text-xs text-muted-foreground">s</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Label className="text-xs w-24">HPAs:</Label>
+                          <Input
+                            type="number"
+                            min={10}
+                            max={300}
+                            value={timeoutHPAs}
+                            onChange={(e) => setTimeoutHPAs(parseInt(e.target.value) || 45)}
+                            className="h-7 text-xs"
+                            disabled={!checkHPAs}
                           />
                           <span className="text-xs text-muted-foreground">s</span>
                         </div>
