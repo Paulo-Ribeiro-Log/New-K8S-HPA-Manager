@@ -792,7 +792,8 @@ func prepareNamespaceApplyPayload(yamlContent, enforceName string) ([]byte, stri
 }
 
 // CreateNamespace cria um novo namespace no cluster
-func (c *Client) CreateNamespace(ctx context.Context, name string) error {
+// Se isSpotInstance for true, adiciona annotations para tolerar spot instances do Azure
+func (c *Client) CreateNamespace(ctx context.Context, name string, isSpotInstance bool) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("namespace name cannot be empty")
 	}
@@ -802,6 +803,13 @@ func (c *Client) CreateNamespace(ctx context.Context, name string) error {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
+	}
+
+	// Adicionar annotations para spot instances se solicitado
+	if isSpotInstance {
+		namespace.ObjectMeta.Annotations = map[string]string{
+			"scheduler.alpha.kubernetes.io/defaultTolerations": `[{"Key": "kubernetes.azure.com/scalesetpriority","Operator": "Equal", "Value": "spot", "Effect": "NoSchedule"}]`,
+		}
 	}
 
 	// Criar namespace

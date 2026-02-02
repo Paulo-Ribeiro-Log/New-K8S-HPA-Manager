@@ -69,6 +69,10 @@ import type {
   TokenStatusResponse,
   SaveTokenRequest,
   SaveTokenResponse,
+  ServiceNowImportResponse,
+  ServiceNowParseResponse,
+  ServiceNowPlaywrightResponse,
+  PlaywrightStatusResponse,
 } from "./types";
 
 import type {
@@ -284,12 +288,12 @@ class APIClient {
     );
   }
 
-  async createNamespace(cluster: string, name: string): Promise<{ success: boolean; message: string }> {
+  async createNamespace(cluster: string, name: string, isSpotInstance: boolean = false): Promise<{ success: boolean; message: string }> {
     return await this.request<{ success: boolean; message: string }>(
       `/namespaces/${encodeURIComponent(cluster)}`,
-      { 
+      {
         method: "POST",
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name, isSpotInstance })
       }
     );
   }
