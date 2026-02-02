@@ -97,6 +97,308 @@ var WarningEventReasons = map[string]bool{
 	"NodeHasNoDiskPressure":   false, // Ignorar (é positivo)
 }
 
+// humanizeEventMessage transforma mensagens técnicas do Kubernetes em mensagens legíveis
+// Mantém dados técnicos importantes mas formata de forma mais clara
+func humanizeEventMessage(reason, originalMessage, involvedKind, involvedName, namespace string) string {
+	// === PRESSURE (Node-Problem-Detector) - Casos mais complexos primeiro ===
+	if strings.Contains(reason, "PressureIGDiagnostics") {
+		return formatPressureMessage(reason, originalMessage, involvedName)
+	}
+
+	// Mapeamento de reasons para mensagens humanizadas
+	switch reason {
+	// === SCHEDULING ===
+	case "FailedScheduling":
+		return formatSchedulingMessage(originalMessage, involvedName, namespace)
+
+	// === CONTAINER/POD ===
+	case "BackOff", "CrashLoopBackOff":
+		restarts := extractValue(originalMessage, "restart count", "")
+		if restarts != "" {
+			return fmt.Sprintf("CRASHLOOP: Pod %s/%s reiniciando em loop (restarts: %s). Verificar logs: kubectl logs %s -n %s --previous", namespace, involvedName, restarts, involvedName, namespace)
+		}
+		return fmt.Sprintf("CRASHLOOP: Pod %s/%s reiniciando em loop. Verificar logs: kubectl logs %s -n %s --previous", namespace, involvedName, involvedName, namespace)
+
+	case "Failed":
+		return fmt.Sprintf("FALHA: %s %s/%s - %s", involvedKind, namespace, involvedName, cleanMessage(originalMessage, 200))
+
+	case "FailedCreate":
+		return fmt.Sprintf("FALHA AO CRIAR: Pod %s/%s - %s", namespace, involvedName, cleanMessage(originalMessage, 150))
+
+	case "FailedKillPod":
+		return fmt.Sprintf("FALHA AO ENCERRAR: Pod %s/%s nao responde a SIGTERM. %s", namespace, involvedName, cleanMessage(originalMessage, 100))
+
+	// === IMAGE ===
+	case "ErrImagePull", "ImagePullBackOff":
+		return formatImagePullMessage(originalMessage, involvedName, namespace)
+
+	case "InvalidImageName":
+		return fmt.Sprintf("IMAGEM INVALIDA: %s/%s - nome de imagem mal formatado. %s", namespace, involvedName, cleanMessage(originalMessage, 100))
+
+	// === VOLUME/MOUNT ===
+	case "FailedMount":
+		return fmt.Sprintf("FALHA MOUNT: %s/%s - %s", namespace, involvedName, cleanMessage(originalMessage, 200))
+
+	case "FailedAttachVolume":
+		return fmt.Sprintf("FALHA ATTACH VOLUME: %s/%s - volume pode estar em uso. %s", namespace, involvedName, cleanMessage(originalMessage, 150))
+
+	// === NODE ===
+	case "NodeNotReady":
+		return fmt.Sprintf("NODE NAO PRONTO: %s - kubelet pode estar com problemas. %s", involvedName, cleanMessage(originalMessage, 150))
+
+	case "NodeNotSchedulable":
+		return fmt.Sprintf("NODE CORDONED: %s - nao recebe novos pods. %s", involvedName, cleanMessage(originalMessage, 100))
+
+	case "Rebooted":
+		return fmt.Sprintf("NODE REINICIADO: %s - pods foram reagendados. %s", involvedName, cleanMessage(originalMessage, 100))
+
+	// === RESOURCES ===
+	case "InsufficientCPU":
+		return fmt.Sprintf("CPU INSUFICIENTE: Pod %s/%s - cluster sem capacidade. %s", namespace, involvedName, cleanMessage(originalMessage, 150))
+
+	case "InsufficientMemory":
+		return fmt.Sprintf("MEMORIA INSUFICIENTE: Pod %s/%s - cluster sem capacidade. %s", namespace, involvedName, cleanMessage(originalMessage, 150))
+
+	case "OutOfMemory", "OOMKilling", "OOMKilled":
+		return fmt.Sprintf("OOM KILL: Container em %s/%s encerrado por falta de memoria. Aumentar memory limits.", namespace, involvedName)
+
+	case "OutOfDisk":
+		return fmt.Sprintf("DISCO CHEIO: Node %s sem espaco. Limpar ou expandir disco.", involvedName)
+
+	// === PROBES ===
+	case "Unhealthy":
+		return formatProbeMessage(originalMessage, involvedName, namespace)
+
+	// === EVICTION ===
+	case "Evicted":
+		evictReason := extractValue(originalMessage, "reason", "pressao de recursos")
+		return fmt.Sprintf("EVICTED: Pod %s/%s removido do node. Motivo: %s", namespace, involvedName, evictReason)
+
+	case "Preempted":
+		return fmt.Sprintf("PREEMPTED: Pod %s/%s removido para dar lugar a pod de maior prioridade.", namespace, involvedName)
+
+	// === NETWORK ===
+	case "NetworkNotReady":
+		return fmt.Sprintf("REDE NAO PRONTA: %s/%s - CNI pode estar com problemas. %s", namespace, involvedName, cleanMessage(originalMessage, 150))
+
+	// === DEFAULT ===
+	default:
+		return fmt.Sprintf("%s: %s %s/%s - %s", reason, involvedKind, namespace, involvedName, cleanMessage(originalMessage, 250))
+	}
+}
+
+// formatPressureMessage formata mensagens de pressão de recursos (CPU/Memory/Disk)
+func formatPressureMessage(reason, originalMessage, nodeName string) string {
+	var sb strings.Builder
+
+	// Identificar tipo de pressão
+	pressureType := "RECURSOS"
+	if strings.Contains(reason, "CPU") {
+		pressureType = "CPU"
+	} else if strings.Contains(reason, "Memory") {
+		pressureType = "MEMORIA"
+	} else if strings.Contains(reason, "Disk") {
+		pressureType = "DISCO"
+	}
+
+	sb.WriteString(fmt.Sprintf("PRESSAO DE %s no Node %s", pressureType, nodeName))
+
+	// Extrair métricas relevantes
+	metrics := []string{}
+
+	// CPU cores
+	if cores := extractValue(originalMessage, "Number of CPU cores:", ""); cores != "" {
+		metrics = append(metrics, fmt.Sprintf("Cores: %s", cores))
+	}
+
+	// Load
+	if load := extractValue(originalMessage, "/proc/loadavg:", ""); load != "" {
+		threshold := extractValue(originalMessage, "Load threshold:", "")
+		if threshold != "" {
+			metrics = append(metrics, fmt.Sprintf("Load: %s (threshold: %s)", load, threshold))
+		} else {
+			metrics = append(metrics, fmt.Sprintf("Load: %s", load))
+		}
+	}
+
+	// PSI CPU
+	if psiCPU := extractValue(originalMessage, "PSI CPU some avg300:", ""); psiCPU != "" {
+		metrics = append(metrics, fmt.Sprintf("PSI CPU: %s%%", psiCPU))
+	}
+
+	// PSI Memory
+	if psiMem := extractValue(originalMessage, "PSI Memory some avg300:", ""); psiMem != "" {
+		metrics = append(metrics, fmt.Sprintf("PSI Memory: %s%%", psiMem))
+	}
+
+	// CPU stats
+	if userCPU := extractValue(originalMessage, "user:", ""); userCPU != "" {
+		systemCPU := extractValue(originalMessage, "ystem:", "") // "system:" pode vir como "ystem:"
+		idleCPU := extractValue(originalMessage, "dle:", "")
+		if systemCPU != "" && idleCPU != "" {
+			metrics = append(metrics, fmt.Sprintf("CPU: user %s, sys %s, idle %s", userCPU, systemCPU, idleCPU))
+		} else {
+			metrics = append(metrics, fmt.Sprintf("CPU user: %s", userCPU))
+		}
+	}
+
+	// Memory stats
+	if memUsed := extractValue(originalMessage, "MemUsed:", ""); memUsed != "" {
+		memTotal := extractValue(originalMessage, "MemTotal:", "")
+		if memTotal != "" {
+			metrics = append(metrics, fmt.Sprintf("Mem: %s / %s", memUsed, memTotal))
+		}
+	}
+
+	// Adicionar métricas à mensagem
+	if len(metrics) > 0 {
+		sb.WriteString(" | ")
+		sb.WriteString(strings.Join(metrics, " | "))
+	}
+
+	// Adicionar recomendação
+	sb.WriteString(" | Acao: escalar nodes ou reduzir workloads")
+
+	return sb.String()
+}
+
+// formatSchedulingMessage formata mensagens de falha de agendamento
+func formatSchedulingMessage(originalMessage, podName, namespace string) string {
+	var reason string
+
+	if strings.Contains(originalMessage, "insufficient cpu") {
+		cpuNeeded := extractValue(originalMessage, "cpu", "")
+		reason = fmt.Sprintf("CPU insuficiente no cluster (necessario: %s)", cpuNeeded)
+	} else if strings.Contains(originalMessage, "insufficient memory") {
+		memNeeded := extractValue(originalMessage, "memory", "")
+		reason = fmt.Sprintf("Memoria insuficiente no cluster (necessario: %s)", memNeeded)
+	} else if strings.Contains(originalMessage, "node(s) had taint") {
+		reason = "Nodes tem taints que o pod nao tolera"
+	} else if strings.Contains(originalMessage, "node(s) didn't match") {
+		reason = "Nenhum node atende nodeSelector/affinity"
+	} else if strings.Contains(originalMessage, "PersistentVolumeClaim") {
+		reason = "PVC nao encontrado ou nao bound"
+	} else {
+		reason = cleanMessage(originalMessage, 150)
+	}
+
+	return fmt.Sprintf("SCHEDULING FALHOU: Pod %s/%s - %s", namespace, podName, reason)
+}
+
+// formatImagePullMessage formata mensagens de erro ao baixar imagem
+func formatImagePullMessage(originalMessage, podName, namespace string) string {
+	// Extrair nome da imagem se possível
+	image := extractValue(originalMessage, "image", "")
+
+	if strings.Contains(originalMessage, "not found") {
+		if image != "" {
+			return fmt.Sprintf("IMAGEM NAO ENCONTRADA: %s/%s - imagem '%s' nao existe no registry", namespace, podName, image)
+		}
+		return fmt.Sprintf("IMAGEM NAO ENCONTRADA: %s/%s - verificar nome e tag da imagem", namespace, podName)
+	}
+
+	if strings.Contains(originalMessage, "unauthorized") || strings.Contains(originalMessage, "denied") {
+		return fmt.Sprintf("SEM PERMISSAO: %s/%s - verificar ImagePullSecrets e credenciais do registry", namespace, podName)
+	}
+
+	if strings.Contains(originalMessage, "timeout") {
+		return fmt.Sprintf("TIMEOUT: %s/%s - timeout ao baixar imagem. Verificar conectividade com registry", namespace, podName)
+	}
+
+	return fmt.Sprintf("ERRO PULL IMAGEM: %s/%s - %s", namespace, podName, cleanMessage(originalMessage, 150))
+}
+
+// formatProbeMessage formata mensagens de falha de probes
+func formatProbeMessage(originalMessage, podName, namespace string) string {
+	probeType := "PROBE"
+	if strings.Contains(originalMessage, "Liveness") || strings.Contains(originalMessage, "liveness") {
+		probeType = "LIVENESS"
+	} else if strings.Contains(originalMessage, "Readiness") || strings.Contains(originalMessage, "readiness") {
+		probeType = "READINESS"
+	} else if strings.Contains(originalMessage, "Startup") || strings.Contains(originalMessage, "startup") {
+		probeType = "STARTUP"
+	}
+
+	// Extrair código HTTP se existir
+	httpCode := extractValue(originalMessage, "HTTP probe failed with statuscode:", "")
+	if httpCode != "" {
+		return fmt.Sprintf("%s FALHOU: Pod %s/%s retornou HTTP %s. Verificar endpoint de health", probeType, namespace, podName, httpCode)
+	}
+
+	// Extrair erro de conexão
+	if strings.Contains(originalMessage, "connection refused") {
+		return fmt.Sprintf("%s FALHOU: Pod %s/%s - conexao recusada. App pode nao estar escutando na porta correta", probeType, namespace, podName)
+	}
+
+	if strings.Contains(originalMessage, "timeout") {
+		return fmt.Sprintf("%s FALHOU: Pod %s/%s - timeout. Aumentar timeoutSeconds ou verificar performance da app", probeType, namespace, podName)
+	}
+
+	return fmt.Sprintf("%s FALHOU: Pod %s/%s - %s", probeType, namespace, podName, cleanMessage(originalMessage, 150))
+}
+
+// extractValue extrai um valor de uma mensagem baseado em um prefixo
+func extractValue(message, prefix, defaultVal string) string {
+	// Normalizar quebras de linha
+	msg := strings.ReplaceAll(message, "\\n", "\n")
+
+	idx := strings.Index(strings.ToLower(msg), strings.ToLower(prefix))
+	if idx == -1 {
+		return defaultVal
+	}
+
+	// Pegar substring após o prefixo
+	start := idx + len(prefix)
+	if start >= len(msg) {
+		return defaultVal
+	}
+
+	// Encontrar o fim do valor (próximo espaço, quebra de linha, ou fim da string)
+	substr := msg[start:]
+	substr = strings.TrimLeft(substr, " :")
+
+	// Encontrar fim do valor
+	end := len(substr)
+	for i, ch := range substr {
+		if ch == '\n' || ch == '\\' || ch == '|' {
+			end = i
+			break
+		}
+	}
+
+	value := strings.TrimSpace(substr[:end])
+	return value
+}
+
+// cleanMessage limpa uma mensagem removendo caracteres especiais (SEM truncar)
+func cleanMessage(msg string, _ int) string {
+	// Remover quebras de linha literais e reais
+	msg = strings.ReplaceAll(msg, "\\n", " | ")
+	msg = strings.ReplaceAll(msg, "\n", " | ")
+	msg = strings.ReplaceAll(msg, "\t", " ")
+	msg = strings.ReplaceAll(msg, "\r", "")
+
+	// Remover caracteres de formatação problemáticos do Go fmt
+	msg = strings.ReplaceAll(msg, "%!(MISSING)", "")
+	msg = strings.ReplaceAll(msg, "((MISSING)", "")
+	msg = strings.ReplaceAll(msg, "(MISSING)", "")
+	msg = strings.ReplaceAll(msg, "%!s", "")
+	msg = strings.ReplaceAll(msg, "%!i", "")
+	msg = strings.ReplaceAll(msg, "%!", "")
+	msg = strings.ReplaceAll(msg, "!(", "(")
+
+	// Remover espaços múltiplos
+	for strings.Contains(msg, "  ") {
+		msg = strings.ReplaceAll(msg, "  ", " ")
+	}
+	// Remover pipes múltiplos
+	for strings.Contains(msg, "| |") {
+		msg = strings.ReplaceAll(msg, "| |", "|")
+	}
+
+	return strings.TrimSpace(msg)
+}
+
 // EventChecker verifica eventos do Kubernetes
 type EventChecker struct {
 	// Tempo máximo para considerar eventos (padrão: 1 hora)
@@ -141,30 +443,15 @@ func (c *EventChecker) CheckAll(ctx context.Context, client kubernetes.Interface
 
 				// ✅ Publicar detalhes do evento encontrado via callback
 				if progressCallback != nil {
-					// Formatar mensagem com detalhes do evento
-					var statusIcon string
 					var eventStatus HealthStatus
 					if eventHealth.Severity == SeverityCritical {
-						statusIcon = "Critico"
 						eventStatus = StatusCritical
 					} else {
-						statusIcon = "Aviso"
 						eventStatus = StatusWarning
 					}
 
-					detailMsg := fmt.Sprintf("%s %s/%s: %s - %s",
-						statusIcon,
-						eventHealth.InvolvedKind,
-						eventHealth.InvolvedName,
-						eventHealth.Reason,
-						eventHealth.Message)
-
-					// Truncar mensagem se muito longa
-					if len(detailMsg) > 200 {
-						detailMsg = detailMsg[:197] + "..."
-					}
-
-					progressCallback(ns, eventHealth.Name, detailMsg, eventStatus, i+1, totalNamespaces)
+					// Usar a mensagem já humanizada do eventHealth
+					progressCallback(ns, eventHealth.Name, eventHealth.Message, eventStatus, i+1, totalNamespaces)
 				}
 			}
 		}
@@ -207,12 +494,21 @@ func (c *EventChecker) processEvent(event *corev1.Event) *EventHealth {
 		return nil // Ignorar eventos informativos
 	}
 
+	// Criar mensagem humanizada
+	humanizedMessage := humanizeEventMessage(
+		event.Reason,
+		event.Message,
+		event.InvolvedObject.Kind,
+		event.InvolvedObject.Name,
+		event.Namespace,
+	)
+
 	// Criar EventHealth
 	health := &EventHealth{
 		Name:           event.Name,
 		Namespace:      event.Namespace,
 		Reason:         event.Reason,
-		Message:        event.Message,
+		Message:        humanizedMessage, // Usar mensagem humanizada
 		Type:           event.Type,
 		Severity:       severity,
 		Count:          event.Count,
