@@ -20,12 +20,13 @@ import type {
   ServiceHealth,
   ConfigHealth,
   EventHealth,
+  HPAHealth,
   HealthStatus,
 } from "@/types/healthcheck";
 
 interface HealthCheckCardProps {
-  health: DeploymentHealth | ServiceHealth | ConfigHealth | EventHealth;
-  type: "deployment" | "service" | "config" | "event";
+  health: DeploymentHealth | ServiceHealth | ConfigHealth | EventHealth | HPAHealth;
+  type: "deployment" | "service" | "config" | "event" | "hpa";
   selectionMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: () => void;
@@ -216,6 +217,77 @@ export const HealthCheckCard = ({
             <div className="col-span-2 text-xs text-muted-foreground">
               <span className="font-medium">Período:</span>{" "}
               {new Date(event.first_timestamp).toLocaleTimeString()} - {new Date(event.last_timestamp).toLocaleTimeString()}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (type === "hpa") {
+      const hpa = health as HPAHealth;
+      return (
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          <div>
+            <span className="text-muted-foreground">Target:</span>{" "}
+            <span className="font-mono text-xs">{hpa.target_kind}/{hpa.target_name}</span>
+          </div>
+          <div>
+            <span className="text-muted-foreground">Target Existe:</span>{" "}
+            <span className={hpa.target_exists ? "text-green-600" : "text-red-600"}>
+              {hpa.target_exists ? "✓ Sim" : "✗ Não"}
+            </span>
+          </div>
+          <div>
+            <span className="text-muted-foreground">Réplicas:</span>{" "}
+            <span className="font-medium">
+              {hpa.current_replicas}/{hpa.desired_replicas}
+            </span>
+          </div>
+          <div>
+            <span className="text-muted-foreground">Min/Max:</span>{" "}
+            <span className={hpa.is_min_equals_max ? "text-yellow-600 font-bold" : "font-medium"}>
+              {hpa.min_replicas}/{hpa.max_replicas}
+            </span>
+            {hpa.is_min_equals_max && (
+              <span className="text-yellow-600 text-xs ml-1">(não escala)</span>
+            )}
+          </div>
+          <div>
+            <span className="text-muted-foreground">Métricas:</span>{" "}
+            <span className="font-medium">{hpa.metrics_count}</span>
+            {hpa.metrics_errors > 0 && (
+              <span className="text-red-600 text-xs ml-1">({hpa.metrics_errors} com erro)</span>
+            )}
+          </div>
+          {hpa.is_at_max_replicas && (
+            <div className="text-yellow-600">
+              <span className="font-medium">⚠️ No limite máximo</span>
+            </div>
+          )}
+          {hpa.is_max_too_low && (
+            <div className="text-yellow-600">
+              <span className="font-medium">⚠️ Max muito baixo ({`<`}3)</span>
+            </div>
+          )}
+          {hpa.has_scaling_disabled && (
+            <div className="col-span-2 text-yellow-600">
+              <span className="font-medium">⚠️ Scaling pode estar desabilitado</span>
+            </div>
+          )}
+          {hpa.issues && hpa.issues.length > 0 && (
+            <div className="col-span-2 mt-2 space-y-1">
+              {hpa.issues.map((issue, i) => (
+                <div
+                  key={i}
+                  className={`text-xs px-2 py-1 rounded ${
+                    issue.severity === "critical"
+                      ? "bg-red-100 text-red-700 dark:bg-red-950/30"
+                      : "bg-yellow-100 text-yellow-700 dark:bg-yellow-950/30"
+                  }`}
+                >
+                  [{issue.type}] {issue.description}
+                </div>
+              ))}
             </div>
           )}
         </div>

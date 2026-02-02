@@ -31,6 +31,7 @@ import {
   X,
   Filter,
   AlertTriangle,
+  TrendingUp,
 } from "lucide-react";
 import type { HealthCheckResult } from "@/types/healthcheck";
 import { HealthCheckCard } from "@/components/HealthCheckCard";
@@ -465,7 +466,7 @@ export const HealthCheckResultsPanel = ({
                       <CollapsibleContent>
                         <CardContent className="pt-0 border-t">
                           <Tabs defaultValue="deployments" className="mt-4">
-                            <TabsList className="grid w-full grid-cols-4">
+                            <TabsList className="grid w-full grid-cols-5">
                               <TabsTrigger value="deployments" className="gap-1 text-xs">
                                 <Server className="h-3 w-3" />
                                 Deploys ({result.deployment_results.length})
@@ -481,6 +482,10 @@ export const HealthCheckResultsPanel = ({
                               <TabsTrigger value="events" className="gap-1 text-xs">
                                 <AlertTriangle className="h-3 w-3" />
                                 Events ({result.event_results?.length || 0})
+                              </TabsTrigger>
+                              <TabsTrigger value="hpas" className="gap-1 text-xs">
+                                <TrendingUp className="h-3 w-3" />
+                                HPAs ({result.hpa_results?.length || 0})
                               </TabsTrigger>
                             </TabsList>
 
@@ -563,6 +568,28 @@ export const HealthCheckResultsPanel = ({
                                       key={i}
                                       health={event}
                                       type="event"
+                                      selectionMode={selectionMode}
+                                      isSelected={selectedAlerts.has(alertKey)}
+                                      onToggleSelect={() => toggleAlert(alertKey)}
+                                    />
+                                  );
+                                })
+                              )}
+                            </TabsContent>
+
+                            <TabsContent value="hpas" className="space-y-2 mt-3">
+                              {!result.hpa_results || result.hpa_results.length === 0 ? (
+                                <div className="text-center py-4 text-xs text-muted-foreground">
+                                  Nenhum HPA com problemas detectado
+                                </div>
+                              ) : (
+                                result.hpa_results.map((hpa, i) => {
+                                  const alertKey = `hpa-${result.cluster}-${hpa.namespace}-${hpa.name}`;
+                                  return (
+                                    <HealthCheckCard
+                                      key={i}
+                                      health={hpa}
+                                      type="hpa"
                                       selectionMode={selectionMode}
                                       isSelected={selectedAlerts.has(alertKey)}
                                       onToggleSelect={() => toggleAlert(alertKey)}

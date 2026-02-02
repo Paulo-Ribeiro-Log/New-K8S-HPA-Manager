@@ -50,6 +50,7 @@ type HealthCheckRequest struct {
 	CheckServices    bool `json:"check_services"`
 	CheckConfigs     bool `json:"check_configs"`
 	CheckEvents      bool `json:"check_events"` // Verificar eventos do Kubernetes (FailedScheduling, etc.)
+	CheckHPAs        bool `json:"check_hpas"`   // Verificar HPAs (min=max, métricas, scaling)
 
 	// Timeout geral (segundos) - usado como fallback se timeouts específicos não forem definidos
 	Timeout int `json:"timeout"` // Padrão: 30s
@@ -60,6 +61,7 @@ type HealthCheckRequest struct {
 	TimeoutServices    int `json:"timeout_services,omitempty"`    // Padrão: 45s (testes de conectividade)
 	TimeoutConfigs     int `json:"timeout_configs,omitempty"`     // Padrão: 30s (validação rápida)
 	TimeoutEvents      int `json:"timeout_events,omitempty"`      // Padrão: 30s (consulta de eventos)
+	TimeoutHPAs        int `json:"timeout_hpas,omitempty"`        // Padrão: 45s (validação de HPAs)
 
 	// Paralelismo (apenas para múltiplos clusters)
 	// Se Clusters > 1: mínimo 2 workers, máximo = NumCPU ou total de clusters
@@ -83,6 +85,7 @@ type HealthCheckResult struct {
 	ServiceResults    []ServiceHealth    `json:"service_results"`
 	ConfigResults     []ConfigHealth     `json:"config_results"`
 	EventResults      []EventHealth      `json:"event_results"` // Eventos K8s críticos (FailedScheduling, etc.)
+	HPAResults        []HPAHealth        `json:"hpa_results"`   // HPAs com problemas de configuração
 
 	// Resumo
 	TotalChecks   int          `json:"total_checks"`
@@ -216,6 +219,80 @@ type ConfigHealth struct {
 	CheckedAt   time.Time `json:"checked_at"`
 }
 
+// HPAScalingIssue representa um problema na configuração do HPA
+type HPAScalingIssue struct {
+	Type        string `json:"type"`        // "config", "metric", "scaling", "target"
+	Description string `json:"description"`
+	Severity    string `json:"severity"` // "warning", "critical"
+}
+
+// HPAMetricConfig configuração de métrica do HPA
+type HPAMetricConfig struct {
+	Type           string `json:"type"`                      // "Resource", "Pods", "Object", "External"
+	Name           string `json:"name"`                      // "cpu", "memory", "custom-metric"
+	TargetType     string `json:"target_type"`               // "Utilization", "Value", "AverageValue"
+	TargetValue    string `json:"target_value"`              // "80%", "100m", "1000"
+	CurrentValue   string `json:"current_value,omitempty"`   // Valor atual se disponível
+	IsHealthy      bool   `json:"is_healthy"`                // Métrica funcionando corretamente
+	ErrorMessage   string `json:"error_message,omitempty"`   // Mensagem de erro se métrica falhar
+}
+
+// HPAScalingEvent evento de scaling recente
+type HPAScalingEvent struct {
+	Timestamp   time.Time `json:"timestamp"`
+	Type        string    `json:"type"`       // "ScaledUp", "ScaledDown", "FailedScaling"
+	OldReplicas int32     `json:"old_replicas"`
+	NewReplicas int32     `json:"new_replicas"`
+	Reason      string    `json:"reason"`
+	Message     string    `json:"message"`
+}
+
+// HPAHealth saúde de um HorizontalPodAutoscaler
+type HPAHealth struct {
+	Name      string       `json:"name"`
+	Namespace string       `json:"namespace"`
+	Status    HealthStatus `json:"status"`
+
+	// Target Reference
+	TargetKind string `json:"target_kind"` // "Deployment", "StatefulSet", etc
+	TargetName string `json:"target_name"`
+	TargetExists bool  `json:"target_exists"` // Target resource existe?
+
+	// Configuração de Réplicas
+	MinReplicas     int32 `json:"min_replicas"`
+	MaxReplicas     int32 `json:"max_replicas"`
+	CurrentReplicas int32 `json:"current_replicas"`
+	DesiredReplicas int32 `json:"desired_replicas"`
+
+	// Flags de Problemas
+	IsMinEqualsMax     bool `json:"is_min_equals_max"`      // min == max (não escala)
+	IsMaxTooLow        bool `json:"is_max_too_low"`         // max < 3 (pouca flexibilidade)
+	IsAtMaxReplicas    bool `json:"is_at_max_replicas"`     // current == max (pode precisar escalar mais)
+	IsAtMinReplicas    bool `json:"is_at_min_replicas"`     // current == min
+	HasScalingDisabled bool `json:"has_scaling_disabled"`   // Annotations que desabilitam scaling
+
+	// Métricas Configuradas
+	Metrics       []HPAMetricConfig `json:"metrics"`
+	MetricsCount  int               `json:"metrics_count"`
+	MetricsErrors int               `json:"metrics_errors"` // Quantas métricas com erro
+
+	// Comportamento de Scaling
+	ScaleUpStabilization   int32 `json:"scale_up_stabilization_seconds,omitempty"`   // Período de estabilização para scale up
+	ScaleDownStabilization int32 `json:"scale_down_stabilization_seconds,omitempty"` // Período de estabilização para scale down
+
+	// Eventos Recentes de Scaling
+	RecentScalingEvents []HPAScalingEvent `json:"recent_scaling_events,omitempty"`
+	LastScaleTime       *time.Time        `json:"last_scale_time,omitempty"`
+
+	// Problemas Detectados
+	Issues []HPAScalingIssue `json:"issues,omitempty"`
+
+	// Mensagem e Sugestões
+	Message     string    `json:"message"`
+	Suggestions []string  `json:"suggestions"`
+	CheckedAt   time.Time `json:"checked_at"`
+}
+
 // HealthCheckProgress progresso de health check (SSE)
 type HealthCheckProgress struct {
 	SessionID string       `json:"session_id"`
@@ -234,6 +311,7 @@ const (
 	DefaultTimeoutServices    = 45 // segundos (testes de conectividade)
 	DefaultTimeoutConfigs     = 30 // segundos (validação rápida)
 	DefaultTimeoutEvents      = 30 // segundos (consulta de eventos)
+	DefaultTimeoutHPAs        = 45 // segundos (validação de HPAs + eventos)
 )
 
 // GetTimeoutDeployments retorna o timeout para deployments com fallback
@@ -278,4 +356,15 @@ func (r *HealthCheckRequest) GetTimeoutEvents() int {
 		return r.Timeout
 	}
 	return DefaultTimeoutEvents
+}
+
+// GetTimeoutHPAs retorna o timeout para HPAs com fallback
+func (r *HealthCheckRequest) GetTimeoutHPAs() int {
+	if r.TimeoutHPAs > 0 {
+		return r.TimeoutHPAs
+	}
+	if r.Timeout > 0 {
+		return r.Timeout
+	}
+	return DefaultTimeoutHPAs
 }
