@@ -231,9 +231,9 @@ func (c *ConfigChecker) validateConfigMap(namespace, name string, data map[strin
 	// Verificar se está vazio
 	if len(data) == 0 {
 		health.Status = StatusWarning
-		health.Message = "ConfigMap vazio (sem chaves)"
-		health.Suggestions = append(health.Suggestions, "ConfigMap não contém dados úteis")
-		health.Suggestions = append(health.Suggestions, "Considerar deletar se não estiver em uso")
+		health.Message = fmt.Sprintf("CONFIGMAP VAZIO: %s/%s nao contem nenhuma chave. Se estiver em uso, aplicacao pode falhar ao ler configuracoes.", namespace, name)
+		health.Suggestions = append(health.Suggestions, "Verificar se ConfigMap deveria conter dados de configuracao")
+		health.Suggestions = append(health.Suggestions, "Se nao estiver em uso, considerar deletar para manter cluster limpo")
 		return health
 	}
 
@@ -261,12 +261,12 @@ func (c *ConfigChecker) validateConfigMap(namespace, name string, data map[strin
 	// Determinar status
 	if len(invalidValues) > 0 {
 		health.Status = StatusWarning
-		health.Message = fmt.Sprintf("ConfigMap com %d valores inválidos ou vazios", len(invalidValues))
-		health.Suggestions = append(health.Suggestions, "Verificar valores vazios ou inválidos")
+		health.Message = fmt.Sprintf("CONFIGMAP COM PROBLEMAS: %s/%s tem %d valor(es) invalido(s) ou vazio(s): %s. Aplicacao pode nao funcionar corretamente.", namespace, name, len(invalidValues), strings.Join(invalidValues, ", "))
+		health.Suggestions = append(health.Suggestions, "Corrigir valores vazios ou invalidos no ConfigMap")
 		health.Suggestions = append(health.Suggestions, fmt.Sprintf("kubectl describe configmap %s -n %s", name, namespace))
 	} else {
 		health.Status = StatusHealthy
-		health.Message = "ConfigMap validado com sucesso"
+		health.Message = fmt.Sprintf("OK: ConfigMap %s/%s validado com sucesso", namespace, name)
 	}
 
 	return health
@@ -286,9 +286,9 @@ func (c *ConfigChecker) validateSecret(namespace, name string, data map[string]s
 	// Verificar se está vazio
 	if len(data) == 0 {
 		health.Status = StatusWarning
-		health.Message = "Secret vazio (sem chaves)"
-		health.Suggestions = append(health.Suggestions, "Secret não contém dados úteis")
-		health.Suggestions = append(health.Suggestions, "Considerar deletar se não estiver em uso")
+		health.Message = fmt.Sprintf("SECRET VAZIO: %s/%s nao contem nenhuma chave. Se estiver em uso, aplicacao pode falhar ao ler credenciais.", namespace, name)
+		health.Suggestions = append(health.Suggestions, "Verificar se Secret deveria conter credenciais ou certificados")
+		health.Suggestions = append(health.Suggestions, "Se nao estiver em uso, considerar deletar para manter cluster limpo")
 		return health
 	}
 
@@ -323,13 +323,13 @@ func (c *ConfigChecker) validateSecret(namespace, name string, data map[string]s
 	// Determinar status
 	if len(invalidValues) > 0 {
 		health.Status = StatusWarning
-		health.Message = fmt.Sprintf("Secret com %d valores inválidos ou vazios", len(invalidValues))
-		health.Suggestions = append(health.Suggestions, "Verificar valores vazios ou credenciais inválidas")
-		health.Suggestions = append(health.Suggestions, fmt.Sprintf("kubectl describe secret %s -n %s", name, namespace))
-		health.Suggestions = append(health.Suggestions, "ATENÇÃO: Secrets podem conter credenciais sensíveis")
+		health.Message = fmt.Sprintf("SECRET COM PROBLEMAS: %s/%s tem %d valor(es) invalido(s) ou vazio(s): %s. Credenciais podem estar incorretas.", namespace, name, len(invalidValues), strings.Join(invalidValues, ", "))
+		health.Suggestions = append(health.Suggestions, "Corrigir valores vazios ou credenciais invalidas no Secret")
+		health.Suggestions = append(health.Suggestions, fmt.Sprintf("kubectl get secret %s -n %s -o yaml", name, namespace))
+		health.Suggestions = append(health.Suggestions, "ATENCAO: Secrets contem credenciais sensiveis - nao expor em logs")
 	} else {
 		health.Status = StatusHealthy
-		health.Message = "Secret validado com sucesso"
+		health.Message = fmt.Sprintf("OK: Secret %s/%s validado com sucesso", namespace, name)
 	}
 
 	return health

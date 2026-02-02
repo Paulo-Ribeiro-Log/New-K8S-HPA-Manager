@@ -194,11 +194,7 @@ func (sc *ServiceChecker) checkAllOptimized(ctx context.Context, client kubernet
 					progress++
 
 					if progressCallback != nil {
-						msg := health.Message
-						if len(msg) > 80 {
-							msg = msg[:80] + "..."
-						}
-						progressCallback(health.Namespace, health.Name, msg, health.Status, progress, totalServices)
+						progressCallback(health.Namespace, health.Name, health.Message, health.Status, progress, totalServices)
 					}
 				}
 				mu.Unlock()
@@ -467,15 +463,15 @@ func (sc *ServiceChecker) processResult(br batchResult) ServiceHealth {
 	if br.success {
 		health.Status = StatusHealthy
 		health.Reachable = true
-		health.Message = fmt.Sprintf("Conectado com sucesso (%dms)", br.latency)
+		health.Message = fmt.Sprintf("OK: Service %s/%s respondeu em %dms na porta %d", br.target.namespace, br.target.name, br.latency, br.target.port)
 	} else {
 		health.Status = StatusCritical
 		health.Reachable = false
 		health.ConnectionError = br.output
-		health.Message = fmt.Sprintf("Falha na conexão: %s", strings.TrimSpace(br.output))
+		health.Message = fmt.Sprintf("CONEXAO RECUSADA: Service %s/%s na porta %d nao responde. Erro: %s", br.target.namespace, br.target.name, br.target.port, strings.TrimSpace(br.output))
 		health.Suggestions = append(health.Suggestions,
-			"Verificar se o serviço está rodando",
-			"Validar NetworkPolicies do namespace",
+			"Verificar se os pods do servico estao rodando e saudaveis",
+			"Validar se NetworkPolicies permitem trafego neste namespace",
 			fmt.Sprintf("kubectl get endpoints %s -n %s", br.target.name, br.target.namespace))
 	}
 
@@ -543,7 +539,7 @@ func (sc *ServiceChecker) checkServiceEndpoints(ctx context.Context, client kube
 	endpoints, err := client.CoreV1().Endpoints(target.namespace).Get(ctx, target.name, metav1.GetOptions{})
 	if err != nil {
 		health.Status = StatusWarning
-		health.Message = fmt.Sprintf("Não foi possível verificar endpoints: %v", err)
+		health.Message = fmt.Sprintf("ERRO AO VERIFICAR: Service %s/%s - nao foi possivel obter endpoints: %v", target.namespace, target.name, err)
 		return health
 	}
 
@@ -556,12 +552,12 @@ func (sc *ServiceChecker) checkServiceEndpoints(ctx context.Context, client kube
 	if activeEndpoints > 0 {
 		health.Status = StatusHealthy
 		health.Reachable = true
-		health.Message = fmt.Sprintf("Service com %d endpoint(s) ativo(s)", activeEndpoints)
+		health.Message = fmt.Sprintf("OK: Service %s/%s tem %d endpoint(s) ativo(s) na porta %d", target.namespace, target.name, activeEndpoints, target.port)
 	} else {
 		health.Status = StatusWarning
-		health.Message = "Service sem endpoints ativos"
+		health.Message = fmt.Sprintf("SEM ENDPOINTS: Service %s/%s nao tem pods ativos para receber trafico. Verificar se deployment esta saudavel.", target.namespace, target.name)
 		health.Suggestions = append(health.Suggestions,
-			"Verificar se há pods com os labels corretos",
+			"Verificar se ha pods com os labels que o Service espera (selector)",
 			fmt.Sprintf("kubectl get endpoints %s -n %s -o yaml", target.name, target.namespace))
 	}
 
