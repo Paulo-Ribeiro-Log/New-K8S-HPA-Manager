@@ -51,6 +51,7 @@ type HealthCheckRequest struct {
 	CheckConfigs     bool `json:"check_configs"`
 	CheckEvents      bool `json:"check_events"` // Verificar eventos do Kubernetes (FailedScheduling, etc.)
 	CheckHPAs        bool `json:"check_hpas"`   // Verificar HPAs (min=max, métricas, scaling)
+	CheckPVCs        bool `json:"check_pvcs"`   // Verificar PersistentVolumeClaims (status, storage class)
 
 	// Timeout geral (segundos) - usado como fallback se timeouts específicos não forem definidos
 	Timeout int `json:"timeout"` // Padrão: 30s
@@ -62,6 +63,7 @@ type HealthCheckRequest struct {
 	TimeoutConfigs     int `json:"timeout_configs,omitempty"`     // Padrão: 30s (validação rápida)
 	TimeoutEvents      int `json:"timeout_events,omitempty"`      // Padrão: 30s (consulta de eventos)
 	TimeoutHPAs        int `json:"timeout_hpas,omitempty"`        // Padrão: 45s (validação de HPAs)
+	TimeoutPVCs        int `json:"timeout_pvcs,omitempty"`        // Padrão: 30s (validação de PVCs)
 
 	// Paralelismo (apenas para múltiplos clusters)
 	// Se Clusters > 1: mínimo 2 workers, máximo = NumCPU ou total de clusters
@@ -86,6 +88,7 @@ type HealthCheckResult struct {
 	ConfigResults     []ConfigHealth     `json:"config_results"`
 	EventResults      []EventHealth      `json:"event_results"` // Eventos K8s críticos (FailedScheduling, etc.)
 	HPAResults        []HPAHealth        `json:"hpa_results"`   // HPAs com problemas de configuração
+	PVCResults        []PVCHealth        `json:"pvc_results"`   // PVCs com problemas de storage
 
 	// Resumo
 	TotalChecks   int          `json:"total_checks"`
@@ -293,6 +296,55 @@ type HPAHealth struct {
 	CheckedAt   time.Time `json:"checked_at"`
 }
 
+// PVIssue representa um problema na configuração do PV/PVC
+type PVIssue struct {
+	Type        string `json:"type"`        // "status", "config", "volume"
+	Description string `json:"description"`
+	Severity    string `json:"severity"` // "warning", "critical"
+}
+
+// PVCHealth saúde de um PersistentVolumeClaim
+type PVCHealth struct {
+	Name      string       `json:"name"`
+	Namespace string       `json:"namespace"`
+	Status    HealthStatus `json:"status"`
+
+	// Status do PVC
+	Phase     string `json:"phase"`      // Bound, Pending, Lost
+	IsBound   bool   `json:"is_bound"`   // Está vinculado a um PV?
+	IsPending bool   `json:"is_pending"` // Está aguardando provisionamento?
+
+	// Volume vinculado
+	VolumeName   string `json:"volume_name,omitempty"`   // Nome do PV vinculado
+	VolumeExists bool   `json:"volume_exists,omitempty"` // PV existe?
+
+	// Storage Class
+	StorageClassName   string `json:"storage_class_name,omitempty"`
+	StorageClassExists bool   `json:"storage_class_exists,omitempty"`
+
+	// Capacidade
+	RequestedStorage string `json:"requested_storage,omitempty"` // Ex: "10Gi"
+	ActualStorage    string `json:"actual_storage,omitempty"`    // Capacidade real do PV
+	RequestedBytes   int64  `json:"requested_bytes,omitempty"`   // Bytes solicitados
+	ActualBytes      int64  `json:"actual_bytes,omitempty"`      // Bytes reais
+
+	// Utilização (se disponível)
+	UsagePercent float64 `json:"usage_percent,omitempty"` // 0-100
+
+	// Configuração
+	AccessModes   []string `json:"access_modes,omitempty"`   // ReadWriteOnce, ReadOnlyMany, ReadWriteMany
+	VolumeMode    string   `json:"volume_mode,omitempty"`    // Filesystem, Block
+	ReclaimPolicy string   `json:"reclaim_policy,omitempty"` // Retain, Delete, Recycle
+
+	// Problemas Detectados
+	Issues []PVIssue `json:"issues,omitempty"`
+
+	// Mensagem e Sugestões
+	Message     string    `json:"message"`
+	Suggestions []string  `json:"suggestions"`
+	CheckedAt   time.Time `json:"checked_at"`
+}
+
 // HealthCheckProgress progresso de health check (SSE)
 type HealthCheckProgress struct {
 	SessionID string       `json:"session_id"`
@@ -312,6 +364,7 @@ const (
 	DefaultTimeoutConfigs     = 30 // segundos (validação rápida)
 	DefaultTimeoutEvents      = 30 // segundos (consulta de eventos)
 	DefaultTimeoutHPAs        = 45 // segundos (validação de HPAs + eventos)
+	DefaultTimeoutPVCs        = 30 // segundos (validação de PVCs)
 )
 
 // GetTimeoutDeployments retorna o timeout para deployments com fallback
@@ -367,4 +420,15 @@ func (r *HealthCheckRequest) GetTimeoutHPAs() int {
 		return r.Timeout
 	}
 	return DefaultTimeoutHPAs
+}
+
+// GetTimeoutPVCs retorna o timeout para PVCs com fallback
+func (r *HealthCheckRequest) GetTimeoutPVCs() int {
+	if r.TimeoutPVCs > 0 {
+		return r.TimeoutPVCs
+	}
+	if r.Timeout > 0 {
+		return r.Timeout
+	}
+	return DefaultTimeoutPVCs
 }

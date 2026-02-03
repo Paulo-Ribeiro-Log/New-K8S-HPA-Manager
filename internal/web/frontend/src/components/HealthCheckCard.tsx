@@ -21,12 +21,13 @@ import type {
   ConfigHealth,
   EventHealth,
   HPAHealth,
+  PVCHealth,
   HealthStatus,
 } from "@/types/healthcheck";
 
 interface HealthCheckCardProps {
-  health: DeploymentHealth | ServiceHealth | ConfigHealth | EventHealth | HPAHealth;
-  type: "deployment" | "service" | "config" | "event" | "hpa";
+  health: DeploymentHealth | ServiceHealth | ConfigHealth | EventHealth | HPAHealth | PVCHealth;
+  type: "deployment" | "service" | "config" | "event" | "hpa" | "pvc";
   selectionMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: () => void;
@@ -277,6 +278,103 @@ export const HealthCheckCard = ({
           {hpa.issues && hpa.issues.length > 0 && (
             <div className="col-span-2 mt-2 space-y-1">
               {hpa.issues.map((issue, i) => (
+                <div
+                  key={i}
+                  className={`text-xs px-2 py-1 rounded ${
+                    issue.severity === "critical"
+                      ? "bg-red-100 text-red-700 dark:bg-red-950/30"
+                      : "bg-yellow-100 text-yellow-700 dark:bg-yellow-950/30"
+                  }`}
+                >
+                  [{issue.type}] {issue.description}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (type === "pvc") {
+      const pvc = health as PVCHealth;
+      return (
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          <div>
+            <span className="text-muted-foreground">Status:</span>{" "}
+            <span className={`font-medium ${
+              pvc.phase === "Bound" ? "text-green-600" :
+              pvc.phase === "Pending" ? "text-yellow-600" :
+              pvc.phase === "Lost" ? "text-red-600" : ""
+            }`}>
+              {pvc.phase}
+            </span>
+          </div>
+          <div>
+            <span className="text-muted-foreground">Bound:</span>{" "}
+            <span className={pvc.is_bound ? "text-green-600" : "text-yellow-600"}>
+              {pvc.is_bound ? "✓ Sim" : "✗ Não"}
+            </span>
+          </div>
+          {pvc.volume_name && (
+            <div className="col-span-2">
+              <span className="text-muted-foreground">PV:</span>{" "}
+              <span className="font-mono text-xs">{pvc.volume_name}</span>
+              {!pvc.volume_exists && (
+                <span className="text-red-600 text-xs ml-1">(não existe!)</span>
+              )}
+            </div>
+          )}
+          <div>
+            <span className="text-muted-foreground">StorageClass:</span>{" "}
+            <span className={`font-medium ${pvc.storage_class_exists ? "" : "text-red-600"}`}>
+              {pvc.storage_class_name || "(default)"}
+            </span>
+            {!pvc.storage_class_exists && pvc.storage_class_name && (
+              <span className="text-red-600 text-xs ml-1">(não existe!)</span>
+            )}
+          </div>
+          <div>
+            <span className="text-muted-foreground">Storage:</span>{" "}
+            <span className="font-medium">{pvc.requested_storage || "N/A"}</span>
+            {pvc.actual_storage && pvc.actual_storage !== pvc.requested_storage && (
+              <span className="text-xs text-muted-foreground ml-1">
+                (real: {pvc.actual_storage})
+              </span>
+            )}
+          </div>
+          {pvc.access_modes && pvc.access_modes.length > 0 && (
+            <div className="col-span-2">
+              <span className="text-muted-foreground">Access Modes:</span>{" "}
+              <span className="font-mono text-xs">
+                {pvc.access_modes.join(", ")}
+              </span>
+              {pvc.access_modes.includes("ReadWriteMany") && (
+                <span className="text-yellow-600 text-xs ml-1">(verificar compatibilidade)</span>
+              )}
+            </div>
+          )}
+          {pvc.reclaim_policy && (
+            <div>
+              <span className="text-muted-foreground">Reclaim:</span>{" "}
+              <span className={`font-medium ${pvc.reclaim_policy === "Delete" ? "text-yellow-600" : ""}`}>
+                {pvc.reclaim_policy}
+              </span>
+            </div>
+          )}
+          {pvc.usage_percent > 0 && (
+            <div>
+              <span className="text-muted-foreground">Uso:</span>{" "}
+              <span className={`font-medium ${
+                pvc.usage_percent > 90 ? "text-red-600" :
+                pvc.usage_percent > 70 ? "text-yellow-600" : "text-green-600"
+              }`}>
+                {pvc.usage_percent.toFixed(1)}%
+              </span>
+            </div>
+          )}
+          {pvc.issues && pvc.issues.length > 0 && (
+            <div className="col-span-2 mt-2 space-y-1">
+              {pvc.issues.map((issue, i) => (
                 <div
                   key={i}
                   className={`text-xs px-2 py-1 rounded ${
