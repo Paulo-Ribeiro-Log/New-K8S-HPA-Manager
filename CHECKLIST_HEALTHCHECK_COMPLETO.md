@@ -1,7 +1,7 @@
 # Checklist Completo - Health Checking Improvements
 
-**Última atualização**: 31/01/2026
-**Progresso geral**: 10/19 itens (53%)
+**Última atualização**: 03/02/2026
+**Progresso geral**: 13/19 itens (68%)
 
 ---
 
@@ -104,7 +104,7 @@
 
 ---
 
-## 🟢 Sprint 3 - NÃO INICIADO (0/5 = 0%)
+## 🟡 Sprint 3 - EM PROGRESSO (2/5 = 40%)
 
 ### 11. Time-series Trend Analysis ⏳
 - [ ] Queries SQL para análise de tendências
@@ -120,19 +120,37 @@
 - [ ] Testes de conectividade básicos
 - **Estimativa**: 3 dias
 
-### 13. HPA/VPA Validation ⏳
-- [ ] Verificar HPAs configurados corretamente
-- [ ] Detectar HPAs com min=max (não escala)
-- [ ] Validar métricas utilizadas
-- [ ] Analisar histórico de scaling
-- **Estimativa**: 3 dias
+### 13. HPA/VPA Validation ✅
+- [x] Verificar HPAs configurados corretamente
+- [x] Detectar HPAs com min=max (não escala)
+- [x] Detectar HPAs com max muito baixo (<3)
+- [x] Detectar HPAs no limite máximo (current=max)
+- [x] Detectar HPAs órfãos (target não existe)
+- [x] Validar métricas configuradas (sem métricas = critical)
+- [x] Verificar annotations que desabilitam scaling
+- [x] Analisar eventos recentes de scaling (falhas)
+- [x] Checkbox "Validar HPAs" no frontend
+- [x] Tab "HPAs" no painel de resultados
+- [x] Card de HPA com detalhes e issues
+- **Arquivos**: `internal/healthcheck/hpa_checker.go` (~470 linhas)
+- **Testes**: `internal/healthcheck/hpa_checker_test.go` (11 testes)
+- **Frontend**: `HealthCheckingTab.tsx`, `HealthCheckResultsPanel.tsx`, `HealthCheckCard.tsx`
 
-### 14. PersistentVolumes Validation ⏳
-- [ ] Verificar status de PVs e PVCs
-- [ ] Detectar PVCs pending
-- [ ] Alertar sobre storage quase cheio
-- [ ] Validar StorageClass
-- **Estimativa**: 2 dias
+### 14. PersistentVolumes Validation ✅
+- [x] Verificar status de PVs e PVCs (Pending, Bound, Lost)
+- [x] Detectar PVCs pending há mais de 5 minutos (Critical)
+- [x] Detectar PVCs com PV referenciado inexistente
+- [x] Validar StorageClass existe no cluster
+- [x] Verificar access modes (warning para ReadWriteMany)
+- [x] Alertar sobre ReclaimPolicy=Delete (risco de perda de dados)
+- [x] Detectar capacidade muito pequena (<1Gi)
+- [x] Filtrar PVCs de sistema (kube-system, istio-system, etc)
+- [x] Checkbox "Validar PVCs" no frontend
+- [x] Tab "PVCs" no painel de resultados (grid-cols-6)
+- [x] Card de PVC com detalhes e issues
+- **Arquivos**: `internal/healthcheck/pv_checker.go` (~370 linhas)
+- **Testes**: `internal/healthcheck/pv_checker_test.go` (12 testes)
+- **Frontend**: `HealthCheckingTab.tsx`, `HealthCheckResultsPanel.tsx`, `HealthCheckCard.tsx`
 
 ### 15. Severity Levels Refinement ⏳
 - [ ] Implementar 5 níveis: Critical, High, Medium, Low, Info
@@ -143,14 +161,20 @@
 
 ---
 
-## 🔵 Sprint 4 - NÃO INICIADO (0/4 = 0%)
+## 🟡 Sprint 4 - EM PROGRESSO (1/4 = 25%)
 
-### 16. Export de Relatórios (PDF/CSV) ⏳
-- [ ] Geração de PDF com jsPDF
-- [ ] Export CSV para análise
-- [ ] Template profissional sem emojis
-- [ ] Seleção de período e clusters
-- **Estimativa**: 3 dias
+### 16. Export de Relatórios (PDF/CSV/Markdown) ✅
+- [x] Geração de PDF com jsPDF + jspdf-autotable
+- [x] Export CSV para análise em Excel/BI
+- [x] Export Markdown (.md) estruturado
+- [x] Template profissional sem emojis (função removeEmojis())
+- [x] Seleção de período e clusters
+- [x] Botão de exportação no painel de Resultados
+- [x] Botão de exportação no modal de Histórico
+- [x] Modal de seleção de formato com preview
+- [x] Timestamp correto da análise (não data atual)
+- **Arquivos**: `lib/reportGenerator.ts` (~440 linhas), `ExportReportModal.tsx` (~187 linhas)
+- **Dependências**: jspdf 2.5.2, jspdf-autotable 3.8.4
 
 ### 17. Integrações (Slack/Teams/Email) ⏳
 - [ ] Webhooks para Slack
@@ -181,9 +205,9 @@
 |--------|-----------|-------|-----------|
 | Sprint 1 | 5 | 5 | ✅ 100% |
 | Sprint 2 | 5 | 5 | ✅ 100% |
-| Sprint 3 | 0 | 5 | ⏳ 0% |
-| Sprint 4 | 0 | 4 | ⏳ 0% |
-| **TOTAL** | **10** | **19** | **53%** |
+| Sprint 3 | 2 | 5 | 🟡 40% |
+| Sprint 4 | 1 | 4 | 🟡 25% |
+| **TOTAL** | **13** | **19** | **68%** |
 
 ---
 

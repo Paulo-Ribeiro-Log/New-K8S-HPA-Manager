@@ -72,6 +72,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   const [checkConfigs, setCheckConfigs] = useState(true);
   const [checkEvents, setCheckEvents] = useState(false); // Verificar eventos K8s (desabilitado por padrão)
   const [checkHPAs, setCheckHPAs] = useState(true);      // Verificar HPAs (habilitado por padrão)
+  const [checkPVCs, setCheckPVCs] = useState(true);      // Verificar PVCs (habilitado por padrão)
   const [timeout, setTimeout] = useState(30); // Timeout geral (fallback)
   const [showAdvancedTimeouts, setShowAdvancedTimeouts] = useState(false);
   const [timeoutDeployments, setTimeoutDeployments] = useState(60); // Padrão: 60s
@@ -79,6 +80,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   const [timeoutConfigs, setTimeoutConfigs] = useState(30);        // Padrão: 30s
   const [timeoutEvents, setTimeoutEvents] = useState(30);          // Padrão: 30s
   const [timeoutHPAs, setTimeoutHPAs] = useState(45);              // Padrão: 45s
+  const [timeoutPVCs, setTimeoutPVCs] = useState(30);              // Padrão: 30s
   const [applyFilters, setApplyFilters] = useState(true); // ✅ Filtrar falsos positivos por padrão
 
   // Modal state
@@ -249,7 +251,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       return;
     }
 
-    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents && !checkHPAs) {
+    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents && !checkHPAs && !checkPVCs) {
       console.error("[HealthCheckingTab] No check types selected");
       toast.error("Selecione pelo menos um tipo de check");
       return;
@@ -269,6 +271,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       check_configs: checkConfigs,
       check_events: checkEvents,
       check_hpas: checkHPAs,
+      check_pvcs: checkPVCs,
       timeout: timeout,
       // Timeouts específicos (se modo avançado habilitado)
       timeout_deployments: showAdvancedTimeouts ? timeoutDeployments : undefined,
@@ -276,6 +279,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       timeout_configs: showAdvancedTimeouts ? timeoutConfigs : undefined,
       timeout_events: showAdvancedTimeouts ? timeoutEvents : undefined,
       timeout_hpas: showAdvancedTimeouts ? timeoutHPAs : undefined,
+      timeout_pvcs: showAdvancedTimeouts ? timeoutPVCs : undefined,
       apply_filters: applyFilters, // ✅ Aplicar filtros de falsos positivos
     };
 
@@ -534,6 +538,19 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                       </Label>
                       <Badge variant="outline" className="text-xs">
                         min=max, métricas, scaling
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="check-pvcs"
+                        checked={checkPVCs}
+                        onCheckedChange={(checked) => setCheckPVCs(checked as boolean)}
+                      />
+                      <Label htmlFor="check-pvcs" className="text-sm cursor-pointer">
+                        Validar PVCs
+                      </Label>
+                      <Badge variant="outline" className="text-xs">
+                        status, StorageClass, bindings
                       </Badge>
                     </div>
                   </CardContent>

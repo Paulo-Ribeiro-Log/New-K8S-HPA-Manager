@@ -667,9 +667,34 @@ func (c *Client) GetNamespace(ctx context.Context, name string) (*models.Namespa
 		return nil, fmt.Errorf("failed to get namespace %s in cluster %s: %w", name, c.cluster, err)
 	}
 
-	yamlBytes, err := yaml.Marshal(ns)
+	// Serializar para map para poder limpar campos gerenciados pelo servidor
+	nsMap := make(map[string]interface{})
+	nsBytes, err := json.Marshal(ns)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal namespace %s: %w", name, err)
+	}
+	if err := json.Unmarshal(nsBytes, &nsMap); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal namespace %s: %w", name, err)
+	}
+
+	// Limpar campos gerenciados pelo servidor (read-only) para editor mais limpo
+	if metadata, ok := nsMap["metadata"].(map[string]interface{}); ok {
+		delete(metadata, "managedFields")
+		delete(metadata, "creationTimestamp")
+		delete(metadata, "resourceVersion")
+		delete(metadata, "uid")
+		delete(metadata, "generation")
+		delete(metadata, "selfLink")
+		nsMap["metadata"] = metadata
+	}
+
+	// Remover status (read-only, gerenciado pelo servidor)
+	delete(nsMap, "status")
+
+	// Converter para YAML limpo
+	yamlBytes, err := yaml.Marshal(nsMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal namespace %s to YAML: %w", name, err)
 	}
 
 	// Calcular status e age
@@ -781,7 +806,20 @@ func prepareNamespaceApplyPayload(yamlContent, enforceName string) ([]byte, stri
 
 	// Remover namespace do metadata (namespace não tem namespace)
 	delete(metadata, "namespace")
+
+	// Remover campos gerenciados pelo servidor (read-only)
+	// Esses campos causam erro "metadata.managedFields must be nil" se enviados
+	delete(metadata, "managedFields")
+	delete(metadata, "creationTimestamp")
+	delete(metadata, "resourceVersion")
+	delete(metadata, "uid")
+	delete(metadata, "generation")
+	delete(metadata, "selfLink")
+
 	ns["metadata"] = metadata
+
+	// Remover campo status (read-only, gerenciado pelo servidor)
+	delete(ns, "status")
 
 	jsonPayload, err := json.Marshal(ns)
 	if err != nil {
