@@ -1,7 +1,7 @@
 // Health Checking Types - Mirror do backend Go
 
 // Tipos de recursos suportados
-export type ResourceType = "Deployment" | "Service" | "ConfigMap" | "Secret" | "HPA";
+export type ResourceType = "Deployment" | "Service" | "ConfigMap" | "Secret" | "HPA" | "PVC";
 
 // Tipos de serviços externos
 export type ServiceType =
@@ -36,6 +36,7 @@ export interface HealthCheckRequest {
   check_configs: boolean;
   check_events: boolean; // Verificar eventos K8s (FailedScheduling, etc.)
   check_hpas: boolean;   // Verificar HPAs (min=max, métricas, scaling)
+  check_pvcs: boolean;   // Verificar PVCs (status, StorageClass, access modes)
 
   // Timeout geral (segundos) - usado como fallback
   timeout: number;
@@ -46,6 +47,7 @@ export interface HealthCheckRequest {
   timeout_configs?: number;     // Padrão: 30s
   timeout_events?: number;      // Padrão: 30s
   timeout_hpas?: number;        // Padrão: 45s
+  timeout_pvcs?: number;        // Padrão: 30s
 
   // Paralelismo máximo (opcional)
   max_parallel?: number;
@@ -69,6 +71,7 @@ export interface HealthCheckResult {
   config_results: ConfigHealth[];
   event_results: EventHealth[]; // Eventos K8s críticos
   hpa_results: HPAHealth[];     // HPAs com problemas de configuração
+  pvc_results: PVCHealth[];     // PVCs com problemas de configuração
 
   // Resumo
   total_checks: number;
@@ -237,6 +240,53 @@ export interface HPAHealth {
 
   // Problemas Detectados
   issues: HPAScalingIssue[];
+
+  // Mensagem e Sugestões
+  message: string;
+  suggestions: string[];
+  checked_at: string; // ISO timestamp
+}
+
+// PV Issue (problema detectado em PVC)
+export interface PVIssue {
+  type: string;        // "volume", "status", "config"
+  description: string;
+  severity: string;    // "warning", "critical"
+}
+
+// Health de PVC (PersistentVolumeClaim)
+export interface PVCHealth {
+  name: string;
+  namespace: string;
+  status: HealthStatus;
+
+  // Status do PVC
+  phase: string;              // "Pending", "Bound", "Lost"
+  is_bound: boolean;
+  is_pending: boolean;
+
+  // Volume associado
+  volume_name: string;        // Nome do PV vinculado
+  volume_exists: boolean;
+
+  // Storage
+  storage_class_name: string;
+  storage_class_exists: boolean;
+  requested_storage: string;  // "10Gi"
+  actual_storage: string;     // Capacidade real do PV
+  requested_bytes: number;
+  actual_bytes: number;
+  usage_percent: number;      // 0-100 (se disponível)
+
+  // Access Modes
+  access_modes: string[];     // ["ReadWriteOnce", "ReadWriteMany", etc]
+
+  // Reclaim Policy
+  reclaim_policy: string;     // "Delete", "Retain", "Recycle"
+  volume_mode: string;        // "Filesystem", "Block"
+
+  // Problemas Detectados
+  issues: PVIssue[];
 
   // Mensagem e Sugestões
   message: string;
