@@ -1710,39 +1710,68 @@ export const NamespacesTab = ({
       try {
         const originalObj = yaml.load(originalYaml) as any;
         const updatedObj = yaml.load(editorValue) as any;
-        
-        const changes: Array<{ path: string; before: any; after: any }> = [];
-        
+
+        const changes: Array<{ path: string; before: string; after: string }> = [];
+
+        // Função auxiliar para formatar valores de forma legível
+        const formatValue = (val: any, isAfter: boolean = false): string => {
+          if (val === undefined) return isAfter ? '(removido)' : '(não existe)';
+          if (val === null) return 'null';
+          if (val === '') return '""';  // String vazia - exibe aspas para indicar valor vazio
+          if (typeof val === 'object') return JSON.stringify(val, null, 2);
+          return String(val);
+        };
+
         const compareObjects = (obj1: any, obj2: any, path: string = '') => {
           const allKeys = new Set([...Object.keys(obj1 || {}), ...Object.keys(obj2 || {})]);
-          
+
           for (const key of allKeys) {
             const currentPath = path ? `${path}.${key}` : key;
             const val1 = obj1?.[key];
             const val2 = obj2?.[key];
-            
+
             if (val1 === val2) continue;
-            
+
             if (typeof val1 === 'object' && typeof val2 === 'object' && val1 !== null && val2 !== null && !Array.isArray(val1) && !Array.isArray(val2)) {
               compareObjects(val1, val2, currentPath);
             } else if (JSON.stringify(val1) !== JSON.stringify(val2)) {
+              // Formatar o valor "depois" incluindo a chave quando é uma adição
+              let afterDisplay = formatValue(val2, true);
+              if (val1 === undefined && val2 !== undefined) {
+                // Chave foi ADICIONADA - mostrar chave: valor
+                const formattedVal = val2 === '' ? '""' :
+                                     typeof val2 === 'object' ? JSON.stringify(val2, null, 2) :
+                                     JSON.stringify(val2);
+                afterDisplay = `${key}: ${formattedVal}`;
+              }
+
+              // Formatar o valor "antes" incluindo a chave quando é uma remoção
+              let beforeDisplay = formatValue(val1, false);
+              if (val2 === undefined && val1 !== undefined) {
+                // Chave foi REMOVIDA - mostrar chave: valor
+                const formattedVal = val1 === '' ? '""' :
+                                     typeof val1 === 'object' ? JSON.stringify(val1, null, 2) :
+                                     JSON.stringify(val1);
+                beforeDisplay = `${key}: ${formattedVal}`;
+              }
+
               changes.push({
                 path: currentPath,
-                before: val1 === undefined ? '(não existe)' : typeof val1 === 'object' ? JSON.stringify(val1, null, 2) : String(val1),
-                after: val2 === undefined ? '(removido)' : typeof val2 === 'object' ? JSON.stringify(val2, null, 2) : String(val2)
+                before: beforeDisplay,
+                after: afterDisplay
               });
             }
           }
         };
-        
+
         compareObjects(originalObj, updatedObj);
-        
+
         return changes;
       } catch {
         return [];
       }
     };
-    
+
     const changes = generateCompactDiff();
 
     return (
