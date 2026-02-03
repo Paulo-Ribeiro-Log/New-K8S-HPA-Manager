@@ -32,6 +32,7 @@ import {
   Filter,
   AlertTriangle,
   TrendingUp,
+  HardDrive,
 } from "lucide-react";
 import type { HealthCheckResult } from "@/types/healthcheck";
 import { HealthCheckCard } from "@/components/HealthCheckCard";
@@ -466,7 +467,7 @@ export const HealthCheckResultsPanel = ({
                       <CollapsibleContent>
                         <CardContent className="pt-0 border-t">
                           <Tabs defaultValue="deployments" className="mt-4">
-                            <TabsList className="grid w-full grid-cols-5">
+                            <TabsList className="grid w-full grid-cols-6">
                               <TabsTrigger value="deployments" className="gap-1 text-xs">
                                 <Server className="h-3 w-3" />
                                 Deploys ({result.deployment_results.length})
@@ -486,6 +487,10 @@ export const HealthCheckResultsPanel = ({
                               <TabsTrigger value="hpas" className="gap-1 text-xs">
                                 <TrendingUp className="h-3 w-3" />
                                 HPAs ({result.hpa_results?.length || 0})
+                              </TabsTrigger>
+                              <TabsTrigger value="pvcs" className="gap-1 text-xs">
+                                <HardDrive className="h-3 w-3" />
+                                PVCs ({result.pvc_results?.length || 0})
                               </TabsTrigger>
                             </TabsList>
 
@@ -590,6 +595,28 @@ export const HealthCheckResultsPanel = ({
                                       key={i}
                                       health={hpa}
                                       type="hpa"
+                                      selectionMode={selectionMode}
+                                      isSelected={selectedAlerts.has(alertKey)}
+                                      onToggleSelect={() => toggleAlert(alertKey)}
+                                    />
+                                  );
+                                })
+                              )}
+                            </TabsContent>
+
+                            <TabsContent value="pvcs" className="space-y-2 mt-3">
+                              {!result.pvc_results || result.pvc_results.length === 0 ? (
+                                <div className="text-center py-4 text-xs text-muted-foreground">
+                                  Nenhum PVC com problemas detectado
+                                </div>
+                              ) : (
+                                result.pvc_results.map((pvc, i) => {
+                                  const alertKey = `pvc-${result.cluster}-${pvc.namespace}-${pvc.name}`;
+                                  return (
+                                    <HealthCheckCard
+                                      key={i}
+                                      health={pvc}
+                                      type="pvc"
                                       selectionMode={selectionMode}
                                       isSelected={selectedAlerts.has(alertKey)}
                                       onToggleSelect={() => toggleAlert(alertKey)}

@@ -25,6 +25,7 @@ type Orchestrator struct {
 	configChecker      *ConfigChecker
 	eventChecker       *EventChecker              // ✅ Verificador de eventos K8s
 	hpaChecker         *HPAChecker                // ✅ Verificador de HPAs
+	pvChecker          *PVChecker                 // ✅ Verificador de PVCs
 	storage            *HealthCheckStorage
 	progressTracker    *sse.ProgressTracker
 	filterManager      *FilterManager         // ✅ Gerenciador de filtros
@@ -58,6 +59,7 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 		configChecker:      NewConfigChecker(),
 		eventChecker:       NewEventChecker(),
 		hpaChecker:         NewHPAChecker(),
+		pvChecker:          NewPVChecker(),
 		storage:            hcStorage,
 		progressTracker:    progressTracker,
 		filterManager:      filterManager,
@@ -190,6 +192,9 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		enabledChecks++
 	}
 	if req.CheckHPAs {
+		enabledChecks++
+	}
+	if req.CheckPVCs {
 		enabledChecks++
 	}
 
@@ -408,6 +413,51 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		}()
 	}
 
+	// Check PVCs
+	if req.CheckPVCs {
+		pvcsStart := currentRangeStart
+		pvcsEnd := currentRangeStart + rangePerCheck
+		currentRangeStart = pvcsEnd
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.publishProgress(sessionID, cluster, "pvcs", fmt.Sprintf("Iniciando verificação de PVCs em %d namespace(s)...", len(namespaces)), pvcsStart, StatusHealthy)
+
+			// Callback para publicar progresso de cada PVC
+			pvcCallback := func(namespace, name, message string, status HealthStatus, current, total int) {
+				// Calcular progresso proporcional dentro da faixa alocada para PVCs
+				pvcProgress := pvcsStart + int(float64(current)/float64(total)*float64(rangePerCheck))
+				o.publishProgress(sessionID, cluster, "pvcs", message, pvcProgress, status)
+			}
+
+			pvcResults := o.pvChecker.CheckAll(ctx, client, namespaces, req.GetTimeoutPVCs(), req.ApplyFilters, pvcCallback)
+
+			mu.Lock()
+			result.PVCResults = pvcResults
+			mu.Unlock()
+
+			// Publicar resumo de PVCs
+			criticalPVCs := 0
+			warningPVCs := 0
+			for _, p := range pvcResults {
+				if p.Status == StatusCritical {
+					criticalPVCs++
+				} else if p.Status == StatusWarning {
+					warningPVCs++
+				}
+			}
+
+			if criticalPVCs > 0 {
+				o.publishProgress(sessionID, cluster, "pvcs", fmt.Sprintf("%d PVC(s) com problemas criticos encontrado(s)", criticalPVCs), pvcsEnd, StatusCritical)
+			} else if warningPVCs > 0 {
+				o.publishProgress(sessionID, cluster, "pvcs", fmt.Sprintf("%d PVC(s) com avisos encontrado(s)", warningPVCs), pvcsEnd, StatusWarning)
+			} else {
+				o.publishProgress(sessionID, cluster, "pvcs", fmt.Sprintf("%d PVC(s) verificado(s) - todos saudaveis", len(pvcResults)), pvcsEnd, StatusHealthy)
+			}
+		}()
+	}
+
 	// Aguardar conclusão
 	wg.Wait()
 
@@ -467,6 +517,16 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			}
 		}
 
+		// Publicar primeiros PVCs críticos (se ainda tiver espaço)
+		for _, p := range result.PVCResults {
+			if p.Status == StatusCritical && criticalShown < maxCritical {
+				o.publishProgress(sessionID, cluster, "summary",
+					fmt.Sprintf("Crítico: PVC %s/%s - %s", p.Namespace, p.Name, p.Message), 97, StatusCritical)
+				criticalShown++
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+
 		// Avisar se há mais problemas
 		if result.CriticalCount > maxCritical {
 			o.publishProgress(sessionID, cluster, "summary",
@@ -516,6 +576,16 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			if h.Status == StatusWarning && warningShown < maxWarning {
 				o.publishProgress(sessionID, cluster, "summary",
 					fmt.Sprintf("Aviso: HPA %s/%s - %s", h.Namespace, h.Name, h.Message), 98, StatusWarning)
+				warningShown++
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+
+		// Publicar primeiros PVCs warning
+		for _, p := range result.PVCResults {
+			if p.Status == StatusWarning && warningShown < maxWarning {
+				o.publishProgress(sessionID, cluster, "summary",
+					fmt.Sprintf("Aviso: PVC %s/%s - %s", p.Namespace, p.Name, p.Message), 98, StatusWarning)
 				warningShown++
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -677,7 +747,12 @@ func (o *Orchestrator) calculateSummary(result *HealthCheckResult) {
 		statusCount[h.Status]++
 	}
 
-	result.TotalChecks = len(result.DeploymentResults) + len(result.ServiceResults) + len(result.ConfigResults) + len(result.EventResults) + len(result.HPAResults)
+	// Contar PVCs
+	for _, p := range result.PVCResults {
+		statusCount[p.Status]++
+	}
+
+	result.TotalChecks = len(result.DeploymentResults) + len(result.ServiceResults) + len(result.ConfigResults) + len(result.EventResults) + len(result.HPAResults) + len(result.PVCResults)
 	result.HealthyCount = statusCount[StatusHealthy]
 	result.WarningCount = statusCount[StatusWarning]
 	result.CriticalCount = statusCount[StatusCritical]
