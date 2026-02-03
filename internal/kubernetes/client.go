@@ -685,11 +685,28 @@ func (c *Client) GetNamespace(ctx context.Context, name string) (*models.Namespa
 		delete(metadata, "uid")
 		delete(metadata, "generation")
 		delete(metadata, "selfLink")
+
+		// Remover campos vazios do metadata
+		if labels, ok := metadata["labels"].(map[string]interface{}); ok && len(labels) == 0 {
+			delete(metadata, "labels")
+		}
+		if annotations, ok := metadata["annotations"].(map[string]interface{}); ok && len(annotations) == 0 {
+			delete(metadata, "annotations")
+		}
+		if finalizers, ok := metadata["finalizers"].([]interface{}); ok && len(finalizers) == 0 {
+			delete(metadata, "finalizers")
+		}
+
 		nsMap["metadata"] = metadata
 	}
 
 	// Remover status (read-only, gerenciado pelo servidor)
 	delete(nsMap, "status")
+
+	// Remover spec se estiver vazio
+	if spec, ok := nsMap["spec"].(map[string]interface{}); ok && len(spec) == 0 {
+		delete(nsMap, "spec")
+	}
 
 	// Converter para YAML limpo
 	yamlBytes, err := yaml.Marshal(nsMap)
