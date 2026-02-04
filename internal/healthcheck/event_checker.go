@@ -12,31 +12,22 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// EventSeverity representa a severidade de um evento Kubernetes
-type EventSeverity string
-
-const (
-	SeverityCritical EventSeverity = "critical"
-	SeverityWarning  EventSeverity = "warning"
-	SeverityInfo     EventSeverity = "info"
-)
-
 // EventHealth representa um evento Kubernetes relevante para health checking
 type EventHealth struct {
-	Name           string        `json:"name"`
-	Namespace      string        `json:"namespace"`
-	Reason         string        `json:"reason"`          // FailedScheduling, BackOff, etc.
-	Message        string        `json:"message"`         // Mensagem completa do evento
-	Type           string        `json:"type"`            // Warning, Normal
-	Severity       EventSeverity `json:"severity"`        // critical, warning, info
-	Count          int32         `json:"count"`           // Número de ocorrências
-	FirstTimestamp time.Time     `json:"first_timestamp"` // Primeira ocorrência
-	LastTimestamp  time.Time     `json:"last_timestamp"`  // Última ocorrência
+	Name           string   `json:"name"`
+	Namespace      string   `json:"namespace"`
+	Reason         string   `json:"reason"`          // FailedScheduling, BackOff, etc.
+	Message        string   `json:"message"`         // Mensagem completa do evento
+	Type           string   `json:"type"`            // Warning, Normal
+	Severity       Severity `json:"severity"`        // critical, high, medium, low, info
+	Count          int32    `json:"count"`           // Número de ocorrências
+	FirstTimestamp time.Time `json:"first_timestamp"` // Primeira ocorrência
+	LastTimestamp  time.Time `json:"last_timestamp"`  // Última ocorrência
 	// Recurso relacionado
 	InvolvedKind string `json:"involved_kind"` // Pod, Node, Deployment, etc.
 	InvolvedName string `json:"involved_name"` // Nome do recurso
 	// Sugestões de correção
-	Suggestions []string `json:"suggestions"`
+	Suggestions []string     `json:"suggestions"`
 	Status      HealthStatus `json:"status"` // Para compatibilidade com outros checkers
 }
 
@@ -530,15 +521,15 @@ func (c *EventChecker) processEvent(event *corev1.Event) *EventHealth {
 }
 
 // determineSeverity determina a severidade baseada no reason do evento
-func (c *EventChecker) determineSeverity(reason string) EventSeverity {
+func (c *EventChecker) determineSeverity(reason string) Severity {
 	if CriticalEventReasons[reason] {
 		return SeverityCritical
 	}
 	if WarningEventReasons[reason] {
-		return SeverityWarning
+		return SeverityMedium
 	}
-	// Eventos Warning não mapeados são tratados como warning por padrão
-	return SeverityWarning
+	// Eventos Warning não mapeados são tratados como medium por padrão
+	return SeverityMedium
 }
 
 // getSuggestions retorna sugestões de correção baseadas no tipo de evento
@@ -654,7 +645,7 @@ func (c *EventChecker) GetCriticalCount(events []EventHealth) int {
 func (c *EventChecker) GetWarningCount(events []EventHealth) int {
 	count := 0
 	for _, e := range events {
-		if e.Severity == SeverityWarning {
+		if e.Severity == SeverityMedium {
 			count++
 		}
 	}

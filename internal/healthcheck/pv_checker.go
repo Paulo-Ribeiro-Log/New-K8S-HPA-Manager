@@ -161,7 +161,7 @@ func (c *PVChecker) validatePVC(ctx context.Context, client kubernetes.Interface
 			health.Issues = append(health.Issues, PVIssue{
 				Type:        "volume",
 				Description: fmt.Sprintf("PV '%s' referenciado nao existe", pvc.Spec.VolumeName),
-				Severity:    "critical",
+				Severity:    SeverityCritical,
 			})
 			health.Suggestions = append(health.Suggestions, "Verificar se o PV foi deletado acidentalmente ou se o nome esta correto")
 		}
@@ -174,7 +174,7 @@ func (c *PVChecker) validatePVC(ctx context.Context, client kubernetes.Interface
 		health.Issues = append(health.Issues, PVIssue{
 			Type:        "status",
 			Description: "PVC esta em estado Pending - aguardando provisionamento ou binding",
-			Severity:    "warning",
+			Severity:    SeverityMedium,
 		})
 		health.Suggestions = append(health.Suggestions,
 			"Verificar se StorageClass existe e tem provisioner configurado",
@@ -186,7 +186,7 @@ func (c *PVChecker) validatePVC(ctx context.Context, client kubernetes.Interface
 			health.Issues = append(health.Issues, PVIssue{
 				Type:        "status",
 				Description: fmt.Sprintf("PVC esta Pending ha mais de 5 minutos (criado em %s)", pvc.CreationTimestamp.Format(time.RFC3339)),
-				Severity:    "critical",
+				Severity:    SeverityCritical,
 			})
 		}
 
@@ -194,7 +194,7 @@ func (c *PVChecker) validatePVC(ctx context.Context, client kubernetes.Interface
 		health.Issues = append(health.Issues, PVIssue{
 			Type:        "status",
 			Description: "PVC esta em estado Lost - PV vinculado foi deletado",
-			Severity:    "critical",
+			Severity:    SeverityCritical,
 		})
 		health.Suggestions = append(health.Suggestions,
 			"Recriar o PV ou deletar e recriar o PVC",
@@ -210,7 +210,7 @@ func (c *PVChecker) validatePVC(ctx context.Context, client kubernetes.Interface
 		health.Issues = append(health.Issues, PVIssue{
 			Type:        "config",
 			Description: "PVC nao tem StorageClass definida - usando default (pode causar problemas)",
-			Severity:    "warning",
+			Severity:    SeverityLow,
 		})
 		health.Suggestions = append(health.Suggestions, "Definir storageClassName explicitamente para garantir comportamento previsível")
 	} else {
@@ -221,7 +221,7 @@ func (c *PVChecker) validatePVC(ctx context.Context, client kubernetes.Interface
 			health.Issues = append(health.Issues, PVIssue{
 				Type:        "config",
 				Description: fmt.Sprintf("StorageClass '%s' nao existe no cluster", health.StorageClassName),
-				Severity:    "critical",
+				Severity:    SeverityCritical,
 			})
 			health.Suggestions = append(health.Suggestions,
 				"Criar a StorageClass ou alterar o PVC para usar uma existente",
@@ -236,7 +236,7 @@ func (c *PVChecker) validatePVC(ctx context.Context, client kubernetes.Interface
 		health.Issues = append(health.Issues, PVIssue{
 			Type:        "config",
 			Description: "PVC nao tem access modes definidos",
-			Severity:    "warning",
+			Severity:    SeverityLow,
 		})
 	}
 
@@ -246,7 +246,7 @@ func (c *PVChecker) validatePVC(ctx context.Context, client kubernetes.Interface
 			health.Issues = append(health.Issues, PVIssue{
 				Type:        "config",
 				Description: "PVC usa ReadWriteMany - verificar se StorageClass suporta este modo",
-				Severity:    "warning",
+				Severity:    SeverityInfo,
 			})
 			health.Suggestions = append(health.Suggestions,
 				"ReadWriteMany requer storage que suporte acesso concorrente (NFS, Azure Files, etc.)",
@@ -260,7 +260,7 @@ func (c *PVChecker) validatePVC(ctx context.Context, client kubernetes.Interface
 		health.Issues = append(health.Issues, PVIssue{
 			Type:        "config",
 			Description: fmt.Sprintf("PVC tem capacidade muito pequena (%s) - pode encher rapidamente", health.RequestedStorage),
-			Severity:    "warning",
+			Severity:    SeverityLow,
 		})
 	}
 
@@ -269,7 +269,7 @@ func (c *PVChecker) validatePVC(ctx context.Context, client kubernetes.Interface
 		health.Issues = append(health.Issues, PVIssue{
 			Type:        "config",
 			Description: "PV usa ReclaimPolicy=Delete - dados serao perdidos se PVC for deletado",
-			Severity:    "warning",
+			Severity:    SeverityMedium,
 		})
 		health.Suggestions = append(health.Suggestions, "Considerar ReclaimPolicy=Retain para dados importantes")
 	}

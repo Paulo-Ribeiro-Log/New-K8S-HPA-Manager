@@ -429,7 +429,7 @@ func (c *DeploymentChecker) analyzeProbes(deployment *appsv1.Deployment, pods []
 		// Contar problemas críticos
 		criticalCount := 0
 		for _, issue := range probeIssues {
-			if issue.Severity == "critical" {
+			if issue.Severity == SeverityCritical || issue.Severity == SeverityHigh {
 				criticalCount++
 			}
 		}
@@ -458,7 +458,7 @@ func (c *DeploymentChecker) validateProbeConfig(containerName, probeType string,
 			Container: containerName,
 			ProbeType: probeType,
 			Issue:     fmt.Sprintf("timeoutSeconds=%d muito curto (mínimo recomendado: %d)", probe.TimeoutSeconds, minTimeout),
-			Severity:  "warning",
+			Severity:  SeverityLow,
 		})
 	}
 
@@ -469,14 +469,14 @@ func (c *DeploymentChecker) validateProbeConfig(containerName, probeType string,
 				Container: containerName,
 				ProbeType: probeType,
 				Issue:     "initialDelaySeconds=0 pode causar restarts durante inicialização lenta",
-				Severity:  "warning",
+				Severity:  SeverityMedium,
 			})
 		} else if probe.InitialDelaySeconds < int32(MinInitialDelay) {
 			issues = append(issues, ProbeIssue{
 				Container: containerName,
 				ProbeType: probeType,
 				Issue:     fmt.Sprintf("initialDelaySeconds=%d pode ser insuficiente para apps lentas", probe.InitialDelaySeconds),
-				Severity:  "warning",
+				Severity:  SeverityLow,
 			})
 		}
 	}
@@ -487,7 +487,7 @@ func (c *DeploymentChecker) validateProbeConfig(containerName, probeType string,
 			Container: containerName,
 			ProbeType: probeType,
 			Issue:     fmt.Sprintf("failureThreshold=%d muito baixo (mínimo recomendado: %d)", probe.FailureThreshold, MinFailureThreshold),
-			Severity:  "warning",
+			Severity:  SeverityLow,
 		})
 	}
 
@@ -500,7 +500,7 @@ func (c *DeploymentChecker) validateProbeConfig(containerName, probeType string,
 			Container: containerName,
 			ProbeType: probeType,
 			Issue:     fmt.Sprintf("periodSeconds=%d muito frequente (pode sobrecarregar endpoints)", probe.PeriodSeconds),
-			Severity:  "warning",
+			Severity:  SeverityLow,
 		})
 	}
 
@@ -563,7 +563,7 @@ func (c *DeploymentChecker) analyzeResources(deployment *appsv1.Deployment, heal
 				Container:    container.Name,
 				ResourceType: "cpu",
 				Issue:        "CPU request não definido",
-				Severity:     "warning",
+				Severity:     SeverityMedium,
 			})
 		}
 		if !cr.HasMemoryRequest {
@@ -571,7 +571,7 @@ func (c *DeploymentChecker) analyzeResources(deployment *appsv1.Deployment, heal
 				Container:    container.Name,
 				ResourceType: "memory",
 				Issue:        "Memory request não definido",
-				Severity:     "warning",
+				Severity:     SeverityMedium,
 			})
 		}
 		if !cr.HasCPULimit {
@@ -579,7 +579,7 @@ func (c *DeploymentChecker) analyzeResources(deployment *appsv1.Deployment, heal
 				Container:    container.Name,
 				ResourceType: "cpu",
 				Issue:        "CPU limit não definido (pode consumir recursos ilimitados)",
-				Severity:     "warning",
+				Severity:     SeverityMedium,
 			})
 		}
 		if !cr.HasMemoryLimit {
@@ -587,7 +587,7 @@ func (c *DeploymentChecker) analyzeResources(deployment *appsv1.Deployment, heal
 				Container:    container.Name,
 				ResourceType: "memory",
 				Issue:        "Memory limit não definido (risco de OOMKill do node)",
-				Severity:     "critical",
+				Severity:     SeverityHigh,
 			})
 		}
 
@@ -626,7 +626,7 @@ func (c *DeploymentChecker) analyzeResources(deployment *appsv1.Deployment, heal
 	// Contar problemas críticos de recursos
 	criticalResourceIssues := 0
 	for _, issue := range resourceIssues {
-		if issue.Severity == "critical" {
+		if issue.Severity == SeverityCritical || issue.Severity == SeverityHigh {
 			criticalResourceIssues++
 		}
 	}
