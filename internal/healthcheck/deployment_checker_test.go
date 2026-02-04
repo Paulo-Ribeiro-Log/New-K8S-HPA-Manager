@@ -302,14 +302,15 @@ func TestValidateProbeConfigTimeoutTooShort(t *testing.T) {
 	found := false
 	for _, issue := range issues {
 		if issue.Container == "test-container" && issue.ProbeType == "liveness" {
-			if issue.Severity == "warning" {
+			// Timeout muito curto é classificado como SeverityLow
+			if issue.Severity == SeverityLow {
 				found = true
 			}
 		}
 	}
 
 	if !found {
-		t.Error("Issue de timeout deveria ter severity=warning")
+		t.Error("Issue de timeout deveria ter severity=low")
 	}
 }
 
@@ -351,7 +352,8 @@ func TestValidateProbeConfigLowInitialDelay(t *testing.T) {
 
 	found := false
 	for _, issue := range issues {
-		if issue.ProbeType == "liveness" && issue.Severity == "warning" {
+		// initialDelaySeconds baixo é classificado como SeverityLow
+		if issue.ProbeType == "liveness" && issue.Severity == SeverityLow {
 			found = true
 		}
 	}
@@ -375,7 +377,8 @@ func TestValidateProbeConfigLowFailureThreshold(t *testing.T) {
 
 	found := false
 	for _, issue := range issues {
-		if issue.ProbeType == "readiness" && issue.Severity == "warning" {
+		// failureThreshold baixo é classificado como SeverityLow
+		if issue.ProbeType == "readiness" && issue.Severity == SeverityLow {
 			if len(issue.Issue) > 0 {
 				found = true
 			}
@@ -392,7 +395,7 @@ func TestValidateProbeConfigFrequentPeriod(t *testing.T) {
 	checker := NewDeploymentChecker()
 
 	probe := &corev1.Probe{
-		PeriodSeconds:       2, // Muito frequente
+		PeriodSeconds:       2, // Muito frequente (< 5)
 		TimeoutSeconds:      10,
 		InitialDelaySeconds: 30,
 		FailureThreshold:    3,
@@ -402,7 +405,8 @@ func TestValidateProbeConfigFrequentPeriod(t *testing.T) {
 
 	found := false
 	for _, issue := range issues {
-		if issue.Issue != "" && issue.Severity == "warning" {
+		// periodSeconds frequente é classificado como SeverityLow
+		if issue.Issue != "" && issue.Severity == SeverityLow {
 			found = true
 		}
 	}
