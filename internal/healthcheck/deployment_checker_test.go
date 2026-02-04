@@ -302,14 +302,15 @@ func TestValidateProbeConfigTimeoutTooShort(t *testing.T) {
 	found := false
 	for _, issue := range issues {
 		if issue.Container == "test-container" && issue.ProbeType == "liveness" {
-			if issue.Severity == "warning" {
+			// Timeout muito curto é classificado como SeverityLow
+			if issue.Severity == SeverityLow {
 				found = true
 			}
 		}
 	}
 
 	if !found {
-		t.Error("Issue de timeout deveria ter severity=warning")
+		t.Error("Issue de timeout deveria ter severity=low")
 	}
 }
 
@@ -351,7 +352,8 @@ func TestValidateProbeConfigLowInitialDelay(t *testing.T) {
 
 	found := false
 	for _, issue := range issues {
-		if issue.ProbeType == "liveness" && issue.Severity == "warning" {
+		// initialDelaySeconds baixo é classificado como SeverityLow
+		if issue.ProbeType == "liveness" && issue.Severity == SeverityLow {
 			found = true
 		}
 	}
@@ -375,7 +377,8 @@ func TestValidateProbeConfigLowFailureThreshold(t *testing.T) {
 
 	found := false
 	for _, issue := range issues {
-		if issue.ProbeType == "readiness" && issue.Severity == "warning" {
+		// failureThreshold baixo é classificado como SeverityLow
+		if issue.ProbeType == "readiness" && issue.Severity == SeverityLow {
 			if len(issue.Issue) > 0 {
 				found = true
 			}
@@ -392,7 +395,7 @@ func TestValidateProbeConfigFrequentPeriod(t *testing.T) {
 	checker := NewDeploymentChecker()
 
 	probe := &corev1.Probe{
-		PeriodSeconds:       2, // Muito frequente
+		PeriodSeconds:       2, // Muito frequente (< 5)
 		TimeoutSeconds:      10,
 		InitialDelaySeconds: 30,
 		FailureThreshold:    3,
@@ -402,7 +405,8 @@ func TestValidateProbeConfigFrequentPeriod(t *testing.T) {
 
 	found := false
 	for _, issue := range issues {
-		if issue.Issue != "" && issue.Severity == "warning" {
+		// periodSeconds frequente é classificado como SeverityLow
+		if issue.Issue != "" && issue.Severity == SeverityLow {
 			found = true
 		}
 	}
@@ -673,16 +677,16 @@ func TestAnalyzeResourcesNoMemoryLimit(t *testing.T) {
 	health := &DeploymentHealth{}
 	checker.analyzeResources(deployment, health)
 
-	// Verificar que tem issue critical para memory limit
-	hasCriticalMemoryIssue := false
+	// Verificar que tem issue high para memory limit (OOMKill risk)
+	hasHighMemoryIssue := false
 	for _, issue := range health.ResourceIssues {
-		if issue.ResourceType == "memory" && issue.Severity == "critical" {
-			hasCriticalMemoryIssue = true
+		if issue.ResourceType == "memory" && issue.Severity == SeverityHigh {
+			hasHighMemoryIssue = true
 		}
 	}
 
-	if !hasCriticalMemoryIssue {
-		t.Error("Deveria ter issue critical para memory limit faltando")
+	if !hasHighMemoryIssue {
+		t.Error("Deveria ter issue high para memory limit faltando")
 	}
 }
 

@@ -67,21 +67,24 @@ func TestHPAChecker_MinEqualsMax(t *testing.T) {
 		t.Error("Expected IsMinEqualsMax to be true")
 	}
 
-	// Verificar que tem warning
-	if health.Status != StatusWarning {
-		t.Errorf("Expected status Warning, got %s", health.Status)
+	// Com min == max E CurrentReplicas == MaxReplicas, temos dois issues:
+	// - min == max: SeverityMedium
+	// - at max replicas: SeverityHigh
+	// SeverityHigh resulta em StatusCritical
+	if health.Status != StatusCritical {
+		t.Errorf("Expected status Critical (due to at max replicas), got %s", health.Status)
 	}
 
-	// Verificar que há issue sobre min == max
+	// Verificar que há issue sobre min == max com SeverityMedium
 	found := false
 	for _, issue := range health.Issues {
-		if issue.Type == "config" && issue.Severity == "warning" {
+		if issue.Type == "config" && issue.Severity == SeverityMedium {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("Expected to find config warning issue for min == max")
+		t.Error("Expected to find config medium severity issue for min == max")
 	}
 }
 
@@ -192,8 +195,9 @@ func TestHPAChecker_AtMaxReplicas(t *testing.T) {
 		t.Error("Expected IsAtMaxReplicas to be true")
 	}
 
-	if health.Status != StatusWarning {
-		t.Errorf("Expected status Warning, got %s", health.Status)
+	// IsAtMaxReplicas é SeverityHigh, que resulta em StatusCritical
+	if health.Status != StatusCritical {
+		t.Errorf("Expected status Critical (high severity), got %s", health.Status)
 	}
 }
 
@@ -551,26 +555,40 @@ func TestHPAChecker_DetermineStatus(t *testing.T) {
 			expected: StatusHealthy,
 		},
 		{
-			name: "Warning only",
+			name: "Medium only (results in Warning)",
 			issues: []HPAScalingIssue{
-				{Severity: "warning"},
+				{Severity: SeverityMedium},
 			},
 			expected: StatusWarning,
 		},
 		{
 			name: "Critical only",
 			issues: []HPAScalingIssue{
-				{Severity: "critical"},
+				{Severity: SeverityCritical},
 			},
 			expected: StatusCritical,
 		},
 		{
-			name: "Warning and Critical",
+			name: "High only (results in Critical)",
 			issues: []HPAScalingIssue{
-				{Severity: "warning"},
-				{Severity: "critical"},
+				{Severity: SeverityHigh},
+			},
+			expected: StatusCritical,
+		},
+		{
+			name: "Medium and Critical",
+			issues: []HPAScalingIssue{
+				{Severity: SeverityMedium},
+				{Severity: SeverityCritical},
 			},
 			expected: StatusCritical, // Critical takes precedence
+		},
+		{
+			name: "Low only (results in Healthy)",
+			issues: []HPAScalingIssue{
+				{Severity: SeverityLow},
+			},
+			expected: StatusHealthy,
 		},
 	}
 
