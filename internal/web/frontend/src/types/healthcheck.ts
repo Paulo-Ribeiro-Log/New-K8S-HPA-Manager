@@ -16,8 +16,56 @@ export type ServiceType =
 // Status de health
 export type HealthStatus = "healthy" | "warning" | "critical" | "unknown";
 
-// Severidade de eventos K8s
-export type EventSeverity = "critical" | "warning" | "info";
+// Níveis de severidade (5 níveis)
+export type Severity = "critical" | "high" | "medium" | "low" | "info";
+
+// Severidade de eventos K8s (deprecated, usar Severity)
+export type EventSeverity = Severity;
+
+// Peso numérico da severidade para ordenação (maior = mais grave)
+export const SeverityWeight: Record<Severity, number> = {
+  critical: 5,
+  high: 4,
+  medium: 3,
+  low: 2,
+  info: 1,
+};
+
+// Cores para cada nível de severidade
+export const SeverityColors: Record<Severity, string> = {
+  critical: "text-red-500",
+  high: "text-orange-500",
+  medium: "text-yellow-500",
+  low: "text-blue-500",
+  info: "text-gray-500",
+};
+
+// Background colors para cada nível de severidade
+export const SeverityBgColors: Record<Severity, string> = {
+  critical: "bg-red-500/10 border-red-500/30",
+  high: "bg-orange-500/10 border-orange-500/30",
+  medium: "bg-yellow-500/10 border-yellow-500/30",
+  low: "bg-blue-500/10 border-blue-500/30",
+  info: "bg-gray-500/10 border-gray-500/30",
+};
+
+// Labels para exibição
+export const SeverityLabels: Record<Severity, string> = {
+  critical: "Crítico",
+  high: "Alto",
+  medium: "Médio",
+  low: "Baixo",
+  info: "Info",
+};
+
+// Contadores por severidade
+export interface SeverityCounts {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  info: number;
+}
 
 // Request de health check
 export interface HealthCheckRequest {
@@ -76,10 +124,45 @@ export interface HealthCheckResult {
   // Resumo
   total_checks: number;
   healthy_count: number;
-  warning_count: number;
-  critical_count: number;
+  warning_count: number;   // Deprecated: usar severity_counts
+  critical_count: number;  // Deprecated: usar severity_counts
   overall_status: HealthStatus;
+
+  // Contadores por severidade (novo sistema)
+  severity_counts?: SeverityCounts;
 }
+
+// Probe Issue (problema na configuração de probes)
+export interface ProbeIssue {
+  container: string;
+  probe_type: string;  // "liveness", "readiness", "startup"
+  issue: string;
+  severity: Severity;
+}
+
+// Resource Issue (problema na configuração de recursos)
+export interface ResourceIssue {
+  container: string;
+  resource_type: string;  // "cpu", "memory"
+  issue: string;
+  severity: Severity;
+}
+
+// Container Resources (recursos configurados de um container)
+export interface ContainerResources {
+  name: string;
+  cpu_request?: string;
+  memory_request?: string;
+  cpu_limit?: string;
+  memory_limit?: string;
+  has_cpu_request: boolean;
+  has_memory_request: boolean;
+  has_cpu_limit: boolean;
+  has_memory_limit: boolean;
+}
+
+// QoS Class
+export type QoSClass = "Guaranteed" | "Burstable" | "BestEffort";
 
 // Health de Deployment
 export interface DeploymentHealth {
@@ -93,15 +176,24 @@ export interface DeploymentHealth {
   containers_crash: number;
   image_pull_errors: number;
 
-  // Recursos
+  // Recursos - Uso atual
   cpu_usage_percent: number;    // 0-100
   memory_usage_percent: number; // 0-100
+
+  // Recursos - Configuração
+  qos_class?: QoSClass;
+  container_resources?: ContainerResources[];
+  resource_issues?: ResourceIssue[];
 
   // Probes
   has_liveness_probe: boolean;
   has_readiness_probe: boolean;
+  has_startup_probe?: boolean;
+  liveness_probe_failures?: number;
+  readiness_probe_failures?: number;
   liveness_failing: boolean;
   readiness_failing: boolean;
+  probe_issues?: ProbeIssue[];
 
   // Mensagem e sugestões
   message: string;
@@ -159,7 +251,7 @@ export interface EventHealth {
   reason: string;           // FailedScheduling, BackOff, etc.
   message: string;          // Mensagem completa do evento
   type: string;             // Warning, Normal
-  severity: EventSeverity;  // critical, warning, info
+  severity: Severity;       // critical, high, medium, low, info
   count: number;            // Número de ocorrências
   first_timestamp: string;  // ISO timestamp - Primeira ocorrência
   last_timestamp: string;   // ISO timestamp - Última ocorrência
@@ -171,13 +263,14 @@ export interface EventHealth {
   // Sugestões de correção
   suggestions: string[];
   status: HealthStatus;     // Para compatibilidade com outros checkers
+  checked_at: string;       // ISO timestamp
 }
 
 // HPA Scaling Issue
 export interface HPAScalingIssue {
   type: string;        // "config", "metric", "scaling", "target"
   description: string;
-  severity: string;    // "warning", "critical"
+  severity: Severity;  // critical, high, medium, low, info
 }
 
 // HPA Metric Config
@@ -251,7 +344,7 @@ export interface HPAHealth {
 export interface PVIssue {
   type: string;        // "volume", "status", "config"
   description: string;
-  severity: string;    // "warning", "critical"
+  severity: Severity;  // critical, high, medium, low, info
 }
 
 // Health de PVC (PersistentVolumeClaim)

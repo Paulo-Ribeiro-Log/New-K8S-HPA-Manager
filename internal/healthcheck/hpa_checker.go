@@ -116,7 +116,7 @@ func (c *HPAChecker) validateHPA(ctx context.Context, client kubernetes.Interfac
 		health.Issues = append(health.Issues, HPAScalingIssue{
 			Type:        "config",
 			Description: fmt.Sprintf("HPA tem minReplicas (%d) igual a maxReplicas (%d) - nao ha scaling automatico", health.MinReplicas, health.MaxReplicas),
-			Severity:    "warning",
+			Severity:    SeverityMedium,
 		})
 		health.Suggestions = append(health.Suggestions, "Aumentar maxReplicas para permitir scaling automatico ou remover o HPA se scaling nao for necessario")
 	}
@@ -127,7 +127,7 @@ func (c *HPAChecker) validateHPA(ctx context.Context, client kubernetes.Interfac
 		health.Issues = append(health.Issues, HPAScalingIssue{
 			Type:        "config",
 			Description: fmt.Sprintf("HPA tem maxReplicas muito baixo (%d) - pouca flexibilidade para escalar", health.MaxReplicas),
-			Severity:    "warning",
+			Severity:    SeverityLow,
 		})
 		health.Suggestions = append(health.Suggestions, "Considerar aumentar maxReplicas para pelo menos 3 para melhor resiliencia")
 	}
@@ -138,7 +138,7 @@ func (c *HPAChecker) validateHPA(ctx context.Context, client kubernetes.Interfac
 		health.Issues = append(health.Issues, HPAScalingIssue{
 			Type:        "scaling",
 			Description: fmt.Sprintf("HPA esta no limite maximo de replicas (%d/%d) - pode precisar de mais capacidade", health.CurrentReplicas, health.MaxReplicas),
-			Severity:    "warning",
+			Severity:    SeverityHigh,
 		})
 		health.Suggestions = append(health.Suggestions, "Verificar metricas e considerar aumentar maxReplicas se carga persistir alta")
 	}
@@ -152,7 +152,7 @@ func (c *HPAChecker) validateHPA(ctx context.Context, client kubernetes.Interfac
 		health.Issues = append(health.Issues, HPAScalingIssue{
 			Type:        "config",
 			Description: "HPA tem annotations que podem desabilitar ou limitar scaling automatico",
-			Severity:    "warning",
+			Severity:    SeverityMedium,
 		})
 		health.Suggestions = append(health.Suggestions, "Verificar annotations do HPA: cluster-autoscaler.kubernetes.io/safe-to-evict, autoscaling.alpha.kubernetes.io/paused")
 	}
@@ -162,7 +162,7 @@ func (c *HPAChecker) validateHPA(ctx context.Context, client kubernetes.Interfac
 		health.Issues = append(health.Issues, HPAScalingIssue{
 			Type:        "target",
 			Description: fmt.Sprintf("Target %s/%s nao encontrado no namespace %s - HPA orfao", health.TargetKind, health.TargetName, namespace),
-			Severity:    "critical",
+			Severity:    SeverityCritical,
 		})
 		health.Suggestions = append(health.Suggestions, fmt.Sprintf("Verificar se %s '%s' existe no namespace ou deletar HPA orfao", health.TargetKind, health.TargetName))
 	}
@@ -182,7 +182,7 @@ func (c *HPAChecker) validateHPA(ctx context.Context, client kubernetes.Interfac
 		health.Issues = append(health.Issues, HPAScalingIssue{
 			Type:        "metric",
 			Description: "HPA nao tem metricas configuradas - scaling nao funcionara corretamente",
-			Severity:    "critical",
+			Severity:    SeverityCritical,
 		})
 		health.Suggestions = append(health.Suggestions, "Adicionar pelo menos uma metrica (CPU ou Memory) para o HPA funcionar")
 	}
@@ -191,7 +191,7 @@ func (c *HPAChecker) validateHPA(ctx context.Context, client kubernetes.Interfac
 		health.Issues = append(health.Issues, HPAScalingIssue{
 			Type:        "metric",
 			Description: fmt.Sprintf("HPA tem %d metrica(s) com erro - verificar se metrics-server esta funcionando", health.MetricsErrors),
-			Severity:    "warning",
+			Severity:    SeverityHigh,
 		})
 		health.Suggestions = append(health.Suggestions, "kubectl get --raw /apis/metrics.k8s.io/v1beta1/namespaces/"+namespace+"/pods")
 	}
@@ -220,7 +220,7 @@ func (c *HPAChecker) validateHPA(ctx context.Context, client kubernetes.Interfac
 			health.Issues = append(health.Issues, HPAScalingIssue{
 				Type:        "scaling",
 				Description: fmt.Sprintf("Evento de falha de scaling recente: %s - %s", event.Reason, event.Message),
-				Severity:    "warning",
+				Severity:    SeverityHigh,
 			})
 		}
 	}

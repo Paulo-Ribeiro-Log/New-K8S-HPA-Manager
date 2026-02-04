@@ -35,6 +35,72 @@ const (
 	StatusUnknown  HealthStatus = "unknown"
 )
 
+// Severity níveis de severidade para problemas detectados
+type Severity string
+
+const (
+	SeverityCritical Severity = "critical" // Requer ação imediata (ex: pod crashloop, PVC lost)
+	SeverityHigh     Severity = "high"     // Impacto significativo (ex: sem probes, HPA no limite)
+	SeverityMedium   Severity = "medium"   // Deveria ser corrigido (ex: QoS BestEffort, warnings)
+	SeverityLow      Severity = "low"      // Melhoria recomendada (ex: sem startupProbe)
+	SeverityInfo     Severity = "info"     // Informativo apenas (ex: scaling events, estatísticas)
+)
+
+// SeverityWeight retorna o peso numérico da severidade para ordenação (maior = mais grave)
+func (s Severity) Weight() int {
+	switch s {
+	case SeverityCritical:
+		return 5
+	case SeverityHigh:
+		return 4
+	case SeverityMedium:
+		return 3
+	case SeverityLow:
+		return 2
+	case SeverityInfo:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// IsMoreSevereThan compara se esta severidade é mais grave que outra
+func (s Severity) IsMoreSevereThan(other Severity) bool {
+	return s.Weight() > other.Weight()
+}
+
+// SeverityFromString converte string para Severity com fallback
+func SeverityFromString(s string) Severity {
+	switch s {
+	case "critical":
+		return SeverityCritical
+	case "high":
+		return SeverityHigh
+	case "medium":
+		return SeverityMedium
+	case "low":
+		return SeverityLow
+	case "info":
+		return SeverityInfo
+	case "warning": // backward compatibility
+		return SeverityMedium
+	default:
+		return SeverityInfo
+	}
+}
+
+// ToHealthStatus converte Severity para HealthStatus (para compatibilidade)
+func (s Severity) ToHealthStatus() HealthStatus {
+	switch s {
+	case SeverityCritical, SeverityHigh:
+		return StatusCritical
+	case SeverityMedium:
+		return StatusWarning
+	default:
+		return StatusHealthy
+	}
+}
+
 // HealthCheckRequest requisição de health check
 type HealthCheckRequest struct {
 	// Modo 1: Filtro por ambiente (prod, hlg, all)
@@ -93,17 +159,55 @@ type HealthCheckResult struct {
 	// Resumo
 	TotalChecks   int          `json:"total_checks"`
 	HealthyCount  int          `json:"healthy_count"`
-	WarningCount  int          `json:"warning_count"`
-	CriticalCount int          `json:"critical_count"`
+	WarningCount  int          `json:"warning_count"`   // Deprecated: use severity counts
+	CriticalCount int          `json:"critical_count"`  // Deprecated: use severity counts
 	OverallStatus HealthStatus `json:"overall_status"`
+
+	// Contadores por severidade (novo sistema)
+	SeverityCounts SeverityCounts `json:"severity_counts"`
+}
+
+// SeverityCounts contadores por nível de severidade
+type SeverityCounts struct {
+	Critical int `json:"critical"` // Requer ação imediata
+	High     int `json:"high"`     // Impacto significativo
+	Medium   int `json:"medium"`   // Deveria ser corrigido
+	Low      int `json:"low"`      // Melhoria recomendada
+	Info     int `json:"info"`     // Informativo
+}
+
+// Total retorna o total de issues (excluindo info)
+func (sc SeverityCounts) Total() int {
+	return sc.Critical + sc.High + sc.Medium + sc.Low
+}
+
+// TotalWithInfo retorna o total de issues incluindo info
+func (sc SeverityCounts) TotalWithInfo() int {
+	return sc.Critical + sc.High + sc.Medium + sc.Low + sc.Info
+}
+
+// Increment incrementa o contador para a severidade especificada
+func (sc *SeverityCounts) Increment(severity Severity) {
+	switch severity {
+	case SeverityCritical:
+		sc.Critical++
+	case SeverityHigh:
+		sc.High++
+	case SeverityMedium:
+		sc.Medium++
+	case SeverityLow:
+		sc.Low++
+	case SeverityInfo:
+		sc.Info++
+	}
 }
 
 // ProbeIssue representa um problema na configuração de probes
 type ProbeIssue struct {
-	Container string `json:"container"`
-	ProbeType string `json:"probe_type"` // "liveness", "readiness", "startup"
-	Issue     string `json:"issue"`
-	Severity  string `json:"severity"` // "warning", "critical"
+	Container string   `json:"container"`
+	ProbeType string   `json:"probe_type"` // "liveness", "readiness", "startup"
+	Issue     string   `json:"issue"`
+	Severity  Severity `json:"severity"` // critical, high, medium, low, info
 }
 
 // QoSClass representa a classe de QoS do Kubernetes
@@ -117,10 +221,10 @@ const (
 
 // ResourceIssue representa um problema na configuração de recursos
 type ResourceIssue struct {
-	Container    string `json:"container"`
-	ResourceType string `json:"resource_type"` // "cpu", "memory"
-	Issue        string `json:"issue"`
-	Severity     string `json:"severity"` // "warning", "critical"
+	Container    string   `json:"container"`
+	ResourceType string   `json:"resource_type"` // "cpu", "memory"
+	Issue        string   `json:"issue"`
+	Severity     Severity `json:"severity"` // critical, high, medium, low, info
 }
 
 // ContainerResources representa os recursos configurados de um container
@@ -224,9 +328,9 @@ type ConfigHealth struct {
 
 // HPAScalingIssue representa um problema na configuração do HPA
 type HPAScalingIssue struct {
-	Type        string `json:"type"`        // "config", "metric", "scaling", "target"
-	Description string `json:"description"`
-	Severity    string `json:"severity"` // "warning", "critical"
+	Type        string   `json:"type"`        // "config", "metric", "scaling", "target"
+	Description string   `json:"description"`
+	Severity    Severity `json:"severity"` // critical, high, medium, low, info
 }
 
 // HPAMetricConfig configuração de métrica do HPA
@@ -298,9 +402,9 @@ type HPAHealth struct {
 
 // PVIssue representa um problema na configuração do PV/PVC
 type PVIssue struct {
-	Type        string `json:"type"`        // "status", "config", "volume"
-	Description string `json:"description"`
-	Severity    string `json:"severity"` // "warning", "critical"
+	Type        string   `json:"type"`        // "status", "config", "volume"
+	Description string   `json:"description"`
+	Severity    Severity `json:"severity"` // critical, high, medium, low, info
 }
 
 // PVCHealth saúde de um PersistentVolumeClaim
