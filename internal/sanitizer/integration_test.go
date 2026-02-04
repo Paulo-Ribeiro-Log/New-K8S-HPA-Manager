@@ -89,9 +89,7 @@ func TestSanitizeLogsIntegration(t *testing.T) {
 		})
 	}
 
-	// Debug: Imprime logs sanitizados (útil para verificação manual)
-	t.Logf("=== LOGS ORIGINAIS ===\n%s", rawLogs)
-	t.Logf("\n=== LOGS SANITIZADOS ===\n%s", sanitizedLogs)
+	// Debug removido - GitHub Actions detecta strings como secrets e marca como erro
 }
 
 // TestSanitizeCrashLoopBackOffScenario testa cenário real de CrashLoopBackOff
@@ -170,9 +168,7 @@ func TestSanitizeCrashLoopBackOffScenario(t *testing.T) {
 		})
 	}
 
-	// Debug
-	t.Logf("=== CRASH LOGS ORIGINAIS ===\n%s", crashLogs)
-	t.Logf("\n=== CRASH LOGS SANITIZADOS ===\n%s", sanitized)
+	// Debug removido - GitHub Actions detecta strings como secrets e marca como erro
 }
 
 // TestSanitizeMultilineConnectionString testa connection strings em múltiplas linhas
@@ -208,6 +204,5 @@ func TestSanitizeMultilineConnectionString(t *testing.T) {
 		t.Error("Redis password not masked correctly (expected cac***456)")
 	}
 
-	t.Logf("=== MULTILINE ORIGINAL ===\n%s", logs)
-	t.Logf("\n=== MULTILINE SANITIZED ===\n%s", sanitized)
+	// Debug removido - GitHub Actions detecta strings como secrets e marca como erro
 }
