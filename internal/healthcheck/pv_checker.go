@@ -316,11 +316,14 @@ func (c *PVChecker) determineStatus(health PVCHealth) HealthStatus {
 	hasWarning := false
 
 	for _, issue := range health.Issues {
-		if issue.Severity == "critical" {
+		// Critical e High resultam em StatusCritical
+		if issue.Severity == SeverityCritical || issue.Severity == SeverityHigh {
 			hasCritical = true
-		} else if issue.Severity == "warning" {
+		} else if issue.Severity == SeverityMedium {
+			// Medium resulta em StatusWarning
 			hasWarning = true
 		}
+		// Low e Info não afetam o status (considerados informativos)
 	}
 
 	if hasCritical {
