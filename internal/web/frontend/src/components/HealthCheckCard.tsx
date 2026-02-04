@@ -23,6 +23,13 @@ import type {
   HPAHealth,
   PVCHealth,
   HealthStatus,
+  Severity,
+} from "@/types/healthcheck";
+import {
+  SeverityColors,
+  SeverityBgColors,
+  SeverityLabels,
+  SeverityWeight,
 } from "@/types/healthcheck";
 
 interface HealthCheckCardProps {
@@ -32,6 +39,19 @@ interface HealthCheckCardProps {
   isSelected?: boolean;
   onToggleSelect?: () => void;
 }
+
+// Helper function para renderizar badge de severidade
+const SeverityBadge = ({ severity }: { severity: Severity }) => {
+  const colorClass = SeverityColors[severity] || SeverityColors.info;
+  const bgClass = SeverityBgColors[severity] || SeverityBgColors.info;
+  const label = SeverityLabels[severity] || severity;
+
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium border ${bgClass} ${colorClass}`}>
+      {label}
+    </span>
+  );
+};
 
 export const HealthCheckCard = ({
   health,
@@ -118,6 +138,55 @@ export const HealthCheckCard = ({
               </span>
             </div>
           )}
+          {deployment.qos_class && (
+            <div>
+              <span className="text-muted-foreground">QoS:</span>{" "}
+              <span className={`font-medium ${
+                deployment.qos_class === "Guaranteed" ? "text-green-600" :
+                deployment.qos_class === "Burstable" ? "text-yellow-600" : "text-red-600"
+              }`}>
+                {deployment.qos_class}
+              </span>
+            </div>
+          )}
+          {/* Probe Issues */}
+          {deployment.probe_issues && deployment.probe_issues.length > 0 && (
+            <div className="col-span-2 mt-2 space-y-1">
+              <span className="text-xs font-medium text-muted-foreground">Problemas de Probes:</span>
+              {[...deployment.probe_issues]
+                .sort((a, b) => (SeverityWeight[b.severity] || 0) - (SeverityWeight[a.severity] || 0))
+                .map((issue, i) => (
+                <div
+                  key={i}
+                  className={`text-xs px-2 py-1 rounded border flex items-start gap-2 ${SeverityBgColors[issue.severity] || SeverityBgColors.info}`}
+                >
+                  <SeverityBadge severity={issue.severity} />
+                  <span className={SeverityColors[issue.severity] || SeverityColors.info}>
+                    [{issue.container}/{issue.probe_type}] {issue.issue}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {/* Resource Issues */}
+          {deployment.resource_issues && deployment.resource_issues.length > 0 && (
+            <div className="col-span-2 mt-2 space-y-1">
+              <span className="text-xs font-medium text-muted-foreground">Problemas de Resources:</span>
+              {[...deployment.resource_issues]
+                .sort((a, b) => (SeverityWeight[b.severity] || 0) - (SeverityWeight[a.severity] || 0))
+                .map((issue, i) => (
+                <div
+                  key={i}
+                  className={`text-xs px-2 py-1 rounded border flex items-start gap-2 ${SeverityBgColors[issue.severity] || SeverityBgColors.info}`}
+                >
+                  <SeverityBadge severity={issue.severity} />
+                  <span className={SeverityColors[issue.severity] || SeverityColors.info}>
+                    [{issue.container}/{issue.resource_type}] {issue.issue}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       );
     }
@@ -187,18 +256,12 @@ export const HealthCheckCard = ({
 
     if (type === "event") {
       const event = health as EventHealth;
-      const severityColors: Record<string, string> = {
-        critical: "text-red-600 bg-red-100 dark:bg-red-950/30",
-        warning: "text-yellow-600 bg-yellow-100 dark:bg-yellow-950/30",
-        info: "text-blue-600 bg-blue-100 dark:bg-blue-950/30",
-      };
       return (
         <div className="grid grid-cols-2 gap-2 text-sm">
-          <div>
+          <div className="flex items-center gap-2">
             <span className="text-muted-foreground">Razão:</span>{" "}
-            <span className={`font-medium px-1.5 py-0.5 rounded ${severityColors[event.severity] || ""}`}>
-              {event.reason}
-            </span>
+            <span className="font-medium">{event.reason}</span>
+            <SeverityBadge severity={event.severity} />
           </div>
           <div>
             <span className="text-muted-foreground">Tipo:</span>{" "}
@@ -277,16 +340,18 @@ export const HealthCheckCard = ({
           )}
           {hpa.issues && hpa.issues.length > 0 && (
             <div className="col-span-2 mt-2 space-y-1">
-              {hpa.issues.map((issue, i) => (
+              {/* Ordenar issues por severidade (mais grave primeiro) */}
+              {[...hpa.issues]
+                .sort((a, b) => (SeverityWeight[b.severity] || 0) - (SeverityWeight[a.severity] || 0))
+                .map((issue, i) => (
                 <div
                   key={i}
-                  className={`text-xs px-2 py-1 rounded ${
-                    issue.severity === "critical"
-                      ? "bg-red-100 text-red-700 dark:bg-red-950/30"
-                      : "bg-yellow-100 text-yellow-700 dark:bg-yellow-950/30"
-                  }`}
+                  className={`text-xs px-2 py-1 rounded border flex items-start gap-2 ${SeverityBgColors[issue.severity] || SeverityBgColors.info}`}
                 >
-                  [{issue.type}] {issue.description}
+                  <SeverityBadge severity={issue.severity} />
+                  <span className={SeverityColors[issue.severity] || SeverityColors.info}>
+                    [{issue.type}] {issue.description}
+                  </span>
                 </div>
               ))}
             </div>
@@ -374,16 +439,18 @@ export const HealthCheckCard = ({
           )}
           {pvc.issues && pvc.issues.length > 0 && (
             <div className="col-span-2 mt-2 space-y-1">
-              {pvc.issues.map((issue, i) => (
+              {/* Ordenar issues por severidade (mais grave primeiro) */}
+              {[...pvc.issues]
+                .sort((a, b) => (SeverityWeight[b.severity] || 0) - (SeverityWeight[a.severity] || 0))
+                .map((issue, i) => (
                 <div
                   key={i}
-                  className={`text-xs px-2 py-1 rounded ${
-                    issue.severity === "critical"
-                      ? "bg-red-100 text-red-700 dark:bg-red-950/30"
-                      : "bg-yellow-100 text-yellow-700 dark:bg-yellow-950/30"
-                  }`}
+                  className={`text-xs px-2 py-1 rounded border flex items-start gap-2 ${SeverityBgColors[issue.severity] || SeverityBgColors.info}`}
                 >
-                  [{issue.type}] {issue.description}
+                  <SeverityBadge severity={issue.severity} />
+                  <span className={SeverityColors[issue.severity] || SeverityColors.info}>
+                    [{issue.type}] {issue.description}
+                  </span>
                 </div>
               ))}
             </div>
