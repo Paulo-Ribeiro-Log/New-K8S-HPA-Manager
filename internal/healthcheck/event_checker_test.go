@@ -58,11 +58,12 @@ func TestDetermineSeverity_Critical(t *testing.T) {
 	}
 }
 
-// TestDetermineSeverity_Warning verifica que eventos de warning são identificados corretamente
-func TestDetermineSeverity_Warning(t *testing.T) {
+// TestDetermineSeverity_Medium verifica que eventos de warning são identificados como Medium
+func TestDetermineSeverity_Medium(t *testing.T) {
 	checker := NewEventChecker()
 
-	warningReasons := []string{
+	// Eventos que não são críticos são tratados como Medium (antigo "warning")
+	mediumReasons := []string{
 		"Unhealthy",
 		"ProbeWarning",
 		"FailedGetScale",
@@ -74,22 +75,22 @@ func TestDetermineSeverity_Warning(t *testing.T) {
 		"ProvisioningFailed",
 	}
 
-	for _, reason := range warningReasons {
+	for _, reason := range mediumReasons {
 		severity := checker.determineSeverity(reason)
-		if severity != SeverityWarning {
-			t.Errorf("determineSeverity(%q) = %v, want SeverityWarning", reason, severity)
+		if severity != SeverityMedium {
+			t.Errorf("determineSeverity(%q) = %v, want SeverityMedium", reason, severity)
 		}
 	}
 }
 
-// TestDetermineSeverity_Unknown verifica que eventos desconhecidos são tratados como warning
+// TestDetermineSeverity_Unknown verifica que eventos desconhecidos são tratados como Medium
 func TestDetermineSeverity_Unknown(t *testing.T) {
 	checker := NewEventChecker()
 
-	// Reason desconhecido deve ser tratado como warning (não crítico, não info)
+	// Reason desconhecido deve ser tratado como Medium (não crítico, não info)
 	severity := checker.determineSeverity("SomeUnknownReason")
-	if severity != SeverityWarning {
-		t.Errorf("determineSeverity(unknown) = %v, want SeverityWarning", severity)
+	if severity != SeverityMedium {
+		t.Errorf("determineSeverity(unknown) = %v, want SeverityMedium", severity)
 	}
 }
 
@@ -214,9 +215,9 @@ func TestGetCriticalCount(t *testing.T) {
 
 	events := []EventHealth{
 		{Severity: SeverityCritical, Status: StatusCritical},
-		{Severity: SeverityWarning, Status: StatusWarning},
+		{Severity: SeverityMedium, Status: StatusWarning},
 		{Severity: SeverityCritical, Status: StatusCritical},
-		{Severity: SeverityWarning, Status: StatusWarning},
+		{Severity: SeverityMedium, Status: StatusWarning},
 		{Severity: SeverityCritical, Status: StatusCritical},
 	}
 
@@ -226,15 +227,15 @@ func TestGetCriticalCount(t *testing.T) {
 	}
 }
 
-// TestGetWarningCount verifica contagem de eventos warning
+// TestGetWarningCount verifica contagem de eventos Medium (warnings)
 func TestGetWarningCount(t *testing.T) {
 	checker := NewEventChecker()
 
 	events := []EventHealth{
 		{Severity: SeverityCritical, Status: StatusCritical},
-		{Severity: SeverityWarning, Status: StatusWarning},
+		{Severity: SeverityMedium, Status: StatusWarning},
 		{Severity: SeverityCritical, Status: StatusCritical},
-		{Severity: SeverityWarning, Status: StatusWarning},
+		{Severity: SeverityMedium, Status: StatusWarning},
 	}
 
 	count := checker.GetWarningCount(events)
@@ -331,9 +332,9 @@ func TestSortBySeverity(t *testing.T) {
 
 	now := time.Now()
 	events := []EventHealth{
-		{Severity: SeverityWarning, LastTimestamp: now.Add(-1 * time.Minute)},
+		{Severity: SeverityMedium, LastTimestamp: now.Add(-1 * time.Minute)},
 		{Severity: SeverityCritical, LastTimestamp: now.Add(-2 * time.Minute)},
-		{Severity: SeverityWarning, LastTimestamp: now.Add(-3 * time.Minute)},
+		{Severity: SeverityMedium, LastTimestamp: now.Add(-3 * time.Minute)},
 		{Severity: SeverityCritical, LastTimestamp: now},
 	}
 
@@ -382,14 +383,14 @@ func TestCriticalEventReasons(t *testing.T) {
 func TestEventHealthStatus(t *testing.T) {
 	checker := NewEventChecker()
 
-	// Evento crítico deve ter StatusCritical
+	// Evento crítico deve ter SeverityCritical
 	if checker.determineSeverity("FailedScheduling") != SeverityCritical {
 		t.Error("FailedScheduling deve ser SeverityCritical")
 	}
 
-	// Evento warning deve ter StatusWarning
-	if checker.determineSeverity("Unhealthy") != SeverityWarning {
-		t.Error("Unhealthy deve ser SeverityWarning")
+	// Evento de warning deve ter SeverityMedium
+	if checker.determineSeverity("Unhealthy") != SeverityMedium {
+		t.Error("Unhealthy deve ser SeverityMedium")
 	}
 }
 
