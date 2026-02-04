@@ -467,7 +467,7 @@ func (h *SecretHandler) Create(c *gin.Context) {
 	startTime := time.Now()
 
 	// Aplicar o secret (usando apply para criar ou atualizar)
-	result, err := kubeClient.ApplySecret(c.Request.Context(), namespace, secretName, req.YAML, req.FieldManager, false)
+	result, err := kubeClient.ApplySecret(c.Request.Context(), req.YAML, req.FieldManager, namespace, secretName, false)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
