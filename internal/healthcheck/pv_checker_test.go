@@ -339,20 +339,21 @@ func TestPVChecker_ReadWriteMany(t *testing.T) {
 	}
 
 	result := results[0]
-	if result.Status != StatusWarning {
-		t.Errorf("Expected StatusWarning for ReadWriteMany, got %s", result.Status)
+	// ReadWriteMany é apenas informativo (SeverityInfo), não afeta o status
+	if result.Status != StatusHealthy {
+		t.Errorf("Expected StatusHealthy for ReadWriteMany (info only), got %s", result.Status)
 	}
 
-	// Deve ter warning sobre ReadWriteMany
+	// Deve ter issue informativo sobre ReadWriteMany
 	hasRWXIssue := false
 	for _, issue := range result.Issues {
-		if issue.Type == "config" && issue.Severity == "warning" {
+		if issue.Type == "config" && issue.Severity == SeverityInfo {
 			hasRWXIssue = true
 			break
 		}
 	}
 	if !hasRWXIssue {
-		t.Error("Expected a warning issue for ReadWriteMany access mode")
+		t.Error("Expected an info issue for ReadWriteMany access mode")
 	}
 }
 
@@ -408,20 +409,21 @@ func TestPVChecker_SmallCapacity(t *testing.T) {
 	}
 
 	result := results[0]
-	if result.Status != StatusWarning {
-		t.Errorf("Expected StatusWarning for small capacity, got %s", result.Status)
+	// Capacidade pequena é SeverityLow (informativo), não afeta o status
+	if result.Status != StatusHealthy {
+		t.Errorf("Expected StatusHealthy for small capacity (low severity), got %s", result.Status)
 	}
 
-	// Deve ter warning sobre capacidade pequena
+	// Deve ter issue de baixa severidade sobre capacidade pequena
 	hasSmallIssue := false
 	for _, issue := range result.Issues {
-		if issue.Type == "config" && issue.Severity == "warning" {
+		if issue.Type == "config" && issue.Severity == SeverityLow {
 			hasSmallIssue = true
 			break
 		}
 	}
 	if !hasSmallIssue {
-		t.Error("Expected a warning issue for small capacity")
+		t.Error("Expected a low severity issue for small capacity")
 	}
 }
 
@@ -602,23 +604,17 @@ func TestPVChecker_CheckAll(t *testing.T) {
 		t.Fatalf("Expected 2 results, got %d", len(results))
 	}
 
-	// Verificar que temos pelo menos um healthy e um warning
+	// ReadWriteMany agora é apenas informativo (SeverityInfo), então ambos são Healthy
 	healthyCount := 0
-	warningCount := 0
 	for _, r := range results {
 		if r.Status == StatusHealthy {
 			healthyCount++
 		}
-		if r.Status == StatusWarning {
-			warningCount++
-		}
 	}
 
-	if healthyCount != 1 {
-		t.Errorf("Expected 1 healthy PVC, got %d", healthyCount)
-	}
-	if warningCount != 1 {
-		t.Errorf("Expected 1 warning PVC, got %d", warningCount)
+	// Ambos PVCs devem ser healthy (ReadWriteMany é apenas info, não afeta status)
+	if healthyCount != 2 {
+		t.Errorf("Expected 2 healthy PVCs (ReadWriteMany is info only), got %d", healthyCount)
 	}
 }
 
@@ -733,20 +729,21 @@ func TestPVChecker_NoStorageClass(t *testing.T) {
 	}
 
 	result := results[0]
-	if result.Status != StatusWarning {
-		t.Errorf("Expected StatusWarning for missing StorageClass, got %s", result.Status)
+	// StorageClass não definida é SeverityLow (informativo), não afeta o status
+	if result.Status != StatusHealthy {
+		t.Errorf("Expected StatusHealthy for missing StorageClass (low severity), got %s", result.Status)
 	}
 
-	// Deve ter issue sobre StorageClass não definida
+	// Deve ter issue de baixa severidade sobre StorageClass não definida
 	hasIssue := false
 	for _, issue := range result.Issues {
-		if issue.Type == "config" && issue.Severity == "warning" {
+		if issue.Type == "config" && issue.Severity == SeverityLow {
 			hasIssue = true
 			break
 		}
 	}
 	if !hasIssue {
-		t.Error("Expected a warning issue for undefined StorageClass")
+		t.Error("Expected a low severity issue for undefined StorageClass")
 	}
 }
 

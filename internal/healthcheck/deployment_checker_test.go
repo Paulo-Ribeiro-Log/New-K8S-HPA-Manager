@@ -677,16 +677,16 @@ func TestAnalyzeResourcesNoMemoryLimit(t *testing.T) {
 	health := &DeploymentHealth{}
 	checker.analyzeResources(deployment, health)
 
-	// Verificar que tem issue critical para memory limit
-	hasCriticalMemoryIssue := false
+	// Verificar que tem issue high para memory limit (OOMKill risk)
+	hasHighMemoryIssue := false
 	for _, issue := range health.ResourceIssues {
-		if issue.ResourceType == "memory" && issue.Severity == "critical" {
-			hasCriticalMemoryIssue = true
+		if issue.ResourceType == "memory" && issue.Severity == SeverityHigh {
+			hasHighMemoryIssue = true
 		}
 	}
 
-	if !hasCriticalMemoryIssue {
-		t.Error("Deveria ter issue critical para memory limit faltando")
+	if !hasHighMemoryIssue {
+		t.Error("Deveria ter issue high para memory limit faltando")
 	}
 }
 
