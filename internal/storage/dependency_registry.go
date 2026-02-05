@@ -294,12 +294,17 @@ func (r *DependencyRegistry) GetStats() (map[string]interface{}, error) {
 	stats["by_type"] = byType
 
 	// Último scan
-	var lastScan sql.NullTime
-	if err := r.db.QueryRow("SELECT MAX(scanned_at) FROM scan_history").Scan(&lastScan); err != nil && err != sql.ErrNoRows {
+	var lastScanStr sql.NullString
+	if err := r.db.QueryRow("SELECT MAX(scanned_at) FROM scan_history").Scan(&lastScanStr); err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
-	if lastScan.Valid {
-		stats["last_scan"] = lastScan.Time
+	if lastScanStr.Valid && lastScanStr.String != "" {
+		// Parse timestamp string do SQLite
+		if t, err := time.Parse("2006-01-02 15:04:05", lastScanStr.String); err == nil {
+			stats["last_scan"] = t
+		} else if t, err := time.Parse(time.RFC3339, lastScanStr.String); err == nil {
+			stats["last_scan"] = t
+		}
 	}
 
 	return stats, nil
