@@ -13,6 +13,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/metrics"
 	"k8s-hpa-manager/internal/storage"
 	"k8s-hpa-manager/internal/web/sse"
 )
@@ -600,6 +601,33 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 
 	o.publishProgress(sessionID, cluster, "summary", fmt.Sprintf("Duração: %dms", result.Duration), 99, StatusHealthy)
 
+	// ======== Registrar métricas Prometheus ========
+	promMetrics := metrics.GetMetrics()
+	durationSeconds := float64(result.Duration) / 1000.0 // converter ms para segundos
+
+	// Registrar health check completo (duração, status, contador)
+	promMetrics.RecordHealthCheck(cluster, string(result.OverallStatus), durationSeconds)
+
+	// Registrar contagem de recursos por status
+	promMetrics.RecordDeployments(cluster, countByStatus(result.DeploymentResults, StatusHealthy),
+		countByStatus(result.DeploymentResults, StatusWarning), countByStatus(result.DeploymentResults, StatusCritical))
+	promMetrics.RecordServices(cluster, countByStatus(result.ServiceResults, StatusHealthy),
+		countByStatus(result.ServiceResults, StatusWarning), countByStatus(result.ServiceResults, StatusCritical))
+	promMetrics.RecordHPAs(cluster, countByStatus(result.HPAResults, StatusHealthy),
+		countByStatus(result.HPAResults, StatusWarning), countByStatus(result.HPAResults, StatusCritical))
+	promMetrics.RecordPVCs(cluster, countByStatus(result.PVCResults, StatusHealthy),
+		countByStatus(result.PVCResults, StatusWarning), countByStatus(result.PVCResults, StatusCritical))
+
+	// Registrar eventos por severidade
+	promMetrics.RecordEvents(cluster, result.WarningCount, result.CriticalCount)
+
+	log.Debug().
+		Str("cluster", cluster).
+		Float64("duration_seconds", durationSeconds).
+		Str("status", string(result.OverallStatus)).
+		Msg("Prometheus metrics recorded for health check")
+	// ================================================
+
 	// Publicar conclusão
 	o.publishProgress(sessionID, cluster, "complete", fmt.Sprintf("Concluído - Status: %s", result.OverallStatus), 100, result.OverallStatus)
 
@@ -834,6 +862,11 @@ func (o *Orchestrator) GetStats(ctx context.Context, cluster, days string) (map[
 	return o.storage.GetStats(ctx, cluster, days)
 }
 
+// GetDashboardMetrics retorna métricas para o dashboard de health checking
+func (o *Orchestrator) GetDashboardMetrics(ctx context.Context, days int) (*DashboardMetrics, error) {
+	return o.storage.GetDashboardMetrics(ctx, days)
+}
+
 // Storage retorna o storage para acesso direto (usado por handlers)
 func (o *Orchestrator) Storage() *HealthCheckStorage {
 	return o.storage
@@ -883,6 +916,36 @@ func calculateWorkers(numClusters, maxParallel int) int {
 	}
 
 	return numWorkers
+}
+
+// =============== Helper functions para métricas Prometheus ===============
+
+// countByStatus conta resultados de um slice genérico pelo status
+// Aceita qualquer slice que tenha campo Status do tipo HealthStatus
+func countByStatus[T any](results []T, status HealthStatus) int {
+	count := 0
+	for _, r := range results {
+		// Usar reflexão/type assertion para acessar Status
+		switch v := any(r).(type) {
+		case DeploymentHealth:
+			if v.Status == status {
+				count++
+			}
+		case ServiceHealth:
+			if v.Status == status {
+				count++
+			}
+		case HPAHealth:
+			if v.Status == status {
+				count++
+			}
+		case PVCHealth:
+			if v.Status == status {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 // ResolveClusters resolve lista de clusters baseado em Environment ou Clusters (método público)
