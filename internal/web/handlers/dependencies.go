@@ -341,8 +341,29 @@ func (h *DependenciesHandler) GetScanHistory(c *gin.Context) {
 	})
 }
 
-// Export exporta todas as dependências em formato CSV ou JSON
-// GET /api/v1/dependencies/export?format=csv|json
+// GetClusters retorna lista de clusters únicos no registry
+// GET /api/v1/dependencies/clusters
+func (h *DependenciesHandler) GetClusters(c *gin.Context) {
+	clusters, err := h.registry.GetUniqueClusters()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"message": "Falha ao obter clusters",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    clusters,
+	})
+}
+
+// Export exporta todas as dependências em formato CSV, JSON ou Markdown
+// GET /api/v1/dependencies/export?format=csv|json|md&cluster=...
 func (h *DependenciesHandler) Export(c *gin.Context) {
 	format := c.DefaultQuery("format", "json")
 	cluster := c.Query("cluster")
@@ -423,11 +444,100 @@ func (h *DependenciesHandler) Export(c *gin.Context) {
 		encoder.SetIndent("", "  ")
 		encoder.Encode(exportData)
 
+	case "md", "markdown":
+		c.Header("Content-Type", "text/markdown")
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=dependencies_%s.md", timestamp))
+
+		// Agrupar por serviço para o relatório
+		grouped := groupRegistryByService(deps)
+
+		// Obter estatísticas
+		stats, _ := h.registry.GetStats()
+
+		// Gerar Markdown
+		var md strings.Builder
+
+		md.WriteString("# Relatório de Dependências Externas\n\n")
+		md.WriteString(fmt.Sprintf("**Data de Exportação:** %s\n\n", time.Now().Format("02/01/2006 15:04:05")))
+
+		// Filtros aplicados
+		if cluster != "" || namespace != "" || serviceType != "" {
+			md.WriteString("## Filtros Aplicados\n\n")
+			if cluster != "" {
+				md.WriteString(fmt.Sprintf("- **Cluster:** %s\n", cluster))
+			}
+			if namespace != "" {
+				md.WriteString(fmt.Sprintf("- **Namespace:** %s\n", namespace))
+			}
+			if serviceType != "" {
+				md.WriteString(fmt.Sprintf("- **Tipo:** %s\n", serviceType))
+			}
+			md.WriteString("\n")
+		}
+
+		// Sumário
+		md.WriteString("## Sumário\n\n")
+		md.WriteString(fmt.Sprintf("| Métrica | Valor |\n"))
+		md.WriteString(fmt.Sprintf("|---------|-------|\n"))
+		md.WriteString(fmt.Sprintf("| Total de Dependências | %d |\n", len(deps)))
+		md.WriteString(fmt.Sprintf("| Serviços Únicos | %d |\n", len(grouped)))
+		if stats != nil {
+			if uniqueClusters, ok := stats["unique_clusters"].(int); ok {
+				md.WriteString(fmt.Sprintf("| Clusters | %d |\n", uniqueClusters))
+			}
+			if uniqueNamespaces, ok := stats["unique_namespaces"].(int); ok {
+				md.WriteString(fmt.Sprintf("| Namespaces | %d |\n", uniqueNamespaces))
+			}
+		}
+		md.WriteString("\n")
+
+		// Por tipo de serviço
+		if stats != nil {
+			if byType, ok := stats["by_type"].(map[string]int); ok && len(byType) > 0 {
+				md.WriteString("## Por Tipo de Serviço\n\n")
+				md.WriteString("| Tipo | Quantidade |\n")
+				md.WriteString("|------|------------|\n")
+				for svcType, count := range byType {
+					md.WriteString(fmt.Sprintf("| %s | %d |\n", svcType, count))
+				}
+				md.WriteString("\n")
+			}
+		}
+
+		// Detalhamento por serviço
+		md.WriteString("## Dependências por Serviço\n\n")
+		for serviceName, serviceDeps := range grouped {
+			md.WriteString(fmt.Sprintf("### %s\n\n", serviceName))
+			md.WriteString(fmt.Sprintf("**Tipo:** %s | **Usada em:** %d local(is)\n\n", serviceDeps[0].ServiceType, len(serviceDeps)))
+
+			md.WriteString("| Cluster | Namespace | Deployment | Fonte | Chave |\n")
+			md.WriteString("|---------|-----------|------------|-------|-------|\n")
+			for _, dep := range serviceDeps {
+				deployment := dep.Deployment
+				if deployment == "" {
+					deployment = "-"
+				}
+				sourceKey := dep.SourceKey
+				if sourceKey == "" {
+					sourceKey = "-"
+				}
+				md.WriteString(fmt.Sprintf("| %s | %s | %s | %s/%s | %s |\n",
+					dep.Cluster, dep.Namespace, deployment, dep.SourceType, dep.SourceName, sourceKey))
+			}
+			md.WriteString("\n")
+		}
+
+		// Footer
+		md.WriteString("---\n\n")
+		md.WriteString("*Relatório gerado automaticamente pelo K8s HPA Manager*\n")
+
+		c.Writer.WriteString(md.String())
+
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error": gin.H{
-				"message": "Formato inválido. Use 'csv' ou 'json'",
+				"message": "Formato inválido. Use 'csv', 'json' ou 'md'",
 			},
 		})
 	}

@@ -203,6 +203,28 @@ func (r *DependencyRegistry) GetUniqueServices() ([]string, error) {
 	return services, nil
 }
 
+// GetUniqueClusters retorna lista de clusters únicos
+func (r *DependencyRegistry) GetUniqueClusters() ([]string, error) {
+	query := `SELECT DISTINCT cluster FROM dependencies ORDER BY cluster`
+
+	rows, err := r.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var clusters []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		clusters = append(clusters, name)
+	}
+
+	return clusters, nil
+}
+
 // GetServiceUsage retorna onde um serviço específico é usado
 func (r *DependencyRegistry) GetServiceUsage(serviceName string) ([]DependencyRecord, error) {
 	query := `
