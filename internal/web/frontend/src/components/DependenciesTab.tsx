@@ -36,6 +36,7 @@ import {
   Layers,
   FileJson,
   FileSpreadsheet,
+  FileText,
   Clock,
   AlertCircle,
 } from "lucide-react";
@@ -111,6 +112,20 @@ export const DependenciesTab = () => {
 
   // Tab ativa
   const [activeTab, setActiveTab] = useState<"registry" | "search">("registry");
+
+  // Estado de exportação
+  const [exportCluster, setExportCluster] = useState<string>("all");
+
+  // Buscar clusters disponíveis no registry
+  const { data: registryClusters } = useQuery({
+    queryKey: ["dependencies-clusters"],
+    queryFn: async () => {
+      const response = await apiClient.get("/dependencies/clusters");
+      if (response.success) return response.data as string[];
+      return [];
+    },
+    staleTime: 60000,
+  });
 
   // Buscar estatísticas do registry
   const { data: statsData, refetch: refetchStats } = useQuery({
@@ -262,10 +277,14 @@ export const DependenciesTab = () => {
   };
 
   // Exportar
-  const handleExport = async (format: "csv" | "json") => {
+  const handleExport = async (format: "csv" | "json" | "md") => {
     try {
-      const url = `/dependencies/export?format=${format}`;
-      const response = await fetch(`/api/v1${url}`, {
+      const params = new URLSearchParams({ format });
+      if (exportCluster && exportCluster !== "all") {
+        params.append("cluster", exportCluster);
+      }
+
+      const response = await fetch(`/api/v1/dependencies/export?${params}`, {
         headers: {
           Authorization: `Bearer ${localStorage.getItem("auth_token") || "poc-token-123"}`,
         },
@@ -277,13 +296,18 @@ export const DependenciesTab = () => {
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = downloadUrl;
-      a.download = `dependencies_${new Date().toISOString().split("T")[0]}.${format}`;
+
+      const ext = format === "md" ? "md" : format;
+      const clusterSuffix = exportCluster && exportCluster !== "all" ? `_${exportCluster}` : "";
+      a.download = `dependencies${clusterSuffix}_${new Date().toISOString().split("T")[0]}.${ext}`;
+
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(downloadUrl);
 
-      toast.success(`Exportado como ${format.toUpperCase()}`);
+      const formatLabel = format === "md" ? "Markdown" : format.toUpperCase();
+      toast.success(`Exportado como ${formatLabel}`);
     } catch (error) {
       console.error("Erro ao exportar:", error);
       toast.error("Falha ao exportar dependências");
@@ -404,28 +428,59 @@ export const DependenciesTab = () => {
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-sm font-medium">Exportar</CardTitle>
+                  <CardDescription className="text-xs">
+                    Selecione o cluster e o formato
+                  </CardDescription>
                 </CardHeader>
-                <CardContent className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => handleExport("csv")}
-                    disabled={!statsData?.total_dependencies}
-                  >
-                    <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5" />
-                    CSV
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => handleExport("json")}
-                    disabled={!statsData?.total_dependencies}
-                  >
-                    <FileJson className="mr-1.5 h-3.5 w-3.5" />
-                    JSON
-                  </Button>
+                <CardContent className="space-y-3">
+                  {/* Seletor de Cluster */}
+                  <Select value={exportCluster} onValueChange={setExportCluster}>
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue placeholder="Selecione o cluster" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Todos os Clusters</SelectItem>
+                      {registryClusters?.map((cluster) => (
+                        <SelectItem key={cluster} value={cluster}>
+                          {cluster}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+
+                  {/* Botões de Formato */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={() => handleExport("csv")}
+                      disabled={!statsData?.total_dependencies}
+                    >
+                      <FileSpreadsheet className="mr-1 h-3 w-3" />
+                      CSV
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={() => handleExport("json")}
+                      disabled={!statsData?.total_dependencies}
+                    >
+                      <FileJson className="mr-1 h-3 w-3" />
+                      JSON
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={() => handleExport("md")}
+                      disabled={!statsData?.total_dependencies}
+                    >
+                      <FileText className="mr-1 h-3 w-3" />
+                      MD
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
 
