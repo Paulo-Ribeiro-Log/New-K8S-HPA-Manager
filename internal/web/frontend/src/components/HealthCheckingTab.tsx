@@ -8,6 +8,12 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -26,6 +32,7 @@ import {
   Clock,
   Download,
   CheckCircle2,
+  BarChart3,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useHealthChecking } from "@/hooks/useHealthChecking";
@@ -35,6 +42,7 @@ import { HealthCheckResultsPanel, type SelectedAlert } from "@/components/Health
 import { FiltersManagementModal } from "@/components/FiltersManagementModal";
 import { HealthCheckHistoryModal } from "@/components/HealthCheckHistoryModal";
 import { ExportReportModal } from "@/components/ExportReportModal";
+import { HealthCheckMetricsDashboard } from "@/components/HealthCheckMetricsDashboard";
 import { useClusters, useNamespaces } from "@/hooks/useAPI";
 import { ProtectedAction } from "@/components/rbac";
 import { useFilters } from "@/hooks/useFilters";
@@ -88,6 +96,9 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   const [showFiltersModal, setShowFiltersModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+
+  // Tab state para painel direito
+  const [rightPanelTab, setRightPanelTab] = useState<"results" | "metrics">("results");
   const [preloadedLogs, setPreloadedLogs] = useState<{
     cluster: string;
     sessionId: string;
@@ -744,61 +755,94 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
           ),
         }}
         rightPanel={{
-          title: "Resultados",
-          titleAction: (
-            <div className="flex items-center gap-2">
-              {selectedClusters.length > 0 && (
-                <Badge variant="secondary" className="gap-1">
-                  <Server className="h-3 w-3" />
-                  {selectedClusters.length} cluster{selectedClusters.length > 1 ? 's' : ''}
-                </Badge>
-              )}
-              {/* Botão Ver Progresso - Apenas quando está executando */}
-              {isRunning && sessionId && (
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={() => setShowProgressModal(true)}
-                  className="h-7 animate-pulse"
-                >
-                  <Activity className="mr-1.5 h-3.5 w-3.5" />
-                  <span className="text-xs">Ver Progresso</span>
-                </Button>
-              )}
-              {/* Botão Exportar Relatório - Aparece quando há resultados */}
-              {results.length > 0 && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowExportModal(true)}
-                  className="h-7"
-                >
-                  <Download className="mr-1.5 h-3.5 w-3.5" />
-                  <span className="text-xs">Exportar Relatório</span>
-                </Button>
-              )}
-              {/* Botão Histórico - Sempre disponível */}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowHistoryModal(true)}
-                className="h-7"
-              >
-                <Clock className="mr-1.5 h-3.5 w-3.5" />
-                <span className="text-xs">Histórico</span>
-              </Button>
-            </div>
-          ),
+          title: "",
           content: (
-            <ScrollArea className="h-full">
-              <HealthCheckResultsPanel
-                results={results}
-                isRunning={isRunning}
-                runningClusters={selectedClusters}
-                onShowProgress={handleShowProgress}
-                onAddToWhitelist={handleAddToWhitelist}
-              />
-            </ScrollArea>
+            <Tabs value={rightPanelTab} onValueChange={(v) => setRightPanelTab(v as "results" | "metrics")} className="h-full flex flex-col">
+              {/* Tabs Header com ações */}
+              <div className="flex items-center justify-between px-4 pt-2 pb-0 border-b">
+                <TabsList className="h-9">
+                  <TabsTrigger value="results" className="text-xs gap-1.5">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Resultados
+                    {results.length > 0 && (
+                      <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">
+                        {results.length}
+                      </Badge>
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger value="metrics" className="text-xs gap-1.5">
+                    <BarChart3 className="h-3.5 w-3.5" />
+                    Métricas
+                  </TabsTrigger>
+                </TabsList>
+
+                {/* Ações do painel (só aparecem na aba Resultados) */}
+                {rightPanelTab === "results" && (
+                  <div className="flex items-center gap-2">
+                    {selectedClusters.length > 0 && (
+                      <Badge variant="secondary" className="gap-1">
+                        <Server className="h-3 w-3" />
+                        {selectedClusters.length} cluster{selectedClusters.length > 1 ? 's' : ''}
+                      </Badge>
+                    )}
+                    {/* Botão Ver Progresso - Apenas quando está executando */}
+                    {isRunning && sessionId && (
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={() => setShowProgressModal(true)}
+                        className="h-7 animate-pulse"
+                      >
+                        <Activity className="mr-1.5 h-3.5 w-3.5" />
+                        <span className="text-xs">Ver Progresso</span>
+                      </Button>
+                    )}
+                    {/* Botão Exportar Relatório - Aparece quando há resultados */}
+                    {results.length > 0 && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowExportModal(true)}
+                        className="h-7"
+                      >
+                        <Download className="mr-1.5 h-3.5 w-3.5" />
+                        <span className="text-xs">Exportar</span>
+                      </Button>
+                    )}
+                    {/* Botão Histórico - Sempre disponível */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowHistoryModal(true)}
+                      className="h-7"
+                    >
+                      <Clock className="mr-1.5 h-3.5 w-3.5" />
+                      <span className="text-xs">Histórico</span>
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {/* Tab Content: Resultados */}
+              <TabsContent value="results" className="flex-1 m-0 overflow-hidden">
+                <ScrollArea className="h-full">
+                  <HealthCheckResultsPanel
+                    results={results}
+                    isRunning={isRunning}
+                    runningClusters={selectedClusters}
+                    onShowProgress={handleShowProgress}
+                    onAddToWhitelist={handleAddToWhitelist}
+                  />
+                </ScrollArea>
+              </TabsContent>
+
+              {/* Tab Content: Métricas Dashboard */}
+              <TabsContent value="metrics" className="flex-1 m-0 overflow-hidden">
+                <ScrollArea className="h-full">
+                  <HealthCheckMetricsDashboard />
+                </ScrollArea>
+              </TabsContent>
+            </Tabs>
           ),
         }}
       />

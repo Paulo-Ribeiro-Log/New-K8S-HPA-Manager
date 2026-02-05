@@ -947,12 +947,17 @@ func (s *Server) setupRoutes() {
 		s.router.GET("/healthz/live", systemHealthHandler.Live)
 		s.router.GET("/healthz/ready", systemHealthHandler.Ready)
 
+		// Prometheus Metrics endpoint - sem auth (padrão Prometheus)
+		metricsHandler := handlers.NewMetricsHandler()
+		s.router.GET("/metrics", metricsHandler.Metrics)
+
 		// Rotas de health checking
 		healthCheckGroup := api.Group("/healthcheck")
 		{
 			// Rotas públicas (GET)
 			healthCheckGroup.GET("/history", healthCheckHandler.History)
 			healthCheckGroup.GET("/stats", healthCheckHandler.Stats)
+			healthCheckGroup.GET("/dashboard", healthCheckHandler.DashboardMetrics) // 🆕 Métricas para dashboard visual
 			healthCheckGroup.GET("/events/:sessionId", healthCheckHandler.GetEvents) // 🆕 Buscar eventos persistidos
 			healthCheckGroup.GET("/:id", healthCheckHandler.Get)
 
@@ -986,6 +991,33 @@ func (s *Server) setupRoutes() {
 		}
 
 		fmt.Println("✅ Health Check Filters routes registradas")
+
+		// ✅ Rotas de Dependency Scanner com SQLite Registry
+		dependencyScanner := healthcheck.NewDependencyScanner(s.kubeManager)
+		dependencyRegistry, err := storage.NewDependencyRegistry()
+		if err != nil {
+			fmt.Printf("⚠️  Erro ao criar dependency registry: %v\n", err)
+		} else {
+			fmt.Println("✅ Dependency Registry (SQLite) inicializado")
+		}
+		dependenciesHandler := handlers.NewDependenciesHandler(dependencyScanner, dependencyRegistry)
+		dependenciesGroup := api.Group("/dependencies")
+		{
+			// Rotas públicas (GET) - Consultam SQLite
+			dependenciesGroup.GET("/search", dependenciesHandler.Search)                        // Busca reversa no SQLite
+			dependenciesGroup.GET("/registry", dependenciesHandler.GetRegistry)                 // Todas dependências do SQLite
+			dependenciesGroup.GET("/stats", dependenciesHandler.GetStats)                       // Estatísticas do registry
+			dependenciesGroup.GET("/scan/history", dependenciesHandler.GetScanHistory)          // Histórico de scans
+			dependenciesGroup.GET("/export", dependenciesHandler.Export)                        // Exportar CSV/JSON do SQLite
+			dependenciesGroup.GET("/service/:serviceName", dependenciesHandler.GetServiceUsage) // Uso de serviço específico
+
+			// Rotas de escrita (POST) - Escaneiam K8s e persistem no SQLite
+			dependenciesGroup.POST("/scan", rbacMiddleware.RequireSREGroup(), dependenciesHandler.Scan)                   // Scan múltiplos clusters
+			dependenciesGroup.POST("/scan/:cluster", rbacMiddleware.RequireSREGroup(), dependenciesHandler.ScanCluster)   // Scan cluster único (auto-scan)
+			dependenciesGroup.POST("/cache/clear", rbacMiddleware.RequireSREGroup(), dependenciesHandler.ClearCache)      // Limpar cache em memória
+		}
+
+		fmt.Println("✅ Dependency Scanner routes registradas (com SQLite)")
 	}
 }
 
