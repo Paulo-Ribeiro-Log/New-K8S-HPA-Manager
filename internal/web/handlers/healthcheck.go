@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -599,6 +600,37 @@ func (h *HealthCheckHandler) Stats(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    stats,
+	})
+}
+
+// DashboardMetrics retorna métricas para o dashboard visual de health checking
+// GET /api/v1/healthcheck/dashboard?days=7
+func (h *HealthCheckHandler) DashboardMetrics(c *gin.Context) {
+	daysStr := c.DefaultQuery("days", "7")
+	days := 7
+	if d, err := strconv.Atoi(daysStr); err == nil && d > 0 && d <= 90 {
+		days = d
+	}
+
+	log.Info().
+		Int("days", days).
+		Msg("Fetching health check dashboard metrics")
+
+	metrics, err := h.orchestrator.GetDashboardMetrics(c.Request.Context(), days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"message": "Falha ao buscar métricas do dashboard",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    metrics,
 	})
 }
 

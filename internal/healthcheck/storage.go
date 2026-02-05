@@ -489,3 +489,242 @@ func (s *HealthCheckStorage) DeleteEvents(ctx context.Context, sessionID string)
 func (s *HealthCheckStorage) Close() error {
 	return s.db.Close()
 }
+
+// ========== Métricas para Dashboard ==========
+
+// ClusterMetrics representa métricas agregadas de um cluster
+type ClusterMetrics struct {
+	Cluster        string    `json:"cluster"`
+	LastStatus     string    `json:"last_status"`
+	LastRunAt      time.Time `json:"last_run_at"`
+	TotalRuns      int       `json:"total_runs"`
+	HealthyRuns    int       `json:"healthy_runs"`
+	WarningRuns    int       `json:"warning_runs"`
+	CriticalRuns   int       `json:"critical_runs"`
+	AvgDurationMs  float64   `json:"avg_duration_ms"`
+	TotalHealthy   int       `json:"total_healthy"`
+	TotalWarnings  int       `json:"total_warnings"`
+	TotalCritical  int       `json:"total_critical"`
+}
+
+// DurationDataPoint representa um ponto de dados de duração ao longo do tempo
+type DurationDataPoint struct {
+	Timestamp  string `json:"timestamp"` // RFC3339 format string para compatibilidade SQLite
+	Cluster    string `json:"cluster"`
+	DurationMs int64  `json:"duration_ms"`
+	Status     string `json:"status"`
+}
+
+// SeverityCount representa contagem de issues por severidade
+type SeverityCount struct {
+	Severity string `json:"severity"`
+	Count    int    `json:"count"`
+}
+
+// DashboardMetrics representa todas as métricas para o dashboard
+type DashboardMetrics struct {
+	// Métricas por cluster
+	ClusterMetrics []ClusterMetrics `json:"cluster_metrics"`
+
+	// Histórico de duração (últimas 50 execuções)
+	DurationHistory []DurationDataPoint `json:"duration_history"`
+
+	// Contagem de issues por severidade (agregado)
+	SeverityBreakdown []SeverityCount `json:"severity_breakdown"`
+
+	// Resumo geral
+	Summary struct {
+		TotalClusters   int     `json:"total_clusters"`
+		TotalRuns       int     `json:"total_runs"`
+		HealthRate      float64 `json:"health_rate"`
+		AvgDurationMs   float64 `json:"avg_duration_ms"`
+		LastRunAt       *time.Time `json:"last_run_at"`
+	} `json:"summary"`
+}
+
+// GetDashboardMetrics retorna métricas para o dashboard de health checking
+func (s *HealthCheckStorage) GetDashboardMetrics(ctx context.Context, days int) (*DashboardMetrics, error) {
+	if days <= 0 {
+		days = 7
+	}
+	since := time.Now().AddDate(0, 0, -days)
+
+	metrics := &DashboardMetrics{
+		ClusterMetrics:    []ClusterMetrics{},
+		DurationHistory:   []DurationDataPoint{},
+		SeverityBreakdown: []SeverityCount{},
+	}
+
+	// 1. Métricas por cluster
+	clusterQuery := `
+		SELECT
+			cluster,
+			MAX(started_at) as last_run_at,
+			COUNT(*) as total_runs,
+			COUNT(CASE WHEN overall_status = 'healthy' THEN 1 END) as healthy_runs,
+			COUNT(CASE WHEN overall_status = 'warning' THEN 1 END) as warning_runs,
+			COUNT(CASE WHEN overall_status = 'critical' THEN 1 END) as critical_runs,
+			AVG(duration_ms) as avg_duration_ms,
+			SUM(healthy_count) as total_healthy,
+			SUM(warning_count) as total_warnings,
+			SUM(critical_count) as total_critical
+		FROM health_check_results
+		WHERE started_at >= ?
+		GROUP BY cluster
+		ORDER BY last_run_at DESC
+	`
+
+	rows, err := s.db.QueryContext(ctx, clusterQuery, since)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query cluster metrics: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cm ClusterMetrics
+		var lastRunAtStr sql.NullString
+		var avgDuration sql.NullFloat64
+
+		err := rows.Scan(
+			&cm.Cluster,
+			&lastRunAtStr,
+			&cm.TotalRuns,
+			&cm.HealthyRuns,
+			&cm.WarningRuns,
+			&cm.CriticalRuns,
+			&avgDuration,
+			&cm.TotalHealthy,
+			&cm.TotalWarnings,
+			&cm.TotalCritical,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan cluster row: %w", err)
+		}
+
+		// Parse timestamp string para time.Time
+		if lastRunAtStr.Valid && lastRunAtStr.String != "" {
+			if t, err := time.Parse(time.RFC3339, lastRunAtStr.String); err == nil {
+				cm.LastRunAt = t
+			} else if t, err := time.Parse("2006-01-02 15:04:05", lastRunAtStr.String); err == nil {
+				cm.LastRunAt = t
+			} else if t, err := time.Parse("2006-01-02T15:04:05Z", lastRunAtStr.String); err == nil {
+				cm.LastRunAt = t
+			}
+		}
+		if avgDuration.Valid {
+			cm.AvgDurationMs = avgDuration.Float64
+		}
+
+		metrics.ClusterMetrics = append(metrics.ClusterMetrics, cm)
+	}
+
+	// Buscar último status de cada cluster
+	for i := range metrics.ClusterMetrics {
+		statusQuery := `
+			SELECT overall_status FROM health_check_results
+			WHERE cluster = ?
+			ORDER BY started_at DESC
+			LIMIT 1
+		`
+		var status string
+		err := s.db.QueryRowContext(ctx, statusQuery, metrics.ClusterMetrics[i].Cluster).Scan(&status)
+		if err == nil {
+			metrics.ClusterMetrics[i].LastStatus = status
+		}
+	}
+
+	// 2. Histórico de duração (últimas 50 execuções)
+	durationQuery := `
+		SELECT started_at, cluster, duration_ms, overall_status
+		FROM health_check_results
+		WHERE started_at >= ?
+		ORDER BY started_at DESC
+		LIMIT 50
+	`
+
+	durationRows, err := s.db.QueryContext(ctx, durationQuery, since)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query duration history: %w", err)
+	}
+	defer durationRows.Close()
+
+	for durationRows.Next() {
+		var dp DurationDataPoint
+		err := durationRows.Scan(&dp.Timestamp, &dp.Cluster, &dp.DurationMs, &dp.Status)
+		if err != nil {
+			continue
+		}
+		metrics.DurationHistory = append(metrics.DurationHistory, dp)
+	}
+
+	// Inverter para ordem cronológica (mais antigo primeiro)
+	for i, j := 0, len(metrics.DurationHistory)-1; i < j; i, j = i+1, j-1 {
+		metrics.DurationHistory[i], metrics.DurationHistory[j] = metrics.DurationHistory[j], metrics.DurationHistory[i]
+	}
+
+	// 3. Breakdown de severidade (agregado de todos os clusters)
+	severityQuery := `
+		SELECT
+			SUM(healthy_count) as healthy,
+			SUM(warning_count) as warning,
+			SUM(critical_count) as critical
+		FROM health_check_results
+		WHERE started_at >= ?
+	`
+
+	var healthy, warning, critical int
+	err = s.db.QueryRowContext(ctx, severityQuery, since).Scan(&healthy, &warning, &critical)
+	if err == nil {
+		metrics.SeverityBreakdown = []SeverityCount{
+			{Severity: "healthy", Count: healthy},
+			{Severity: "warning", Count: warning},
+			{Severity: "critical", Count: critical},
+		}
+	}
+
+	// 4. Resumo geral
+	summaryQuery := `
+		SELECT
+			COUNT(DISTINCT cluster) as total_clusters,
+			COUNT(*) as total_runs,
+			AVG(duration_ms) as avg_duration_ms,
+			MAX(started_at) as last_run_at,
+			COUNT(CASE WHEN overall_status = 'healthy' THEN 1 END) as healthy_runs
+		FROM health_check_results
+		WHERE started_at >= ?
+	`
+
+	var totalClusters, totalRuns, healthyRuns int
+	var avgDuration sql.NullFloat64
+	var lastRunAtStr sql.NullString
+
+	err = s.db.QueryRowContext(ctx, summaryQuery, since).Scan(
+		&totalClusters,
+		&totalRuns,
+		&avgDuration,
+		&lastRunAtStr,
+		&healthyRuns,
+	)
+	if err == nil {
+		metrics.Summary.TotalClusters = totalClusters
+		metrics.Summary.TotalRuns = totalRuns
+		if avgDuration.Valid {
+			metrics.Summary.AvgDurationMs = avgDuration.Float64
+		}
+		// Parse timestamp string para time.Time
+		if lastRunAtStr.Valid && lastRunAtStr.String != "" {
+			if t, err := time.Parse(time.RFC3339, lastRunAtStr.String); err == nil {
+				metrics.Summary.LastRunAt = &t
+			} else if t, err := time.Parse("2006-01-02 15:04:05", lastRunAtStr.String); err == nil {
+				metrics.Summary.LastRunAt = &t
+			} else if t, err := time.Parse("2006-01-02T15:04:05Z", lastRunAtStr.String); err == nil {
+				metrics.Summary.LastRunAt = &t
+			}
+		}
+		if totalRuns > 0 {
+			metrics.Summary.HealthRate = float64(healthyRuns) / float64(totalRuns) * 100
+		}
+	}
+
+	return metrics, nil
+}

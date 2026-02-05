@@ -1,7 +1,7 @@
 # Checklist Completo - Health Checking Improvements
 
-**Última atualização**: 03/02/2026
-**Progresso geral**: 13/19 itens (68%)
+**Última atualização**: 05/02/2026
+**Progresso geral**: 15/19 itens (79%)
 
 ---
 
@@ -104,7 +104,7 @@
 
 ---
 
-## 🟡 Sprint 3 - EM PROGRESSO (2/5 = 40%)
+## 🟡 Sprint 3 - EM PROGRESSO (3/5 = 60%)
 
 ### 11. Time-series Trend Analysis ⏳
 - [ ] Queries SQL para análise de tendências
@@ -152,16 +152,16 @@
 - **Testes**: `internal/healthcheck/pv_checker_test.go` (12 testes)
 - **Frontend**: `HealthCheckingTab.tsx`, `HealthCheckResultsPanel.tsx`, `HealthCheckCard.tsx`
 
-### 15. Severity Levels Refinement ⏳
-- [ ] Implementar 5 níveis: Critical, High, Medium, Low, Info
-- [ ] Regras de classificação por tipo de problema
-- [ ] Filtros por severidade no frontend
-- [ ] Ordenação por severidade
-- **Estimativa**: 1 dia
+### 15. Severity Levels Refinement ✅
+- [x] Implementar 5 níveis: Critical, High, Medium, Low, Info
+- [x] Regras de classificação por tipo de problema
+- [x] Cores e labels por severidade no frontend
+- [x] Ordenação por severidade (SeverityWeight)
+- **Arquivos**: `internal/healthcheck/models.go`, `types/healthcheck.ts`, `HealthCheckCard.tsx`
 
 ---
 
-## 🟡 Sprint 4 - EM PROGRESSO (1/4 = 25%)
+## 🟡 Sprint 4 - EM PROGRESSO (2/4 = 50%)
 
 ### 16. Export de Relatórios (PDF/CSV/Markdown) ✅
 - [x] Geração de PDF com jsPDF + jspdf-autotable
@@ -190,12 +190,28 @@
 - [ ] Alertas visuais
 - **Estimativa**: 2 dias
 
-### 19. Prometheus Metrics Export ⏳
-- [ ] Endpoint /metrics no formato Prometheus
-- [ ] Métricas de health check (tempo, status, contadores)
-- [ ] Labels por cluster/namespace
-- [ ] Histograma de latências
-- **Estimativa**: 2 dias
+### 19. Prometheus Metrics Export ✅
+- [x] Endpoint /metrics no formato Prometheus
+- [x] Métricas de health check (tempo, status, contadores)
+- [x] Labels por cluster/namespace
+- [x] Histograma de latências
+- [x] **Dashboard Visual (UI)** - Nova aba "Métricas" no Health Checking
+  - Cards com resumo: clusters monitorados, total execuções, taxa de saúde, duração média
+  - Gráfico de linha: histórico de duração dos health checks
+  - Gráfico de pizza: distribuição de issues por severidade
+  - Gráfico de barras: status por cluster (stacked)
+  - Tabela completa: status atual de todos os clusters com métricas detalhadas
+  - Filtro por período: 1, 7, 14, 30, 90 dias
+- **Backend**:
+  - `internal/metrics/prometheus.go` - Métricas Prometheus (11 métricas)
+  - `internal/web/handlers/metrics.go` - Endpoint /metrics (formato Prometheus)
+  - `internal/healthcheck/storage.go` - `GetDashboardMetrics()` (métricas agregadas JSON)
+  - `internal/web/handlers/healthcheck.go` - Endpoint `/api/v1/healthcheck/dashboard` (JSON)
+- **Frontend**:
+  - `HealthCheckMetricsDashboard.tsx` (~450 linhas) - Dashboard completo com Recharts
+  - `HealthCheckingTab.tsx` - Tabs: Resultados | Métricas
+- **Testes**: `internal/metrics/prometheus_test.go` (16 testes)
+- **Integração**: `internal/healthcheck/orchestrator.go` (registro automático após cada health check)
 
 ---
 
@@ -205,9 +221,9 @@
 |--------|-----------|-------|-----------|
 | Sprint 1 | 5 | 5 | ✅ 100% |
 | Sprint 2 | 5 | 5 | ✅ 100% |
-| Sprint 3 | 2 | 5 | 🟡 40% |
-| Sprint 4 | 1 | 4 | 🟡 25% |
-| **TOTAL** | **13** | **19** | **68%** |
+| Sprint 3 | 3 | 5 | 🟡 60% |
+| Sprint 4 | 2 | 4 | 🟡 50% |
+| **TOTAL** | **15** | **19** | **79%** |
 
 ---
 
@@ -223,7 +239,9 @@
 
 ### Backend (Go)
 - `internal/healthcheck/` - Core do health checking
+- `internal/metrics/` - Métricas Prometheus
 - `internal/web/handlers/healthcheck.go` - API REST
+- `internal/web/handlers/metrics.go` - Endpoint /metrics
 - `internal/web/sse/progress.go` - SSE + Replay Buffer
 
 ### Frontend (React/TypeScript)
@@ -233,4 +251,5 @@
 
 ### Testes
 - `internal/healthcheck/*_test.go` - Testes unitários
+- `internal/metrics/prometheus_test.go` - Testes métricas Prometheus
 - `internal/web/sse/progress_test.go` - Testes SSE
