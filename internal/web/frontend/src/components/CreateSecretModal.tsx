@@ -5,10 +5,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Plus, X, Loader2, Key } from "lucide-react";
+import { Plus, X, Loader2, Key, Code2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import type { Namespace } from "@/lib/api/types";
+import { MonacoYamlEditor } from "./MonacoYamlEditor";
+import * as yaml from "js-yaml";
 
 interface CreateSecretModalProps {
   open: boolean;
@@ -18,7 +20,7 @@ interface CreateSecretModalProps {
   onSuccess?: () => void;
 }
 
-type SecretType = "delinea" | "normal-secret";
+type SecretType = "delinea" | "normal-secret" | "custom";
 
 interface Annotation {
   key: string;
@@ -44,6 +46,75 @@ export const CreateSecretModal = ({
   const [annotations, setAnnotations] = useState<Annotation[]>([{ key: "", value: "" }]);
   const [dataEntries, setDataEntries] = useState<DataEntry[]>([{ key: "", value: "", encodeBase64: true }]);
   const [isCreating, setIsCreating] = useState(false);
+  const [customYaml, setCustomYaml] = useState("");
+  const [yamlError, setYamlError] = useState<string | null>(null);
+
+  // Template YAML para modo Custom
+  const generateCustomTemplate = (secretName: string, secretNamespace: string): string => {
+    return `apiVersion: v1
+kind: Secret
+metadata:
+  name: ${secretName || "my-secret"}
+  namespace: ${secretNamespace || "default"}
+  labels: {}
+  annotations: {}
+type: Opaque
+data:
+  # Adicione seus dados em base64 abaixo
+  # Exemplo: username: YWRtaW4=
+stringData:
+  # Ou adicione dados em texto plano (serão convertidos automaticamente)
+  # Exemplo: password: minhasenha123
+`;
+  };
+
+  // Atualizar template quando nome ou namespace mudar (apenas no modo custom)
+  useEffect(() => {
+    if (secretType === "custom") {
+      // Apenas atualizar se o template ainda não foi modificado significativamente
+      const currentTemplate = generateCustomTemplate(name, namespace);
+      if (!customYaml || customYaml === generateCustomTemplate("", "") ||
+          customYaml === generateCustomTemplate(name, "") ||
+          customYaml === generateCustomTemplate("", namespace)) {
+        setCustomYaml(currentTemplate);
+      }
+    }
+  }, [name, namespace, secretType]);
+
+  // Validar YAML em tempo real no modo custom
+  useEffect(() => {
+    if (secretType === "custom" && customYaml) {
+      try {
+        const parsed = yaml.load(customYaml) as Record<string, unknown>;
+        if (!parsed || typeof parsed !== "object") {
+          setYamlError("YAML deve ser um objeto valido");
+          return;
+        }
+        if (parsed.kind !== "Secret") {
+          setYamlError("kind deve ser 'Secret'");
+          return;
+        }
+        if (parsed.apiVersion !== "v1") {
+          setYamlError("apiVersion deve ser 'v1'");
+          return;
+        }
+        const metadata = parsed.metadata as Record<string, unknown> | undefined;
+        if (!metadata?.name) {
+          setYamlError("metadata.name é obrigatorio");
+          return;
+        }
+        if (!metadata?.namespace) {
+          setYamlError("metadata.namespace é obrigatorio");
+          return;
+        }
+        setYamlError(null);
+      } catch (e) {
+        setYamlError(e instanceof Error ? e.message : "YAML invalido");
+      }
+    } else {
+      setYamlError(null);
+    }
+  }, [customYaml, secretType]);
 
   // Função para encodar em base64
   const toBase64 = (str: string): string => {
@@ -61,6 +132,9 @@ export const CreateSecretModal = ({
         { key: "dsv.delinea.com/credentials", value: "" },
         { key: "dsv.delinea.com/set-secret", value: "" }
       ]);
+    } else if (secretType === "custom") {
+      // No modo custom, inicializar template
+      setCustomYaml(generateCustomTemplate(name, namespace));
     } else {
       setAnnotations([{ key: "", value: "" }]);
     }
@@ -134,6 +208,55 @@ ${dataSection}`;
   };
 
   const handleCreate = async () => {
+    // Validações específicas por modo
+    if (secretType === "custom") {
+      if (!customYaml.trim()) {
+        toast.error("YAML do secret é obrigatório");
+        return;
+      }
+      if (yamlError) {
+        toast.error("Corrija os erros no YAML antes de criar");
+        return;
+      }
+
+      // Extrair namespace e nome do YAML para a API
+      try {
+        const parsed = yaml.load(customYaml) as Record<string, unknown>;
+        const metadata = parsed.metadata as Record<string, unknown>;
+        const yamlNamespace = metadata?.namespace as string;
+        const yamlName = metadata?.name as string;
+
+        setIsCreating(true);
+        await apiClient.createSecret(cluster, yamlNamespace, {
+          yaml: customYaml,
+          fieldManager: "web-secret-creator-custom",
+        });
+
+        toast.success("Secret criado com sucesso", {
+          description: `${yamlNamespace}/${yamlName}`,
+        });
+
+        // Reset form
+        setName("");
+        setNamespace("");
+        setAnnotations([{ key: "", value: "" }]);
+        setDataEntries([{ key: "", value: "", encodeBase64: true }]);
+        setCustomYaml("");
+        setSecretType("delinea");
+
+        onOpenChange(false);
+        onSuccess?.();
+      } catch (err) {
+        toast.error("Falha ao criar secret", {
+          description: err instanceof Error ? err.message : "Erro desconhecido",
+        });
+      } finally {
+        setIsCreating(false);
+      }
+      return;
+    }
+
+    // Modo normal (delinea ou normal-secret)
     if (!name.trim()) {
       toast.error("Nome do secret é obrigatório");
       return;
@@ -147,7 +270,7 @@ ${dataSection}`;
     setIsCreating(true);
     try {
       const secretYAML = generateSecretYAML();
-      
+
       await apiClient.createSecret(cluster, namespace, {
         yaml: secretYAML,
         fieldManager: "web-secret-creator",
@@ -162,8 +285,9 @@ ${dataSection}`;
       setNamespace("");
       setAnnotations([{ key: "", value: "" }]);
       setDataEntries([{ key: "", value: "", encodeBase64: true }]);
+      setCustomYaml("");
       setSecretType("delinea");
-      
+
       onOpenChange(false);
       onSuccess?.();
     } catch (err) {
@@ -180,6 +304,8 @@ ${dataSection}`;
     setNamespace("");
     setAnnotations([{ key: "", value: "" }]);
     setDataEntries([{ key: "", value: "", encodeBase64: true }]);
+    setCustomYaml("");
+    setYamlError(null);
     setSecretType("delinea");
     onOpenChange(false);
   };
@@ -205,166 +331,206 @@ ${dataSection}`;
               <SelectContent>
                 <SelectItem value="delinea">Delinea</SelectItem>
                 <SelectItem value="normal-secret">Normal secret</SelectItem>
+                <SelectItem value="custom">
+                  <span className="flex items-center gap-2">
+                    <Code2 className="h-4 w-4" />
+                    Custom (YAML)
+                  </span>
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
 
-          {/* Nome */}
-          <div className="space-y-2">
-            <Label htmlFor="secret-name">Nome *</Label>
-            <Input
-              id="secret-name"
-              placeholder="ex: my-secret"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </div>
-
-          {/* Namespace */}
-          <div className="space-y-2">
-            <Label htmlFor="secret-namespace">Namespace *</Label>
-            <Select value={namespace} onValueChange={setNamespace}>
-              <SelectTrigger id="secret-namespace">
-                <SelectValue placeholder="Selecione um namespace" />
-              </SelectTrigger>
-              <SelectContent>
-                {namespaces.map((ns) => (
-                  <SelectItem key={ns.name} value={ns.name}>
-                    {ns.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Annotations */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label>Annotations {secretType === "normal-secret" && "(opcional)"}</Label>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={handleAddAnnotation}
-              >
-                <Plus className="w-4 h-4 mr-1" />
-                Adicionar
-              </Button>
-            </div>
-
-            <div className="space-y-2">
-              {annotations.map((annotation, index) => {
-                // Desabilitar chave apenas para as annotations pré-definidas do Delinea
-                const isDelineaPreset = secretType === "delinea" && 
-                  (annotation.key === "dsv.delinea.com/credentials" || 
-                   annotation.key === "dsv.delinea.com/set-secret");
-                
-                return (
-                  <div key={index} className="flex gap-2 items-start">
-                    <div className="flex-1">
-                      <Input
-                        placeholder="Chave (ex: app)"
-                        value={annotation.key}
-                        onChange={(e) => handleAnnotationChange(index, "key", e.target.value)}
-                        disabled={isDelineaPreset}
-                      />
-                    </div>
-                    <div className="flex-1">
-                      <Input
-                        placeholder="Valor (ex: myapp)"
-                        value={annotation.value}
-                        onChange={(e) => handleAnnotationChange(index, "value", e.target.value)}
-                      />
-                    </div>
-                    {annotations.length > 1 && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleRemoveAnnotation(index)}
-                      >
-                        <X className="w-4 h-4" />
-                      </Button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Data (chave/valor) */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="flex items-center gap-2">
-                <Key className="w-4 h-4" />
-                Data (chave/valor)
-              </Label>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={handleAddDataEntry}
-              >
-                <Plus className="w-4 h-4 mr-1" />
-                Adicionar
-              </Button>
-            </div>
-
+          {/* Modo Custom - Monaco Editor */}
+          {secretType === "custom" ? (
             <div className="space-y-3">
-              {dataEntries.map((entry, index) => (
-                <div key={index} className="flex gap-2 items-center border rounded-md p-2 bg-muted/30">
-                  <div className="flex-1">
-                    <Input
-                      placeholder="Chave (ex: username)"
-                      value={entry.key}
-                      onChange={(e) => handleDataEntryChange(index, "key", e.target.value)}
-                      className="text-sm"
-                    />
+              <div className="flex items-center justify-between">
+                <Label className="flex items-center gap-2">
+                  <Code2 className="h-4 w-4" />
+                  YAML do Secret
+                </Label>
+                {yamlError && (
+                  <div className="flex items-center gap-1 text-xs text-destructive">
+                    <AlertCircle className="h-3 w-3" />
+                    {yamlError}
                   </div>
-                  <div className="flex-1">
-                    <Input
-                      placeholder="Valor (ex: admin)"
-                      value={entry.value}
-                      onChange={(e) => handleDataEntryChange(index, "value", e.target.value)}
-                      className="text-sm"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2 min-w-[120px]">
-                    <Switch
-                      id={`encode-${index}`}
-                      checked={entry.encodeBase64}
-                      onCheckedChange={() => handleToggleEncode(index)}
-                    />
-                    <Label htmlFor={`encode-${index}`} className="text-xs cursor-pointer">
-                      Base64
-                    </Label>
-                  </div>
-                  {dataEntries.length > 1 && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleRemoveDataEntry(index)}
-                    >
-                      <X className="w-4 h-4" />
-                    </Button>
-                  )}
-                </div>
-              ))}
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Edite o YAML completo do Secret. Os campos apiVersion, kind, metadata.name e metadata.namespace são obrigatorios.
+              </p>
+              <MonacoYamlEditor
+                value={customYaml}
+                onChange={setCustomYaml}
+                height={400}
+                readOnly={false}
+              />
             </div>
-            <p className="text-xs text-muted-foreground">
-              Ative "Base64" para encodar o valor automaticamente. Desative se o valor já estiver em base64.
-            </p>
-          </div>
+          ) : (
+            <>
+              {/* Nome */}
+              <div className="space-y-2">
+                <Label htmlFor="secret-name">Nome *</Label>
+                <Input
+                  id="secret-name"
+                  placeholder="ex: my-secret"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </div>
 
-          {/* Preview do YAML */}
-          {name && namespace && (
-            <div className="space-y-2">
-              <Label>Preview do YAML</Label>
-              <pre className="bg-muted p-3 rounded-md text-xs overflow-x-auto">
-                {generateSecretYAML()}
-              </pre>
-            </div>
+              {/* Namespace */}
+              <div className="space-y-2">
+                <Label htmlFor="secret-namespace">Namespace *</Label>
+                <Select value={namespace} onValueChange={setNamespace}>
+                  <SelectTrigger id="secret-namespace">
+                    <SelectValue placeholder="Selecione um namespace" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {namespaces.map((ns) => (
+                      <SelectItem key={ns.name} value={ns.name}>
+                        {ns.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
+          )}
+
+          {/* Campos para modos Delinea e Normal Secret */}
+          {secretType !== "custom" && (
+            <>
+              {/* Annotations */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label>Annotations {secretType === "normal-secret" && "(opcional)"}</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleAddAnnotation}
+                  >
+                    <Plus className="w-4 h-4 mr-1" />
+                    Adicionar
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  {annotations.map((annotation, index) => {
+                    // Desabilitar chave apenas para as annotations pré-definidas do Delinea
+                    const isDelineaPreset = secretType === "delinea" &&
+                      (annotation.key === "dsv.delinea.com/credentials" ||
+                       annotation.key === "dsv.delinea.com/set-secret");
+
+                    return (
+                      <div key={index} className="flex gap-2 items-start">
+                        <div className="flex-1">
+                          <Input
+                            placeholder="Chave (ex: app)"
+                            value={annotation.key}
+                            onChange={(e) => handleAnnotationChange(index, "key", e.target.value)}
+                            disabled={isDelineaPreset}
+                          />
+                        </div>
+                        <div className="flex-1">
+                          <Input
+                            placeholder="Valor (ex: myapp)"
+                            value={annotation.value}
+                            onChange={(e) => handleAnnotationChange(index, "value", e.target.value)}
+                          />
+                        </div>
+                        {annotations.length > 1 && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleRemoveAnnotation(index)}
+                          >
+                            <X className="w-4 h-4" />
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Data (chave/valor) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="flex items-center gap-2">
+                    <Key className="w-4 h-4" />
+                    Data (chave/valor)
+                  </Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleAddDataEntry}
+                  >
+                    <Plus className="w-4 h-4 mr-1" />
+                    Adicionar
+                  </Button>
+                </div>
+
+                <div className="space-y-3">
+                  {dataEntries.map((entry, index) => (
+                    <div key={index} className="flex gap-2 items-center border rounded-md p-2 bg-muted/30">
+                      <div className="flex-1">
+                        <Input
+                          placeholder="Chave (ex: username)"
+                          value={entry.key}
+                          onChange={(e) => handleDataEntryChange(index, "key", e.target.value)}
+                          className="text-sm"
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <Input
+                          placeholder="Valor (ex: admin)"
+                          value={entry.value}
+                          onChange={(e) => handleDataEntryChange(index, "value", e.target.value)}
+                          className="text-sm"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2 min-w-[120px]">
+                        <Switch
+                          id={`encode-${index}`}
+                          checked={entry.encodeBase64}
+                          onCheckedChange={() => handleToggleEncode(index)}
+                        />
+                        <Label htmlFor={`encode-${index}`} className="text-xs cursor-pointer">
+                          Base64
+                        </Label>
+                      </div>
+                      {dataEntries.length > 1 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleRemoveDataEntry(index)}
+                        >
+                          <X className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Ative "Base64" para encodar o valor automaticamente. Desative se o valor já estiver em base64.
+                </p>
+              </div>
+
+              {/* Preview do YAML */}
+              {name && namespace && (
+                <div className="space-y-2">
+                  <Label>Preview do YAML</Label>
+                  <pre className="bg-muted p-3 rounded-md text-xs overflow-x-auto">
+                    {generateSecretYAML()}
+                  </pre>
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -372,7 +538,10 @@ ${dataSection}`;
           <Button variant="outline" onClick={handleCancel} disabled={isCreating}>
             Cancelar
           </Button>
-          <Button onClick={handleCreate} disabled={isCreating}>
+          <Button
+            onClick={handleCreate}
+            disabled={isCreating || (secretType === "custom" && !!yamlError)}
+          >
             {isCreating && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
             Criar Secret
           </Button>
