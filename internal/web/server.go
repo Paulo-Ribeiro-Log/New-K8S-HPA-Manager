@@ -1007,8 +1007,9 @@ func (s *Server) setupRoutes() {
 			dependenciesGroup.GET("/search", dependenciesHandler.Search)                        // Busca reversa no SQLite
 			dependenciesGroup.GET("/registry", dependenciesHandler.GetRegistry)                 // Todas dependências do SQLite
 			dependenciesGroup.GET("/stats", dependenciesHandler.GetStats)                       // Estatísticas do registry
+			dependenciesGroup.GET("/clusters", dependenciesHandler.GetClusters)                 // Lista clusters únicos do SQLite
 			dependenciesGroup.GET("/scan/history", dependenciesHandler.GetScanHistory)          // Histórico de scans
-			dependenciesGroup.GET("/export", dependenciesHandler.Export)                        // Exportar CSV/JSON do SQLite
+			dependenciesGroup.GET("/export", dependenciesHandler.Export)                        // Exportar CSV/JSON/Markdown do SQLite
 			dependenciesGroup.GET("/service/:serviceName", dependenciesHandler.GetServiceUsage) // Uso de serviço específico
 
 			// Rotas de escrita (POST) - Escaneiam K8s e persistem no SQLite

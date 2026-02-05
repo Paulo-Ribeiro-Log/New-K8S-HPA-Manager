@@ -1,5 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import { SplitView } from "@/components/SplitView";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -36,12 +38,15 @@ import {
   Layers,
   FileJson,
   FileSpreadsheet,
+  FileText,
+  FileType,
   Clock,
   AlertCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
+import { addLogoHeaderToPDF } from "@/lib/logoUtils";
 
 // Tipos
 interface DependencyRecord {
@@ -111,6 +116,20 @@ export const DependenciesTab = () => {
 
   // Tab ativa
   const [activeTab, setActiveTab] = useState<"registry" | "search">("registry");
+
+  // Estado de exportação
+  const [exportCluster, setExportCluster] = useState<string>("all");
+
+  // Buscar clusters disponíveis no registry
+  const { data: registryClusters } = useQuery({
+    queryKey: ["dependencies-clusters"],
+    queryFn: async () => {
+      const response = await apiClient.get("/dependencies/clusters");
+      if (response.success) return response.data as string[];
+      return [];
+    },
+    staleTime: 60000,
+  });
 
   // Buscar estatísticas do registry
   const { data: statsData, refetch: refetchStats } = useQuery({
@@ -262,10 +281,14 @@ export const DependenciesTab = () => {
   };
 
   // Exportar
-  const handleExport = async (format: "csv" | "json") => {
+  const handleExport = async (format: "csv" | "json" | "md") => {
     try {
-      const url = `/dependencies/export?format=${format}`;
-      const response = await fetch(`/api/v1${url}`, {
+      const params = new URLSearchParams({ format });
+      if (exportCluster && exportCluster !== "all") {
+        params.append("cluster", exportCluster);
+      }
+
+      const response = await fetch(`/api/v1/dependencies/export?${params}`, {
         headers: {
           Authorization: `Bearer ${localStorage.getItem("auth_token") || "poc-token-123"}`,
         },
@@ -277,16 +300,159 @@ export const DependenciesTab = () => {
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = downloadUrl;
-      a.download = `dependencies_${new Date().toISOString().split("T")[0]}.${format}`;
+
+      const ext = format === "md" ? "md" : format;
+      const clusterSuffix = exportCluster && exportCluster !== "all" ? `_${exportCluster}` : "";
+      a.download = `dependencies${clusterSuffix}_${new Date().toISOString().split("T")[0]}.${ext}`;
+
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(downloadUrl);
 
-      toast.success(`Exportado como ${format.toUpperCase()}`);
+      const formatLabel = format === "md" ? "Markdown" : format.toUpperCase();
+      toast.success(`Exportado como ${formatLabel}`);
     } catch (error) {
       console.error("Erro ao exportar:", error);
       toast.error("Falha ao exportar dependências");
+    }
+  };
+
+  // Exportar PDF usando jsPDF
+  const handleExportPDF = async () => {
+    try {
+      // Buscar dados do registry
+      const params = new URLSearchParams();
+      if (exportCluster && exportCluster !== "all") {
+        params.append("cluster", exportCluster);
+      }
+
+      const response = await apiClient.get(`/dependencies/registry?${params}`);
+      if (!response.success) throw new Error("Failed to fetch data");
+
+      const deps = response.data.dependencies as DependencyRecord[];
+      const grouped = response.data.by_service as Record<string, DependencyRecord[]>;
+
+      // Criar PDF
+      const doc = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4",
+      });
+
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const clusterLabel = exportCluster && exportCluster !== "all" ? exportCluster : "Todos os Clusters";
+
+      // Header com logo
+      let yPos = await addLogoHeaderToPDF(
+        doc,
+        "RELATORIO DE DEPENDENCIAS EXTERNAS",
+        `Cluster: ${clusterLabel} | Data: ${new Date().toLocaleDateString("pt-BR")}`
+      );
+
+      // Sumário
+      doc.setFontSize(14);
+      doc.setFont("helvetica", "bold");
+      doc.text("Sumario", 14, yPos);
+      yPos += 8;
+
+      autoTable(doc, {
+        startY: yPos,
+        head: [["Metrica", "Valor"]],
+        body: [
+          ["Total de Dependencias", deps.length.toString()],
+          ["Servicos Unicos", Object.keys(grouped).length.toString()],
+          ["Cluster", clusterLabel],
+        ],
+        theme: "grid",
+        headStyles: { fillColor: [41, 128, 185] },
+        margin: { left: 14, right: 14 },
+        styles: { fontSize: 10 },
+      });
+
+      yPos = (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10;
+
+      // Por tipo de serviço
+      const byType: Record<string, number> = {};
+      deps.forEach((dep) => {
+        byType[dep.service_type] = (byType[dep.service_type] || 0) + 1;
+      });
+
+      doc.setFontSize(14);
+      doc.setFont("helvetica", "bold");
+      doc.text("Por Tipo de Servico", 14, yPos);
+      yPos += 8;
+
+      autoTable(doc, {
+        startY: yPos,
+        head: [["Tipo", "Quantidade"]],
+        body: Object.entries(byType).map(([type, count]) => [
+          SERVICE_TYPE_LABELS[type] || type,
+          count.toString(),
+        ]),
+        theme: "grid",
+        headStyles: { fillColor: [41, 128, 185] },
+        margin: { left: 14, right: 14 },
+        styles: { fontSize: 10 },
+      });
+
+      yPos = (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10;
+
+      // Detalhamento por serviço (nova página)
+      doc.addPage();
+      yPos = 20;
+
+      doc.setFontSize(14);
+      doc.setFont("helvetica", "bold");
+      doc.text("Detalhamento por Servico", 14, yPos);
+      yPos += 10;
+
+      // Tabela com todas as dependências
+      autoTable(doc, {
+        startY: yPos,
+        head: [["Servico", "Tipo", "Cluster", "Namespace", "Fonte"]],
+        body: deps.map((dep) => [
+          dep.service_name,
+          dep.service_type,
+          dep.cluster.replace("-admin", ""),
+          dep.namespace,
+          `${dep.source_type}/${dep.source_name}`,
+        ]),
+        theme: "striped",
+        headStyles: { fillColor: [41, 128, 185], fontSize: 9 },
+        bodyStyles: { fontSize: 8 },
+        margin: { left: 10, right: 10 },
+        columnStyles: {
+          0: { cellWidth: 45 },
+          1: { cellWidth: 20 },
+          2: { cellWidth: 35 },
+          3: { cellWidth: 35 },
+          4: { cellWidth: 45 },
+        },
+      });
+
+      // Footer
+      const pageCount = doc.getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(128, 128, 128);
+        doc.text(
+          `Pagina ${i} de ${pageCount} | K8s HPA Manager`,
+          pageWidth / 2,
+          doc.internal.pageSize.getHeight() - 10,
+          { align: "center" }
+        );
+      }
+
+      // Download
+      const clusterSuffix = exportCluster && exportCluster !== "all" ? `_${exportCluster}` : "";
+      doc.save(`dependencies${clusterSuffix}_${new Date().toISOString().split("T")[0]}.pdf`);
+
+      toast.success("Exportado como PDF");
+    } catch (error) {
+      console.error("Erro ao exportar PDF:", error);
+      toast.error("Falha ao exportar PDF");
     }
   };
 
@@ -404,28 +570,69 @@ export const DependenciesTab = () => {
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-sm font-medium">Exportar</CardTitle>
+                  <CardDescription className="text-xs">
+                    Selecione o cluster e o formato
+                  </CardDescription>
                 </CardHeader>
-                <CardContent className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => handleExport("csv")}
-                    disabled={!statsData?.total_dependencies}
-                  >
-                    <FileSpreadsheet className="mr-1.5 h-3.5 w-3.5" />
-                    CSV
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => handleExport("json")}
-                    disabled={!statsData?.total_dependencies}
-                  >
-                    <FileJson className="mr-1.5 h-3.5 w-3.5" />
-                    JSON
-                  </Button>
+                <CardContent className="space-y-3">
+                  {/* Seletor de Cluster */}
+                  <Select value={exportCluster} onValueChange={setExportCluster}>
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue placeholder="Selecione o cluster" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Todos os Clusters</SelectItem>
+                      {registryClusters?.map((cluster) => (
+                        <SelectItem key={cluster} value={cluster}>
+                          {cluster}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+
+                  {/* Botões de Formato */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={() => handleExport("csv")}
+                      disabled={!statsData?.total_dependencies}
+                    >
+                      <FileSpreadsheet className="mr-1 h-3 w-3" />
+                      CSV
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={() => handleExport("json")}
+                      disabled={!statsData?.total_dependencies}
+                    >
+                      <FileJson className="mr-1 h-3 w-3" />
+                      JSON
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={() => handleExport("md")}
+                      disabled={!statsData?.total_dependencies}
+                    >
+                      <FileText className="mr-1 h-3 w-3" />
+                      Markdown
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={handleExportPDF}
+                      disabled={!statsData?.total_dependencies}
+                    >
+                      <FileType className="mr-1 h-3 w-3" />
+                      PDF
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
 
