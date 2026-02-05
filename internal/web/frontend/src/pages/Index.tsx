@@ -49,6 +49,7 @@ import { HealthCheckingTab } from "@/components/HealthCheckingTab";
 import { HelmTab } from "@/components/HelmTab";
 import { GitHubReleasesTab } from "@/components/GitHubReleasesTab";
 import { NexusValuesDiffPanel } from "@/components/NexusValuesDiffPanel";
+import { DependenciesTab } from "@/components/DependenciesTab";
 import {
   LayoutDashboard,
   Scale,
@@ -70,6 +71,7 @@ import {
   PackageOpen,
   GitCompareArrows,
   FileCode,
+  Link2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -423,6 +425,7 @@ const Index = ({ onLogout }: IndexProps) => {
     { id: "namespaces", label: "Namespaces", icon: Database },
     { id: "ai-diagnostics", label: "AI Diagnostics", icon: Brain },
     { id: "github-releases", label: "GitHub Releases", icon: GitCompareArrows },
+    { id: "dependencies", label: "Dependencies", icon: Link2 },
   ];
 
   // Filtrar namespaces
@@ -977,6 +980,13 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
+      case "dependencies":
+        return (
+          <ErrorBoundary componentName="Dependencies Tab">
+            <DependenciesTab />
+          </ErrorBoundary>
+        );
+
       case "daemonsets":
         return (
           <ErrorBoundary componentName="DaemonSets Tab">
@@ -1059,8 +1069,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, DaemonSets, StatefulSets, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm, Nexus Values, AI Diagnostics e GitHub Releases */}
-      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "daemonsets" && activeTab !== "statefulsets" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "nexus-values" && activeTab !== "ai-diagnostics" && activeTab !== "github-releases" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, DaemonSets, StatefulSets, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm, Nexus Values, AI Diagnostics, GitHub Releases e Dependencies */}
+      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "daemonsets" && activeTab !== "statefulsets" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "nexus-values" && activeTab !== "ai-diagnostics" && activeTab !== "github-releases" && activeTab !== "dependencies" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (
