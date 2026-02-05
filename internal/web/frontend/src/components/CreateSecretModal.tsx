@@ -49,39 +49,38 @@ export const CreateSecretModal = ({
   const [customYaml, setCustomYaml] = useState("");
   const [yamlError, setYamlError] = useState<string | null>(null);
 
-  // Template YAML para modo Custom
-  const generateCustomTemplate = (secretName: string, secretNamespace: string): string => {
-    return `apiVersion: v1
-kind: Secret
-metadata:
-  name: ${secretName || "my-secret"}
-  namespace: ${secretNamespace || "default"}
-  labels: {}
-  annotations: {}
+  // Template YAML para modo Custom (sem name/namespace - serão injetados automaticamente)
+  const generateCustomTemplate = (): string => {
+    return `# Edite apenas o conteúdo do Secret abaixo
+# Name e Namespace serão definidos pelos campos acima
+
 type: Opaque
+
+# Labels (opcional)
+labels: {}
+
+# Annotations (opcional)
+annotations: {}
+
+# Dados em base64
 data:
-  # Adicione seus dados em base64 abaixo
-  # Exemplo: username: YWRtaW4=
+  # username: YWRtaW4=
+  # password: c2VuaGExMjM=
+
+# Ou dados em texto plano (serão convertidos automaticamente para base64)
 stringData:
-  # Ou adicione dados em texto plano (serão convertidos automaticamente)
-  # Exemplo: password: minhasenha123
+  # exemplo-chave: valor-em-texto-plano
 `;
   };
 
-  // Atualizar template quando nome ou namespace mudar (apenas no modo custom)
+  // Inicializar template quando mudar para modo custom
   useEffect(() => {
-    if (secretType === "custom") {
-      // Apenas atualizar se o template ainda não foi modificado significativamente
-      const currentTemplate = generateCustomTemplate(name, namespace);
-      if (!customYaml || customYaml === generateCustomTemplate("", "") ||
-          customYaml === generateCustomTemplate(name, "") ||
-          customYaml === generateCustomTemplate("", namespace)) {
-        setCustomYaml(currentTemplate);
-      }
+    if (secretType === "custom" && !customYaml) {
+      setCustomYaml(generateCustomTemplate());
     }
-  }, [name, namespace, secretType]);
+  }, [secretType]);
 
-  // Validar YAML em tempo real no modo custom
+  // Validar YAML em tempo real no modo custom (apenas sintaxe, name/namespace vêm dos campos)
   useEffect(() => {
     if (secretType === "custom" && customYaml) {
       try {
@@ -90,23 +89,7 @@ stringData:
           setYamlError("YAML deve ser um objeto valido");
           return;
         }
-        if (parsed.kind !== "Secret") {
-          setYamlError("kind deve ser 'Secret'");
-          return;
-        }
-        if (parsed.apiVersion !== "v1") {
-          setYamlError("apiVersion deve ser 'v1'");
-          return;
-        }
-        const metadata = parsed.metadata as Record<string, unknown> | undefined;
-        if (!metadata?.name) {
-          setYamlError("metadata.name é obrigatorio");
-          return;
-        }
-        if (!metadata?.namespace) {
-          setYamlError("metadata.namespace é obrigatorio");
-          return;
-        }
+        // Validação básica - apenas sintaxe YAML
         setYamlError(null);
       } catch (e) {
         setYamlError(e instanceof Error ? e.message : "YAML invalido");
@@ -133,8 +116,10 @@ stringData:
         { key: "dsv.delinea.com/set-secret", value: "" }
       ]);
     } else if (secretType === "custom") {
-      // No modo custom, inicializar template
-      setCustomYaml(generateCustomTemplate(name, namespace));
+      // No modo custom, inicializar template se vazio
+      if (!customYaml) {
+        setCustomYaml(generateCustomTemplate());
+      }
     } else {
       setAnnotations([{ key: "", value: "" }]);
     }
@@ -207,7 +192,56 @@ data:
 ${dataSection}`;
   };
 
+  // Gerar YAML final para modo custom (mescla campos do form com YAML editado)
+  const generateCustomSecretYAML = (): string => {
+    try {
+      const parsed = yaml.load(customYaml) as Record<string, unknown> || {};
+
+      // Construir objeto final do Secret
+      const secretObj: Record<string, unknown> = {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: {
+          name: name,
+          namespace: namespace,
+          ...(parsed.labels && Object.keys(parsed.labels as object).length > 0
+            ? { labels: parsed.labels }
+            : {}),
+          ...(parsed.annotations && Object.keys(parsed.annotations as object).length > 0
+            ? { annotations: parsed.annotations }
+            : {}),
+        },
+        type: (parsed.type as string) || "Opaque",
+      };
+
+      // Adicionar data se existir
+      if (parsed.data && Object.keys(parsed.data as object).length > 0) {
+        secretObj.data = parsed.data;
+      }
+
+      // Adicionar stringData se existir
+      if (parsed.stringData && Object.keys(parsed.stringData as object).length > 0) {
+        secretObj.stringData = parsed.stringData;
+      }
+
+      return yaml.dump(secretObj, { indent: 2, lineWidth: -1 });
+    } catch {
+      return "";
+    }
+  };
+
   const handleCreate = async () => {
+    // Validação comum: nome e namespace são sempre obrigatórios
+    if (!name.trim()) {
+      toast.error("Nome do secret é obrigatório");
+      return;
+    }
+
+    if (!namespace) {
+      toast.error("Namespace é obrigatório");
+      return;
+    }
+
     // Validações específicas por modo
     if (secretType === "custom") {
       if (!customYaml.trim()) {
@@ -219,21 +253,22 @@ ${dataSection}`;
         return;
       }
 
-      // Extrair namespace e nome do YAML para a API
-      try {
-        const parsed = yaml.load(customYaml) as Record<string, unknown>;
-        const metadata = parsed.metadata as Record<string, unknown>;
-        const yamlNamespace = metadata?.namespace as string;
-        const yamlName = metadata?.name as string;
+      // Gerar YAML final mesclando campos do form com YAML editado
+      const finalYaml = generateCustomSecretYAML();
+      if (!finalYaml) {
+        toast.error("Erro ao processar YAML");
+        return;
+      }
 
-        setIsCreating(true);
-        await apiClient.createSecret(cluster, yamlNamespace, {
-          yaml: customYaml,
+      setIsCreating(true);
+      try {
+        await apiClient.createSecret(cluster, namespace, {
+          yaml: finalYaml,
           fieldManager: "web-secret-creator-custom",
         });
 
         toast.success("Secret criado com sucesso", {
-          description: `${yamlNamespace}/${yamlName}`,
+          description: `${namespace}/${name}`,
         });
 
         // Reset form
@@ -257,16 +292,6 @@ ${dataSection}`;
     }
 
     // Modo normal (delinea ou normal-secret)
-    if (!name.trim()) {
-      toast.error("Nome do secret é obrigatório");
-      return;
-    }
-
-    if (!namespace) {
-      toast.error("Namespace é obrigatório");
-      return;
-    }
-
     setIsCreating(true);
     try {
       const secretYAML = generateSecretYAML();
@@ -341,13 +366,41 @@ ${dataSection}`;
             </Select>
           </div>
 
-          {/* Modo Custom - Monaco Editor */}
-          {secretType === "custom" ? (
+          {/* Nome - sempre visível */}
+          <div className="space-y-2">
+            <Label htmlFor="secret-name">Nome *</Label>
+            <Input
+              id="secret-name"
+              placeholder="ex: my-secret"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+
+          {/* Namespace - sempre visível */}
+          <div className="space-y-2">
+            <Label htmlFor="secret-namespace">Namespace *</Label>
+            <Select value={namespace} onValueChange={setNamespace}>
+              <SelectTrigger id="secret-namespace">
+                <SelectValue placeholder="Selecione um namespace" />
+              </SelectTrigger>
+              <SelectContent>
+                {namespaces.map((ns) => (
+                  <SelectItem key={ns.name} value={ns.name}>
+                    {ns.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Modo Custom - Monaco Editor para conteúdo */}
+          {secretType === "custom" && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <Label className="flex items-center gap-2">
                   <Code2 className="h-4 w-4" />
-                  YAML do Secret
+                  Conteúdo do Secret (YAML)
                 </Label>
                 {yamlError && (
                   <div className="flex items-center gap-1 text-xs text-destructive">
@@ -357,45 +410,15 @@ ${dataSection}`;
                 )}
               </div>
               <p className="text-xs text-muted-foreground">
-                Edite o YAML completo do Secret. Os campos apiVersion, kind, metadata.name e metadata.namespace são obrigatorios.
+                Edite type, labels, annotations, data e stringData. Os campos apiVersion, kind, name e namespace serão adicionados automaticamente.
               </p>
               <MonacoYamlEditor
                 value={customYaml}
                 onChange={setCustomYaml}
-                height={400}
+                height={350}
                 readOnly={false}
               />
             </div>
-          ) : (
-            <>
-              {/* Nome */}
-              <div className="space-y-2">
-                <Label htmlFor="secret-name">Nome *</Label>
-                <Input
-                  id="secret-name"
-                  placeholder="ex: my-secret"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </div>
-
-              {/* Namespace */}
-              <div className="space-y-2">
-                <Label htmlFor="secret-namespace">Namespace *</Label>
-                <Select value={namespace} onValueChange={setNamespace}>
-                  <SelectTrigger id="secret-namespace">
-                    <SelectValue placeholder="Selecione um namespace" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {namespaces.map((ns) => (
-                      <SelectItem key={ns.name} value={ns.name}>
-                        {ns.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </>
           )}
 
           {/* Campos para modos Delinea e Normal Secret */}
@@ -540,7 +563,7 @@ ${dataSection}`;
           </Button>
           <Button
             onClick={handleCreate}
-            disabled={isCreating || (secretType === "custom" && !!yamlError)}
+            disabled={isCreating || !name.trim() || !namespace || (secretType === "custom" && !!yamlError)}
           >
             {isCreating && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
             Criar Secret
