@@ -203,15 +203,14 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 		"login.live.com",
 	}
 
-	// FASE 1: Aguardar 5 segundos iniciais para página carregar e redirecionar
-	r.logger.Info().Msg("[Rod] Fase 1: Aguardando redirect inicial (5s)...")
-	time.Sleep(5 * time.Second)
+	// FASE 1: Aguardar redirect inicial para página de login
+	// ServiceNow pode levar até 15 segundos para detectar falta de sessão e redirecionar
+	r.logger.Info().Msg("[Rod] Fase 1: Aguardando redirect para Azure AD (até 30s)...")
 
-	// FASE 2: Aguardar aparecer página de login OU já estar no ServiceNow
-	r.logger.Info().Msg("[Rod] Fase 2: Verificando se precisa de login...")
 	loginPageDetected := false
+	serviceNowLoadedCount := 0
 
-	for i := 0; i < 10; i++ { // Máximo 20 segundos para detectar página de login
+	for i := 0; i < 15; i++ { // Máximo 30 segundos para detectar página de login
 		pageInfo, err := page.Info()
 		if err != nil {
 			time.Sleep(2 * time.Second)
@@ -220,6 +219,7 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 		currentURL := pageInfo.URL
 		r.logger.Debug().Str("url", currentURL).Int("check", i+1).Msg("[Rod] Verificando URL...")
 
+		// Verificar se está na página de login do Azure AD
 		for _, pattern := range loginPatterns {
 			if strings.Contains(currentURL, pattern) {
 				loginPageDetected = true
@@ -234,26 +234,38 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 			break
 		}
 
-		// Se já está no ServiceNow sem passar por login, a sessão já era válida
-		if strings.Contains(currentURL, "service-now.com") && !strings.Contains(currentURL, "saml") {
-			r.logger.Info().Msg("[Rod] Já está autenticado no ServiceNow (sessão anterior válida)")
-			time.Sleep(3 * time.Second)
-			browser.Close()
-			status := r.GetSessionStatus()
-			status.Valid = true
-			status.Message = "Sessão já está válida."
-			return status, nil
+		// Se está no ServiceNow, contar quantas vezes consecutivas
+		// Só considera "já logado" se ficar no ServiceNow por 5 verificações seguidas (10s)
+		// Isso evita falso positivo durante o carregamento inicial
+		if strings.Contains(currentURL, "service-now.com") &&
+			!strings.Contains(currentURL, "saml") &&
+			!strings.Contains(currentURL, "login") {
+			serviceNowLoadedCount++
+			r.logger.Debug().Int("count", serviceNowLoadedCount).Msg("[Rod] ServiceNow carregado, aguardando confirmação...")
+
+			// Só considera logado se ficar no ServiceNow por 5 checks seguidos (10 segundos)
+			if serviceNowLoadedCount >= 5 {
+				r.logger.Info().Msg("[Rod] Confirmado: já está autenticado no ServiceNow (sessão anterior válida)")
+				time.Sleep(2 * time.Second)
+				browser.Close()
+				status := r.GetSessionStatus()
+				status.Valid = true
+				status.Message = "Sessão já está válida."
+				return status, nil
+			}
+		} else {
+			serviceNowLoadedCount = 0 // Reset se mudou de página
 		}
 
 		time.Sleep(2 * time.Second)
 	}
 
 	if !loginPageDetected {
-		r.logger.Warn().Msg("[Rod] Página de login não detectada após 20s, aguardando mais...")
+		r.logger.Warn().Msg("[Rod] Página de login não detectada após 30s, aguardando mais...")
 	}
 
-	// FASE 3: Aguardar o usuário completar o login (até 3 minutos)
-	r.logger.Info().Msg("[Rod] Fase 3: Aguardando você completar o login no Azure AD...")
+	// FASE 2: Aguardar o usuário completar o login (até 3 minutos)
+	r.logger.Info().Msg("[Rod] Aguardando você completar o login no Azure AD...")
 
 	for {
 		elapsed := time.Since(startTime)
