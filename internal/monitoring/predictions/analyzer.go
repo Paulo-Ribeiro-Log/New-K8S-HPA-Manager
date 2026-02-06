@@ -18,9 +18,10 @@ import (
 
 // Analyzer é o orquestrador principal da análise preditiva
 type Analyzer struct {
-	collector  *MetricsCollector
-	aiProvider ai.Provider
-	kubeClient *kubernetes.Client
+	collector    *MetricsCollector
+	aiProvider   ai.Provider
+	kubeClient   *kubernetes.Client
+	costAnalyzer *CostAnalyzer
 }
 
 // NewAnalyzer cria novo Analyzer
@@ -30,9 +31,10 @@ func NewAnalyzer(
 	kubeClient *kubernetes.Client,
 ) *Analyzer {
 	return &Analyzer{
-		collector:  NewMetricsCollector(promClient, kubeClient),
-		aiProvider: aiProvider,
-		kubeClient: kubeClient,
+		collector:    NewMetricsCollector(promClient, kubeClient),
+		aiProvider:   aiProvider,
+		kubeClient:   kubeClient,
+		costAnalyzer: NewCostAnalyzer(),
 	}
 }
 
@@ -104,6 +106,9 @@ func (a *Analyzer) Analyze(ctx context.Context, req PredictionRequest) (*Predict
 
 	// 4.3. Calcular Action Summary (resumo para decisão rápida)
 	result.ActionSummary = a.calculateActionSummary(result, metrics)
+
+	// 4.4. Calcular Cost Analysis
+	result.CostAnalysis = a.costAnalyzer.Calculate(metrics)
 
 	// 5. Calcular duração
 	result.DurationMs = time.Since(startTime).Milliseconds()
@@ -306,6 +311,7 @@ Retorne um JSON seguindo esta estrutura:
 
 IMPORTANTE:
 - **ESCREVA TUDO EM PORTUGUÊS BRASILEIRO (PT-BR)**
+- **NAO USE EMOJIS OU ICONES** - apenas texto puro (sem símbolos Unicode como ⚠️, ✅, ❌, 💰, 🚀, etc)
 - Seja específico com números e percentuais
 - Base as previsões nas tendências observadas
 - Considere o contexto de nodes e capacidade do cluster
@@ -432,11 +438,11 @@ func (a *Analyzer) fallbackAnalysis(metrics *DeploymentMetrics) *AIAnalysisResul
 func (a *Analyzer) buildTemporalContext(metrics *DeploymentMetrics) string {
 	var context strings.Builder
 
-	context.WriteString("# ⏰ CONTEXTO TEMPORAL - ANÁLISE PREDITIVA VERDADEIRA\n\n")
+	context.WriteString("# CONTEXTO TEMPORAL - ANALISE PREDITIVA VERDADEIRA\n\n")
 
 	// Idade do deployment
 	if metrics.IsNew {
-		context.WriteString(fmt.Sprintf(`⚠️  **DEPLOYMENT NOVO - HISTÓRICO LIMITADO**
+		context.WriteString(fmt.Sprintf(`[ATENCAO] **DEPLOYMENT NOVO - HISTORICO LIMITADO**
 - **Idade**: %d dias (criado em %s)
 - **Status**: Deployment recente - menos de 7 dias de histórico
 - **Impacto na Análise**:
@@ -448,7 +454,7 @@ func (a *Analyzer) buildTemporalContext(metrics *DeploymentMetrics) string {
 
 `, metrics.AgeInDays, metrics.CreationTimestamp.Format("02/01/2006")))
 	} else if !metrics.HasSufficientHistory {
-		context.WriteString(fmt.Sprintf(`⚠️  **DEPLOYMENT RECENTE - HISTÓRICO PARCIAL**
+		context.WriteString(fmt.Sprintf(`[ATENCAO] **DEPLOYMENT RECENTE - HISTORICO PARCIAL**
 - **Idade**: %d dias (criado em %s)
 - **Status**: Entre 7-14 dias - histórico em formação
 - **Impacto na Análise**:
@@ -459,7 +465,7 @@ func (a *Analyzer) buildTemporalContext(metrics *DeploymentMetrics) string {
 
 `, metrics.AgeInDays, metrics.CreationTimestamp.Format("02/01/2006")))
 	} else {
-		context.WriteString(fmt.Sprintf(`✅ **DEPLOYMENT MADURO - HISTÓRICO CONFIÁVEL**
+		context.WriteString(fmt.Sprintf(`[OK] **DEPLOYMENT MADURO - HISTORICO CONFIAVEL**
 - **Idade**: %d dias (criado em %s)
 - **Status**: Mais de 14 dias de histórico - padrões estabelecidos
 - **Impacto na Análise**:

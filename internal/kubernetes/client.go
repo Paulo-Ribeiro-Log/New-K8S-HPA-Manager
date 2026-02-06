@@ -2288,6 +2288,33 @@ func (c *Client) DeleteDeployment(ctx context.Context, namespace, deploymentName
 	return nil
 }
 
+// DeleteConfigMap deleta um configmap específico
+func (c *Client) DeleteConfigMap(ctx context.Context, namespace, name string) error {
+	err := c.clientset.CoreV1().ConfigMaps(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete configmap %s/%s/%s: %w", c.cluster, namespace, name, err)
+	}
+	return nil
+}
+
+// DeleteSecret deleta um secret específico
+func (c *Client) DeleteSecret(ctx context.Context, namespace, name string) error {
+	err := c.clientset.CoreV1().Secrets(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete secret %s/%s/%s: %w", c.cluster, namespace, name, err)
+	}
+	return nil
+}
+
+// DeleteIngress deleta um ingress específico
+func (c *Client) DeleteIngress(ctx context.Context, namespace, name string) error {
+	err := c.clientset.NetworkingV1().Ingresses(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete ingress %s/%s/%s: %w", c.cluster, namespace, name, err)
+	}
+	return nil
+}
+
 // ScaleDeployment escala um deployment para o número especificado de réplicas
 func (c *Client) ScaleDeployment(ctx context.Context, namespace, deploymentName string, replicas int32) error {
 	scale, err := c.clientset.AppsV1().Deployments(namespace).GetScale(ctx, deploymentName, metav1.GetOptions{})

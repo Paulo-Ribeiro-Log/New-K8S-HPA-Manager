@@ -2,7 +2,7 @@
 
 **Criado em**: 06/02/2026
 **Última atualização**: 06/02/2026
-**Progresso geral**: 4/24 itens (17%) - Fase 1 completa
+**Progresso geral**: 8/24 itens (33%) - Fase 1 + Fase 2 completas
 
 ---
 
@@ -58,54 +58,58 @@ A feature atual é **mais "retrospectiva" do que "preditiva"**. Ela coleta dados
 - **Arquivos**: `DeploymentsTab.tsx`
 - **Implementado em**: 06/02/2026
 
-### Correções Adicionais
-- [x] Removidos emojis do PDF (jsPDF não suporta Unicode)
-- [x] Substituído emoji 💰 por texto "[ECONOMIA]" e símbolo "$"
+### Correções Adicionais - Remoção de Emojis (jsPDF Compatibility)
+- [x] Removidos emojis do PDF/MD frontend (`DeploymentsTab.tsx`)
+- [x] Substituído emoji 💰 por texto "[ECONOMIA]" e símbolo "$" no frontend
+- [x] Removidos emojis do backend Markdown (`predictions.go`)
+  - `### 💰 OPORTUNIDADE...` → `### [ALERTA] OPORTUNIDADE...`
+  - `💰 **ECONOMIA DE CUSTOS** 💰` → `**[ECONOMIA DE CUSTOS]**`
+- [x] Removidos emojis do contexto temporal (`analyzer.go`)
+  - `⏰ CONTEXTO TEMPORAL` → `CONTEXTO TEMPORAL`
+  - `⚠️ DEPLOYMENT NOVO` → `[ATENCAO] DEPLOYMENT NOVO`
+  - `✅ DEPLOYMENT MADURO` → `[OK] DEPLOYMENT MADURO`
+- [x] Adicionada instrução explícita no prompt da IA para NAO usar emojis
+  - `**NAO USE EMOJIS OU ICONES** - apenas texto puro`
 
 ---
 
-## Fase 2 - Análise de Custo (3-4 dias) | Prioridade: ALTA
+## Fase 2 - Análise de Custo (3-4 dias) | Prioridade: ALTA | ✅ COMPLETO
 
-### 2.1 Calcular Custo Atual do Deployment
-- [ ] Criar `internal/monitoring/predictions/cost_analyzer.go`
-- [ ] Fórmula: `(cpu_requests * preco_cpu_hora) + (mem_requests * preco_mem_hora) * replicas * 720h`
-- [ ] Suportar preços customizáveis via config (Azure default)
-- [ ] Adicionar `current_monthly_cost` no response
-- **Arquivos**: `cost_analyzer.go` (novo), `collector.go`, `models.go`
-- **Estimativa**: 4h
+### 2.1 Calcular Custo Atual do Deployment ✅
+- [x] Criar `internal/monitoring/predictions/cost_analyzer.go`
+- [x] Formula: `(cpuRequest * $0.05/h + memRequestGB * $0.005/h) * replicas * 730h`
+- [x] Precos Azure pay-as-you-go (referencia Brasil Sul)
+- [x] Adicionar `CostAnalysis` no `PredictionResult`
+- [x] Cotacao USD/BRL automatica via API publica (cache 1h, fallback R$ 5,50)
+- [x] Exibir valores em USD + BRL + cotacao de referencia
+- **Arquivos**: `cost_analyzer.go` (novo), `models.go`, `analyzer.go`
+- **Implementado em**: 06/02/2026
 
-**Estrutura proposta**:
-```go
-type CostAnalysis struct {
-    CurrentMonthlyCost     float64 `json:"current_monthly_cost"`
-    RecommendedCost        float64 `json:"recommended_cost"`
-    MonthlySavings         float64 `json:"monthly_savings"`
-    PaybackPeriodDays      int     `json:"payback_period_days"`
-    CostPerMillionRequests float64 `json:"cost_per_million_requests"`
-    Currency               string  `json:"currency"` // BRL, USD
-}
-```
+### 2.2 Custo de Cada Recomendacao ✅
+- [x] Calcular custo antes/depois para cada recomendacao de over-provisioning
+- [x] Struct `CostRecommendation` com `CostBeforeUSD`, `CostAfterUSD`, `SavingsUSD`, `SavingsBRL`
+- [x] Exibir no card da recomendacao com impacto (low/medium/high)
+- **Arquivos**: `cost_analyzer.go`, `models.go`, `DeploymentsTab.tsx`
+- **Implementado em**: 06/02/2026
 
-### 2.2 Custo de Cada Recomendação
-- [ ] Calcular custo antes/depois para cada recomendação
-- [ ] Exibir: "Escalar para 4 réplicas = +R$ 120/mês"
-- [ ] Incluir no card da recomendação
-- **Arquivos**: `cost_analyzer.go`, `analyzer.go`, `DeploymentsTab.tsx`
-- **Estimativa**: 3h
-
-### 2.3 Economia de Downsizing
-- [ ] Detectar recursos subutilizados (CPU <30%, Mem <40%)
-- [ ] Calcular economia mensal potencial
-- [ ] Exibir: "Reduzir CPU = -R$ 50/mês sem impacto"
+### 2.3 Economia de Downsizing ✅
+- [x] Detectar CPU over-provisioned (P95 < 30% do request)
+- [x] Detectar Memory over-provisioned (P95 < 40% do request)
+- [x] Detectar replicas ociosas (uso total < 20% da capacidade)
+- [x] Right-sizing: P95 + 20% margem de seguranca
+- [x] Calcular economia mensal e anual potencial (USD + BRL)
 - **Arquivos**: `cost_analyzer.go`, `DeploymentsTab.tsx`
-- **Estimativa**: 3h
+- **Implementado em**: 06/02/2026
 
-### 2.4 ROI Dashboard (Card no Modal)
-- [ ] Card resumo: Custo Atual | Custo Otimizado | Economia
-- [ ] Trade-off visual: custo vs performance
-- [ ] Gráfico de barras comparativo
-- **Arquivos**: `DeploymentsTab.tsx`
-- **Estimativa**: 4h
+### 2.4 ROI Dashboard (Card no Modal) ✅
+- [x] Card resumo: Custo Mensal | Custo por Replica | Economia Potencial (grid 3 colunas)
+- [x] Breakdown CPU vs Memory com valores
+- [x] Economia anual destacada quando ha potencial
+- [x] Recomendacoes de custo com titulo, descricao e economia
+- [x] Secao completa no export PDF (tabela + breakdown + recomendacoes)
+- [x] Secao completa no relatorio Markdown (backend)
+- **Arquivos**: `DeploymentsTab.tsx`, `predictions.go`
+- **Implementado em**: 06/02/2026
 
 ---
 
@@ -298,12 +302,12 @@ type SeasonalPatterns struct {
 | Fase | Itens | Completos | Progresso | Status |
 |------|-------|-----------|-----------|--------|
 | Fase 1 - Quick Wins | 4 | 4 | ✅ 100% | Implementado 06/02/2026 |
-| Fase 2 - Custo | 4 | 0 | 0% | Pendente |
+| Fase 2 - Custo | 4 | 4 | ✅ 100% | Implementado 06/02/2026 |
 | Fase 3 - Sazonalidade | 4 | 0 | 0% | Pendente |
 | Fase 4 - Feedback Loop | 4 | 0 | 0% | Pendente |
 | Fase 5 - Métricas | 5 | 0 | 0% | Pendente |
 | Fase 6 - UX Modal | 3 | 0 | 0% | Pendente |
-| **TOTAL** | **24** | **4** | **17%** | Em progresso |
+| **TOTAL** | **24** | **8** | **33%** | Em progresso |
 
 ---
 
@@ -333,15 +337,24 @@ type SeasonalPatterns struct {
 
 ## Notas de Implementação
 
-### Preços de Referência (Azure AKS - Brasil Sul)
+### Precos de Referencia (Azure AKS - Brasil Sul) ✅ Implementado
 ```go
 const (
-    // Preços aproximados por hora (verificar Azure Pricing Calculator)
-    PriceCPUCoreHour  = 0.05  // USD por vCPU/hora
-    PriceMemGBHour    = 0.01  // USD por GB/hora
-    HoursPerMonth     = 720   // 24h * 30 dias
-    USDToBRL          = 5.0   // Taxa de câmbio aproximada
+    PriceCPUCoreHour = 0.05  // USD por vCPU/hora
+    PriceMemGBHour   = 0.005 // USD por GB/hora
+    HoursPerMonth    = 730   // 365 dias * 24h / 12 meses
+
+    // Thresholds de over-provisioning
+    CPUOverProvisionThreshold = 0.30 // P95 < 30% do request = over-provisioned
+    MemOverProvisionThreshold = 0.40 // P95 < 40% do request = over-provisioned
+
+    // Margem de seguranca para right-sizing
+    RightSizingMargin = 1.20 // P95 + 20%
+
+    // Cotacao fallback quando API falha
+    DefaultExchangeRate = 5.50
 )
+// Cotacao USD/BRL: API publica economia.awesomeapi.com.br (gratis, sem auth, cache 1h)
 ```
 
 ### Thresholds de Cores
