@@ -1904,7 +1904,7 @@ export const DeploymentsTab = ({
         doc.setFontSize(10);
         doc.setFont("helvetica", "bold");
         doc.setTextColor(0, 0, 0);
-        doc.text("💰 OPORTUNIDADE DE ECONOMIA DE CUSTOS IDENTIFICADA", pageWidth / 2, yPosition + 6, { align: "center" });
+        doc.text("OPORTUNIDADE DE ECONOMIA DE CUSTOS IDENTIFICADA", pageWidth / 2, yPosition + 6, { align: "center" });
         yPosition += 10;
         doc.setFontSize(8);
         doc.setFont("helvetica", "normal");
@@ -1925,7 +1925,7 @@ export const DeploymentsTab = ({
         // Destacar economia de custos
         if (rec.category === 'cost-optimization' || rec.category === 'downsizing') {
           doc.setTextColor(255, 152, 0); // Laranja
-          doc.text(`💰 ${idx + 1}. ${rec.title}`, 14, yPosition);
+          doc.text(`[ECONOMIA] ${idx + 1}. ${rec.title}`, 14, yPosition);
           doc.setTextColor(0, 0, 0);
         } else {
           doc.text(`${idx + 1}. ${rec.title}`, 14, yPosition);
@@ -3131,6 +3131,106 @@ export const DeploymentsTab = ({
                 </div>
               ) : predictionResult ? (
                 <div className="space-y-6">
+                  {/* ACTION SUMMARY - Resumo de Ação (Quick Wins Fase 1) */}
+                  {predictionResult.action_summary && (
+                    <div className={`rounded-lg p-4 border-l-4 ${
+                      predictionResult.action_summary.status === 'critical'
+                        ? 'bg-red-500/10 border-red-500'
+                        : predictionResult.action_summary.status === 'attention'
+                        ? 'bg-yellow-500/10 border-yellow-500'
+                        : 'bg-green-500/10 border-green-500'
+                    }`}>
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1">
+                          {/* Status Header */}
+                          <div className="flex items-center gap-3 mb-2">
+                            {predictionResult.action_summary.status === 'critical' ? (
+                              <TriangleAlert className="w-6 h-6 text-red-500" />
+                            ) : predictionResult.action_summary.status === 'attention' ? (
+                              <TriangleAlert className="w-6 h-6 text-yellow-500" />
+                            ) : (
+                              <CheckCircle2 className="w-6 h-6 text-green-500" />
+                            )}
+                            <div>
+                              <h3 className={`font-bold text-lg ${
+                                predictionResult.action_summary.status === 'critical' ? 'text-red-500' :
+                                predictionResult.action_summary.status === 'attention' ? 'text-yellow-500' :
+                                'text-green-500'
+                              }`}>
+                                {predictionResult.action_summary.status_message}
+                              </h3>
+                              {predictionResult.action_summary.hours_to_critical !== null &&
+                               predictionResult.action_summary.hours_to_critical !== undefined && (
+                                <p className="text-sm text-red-400 font-medium">
+                                  {predictionResult.action_summary.critical_reason}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Métricas rápidas */}
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                            {/* Tempo até crítico */}
+                            {predictionResult.action_summary.hours_to_critical !== null &&
+                             predictionResult.action_summary.hours_to_critical !== undefined && (
+                              <div className="bg-background/50 rounded p-2 text-center">
+                                <div className="text-2xl font-bold text-red-500">
+                                  {predictionResult.action_summary.hours_to_critical}h
+                                </div>
+                                <div className="text-xs text-muted-foreground">até crítico</div>
+                              </div>
+                            )}
+
+                            {/* Total de ações */}
+                            <div className="bg-background/50 rounded p-2 text-center">
+                              <div className="text-2xl font-bold">
+                                {predictionResult.action_summary.total_actions}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                ações ({predictionResult.action_summary.urgent_actions} urgentes)
+                              </div>
+                            </div>
+
+                            {/* Próxima revisão */}
+                            <div className="bg-background/50 rounded p-2 text-center">
+                              <div className="text-2xl font-bold">
+                                {predictionResult.action_summary.next_review_days === 0
+                                  ? 'Agora'
+                                  : `${predictionResult.action_summary.next_review_days}d`}
+                              </div>
+                              <div className="text-xs text-muted-foreground">próx. revisão</div>
+                            </div>
+
+                            {/* Confiança */}
+                            <div className="bg-background/50 rounded p-2 text-center">
+                              <div className={`text-2xl font-bold ${
+                                predictionResult.action_summary.overall_confidence >= 70 ? 'text-green-500' :
+                                predictionResult.action_summary.overall_confidence >= 50 ? 'text-yellow-500' :
+                                'text-red-500'
+                              }`}>
+                                {predictionResult.action_summary.overall_confidence?.toFixed(0) || 0}%
+                              </div>
+                              <div className="text-xs text-muted-foreground">confiança</div>
+                            </div>
+                          </div>
+
+                          {/* Ação principal */}
+                          {predictionResult.action_summary.top_action && (
+                            <div className="mt-3 p-2 bg-background/50 rounded">
+                              <div className="text-xs text-muted-foreground mb-1">Ação Principal Recomendada:</div>
+                              <div className="font-medium text-sm">{predictionResult.action_summary.top_action}</div>
+                              {predictionResult.action_summary.top_action_command && (
+                                <code className="block mt-1 text-xs bg-secondary/50 p-1 rounded font-mono text-primary">
+                                  {predictionResult.action_summary.top_action_command}
+                                </code>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Health Score */}
                   <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
                     <h3 className="font-semibold text-lg mb-3 flex items-center gap-2">
@@ -3788,7 +3888,7 @@ export const DeploymentsTab = ({
                       ) && (
                         <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 mb-4">
                           <div className="flex items-start gap-3">
-                            <div className="text-2xl">💰</div>
+                            <div className="text-2xl text-yellow-500 font-bold">$</div>
                             <div className="flex-1">
                               <h4 className="font-semibold text-yellow-600 dark:text-yellow-400 mb-1">
                                 Oportunidade de Economia de Custos Identificada
@@ -3813,7 +3913,7 @@ export const DeploymentsTab = ({
                         >
                           <div className="flex items-start justify-between mb-2">
                             <span className="font-semibold">
-                              {(rec.category === 'cost-optimization' || rec.category === 'downsizing') && '💰 '}
+                              {(rec.category === 'cost-optimization' || rec.category === 'downsizing') && '[ECONOMIA] '}
                               #{rec.priority} - {rec.title}
                             </span>
                             <span className={`text-xs px-2 py-1 rounded ${
