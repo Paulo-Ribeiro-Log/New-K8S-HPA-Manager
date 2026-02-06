@@ -1,7 +1,8 @@
 # Checklist de Melhorias - Análise Preditiva
 
 **Criado em**: 06/02/2026
-**Progresso geral**: 0/24 itens (0%)
+**Última atualização**: 06/02/2026
+**Progresso geral**: 4/24 itens (17%) - Fase 1 completa
 
 ---
 
@@ -21,49 +22,45 @@ A feature atual é **mais "retrospectiva" do que "preditiva"**. Ela coleta dados
 
 ---
 
-## Fase 1 - Quick Wins (2-3 dias) | Prioridade: ALTA
+## Fase 1 - Quick Wins (2-3 dias) | Prioridade: ALTA | ✅ COMPLETO
 
-### 1.1 Resumo de Ação no Topo do Modal
-- [ ] Criar componente `PredictionActionSummary`
-- [ ] Exibir status geral (Saudável/Atenção/Crítico) com cor
-- [ ] Mostrar quantidade de ações recomendadas
-- [ ] Botão direto para aplicar correção principal
-- [ ] Indicar próxima revisão recomendada
-- **Arquivos**: `DeploymentsTab.tsx`
-- **Estimativa**: 4h
+### 1.1 Resumo de Ação no Topo do Modal ✅
+- [x] Criar componente `ActionSummary` inline no modal
+- [x] Exibir status geral (Saudável/Atenção/Crítico) com cor
+- [x] Mostrar quantidade de ações recomendadas (total e urgentes)
+- [x] Exibir ação principal recomendada com comando kubectl
+- [x] Indicar próxima revisão recomendada (dias)
+- **Arquivos**: `DeploymentsTab.tsx`, `models.go`, `analyzer.go`
+- **Implementado em**: 06/02/2026
 
-**Exemplo de implementação**:
-```tsx
-<div className="bg-yellow-50 border-l-4 border-yellow-500 p-4">
-  <h3>⚠️ 1 Ação Recomendada</h3>
-  <p>CPU Usage está em tendência de alta (+15%/semana).</p>
-  <p>Estimativa: Atingirá 90% do limit em <strong>~3 dias</strong>.</p>
-  <Button>Aplicar: Aumentar CPU limit para 2 cores</Button>
-</div>
-```
-
-### 1.2 Tempo até Crítico (hours_to_critical)
-- [ ] Calcular no backend quando métrica atingirá threshold crítico
-- [ ] Adicionar campo `hours_to_critical` no response
-- [ ] Exibir no frontend com urgência visual
-- [ ] Cores: verde (>7d), amarelo (1-7d), vermelho (<24h)
-- **Arquivos**: `collector.go`, `models.go`, `DeploymentsTab.tsx`
-- **Estimativa**: 4h
-
-### 1.3 Badges de Confiança nas Previsões
-- [ ] Adicionar campo `confidence_percent` em cada previsão
-- [ ] Exibir badge com porcentagem (ex: "78% certeza")
-- [ ] Tooltip explicando o que afeta a confiança
+### 1.2 Tempo até Crítico (hours_to_critical) ✅
+- [x] Calcular no backend quando métrica atingirá threshold crítico
+- [x] Adicionar struct `ActionSummary` com campo `HoursToCritical`
+- [x] Método `calculateHoursToCritical()` analisa CPU, memória, HPA e predictions
+- [x] Exibir no frontend com urgência visual (card com horas)
+- [x] Cores: vermelho (<24h), amarelo (24-72h), ajuste automático de status
 - **Arquivos**: `analyzer.go`, `models.go`, `DeploymentsTab.tsx`
-- **Estimativa**: 2h
+- **Implementado em**: 06/02/2026
 
-### 1.4 Colorir Métricas (Semáforo Visual)
-- [ ] CPU: verde (<60%), amarelo (60-80%), vermelho (>80%)
-- [ ] Memória: verde (<70%), amarelo (70-85%), vermelho (>85%)
-- [ ] Tendências: verde (estável/descendo), amarelo (subindo leve), vermelho (subindo rápido)
-- [ ] Aplicar cores nos cards de métricas do modal
+### 1.3 Badges de Confiança nas Previsões ✅
+- [x] Adicionar campo `ConfidencePercent` em struct `Prediction`
+- [x] Método `enrichPredictionsWithConfidence()` calcula confiança
+- [x] Fatores: idade do deployment, volatilidade, probabilidade, timeframe
+- [x] Confiança geral exibida no ActionSummary
+- **Arquivos**: `analyzer.go`, `models.go`, `DeploymentsTab.tsx`
+- **Implementado em**: 06/02/2026
+
+### 1.4 Colorir Métricas (Semáforo Visual) ✅
+- [x] Status colorido no ActionSummary (verde/amarelo/vermelho)
+- [x] Confiança colorida (verde >=70%, amarelo 50-70%, vermelho <50%)
+- [x] Tendências já tinham cores (laranja subindo, verde descendo, azul estável)
+- [x] Cores aplicadas nos cards de métricas do modal
 - **Arquivos**: `DeploymentsTab.tsx`
-- **Estimativa**: 2h
+- **Implementado em**: 06/02/2026
+
+### Correções Adicionais
+- [x] Removidos emojis do PDF (jsPDF não suporta Unicode)
+- [x] Substituído emoji 💰 por texto "[ECONOMIA]" e símbolo "$"
 
 ---
 
@@ -298,15 +295,15 @@ type SeasonalPatterns struct {
 
 ## Resumo de Progresso
 
-| Fase | Itens | Completos | Progresso | Estimativa |
-|------|-------|-----------|-----------|------------|
-| Fase 1 - Quick Wins | 4 | 0 | 0% | 2-3 dias |
-| Fase 2 - Custo | 4 | 0 | 0% | 3-4 dias |
-| Fase 3 - Sazonalidade | 4 | 0 | 0% | 4-5 dias |
-| Fase 4 - Feedback Loop | 4 | 0 | 0% | 3-4 dias |
-| Fase 5 - Métricas | 5 | 0 | 0% | 2-3 dias |
-| Fase 6 - UX Modal | 3 | 0 | 0% | 2-3 dias |
-| **TOTAL** | **24** | **0** | **0%** | **16-22 dias** |
+| Fase | Itens | Completos | Progresso | Status |
+|------|-------|-----------|-----------|--------|
+| Fase 1 - Quick Wins | 4 | 4 | ✅ 100% | Implementado 06/02/2026 |
+| Fase 2 - Custo | 4 | 0 | 0% | Pendente |
+| Fase 3 - Sazonalidade | 4 | 0 | 0% | Pendente |
+| Fase 4 - Feedback Loop | 4 | 0 | 0% | Pendente |
+| Fase 5 - Métricas | 5 | 0 | 0% | Pendente |
+| Fase 6 - UX Modal | 3 | 0 | 0% | Pendente |
+| **TOTAL** | **24** | **4** | **17%** | Em progresso |
 
 ---
 

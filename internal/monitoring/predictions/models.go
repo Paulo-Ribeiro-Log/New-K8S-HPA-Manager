@@ -23,6 +23,9 @@ type PredictionResult struct {
 	// Dados coletados
 	RawMetrics DeploymentMetrics `json:"raw_metrics"`
 
+	// NOVO: Resumo de Ação (Quick Summary para decisões rápidas)
+	ActionSummary ActionSummary `json:"action_summary"`
+
 	// Análises
 	HealthScore       HealthScore         `json:"health_score"`
 	Predictions       PredictionsAnalysis `json:"predictions"`
@@ -30,6 +33,31 @@ type PredictionResult struct {
 	ImpactAnalysis    ImpactAnalysis      `json:"impact_analysis"`
 	ExecutiveSummary  ExecutiveSummary    `json:"executive_summary"`
 	Recommendations   []Recommendation    `json:"recommendations"`
+}
+
+// ActionSummary resume as ações necessárias para decisão rápida
+type ActionSummary struct {
+	// Status geral
+	Status           string `json:"status"`             // healthy, attention, critical
+	StatusColor      string `json:"status_color"`       // green, yellow, red
+	StatusMessage    string `json:"status_message"`     // "Operacional" / "Requer atenção" / "Crítico"
+
+	// Métricas de urgência
+	HoursToCritical  *int   `json:"hours_to_critical,omitempty"`  // nil se não há risco
+	CriticalMetric   string `json:"critical_metric,omitempty"`    // cpu, memory, replicas
+	CriticalReason   string `json:"critical_reason,omitempty"`    // "CPU atingirá 90% em X horas"
+
+	// Ações
+	TotalActions     int    `json:"total_actions"`      // Quantidade de ações recomendadas
+	UrgentActions    int    `json:"urgent_actions"`     // Ações de alta prioridade (1-2)
+	TopAction        string `json:"top_action,omitempty"`         // Ação principal recomendada
+	TopActionCommand string `json:"top_action_command,omitempty"` // Comando kubectl se aplicável
+
+	// Próxima revisão
+	NextReviewDays   int    `json:"next_review_days"`   // Quando revisar novamente
+
+	// Confiança geral da análise
+	OverallConfidence float64 `json:"overall_confidence"` // 0-100%
 }
 
 // DeploymentMetrics contém todas as métricas coletadas
@@ -280,6 +308,9 @@ type Prediction struct {
 	Severity    string     `json:"severity"`    // low, medium, high, critical
 	Impact      string     `json:"impact"`      // descrição do impacto
 	Indicators  []string   `json:"indicators"`  // sinais que levam a esta previsão
+
+	// NOVO: Nível de confiança da previsão (0-100%)
+	ConfidencePercent float64 `json:"confidence_percent"`
 }
 
 // RootCauseAnalysis análise de causa raiz
