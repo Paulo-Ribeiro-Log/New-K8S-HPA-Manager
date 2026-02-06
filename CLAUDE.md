@@ -775,6 +775,37 @@ Recent Updates (v1.3.11 - 19/01/2026):
     - Import de `ProtectedAction` corrigido: `@/components/rbac/ProtectedAction`
     - Removida prop inexistente `requiredGroup` do componente
 
+Recent Updates (v1.3.19 - 06/02/2026):
+- **Fix Crítico: calculateCapacityForecast() misturava métricas cluster-wide com deployment**:
+  - **Problema**: Timeline de saturação usava `CPUUtilization` do cluster inteiro + tendência de um deployment
+    - `daysUntil80 = (80 - clusterCPUUtil) / deploymentCPUGrowth` - escopos incompatíveis
+    - NodeAnalysis criava nodes fictícios baseados em utilização cluster-wide
+    - NewNodesNeeded baseado em cluster > 85% (ignorava contexto do deployment)
+  - **Solução**: Refatoração completa de `calculateCapacityForecast()` (`collector.go`)
+    - Utilização do deployment: `cpuPerReplica / cpuRequest * 100` (uso real vs request por réplica)
+    - Timeline deployment-scoped: "quando CPU do deployment atinge threshold do HPA / 100% do request"
+    - HPA-aware: considera `maxReplicas` e `targetCPUPercent` como limitadores reais
+    - NodeAnalysis real: usa nodes de `NodeDistribution` (onde pods do deployment rodam)
+    - LimitingFactor inteligente: identifica gargalo (CPU, memória ou HPA max replicas)
+    - NewNodesNeeded contextual: baseado na capacidade de escalar o deployment específico
+  - Arquivo: `internal/monitoring/predictions/collector.go`
+- **Fase 1 Quick Wins - Análise Preditiva** (checklist em `CHECKLIST_ANALISE_PREDITIVA.md`):
+  - 1.1 Resumo de Ação no topo do modal (ActionSummary com status/ações/comando kubectl)
+  - 1.2 Tempo até Crítico (hours_to_critical com cores vermelho/amarelo)
+  - 1.3 Badges de Confiança nas Previsões (ConfidencePercent calculado por fatores)
+  - 1.4 Colorir Métricas (semáforo visual verde/amarelo/vermelho)
+  - Remoção de emojis em backend (predictions.go, analyzer.go) e frontend (DeploymentsTab.tsx)
+- **Fase 2 Análise de Custo - Completa** (checklist em `CHECKLIST_ANALISE_PREDITIVA.md`):
+  - **cost_analyzer.go** (novo): Cálculo de custos Azure pay-as-you-go ($0.05/vCPU/h, $0.005/GB/h, 730h/mês)
+  - Cotação USD/BRL automática via API pública (`economia.awesomeapi.com.br`, cache 1h, fallback R$ 5,50)
+  - Detecção de over-provisioning: CPU P95 < 30% request, Memory P95 < 40% request, réplicas ociosas < 20%
+  - Right-sizing: P95 + 20% margem de segurança com mínimos razoáveis (50m CPU, 64Mi memória)
+  - Recomendações de custo com antes/depois e impacto (low/medium/high)
+  - Card no modal: grid 3 colunas (Custo Mensal, Por Réplica, Economia) + breakdown CPU/Mem + economia anual
+  - Seção completa no PDF export (tabela de custos, breakdown, recomendações)
+  - Seção completa no relatório Markdown (backend predictions.go)
+  - Arquivos: `cost_analyzer.go` (novo), `models.go`, `analyzer.go`, `predictions.go`, `DeploymentsTab.tsx`
+
 Recent Updates (v1.3.9 - 05/01/2026):
 - **Refatoração Crítica: Cálculo de Crescimento de Réplicas (Growth Analysis)**:
   - **Problema**: Cálculo incorreto usando capacidade total do cluster ao invés de cálculo per-node

@@ -33,6 +33,9 @@ type PredictionResult struct {
 	ImpactAnalysis    ImpactAnalysis      `json:"impact_analysis"`
 	ExecutiveSummary  ExecutiveSummary    `json:"executive_summary"`
 	Recommendations   []Recommendation    `json:"recommendations"`
+
+	// Análise de Custo (Fase 2)
+	CostAnalysis *CostAnalysis `json:"cost_analysis,omitempty"`
 }
 
 // ActionSummary resume as ações necessárias para decisão rápida
@@ -419,4 +422,50 @@ type ResourceUsage struct {
 type CapacityInfo struct {
 	Nodes     int           `json:"nodes"`
 	Resources ResourceUsage `json:"resources"`
+}
+
+// CostAnalysis análise de custo do deployment
+type CostAnalysis struct {
+	// Cotação USD→BRL
+	ExchangeRate     float64 `json:"exchange_rate"`      // cotação do dia
+	ExchangeRateDate string  `json:"exchange_rate_date"` // "2026-02-06"
+
+	// Custo atual
+	CurrentMonthlyCostUSD float64       `json:"current_monthly_cost_usd"`
+	CurrentMonthlyCostBRL float64       `json:"current_monthly_cost_brl"`
+	CostPerReplicaUSD     float64       `json:"cost_per_replica_usd"`
+	CostPerReplicaBRL     float64       `json:"cost_per_replica_brl"`
+	CostBreakdown         CostBreakdown `json:"cost_breakdown"`
+
+	// Otimização (right-sizing baseado em P95 + 20% margem)
+	RecommendedCostUSD float64 `json:"recommended_cost_usd"`
+	RecommendedCostBRL float64 `json:"recommended_cost_brl"`
+	MonthlySavingsUSD  float64 `json:"monthly_savings_usd"`
+	MonthlySavingsBRL  float64 `json:"monthly_savings_brl"`
+	AnnualSavingsUSD   float64 `json:"annual_savings_usd"`
+	AnnualSavingsBRL   float64 `json:"annual_savings_brl"`
+	SavingsPercent     float64 `json:"savings_percent"`
+
+	// Recomendações de custo
+	Recommendations []CostRecommendation `json:"recommendations,omitempty"`
+}
+
+// CostBreakdown detalhamento do custo por recurso
+type CostBreakdown struct {
+	CPUCostUSD    float64 `json:"cpu_cost_usd"`
+	CPUCostBRL    float64 `json:"cpu_cost_brl"`
+	MemoryCostUSD float64 `json:"memory_cost_usd"`
+	MemoryCostBRL float64 `json:"memory_cost_brl"`
+}
+
+// CostRecommendation recomendação de economia
+type CostRecommendation struct {
+	Title         string  `json:"title"`
+	Description   string  `json:"description"`
+	Action        string  `json:"action"` // "downsize_cpu", "reduce_replicas", "right_size_memory"
+	CostBeforeUSD float64 `json:"cost_before_usd"`
+	CostAfterUSD  float64 `json:"cost_after_usd"`
+	SavingsUSD    float64 `json:"savings_usd"`
+	SavingsBRL    float64 `json:"savings_brl"`
+	Impact        string  `json:"impact"` // "low", "medium", "high"
 }

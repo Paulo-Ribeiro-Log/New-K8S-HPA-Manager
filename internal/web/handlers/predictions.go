@@ -178,7 +178,7 @@ func (h *PredictionsHandler) AnalyzeDeployment(c *gin.Context) {
 		log.Warn().
 			Str("provider", providerName).
 			Str("model", modelName).
-			Msg("⚠️ WARNING: Using PAID AI provider for predictions - charges may apply!")
+			Msg("WARNING: Using PAID AI provider for predictions - charges may apply!")
 	}
 
 	// 5. Executar análise
@@ -639,6 +639,41 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 
 	report.WriteString("---\n\n")
 
+	// Análise de Custos
+	if result.CostAnalysis != nil {
+		cost := result.CostAnalysis
+		report.WriteString("## ANÁLISE DE CUSTOS\n\n")
+		report.WriteString(fmt.Sprintf("**Cotação USD/BRL**: R$ %.2f (referência: %s)\n\n", cost.ExchangeRate, cost.ExchangeRateDate))
+
+		report.WriteString("### Custo Mensal Atual\n\n")
+		report.WriteString("| Recurso | USD | BRL |\n")
+		report.WriteString("|---------|-----|-----|\n")
+		report.WriteString(fmt.Sprintf("| CPU | $ %.2f | R$ %.2f |\n", cost.CostBreakdown.CPUCostUSD, cost.CostBreakdown.CPUCostBRL))
+		report.WriteString(fmt.Sprintf("| Memória | $ %.2f | R$ %.2f |\n", cost.CostBreakdown.MemoryCostUSD, cost.CostBreakdown.MemoryCostBRL))
+		report.WriteString(fmt.Sprintf("| **Total** | **$ %.2f** | **R$ %.2f** |\n\n", cost.CurrentMonthlyCostUSD, cost.CurrentMonthlyCostBRL))
+		report.WriteString(fmt.Sprintf("**Custo por réplica**: $ %.2f / R$ %.2f\n\n", cost.CostPerReplicaUSD, cost.CostPerReplicaBRL))
+
+		if cost.SavingsPercent > 0 {
+			report.WriteString("### Potencial de Otimização\n\n")
+			report.WriteString(fmt.Sprintf("- Custo otimizado: $ %.2f / R$ %.2f por mês\n", cost.RecommendedCostUSD, cost.RecommendedCostBRL))
+			report.WriteString(fmt.Sprintf("- Economia mensal: **$ %.2f / R$ %.2f** (%.1f%%)\n", cost.MonthlySavingsUSD, cost.MonthlySavingsBRL, cost.SavingsPercent))
+			report.WriteString(fmt.Sprintf("- Economia anual: **$ %.2f / R$ %.2f**\n\n", cost.AnnualSavingsUSD, cost.AnnualSavingsBRL))
+		}
+
+		if len(cost.Recommendations) > 0 {
+			report.WriteString("### Recomendações de Custo\n\n")
+			report.WriteString("| Ação | Antes (USD) | Depois (USD) | Economia (USD) | Economia (BRL) | Impacto |\n")
+			report.WriteString("|------|-------------|--------------|----------------|----------------|---------|\n")
+			for _, rec := range cost.Recommendations {
+				report.WriteString(fmt.Sprintf("| %s | $ %.2f | $ %.2f | $ %.2f | R$ %.2f | %s |\n",
+					rec.Title, rec.CostBeforeUSD, rec.CostAfterUSD, rec.SavingsUSD, rec.SavingsBRL, rec.Impact))
+			}
+			report.WriteString("\n")
+		}
+
+		report.WriteString("---\n\n")
+	}
+
 	// Health Score Breakdown
 	report.WriteString("## HEALTH SCORE DETALHADO\n\n")
 	report.WriteString("O Health Score é calculado com base em 4 dimensões principais:\n\n")
@@ -812,7 +847,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 		}
 
 		if hasCostOptimization {
-			report.WriteString("### 💰 OPORTUNIDADE DE ECONOMIA DE CUSTOS IDENTIFICADA\n\n")
+			report.WriteString("### [ALERTA] OPORTUNIDADE DE ECONOMIA DE CUSTOS IDENTIFICADA\n\n")
 			report.WriteString("**IMPORTANTE**: Há recursos sobreprovisionados que podem ser reduzidos sem impacto negativo.\n")
 			report.WriteString("A otimização destes recursos pode resultar em economia significativa de custos.\n\n")
 		}
@@ -822,7 +857,7 @@ func (h *PredictionsHandler) generateMarkdownReport(result *predictions.Predicti
 
 			// Destacar economia de custos
 			if rec.Category == "cost-optimization" || rec.Category == "downsizing" {
-				report.WriteString("💰 **ECONOMIA DE CUSTOS** 💰\n\n")
+				report.WriteString("**[ECONOMIA DE CUSTOS]**\n\n")
 			}
 
 			report.WriteString("**Categoria**: " + rec.Category + "\n\n")
