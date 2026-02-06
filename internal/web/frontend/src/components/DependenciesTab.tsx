@@ -178,9 +178,13 @@ export const DependenciesTab = () => {
         const query = searchQuery.toLowerCase();
         return (
           dep.service_name.toLowerCase().includes(query) ||
+          dep.service_type.toLowerCase().includes(query) ||
           dep.cluster.toLowerCase().includes(query) ||
           dep.namespace.toLowerCase().includes(query) ||
-          dep.deployment?.toLowerCase().includes(query)
+          dep.deployment?.toLowerCase().includes(query) ||
+          dep.source_type?.toLowerCase().includes(query) ||
+          dep.source_name?.toLowerCase().includes(query) ||
+          dep.source_key?.toLowerCase().includes(query)
         );
       }
 
