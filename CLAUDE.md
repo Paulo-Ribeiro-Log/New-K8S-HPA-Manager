@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **31 de janeiro de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **06 de fevereiro de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -2040,6 +2040,24 @@ make release                     # Gera binários em build/release/
 ---
 
 ## 📝 Histórico de Sessões Recentes
+
+### Sessão 06/02/2026 - Modal de Exportação no Painel de Visualização da DependenciesTab
+**Contexto**: Adicionar exportação de dados filtrados/visíveis no painel direito (visualização) da aba Dependencies
+**Alterações**:
+- Modal de exportação com seleção de formato (PDF, Markdown, CSV)
+- Exporta dados **filtrados e visíveis** (não dados brutos do Registry)
+- Suporta ambas as abas: Registry (usa `filteredDependencies`) e Busca Reversa (usa `filteredSearchResults`)
+- **PDF**: jsPDF com logo (`addLogoHeaderToPDF`), sumário, tabela por tipo, detalhamento completo, paginação no footer
+- **Markdown**: `getMarkdownHeader` + tabelas markdown (sumário, por tipo, detalhamento)
+- **CSV**: Header com 8 colunas, escape de aspas, BOM UTF-8 para compatibilidade Excel
+- Botão "Exportar" no header do painel direito, visível quando há dados em qualquer aba
+- Descrição dinâmica no modal: indica aba ativa, filtros aplicados e total de registros
+- Loading state durante exportação
+
+**Arquivos Modificados**:
+- `internal/web/frontend/src/components/DependenciesTab.tsx` - imports, states, função `handleViewExport()`, botão, modal Dialog
+
+---
 
 ### Sessão 19/01/2026 - Novas Abas DaemonSets e StatefulSets
 **Contexto**: Implementação de duas novas abas para gerenciamento de workloads Kubernetes

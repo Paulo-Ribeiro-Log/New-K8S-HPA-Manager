@@ -30,6 +30,16 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Label } from "@/components/ui/label";
+import {
   Search,
   Loader2,
   RefreshCcw,
@@ -42,11 +52,12 @@ import {
   FileType,
   Clock,
   AlertCircle,
+  Download,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
-import { addLogoHeaderToPDF } from "@/lib/logoUtils";
+import { addLogoHeaderToPDF, getMarkdownHeader } from "@/lib/logoUtils";
 
 // Tipos
 interface DependencyRecord {
@@ -109,6 +120,8 @@ export const DependenciesTab = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [reverseSearchQuery, setReverseSearchQuery] = useState("");
   const [filterType, setFilterType] = useState<string>("all");
+  const [filterEnv, setFilterEnv] = useState<string>("all");
+  const [filterEnvSearch, setFilterEnvSearch] = useState<string>("all");
 
   // Estado de auto-scan
   const [autoScanRunning, setAutoScanRunning] = useState(false);
@@ -117,8 +130,13 @@ export const DependenciesTab = () => {
   // Tab ativa
   const [activeTab, setActiveTab] = useState<"registry" | "search">("registry");
 
-  // Estado de exportação
+  // Estado de exportação (painel esquerdo)
   const [exportCluster, setExportCluster] = useState<string>("all");
+
+  // Estado de exportação (painel direito - visualização)
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState<"pdf" | "md" | "csv">("pdf");
+  const [isExporting, setIsExporting] = useState(false);
 
   // Buscar clusters disponíveis no registry
   const { data: registryClusters } = useQuery({
@@ -166,12 +184,54 @@ export const DependenciesTab = () => {
   });
 
   // Filtrar dependências do registry
+  // Extrair ambiente do nome do cluster (ex: "akspriv-faturamento-prd-admin" → "prd")
+  const extractEnv = (cluster: string): string => {
+    const lower = cluster.toLowerCase();
+    const envs = ["prd", "hlg", "dev", "sit", "stg"];
+    for (const env of envs) {
+      if (lower.includes(`-${env}`) || lower.includes(`_${env}`)) return env;
+    }
+    return "outro";
+  };
+
+  // Ambientes únicos disponíveis no registry
+  const availableEnvs = useMemo(() => {
+    if (!registryData?.dependencies) return [];
+    const envSet = new Set<string>();
+    (registryData.dependencies as DependencyRecord[]).forEach((dep) => {
+      envSet.add(extractEnv(dep.cluster));
+    });
+    return Array.from(envSet).sort();
+  }, [registryData]);
+
+  // Ambientes únicos disponíveis nos resultados da busca reversa
+  const availableEnvsSearch = useMemo(() => {
+    if (!searchResults?.results) return [];
+    const envSet = new Set<string>();
+    (searchResults.results as DependencyRecord[]).forEach((dep) => {
+      envSet.add(extractEnv(dep.cluster));
+    });
+    return Array.from(envSet).sort();
+  }, [searchResults]);
+
+  // Resultados da busca reversa filtrados por ambiente
+  const filteredSearchResults = useMemo(() => {
+    if (!searchResults?.results) return [];
+    if (filterEnvSearch === "all") return searchResults.results as DependencyRecord[];
+    return (searchResults.results as DependencyRecord[]).filter(
+      (dep) => extractEnv(dep.cluster) === filterEnvSearch
+    );
+  }, [searchResults, filterEnvSearch]);
+
   const filteredDependencies = useMemo(() => {
     if (!registryData?.dependencies) return [];
 
     return (registryData.dependencies as DependencyRecord[]).filter((dep) => {
       // Filtro por tipo
       if (filterType !== "all" && dep.service_type !== filterType) return false;
+
+      // Filtro por ambiente
+      if (filterEnv !== "all" && extractEnv(dep.cluster) !== filterEnv) return false;
 
       // Filtro por busca
       if (searchQuery) {
@@ -190,7 +250,7 @@ export const DependenciesTab = () => {
 
       return true;
     });
-  }, [registryData, filterType, searchQuery]);
+  }, [registryData, filterType, filterEnv, searchQuery]);
 
   // Agrupar por serviço
   const groupedByService = useMemo(() => {
@@ -475,7 +535,230 @@ export const DependenciesTab = () => {
     return `${diffDays}d atrás`;
   };
 
+  // Dados visíveis para exportação do painel direito
+  const viewExportData = useMemo(() => {
+    if (activeTab === "registry") return filteredDependencies;
+    return filteredSearchResults;
+  }, [activeTab, filteredDependencies, filteredSearchResults]);
+
+  const viewExportHasData = viewExportData.length > 0;
+
+  // Descrição dinâmica do modal de exportação
+  const viewExportDescription = useMemo(() => {
+    const tabLabel = activeTab === "registry" ? "Registry" : "Busca Reversa";
+    const filters: string[] = [];
+    if (activeTab === "registry") {
+      if (filterEnv !== "all") filters.push(`Ambiente: ${filterEnv.toUpperCase()}`);
+      if (filterType !== "all") filters.push(`Tipo: ${SERVICE_TYPE_LABELS[filterType] || filterType}`);
+      if (searchQuery) filters.push(`Busca: "${searchQuery}"`);
+    } else {
+      if (filterEnvSearch !== "all") filters.push(`Ambiente: ${filterEnvSearch.toUpperCase()}`);
+      if (reverseSearchQuery) filters.push(`Query: "${reverseSearchQuery}"`);
+    }
+    const filterStr = filters.length > 0 ? ` | ${filters.join(", ")}` : "";
+    return `Aba: ${tabLabel}${filterStr} | ${viewExportData.length} registro(s)`;
+  }, [activeTab, filterEnv, filterType, searchQuery, filterEnvSearch, reverseSearchQuery, viewExportData.length]);
+
+  // Exportar dados filtrados do painel de visualização
+  const handleViewExport = async () => {
+    if (viewExportData.length === 0) return;
+    setIsExporting(true);
+
+    try {
+      const isRegistry = activeTab === "registry";
+      const titleLabel = isRegistry ? "REGISTRY DE DEPENDENCIAS" : "BUSCA REVERSA DE DEPENDENCIAS";
+      const dateStr = new Date().toLocaleDateString("pt-BR");
+      const filenameBase = isRegistry ? "dependencies-registry" : `dependencies-search-${reverseSearchQuery}`;
+      const filename = `${filenameBase}_${new Date().toISOString().split("T")[0]}`;
+
+      // Calcular breakdown por tipo
+      const byType: Record<string, number> = {};
+      const uniqueServices = new Set<string>();
+      viewExportData.forEach((dep) => {
+        byType[dep.service_type] = (byType[dep.service_type] || 0) + 1;
+        uniqueServices.add(dep.service_name);
+      });
+
+      // Subtítulo com filtros
+      const subtitleParts: string[] = [`Data: ${dateStr}`];
+      if (isRegistry) {
+        if (filterEnv !== "all") subtitleParts.push(`Ambiente: ${filterEnv.toUpperCase()}`);
+        if (filterType !== "all") subtitleParts.push(`Tipo: ${SERVICE_TYPE_LABELS[filterType] || filterType}`);
+        if (searchQuery) subtitleParts.push(`Filtro: "${searchQuery}"`);
+      } else {
+        if (reverseSearchQuery) subtitleParts.push(`Query: "${reverseSearchQuery}"`);
+        if (filterEnvSearch !== "all") subtitleParts.push(`Ambiente: ${filterEnvSearch.toUpperCase()}`);
+      }
+      const subtitle = subtitleParts.join(" | ");
+
+      if (exportFormat === "pdf") {
+        const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+        const pageWidth = doc.internal.pageSize.getWidth();
+
+        let yPos = await addLogoHeaderToPDF(doc, titleLabel, subtitle);
+
+        // Sumário
+        doc.setFontSize(14);
+        doc.setFont("helvetica", "bold");
+        doc.text("Sumario", 14, yPos);
+        yPos += 8;
+
+        autoTable(doc, {
+          startY: yPos,
+          head: [["Metrica", "Valor"]],
+          body: [
+            ["Total de Dependencias", viewExportData.length.toString()],
+            ["Servicos Unicos", uniqueServices.size.toString()],
+          ],
+          theme: "grid",
+          headStyles: { fillColor: [41, 128, 185] },
+          margin: { left: 14, right: 14 },
+          styles: { fontSize: 10 },
+        });
+        yPos = (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10;
+
+        // Por tipo
+        doc.setFontSize(14);
+        doc.setFont("helvetica", "bold");
+        doc.text("Por Tipo de Servico", 14, yPos);
+        yPos += 8;
+
+        autoTable(doc, {
+          startY: yPos,
+          head: [["Tipo", "Quantidade"]],
+          body: Object.entries(byType).map(([type, count]) => [
+            SERVICE_TYPE_LABELS[type] || type,
+            count.toString(),
+          ]),
+          theme: "grid",
+          headStyles: { fillColor: [41, 128, 185] },
+          margin: { left: 14, right: 14 },
+          styles: { fontSize: 10 },
+        });
+        yPos = (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 10;
+
+        // Detalhamento
+        if (yPos > 220) {
+          doc.addPage();
+          yPos = 20;
+        }
+        doc.setFontSize(14);
+        doc.setFont("helvetica", "bold");
+        doc.text("Detalhamento", 14, yPos);
+        yPos += 8;
+
+        autoTable(doc, {
+          startY: yPos,
+          head: [["Servico", "Tipo", "Cluster", "Namespace", "Deployment", "Fonte"]],
+          body: viewExportData.map((dep) => [
+            dep.service_name,
+            dep.service_type,
+            dep.cluster.replace(/-admin$/, ""),
+            dep.namespace,
+            dep.deployment || "-",
+            `${dep.source_type}/${dep.source_name}${dep.source_key ? ` [${dep.source_key}]` : ""}`,
+          ]),
+          theme: "striped",
+          headStyles: { fillColor: [41, 128, 185], fontSize: 9 },
+          bodyStyles: { fontSize: 8 },
+          margin: { left: 10, right: 10 },
+          columnStyles: {
+            0: { cellWidth: 35 },
+            1: { cellWidth: 18 },
+            2: { cellWidth: 30 },
+            3: { cellWidth: 25 },
+            4: { cellWidth: 25 },
+            5: { cellWidth: 45 },
+          },
+        });
+
+        // Footer com paginação
+        const pageCount = doc.getNumberOfPages();
+        for (let i = 1; i <= pageCount; i++) {
+          doc.setPage(i);
+          doc.setFontSize(8);
+          doc.setTextColor(128, 128, 128);
+          doc.text(
+            `Pagina ${i} de ${pageCount} | K8s HPA Manager`,
+            pageWidth / 2,
+            doc.internal.pageSize.getHeight() - 10,
+            { align: "center" }
+          );
+        }
+
+        doc.save(`${filename}.pdf`);
+        toast.success("Exportado como PDF");
+      } else if (exportFormat === "md") {
+        let md = getMarkdownHeader(titleLabel, subtitle);
+        md += "\n\n## Sumario\n\n";
+        md += "| Metrica | Valor |\n|---|---|\n";
+        md += `| Total de Dependencias | ${viewExportData.length} |\n`;
+        md += `| Servicos Unicos | ${uniqueServices.size} |\n`;
+
+        md += "\n## Por Tipo de Servico\n\n";
+        md += "| Tipo | Quantidade |\n|---|---|\n";
+        Object.entries(byType).forEach(([type, count]) => {
+          md += `| ${SERVICE_TYPE_LABELS[type] || type} | ${count} |\n`;
+        });
+
+        md += "\n## Detalhamento\n\n";
+        md += "| Servico | Tipo | Cluster | Namespace | Deployment | Fonte |\n";
+        md += "|---|---|---|---|---|---|\n";
+        viewExportData.forEach((dep) => {
+          const fonte = `${dep.source_type}/${dep.source_name}${dep.source_key ? ` [${dep.source_key}]` : ""}`;
+          md += `| ${dep.service_name} | ${dep.service_type} | ${dep.cluster.replace(/-admin$/, "")} | ${dep.namespace} | ${dep.deployment || "-"} | ${fonte} |\n`;
+        });
+
+        const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${filename}.md`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast.success("Exportado como Markdown");
+      } else {
+        // CSV
+        const escape = (val: string) => `"${(val || "").replace(/"/g, '""')}"`;
+        let csv = "Servico,Tipo,Cluster,Namespace,Deployment,Fonte_Tipo,Fonte_Nome,Fonte_Chave\n";
+        viewExportData.forEach((dep) => {
+          csv += [
+            escape(dep.service_name),
+            escape(dep.service_type),
+            escape(dep.cluster.replace(/-admin$/, "")),
+            escape(dep.namespace),
+            escape(dep.deployment || ""),
+            escape(dep.source_type),
+            escape(dep.source_name),
+            escape(dep.source_key || ""),
+          ].join(",") + "\n";
+        });
+
+        const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${filename}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast.success("Exportado como CSV");
+      }
+
+      setExportModalOpen(false);
+    } catch (error) {
+      console.error("Erro ao exportar:", error);
+      toast.error("Falha ao exportar dados");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   return (
+    <>
     <SplitView
       leftPanel={{
         title: "Registry de Dependências",
@@ -679,9 +962,24 @@ export const DependenciesTab = () => {
                 </TabsTrigger>
               </TabsList>
 
+              {/* Botão exportar + Filtros */}
+              <div className="flex items-center gap-2">
+                {viewExportHasData && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs gap-1"
+                    onClick={() => setExportModalOpen(true)}
+                    title="Exportar dados filtrados"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Exportar
+                  </Button>
+                )}
+
               {/* Filtros (apenas na aba registry) */}
               {activeTab === "registry" && registryData && (
-                <div className="flex items-center gap-2">
+                <>
                   <Input
                     placeholder="Filtrar..."
                     value={searchQuery}
@@ -698,6 +996,19 @@ export const DependenciesTab = () => {
                       <X className="h-3.5 w-3.5" />
                     </Button>
                   )}
+                  <Select value={filterEnv} onValueChange={setFilterEnv}>
+                    <SelectTrigger className="h-7 w-32 text-xs">
+                      <SelectValue placeholder="Ambiente" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Todos ambientes</SelectItem>
+                      {availableEnvs.map((env) => (
+                        <SelectItem key={env} value={env}>
+                          {env.toUpperCase()}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <Select value={filterType} onValueChange={setFilterType}>
                     <SelectTrigger className="h-7 w-32 text-xs">
                       <SelectValue placeholder="Tipo" />
@@ -711,8 +1022,9 @@ export const DependenciesTab = () => {
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
+                </>
               )}
+              </div>
             </div>
 
             {/* Tab: Registry */}
@@ -815,18 +1127,31 @@ export const DependenciesTab = () => {
                   <CardHeader className="pb-3">
                     <CardTitle className="text-sm font-medium">Busca por Serviço</CardTitle>
                     <CardDescription className="text-xs">
-                      Digite o nome do serviço (ex: rdsh-regional01) para encontrar onde ele é usado em todos os clusters
+                      Digite o nome do serviço para encontrar onde ele é usado. Use * como coringa (ex: rds*, *kafka*, evh-*)
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="flex gap-2">
                       <Input
-                        placeholder="Ex: rdsh-regional01, kfk-eventos, evh-mensagens..."
+                        placeholder="Ex: rdsh-regional01, rds*, *kafka*, evh-mensagens..."
                         value={reverseSearchQuery}
                         onChange={(e) => setReverseSearchQuery(e.target.value)}
                         onKeyDown={(e) => e.key === "Enter" && handleReverseSearch()}
                         className="flex-1"
                       />
+                      <Select value={filterEnvSearch} onValueChange={setFilterEnvSearch}>
+                        <SelectTrigger className="w-[130px]">
+                          <SelectValue placeholder="Ambiente" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Todos Ambientes</SelectItem>
+                          {availableEnvsSearch.map((env) => (
+                            <SelectItem key={env} value={env}>
+                              {env.toUpperCase()}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                       <Button onClick={handleReverseSearch} disabled={isSearching}>
                         {isSearching ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
@@ -836,7 +1161,7 @@ export const DependenciesTab = () => {
                       </Button>
                     </div>
                     <p className="text-xs text-muted-foreground mt-2">
-                      A busca é feita no registry local (SQLite) - não requer seleção de clusters
+                      Busca no registry local (SQLite). Use * como coringa: rds* (inicia com), *kafka* (contém), evh-prd* (prefixo)
                     </p>
                   </CardContent>
                 </Card>
@@ -862,7 +1187,7 @@ export const DependenciesTab = () => {
                   ) : (
                     <div className="space-y-2">
                       <div className="text-xs text-muted-foreground mb-2">
-                        {searchResults.total_found} resultado(s) encontrado(s) para "{reverseSearchQuery}"
+                        {filteredSearchResults.length} resultado(s){filterEnvSearch !== "all" ? ` (filtro: ${filterEnvSearch.toUpperCase()})` : ""} encontrado(s) para "{reverseSearchQuery}"
                       </div>
                       <Table>
                         <TableHeader>
@@ -875,7 +1200,7 @@ export const DependenciesTab = () => {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {(searchResults.results as DependencyRecord[]).map((dep) => (
+                          {filteredSearchResults.map((dep) => (
                             <TableRow key={`${dep.cluster}-${dep.namespace}-${dep.source_name}-${dep.id}`}>
                               <TableCell className="text-xs font-mono">
                                 <div className="flex items-center gap-1">
@@ -909,5 +1234,61 @@ export const DependenciesTab = () => {
         ),
       }}
     />
+
+    {/* Modal de Exportação do Painel de Visualização */}
+    <Dialog open={exportModalOpen} onOpenChange={setExportModalOpen}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Exportar Dependencias</DialogTitle>
+          <DialogDescription className="text-xs">
+            {viewExportDescription}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="py-4">
+          <RadioGroup value={exportFormat} onValueChange={(v) => setExportFormat(v as "pdf" | "md" | "csv")}>
+            <div className="flex items-center space-x-2 mb-3">
+              <RadioGroupItem value="pdf" id="fmt-pdf" />
+              <Label htmlFor="fmt-pdf" className="text-sm cursor-pointer">
+                <span className="font-medium">PDF</span>
+                <span className="text-xs text-muted-foreground ml-2">com logo e tabelas formatadas</span>
+              </Label>
+            </div>
+            <div className="flex items-center space-x-2 mb-3">
+              <RadioGroupItem value="md" id="fmt-md" />
+              <Label htmlFor="fmt-md" className="text-sm cursor-pointer">
+                <span className="font-medium">Markdown</span>
+                <span className="text-xs text-muted-foreground ml-2">com header e tabelas</span>
+              </Label>
+            </div>
+            <div className="flex items-center space-x-2">
+              <RadioGroupItem value="csv" id="fmt-csv" />
+              <Label htmlFor="fmt-csv" className="text-sm cursor-pointer">
+                <span className="font-medium">CSV</span>
+                <span className="text-xs text-muted-foreground ml-2">para Excel e ferramentas de BI</span>
+              </Label>
+            </div>
+          </RadioGroup>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={() => setExportModalOpen(false)}>
+            Cancelar
+          </Button>
+          <Button size="sm" onClick={handleViewExport} disabled={isExporting}>
+            {isExporting ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                Exportando...
+              </>
+            ) : (
+              <>
+                <Download className="h-3.5 w-3.5 mr-1" />
+                Exportar
+              </>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 };
