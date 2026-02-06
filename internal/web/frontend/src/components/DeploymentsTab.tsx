@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -1453,6 +1453,92 @@ export const DeploymentsTab = ({
       yPosition += 10;
     }
 
+    // ===== ANÁLISE DE CUSTOS =====
+    if (predictionResult.cost_analysis) {
+      const cost = predictionResult.cost_analysis;
+      checkPageBreak(30);
+      doc.setFontSize(16);
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(34, 197, 94);
+      doc.text("ANÁLISE DE CUSTOS", 14, yPosition);
+      yPosition += 4;
+      doc.setFontSize(8);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(100, 100, 100);
+      doc.text(`Cotacao USD/BRL: R$ ${cost.exchange_rate.toFixed(2)} (${cost.exchange_rate_date})`, 14, yPosition);
+      yPosition += 8;
+
+      // Tabela de custos
+      doc.setFontSize(9);
+      doc.setTextColor(0, 0, 0);
+      doc.setFont("helvetica", "bold");
+      doc.text("Componente", 14, yPosition);
+      doc.text("USD/mes", 80, yPosition);
+      doc.text("BRL/mes", 120, yPosition);
+      yPosition += 2;
+      doc.setDrawColor(200, 200, 200);
+      doc.line(14, yPosition, 160, yPosition);
+      yPosition += 4;
+
+      doc.setFont("helvetica", "normal");
+      doc.text("CPU", 14, yPosition);
+      doc.text(`$ ${cost.cost_breakdown.cpu_cost_usd.toFixed(2)}`, 80, yPosition);
+      doc.text(`R$ ${cost.cost_breakdown.cpu_cost_brl.toFixed(2)}`, 120, yPosition);
+      yPosition += 5;
+      doc.text("Memoria", 14, yPosition);
+      doc.text(`$ ${cost.cost_breakdown.memory_cost_usd.toFixed(2)}`, 80, yPosition);
+      doc.text(`R$ ${cost.cost_breakdown.memory_cost_brl.toFixed(2)}`, 120, yPosition);
+      yPosition += 2;
+      doc.line(14, yPosition, 160, yPosition);
+      yPosition += 4;
+      doc.setFont("helvetica", "bold");
+      doc.text("Total Mensal", 14, yPosition);
+      doc.text(`$ ${cost.current_monthly_cost_usd.toFixed(2)}`, 80, yPosition);
+      doc.text(`R$ ${cost.current_monthly_cost_brl.toFixed(2)}`, 120, yPosition);
+      yPosition += 5;
+      doc.setFont("helvetica", "normal");
+      doc.text(`Custo por replica: $ ${cost.cost_per_replica_usd.toFixed(2)} / R$ ${cost.cost_per_replica_brl.toFixed(2)}`, 14, yPosition);
+      yPosition += 8;
+
+      // Economia potencial
+      if (cost.savings_percent > 0) {
+        checkPageBreak(20);
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(34, 197, 94);
+        doc.text("Potencial de Economia", 14, yPosition);
+        yPosition += 5;
+        doc.setFont("helvetica", "normal");
+        doc.setTextColor(0, 0, 0);
+        doc.text(`Custo otimizado: $ ${cost.recommended_cost_usd.toFixed(2)} / R$ ${cost.recommended_cost_brl.toFixed(2)}`, 14, yPosition);
+        yPosition += 5;
+        doc.text(`Economia mensal: $ ${cost.monthly_savings_usd.toFixed(2)} / R$ ${cost.monthly_savings_brl.toFixed(2)} (${cost.savings_percent.toFixed(1)}%)`, 14, yPosition);
+        yPosition += 5;
+        doc.text(`Economia anual: $ ${cost.annual_savings_usd.toFixed(2)} / R$ ${cost.annual_savings_brl.toFixed(2)}`, 14, yPosition);
+        yPosition += 8;
+      }
+
+      // Recomendações de custo
+      if (cost.recommendations && cost.recommendations.length > 0) {
+        checkPageBreak(10 + cost.recommendations.length * 8);
+        doc.setFont("helvetica", "bold");
+        doc.text("Recomendacoes de Custo:", 14, yPosition);
+        yPosition += 5;
+        doc.setFont("helvetica", "normal");
+        cost.recommendations.forEach((rec: any) => {
+          checkPageBreak(8);
+          doc.text(`[${rec.impact.toUpperCase()}] ${rec.title}`, 14, yPosition);
+          yPosition += 4;
+          doc.setFontSize(8);
+          doc.text(`${rec.description}`, 18, yPosition);
+          yPosition += 4;
+          doc.text(`Economia: $ ${rec.savings_usd.toFixed(2)} / R$ ${rec.savings_brl.toFixed(2)}`, 18, yPosition);
+          doc.setFontSize(9);
+          yPosition += 6;
+        });
+      }
+      yPosition += 5;
+    }
+
     // ===== HEALTH SCORE =====
     checkPageBreak(30);
     doc.setFontSize(16);
@@ -1904,7 +1990,7 @@ export const DeploymentsTab = ({
         doc.setFontSize(10);
         doc.setFont("helvetica", "bold");
         doc.setTextColor(0, 0, 0);
-        doc.text("💰 OPORTUNIDADE DE ECONOMIA DE CUSTOS IDENTIFICADA", pageWidth / 2, yPosition + 6, { align: "center" });
+        doc.text("OPORTUNIDADE DE ECONOMIA DE CUSTOS IDENTIFICADA", pageWidth / 2, yPosition + 6, { align: "center" });
         yPosition += 10;
         doc.setFontSize(8);
         doc.setFont("helvetica", "normal");
@@ -1925,7 +2011,7 @@ export const DeploymentsTab = ({
         // Destacar economia de custos
         if (rec.category === 'cost-optimization' || rec.category === 'downsizing') {
           doc.setTextColor(255, 152, 0); // Laranja
-          doc.text(`💰 ${idx + 1}. ${rec.title}`, 14, yPosition);
+          doc.text(`[ECONOMIA] ${idx + 1}. ${rec.title}`, 14, yPosition);
           doc.setTextColor(0, 0, 0);
         } else {
           doc.text(`${idx + 1}. ${rec.title}`, 14, yPosition);
@@ -2103,16 +2189,14 @@ export const DeploymentsTab = ({
             <History className="w-4 h-4 mr-2" />
             Histórico de Análises
           </Button>
-          {isDeploymentProblematic(selectedDeployment) && (
-            <AITriggerButton
-              resourceType="Deployment"
-              cluster={cluster}
-              namespace={selectedDeployment.namespace}
-              resourceName={selectedDeployment.name}
-              size="sm"
-              variant="outline"
-            />
-          )}
+          <AITriggerButton
+            resourceType="Deployment"
+            cluster={cluster}
+            namespace={selectedDeployment.namespace}
+            resourceName={selectedDeployment.name}
+            size="sm"
+            variant="outline"
+          />
         </>
       )}
       <Button
@@ -3131,6 +3215,106 @@ export const DeploymentsTab = ({
                 </div>
               ) : predictionResult ? (
                 <div className="space-y-6">
+                  {/* ACTION SUMMARY - Resumo de Ação (Quick Wins Fase 1) */}
+                  {predictionResult.action_summary && (
+                    <div className={`rounded-lg p-4 border-l-4 ${
+                      predictionResult.action_summary.status === 'critical'
+                        ? 'bg-red-500/10 border-red-500'
+                        : predictionResult.action_summary.status === 'attention'
+                        ? 'bg-yellow-500/10 border-yellow-500'
+                        : 'bg-green-500/10 border-green-500'
+                    }`}>
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1">
+                          {/* Status Header */}
+                          <div className="flex items-center gap-3 mb-2">
+                            {predictionResult.action_summary.status === 'critical' ? (
+                              <TriangleAlert className="w-6 h-6 text-red-500" />
+                            ) : predictionResult.action_summary.status === 'attention' ? (
+                              <TriangleAlert className="w-6 h-6 text-yellow-500" />
+                            ) : (
+                              <CheckCircle2 className="w-6 h-6 text-green-500" />
+                            )}
+                            <div>
+                              <h3 className={`font-bold text-lg ${
+                                predictionResult.action_summary.status === 'critical' ? 'text-red-500' :
+                                predictionResult.action_summary.status === 'attention' ? 'text-yellow-500' :
+                                'text-green-500'
+                              }`}>
+                                {predictionResult.action_summary.status_message}
+                              </h3>
+                              {predictionResult.action_summary.hours_to_critical !== null &&
+                               predictionResult.action_summary.hours_to_critical !== undefined && (
+                                <p className="text-sm text-red-400 font-medium">
+                                  {predictionResult.action_summary.critical_reason}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Métricas rápidas */}
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                            {/* Tempo até crítico */}
+                            {predictionResult.action_summary.hours_to_critical !== null &&
+                             predictionResult.action_summary.hours_to_critical !== undefined && (
+                              <div className="bg-background/50 rounded p-2 text-center">
+                                <div className="text-2xl font-bold text-red-500">
+                                  {predictionResult.action_summary.hours_to_critical}h
+                                </div>
+                                <div className="text-xs text-muted-foreground">até crítico</div>
+                              </div>
+                            )}
+
+                            {/* Total de ações */}
+                            <div className="bg-background/50 rounded p-2 text-center">
+                              <div className="text-2xl font-bold">
+                                {predictionResult.action_summary.total_actions}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                ações ({predictionResult.action_summary.urgent_actions} urgentes)
+                              </div>
+                            </div>
+
+                            {/* Próxima revisão */}
+                            <div className="bg-background/50 rounded p-2 text-center">
+                              <div className="text-2xl font-bold">
+                                {predictionResult.action_summary.next_review_days === 0
+                                  ? 'Agora'
+                                  : `${predictionResult.action_summary.next_review_days}d`}
+                              </div>
+                              <div className="text-xs text-muted-foreground">próx. revisão</div>
+                            </div>
+
+                            {/* Confiança */}
+                            <div className="bg-background/50 rounded p-2 text-center">
+                              <div className={`text-2xl font-bold ${
+                                predictionResult.action_summary.overall_confidence >= 70 ? 'text-green-500' :
+                                predictionResult.action_summary.overall_confidence >= 50 ? 'text-yellow-500' :
+                                'text-red-500'
+                              }`}>
+                                {predictionResult.action_summary.overall_confidence?.toFixed(0) || 0}%
+                              </div>
+                              <div className="text-xs text-muted-foreground">confiança</div>
+                            </div>
+                          </div>
+
+                          {/* Ação principal */}
+                          {predictionResult.action_summary.top_action && (
+                            <div className="mt-3 p-2 bg-background/50 rounded">
+                              <div className="text-xs text-muted-foreground mb-1">Ação Principal Recomendada:</div>
+                              <div className="font-medium text-sm">{predictionResult.action_summary.top_action}</div>
+                              {predictionResult.action_summary.top_action_command && (
+                                <code className="block mt-1 text-xs bg-secondary/50 p-1 rounded font-mono text-primary">
+                                  {predictionResult.action_summary.top_action_command}
+                                </code>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Health Score */}
                   <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
                     <h3 className="font-semibold text-lg mb-3 flex items-center gap-2">
@@ -3627,6 +3811,126 @@ export const DeploymentsTab = ({
                     </div>
                   )}
 
+                  {/* ANÁLISE DE CUSTOS */}
+                  {predictionResult.cost_analysis && (
+                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                      <h3 className="font-semibold text-lg mb-3 flex items-center gap-2">
+                        <DollarSign className="w-5 h-5 text-yellow-500" />
+                        Análise de Custos
+                        <span className="ml-auto text-xs font-normal bg-secondary/50 rounded px-2 py-1 text-muted-foreground">
+                          Dólar: R$ {predictionResult.cost_analysis.exchange_rate?.toFixed(2)} ({predictionResult.cost_analysis.exchange_rate_date})
+                        </span>
+                      </h3>
+
+                      {/* Grid: Custo Mensal | Por Réplica | Economia */}
+                      <div className="grid grid-cols-3 gap-3 mb-4">
+                        <div className="bg-secondary/50 rounded p-3 text-center">
+                          <div className="text-muted-foreground text-xs mb-1">Custo Mensal</div>
+                          <div className="text-xl font-bold text-yellow-500">
+                            R$ {predictionResult.cost_analysis.current_monthly_cost_brl?.toFixed(2)}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            $ {predictionResult.cost_analysis.current_monthly_cost_usd?.toFixed(2)}
+                          </div>
+                        </div>
+                        <div className="bg-secondary/50 rounded p-3 text-center">
+                          <div className="text-muted-foreground text-xs mb-1">Por Réplica</div>
+                          <div className="text-xl font-bold">
+                            R$ {predictionResult.cost_analysis.cost_per_replica_brl?.toFixed(2)}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            $ {predictionResult.cost_analysis.cost_per_replica_usd?.toFixed(2)}
+                          </div>
+                        </div>
+                        <div className={`rounded p-3 text-center ${
+                          predictionResult.cost_analysis.savings_percent > 0
+                            ? 'bg-green-500/10 border border-green-500/30'
+                            : 'bg-secondary/50'
+                        }`}>
+                          <div className="text-muted-foreground text-xs mb-1">Economia Potencial</div>
+                          <div className={`text-xl font-bold ${
+                            predictionResult.cost_analysis.savings_percent > 0 ? 'text-green-500' : 'text-muted-foreground'
+                          }`}>
+                            {predictionResult.cost_analysis.savings_percent > 0
+                              ? `${predictionResult.cost_analysis.savings_percent?.toFixed(1)}%`
+                              : 'Otimizado'}
+                          </div>
+                          {predictionResult.cost_analysis.monthly_savings_brl > 0 && (
+                            <div className="text-xs text-green-500">
+                              -R$ {predictionResult.cost_analysis.monthly_savings_brl?.toFixed(2)}/mês
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Breakdown CPU vs Memory */}
+                      <div className="mb-4">
+                        <div className="text-xs font-semibold mb-2 text-muted-foreground">Composição do Custo</div>
+                        <div className="flex gap-2 text-xs">
+                          <div className="flex-1 bg-blue-500/20 border border-blue-500/30 rounded p-2">
+                            <div className="text-blue-400 font-semibold">CPU</div>
+                            <div>R$ {predictionResult.cost_analysis.cost_breakdown?.cpu_cost_brl?.toFixed(2)} / $ {predictionResult.cost_analysis.cost_breakdown?.cpu_cost_usd?.toFixed(2)}</div>
+                          </div>
+                          <div className="flex-1 bg-purple-500/20 border border-purple-500/30 rounded p-2">
+                            <div className="text-purple-400 font-semibold">Memória</div>
+                            <div>R$ {predictionResult.cost_analysis.cost_breakdown?.memory_cost_brl?.toFixed(2)} / $ {predictionResult.cost_analysis.cost_breakdown?.memory_cost_usd?.toFixed(2)}</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Economia anual se houver */}
+                      {predictionResult.cost_analysis.annual_savings_usd > 0 && (
+                        <div className="bg-green-500/10 border border-green-500/30 rounded p-3 mb-4">
+                          <div className="flex justify-between items-center">
+                            <div>
+                              <div className="font-semibold text-green-400 text-sm">Economia Anual Estimada</div>
+                              <div className="text-xs text-muted-foreground mt-1">
+                                Custo otimizado: R$ {predictionResult.cost_analysis.recommended_cost_brl?.toFixed(2)} / $ {predictionResult.cost_analysis.recommended_cost_usd?.toFixed(2)} por mês
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-lg font-bold text-green-500">
+                                R$ {predictionResult.cost_analysis.annual_savings_brl?.toFixed(2)}
+                              </div>
+                              <div className="text-xs text-green-400">
+                                $ {predictionResult.cost_analysis.annual_savings_usd?.toFixed(2)}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Recomendações de custo */}
+                      {predictionResult.cost_analysis.recommendations?.length > 0 && (
+                        <div>
+                          <div className="text-xs font-semibold mb-2 text-muted-foreground">Recomendações de Economia</div>
+                          <div className="space-y-2">
+                            {predictionResult.cost_analysis.recommendations.map((rec: any, idx: number) => (
+                              <div key={idx} className="bg-secondary/30 rounded p-3 text-xs">
+                                <div className="flex justify-between items-start mb-1">
+                                  <span className="font-semibold">{rec.title}</span>
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                    rec.impact === 'low' ? 'bg-green-500/20 text-green-400' :
+                                    rec.impact === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                                    'bg-red-500/20 text-red-400'
+                                  }`}>
+                                    {rec.impact === 'low' ? 'Baixo Risco' : rec.impact === 'medium' ? 'Risco Médio' : 'Alto Risco'}
+                                  </span>
+                                </div>
+                                <div className="text-muted-foreground mb-2">{rec.description}</div>
+                                <div className="flex gap-4">
+                                  <span>Antes: <span className="text-yellow-500">R$ {(rec.cost_before_usd * predictionResult.cost_analysis.exchange_rate)?.toFixed(2)}</span></span>
+                                  <span>Depois: <span className="text-green-500">R$ {(rec.cost_after_usd * predictionResult.cost_analysis.exchange_rate)?.toFixed(2)}</span></span>
+                                  <span>Economia: <span className="font-bold text-green-500">R$ {rec.savings_brl?.toFixed(2)} / $ {rec.savings_usd?.toFixed(2)}</span></span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Gráficos de Tendências Temporais */}
                   {predictionResult.raw_metrics && (
                     <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
@@ -3788,7 +4092,7 @@ export const DeploymentsTab = ({
                       ) && (
                         <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 mb-4">
                           <div className="flex items-start gap-3">
-                            <div className="text-2xl">💰</div>
+                            <div className="text-2xl text-yellow-500 font-bold">$</div>
                             <div className="flex-1">
                               <h4 className="font-semibold text-yellow-600 dark:text-yellow-400 mb-1">
                                 Oportunidade de Economia de Custos Identificada
@@ -3813,7 +4117,7 @@ export const DeploymentsTab = ({
                         >
                           <div className="flex items-start justify-between mb-2">
                             <span className="font-semibold">
-                              {(rec.category === 'cost-optimization' || rec.category === 'downsizing') && '💰 '}
+                              {(rec.category === 'cost-optimization' || rec.category === 'downsizing') && '[ECONOMIA] '}
                               #{rec.priority} - {rec.title}
                             </span>
                             <span className={`text-xs px-2 py-1 rounded ${

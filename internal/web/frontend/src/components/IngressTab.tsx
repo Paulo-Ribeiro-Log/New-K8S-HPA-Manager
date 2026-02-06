@@ -9,7 +9,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Network } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Network, MoreVertical, Trash2 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 
@@ -24,7 +30,7 @@ import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
 import "@/styles/diff2html-dark.css";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProtectedAction } from "@/components/rbac";
 
@@ -65,6 +71,8 @@ export const IngressTab = ({
   const [describeModalOpen, setDescribeModalOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Undo/Redo history with persistent cache
   const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
@@ -458,16 +466,65 @@ export const IngressTab = ({
     </div>
   );
 
+  const handleDeleteIngress = async () => {
+    if (!selectedIngress) return;
+    setIsDeleting(true);
+    try {
+      const response = await fetch(
+        `/api/v1/ingresses/${selectedIngress.cluster}/${selectedIngress.namespace}/${selectedIngress.name}`,
+        { method: "DELETE", headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` } }
+      );
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || `HTTP ${response.status}`);
+      }
+      toast.success("Ingress deletado com sucesso!", { description: `${selectedIngress.namespace}/${selectedIngress.name}` });
+      setSelectedIngress(null);
+      setManifest(null);
+      setEditorValue("");
+      setOriginalYaml("");
+      setDeleteConfirmOpen(false);
+      await refetch();
+    } catch (err) {
+      toast.error("Erro ao deletar Ingress", { description: err instanceof Error ? err.message : "Erro desconhecido" });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const rightTitleAction = (
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={refreshManifest}
-      disabled={!selectedIngress || manifestLoading}
-    >
-      <RefreshCcw className="w-4 h-4 mr-2" />
-      Recarregar YAML
-    </Button>
+    <div className="flex items-center gap-2">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={refreshManifest}
+        disabled={!selectedIngress || manifestLoading}
+      >
+        <RefreshCcw className="w-4 h-4 mr-2" />
+        Recarregar YAML
+      </Button>
+      {selectedIngress && (
+        <ProtectedAction>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" disabled={manifestLoading}>
+                <MoreVertical className="w-4 h-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => setDeleteConfirmOpen(true)}
+                disabled={isDeleting}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Deletar Ingress
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </ProtectedAction>
+      )}
+    </div>
   );
 
   const renderIngressList = () => {
@@ -1199,6 +1256,45 @@ export const IngressTab = ({
       {renderDiffDialog()}
       {renderEditorFullScreen()}
       {renderApplyConfirmDialog()}
+
+      {/* Modal Delete Confirm */}
+      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <Trash2 className="w-5 h-5" />
+              Deletar Ingress
+            </DialogTitle>
+            <DialogDescription>
+              Esta acao e permanente e nao pode ser desfeita.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="bg-destructive/10 border border-destructive/20 rounded-md p-4 my-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">Cluster:</span>
+                <span className="text-sm text-muted-foreground">{selectedIngress?.cluster}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">Namespace:</span>
+                <span className="text-sm text-muted-foreground">{selectedIngress?.namespace}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">Ingress:</span>
+                <span className="text-sm font-semibold">{selectedIngress?.name}</span>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteConfirmOpen(false)} disabled={isDeleting}>
+              Cancelar
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteIngress} disabled={isDeleting}>
+              {isDeleting ? (<><Loader2 className="w-4 h-4 mr-2 animate-spin" />Deletando...</>) : (<><Trash2 className="w-4 h-4 mr-2" />Deletar Ingress</>)}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Modal Describe */}
       <Dialog open={describeModalOpen} onOpenChange={setDescribeModalOpen}>

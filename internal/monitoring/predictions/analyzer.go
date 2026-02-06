@@ -18,9 +18,10 @@ import (
 
 // Analyzer é o orquestrador principal da análise preditiva
 type Analyzer struct {
-	collector  *MetricsCollector
-	aiProvider ai.Provider
-	kubeClient *kubernetes.Client
+	collector    *MetricsCollector
+	aiProvider   ai.Provider
+	kubeClient   *kubernetes.Client
+	costAnalyzer *CostAnalyzer
 }
 
 // NewAnalyzer cria novo Analyzer
@@ -30,9 +31,10 @@ func NewAnalyzer(
 	kubeClient *kubernetes.Client,
 ) *Analyzer {
 	return &Analyzer{
-		collector:  NewMetricsCollector(promClient, kubeClient),
-		aiProvider: aiProvider,
-		kubeClient: kubeClient,
+		collector:    NewMetricsCollector(promClient, kubeClient),
+		aiProvider:   aiProvider,
+		kubeClient:   kubeClient,
+		costAnalyzer: NewCostAnalyzer(),
 	}
 }
 
@@ -98,6 +100,15 @@ func (a *Analyzer) Analyze(ctx context.Context, req PredictionRequest) (*Predict
 
 	// 4.1. Enriquecer predictions com timestamps calculados (baseado no timestamp das métricas atuais)
 	a.enrichPredictionsWithTimestamps(&result.Predictions, metrics.Current.Timestamp)
+
+	// 4.2. Enriquecer predictions com confidence percent
+	a.enrichPredictionsWithConfidence(&result.Predictions, metrics)
+
+	// 4.3. Calcular Action Summary (resumo para decisão rápida)
+	result.ActionSummary = a.calculateActionSummary(result, metrics)
+
+	// 4.4. Calcular Cost Analysis
+	result.CostAnalysis = a.costAnalyzer.Calculate(metrics)
 
 	// 5. Calcular duração
 	result.DurationMs = time.Since(startTime).Milliseconds()
@@ -300,6 +311,7 @@ Retorne um JSON seguindo esta estrutura:
 
 IMPORTANTE:
 - **ESCREVA TUDO EM PORTUGUÊS BRASILEIRO (PT-BR)**
+- **NAO USE EMOJIS OU ICONES** - apenas texto puro (sem símbolos Unicode como ⚠️, ✅, ❌, 💰, 🚀, etc)
 - Seja específico com números e percentuais
 - Base as previsões nas tendências observadas
 - Considere o contexto de nodes e capacidade do cluster
@@ -426,11 +438,11 @@ func (a *Analyzer) fallbackAnalysis(metrics *DeploymentMetrics) *AIAnalysisResul
 func (a *Analyzer) buildTemporalContext(metrics *DeploymentMetrics) string {
 	var context strings.Builder
 
-	context.WriteString("# ⏰ CONTEXTO TEMPORAL - ANÁLISE PREDITIVA VERDADEIRA\n\n")
+	context.WriteString("# CONTEXTO TEMPORAL - ANALISE PREDITIVA VERDADEIRA\n\n")
 
 	// Idade do deployment
 	if metrics.IsNew {
-		context.WriteString(fmt.Sprintf(`⚠️  **DEPLOYMENT NOVO - HISTÓRICO LIMITADO**
+		context.WriteString(fmt.Sprintf(`[ATENCAO] **DEPLOYMENT NOVO - HISTORICO LIMITADO**
 - **Idade**: %d dias (criado em %s)
 - **Status**: Deployment recente - menos de 7 dias de histórico
 - **Impacto na Análise**:
@@ -442,7 +454,7 @@ func (a *Analyzer) buildTemporalContext(metrics *DeploymentMetrics) string {
 
 `, metrics.AgeInDays, metrics.CreationTimestamp.Format("02/01/2006")))
 	} else if !metrics.HasSufficientHistory {
-		context.WriteString(fmt.Sprintf(`⚠️  **DEPLOYMENT RECENTE - HISTÓRICO PARCIAL**
+		context.WriteString(fmt.Sprintf(`[ATENCAO] **DEPLOYMENT RECENTE - HISTORICO PARCIAL**
 - **Idade**: %d dias (criado em %s)
 - **Status**: Entre 7-14 dias - histórico em formação
 - **Impacto na Análise**:
@@ -453,7 +465,7 @@ func (a *Analyzer) buildTemporalContext(metrics *DeploymentMetrics) string {
 
 `, metrics.AgeInDays, metrics.CreationTimestamp.Format("02/01/2006")))
 	} else {
-		context.WriteString(fmt.Sprintf(`✅ **DEPLOYMENT MADURO - HISTÓRICO CONFIÁVEL**
+		context.WriteString(fmt.Sprintf(`[OK] **DEPLOYMENT MADURO - HISTORICO CONFIAVEL**
 - **Idade**: %d dias (criado em %s)
 - **Status**: Mais de 14 dias de histórico - padrões estabelecidos
 - **Impacto na Análise**:
@@ -600,4 +612,235 @@ func (a *Analyzer) enrichPredictionsWithTimestamps(predictions *PredictionsAnaly
 	for i := range predictions.LongTerm {
 		predictions.LongTerm[i].Timestamp = calculateTimestamp(predictions.LongTerm[i].Timeframe)
 	}
+}
+
+// enrichPredictionsWithConfidence calcula e adiciona confidence percent para cada prediction
+func (a *Analyzer) enrichPredictionsWithConfidence(predictions *PredictionsAnalysis, metrics *DeploymentMetrics) {
+	// Fatores que afetam a confiança:
+	// 1. Quantidade de dados históricos (deployment novo = menos confiança)
+	// 2. Variabilidade das métricas (alta variância = menos confiança)
+	// 3. Probabilidade da previsão (probabilidade baixa = menos confiança)
+
+	baseConfidence := 80.0
+
+	// Reduz confiança se deployment é novo (<7 dias)
+	if metrics.IsNew {
+		baseConfidence -= 25.0
+	} else if !metrics.HasSufficientHistory {
+		baseConfidence -= 15.0
+	}
+
+	// Reduz confiança se métricas são muito voláteis
+	if metrics.Trends.CPUTrend == TrendVolatile {
+		baseConfidence -= 10.0
+	}
+	if metrics.Trends.MemoryTrend == TrendVolatile {
+		baseConfidence -= 10.0
+	}
+
+	// Função helper para calcular confidence de uma prediction
+	calculateConfidence := func(p *Prediction) float64 {
+		conf := baseConfidence
+
+		// Ajusta pela probabilidade da previsão
+		// Previsões com probabilidade muito baixa (<0.3) ou muito alta (>0.9) são menos confiáveis
+		if p.Probability < 0.3 {
+			conf -= 15.0
+		} else if p.Probability > 0.9 {
+			conf -= 5.0 // Muito certeza também pode ser overconfidence
+		}
+
+		// Previsões de longo prazo são menos confiáveis
+		if strings.Contains(p.Timeframe, "7d") || strings.Contains(p.Timeframe, "d") {
+			conf -= 10.0
+		}
+
+		// Limitar entre 10% e 95%
+		if conf < 10.0 {
+			conf = 10.0
+		}
+		if conf > 95.0 {
+			conf = 95.0
+		}
+
+		return conf
+	}
+
+	// Aplicar a todas as predictions
+	for i := range predictions.ShortTerm {
+		predictions.ShortTerm[i].ConfidencePercent = calculateConfidence(&predictions.ShortTerm[i])
+	}
+	for i := range predictions.MediumTerm {
+		predictions.MediumTerm[i].ConfidencePercent = calculateConfidence(&predictions.MediumTerm[i])
+	}
+	for i := range predictions.LongTerm {
+		predictions.LongTerm[i].ConfidencePercent = calculateConfidence(&predictions.LongTerm[i])
+	}
+}
+
+// calculateActionSummary gera resumo de ações para decisão rápida
+func (a *Analyzer) calculateActionSummary(result *PredictionResult, metrics *DeploymentMetrics) ActionSummary {
+	summary := ActionSummary{
+		NextReviewDays: 7, // Padrão: revisar em 7 dias
+	}
+
+	// 1. Determinar status baseado no health score
+	healthScore := result.HealthScore.Overall
+	switch {
+	case healthScore >= 75:
+		summary.Status = "healthy"
+		summary.StatusColor = "green"
+		summary.StatusMessage = "Operacional"
+		summary.NextReviewDays = 14
+	case healthScore >= 50:
+		summary.Status = "attention"
+		summary.StatusColor = "yellow"
+		summary.StatusMessage = "Requer atenção"
+		summary.NextReviewDays = 7
+	default:
+		summary.Status = "critical"
+		summary.StatusColor = "red"
+		summary.StatusMessage = "Crítico"
+		summary.NextReviewDays = 1
+	}
+
+	// 2. Contar ações
+	summary.TotalActions = len(result.Recommendations)
+	for _, rec := range result.Recommendations {
+		if rec.Priority <= 2 {
+			summary.UrgentActions++
+		}
+	}
+
+	// 3. Obter ação principal (maior prioridade)
+	if len(result.Recommendations) > 0 {
+		topRec := result.Recommendations[0]
+		for _, rec := range result.Recommendations {
+			if rec.Priority < topRec.Priority {
+				topRec = rec
+			}
+		}
+		summary.TopAction = topRec.Title
+		if len(topRec.Actions) > 0 {
+			summary.TopActionCommand = topRec.Actions[0]
+		}
+	}
+
+	// 4. Calcular tempo até crítico (horas)
+	summary.HoursToCritical, summary.CriticalMetric, summary.CriticalReason = a.calculateHoursToCritical(metrics, result)
+
+	// Ajustar status se há risco iminente
+	if summary.HoursToCritical != nil && *summary.HoursToCritical < 24 {
+		summary.Status = "critical"
+		summary.StatusColor = "red"
+		summary.StatusMessage = "Risco iminente"
+		summary.NextReviewDays = 0 // Ação imediata
+	} else if summary.HoursToCritical != nil && *summary.HoursToCritical < 72 {
+		if summary.Status == "healthy" {
+			summary.Status = "attention"
+			summary.StatusColor = "yellow"
+			summary.StatusMessage = "Atenção preventiva"
+		}
+		summary.NextReviewDays = 1
+	}
+
+	// 5. Calcular confiança geral (média das predictions)
+	var totalConfidence float64
+	var count int
+	for _, p := range result.Predictions.ShortTerm {
+		totalConfidence += p.ConfidencePercent
+		count++
+	}
+	for _, p := range result.Predictions.MediumTerm {
+		totalConfidence += p.ConfidencePercent
+		count++
+	}
+	for _, p := range result.Predictions.LongTerm {
+		totalConfidence += p.ConfidencePercent
+		count++
+	}
+	if count > 0 {
+		summary.OverallConfidence = totalConfidence / float64(count)
+	} else {
+		// Se não há predictions, usar confiança baseada na qualidade dos dados
+		if metrics.HasSufficientHistory {
+			summary.OverallConfidence = 75.0
+		} else if metrics.IsNew {
+			summary.OverallConfidence = 40.0
+		} else {
+			summary.OverallConfidence = 60.0
+		}
+	}
+
+	return summary
+}
+
+// calculateHoursToCritical calcula quantas horas até atingir estado crítico
+func (a *Analyzer) calculateHoursToCritical(metrics *DeploymentMetrics, result *PredictionResult) (*int, string, string) {
+	// Verificar CPU
+	if metrics.Current.CPUUsageAvg > 0 {
+		// Assumir que o usage atual representa uma fração do limit
+		// Tendência de 7 dias para calcular projeção
+		cpuChange7d := metrics.Trends.CPUChange7d
+		if cpuChange7d > 0 {
+			// CPU está aumentando
+			// Estimar quando atingirá 90% (considerando tendência linear)
+			// Se aumentou X% em 7 dias, quanto tempo para aumentar mais (90% - atual)%?
+			currentUsage := metrics.Current.CPUUsageAvg
+			if metrics.Day7Ago.CPUUsageAvg > 0 {
+				dailyIncrease := (currentUsage - metrics.Day7Ago.CPUUsageAvg) / 7.0
+				if dailyIncrease > 0 {
+					// Estimando limite baseado no P95 atual (assumindo que é ~80% do limit)
+					estimatedLimit := metrics.Current.CPUUsageP95 * 1.25
+					remaining := estimatedLimit - currentUsage
+					daysToReach := remaining / dailyIncrease
+					if daysToReach > 0 && daysToReach < 30 {
+						hours := int(daysToReach * 24)
+						return &hours, "cpu", fmt.Sprintf("CPU atingirá limite em aproximadamente %d horas", hours)
+					}
+				}
+			}
+		}
+	}
+
+	// Verificar Memória
+	memChange7d := metrics.Trends.MemoryChange7d
+	if memChange7d > 5 { // Memória crescendo mais de 5% por semana
+		currentMem := metrics.Current.MemoryUsageAvg
+		if metrics.Day7Ago.MemoryUsageAvg > 0 && currentMem > 0 {
+			dailyIncrease := (currentMem - metrics.Day7Ago.MemoryUsageAvg) / 7.0
+			if dailyIncrease > 0 {
+				estimatedLimit := metrics.Current.MemoryUsageP95 * 1.2
+				remaining := estimatedLimit - currentMem
+				daysToReach := remaining / dailyIncrease
+				if daysToReach > 0 && daysToReach < 30 {
+					hours := int(daysToReach * 24)
+					return &hours, "memory", fmt.Sprintf("Memória atingirá limite em aproximadamente %d horas", hours)
+				}
+			}
+		}
+	}
+
+	// Verificar se HPA está próximo do máximo
+	if metrics.HPAConfig != nil && metrics.HPAConfig.Exists {
+		if metrics.CurrentReplicas >= metrics.HPAConfig.MaxReplicas {
+			hours := 0
+			return &hours, "replicas", "HPA já está no máximo de réplicas"
+		}
+		// Verificar proximidade ao threshold de scaling
+		if metrics.HPAConfig.CPUProximityToThreshold > 80 {
+			hours := 4 // Estimativa conservadora
+			return &hours, "hpa_threshold", fmt.Sprintf("CPU em %.0f%% do threshold de scaling", metrics.HPAConfig.CPUProximityToThreshold)
+		}
+	}
+
+	// Verificar previsões críticas
+	for _, p := range result.Predictions.ShortTerm {
+		if p.Severity == "critical" && p.Probability > 0.7 {
+			hours := 4
+			return &hours, "prediction", p.Event
+		}
+	}
+
+	return nil, "", ""
 }

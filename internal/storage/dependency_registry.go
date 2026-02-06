@@ -130,16 +130,28 @@ func (r *DependencyRegistry) UpsertDependency(dep *DependencyRecord) error {
 	return err
 }
 
-// SearchByServiceName busca dependências por nome do serviço (busca parcial)
+// SearchByServiceName busca dependências por nome do serviço, tipo, source ou deployment (busca parcial)
+// Suporta wildcards: * ou % (ex: "rds*", "rds%", "*kafka*")
 func (r *DependencyRegistry) SearchByServiceName(query string) ([]DependencyRecord, error) {
+	lower := strings.ToLower(query)
+
+	// Suporte a wildcards: * ou % do usuário
+	var pattern string
+	if strings.ContainsAny(lower, "*%") {
+		// Usuário forneceu wildcard explícito: converter * para % do SQLite
+		pattern = strings.ReplaceAll(lower, "*", "%")
+	} else {
+		// Busca padrão: contém o termo em qualquer posição
+		pattern = "%" + lower + "%"
+	}
 	sqlQuery := `
 	SELECT id, service_name, service_type, cluster, namespace, deployment, source_type, source_name, source_key, first_seen, last_seen
 	FROM dependencies
-	WHERE service_name LIKE ?
+	WHERE service_name LIKE ? OR service_type LIKE ? OR source_name LIKE ? OR source_key LIKE ? OR deployment LIKE ? OR namespace LIKE ?
 	ORDER BY service_name, cluster, namespace
 	`
 
-	rows, err := r.db.Query(sqlQuery, "%"+strings.ToLower(query)+"%")
+	rows, err := r.db.Query(sqlQuery, pattern, pattern, pattern, pattern, pattern, pattern)
 	if err != nil {
 		return nil, err
 	}
