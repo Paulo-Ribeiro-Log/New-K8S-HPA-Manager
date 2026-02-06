@@ -1,7 +1,7 @@
 # Checklist Completo - Health Checking Improvements
 
-**Última atualização**: 05/02/2026
-**Progresso geral**: 15/19 itens (79%)
+**Última atualização**: 06/02/2026
+**Progresso geral**: 16/19 itens (84%)
 
 ---
 
@@ -161,7 +161,7 @@
 
 ---
 
-## 🟡 Sprint 4 - EM PROGRESSO (2/4 = 50%)
+## 🟡 Sprint 4 - EM PROGRESSO (3/4 = 75%)
 
 ### 16. Export de Relatórios (PDF/CSV/Markdown) ✅
 - [x] Geração de PDF com jsPDF + jspdf-autotable
@@ -183,12 +183,14 @@
 - [ ] Templates customizáveis
 - **Estimativa**: 3 dias
 
-### 18. Grafana Dashboard ⏳
-- [ ] Dashboard JSON pronto para importar
-- [ ] Queries Prometheus para métricas
-- [ ] Painéis de status por cluster
-- [ ] Alertas visuais
-- **Estimativa**: 2 dias
+### 18. Grafana Dashboard ✅
+- [x] Dashboard JSON pronto para importar (24 painéis)
+- [x] Queries Prometheus para métricas
+- [x] Painéis de status por cluster (tabela + gauges)
+- [x] Alertas visuais (regras opcionais)
+- [x] Seções: Visão Geral, Status, Tendências, Recursos, Issues, Eventos
+- [x] README com instruções de instalação
+- **Arquivos**: `grafana/k8s-hpa-manager-healthcheck-dashboard.json`, `grafana/README.md`
 
 ### 19. Prometheus Metrics Export ✅
 - [x] Endpoint /metrics no formato Prometheus
@@ -222,8 +224,8 @@
 | Sprint 1 | 5 | 5 | ✅ 100% |
 | Sprint 2 | 5 | 5 | ✅ 100% |
 | Sprint 3 | 3 | 5 | 🟡 60% |
-| Sprint 4 | 2 | 4 | 🟡 50% |
-| **TOTAL** | **15** | **19** | **79%** |
+| Sprint 4 | 3 | 4 | 🟡 75% |
+| **TOTAL** | **16** | **19** | **84%** |
 
 ---
 
