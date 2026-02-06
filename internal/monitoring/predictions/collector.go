@@ -1039,92 +1039,215 @@ func (c *MetricsCollector) calculateTrends(metrics *DeploymentMetrics) {
 	metrics.Trends = trends
 }
 
-// calculateCapacityForecast calcula previsão de capacidade
+// calculateCapacityForecast calcula previsão de capacidade baseada no DEPLOYMENT
+// REFATORADO 06/02/2026: Usa métricas do deployment (CPU/Mem vs request/limit)
+// ao invés de utilização cluster-wide que misturava escopos
 func (c *MetricsCollector) calculateCapacityForecast(metrics *DeploymentMetrics) {
-	// Calcular utilização atual de CPU e memória
-	cpuUtil := metrics.NodeMetrics.TotalCapacity.CPUUtilization
-	memUtil := metrics.NodeMetrics.TotalCapacity.MemUtilization
+	// ========================================
+	// MÉTRICAS DO DEPLOYMENT (não cluster-wide)
+	// ========================================
+	cpuRequest := c.parseResourceQuantity(metrics.Resources.CPURequest)    // cores por réplica
+	memRequest := c.parseResourceQuantity(metrics.Resources.MemoryRequest) // bytes por réplica
 
-	// Determinar fator limitante
-	limitingFactor := "Disponibilidade de CPU nos nodes"
-	if memUtil > cpuUtil {
-		limitingFactor = "Disponibilidade de memória nos nodes"
-	}
-
-	// Estimar capacidade disponível para réplicas adicionais
-	cpuAvailable := metrics.NodeMetrics.TotalCapacity.CPUTotal - metrics.NodeMetrics.TotalCapacity.CPUAllocated
-	memAvailable := metrics.NodeMetrics.TotalCapacity.MemTotal - metrics.NodeMetrics.TotalCapacity.MemAllocated
-
-	// Estimar quantas réplicas adicionais cabem (baseado no uso atual por réplica)
 	currentReplicas := float64(metrics.CurrentReplicas)
 	if currentReplicas == 0 {
 		currentReplicas = 1
 	}
+
+	// Uso real por réplica
 	cpuPerReplica := metrics.Current.CPUUsageAvg / currentReplicas
 	memPerReplica := metrics.Current.MemoryUsageAvg / currentReplicas
 
-	maxReplicasByCPU := int(cpuAvailable / cpuPerReplica)
-	maxReplicasByMem := int(memAvailable / memPerReplica)
-	maxAdditionalReplicas := maxReplicasByCPU
-	if maxReplicasByMem < maxAdditionalReplicas {
-		maxAdditionalReplicas = maxReplicasByMem
+	// Utilização do deployment: uso real vs request (por réplica)
+	cpuUtilPercent := 0.0
+	memUtilPercent := 0.0
+	if cpuRequest > 0 {
+		cpuUtilPercent = (cpuPerReplica / cpuRequest) * 100
 	}
+	if memRequest > 0 {
+		memUtilPercent = (memPerReplica / memRequest) * 100
+	}
+
+	log.Info().
+		Float64("cpu_per_replica_cores", cpuPerReplica).
+		Float64("cpu_request_cores", cpuRequest).
+		Float64("cpu_util_percent", cpuUtilPercent).
+		Float64("mem_per_replica_bytes", memPerReplica).
+		Float64("mem_request_bytes", memRequest).
+		Float64("mem_util_percent", memUtilPercent).
+		Str("deployment", metrics.Deployment).
+		Msg("Capacity forecast - deployment utilization")
+
+	// ========================================
+	// FATOR LIMITANTE (baseado no deployment)
+	// ========================================
+	limitingFactor := fmt.Sprintf("CPU do deployment (%.0f%% do request por réplica)", cpuUtilPercent)
+	if memUtilPercent > cpuUtilPercent {
+		limitingFactor = fmt.Sprintf("Memória do deployment (%.0f%% do request por réplica)", memUtilPercent)
+	}
+
+	// Se tem HPA, considerar proximidade ao max replicas
+	hpaMaxReplicas := int32(0)
+	hpaTargetCPU := 80.0 // default se não tem HPA
+	if metrics.HPAConfig != nil && metrics.HPAConfig.Exists {
+		hpaMaxReplicas = metrics.HPAConfig.MaxReplicas
+		if metrics.HPAConfig.TargetCPUPercent != nil {
+			hpaTargetCPU = float64(*metrics.HPAConfig.TargetCPUPercent)
+		}
+
+		replicaUtilPercent := (currentReplicas / float64(hpaMaxReplicas)) * 100
+		if replicaUtilPercent > 80 {
+			limitingFactor = fmt.Sprintf("HPA max replicas (%d) - atualmente em %d (%.0f%%)",
+				hpaMaxReplicas, int(currentReplicas), replicaUtilPercent)
+		}
+	}
+
+	// ========================================
+	// MAX RÉPLICAS ADICIONAIS
+	// ========================================
+	growthAnalysis := c.calculateGrowthAnalysis(metrics)
+
+	maxAdditionalReplicas := growthAnalysis.MaxReplicasCurrentNodes - int(currentReplicas)
 	if maxAdditionalReplicas < 0 {
 		maxAdditionalReplicas = 0
 	}
 
-	// Calcular quando atingirá limites (baseado na tendência de CPU)
-	daysUntil80 := 30 // Padrão conservador
-	daysUntil100 := 60
-
-	if metrics.Trends.CPUChange7d > 0 {
-		// Projetar quando atingirá 80% e 100% baseado na taxa de crescimento
-		currentUtil := cpuUtil
-		growthRate := metrics.Trends.CPUChange7d / 7 // % por dia
-		if growthRate > 0 {
-			daysUntil80 = int((80 - currentUtil) / growthRate)
-			daysUntil100 = int((100 - currentUtil) / growthRate)
-			if daysUntil80 < 1 {
-				daysUntil80 = 1
-			}
-			if daysUntil100 < daysUntil80 {
-				daysUntil100 = daysUntil80 + 3
-			}
+	// HPA pode limitar antes dos nodes
+	if hpaMaxReplicas > 0 {
+		hpaAdditional := int(hpaMaxReplicas) - int(currentReplicas)
+		if hpaAdditional < 0 {
+			hpaAdditional = 0
+		}
+		if hpaAdditional < maxAdditionalReplicas {
+			maxAdditionalReplicas = hpaAdditional
 		}
 	}
 
-	// Determinar se pode escalar
 	canScale := maxAdditionalReplicas > 0
 
-	// Estimar nodes saturados e disponíveis
-	estimatedNodes := int(metrics.NodeMetrics.TotalCapacity.CPUTotal / 4)
-	if estimatedNodes == 0 {
-		estimatedNodes = 1
-	}
-	saturatedNodeName := fmt.Sprintf("node-saturado (%.0f%% CPU)", cpuUtil)
-	availableNodeName := fmt.Sprintf("node-disponível (%.0f%% CPU)", 100-cpuUtil)
-	replicasPerNode := int(metrics.NodeMetrics.TotalCapacity.CPUTotal / cpuPerReplica / float64(estimatedNodes))
-	if replicasPerNode == 0 {
-		replicasPerNode = 1
+	// ========================================
+	// TIMELINE BASEADA NO DEPLOYMENT
+	// ========================================
+	// Projetar quando o uso de CPU por réplica atingirá thresholds
+	// 80% = threshold típico do HPA (ou o target real se configurado)
+	// 100% = réplica saturada (uso = request)
+	baseTimestamp := metrics.Current.Timestamp
+
+	threshold80 := hpaTargetCPU // Usar target do HPA como referência de 80%
+	threshold100 := 100.0       // 100% do request = saturação
+
+	daysUntil80 := 365  // Muito longe (tendência estável ou decrescente)
+	daysUntil100 := 365
+
+	cpuGrowthPerDay := metrics.Trends.CPUChange7d / 7.0 // % mudança por dia
+
+	if cpuGrowthPerDay > 0 && cpuUtilPercent > 0 {
+		// Dias até atingir threshold do HPA (CPU por réplica)
+		if cpuUtilPercent < threshold80 {
+			daysUntil80 = int((threshold80 - cpuUtilPercent) / cpuGrowthPerDay)
+		} else {
+			daysUntil80 = 0 // Já ultrapassou
+		}
+
+		// Dias até saturação da réplica (100% do request)
+		if cpuUtilPercent < threshold100 {
+			daysUntil100 = int((threshold100 - cpuUtilPercent) / cpuGrowthPerDay)
+		} else {
+			daysUntil100 = 0 // Já saturado
+		}
 	}
 
-	// Calcular se novos nodes são necessários
+	// Limitar a range razoável
+	if daysUntil80 > 365 {
+		daysUntil80 = 365
+	}
+	if daysUntil100 > 365 {
+		daysUntil100 = 365
+	}
+	if daysUntil80 < 0 {
+		daysUntil80 = 0
+	}
+	if daysUntil100 < 0 {
+		daysUntil100 = 0
+	}
+	if daysUntil100 < daysUntil80 {
+		daysUntil100 = daysUntil80 + 1
+	}
+
+	// ========================================
+	// NODE ANALYSIS (baseada nos nodes do deployment)
+	// ========================================
+	saturatedNodeName := "N/A"
+	availableNodeName := "N/A"
+	replicasPerNode := 0
+
+	if len(metrics.NodeMetrics.NodeDistribution) > 0 {
+		maxUsage := 0.0
+		minUsage := 100.0
+		totalPods := 0
+
+		for name, nodeInfo := range metrics.NodeMetrics.NodeDistribution {
+			totalPods += nodeInfo.PodCount
+			if nodeInfo.CPUUsage > maxUsage {
+				maxUsage = nodeInfo.CPUUsage
+				saturatedNodeName = fmt.Sprintf("%s (%.0f%% CPU)", name, nodeInfo.CPUUsage)
+			}
+			if nodeInfo.CPUUsage < minUsage {
+				minUsage = nodeInfo.CPUUsage
+				availableNodeName = fmt.Sprintf("%s (%.0f%% CPU)", name, nodeInfo.CPUUsage)
+			}
+		}
+
+		nodeCount := len(metrics.NodeMetrics.NodeDistribution)
+		if nodeCount > 0 {
+			replicasPerNode = totalPods / nodeCount
+			if replicasPerNode == 0 {
+				replicasPerNode = 1
+			}
+		}
+	}
+
+	// ========================================
+	// NOVOS NODES NECESSÁRIOS (baseado no deployment)
+	// ========================================
 	newNodesNeeded := 0
 	newNodesReason := ""
-	if cpuUtil > 85 || memUtil > 85 {
-		newNodesNeeded = int((cpuUtil - 70) / 30) // Rough estimate
-		if newNodesNeeded < 1 {
-			newNodesNeeded = 1
-		}
-		newNodesReason = fmt.Sprintf("Cluster com utilização alta (CPU: %.1f%%, Mem: %.1f%%), recomenda-se adicionar capacidade", cpuUtil, memUtil)
+
+	if !canScale && hpaMaxReplicas > 0 && int(currentReplicas) >= int(hpaMaxReplicas) {
+		// Deployment já está no max do HPA - precisa ajustar HPA, não nodes
+		newNodesReason = fmt.Sprintf("Deployment atingiu HPA max (%d réplicas). Considerar aumentar maxReplicas do HPA.", hpaMaxReplicas)
 	} else if !canScale {
+		// Sem capacidade para escalar - precisa de novos nodes
 		newNodesNeeded = 1
-		newNodesReason = "Sem capacidade disponível para escalar réplicas adicionais"
+		if cpuPerReplica > 0 {
+			// Calcular quantos nodes precisa para dobrar réplicas
+			cpuPerVM := float64(metrics.NodeMetrics.VMSizing.CPUPerVM)
+			if cpuPerVM > 0 {
+				replicasPerNewNode := int(cpuPerVM * 0.85 / cpuPerReplica) // 85% utilizável
+				if replicasPerNewNode > 0 {
+					additionalNeeded := int(currentReplicas) // Dobrar capacidade
+					newNodesNeeded = (additionalNeeded + replicasPerNewNode - 1) / replicasPerNewNode
+				}
+			}
+		}
+		newNodesReason = fmt.Sprintf("Deployment %s sem capacidade para escalar nos nodes atuais. Necessário adicionar %d node(s).",
+			metrics.Deployment, newNodesNeeded)
+	} else if daysUntil80 < 7 && daysUntil80 > 0 {
+		// CPU do deployment atingirá threshold do HPA em menos de 7 dias
+		newNodesReason = fmt.Sprintf("Deployment atingirá threshold de scaling (%.0f%%) em ~%d dias. Monitorar de perto.",
+			threshold80, daysUntil80)
 	}
 
-	// ✅ IMPORTANTE: Usar timestamp dos dados REAIS, não data atual do sistema
-	// Isso garante que previsões sejam relativas ao momento da coleta de métricas
-	baseTimestamp := metrics.Current.Timestamp
+	log.Info().
+		Bool("can_scale", canScale).
+		Int("max_additional", maxAdditionalReplicas).
+		Int("days_until_80", daysUntil80).
+		Int("days_until_100", daysUntil100).
+		Float64("cpu_util_percent", cpuUtilPercent).
+		Float64("hpa_target_cpu", hpaTargetCPU).
+		Str("limiting_factor", limitingFactor).
+		Str("deployment", metrics.Deployment).
+		Msg("Capacity forecast completed (deployment-scoped)")
 
 	forecast := CapacityForecast{
 		CanScale:              canScale,
@@ -1145,8 +1268,8 @@ func (c *MetricsCollector) calculateCapacityForecast(metrics *DeploymentMetrics)
 		NewNodesNeeded: newNodesNeeded,
 		NewNodesReason: newNodesReason,
 
-		// Adicionar análise detalhada de crescimento
-		GrowthAnalysis: c.calculateGrowthAnalysis(metrics),
+		// Análise detalhada de crescimento (já era correta - per-node)
+		GrowthAnalysis: growthAnalysis,
 	}
 
 	metrics.CapacityForecast = forecast

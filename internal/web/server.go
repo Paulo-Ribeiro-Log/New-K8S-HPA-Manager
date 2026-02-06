@@ -489,6 +489,7 @@ func (s *Server) setupRoutes() {
 
 		// ConfigMaps - Write Operations (SRE-only)
 		configMaps.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), configMapHandler.Apply)
+		configMaps.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), configMapHandler.Delete)
 	}
 
 	// Ingress
@@ -503,6 +504,7 @@ func (s *Server) setupRoutes() {
 
 		// Ingress - Write Operations (SRE-only)
 		ingresses.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), ingressHandler.Apply)
+		ingresses.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), ingressHandler.Delete)
 	}
 
 	// Deployments
@@ -669,6 +671,7 @@ func (s *Server) setupRoutes() {
 		// Secrets - Write Operations (SRE-only)
 		secrets.POST("/:cluster/:namespace", rbacMiddleware.RequireSREGroup(), secretHandler.Create)
 		secrets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), secretHandler.Apply)
+		secrets.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), secretHandler.Delete)
 	}
 
 	// Validation (VPN + Azure CLI)
