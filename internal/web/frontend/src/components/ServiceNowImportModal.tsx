@@ -27,6 +27,7 @@ import {
   Copy,
   ClipboardPaste,
   Globe,
+  Plus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -83,6 +84,7 @@ export function ServiceNowImportModal({
   const [description, setDescription] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<ImportResponse | null>(null);
+  const [addedCount, setAddedCount] = useState(0);
   const [playwrightStatus, setPlaywrightStatus] = useState<{
     configured: boolean;
     checked: boolean;
@@ -227,23 +229,34 @@ export function ServiceNowImportModal({
     }
 
     const data = result.extracted_data;
+    const chgNumber = result.change_request?.number;
 
     onImportSuccess({
       deploymentName: data.application,
       githubRepo: data.github_repo,
       newVersion: data.version,
       xlReleaseUrl: data.xlrelease_url,
-      changeNumber: result.change_request?.number,
+      changeNumber: chgNumber,
     });
 
-    handleClose();
-    toast.success("Campos preenchidos automaticamente!");
+    // Limpar resultado e campos para permitir nova extração (modal fica aberto)
+    setResult(null);
+    setChgUrl("");
+    setDescription("");
+    setAddedCount((prev) => prev + 1);
+
+    toast.success(
+      chgNumber
+        ? `${chgNumber} adicionada a comparações`
+        : `${data.application || "CHG"} adicionada a comparações`
+    );
   };
 
   const handleClose = () => {
     setChgUrl("");
     setDescription("");
     setResult(null);
+    setAddedCount(0);
     onClose();
   };
 
@@ -267,9 +280,14 @@ export function ServiceNowImportModal({
           <DialogTitle className="flex items-center gap-2">
             <Download className="h-5 w-5" />
             Importar de ServiceNow
+            {addedCount > 0 && (
+              <Badge variant="secondary" className="ml-2 text-xs">
+                {addedCount} adicionada(s) a comparações
+              </Badge>
+            )}
           </DialogTitle>
           <DialogDescription>
-            Importe os dados de uma CHG para preencher automaticamente os campos.
+            Extraia dados de CHGs e adicione a comparações. Feche quando terminar.
           </DialogDescription>
         </DialogHeader>
 
@@ -516,14 +534,14 @@ export function ServiceNowImportModal({
               {/* Botões de ação */}
               <div className="flex gap-2 justify-end">
                 <Button variant="outline" onClick={handleClose}>
-                  Cancelar
+                  Fechar
                 </Button>
                 <Button
                   onClick={handleUseData}
                   disabled={!result.extracted_data?.application && !result.extracted_data?.version}
                 >
-                  <CheckCircle2 className="h-4 w-4 mr-2" />
-                  Usar Dados
+                  <Plus className="h-4 w-4 mr-2" />
+                  Adicionar a Comparações
                 </Button>
               </div>
             </div>
