@@ -554,32 +554,51 @@ export const GitHubReleasesTab = () => {
     }
   };
 
-  // ✅ Handler para usar dados importados do ServiceNow
-  const handleServiceNowImport = (data: {
+  // Handler para dados importados do ServiceNow → adiciona direto às comparações
+  const handleServiceNowImport = async (data: {
     deploymentName: string;
     githubRepo: string;
     newVersion: string;
     xlReleaseUrl?: string;
     changeNumber?: string;
   }) => {
-    // Preencher campos com os dados extraídos
-    if (data.deploymentName) {
-      setDeploymentName(data.deploymentName);
-      // Marcar como selecionado para buscar dados de produção
-      setDeploymentSelected(true);
-    }
-    if (data.githubRepo) {
-      setGithubRepo(data.githubRepo);
-    }
-    if (data.newVersion) {
-      setNewTag(data.newVersion);
+    if (!data.githubRepo || !data.newVersion) {
+      toast.error('Dados insuficientes: repositório e versão são obrigatórios');
+      return;
     }
 
-    toast.success('Dados preenchidos automaticamente!', {
-      description: data.changeNumber
-        ? `CHG: ${data.changeNumber}`
-        : 'Revise os campos antes de comparar.',
-    });
+    // Buscar tag de produção via API
+    let prodTag = '';
+    if (data.deploymentName) {
+      try {
+        const response = await fetch(
+          `/api/v1/github/deployments/production?app_name=${encodeURIComponent(data.deploymentName)}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`
+            }
+          }
+        );
+        if (response.ok) {
+          const prodData = await response.json();
+          prodTag = prodData.version || '';
+        }
+      } catch {
+        // Se falhar, adiciona sem tag de produção (usuário pode editar depois)
+      }
+    }
+
+    // Adicionar a comparações
+    const newItem: ComparisonItem = {
+      id: `${Date.now()}-${data.githubRepo}`,
+      deploymentName: data.deploymentName || undefined,
+      githubRepo: data.githubRepo,
+      productionTag: prodTag,
+      newTag: data.newVersion,
+      status: 'pending',
+    };
+
+    setComparisonBatch(prev => [...prev, newItem]);
   };
 
   // ✅ CORRIGIDO: Auto-preencher tag em produção quando encontrar o deployment
@@ -1128,7 +1147,7 @@ export const GitHubReleasesTab = () => {
           ),
           content: (
             <div className="h-full flex flex-col">
-              {!searchTriggered && (
+              {!searchTriggered && !displayedComparison && !isComparing && (
                 <div className="flex-1 flex items-center justify-center text-center space-y-4 p-8">
                   <div>
                     <GitCompare className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
