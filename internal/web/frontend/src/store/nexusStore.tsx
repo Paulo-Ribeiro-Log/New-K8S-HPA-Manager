@@ -55,8 +55,6 @@ interface NexusState {
 const initialFile: ValuesFileRequest = {
   release: '',
   version: '',
-  environment: '' as any,
-  type: '' as any,
 };
 
 // Interface para o estado persistido (exclui funções e loading states)

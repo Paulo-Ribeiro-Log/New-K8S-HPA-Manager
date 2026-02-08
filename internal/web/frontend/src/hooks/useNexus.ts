@@ -8,6 +8,8 @@ import type {
   CompareValuesResponse,
   TestConnectionResponse,
   NexusStatus,
+  BrowseResponse,
+  BrowseItem,
 } from '../types/nexus';
 
 const API_BASE = '/nexus';
@@ -89,12 +91,25 @@ export const useNexusConfig = () => {
     }
   }, []);
 
+  const browseRepository = useCallback(async (path: string = '', query: string = ''): Promise<BrowseItem[]> => {
+    try {
+      let url = `${API_BASE}/browse?path=${encodeURIComponent(path)}`;
+      if (query) url += `&q=${encodeURIComponent(query)}`;
+      const response = await apiClient.get<BrowseResponse>(url);
+      return response.items || [];
+    } catch (err) {
+      console.error('[useNexus] Browse failed:', err);
+      return [];
+    }
+  }, []);
+
   return {
     testConnection,
     saveConfig,
     loadConfig,
     deleteConfig,
     checkStatus,
+    browseRepository,
     loading,
     error,
   };

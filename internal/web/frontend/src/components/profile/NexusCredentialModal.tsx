@@ -33,6 +33,7 @@ export function NexusCredentialModal({ open, onOpenChange, onSaved }: Credential
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [hasSavedPassword, setHasSavedPassword] = useState(false);
 
   // Carrega configuracao existente ao abrir
   useEffect(() => {
@@ -46,15 +47,23 @@ export function NexusCredentialModal({ open, onOpenChange, onSaved }: Credential
     try {
       const existingConfig = await loadConfig();
       if (existingConfig) {
-        setConfig(existingConfig);
+        // Backend retorna password vazio por segurança
+        // Se config existe com username, a senha está salva no servidor
+        const passwordSaved = !!existingConfig.username;
+        setHasSavedPassword(passwordSaved);
+        setConfig({
+          ...existingConfig,
+          password: '', // Não temos a senha real, usuário re-digita se quiser alterar
+        });
       }
     } catch (err) {
       // Config nao existe ainda, use valores padrao
+      setHasSavedPassword(false);
     }
   };
 
   const handleTestConnection = async () => {
-    if (!config.baseUrl || !config.repository || !config.username || !config.password) {
+    if (!config.baseUrl || !config.repository || !config.username || (!config.password && !hasSavedPassword)) {
       setTestResult({
         success: false,
         message: 'Preencha todos os campos obrigatorios',
@@ -79,7 +88,7 @@ export function NexusCredentialModal({ open, onOpenChange, onSaved }: Credential
   };
 
   const handleSave = async () => {
-    if (!config.baseUrl || !config.repository || !config.username || !config.password) {
+    if (!config.baseUrl || !config.repository || !config.username || (!config.password && !hasSavedPassword)) {
       setTestResult({
         success: false,
         message: 'Preencha todos os campos obrigatorios',
@@ -202,9 +211,12 @@ export function NexusCredentialModal({ open, onOpenChange, onSaved }: Credential
                 type="password"
                 value={config.password}
                 onChange={(e) => setConfig({ ...config, password: e.target.value })}
-                placeholder="********"
+                placeholder={hasSavedPassword ? '(senha salva - digite para alterar)' : 'Digite sua senha'}
                 disabled={isProcessing}
               />
+              {hasSavedPassword && !config.password && (
+                <p className="text-xs text-green-500">Senha ja salva no servidor</p>
+              )}
             </div>
           </div>
 
