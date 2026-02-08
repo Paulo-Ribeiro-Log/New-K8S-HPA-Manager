@@ -16,10 +16,12 @@ type Config struct {
 
 // ValuesFileRequest representa uma requisição para baixar um arquivo de values
 type ValuesFileRequest struct {
-	Release     string `json:"release" binding:"required"`     // Nome do release
-	Version     string `json:"version" binding:"required"`     // Versão (ex: v1.0.0)
-	Environment string `json:"environment" binding:"required"` // dev, sit, uat, hlg, prd
-	Type        string `json:"type" binding:"required"`        // base, sit, prd, hlg
+	Release     string `json:"release" binding:"required"`      // Nome do release
+	Version     string `json:"version" binding:"required"`      // Versão (ex: v1.0.0)
+	Environment string `json:"environment,omitempty"`           // dev, sit, uat, hlg, prd (legado)
+	Type        string `json:"type,omitempty"`                  // base, sit, prd, hlg (legado)
+	Repository  string `json:"repository,omitempty"`             // Repositório (detectado via busca)
+	FilePath    string `json:"filePath,omitempty"`               // Path real do arquivo (release/version/file.yaml)
 }
 
 // ValuesFileResponse representa a resposta com o conteúdo de um arquivo
@@ -71,6 +73,21 @@ type DownloadedFile struct {
 	Downloaded time.Time `json:"downloaded"`
 }
 
+// BrowseResponse representa a resposta da navegação no repositório
+type BrowseResponse struct {
+	Items []BrowseItem `json:"items"`
+	Path  string       `json:"path"`
+}
+
+// BrowseItem representa um item (diretório ou arquivo) no repositório
+type BrowseItem struct {
+	Name       string              `json:"name"`                 // nome do diretório/arquivo
+	Path       string              `json:"path"`                 // path completo
+	Versions   []string            `json:"versions,omitempty"`   // versões encontradas (quando item é uma release)
+	Repository string              `json:"repository,omitempty"` // repositório onde a release foi encontrada
+	Files      map[string][]string `json:"files,omitempty"`      // versão → lista de arquivos reais
+}
+
 // Client interface define as operações disponíveis para o Nexus
 type Client interface {
 	// TestConnection verifica se a conexão e autenticação estão funcionando
@@ -87,6 +104,9 @@ type Client interface {
 
 	// CleanupTempFiles limpa arquivos temporários antigos
 	CleanupTempFiles(olderThan time.Duration) error
+
+	// BrowseRepository navega o repositório e lista diretórios em um dado path com filtro opcional
+	BrowseRepository(path string, query string) (*BrowseResponse, error)
 }
 
 // ConfigManager interface define operações de gerenciamento de configuração

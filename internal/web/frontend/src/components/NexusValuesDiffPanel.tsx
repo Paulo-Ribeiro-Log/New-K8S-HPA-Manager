@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo, type ChangeEvent } from 'react';
 import { useNexusConfig, useNexusValues } from '../hooks/useNexus';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -18,17 +18,133 @@ import {
   DialogHeader,
   DialogTitle,
 } from './ui/dialog';
-import { Loader2, AlertCircle, GitCompare, Download, Settings as SettingsIcon, X } from 'lucide-react';
+import { Loader2, AlertCircle, GitCompare, Download, Settings as SettingsIcon, X, Check } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
 import { MonacoYamlEditor } from './MonacoYamlEditor';
 import { CredentialRedirectDialog } from './profile/CredentialRedirectDialog';
-import { VALID_ENVIRONMENTS, VALID_TYPES, DEFAULT_URL_PATTERN, ValuesFileRequest } from '../types/nexus';
+import { ValuesFileRequest, BrowseItem } from '../types/nexus';
 import { NexusProvider, useNexusStore } from '../store/nexusStore';
+import { cn } from '../lib/utils';
+
+// Componente Input com busca debounced e sugestões dropdown
+interface NexusSearchInputProps {
+  value: string;
+  onChange: (value: string) => void;
+  onSelect?: (value: string) => void;
+  suggestions: BrowseItem[];
+  loading: boolean;
+  onSearch: (query: string) => void;
+  placeholder: string;
+  label: string;
+  id: string;
+  disabled?: boolean;
+  helpText?: string;
+}
+
+const NexusSearchInput = ({ value, onChange, onSelect, suggestions, loading, onSearch, placeholder, label, id, disabled, helpText }: NexusSearchInputProps) => {
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const handleInputChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    onChange(val);
+
+    // Debounce: buscar após 500ms de pausa
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (val.length >= 2) {
+      debounceRef.current = setTimeout(() => {
+        onSearch(val);
+        setShowSuggestions(true);
+      }, 500);
+    } else {
+      setShowSuggestions(false);
+    }
+  };
+
+  const handleSelect = (name: string) => {
+    if (onSelect) {
+      onSelect(name);
+    } else {
+      onChange(name);
+    }
+    setShowSuggestions(false);
+  };
+
+  // Fechar sugestões ao clicar fora
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const isInList = suggestions.some(item => item.name === value);
+
+  return (
+    <div className="space-y-2" ref={containerRef}>
+      <Label htmlFor={id}>{label}</Label>
+      <div className="relative">
+        <Input
+          id={id}
+          value={value}
+          onChange={handleInputChange}
+          onFocus={() => { if (suggestions.length > 0 && value.length >= 2) setShowSuggestions(true); }}
+          placeholder={placeholder}
+          disabled={disabled}
+          className={cn(isInList && "border-green-500/50")}
+        />
+        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+          {loading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+          {value && isInList && <Check className="h-3 w-3 text-green-500" />}
+        </div>
+
+        {/* Dropdown de sugestões */}
+        {showSuggestions && (
+          <div className="absolute z-50 w-full mt-1 bg-popover border rounded-md shadow-lg max-h-48 overflow-y-auto">
+            {loading ? (
+              <div className="flex items-center justify-center py-4">
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                <span className="text-sm text-muted-foreground">Buscando no Nexus...</span>
+              </div>
+            ) : suggestions.length === 0 ? (
+              <div className="py-3 px-4 text-sm text-muted-foreground">
+                Nenhum resultado para "{value}"
+              </div>
+            ) : (
+              suggestions.map((item) => (
+                <button
+                  key={item.name}
+                  type="button"
+                  className={cn(
+                    "w-full text-left px-4 py-2 text-sm hover:bg-accent hover:text-accent-foreground cursor-pointer",
+                    value === item.name && "bg-accent"
+                  )}
+                  onClick={() => handleSelect(item.name)}
+                >
+                  {item.name}
+                </button>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+      {helpText && <p className="text-xs text-muted-foreground">{helpText}</p>}
+    </div>
+  );
+};
 
 // Componente interno que usa a store
 const NexusValuesDiffPanelContent = () => {
-  const { checkStatus } = useNexusConfig();
+  const { checkStatus, browseRepository } = useNexusConfig();
   const { compareValues, loading, error } = useNexusValues();
+
+  // Sugestões de browse
+  const [releaseSuggestions, setReleaseSuggestions] = useState<BrowseItem[]>([]);
+  const [browsing, setBrowsing] = useState({ releases: false });
 
   // Usar store ao invés de useState local
   const {
@@ -70,15 +186,41 @@ const NexusValuesDiffPanelContent = () => {
       const nexusStatus = await checkStatus();
       console.log('[NexusValuesDiffPanel] Status loaded:', nexusStatus);
       setStatus(nexusStatus);
-      // Não abre mais automaticamente - usuário clica no botão se quiser
     } catch (err) {
       console.error('[NexusValuesDiffPanel] Failed to check Nexus status:', err);
-      // Se falhou ao verificar status, assumir que não está configurado
       setStatus({ configured: false });
     } finally {
       setStatusLoading(false);
     }
   };
+
+  const searchReleases = useCallback(async (query: string) => {
+    if (query.length < 2) return;
+    console.log('[NexusValuesDiffPanel] Searching releases:', query);
+    setBrowsing(prev => ({ ...prev, releases: true }));
+    try {
+      const items = await browseRepository('', query);
+      console.log('[NexusValuesDiffPanel] Found releases:', items.length, items.map(i => i.name));
+      setReleaseSuggestions(items);
+    } catch (err) {
+      console.error('[NexusValuesDiffPanel] Failed to search releases:', err);
+    } finally {
+      setBrowsing(prev => ({ ...prev, releases: false }));
+    }
+  }, [browseRepository]);
+
+  // Extrai versões e arquivos do BrowseItem (já vêm da busca de releases, sem chamada extra)
+  const getReleaseData = useCallback((releaseName: string) => {
+    return releaseSuggestions.find(item => item.name === releaseName);
+  }, [releaseSuggestions]);
+
+  const getVersionsForRelease = useCallback((releaseName: string): string[] => {
+    return getReleaseData(releaseName)?.versions || [];
+  }, [getReleaseData]);
+
+  const getFilesForVersion = useCallback((releaseName: string, version: string): string[] => {
+    return getReleaseData(releaseName)?.files?.[version] || [];
+  }, [getReleaseData]);
 
   const handleCompare = async () => {
     setComparing(true);
@@ -88,68 +230,45 @@ const NexusValuesDiffPanelContent = () => {
     setFile1Url('');
     setFile2Url('');
 
-    console.log('[NexusValuesDiffPanel] Starting comparison...');
-    console.log('[NexusValuesDiffPanel] File1:', file1);
-    console.log('[NexusValuesDiffPanel] File2:', file2);
-
     try {
       const result = await compareValues({ file1, file2 });
-      console.log('[NexusValuesDiffPanel] Compare result:', result);
-      console.log('[NexusValuesDiffPanel] File1 content length:', result?.file1?.content?.length || 0);
-      console.log('[NexusValuesDiffPanel] File2 content length:', result?.file2?.content?.length || 0);
 
-      // Salvar URLs para exibição de erros
       if (result?.file1?.fullUrl) setFile1Url(result.file1.fullUrl);
       if (result?.file2?.fullUrl) setFile2Url(result.file2.fullUrl);
 
-      // Verificar erro geral
       if (result.error) {
-        console.error('[NexusValuesDiffPanel] Result error:', result.error);
         let errorDetails = result.error;
-        // Adicionar detalhes dos erros dos arquivos
         if (result.file1?.error) errorDetails += `\nArquivo 1: ${result.file1.error}`;
         if (result.file2?.error) errorDetails += `\nArquivo 2: ${result.file2.error}`;
         setCompareError(errorDetails);
         return;
       }
 
-      // Verificar erro do arquivo 1
       if (result.file1?.error) {
-        console.error('[NexusValuesDiffPanel] File1 error:', result.file1.error);
         const urlInfo = result.file1.fullUrl ? `\nURL: ${result.file1.fullUrl}` : '';
         setCompareError(`Arquivo 1: ${result.file1.error}${urlInfo}`);
         return;
       }
 
-      // Verificar erro do arquivo 2
       if (result.file2?.error) {
-        console.error('[NexusValuesDiffPanel] File2 error:', result.file2.error);
         const urlInfo = result.file2.fullUrl ? `\nURL: ${result.file2.fullUrl}` : '';
         setCompareError(`Arquivo 2: ${result.file2.error}${urlInfo}`);
         return;
       }
 
-      // Verificar se os conteúdos existem
       const content1 = result.file1?.content || '';
       const content2 = result.file2?.content || '';
 
       if (!content1 && !content2) {
-        console.warn('[NexusValuesDiffPanel] Both files are empty');
         setCompareError('Ambos os arquivos estao vazios ou nao foram encontrados');
         return;
       }
 
-      console.log('[NexusValuesDiffPanel] Setting file contents...');
-      console.log('[NexusValuesDiffPanel] Content1 preview:', content1.substring(0, 100));
-      console.log('[NexusValuesDiffPanel] Content2 preview:', content2.substring(0, 100));
-
       setFile1Content(content1);
       setFile2Content(content2);
-      setShowDiffModal(true); // Abre o modal automaticamente
-      console.log('[NexusValuesDiffPanel] Comparison successful!');
+      setShowDiffModal(true);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Erro ao comparar arquivos';
-      console.error('[NexusValuesDiffPanel] Exception:', errorMessage, err);
       setCompareError(errorMessage);
     } finally {
       setComparing(false);
@@ -183,29 +302,115 @@ const NexusValuesDiffPanelContent = () => {
 
   const isFormValid = () => {
     return (
-      file1.release && file1.version && file1.environment && file1.type &&
-      file2.release && file2.version && file2.environment && file2.type
+      file1.release && file1.version && file1.filePath &&
+      file2.release && file2.version && file2.filePath
     );
   };
 
-  // Função para construir a URL de preview
   const buildPreviewUrl = (fileRequest: ValuesFileRequest): string => {
-    if (!status?.baseUrl || !status?.repository) return '';
-    if (!fileRequest.release || !fileRequest.version || !fileRequest.environment || !fileRequest.type) return '';
-
-    const pattern = status.urlPattern || DEFAULT_URL_PATTERN;
-    let url = pattern;
-    url = url.replace('{baseUrl}', status.baseUrl.replace(/\/$/, ''));
-    url = url.replace('{repository}', status.repository);
-    url = url.replace('{release}', fileRequest.release);
-    url = url.replace('{version}', fileRequest.version);
-    url = url.replace('{environment}', fileRequest.environment);
-    url = url.replace('{type}', fileRequest.type);
-    return url;
+    if (!status?.baseUrl || !fileRequest.filePath) return '';
+    const baseUrl = status.baseUrl.replace(/\/$/, '');
+    const repo = fileRequest.repository || status.repository || '';
+    return `${baseUrl}/repository/${repo}/${fileRequest.filePath}`;
   };
 
   const file1PreviewUrl = buildPreviewUrl(file1);
   const file2PreviewUrl = buildPreviewUrl(file2);
+
+  // Renderizar seletor de arquivo: Release → Versão → Arquivo
+  const renderFileSelector = (
+    fileKey: 'file1' | 'file2',
+    file: ValuesFileRequest,
+    setFile: (f: ValuesFileRequest) => void,
+    title: string,
+    description: string,
+  ) => {
+    const versions = getVersionsForRelease(file.release);
+    const files = getFilesForVersion(file.release, file.version);
+
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>{title}</CardTitle>
+          <CardDescription>{description}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Release - busca com autocomplete */}
+          <NexusSearchInput
+            id={`${fileKey}-release`}
+            label="Release"
+            value={file.release}
+            onChange={(val) => {
+              setFile({ ...file, release: val, version: '', filePath: '' });
+            }}
+            onSelect={(val) => {
+              const releaseItem = releaseSuggestions.find(item => item.name === val);
+              setFile({ ...file, release: val, version: '', filePath: '', repository: releaseItem?.repository || '' });
+            }}
+            suggestions={releaseSuggestions}
+            loading={browsing.releases}
+            onSearch={searchReleases}
+            placeholder="Digite 2+ caracteres para buscar..."
+            helpText="Ex: comercial, sortimento, faturamento"
+          />
+
+          {/* Versão - select populado da busca */}
+          <div className="space-y-2">
+            <Label htmlFor={`${fileKey}-version`}>Versão</Label>
+            {versions.length > 0 ? (
+              <Select
+                value={file.version}
+                onValueChange={(val: string) => setFile({ ...file, version: val, filePath: '' })}
+              >
+                <SelectTrigger id={`${fileKey}-version`}>
+                  <SelectValue placeholder="Selecione a versão" />
+                </SelectTrigger>
+                <SelectContent className="max-h-60">
+                  {versions.map((v) => (
+                    <SelectItem key={v} value={v}>{v}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <div className="flex items-center h-10 px-3 border rounded-md bg-muted/30">
+                <span className="text-sm text-muted-foreground">
+                  {file.release ? 'Nenhuma versão encontrada' : 'Selecione uma release primeiro'}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Arquivo - select populado da busca */}
+          <div className="space-y-2">
+            <Label htmlFor={`${fileKey}-file`}>Arquivo</Label>
+            {files.length > 0 ? (
+              <Select
+                value={file.filePath ? file.filePath.replace(`${file.release}/${file.version}/`, '') : ''}
+                onValueChange={(val: string) => {
+                  setFile({ ...file, filePath: `${file.release}/${file.version}/${val}` });
+                }}
+              >
+                <SelectTrigger id={`${fileKey}-file`}>
+                  <SelectValue placeholder="Selecione o arquivo" />
+                </SelectTrigger>
+                <SelectContent className="max-h-60">
+                  {files.map((f) => (
+                    <SelectItem key={f} value={f}>{f}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <div className="flex items-center h-10 px-3 border rounded-md bg-muted/30">
+                <span className="text-sm text-muted-foreground">
+                  {file.version ? 'Nenhum arquivo encontrado' : 'Selecione uma versão primeiro'}
+                </span>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  };
 
   // Mostrar loading enquanto verifica status
   if (statusLoading) {
@@ -269,139 +474,8 @@ const NexusValuesDiffPanelContent = () => {
 
       {/* File Selectors */}
       <div className="grid grid-cols-2 gap-4">
-        {/* File 1 */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Arquivo 1</CardTitle>
-            <CardDescription>Selecione o primeiro arquivo para comparação</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="file1-release">Release</Label>
-              <Input
-                id="file1-release"
-                value={file1.release}
-                onChange={(e) => setFile1({ ...file1, release: e.target.value })}
-                placeholder="nome-do-release"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="file1-version">Versão</Label>
-              <Input
-                id="file1-version"
-                value={file1.version}
-                onChange={(e) => setFile1({ ...file1, version: e.target.value })}
-                placeholder="v1.0.0"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="file1-environment">Ambiente</Label>
-              <Select
-                value={file1.environment}
-                onValueChange={(value: any) => setFile1({ ...file1, environment: value })}
-              >
-                <SelectTrigger id="file1-environment">
-                  <SelectValue placeholder="Selecione o ambiente" />
-                </SelectTrigger>
-                <SelectContent>
-                  {VALID_ENVIRONMENTS.map((env) => (
-                    <SelectItem key={env} value={env}>
-                      {env.toUpperCase()}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="file1-type">Tipo</Label>
-              <Select
-                value={file1.type}
-                onValueChange={(value: any) => setFile1({ ...file1, type: value })}
-              >
-                <SelectTrigger id="file1-type">
-                  <SelectValue placeholder="Selecione o tipo" />
-                </SelectTrigger>
-                <SelectContent>
-                  {VALID_TYPES.map((type) => (
-                    <SelectItem key={type} value={type}>
-                      {type}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* File 2 */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Arquivo 2</CardTitle>
-            <CardDescription>Selecione o segundo arquivo para comparação</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="file2-release">Release</Label>
-              <Input
-                id="file2-release"
-                value={file2.release}
-                onChange={(e) => setFile2({ ...file2, release: e.target.value })}
-                placeholder="nome-do-release"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="file2-version">Versão</Label>
-              <Input
-                id="file2-version"
-                value={file2.version}
-                onChange={(e) => setFile2({ ...file2, version: e.target.value })}
-                placeholder="v1.0.0"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="file2-environment">Ambiente</Label>
-              <Select
-                value={file2.environment}
-                onValueChange={(value: any) => setFile2({ ...file2, environment: value })}
-              >
-                <SelectTrigger id="file2-environment">
-                  <SelectValue placeholder="Selecione o ambiente" />
-                </SelectTrigger>
-                <SelectContent>
-                  {VALID_ENVIRONMENTS.map((env) => (
-                    <SelectItem key={env} value={env}>
-                      {env.toUpperCase()}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="file2-type">Tipo</Label>
-              <Select
-                value={file2.type}
-                onValueChange={(value: any) => setFile2({ ...file2, type: value })}
-              >
-                <SelectTrigger id="file2-type">
-                  <SelectValue placeholder="Selecione o tipo" />
-                </SelectTrigger>
-                <SelectContent>
-                  {VALID_TYPES.map((type) => (
-                    <SelectItem key={type} value={type}>
-                      {type}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </CardContent>
-        </Card>
+        {renderFileSelector('file1', file1, setFile1, 'Arquivo 1', 'Selecione o primeiro arquivo para comparação')}
+        {renderFileSelector('file2', file2, setFile2, 'Arquivo 2', 'Selecione o segundo arquivo para comparação')}
       </div>
 
       {/* URL Preview */}
@@ -488,7 +562,7 @@ const NexusValuesDiffPanelContent = () => {
               <div>
                 <DialogTitle>Comparacao de Values</DialogTitle>
                 <DialogDescription>
-                  {file1.release}/{file1.version}/{file1.environment}/{file1.type} vs {file2.release}/{file2.version}/{file2.environment}/{file2.type}
+                  {file1.filePath || `${file1.release}/${file1.version}`} vs {file2.filePath || `${file2.release}/${file2.version}`}
                 </DialogDescription>
               </div>
               <div className="flex items-center gap-2">
