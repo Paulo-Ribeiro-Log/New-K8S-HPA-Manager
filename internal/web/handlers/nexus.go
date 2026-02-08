@@ -58,11 +58,23 @@ func (h *NexusHandler) TestConnection(c *gin.Context) {
 	}
 
 	// Valida campos obrigatórios
-	if config.BaseURL == "" || config.Repository == "" || config.Username == "" || config.Password == "" {
+	if config.BaseURL == "" || config.Repository == "" || config.Username == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "BaseURL, Repository, Username and Password are required",
+			"error": "BaseURL, Repository and Username are required",
 		})
 		return
+	}
+
+	// Se senha veio vazia, usar a existente
+	if config.Password == "" {
+		existingConfig, err := h.configManager.Load()
+		if err != nil || existingConfig.Password == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Password is required",
+			})
+			return
+		}
+		config.Password = existingConfig.Password
 	}
 
 	// Cria cliente temporário para teste
@@ -90,12 +102,24 @@ func (h *NexusHandler) SaveConfig(c *gin.Context) {
 		return
 	}
 
-	// Valida campos obrigatórios
-	if config.BaseURL == "" || config.Repository == "" || config.Username == "" || config.Password == "" {
+	// Valida campos obrigatórios (exceto senha que pode vir do config existente)
+	if config.BaseURL == "" || config.Repository == "" || config.Username == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "BaseURL, Repository, Username and Password are required",
+			"error": "BaseURL, Repository and Username are required",
 		})
 		return
+	}
+
+	// Se senha veio vazia, manter a existente
+	if config.Password == "" {
+		existingConfig, err := h.configManager.Load()
+		if err != nil || existingConfig.Password == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Password is required",
+			})
+			return
+		}
+		config.Password = existingConfig.Password
 	}
 
 	// Define diretório temporário padrão se não fornecido
@@ -215,8 +239,8 @@ func (h *NexusHandler) CompareValues(c *gin.Context) {
 	}
 
 	fmt.Printf("[NexusHandler] Compare request:\n")
-	fmt.Printf("  File1: %s/%s/%s/%s\n", req.File1.Release, req.File1.Version, req.File1.Environment, req.File1.Type)
-	fmt.Printf("  File2: %s/%s/%s/%s\n", req.File2.Release, req.File2.Version, req.File2.Environment, req.File2.Type)
+	fmt.Printf("  File1: %s/%s/%s/%s (repo=%q)\n", req.File1.Release, req.File1.Version, req.File1.Environment, req.File1.Type, req.File1.Repository)
+	fmt.Printf("  File2: %s/%s/%s/%s (repo=%q)\n", req.File2.Release, req.File2.Version, req.File2.Environment, req.File2.Type, req.File2.Repository)
 
 	client, err := h.getClient()
 	if err != nil {
@@ -250,6 +274,32 @@ func (h *NexusHandler) CompareValues(c *gin.Context) {
 	} else {
 		fmt.Printf("[NexusHandler] Compare successful: File1=%d bytes, File2=%d bytes\n",
 			response.File1.Size, response.File2.Size)
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// BrowseRepository navega o repositório Nexus e lista diretórios
+// GET /api/v1/nexus/browse?path=&q=comercial
+func (h *NexusHandler) BrowseRepository(c *gin.Context) {
+	path := c.DefaultQuery("path", "")
+	query := c.DefaultQuery("q", "")
+
+	client, err := h.getClient()
+	if err != nil {
+		c.JSON(http.StatusPreconditionFailed, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	response, err := client.BrowseRepository(path, query)
+	if err != nil {
+		fmt.Printf("[NexusHandler] Browse error: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("Browse failed: %v", err),
+		})
+		return
 	}
 
 	c.JSON(http.StatusOK, response)
