@@ -655,6 +655,7 @@ func (s *Server) setupRoutes() {
 			nexusRoutes.DELETE("/config", nexusHandler.DeleteConfig)
 			nexusRoutes.POST("/values/download", nexusHandler.DownloadValues)
 			nexusRoutes.POST("/values/compare", nexusHandler.CompareValues)
+			nexusRoutes.GET("/browse", nexusHandler.BrowseRepository)
 		}
 	}
 

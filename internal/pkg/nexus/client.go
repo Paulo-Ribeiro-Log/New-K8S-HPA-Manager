@@ -2,11 +2,13 @@ package nexus
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -22,7 +24,7 @@ func NewHTTPClient(config Config) *HTTPClient {
 	return &HTTPClient{
 		config: config,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 60 * time.Second,
 		},
 	}
 }
@@ -79,15 +81,29 @@ const DefaultURLPattern = "{baseUrl}/repository/{repository}/{release}/{version}
 // BuildURL constrói a URL completa para um arquivo de values
 func (c *HTTPClient) BuildURL(req ValuesFileRequest) string {
 	baseURL := strings.TrimSuffix(c.config.BaseURL, "/")
-	repository := c.config.Repository
 
-	// Usa o padrão customizado se fornecido, senão usa o padrão default
+	// Se temos FilePath (path real coletado da busca), usar URL direta
+	if req.FilePath != "" {
+		repository := req.Repository
+		if repository == "" {
+			repository = c.config.Repository
+		}
+		url := fmt.Sprintf("%s/repository/%s/%s", baseURL, repository, strings.TrimPrefix(req.FilePath, "/"))
+		fmt.Printf("[Nexus] BuildURL (direct): %s\n", url)
+		return url
+	}
+
+	// Fallback: URL por pattern (modo legado)
+	repository := c.config.Repository
+	if req.Repository != "" {
+		repository = req.Repository
+	}
+
 	pattern := c.config.URLPattern
 	if pattern == "" {
 		pattern = DefaultURLPattern
 	}
 
-	// Substitui os placeholders
 	url := pattern
 	url = strings.ReplaceAll(url, "{baseUrl}", baseURL)
 	url = strings.ReplaceAll(url, "{repository}", repository)
@@ -96,22 +112,25 @@ func (c *HTTPClient) BuildURL(req ValuesFileRequest) string {
 	url = strings.ReplaceAll(url, "{environment}", req.Environment)
 	url = strings.ReplaceAll(url, "{type}", req.Type)
 
+	fmt.Printf("[Nexus] BuildURL (pattern): %s\n", url)
 	return url
 }
 
 // DownloadValues baixa um arquivo de values do Nexus
 func (c *HTTPClient) DownloadValues(req ValuesFileRequest) (*ValuesFileResponse, error) {
-	// Valida inputs
-	if !IsValidEnvironment(req.Environment) {
-		return &ValuesFileResponse{
-			Error: fmt.Sprintf("Invalid environment: %s. Valid values: %v", req.Environment, ValidEnvironments),
-		}, nil
-	}
+	// Valida inputs apenas no modo legado (sem FilePath)
+	if req.FilePath == "" {
+		if req.Environment != "" && !IsValidEnvironment(req.Environment) {
+			return &ValuesFileResponse{
+				Error: fmt.Sprintf("Invalid environment: %s. Valid values: %v", req.Environment, ValidEnvironments),
+			}, nil
+		}
 
-	if !IsValidType(req.Type) {
-		return &ValuesFileResponse{
-			Error: fmt.Sprintf("Invalid type: %s. Valid values: %v", req.Type, ValidTypes),
-		}, nil
+		if req.Type != "" && !IsValidType(req.Type) {
+			return &ValuesFileResponse{
+				Error: fmt.Sprintf("Invalid type: %s. Valid values: %v", req.Type, ValidTypes),
+			}, nil
+		}
 	}
 
 	// Constrói URL
@@ -290,6 +309,209 @@ func (c *HTTPClient) DownloadMultipleValues(reqs []ValuesFileRequest) ([]ValuesF
 	}
 
 	return results, nil
+}
+
+// BrowseRepository busca releases/versões no Nexus usando a Search API (/search)
+// Busca em TODOS os repositórios pelo nome da release
+// path="" → lista releases cujo nome contém query
+// path="meu-release" → lista versões desse release
+func (c *HTTPClient) BrowseRepository(path string, query string) (*BrowseResponse, error) {
+	baseURL := strings.TrimSuffix(c.config.BaseURL, "/")
+	path = strings.Trim(path, "/")
+
+	if query == "" && path == "" {
+		return &BrowseResponse{Items: []BrowseItem{}, Path: ""}, nil
+	}
+
+	// Termo de busca
+	searchTerm := query
+	if path != "" {
+		searchTerm = path
+	}
+
+	uniqueItems := make(map[string]bool)
+	// Mapa de release → set de versões (coletadas junto com a busca de releases)
+	releaseVersions := make(map[string]map[string]bool)
+	// Mapa de release → repositório (coletado da Search API)
+	releaseRepository := make(map[string]string)
+	// Mapa de release → versão → set de arquivos reais
+	releaseFiles := make(map[string]map[string]map[string]bool)
+	continuationToken := ""
+	maxPages := 5
+
+	for page := 0; page < maxPages; page++ {
+		// Usa /search (componentes) sem filtro de repository
+		// O campo "name" do componente contém o path completo: "release/version/file.yaml"
+		apiURL := fmt.Sprintf("%s/service/rest/v1/search?q=%s", baseURL, searchTerm)
+		if continuationToken != "" {
+			apiURL += "&continuationToken=" + continuationToken
+		}
+
+		fmt.Printf("[Nexus] Search: %s (page %d)\n", apiURL, page+1)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+		req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.SetBasicAuth(c.config.Username, c.config.Password)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("request failed: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			cancel()
+			return nil, fmt.Errorf("search failed with status %d", resp.StatusCode)
+		}
+
+		var result struct {
+			Items []struct {
+				Name       string `json:"name"`
+				Group      string `json:"group"`
+				Repository string `json:"repository"`
+				Assets     []struct {
+					Path       string `json:"path"`
+					Repository string `json:"repository"`
+				} `json:"assets"`
+			} `json:"items"`
+			ContinuationToken string `json:"continuationToken"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			cancel()
+			return nil, fmt.Errorf("failed to decode: %w", err)
+		}
+		resp.Body.Close()
+		cancel()
+
+		fmt.Printf("[Nexus] Search returned %d components on page %d\n", len(result.Items), page+1)
+		if page == 0 && len(result.Items) > 0 {
+			fmt.Printf("[Nexus] Sample: name=%q group=%q\n", result.Items[0].Name, result.Items[0].Group)
+		}
+
+		queryLower := strings.ToLower(query)
+
+		// Função auxiliar para processar um path e extrair release/versão/repositório/arquivo
+		processPath := func(fullPath string, repo string) {
+			fullPath = strings.Trim(fullPath, "/")
+			parts := strings.Split(fullPath, "/")
+			if len(parts) < 2 {
+				return
+			}
+
+			releaseName := parts[0]
+			version := parts[1]
+			// Tudo após release/version é o path relativo do arquivo
+			// Ex: "carga-notfis-api/2.0.5-8/deploy-via-sit.yaml" → "deploy-via-sit.yaml"
+			// Ex: "vv-retira/2.5.8-1/hlg/values/values-hlg.yaml" → "hlg/values/values-hlg.yaml"
+			var filePath string
+			if len(parts) > 2 {
+				filePath = strings.Join(parts[2:], "/")
+			}
+
+			if path == "" {
+				// Listar releases + coletar versões, repositório e arquivos
+				if strings.Contains(strings.ToLower(releaseName), queryLower) {
+					uniqueItems[releaseName] = true
+					if releaseVersions[releaseName] == nil {
+						releaseVersions[releaseName] = make(map[string]bool)
+					}
+					releaseVersions[releaseName][version] = true
+					if repo != "" {
+						releaseRepository[releaseName] = repo
+					}
+					if filePath != "" {
+						if releaseFiles[releaseName] == nil {
+							releaseFiles[releaseName] = make(map[string]map[string]bool)
+						}
+						if releaseFiles[releaseName][version] == nil {
+							releaseFiles[releaseName][version] = make(map[string]bool)
+						}
+						releaseFiles[releaseName][version][filePath] = true
+					}
+				}
+			} else {
+				// Listar versões de uma release específica
+				if strings.EqualFold(releaseName, path) {
+					if query == "" || strings.Contains(strings.ToLower(version), queryLower) {
+						uniqueItems[version] = true
+					}
+				}
+			}
+		}
+
+		for _, comp := range result.Items {
+			// Extrair release e versão do name ou group
+			if comp.Name != "" {
+				processPath(comp.Name, comp.Repository)
+			} else if comp.Group != "" {
+				processPath(comp.Group, comp.Repository)
+			}
+
+			// Também verificar assets
+			for _, asset := range comp.Assets {
+				repo := asset.Repository
+				if repo == "" {
+					repo = comp.Repository
+				}
+				processPath(asset.Path, repo)
+			}
+		}
+
+		if result.ContinuationToken == "" {
+			break
+		}
+		continuationToken = result.ContinuationToken
+	}
+
+	items := make([]BrowseItem, 0, len(uniqueItems))
+	for name := range uniqueItems {
+		itemPath := name
+		if path != "" {
+			itemPath = path + "/" + name
+		}
+		item := BrowseItem{Name: name, Path: itemPath}
+
+		// Incluir versões, repositório e arquivos quando buscando releases
+		if path == "" {
+			if versions, ok := releaseVersions[name]; ok {
+				versionList := make([]string, 0, len(versions))
+				for v := range versions {
+					versionList = append(versionList, v)
+				}
+				sort.Strings(versionList)
+				item.Versions = versionList
+			}
+			if repo, ok := releaseRepository[name]; ok {
+				item.Repository = repo
+			}
+			if versionFiles, ok := releaseFiles[name]; ok {
+				item.Files = make(map[string][]string)
+				for ver, files := range versionFiles {
+					fileList := make([]string, 0, len(files))
+					for f := range files {
+						fileList = append(fileList, f)
+					}
+					sort.Strings(fileList)
+					item.Files[ver] = fileList
+				}
+			}
+		}
+
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Name < items[j].Name
+	})
+
+	fmt.Printf("[Nexus] Found %d unique items (path='%s', query='%s')\n", len(items), path, query)
+
+	return &BrowseResponse{Items: items, Path: path}, nil
 }
 
 // CleanupTempFiles remove arquivos temporários mais antigos que a duração especificada

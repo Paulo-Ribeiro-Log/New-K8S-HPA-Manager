@@ -15,8 +15,10 @@ export const DEFAULT_URL_PATTERN = '{baseUrl}/repository/{repository}/{release}/
 export interface ValuesFileRequest {
   release: string;
   version: string;
-  environment: 'default' | 'dev' | 'sit' | 'uat' | 'hlg' | 'prd';
-  type: 'base' | 'sit' | 'prd' | 'hlg' | 'dev';
+  environment?: string;
+  type?: string;
+  repository?: string;
+  filePath?: string; // Path real do arquivo (release/version/file.yaml)
 }
 
 export interface ValuesFileResponse {
@@ -55,3 +57,16 @@ export interface NexusStatus {
 
 export const VALID_ENVIRONMENTS = ['default', 'dev', 'sit', 'uat', 'hlg', 'prd'] as const;
 export const VALID_TYPES = ['base', 'sit', 'prd', 'hlg', 'dev'] as const;
+
+export interface BrowseItem {
+  name: string;
+  path: string;
+  versions?: string[];
+  repository?: string;
+  files?: Record<string, string[]>; // versão → lista de arquivos reais
+}
+
+export interface BrowseResponse {
+  items: BrowseItem[];
+  path: string;
+}
