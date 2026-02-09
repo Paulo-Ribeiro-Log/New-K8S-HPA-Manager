@@ -3,6 +3,7 @@ import { Header } from "@/components/Header";
 import { StatsCard } from "@/components/StatsCard";
 import { TabNavigation } from "@/components/TabNavigation";
 import { WorkloadMenu } from "@/components/WorkloadMenu";
+import { ToolsMenu } from "@/components/ToolsMenu";
 import { DashboardCharts } from "@/components/DashboardCharts";
 import { SplitView } from "@/components/SplitView";
 import {
@@ -50,6 +51,7 @@ import { HelmTab } from "@/components/HelmTab";
 import { GitHubReleasesTab } from "@/components/GitHubReleasesTab";
 import { NexusValuesDiffPanel } from "@/components/NexusValuesDiffPanel";
 import { DependenciesTab } from "@/components/DependenciesTab";
+import CertificatesTab from "@/components/CertificatesTab";
 import {
   LayoutDashboard,
   Scale,
@@ -72,6 +74,7 @@ import {
   GitCompareArrows,
   FileCode,
   Link2,
+  Shield,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -411,21 +414,12 @@ const Index = ({ onLogout }: IndexProps) => {
     nodePools: nodePools.length,
   };
 
-  // Abas que ficam no TabNavigation (topo) - SEM as abas workload
+  // Abas que ficam no TabNavigation (topo) - SEM as abas workload e tools
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "hpas", label: "HPAs", icon: Scale },
     { id: "nodepools", label: "Node Pools", icon: Server },
     { id: "staging", label: "Staging", icon: FileText, badge: staging.getChangesCount().total },
-    { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
-    { id: "servicemesh", label: "Service Mesh", icon: Network },
-    { id: "healthcheck", label: "Health Checking", icon: Activity },
-    { id: "helm", label: "Helm", icon: PackageOpen },
-    { id: "nexus-values", label: "Nexus Values", icon: FileCode },
-    { id: "namespaces", label: "Namespaces", icon: Database },
-    { id: "ai-diagnostics", label: "AI Diagnostics", icon: Brain },
-    { id: "github-releases", label: "GitHub Releases", icon: GitCompareArrows },
-    { id: "dependencies", label: "Dependencies", icon: Link2 },
   ];
 
   // Filtrar namespaces
@@ -987,6 +981,13 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
+      case "certificates":
+        return (
+          <ErrorBoundary componentName="Certificates Tab">
+            <CertificatesTab selectedCluster={selectedCluster} />
+          </ErrorBoundary>
+        );
+
       case "daemonsets":
         return (
           <ErrorBoundary componentName="DaemonSets Tab">
@@ -1069,8 +1070,8 @@ const Index = ({ onLogout }: IndexProps) => {
         onLogout={onLogout || (() => console.log("Logout"))}
       />
 
-      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, DaemonSets, StatefulSets, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm, Nexus Values, AI Diagnostics, GitHub Releases e Dependencies */}
-      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "daemonsets" && activeTab !== "statefulsets" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "nexus-values" && activeTab !== "ai-diagnostics" && activeTab !== "github-releases" && activeTab !== "dependencies" && (
+      {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, DaemonSets, StatefulSets, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm, Nexus Values, AI Diagnostics, GitHub Releases, Dependencies e Certificados TLS */}
+      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "daemonsets" && activeTab !== "statefulsets" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "nexus-values" && activeTab !== "ai-diagnostics" && activeTab !== "github-releases" && activeTab !== "dependencies" && activeTab !== "certificates" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (
@@ -1117,6 +1118,8 @@ const Index = ({ onLogout }: IndexProps) => {
       >
         {/* Menu dropdown Workload */}
         <WorkloadMenu activeTab={activeTab} onTabChange={handleTabChange} />
+        {/* Menu dropdown Tools */}
+        <ToolsMenu activeTab={activeTab} onTabChange={handleTabChange} />
       </TabNavigation>
 
       {/* Conteúdo Principal */}
