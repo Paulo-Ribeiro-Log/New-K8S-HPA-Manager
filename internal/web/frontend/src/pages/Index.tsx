@@ -3,6 +3,7 @@ import { Header } from "@/components/Header";
 import { StatsCard } from "@/components/StatsCard";
 import { TabNavigation } from "@/components/TabNavigation";
 import { WorkloadMenu } from "@/components/WorkloadMenu";
+import { ToolsMenu } from "@/components/ToolsMenu";
 import { DashboardCharts } from "@/components/DashboardCharts";
 import { SplitView } from "@/components/SplitView";
 import {
@@ -413,22 +414,12 @@ const Index = ({ onLogout }: IndexProps) => {
     nodePools: nodePools.length,
   };
 
-  // Abas que ficam no TabNavigation (topo) - SEM as abas workload
+  // Abas que ficam no TabNavigation (topo) - SEM as abas workload e tools
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "hpas", label: "HPAs", icon: Scale },
     { id: "nodepools", label: "Node Pools", icon: Server },
     { id: "staging", label: "Staging", icon: FileText, badge: staging.getChangesCount().total },
-    { id: "monitoring", label: "Monitoramento", icon: BarChart3 },
-    { id: "servicemesh", label: "Service Mesh", icon: Network },
-    { id: "healthcheck", label: "Health Checking", icon: Activity },
-    { id: "helm", label: "Helm", icon: PackageOpen },
-    { id: "nexus-values", label: "Nexus Values", icon: FileCode },
-    { id: "namespaces", label: "Namespaces", icon: Database },
-    { id: "ai-diagnostics", label: "AI Diagnostics", icon: Brain },
-    { id: "github-releases", label: "GitHub Releases", icon: GitCompareArrows },
-    { id: "dependencies", label: "Dependencies", icon: Link2 },
-    { id: "certificates", label: "Certificados TLS", icon: Shield },
   ];
 
   // Filtrar namespaces
@@ -1127,6 +1118,8 @@ const Index = ({ onLogout }: IndexProps) => {
       >
         {/* Menu dropdown Workload */}
         <WorkloadMenu activeTab={activeTab} onTabChange={handleTabChange} />
+        {/* Menu dropdown Tools */}
+        <ToolsMenu activeTab={activeTab} onTabChange={handleTabChange} />
       </TabNavigation>
 
       {/* Conteúdo Principal */}
