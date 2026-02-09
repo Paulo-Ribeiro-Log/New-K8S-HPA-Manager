@@ -1214,7 +1214,7 @@ export const DeploymentsTab = ({
   const openScaleModal = () => {
     if (selectedDeployment) {
       // Pegar valor atual de réplicas do deployment
-      const currentReplicas = selectedDeployment.replicas?.desired || selectedDeployment.replicas?.ready || 1;
+      const currentReplicas = selectedDeployment.replicas || selectedDeployment.readyReplicas || 1;
       setScaleReplicas(currentReplicas);
       setScaleModalOpen(true);
     }
@@ -4507,7 +4507,7 @@ export const DeploymentsTab = ({
                 className="w-full"
               />
               <p className="text-xs text-muted-foreground">
-                Valor atual: {selectedDeployment?.replicas?.desired || selectedDeployment?.replicas?.ready || "N/A"} réplicas
+                Valor atual: {selectedDeployment?.replicas ?? selectedDeployment?.readyReplicas ?? "N/A"} réplicas
               </p>
             </div>
           </div>
