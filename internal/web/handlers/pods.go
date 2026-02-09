@@ -70,6 +70,7 @@ type PodSummary struct {
 	PodIP           string            `json:"podIP,omitempty"`
 	NodeName        string            `json:"nodeName,omitempty"`
 	Phase           string            `json:"phase"`
+	StatusReason    string            `json:"statusReason,omitempty"`
 	Labels          map[string]string `json:"labels,omitempty"`
 	Containers      []ContainerStatus `json:"containers"`
 	ReadyContainers int               `json:"readyContainers"`
@@ -683,6 +684,32 @@ func (h *PodHandler) convertToPodSummary(cluster string, pod *corev1.Pod) PodSum
 
 	createdAt := pod.CreationTimestamp.Format(time.RFC3339)
 
+	// Calcular statusReason (como k9s faz): pegar razão do container com problema
+	statusReason := ""
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
+			statusReason = cs.State.Waiting.Reason // Ex: CrashLoopBackOff, ImagePullBackOff, ErrImagePull
+			break
+		}
+		if cs.State.Terminated != nil && cs.State.Terminated.Reason != "" && cs.State.Terminated.ExitCode != 0 {
+			statusReason = cs.State.Terminated.Reason // Ex: Error, OOMKilled
+			break
+		}
+	}
+	// Fallback: init containers com problema
+	if statusReason == "" {
+		for _, cs := range pod.Status.InitContainerStatuses {
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
+				statusReason = "Init:" + cs.State.Waiting.Reason
+				break
+			}
+			if cs.State.Terminated != nil && cs.State.Terminated.Reason != "" && cs.State.Terminated.ExitCode != 0 {
+				statusReason = "Init:" + cs.State.Terminated.Reason
+				break
+			}
+		}
+	}
+
 	return PodSummary{
 		Cluster:         cluster,
 		Namespace:       pod.Namespace,
@@ -690,6 +717,7 @@ func (h *PodHandler) convertToPodSummary(cluster string, pod *corev1.Pod) PodSum
 		PodIP:           pod.Status.PodIP,
 		NodeName:        pod.Spec.NodeName,
 		Phase:           string(pod.Status.Phase),
+		StatusReason:    statusReason,
 		Labels:          pod.Labels,
 		Containers:      containers,
 		ReadyContainers: readyCount,

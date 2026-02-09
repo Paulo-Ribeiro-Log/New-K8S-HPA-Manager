@@ -271,13 +271,29 @@ export const DeploymentsTab = ({
 
   // Helper: Detectar deployment problemático
   const isDeploymentProblematic = (dep: DeploymentSummary): boolean => {
-    // availableReplicas < desiredReplicas
     if (dep.availableReplicas < dep.replicas) return true;
-    
-    // readyReplicas < desiredReplicas
     if (dep.readyReplicas < dep.replicas) return true;
-    
+    if (dep.statusCondition === "Available" && dep.statusReason) return true;
+    if (dep.statusReason === "ProgressDeadlineExceeded") return true;
+    if (dep.statusCondition === "ReplicaFailure") return true;
     return false;
+  };
+
+  // Helper: Status label para exibição inline
+  const getDeploymentStatusInfo = (dep: DeploymentSummary): { label: string; color: string; tooltip: string } | null => {
+    if (dep.statusCondition === "ReplicaFailure") {
+      return { label: dep.statusReason || "ReplicaFailure", color: "bg-red-500/20 text-red-400", tooltip: dep.statusMessage || "" };
+    }
+    if (dep.statusCondition === "Available" && dep.statusReason && dep.availableReplicas < dep.replicas) {
+      return { label: dep.statusReason, color: "bg-red-500/20 text-red-400", tooltip: dep.statusMessage || "" };
+    }
+    if (dep.statusReason === "ProgressDeadlineExceeded") {
+      return { label: "DeadlineExceeded", color: "bg-red-500/20 text-red-400", tooltip: dep.statusMessage || "" };
+    }
+    if (dep.statusCondition === "Progressing" && dep.statusReason && dep.availableReplicas < dep.replicas) {
+      return { label: dep.statusReason, color: "bg-yellow-500/20 text-yellow-400", tooltip: dep.statusMessage || "" };
+    }
+    return null;
   };
 
   // Undo/Redo history with persistent cache
@@ -2337,6 +2353,7 @@ export const DeploymentsTab = ({
           const isChecked = selectedDeployments.has(getDeploymentKey(dep));
           const hasProblems = isDeploymentProblematic(dep);
           const statusColor = hasProblems ? "text-red-400" : "text-green-400";
+          const statusInfo = getDeploymentStatusInfo(dep);
 
           return (
             <div
@@ -2361,6 +2378,7 @@ export const DeploymentsTab = ({
               <button
                 onClick={() => handleSelectDeployment(dep)}
                 className="flex-1 text-left"
+                title={statusInfo?.tooltip || undefined}
               >
                 {hasProblems && (
                   <div className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full animate-pulse" title="Deployment com problemas" />
@@ -2377,6 +2395,11 @@ export const DeploymentsTab = ({
                 <div className={`text-[11px] mt-1 font-medium ${statusColor}`}>
                   {dep.readyReplicas}/{dep.replicas} ready • {dep.availableReplicas}/{dep.replicas} available
                 </div>
+                {statusInfo && (
+                  <div className={`text-[10px] mt-1 px-1.5 py-0.5 rounded inline-block font-medium ${statusInfo.color}`}>
+                    {statusInfo.label}
+                  </div>
+                )}
               </button>
             </div>
           );
@@ -2547,6 +2570,28 @@ export const DeploymentsTab = ({
             onClose={clearRolloutGauge}
           />
         )}
+
+        {/* Banner de status com erro - exibido quando deployment tem problemas */}
+        {selectedDeployment && (() => {
+          const info = getDeploymentStatusInfo(selectedDeployment);
+          if (!info) return null;
+          const isError = info.color.includes("red");
+          return (
+            <div className={`flex items-start gap-3 p-3 rounded-lg border text-xs ${
+              isError
+                ? "bg-red-500/10 border-red-500/30 text-red-300"
+                : "bg-yellow-500/10 border-yellow-500/30 text-yellow-300"
+            }`}>
+              <TriangleAlert className={`w-4 h-4 mt-0.5 shrink-0 ${isError ? "text-red-400" : "text-yellow-400"}`} />
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold">{selectedDeployment.statusCondition}: {info.label}</div>
+                {info.tooltip && (
+                  <div className="mt-1 text-muted-foreground break-words">{info.tooltip}</div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         <div className="space-y-3">
           <div className="flex flex-col gap-2">
