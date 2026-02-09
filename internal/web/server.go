@@ -675,6 +675,18 @@ func (s *Server) setupRoutes() {
 		secrets.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), secretHandler.Delete)
 	}
 
+	// Certificates TLS
+	certificatesHandler := handlers.NewCertificatesHandler(s.kubeManager)
+	certGroup := api.Group("/certificates")
+	{
+		certGroup.POST("/scan", certificatesHandler.Scan)
+		certGroup.GET("/:cluster/:namespace/:name", certificatesHandler.GetDetails)
+		certGroup.GET("/report", certificatesHandler.Report)
+		// Write Operations (SRE-only)
+		certGroup.POST("/copy", rbacMiddleware.RequireSREGroup(), certificatesHandler.Copy)
+		certGroup.POST("/upload", rbacMiddleware.RequireSREGroup(), certificatesHandler.Upload)
+	}
+
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()
 	api.GET("/validate", validationHandler.Validate)
