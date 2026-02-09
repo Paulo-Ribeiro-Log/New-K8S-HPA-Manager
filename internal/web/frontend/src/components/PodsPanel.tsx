@@ -555,6 +555,7 @@ export const PodsPanel = ({
           pod.namespace.toLowerCase().includes(query) ||
           pod.nodeName?.toLowerCase().includes(query) ||
           pod.phase.toLowerCase().includes(query) ||
+          (pod.statusReason && pod.statusReason.toLowerCase().includes(query)) ||
           pod.containers.some(c => c.name.toLowerCase().includes(query))
         );
       });
@@ -864,12 +865,22 @@ export const PodsPanel = ({
       case "pending":
         return "bg-yellow-500/10 text-yellow-700 dark:text-yellow-400 border-yellow-500/20";
       case "succeeded":
+      case "completed":
         return "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20";
       case "failed":
+      case "error":
+      case "oomkilled":
         return "bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20";
       case "crashloopbackoff":
+      case "imagepullbackoff":
+      case "errimagepull":
+      case "createcontainerconfigerror":
         return "bg-red-600/10 text-red-800 dark:text-red-300 border-red-600/20";
       default:
+        // Init container errors (Init:Error, Init:CrashLoopBackOff, etc)
+        if (phase.toLowerCase().startsWith("init:")) {
+          return "bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20";
+        }
         return "bg-slate-500/10 text-slate-700 dark:text-slate-400 border-slate-500/20";
     }
   };
@@ -1134,8 +1145,8 @@ export const PodsPanel = ({
               >
                 <div className="flex items-center gap-2 mb-1">
                   <div className="font-semibold text-sm truncate flex-1">{pod.name}</div>
-                  <Badge variant="outline" className={`text-xs ${getPhaseColor(pod.phase)}`}>
-                    {pod.phase}
+                  <Badge variant="outline" className={`text-xs ${getPhaseColor(pod.statusReason || pod.phase)}`}>
+                    {pod.statusReason || pod.phase}
                   </Badge>
                 </div>
                 <div className="text-xs text-muted-foreground">{pod.namespace}</div>
@@ -1236,8 +1247,8 @@ export const PodsPanel = ({
                 v{extractImageVersion(selectedPod.containers[0].image)}
               </Badge>
             )}
-            <Badge variant="outline" className={`text-xs ${getPhaseColor(selectedPod.phase)}`}>
-              {selectedPod.phase}
+            <Badge variant="outline" className={`text-xs ${getPhaseColor(selectedPod.statusReason || selectedPod.phase)}`}>
+              {selectedPod.statusReason || selectedPod.phase}
             </Badge>
             <Badge
               variant="outline"
@@ -1757,8 +1768,8 @@ export const PodsPanel = ({
                   <div className="space-y-1">
                     {getSelectedPodsData().map(pod => (
                       <div key={getPodKey(pod)} className="text-xs flex items-center gap-2">
-                        <Badge variant="outline" className={`text-[10px] ${getPhaseColor(pod.phase)}`}>
-                          {pod.phase}
+                        <Badge variant="outline" className={`text-[10px] ${getPhaseColor(pod.statusReason || pod.phase)}`}>
+                          {pod.statusReason || pod.phase}
                         </Badge>
                         <span className="text-muted-foreground">{pod.namespace}/</span>
                         <span className="font-medium">{pod.name}</span>
@@ -2065,7 +2076,7 @@ export const PodsPanel = ({
               <div className="mt-4 p-3 bg-muted rounded-lg text-sm space-y-1">
                 <div><span className="font-medium">Pod:</span> {selectedPod.name}</div>
                 <div><span className="font-medium">Namespace:</span> {selectedPod.namespace}</div>
-                <div><span className="font-medium">Status:</span> <Badge variant="outline" className={getPhaseColor(selectedPod.phase)}>{selectedPod.phase}</Badge></div>
+                <div><span className="font-medium">Status:</span> <Badge variant="outline" className={getPhaseColor(selectedPod.statusReason || selectedPod.phase)}>{selectedPod.statusReason || selectedPod.phase}</Badge>{selectedPod.statusReason && <span className="ml-2 text-muted-foreground">({selectedPod.phase})</span>}</div>
               </div>
             )}
           </div>
@@ -2249,8 +2260,8 @@ export const PodsPanel = ({
                 <div className="space-y-1">
                   {getSelectedPodsData().map(pod => (
                     <div key={getPodKey(pod)} className="text-xs flex items-center gap-2">
-                      <Badge variant="outline" className={`text-[10px] ${getPhaseColor(pod.phase)}`}>
-                        {pod.phase}
+                      <Badge variant="outline" className={`text-[10px] ${getPhaseColor(pod.statusReason || pod.phase)}`}>
+                        {pod.statusReason || pod.phase}
                       </Badge>
                       <span className="text-muted-foreground">{pod.namespace}/</span>
                       <span className="font-medium">{pod.name}</span>
