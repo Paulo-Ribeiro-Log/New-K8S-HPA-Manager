@@ -997,6 +997,40 @@ func buildDeploymentSummary(cluster string, dep *appsv1.Deployment) models.Deplo
 	}
 
 	updatedAt := dep.CreationTimestamp.Time
+
+	// Extrair condition mais relevante para exibir status de erro
+	var statusCondition, statusReason, statusMessage string
+	for _, cond := range dep.Status.Conditions {
+		switch cond.Type {
+		case appsv1.DeploymentAvailable:
+			if cond.Status == corev1.ConditionFalse {
+				// Available=False é o erro mais grave, usar diretamente
+				statusCondition = string(cond.Type)
+				statusReason = cond.Reason
+				statusMessage = cond.Message
+			}
+		case appsv1.DeploymentProgressing:
+			if cond.Reason == "ProgressDeadlineExceeded" {
+				// Deadline excedido é erro grave (só sobrescreve se não há Available=False)
+				if statusCondition == "" {
+					statusCondition = string(cond.Type)
+					statusReason = cond.Reason
+					statusMessage = cond.Message
+				}
+			} else if cond.Status == corev1.ConditionTrue && statusCondition == "" {
+				// Em progresso (rollout em andamento)
+				statusCondition = string(cond.Type)
+				statusReason = cond.Reason
+				statusMessage = cond.Message
+			}
+		case appsv1.DeploymentReplicaFailure:
+			// ReplicaFailure é erro crítico, sempre sobrescreve
+			statusCondition = string(cond.Type)
+			statusReason = cond.Reason
+			statusMessage = cond.Message
+		}
+	}
+
 	return models.DeploymentSummary{
 		Cluster:             cluster,
 		Namespace:           dep.Namespace,
@@ -1008,6 +1042,9 @@ func buildDeploymentSummary(cluster string, dep *appsv1.Deployment) models.Deplo
 		UpdatedReplicas:     dep.Status.UpdatedReplicas,
 		UnavailableReplicas: dep.Status.UnavailableReplicas,
 		CurrentReplicas:     dep.Status.Replicas,
+		StatusCondition:     statusCondition,
+		StatusReason:        statusReason,
+		StatusMessage:       statusMessage,
 		ResourceVersion:     dep.ResourceVersion,
 		UpdatedAt:           updatedAt,
 	}

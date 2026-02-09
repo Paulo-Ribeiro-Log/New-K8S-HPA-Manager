@@ -126,6 +126,9 @@ type DeploymentSummary struct {
 	UpdatedReplicas     int32             `json:"updatedReplicas"`
 	UnavailableReplicas int32             `json:"unavailableReplicas"`
 	CurrentReplicas     int32             `json:"currentReplicas"`
+	StatusCondition     string            `json:"statusCondition,omitempty"`
+	StatusReason        string            `json:"statusReason,omitempty"`
+	StatusMessage       string            `json:"statusMessage,omitempty"`
 	ResourceVersion     string            `json:"resourceVersion,omitempty"`
 	UpdatedAt           time.Time         `json:"updatedAt"`
 }
