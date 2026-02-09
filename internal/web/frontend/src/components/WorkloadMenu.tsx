@@ -9,6 +9,7 @@ import {
   FileCode,
   Key,
   Package,
+  PackageOpen,
   Box,
   Layers,
   Clock,
@@ -41,6 +42,8 @@ const workloadTabs: WorkloadTab[] = [
   { id: "pods", label: "Pods", icon: Layers },
   { id: "events", label: "Events", icon: Calendar },
   { id: "cronjobs", label: "CronJobs", icon: Clock },
+  { id: "namespaces", label: "Namespaces", icon: Database },
+  { id: "helm", label: "Helm", icon: PackageOpen },
   { id: "prometheus", label: "Prometheus", icon: Activity },
 ];
 
