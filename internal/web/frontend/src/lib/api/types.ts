@@ -160,9 +160,14 @@ export interface DeploymentSummary {
   updatedReplicas: number;
   unavailableReplicas: number;
   currentReplicas: number;
+  statusCondition?: string;
+  statusReason?: string;
+  statusMessage?: string;
   resourceVersion?: string;
   updatedAt: string;
 }
+
+// Nota: statusCondition/statusReason/statusMessage vêm das Conditions do Deployment K8s
 
 export interface DeploymentMetadata {
   uid?: string;
@@ -366,6 +371,7 @@ export interface PodSummary {
   podIP?: string;
   nodeName?: string;
   phase: string;
+  statusReason?: string;
   labels?: Record<string, string>;
   containers: ContainerStatus[];
   readyContainers: number;
