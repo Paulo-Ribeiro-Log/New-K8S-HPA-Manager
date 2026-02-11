@@ -94,17 +94,19 @@ interface IndexProps {
 const Index = ({ onLogout }: IndexProps) => {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [selectedCluster, setSelectedCluster] = useState("");
-  const [selectedNamespace, setSelectedNamespace] = useState(""); // Namespace global (HPAs, Namespaces tab)
+  // ✅ FIX: Inicializar com "__all__" para exibir todos os recursos por padrão
+  const [selectedNamespace, setSelectedNamespace] = useState("__all__"); // Namespace global (HPAs, Namespaces tab)
   const [selectedHPA, setSelectedHPA] = useState<HPA | null>(null);
   const [selectedNodePool, setSelectedNodePool] = useState<NodePool | null>(null);
 
   // 🔄 Namespace independente por aba workload (evita interferência ao trocar namespaces em outras abas)
-  const [podsNamespace, setPodsNamespace] = useState("");
-  const [configMapsNamespace, setConfigMapsNamespace] = useState("");
-  const [deploymentsNamespace, setDeploymentsNamespace] = useState("");
-  const [secretsNamespace, setSecretsNamespace] = useState("");
-  const [containersNamespace, setContainersNamespace] = useState("");
-  const [ingressNamespace, setIngressNamespace] = useState("");
+  // ✅ FIX: Inicializar com "__all__" para exibir todos os recursos (incluindo problemáticos) por padrão
+  const [podsNamespace, setPodsNamespace] = useState("__all__");
+  const [configMapsNamespace, setConfigMapsNamespace] = useState("__all__");
+  const [deploymentsNamespace, setDeploymentsNamespace] = useState("__all__");
+  const [secretsNamespace, setSecretsNamespace] = useState("__all__");
+  const [containersNamespace, setContainersNamespace] = useState("__all__");
+  const [ingressNamespace, setIngressNamespace] = useState("__all__");
   const [showApplyModal, setShowApplyModal] = useState(false);
   const [hpasToApply, setHpasToApply] = useState<Array<{ key: string; current: HPA; original: HPA }>>([]);
   const [showNodePoolApplyModal, setShowNodePoolApplyModal] = useState(false);
