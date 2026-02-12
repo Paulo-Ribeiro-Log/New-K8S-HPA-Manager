@@ -2041,8 +2041,8 @@ make release                     # Gera binários em build/release/
 
 ## 📝 Histórico de Sessões Recentes
 
-### Sessão 11/02/2026 - Visualização Completa de Nodes do Node Pool
-**Contexto**: Implementação de sistema completo para visualizar nodes de um node pool com métricas detalhadas
+### Sessão 11/02/2026 - Visualização Completa de Nodes do Node Pool (Refatoração com Tabs)
+**Contexto**: Implementação de sistema completo para visualizar nodes de um node pool com métricas detalhadas, integrado como TAB no painel de visualizações
 **Alterações**:
 - **Backend**:
   - `internal/kubernetes/node_methods.go` - Métodos completos para gerenciamento de nodes:
@@ -2094,7 +2094,24 @@ make release                     # Gera binários em build/release/
 - `internal/web/server.go` - 2 rotas REST registradas
 - `internal/web/frontend/src/lib/api/client.ts` - 2 métodos API
 - `internal/web/frontend/src/lib/api/types.ts` - 7 interfaces TypeScript
-- `internal/web/frontend/src/components/NodePoolEditor.tsx` - Integração
+- `internal/web/frontend/src/components/NodePoolEditor.tsx` - **REFATORAÇÃO COMPLETA**
+
+**Refatoração Final**:
+- NodePoolEditor completamente refatorado com estrutura de **Tabs** (shadcn/ui)
+- 3 tabs implementadas: **Configuration**, **Nodes** e **Disk**
+- Tab **Configuration**: Mantém todos os Cards originais (VM Info, Scaling, Sequential Execution, Original Values)
+- Tab **Nodes**: Tabela completa de nodes com métricas inline, botão "View Details" abre NodeDetailsModal
+- Tab **Disk**: Métricas de disco inline com resumo e botão para modal detalhado
+- Contador de nodes no tab trigger: "Nodes (X)"
+- Estados de loading, erro e vazio bem definidos
+- Remove NodeDetailsTab.tsx standalone (não mais necessário)
+- Script automático de refatoração: `/tmp/refactor-nodepool-tabs.sh`
+
+**UX Melhorada**:
+- Organização clara com tabs ao invés de scroll vertical
+- Informações agrupadas logicamente
+- Acesso rápido a diferentes visualizações
+- Mantém todos os botões de ação (Save, Apply, Cancel) abaixo das tabs
 
 ---
 
