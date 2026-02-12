@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Plus, X, Loader2, Key, Code2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -337,7 +338,7 @@ ${dataSection}`;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-[1400px] max-h-[95vh] overflow-hidden">
         <DialogHeader>
           <DialogTitle>Criar Novo Secret</DialogTitle>
           <DialogDescription>
@@ -345,7 +346,8 @@ ${dataSection}`;
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-4">
+        <ScrollArea className="h-[calc(95vh-220px)] pr-4">
+          <div className="space-y-4 py-4">
           {/* Tipo de Secret */}
           <div className="space-y-2">
             <Label htmlFor="secret-type">Tipo de Secret</Label>
@@ -409,13 +411,19 @@ ${dataSection}`;
                   </div>
                 )}
               </div>
-              <p className="text-xs text-muted-foreground">
-                Edite type, labels, annotations, data e stringData. Os campos apiVersion, kind, name e namespace serão adicionados automaticamente.
-              </p>
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground">
+                  Edite type, labels, annotations, data e stringData. Os campos apiVersion, kind, name e namespace serão adicionados automaticamente.
+                </p>
+                <p className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Code2 className="h-3 w-3" />
+                  Atalhos: <kbd className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono">Ctrl+Shift+E</kbd> Encode Base64 | <kbd className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono">Ctrl+Shift+D</kbd> Decode Base64
+                </p>
+              </div>
               <MonacoYamlEditor
                 value={customYaml}
                 onChange={setCustomYaml}
-                height={350}
+                height={500}
                 readOnly={false}
               />
             </div>
@@ -555,7 +563,8 @@ ${dataSection}`;
               )}
             </>
           )}
-        </div>
+          </div>
+        </ScrollArea>
 
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={handleCancel} disabled={isCreating}>

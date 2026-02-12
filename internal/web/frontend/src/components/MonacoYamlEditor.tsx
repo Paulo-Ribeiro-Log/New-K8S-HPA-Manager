@@ -37,11 +37,111 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
 
   const handleMount: OnMount = (editor, monacoInstance) => {
     editorRef.current = editor;
+
+    // Comando Ctrl+S para salvar
     editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS, () => {
       if (!onChange) return;
       const currentValue = editor.getValue();
       onChange(currentValue);
     });
+
+    // Comando Ctrl+Shift+E para Encode Base64
+    if (!readOnly) {
+      editor.addCommand(
+        monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyE,
+        () => {
+          const selection = editor.getSelection();
+          if (!selection) return;
+
+          const selectedText = editor.getModel()?.getValueInRange(selection);
+          if (!selectedText) return;
+
+          try {
+            const encoded = btoa(unescape(encodeURIComponent(selectedText)));
+            editor.executeEdits("encode-base64", [
+              { range: selection, text: encoded, forceMoveMarkers: true },
+            ]);
+            if (onChange) onChange(editor.getValue());
+          } catch (error) {
+            console.error("Erro ao encodar base64:", error);
+          }
+        }
+      );
+
+      // Comando Ctrl+Shift+D para Decode Base64
+      editor.addCommand(
+        monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyD,
+        () => {
+          const selection = editor.getSelection();
+          if (!selection) return;
+
+          const selectedText = editor.getModel()?.getValueInRange(selection);
+          if (!selectedText) return;
+
+          try {
+            const decoded = decodeURIComponent(escape(atob(selectedText)));
+            editor.executeEdits("decode-base64", [
+              { range: selection, text: decoded, forceMoveMarkers: true },
+            ]);
+            if (onChange) onChange(editor.getValue());
+          } catch (error) {
+            console.error("Erro ao decodar base64:", error);
+          }
+        }
+      );
+
+      // Menu de contexto (botão direito)
+      editor.addAction({
+        id: "encode-base64-action",
+        label: "Encode para Base64",
+        keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyE],
+        contextMenuGroupId: "1_modification",
+        contextMenuOrder: 1,
+        run: (ed) => {
+          const selection = ed.getSelection();
+          if (!selection) return;
+
+          const selectedText = ed.getModel()?.getValueInRange(selection);
+          if (!selectedText) return;
+
+          try {
+            const encoded = btoa(unescape(encodeURIComponent(selectedText)));
+            ed.executeEdits("encode-base64", [
+              { range: selection, text: encoded, forceMoveMarkers: true },
+            ]);
+            if (onChange) onChange(ed.getValue());
+          } catch (error) {
+            console.error("Erro ao encodar base64:", error);
+          }
+        },
+      });
+
+      editor.addAction({
+        id: "decode-base64-action",
+        label: "Decode de Base64",
+        keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyMod.Shift | monacoInstance.KeyCode.KeyD],
+        contextMenuGroupId: "1_modification",
+        contextMenuOrder: 2,
+        run: (ed) => {
+          const selection = ed.getSelection();
+          if (!selection) return;
+
+          const selectedText = ed.getModel()?.getValueInRange(selection);
+          if (!selectedText) return;
+
+          try {
+            const decoded = decodeURIComponent(escape(atob(selectedText)));
+            ed.executeEdits("decode-base64", [
+              { range: selection, text: decoded, forceMoveMarkers: true },
+            ]);
+            if (onChange) onChange(ed.getValue());
+          } catch (error) {
+            console.error("Erro ao decodar base64:", error);
+          }
+        },
+      });
+    }
+
     setMounted(true);
   };
 
@@ -105,7 +205,7 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
 
   const commonOptions = {
     automaticLayout: true,
-    scrollBeyondLastLine: false,
+    scrollBeyondLastLine: true,  // ✅ Permite scroll além da última linha (força scroll sempre)
     wordWrap: "on" as const,
     tabSize: 2,
     formatOnPaste: true,
@@ -123,6 +223,7 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
       useShadows: true,
       verticalScrollbarSize: 14,
       horizontalScrollbarSize: 14,
+      alwaysConsumeMouseWheel: true,  // ✅ Força scroll wheel sempre ativo
     },
     renderWhitespace: "selection" as const,
     renderLineHighlight: "all" as const,
