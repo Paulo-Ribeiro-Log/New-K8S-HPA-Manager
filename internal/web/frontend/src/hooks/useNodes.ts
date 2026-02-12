@@ -9,16 +9,22 @@ export function useNodes(cluster: string, nodePoolName: string) {
 
   const fetchNodes = async () => {
     if (!cluster || !nodePoolName) {
+      console.log('[useNodes] Skipping fetch - missing params:', { cluster, nodePoolName });
       setNodes([]);
       return;
     }
+
+    console.log('[useNodes] Fetching nodes for:', { cluster, nodePoolName });
 
     try {
       setLoading(true);
       setError(null);
       const response: NodesListResponse = await apiClient.getNodesInNodePool(cluster, nodePoolName);
+      console.log('[useNodes] API Response:', response);
+      console.log('[useNodes] Nodes count:', response.nodes?.length || 0);
       setNodes(response.nodes || []);
     } catch (err) {
+      console.error('[useNodes] Error fetching nodes:', err);
       setError(err instanceof Error ? err.message : "Failed to fetch nodes");
       setNodes([]);
     } finally {
