@@ -324,7 +324,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         } else {
           // Ctrl+S: Save to staging
           if (hasChanges) {
-            handleSave();
+            handleApply();
           }
         }
       } else if (e.key === 'z') {
@@ -980,6 +980,14 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         loading={diskMetricsLoading}
         vmSize={nodePool.vm_size}
         cluster={clusterWithAdmin}
+      />
+
+      {/* Node Details Modal */}
+      <NodeDetailsModal
+        open={showNodeDetailsModal}
+        onOpenChange={handleCloseNodeModal}
+        nodeDetails={nodeDetails}
+        loading={loadingNodeDetails}
       />
     </div>
   );
