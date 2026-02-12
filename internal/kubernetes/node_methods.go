@@ -1,0 +1,404 @@
+package kubernetes
+
+import (
+	"context"
+	"fmt"
+	"os/exec"
+	"sort"
+	"sync"
+
+	"k8s-hpa-manager/internal/models"
+
+	"github.com/rs/zerolog/log"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// ==================================================================
+// Node Management Methods
+// ==================================================================
+
+// GetNodesWithMetrics retorna lista de nodes de um node pool com métricas de uso
+func (c *Client) GetNodesWithMetrics(ctx context.Context, nodePoolName string) ([]models.NodeInfo, error) {
+	// 1. Obter lista de nodes do node pool (reutiliza GetNodesInNodePool)
+	nodeNames, err := c.GetNodesInNodePool(ctx, nodePoolName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get nodes for node pool %s: %w", nodePoolName, err)
+	}
+
+	// 2. Buscar detalhes de cada node em paralelo
+	nodeInfos := make([]models.NodeInfo, 0, len(nodeNames))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(nodeNames))
+
+	for _, nodeName := range nodeNames {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+
+			nodeInfo, err := c.getNodeInfo(ctx, name, nodePoolName)
+			if err != nil {
+				errChan <- fmt.Errorf("failed to get info for node %s: %w", name, err)
+				return
+			}
+
+			mu.Lock()
+			nodeInfos = append(nodeInfos, nodeInfo)
+			mu.Unlock()
+		}(nodeName)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	// Coletar erros (se houver)
+	if len(errChan) > 0 {
+		return nil, <-errChan
+	}
+
+	// 3. Ordenar por nome
+	sort.Slice(nodeInfos, func(i, j int) bool {
+		return nodeInfos[i].Name < nodeInfos[j].Name
+	})
+
+	return nodeInfos, nil
+}
+
+// getNodeInfo obtém informações detalhadas de um node individual (helper privado)
+func (c *Client) getNodeInfo(ctx context.Context, nodeName, nodePoolName string) (models.NodeInfo, error) {
+	// Buscar node do Kubernetes API
+	node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return models.NodeInfo{}, fmt.Errorf("failed to get node %s: %w", nodeName, err)
+	}
+
+	nodeInfo := models.NodeInfo{
+		Name:              node.Name,
+		NodePoolName:      nodePoolName,
+		ClusterName:       c.cluster,
+		KubernetesVersion: node.Status.NodeInfo.KubeletVersion,
+		ProviderID:        node.Spec.ProviderID,
+		Hostname:          node.Name, // Usar nome do node como hostname
+		CreatedAt:         node.CreationTimestamp.Time,
+		Age:               formatAge(node.CreationTimestamp.Time),
+		Unschedulable:     node.Spec.Unschedulable,
+		Labels:            copyStringMap(node.Labels),
+		Annotations:       copyStringMap(node.Annotations),
+		Taints:            node.Spec.Taints,
+	}
+
+	// Extrair IPs
+	for _, addr := range node.Status.Addresses {
+		switch addr.Type {
+		case corev1.NodeInternalIP:
+			nodeInfo.InternalIP = addr.Address
+		case corev1.NodeExternalIP:
+			nodeInfo.ExternalIP = addr.Address
+		}
+	}
+
+	// Capacity e Allocatable
+	if cpu, ok := node.Status.Capacity[corev1.ResourceCPU]; ok {
+		nodeInfo.CPUCapacity = cpu.String()
+	}
+	if memory, ok := node.Status.Capacity[corev1.ResourceMemory]; ok {
+		nodeInfo.MemoryCapacity = formatMemory(memory.Value())
+	}
+	if pods, ok := node.Status.Capacity[corev1.ResourcePods]; ok {
+		nodeInfo.PodsCapacity = int(pods.Value())
+	}
+
+	if cpu, ok := node.Status.Allocatable[corev1.ResourceCPU]; ok {
+		nodeInfo.CPUAllocatable = cpu.String()
+	}
+	if memory, ok := node.Status.Allocatable[corev1.ResourceMemory]; ok {
+		nodeInfo.MemoryAllocatable = formatMemory(memory.Value())
+	}
+	if pods, ok := node.Status.Allocatable[corev1.ResourcePods]; ok {
+		nodeInfo.PodsAllocatable = int(pods.Value())
+	}
+
+	// Conditions
+	nodeInfo.Conditions = make([]models.NodeCondition, len(node.Status.Conditions))
+	for i, cond := range node.Status.Conditions {
+		nodeInfo.Conditions[i] = models.NodeCondition{
+			Type:               string(cond.Type),
+			Status:             string(cond.Status),
+			LastTransitionTime: cond.LastTransitionTime.Time,
+			Reason:             cond.Reason,
+			Message:            cond.Message,
+		}
+	}
+
+	// Determinar status geral do node
+	nodeInfo.Status = c.determineNodeStatus(node)
+
+	// Buscar métricas (CPU, Memory usage)
+	if err := c.enrichNodeWithMetrics(ctx, &nodeInfo, nodeName); err != nil {
+		// Não falhar se métricas não disponíveis - apenas logar warning
+		log.Warn().Err(err).Str("node", nodeName).Msg("Failed to get node metrics")
+	}
+
+	// Contar pods no node
+	if err := c.enrichNodeWithPodCount(ctx, &nodeInfo, nodeName); err != nil {
+		log.Warn().Err(err).Str("node", nodeName).Msg("Failed to count pods on node")
+	}
+
+	return nodeInfo, nil
+}
+
+// determineNodeStatus determina status geral do node baseado nas conditions
+func (c *Client) determineNodeStatus(node *corev1.Node) string {
+	if node.Spec.Unschedulable {
+		return "SchedulingDisabled" // Cordoned
+	}
+
+	// Verificar condition "Ready"
+	for _, cond := range node.Status.Conditions {
+		if cond.Type == corev1.NodeReady {
+			if cond.Status == corev1.ConditionTrue {
+				return "Ready"
+			}
+			return "NotReady"
+		}
+	}
+
+	return "Unknown"
+}
+
+// enrichNodeWithMetrics adiciona métricas de uso ao NodeInfo
+func (c *Client) enrichNodeWithMetrics(ctx context.Context, nodeInfo *models.NodeInfo, nodeName string) error {
+	// Tentar obter do Metrics Server primeiro
+	if c.metricsClient != nil {
+		nodeMetrics, err := c.metricsClient.MetricsV1beta1().NodeMetricses().Get(ctx, nodeName, metav1.GetOptions{})
+		if err == nil {
+			// CPU
+			if cpu, ok := nodeMetrics.Usage[corev1.ResourceCPU]; ok {
+				nodeInfo.CPUUsed = cpu.String()
+
+				// Calcular % (usado / allocatable * 100)
+				if allocatable := parseQuantityMilliCPU(nodeInfo.CPUAllocatable); allocatable > 0 {
+					used := float64(cpu.MilliValue())
+					nodeInfo.CPUUsagePercent = (used / allocatable) * 100
+				}
+			}
+
+			// Memory
+			if memory, ok := nodeMetrics.Usage[corev1.ResourceMemory]; ok {
+				nodeInfo.MemoryUsed = formatMemory(memory.Value())
+
+				if allocatable := parseMemoryBytes(nodeInfo.MemoryAllocatable); allocatable > 0 {
+					used := float64(memory.Value())
+					nodeInfo.MemoryUsagePercent = (used / allocatable) * 100
+				}
+			}
+
+			// Disk usage - não disponível diretamente no Metrics Server
+			// Placeholder: 0% (seria necessário Prometheus node_exporter)
+			nodeInfo.DiskUsagePercent = 0
+
+			return nil
+		}
+		log.Debug().Err(err).Str("node", nodeName).Msg("Metrics Server unavailable, metrics will be empty")
+	}
+
+	// Metrics Server não disponível - deixar métricas vazias
+	return nil
+}
+
+// enrichNodeWithPodCount conta pods rodando no node
+func (c *Client) enrichNodeWithPodCount(ctx context.Context, nodeInfo *models.NodeInfo, nodeName string) error {
+	pods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
+	})
+	if err != nil {
+		return err
+	}
+
+	nodeInfo.PodsTotal = len(pods.Items)
+	nodeInfo.PodsRunning = 0
+
+	for _, pod := range pods.Items {
+		if pod.Status.Phase == corev1.PodRunning {
+			nodeInfo.PodsRunning++
+		}
+	}
+
+	return nil
+}
+
+// GetNodeDetails retorna detalhes completos de um node incluindo pods e eventos
+func (c *Client) GetNodeDetails(ctx context.Context, nodeName, nodePoolName string) (*models.NodeDetailsResponse, error) {
+	// 1. Obter informações do node
+	nodeInfo, err := c.getNodeInfo(ctx, nodeName, nodePoolName)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Buscar pods rodando no node
+	pods, err := c.getPodsOnNode(ctx, nodeName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pods on node %s: %w", nodeName, err)
+	}
+
+	// 3. Buscar eventos recentes do node
+	events, err := c.getNodeEvents(ctx, nodeName)
+	if err != nil {
+		// Não falhar - eventos são opcionais
+		log.Warn().Err(err).Str("node", nodeName).Msg("Failed to get node events")
+	}
+
+	// 4. Executar kubectl describe (opcional)
+	kubectlDescribe := ""
+	if describe, err := c.executeKubectlDescribeNode(nodeName); err == nil {
+		kubectlDescribe = describe
+	}
+
+	return &models.NodeDetailsResponse{
+		Node:            nodeInfo,
+		Pods:            pods,
+		Events:          events,
+		KubectlDescribe: kubectlDescribe,
+	}, nil
+}
+
+// getPodsOnNode retorna lista de pods rodando em um node
+func (c *Client) getPodsOnNode(ctx context.Context, nodeName string) ([]models.PodOnNode, error) {
+	podsList, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	pods := make([]models.PodOnNode, 0, len(podsList.Items))
+	for _, pod := range podsList.Items {
+		podInfo := models.PodOnNode{
+			Name:      pod.Name,
+			Namespace: pod.Namespace,
+			Phase:     string(pod.Status.Phase),
+		}
+
+		// Agregar recursos de todos os containers
+		var cpuReq, cpuLim, memReq, memLim resource.Quantity
+		var restarts int32
+
+		for _, container := range pod.Spec.Containers {
+			if req, ok := container.Resources.Requests[corev1.ResourceCPU]; ok {
+				cpuReq.Add(req)
+			}
+			if lim, ok := container.Resources.Limits[corev1.ResourceCPU]; ok {
+				cpuLim.Add(lim)
+			}
+			if req, ok := container.Resources.Requests[corev1.ResourceMemory]; ok {
+				memReq.Add(req)
+			}
+			if lim, ok := container.Resources.Limits[corev1.ResourceMemory]; ok {
+				memLim.Add(lim)
+			}
+		}
+
+		// Contar restarts
+		for _, status := range pod.Status.ContainerStatuses {
+			restarts += status.RestartCount
+		}
+
+		podInfo.CPURequest = cpuReq.String()
+		podInfo.CPULimit = cpuLim.String()
+		podInfo.MemoryRequest = formatMemory(memReq.Value())
+		podInfo.MemoryLimit = formatMemory(memLim.Value())
+		podInfo.RestartCount = int(restarts)
+
+		pods = append(pods, podInfo)
+	}
+
+	return pods, nil
+}
+
+// getNodeEvents retorna eventos recentes do node (últimos 20)
+func (c *Client) getNodeEvents(ctx context.Context, nodeName string) ([]models.NodeEvent, error) {
+	eventsList, err := c.clientset.CoreV1().Events("").List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Ordenar por timestamp (mais recente primeiro)
+	sort.Slice(eventsList.Items, func(i, j int) bool {
+		return eventsList.Items[i].LastTimestamp.Time.After(eventsList.Items[j].LastTimestamp.Time)
+	})
+
+	// Limitar a 20 eventos mais recentes
+	maxEvents := 20
+	if len(eventsList.Items) > maxEvents {
+		eventsList.Items = eventsList.Items[:maxEvents]
+	}
+
+	events := make([]models.NodeEvent, 0, len(eventsList.Items))
+	for _, event := range eventsList.Items {
+		events = append(events, models.NodeEvent{
+			Type:            event.Type,
+			Reason:          event.Reason,
+			Message:         event.Message,
+			Count:           event.Count,
+			FirstTimestamp:  event.FirstTimestamp.Time,
+			LastTimestamp:   event.LastTimestamp.Time,
+			SourceComponent: event.Source.Component,
+			SourceHost:      event.Source.Host,
+		})
+	}
+
+	return events, nil
+}
+
+// executeKubectlDescribeNode executa kubectl describe node
+func (c *Client) executeKubectlDescribeNode(nodeName string) (string, error) {
+	cmd := exec.Command("kubectl", "describe", "node", nodeName, "--context", c.cluster)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("kubectl describe failed: %w\nOutput: %s", err, string(output))
+	}
+	return string(output), nil
+}
+
+// ==================================================================
+// Helper Functions
+// ==================================================================
+
+// formatMemory formata bytes em unidades legíveis (Gi, Mi, Ki)
+func formatMemory(bytes int64) string {
+	const (
+		Ki = 1024
+		Mi = 1024 * Ki
+		Gi = 1024 * Mi
+	)
+
+	if bytes >= Gi {
+		return fmt.Sprintf("%.1fGi", float64(bytes)/float64(Gi))
+	}
+	if bytes >= Mi {
+		return fmt.Sprintf("%.0fMi", float64(bytes)/float64(Mi))
+	}
+	return fmt.Sprintf("%.0fKi", float64(bytes)/float64(Ki))
+}
+
+// parseQuantityMilliCPU converte string CPU quantity para float64 millicores
+func parseQuantityMilliCPU(s string) float64 {
+	q, err := resource.ParseQuantity(s)
+	if err != nil {
+		return 0
+	}
+	return float64(q.MilliValue())
+}
+
+// parseMemoryBytes converte string memory quantity para float64 bytes
+func parseMemoryBytes(s string) float64 {
+	q, err := resource.ParseQuantity(s)
+	if err != nil {
+		return 0
+	}
+	return float64(q.Value())
+}

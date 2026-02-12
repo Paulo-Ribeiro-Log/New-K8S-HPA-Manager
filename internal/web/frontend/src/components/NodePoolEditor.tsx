@@ -15,6 +15,7 @@ import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import CordonDrainConfigModal, { CordonDrainConfig } from "./CordonDrainConfigModal";
 import NodePoolDiskDetailsModal from "./NodePoolDiskDetailsModal";
+import NodeDetailsTab from "./NodeDetailsTab";
 import { formatVMSpecs, formatDiskSpecs, getVMSpecs } from "@/lib/azure-vm-specs";
 import { useNodePoolDiskMetrics } from "@/hooks/useNodePoolDiskMetrics";
 import { ProtectedAction } from "@/components/rbac";
@@ -697,6 +698,12 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           Cancelar
         </Button>
       </div>
+
+      {/* Node Details Tab */}
+      <NodeDetailsTab
+        cluster={clusterWithAdmin}
+        nodePoolName={nodePool.name}
+      />
 
       {/* Cordon/Drain Config Modal */}
       <CordonDrainConfigModal

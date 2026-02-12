@@ -7,6 +7,8 @@ import type {
   NamespaceManifest,
   HPA,
   NodePool,
+  NodesListResponse,
+  NodeDetailsResponse,
   CronJob,
   PrometheusResource,
   ValidationStatus,
@@ -1438,6 +1440,20 @@ class APIClient {
   async getStorageOverview(cluster: string): Promise<{ success: boolean; data: any }> {
     const response = await this.request<{ success: boolean; data: any }>(
       `/nodepools/storage-overview?cluster=${encodeURIComponent(cluster)}`
+    );
+    return response;
+  }
+
+  async getNodesInNodePool(cluster: string, nodePoolName: string): Promise<NodesListResponse> {
+    const response = await this.request<NodesListResponse>(
+      `/nodes/${encodeURIComponent(cluster)}/${encodeURIComponent(nodePoolName)}`
+    );
+    return response;
+  }
+
+  async getNodeDetails(cluster: string, nodePoolName: string, nodeName: string): Promise<NodeDetailsResponse> {
+    const response = await this.request<NodeDetailsResponse>(
+      `/nodes/${encodeURIComponent(cluster)}/${encodeURIComponent(nodePoolName)}/${encodeURIComponent(nodeName)}`
     );
     return response;
   }
