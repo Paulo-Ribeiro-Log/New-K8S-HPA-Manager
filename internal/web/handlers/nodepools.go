@@ -25,6 +25,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 // NodePoolHandler gerencia requisições relacionadas a Node Pools
@@ -1929,6 +1930,19 @@ func (h *NodePoolHandler) ListNodesInNodePool(c *gin.Context) {
 	// Type assertion para nosso wrapper Client
 	k8sClient := kubernetes.NewClient(clientset, cluster)
 
+	// Configurar Metrics Client para coletar métricas de CPU/Memory
+	metricsClientInterface, err := h.kubeManager.GetMetricsClient(cluster)
+	if err != nil {
+		log.Warn().Err(err).Str("cluster", cluster).Msg("Metrics client unavailable, metrics will be empty")
+	} else {
+		// Type assertion para o tipo concreto
+		if metricsClient, ok := metricsClientInterface.(*metricsclientset.Clientset); ok {
+			k8sClient.SetMetricsClient(metricsClient)
+		} else {
+			log.Warn().Str("cluster", cluster).Msg("Failed to assert metrics client type")
+		}
+	}
+
 	ctx := c.Request.Context()
 
 	// Buscar nodes com métricas
@@ -1986,6 +2000,17 @@ func (h *NodePoolHandler) GetNodeDetails(c *gin.Context) {
 	}
 
 	k8sClient := kubernetes.NewClient(clientset, cluster)
+
+	// Configurar Metrics Client para coletar métricas de CPU/Memory
+	metricsClientInterface, err := h.kubeManager.GetMetricsClient(cluster)
+	if err != nil {
+		log.Warn().Err(err).Str("cluster", cluster).Msg("Metrics client unavailable, metrics will be empty")
+	} else {
+		// Type assertion para o tipo concreto
+		if metricsClient, ok := metricsClientInterface.(*metricsclientset.Clientset); ok {
+			k8sClient.SetMetricsClient(metricsClient)
+		}
+	}
 
 	ctx := c.Request.Context()
 
