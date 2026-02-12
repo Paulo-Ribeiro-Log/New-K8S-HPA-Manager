@@ -411,13 +411,19 @@ ${dataSection}`;
                   </div>
                 )}
               </div>
-              <p className="text-xs text-muted-foreground">
-                Edite type, labels, annotations, data e stringData. Os campos apiVersion, kind, name e namespace serão adicionados automaticamente.
-              </p>
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground">
+                  Edite type, labels, annotations, data e stringData. Os campos apiVersion, kind, name e namespace serão adicionados automaticamente.
+                </p>
+                <p className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Code2 className="h-3 w-3" />
+                  Atalhos: <kbd className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono">Ctrl+Shift+E</kbd> Encode Base64 | <kbd className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono">Ctrl+Shift+D</kbd> Decode Base64
+                </p>
+              </div>
               <MonacoYamlEditor
                 value={customYaml}
                 onChange={setCustomYaml}
-                height={500}
+                height={350}
                 readOnly={false}
               />
             </div>
