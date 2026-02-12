@@ -16,7 +16,7 @@ interface NodeDetailsModalProps {
 
 const StatusBadge = ({ status }: { status: string }) => {
   const getVariant = () => {
-    if (status === "Ready") return "success";
+    if (status === "Ready") return "default";
     if (status === "NotReady") return "destructive";
     return "secondary";
   };
@@ -213,13 +213,13 @@ export default function NodeDetailsModal({
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             {condition.status === "True" ? (
-                              <CheckCircle2 className="w-4 h-4 text-success" />
+                              <CheckCircle2 className="w-4 h-4 text-green-600" />
                             ) : (
-                              <AlertTriangle className="w-4 h-4 text-warning" />
+                              <AlertTriangle className="w-4 h-4 text-yellow-600" />
                             )}
                             <span className="font-medium text-sm">{condition.type}</span>
                           </div>
-                          <Badge variant={condition.status === "True" ? "success" : "secondary"} className="text-xs">
+                          <Badge variant={condition.status === "True" ? "default" : "secondary"} className="text-xs">
                             {condition.status}
                           </Badge>
                         </div>
@@ -253,7 +253,7 @@ export default function NodeDetailsModal({
                         </h4>
                         <p className="text-xs text-muted-foreground">Namespace: {pod.namespace}</p>
                       </div>
-                      <Badge variant={pod.phase === "Running" ? "success" : "secondary"}>
+                      <Badge variant={pod.phase === "Running" ? "default" : "secondary"}>
                         {pod.phase}
                       </Badge>
                     </div>
