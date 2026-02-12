@@ -47,7 +47,7 @@ export default function NodeDetailsModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-6xl max-h-[90vh]">
+      <DialogContent className="max-w-6xl max-h-[95vh] overflow-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Server className="w-5 h-5" />
@@ -59,17 +59,17 @@ export default function NodeDetailsModal({
           </DialogDescription>
         </DialogHeader>
 
-        <Tabs defaultValue="overview" className="w-full">
-          <TabsList className="grid w-full grid-cols-4">
+        <Tabs defaultValue="overview" className="w-full h-full flex flex-col">
+          <TabsList className="grid w-full grid-cols-4 flex-shrink-0">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="pods">Pods ({node.pods_total})</TabsTrigger>
             <TabsTrigger value="events">Events ({events.length})</TabsTrigger>
             <TabsTrigger value="describe">kubectl describe</TabsTrigger>
           </TabsList>
 
-          <ScrollArea className="max-h-[calc(90vh-180px)] mt-4">
+          <ScrollArea className="h-[calc(95vh-220px)] mt-4 pr-4">
             {/* Overview Tab */}
-            <TabsContent value="overview" className="space-y-6 mt-0 pr-4">
+            <TabsContent value="overview" className="space-y-6 mt-0">
               {/* Basic Info */}
               <div>
                 <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
@@ -237,7 +237,7 @@ export default function NodeDetailsModal({
             </TabsContent>
 
             {/* Pods Tab */}
-            <TabsContent value="pods" className="space-y-3 mt-0 pr-4">
+            <TabsContent value="pods" className="space-y-3 mt-0">
               {pods.length === 0 ? (
                 <div className="text-center text-muted-foreground py-8">
                   No pods running on this node
@@ -287,7 +287,7 @@ export default function NodeDetailsModal({
             </TabsContent>
 
             {/* Events Tab */}
-            <TabsContent value="events" className="space-y-3 mt-0 pr-4">
+            <TabsContent value="events" className="space-y-3 mt-0">
               {events.length === 0 ? (
                 <div className="text-center text-muted-foreground py-8">
                   No recent events
@@ -318,7 +318,7 @@ export default function NodeDetailsModal({
             </TabsContent>
 
             {/* kubectl describe Tab */}
-            <TabsContent value="describe" className="mt-0 pr-4">
+            <TabsContent value="describe" className="mt-0">
               {kubectl_describe ? (
                 <div className="p-4 border rounded-lg bg-muted/30">
                   <pre className="text-xs font-mono whitespace-pre-wrap overflow-x-auto">
