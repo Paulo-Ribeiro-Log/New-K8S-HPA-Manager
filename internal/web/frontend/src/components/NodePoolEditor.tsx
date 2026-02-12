@@ -8,16 +8,19 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import type { NodePool } from "@/lib/api/types";
-import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import type { NodePool, NodeInfo } from "@/lib/api/types";
+import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import CordonDrainConfigModal, { CordonDrainConfig } from "./CordonDrainConfigModal";
 import NodePoolDiskDetailsModal from "./NodePoolDiskDetailsModal";
-import NodeDetailsTab from "./NodeDetailsTab";
 import { formatVMSpecs, formatDiskSpecs, getVMSpecs } from "@/lib/azure-vm-specs";
 import { useNodePoolDiskMetrics } from "@/hooks/useNodePoolDiskMetrics";
+import { useNodes, useNodeDetails } from "@/hooks/useNodes";
+import NodeDetailsModal from "./NodeDetailsModal";
 import { ProtectedAction } from "@/components/rbac";
 
 interface NodePoolEditorProps {
@@ -66,6 +69,23 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
 
   // Disk details modal state
   const [showDiskDetailsModal, setShowDiskDetailsModal] = useState(false);
+
+  // Nodes states
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [showNodeDetailsModal, setShowNodeDetailsModal] = useState(false);
+
+  // Fetch nodes from API
+  const { nodes, loading: nodesLoading, error: nodesError, refetch: refetchNodes } = useNodes(
+    clusterWithAdmin,
+    nodePool?.name || ""
+  );
+
+  // Fetch selected node details
+  const { nodeDetails, loading: loadingNodeDetails } = useNodeDetails(
+    clusterWithAdmin,
+    nodePool?.name || "",
+    selectedNode || ""
+  );
 
   // Initialize form when nodePool changes or staging updates
   useEffect(() => {
@@ -316,6 +336,31 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
     }
   };
 
+  // Handlers for nodes table
+  const handleViewNodeDetails = (nodeName: string) => {
+    setSelectedNode(nodeName);
+    setShowNodeDetailsModal(true);
+  };
+
+  const handleCloseNodeModal = () => {
+    setShowNodeDetailsModal(false);
+    setSelectedNode(null);
+  };
+
+  const StatusBadge = ({ status }: { status: string }) => {
+    const getVariant = () => {
+      if (status === "Ready") return "success";
+      if (status === "NotReady") return "destructive";
+      return "secondary";
+    };
+
+    return (
+      <Badge variant={getVariant() as any}>
+        {status}
+      </Badge>
+    );
+  };
+
   if (!nodePool) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted-foreground p-8">
@@ -345,6 +390,26 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
       </div>
 
       <Separator />
+
+      {/* Tabs para organizar visualizações */}
+      <Tabs defaultValue="configuration" className="w-full">
+        <TabsList className="grid w-full grid-cols-3">
+          <TabsTrigger value="configuration">
+            <Settings className="w-4 h-4 mr-2" />
+            Configuration
+          </TabsTrigger>
+          <TabsTrigger value="nodes">
+            <Server className="w-4 h-4 mr-2" />
+            Nodes ({nodes.length})
+          </TabsTrigger>
+          <TabsTrigger value="disk">
+            <Database className="w-4 h-4 mr-2" />
+            Disk
+          </TabsTrigger>
+        </TabsList>
+
+        {/* Tab Configuration */}
+        <TabsContent value="configuration" className="space-y-4 mt-4">
 
       {/* VM Information */}
       <Card>
@@ -654,6 +719,206 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         </Card>
       )}
 
+        </TabsContent>
+
+        {/* Tab Nodes */}
+        <TabsContent value="nodes" className="space-y-4 mt-4">
+          {nodesLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <RefreshCcw className="w-4 h-4 animate-spin" />
+                Loading nodes...
+              </div>
+            </div>
+          ) : nodesError ? (
+            <div className="text-center text-destructive py-12">
+              <p className="mb-4">Error loading nodes: {nodesError}</p>
+              <Button onClick={() => refetchNodes()} variant="outline" size="sm">
+                <RefreshCcw className="w-4 h-4 mr-2" />
+                Retry
+              </Button>
+            </div>
+          ) : nodes.length === 0 ? (
+            <div className="text-center text-muted-foreground py-12">
+              No nodes found in this pool
+            </div>
+          ) : (
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <Server className="w-5 h-5" />
+                      Nodes - {nodePool.name}
+                    </CardTitle>
+                    <CardDescription>
+                      {nodes.length} node{nodes.length !== 1 ? "s" : ""} in this pool
+                    </CardDescription>
+                  </div>
+                  <Button onClick={() => refetchNodes()} variant="outline" size="sm">
+                    <RefreshCcw className="w-4 h-4 mr-2" />
+                    Atualizar
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="border rounded-lg overflow-hidden">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>CPU</TableHead>
+                        <TableHead>Memory</TableHead>
+                        <TableHead>Pods</TableHead>
+                        <TableHead>Age</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {nodes.map((node: NodeInfo) => (
+                        <TableRow key={node.name} className="hover:bg-muted/50">
+                          <TableCell className="font-medium font-mono text-sm">
+                            {node.name}
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge status={node.status} />
+                            {node.unschedulable && (
+                              <Badge variant="secondary" className="ml-2">
+                                Cordoned
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {node.cpu_used ? (
+                              <div className="space-y-1">
+                                <div className="text-sm font-mono">
+                                  {node.cpu_used} / {node.cpu_allocatable}
+                                </div>
+                                <Badge
+                                  variant={node.cpu_usage_percent > 80 ? "destructive" : "secondary"}
+                                  className="text-xs"
+                                >
+                                  {node.cpu_usage_percent.toFixed(1)}%
+                                </Badge>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground text-sm">N/A</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {node.memory_used ? (
+                              <div className="space-y-1">
+                                <div className="text-sm font-mono">
+                                  {node.memory_used} / {node.memory_allocatable}
+                                </div>
+                                <Badge
+                                  variant={node.memory_usage_percent > 80 ? "destructive" : "secondary"}
+                                  className="text-xs"
+                                >
+                                  {node.memory_usage_percent.toFixed(1)}%
+                                </Badge>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground text-sm">N/A</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <div className="text-sm font-mono">
+                              {node.pods_running} / {node.pods_total}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              of {node.pods_capacity} max
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-sm">{node.age}</TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              onClick={() => handleViewNodeDetails(node.name)}
+                              variant="ghost"
+                              size="sm"
+                            >
+                              <Eye className="w-4 h-4 mr-2" />
+                              View Details
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+
+        {/* Tab Disk */}
+        <TabsContent value="disk" className="space-y-4 mt-4">
+          {diskMetricsLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <RefreshCcw className="w-4 h-4 animate-spin" />
+                Loading disk metrics...
+              </div>
+            </div>
+          ) : !diskMetrics ? (
+            <div className="text-center text-muted-foreground py-12">
+              No disk metrics available
+            </div>
+          ) : (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <HardDrive className="w-5 h-5" />
+                  Disk Usage - {nodePool.name}
+                </CardTitle>
+                <CardDescription>
+                  {diskMetrics.node_count} node{diskMetrics.node_count !== 1 ? "s" : ""} in this pool
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Total</p>
+                    <p className="text-2xl font-bold">
+                      {(diskMetrics.total_bytes / (1024**3)).toFixed(1)} GiB
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Used</p>
+                    <p className="text-2xl font-bold">
+                      {(diskMetrics.used_bytes / (1024**3)).toFixed(1)} GiB
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Usage</p>
+                    <p className="text-2xl font-bold">
+                      <Badge
+                        variant={diskMetrics.usage_percent > 80 ? "destructive" : "secondary"}
+                        className="text-lg"
+                      >
+                        {diskMetrics.usage_percent.toFixed(1)}%
+                      </Badge>
+                    </p>
+                  </div>
+                </div>
+                <Separator />
+                <div>
+                  <Button
+                    onClick={() => setShowDiskDetailsModal(true)}
+                    variant="outline"
+                    className="w-full"
+                  >
+                    <Info className="w-4 h-4 mr-2" />
+                    View Detailed Metrics
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+      </Tabs>
+
       {/* Action Buttons */}
       <div className="flex gap-3 pt-3 border-t border-border">
         <ProtectedAction>
@@ -698,12 +963,6 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           Cancelar
         </Button>
       </div>
-
-      {/* Node Details Tab */}
-      <NodeDetailsTab
-        cluster={clusterWithAdmin}
-        nodePoolName={nodePool.name}
-      />
 
       {/* Cordon/Drain Config Modal */}
       <CordonDrainConfigModal
