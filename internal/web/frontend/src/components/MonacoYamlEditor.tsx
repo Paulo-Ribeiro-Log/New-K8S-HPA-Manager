@@ -205,7 +205,7 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
 
   const commonOptions = {
     automaticLayout: true,
-    scrollBeyondLastLine: false,
+    scrollBeyondLastLine: true,  // ✅ Permite scroll além da última linha (força scroll sempre)
     wordWrap: "on" as const,
     tabSize: 2,
     formatOnPaste: true,
@@ -223,6 +223,7 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
       useShadows: true,
       verticalScrollbarSize: 14,
       horizontalScrollbarSize: 14,
+      alwaysConsumeMouseWheel: true,  // ✅ Força scroll wheel sempre ativo
     },
     renderWhitespace: "selection" as const,
     renderLineHighlight: "all" as const,
