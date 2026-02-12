@@ -98,6 +98,11 @@ func (c *Client) SetHistoryTracker(tracker *history.HistoryTracker) {
 	c.historyTracker = tracker
 }
 
+// SetMetricsClient configura o metrics client para coletar métricas
+func (c *Client) SetMetricsClient(client *metricsclientset.Clientset) {
+	c.metricsClient = client
+}
+
 // ListNamespaces lista todos os namespaces do cluster
 // Retorna todos os namespaces com o campo IsSystem marcado, permitindo que o frontend filtre
 func (c *Client) ListNamespaces(ctx context.Context, showSystemNamespaces bool) ([]models.Namespace, error) {

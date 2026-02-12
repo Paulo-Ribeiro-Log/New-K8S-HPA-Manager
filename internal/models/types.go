@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 // StatusContainerInterface define o contrato para containers de status
@@ -1723,4 +1725,93 @@ func (sp *StatusPanelModule) HPARollout(cluster, namespace, name, rolloutType st
 // NodePoolScaling - Log específico para scaling de node pool
 func (sp *StatusPanelModule) NodePoolScaling(cluster, pool string, from, to int) {
 	sp.Info("nodepool", fmt.Sprintf("📊 Scaling %s/%s: %d → %d nodes", cluster, pool, from, to))
+}
+// ============================================================================
+// Node Management Types
+// ============================================================================
+
+// NodeInfo representa informações detalhadas de um node Kubernetes
+type NodeInfo struct {
+	Name              string            `json:"name"`
+	Status            string            `json:"status"`              // "Ready", "NotReady", "SchedulingDisabled"
+	NodePoolName      string            `json:"node_pool_name"`
+	ClusterName       string            `json:"cluster_name"`
+	KubernetesVersion string            `json:"kubernetes_version"`
+	ProviderID        string            `json:"provider_id"`         // Azure resource ID
+	InternalIP        string            `json:"internal_ip"`
+	ExternalIP        string            `json:"external_ip,omitempty"`
+	Hostname          string            `json:"hostname"`
+	Age               string            `json:"age"`                 // Formato: "2d5h", "30m", "45s"
+	CreatedAt         time.Time         `json:"created_at"`
+
+	// Capacity e Allocatable
+	CPUCapacity       string `json:"cpu_capacity"`       // Ex: "2"
+	MemoryCapacity    string `json:"memory_capacity"`    // Ex: "7Gi"
+	PodsCapacity      int    `json:"pods_capacity"`      // Ex: 30
+	CPUAllocatable    string `json:"cpu_allocatable"`
+	MemoryAllocatable string `json:"memory_allocatable"`
+	PodsAllocatable   int    `json:"pods_allocatable"`
+
+	// Usage (via Metrics Server ou Prometheus)
+	CPUUsed            string  `json:"cpu_used"`             // Ex: "800m"
+	MemoryUsed         string  `json:"memory_used"`          // Ex: "3.5Gi"
+	CPUUsagePercent    float64 `json:"cpu_usage_percent"`    // 0-100
+	MemoryUsagePercent float64 `json:"memory_usage_percent"` // 0-100
+	DiskUsagePercent   float64 `json:"disk_usage_percent"`   // 0-100
+
+	// Pods count
+	PodsRunning int `json:"pods_running"`
+	PodsTotal   int `json:"pods_total"`
+
+	// Conditions
+	Conditions []NodeCondition `json:"conditions"`
+
+	// Taints and Labels
+	Taints      []corev1.Taint    `json:"taints,omitempty"`
+	Labels      map[string]string `json:"labels"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// Flags
+	Unschedulable bool `json:"unschedulable"` // Cordon status
+}
+
+// NodeCondition representa uma condition do Kubernetes
+type NodeCondition struct {
+	Type               string    `json:"type"`   // "Ready", "MemoryPressure", "DiskPressure", etc.
+	Status             string    `json:"status"` // "True", "False", "Unknown"
+	LastTransitionTime time.Time `json:"last_transition_time"`
+	Reason             string    `json:"reason,omitempty"`
+	Message            string    `json:"message,omitempty"`
+}
+
+// NodeEvent representa eventos do Kubernetes relacionados ao node
+type NodeEvent struct {
+	Type            string    `json:"type"`    // "Normal", "Warning"
+	Reason          string    `json:"reason"`
+	Message         string    `json:"message"`
+	Count           int32     `json:"count"`
+	FirstTimestamp  time.Time `json:"first_timestamp"`
+	LastTimestamp   time.Time `json:"last_timestamp"`
+	SourceComponent string    `json:"source_component"`
+	SourceHost      string    `json:"source_host,omitempty"`
+}
+
+// PodOnNode representa um pod rodando em um node específico
+type PodOnNode struct {
+	Name          string `json:"name"`
+	Namespace     string `json:"namespace"`
+	Phase         string `json:"phase"` // "Running", "Pending", etc.
+	CPURequest    string `json:"cpu_request"`
+	MemoryRequest string `json:"memory_request"`
+	CPULimit      string `json:"cpu_limit"`
+	MemoryLimit   string `json:"memory_limit"`
+	RestartCount  int    `json:"restart_count"`
+}
+
+// NodeDetailsResponse é o payload completo retornado pela API
+type NodeDetailsResponse struct {
+	Node            NodeInfo    `json:"node"`
+	Pods            []PodOnNode `json:"pods"`
+	Events          []NodeEvent `json:"events"`
+	KubectlDescribe string      `json:"kubectl_describe,omitempty"` // Output do kubectl describe
 }

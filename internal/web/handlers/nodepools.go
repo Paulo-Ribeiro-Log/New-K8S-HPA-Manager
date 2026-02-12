@@ -25,6 +25,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 // NodePoolHandler gerencia requisições relacionadas a Node Pools
@@ -1892,4 +1893,142 @@ type VolumeMetric struct {
 	CapacityBytes   float64
 	AvailableBytes  float64
 	UsagePercentage float64
+}
+// ==================================================================
+// Node Details Handlers
+// ==================================================================
+
+// ListNodesInNodePool retorna lista de nodes de um node pool com métricas
+func (h *NodePoolHandler) ListNodesInNodePool(c *gin.Context) {
+	cluster := c.Param("cluster")
+	nodePoolName := c.Param("nodepool")
+
+	if cluster == "" || nodePoolName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETERS",
+				"message": "Parameters 'cluster' and 'nodepool' are required",
+			},
+		})
+		return
+	}
+
+	// Obter client Kubernetes
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "K8S_CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get Kubernetes client: %v", err),
+			},
+		})
+		return
+	}
+
+	// Type assertion para nosso wrapper Client
+	k8sClient := kubernetes.NewClient(clientset, cluster)
+
+	// Configurar Metrics Client para coletar métricas de CPU/Memory
+	metricsClientInterface, err := h.kubeManager.GetMetricsClient(cluster)
+	if err != nil {
+		log.Warn().Err(err).Str("cluster", cluster).Msg("Metrics client unavailable, metrics will be empty")
+	} else {
+		// Type assertion para o tipo concreto
+		if metricsClient, ok := metricsClientInterface.(*metricsclientset.Clientset); ok {
+			k8sClient.SetMetricsClient(metricsClient)
+		} else {
+			log.Warn().Str("cluster", cluster).Msg("Failed to assert metrics client type")
+		}
+	}
+
+	ctx := c.Request.Context()
+
+	// Buscar nodes com métricas
+	nodes, err := k8sClient.GetNodesWithMetrics(ctx, nodePoolName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "GET_NODES_ERROR",
+				"message": fmt.Sprintf("Failed to get nodes: %v", err),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"nodes":          nodes,
+			"count":          len(nodes),
+			"node_pool_name": nodePoolName,
+			"cluster":        cluster,
+		},
+	})
+}
+
+// GetNodeDetails retorna detalhes completos de um node específico
+func (h *NodePoolHandler) GetNodeDetails(c *gin.Context) {
+	cluster := c.Param("cluster")
+	nodePoolName := c.Param("nodepool")
+	nodeName := c.Param("node")
+
+	if cluster == "" || nodePoolName == "" || nodeName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETERS",
+				"message": "Parameters 'cluster', 'nodepool' and 'node' are required",
+			},
+		})
+		return
+	}
+
+	// Obter client Kubernetes
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "K8S_CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get Kubernetes client: %v", err),
+			},
+		})
+		return
+	}
+
+	k8sClient := kubernetes.NewClient(clientset, cluster)
+
+	// Configurar Metrics Client para coletar métricas de CPU/Memory
+	metricsClientInterface, err := h.kubeManager.GetMetricsClient(cluster)
+	if err != nil {
+		log.Warn().Err(err).Str("cluster", cluster).Msg("Metrics client unavailable, metrics will be empty")
+	} else {
+		// Type assertion para o tipo concreto
+		if metricsClient, ok := metricsClientInterface.(*metricsclientset.Clientset); ok {
+			k8sClient.SetMetricsClient(metricsClient)
+		}
+	}
+
+	ctx := c.Request.Context()
+
+	// Buscar detalhes do node
+	details, err := k8sClient.GetNodeDetails(ctx, nodeName, nodePoolName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "GET_NODE_DETAILS_ERROR",
+				"message": fmt.Sprintf("Failed to get node details: %v", err),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    details,
+	})
 }
