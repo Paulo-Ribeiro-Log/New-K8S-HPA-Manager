@@ -2041,6 +2041,63 @@ make release                     # Gera binários em build/release/
 
 ## 📝 Histórico de Sessões Recentes
 
+### Sessão 11/02/2026 - Visualização Completa de Nodes do Node Pool
+**Contexto**: Implementação de sistema completo para visualizar nodes de um node pool com métricas detalhadas
+**Alterações**:
+- **Backend**:
+  - `internal/kubernetes/node_methods.go` - Métodos completos para gerenciamento de nodes:
+    - `GetNodesWithMetrics()` - Lista nodes com métricas (CPU/Memory usage via Metrics Server)
+    - `GetNodeDetails()` - Detalhes completos incluindo pods, events e kubectl describe
+    - Coleta paralela com goroutines e sync.WaitGroup
+    - Graceful degradation quando Metrics Server indisponível
+  - `internal/web/handlers/nodepools.go` - Dois novos handlers:
+    - `ListNodesInNodePool()` - GET /api/v1/nodes/:cluster/:nodepool
+    - `GetNodeDetails()` - GET /api/v1/nodes/:cluster/:nodepool/:node
+  - `internal/models/types.go` - Estruturas de dados:
+    - `NodeInfo`, `NodeCondition`, `NodeEvent`, `PodOnNode`, `NodeDetailsResponse`, `NodesListResponse`
+  - `internal/web/server.go` - Registro de rotas REST API
+
+- **Frontend**:
+  - `hooks/useNodes.ts` - Hooks React:
+    - `useNodes()` - Busca lista de nodes de um node pool
+    - `useNodeDetails()` - Busca detalhes completos de um node específico
+  - `components/NodeDetailsTab.tsx` - Tabela de nodes:
+    - Exibe status, CPU, memória, pods e age
+    - Badges coloridos para status (Ready, NotReady, Cordoned)
+    - Botão "View Details" por node
+  - `components/NodeDetailsModal.tsx` - Modal com 4 tabs:
+    - **Overview**: Informações básicas, recursos (CPU/Memory/Pods), conditions
+    - **Pods**: Lista de pods rodando no node com recursos e restarts
+    - **Events**: Eventos recentes com timestamps e severidade
+    - **kubectl describe**: Output completo do comando kubectl
+  - `components/NodePoolEditor.tsx` - Integração do NodeDetailsTab no editor de node pool
+  - `lib/api/types.ts` e `lib/api/client.ts` - Tipos TypeScript e métodos API
+
+- **Funcionalidades**:
+  - Coleta de métricas em tempo real via Metrics Server
+  - Detecção de nodes cordoned (unschedulable)
+  - Análise de conditions (Ready, MemoryPressure, DiskPressure, etc)
+  - Lista de pods com recursos (requests/limits) e restart count
+  - Eventos ordenados por timestamp (mais recentes primeiro)
+  - kubectl describe integrado no modal
+
+**Arquivos Criados**:
+- `internal/kubernetes/node_methods.go` (405 linhas)
+- `internal/web/frontend/src/hooks/useNodes.ts` (67 linhas)
+- `internal/web/frontend/src/components/NodeDetailsTab.tsx` (168 linhas)
+- `internal/web/frontend/src/components/NodeDetailsModal.tsx` (364 linhas)
+- `PLANO_NODES_VMSS_VISUALIZATION.md` (checklist completo de 7 fases)
+
+**Arquivos Modificados**:
+- `internal/models/types.go` - Adicionados 7 tipos novos
+- `internal/web/handlers/nodepools.go` - 2 handlers novos
+- `internal/web/server.go` - 2 rotas REST registradas
+- `internal/web/frontend/src/lib/api/client.ts` - 2 métodos API
+- `internal/web/frontend/src/lib/api/types.ts` - 7 interfaces TypeScript
+- `internal/web/frontend/src/components/NodePoolEditor.tsx` - Integração
+
+---
+
 ### Sessão 06/02/2026 - Modal de Exportação no Painel de Visualização da DependenciesTab
 **Contexto**: Adicionar exportação de dados filtrados/visíveis no painel direito (visualização) da aba Dependencies
 **Alterações**:
