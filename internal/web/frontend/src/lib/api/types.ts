@@ -540,6 +540,107 @@ export interface NodePool {
     autoscaling_enabled: boolean;
   };
   cordon_drain_config?: CordonDrainConfig; // Configuração de Cordon/Drain (opcional)
+
+
+// ============================================================================
+// Node Management Types
+// ============================================================================
+
+export interface NodeInfo {
+  name: string;
+  status: string; // "Ready" | "NotReady" | "SchedulingDisabled"
+  node_pool_name: string;
+  cluster_name: string;
+  kubernetes_version: string;
+  provider_id: string;
+  internal_ip: string;
+  external_ip?: string;
+  hostname: string;
+  age: string;
+  created_at: string;
+  
+  // Capacity e Allocatable
+  cpu_capacity: string;
+  memory_capacity: string;
+  pods_capacity: number;
+  cpu_allocatable: string;
+  memory_allocatable: string;
+  pods_allocatable: number;
+  
+  // Usage
+  cpu_used: string;
+  memory_used: string;
+  cpu_usage_percent: number;
+  memory_usage_percent: number;
+  disk_usage_percent: number;
+  
+  // Pods count
+  pods_running: number;
+  pods_total: number;
+  
+  // Conditions
+  conditions: NodeCondition[];
+  
+  // Taints and Labels
+  taints?: NodeTaint[];
+  labels: Record<string, string>;
+  annotations?: Record<string, string>;
+  
+  // Flags
+  unschedulable: boolean;
+}
+
+export interface NodeCondition {
+  type: string;
+  status: string;
+  last_transition_time: string;
+  reason?: string;
+  message?: string;
+}
+
+export interface NodeTaint {
+  key: string;
+  value?: string;
+  effect: string; // "NoSchedule" | "PreferNoSchedule" | "NoExecute"
+  timeAdded?: string;
+}
+
+export interface NodeEvent {
+  type: string; // "Normal" | "Warning"
+  reason: string;
+  message: string;
+  count: number;
+  first_timestamp: string;
+  last_timestamp: string;
+  source_component: string;
+  source_host?: string;
+}
+
+export interface PodOnNode {
+  name: string;
+  namespace: string;
+  phase: string;
+  cpu_request: string;
+  memory_request: string;
+  cpu_limit: string;
+  memory_limit: string;
+  restart_count: number;
+}
+
+export interface NodeDetailsResponse {
+  node: NodeInfo;
+  pods: PodOnNode[];
+  events: NodeEvent[];
+  kubectl_describe?: string;
+}
+
+export interface NodesListResponse {
+  nodes: NodeInfo[];
+  count: number;
+  node_pool_name: string;
+  cluster: string;
+}
+
 }
 
 export interface CronJob {
@@ -670,6 +771,7 @@ export interface NodePoolChange {
   sequence_order: number;
   sequence_status: string;
   cordon_drain_config?: CordonDrainConfig; // Configuração de Cordon/Drain (opcional)
+
 }
 
 export interface NodePoolValues {

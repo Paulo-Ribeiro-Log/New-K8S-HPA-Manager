@@ -458,6 +458,10 @@ func (s *Server) setupRoutes() {
 	api.POST("/nodepools/apply-sequential", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ApplySequential)
 	api.POST("/nodepools/sequence/execute", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ExecuteSequence) // NOVO: Cordon/Drain sequencing
 
+	// Node Pools - Node Details
+	api.GET("/nodes/:cluster/:nodepool", nodePoolHandler.ListNodesInNodePool)       // Lista nodes do node pool
+	api.GET("/nodes/:cluster/:nodepool/:node", nodePoolHandler.GetNodeDetails)      // Detalhes de um node específico
+
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
 	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)
 	s.router.GET("/api/v1/nodepools/progress/:operationId/status", handlers.HandleProgressStatus)

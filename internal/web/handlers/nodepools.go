@@ -1893,3 +1893,117 @@ type VolumeMetric struct {
 	AvailableBytes  float64
 	UsagePercentage float64
 }
+// ==================================================================
+// Node Details Handlers
+// ==================================================================
+
+// ListNodesInNodePool retorna lista de nodes de um node pool com métricas
+func (h *NodePoolHandler) ListNodesInNodePool(c *gin.Context) {
+	cluster := c.Param("cluster")
+	nodePoolName := c.Param("nodepool")
+
+	if cluster == "" || nodePoolName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETERS",
+				"message": "Parameters 'cluster' and 'nodepool' are required",
+			},
+		})
+		return
+	}
+
+	// Obter client Kubernetes
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "K8S_CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get Kubernetes client: %v", err),
+			},
+		})
+		return
+	}
+
+	// Type assertion para nosso wrapper Client
+	k8sClient := kubernetes.NewClient(clientset, cluster)
+
+	ctx := c.Request.Context()
+
+	// Buscar nodes com métricas
+	nodes, err := k8sClient.GetNodesWithMetrics(ctx, nodePoolName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "GET_NODES_ERROR",
+				"message": fmt.Sprintf("Failed to get nodes: %v", err),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"nodes":          nodes,
+			"count":          len(nodes),
+			"node_pool_name": nodePoolName,
+			"cluster":        cluster,
+		},
+	})
+}
+
+// GetNodeDetails retorna detalhes completos de um node específico
+func (h *NodePoolHandler) GetNodeDetails(c *gin.Context) {
+	cluster := c.Param("cluster")
+	nodePoolName := c.Param("nodepool")
+	nodeName := c.Param("node")
+
+	if cluster == "" || nodePoolName == "" || nodeName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETERS",
+				"message": "Parameters 'cluster', 'nodepool' and 'node' are required",
+			},
+		})
+		return
+	}
+
+	// Obter client Kubernetes
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "K8S_CLIENT_ERROR",
+				"message": fmt.Sprintf("Failed to get Kubernetes client: %v", err),
+			},
+		})
+		return
+	}
+
+	k8sClient := kubernetes.NewClient(clientset, cluster)
+
+	ctx := c.Request.Context()
+
+	// Buscar detalhes do node
+	details, err := k8sClient.GetNodeDetails(ctx, nodeName, nodePoolName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "GET_NODE_DETAILS_ERROR",
+				"message": fmt.Sprintf("Failed to get node details: %v", err),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    details,
+	})
+}
