@@ -171,40 +171,46 @@ func (c *Client) determineNodeStatus(node *corev1.Node) string {
 // enrichNodeWithMetrics adiciona métricas de uso ao NodeInfo
 func (c *Client) enrichNodeWithMetrics(ctx context.Context, nodeInfo *models.NodeInfo, nodeName string) error {
 	// Tentar obter do Metrics Server primeiro
-	if c.metricsClient != nil {
-		nodeMetrics, err := c.metricsClient.MetricsV1beta1().NodeMetricses().Get(ctx, nodeName, metav1.GetOptions{})
-		if err == nil {
-			// CPU
-			if cpu, ok := nodeMetrics.Usage[corev1.ResourceCPU]; ok {
-				nodeInfo.CPUUsed = cpu.String()
-
-				// Calcular % (usado / allocatable * 100)
-				if allocatable := parseQuantityMilliCPU(nodeInfo.CPUAllocatable); allocatable > 0 {
-					used := float64(cpu.MilliValue())
-					nodeInfo.CPUUsagePercent = (used / allocatable) * 100
-				}
-			}
-
-			// Memory
-			if memory, ok := nodeMetrics.Usage[corev1.ResourceMemory]; ok {
-				nodeInfo.MemoryUsed = formatMemory(memory.Value())
-
-				if allocatable := parseMemoryBytes(nodeInfo.MemoryAllocatable); allocatable > 0 {
-					used := float64(memory.Value())
-					nodeInfo.MemoryUsagePercent = (used / allocatable) * 100
-				}
-			}
-
-			// Disk usage - não disponível diretamente no Metrics Server
-			// Placeholder: 0% (seria necessário Prometheus node_exporter)
-			nodeInfo.DiskUsagePercent = 0
-
-			return nil
-		}
-		log.Debug().Err(err).Str("node", nodeName).Msg("Metrics Server unavailable, metrics will be empty")
+	if c.metricsClient == nil {
+		log.Warn().Str("node", nodeName).Msg("Metrics client is nil - skipping metrics collection")
+		return nil
 	}
 
-	// Metrics Server não disponível - deixar métricas vazias
+	nodeMetrics, err := c.metricsClient.MetricsV1beta1().NodeMetricses().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		log.Warn().Err(err).Str("node", nodeName).Msg("Failed to get node metrics from Metrics Server")
+		return nil
+	}
+
+	log.Info().Str("node", nodeName).Msg("Successfully fetched node metrics from Metrics Server")
+
+	// CPU
+	if cpu, ok := nodeMetrics.Usage[corev1.ResourceCPU]; ok {
+		nodeInfo.CPUUsed = cpu.String()
+
+		// Calcular % (usado / allocatable * 100)
+		if allocatable := parseQuantityMilliCPU(nodeInfo.CPUAllocatable); allocatable > 0 {
+			used := float64(cpu.MilliValue())
+			nodeInfo.CPUUsagePercent = (used / allocatable) * 100
+			log.Info().Str("node", nodeName).Float64("cpu_percent", nodeInfo.CPUUsagePercent).Msg("CPU metrics calculated")
+		}
+	}
+
+	// Memory
+	if memory, ok := nodeMetrics.Usage[corev1.ResourceMemory]; ok {
+		nodeInfo.MemoryUsed = formatMemory(memory.Value())
+
+		if allocatable := parseMemoryBytes(nodeInfo.MemoryAllocatable); allocatable > 0 {
+			used := float64(memory.Value())
+			nodeInfo.MemoryUsagePercent = (used / allocatable) * 100
+			log.Info().Str("node", nodeName).Float64("memory_percent", nodeInfo.MemoryUsagePercent).Msg("Memory metrics calculated")
+		}
+	}
+
+	// Disk usage - não disponível diretamente no Metrics Server
+	// Placeholder: 0% (seria necessário Prometheus node_exporter)
+	nodeInfo.DiskUsagePercent = 0
+
 	return nil
 }
 
