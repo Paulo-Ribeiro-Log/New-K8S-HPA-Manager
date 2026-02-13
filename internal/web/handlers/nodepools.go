@@ -744,6 +744,13 @@ func loadNodePoolsFromAzure(clusterName, resourceGroup string) ([]models.NodePoo
 		return nil, fmt.Errorf("failed to parse Azure CLI output: %w", err)
 	}
 
+	// Buscar tags do cluster (uma única vez para todos os node pools)
+	clusterTags, err := getClusterTags(clusterName, resourceGroup)
+	if err != nil {
+		log.Warn().Err(err).Msgf("Failed to fetch cluster tags for %s, continuing without tags", clusterName)
+		clusterTags = make(map[string]string) // Mapa vazio se falhar
+	}
+
 	// Converter para nosso modelo
 	var nodePools []models.NodePool
 	for _, azPool := range azureNodePools {
@@ -767,12 +774,43 @@ func loadNodePoolsFromAzure(clusterName, resourceGroup string) ([]models.NodePoo
 			IsSystemPool:       azPool.Mode == "System",
 			ClusterName:        clusterName,
 			ResourceGroup:      resourceGroup,
+			ClusterTags:        clusterTags, // Adicionar tags do cluster
 		}
 
 		nodePools = append(nodePools, nodePool)
 	}
 
 	return nodePools, nil
+}
+
+// getClusterTags busca as tags do cluster AKS
+func getClusterTags(clusterName, resourceGroup string) (map[string]string, error) {
+	cmd := exec.Command("az", "aks", "show",
+		"--resource-group", resourceGroup,
+		"--name", clusterName,
+		"--query", "tags",
+		"--output", "json")
+
+	output, err := cmd.Output()
+	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			stderr := string(exitError.Stderr)
+			return nil, fmt.Errorf("az aks show failed: %s", stderr)
+		}
+		return nil, fmt.Errorf("failed to execute az aks show: %w", err)
+	}
+
+	var tags map[string]string
+	if err := json.Unmarshal(output, &tags); err != nil {
+		return nil, fmt.Errorf("failed to parse cluster tags: %w", err)
+	}
+
+	// Se tags for null, retornar mapa vazio
+	if tags == nil {
+		tags = make(map[string]string)
+	}
+
+	return tags, nil
 }
 
 // AzureNodePool representa a estrutura retornada pela Azure CLI

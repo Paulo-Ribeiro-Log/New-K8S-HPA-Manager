@@ -10,8 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { NodePool, NodeInfo } from "@/lib/api/types";
-import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw } from "lucide-react";
+import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
@@ -384,9 +385,42 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             {nodePool.status}
           </Badge>
         </div>
-        <p className="text-sm text-muted-foreground">
-          {nodePool.cluster_name} • {nodePool.resource_group}
-        </p>
+        <div className="flex items-center gap-2 flex-wrap">
+          <p className="text-sm text-muted-foreground">
+            {nodePool.cluster_name} • {nodePool.resource_group}
+            {nodePool.subscription && (
+              <> • <span className="font-mono">{nodePool.subscription}</span></>
+            )}
+          </p>
+
+          {/* Botão de Tags do Cluster */}
+          {nodePool.cluster_tags && Object.keys(nodePool.cluster_tags).length > 0 && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="h-6 gap-1 px-2">
+                  <Tag className="h-3 w-3" />
+                  <span className="text-xs">Tags ({Object.keys(nodePool.cluster_tags).length})</span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-80">
+                <div className="space-y-2">
+                  <h4 className="font-semibold text-sm">Cluster Tags</h4>
+                  <Separator />
+                  <div className="space-y-1 max-h-60 overflow-y-auto">
+                    {Object.entries(nodePool.cluster_tags).map(([key, value]) => (
+                      <div key={key} className="flex items-start gap-2 text-xs">
+                        <Badge variant="secondary" className="font-mono text-xs shrink-0">
+                          {key}
+                        </Badge>
+                        <span className="text-muted-foreground break-all">{value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+          )}
+        </div>
       </div>
 
       <Separator />
