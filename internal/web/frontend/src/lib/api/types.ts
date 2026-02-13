@@ -528,6 +528,7 @@ export interface NodePool {
   cluster_name: string;
   resource_group: string;
   subscription: string;
+  cluster_tags?: Record<string, string>; // Tags do cluster AKS
   modified: boolean;
   selected: boolean;
   applied_count: number;
@@ -540,7 +541,7 @@ export interface NodePool {
     autoscaling_enabled: boolean;
   };
   cordon_drain_config?: CordonDrainConfig; // Configuração de Cordon/Drain (opcional)
-
+}
 
 // ============================================================================
 // Node Management Types
