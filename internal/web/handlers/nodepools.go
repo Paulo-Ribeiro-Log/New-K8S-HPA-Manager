@@ -178,7 +178,7 @@ func (h *NodePoolHandler) List(c *gin.Context) {
 	clusterNameForAzure := strings.TrimSuffix(clusterConfig.ClusterName, "-admin")
 
 	// Listar node pools via Azure CLI
-	nodePools, err := loadNodePoolsFromAzure(clusterNameForAzure, clusterConfig.ResourceGroup)
+	nodePools, err := loadNodePoolsFromAzure(clusterNameForAzure, clusterConfig.ResourceGroup, clusterConfig.Subscription)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"success": false,
@@ -583,7 +583,7 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 	}
 
 	// Recarregar node pools para retornar o estado atualizado
-	nodePools, err := loadNodePoolsFromAzure(clusterNameForAzure, clusterConfig.ResourceGroup)
+	nodePools, err := loadNodePoolsFromAzure(clusterNameForAzure, clusterConfig.ResourceGroup, clusterConfig.Subscription)
 	if err != nil {
 		if reporter != nil {
 			reporter.SendError("azure", fmt.Sprintf("Failed to reload node pools: %v", err))
@@ -712,7 +712,7 @@ func loadClusterConfig() ([]models.ClusterConfig, error) {
 }
 
 // loadNodePoolsFromAzure carrega node pools via Azure CLI
-func loadNodePoolsFromAzure(clusterName, resourceGroup string) ([]models.NodePool, error) {
+func loadNodePoolsFromAzure(clusterName, resourceGroup, subscription string) ([]models.NodePool, error) {
 	// Executar comando Azure CLI
 	cmd := exec.Command("az", "aks", "nodepool", "list",
 		"--resource-group", resourceGroup,
@@ -774,7 +774,8 @@ func loadNodePoolsFromAzure(clusterName, resourceGroup string) ([]models.NodePoo
 			IsSystemPool:       azPool.Mode == "System",
 			ClusterName:        clusterName,
 			ResourceGroup:      resourceGroup,
-			ClusterTags:        clusterTags, // Adicionar tags do cluster
+			Subscription:       subscription,   // Adicionar subscription
+			ClusterTags:        clusterTags,     // Adicionar tags do cluster
 		}
 
 		nodePools = append(nodePools, nodePool)
