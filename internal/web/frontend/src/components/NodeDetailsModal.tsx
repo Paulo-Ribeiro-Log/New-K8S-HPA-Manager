@@ -333,18 +333,23 @@ export default function NodeDetailsModal({
                     </div>
                   </div>
 
-                  {/* Taints */}
+                  {/* Taints & Labels */}
                   <div className="p-4 border rounded-lg">
+                    {/* Taints */}
                     <h4 className="text-xs font-medium mb-2 flex items-center gap-2">
                       <AlertTriangle className="w-3 h-3" />
                       Taints {node.taints && node.taints.length > 0 && `(${node.taints.length})`}
                     </h4>
                     {node.taints && node.taints.length > 0 ? (
-                      <div className="space-y-2 max-h-40 overflow-y-auto">
+                      <div className="space-y-2 max-h-32 overflow-y-auto mb-4">
                         {node.taints.map((taint, index) => (
                           <div key={index} className="p-2 border rounded text-xs space-y-1">
                             <div className="flex items-center justify-between gap-1">
-                              <Badge variant="secondary" className="font-mono text-[10px] px-1 py-0">
+                              <Badge
+                                variant="secondary"
+                                className="font-mono text-[10px] px-1 py-0 truncate max-w-[150px]"
+                                title={taint.key}
+                              >
                                 {taint.key}
                               </Badge>
                               <Button
@@ -363,7 +368,7 @@ export default function NodeDetailsModal({
                               </Button>
                             </div>
                             {taint.value && (
-                              <div className="text-muted-foreground">= {taint.value}</div>
+                              <div className="text-muted-foreground truncate" title={taint.value}>= {taint.value}</div>
                             )}
                             <Badge variant={
                               taint.effect === "NoSchedule" ? "destructive" :
@@ -375,31 +380,39 @@ export default function NodeDetailsModal({
                         ))}
                       </div>
                     ) : (
-                      <div className="text-xs text-muted-foreground">No taints</div>
+                      <div className="text-xs text-muted-foreground mb-4">No taints</div>
                     )}
-                  </div>
 
-                  {/* Labels */}
-                  <div className="p-4 border rounded-lg col-span-2">
+                    {/* Labels */}
                     <h4 className="text-xs font-medium mb-2 flex items-center gap-2">
                       <Tags className="w-3 h-3" />
                       Labels {node.labels && `(${Object.keys(node.labels).length})`}
                     </h4>
                     {node.labels && Object.keys(node.labels).length > 0 ? (
-                      <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto">
+                      <div className="space-y-2 max-h-32 overflow-y-auto">
                         {Object.entries(node.labels).slice(0, 10).map(([key, value]) => (
                           <div key={key} className="p-1.5 border rounded flex items-center justify-between gap-1 text-xs">
                             <div className="flex items-center gap-1 flex-1 min-w-0">
-                              <Badge variant="outline" className="font-mono text-[10px] px-1 py-0 shrink-0">
+                              <Badge
+                                variant="outline"
+                                className="font-mono text-[10px] px-1 py-0 shrink-0 max-w-[100px] truncate"
+                                title={key}
+                              >
                                 {key.split('/').pop()}
                               </Badge>
-                              <span className="text-muted-foreground truncate text-[10px]">{value}</span>
+                              <span
+                                className="text-muted-foreground truncate text-[10px]"
+                                title={value}
+                              >
+                                {value}
+                              </span>
                             </div>
                             <Button
                               variant="ghost"
                               size="sm"
                               className="h-4 w-4 p-0 shrink-0"
                               onClick={() => {
+                                // IMPORTANTE: Copia valor COMPLETO (não truncado)
                                 navigator.clipboard.writeText(`${key}=${value}`);
                                 toast.success(`Label copiado!`);
                               }}
@@ -409,7 +422,7 @@ export default function NodeDetailsModal({
                           </div>
                         ))}
                         {Object.keys(node.labels).length > 10 && (
-                          <div className="col-span-2 text-center text-xs text-muted-foreground">
+                          <div className="text-center text-xs text-muted-foreground">
                             +{Object.keys(node.labels).length - 10} mais labels...
                           </div>
                         )}
