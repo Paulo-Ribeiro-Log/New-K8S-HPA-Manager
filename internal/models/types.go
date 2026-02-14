@@ -1738,6 +1738,10 @@ type NodeInfo struct {
 	Status            string            `json:"status"`              // "Ready", "NotReady", "SchedulingDisabled"
 	NodePoolName      string            `json:"node_pool_name"`
 	ClusterName       string            `json:"cluster_name"`
+	ResourceGroup     string            `json:"resource_group"`      // Azure Resource Group
+	Subscription      string            `json:"subscription"`        // Subscription ID (UUID)
+	SubscriptionName  string            `json:"subscription_name"`   // Nome legível da subscription
+	ClusterTags       map[string]string `json:"cluster_tags,omitempty"` // Tags do cluster AKS
 	KubernetesVersion string            `json:"kubernetes_version"`
 	ProviderID        string            `json:"provider_id"`         // Azure resource ID
 	InternalIP        string            `json:"internal_ip"`
