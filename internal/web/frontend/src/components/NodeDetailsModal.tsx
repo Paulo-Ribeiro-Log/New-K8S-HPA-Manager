@@ -332,6 +332,92 @@ export default function NodeDetailsModal({
                       </div>
                     </div>
                   </div>
+
+                  {/* Taints */}
+                  <div className="p-4 border rounded-lg">
+                    <h4 className="text-xs font-medium mb-2 flex items-center gap-2">
+                      <AlertTriangle className="w-3 h-3" />
+                      Taints {node.taints && node.taints.length > 0 && `(${node.taints.length})`}
+                    </h4>
+                    {node.taints && node.taints.length > 0 ? (
+                      <div className="space-y-2 max-h-40 overflow-y-auto">
+                        {node.taints.map((taint, index) => (
+                          <div key={index} className="p-2 border rounded text-xs space-y-1">
+                            <div className="flex items-center justify-between gap-1">
+                              <Badge variant="secondary" className="font-mono text-[10px] px-1 py-0">
+                                {taint.key}
+                              </Badge>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-4 w-4 p-0"
+                                onClick={() => {
+                                  const taintStr = taint.value
+                                    ? `${taint.key}=${taint.value}:${taint.effect}`
+                                    : `${taint.key}:${taint.effect}`;
+                                  navigator.clipboard.writeText(taintStr);
+                                  toast.success("Taint copiado!");
+                                }}
+                              >
+                                <Copy className="h-2.5 w-2.5" />
+                              </Button>
+                            </div>
+                            {taint.value && (
+                              <div className="text-muted-foreground">= {taint.value}</div>
+                            )}
+                            <Badge variant={
+                              taint.effect === "NoSchedule" ? "destructive" :
+                              taint.effect === "NoExecute" ? "destructive" : "secondary"
+                            } className="text-[10px] px-1 py-0">
+                              {taint.effect}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-muted-foreground">No taints</div>
+                    )}
+                  </div>
+
+                  {/* Labels */}
+                  <div className="p-4 border rounded-lg col-span-2">
+                    <h4 className="text-xs font-medium mb-2 flex items-center gap-2">
+                      <Tags className="w-3 h-3" />
+                      Labels {node.labels && `(${Object.keys(node.labels).length})`}
+                    </h4>
+                    {node.labels && Object.keys(node.labels).length > 0 ? (
+                      <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto">
+                        {Object.entries(node.labels).slice(0, 10).map(([key, value]) => (
+                          <div key={key} className="p-1.5 border rounded flex items-center justify-between gap-1 text-xs">
+                            <div className="flex items-center gap-1 flex-1 min-w-0">
+                              <Badge variant="outline" className="font-mono text-[10px] px-1 py-0 shrink-0">
+                                {key.split('/').pop()}
+                              </Badge>
+                              <span className="text-muted-foreground truncate text-[10px]">{value}</span>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-4 w-4 p-0 shrink-0"
+                              onClick={() => {
+                                navigator.clipboard.writeText(`${key}=${value}`);
+                                toast.success(`Label copiado!`);
+                              }}
+                            >
+                              <Copy className="h-2.5 w-2.5" />
+                            </Button>
+                          </div>
+                        ))}
+                        {Object.keys(node.labels).length > 10 && (
+                          <div className="col-span-2 text-center text-xs text-muted-foreground">
+                            +{Object.keys(node.labels).length - 10} mais labels...
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-muted-foreground">No labels</div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -374,100 +460,6 @@ export default function NodeDetailsModal({
 
                   <Separator />
                 </>
-              )}
-
-              {/* Taints */}
-              {node.taints && node.taints.length > 0 && (
-                <>
-                  <div>
-                    <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4" />
-                      Taints
-                    </h3>
-                    <div className="space-y-2">
-                      {node.taints.map((taint, index) => (
-                        <div key={index} className="p-3 border rounded-lg">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-start gap-2 flex-1 min-w-0">
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <Badge variant="secondary" className="font-mono text-xs">
-                                    {taint.key}
-                                  </Badge>
-                                  {taint.value && (
-                                    <span className="text-xs text-muted-foreground">= {taint.value}</span>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-2 text-xs">
-                                  <Badge variant={
-                                    taint.effect === "NoSchedule" ? "destructive" :
-                                    taint.effect === "NoExecute" ? "destructive" : "secondary"
-                                  }>
-                                    {taint.effect}
-                                  </Badge>
-                                  {taint.timeAdded && (
-                                    <span className="text-muted-foreground">
-                                      Added: {format(new Date(taint.timeAdded), "yyyy-MM-dd HH:mm:ss")}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-5 w-5 p-0 shrink-0"
-                              onClick={() => {
-                                const taintStr = taint.value
-                                  ? `${taint.key}=${taint.value}:${taint.effect}`
-                                  : `${taint.key}:${taint.effect}`;
-                                navigator.clipboard.writeText(taintStr);
-                                toast.success("Taint copiado!");
-                              }}
-                            >
-                              <Copy className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <Separator />
-                </>
-              )}
-
-              {/* Labels */}
-              {node.labels && Object.keys(node.labels).length > 0 && (
-                <div>
-                  <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
-                    <Tags className="w-4 h-4" />
-                    Labels ({Object.keys(node.labels).length})
-                  </h3>
-                  <div className="grid grid-cols-1 gap-2 max-h-60 overflow-y-auto">
-                    {Object.entries(node.labels).map(([key, value]) => (
-                      <div key={key} className="p-2 border rounded-lg flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 flex-1 min-w-0">
-                          <Badge variant="outline" className="font-mono text-xs shrink-0">
-                            {key}
-                          </Badge>
-                          <span className="text-xs text-muted-foreground break-all">{value}</span>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-5 w-5 p-0 shrink-0"
-                          onClick={() => {
-                            navigator.clipboard.writeText(`${key}=${value}`);
-                            toast.success(`Label ${key} copiado!`);
-                          }}
-                        >
-                          <Copy className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
               )}
             </TabsContent>
 
