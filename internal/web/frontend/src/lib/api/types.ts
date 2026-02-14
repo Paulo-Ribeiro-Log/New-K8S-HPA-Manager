@@ -527,7 +527,8 @@ export interface NodePool {
   is_system_pool: boolean;
   cluster_name: string;
   resource_group: string;
-  subscription: string;
+  subscription: string; // Subscription ID (UUID)
+  subscription_name?: string; // Nome legível da subscription
   cluster_tags?: Record<string, string>; // Tags do cluster AKS
   modified: boolean;
   selected: boolean;
@@ -640,8 +641,6 @@ export interface NodesListResponse {
   count: number;
   node_pool_name: string;
   cluster: string;
-}
-
 }
 
 export interface CronJob {

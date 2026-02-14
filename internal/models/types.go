@@ -951,10 +951,11 @@ type NodePool struct {
 	SequenceStatus string `json:"sequence_status"` // pending, executing, completed, failed
 
 	// Cluster info
-	ClusterName   string            `json:"cluster_name"`
-	ResourceGroup string            `json:"resource_group"`
-	Subscription  string            `json:"subscription"`
-	ClusterTags   map[string]string `json:"cluster_tags,omitempty"` // Tags do cluster AKS
+	ClusterName      string            `json:"cluster_name"`
+	ResourceGroup    string            `json:"resource_group"`
+	Subscription     string            `json:"subscription"`      // Subscription ID (UUID)
+	SubscriptionName string            `json:"subscription_name"` // Nome legível da subscription
+	ClusterTags      map[string]string `json:"cluster_tags,omitempty"` // Tags do cluster AKS
 
 	// Valores originais para rollback
 	OriginalValues NodePoolValues `json:"original_values"`
