@@ -1,11 +1,14 @@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Server, Activity, AlertTriangle, CheckCircle2, Package, Terminal } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Server, Activity, AlertTriangle, CheckCircle2, Package, Terminal, Copy, Tag, Tags } from "lucide-react";
 import type { NodeDetailsResponse } from "@/lib/api/types";
 import { format } from "date-fns";
+import { toast } from "sonner";
 
 interface NodeDetailsModalProps {
   open: boolean;
@@ -54,8 +57,142 @@ export default function NodeDetailsModal({
             {node.name}
             <StatusBadge status={node.status} />
           </DialogTitle>
-          <DialogDescription>
-            Node Pool: {node.node_pool_name} | Cluster: {node.cluster_name}
+          <DialogDescription className="space-y-2 mt-2">
+            <div className="flex items-center gap-2 flex-wrap text-sm">
+              <span className="text-muted-foreground">Node Pool:</span>
+              <span className="font-medium">{node.node_pool_name}</span>
+            </div>
+
+            {/* Cluster Info */}
+            <div className="flex items-center gap-3 flex-wrap text-sm">
+              {/* Cluster Name */}
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">{node.cluster_name}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-4 w-4 p-0"
+                  onClick={() => {
+                    navigator.clipboard.writeText(node.cluster_name);
+                    toast.success("Cluster name copiado!");
+                  }}
+                >
+                  <Copy className="h-3 w-3" />
+                </Button>
+              </div>
+
+              <span className="text-muted-foreground">•</span>
+
+              {/* Resource Group */}
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">{node.resource_group}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-4 w-4 p-0"
+                  onClick={() => {
+                    navigator.clipboard.writeText(node.resource_group);
+                    toast.success("Resource Group copiado!");
+                  }}
+                >
+                  <Copy className="h-3 w-3" />
+                </Button>
+              </div>
+
+              {node.subscription && (
+                <>
+                  <span className="text-muted-foreground">•</span>
+
+                  {/* Subscription */}
+                  <div className="flex items-center gap-1">
+                    {node.subscription_name ? (
+                      <>
+                        <span className="text-muted-foreground">{node.subscription_name}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-4 w-4 p-0"
+                          onClick={() => {
+                            navigator.clipboard.writeText(node.subscription_name || '');
+                            toast.success("Subscription name copiado!");
+                          }}
+                        >
+                          <Copy className="h-3 w-3" />
+                        </Button>
+                        <span className="text-xs text-muted-foreground/60 font-mono">({node.subscription})</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-4 w-4 p-0"
+                          onClick={() => {
+                            navigator.clipboard.writeText(node.subscription);
+                            toast.success("Subscription ID copiado!");
+                          }}
+                        >
+                          <Copy className="h-3 w-3" />
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-muted-foreground font-mono">{node.subscription}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-4 w-4 p-0"
+                          onClick={() => {
+                            navigator.clipboard.writeText(node.subscription);
+                            toast.success("Subscription ID copiado!");
+                          }}
+                        >
+                          <Copy className="h-3 w-3" />
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* Cluster Tags */}
+              {node.cluster_tags && Object.keys(node.cluster_tags).length > 0 && (
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" size="sm" className="h-5 gap-1 px-2">
+                      <Tag className="h-3 w-3" />
+                      <span className="text-xs">Tags ({Object.keys(node.cluster_tags).length})</span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-80">
+                    <div className="space-y-2">
+                      <h4 className="font-semibold text-sm">Cluster Tags</h4>
+                      <Separator />
+                      <div className="space-y-1 max-h-60 overflow-y-auto">
+                        {Object.entries(node.cluster_tags).map(([key, value]) => (
+                          <div key={key} className="flex items-center justify-between gap-2 text-xs">
+                            <div className="flex items-start gap-2 flex-1 min-w-0">
+                              <Badge variant="secondary" className="font-mono text-xs shrink-0">
+                                {key}
+                              </Badge>
+                              <span className="text-muted-foreground break-all">{value}</span>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-5 w-5 p-0 shrink-0"
+                              onClick={() => {
+                                navigator.clipboard.writeText(`${key}=${value}`);
+                                toast.success(`Tag ${key} copiada!`);
+                              }}
+                            >
+                              <Copy className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              )}
+            </div>
           </DialogDescription>
         </DialogHeader>
 
@@ -202,33 +339,131 @@ export default function NodeDetailsModal({
 
               {/* Conditions */}
               {node.conditions && node.conditions.length > 0 && (
+                <>
+                  <div>
+                    <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" />
+                      Conditions
+                    </h3>
+                    <div className="space-y-2">
+                      {node.conditions.map((condition, index) => (
+                        <div key={index} className="p-3 border rounded-lg">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              {condition.status === "True" ? (
+                                <CheckCircle2 className="w-4 h-4 text-green-600" />
+                              ) : (
+                                <AlertTriangle className="w-4 h-4 text-yellow-600" />
+                              )}
+                              <span className="font-medium text-sm">{condition.type}</span>
+                            </div>
+                            <Badge variant={condition.status === "True" ? "default" : "secondary"} className="text-xs">
+                              {condition.status}
+                            </Badge>
+                          </div>
+                          {condition.message && (
+                            <p className="text-xs text-muted-foreground mt-2">{condition.message}</p>
+                          )}
+                          {condition.reason && (
+                            <p className="text-xs text-muted-foreground mt-1">Reason: {condition.reason}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <Separator />
+                </>
+              )}
+
+              {/* Taints */}
+              {node.taints && node.taints.length > 0 && (
+                <>
+                  <div>
+                    <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" />
+                      Taints
+                    </h3>
+                    <div className="space-y-2">
+                      {node.taints.map((taint, index) => (
+                        <div key={index} className="p-3 border rounded-lg">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-start gap-2 flex-1 min-w-0">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <Badge variant="secondary" className="font-mono text-xs">
+                                    {taint.key}
+                                  </Badge>
+                                  {taint.value && (
+                                    <span className="text-xs text-muted-foreground">= {taint.value}</span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2 text-xs">
+                                  <Badge variant={
+                                    taint.effect === "NoSchedule" ? "destructive" :
+                                    taint.effect === "NoExecute" ? "destructive" : "secondary"
+                                  }>
+                                    {taint.effect}
+                                  </Badge>
+                                  {taint.timeAdded && (
+                                    <span className="text-muted-foreground">
+                                      Added: {format(new Date(taint.timeAdded), "yyyy-MM-dd HH:mm:ss")}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-5 w-5 p-0 shrink-0"
+                              onClick={() => {
+                                const taintStr = taint.value
+                                  ? `${taint.key}=${taint.value}:${taint.effect}`
+                                  : `${taint.key}:${taint.effect}`;
+                                navigator.clipboard.writeText(taintStr);
+                                toast.success("Taint copiado!");
+                              }}
+                            >
+                              <Copy className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <Separator />
+                </>
+              )}
+
+              {/* Labels */}
+              {node.labels && Object.keys(node.labels).length > 0 && (
                 <div>
                   <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4" />
-                    Conditions
+                    <Tags className="w-4 h-4" />
+                    Labels ({Object.keys(node.labels).length})
                   </h3>
-                  <div className="space-y-2">
-                    {node.conditions.map((condition, index) => (
-                      <div key={index} className="p-3 border rounded-lg">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            {condition.status === "True" ? (
-                              <CheckCircle2 className="w-4 h-4 text-green-600" />
-                            ) : (
-                              <AlertTriangle className="w-4 h-4 text-yellow-600" />
-                            )}
-                            <span className="font-medium text-sm">{condition.type}</span>
-                          </div>
-                          <Badge variant={condition.status === "True" ? "default" : "secondary"} className="text-xs">
-                            {condition.status}
+                  <div className="grid grid-cols-1 gap-2 max-h-60 overflow-y-auto">
+                    {Object.entries(node.labels).map(([key, value]) => (
+                      <div key={key} className="p-2 border rounded-lg flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <Badge variant="outline" className="font-mono text-xs shrink-0">
+                            {key}
                           </Badge>
+                          <span className="text-xs text-muted-foreground break-all">{value}</span>
                         </div>
-                        {condition.message && (
-                          <p className="text-xs text-muted-foreground mt-2">{condition.message}</p>
-                        )}
-                        {condition.reason && (
-                          <p className="text-xs text-muted-foreground mt-1">Reason: {condition.reason}</p>
-                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-5 w-5 p-0 shrink-0"
+                          onClick={() => {
+                            navigator.clipboard.writeText(`${key}=${value}`);
+                            toast.success(`Label ${key} copiado!`);
+                          }}
+                        >
+                          <Copy className="h-3 w-3" />
+                        </Button>
                       </div>
                     ))}
                   </div>
