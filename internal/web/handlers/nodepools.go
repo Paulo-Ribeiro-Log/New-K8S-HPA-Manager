@@ -751,6 +751,9 @@ func loadNodePoolsFromAzure(clusterName, resourceGroup, subscription string) ([]
 		clusterTags = make(map[string]string) // Mapa vazio se falhar
 	}
 
+	// Buscar nome da subscription (uma única vez para todos os node pools)
+	subscriptionName := getSubscriptionName(subscription)
+
 	// Converter para nosso modelo
 	var nodePools []models.NodePool
 	for _, azPool := range azureNodePools {
@@ -774,8 +777,9 @@ func loadNodePoolsFromAzure(clusterName, resourceGroup, subscription string) ([]
 			IsSystemPool:       azPool.Mode == "System",
 			ClusterName:        clusterName,
 			ResourceGroup:      resourceGroup,
-			Subscription:       subscription,   // Adicionar subscription
-			ClusterTags:        clusterTags,     // Adicionar tags do cluster
+			Subscription:       subscription,     // Subscription ID (UUID)
+			SubscriptionName:   subscriptionName, // Nome legível
+			ClusterTags:        clusterTags,      // Tags do cluster
 		}
 
 		nodePools = append(nodePools, nodePool)
@@ -812,6 +816,24 @@ func getClusterTags(clusterName, resourceGroup string) (map[string]string, error
 	}
 
 	return tags, nil
+}
+
+// getSubscriptionName busca o nome da subscription via Azure CLI
+func getSubscriptionName(subscriptionID string) string {
+	cmd := exec.Command("az", "account", "show",
+		"--subscription", subscriptionID,
+		"--query", "name",
+		"--output", "tsv")
+
+	output, err := cmd.Output()
+	if err != nil {
+		log.Warn().Err(err).Msgf("Failed to fetch subscription name for %s", subscriptionID)
+		return "" // Retorna vazio se falhar
+	}
+
+	// Remover quebras de linha e espaços em branco
+	name := strings.TrimSpace(string(output))
+	return name
 }
 
 // AzureNodePool representa a estrutura retornada pela Azure CLI

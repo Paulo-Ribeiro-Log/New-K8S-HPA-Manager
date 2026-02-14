@@ -424,20 +424,51 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             <>
               <span className="text-sm text-muted-foreground">•</span>
 
-              {/* Subscription ID */}
+              {/* Subscription Name + ID */}
               <div className="flex items-center gap-1">
-                <span className="text-sm text-muted-foreground font-mono">{nodePool.subscription}</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-5 w-5 p-0"
-                  onClick={() => {
-                    navigator.clipboard.writeText(nodePool.subscription);
-                    toast.success("Subscription ID copiado!");
-                  }}
-                >
-                  <Copy className="h-3 w-3" />
-                </Button>
+                {nodePool.subscription_name ? (
+                  <>
+                    <span className="text-sm text-muted-foreground">{nodePool.subscription_name}</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-5 w-5 p-0"
+                      onClick={() => {
+                        navigator.clipboard.writeText(nodePool.subscription_name || '');
+                        toast.success("Subscription name copiado!");
+                      }}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                    <span className="text-xs text-muted-foreground/60 font-mono">({nodePool.subscription})</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-5 w-5 p-0"
+                      onClick={() => {
+                        navigator.clipboard.writeText(nodePool.subscription);
+                        toast.success("Subscription ID copiado!");
+                      }}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-sm text-muted-foreground font-mono">{nodePool.subscription}</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-5 w-5 p-0"
+                      onClick={() => {
+                        navigator.clipboard.writeText(nodePool.subscription);
+                        toast.success("Subscription ID copiado!");
+                      }}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                  </>
+                )}
               </div>
             </>
           )}
