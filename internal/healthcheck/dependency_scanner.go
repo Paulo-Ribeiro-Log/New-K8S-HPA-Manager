@@ -43,6 +43,9 @@ type ExternalDependency struct {
 	ServiceName string         `json:"service_name"` // ex: rdsh-regional01.dc.nova
 	ServiceType DependencyType `json:"service_type"` // ex: rds
 
+	// Tópico/Fila/Stream (para Kafka, EventHub, SQS, etc)
+	TopicName string `json:"topic_name,omitempty"` // ex: pedidos-criados, events-hub
+
 	// Onde foi encontrado
 	Cluster    string `json:"cluster"`
 	Namespace  string `json:"namespace"`
@@ -294,6 +297,7 @@ func (s *DependencyScanner) scanConfigMapOrSecret(cluster, namespace, name, sour
 	var deps []ExternalDependency
 	foundServices := make(map[string]bool) // Evitar duplicatas no mesmo recurso
 
+	// Primeiro, buscar por serviços (URLs, hostnames)
 	for key, value := range data {
 		for _, pattern := range s.patterns {
 			matches := pattern.Pattern.FindAllString(value, -1)
@@ -322,7 +326,198 @@ func (s *DependencyScanner) scanConfigMapOrSecret(cluster, namespace, name, sour
 		}
 	}
 
+	// Segundo, buscar por tópicos/filas/streams (baseado em chaves conhecidas)
+	topics := s.extractTopicsFromData(data)
+	for _, topic := range topics {
+		// Evitar duplicatas
+		dedupKey := topic.TopicName + ":" + name + ":topic"
+		if foundServices[dedupKey] {
+			continue
+		}
+		foundServices[dedupKey] = true
+
+		deps = append(deps, ExternalDependency{
+			ServiceName: topic.ServiceName, // Nome do serviço (broker)
+			ServiceType: topic.ServiceType,
+			TopicName:   topic.TopicName,
+			Cluster:     cluster,
+			Namespace:   namespace,
+			SourceType:  sourceType,
+			SourceName:  name,
+			SourceKey:   topic.SourceKey,
+			FoundAt:     time.Now(),
+		})
+	}
+
 	return deps
+}
+
+// TopicInfo contém informações sobre um tópico/fila/stream encontrado
+type TopicInfo struct {
+	TopicName   string
+	ServiceName string
+	ServiceType DependencyType
+	SourceKey   string
+}
+
+// extractTopicsFromData extrai tópicos/filas/streams baseado em padrões de chaves
+func (s *DependencyScanner) extractTopicsFromData(data map[string]string) []TopicInfo {
+	var topics []TopicInfo
+
+	// Padrões de chaves que indicam tópicos Kafka
+	kafkaTopicKeys := []string{
+		"kafka_topic", "kafka.topic", "kafkatopic",
+		"topic_name", "topic.name", "topicname",
+		"bootstrap_topic", "consumer_topic", "producer_topic",
+	}
+
+	// Padrões de chaves que indicam Event Hub
+	eventhubTopicKeys := []string{
+		"eventhub_name", "eventhub.name", "eventhubname",
+		"event_hub_name", "event_hub", "eventhub",
+		"eh_name", "eh.name", "ehname",
+	}
+
+	// Padrões de chaves que indicam Filas (SQS, Service Bus, etc)
+	queueKeys := []string{
+		"queue_name", "queue.name", "queuename",
+		"sqs_queue", "sqs.queue", "sqsqueue",
+		"servicebus_queue", "sb_queue",
+	}
+
+	// Padrões de chaves que indicam Streams
+	streamKeys := []string{
+		"stream_name", "stream.name", "streamname",
+		"kinesis_stream", "kinesis.stream",
+	}
+
+	// Tentar encontrar broker/host para associar o tópico
+	brokerHost := s.findBrokerHost(data)
+
+	for key, value := range data {
+		keyLower := strings.ToLower(key)
+		value = strings.TrimSpace(value)
+
+		// Ignorar valores vazios ou muito longos (provavelmente não são tópicos)
+		if value == "" || len(value) > 200 {
+			continue
+		}
+
+		// Detectar Kafka topics
+		if contains(kafkaTopicKeys, keyLower) {
+			// Valor pode ser um único tópico ou lista separada por vírgula
+			topicNames := strings.Split(value, ",")
+			for _, topicName := range topicNames {
+				topicName = strings.TrimSpace(topicName)
+				if topicName != "" {
+					topics = append(topics, TopicInfo{
+						TopicName:   topicName,
+						ServiceName: brokerHost,
+						ServiceType: DependencyKafka,
+						SourceKey:   key,
+					})
+				}
+			}
+		}
+
+		// Detectar EventHub topics
+		if contains(eventhubTopicKeys, keyLower) {
+			topicNames := strings.Split(value, ",")
+			for _, topicName := range topicNames {
+				topicName = strings.TrimSpace(topicName)
+				if topicName != "" {
+					topics = append(topics, TopicInfo{
+						TopicName:   topicName,
+						ServiceName: brokerHost,
+						ServiceType: DependencyEventHub,
+						SourceKey:   key,
+					})
+				}
+			}
+		}
+
+		// Detectar Queues (SQS, Service Bus)
+		if contains(queueKeys, keyLower) {
+			topics = append(topics, TopicInfo{
+				TopicName:   value,
+				ServiceName: brokerHost,
+				ServiceType: DependencyOther, // Pode ser refinado baseado em broker
+				SourceKey:   key,
+			})
+		}
+
+		// Detectar Streams (Kinesis, etc)
+		if contains(streamKeys, keyLower) {
+			topics = append(topics, TopicInfo{
+				TopicName:   value,
+				ServiceName: brokerHost,
+				ServiceType: DependencyOther,
+				SourceKey:   key,
+			})
+		}
+	}
+
+	return topics
+}
+
+// findBrokerHost tenta encontrar o host do broker (Kafka, EventHub) nos dados
+func (s *DependencyScanner) findBrokerHost(data map[string]string) string {
+	brokerKeys := []string{
+		"kafka_bootstrap_servers", "bootstrap_servers", "bootstrap.servers",
+		"kafka_broker", "kafka.broker", "kafka_host",
+		"eventhub_connection_string", "eventhub.connection",
+		"event_hub_endpoint", "eventhub_endpoint",
+	}
+
+	for key, value := range data {
+		keyLower := strings.ToLower(key)
+		if contains(brokerKeys, keyLower) {
+			// Tentar extrair hostname da URL/connection string
+			value = strings.TrimSpace(value)
+
+			// Se é URL, extrair host
+			if strings.Contains(value, "://") {
+				parts := strings.Split(value, "://")
+				if len(parts) > 1 {
+					hostPart := strings.Split(parts[1], "/")[0]
+					hostPart = strings.Split(hostPart, ":")[0]
+					return hostPart
+				}
+			}
+
+			// Se é lista de hosts (Kafka bootstrap servers)
+			if strings.Contains(value, ",") {
+				firstHost := strings.Split(value, ",")[0]
+				firstHost = strings.TrimSpace(firstHost)
+				firstHost = strings.Split(firstHost, ":")[0]
+				return firstHost
+			}
+
+			// Retornar primeiro match de hostname
+			for _, pattern := range s.patterns {
+				if matches := pattern.Pattern.FindString(value); matches != "" {
+					return strings.ToLower(strings.TrimSpace(matches))
+				}
+			}
+
+			// Fallback: retornar valor direto (se parecer hostname)
+			if !strings.Contains(value, " ") && len(value) < 100 {
+				return strings.ToLower(value)
+			}
+		}
+	}
+
+	return "unknown" // Sem broker identificado
+}
+
+// contains verifica se uma string está em uma slice (case-insensitive)
+func contains(slice []string, str string) bool {
+	for _, s := range slice {
+		if s == str {
+			return true
+		}
+	}
+	return false
 }
 
 // scanDeploymentEnvVars analisa variáveis de ambiente de um Deployment
@@ -330,9 +525,19 @@ func (s *DependencyScanner) scanDeploymentEnvVars(cluster, namespace, deployment
 	var deps []ExternalDependency
 	foundServices := make(map[string]bool)
 
+	// Coletar todas as env vars em um map para análise
+	envData := make(map[string]string)
 	for _, container := range containers {
 		for _, env := range container.Env {
-			// Ignorar variáveis sem valor direto (referências a secrets/configmaps já foram escaneadas)
+			if env.Value != "" {
+				envData[env.Name] = env.Value
+			}
+		}
+	}
+
+	// Primeiro, buscar por serviços (URLs, hostnames)
+	for _, container := range containers {
+		for _, env := range container.Env {
 			if env.Value == "" {
 				continue
 			}
@@ -362,6 +567,29 @@ func (s *DependencyScanner) scanDeploymentEnvVars(cluster, namespace, deployment
 				}
 			}
 		}
+	}
+
+	// Segundo, buscar por tópicos/filas/streams
+	topics := s.extractTopicsFromData(envData)
+	for _, topic := range topics {
+		dedupKey := topic.TopicName + ":" + deploymentName + ":topic"
+		if foundServices[dedupKey] {
+			continue
+		}
+		foundServices[dedupKey] = true
+
+		deps = append(deps, ExternalDependency{
+			ServiceName: topic.ServiceName,
+			ServiceType: topic.ServiceType,
+			TopicName:   topic.TopicName,
+			Cluster:     cluster,
+			Namespace:   namespace,
+			Deployment:  deploymentName,
+			SourceType:  "env",
+			SourceName:  "container-env",
+			SourceKey:   topic.SourceKey,
+			FoundAt:     time.Now(),
+		})
 	}
 
 	return deps
