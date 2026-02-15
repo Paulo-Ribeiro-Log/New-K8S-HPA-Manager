@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -35,6 +35,12 @@ import "diff2html/bundles/css/diff2html.min.css";
 import "@/styles/diff2html-dark.css";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import { ProtectedAction } from "@/components/rbac";
 import {
   DropdownMenu,
@@ -3359,6 +3365,112 @@ export const DeploymentsTab = ({
                       </div>
                     </div>
                   )}
+
+                  {/* MÉTRICAS PRINCIPAIS - Cards Visuais */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* Card CPU */}
+                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Activity className="w-4 h-4 text-blue-500" />
+                          <span className="text-sm font-semibold text-muted-foreground">CPU</span>
+                        </div>
+                        {predictionResult.raw_metrics?.cpu_trend && (
+                          <Badge variant={
+                            predictionResult.raw_metrics.cpu_trend.direction === 'up' ? 'destructive' :
+                            predictionResult.raw_metrics.cpu_trend.direction === 'down' ? 'default' :
+                            'secondary'
+                          } className="text-xs">
+                            {predictionResult.raw_metrics.cpu_trend.direction === 'up' ? '↗' :
+                             predictionResult.raw_metrics.cpu_trend.direction === 'down' ? '↘' : '→'}
+                            {' '}{predictionResult.raw_metrics.cpu_trend.percent_change?.toFixed(1)}%
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className={`text-3xl font-bold ${
+                          (predictionResult.raw_metrics?.cpu_p95_percent || 0) >= 80 ? 'text-red-500' :
+                          (predictionResult.raw_metrics?.cpu_p95_percent || 0) >= 60 ? 'text-yellow-500' :
+                          'text-green-500'
+                        }`}>
+                          {predictionResult.raw_metrics?.cpu_p95_percent?.toFixed(0) || 0}%
+                        </span>
+                        <span className="text-sm text-muted-foreground">utilização P95</span>
+                      </div>
+                      {predictionResult.raw_metrics && (
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          Request: {predictionResult.raw_metrics.cpu_requests}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Card Memória */}
+                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Database className="w-4 h-4 text-purple-500" />
+                          <span className="text-sm font-semibold text-muted-foreground">Memória</span>
+                        </div>
+                        {predictionResult.raw_metrics?.memory_trend && (
+                          <Badge variant={
+                            predictionResult.raw_metrics.memory_trend.direction === 'up' ? 'destructive' :
+                            predictionResult.raw_metrics.memory_trend.direction === 'down' ? 'default' :
+                            'secondary'
+                          } className="text-xs">
+                            {predictionResult.raw_metrics.memory_trend.direction === 'up' ? '↗' :
+                             predictionResult.raw_metrics.memory_trend.direction === 'down' ? '↘' : '→'}
+                            {' '}{predictionResult.raw_metrics.memory_trend.percent_change?.toFixed(1)}%
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className={`text-3xl font-bold ${
+                          (predictionResult.raw_metrics?.memory_p95_percent || 0) >= 85 ? 'text-red-500' :
+                          (predictionResult.raw_metrics?.memory_p95_percent || 0) >= 70 ? 'text-yellow-500' :
+                          'text-green-500'
+                        }`}>
+                          {predictionResult.raw_metrics?.memory_p95_percent?.toFixed(0) || 0}%
+                        </span>
+                        <span className="text-sm text-muted-foreground">utilização P95</span>
+                      </div>
+                      {predictionResult.raw_metrics && (
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          Request: {predictionResult.raw_metrics.memory_requests}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Card Custo */}
+                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <DollarSign className="w-4 h-4 text-yellow-500" />
+                          <span className="text-sm font-semibold text-muted-foreground">Custo</span>
+                        </div>
+                        {predictionResult.cost_analysis?.savings_percent > 0 && (
+                          <Badge variant="default" className="text-xs bg-green-500/20 text-green-500 border-green-500/30">
+                            -{predictionResult.cost_analysis.savings_percent.toFixed(0)}% possível
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-3xl font-bold text-yellow-500">
+                          R$ {predictionResult.cost_analysis?.current_monthly_cost_brl?.toFixed(0) || 0}
+                        </span>
+                        <span className="text-sm text-muted-foreground">/mês</span>
+                      </div>
+                      {predictionResult.cost_analysis?.monthly_savings_brl > 0 && (
+                        <div className="mt-2 text-xs text-green-500 font-medium">
+                          Economia: -R$ {predictionResult.cost_analysis.monthly_savings_brl.toFixed(2)}/mês
+                        </div>
+                      )}
+                      {(!predictionResult.cost_analysis?.monthly_savings_brl || predictionResult.cost_analysis?.monthly_savings_brl === 0) && (
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          $ {predictionResult.cost_analysis?.current_monthly_cost_usd?.toFixed(2) || 0}
+                        </div>
+                      )}
+                    </div>
+                  </div>
 
                   {/* Health Score */}
                   <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
