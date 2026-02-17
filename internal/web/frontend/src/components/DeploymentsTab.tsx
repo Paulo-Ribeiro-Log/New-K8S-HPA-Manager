@@ -3256,6 +3256,16 @@ export const DeploymentsTab = ({
                     Exportar Relatório
                   </Button>
                 )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={predictionLoading}
+                  onClick={() => handlePredictionModalChange(false)}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X className="w-4 h-4 mr-1" />
+                  Fechar
+                </Button>
               </div>
             </div>
           </DialogHeader>
