@@ -4653,11 +4653,14 @@ export const DeploymentsTab = ({
                                   <XAxis dataKey="hora" stroke="#888" style={{ fontSize: '10px' }} interval={1} />
                                   <YAxis stroke="#888" style={{ fontSize: '10px' }} domain={[0, hourlyMax * 1.1]} />
                                   <Tooltip
-                                    contentStyle={{ backgroundColor: '#1a1a2e', border: '1px solid #333', borderRadius: '6px' }}
+                                    cursor={{ fill: 'rgba(255,255,255,0.06)' }}
+                                    contentStyle={{ backgroundColor: '#0f0f1a', border: '1px solid #444', borderRadius: '6px', padding: '6px 10px' }}
+                                    labelStyle={{ color: '#e2e8f0', fontWeight: 600, fontSize: '12px', marginBottom: '2px' }}
+                                    itemStyle={{ color: '#cbd5e1', fontSize: '12px' }}
                                     formatter={(v: number, _: string, props: any) => {
                                       const d = props.payload;
-                                      const label = d.isPeak ? '(pico)' : d.isLow ? '(vale)' : '';
-                                      return [`${v}m ${label}`, 'CPU'];
+                                      const label = d.isPeak ? ' (pico)' : d.isLow ? ' (vale)' : '';
+                                      return [`${v}m${label}`, 'CPU'];
                                     }}
                                   />
                                   <Bar dataKey="cpu" radius={[2, 2, 0, 0]}>
@@ -4686,7 +4689,10 @@ export const DeploymentsTab = ({
                                   <XAxis dataKey="dia" stroke="#888" style={{ fontSize: '11px' }} />
                                   <YAxis stroke="#888" style={{ fontSize: '10px' }} domain={[0, weeklyMax * 1.1]} />
                                   <Tooltip
-                                    contentStyle={{ backgroundColor: '#1a1a2e', border: '1px solid #333', borderRadius: '6px' }}
+                                    cursor={{ fill: 'rgba(255,255,255,0.06)' }}
+                                    contentStyle={{ backgroundColor: '#0f0f1a', border: '1px solid #444', borderRadius: '6px', padding: '6px 10px' }}
+                                    labelStyle={{ color: '#e2e8f0', fontWeight: 600, fontSize: '12px', marginBottom: '2px' }}
+                                    itemStyle={{ color: '#cbd5e1', fontSize: '12px' }}
                                     formatter={(v: number) => [`${v}m`, 'CPU']}
                                   />
                                   <Bar dataKey="cpu" radius={[2, 2, 0, 0]}>
