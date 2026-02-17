@@ -1363,8 +1363,22 @@ func (c *MetricsCollector) collectPodLogs(ctx context.Context, req PredictionReq
 				}
 			}
 
-			// Coletar logs anteriores ao último restart (se houve restart)
-			if entry.RestartCount > 0 {
+			// Verificar se container está em estado de crash (CrashLoopBackOff/Error)
+			inCrashState := false
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.Name == container.Name {
+					if cs.State.Waiting != nil {
+						reason := cs.State.Waiting.Reason
+						if reason == "CrashLoopBackOff" || reason == "Error" || reason == "OOMKilled" {
+							inCrashState = true
+						}
+					}
+					break
+				}
+			}
+
+			// Coletar logs anteriores ao último restart se: houve restart OU está em crash
+			if entry.RestartCount > 0 || inCrashState {
 				prevCtx, cancelPrev := context.WithTimeout(ctx, 10*time.Second)
 				prevOpts := &corev1.PodLogOptions{
 					Container: container.Name,
@@ -1379,10 +1393,17 @@ func (c *MetricsCollector) collectPodLogs(ctx context.Context, req PredictionReq
 					if readErr == nil && len(raw) > 0 {
 						entry.PreviousLogs = c.sanitizer.SanitizeText(string(raw))
 					}
+				} else {
+					log.Debug().Err(prevErr).
+						Str("pod", pod.Name).
+						Str("container", container.Name).
+						Msg("Logs anteriores não disponíveis")
 				}
 			}
 
-			if entry.LogLines != "" || entry.PreviousLogs != "" {
+			// Adicionar entry sempre que o pod for relevante (com ou sem logs)
+			// Restart count e crash state já são informações úteis para a IA
+			if entry.LogLines != "" || entry.PreviousLogs != "" || entry.RestartCount > 0 || inCrashState {
 				metrics.PodLogs = append(metrics.PodLogs, entry)
 			}
 		}
