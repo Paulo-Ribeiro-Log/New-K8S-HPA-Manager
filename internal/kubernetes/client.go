@@ -186,6 +186,8 @@ func (c *Client) GetConfigMap(ctx context.Context, namespace, name string) (*mod
 		return nil, fmt.Errorf("failed to get configmap %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
 
+	cm.ManagedFields = nil
+
 	yamlBytes, err := yaml.Marshal(cm)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal configmap %s/%s: %w", namespace, name, err)
@@ -468,6 +470,9 @@ func (c *Client) GetIngress(ctx context.Context, namespace, name string) (*model
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ingress %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
+
+	ing.ManagedFields = nil
+	ing.Status = networkingv1.IngressStatus{}
 
 	yamlBytes, err := yaml.Marshal(ing)
 	if err != nil {
@@ -960,6 +965,12 @@ func (c *Client) GetDeployment(ctx context.Context, namespace, name string) (*mo
 		return nil, fmt.Errorf("failed to get deployment %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
 
+	// Limpar campos server-side que poluem o YAML exibido
+	// ManagedFields gera entradas "f:campo: {}" que não são valores reais
+	dep.ManagedFields = nil
+	// Status é gerenciado pelo cluster e não deve aparecer no editor
+	dep.Status = appsv1.DeploymentStatus{}
+
 	yamlBytes, err := yaml.Marshal(dep)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal deployment %s/%s: %w", namespace, name, err)
@@ -1222,6 +1233,9 @@ func (c *Client) GetDaemonSet(ctx context.Context, namespace, name string) (*mod
 		return nil, fmt.Errorf("failed to get daemonset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
 
+	ds.ManagedFields = nil
+	ds.Status = appsv1.DaemonSetStatus{}
+
 	yamlBytes, err := yaml.Marshal(ds)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal daemonset %s/%s: %w", namespace, name, err)
@@ -1455,6 +1469,9 @@ func (c *Client) GetStatefulSet(ctx context.Context, namespace, name string) (*m
 	if err != nil {
 		return nil, fmt.Errorf("failed to get statefulset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
+
+	sts.ManagedFields = nil
+	sts.Status = appsv1.StatefulSetStatus{}
 
 	yamlBytes, err := yaml.Marshal(sts)
 	if err != nil {
@@ -1693,6 +1710,8 @@ func (c *Client) GetSecret(ctx context.Context, namespace, name string) (*models
 	if err != nil {
 		return nil, fmt.Errorf("failed to get secret %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
+
+	secret.ManagedFields = nil
 
 	yamlBytes, err := yaml.Marshal(secret)
 	if err != nil {
