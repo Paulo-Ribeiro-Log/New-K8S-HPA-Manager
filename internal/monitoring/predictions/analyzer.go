@@ -214,10 +214,16 @@ func (a *Analyzer) performAIAnalysis(ctx context.Context, req PredictionRequest,
 
 // buildAIPrompt constrói prompt estruturado para IA
 func (a *Analyzer) buildAIPrompt(metrics *DeploymentMetrics) string {
-	metricsJSON, _ := json.MarshalIndent(metrics, "", "  ")
+	// Remover pod_logs do JSON de métricas para evitar duplicação (logs têm seção própria)
+	metricsWithoutLogs := *metrics
+	metricsWithoutLogs.PodLogs = nil
+	metricsJSON, _ := json.MarshalIndent(metricsWithoutLogs, "", "  ")
 
-	// ✅ NOVO: Construir contexto temporal para análise preditiva verdadeira
+	// Construir contexto temporal para análise preditiva verdadeira
 	temporalContext := a.buildTemporalContext(metrics)
+
+	// Construir seção de logs dos pods (se existir)
+	podLogsSection := a.buildPodLogsSection(metrics)
 
 	return fmt.Sprintf(`Você é um especialista em análise preditiva de deployments Kubernetes.
 
@@ -226,7 +232,7 @@ Analise as métricas abaixo e forneça uma análise preditiva completa em format
 **IMPORTANTE: Toda a análise DEVE ser escrita em PORTUGUÊS BRASILEIRO (PT-BR). Todos os textos, descrições, recomendações e mensagens devem estar em português.**
 
 %s
-
+%s
 # MÉTRICAS COLETADAS:
 %s
 
@@ -364,7 +370,7 @@ IMPORTANTE:
     "requires_downtime": false,
     "resource_efficiency_gain_percent": 75.0
   }
-}`, temporalContext, string(metricsJSON))
+}`, temporalContext, podLogsSection, string(metricsJSON))
 }
 
 // fallbackAnalysis análise de fallback quando IA falha
@@ -556,6 +562,37 @@ func extractJSON(text string) string {
 	}
 
 	return text
+}
+
+// buildPodLogsSection constrói seção de logs dos pods para o prompt da IA
+func (a *Analyzer) buildPodLogsSection(metrics *DeploymentMetrics) string {
+	if len(metrics.PodLogs) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# LOGS DOS PODS (coletados e sanitizados automaticamente):\n\n")
+	sb.WriteString("IMPORTANTE: Analise os logs abaixo para identificar erros, exceções e causas raiz.\n")
+	sb.WriteString("Estes logs foram coletados AGORA dos pods em execução. Use-os na análise de causa raiz.\n\n")
+
+	for _, entry := range metrics.PodLogs {
+		sb.WriteString(fmt.Sprintf("## Pod: %s | Container: %s | Restarts: %d\n",
+			entry.PodName, entry.ContainerName, entry.RestartCount))
+
+		if entry.LogLines != "" {
+			sb.WriteString("### Logs atuais (últimas 80 linhas):\n```\n")
+			sb.WriteString(entry.LogLines)
+			sb.WriteString("\n```\n\n")
+		}
+
+		if entry.PreviousLogs != "" {
+			sb.WriteString("### Logs ANTES do ultimo restart (crash anterior):\n```\n")
+			sb.WriteString(entry.PreviousLogs)
+			sb.WriteString("\n```\n\n")
+		}
+	}
+
+	return sb.String()
 }
 
 // enrichPredictionsWithTimestamps adiciona timestamps às predictions baseado no timestamp atual das métricas

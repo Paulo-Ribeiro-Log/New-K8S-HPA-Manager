@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"io"
+
 	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
 	"k8s-hpa-manager/internal/monitoring/prometheus"
@@ -20,6 +22,7 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/rs/zerolog/log"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -92,7 +95,12 @@ func (c *MetricsCollector) CollectMetrics(ctx context.Context, req PredictionReq
 	// 6. Calcular previsão de capacidade
 	c.calculateCapacityForecast(metrics)
 
-	// 7. Sanitizar dados sensíveis
+	// 7. Coletar logs dos pods (antes de sanitizar)
+	if err := c.collectPodLogs(ctx, req, metrics); err != nil {
+		log.Warn().Err(err).Msg("Falha ao coletar logs dos pods")
+	}
+
+	// 8. Sanitizar dados sensíveis (inclui logs coletados)
 	c.sanitizeMetrics(metrics)
 
 	log.Info().
@@ -1273,6 +1281,120 @@ func (c *MetricsCollector) calculateCapacityForecast(metrics *DeploymentMetrics)
 	}
 
 	metrics.CapacityForecast = forecast
+}
+
+// collectPodLogs coleta e sanitiza logs dos pods do deployment para análise pela IA
+func (c *MetricsCollector) collectPodLogs(ctx context.Context, req PredictionRequest, metrics *DeploymentMetrics) error {
+	clientset := c.kubeClient.GetClientset()
+
+	// Buscar deployment para obter o label selector
+	deployment, err := clientset.AppsV1().Deployments(req.Namespace).Get(ctx, req.Deployment, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("falha ao obter deployment para logs: %w", err)
+	}
+
+	// Converter matchLabels em string de seletor
+	if deployment.Spec.Selector == nil || len(deployment.Spec.Selector.MatchLabels) == 0 {
+		return fmt.Errorf("deployment %s não possui selector definido", req.Deployment)
+	}
+
+	var selectorParts []string
+	for k, v := range deployment.Spec.Selector.MatchLabels {
+		selectorParts = append(selectorParts, fmt.Sprintf("%s=%s", k, v))
+	}
+	labelSelector := strings.Join(selectorParts, ",")
+
+	// Listar pods do deployment
+	pods, err := clientset.CoreV1().Pods(req.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		return fmt.Errorf("falha ao listar pods de %s: %w", req.Deployment, err)
+	}
+
+	if len(pods.Items) == 0 {
+		log.Debug().Str("deployment", req.Deployment).Msg("Nenhum pod encontrado para coleta de logs")
+		return nil
+	}
+
+	// Limitar a no máximo 3 pods para não sobrecarregar a análise
+	maxPods := 3
+	if len(pods.Items) < maxPods {
+		maxPods = len(pods.Items)
+	}
+
+	var tailLines int64 = 80
+
+	for i := 0; i < maxPods; i++ {
+		pod := pods.Items[i]
+
+		// Ignorar pods Succeeded (jobs concluídos)
+		if pod.Status.Phase == corev1.PodSucceeded {
+			continue
+		}
+
+		for _, container := range pod.Spec.Containers {
+			entry := PodLogEntry{
+				PodName:       pod.Name,
+				ContainerName: container.Name,
+			}
+
+			// Obter restart count do container
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.Name == container.Name {
+					entry.RestartCount = cs.RestartCount
+					break
+				}
+			}
+
+			// Coletar logs atuais (tail 80 linhas)
+			logCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			logOpts := &corev1.PodLogOptions{
+				Container: container.Name,
+				TailLines: &tailLines,
+			}
+			stream, err := clientset.CoreV1().Pods(req.Namespace).GetLogs(pod.Name, logOpts).Stream(logCtx)
+			cancel()
+			if err == nil {
+				raw, readErr := io.ReadAll(io.LimitReader(stream, 512*1024))
+				stream.Close()
+				if readErr == nil && len(raw) > 0 {
+					entry.LogLines = c.sanitizer.SanitizeText(string(raw))
+				}
+			}
+
+			// Coletar logs anteriores ao último restart (se houve restart)
+			if entry.RestartCount > 0 {
+				prevCtx, cancelPrev := context.WithTimeout(ctx, 10*time.Second)
+				prevOpts := &corev1.PodLogOptions{
+					Container: container.Name,
+					TailLines: &tailLines,
+					Previous:  true,
+				}
+				prevStream, prevErr := clientset.CoreV1().Pods(req.Namespace).GetLogs(pod.Name, prevOpts).Stream(prevCtx)
+				cancelPrev()
+				if prevErr == nil {
+					raw, readErr := io.ReadAll(io.LimitReader(prevStream, 256*1024))
+					prevStream.Close()
+					if readErr == nil && len(raw) > 0 {
+						entry.PreviousLogs = c.sanitizer.SanitizeText(string(raw))
+					}
+				}
+			}
+
+			if entry.LogLines != "" || entry.PreviousLogs != "" {
+				metrics.PodLogs = append(metrics.PodLogs, entry)
+			}
+		}
+	}
+
+	log.Info().
+		Str("deployment", req.Deployment).
+		Int("pods_coletados", maxPods).
+		Int("entradas_logs", len(metrics.PodLogs)).
+		Msg("Logs dos pods coletados e sanitizados")
+
+	return nil
 }
 
 // sanitizeMetrics sanitiza dados sensíveis
