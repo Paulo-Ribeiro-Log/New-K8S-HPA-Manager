@@ -110,6 +110,11 @@ func (c *MetricsCollector) CollectMetrics(ctx context.Context, req PredictionReq
 		log.Warn().Err(err).Msg("Falha ao coletar padrões sazonais")
 	}
 
+	// 8.7. Analisar conntrack do cluster e nodes
+	if err := c.collectConntrackAnalysis(ctx, metrics); err != nil {
+		log.Warn().Err(err).Msg("Falha ao coletar análise conntrack (node_exporter pode estar indisponível)")
+	}
+
 	// 9. Sanitizar dados sensíveis (inclui logs coletados)
 	c.sanitizeMetrics(metrics)
 
@@ -1296,6 +1301,130 @@ func (c *MetricsCollector) calculateCapacityForecast(metrics *DeploymentMetrics)
 	}
 
 	metrics.CapacityForecast = forecast
+}
+
+// collectConntrackAnalysis coleta métricas de connection tracking (nf_conntrack) por node
+func (c *MetricsCollector) collectConntrackAnalysis(ctx context.Context, metrics *DeploymentMetrics) error {
+	// Query entradas atuais por node
+	entriesResult, err := c.promClient.Query(ctx, c.queries.GetConntrackEntriesQuery())
+	if err != nil {
+		metrics.ConntrackAnalysis = ConntrackAnalysis{
+			HasSufficientData: false,
+			MetricSource:      "unavailable",
+		}
+		return fmt.Errorf("falha ao consultar conntrack entries: %w", err)
+	}
+
+	entriesVec, ok := entriesResult.(model.Vector)
+	if !ok || len(entriesVec) == 0 {
+		metrics.ConntrackAnalysis = ConntrackAnalysis{
+			HasSufficientData: false,
+			MetricSource:      "unavailable",
+		}
+		log.Debug().Msg("conntrack: node_exporter não disponível ou sem dados")
+		return nil
+	}
+
+	// Query limites por node
+	limitResult, err := c.promClient.Query(ctx, c.queries.GetConntrackLimitQuery())
+	if err != nil {
+		metrics.ConntrackAnalysis = ConntrackAnalysis{
+			HasSufficientData: false,
+			MetricSource:      "unavailable",
+		}
+		return fmt.Errorf("falha ao consultar conntrack limit: %w", err)
+	}
+
+	// Construir mapa instance → limite
+	limitMap := make(map[string]int64)
+	if limitVec, ok := limitResult.(model.Vector); ok {
+		for _, s := range limitVec {
+			instance := string(s.Metric["instance"])
+			limitMap[instance] = int64(s.Value)
+		}
+	}
+
+	// Construir análise por node
+	var nodes []ConntrackNodeInfo
+	var clusterTotal, clusterMax int64
+	var nodesWarning, nodesCritical int
+	var highestNode string
+	var highestUsage float64
+
+	for _, s := range entriesVec {
+		instance := string(s.Metric["instance"])
+		current := int64(s.Value)
+		maxEntries := limitMap[instance]
+		if maxEntries == 0 {
+			maxEntries = 131072 // padrão Linux quando limite não disponível
+		}
+
+		usagePct := float64(current) / float64(maxEntries) * 100.0
+
+		status := "ok"
+		if usagePct >= 85 {
+			status = "critical"
+			nodesCritical++
+		} else if usagePct >= 70 {
+			status = "warning"
+			nodesWarning++
+		}
+
+		// Tentar extrair só o IP (remover :porta)
+		nodeName := instance
+		if idx := len(instance) - 1; idx > 0 {
+			for i := len(instance) - 1; i >= 0; i-- {
+				if instance[i] == ':' {
+					nodeName = instance[:i]
+					break
+				}
+			}
+		}
+
+		nodes = append(nodes, ConntrackNodeInfo{
+			Instance:       instance,
+			NodeName:       nodeName,
+			CurrentEntries: current,
+			MaxEntries:     maxEntries,
+			UsagePercent:   usagePct,
+			Status:         status,
+		})
+
+		clusterTotal += current
+		clusterMax += maxEntries
+
+		if usagePct > highestUsage {
+			highestUsage = usagePct
+			highestNode = nodeName
+		}
+	}
+
+	clusterUsage := 0.0
+	if clusterMax > 0 {
+		clusterUsage = float64(clusterTotal) / float64(clusterMax) * 100.0
+	}
+
+	metrics.ConntrackAnalysis = ConntrackAnalysis{
+		Nodes:             nodes,
+		ClusterTotal:      clusterTotal,
+		ClusterMax:        clusterMax,
+		ClusterUsage:      clusterUsage,
+		NodesWarning:      nodesWarning,
+		NodesCritical:     nodesCritical,
+		HighestNode:       highestNode,
+		HighestUsage:      highestUsage,
+		HasSufficientData: true,
+		MetricSource:      "node_exporter",
+	}
+
+	log.Info().
+		Int("total_nodes", len(nodes)).
+		Float64("cluster_usage_pct", clusterUsage).
+		Int("nodes_warning", nodesWarning).
+		Int("nodes_critical", nodesCritical).
+		Msg("Análise conntrack coletada")
+
+	return nil
 }
 
 // queryMatrix executa range query Prometheus e retorna Matrix (série temporal)
