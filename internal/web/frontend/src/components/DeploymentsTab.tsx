@@ -3472,70 +3472,86 @@ export const DeploymentsTab = ({
                     </div>
                   </div>
 
-                  {/* Health Score */}
-                  <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                    <h3 className="font-semibold text-lg mb-3 flex items-center gap-2">
-                      <CheckCircle2 className="w-5 h-5 text-primary" />
-                      Health Score
-                    </h3>
-                    <div className="flex items-center gap-4">
-                      <div className={`text-5xl font-bold ${
-                        predictionResult.health_score.overall >= 75 ? 'text-green-500' :
-                        predictionResult.health_score.overall >= 50 ? 'text-yellow-500' :
-                        'text-red-500'
-                      }`}>
-                        {predictionResult.health_score.overall}
-                        <span className="text-2xl text-muted-foreground">/100</span>
-                      </div>
-                      <div className="flex-1">
-                        <div className="text-sm text-muted-foreground mb-2">Categoria:
-                          <span className="ml-2 font-semibold capitalize">{predictionResult.health_score.category}</span>
+                  {/* DETALHES TÉCNICOS - Accordion Colapsável */}
+                  <Accordion type="multiple" className="space-y-4">
+                    {/* Health Score */}
+                    <AccordionItem value="health-score" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Health Score</span>
+                          <span className={`ml-2 text-2xl font-bold ${
+                            predictionResult.health_score.overall >= 75 ? 'text-green-500' :
+                            predictionResult.health_score.overall >= 50 ? 'text-yellow-500' :
+                            'text-red-500'
+                          }`}>
+                            {predictionResult.health_score.overall}/100
+                          </span>
                         </div>
-                        <div className="grid grid-cols-2 gap-2 text-xs">
-                          <div>Availability: {predictionResult.health_score.breakdown.availability}/100</div>
-                          <div>Performance: {predictionResult.health_score.breakdown.performance}/100</div>
-                          <div>Stability: {predictionResult.health_score.breakdown.stability}/100</div>
-                          <div>Efficiency: {predictionResult.health_score.breakdown.efficiency}/100</div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                        <div className="flex items-center gap-4">
+                          <div className="flex-1">
+                            <div className="text-sm text-muted-foreground mb-2">Categoria:
+                              <span className="ml-2 font-semibold capitalize">{predictionResult.health_score.category}</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div>Availability: {predictionResult.health_score.breakdown.availability}/100</div>
+                              <div>Performance: {predictionResult.health_score.breakdown.performance}/100</div>
+                              <div>Stability: {predictionResult.health_score.breakdown.stability}/100</div>
+                              <div>Efficiency: {predictionResult.health_score.breakdown.efficiency}/100</div>
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                  </div>
+                      </AccordionContent>
+                    </AccordionItem>
 
-                  {/* Executive Summary */}
-                  <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                    <h3 className="font-semibold text-lg mb-3">Resumo Executivo</h3>
-                    <p className="text-sm mb-3">{predictionResult.executive_summary.current_state}</p>
-                    <div className="mb-3">
-                      <span className="text-xs font-semibold text-muted-foreground">Nível de Risco:</span>
-                      <span className={`ml-2 px-2 py-1 rounded text-xs font-semibold ${
-                        predictionResult.executive_summary.risk_level === 'critical' ? 'bg-red-500/20 text-red-400' :
-                        predictionResult.executive_summary.risk_level === 'high' ? 'bg-orange-500/20 text-orange-400' :
-                        predictionResult.executive_summary.risk_level === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
-                        'bg-green-500/20 text-green-400'
-                      }`}>
-                        {predictionResult.executive_summary.risk_level}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-xs font-semibold text-muted-foreground">Principais Descobertas:</span>
-                      <ul className="list-disc list-inside text-sm mt-2 space-y-1">
-                        {predictionResult.executive_summary?.key_findings?.map((finding: string, idx: number) => (
-                          <li key={idx}>{finding}</li>
-                        )) || <li className="text-muted-foreground">Nenhuma descoberta disponível</li>}
-                      </ul>
-                    </div>
-                    {predictionResult.executive_summary?.business_impact && (
-                      <div className="mt-3 pt-3 border-t border-border/50">
-                        <span className="text-xs font-semibold text-muted-foreground">Impacto no Negócio:</span>
-                        <p className="text-sm mt-1">{predictionResult.executive_summary.business_impact}</p>
-                      </div>
-                    )}
-                  </div>
+                    {/* Executive Summary */}
+                    <AccordionItem value="executive-summary" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <FileText className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Resumo Executivo</span>
+                          <span className={`ml-2 px-2 py-1 rounded text-xs font-semibold ${
+                            predictionResult.executive_summary.risk_level === 'critical' ? 'bg-red-500/20 text-red-400' :
+                            predictionResult.executive_summary.risk_level === 'high' ? 'bg-orange-500/20 text-orange-400' :
+                            predictionResult.executive_summary.risk_level === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                            'bg-green-500/20 text-green-400'
+                          }`}>
+                            {predictionResult.executive_summary.risk_level}
+                          </span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                        <p className="text-sm mb-3">{predictionResult.executive_summary.current_state}</p>
+                        <div>
+                          <span className="text-xs font-semibold text-muted-foreground">Principais Descobertas:</span>
+                          <ul className="list-disc list-inside text-sm mt-2 space-y-1">
+                            {predictionResult.executive_summary?.key_findings?.map((finding: string, idx: number) => (
+                              <li key={idx}>{finding}</li>
+                            )) || <li className="text-muted-foreground">Nenhuma descoberta disponível</li>}
+                          </ul>
+                        </div>
+                        {predictionResult.executive_summary?.business_impact && (
+                          <div className="mt-3 pt-3 border-t border-border/50">
+                            <span className="text-xs font-semibold text-muted-foreground">Impacto no Negócio:</span>
+                            <p className="text-sm mt-1">{predictionResult.executive_summary.business_impact}</p>
+                          </div>
+                        )}
+                      </AccordionContent>
+                    </AccordionItem>
 
-                  {/* DADOS ANALISADOS */}
-                  {predictionResult.raw_metrics && (
-                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                      <h3 className="font-semibold text-lg mb-3">Dados Analisados</h3>
+                    {/* DADOS ANALISADOS */}
+                    {predictionResult.raw_metrics && (
+                    <AccordionItem value="dados-analisados" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <Database className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Dados Analisados</span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                    <div className="pt-2">
                       <p className="text-xs text-muted-foreground mb-3">
                         Esta análise foi baseada nas seguintes métricas e observações do deployment:
                       </p>
@@ -3637,6 +3653,8 @@ export const DeploymentsTab = ({
                         </div>
                       </div>
                     </div>
+                      </AccordionContent>
+                    </AccordionItem>
                   )}
 
                   {/* VM Sizing e Aplicações Concorrentes */}
@@ -3968,18 +3986,25 @@ export const DeploymentsTab = ({
                     </div>
                   )}
 
-                  {/* ANÁLISE DE CUSTOS */}
-                  {predictionResult.cost_analysis && (
-                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                      <h3 className="font-semibold text-lg mb-3 flex items-center gap-2">
-                        <DollarSign className="w-5 h-5 text-yellow-500" />
-                        Análise de Custos
-                        <span className="ml-auto text-xs font-normal bg-secondary/50 rounded px-2 py-1 text-muted-foreground">
-                          Dólar: R$ {predictionResult.cost_analysis.exchange_rate?.toFixed(2)} ({predictionResult.cost_analysis.exchange_rate_date})
-                        </span>
-                      </h3>
+                    {/* ANÁLISE DE CUSTOS */}
+                    {predictionResult.cost_analysis && (
+                    <AccordionItem value="analise-custos" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <DollarSign className="w-5 h-5 text-yellow-500" />
+                          <span className="font-semibold text-lg">Análise de Custos</span>
+                          <span className="ml-2 text-xs font-normal bg-secondary/50 rounded px-2 py-1 text-muted-foreground">
+                            R$ {predictionResult.cost_analysis.current_monthly_cost_brl?.toFixed(2)}/mês
+                          </span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                        <div className="pt-2">
+                          <div className="text-xs text-muted-foreground mb-4">
+                            Dólar: R$ {predictionResult.cost_analysis.exchange_rate?.toFixed(2)} ({predictionResult.cost_analysis.exchange_rate_date})
+                          </div>
 
-                      {/* Grid: Custo Mensal | Por Réplica | Economia */}
+                          {/* Grid: Custo Mensal | Por Réplica | Economia */}
                       <div className="grid grid-cols-3 gap-3 mb-4">
                         <div className="bg-secondary/50 rounded p-3 text-center">
                           <div className="text-muted-foreground text-xs mb-1">Custo Mensal</div>
@@ -4086,15 +4111,21 @@ export const DeploymentsTab = ({
                         </div>
                       )}
                     </div>
+                      </AccordionContent>
+                    </AccordionItem>
                   )}
 
-                  {/* Gráficos de Tendências Temporais */}
-                  {predictionResult.raw_metrics && (
-                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                      <h3 className="font-semibold text-lg mb-3 flex items-center gap-2">
-                        <BarChart3 className="w-5 h-5 text-primary" />
-                        Tendências Temporais
-                      </h3>
+                    {/* Gráficos de Tendências Temporais */}
+                    {predictionResult.raw_metrics && (
+                    <AccordionItem value="tendencias-temporais" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <BarChart3 className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Tendências Temporais</span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                    <div className="pt-2">
                       
                       {/* Gráfico de CPU */}
                       <div className="mb-6">
@@ -4206,14 +4237,23 @@ export const DeploymentsTab = ({
                         })()}
                       </div>
                     </div>
+                      </AccordionContent>
+                    </AccordionItem>
                   )}
 
-                  {/* Predictions */}
-                  {((Array.isArray(predictionResult.predictions?.short_term) && predictionResult.predictions.short_term.length > 0) ||
-                    (Array.isArray(predictionResult.predictions?.medium_term) && predictionResult.predictions.medium_term.length > 0) ||
-                    (Array.isArray(predictionResult.predictions?.long_term) && predictionResult.predictions.long_term.length > 0)) && (
-                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                      <h3 className="font-semibold text-lg mb-3">Previsões</h3>
+                    {/* Predictions */}
+                    {((Array.isArray(predictionResult.predictions?.short_term) && predictionResult.predictions.short_term.length > 0) ||
+                      (Array.isArray(predictionResult.predictions?.medium_term) && predictionResult.predictions.medium_term.length > 0) ||
+                      (Array.isArray(predictionResult.predictions?.long_term) && predictionResult.predictions.long_term.length > 0)) && (
+                    <AccordionItem value="previsoes" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <TrendingUp className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Previsões</span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                    <div className="pt-2">
 
                       {Array.isArray(predictionResult.predictions?.short_term) && predictionResult.predictions.short_term.length > 0 && (
                         <div className="mb-4">
@@ -4236,12 +4276,24 @@ export const DeploymentsTab = ({
                         </div>
                       )}
                     </div>
+                      </AccordionContent>
+                    </AccordionItem>
                   )}
 
-                  {/* Recommendations */}
-                  {Array.isArray(predictionResult.recommendations) && predictionResult.recommendations.length > 0 && (
-                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                      <h3 className="font-semibold text-lg mb-3">Recomendações</h3>
+                    {/* Recommendations */}
+                    {Array.isArray(predictionResult.recommendations) && predictionResult.recommendations.length > 0 && (
+                    <AccordionItem value="recomendacoes" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <Lightbulb className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Recomendações</span>
+                          <span className="ml-2 px-2 py-1 rounded text-xs bg-primary/20 text-primary">
+                            {predictionResult.recommendations.length} item{predictionResult.recommendations.length !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                    <div className="pt-2">
                       
                       {/* Alerta de Economia de Custos */}
                       {predictionResult.recommendations.some((rec: any) => 
@@ -4299,7 +4351,11 @@ export const DeploymentsTab = ({
                         </div>
                       ))}
                     </div>
+                      </AccordionContent>
+                    </AccordionItem>
                   )}
+                  </Accordion>
+                  {/* FIM DETALHES TÉCNICOS - Accordion Colapsável */}
                 </div>
               ) : null}
             </div>
