@@ -168,6 +168,31 @@ func (q *PrometheusQueries) GetLatencyP99Query(namespace, deployment string, off
 	)
 }
 
+// GetRPSQuery retorna query para requests por segundo (http_requests_total)
+func (q *PrometheusQueries) GetRPSQuery(namespace, deployment string) string {
+	return fmt.Sprintf(
+		`sum(rate(http_requests_total{namespace="%s",pod=~"%s-.*"}[5m]))`,
+		namespace, deployment,
+	)
+}
+
+// GetUptimeQuery retorna query para uptime % dos últimos 30 dias
+// Calcula a fração de tempo em que replicas_available > 0
+func (q *PrometheusQueries) GetUptimeQuery(namespace, deployment string) string {
+	return fmt.Sprintf(
+		`avg_over_time(clamp_max(kube_deployment_status_replicas_available{namespace="%s",deployment="%s"}, 1)[30d:5m]) * 100`,
+		namespace, deployment,
+	)
+}
+
+// GetCurrentAvailabilityQuery retorna query para disponibilidade atual (fallback de uptime)
+func (q *PrometheusQueries) GetCurrentAvailabilityQuery(namespace, deployment string) string {
+	return fmt.Sprintf(
+		`kube_deployment_status_replicas_available{namespace="%s",deployment="%s"} / kube_deployment_spec_replicas{namespace="%s",deployment="%s"} * 100`,
+		namespace, deployment, namespace, deployment,
+	)
+}
+
 // GetNodeCPUCapacityQuery retorna query para capacidade de CPU dos nodes
 func (q *PrometheusQueries) GetNodeCPUCapacityQuery() string {
 	return `sum(kube_node_status_capacity{resource="cpu"}) by (node)`
@@ -265,6 +290,26 @@ func (q *PrometheusQueries) GetReadyReplicasQuery(namespace, deployment string) 
 		`kube_deployment_status_replicas_ready{namespace="%s",deployment="%s"}`,
 		namespace, deployment,
 	)
+}
+
+// GetNodeInfoQuery retorna query para informações dos nodes (nome + IP interno)
+func (q *PrometheusQueries) GetNodeInfoQuery() string {
+	return `kube_node_info`
+}
+
+// GetConntrackEntriesQuery retorna query para entradas atuais de conntrack por node
+func (q *PrometheusQueries) GetConntrackEntriesQuery() string {
+	return `node_nf_conntrack_entries`
+}
+
+// GetConntrackLimitQuery retorna query para limite máximo de conntrack por node
+func (q *PrometheusQueries) GetConntrackLimitQuery() string {
+	return `node_nf_conntrack_entries_limit`
+}
+
+// GetConntrackUsageRatioQuery retorna query de uso % de conntrack por node
+func (q *PrometheusQueries) GetConntrackUsageRatioQuery() string {
+	return `node_nf_conntrack_entries / node_nf_conntrack_entries_limit * 100`
 }
 
 // formatDuration formata duration para formato Prometheus (7d, 30d, etc)

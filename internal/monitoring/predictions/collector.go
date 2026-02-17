@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"io"
+
 	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
 	"k8s-hpa-manager/internal/monitoring/prometheus"
@@ -20,6 +22,7 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/rs/zerolog/log"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -92,7 +95,27 @@ func (c *MetricsCollector) CollectMetrics(ctx context.Context, req PredictionReq
 	// 6. Calcular previsão de capacidade
 	c.calculateCapacityForecast(metrics)
 
-	// 7. Sanitizar dados sensíveis
+	// 7. Coletar logs dos pods (antes de sanitizar)
+	if err := c.collectPodLogs(ctx, req, metrics); err != nil {
+		log.Warn().Err(err).Msg("Falha ao coletar logs dos pods")
+	}
+
+	// 8. Coletar métricas adicionais (RPS consolidado, OOMKill, Uptime)
+	if err := c.collectAdditionalMetrics(ctx, req, metrics); err != nil {
+		log.Warn().Err(err).Msg("Falha ao coletar métricas adicionais")
+	}
+
+	// 8.5. Detectar padrões sazonais (Fase 3)
+	if err := c.collectSeasonalPatterns(ctx, req, metrics); err != nil {
+		log.Warn().Err(err).Msg("Falha ao coletar padrões sazonais")
+	}
+
+	// 8.7. Analisar conntrack do cluster e nodes
+	if err := c.collectConntrackAnalysis(ctx, metrics); err != nil {
+		log.Warn().Err(err).Msg("Falha ao coletar análise conntrack (node_exporter pode estar indisponível)")
+	}
+
+	// 9. Sanitizar dados sensíveis (inclui logs coletados)
 	c.sanitizeMetrics(metrics)
 
 	log.Info().
@@ -327,6 +350,11 @@ func (c *MetricsCollector) collectSnapshot(ctx context.Context, req PredictionRe
 		return nil, fmt.Errorf("falha ao coletar Error rate: %w", err)
 	}
 	snapshot.ErrorRate = errorRate
+
+	// RPS (opcional — 0 se http_requests_total não instrumentado)
+	if rps, rpsErr := c.queryScalar(ctx, c.queries.GetRPSQuery(req.Namespace, req.Deployment)); rpsErr == nil {
+		snapshot.RPS = rps
+	}
 
 	// Latency
 	latP50, err := c.queryScalar(ctx, c.queries.GetLatencyP50Query(req.Namespace, req.Deployment, offset))
@@ -1273,6 +1301,542 @@ func (c *MetricsCollector) calculateCapacityForecast(metrics *DeploymentMetrics)
 	}
 
 	metrics.CapacityForecast = forecast
+}
+
+// collectConntrackAnalysis coleta métricas de connection tracking (nf_conntrack) por node
+func (c *MetricsCollector) collectConntrackAnalysis(ctx context.Context, metrics *DeploymentMetrics) error {
+	// Query entradas atuais por node
+	entriesResult, err := c.promClient.Query(ctx, c.queries.GetConntrackEntriesQuery())
+	if err != nil {
+		metrics.ConntrackAnalysis = ConntrackAnalysis{
+			HasSufficientData: false,
+			MetricSource:      "unavailable",
+		}
+		return fmt.Errorf("falha ao consultar conntrack entries: %w", err)
+	}
+
+	entriesVec, ok := entriesResult.(model.Vector)
+	if !ok || len(entriesVec) == 0 {
+		metrics.ConntrackAnalysis = ConntrackAnalysis{
+			HasSufficientData: false,
+			MetricSource:      "unavailable",
+		}
+		log.Debug().Msg("conntrack: node_exporter não disponível ou sem dados")
+		return nil
+	}
+
+	// Query limites por node
+	limitResult, err := c.promClient.Query(ctx, c.queries.GetConntrackLimitQuery())
+	if err != nil {
+		metrics.ConntrackAnalysis = ConntrackAnalysis{
+			HasSufficientData: false,
+			MetricSource:      "unavailable",
+		}
+		return fmt.Errorf("falha ao consultar conntrack limit: %w", err)
+	}
+
+	// Construir mapa instance → limite
+	limitMap := make(map[string]int64)
+	if limitVec, ok := limitResult.(model.Vector); ok {
+		for _, s := range limitVec {
+			instance := string(s.Metric["instance"])
+			limitMap[instance] = int64(s.Value)
+		}
+	}
+
+	// Construir mapa IP → nome do node via kube_node_info
+	// kube_node_info tem labels "node" (nome) e "internal_ip" (IP)
+	ipToNodeName := make(map[string]string)
+	if nodeInfoResult, nodeInfoErr := c.promClient.Query(ctx, c.queries.GetNodeInfoQuery()); nodeInfoErr == nil {
+		if nodeInfoVec, ok := nodeInfoResult.(model.Vector); ok {
+			for _, s := range nodeInfoVec {
+				nodeName := string(s.Metric["node"])
+				internalIP := string(s.Metric["internal_ip"])
+				if nodeName != "" && internalIP != "" {
+					ipToNodeName[internalIP] = nodeName
+				}
+			}
+		}
+	}
+
+	// extractIP remove a porta de "IP:porta" → "IP"
+	extractIP := func(instance string) string {
+		for i := len(instance) - 1; i >= 0; i-- {
+			if instance[i] == ':' {
+				return instance[:i]
+			}
+		}
+		return instance
+	}
+
+	// Construir análise por node
+	var nodes []ConntrackNodeInfo
+	var clusterTotal, clusterMax int64
+	var nodesWarning, nodesCritical int
+	var highestNode string
+	var highestUsage float64
+
+	for _, s := range entriesVec {
+		instance := string(s.Metric["instance"])
+		current := int64(s.Value)
+		maxEntries := limitMap[instance]
+		if maxEntries == 0 {
+			maxEntries = 131072 // padrão Linux quando limite não disponível
+		}
+
+		usagePct := float64(current) / float64(maxEntries) * 100.0
+
+		status := "ok"
+		if usagePct >= 85 {
+			status = "critical"
+			nodesCritical++
+		} else if usagePct >= 70 {
+			status = "warning"
+			nodesWarning++
+		}
+
+		// Resolver nome do node: kube_node_info > IP extraído > instance completo
+		nodeIP := extractIP(instance)
+		nodeName := ipToNodeName[nodeIP]
+		if nodeName == "" {
+			nodeName = nodeIP // fallback: só o IP sem porta
+		}
+
+		nodes = append(nodes, ConntrackNodeInfo{
+			Instance:       instance,
+			NodeName:       nodeName,
+			CurrentEntries: current,
+			MaxEntries:     maxEntries,
+			UsagePercent:   usagePct,
+			Status:         status,
+		})
+
+		clusterTotal += current
+		clusterMax += maxEntries
+
+		if usagePct > highestUsage {
+			highestUsage = usagePct
+			highestNode = nodeName
+		}
+	}
+
+	clusterUsage := 0.0
+	if clusterMax > 0 {
+		clusterUsage = float64(clusterTotal) / float64(clusterMax) * 100.0
+	}
+
+	metrics.ConntrackAnalysis = ConntrackAnalysis{
+		Nodes:             nodes,
+		ClusterTotal:      clusterTotal,
+		ClusterMax:        clusterMax,
+		ClusterUsage:      clusterUsage,
+		NodesWarning:      nodesWarning,
+		NodesCritical:     nodesCritical,
+		HighestNode:       highestNode,
+		HighestUsage:      highestUsage,
+		HasSufficientData: true,
+		MetricSource:      "node_exporter",
+	}
+
+	log.Info().
+		Int("total_nodes", len(nodes)).
+		Float64("cluster_usage_pct", clusterUsage).
+		Int("nodes_warning", nodesWarning).
+		Int("nodes_critical", nodesCritical).
+		Msg("Análise conntrack coletada")
+
+	return nil
+}
+
+// queryMatrix executa range query Prometheus e retorna Matrix (série temporal)
+func (c *MetricsCollector) queryMatrix(ctx context.Context, query string, start, end time.Time, step time.Duration) (model.Matrix, error) {
+	result, err := c.promClient.QueryRange(ctx, query, start, end, step)
+	if err != nil {
+		return nil, fmt.Errorf("range query falhou: %w", err)
+	}
+	if result == nil {
+		return nil, fmt.Errorf("range query retornou nil")
+	}
+	matrix, ok := result.(model.Matrix)
+	if !ok {
+		return nil, fmt.Errorf("esperado Matrix, recebido %T", result)
+	}
+	return matrix, nil
+}
+
+// collectSeasonalPatterns detecta padrões horários e semanais de CPU nos últimos 7 dias (Fase 3)
+func (c *MetricsCollector) collectSeasonalPatterns(ctx context.Context, req PredictionRequest, metrics *DeploymentMetrics) error {
+	end := time.Now()
+	start := end.Add(-7 * 24 * time.Hour)
+
+	query := c.queries.GetCPUUsageQuery(req.Namespace, req.Deployment, 0)
+	matrix, err := c.queryMatrix(ctx, query, start, end, time.Hour)
+	if err != nil || len(matrix) == 0 {
+		log.Warn().Err(err).Msg("Dados insuficientes para análise sazonal")
+		metrics.SeasonalPatterns.HasSufficientData = false
+		return nil
+	}
+
+	// Extrair todos os pontos (timestamp + valor)
+	type point struct {
+		t time.Time
+		v float64
+	}
+	var points []point
+	for _, stream := range matrix {
+		for _, pair := range stream.Values {
+			points = append(points, point{
+				t: pair.Timestamp.Time(),
+				v: float64(pair.Value),
+			})
+		}
+	}
+
+	if len(points) < 24 {
+		metrics.SeasonalPatterns.HasSufficientData = false
+		return nil
+	}
+
+	// --- Padrão horário (0-23h) ---
+	var hourSum [24]float64
+	var hourCount [24]int
+	for _, p := range points {
+		h := p.t.Hour()
+		hourSum[h] += p.v
+		hourCount[h]++
+	}
+
+	var hourlyAvg [24]float64
+	totalAvg := 0.0
+	validHours := 0
+	maxHourVal := 0.0
+	peakHour := 0
+	for h := 0; h < 24; h++ {
+		if hourCount[h] > 0 {
+			hourlyAvg[h] = hourSum[h] / float64(hourCount[h])
+			totalAvg += hourlyAvg[h]
+			validHours++
+		}
+		if hourlyAvg[h] > maxHourVal {
+			maxHourVal = hourlyAvg[h]
+			peakHour = h
+		}
+	}
+	if validHours > 0 {
+		totalAvg /= float64(validHours)
+	}
+
+	var peakHours, lowHours []int
+	peakMultiplier := 1.0
+	for h := 0; h < 24; h++ {
+		if totalAvg > 0 {
+			ratio := hourlyAvg[h] / totalAvg
+			if ratio > 1.20 {
+				peakHours = append(peakHours, h)
+			} else if ratio < 0.80 {
+				lowHours = append(lowHours, h)
+			}
+		}
+	}
+	if totalAvg > 0 && maxHourVal > 0 {
+		peakMultiplier = maxHourVal / totalAvg
+	}
+
+	// --- Padrão semanal (0=Dom, 1=Seg, ..., 6=Sáb) ---
+	var daySum [7]float64
+	var dayCount [7]int
+	for _, p := range points {
+		d := int(p.t.Weekday())
+		daySum[d] += p.v
+		dayCount[d]++
+	}
+
+	var dailyAvg [7]float64
+	weekdayTotal, weekendTotal := 0.0, 0.0
+	weekdayCount, weekendCount := 0, 0
+	for d := 0; d < 7; d++ {
+		if dayCount[d] > 0 {
+			dailyAvg[d] = daySum[d] / float64(dayCount[d])
+			if d == 0 || d == 6 { // Domingo=0, Sábado=6
+				weekendTotal += dailyAvg[d]
+				weekendCount++
+			} else {
+				weekdayTotal += dailyAvg[d]
+				weekdayCount++
+			}
+		}
+	}
+
+	dayNames := []string{"domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"}
+	weekAvgPerDay := (weekdayTotal + weekendTotal) / 7.0
+	var highDays, lowDays []string
+	for d := 0; d < 7; d++ {
+		if weekAvgPerDay > 0 {
+			ratio := dailyAvg[d] / weekAvgPerDay
+			if ratio > 1.10 {
+				highDays = append(highDays, dayNames[d])
+			} else if ratio < 0.90 {
+				lowDays = append(lowDays, dayNames[d])
+			}
+		}
+	}
+
+	weekendReduction := 0.0
+	if weekdayCount > 0 && weekendCount > 0 {
+		wkdAvg := weekdayTotal / float64(weekdayCount)
+		wkndAvg := weekendTotal / float64(weekendCount)
+		if wkdAvg > 0 {
+			weekendReduction = (wkdAvg - wkndAvg) / wkdAvg * 100
+		}
+	}
+
+	// --- Detectar se tendência atual é sazonal (3.3) ---
+	currentHour := time.Now().Hour()
+	isSeasonalPeak := false
+	for _, h := range peakHours {
+		if h == currentHour {
+			isSeasonalPeak = true
+			break
+		}
+	}
+
+	seasonalAdjustedTrend := string(metrics.Trends.CPUTrend)
+	if isSeasonalPeak && metrics.Trends.CPUTrend == TrendUp {
+		seasonalAdjustedTrend = "stable_seasonal_peak"
+	}
+
+	log.Debug().
+		Str("deployment", req.Deployment).
+		Int("data_points", len(points)).
+		Ints("peak_hours", peakHours).
+		Float64("peak_multiplier", peakMultiplier).
+		Float64("weekend_reduction", weekendReduction).
+		Bool("is_seasonal_peak", isSeasonalPeak).
+		Msg("Padrões sazonais detectados")
+
+	metrics.SeasonalPatterns = SeasonalPatterns{
+		Hourly: HourlyPattern{
+			AvgByHour:      hourlyAvg,
+			PeakHours:      peakHours,
+			LowHours:       lowHours,
+			PeakHour:       peakHour,
+			PeakMultiplier: peakMultiplier,
+		},
+		Weekly: WeeklyPattern{
+			AvgByDay:         dailyAvg,
+			HighDays:         highDays,
+			LowDays:          lowDays,
+			WeekendReduction: weekendReduction,
+		},
+		DataPoints:            len(points),
+		HasSufficientData:     len(points) >= 100,
+		IsTrendSeasonal:       isSeasonalPeak,
+		SeasonalAdjustedTrend: seasonalAdjustedTrend,
+	}
+
+	return nil
+}
+
+// collectAdditionalMetrics coleta métricas de observabilidade complementares (Fase 5)
+func (c *MetricsCollector) collectAdditionalMetrics(ctx context.Context, req PredictionRequest, metrics *DeploymentMetrics) error {
+	additional := AdditionalMetrics{}
+
+	// RPS: copiado do snapshot current (já coletado em collectSnapshot)
+	additional.RequestsPerSecond = metrics.Current.RPS
+
+	// Uptime % 30d via subquery Prometheus
+	uptime, err := c.queryScalar(ctx, c.queries.GetUptimeQuery(req.Namespace, req.Deployment))
+	if err == nil && uptime > 0 {
+		additional.UptimePercent30d = uptime
+	} else {
+		// Fallback: disponibilidade atual
+		fallback, fErr := c.queryScalar(ctx, c.queries.GetCurrentAvailabilityQuery(req.Namespace, req.Deployment))
+		if fErr == nil && fallback > 0 {
+			additional.UptimePercent30d = fallback
+		} else if metrics.DesiredReplicas > 0 {
+			// Fallback final: ratio baseado em réplicas K8s
+			additional.UptimePercent30d = float64(metrics.AvailableReplicas) / float64(metrics.DesiredReplicas) * 100
+		}
+	}
+
+	// OOMKill events via K8s API (últimos 7 dias)
+	oomCount, oomErr := c.countOOMKillEvents(ctx, req)
+	if oomErr == nil {
+		additional.OOMKillEvents7d = oomCount
+	} else {
+		log.Warn().Err(oomErr).Msg("Falha ao contar eventos OOMKill")
+	}
+
+	log.Debug().
+		Str("deployment", req.Deployment).
+		Float64("rps", additional.RequestsPerSecond).
+		Float64("uptime_30d", additional.UptimePercent30d).
+		Int("oom_events_7d", additional.OOMKillEvents7d).
+		Msg("Metricas adicionais coletadas")
+
+	metrics.AdditionalMetrics = additional
+	return nil
+}
+
+// countOOMKillEvents conta eventos de OOMKill nos últimos 7 dias para o deployment
+func (c *MetricsCollector) countOOMKillEvents(ctx context.Context, req PredictionRequest) (int, error) {
+	clientset := c.kubeClient.GetClientset()
+	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour)
+
+	events, err := clientset.CoreV1().Events(req.Namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: "reason=OOMKilling",
+	})
+	if err != nil {
+		return 0, fmt.Errorf("falha ao listar eventos OOMKilling: %w", err)
+	}
+
+	deploymentPrefix := req.Deployment + "-"
+	count := 0
+	for _, event := range events.Items {
+		if !strings.HasPrefix(event.InvolvedObject.Name, deploymentPrefix) {
+			continue
+		}
+		if event.LastTimestamp.Time.After(sevenDaysAgo) {
+			count++
+		}
+	}
+
+	return count, nil
+}
+
+// collectPodLogs coleta e sanitiza logs dos pods do deployment para análise pela IA
+func (c *MetricsCollector) collectPodLogs(ctx context.Context, req PredictionRequest, metrics *DeploymentMetrics) error {
+	clientset := c.kubeClient.GetClientset()
+
+	// Buscar deployment para obter o label selector
+	deployment, err := clientset.AppsV1().Deployments(req.Namespace).Get(ctx, req.Deployment, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("falha ao obter deployment para logs: %w", err)
+	}
+
+	// Converter matchLabels em string de seletor
+	if deployment.Spec.Selector == nil || len(deployment.Spec.Selector.MatchLabels) == 0 {
+		return fmt.Errorf("deployment %s não possui selector definido", req.Deployment)
+	}
+
+	var selectorParts []string
+	for k, v := range deployment.Spec.Selector.MatchLabels {
+		selectorParts = append(selectorParts, fmt.Sprintf("%s=%s", k, v))
+	}
+	labelSelector := strings.Join(selectorParts, ",")
+
+	// Listar pods do deployment
+	pods, err := clientset.CoreV1().Pods(req.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		return fmt.Errorf("falha ao listar pods de %s: %w", req.Deployment, err)
+	}
+
+	if len(pods.Items) == 0 {
+		log.Debug().Str("deployment", req.Deployment).Msg("Nenhum pod encontrado para coleta de logs")
+		return nil
+	}
+
+	// Limitar a no máximo 3 pods para não sobrecarregar a análise
+	maxPods := 3
+	if len(pods.Items) < maxPods {
+		maxPods = len(pods.Items)
+	}
+
+	var tailLines int64 = 80
+
+	for i := 0; i < maxPods; i++ {
+		pod := pods.Items[i]
+
+		// Ignorar pods Succeeded (jobs concluídos)
+		if pod.Status.Phase == corev1.PodSucceeded {
+			continue
+		}
+
+		for _, container := range pod.Spec.Containers {
+			entry := PodLogEntry{
+				PodName:       pod.Name,
+				ContainerName: container.Name,
+			}
+
+			// Obter restart count do container
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.Name == container.Name {
+					entry.RestartCount = cs.RestartCount
+					break
+				}
+			}
+
+			// Coletar logs atuais (tail 80 linhas)
+			logCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			logOpts := &corev1.PodLogOptions{
+				Container: container.Name,
+				TailLines: &tailLines,
+			}
+			stream, err := clientset.CoreV1().Pods(req.Namespace).GetLogs(pod.Name, logOpts).Stream(logCtx)
+			cancel()
+			if err == nil {
+				raw, readErr := io.ReadAll(io.LimitReader(stream, 512*1024))
+				stream.Close()
+				if readErr == nil && len(raw) > 0 {
+					entry.LogLines = c.sanitizer.SanitizeText(string(raw))
+				}
+			}
+
+			// Verificar se container está em estado de crash (CrashLoopBackOff/Error)
+			inCrashState := false
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.Name == container.Name {
+					if cs.State.Waiting != nil {
+						reason := cs.State.Waiting.Reason
+						if reason == "CrashLoopBackOff" || reason == "Error" || reason == "OOMKilled" {
+							inCrashState = true
+						}
+					}
+					break
+				}
+			}
+
+			// Coletar logs anteriores ao último restart se: houve restart OU está em crash
+			if entry.RestartCount > 0 || inCrashState {
+				prevCtx, cancelPrev := context.WithTimeout(ctx, 10*time.Second)
+				prevOpts := &corev1.PodLogOptions{
+					Container: container.Name,
+					TailLines: &tailLines,
+					Previous:  true,
+				}
+				prevStream, prevErr := clientset.CoreV1().Pods(req.Namespace).GetLogs(pod.Name, prevOpts).Stream(prevCtx)
+				cancelPrev()
+				if prevErr == nil {
+					raw, readErr := io.ReadAll(io.LimitReader(prevStream, 256*1024))
+					prevStream.Close()
+					if readErr == nil && len(raw) > 0 {
+						entry.PreviousLogs = c.sanitizer.SanitizeText(string(raw))
+					}
+				} else {
+					log.Debug().Err(prevErr).
+						Str("pod", pod.Name).
+						Str("container", container.Name).
+						Msg("Logs anteriores não disponíveis")
+				}
+			}
+
+			// Adicionar entry sempre que o pod for relevante (com ou sem logs)
+			// Restart count e crash state já são informações úteis para a IA
+			if entry.LogLines != "" || entry.PreviousLogs != "" || entry.RestartCount > 0 || inCrashState {
+				metrics.PodLogs = append(metrics.PodLogs, entry)
+			}
+		}
+	}
+
+	log.Info().
+		Str("deployment", req.Deployment).
+		Int("pods_coletados", maxPods).
+		Int("entradas_logs", len(metrics.PodLogs)).
+		Msg("Logs dos pods coletados e sanitizados")
+
+	return nil
 }
 
 // sanitizeMetrics sanitiza dados sensíveis

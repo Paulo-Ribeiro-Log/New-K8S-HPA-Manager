@@ -64,6 +64,7 @@ interface DependencyRecord {
   id: number;
   service_name: string;
   service_type: string;
+  topic_name?: string; // Tópico/Fila/Stream (para Kafka, EventHub, etc)
   cluster: string;
   namespace: string;
   deployment: string;
@@ -1079,6 +1080,7 @@ export const DependenciesTab = () => {
                                   <TableHead className="text-xs">Cluster</TableHead>
                                   <TableHead className="text-xs">Namespace</TableHead>
                                   <TableHead className="text-xs">Deployment</TableHead>
+                                  <TableHead className="text-xs">Tópico/Fila</TableHead>
                                   <TableHead className="text-xs">Fonte</TableHead>
                                   <TableHead className="text-xs">Visto</TableHead>
                                 </TableRow>
@@ -1092,6 +1094,15 @@ export const DependenciesTab = () => {
                                     <TableCell className="text-xs">{dep.namespace}</TableCell>
                                     <TableCell className="text-xs">
                                       {dep.deployment || "-"}
+                                    </TableCell>
+                                    <TableCell className="text-xs">
+                                      {dep.topic_name ? (
+                                        <Badge variant="secondary" className="font-mono text-[10px]">
+                                          {dep.topic_name}
+                                        </Badge>
+                                      ) : (
+                                        <span className="text-muted-foreground">-</span>
+                                      )}
                                     </TableCell>
                                     <TableCell className="text-xs">
                                       <span className="text-muted-foreground">
@@ -1193,6 +1204,7 @@ export const DependenciesTab = () => {
                         <TableHeader>
                           <TableRow>
                             <TableHead className="text-xs">Serviço</TableHead>
+                            <TableHead className="text-xs">Tópico/Fila</TableHead>
                             <TableHead className="text-xs">Cluster</TableHead>
                             <TableHead className="text-xs">Namespace</TableHead>
                             <TableHead className="text-xs">Deployment</TableHead>
@@ -1212,6 +1224,15 @@ export const DependenciesTab = () => {
                                   </Badge>
                                   {dep.service_name}
                                 </div>
+                              </TableCell>
+                              <TableCell className="text-xs">
+                                {dep.topic_name ? (
+                                  <Badge variant="secondary" className="font-mono text-[10px]">
+                                    {dep.topic_name}
+                                  </Badge>
+                                ) : (
+                                  <span className="text-muted-foreground">-</span>
+                                )}
                               </TableCell>
                               <TableCell className="text-xs">
                                 {dep.cluster.replace(/-admin$/, "")}

@@ -18,6 +18,7 @@ type DependencyRecord struct {
 	ID          int       `json:"id"`
 	ServiceName string    `json:"service_name"` // ex: rdsh-regional01.dc.nova
 	ServiceType string    `json:"service_type"` // ex: rds, kafka, eventhub
+	TopicName   string    `json:"topic_name"`   // ex: pedidos-criados, events-hub (para Kafka/EventHub)
 	Cluster     string    `json:"cluster"`
 	Namespace   string    `json:"namespace"`
 	Deployment  string    `json:"deployment"`   // Nome do deployment (se encontrado via env var)
@@ -70,6 +71,7 @@ func (r *DependencyRegistry) initSchema() error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		service_name TEXT NOT NULL,
 		service_type TEXT NOT NULL,
+		topic_name TEXT DEFAULT '',
 		cluster TEXT NOT NULL,
 		namespace TEXT NOT NULL,
 		deployment TEXT DEFAULT '',
@@ -78,11 +80,12 @@ func (r *DependencyRegistry) initSchema() error {
 		source_key TEXT DEFAULT '',
 		first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(cluster, namespace, service_name, source_type, source_name, source_key)
+		UNIQUE(cluster, namespace, service_name, source_type, source_name, source_key, topic_name)
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_dependencies_service_name ON dependencies(service_name);
 	CREATE INDEX IF NOT EXISTS idx_dependencies_service_type ON dependencies(service_type);
+	CREATE INDEX IF NOT EXISTS idx_dependencies_topic_name ON dependencies(topic_name);
 	CREATE INDEX IF NOT EXISTS idx_dependencies_cluster ON dependencies(cluster);
 	CREATE INDEX IF NOT EXISTS idx_dependencies_namespace ON dependencies(namespace);
 	CREATE INDEX IF NOT EXISTS idx_dependencies_last_seen ON dependencies(last_seen);
@@ -102,15 +105,28 @@ func (r *DependencyRegistry) initSchema() error {
 	`
 
 	_, err := r.db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migração: Adicionar coluna topic_name em bancos existentes
+	migration := `
+	-- Adicionar coluna topic_name se não existir
+	ALTER TABLE dependencies ADD COLUMN topic_name TEXT DEFAULT '';
+	`
+
+	// Tentar executar migração (pode falhar se já existir, ignore erro)
+	r.db.Exec(migration)
+
+	return nil
 }
 
 // UpsertDependency insere ou atualiza uma dependência
 func (r *DependencyRegistry) UpsertDependency(dep *DependencyRecord) error {
 	query := `
-	INSERT INTO dependencies (service_name, service_type, cluster, namespace, deployment, source_type, source_name, source_key, first_seen, last_seen)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-	ON CONFLICT(cluster, namespace, service_name, source_type, source_name, source_key)
+	INSERT INTO dependencies (service_name, service_type, topic_name, cluster, namespace, deployment, source_type, source_name, source_key, first_seen, last_seen)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	ON CONFLICT(cluster, namespace, service_name, source_type, source_name, source_key, topic_name)
 	DO UPDATE SET
 		deployment = excluded.deployment,
 		last_seen = CURRENT_TIMESTAMP
@@ -119,6 +135,7 @@ func (r *DependencyRegistry) UpsertDependency(dep *DependencyRecord) error {
 	_, err := r.db.Exec(query,
 		dep.ServiceName,
 		dep.ServiceType,
+		dep.TopicName,
 		dep.Cluster,
 		dep.Namespace,
 		dep.Deployment,
@@ -145,13 +162,13 @@ func (r *DependencyRegistry) SearchByServiceName(query string) ([]DependencyReco
 		pattern = "%" + lower + "%"
 	}
 	sqlQuery := `
-	SELECT id, service_name, service_type, cluster, namespace, deployment, source_type, source_name, source_key, first_seen, last_seen
+	SELECT id, service_name, service_type, topic_name, cluster, namespace, deployment, source_type, source_name, source_key, first_seen, last_seen
 	FROM dependencies
-	WHERE service_name LIKE ? OR service_type LIKE ? OR source_name LIKE ? OR source_key LIKE ? OR deployment LIKE ? OR namespace LIKE ?
+	WHERE service_name LIKE ? OR service_type LIKE ? OR topic_name LIKE ? OR source_name LIKE ? OR source_key LIKE ? OR deployment LIKE ? OR namespace LIKE ?
 	ORDER BY service_name, cluster, namespace
 	`
 
-	rows, err := r.db.Query(sqlQuery, pattern, pattern, pattern, pattern, pattern, pattern)
+	rows, err := r.db.Query(sqlQuery, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +180,7 @@ func (r *DependencyRegistry) SearchByServiceName(query string) ([]DependencyReco
 // GetAll retorna todas as dependências com filtros opcionais
 func (r *DependencyRegistry) GetAll(cluster, namespace, serviceType string) ([]DependencyRecord, error) {
 	query := `
-	SELECT id, service_name, service_type, cluster, namespace, deployment, source_type, source_name, source_key, first_seen, last_seen
+	SELECT id, service_name, service_type, topic_name, cluster, namespace, deployment, source_type, source_name, source_key, first_seen, last_seen
 	FROM dependencies
 	WHERE 1=1
 	`
@@ -240,7 +257,7 @@ func (r *DependencyRegistry) GetUniqueClusters() ([]string, error) {
 // GetServiceUsage retorna onde um serviço específico é usado
 func (r *DependencyRegistry) GetServiceUsage(serviceName string) ([]DependencyRecord, error) {
 	query := `
-	SELECT id, service_name, service_type, cluster, namespace, deployment, source_type, source_name, source_key, first_seen, last_seen
+	SELECT id, service_name, service_type, topic_name, cluster, namespace, deployment, source_type, source_name, source_key, first_seen, last_seen
 	FROM dependencies
 	WHERE LOWER(service_name) = LOWER(?)
 	ORDER BY cluster, namespace
@@ -399,6 +416,7 @@ func (r *DependencyRegistry) scanRows(rows *sql.Rows) ([]DependencyRecord, error
 			&dep.ID,
 			&dep.ServiceName,
 			&dep.ServiceType,
+			&dep.TopicName,
 			&dep.Cluster,
 			&dep.Namespace,
 			&dep.Deployment,

@@ -9,12 +9,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import yaml from "js-yaml";
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, Cell } from 'recharts';
+import { Switch } from "@/components/ui/switch";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { addLogoHeaderToPDF } from "@/lib/logoUtils";
@@ -35,6 +36,12 @@ import "diff2html/bundles/css/diff2html.min.css";
 import "@/styles/diff2html-dark.css";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import { ProtectedAction } from "@/components/rbac";
 import {
   DropdownMenu,
@@ -111,6 +118,7 @@ export const DeploymentsTab = ({
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<"pdf" | "markdown" | "json">("markdown");
   const [isExporting, setIsExporting] = useState(false);
+  const [showProjection, setShowProjection] = useState(false);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -546,6 +554,26 @@ export const DeploymentsTab = ({
     rolloutTargetRef.current = null;
   }, [stopRolloutMonitor]);
 
+  // gaugeStatusMessage calculado no nível raiz para funcionar independente do selectedDeployment
+  const gaugeStatusMessage = useMemo(() => {
+    if (!showRolloutGauge) return "";
+    const remainingToUpdate = Math.max(rolloutPodsCount.desired - rolloutPodsCount.updated, 0);
+    const remainingToReady = Math.max(rolloutPodsCount.desired - rolloutPodsCount.newReady, 0);
+    const oldPods = Math.max(rolloutPodsCount.oldPods, 0);
+    const unavailable = Math.max(rolloutPodsCount.unavailable, 0);
+
+    if (!rolloutSawActivity) return "Aguardando o controlador iniciar o restart...";
+    if (rolloutState === "completed") {
+      if (oldPods > 0) return `Encerrando pods antigos (${oldPods} restantes)...`;
+      if (unavailable > 0) return `Aguardando ${unavailable} pod(s) ficarem prontos...`;
+      return "Rollout finalizado e estável";
+    }
+    if (remainingToUpdate > 0) return `Atualizando pods (${rolloutPodsCount.updated}/${rolloutPodsCount.desired})...`;
+    if (remainingToReady > 0 || unavailable > 0) return "Esperando os novos pods ficarem prontos...";
+    if (oldPods > 0) return `Desligando pods antigos (${oldPods} restantes)...`;
+    return "Sincronizando rollout...";
+  }, [showRolloutGauge, rolloutPodsCount, rolloutSawActivity, rolloutState]);
+
   const updateRolloutMetrics = useCallback(
     (summary: DeploymentSummary) => {
       const desired = Math.max(summary.replicas ?? 0, 0);
@@ -775,6 +803,16 @@ export const DeploymentsTab = ({
           // Calcular se está pronto
           const ready = pod.readyContainers === pod.totalContainers && pod.totalContainers > 0;
 
+          // Coletar motivo de erro do container (ex: ImagePullBackOff, OOMKilled)
+          const errorReason = pod.containers?.reduce<string | undefined>((acc, c) => {
+            if (acc) return acc;
+            const r = c.stateReason || "";
+            if (r && r.toLowerCase() !== "completed" && r.toLowerCase() !== "running") {
+              return r;
+            }
+            return undefined;
+          }, undefined);
+
           return {
             name: pod.name,
             phase,
@@ -782,6 +820,7 @@ export const DeploymentsTab = ({
             isNew,
             restarts: pod.restarts || 0,
             podTemplateHash: podHash,
+            errorReason,
           };
         });
 
@@ -998,6 +1037,7 @@ export const DeploymentsTab = ({
 
     console.log("[PredictiveAnalysis] Setting predictionModalOpen to:", open);
     setPredictionModalOpen(open);
+    if (!open) setShowProjection(false);
   }, [predictionLoading, predictionResult]);
 
   // Nova função para análise preditiva
@@ -1236,6 +1276,33 @@ export const DeploymentsTab = ({
     }
   };
 
+  // Remove emojis e caracteres Unicode especiais que quebram jsPDF
+  const stripEmojis = (text: string): string => {
+    if (!text) return text;
+    return text
+      .replace(/[\u{1F300}-\u{1F9FF}]/gu, '')
+      .replace(/[\u{2600}-\u{26FF}]/gu, '')
+      .replace(/[\u{2700}-\u{27BF}]/gu, '')
+      .replace(/\uFE0F/gu, '')
+      .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
+      .trim();
+  };
+
+  // Remove marcadores de markdown: **bold**, *italic*, _italic_, # headers
+  const stripMarkdown = (text: string): string => {
+    if (!text) return text;
+    return text
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/\*(.*?)\*/g, '$1')
+      .replace(/_(.*?)_/g, '$1')
+      .replace(/^#+\s*/gm, '')
+      .replace(/`(.*?)`/g, '$1')
+      .trim();
+  };
+
+  // Limpa texto para uso em PDF (sem emojis e sem markdown)
+  const cleanForPDF = (text: string): string => stripEmojis(stripMarkdown(text ?? ''));
+
   // Função para gerar PDF profissional usando jsPDF
   const generatePredictionPDF = async () => {
     if (!predictionResult || !selectedDeployment) return;
@@ -1380,7 +1447,7 @@ export const DeploymentsTab = ({
         doc.text(`Tipo Recomendado: ${vmSizing.recommended_instance_type}`, 14, yPosition);
         yPosition += 4;
         if (vmSizing.recommendation_reason) {
-          const reasonLines = doc.splitTextToSize(`Razão: ${vmSizing.recommendation_reason}`, pageWidth - 28);
+          const reasonLines = doc.splitTextToSize(`Razao: ${cleanForPDF(vmSizing.recommendation_reason)}`, pageWidth - 28);
           reasonLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -1642,7 +1709,7 @@ export const DeploymentsTab = ({
     doc.setFontSize(10);
     doc.setTextColor(0, 0, 0);
     doc.setFont("helvetica", "normal");
-    const currentState = predictionResult.executive_summary?.current_state || "";
+    const currentState = cleanForPDF(predictionResult.executive_summary?.current_state || "");
     const stateLines = doc.splitTextToSize(currentState, pageWidth - 28);
     stateLines.forEach((line: string) => {
       checkPageBreak(6);
@@ -1663,7 +1730,7 @@ export const DeploymentsTab = ({
       doc.setFont("helvetica", "normal");
       predictionResult.executive_summary.key_findings.forEach((finding: string) => {
         checkPageBreak(6);
-        const findingLines = doc.splitTextToSize(`• ${finding}`, pageWidth - 28);
+        const findingLines = doc.splitTextToSize(`• ${cleanForPDF(finding)}`, pageWidth - 28);
         findingLines.forEach((line: string) => {
           doc.text(line, 14, yPosition);
           yPosition += 5;
@@ -1710,16 +1777,16 @@ export const DeploymentsTab = ({
             doc.setFont("helvetica", "bold");
             const severityText = pred.severity ? `[${pred.severity.toUpperCase()}]` : "";
             const probText = pred.probability ? ` (${(pred.probability * 100).toFixed(0)}%)` : "";
-            doc.text(`• ${severityText} ${pred.event || pred.timeframe}${probText}`, 14, yPosition);
+            doc.text(`• ${severityText} ${cleanForPDF(pred.event || pred.timeframe)}${probText}`, 14, yPosition);
             yPosition += 5;
-            
+
             doc.setFont("helvetica", "normal");
             if (pred.timestamp) {
               doc.text(`  Timestamp: ${new Date(pred.timestamp).toLocaleDateString("pt-BR")}`, 14, yPosition);
               yPosition += 4;
             }
             if (pred.impact) {
-              const impactLines = doc.splitTextToSize(`  Impacto: ${pred.impact}`, pageWidth - 28);
+              const impactLines = doc.splitTextToSize(`  Impacto: ${cleanForPDF(pred.impact)}`, pageWidth - 28);
               impactLines.forEach((line: string) => {
                 checkPageBreak(5);
                 doc.text(line, 14, yPosition);
@@ -1731,7 +1798,7 @@ export const DeploymentsTab = ({
               yPosition += 4;
               pred.indicators.forEach((ind: string) => {
                 checkPageBreak(5);
-                const indLines = doc.splitTextToSize(`    - ${ind}`, pageWidth - 28);
+                const indLines = doc.splitTextToSize(`    - ${cleanForPDF(ind)}`, pageWidth - 28);
                 indLines.forEach((line: string) => {
                   doc.text(line, 14, yPosition);
                   yPosition += 4;
@@ -1775,7 +1842,7 @@ export const DeploymentsTab = ({
         doc.text("Fator Primário Identificado:", 14, yPosition);
         yPosition += 5;
         doc.setFont("helvetica", "normal");
-        const primaryLines = doc.splitTextToSize(predictionResult.root_cause_analysis.primary_factor, pageWidth - 28);
+        const primaryLines = doc.splitTextToSize(cleanForPDF(predictionResult.root_cause_analysis.primary_factor), pageWidth - 28);
         primaryLines.forEach((line: string) => {
           checkPageBreak(5);
           doc.text(line, 14, yPosition);
@@ -1789,13 +1856,13 @@ export const DeploymentsTab = ({
         doc.setFontSize(10);
         doc.setFont("helvetica", "bold");
         const certainty = cause.certainty ? ` (Certeza: ${(cause.certainty * 100).toFixed(0)}%)` : "";
-        doc.text(`Causa ${idx + 1}: ${cause.cause}${certainty}`, 14, yPosition);
+        doc.text(`Causa ${idx + 1}: ${cleanForPDF(cause.cause)}${certainty}`, 14, yPosition);
         yPosition += 6;
 
         doc.setFontSize(9);
         doc.setFont("helvetica", "normal");
         if (cause.category) {
-          doc.text(`Categoria: ${cause.category}`, 14, yPosition);
+          doc.text(`Categoria: ${cleanForPDF(cause.category)}`, 14, yPosition);
           yPosition += 5;
         }
 
@@ -1806,7 +1873,7 @@ export const DeploymentsTab = ({
           doc.setFont("helvetica", "normal");
           cause.evidence.forEach((ev: string) => {
             checkPageBreak(5);
-            const evLines = doc.splitTextToSize(`• ${ev}`, pageWidth - 28);
+            const evLines = doc.splitTextToSize(`• ${cleanForPDF(ev)}`, pageWidth - 28);
             evLines.forEach((line: string) => {
               doc.text(line, 14, yPosition);
               yPosition += 4;
@@ -1821,7 +1888,7 @@ export const DeploymentsTab = ({
           doc.text("Remediação:", 14, yPosition);
           yPosition += 4;
           doc.setFont("helvetica", "normal");
-          const remLines = doc.splitTextToSize(cause.remediation, pageWidth - 28);
+          const remLines = doc.splitTextToSize(cleanForPDF(cause.remediation), pageWidth - 28);
           remLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -1879,7 +1946,7 @@ export const DeploymentsTab = ({
         doc.setFont("helvetica", "normal");
         const noAction = predictionResult.impact_analysis.if_no_action;
         if (noAction.user_impact) {
-          const userLines = doc.splitTextToSize(`Impacto nos Usuários: ${noAction.user_impact}`, pageWidth - 28);
+          const userLines = doc.splitTextToSize(`Impacto nos Usuários: ${cleanForPDF(noAction.user_impact)}`, pageWidth - 28);
           userLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -1888,7 +1955,7 @@ export const DeploymentsTab = ({
           yPosition += 2;
         }
         if (noAction.infrastructure_impact) {
-          const infraLines = doc.splitTextToSize(`Impacto na Infraestrutura: ${noAction.infrastructure_impact}`, pageWidth - 28);
+          const infraLines = doc.splitTextToSize(`Impacto na Infraestrutura: ${cleanForPDF(noAction.infrastructure_impact)}`, pageWidth - 28);
           infraLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -1903,7 +1970,7 @@ export const DeploymentsTab = ({
           doc.setFont("helvetica", "normal");
           noAction.risks.forEach((risk: string) => {
             checkPageBreak(5);
-            const riskLines = doc.splitTextToSize(`• ${risk}`, pageWidth - 28);
+            const riskLines = doc.splitTextToSize(`• ${cleanForPDF(risk)}`, pageWidth - 28);
             riskLines.forEach((line: string) => {
               doc.text(line, 14, yPosition);
               yPosition += 4;
@@ -1928,7 +1995,7 @@ export const DeploymentsTab = ({
         doc.setFont("helvetica", "normal");
         const withAction = predictionResult.impact_analysis.if_optimizations_applied;
         if (withAction.user_impact) {
-          const userLines = doc.splitTextToSize(`Impacto nos Usuários: ${withAction.user_impact}`, pageWidth - 28);
+          const userLines = doc.splitTextToSize(`Impacto nos Usuários: ${cleanForPDF(withAction.user_impact)}`, pageWidth - 28);
           userLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -1937,7 +2004,7 @@ export const DeploymentsTab = ({
           yPosition += 2;
         }
         if (withAction.infrastructure_impact) {
-          const infraLines = doc.splitTextToSize(`Impacto na Infraestrutura: ${withAction.infrastructure_impact}`, pageWidth - 28);
+          const infraLines = doc.splitTextToSize(`Impacto na Infraestrutura: ${cleanForPDF(withAction.infrastructure_impact)}`, pageWidth - 28);
           infraLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -2027,17 +2094,17 @@ export const DeploymentsTab = ({
         // Destacar economia de custos
         if (rec.category === 'cost-optimization' || rec.category === 'downsizing') {
           doc.setTextColor(255, 152, 0); // Laranja
-          doc.text(`[ECONOMIA] ${idx + 1}. ${rec.title}`, 14, yPosition);
+          doc.text(`[ECONOMIA] ${idx + 1}. ${cleanForPDF(rec.title)}`, 14, yPosition);
           doc.setTextColor(0, 0, 0);
         } else {
-          doc.text(`${idx + 1}. ${rec.title}`, 14, yPosition);
+          doc.text(`${idx + 1}. ${cleanForPDF(rec.title)}`, 14, yPosition);
         }
         yPosition += 6;
 
         if (rec.category) {
           doc.setFontSize(9);
           doc.setFont("helvetica", "normal");
-          doc.text(`Categoria: ${rec.category}`, 14, yPosition);
+          doc.text(`Categoria: ${cleanForPDF(rec.category)}`, 14, yPosition);
           yPosition += 5;
         }
 
@@ -2045,7 +2112,7 @@ export const DeploymentsTab = ({
         doc.text("Por que esta recomendação?", 14, yPosition);
         yPosition += 4;
         doc.setFont("helvetica", "normal");
-        const descLines = doc.splitTextToSize(rec.description, pageWidth - 28);
+        const descLines = doc.splitTextToSize(cleanForPDF(rec.description), pageWidth - 28);
         descLines.forEach((line: string) => {
           checkPageBreak(5);
           doc.text(line, 14, yPosition);
@@ -2059,7 +2126,7 @@ export const DeploymentsTab = ({
           doc.text("Impacto Esperado:", 14, yPosition);
           yPosition += 4;
           doc.setFont("helvetica", "normal");
-          const impactLines = doc.splitTextToSize(rec.expected_impact, pageWidth - 28);
+          const impactLines = doc.splitTextToSize(cleanForPDF(rec.expected_impact), pageWidth - 28);
           impactLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -2071,12 +2138,12 @@ export const DeploymentsTab = ({
         if (rec.actions?.length > 0) {
           checkPageBreak(10);
           doc.setFont("helvetica", "bold");
-          doc.text("Ações:", 14, yPosition);
+          doc.text("Acoes:", 14, yPosition);
           yPosition += 4;
           doc.setFont("helvetica", "normal");
           rec.actions.forEach((action: string, actIdx: number) => {
             checkPageBreak(5);
-            const actionLines = doc.splitTextToSize(`${actIdx + 1}. ${action}`, pageWidth - 28);
+            const actionLines = doc.splitTextToSize(`${actIdx + 1}. ${cleanForPDF(action)}`, pageWidth - 28);
             actionLines.forEach((line: string) => {
               doc.text(line, 14, yPosition);
               yPosition += 4;
@@ -2465,41 +2532,6 @@ export const DeploymentsTab = ({
     const appVersion = selectedDeployment.labels?.["app.kubernetes.io/version"] ||
                        selectedDeployment.labels?.["version"] ||
                        selectedDeployment.labels?.["app.version"];
-    const gaugeStatusMessage = (() => {
-      if (!showRolloutGauge) {
-        return "";
-      }
-      const remainingToUpdate = Math.max(rolloutPodsCount.desired - rolloutPodsCount.updated, 0);
-      const remainingToReady = Math.max(rolloutPodsCount.desired - rolloutPodsCount.newReady, 0);
-      const oldPods = Math.max(rolloutPodsCount.oldPods, 0);
-      const unavailable = Math.max(rolloutPodsCount.unavailable, 0);
-
-      if (!rolloutSawActivity) {
-        return "Aguardando o controlador iniciar o restart...";
-      }
-
-      if (rolloutState === "completed") {
-        if (oldPods > 0) {
-          return `Encerrando pods antigos (${oldPods} restantes)...`;
-        }
-        if (unavailable > 0) {
-          return `Aguardando ${unavailable} pod(s) ficarem prontos...`;
-        }
-        return "Rollout finalizado e estável";
-      }
-
-      if (remainingToUpdate > 0) {
-        return `Atualizando pods (${rolloutPodsCount.updated}/${rolloutPodsCount.desired})...`;
-      }
-      if (remainingToReady > 0 || unavailable > 0) {
-        return "Esperando os novos pods ficarem prontos...";
-      }
-      if (oldPods > 0) {
-        return `Desligando pods antigos (${oldPods} restantes)...`;
-      }
-      return "Sincronizando rollout...";
-    })();
-
     return (
       <div className="space-y-3" onKeyDown={handleEditorKeyDown} tabIndex={-1}>
         <div className="flex items-start gap-4 text-xs border-b border-border/50 pb-2">
@@ -2552,24 +2584,6 @@ export const DeploymentsTab = ({
             </div>
           )}
         </div>
-
-        {/* Gauge de rollout - exibido independente do deployment selecionado */}
-        {showRolloutGauge && rolloutDeploymentName && (
-          <RolloutProgressGauge
-            deploymentName={rolloutDeploymentName}
-            progress={rolloutProgress}
-            updated={rolloutPodsCount.updated}
-            newReady={rolloutPodsCount.newReady}
-            desired={rolloutPodsCount.desired}
-            oldPods={rolloutPodsCount.oldPods}
-            unavailable={rolloutPodsCount.unavailable}
-            status={rolloutState === "completed" ? "completed" : "running"}
-            message={gaugeStatusMessage}
-            startTime={rolloutStartTime ?? undefined}
-            pods={rolloutPods}
-            onClose={clearRolloutGauge}
-          />
-        )}
 
         {/* Banner de status com erro - exibido quando deployment tem problemas */}
         {selectedDeployment && (() => {
@@ -3242,6 +3256,16 @@ export const DeploymentsTab = ({
                     Exportar Relatório
                   </Button>
                 )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={predictionLoading}
+                  onClick={() => handlePredictionModalChange(false)}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X className="w-4 h-4 mr-1" />
+                  Fechar
+                </Button>
               </div>
             </div>
           </DialogHeader>
@@ -3347,10 +3371,10 @@ export const DeploymentsTab = ({
                           {predictionResult.action_summary.top_action && (
                             <div className="mt-3 p-2 bg-background/50 rounded">
                               <div className="text-xs text-muted-foreground mb-1">Ação Principal Recomendada:</div>
-                              <div className="font-medium text-sm">{predictionResult.action_summary.top_action}</div>
+                              <div className="font-medium text-sm">{stripMarkdown(predictionResult.action_summary.top_action)}</div>
                               {predictionResult.action_summary.top_action_command && (
                                 <code className="block mt-1 text-xs bg-secondary/50 p-1 rounded font-mono text-primary">
-                                  {predictionResult.action_summary.top_action_command}
+                                  {stripMarkdown(predictionResult.action_summary.top_action_command)}
                                 </code>
                               )}
                             </div>
@@ -3360,70 +3384,192 @@ export const DeploymentsTab = ({
                     </div>
                   )}
 
-                  {/* Health Score */}
-                  <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                    <h3 className="font-semibold text-lg mb-3 flex items-center gap-2">
-                      <CheckCircle2 className="w-5 h-5 text-primary" />
-                      Health Score
-                    </h3>
-                    <div className="flex items-center gap-4">
-                      <div className={`text-5xl font-bold ${
-                        predictionResult.health_score.overall >= 75 ? 'text-green-500' :
-                        predictionResult.health_score.overall >= 50 ? 'text-yellow-500' :
-                        'text-red-500'
-                      }`}>
-                        {predictionResult.health_score.overall}
-                        <span className="text-2xl text-muted-foreground">/100</span>
-                      </div>
-                      <div className="flex-1">
-                        <div className="text-sm text-muted-foreground mb-2">Categoria:
-                          <span className="ml-2 font-semibold capitalize">{predictionResult.health_score.category}</span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 text-xs">
-                          <div>Availability: {predictionResult.health_score.breakdown.availability}/100</div>
-                          <div>Performance: {predictionResult.health_score.breakdown.performance}/100</div>
-                          <div>Stability: {predictionResult.health_score.breakdown.stability}/100</div>
-                          <div>Efficiency: {predictionResult.health_score.breakdown.efficiency}/100</div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Executive Summary */}
-                  <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                    <h3 className="font-semibold text-lg mb-3">Resumo Executivo</h3>
-                    <p className="text-sm mb-3">{predictionResult.executive_summary.current_state}</p>
-                    <div className="mb-3">
-                      <span className="text-xs font-semibold text-muted-foreground">Nível de Risco:</span>
-                      <span className={`ml-2 px-2 py-1 rounded text-xs font-semibold ${
-                        predictionResult.executive_summary.risk_level === 'critical' ? 'bg-red-500/20 text-red-400' :
-                        predictionResult.executive_summary.risk_level === 'high' ? 'bg-orange-500/20 text-orange-400' :
-                        predictionResult.executive_summary.risk_level === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
-                        'bg-green-500/20 text-green-400'
-                      }`}>
-                        {predictionResult.executive_summary.risk_level}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-xs font-semibold text-muted-foreground">Principais Descobertas:</span>
-                      <ul className="list-disc list-inside text-sm mt-2 space-y-1">
-                        {predictionResult.executive_summary?.key_findings?.map((finding: string, idx: number) => (
-                          <li key={idx}>{finding}</li>
-                        )) || <li className="text-muted-foreground">Nenhuma descoberta disponível</li>}
-                      </ul>
-                    </div>
-                    {predictionResult.executive_summary?.business_impact && (
-                      <div className="mt-3 pt-3 border-t border-border/50">
-                        <span className="text-xs font-semibold text-muted-foreground">Impacto no Negócio:</span>
-                        <p className="text-sm mt-1">{predictionResult.executive_summary.business_impact}</p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* DADOS ANALISADOS */}
-                  {predictionResult.raw_metrics && (
+                  {/* MÉTRICAS PRINCIPAIS - Cards Visuais */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* Card CPU */}
                     <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                      <h3 className="font-semibold text-lg mb-3">Dados Analisados</h3>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Activity className="w-4 h-4 text-blue-500" />
+                          <span className="text-sm font-semibold text-muted-foreground">CPU</span>
+                        </div>
+                        {predictionResult.raw_metrics?.cpu_trend && (
+                          <Badge variant={
+                            predictionResult.raw_metrics.cpu_trend.direction === 'up' ? 'destructive' :
+                            predictionResult.raw_metrics.cpu_trend.direction === 'down' ? 'default' :
+                            'secondary'
+                          } className="text-xs">
+                            {predictionResult.raw_metrics.cpu_trend.direction === 'up' ? '↗' :
+                             predictionResult.raw_metrics.cpu_trend.direction === 'down' ? '↘' : '→'}
+                            {' '}{predictionResult.raw_metrics.cpu_trend.percent_change?.toFixed(1)}%
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className={`text-3xl font-bold ${
+                          (predictionResult.raw_metrics?.cpu_p95_percent || 0) >= 80 ? 'text-red-500' :
+                          (predictionResult.raw_metrics?.cpu_p95_percent || 0) >= 60 ? 'text-yellow-500' :
+                          'text-green-500'
+                        }`}>
+                          {predictionResult.raw_metrics?.cpu_p95_percent?.toFixed(0) || 0}%
+                        </span>
+                        <span className="text-sm text-muted-foreground">utilização P95</span>
+                      </div>
+                      {predictionResult.raw_metrics && (
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          Request: {predictionResult.raw_metrics.cpu_requests}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Card Memória */}
+                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Database className="w-4 h-4 text-purple-500" />
+                          <span className="text-sm font-semibold text-muted-foreground">Memória</span>
+                        </div>
+                        {predictionResult.raw_metrics?.memory_trend && (
+                          <Badge variant={
+                            predictionResult.raw_metrics.memory_trend.direction === 'up' ? 'destructive' :
+                            predictionResult.raw_metrics.memory_trend.direction === 'down' ? 'default' :
+                            'secondary'
+                          } className="text-xs">
+                            {predictionResult.raw_metrics.memory_trend.direction === 'up' ? '↗' :
+                             predictionResult.raw_metrics.memory_trend.direction === 'down' ? '↘' : '→'}
+                            {' '}{predictionResult.raw_metrics.memory_trend.percent_change?.toFixed(1)}%
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className={`text-3xl font-bold ${
+                          (predictionResult.raw_metrics?.memory_p95_percent || 0) >= 85 ? 'text-red-500' :
+                          (predictionResult.raw_metrics?.memory_p95_percent || 0) >= 70 ? 'text-yellow-500' :
+                          'text-green-500'
+                        }`}>
+                          {predictionResult.raw_metrics?.memory_p95_percent?.toFixed(0) || 0}%
+                        </span>
+                        <span className="text-sm text-muted-foreground">utilização P95</span>
+                      </div>
+                      {predictionResult.raw_metrics && (
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          Request: {predictionResult.raw_metrics.memory_requests}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Card Custo */}
+                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <DollarSign className="w-4 h-4 text-yellow-500" />
+                          <span className="text-sm font-semibold text-muted-foreground">Custo</span>
+                        </div>
+                        {predictionResult.cost_analysis?.savings_percent > 0 && (
+                          <Badge variant="default" className="text-xs bg-green-500/20 text-green-500 border-green-500/30">
+                            -{predictionResult.cost_analysis.savings_percent.toFixed(0)}% possível
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-3xl font-bold text-yellow-500">
+                          R$ {predictionResult.cost_analysis?.current_monthly_cost_brl?.toFixed(0) || 0}
+                        </span>
+                        <span className="text-sm text-muted-foreground">/mês</span>
+                      </div>
+                      {predictionResult.cost_analysis?.monthly_savings_brl > 0 && (
+                        <div className="mt-2 text-xs text-green-500 font-medium">
+                          Economia: -R$ {predictionResult.cost_analysis.monthly_savings_brl.toFixed(2)}/mês
+                        </div>
+                      )}
+                      {(!predictionResult.cost_analysis?.monthly_savings_brl || predictionResult.cost_analysis?.monthly_savings_brl === 0) && (
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          $ {predictionResult.cost_analysis?.current_monthly_cost_usd?.toFixed(2) || 0}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* DETALHES TÉCNICOS - Accordion Colapsável */}
+                  <Accordion type="multiple" className="space-y-4">
+                    {/* Health Score */}
+                    <AccordionItem value="health-score" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Health Score</span>
+                          <span className={`ml-2 text-2xl font-bold ${
+                            predictionResult.health_score.overall >= 75 ? 'text-green-500' :
+                            predictionResult.health_score.overall >= 50 ? 'text-yellow-500' :
+                            'text-red-500'
+                          }`}>
+                            {predictionResult.health_score.overall}/100
+                          </span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                        <div className="flex items-center gap-4">
+                          <div className="flex-1">
+                            <div className="text-sm text-muted-foreground mb-2">Categoria:
+                              <span className="ml-2 font-semibold capitalize">{predictionResult.health_score.category}</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div>Availability: {predictionResult.health_score.breakdown.availability}/100</div>
+                              <div>Performance: {predictionResult.health_score.breakdown.performance}/100</div>
+                              <div>Stability: {predictionResult.health_score.breakdown.stability}/100</div>
+                              <div>Efficiency: {predictionResult.health_score.breakdown.efficiency}/100</div>
+                            </div>
+                          </div>
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+
+                    {/* Executive Summary */}
+                    <AccordionItem value="executive-summary" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <FileText className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Resumo Executivo</span>
+                          <span className={`ml-2 px-2 py-1 rounded text-xs font-semibold ${
+                            predictionResult.executive_summary.risk_level === 'critical' ? 'bg-red-500/20 text-red-400' :
+                            predictionResult.executive_summary.risk_level === 'high' ? 'bg-orange-500/20 text-orange-400' :
+                            predictionResult.executive_summary.risk_level === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                            'bg-green-500/20 text-green-400'
+                          }`}>
+                            {predictionResult.executive_summary.risk_level}
+                          </span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                        <p className="text-sm mb-3">{predictionResult.executive_summary.current_state}</p>
+                        <div>
+                          <span className="text-xs font-semibold text-muted-foreground">Principais Descobertas:</span>
+                          <ul className="list-disc list-inside text-sm mt-2 space-y-1">
+                            {predictionResult.executive_summary?.key_findings?.map((finding: string, idx: number) => (
+                              <li key={idx}>{finding}</li>
+                            )) || <li className="text-muted-foreground">Nenhuma descoberta disponível</li>}
+                          </ul>
+                        </div>
+                        {predictionResult.executive_summary?.business_impact && (
+                          <div className="mt-3 pt-3 border-t border-border/50">
+                            <span className="text-xs font-semibold text-muted-foreground">Impacto no Negócio:</span>
+                            <p className="text-sm mt-1">{predictionResult.executive_summary.business_impact}</p>
+                          </div>
+                        )}
+                      </AccordionContent>
+                    </AccordionItem>
+
+                    {/* DADOS ANALISADOS */}
+                    {predictionResult.raw_metrics && (
+                    <AccordionItem value="dados-analisados" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <Database className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Dados Analisados</span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                    <div className="pt-2">
                       <p className="text-xs text-muted-foreground mb-3">
                         Esta análise foi baseada nas seguintes métricas e observações do deployment:
                       </p>
@@ -3525,6 +3671,8 @@ export const DeploymentsTab = ({
                         </div>
                       </div>
                     </div>
+                      </AccordionContent>
+                    </AccordionItem>
                   )}
 
                   {/* VM Sizing e Aplicações Concorrentes */}
@@ -3856,18 +4004,321 @@ export const DeploymentsTab = ({
                     </div>
                   )}
 
-                  {/* ANÁLISE DE CUSTOS */}
-                  {predictionResult.cost_analysis && (
-                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                      <h3 className="font-semibold text-lg mb-3 flex items-center gap-2">
-                        <DollarSign className="w-5 h-5 text-yellow-500" />
-                        Análise de Custos
-                        <span className="ml-auto text-xs font-normal bg-secondary/50 rounded px-2 py-1 text-muted-foreground">
-                          Dólar: R$ {predictionResult.cost_analysis.exchange_rate?.toFixed(2)} ({predictionResult.cost_analysis.exchange_rate_date})
-                        </span>
-                      </h3>
+                    {/* CONNTRACK - Connection Tracking */}
+                    {predictionResult.raw_metrics?.conntrack_analysis?.has_sufficient_data && (() => {
+                      const ct = predictionResult.raw_metrics.conntrack_analysis;
+                      const hasCritical = ct.nodes_critical > 0;
+                      const hasWarning = ct.nodes_warning > 0;
+                      const statusColor = hasCritical ? 'text-red-400' : hasWarning ? 'text-yellow-400' : 'text-green-400';
+                      const statusLabel = hasCritical ? 'Crítico' : hasWarning ? 'Atenção' : 'Saudável';
+                      const statusBg = hasCritical ? 'bg-red-500/20 border-red-500/30' : hasWarning ? 'bg-yellow-500/20 border-yellow-500/30' : 'bg-green-500/20 border-green-500/30';
+                      return (
+                        <AccordionItem value="conntrack" className="bg-gradient-card border border-border/50 rounded-lg">
+                          <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                            <div className="flex items-center gap-2">
+                              <Database className="w-5 h-5 text-primary" />
+                              <span className="font-semibold text-lg">Conntrack (Rastreamento de Conexões)</span>
+                              <span className={`ml-2 px-2 py-0.5 rounded text-xs border ${statusBg} ${statusColor}`}>
+                                {statusLabel}
+                              </span>
+                            </div>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-4 pb-4">
+                            {/* Alerta crítico */}
+                            {hasCritical && (
+                              <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+                                <p className="text-sm text-red-400 font-medium">Conntrack critico em {ct.nodes_critical} node(s)</p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Novas conexoes de rede estao sendo descartadas silenciosamente.
+                                  Isso pode causar timeouts e falhas de servico sem mensagem de erro clara.
+                                  Aumente <code className="bg-secondary px-1 rounded">net.netfilter.nf_conntrack_max</code> imediatamente.
+                                </p>
+                              </div>
+                            )}
+                            {!hasCritical && hasWarning && (
+                              <div className="mb-4 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+                                <p className="text-sm text-yellow-400 font-medium">Conntrack elevado em {ct.nodes_warning} node(s)</p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Uso acima de 70% do limite. Com escalabilidade horizontal (mais pods/replicas),
+                                  o consumo vai aumentar. Planeje aumentar <code className="bg-secondary px-1 rounded">nf_conntrack_max</code>.
+                                </p>
+                              </div>
+                            )}
 
-                      {/* Grid: Custo Mensal | Por Réplica | Economia */}
+                            {/* Cards de resumo do cluster */}
+                            <div className="grid grid-cols-4 gap-3 mb-4">
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Uso médio cluster</div>
+                                <div className={`font-bold text-lg ${ct.cluster_usage >= 85 ? 'text-red-400' : ct.cluster_usage >= 70 ? 'text-yellow-400' : 'text-green-400'}`}>
+                                  {ct.cluster_usage.toFixed(1)}%
+                                </div>
+                              </div>
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Entradas totais</div>
+                                <div className="font-bold text-base">{ct.cluster_total.toLocaleString()}</div>
+                                <div className="text-xs text-muted-foreground">de {ct.cluster_max.toLocaleString()}</div>
+                              </div>
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Nodes WARNING</div>
+                                <div className={`font-bold text-lg ${ct.nodes_warning > 0 ? 'text-yellow-400' : 'text-muted-foreground'}`}>
+                                  {ct.nodes_warning}
+                                </div>
+                              </div>
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Nodes CRITICAL</div>
+                                <div className={`font-bold text-lg ${ct.nodes_critical > 0 ? 'text-red-400' : 'text-muted-foreground'}`}>
+                                  {ct.nodes_critical}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Tabela de nodes */}
+                            {ct.nodes?.length > 0 && (
+                              <div>
+                                <p className="text-sm font-medium mb-2">Detalhamento por Node</p>
+                                <div className="rounded-lg border border-border/30 overflow-hidden">
+                                  <table className="w-full text-xs">
+                                    <thead className="bg-secondary/50">
+                                      <tr>
+                                        <th className="text-left px-3 py-2 font-medium">Node</th>
+                                        <th className="text-right px-3 py-2 font-medium">Entradas</th>
+                                        <th className="text-right px-3 py-2 font-medium">Limite</th>
+                                        <th className="text-right px-3 py-2 font-medium">Uso</th>
+                                        <th className="text-center px-3 py-2 font-medium">Status</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {ct.nodes.map((node: any, idx: number) => (
+                                        <tr key={idx} className={`border-t border-border/20 ${idx % 2 === 0 ? '' : 'bg-secondary/10'}`}>
+                                          <td className="px-3 py-2">
+                                            <span className="font-mono text-xs">{node.node_name}</span>
+                                            <span className="block text-xs text-muted-foreground font-mono">{node.instance}</span>
+                                          </td>
+                                          <td className="text-right px-3 py-2">{node.current_entries.toLocaleString()}</td>
+                                          <td className="text-right px-3 py-2 text-muted-foreground">{node.max_entries.toLocaleString()}</td>
+                                          <td className={`text-right px-3 py-2 font-medium ${node.status === 'critical' ? 'text-red-400' : node.status === 'warning' ? 'text-yellow-400' : 'text-green-400'}`}>
+                                            {node.usage_percent.toFixed(1)}%
+                                          </td>
+                                          <td className="text-center px-3 py-2">
+                                            <span className={`px-2 py-0.5 rounded text-xs border ${
+                                              node.status === 'critical' ? 'bg-red-500/20 border-red-500/30 text-red-400' :
+                                              node.status === 'warning' ? 'bg-yellow-500/20 border-yellow-500/30 text-yellow-400' :
+                                              'bg-green-500/20 border-green-500/30 text-green-400'
+                                            }`}>
+                                              {node.status === 'critical' ? 'Crítico' : node.status === 'warning' ? 'Atenção' : 'OK'}
+                                            </span>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                                {/* Barra de progresso do node mais saturado */}
+                                {ct.highest_node && (
+                                  <div className="mt-3 p-3 rounded-lg bg-background/50 border border-border/30">
+                                    <div className="flex justify-between text-xs mb-1">
+                                      <span className="text-muted-foreground">Node mais saturado: <span className="font-mono text-foreground">{ct.highest_node}</span></span>
+                                      <span className={ct.highest_usage >= 85 ? 'text-red-400' : ct.highest_usage >= 70 ? 'text-yellow-400' : 'text-green-400'}>
+                                        {ct.highest_usage.toFixed(1)}%
+                                      </span>
+                                    </div>
+                                    <div className="h-2 bg-secondary rounded-full overflow-hidden">
+                                      <div
+                                        className={`h-full rounded-full transition-all ${ct.highest_usage >= 85 ? 'bg-red-500' : ct.highest_usage >= 70 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                                        style={{ width: `${Math.min(ct.highest_usage, 100)}%` }}
+                                      />
+                                    </div>
+                                    <p className="text-xs text-muted-foreground mt-2">
+                                      Fonte: <code className="bg-secondary px-1 rounded">node_nf_conntrack_entries</code> via node_exporter
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </AccordionContent>
+                        </AccordionItem>
+                      );
+                    })()}
+
+                    {/* MÉTRICAS DE APLICAÇÃO (Fase 5) */}
+                    <AccordionItem value="metricas-aplicacao" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <Activity className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Métricas de Aplicação</span>
+                          {/* Badge de alerta se há OOMKill ou error rate alto */}
+                          {(() => {
+                            const am = predictionResult.raw_metrics?.additional_metrics;
+                            const er = predictionResult.raw_metrics?.current?.error_rate ?? 0;
+                            if ((am?.oom_kill_events_7d ?? 0) > 0 || er >= 5) {
+                              return <span className="ml-2 px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-400">Alertas</span>;
+                            }
+                            if (er >= 1) {
+                              return <span className="ml-2 px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400">Atenção</span>;
+                            }
+                            return null;
+                          })()}
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                        <div className="pt-2 space-y-3">
+                          {(() => {
+                            const am   = predictionResult.raw_metrics?.additional_metrics ?? {};
+                            const cur  = predictionResult.raw_metrics?.current ?? {};
+                            const rps         = am.requests_per_second ?? cur.rps ?? 0;
+                            const errorRate   = cur.error_rate ?? 0;
+                            const latP99      = cur.latency?.p99 ?? 0;
+                            const oomEvents   = am.oom_kill_events_7d ?? 0;
+                            const uptime      = am.uptime_percent_30d ?? 0;
+                            const hasHTTP     = rps > 0 || errorRate > 0 || latP99 > 0;
+
+                            return (
+                              <>
+                                {/* Aviso quando métricas HTTP não disponíveis */}
+                                {!hasHTTP && (
+                                  <div className="text-xs text-muted-foreground bg-muted/30 rounded p-2 border border-border/30">
+                                    RPS, Error Rate e Latência mostram N/A — a aplicação não expõe
+                                    <code className="mx-1 text-primary">http_requests_total</code>
+                                    no Prometheus (normal para workloads não-HTTP).
+                                  </div>
+                                )}
+
+                                {/* Grid de métricas */}
+                                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                                  {/* RPS */}
+                                  <div className="bg-muted/40 rounded-lg p-3 border border-border/30">
+                                    <p className="text-[11px] text-muted-foreground mb-1">Req/s (RPS)</p>
+                                    <p className="text-lg font-mono font-bold">
+                                      {hasHTTP && rps > 0 ? rps.toFixed(1) : 'N/A'}
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground">http_requests_total</p>
+                                  </div>
+
+                                  {/* Error Rate */}
+                                  <div className={`rounded-lg p-3 border ${
+                                    errorRate >= 5  ? 'bg-red-500/10 border-red-500/20' :
+                                    errorRate >= 1  ? 'bg-yellow-500/10 border-yellow-500/20' :
+                                    hasHTTP         ? 'bg-green-500/10 border-green-500/20' :
+                                                      'bg-muted/40 border-border/30'
+                                  }`}>
+                                    <p className="text-[11px] text-muted-foreground mb-1">Error Rate</p>
+                                    <p className={`text-lg font-mono font-bold ${
+                                      errorRate >= 5  ? 'text-red-400' :
+                                      errorRate >= 1  ? 'text-yellow-400' :
+                                      hasHTTP         ? 'text-green-400' :
+                                                        'text-muted-foreground'
+                                    }`}>
+                                      {hasHTTP ? `${errorRate.toFixed(2)}%` : 'N/A'}
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      {errorRate >= 5 ? 'Critico (>5%)' : errorRate >= 1 ? 'Atencao (1-5%)' : hasHTTP ? 'Saudavel (<1%)' : 'sem dados'}
+                                    </p>
+                                  </div>
+
+                                  {/* Latência P99 */}
+                                  <div className={`rounded-lg p-3 border ${
+                                    latP99 >= 500 ? 'bg-red-500/10 border-red-500/20' :
+                                    latP99 >= 200 ? 'bg-yellow-500/10 border-yellow-500/20' :
+                                    latP99 > 0    ? 'bg-green-500/10 border-green-500/20' :
+                                                    'bg-muted/40 border-border/30'
+                                  }`}>
+                                    <p className="text-[11px] text-muted-foreground mb-1">Latência P99</p>
+                                    <p className={`text-lg font-mono font-bold ${
+                                      latP99 >= 500 ? 'text-red-400' :
+                                      latP99 >= 200 ? 'text-yellow-400' :
+                                      latP99 > 0    ? 'text-green-400' :
+                                                      'text-muted-foreground'
+                                    }`}>
+                                      {latP99 > 0 ? `${latP99.toFixed(0)}ms` : 'N/A'}
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      {latP99 >= 500 ? 'Critico (>500ms)' : latP99 >= 200 ? 'Atencao (>200ms)' : latP99 > 0 ? 'Saudavel (<200ms)' : 'sem dados'}
+                                    </p>
+                                  </div>
+
+                                  {/* OOMKill 7d */}
+                                  <div className={`rounded-lg p-3 border ${
+                                    oomEvents > 0 ? 'bg-red-500/10 border-red-500/20' : 'bg-green-500/10 border-green-500/20'
+                                  }`}>
+                                    <p className="text-[11px] text-muted-foreground mb-1">OOMKill (7d)</p>
+                                    <p className={`text-lg font-mono font-bold ${oomEvents > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                      {oomEvents}
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      {oomEvents > 0 ? 'Aumentar limite de memoria' : 'Sem OOMKill detectado'}
+                                    </p>
+                                  </div>
+
+                                  {/* Uptime 30d */}
+                                  <div className={`rounded-lg p-3 border ${
+                                    uptime === 0    ? 'bg-muted/40 border-border/30' :
+                                    uptime >= 99    ? 'bg-green-500/10 border-green-500/20' :
+                                    uptime >= 95    ? 'bg-yellow-500/10 border-yellow-500/20' :
+                                                      'bg-red-500/10 border-red-500/20'
+                                  }`}>
+                                    <p className="text-[11px] text-muted-foreground mb-1">Uptime (30d)</p>
+                                    <p className={`text-lg font-mono font-bold ${
+                                      uptime === 0 ? 'text-muted-foreground' :
+                                      uptime >= 99 ? 'text-green-400' :
+                                      uptime >= 95 ? 'text-yellow-400' :
+                                                     'text-red-400'
+                                    }`}>
+                                      {uptime > 0 ? `${uptime.toFixed(1)}%` : 'N/A'}
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      {uptime >= 99 ? 'Alta disponibilidade' : uptime >= 95 ? 'Atencao' : uptime > 0 ? 'Indisponibilidade detectada' : 'sem dados'}
+                                    </p>
+                                  </div>
+
+                                  {/* Latência P50 */}
+                                  {latP99 > 0 && (
+                                    <div className="bg-muted/40 rounded-lg p-3 border border-border/30">
+                                      <p className="text-[11px] text-muted-foreground mb-1">Latência P50</p>
+                                      <p className="text-lg font-mono font-bold">
+                                        {(cur.latency?.p50 ?? 0) > 0 ? `${(cur.latency?.p50 ?? 0).toFixed(0)}ms` : 'N/A'}
+                                      </p>
+                                      <p className="text-[10px] text-muted-foreground">mediana</p>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Alerta OOMKill */}
+                                {oomEvents > 0 && (
+                                  <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm">
+                                    <span className="font-semibold text-red-400">
+                                      {oomEvents} evento{oomEvents !== 1 ? 's' : ''} de OOMKill nos ultimos 7 dias.
+                                    </span>
+                                    <span className="text-muted-foreground ml-2">
+                                      O container esta sendo terminado por falta de memoria. Aumente o memory limit.
+                                    </span>
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+
+                    {/* ANÁLISE DE CUSTOS */}
+                    {predictionResult.cost_analysis && (
+                    <AccordionItem value="analise-custos" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <DollarSign className="w-5 h-5 text-yellow-500" />
+                          <span className="font-semibold text-lg">Análise de Custos</span>
+                          <span className="ml-2 text-xs font-normal bg-secondary/50 rounded px-2 py-1 text-muted-foreground">
+                            R$ {predictionResult.cost_analysis.current_monthly_cost_brl?.toFixed(2)}/mês
+                          </span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                        <div className="pt-2">
+                          <div className="text-xs text-muted-foreground mb-4">
+                            Dólar: R$ {predictionResult.cost_analysis.exchange_rate?.toFixed(2)} ({predictionResult.cost_analysis.exchange_rate_date})
+                          </div>
+
+                          {/* Grid: Custo Mensal | Por Réplica | Economia */}
                       <div className="grid grid-cols-3 gap-3 mb-4">
                         <div className="bg-secondary/50 rounded p-3 text-center">
                           <div className="text-muted-foreground text-xs mb-1">Custo Mensal</div>
@@ -3974,16 +4425,36 @@ export const DeploymentsTab = ({
                         </div>
                       )}
                     </div>
+                      </AccordionContent>
+                    </AccordionItem>
                   )}
 
-                  {/* Gráficos de Tendências Temporais */}
-                  {predictionResult.raw_metrics && (
-                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                      <h3 className="font-semibold text-lg mb-3 flex items-center gap-2">
-                        <BarChart3 className="w-5 h-5 text-primary" />
-                        Tendências Temporais
-                      </h3>
-                      
+                    {/* Gráficos de Tendências Temporais */}
+                    {predictionResult.raw_metrics && (
+                    <AccordionItem value="tendencias-temporais" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <BarChart3 className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Tendências Temporais</span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                    <div className="pt-2">
+
+                      {/* Toggle: Projeção de Cenários */}
+                      <div className="flex items-center justify-between mb-4 p-3 bg-muted/30 rounded-lg border border-border/30">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <TrendingUp className="w-4 h-4 text-primary" />
+                            <span className="text-sm font-medium">Projeção de Cenários (próximos 30 dias)</span>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-0.5 ml-6">
+                            Simula a evolução com e sem aplicação das recomendações
+                          </p>
+                        </div>
+                        <Switch checked={showProjection} onCheckedChange={setShowProjection} />
+                      </div>
+
                       {/* Gráfico de CPU */}
                       <div className="mb-6">
                         <h4 className="text-sm font-semibold mb-2">Uso de CPU (cores)</h4>
@@ -4093,15 +4564,316 @@ export const DeploymentsTab = ({
                           );
                         })()}
                       </div>
+
+                      {/* Projeção de Cenários */}
+                      {showProjection && (() => {
+                        const rm = predictionResult.raw_metrics;
+                        const gb = 1024 * 1024 * 1024;
+                        const curCPU = rm.current?.cpu_usage_p95 ?? 0;
+                        const d7CPU  = rm.day_7_ago?.cpu_usage_p95 ?? 0;
+                        const cpuSlope = (curCPU - d7CPU) / 7; // cores/dia
+
+                        const curMemB = rm.current?.memory_usage_p95 ?? 0;
+                        const d7MemB  = rm.day_7_ago?.memory_usage_p95 ?? 0;
+                        const curMem = curMemB / gb;
+                        const memSlope = (curMemB - d7MemB) / gb / 7; // GB/dia
+
+                        const savPct    = predictionResult.cost_analysis?.savings_percent ?? 0;
+                        const redFactor = Math.min(savPct / 100, 0.40);
+                        const hasOverProv = redFactor > 0.05;
+
+                        const calcCPUWith = (d: number) => hasOverProv
+                          ? Math.max(0, curCPU * (1 - redFactor * (d / 30)))
+                          : Math.max(0, curCPU + cpuSlope * d * 0.25);
+
+                        const calcMemWith = (d: number) => hasOverProv
+                          ? Math.max(0, curMem * (1 - redFactor * (d / 30)))
+                          : Math.max(0, curMem + memSlope * d * 0.25);
+
+                        const cpuData = [
+                          { label: '14d atrás', p95: rm.day_14_ago?.cpu_usage_p95 },
+                          { label: '10d atrás', p95: rm.day_10_ago?.cpu_usage_p95 },
+                          { label: '7d atrás',  p95: d7CPU },
+                          { label: '3d atrás',  p95: rm.day_3_ago?.cpu_usage_p95 },
+                          { label: 'Atual',     p95: curCPU, noAction: curCPU, withAction: curCPU },
+                          { label: 'D+7',  noAction: Math.max(0, curCPU + cpuSlope * 7),  withAction: calcCPUWith(7) },
+                          { label: 'D+14', noAction: Math.max(0, curCPU + cpuSlope * 14), withAction: calcCPUWith(14) },
+                          { label: 'D+30', noAction: Math.max(0, curCPU + cpuSlope * 30), withAction: calcCPUWith(30) },
+                        ];
+
+                        const memData = [
+                          { label: '14d atrás', p95: (rm.day_14_ago?.memory_usage_p95 ?? 0) / gb },
+                          { label: '10d atrás', p95: (rm.day_10_ago?.memory_usage_p95 ?? 0) / gb },
+                          { label: '7d atrás',  p95: (rm.day_7_ago?.memory_usage_p95 ?? 0) / gb },
+                          { label: '3d atrás',  p95: (rm.day_3_ago?.memory_usage_p95 ?? 0) / gb },
+                          { label: 'Atual',     p95: curMem, noAction: curMem, withAction: curMem },
+                          { label: 'D+7',  noAction: Math.max(0, curMem + memSlope * 7),  withAction: calcMemWith(7) },
+                          { label: 'D+14', noAction: Math.max(0, curMem + memSlope * 14), withAction: calcMemWith(14) },
+                          { label: 'D+30', noAction: Math.max(0, curMem + memSlope * 30), withAction: calcMemWith(30) },
+                        ];
+
+                        const tipStyle = { backgroundColor: '#1a1a1a', border: '1px solid #333' };
+                        const fmtCPU = (v: any) => v != null ? (v >= 1 ? `${v.toFixed(3)} cores` : `${(v * 1000).toFixed(0)}m`) : '';
+                        const fmtMem = (v: any) => v != null ? `${Number(v).toFixed(2)} GB` : '';
+
+                        const currentCostBRL = predictionResult.cost_analysis?.current_monthly_cost_brl ?? 0;
+                        const recommendedCostBRL = predictionResult.cost_analysis?.recommended_cost_brl ?? 0;
+                        const noActionCostBRL = currentCostBRL * (cpuSlope > 0.001 ? 1.10 : 1.02);
+
+                        return (
+                          <div className="mt-6 border-t border-border/30 pt-4 space-y-5">
+                            {/* Legenda */}
+                            <div className="flex items-center gap-5 text-xs text-muted-foreground">
+                              <div className="flex items-center gap-1.5">
+                                <svg width="24" height="4"><line x1="0" y1="2" x2="24" y2="2" stroke="#60a5fa" strokeWidth="2"/></svg>
+                                <span>Histórico P95</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <svg width="24" height="4"><line x1="0" y1="2" x2="24" y2="2" stroke="#f87171" strokeWidth="2" strokeDasharray="5 3"/></svg>
+                                <span>Sem Ação</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <svg width="24" height="4"><line x1="0" y1="2" x2="24" y2="2" stroke="#4ade80" strokeWidth="2" strokeDasharray="5 3"/></svg>
+                                <span>Com Recomendações</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <svg width="24" height="4"><line x1="0" y1="2" x2="24" y2="2" stroke="#666" strokeWidth="1" strokeDasharray="3 3"/></svg>
+                                <span>Hoje</span>
+                              </div>
+                            </div>
+
+                            {/* Gráfico Projeção CPU */}
+                            <div>
+                              <h4 className="text-sm font-semibold mb-2">Projeção de CPU (cores)</h4>
+                              <ResponsiveContainer width="100%" height={200}>
+                                <LineChart data={cpuData}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                                  <XAxis dataKey="label" stroke="#888" style={{ fontSize: '11px' }} />
+                                  <YAxis stroke="#888" style={{ fontSize: '11px' }} tickFormatter={(v) => v >= 1 ? v.toFixed(2) : `${(v*1000).toFixed(0)}m`} />
+                                  <Tooltip contentStyle={tipStyle} formatter={(v: any, name: string) => [fmtCPU(v), name]} />
+                                  <ReferenceLine x="Atual" stroke="#555" strokeDasharray="3 3" />
+                                  <Line type="monotone" dataKey="p95"        stroke="#60a5fa" name="Histórico P95"     strokeWidth={2} connectNulls={false} dot={false} />
+                                  <Line type="monotone" dataKey="noAction"   stroke="#f87171" name="Sem Ação"          strokeWidth={2} strokeDasharray="6 3" connectNulls={false} dot={false} />
+                                  <Line type="monotone" dataKey="withAction" stroke="#4ade80" name="Com Recomendações" strokeWidth={2} strokeDasharray="6 3" connectNulls={false} dot={false} />
+                                </LineChart>
+                              </ResponsiveContainer>
+                              {hasOverProv && cpuSlope > 0 && (
+                                <p className="text-xs text-green-400 mt-1">
+                                  Com right-sizing: reducao estimada de {(redFactor * 100).toFixed(0)}% no uso em 30 dias
+                                </p>
+                              )}
+                              {!hasOverProv && cpuSlope > 0.0001 && (
+                                <p className="text-xs text-yellow-400 mt-1">
+                                  Sem acao: crescimento projetado de +{(cpuSlope * 30 * 1000).toFixed(0)}m em 30 dias
+                                </p>
+                              )}
+                            </div>
+
+                            {/* Gráfico Projeção Memória */}
+                            <div>
+                              <h4 className="text-sm font-semibold mb-2">Projeção de Memória (GB)</h4>
+                              <ResponsiveContainer width="100%" height={200}>
+                                <LineChart data={memData}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                                  <XAxis dataKey="label" stroke="#888" style={{ fontSize: '11px' }} />
+                                  <YAxis stroke="#888" style={{ fontSize: '11px' }} tickFormatter={(v) => Number(v).toFixed(2)} />
+                                  <Tooltip contentStyle={tipStyle} formatter={(v: any, name: string) => [fmtMem(v), name]} />
+                                  <ReferenceLine x="Atual" stroke="#555" strokeDasharray="3 3" />
+                                  <Line type="monotone" dataKey="p95"        stroke="#60a5fa" name="Histórico P95"     strokeWidth={2} connectNulls={false} dot={false} />
+                                  <Line type="monotone" dataKey="noAction"   stroke="#f87171" name="Sem Ação"          strokeWidth={2} strokeDasharray="6 3" connectNulls={false} dot={false} />
+                                  <Line type="monotone" dataKey="withAction" stroke="#4ade80" name="Com Recomendações" strokeWidth={2} strokeDasharray="6 3" connectNulls={false} dot={false} />
+                                </LineChart>
+                              </ResponsiveContainer>
+                            </div>
+
+                            {/* Cards de custo projetado */}
+                            {currentCostBRL > 0 && (
+                              <div>
+                                <h4 className="text-sm font-semibold mb-2">Impacto no Custo (D+30)</h4>
+                                <div className="grid grid-cols-3 gap-3">
+                                  <div className="bg-muted/40 rounded-lg p-3 text-center border border-border/30">
+                                    <p className="text-[11px] text-muted-foreground mb-1">Custo Atual/mês</p>
+                                    <p className="text-base font-mono font-bold">R$ {currentCostBRL.toFixed(0)}</p>
+                                  </div>
+                                  <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-center">
+                                    <p className="text-[11px] text-muted-foreground mb-1">Sem Acao (D+30)</p>
+                                    <p className="text-base font-mono font-bold text-red-400">R$ {noActionCostBRL.toFixed(0)}</p>
+                                    <p className="text-[10px] text-red-400/70">+{((noActionCostBRL - currentCostBRL) / currentCostBRL * 100).toFixed(0)}% estimado</p>
+                                  </div>
+                                  <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3 text-center">
+                                    <p className="text-[11px] text-muted-foreground mb-1">Com Recomendacoes</p>
+                                    <p className="text-base font-mono font-bold text-green-400">
+                                      R$ {recommendedCostBRL > 0 ? recommendedCostBRL.toFixed(0) : (currentCostBRL * (1 - redFactor)).toFixed(0)}
+                                    </p>
+                                    {savPct > 1 && (
+                                      <p className="text-[10px] text-green-500">-{savPct.toFixed(0)}% economia</p>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
                     </div>
+                      </AccordionContent>
+                    </AccordionItem>
                   )}
 
-                  {/* Predictions */}
-                  {((Array.isArray(predictionResult.predictions?.short_term) && predictionResult.predictions.short_term.length > 0) ||
-                    (Array.isArray(predictionResult.predictions?.medium_term) && predictionResult.predictions.medium_term.length > 0) ||
-                    (Array.isArray(predictionResult.predictions?.long_term) && predictionResult.predictions.long_term.length > 0)) && (
-                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                      <h3 className="font-semibold text-lg mb-3">Previsões</h3>
+                    {/* Padrões Sazonais */}
+                    {predictionResult.raw_metrics?.seasonal_patterns?.has_sufficient_data && (() => {
+                      const sp = predictionResult.raw_metrics.seasonal_patterns;
+                      const hourlyData = Array.from({ length: 24 }, (_, i) => ({
+                        hora: `${String(i).padStart(2, '0')}h`,
+                        cpu: parseFloat(((sp.hourly?.avg_by_hour?.[i] ?? 0) * 1000).toFixed(1)),
+                        isPeak: sp.hourly?.peak_hours?.includes(i) ?? false,
+                        isLow: sp.hourly?.low_hours?.includes(i) ?? false,
+                      }));
+                      const dayLabels = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+                      const weeklyData = Array.from({ length: 7 }, (_, i) => ({
+                        dia: dayLabels[i],
+                        cpu: parseFloat(((sp.weekly?.avg_by_day?.[i] ?? 0) * 1000).toFixed(1)),
+                        isWeekend: i === 0 || i === 6,
+                      }));
+                      const hourlyMax = Math.max(...hourlyData.map(d => d.cpu), 1);
+                      const weeklyMax = Math.max(...weeklyData.map(d => d.cpu), 1);
+                      return (
+                        <AccordionItem value="padroes-sazonais" className="bg-gradient-card border border-border/50 rounded-lg">
+                          <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                            <div className="flex items-center gap-2">
+                              <Activity className="w-5 h-5 text-primary" />
+                              <span className="font-semibold text-lg">Padrões Sazonais</span>
+                              {sp.is_trend_seasonal && (
+                                <span className="ml-2 px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">
+                                  Sazonalidade detectada
+                                </span>
+                              )}
+                            </div>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-4 pb-4">
+                            {sp.is_trend_seasonal && (
+                              <div className="mb-4 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+                                <p className="text-sm text-yellow-400 font-medium">Tendência de crescimento coincide com pico sazonal</p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  O aumento de CPU pode ser sazonalidade esperada, não crescimento real.
+                                  Configure o HPA para absorver os picos antes de adicionar nodes.
+                                </p>
+                              </div>
+                            )}
+
+                            {/* Cards de resumo */}
+                            <div className="grid grid-cols-3 gap-3 mb-4">
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Hora de pico</div>
+                                <div className="font-bold text-base">
+                                  {sp.hourly?.peak_hour != null ? `${String(sp.hourly.peak_hour).padStart(2,'0')}h` : 'N/A'}
+                                </div>
+                                {sp.hourly?.peak_multiplier > 0 && (
+                                  <div className="text-xs text-orange-400 mt-1">+{((sp.hourly.peak_multiplier - 1) * 100).toFixed(0)}% da média</div>
+                                )}
+                              </div>
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Pico semanal</div>
+                                <div className="font-bold text-base">
+                                  {sp.weekly?.high_days?.length > 0 ? sp.weekly.high_days[0] : 'N/A'}
+                                </div>
+                                {sp.weekly?.high_days?.length > 1 && (
+                                  <div className="text-xs text-muted-foreground mt-1">+{sp.weekly.high_days.length - 1} dias</div>
+                                )}
+                              </div>
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Redução fim de semana</div>
+                                <div className="font-bold text-base text-blue-400">
+                                  {sp.weekly?.weekend_reduction > 0 ? `-${sp.weekly.weekend_reduction.toFixed(0)}%` : 'N/A'}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Gráfico horário */}
+                            <div className="mb-4">
+                              <p className="text-sm font-medium mb-2">Uso médio de CPU por hora do dia (millicores)</p>
+                              <ResponsiveContainer width="100%" height={160}>
+                                <BarChart data={hourlyData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                                  <XAxis dataKey="hora" stroke="#888" style={{ fontSize: '10px' }} interval={1} />
+                                  <YAxis stroke="#888" style={{ fontSize: '10px' }} domain={[0, hourlyMax * 1.1]} />
+                                  <Tooltip
+                                    cursor={{ fill: 'rgba(255,255,255,0.06)' }}
+                                    contentStyle={{ backgroundColor: '#0f0f1a', border: '1px solid #444', borderRadius: '6px', padding: '6px 10px' }}
+                                    labelStyle={{ color: '#e2e8f0', fontWeight: 600, fontSize: '12px', marginBottom: '2px' }}
+                                    itemStyle={{ color: '#cbd5e1', fontSize: '12px' }}
+                                    formatter={(v: number, _: string, props: any) => {
+                                      const d = props.payload;
+                                      const label = d.isPeak ? ' (pico)' : d.isLow ? ' (vale)' : '';
+                                      return [`${v}m${label}`, 'CPU'];
+                                    }}
+                                  />
+                                  <Bar dataKey="cpu" radius={[2, 2, 0, 0]}>
+                                    {hourlyData.map((entry, index) => (
+                                      <Cell
+                                        key={`h-${index}`}
+                                        fill={entry.isPeak ? '#f97316' : entry.isLow ? '#3b82f6' : '#6366f1'}
+                                      />
+                                    ))}
+                                  </Bar>
+                                </BarChart>
+                              </ResponsiveContainer>
+                              <div className="flex gap-4 mt-1 text-xs text-muted-foreground">
+                                <span><span className="inline-block w-3 h-3 rounded-sm bg-orange-500 mr-1" />Pico (&gt;120%)</span>
+                                <span><span className="inline-block w-3 h-3 rounded-sm bg-blue-500 mr-1" />Vale (&lt;80%)</span>
+                                <span><span className="inline-block w-3 h-3 rounded-sm bg-indigo-500 mr-1" />Normal</span>
+                              </div>
+                            </div>
+
+                            {/* Gráfico semanal */}
+                            <div>
+                              <p className="text-sm font-medium mb-2">Uso médio de CPU por dia da semana (millicores)</p>
+                              <ResponsiveContainer width="100%" height={130}>
+                                <BarChart data={weeklyData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                                  <XAxis dataKey="dia" stroke="#888" style={{ fontSize: '11px' }} />
+                                  <YAxis stroke="#888" style={{ fontSize: '10px' }} domain={[0, weeklyMax * 1.1]} />
+                                  <Tooltip
+                                    cursor={{ fill: 'rgba(255,255,255,0.06)' }}
+                                    contentStyle={{ backgroundColor: '#0f0f1a', border: '1px solid #444', borderRadius: '6px', padding: '6px 10px' }}
+                                    labelStyle={{ color: '#e2e8f0', fontWeight: 600, fontSize: '12px', marginBottom: '2px' }}
+                                    itemStyle={{ color: '#cbd5e1', fontSize: '12px' }}
+                                    formatter={(v: number) => [`${v}m`, 'CPU']}
+                                  />
+                                  <Bar dataKey="cpu" radius={[2, 2, 0, 0]}>
+                                    {weeklyData.map((entry, index) => (
+                                      <Cell
+                                        key={`w-${index}`}
+                                        fill={entry.isWeekend ? '#3b82f6' : '#6366f1'}
+                                      />
+                                    ))}
+                                  </Bar>
+                                </BarChart>
+                              </ResponsiveContainer>
+                              <div className="flex gap-4 mt-1 text-xs text-muted-foreground">
+                                <span><span className="inline-block w-3 h-3 rounded-sm bg-indigo-500 mr-1" />Dias úteis</span>
+                                <span><span className="inline-block w-3 h-3 rounded-sm bg-blue-500 mr-1" />Fim de semana</span>
+                              </div>
+                            </div>
+                          </AccordionContent>
+                        </AccordionItem>
+                      );
+                    })()}
+
+                    {/* Predictions */}
+                    {((Array.isArray(predictionResult.predictions?.short_term) && predictionResult.predictions.short_term.length > 0) ||
+                      (Array.isArray(predictionResult.predictions?.medium_term) && predictionResult.predictions.medium_term.length > 0) ||
+                      (Array.isArray(predictionResult.predictions?.long_term) && predictionResult.predictions.long_term.length > 0)) && (
+                    <AccordionItem value="previsoes" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <TrendingUp className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Previsões</span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                    <div className="pt-2">
 
                       {Array.isArray(predictionResult.predictions?.short_term) && predictionResult.predictions.short_term.length > 0 && (
                         <div className="mb-4">
@@ -4124,12 +4896,24 @@ export const DeploymentsTab = ({
                         </div>
                       )}
                     </div>
+                      </AccordionContent>
+                    </AccordionItem>
                   )}
 
-                  {/* Recommendations */}
-                  {Array.isArray(predictionResult.recommendations) && predictionResult.recommendations.length > 0 && (
-                    <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
-                      <h3 className="font-semibold text-lg mb-3">Recomendações</h3>
+                    {/* Recommendations */}
+                    {Array.isArray(predictionResult.recommendations) && predictionResult.recommendations.length > 0 && (
+                    <AccordionItem value="recomendacoes" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <Lightbulb className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Recomendações</span>
+                          <span className="ml-2 px-2 py-1 rounded text-xs bg-primary/20 text-primary">
+                            {predictionResult.recommendations.length} item{predictionResult.recommendations.length !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                    <div className="pt-2">
                       
                       {/* Alerta de Economia de Custos */}
                       {predictionResult.recommendations.some((rec: any) => 
@@ -4187,7 +4971,11 @@ export const DeploymentsTab = ({
                         </div>
                       ))}
                     </div>
+                      </AccordionContent>
+                    </AccordionItem>
                   )}
+                  </Accordion>
+                  {/* FIM DETALHES TÉCNICOS - Accordion Colapsável */}
                 </div>
               ) : null}
             </div>
@@ -4702,6 +5490,44 @@ export const DeploymentsTab = ({
               Fechar
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Progresso do Rollout Restart - visível independente do deployment selecionado */}
+      <Dialog open={showRolloutGauge && !!rolloutDeploymentName} onOpenChange={(open) => { if (!open) clearRolloutGauge(); }}>
+        <DialogContent className="max-w-2xl" onPointerDownOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RotateCw className="w-5 h-5" />
+              Progresso do Rollout Restart
+            </DialogTitle>
+          </DialogHeader>
+          {rolloutDeploymentName && (
+            <RolloutProgressGauge
+              deploymentName={rolloutDeploymentName}
+              progress={rolloutProgress}
+              updated={rolloutPodsCount.updated}
+              newReady={rolloutPodsCount.newReady}
+              desired={rolloutPodsCount.desired}
+              oldPods={rolloutPodsCount.oldPods}
+              unavailable={rolloutPodsCount.unavailable}
+              status={rolloutState === "completed" ? "completed" : "running"}
+              message={gaugeStatusMessage}
+              startTime={rolloutStartTime ?? undefined}
+              pods={rolloutPods}
+            />
+          )}
+          {rolloutState === "completed" && (
+            <div className="flex justify-end mt-2">
+              <button
+                type="button"
+                onClick={clearRolloutGauge}
+                className="px-4 py-1.5 text-sm rounded-md bg-green-500/10 text-green-600 border border-green-500/30 hover:bg-green-500/20 transition-colors font-medium"
+              >
+                Fechar
+              </button>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

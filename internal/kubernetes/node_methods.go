@@ -2,9 +2,13 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"k8s-hpa-manager/internal/models"
@@ -74,10 +78,17 @@ func (c *Client) getNodeInfo(ctx context.Context, nodeName, nodePoolName string)
 		return models.NodeInfo{}, fmt.Errorf("failed to get node %s: %w", nodeName, err)
 	}
 
+	// Buscar informações do cluster (resource group, subscription, tags)
+	clusterInfo := c.getClusterInfo()
+
 	nodeInfo := models.NodeInfo{
 		Name:              node.Name,
 		NodePoolName:      nodePoolName,
 		ClusterName:       c.cluster,
+		ResourceGroup:     clusterInfo.ResourceGroup,
+		Subscription:      clusterInfo.Subscription,
+		SubscriptionName:  clusterInfo.SubscriptionName,
+		ClusterTags:       clusterInfo.ClusterTags,
 		KubernetesVersion: node.Status.NodeInfo.KubeletVersion,
 		ProviderID:        node.Spec.ProviderID,
 		Hostname:          node.Name, // Usar nome do node como hostname
@@ -407,4 +418,119 @@ func parseMemoryBytes(s string) float64 {
 		return 0
 	}
 	return float64(q.Value())
+}
+
+// ClusterInfo armazena informações do cluster
+type ClusterInfo struct {
+	ResourceGroup    string
+	Subscription     string
+	SubscriptionName string
+	ClusterTags      map[string]string
+}
+
+// getClusterInfo busca informações do cluster (resource group, subscription, tags)
+func (c *Client) getClusterInfo() ClusterInfo {
+	info := ClusterInfo{
+		ClusterTags: make(map[string]string),
+	}
+
+	// Buscar cluster config do clusters-config.json
+	clusterConfig, err := findClusterConfig(c.cluster)
+	if err != nil {
+		log.Warn().Err(err).Str("cluster", c.cluster).Msg("Failed to find cluster config")
+		return info
+	}
+
+	info.ResourceGroup = clusterConfig.ResourceGroup
+	info.Subscription = clusterConfig.Subscription
+
+	// Buscar nome da subscription
+	info.SubscriptionName = getSubscriptionNameForNode(clusterConfig.Subscription)
+
+	// Buscar tags do cluster
+	clusterName := strings.TrimSuffix(clusterConfig.ClusterName, "-admin")
+	tags, err := getClusterTagsForNode(clusterName, clusterConfig.ResourceGroup)
+	if err != nil {
+		log.Warn().Err(err).Str("cluster", c.cluster).Msg("Failed to get cluster tags")
+	} else {
+		info.ClusterTags = tags
+	}
+
+	return info
+}
+
+// findClusterConfig busca cluster no clusters-config.json
+func findClusterConfig(clusterName string) (*models.ClusterConfig, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	configPath := filepath.Join(homeDir, ".k8s-hpa-manager", "clusters-config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read clusters-config.json: %w", err)
+	}
+
+	var configs []models.ClusterConfig
+	if err := json.Unmarshal(data, &configs); err != nil {
+		return nil, fmt.Errorf("failed to parse clusters-config.json: %w", err)
+	}
+
+	// Normalizar nome do cluster (remover -admin)
+	normalizedName := strings.TrimSuffix(clusterName, "-admin")
+
+	for _, cfg := range configs {
+		clusterCfgName := strings.TrimSuffix(cfg.ClusterName, "-admin")
+		if clusterCfgName == normalizedName {
+			return &cfg, nil
+		}
+	}
+
+	return nil, fmt.Errorf("cluster '%s' not found in clusters-config.json", clusterName)
+}
+
+// getSubscriptionNameForNode busca nome da subscription via Azure CLI
+func getSubscriptionNameForNode(subscriptionID string) string {
+	cmd := exec.Command("az", "account", "show",
+		"--subscription", subscriptionID,
+		"--query", "name",
+		"--output", "tsv")
+
+	output, err := cmd.Output()
+	if err != nil {
+		log.Warn().Err(err).Msgf("Failed to fetch subscription name for %s", subscriptionID)
+		return ""
+	}
+
+	return strings.TrimSpace(string(output))
+}
+
+// getClusterTagsForNode busca tags do cluster via Azure CLI
+func getClusterTagsForNode(clusterName, resourceGroup string) (map[string]string, error) {
+	cmd := exec.Command("az", "aks", "show",
+		"--resource-group", resourceGroup,
+		"--name", clusterName,
+		"--query", "tags",
+		"--output", "json")
+
+	output, err := cmd.Output()
+	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			stderr := string(exitError.Stderr)
+			return nil, fmt.Errorf("az aks show failed: %s", stderr)
+		}
+		return nil, fmt.Errorf("failed to execute az aks show: %w", err)
+	}
+
+	var tags map[string]string
+	if err := json.Unmarshal(output, &tags); err != nil {
+		return nil, fmt.Errorf("failed to parse cluster tags: %w", err)
+	}
+
+	if tags == nil {
+		tags = make(map[string]string)
+	}
+
+	return tags, nil
 }

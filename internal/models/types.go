@@ -951,9 +951,11 @@ type NodePool struct {
 	SequenceStatus string `json:"sequence_status"` // pending, executing, completed, failed
 
 	// Cluster info
-	ClusterName   string `json:"cluster_name"`
-	ResourceGroup string `json:"resource_group"`
-	Subscription  string `json:"subscription"`
+	ClusterName      string            `json:"cluster_name"`
+	ResourceGroup    string            `json:"resource_group"`
+	Subscription     string            `json:"subscription"`      // Subscription ID (UUID)
+	SubscriptionName string            `json:"subscription_name"` // Nome legível da subscription
+	ClusterTags      map[string]string `json:"cluster_tags,omitempty"` // Tags do cluster AKS
 
 	// Valores originais para rollback
 	OriginalValues NodePoolValues `json:"original_values"`
@@ -1736,6 +1738,10 @@ type NodeInfo struct {
 	Status            string            `json:"status"`              // "Ready", "NotReady", "SchedulingDisabled"
 	NodePoolName      string            `json:"node_pool_name"`
 	ClusterName       string            `json:"cluster_name"`
+	ResourceGroup     string            `json:"resource_group"`      // Azure Resource Group
+	Subscription      string            `json:"subscription"`        // Subscription ID (UUID)
+	SubscriptionName  string            `json:"subscription_name"`   // Nome legível da subscription
+	ClusterTags       map[string]string `json:"cluster_tags,omitempty"` // Tags do cluster AKS
 	KubernetesVersion string            `json:"kubernetes_version"`
 	ProviderID        string            `json:"provider_id"`         // Azure resource ID
 	InternalIP        string            `json:"internal_ip"`

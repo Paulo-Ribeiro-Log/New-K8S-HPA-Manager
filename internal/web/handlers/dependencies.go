@@ -87,6 +87,7 @@ func (h *DependenciesHandler) Scan(c *gin.Context) {
 			record := &storage.DependencyRecord{
 				ServiceName: dep.ServiceName,
 				ServiceType: string(dep.ServiceType),
+				TopicName:   dep.TopicName,
 				Cluster:     dep.Cluster,
 				Namespace:   dep.Namespace,
 				Deployment:  dep.Deployment,
