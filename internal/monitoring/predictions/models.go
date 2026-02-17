@@ -107,6 +107,9 @@ type DeploymentMetrics struct {
 
 	// Métricas adicionais de observabilidade (Fase 5)
 	AdditionalMetrics AdditionalMetrics `json:"additional_metrics"`
+
+	// Padrões sazonais detectados (Fase 3)
+	SeasonalPatterns SeasonalPatterns `json:"seasonal_patterns"`
 }
 
 // AdditionalMetrics contém métricas de observabilidade complementares
@@ -119,6 +122,37 @@ type AdditionalMetrics struct {
 
 	// Uptime % nos últimos 30 dias baseado em replicas_available > 0
 	UptimePercent30d float64 `json:"uptime_percent_30d"` // 0-100
+}
+
+// SeasonalPatterns contém padrões sazonais detectados nos últimos 7 dias (Fase 3)
+type SeasonalPatterns struct {
+	Hourly HourlyPattern `json:"hourly"`
+	Weekly WeeklyPattern `json:"weekly"`
+
+	// Meta
+	DataPoints        int  `json:"data_points"`         // pontos coletados
+	HasSufficientData bool `json:"has_sufficient_data"` // >= 100 pontos (~4 dias)
+
+	// Contexto para a IA (3.3)
+	IsTrendSeasonal       bool   `json:"is_trend_seasonal"`        // aumento atual coincide com pico horário típico
+	SeasonalAdjustedTrend string `json:"seasonal_adjusted_trend"`  // tendência após descontar sazonalidade
+}
+
+// HourlyPattern contém padrão horário (0-23h)
+type HourlyPattern struct {
+	AvgByHour      [24]float64 `json:"avg_by_hour"`      // média de CPU por hora
+	PeakHours      []int       `json:"peak_hours"`       // horas com uso > 120% da média
+	LowHours       []int       `json:"low_hours"`        // horas com uso < 80% da média
+	PeakHour       int         `json:"peak_hour"`        // hora de maior consumo médio
+	PeakMultiplier float64     `json:"peak_multiplier"`  // pico / média geral (ex: 1.8)
+}
+
+// WeeklyPattern contém padrão semanal (0=Dom … 6=Sáb)
+type WeeklyPattern struct {
+	AvgByDay         [7]float64 `json:"avg_by_day"`         // média de CPU por dia
+	HighDays         []string   `json:"high_days"`          // dias com uso > 110% da média semanal
+	LowDays          []string   `json:"low_days"`           // dias com uso < 90% da média semanal
+	WeekendReduction float64    `json:"weekend_reduction"`  // % redução fim de semana vs dias úteis
 }
 
 // PodLogEntry contém logs sanitizados de um pod/container

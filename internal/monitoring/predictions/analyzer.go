@@ -225,12 +225,16 @@ func (a *Analyzer) buildAIPrompt(metrics *DeploymentMetrics) string {
 	// Construir seção de logs dos pods (se existir)
 	podLogsSection := a.buildPodLogsSection(metrics)
 
+	// Construir seção de sazonalidade (se dados disponíveis)
+	seasonalSection := a.buildSeasonalSection(metrics)
+
 	return fmt.Sprintf(`Você é um especialista em análise preditiva de deployments Kubernetes.
 
 Analise as métricas abaixo e forneça uma análise preditiva completa em formato JSON.
 
 **IMPORTANTE: Toda a análise DEVE ser escrita em PORTUGUÊS BRASILEIRO (PT-BR). Todos os textos, descrições, recomendações e mensagens devem estar em português.**
 
+%s
 %s
 %s
 # MÉTRICAS COLETADAS:
@@ -370,7 +374,7 @@ IMPORTANTE:
     "requires_downtime": false,
     "resource_efficiency_gain_percent": 75.0
   }
-}`, temporalContext, podLogsSection, string(metricsJSON))
+}`, temporalContext, podLogsSection, seasonalSection, string(metricsJSON))
 }
 
 // fallbackAnalysis análise de fallback quando IA falha
@@ -438,6 +442,78 @@ func (a *Analyzer) fallbackAnalysis(metrics *DeploymentMetrics) *AIAnalysisResul
 	}
 
 	return result
+}
+
+// buildSeasonalSection constrói seção de contexto sazonal para o prompt da IA
+func (a *Analyzer) buildSeasonalSection(metrics *DeploymentMetrics) string {
+	sp := metrics.SeasonalPatterns
+	if !sp.HasSufficientData {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# ANALISE DE SAZONALIDADE\n\n")
+
+	// Alerta principal quando tendência de crescimento é na verdade sazonalidade
+	if sp.IsTrendSeasonal {
+		sb.WriteString("[ATENCAO - SAZONALIDADE DETECTADA]\n")
+		sb.WriteString("O aumento de CPU detectado COINCIDE com o horario de pico tipico desta aplicacao.\n")
+		sb.WriteString("IMPORTANTE: Antes de recomendar scaling permanente, verifique se o aumento e sazonalidade:\n")
+		sb.WriteString("- Se o aumento ocorre somente nos horarios de pico e retorna ao normal depois, e SAZONALIDADE\n")
+		sb.WriteString("- Sazonalidade NAO requer novos nos, apenas HPA bem configurado para absorver os picos\n")
+		sb.WriteString("- Recomende HPA com minReplicas = piso do vale e maxReplicas = pico esperado\n\n")
+	}
+
+	// Padrão horário
+	sb.WriteString("## Padrao Horario (media de CPU por hora do dia):\n")
+	if len(sp.Hourly.PeakHours) > 0 {
+		peakHoursStr := make([]string, len(sp.Hourly.PeakHours))
+		for i, h := range sp.Hourly.PeakHours {
+			peakHoursStr[i] = fmt.Sprintf("%02dh", h)
+		}
+		sb.WriteString(fmt.Sprintf("- Horas de pico (>120%% da media): %s\n", strings.Join(peakHoursStr, ", ")))
+	}
+	if len(sp.Hourly.LowHours) > 0 {
+		lowHoursStr := make([]string, len(sp.Hourly.LowHours))
+		for i, h := range sp.Hourly.LowHours {
+			lowHoursStr[i] = fmt.Sprintf("%02dh", h)
+		}
+		sb.WriteString(fmt.Sprintf("- Horas de baixo uso (<80%% da media): %s\n", strings.Join(lowHoursStr, ", ")))
+	}
+	if sp.Hourly.PeakMultiplier > 0 {
+		sb.WriteString(fmt.Sprintf("- Multiplicador de pico: %.1fx (pico e %.0f%% maior que o vale)\n",
+			sp.Hourly.PeakMultiplier, (sp.Hourly.PeakMultiplier-1)*100))
+	}
+
+	// Padrão semanal
+	sb.WriteString("\n## Padrao Semanal (media de CPU por dia da semana):\n")
+	dayNames := []string{"Domingo", "Segunda", "Terca", "Quarta", "Quinta", "Sexta", "Sabado"}
+	if len(sp.Weekly.HighDays) > 0 {
+		sb.WriteString(fmt.Sprintf("- Dias de alto uso: %s\n", strings.Join(sp.Weekly.HighDays, ", ")))
+	}
+	if len(sp.Weekly.LowDays) > 0 {
+		sb.WriteString(fmt.Sprintf("- Dias de baixo uso: %s\n", strings.Join(sp.Weekly.LowDays, ", ")))
+	}
+	if sp.Weekly.WeekendReduction > 0 {
+		sb.WriteString(fmt.Sprintf("- Reducao de fim de semana: %.0f%% menos uso que dias uteis\n", sp.Weekly.WeekendReduction))
+	}
+	_ = dayNames // usado implicitamente pelos nomes já preenchidos nas structs
+
+	// Tendência ajustada
+	if sp.SeasonalAdjustedTrend != "" && sp.SeasonalAdjustedTrend != string(metrics.Trends.CPUTrend) {
+		sb.WriteString(fmt.Sprintf("\n## Tendencia Ajustada pela Sazonalidade:\n"))
+		sb.WriteString(fmt.Sprintf("- Tendencia bruta detectada: %s\n", metrics.Trends.CPUTrend))
+		sb.WriteString(fmt.Sprintf("- Tendencia ajustada (considerando sazonalidade): %s\n", sp.SeasonalAdjustedTrend))
+		sb.WriteString("- INTERPRETACAO: O crescimento aparente pode ser um pico sazonal esperado, nao crescimento real\n")
+	}
+
+	sb.WriteString("\n## Instrucoes para a IA:\n")
+	sb.WriteString("1. Considere a sazonalidade ao fazer previsoes - picos esperados nao indicam problema\n")
+	sb.WriteString("2. Se a tendencia e sazonal, recomende configuracao de HPA ao inves de scaling permanente\n")
+	sb.WriteString("3. Mencione nos short_term predictions se um pico esta previsto para as proximas horas\n")
+	sb.WriteString("4. Diferencie entre crescimento real (preocupante) e variacao sazonal (esperada)\n\n")
+
+	return sb.String()
 }
 
 // buildTemporalContext constrói contexto temporal para análise preditiva verdadeira
