@@ -292,6 +292,11 @@ func (q *PrometheusQueries) GetReadyReplicasQuery(namespace, deployment string) 
 	)
 }
 
+// GetNodeInfoQuery retorna query para informações dos nodes (nome + IP interno)
+func (q *PrometheusQueries) GetNodeInfoQuery() string {
+	return `kube_node_info`
+}
+
 // GetConntrackEntriesQuery retorna query para entradas atuais de conntrack por node
 func (q *PrometheusQueries) GetConntrackEntriesQuery() string {
 	return `node_nf_conntrack_entries`
