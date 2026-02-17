@@ -228,12 +228,16 @@ func (a *Analyzer) buildAIPrompt(metrics *DeploymentMetrics) string {
 	// Construir seção de sazonalidade (se dados disponíveis)
 	seasonalSection := a.buildSeasonalSection(metrics)
 
+	// Construir seção conntrack (se dados disponíveis)
+	conntrackSection := a.buildConntrackSection(metrics)
+
 	return fmt.Sprintf(`Você é um especialista em análise preditiva de deployments Kubernetes.
 
 Analise as métricas abaixo e forneça uma análise preditiva completa em formato JSON.
 
 **IMPORTANTE: Toda a análise DEVE ser escrita em PORTUGUÊS BRASILEIRO (PT-BR). Todos os textos, descrições, recomendações e mensagens devem estar em português.**
 
+%s
 %s
 %s
 %s
@@ -374,7 +378,7 @@ IMPORTANTE:
     "requires_downtime": false,
     "resource_efficiency_gain_percent": 75.0
   }
-}`, temporalContext, podLogsSection, seasonalSection, string(metricsJSON))
+}`, temporalContext, podLogsSection, seasonalSection, conntrackSection, string(metricsJSON))
 }
 
 // fallbackAnalysis análise de fallback quando IA falha
@@ -442,6 +446,69 @@ func (a *Analyzer) fallbackAnalysis(metrics *DeploymentMetrics) *AIAnalysisResul
 	}
 
 	return result
+}
+
+// buildConntrackSection constrói seção de análise conntrack para o prompt da IA
+func (a *Analyzer) buildConntrackSection(metrics *DeploymentMetrics) string {
+	ct := metrics.ConntrackAnalysis
+	if !ct.HasSufficientData {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# ANALISE CONNTRACK (Connection Tracking)\n\n")
+	sb.WriteString("Conntrack rastreia conexoes de rede no kernel Linux. Quando esgotado, NOVAS CONEXOES SAO SILENCIOSAMENTE DESCARTADAS - causando timeouts, falhas de servico e erros de aplicacao sem mensagem de erro clara.\n\n")
+
+	// Status geral do cluster
+	clusterStatus := "OK"
+	if ct.NodesCritical > 0 {
+		clusterStatus = "CRITICO"
+	} else if ct.NodesWarning > 0 {
+		clusterStatus = "ATENCAO"
+	}
+
+	sb.WriteString(fmt.Sprintf("## Status Geral do Cluster: %s\n", clusterStatus))
+	sb.WriteString(fmt.Sprintf("- Entradas atuais: %d / %d (%.1f%% do limite total)\n",
+		ct.ClusterTotal, ct.ClusterMax, ct.ClusterUsage))
+	sb.WriteString(fmt.Sprintf("- Nodes em WARNING (>70%%): %d\n", ct.NodesWarning))
+	sb.WriteString(fmt.Sprintf("- Nodes em CRITICO (>85%%): %d\n", ct.NodesCritical))
+	if ct.HighestNode != "" {
+		sb.WriteString(fmt.Sprintf("- Node mais saturado: %s (%.1f%%)\n", ct.HighestNode, ct.HighestUsage))
+	}
+
+	// Detalhe por node
+	if len(ct.Nodes) > 0 {
+		sb.WriteString("\n## Detalhes por Node:\n")
+		for _, n := range ct.Nodes {
+			statusTag := "[OK]"
+			if n.Status == "critical" {
+				statusTag = "[CRITICO]"
+			} else if n.Status == "warning" {
+				statusTag = "[ATENCAO]"
+			}
+			sb.WriteString(fmt.Sprintf("- %s %s: %d/%d entradas (%.1f%%)\n",
+				statusTag, n.NodeName, n.CurrentEntries, n.MaxEntries, n.UsagePercent))
+		}
+	}
+
+	// Instruções para a IA
+	sb.WriteString("\n## Instrucoes para a IA:\n")
+	if ct.NodesCritical > 0 {
+		sb.WriteString("[URGENTE] Um ou mais nodes estao com conntrack CRITICO (>85%).\n")
+		sb.WriteString("- Inclua recomendacao de ALTA PRIORIDADE para aumentar nf_conntrack_max\n")
+		sb.WriteString("- Explique que novas conexoes estao sendo descartadas silenciosamente\n")
+		sb.WriteString("- Inclua o comando: sysctl -w net.netfilter.nf_conntrack_max=NOVO_VALOR\n")
+		sb.WriteString("- Mencione nas previsoes de curto prazo o risco de falha de rede\n")
+	} else if ct.NodesWarning > 0 {
+		sb.WriteString("[ATENCAO] Nodes com conntrack elevado (>70%%).\n")
+		sb.WriteString("- Inclua recomendacao de MEDIA PRIORIDADE para monitorar e planejar aumento\n")
+		sb.WriteString("- Mencione que com escalabilidade horizontal (mais pods), o uso vai aumentar\n")
+	} else {
+		sb.WriteString("Conntrack esta saudavel. Mencione brevemente como informacao positiva.\n")
+	}
+	sb.WriteString("- Associe o estado do conntrack ao comportamento de rede do deployment analisado\n\n")
+
+	return sb.String()
 }
 
 // buildSeasonalSection constrói seção de contexto sazonal para o prompt da IA

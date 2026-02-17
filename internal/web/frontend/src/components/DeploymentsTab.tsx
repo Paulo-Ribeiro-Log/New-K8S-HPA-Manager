@@ -3994,6 +3994,139 @@ export const DeploymentsTab = ({
                     </div>
                   )}
 
+                    {/* CONNTRACK - Connection Tracking */}
+                    {predictionResult.raw_metrics?.conntrack_analysis?.has_sufficient_data && (() => {
+                      const ct = predictionResult.raw_metrics.conntrack_analysis;
+                      const hasCritical = ct.nodes_critical > 0;
+                      const hasWarning = ct.nodes_warning > 0;
+                      const statusColor = hasCritical ? 'text-red-400' : hasWarning ? 'text-yellow-400' : 'text-green-400';
+                      const statusLabel = hasCritical ? 'Crítico' : hasWarning ? 'Atenção' : 'Saudável';
+                      const statusBg = hasCritical ? 'bg-red-500/20 border-red-500/30' : hasWarning ? 'bg-yellow-500/20 border-yellow-500/30' : 'bg-green-500/20 border-green-500/30';
+                      return (
+                        <AccordionItem value="conntrack" className="bg-gradient-card border border-border/50 rounded-lg">
+                          <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                            <div className="flex items-center gap-2">
+                              <Database className="w-5 h-5 text-primary" />
+                              <span className="font-semibold text-lg">Conntrack (Rastreamento de Conexões)</span>
+                              <span className={`ml-2 px-2 py-0.5 rounded text-xs border ${statusBg} ${statusColor}`}>
+                                {statusLabel}
+                              </span>
+                            </div>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-4 pb-4">
+                            {/* Alerta crítico */}
+                            {hasCritical && (
+                              <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+                                <p className="text-sm text-red-400 font-medium">Conntrack critico em {ct.nodes_critical} node(s)</p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Novas conexoes de rede estao sendo descartadas silenciosamente.
+                                  Isso pode causar timeouts e falhas de servico sem mensagem de erro clara.
+                                  Aumente <code className="bg-secondary px-1 rounded">net.netfilter.nf_conntrack_max</code> imediatamente.
+                                </p>
+                              </div>
+                            )}
+                            {!hasCritical && hasWarning && (
+                              <div className="mb-4 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+                                <p className="text-sm text-yellow-400 font-medium">Conntrack elevado em {ct.nodes_warning} node(s)</p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Uso acima de 70% do limite. Com escalabilidade horizontal (mais pods/replicas),
+                                  o consumo vai aumentar. Planeje aumentar <code className="bg-secondary px-1 rounded">nf_conntrack_max</code>.
+                                </p>
+                              </div>
+                            )}
+
+                            {/* Cards de resumo do cluster */}
+                            <div className="grid grid-cols-4 gap-3 mb-4">
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Uso médio cluster</div>
+                                <div className={`font-bold text-lg ${ct.cluster_usage >= 85 ? 'text-red-400' : ct.cluster_usage >= 70 ? 'text-yellow-400' : 'text-green-400'}`}>
+                                  {ct.cluster_usage.toFixed(1)}%
+                                </div>
+                              </div>
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Entradas totais</div>
+                                <div className="font-bold text-base">{ct.cluster_total.toLocaleString()}</div>
+                                <div className="text-xs text-muted-foreground">de {ct.cluster_max.toLocaleString()}</div>
+                              </div>
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Nodes WARNING</div>
+                                <div className={`font-bold text-lg ${ct.nodes_warning > 0 ? 'text-yellow-400' : 'text-muted-foreground'}`}>
+                                  {ct.nodes_warning}
+                                </div>
+                              </div>
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Nodes CRITICAL</div>
+                                <div className={`font-bold text-lg ${ct.nodes_critical > 0 ? 'text-red-400' : 'text-muted-foreground'}`}>
+                                  {ct.nodes_critical}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Tabela de nodes */}
+                            {ct.nodes?.length > 0 && (
+                              <div>
+                                <p className="text-sm font-medium mb-2">Detalhamento por Node</p>
+                                <div className="rounded-lg border border-border/30 overflow-hidden">
+                                  <table className="w-full text-xs">
+                                    <thead className="bg-secondary/50">
+                                      <tr>
+                                        <th className="text-left px-3 py-2 font-medium">Node</th>
+                                        <th className="text-right px-3 py-2 font-medium">Entradas</th>
+                                        <th className="text-right px-3 py-2 font-medium">Limite</th>
+                                        <th className="text-right px-3 py-2 font-medium">Uso</th>
+                                        <th className="text-center px-3 py-2 font-medium">Status</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {ct.nodes.map((node: any, idx: number) => (
+                                        <tr key={idx} className={`border-t border-border/20 ${idx % 2 === 0 ? '' : 'bg-secondary/10'}`}>
+                                          <td className="px-3 py-2 font-mono">{node.node_name}</td>
+                                          <td className="text-right px-3 py-2">{node.current_entries.toLocaleString()}</td>
+                                          <td className="text-right px-3 py-2 text-muted-foreground">{node.max_entries.toLocaleString()}</td>
+                                          <td className={`text-right px-3 py-2 font-medium ${node.status === 'critical' ? 'text-red-400' : node.status === 'warning' ? 'text-yellow-400' : 'text-green-400'}`}>
+                                            {node.usage_percent.toFixed(1)}%
+                                          </td>
+                                          <td className="text-center px-3 py-2">
+                                            <span className={`px-2 py-0.5 rounded text-xs border ${
+                                              node.status === 'critical' ? 'bg-red-500/20 border-red-500/30 text-red-400' :
+                                              node.status === 'warning' ? 'bg-yellow-500/20 border-yellow-500/30 text-yellow-400' :
+                                              'bg-green-500/20 border-green-500/30 text-green-400'
+                                            }`}>
+                                              {node.status === 'critical' ? 'Crítico' : node.status === 'warning' ? 'Atenção' : 'OK'}
+                                            </span>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                                {/* Barra de progresso do node mais saturado */}
+                                {ct.highest_node && (
+                                  <div className="mt-3 p-3 rounded-lg bg-background/50 border border-border/30">
+                                    <div className="flex justify-between text-xs mb-1">
+                                      <span className="text-muted-foreground">Node mais saturado: <span className="font-mono text-foreground">{ct.highest_node}</span></span>
+                                      <span className={ct.highest_usage >= 85 ? 'text-red-400' : ct.highest_usage >= 70 ? 'text-yellow-400' : 'text-green-400'}>
+                                        {ct.highest_usage.toFixed(1)}%
+                                      </span>
+                                    </div>
+                                    <div className="h-2 bg-secondary rounded-full overflow-hidden">
+                                      <div
+                                        className={`h-full rounded-full transition-all ${ct.highest_usage >= 85 ? 'bg-red-500' : ct.highest_usage >= 70 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                                        style={{ width: `${Math.min(ct.highest_usage, 100)}%` }}
+                                      />
+                                    </div>
+                                    <p className="text-xs text-muted-foreground mt-2">
+                                      Fonte: <code className="bg-secondary px-1 rounded">node_nf_conntrack_entries</code> via node_exporter
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </AccordionContent>
+                        </AccordionItem>
+                      );
+                    })()}
+
                     {/* MÉTRICAS DE APLICAÇÃO (Fase 5) */}
                     <AccordionItem value="metricas-aplicacao" className="bg-gradient-card border border-border/50 rounded-lg">
                       <AccordionTrigger className="px-4 py-3 hover:no-underline">

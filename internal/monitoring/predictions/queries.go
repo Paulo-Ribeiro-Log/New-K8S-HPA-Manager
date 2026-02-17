@@ -292,6 +292,21 @@ func (q *PrometheusQueries) GetReadyReplicasQuery(namespace, deployment string) 
 	)
 }
 
+// GetConntrackEntriesQuery retorna query para entradas atuais de conntrack por node
+func (q *PrometheusQueries) GetConntrackEntriesQuery() string {
+	return `node_nf_conntrack_entries`
+}
+
+// GetConntrackLimitQuery retorna query para limite máximo de conntrack por node
+func (q *PrometheusQueries) GetConntrackLimitQuery() string {
+	return `node_nf_conntrack_entries_limit`
+}
+
+// GetConntrackUsageRatioQuery retorna query de uso % de conntrack por node
+func (q *PrometheusQueries) GetConntrackUsageRatioQuery() string {
+	return `node_nf_conntrack_entries / node_nf_conntrack_entries_limit * 100`
+}
+
 // formatDuration formata duration para formato Prometheus (7d, 30d, etc)
 func formatDuration(d time.Duration) string {
 	days := int(d.Hours() / 24)

@@ -110,6 +110,9 @@ type DeploymentMetrics struct {
 
 	// Padrões sazonais detectados (Fase 3)
 	SeasonalPatterns SeasonalPatterns `json:"seasonal_patterns"`
+
+	// Análise conntrack do cluster e nodes
+	ConntrackAnalysis ConntrackAnalysis `json:"conntrack_analysis"`
 }
 
 // AdditionalMetrics contém métricas de observabilidade complementares
@@ -153,6 +156,30 @@ type WeeklyPattern struct {
 	HighDays         []string   `json:"high_days"`          // dias com uso > 110% da média semanal
 	LowDays          []string   `json:"low_days"`           // dias com uso < 90% da média semanal
 	WeekendReduction float64    `json:"weekend_reduction"`  // % redução fim de semana vs dias úteis
+}
+
+// ConntrackNodeInfo contém métricas de conntrack de um node específico
+type ConntrackNodeInfo struct {
+	Instance       string  `json:"instance"`        // IP:porta do node_exporter
+	NodeName       string  `json:"node_name"`       // nome do node (resolvido quando possível)
+	CurrentEntries int64   `json:"current_entries"` // entradas atuais
+	MaxEntries     int64   `json:"max_entries"`     // limite configurado
+	UsagePercent   float64 `json:"usage_percent"`   // percentual de uso (0-100)
+	Status         string  `json:"status"`          // "ok" (<70%), "warning" (70-85%), "critical" (>85%)
+}
+
+// ConntrackAnalysis contém a análise completa de conntrack do cluster
+type ConntrackAnalysis struct {
+	Nodes            []ConntrackNodeInfo `json:"nodes"`              // dados por node
+	ClusterTotal     int64               `json:"cluster_total"`      // soma de entradas em todos os nodes
+	ClusterMax       int64               `json:"cluster_max"`        // soma dos limites
+	ClusterUsage     float64             `json:"cluster_usage"`      // uso médio do cluster (%)
+	NodesWarning     int                 `json:"nodes_warning"`      // nodes entre 70-85%
+	NodesCritical    int                 `json:"nodes_critical"`     // nodes acima de 85%
+	HighestNode      string              `json:"highest_node"`       // node com maior uso
+	HighestUsage     float64             `json:"highest_usage"`      // % do node mais saturado
+	HasSufficientData bool               `json:"has_sufficient_data"` // false se node_exporter indisponível
+	MetricSource     string              `json:"metric_source"`      // "node_exporter" ou "unavailable"
 }
 
 // PodLogEntry contém logs sanitizados de um pod/container
