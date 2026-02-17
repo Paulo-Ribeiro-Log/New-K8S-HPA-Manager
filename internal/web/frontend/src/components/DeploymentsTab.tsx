@@ -14,7 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import yaml from "js-yaml";
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, Cell } from 'recharts';
 import { Switch } from "@/components/ui/switch";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -4574,6 +4574,140 @@ export const DeploymentsTab = ({
                       </AccordionContent>
                     </AccordionItem>
                   )}
+
+                    {/* Padrões Sazonais */}
+                    {predictionResult.raw_metrics?.seasonal_patterns?.has_sufficient_data && (() => {
+                      const sp = predictionResult.raw_metrics.seasonal_patterns;
+                      const hourlyData = Array.from({ length: 24 }, (_, i) => ({
+                        hora: `${String(i).padStart(2, '0')}h`,
+                        cpu: parseFloat(((sp.hourly?.avg_by_hour?.[i] ?? 0) * 1000).toFixed(1)),
+                        isPeak: sp.hourly?.peak_hours?.includes(i) ?? false,
+                        isLow: sp.hourly?.low_hours?.includes(i) ?? false,
+                      }));
+                      const dayLabels = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+                      const weeklyData = Array.from({ length: 7 }, (_, i) => ({
+                        dia: dayLabels[i],
+                        cpu: parseFloat(((sp.weekly?.avg_by_day?.[i] ?? 0) * 1000).toFixed(1)),
+                        isWeekend: i === 0 || i === 6,
+                      }));
+                      const hourlyMax = Math.max(...hourlyData.map(d => d.cpu), 1);
+                      const weeklyMax = Math.max(...weeklyData.map(d => d.cpu), 1);
+                      return (
+                        <AccordionItem value="padroes-sazonais" className="bg-gradient-card border border-border/50 rounded-lg">
+                          <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                            <div className="flex items-center gap-2">
+                              <Activity className="w-5 h-5 text-primary" />
+                              <span className="font-semibold text-lg">Padrões Sazonais</span>
+                              {sp.is_trend_seasonal && (
+                                <span className="ml-2 px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">
+                                  Sazonalidade detectada
+                                </span>
+                              )}
+                            </div>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-4 pb-4">
+                            {sp.is_trend_seasonal && (
+                              <div className="mb-4 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+                                <p className="text-sm text-yellow-400 font-medium">Tendência de crescimento coincide com pico sazonal</p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  O aumento de CPU pode ser sazonalidade esperada, não crescimento real.
+                                  Configure o HPA para absorver os picos antes de adicionar nodes.
+                                </p>
+                              </div>
+                            )}
+
+                            {/* Cards de resumo */}
+                            <div className="grid grid-cols-3 gap-3 mb-4">
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Hora de pico</div>
+                                <div className="font-bold text-base">
+                                  {sp.hourly?.peak_hour != null ? `${String(sp.hourly.peak_hour).padStart(2,'0')}h` : 'N/A'}
+                                </div>
+                                {sp.hourly?.peak_multiplier > 0 && (
+                                  <div className="text-xs text-orange-400 mt-1">+{((sp.hourly.peak_multiplier - 1) * 100).toFixed(0)}% da média</div>
+                                )}
+                              </div>
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Pico semanal</div>
+                                <div className="font-bold text-base">
+                                  {sp.weekly?.high_days?.length > 0 ? sp.weekly.high_days[0] : 'N/A'}
+                                </div>
+                                {sp.weekly?.high_days?.length > 1 && (
+                                  <div className="text-xs text-muted-foreground mt-1">+{sp.weekly.high_days.length - 1} dias</div>
+                                )}
+                              </div>
+                              <div className="p-3 rounded-lg bg-background/50 border border-border/30 text-center">
+                                <div className="text-xs text-muted-foreground mb-1">Redução fim de semana</div>
+                                <div className="font-bold text-base text-blue-400">
+                                  {sp.weekly?.weekend_reduction > 0 ? `-${sp.weekly.weekend_reduction.toFixed(0)}%` : 'N/A'}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Gráfico horário */}
+                            <div className="mb-4">
+                              <p className="text-sm font-medium mb-2">Uso médio de CPU por hora do dia (millicores)</p>
+                              <ResponsiveContainer width="100%" height={160}>
+                                <BarChart data={hourlyData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                                  <XAxis dataKey="hora" stroke="#888" style={{ fontSize: '10px' }} interval={1} />
+                                  <YAxis stroke="#888" style={{ fontSize: '10px' }} domain={[0, hourlyMax * 1.1]} />
+                                  <Tooltip
+                                    contentStyle={{ backgroundColor: '#1a1a2e', border: '1px solid #333', borderRadius: '6px' }}
+                                    formatter={(v: number, _: string, props: any) => {
+                                      const d = props.payload;
+                                      const label = d.isPeak ? '(pico)' : d.isLow ? '(vale)' : '';
+                                      return [`${v}m ${label}`, 'CPU'];
+                                    }}
+                                  />
+                                  <Bar dataKey="cpu" radius={[2, 2, 0, 0]}>
+                                    {hourlyData.map((entry, index) => (
+                                      <Cell
+                                        key={`h-${index}`}
+                                        fill={entry.isPeak ? '#f97316' : entry.isLow ? '#3b82f6' : '#6366f1'}
+                                      />
+                                    ))}
+                                  </Bar>
+                                </BarChart>
+                              </ResponsiveContainer>
+                              <div className="flex gap-4 mt-1 text-xs text-muted-foreground">
+                                <span><span className="inline-block w-3 h-3 rounded-sm bg-orange-500 mr-1" />Pico (&gt;120%)</span>
+                                <span><span className="inline-block w-3 h-3 rounded-sm bg-blue-500 mr-1" />Vale (&lt;80%)</span>
+                                <span><span className="inline-block w-3 h-3 rounded-sm bg-indigo-500 mr-1" />Normal</span>
+                              </div>
+                            </div>
+
+                            {/* Gráfico semanal */}
+                            <div>
+                              <p className="text-sm font-medium mb-2">Uso médio de CPU por dia da semana (millicores)</p>
+                              <ResponsiveContainer width="100%" height={130}>
+                                <BarChart data={weeklyData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                                  <XAxis dataKey="dia" stroke="#888" style={{ fontSize: '11px' }} />
+                                  <YAxis stroke="#888" style={{ fontSize: '10px' }} domain={[0, weeklyMax * 1.1]} />
+                                  <Tooltip
+                                    contentStyle={{ backgroundColor: '#1a1a2e', border: '1px solid #333', borderRadius: '6px' }}
+                                    formatter={(v: number) => [`${v}m`, 'CPU']}
+                                  />
+                                  <Bar dataKey="cpu" radius={[2, 2, 0, 0]}>
+                                    {weeklyData.map((entry, index) => (
+                                      <Cell
+                                        key={`w-${index}`}
+                                        fill={entry.isWeekend ? '#3b82f6' : '#6366f1'}
+                                      />
+                                    ))}
+                                  </Bar>
+                                </BarChart>
+                              </ResponsiveContainer>
+                              <div className="flex gap-4 mt-1 text-xs text-muted-foreground">
+                                <span><span className="inline-block w-3 h-3 rounded-sm bg-indigo-500 mr-1" />Dias úteis</span>
+                                <span><span className="inline-block w-3 h-3 rounded-sm bg-blue-500 mr-1" />Fim de semana</span>
+                              </div>
+                            </div>
+                          </AccordionContent>
+                        </AccordionItem>
+                      );
+                    })()}
 
                     {/* Predictions */}
                     {((Array.isArray(predictionResult.predictions?.short_term) && predictionResult.predictions.short_term.length > 0) ||

@@ -105,6 +105,11 @@ func (c *MetricsCollector) CollectMetrics(ctx context.Context, req PredictionReq
 		log.Warn().Err(err).Msg("Falha ao coletar métricas adicionais")
 	}
 
+	// 8.5. Detectar padrões sazonais (Fase 3)
+	if err := c.collectSeasonalPatterns(ctx, req, metrics); err != nil {
+		log.Warn().Err(err).Msg("Falha ao coletar padrões sazonais")
+	}
+
 	// 9. Sanitizar dados sensíveis (inclui logs coletados)
 	c.sanitizeMetrics(metrics)
 
@@ -1291,6 +1296,195 @@ func (c *MetricsCollector) calculateCapacityForecast(metrics *DeploymentMetrics)
 	}
 
 	metrics.CapacityForecast = forecast
+}
+
+// queryMatrix executa range query Prometheus e retorna Matrix (série temporal)
+func (c *MetricsCollector) queryMatrix(ctx context.Context, query string, start, end time.Time, step time.Duration) (model.Matrix, error) {
+	result, err := c.promClient.QueryRange(ctx, query, start, end, step)
+	if err != nil {
+		return nil, fmt.Errorf("range query falhou: %w", err)
+	}
+	if result == nil {
+		return nil, fmt.Errorf("range query retornou nil")
+	}
+	matrix, ok := result.(model.Matrix)
+	if !ok {
+		return nil, fmt.Errorf("esperado Matrix, recebido %T", result)
+	}
+	return matrix, nil
+}
+
+// collectSeasonalPatterns detecta padrões horários e semanais de CPU nos últimos 7 dias (Fase 3)
+func (c *MetricsCollector) collectSeasonalPatterns(ctx context.Context, req PredictionRequest, metrics *DeploymentMetrics) error {
+	end := time.Now()
+	start := end.Add(-7 * 24 * time.Hour)
+
+	query := c.queries.GetCPUUsageQuery(req.Namespace, req.Deployment, 0)
+	matrix, err := c.queryMatrix(ctx, query, start, end, time.Hour)
+	if err != nil || len(matrix) == 0 {
+		log.Warn().Err(err).Msg("Dados insuficientes para análise sazonal")
+		metrics.SeasonalPatterns.HasSufficientData = false
+		return nil
+	}
+
+	// Extrair todos os pontos (timestamp + valor)
+	type point struct {
+		t time.Time
+		v float64
+	}
+	var points []point
+	for _, stream := range matrix {
+		for _, pair := range stream.Values {
+			points = append(points, point{
+				t: pair.Timestamp.Time(),
+				v: float64(pair.Value),
+			})
+		}
+	}
+
+	if len(points) < 24 {
+		metrics.SeasonalPatterns.HasSufficientData = false
+		return nil
+	}
+
+	// --- Padrão horário (0-23h) ---
+	var hourSum [24]float64
+	var hourCount [24]int
+	for _, p := range points {
+		h := p.t.Hour()
+		hourSum[h] += p.v
+		hourCount[h]++
+	}
+
+	var hourlyAvg [24]float64
+	totalAvg := 0.0
+	validHours := 0
+	maxHourVal := 0.0
+	peakHour := 0
+	for h := 0; h < 24; h++ {
+		if hourCount[h] > 0 {
+			hourlyAvg[h] = hourSum[h] / float64(hourCount[h])
+			totalAvg += hourlyAvg[h]
+			validHours++
+		}
+		if hourlyAvg[h] > maxHourVal {
+			maxHourVal = hourlyAvg[h]
+			peakHour = h
+		}
+	}
+	if validHours > 0 {
+		totalAvg /= float64(validHours)
+	}
+
+	var peakHours, lowHours []int
+	peakMultiplier := 1.0
+	for h := 0; h < 24; h++ {
+		if totalAvg > 0 {
+			ratio := hourlyAvg[h] / totalAvg
+			if ratio > 1.20 {
+				peakHours = append(peakHours, h)
+			} else if ratio < 0.80 {
+				lowHours = append(lowHours, h)
+			}
+		}
+	}
+	if totalAvg > 0 && maxHourVal > 0 {
+		peakMultiplier = maxHourVal / totalAvg
+	}
+
+	// --- Padrão semanal (0=Dom, 1=Seg, ..., 6=Sáb) ---
+	var daySum [7]float64
+	var dayCount [7]int
+	for _, p := range points {
+		d := int(p.t.Weekday())
+		daySum[d] += p.v
+		dayCount[d]++
+	}
+
+	var dailyAvg [7]float64
+	weekdayTotal, weekendTotal := 0.0, 0.0
+	weekdayCount, weekendCount := 0, 0
+	for d := 0; d < 7; d++ {
+		if dayCount[d] > 0 {
+			dailyAvg[d] = daySum[d] / float64(dayCount[d])
+			if d == 0 || d == 6 { // Domingo=0, Sábado=6
+				weekendTotal += dailyAvg[d]
+				weekendCount++
+			} else {
+				weekdayTotal += dailyAvg[d]
+				weekdayCount++
+			}
+		}
+	}
+
+	dayNames := []string{"domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"}
+	weekAvgPerDay := (weekdayTotal + weekendTotal) / 7.0
+	var highDays, lowDays []string
+	for d := 0; d < 7; d++ {
+		if weekAvgPerDay > 0 {
+			ratio := dailyAvg[d] / weekAvgPerDay
+			if ratio > 1.10 {
+				highDays = append(highDays, dayNames[d])
+			} else if ratio < 0.90 {
+				lowDays = append(lowDays, dayNames[d])
+			}
+		}
+	}
+
+	weekendReduction := 0.0
+	if weekdayCount > 0 && weekendCount > 0 {
+		wkdAvg := weekdayTotal / float64(weekdayCount)
+		wkndAvg := weekendTotal / float64(weekendCount)
+		if wkdAvg > 0 {
+			weekendReduction = (wkdAvg - wkndAvg) / wkdAvg * 100
+		}
+	}
+
+	// --- Detectar se tendência atual é sazonal (3.3) ---
+	currentHour := time.Now().Hour()
+	isSeasonalPeak := false
+	for _, h := range peakHours {
+		if h == currentHour {
+			isSeasonalPeak = true
+			break
+		}
+	}
+
+	seasonalAdjustedTrend := string(metrics.Trends.CPUTrend)
+	if isSeasonalPeak && metrics.Trends.CPUTrend == TrendUp {
+		seasonalAdjustedTrend = "stable_seasonal_peak"
+	}
+
+	log.Debug().
+		Str("deployment", req.Deployment).
+		Int("data_points", len(points)).
+		Ints("peak_hours", peakHours).
+		Float64("peak_multiplier", peakMultiplier).
+		Float64("weekend_reduction", weekendReduction).
+		Bool("is_seasonal_peak", isSeasonalPeak).
+		Msg("Padrões sazonais detectados")
+
+	metrics.SeasonalPatterns = SeasonalPatterns{
+		Hourly: HourlyPattern{
+			AvgByHour:      hourlyAvg,
+			PeakHours:      peakHours,
+			LowHours:       lowHours,
+			PeakHour:       peakHour,
+			PeakMultiplier: peakMultiplier,
+		},
+		Weekly: WeeklyPattern{
+			AvgByDay:         dailyAvg,
+			HighDays:         highDays,
+			LowDays:          lowDays,
+			WeekendReduction: weekendReduction,
+		},
+		DataPoints:            len(points),
+		HasSufficientData:     len(points) >= 100,
+		IsTrendSeasonal:       isSeasonalPeak,
+		SeasonalAdjustedTrend: seasonalAdjustedTrend,
+	}
+
+	return nil
 }
 
 // collectAdditionalMetrics coleta métricas de observabilidade complementares (Fase 5)
