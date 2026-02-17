@@ -101,6 +101,18 @@ type DeploymentMetrics struct {
 	NodeMetrics      NodeMetrics      `json:"node_metrics"`
 	CompetingApps    []CompetingApp   `json:"competing_apps"`
 	CapacityForecast CapacityForecast `json:"capacity_forecast"`
+
+	// Logs dos pods (coletados e sanitizados automaticamente)
+	PodLogs []PodLogEntry `json:"pod_logs,omitempty"`
+}
+
+// PodLogEntry contém logs sanitizados de um pod/container
+type PodLogEntry struct {
+	PodName       string `json:"pod_name"`
+	ContainerName string `json:"container_name"`
+	RestartCount  int32  `json:"restart_count"`
+	LogLines      string `json:"log_lines"`       // logs atuais (tail 80 linhas, sanitizados)
+	PreviousLogs  string `json:"previous_logs,omitempty"` // logs antes do último restart (se houver)
 }
 
 // ResourceRequests define requests e limits do deployment
