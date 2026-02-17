@@ -1344,6 +1344,31 @@ func (c *MetricsCollector) collectConntrackAnalysis(ctx context.Context, metrics
 		}
 	}
 
+	// Construir mapa IP → nome do node via kube_node_info
+	// kube_node_info tem labels "node" (nome) e "internal_ip" (IP)
+	ipToNodeName := make(map[string]string)
+	if nodeInfoResult, nodeInfoErr := c.promClient.Query(ctx, c.queries.GetNodeInfoQuery()); nodeInfoErr == nil {
+		if nodeInfoVec, ok := nodeInfoResult.(model.Vector); ok {
+			for _, s := range nodeInfoVec {
+				nodeName := string(s.Metric["node"])
+				internalIP := string(s.Metric["internal_ip"])
+				if nodeName != "" && internalIP != "" {
+					ipToNodeName[internalIP] = nodeName
+				}
+			}
+		}
+	}
+
+	// extractIP remove a porta de "IP:porta" → "IP"
+	extractIP := func(instance string) string {
+		for i := len(instance) - 1; i >= 0; i-- {
+			if instance[i] == ':' {
+				return instance[:i]
+			}
+		}
+		return instance
+	}
+
 	// Construir análise por node
 	var nodes []ConntrackNodeInfo
 	var clusterTotal, clusterMax int64
@@ -1370,15 +1395,11 @@ func (c *MetricsCollector) collectConntrackAnalysis(ctx context.Context, metrics
 			nodesWarning++
 		}
 
-		// Tentar extrair só o IP (remover :porta)
-		nodeName := instance
-		if idx := len(instance) - 1; idx > 0 {
-			for i := len(instance) - 1; i >= 0; i-- {
-				if instance[i] == ':' {
-					nodeName = instance[:i]
-					break
-				}
-			}
+		// Resolver nome do node: kube_node_info > IP extraído > instance completo
+		nodeIP := extractIP(instance)
+		nodeName := ipToNodeName[nodeIP]
+		if nodeName == "" {
+			nodeName = nodeIP // fallback: só o IP sem porta
 		}
 
 		nodes = append(nodes, ConntrackNodeInfo{
