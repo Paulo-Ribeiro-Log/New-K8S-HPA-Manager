@@ -3994,6 +3994,166 @@ export const DeploymentsTab = ({
                     </div>
                   )}
 
+                    {/* MÉTRICAS DE APLICAÇÃO (Fase 5) */}
+                    <AccordionItem value="metricas-aplicacao" className="bg-gradient-card border border-border/50 rounded-lg">
+                      <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                        <div className="flex items-center gap-2">
+                          <Activity className="w-5 h-5 text-primary" />
+                          <span className="font-semibold text-lg">Métricas de Aplicação</span>
+                          {/* Badge de alerta se há OOMKill ou error rate alto */}
+                          {(() => {
+                            const am = predictionResult.raw_metrics?.additional_metrics;
+                            const er = predictionResult.raw_metrics?.current?.error_rate ?? 0;
+                            if ((am?.oom_kill_events_7d ?? 0) > 0 || er >= 5) {
+                              return <span className="ml-2 px-2 py-0.5 rounded text-xs bg-red-500/20 text-red-400">Alertas</span>;
+                            }
+                            if (er >= 1) {
+                              return <span className="ml-2 px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400">Atenção</span>;
+                            }
+                            return null;
+                          })()}
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="px-4 pb-4">
+                        <div className="pt-2 space-y-3">
+                          {(() => {
+                            const am   = predictionResult.raw_metrics?.additional_metrics ?? {};
+                            const cur  = predictionResult.raw_metrics?.current ?? {};
+                            const rps         = am.requests_per_second ?? cur.rps ?? 0;
+                            const errorRate   = cur.error_rate ?? 0;
+                            const latP99      = cur.latency?.p99 ?? 0;
+                            const oomEvents   = am.oom_kill_events_7d ?? 0;
+                            const uptime      = am.uptime_percent_30d ?? 0;
+                            const hasHTTP     = rps > 0 || errorRate > 0 || latP99 > 0;
+
+                            return (
+                              <>
+                                {/* Aviso quando métricas HTTP não disponíveis */}
+                                {!hasHTTP && (
+                                  <div className="text-xs text-muted-foreground bg-muted/30 rounded p-2 border border-border/30">
+                                    RPS, Error Rate e Latência mostram N/A — a aplicação não expõe
+                                    <code className="mx-1 text-primary">http_requests_total</code>
+                                    no Prometheus (normal para workloads não-HTTP).
+                                  </div>
+                                )}
+
+                                {/* Grid de métricas */}
+                                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                                  {/* RPS */}
+                                  <div className="bg-muted/40 rounded-lg p-3 border border-border/30">
+                                    <p className="text-[11px] text-muted-foreground mb-1">Req/s (RPS)</p>
+                                    <p className="text-lg font-mono font-bold">
+                                      {hasHTTP && rps > 0 ? rps.toFixed(1) : 'N/A'}
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground">http_requests_total</p>
+                                  </div>
+
+                                  {/* Error Rate */}
+                                  <div className={`rounded-lg p-3 border ${
+                                    errorRate >= 5  ? 'bg-red-500/10 border-red-500/20' :
+                                    errorRate >= 1  ? 'bg-yellow-500/10 border-yellow-500/20' :
+                                    hasHTTP         ? 'bg-green-500/10 border-green-500/20' :
+                                                      'bg-muted/40 border-border/30'
+                                  }`}>
+                                    <p className="text-[11px] text-muted-foreground mb-1">Error Rate</p>
+                                    <p className={`text-lg font-mono font-bold ${
+                                      errorRate >= 5  ? 'text-red-400' :
+                                      errorRate >= 1  ? 'text-yellow-400' :
+                                      hasHTTP         ? 'text-green-400' :
+                                                        'text-muted-foreground'
+                                    }`}>
+                                      {hasHTTP ? `${errorRate.toFixed(2)}%` : 'N/A'}
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      {errorRate >= 5 ? 'Critico (>5%)' : errorRate >= 1 ? 'Atencao (1-5%)' : hasHTTP ? 'Saudavel (<1%)' : 'sem dados'}
+                                    </p>
+                                  </div>
+
+                                  {/* Latência P99 */}
+                                  <div className={`rounded-lg p-3 border ${
+                                    latP99 >= 500 ? 'bg-red-500/10 border-red-500/20' :
+                                    latP99 >= 200 ? 'bg-yellow-500/10 border-yellow-500/20' :
+                                    latP99 > 0    ? 'bg-green-500/10 border-green-500/20' :
+                                                    'bg-muted/40 border-border/30'
+                                  }`}>
+                                    <p className="text-[11px] text-muted-foreground mb-1">Latência P99</p>
+                                    <p className={`text-lg font-mono font-bold ${
+                                      latP99 >= 500 ? 'text-red-400' :
+                                      latP99 >= 200 ? 'text-yellow-400' :
+                                      latP99 > 0    ? 'text-green-400' :
+                                                      'text-muted-foreground'
+                                    }`}>
+                                      {latP99 > 0 ? `${latP99.toFixed(0)}ms` : 'N/A'}
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      {latP99 >= 500 ? 'Critico (>500ms)' : latP99 >= 200 ? 'Atencao (>200ms)' : latP99 > 0 ? 'Saudavel (<200ms)' : 'sem dados'}
+                                    </p>
+                                  </div>
+
+                                  {/* OOMKill 7d */}
+                                  <div className={`rounded-lg p-3 border ${
+                                    oomEvents > 0 ? 'bg-red-500/10 border-red-500/20' : 'bg-green-500/10 border-green-500/20'
+                                  }`}>
+                                    <p className="text-[11px] text-muted-foreground mb-1">OOMKill (7d)</p>
+                                    <p className={`text-lg font-mono font-bold ${oomEvents > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                      {oomEvents}
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      {oomEvents > 0 ? 'Aumentar limite de memoria' : 'Sem OOMKill detectado'}
+                                    </p>
+                                  </div>
+
+                                  {/* Uptime 30d */}
+                                  <div className={`rounded-lg p-3 border ${
+                                    uptime === 0    ? 'bg-muted/40 border-border/30' :
+                                    uptime >= 99    ? 'bg-green-500/10 border-green-500/20' :
+                                    uptime >= 95    ? 'bg-yellow-500/10 border-yellow-500/20' :
+                                                      'bg-red-500/10 border-red-500/20'
+                                  }`}>
+                                    <p className="text-[11px] text-muted-foreground mb-1">Uptime (30d)</p>
+                                    <p className={`text-lg font-mono font-bold ${
+                                      uptime === 0 ? 'text-muted-foreground' :
+                                      uptime >= 99 ? 'text-green-400' :
+                                      uptime >= 95 ? 'text-yellow-400' :
+                                                     'text-red-400'
+                                    }`}>
+                                      {uptime > 0 ? `${uptime.toFixed(1)}%` : 'N/A'}
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      {uptime >= 99 ? 'Alta disponibilidade' : uptime >= 95 ? 'Atencao' : uptime > 0 ? 'Indisponibilidade detectada' : 'sem dados'}
+                                    </p>
+                                  </div>
+
+                                  {/* Latência P50 */}
+                                  {latP99 > 0 && (
+                                    <div className="bg-muted/40 rounded-lg p-3 border border-border/30">
+                                      <p className="text-[11px] text-muted-foreground mb-1">Latência P50</p>
+                                      <p className="text-lg font-mono font-bold">
+                                        {(cur.latency?.p50 ?? 0) > 0 ? `${(cur.latency?.p50 ?? 0).toFixed(0)}ms` : 'N/A'}
+                                      </p>
+                                      <p className="text-[10px] text-muted-foreground">mediana</p>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Alerta OOMKill */}
+                                {oomEvents > 0 && (
+                                  <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm">
+                                    <span className="font-semibold text-red-400">
+                                      {oomEvents} evento{oomEvents !== 1 ? 's' : ''} de OOMKill nos ultimos 7 dias.
+                                    </span>
+                                    <span className="text-muted-foreground ml-2">
+                                      O container esta sendo terminado por falta de memoria. Aumente o memory limit.
+                                    </span>
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+
                     {/* ANÁLISE DE CUSTOS */}
                     {predictionResult.cost_analysis && (
                     <AccordionItem value="analise-custos" className="bg-gradient-card border border-border/50 rounded-lg">

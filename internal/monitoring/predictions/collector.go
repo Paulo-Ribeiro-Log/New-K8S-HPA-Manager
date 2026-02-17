@@ -100,7 +100,12 @@ func (c *MetricsCollector) CollectMetrics(ctx context.Context, req PredictionReq
 		log.Warn().Err(err).Msg("Falha ao coletar logs dos pods")
 	}
 
-	// 8. Sanitizar dados sensíveis (inclui logs coletados)
+	// 8. Coletar métricas adicionais (RPS consolidado, OOMKill, Uptime)
+	if err := c.collectAdditionalMetrics(ctx, req, metrics); err != nil {
+		log.Warn().Err(err).Msg("Falha ao coletar métricas adicionais")
+	}
+
+	// 9. Sanitizar dados sensíveis (inclui logs coletados)
 	c.sanitizeMetrics(metrics)
 
 	log.Info().
@@ -335,6 +340,11 @@ func (c *MetricsCollector) collectSnapshot(ctx context.Context, req PredictionRe
 		return nil, fmt.Errorf("falha ao coletar Error rate: %w", err)
 	}
 	snapshot.ErrorRate = errorRate
+
+	// RPS (opcional — 0 se http_requests_total não instrumentado)
+	if rps, rpsErr := c.queryScalar(ctx, c.queries.GetRPSQuery(req.Namespace, req.Deployment)); rpsErr == nil {
+		snapshot.RPS = rps
+	}
 
 	// Latency
 	latP50, err := c.queryScalar(ctx, c.queries.GetLatencyP50Query(req.Namespace, req.Deployment, offset))
@@ -1281,6 +1291,73 @@ func (c *MetricsCollector) calculateCapacityForecast(metrics *DeploymentMetrics)
 	}
 
 	metrics.CapacityForecast = forecast
+}
+
+// collectAdditionalMetrics coleta métricas de observabilidade complementares (Fase 5)
+func (c *MetricsCollector) collectAdditionalMetrics(ctx context.Context, req PredictionRequest, metrics *DeploymentMetrics) error {
+	additional := AdditionalMetrics{}
+
+	// RPS: copiado do snapshot current (já coletado em collectSnapshot)
+	additional.RequestsPerSecond = metrics.Current.RPS
+
+	// Uptime % 30d via subquery Prometheus
+	uptime, err := c.queryScalar(ctx, c.queries.GetUptimeQuery(req.Namespace, req.Deployment))
+	if err == nil && uptime > 0 {
+		additional.UptimePercent30d = uptime
+	} else {
+		// Fallback: disponibilidade atual
+		fallback, fErr := c.queryScalar(ctx, c.queries.GetCurrentAvailabilityQuery(req.Namespace, req.Deployment))
+		if fErr == nil && fallback > 0 {
+			additional.UptimePercent30d = fallback
+		} else if metrics.DesiredReplicas > 0 {
+			// Fallback final: ratio baseado em réplicas K8s
+			additional.UptimePercent30d = float64(metrics.AvailableReplicas) / float64(metrics.DesiredReplicas) * 100
+		}
+	}
+
+	// OOMKill events via K8s API (últimos 7 dias)
+	oomCount, oomErr := c.countOOMKillEvents(ctx, req)
+	if oomErr == nil {
+		additional.OOMKillEvents7d = oomCount
+	} else {
+		log.Warn().Err(oomErr).Msg("Falha ao contar eventos OOMKill")
+	}
+
+	log.Debug().
+		Str("deployment", req.Deployment).
+		Float64("rps", additional.RequestsPerSecond).
+		Float64("uptime_30d", additional.UptimePercent30d).
+		Int("oom_events_7d", additional.OOMKillEvents7d).
+		Msg("Metricas adicionais coletadas")
+
+	metrics.AdditionalMetrics = additional
+	return nil
+}
+
+// countOOMKillEvents conta eventos de OOMKill nos últimos 7 dias para o deployment
+func (c *MetricsCollector) countOOMKillEvents(ctx context.Context, req PredictionRequest) (int, error) {
+	clientset := c.kubeClient.GetClientset()
+	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour)
+
+	events, err := clientset.CoreV1().Events(req.Namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: "reason=OOMKilling",
+	})
+	if err != nil {
+		return 0, fmt.Errorf("falha ao listar eventos OOMKilling: %w", err)
+	}
+
+	deploymentPrefix := req.Deployment + "-"
+	count := 0
+	for _, event := range events.Items {
+		if !strings.HasPrefix(event.InvolvedObject.Name, deploymentPrefix) {
+			continue
+		}
+		if event.LastTimestamp.Time.After(sevenDaysAgo) {
+			count++
+		}
+	}
+
+	return count, nil
 }
 
 // collectPodLogs coleta e sanitiza logs dos pods do deployment para análise pela IA
