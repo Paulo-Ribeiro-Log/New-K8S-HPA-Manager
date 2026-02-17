@@ -471,6 +471,9 @@ func (c *Client) GetIngress(ctx context.Context, namespace, name string) (*model
 		return nil, fmt.Errorf("failed to get ingress %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
 
+	ing.ManagedFields = nil
+	ing.Status = networkingv1.IngressStatus{}
+
 	yamlBytes, err := yaml.Marshal(ing)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal ingress %s/%s: %w", namespace, name, err)
