@@ -527,7 +527,9 @@ export interface NodePool {
   is_system_pool: boolean;
   cluster_name: string;
   resource_group: string;
-  subscription: string;
+  subscription: string; // Subscription ID (UUID)
+  subscription_name?: string; // Nome legível da subscription
+  cluster_tags?: Record<string, string>; // Tags do cluster AKS
   modified: boolean;
   selected: boolean;
   applied_count: number;
@@ -540,7 +542,7 @@ export interface NodePool {
     autoscaling_enabled: boolean;
   };
   cordon_drain_config?: CordonDrainConfig; // Configuração de Cordon/Drain (opcional)
-
+}
 
 // ============================================================================
 // Node Management Types
@@ -551,6 +553,10 @@ export interface NodeInfo {
   status: string; // "Ready" | "NotReady" | "SchedulingDisabled"
   node_pool_name: string;
   cluster_name: string;
+  resource_group: string; // Azure Resource Group
+  subscription: string; // Subscription ID (UUID)
+  subscription_name?: string; // Nome legível da subscription
+  cluster_tags?: Record<string, string>; // Tags do cluster AKS
   kubernetes_version: string;
   provider_id: string;
   internal_ip: string;
@@ -558,7 +564,7 @@ export interface NodeInfo {
   hostname: string;
   age: string;
   created_at: string;
-  
+
   // Capacity e Allocatable
   cpu_capacity: string;
   memory_capacity: string;
@@ -566,26 +572,26 @@ export interface NodeInfo {
   cpu_allocatable: string;
   memory_allocatable: string;
   pods_allocatable: number;
-  
+
   // Usage
   cpu_used: string;
   memory_used: string;
   cpu_usage_percent: number;
   memory_usage_percent: number;
   disk_usage_percent: number;
-  
+
   // Pods count
   pods_running: number;
   pods_total: number;
-  
+
   // Conditions
   conditions: NodeCondition[];
-  
+
   // Taints and Labels
   taints?: NodeTaint[];
   labels: Record<string, string>;
   annotations?: Record<string, string>;
-  
+
   // Flags
   unschedulable: boolean;
 }
@@ -639,8 +645,6 @@ export interface NodesListResponse {
   count: number;
   node_pool_name: string;
   cluster: string;
-}
-
 }
 
 export interface CronJob {

@@ -10,8 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { NodePool, NodeInfo } from "@/lib/api/types";
-import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw } from "lucide-react";
+import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Copy } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
@@ -384,9 +385,135 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             {nodePool.status}
           </Badge>
         </div>
-        <p className="text-sm text-muted-foreground">
-          {nodePool.cluster_name} • {nodePool.resource_group}
-        </p>
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Cluster Name */}
+          <div className="flex items-center gap-1">
+            <span className="text-sm text-muted-foreground">{nodePool.cluster_name}</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-5 w-5 p-0"
+              onClick={() => {
+                navigator.clipboard.writeText(nodePool.cluster_name);
+                toast.success("Cluster name copiado!");
+              }}
+            >
+              <Copy className="h-3 w-3" />
+            </Button>
+          </div>
+
+          <span className="text-sm text-muted-foreground">•</span>
+
+          {/* Resource Group */}
+          <div className="flex items-center gap-1">
+            <span className="text-sm text-muted-foreground">{nodePool.resource_group}</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-5 w-5 p-0"
+              onClick={() => {
+                navigator.clipboard.writeText(nodePool.resource_group);
+                toast.success("Resource Group copiado!");
+              }}
+            >
+              <Copy className="h-3 w-3" />
+            </Button>
+          </div>
+
+          {nodePool.subscription && (
+            <>
+              <span className="text-sm text-muted-foreground">•</span>
+
+              {/* Subscription Name + ID */}
+              <div className="flex items-center gap-1">
+                {nodePool.subscription_name ? (
+                  <>
+                    <span className="text-sm text-muted-foreground">{nodePool.subscription_name}</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-5 w-5 p-0"
+                      onClick={() => {
+                        navigator.clipboard.writeText(nodePool.subscription_name || '');
+                        toast.success("Subscription name copiado!");
+                      }}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                    <span className="text-xs text-muted-foreground/60 font-mono">({nodePool.subscription})</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-5 w-5 p-0"
+                      onClick={() => {
+                        navigator.clipboard.writeText(nodePool.subscription);
+                        toast.success("Subscription ID copiado!");
+                      }}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-sm text-muted-foreground font-mono">{nodePool.subscription}</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-5 w-5 p-0"
+                      onClick={() => {
+                        navigator.clipboard.writeText(nodePool.subscription);
+                        toast.success("Subscription ID copiado!");
+                      }}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Botão de Tags do Cluster */}
+          {nodePool.cluster_tags && Object.keys(nodePool.cluster_tags).length > 0 && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="h-6 gap-1 px-2">
+                  <Tag className="h-3 w-3" />
+                  <span className="text-xs">Tags ({Object.keys(nodePool.cluster_tags).length})</span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-80">
+                <div className="space-y-2">
+                  <h4 className="font-semibold text-sm">Cluster Tags</h4>
+                  <Separator />
+                  <div className="space-y-1 max-h-60 overflow-y-auto">
+                    {Object.entries(nodePool.cluster_tags).map(([key, value]) => (
+                      <div key={key} className="flex items-center justify-between gap-2 text-xs">
+                        <div className="flex items-start gap-2 flex-1 min-w-0">
+                          <Badge variant="secondary" className="font-mono text-xs shrink-0">
+                            {key}
+                          </Badge>
+                          <span className="text-muted-foreground break-all">{value}</span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-5 w-5 p-0 shrink-0"
+                          onClick={() => {
+                            navigator.clipboard.writeText(`${key}=${value}`);
+                            toast.success(`Tag ${key} copiada!`);
+                          }}
+                        >
+                          <Copy className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+          )}
+        </div>
       </div>
 
       <Separator />

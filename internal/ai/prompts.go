@@ -485,28 +485,90 @@ LEMBRE-SE: ANALISE OS DADOS ACIMA. NÃO PEÇA MAIS DADOS!
 RETORNE APENAS O JSON (SEM TEXTO ADICIONAL, SEM MARKDOWN WRAPPERS).`
 
 // Template para análise de Deployments
-const deploymentTemplate = `Você é um especialista em Kubernetes especializado em troubleshooting de Deployments.
+const deploymentTemplate = `Você é um especialista sênior em Kubernetes especializado em troubleshooting de Deployments.
 
-Analise o seguinte contexto de diagnóstico do Deployment e forneça uma análise abrangente.
+═══════════════════════════════════════════════════════════════════════════════
+REGRAS ABSOLUTAS - LEIA COM ATENÇÃO:
+═══════════════════════════════════════════════════════════════════════════════
 
-**Sua resposta deve incluir:**
+1. RETORNE APENAS JSON VÁLIDO (sem markdown, sem '''json''')
+2. NÃO USE EMOJIS nos textos do JSON
+3. PORTUGUÊS BRASILEIRO NOS TEXTOS DO JSON
 
-1. **Análise da Causa Raiz**: Identifique problemas com rollout, réplicas ou falhas de pods
-2. **Avaliação de Impacto**: Descreva severidade e impacto na disponibilidade do serviço
-3. **Ações Recomendadas**: Remediação passo-a-passo (rollback, escala, estratégia de atualização)
-4. **Comandos kubectl**: Inclua comandos específicos (prefixe com $)
+═══════════════════════════════════════════════════════════════════════════════
+FORMATO DA RESPOSTA (JSON OBRIGATÓRIO):
+═══════════════════════════════════════════════════════════════════════════════
 
-**Importante:**
-- Analise status do rollout e histórico
-- Verifique falhas e restarts de pods
-- Avalie alocação de recursos (CPU/Memória)
-- Considere estratégia de atualização (RollingUpdate, Recreate)
-- Sugira rollback se necessário
+Retorne APENAS este JSON (sem texto adicional, sem markdown wrappers):
 
-**Contexto de Diagnóstico (JSON):**
+{
+  "executive_summary": {
+    "severity": "critical|high|medium|low",
+    "status": "unhealthy|degraded|healthy",
+    "quick_summary": "Resumo de 1-2 frases do problema principal do Deployment",
+    "time_to_resolve": "estimativa de tempo (ex: 15 minutes, 1 hour)"
+  },
+  "root_cause_analysis": {
+    "symptom": "Descrição do sintoma observado (ex: Rollout travado, pods failing)",
+    "probable_causes": [
+      "Causa principal identificada (ex: Image pull error, Resource limits, Config error)",
+      "Causa secundária se aplicável",
+      "Causa terciária se aplicável"
+    ],
+    "evidence": [
+      "Evidência do problema (ex: eventos do Deployment, status das réplicas)",
+      "Estado das réplicas: X desired, Y available, Z unavailable",
+      "Rollout status: progressing/complete/failed"
+    ],
+    "confidence": "high|medium|low"
+  },
+  "impact_assessment": {
+    "severity": "critical|high|medium|low",
+    "affected_users": "Descrição de quem é afetado",
+    "downtime_estimate": "Estimativa de downtime ou degradação",
+    "sla_breach": true|false,
+    "business_impact": "Descrição do impacto no negócio"
+  },
+  "recommendations": [
+    {
+      "priority": 1,
+      "title": "Ação para resolver o problema do Deployment",
+      "description": "Explicação detalhada (rollback, ajuste de recursos, fix de config)",
+      "commands": [
+        "kubectl rollout undo deployment/nome -n namespace",
+        "kubectl scale deployment/nome --replicas=3 -n namespace"
+      ],
+      "time_estimate": "estimativa",
+      "risk_level": "low|medium|high",
+      "impact_level": "high|medium|low"
+    }
+  ]
+}
+
+**FOCO DA ANÁLISE:**
+- Status do rollout (progressing, complete, failed)
+- Réplicas disponíveis vs desejadas
+- Falhas em pods (ImagePullBackOff, CrashLoopBackOff, OOMKilled)
+- Estratégia de atualização (RollingUpdate vs Recreate)
+- Recursos (CPU/Memory requests/limits)
+- ConfigMaps/Secrets/Volumes
+- Considere rollback se deployment falhou
+
+**REGRAS DE SEVERITY:**
+- critical: Deployment completamente falho, 0 réplicas disponíveis
+- high: Deployment degradado, menos réplicas que o desejado
+- medium: Rollout lento, algumas réplicas com problemas
+- low: Deployment saudável mas com otimizações possíveis
+
+═══════════════════════════════════════════════════════════════════════════════
+CONTEXTO COM TODOS OS DADOS COLETADOS DO CLUSTER:
+═══════════════════════════════════════════════════════════════════════════════
+
 {{CONTEXT}}
 
-**Formate sua resposta claramente com cabeçalhos markdown e bullet points. RESPONDA SEMPRE EM PORTUGUÊS BRASILEIRO.**`
+═══════════════════════════════════════════════════════════════════════════════
+RETORNE APENAS O JSON (SEM TEXTO ADICIONAL, SEM MARKDOWN WRAPPERS).
+═══════════════════════════════════════════════════════════════════════════════`
 
 // Template para análise de HPAs
 const hpaTemplate = `Você é um especialista em Kubernetes especializado em otimização de HPA (Horizontal Pod Autoscaler).

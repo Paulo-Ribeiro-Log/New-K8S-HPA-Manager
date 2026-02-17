@@ -178,7 +178,7 @@ func (h *NodePoolHandler) List(c *gin.Context) {
 	clusterNameForAzure := strings.TrimSuffix(clusterConfig.ClusterName, "-admin")
 
 	// Listar node pools via Azure CLI
-	nodePools, err := loadNodePoolsFromAzure(clusterNameForAzure, clusterConfig.ResourceGroup)
+	nodePools, err := loadNodePoolsFromAzure(clusterNameForAzure, clusterConfig.ResourceGroup, clusterConfig.Subscription)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"success": false,
@@ -583,7 +583,7 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 	}
 
 	// Recarregar node pools para retornar o estado atualizado
-	nodePools, err := loadNodePoolsFromAzure(clusterNameForAzure, clusterConfig.ResourceGroup)
+	nodePools, err := loadNodePoolsFromAzure(clusterNameForAzure, clusterConfig.ResourceGroup, clusterConfig.Subscription)
 	if err != nil {
 		if reporter != nil {
 			reporter.SendError("azure", fmt.Sprintf("Failed to reload node pools: %v", err))
@@ -712,7 +712,7 @@ func loadClusterConfig() ([]models.ClusterConfig, error) {
 }
 
 // loadNodePoolsFromAzure carrega node pools via Azure CLI
-func loadNodePoolsFromAzure(clusterName, resourceGroup string) ([]models.NodePool, error) {
+func loadNodePoolsFromAzure(clusterName, resourceGroup, subscription string) ([]models.NodePool, error) {
 	// Executar comando Azure CLI
 	cmd := exec.Command("az", "aks", "nodepool", "list",
 		"--resource-group", resourceGroup,
@@ -744,6 +744,16 @@ func loadNodePoolsFromAzure(clusterName, resourceGroup string) ([]models.NodePoo
 		return nil, fmt.Errorf("failed to parse Azure CLI output: %w", err)
 	}
 
+	// Buscar tags do cluster (uma única vez para todos os node pools)
+	clusterTags, err := getClusterTags(clusterName, resourceGroup)
+	if err != nil {
+		log.Warn().Err(err).Msgf("Failed to fetch cluster tags for %s, continuing without tags", clusterName)
+		clusterTags = make(map[string]string) // Mapa vazio se falhar
+	}
+
+	// Buscar nome da subscription (uma única vez para todos os node pools)
+	subscriptionName := getSubscriptionName(subscription)
+
 	// Converter para nosso modelo
 	var nodePools []models.NodePool
 	for _, azPool := range azureNodePools {
@@ -767,12 +777,63 @@ func loadNodePoolsFromAzure(clusterName, resourceGroup string) ([]models.NodePoo
 			IsSystemPool:       azPool.Mode == "System",
 			ClusterName:        clusterName,
 			ResourceGroup:      resourceGroup,
+			Subscription:       subscription,     // Subscription ID (UUID)
+			SubscriptionName:   subscriptionName, // Nome legível
+			ClusterTags:        clusterTags,      // Tags do cluster
 		}
 
 		nodePools = append(nodePools, nodePool)
 	}
 
 	return nodePools, nil
+}
+
+// getClusterTags busca as tags do cluster AKS
+func getClusterTags(clusterName, resourceGroup string) (map[string]string, error) {
+	cmd := exec.Command("az", "aks", "show",
+		"--resource-group", resourceGroup,
+		"--name", clusterName,
+		"--query", "tags",
+		"--output", "json")
+
+	output, err := cmd.Output()
+	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			stderr := string(exitError.Stderr)
+			return nil, fmt.Errorf("az aks show failed: %s", stderr)
+		}
+		return nil, fmt.Errorf("failed to execute az aks show: %w", err)
+	}
+
+	var tags map[string]string
+	if err := json.Unmarshal(output, &tags); err != nil {
+		return nil, fmt.Errorf("failed to parse cluster tags: %w", err)
+	}
+
+	// Se tags for null, retornar mapa vazio
+	if tags == nil {
+		tags = make(map[string]string)
+	}
+
+	return tags, nil
+}
+
+// getSubscriptionName busca o nome da subscription via Azure CLI
+func getSubscriptionName(subscriptionID string) string {
+	cmd := exec.Command("az", "account", "show",
+		"--subscription", subscriptionID,
+		"--query", "name",
+		"--output", "tsv")
+
+	output, err := cmd.Output()
+	if err != nil {
+		log.Warn().Err(err).Msgf("Failed to fetch subscription name for %s", subscriptionID)
+		return "" // Retorna vazio se falhar
+	}
+
+	// Remover quebras de linha e espaços em branco
+	name := strings.TrimSpace(string(output))
+	return name
 }
 
 // AzureNodePool representa a estrutura retornada pela Azure CLI

@@ -214,10 +214,22 @@ func (a *Analyzer) performAIAnalysis(ctx context.Context, req PredictionRequest,
 
 // buildAIPrompt constrói prompt estruturado para IA
 func (a *Analyzer) buildAIPrompt(metrics *DeploymentMetrics) string {
-	metricsJSON, _ := json.MarshalIndent(metrics, "", "  ")
+	// Remover pod_logs do JSON de métricas para evitar duplicação (logs têm seção própria)
+	metricsWithoutLogs := *metrics
+	metricsWithoutLogs.PodLogs = nil
+	metricsJSON, _ := json.MarshalIndent(metricsWithoutLogs, "", "  ")
 
-	// ✅ NOVO: Construir contexto temporal para análise preditiva verdadeira
+	// Construir contexto temporal para análise preditiva verdadeira
 	temporalContext := a.buildTemporalContext(metrics)
+
+	// Construir seção de logs dos pods (se existir)
+	podLogsSection := a.buildPodLogsSection(metrics)
+
+	// Construir seção de sazonalidade (se dados disponíveis)
+	seasonalSection := a.buildSeasonalSection(metrics)
+
+	// Construir seção conntrack (se dados disponíveis)
+	conntrackSection := a.buildConntrackSection(metrics)
 
 	return fmt.Sprintf(`Você é um especialista em análise preditiva de deployments Kubernetes.
 
@@ -226,7 +238,9 @@ Analise as métricas abaixo e forneça uma análise preditiva completa em format
 **IMPORTANTE: Toda a análise DEVE ser escrita em PORTUGUÊS BRASILEIRO (PT-BR). Todos os textos, descrições, recomendações e mensagens devem estar em português.**
 
 %s
-
+%s
+%s
+%s
 # MÉTRICAS COLETADAS:
 %s
 
@@ -364,7 +378,7 @@ IMPORTANTE:
     "requires_downtime": false,
     "resource_efficiency_gain_percent": 75.0
   }
-}`, temporalContext, string(metricsJSON))
+}`, temporalContext, podLogsSection, seasonalSection, conntrackSection, string(metricsJSON))
 }
 
 // fallbackAnalysis análise de fallback quando IA falha
@@ -432,6 +446,141 @@ func (a *Analyzer) fallbackAnalysis(metrics *DeploymentMetrics) *AIAnalysisResul
 	}
 
 	return result
+}
+
+// buildConntrackSection constrói seção de análise conntrack para o prompt da IA
+func (a *Analyzer) buildConntrackSection(metrics *DeploymentMetrics) string {
+	ct := metrics.ConntrackAnalysis
+	if !ct.HasSufficientData {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# ANALISE CONNTRACK (Connection Tracking)\n\n")
+	sb.WriteString("Conntrack rastreia conexoes de rede no kernel Linux. Quando esgotado, NOVAS CONEXOES SAO SILENCIOSAMENTE DESCARTADAS - causando timeouts, falhas de servico e erros de aplicacao sem mensagem de erro clara.\n\n")
+
+	// Status geral do cluster
+	clusterStatus := "OK"
+	if ct.NodesCritical > 0 {
+		clusterStatus = "CRITICO"
+	} else if ct.NodesWarning > 0 {
+		clusterStatus = "ATENCAO"
+	}
+
+	sb.WriteString(fmt.Sprintf("## Status Geral do Cluster: %s\n", clusterStatus))
+	sb.WriteString(fmt.Sprintf("- Entradas atuais: %d / %d (%.1f%% do limite total)\n",
+		ct.ClusterTotal, ct.ClusterMax, ct.ClusterUsage))
+	sb.WriteString(fmt.Sprintf("- Nodes em WARNING (>70%%): %d\n", ct.NodesWarning))
+	sb.WriteString(fmt.Sprintf("- Nodes em CRITICO (>85%%): %d\n", ct.NodesCritical))
+	if ct.HighestNode != "" {
+		sb.WriteString(fmt.Sprintf("- Node mais saturado: %s (%.1f%%)\n", ct.HighestNode, ct.HighestUsage))
+	}
+
+	// Detalhe por node
+	if len(ct.Nodes) > 0 {
+		sb.WriteString("\n## Detalhes por Node:\n")
+		for _, n := range ct.Nodes {
+			statusTag := "[OK]"
+			if n.Status == "critical" {
+				statusTag = "[CRITICO]"
+			} else if n.Status == "warning" {
+				statusTag = "[ATENCAO]"
+			}
+			sb.WriteString(fmt.Sprintf("- %s %s: %d/%d entradas (%.1f%%)\n",
+				statusTag, n.NodeName, n.CurrentEntries, n.MaxEntries, n.UsagePercent))
+		}
+	}
+
+	// Instruções para a IA
+	sb.WriteString("\n## Instrucoes para a IA:\n")
+	if ct.NodesCritical > 0 {
+		sb.WriteString("[URGENTE] Um ou mais nodes estao com conntrack CRITICO (>85%).\n")
+		sb.WriteString("- Inclua recomendacao de ALTA PRIORIDADE para aumentar nf_conntrack_max\n")
+		sb.WriteString("- Explique que novas conexoes estao sendo descartadas silenciosamente\n")
+		sb.WriteString("- Inclua o comando: sysctl -w net.netfilter.nf_conntrack_max=NOVO_VALOR\n")
+		sb.WriteString("- Mencione nas previsoes de curto prazo o risco de falha de rede\n")
+	} else if ct.NodesWarning > 0 {
+		sb.WriteString("[ATENCAO] Nodes com conntrack elevado (>70%%).\n")
+		sb.WriteString("- Inclua recomendacao de MEDIA PRIORIDADE para monitorar e planejar aumento\n")
+		sb.WriteString("- Mencione que com escalabilidade horizontal (mais pods), o uso vai aumentar\n")
+	} else {
+		sb.WriteString("Conntrack esta saudavel. Mencione brevemente como informacao positiva.\n")
+	}
+	sb.WriteString("- Associe o estado do conntrack ao comportamento de rede do deployment analisado\n\n")
+
+	return sb.String()
+}
+
+// buildSeasonalSection constrói seção de contexto sazonal para o prompt da IA
+func (a *Analyzer) buildSeasonalSection(metrics *DeploymentMetrics) string {
+	sp := metrics.SeasonalPatterns
+	if !sp.HasSufficientData {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# ANALISE DE SAZONALIDADE\n\n")
+
+	// Alerta principal quando tendência de crescimento é na verdade sazonalidade
+	if sp.IsTrendSeasonal {
+		sb.WriteString("[ATENCAO - SAZONALIDADE DETECTADA]\n")
+		sb.WriteString("O aumento de CPU detectado COINCIDE com o horario de pico tipico desta aplicacao.\n")
+		sb.WriteString("IMPORTANTE: Antes de recomendar scaling permanente, verifique se o aumento e sazonalidade:\n")
+		sb.WriteString("- Se o aumento ocorre somente nos horarios de pico e retorna ao normal depois, e SAZONALIDADE\n")
+		sb.WriteString("- Sazonalidade NAO requer novos nos, apenas HPA bem configurado para absorver os picos\n")
+		sb.WriteString("- Recomende HPA com minReplicas = piso do vale e maxReplicas = pico esperado\n\n")
+	}
+
+	// Padrão horário
+	sb.WriteString("## Padrao Horario (media de CPU por hora do dia):\n")
+	if len(sp.Hourly.PeakHours) > 0 {
+		peakHoursStr := make([]string, len(sp.Hourly.PeakHours))
+		for i, h := range sp.Hourly.PeakHours {
+			peakHoursStr[i] = fmt.Sprintf("%02dh", h)
+		}
+		sb.WriteString(fmt.Sprintf("- Horas de pico (>120%% da media): %s\n", strings.Join(peakHoursStr, ", ")))
+	}
+	if len(sp.Hourly.LowHours) > 0 {
+		lowHoursStr := make([]string, len(sp.Hourly.LowHours))
+		for i, h := range sp.Hourly.LowHours {
+			lowHoursStr[i] = fmt.Sprintf("%02dh", h)
+		}
+		sb.WriteString(fmt.Sprintf("- Horas de baixo uso (<80%% da media): %s\n", strings.Join(lowHoursStr, ", ")))
+	}
+	if sp.Hourly.PeakMultiplier > 0 {
+		sb.WriteString(fmt.Sprintf("- Multiplicador de pico: %.1fx (pico e %.0f%% maior que o vale)\n",
+			sp.Hourly.PeakMultiplier, (sp.Hourly.PeakMultiplier-1)*100))
+	}
+
+	// Padrão semanal
+	sb.WriteString("\n## Padrao Semanal (media de CPU por dia da semana):\n")
+	dayNames := []string{"Domingo", "Segunda", "Terca", "Quarta", "Quinta", "Sexta", "Sabado"}
+	if len(sp.Weekly.HighDays) > 0 {
+		sb.WriteString(fmt.Sprintf("- Dias de alto uso: %s\n", strings.Join(sp.Weekly.HighDays, ", ")))
+	}
+	if len(sp.Weekly.LowDays) > 0 {
+		sb.WriteString(fmt.Sprintf("- Dias de baixo uso: %s\n", strings.Join(sp.Weekly.LowDays, ", ")))
+	}
+	if sp.Weekly.WeekendReduction > 0 {
+		sb.WriteString(fmt.Sprintf("- Reducao de fim de semana: %.0f%% menos uso que dias uteis\n", sp.Weekly.WeekendReduction))
+	}
+	_ = dayNames // usado implicitamente pelos nomes já preenchidos nas structs
+
+	// Tendência ajustada
+	if sp.SeasonalAdjustedTrend != "" && sp.SeasonalAdjustedTrend != string(metrics.Trends.CPUTrend) {
+		sb.WriteString(fmt.Sprintf("\n## Tendencia Ajustada pela Sazonalidade:\n"))
+		sb.WriteString(fmt.Sprintf("- Tendencia bruta detectada: %s\n", metrics.Trends.CPUTrend))
+		sb.WriteString(fmt.Sprintf("- Tendencia ajustada (considerando sazonalidade): %s\n", sp.SeasonalAdjustedTrend))
+		sb.WriteString("- INTERPRETACAO: O crescimento aparente pode ser um pico sazonal esperado, nao crescimento real\n")
+	}
+
+	sb.WriteString("\n## Instrucoes para a IA:\n")
+	sb.WriteString("1. Considere a sazonalidade ao fazer previsoes - picos esperados nao indicam problema\n")
+	sb.WriteString("2. Se a tendencia e sazonal, recomende configuracao de HPA ao inves de scaling permanente\n")
+	sb.WriteString("3. Mencione nos short_term predictions se um pico esta previsto para as proximas horas\n")
+	sb.WriteString("4. Diferencie entre crescimento real (preocupante) e variacao sazonal (esperada)\n\n")
+
+	return sb.String()
 }
 
 // buildTemporalContext constrói contexto temporal para análise preditiva verdadeira
@@ -556,6 +705,37 @@ func extractJSON(text string) string {
 	}
 
 	return text
+}
+
+// buildPodLogsSection constrói seção de logs dos pods para o prompt da IA
+func (a *Analyzer) buildPodLogsSection(metrics *DeploymentMetrics) string {
+	if len(metrics.PodLogs) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# LOGS DOS PODS (coletados e sanitizados automaticamente):\n\n")
+	sb.WriteString("IMPORTANTE: Analise os logs abaixo para identificar erros, exceções e causas raiz.\n")
+	sb.WriteString("Estes logs foram coletados AGORA dos pods em execução. Use-os na análise de causa raiz.\n\n")
+
+	for _, entry := range metrics.PodLogs {
+		sb.WriteString(fmt.Sprintf("## Pod: %s | Container: %s | Restarts: %d\n",
+			entry.PodName, entry.ContainerName, entry.RestartCount))
+
+		if entry.LogLines != "" {
+			sb.WriteString("### Logs atuais (últimas 80 linhas):\n```\n")
+			sb.WriteString(entry.LogLines)
+			sb.WriteString("\n```\n\n")
+		}
+
+		if entry.PreviousLogs != "" {
+			sb.WriteString("### Logs ANTES do ultimo restart (crash anterior):\n```\n")
+			sb.WriteString(entry.PreviousLogs)
+			sb.WriteString("\n```\n\n")
+		}
+	}
+
+	return sb.String()
 }
 
 // enrichPredictionsWithTimestamps adiciona timestamps às predictions baseado no timestamp atual das métricas

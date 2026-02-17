@@ -489,8 +489,22 @@ func (a *Analyzer) parseStructuredResponse(response string, result *AnalysisResu
 	cleanedResponse = strings.TrimSuffix(cleanedResponse, "```")
 	cleanedResponse = strings.TrimSpace(cleanedResponse)
 
+	// DEBUG: Log da resposta limpa (primeiros 200 chars)
+	previewLen := 200
+	if len(cleanedResponse) < previewLen {
+		previewLen = len(cleanedResponse)
+	}
+	fmt.Printf("[AI] Cleaned response preview (first %d chars): %s\n", previewLen, cleanedResponse[:previewLen])
+
 	// Tentar fazer unmarshal do JSON
 	if err := json.Unmarshal([]byte(cleanedResponse), &structuredResponse); err != nil {
+		// DEBUG: Mostrar erro detalhado
+		startLen := 50
+		if len(cleanedResponse) < startLen {
+			startLen = len(cleanedResponse)
+		}
+		fmt.Printf("[AI] JSON unmarshal error details: %v\n", err)
+		fmt.Printf("[AI] Response starts with: %q\n", cleanedResponse[:startLen])
 		return fmt.Errorf("failed to parse JSON: %w", err)
 	}
 

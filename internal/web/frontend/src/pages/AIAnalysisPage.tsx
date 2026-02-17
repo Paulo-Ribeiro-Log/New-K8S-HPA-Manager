@@ -33,6 +33,9 @@ export function AIAnalysisPage() {
       try {
         const parsed = JSON.parse(cachedAnalysis);
         console.log("[AIAnalysisPage] Parsed analysis from cache:", parsed);
+        console.log("[AIAnalysisPage] analysis.analysis field:", parsed.analysis);
+        console.log("[AIAnalysisPage] analysis.analysis length:", parsed.analysis?.length || 0);
+        console.log("[AIAnalysisPage] executive_summary exists?", !!parsed.executive_summary);
         setAnalysis(parsed);
         setLoading(false);
         return;
@@ -122,12 +125,12 @@ export function AIAnalysisPage() {
                 <div className="p-2 bg-purple-100 dark:bg-purple-900/30 rounded-lg flex-shrink-0">
                   <Brain className="h-6 w-6 sm:h-8 sm:w-8 text-purple-600 dark:text-purple-400" />
                 </div>
-                <span className="truncate">Análise AI - {analysis.resourceType}</span>
+                <span className="truncate">Análise AI - {analysis.resource_type}</span>
               </h1>
               <div className="flex items-center gap-2 flex-wrap text-sm">
                 <Badge variant="outline" className="font-mono text-xs px-3 py-1">
                   <span className="truncate max-w-[300px] sm:max-w-[500px]">
-                    {analysis.cluster}/{analysis.namespace}/{analysis.resourceName}
+                    {analysis.cluster}/{analysis.namespace}/{analysis.resource_name}
                   </span>
                 </Badge>
                 <Badge variant="secondary" className="text-xs px-3 py-1">
@@ -139,21 +142,21 @@ export function AIAnalysisPage() {
 
           {/* Metadados */}
           <div className="flex items-center gap-4 md:gap-6 flex-wrap text-xs text-muted-foreground pt-3 border-t border-purple-200/50 dark:border-purple-800/50">
-            {analysis.responseTime && (
+            {analysis.response_time && (
               <div className="flex items-center gap-2 bg-white/50 dark:bg-black/20 px-3 py-1.5 rounded-md">
                 <Clock className="h-4 w-4 flex-shrink-0" />
-                <span className="font-medium">{analysis.responseTime.toFixed(1)}s</span>
+                <span className="font-medium">{analysis.response_time.toFixed(1)}s</span>
               </div>
             )}
-            {analysis.tokensUsed && (
+            {analysis.tokens_used && (
               <div className="flex items-center gap-2 bg-white/50 dark:bg-black/20 px-3 py-1.5 rounded-md">
                 <Cpu className="h-4 w-4 flex-shrink-0" />
-                <span className="font-medium">{analysis.tokensUsed} tokens</span>
+                <span className="font-medium">{analysis.tokens_used} tokens</span>
               </div>
             )}
             <div className="flex items-center gap-2 bg-white/50 dark:bg-black/20 px-3 py-1.5 rounded-md">
               <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
-              <span className="font-medium">{new Date(analysis.analyzedAt).toLocaleString("pt-BR")}</span>
+              <span className="font-medium">{new Date(analysis.analyzed_at).toLocaleString("pt-BR")}</span>
             </div>
           </div>
         </div>

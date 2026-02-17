@@ -2,7 +2,7 @@
 
 **Criado em**: 06/02/2026
 **Última atualização**: 06/02/2026
-**Progresso geral**: 8/24 itens (33%) - Fase 1 + Fase 2 completas
+**Progresso geral**: 20/24 itens (83%) - Fase 1 + Fase 2 + Fase 3 + Fase 5 + Fase 6 completas
 
 ---
 
@@ -113,59 +113,42 @@ A feature atual é **mais "retrospectiva" do que "preditiva"**. Ela coleta dados
 
 ---
 
-## Fase 3 - Sazonalidade (4-5 dias) | Prioridade: MÉDIA
+## Fase 3 - Sazonalidade (4-5 dias) | Prioridade: MÉDIA | ✅ COMPLETO
 
-### 3.1 Detectar Padrões Horários
-- [ ] Coletar métricas agrupadas por hora do dia (últimos 7 dias)
-- [ ] Calcular média por hora (0-23h)
-- [ ] Identificar peak_hours e low_hours
-- [ ] Calcular peak_multiplier (quanto sobe no pico vs média)
-- **Arquivos**: `collector.go`, `queries.go`, `models.go`
-- **Estimativa**: 6h
+### 3.1 Detectar Padrões Horários ✅
+- [x] Coletar métricas agrupadas por hora do dia (últimos 7 dias) via QueryRange Prometheus (step=1h)
+- [x] Calcular média por hora (0-23h) agrupando `pair.Timestamp.Time().Hour()`
+- [x] Identificar peak_hours (>120% da média) e low_hours (<80% da média)
+- [x] Calcular peak_multiplier (quanto sobe no pico vs vale)
+- **Arquivos**: `collector.go` (`collectSeasonalPatterns`, `queryMatrix`), `models.go`, `queries.go`
+- **Implementado em**: 11/02/2026
 
-**Query Prometheus proposta**:
-```promql
-avg_over_time(
-  sum(rate(container_cpu_usage_seconds_total{pod=~"deployment-.*"}[5m])) by (pod)
-[7d:1h])
-```
-
-### 3.2 Detectar Padrões Semanais
-- [ ] Agrupar métricas por dia da semana
-- [ ] Identificar high_days e low_days
-- [ ] Calcular weekend_reduction (% de queda no fim de semana)
+### 3.2 Detectar Padrões Semanais ✅
+- [x] Agrupar métricas por dia da semana via `pair.Timestamp.Time().Weekday()`
+- [x] Identificar high_days (>110%) e low_days (<90%)
+- [x] Calcular weekend_reduction (% de queda no fim de semana vs dias úteis)
+- [x] Flag `IsTrendSeasonal`: hora atual em peak_hours + tendência TrendUp
 - **Arquivos**: `collector.go`, `models.go`
-- **Estimativa**: 4h
+- **Implementado em**: 11/02/2026
 
-**Estrutura proposta**:
-```go
-type SeasonalPatterns struct {
-    Hourly struct {
-        PeakHours      []int   `json:"peak_hours"`      // [14, 15, 16]
-        LowHours       []int   `json:"low_hours"`       // [2, 3, 4]
-        PeakMultiplier float64 `json:"peak_multiplier"` // 1.8
-    } `json:"hourly"`
-    Weekly struct {
-        HighDays         []string `json:"high_days"`         // ["monday", "tuesday"]
-        LowDays          []string `json:"low_days"`          // ["saturday", "sunday"]
-        WeekendReduction float64  `json:"weekend_reduction"` // 0.4
-    } `json:"weekly"`
-}
-```
+### 3.3 Ajustar Previsões por Sazonalidade ✅
+- [x] Função `buildSeasonalSection()` em `analyzer.go` gera contexto sazonal para prompt da IA
+- [x] Alerta quando `IsTrendSeasonal = true`: "aumento coincide com pico sazonal"
+- [x] Instrução à IA: diferenciar sazonalidade de crescimento real, recomendar HPA vs scaling permanente
+- [x] `SeasonalAdjustedTrend = "stable_seasonal_peak"` quando sazonal
+- **Arquivos**: `analyzer.go` (`buildSeasonalSection`, `buildAIPrompt`)
+- **Implementado em**: 11/02/2026
 
-### 3.3 Ajustar Previsões por Sazonalidade
-- [ ] Descontar sazonalidade das tendências
-- [ ] Evitar falsos positivos (pico normal vs crescimento real)
-- [ ] Flag: "Este aumento é padrão sazonal, não tendência"
-- **Arquivos**: `analyzer.go`
-- **Estimativa**: 4h
-
-### 3.4 Gráfico de "Típico Dia/Semana"
-- [ ] Componente visual mostrando padrão esperado
-- [ ] Linha de "baseline" vs "atual"
-- [ ] Destacar desvios do padrão
-- **Arquivos**: `DeploymentsTab.tsx` (Recharts)
-- **Estimativa**: 4h
+### 3.4 Gráfico de "Típico Dia/Semana" ✅
+- [x] Accordion "Padrões Sazonais" no modal preditivo (apenas quando `has_sufficient_data = true`)
+- [x] Banner de alerta quando `is_trend_seasonal = true`
+- [x] Cards de resumo: hora de pico, pico semanal, redução fim de semana
+- [x] BarChart horário (0-23h, barras coloridas: laranja=pico, azul=vale, índigo=normal)
+- [x] BarChart semanal (Dom-Sáb, azul=fim de semana, índigo=dias úteis)
+- [x] Legendas explicativas abaixo de cada gráfico
+- [x] Import `Cell` adicionado ao recharts
+- **Arquivos**: `DeploymentsTab.tsx`
+- **Implementado em**: 11/02/2026
 
 ---
 
@@ -201,54 +184,56 @@ type SeasonalPatterns struct {
 
 ---
 
-## Fase 5 - Métricas Adicionais (2-3 dias) | Prioridade: BAIXA
+## Fase 5 - Métricas Adicionais (2-3 dias) | Prioridade: BAIXA | ✅ COMPLETO
 
-### 5.1 RPS (Requests por Segundo)
-- [ ] Query Prometheus: `rate(http_requests_total[5m])`
-- [ ] Adicionar ao contexto enviado para IA
-- [ ] Exibir no modal: "Carga atual: 150 req/s"
+### 5.1 RPS (Requests por Segundo) ✅
+- [x] Query Prometheus: `sum(rate(http_requests_total{...}[5m]))` em `GetRPSQuery()`
+- [x] Coletado em `collectSnapshot()` como `snapshot.RPS`
+- [x] Exibido no modal: card "Req/s (RPS)" com N/A quando não instrumentado
 - **Arquivos**: `queries.go`, `collector.go`, `DeploymentsTab.tsx`
-- **Estimativa**: 2h
+- **Implementado em**: 11/02/2026
 
-### 5.2 Error Rate %
-- [ ] Query: `rate(http_requests_total{status=~"5.."})/rate(http_requests_total)`
-- [ ] Threshold: verde (<1%), amarelo (1-5%), vermelho (>5%)
-- [ ] Correlacionar com CPU/Memória alta
-- **Arquivos**: `queries.go`, `collector.go`
-- **Estimativa**: 2h
+### 5.2 Error Rate % ✅
+- [x] Query já existia em `GetErrorRateQuery()` — coletado em `collectSnapshot()`
+- [x] Threshold visual: verde (<1%), amarelo (1-5%), vermelho (>5%)
+- [x] Badge de alerta no trigger do accordion quando error_rate >= 1%
+- **Arquivos**: `queries.go`, `collector.go`, `DeploymentsTab.tsx`
+- **Implementado em**: 11/02/2026
 
-### 5.3 Latência P99
-- [ ] Query: `histogram_quantile(0.99, ...)`
-- [ ] Comparar com SLA (se configurado)
-- [ ] Alertar se P99 > SLA target
-- **Arquivos**: `queries.go`, `collector.go`
-- **Estimativa**: 2h
+### 5.3 Latência P99 ✅
+- [x] Query já existia em `GetLatencyP99Query()` — coletado em `collectSnapshot()`
+- [x] Threshold visual: verde (<200ms), amarelo (200-500ms), vermelho (>500ms)
+- [x] P50 também exibido quando P99 disponível
+- **Arquivos**: `queries.go`, `collector.go`, `DeploymentsTab.tsx`
+- **Implementado em**: 11/02/2026
 
-### 5.4 Eventos de OOMKill
-- [ ] Buscar eventos do Kubernetes com reason=OOMKilled
-- [ ] Contar ocorrências nos últimos 7 dias
-- [ ] Priorizar recomendação de aumentar memória
-- **Arquivos**: `collector.go`
-- **Estimativa**: 3h
-
-### 5.5 Uptime % (30 dias)
-- [ ] Calcular baseado em disponibilidade de réplicas
-- [ ] Fórmula: (tempo com replicas>=1) / (tempo total)
-- [ ] Exibir: "Uptime 30d: 99.7%"
+### 5.4 Eventos de OOMKill ✅
+- [x] `countOOMKillEvents()` busca eventos K8s com reason=OOMKilling (últimos 7 dias)
+- [x] Filtra por pods do deployment (prefix match)
+- [x] Card vermelho quando > 0 com instrução de ação
+- [x] Alerta destacado abaixo do grid quando há OOMKill
 - **Arquivos**: `collector.go`, `DeploymentsTab.tsx`
-- **Estimativa**: 3h
+- **Implementado em**: 11/02/2026
+
+### 5.5 Uptime % (30 dias) ✅
+- [x] `GetUptimeQuery()`: `avg_over_time(clamp_max(replicas_available, 1)[30d:5m]) * 100`
+- [x] Fallback 1: ratio atual `replicas_available / spec_replicas * 100`
+- [x] Fallback 2: ratio baseado em métricas K8s diretas
+- [x] Threshold: verde ≥99%, amarelo 95-99%, vermelho <95%
+- **Arquivos**: `queries.go`, `collector.go`, `DeploymentsTab.tsx`
+- **Implementado em**: 11/02/2026
 
 ---
 
 ## Fase 6 - UX do Modal (2-3 dias) | Prioridade: MÉDIA
 
-### 6.1 Novo Layout do Modal
-- [ ] Reorganizar seções por prioridade de decisão
-- [ ] Resumo executivo sempre no topo
-- [ ] Métricas detalhadas em accordion colapsável
-- [ ] Cards de ação com botões diretos
+### 6.1 Novo Layout do Modal ✅
+- [x] Reorganizar seções por prioridade de decisão
+- [x] Resumo executivo sempre no topo (ActionSummary)
+- [x] 3 cards visuais de métricas: CPU, Memória, Custo (com cores dinâmicas)
+- [x] Badges de tendência com setas direcionais (↗↘→)
 - **Arquivos**: `DeploymentsTab.tsx`
-- **Estimativa**: 6h
+- **Implementado em**: 11/02/2026
 
 **Layout proposto**:
 ```
@@ -280,20 +265,24 @@ type SeasonalPatterns struct {
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 6.2 Accordion para Dados Detalhados
-- [ ] Métricas brutas em seção colapsável
-- [ ] Aplicações concorrentes em seção colapsável
-- [ ] Histórico de tendências em seção colapsável
-- [ ] Iniciar colapsado para UX mais limpa
+### 6.2 Accordion para Dados Detalhados ✅
+- [x] 7 acordeões implementados: Health Score, Resumo Executivo, Dados Analisados,
+      Análise de Custos, Tendências Temporais, Previsões, Recomendações
+- [x] Trigger de cada acordeão exibe sumário: score, badge de risco, custo, contador
+- [x] Accordion type="multiple" - múltiplas seções abertas simultaneamente
+- [x] Dados técnicos iniciam colapsados para UX mais limpa
 - **Arquivos**: `DeploymentsTab.tsx`
-- **Estimativa**: 2h
+- **Implementado em**: 11/02/2026
 
-### 6.3 Comparação Visual Antes/Depois
-- [ ] Mostrar gráfico simulado após aplicar recomendação
-- [ ] Toggle: "Ver projeção se aplicar"
-- [ ] Linha pontilhada mostrando melhoria esperada
-- **Arquivos**: `DeploymentsTab.tsx` (Recharts)
-- **Estimativa**: 4h
+### 6.3 Comparação Visual Antes/Depois ✅
+- [x] Toggle "Projeção de Cenários (30 dias)" no accordion "Tendências Temporais"
+- [x] Gráfico CPU: Histórico P95 (sólido) + Sem Ação (dashed vermelho) + Com Recomendações (dashed verde)
+- [x] Gráfico Memória: mesma estrutura
+- [x] ReferenceLine vertical em "Atual" delimita histórico vs projeção
+- [x] Cards de custo projetado em D+30: Atual | Sem Ação (+%) | Com Recomendações (-% economia)
+- [x] Reset automático do toggle ao fechar o modal
+- **Arquivos**: `DeploymentsTab.tsx`
+- **Implementado em**: 11/02/2026
 
 ---
 
@@ -305,9 +294,9 @@ type SeasonalPatterns struct {
 | Fase 2 - Custo | 4 | 4 | ✅ 100% | Implementado 06/02/2026 |
 | Fase 3 - Sazonalidade | 4 | 0 | 0% | Pendente |
 | Fase 4 - Feedback Loop | 4 | 0 | 0% | Pendente |
-| Fase 5 - Métricas | 5 | 0 | 0% | Pendente |
-| Fase 6 - UX Modal | 3 | 0 | 0% | Pendente |
-| **TOTAL** | **24** | **8** | **33%** | Em progresso |
+| Fase 5 - Métricas | 5 | 5 | ✅ 100% | Implementado 11/02/2026 |
+| Fase 6 - UX Modal | 3 | 3 | ✅ 100% | Implementado 11/02/2026 |
+| **TOTAL** | **24** | **11** | **46%** | Em progresso |
 
 ---
 

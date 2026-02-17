@@ -52,9 +52,11 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
         // Verifica se parece ser JSON (começa com {)
         const trimmed = rawAnalysis.analysis.trim();
         if (trimmed.startsWith('{')) {
+          console.log("[AIAnalysisView] Attempting JSON parse...");
           const parsed = JSON.parse(trimmed);
           // Se o parse funcionou e tem os campos estruturados, mescla com o original
           if (parsed.executive_summary || parsed.root_cause_analysis || parsed.recommendations) {
+            console.log("[AIAnalysisView] JSON parse successful!");
             return {
               ...rawAnalysis,
               executive_summary: parsed.executive_summary,
@@ -65,12 +67,16 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
               analysis: parsed.quick_summary || rawAnalysis.analysis,
             };
           }
+        } else {
+          console.log("[AIAnalysisView] Not JSON (doesn't start with '{'), using as markdown");
         }
-      } catch {
+      } catch (err) {
         // Não é JSON, mantém como markdown
+        console.log("[AIAnalysisView] JSON parse failed, using as markdown:", err);
       }
     }
 
+    console.log("[AIAnalysisView] Using fallback format (markdown)");
     return rawAnalysis;
   }, [rawAnalysis]);
 
@@ -202,13 +208,6 @@ export const AIAnalysisView: React.FC<AIAnalysisViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* DEBUG: Verificar se está renderizando */}
-      <div className="bg-yellow-100 p-4 rounded border border-yellow-400 text-yellow-800">
-        <strong>DEBUG:</strong> AIAnalysisView renderizando.
-        executive_summary: {analysis.executive_summary ? "SIM" : "NÃO"},
-        root_cause: {analysis.root_cause_analysis ? "SIM" : "NÃO"},
-        recommendations: {analysis.recommendations?.length ?? 0}
-      </div>
 
       {/* Export Buttons */}
       {showExportButtons && (

@@ -101,6 +101,94 @@ type DeploymentMetrics struct {
 	NodeMetrics      NodeMetrics      `json:"node_metrics"`
 	CompetingApps    []CompetingApp   `json:"competing_apps"`
 	CapacityForecast CapacityForecast `json:"capacity_forecast"`
+
+	// Logs dos pods (coletados e sanitizados automaticamente)
+	PodLogs []PodLogEntry `json:"pod_logs,omitempty"`
+
+	// Métricas adicionais de observabilidade (Fase 5)
+	AdditionalMetrics AdditionalMetrics `json:"additional_metrics"`
+
+	// Padrões sazonais detectados (Fase 3)
+	SeasonalPatterns SeasonalPatterns `json:"seasonal_patterns"`
+
+	// Análise conntrack do cluster e nodes
+	ConntrackAnalysis ConntrackAnalysis `json:"conntrack_analysis"`
+}
+
+// AdditionalMetrics contém métricas de observabilidade complementares
+type AdditionalMetrics struct {
+	// RPS atual do snapshot "current" (copiado para conveniência)
+	RequestsPerSecond float64 `json:"requests_per_second"` // 0 se http_requests_total não disponível
+
+	// Eventos de OOMKill nos últimos 7 dias (via K8s API Events)
+	OOMKillEvents7d int `json:"oom_kill_events_7d"`
+
+	// Uptime % nos últimos 30 dias baseado em replicas_available > 0
+	UptimePercent30d float64 `json:"uptime_percent_30d"` // 0-100
+}
+
+// SeasonalPatterns contém padrões sazonais detectados nos últimos 7 dias (Fase 3)
+type SeasonalPatterns struct {
+	Hourly HourlyPattern `json:"hourly"`
+	Weekly WeeklyPattern `json:"weekly"`
+
+	// Meta
+	DataPoints        int  `json:"data_points"`         // pontos coletados
+	HasSufficientData bool `json:"has_sufficient_data"` // >= 100 pontos (~4 dias)
+
+	// Contexto para a IA (3.3)
+	IsTrendSeasonal       bool   `json:"is_trend_seasonal"`        // aumento atual coincide com pico horário típico
+	SeasonalAdjustedTrend string `json:"seasonal_adjusted_trend"`  // tendência após descontar sazonalidade
+}
+
+// HourlyPattern contém padrão horário (0-23h)
+type HourlyPattern struct {
+	AvgByHour      [24]float64 `json:"avg_by_hour"`      // média de CPU por hora
+	PeakHours      []int       `json:"peak_hours"`       // horas com uso > 120% da média
+	LowHours       []int       `json:"low_hours"`        // horas com uso < 80% da média
+	PeakHour       int         `json:"peak_hour"`        // hora de maior consumo médio
+	PeakMultiplier float64     `json:"peak_multiplier"`  // pico / média geral (ex: 1.8)
+}
+
+// WeeklyPattern contém padrão semanal (0=Dom … 6=Sáb)
+type WeeklyPattern struct {
+	AvgByDay         [7]float64 `json:"avg_by_day"`         // média de CPU por dia
+	HighDays         []string   `json:"high_days"`          // dias com uso > 110% da média semanal
+	LowDays          []string   `json:"low_days"`           // dias com uso < 90% da média semanal
+	WeekendReduction float64    `json:"weekend_reduction"`  // % redução fim de semana vs dias úteis
+}
+
+// ConntrackNodeInfo contém métricas de conntrack de um node específico
+type ConntrackNodeInfo struct {
+	Instance       string  `json:"instance"`        // IP:porta do node_exporter
+	NodeName       string  `json:"node_name"`       // nome do node (resolvido quando possível)
+	CurrentEntries int64   `json:"current_entries"` // entradas atuais
+	MaxEntries     int64   `json:"max_entries"`     // limite configurado
+	UsagePercent   float64 `json:"usage_percent"`   // percentual de uso (0-100)
+	Status         string  `json:"status"`          // "ok" (<70%), "warning" (70-85%), "critical" (>85%)
+}
+
+// ConntrackAnalysis contém a análise completa de conntrack do cluster
+type ConntrackAnalysis struct {
+	Nodes            []ConntrackNodeInfo `json:"nodes"`              // dados por node
+	ClusterTotal     int64               `json:"cluster_total"`      // soma de entradas em todos os nodes
+	ClusterMax       int64               `json:"cluster_max"`        // soma dos limites
+	ClusterUsage     float64             `json:"cluster_usage"`      // uso médio do cluster (%)
+	NodesWarning     int                 `json:"nodes_warning"`      // nodes entre 70-85%
+	NodesCritical    int                 `json:"nodes_critical"`     // nodes acima de 85%
+	HighestNode      string              `json:"highest_node"`       // node com maior uso
+	HighestUsage     float64             `json:"highest_usage"`      // % do node mais saturado
+	HasSufficientData bool               `json:"has_sufficient_data"` // false se node_exporter indisponível
+	MetricSource     string              `json:"metric_source"`      // "node_exporter" ou "unavailable"
+}
+
+// PodLogEntry contém logs sanitizados de um pod/container
+type PodLogEntry struct {
+	PodName       string `json:"pod_name"`
+	ContainerName string `json:"container_name"`
+	RestartCount  int32  `json:"restart_count"`
+	LogLines      string `json:"log_lines"`       // logs atuais (tail 80 linhas, sanitizados)
+	PreviousLogs  string `json:"previous_logs,omitempty"` // logs antes do último restart (se houver)
 }
 
 // ResourceRequests define requests e limits do deployment
@@ -142,6 +230,7 @@ type MetricSnapshot struct {
 	NetworkTxAvg   float64        `json:"network_tx_avg"`
 	RestartCount   int            `json:"restart_count"`
 	ErrorRate      float64        `json:"error_rate"` // %
+	RPS            float64        `json:"rps"`        // requests/s (0 se http_requests_total não disponível)
 	Latency        LatencyMetrics `json:"latency"`
 }
 
