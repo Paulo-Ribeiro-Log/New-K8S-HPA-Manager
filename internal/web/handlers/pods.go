@@ -235,6 +235,9 @@ func (h *PodHandler) Get(c *gin.Context) {
 		return
 	}
 
+	pod.ManagedFields = nil
+	pod.Status = corev1.PodStatus{}
+
 	yamlBytes, err := yaml.Marshal(pod)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
