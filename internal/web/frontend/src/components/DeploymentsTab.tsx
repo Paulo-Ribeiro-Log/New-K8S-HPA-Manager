@@ -4080,7 +4080,10 @@ export const DeploymentsTab = ({
                                     <tbody>
                                       {ct.nodes.map((node: any, idx: number) => (
                                         <tr key={idx} className={`border-t border-border/20 ${idx % 2 === 0 ? '' : 'bg-secondary/10'}`}>
-                                          <td className="px-3 py-2 font-mono">{node.node_name}</td>
+                                          <td className="px-3 py-2">
+                                            <span className="font-mono text-xs">{node.node_name}</span>
+                                            <span className="block text-xs text-muted-foreground font-mono">{node.instance}</span>
+                                          </td>
                                           <td className="text-right px-3 py-2">{node.current_entries.toLocaleString()}</td>
                                           <td className="text-right px-3 py-2 text-muted-foreground">{node.max_entries.toLocaleString()}</td>
                                           <td className={`text-right px-3 py-2 font-medium ${node.status === 'critical' ? 'text-red-400' : node.status === 'warning' ? 'text-yellow-400' : 'text-green-400'}`}>
