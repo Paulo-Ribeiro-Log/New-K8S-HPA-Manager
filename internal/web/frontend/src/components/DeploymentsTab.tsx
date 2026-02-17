@@ -1242,6 +1242,33 @@ export const DeploymentsTab = ({
     }
   };
 
+  // Remove emojis e caracteres Unicode especiais que quebram jsPDF
+  const stripEmojis = (text: string): string => {
+    if (!text) return text;
+    return text
+      .replace(/[\u{1F300}-\u{1F9FF}]/gu, '')
+      .replace(/[\u{2600}-\u{26FF}]/gu, '')
+      .replace(/[\u{2700}-\u{27BF}]/gu, '')
+      .replace(/\uFE0F/gu, '')
+      .replace(/[\u{1F000}-\u{1FFFF}]/gu, '')
+      .trim();
+  };
+
+  // Remove marcadores de markdown: **bold**, *italic*, _italic_, # headers
+  const stripMarkdown = (text: string): string => {
+    if (!text) return text;
+    return text
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/\*(.*?)\*/g, '$1')
+      .replace(/_(.*?)_/g, '$1')
+      .replace(/^#+\s*/gm, '')
+      .replace(/`(.*?)`/g, '$1')
+      .trim();
+  };
+
+  // Limpa texto para uso em PDF (sem emojis e sem markdown)
+  const cleanForPDF = (text: string): string => stripEmojis(stripMarkdown(text ?? ''));
+
   // Função para gerar PDF profissional usando jsPDF
   const generatePredictionPDF = async () => {
     if (!predictionResult || !selectedDeployment) return;
@@ -1386,7 +1413,7 @@ export const DeploymentsTab = ({
         doc.text(`Tipo Recomendado: ${vmSizing.recommended_instance_type}`, 14, yPosition);
         yPosition += 4;
         if (vmSizing.recommendation_reason) {
-          const reasonLines = doc.splitTextToSize(`Razão: ${vmSizing.recommendation_reason}`, pageWidth - 28);
+          const reasonLines = doc.splitTextToSize(`Razao: ${cleanForPDF(vmSizing.recommendation_reason)}`, pageWidth - 28);
           reasonLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -1648,7 +1675,7 @@ export const DeploymentsTab = ({
     doc.setFontSize(10);
     doc.setTextColor(0, 0, 0);
     doc.setFont("helvetica", "normal");
-    const currentState = predictionResult.executive_summary?.current_state || "";
+    const currentState = cleanForPDF(predictionResult.executive_summary?.current_state || "");
     const stateLines = doc.splitTextToSize(currentState, pageWidth - 28);
     stateLines.forEach((line: string) => {
       checkPageBreak(6);
@@ -1669,7 +1696,7 @@ export const DeploymentsTab = ({
       doc.setFont("helvetica", "normal");
       predictionResult.executive_summary.key_findings.forEach((finding: string) => {
         checkPageBreak(6);
-        const findingLines = doc.splitTextToSize(`• ${finding}`, pageWidth - 28);
+        const findingLines = doc.splitTextToSize(`• ${cleanForPDF(finding)}`, pageWidth - 28);
         findingLines.forEach((line: string) => {
           doc.text(line, 14, yPosition);
           yPosition += 5;
@@ -1716,16 +1743,16 @@ export const DeploymentsTab = ({
             doc.setFont("helvetica", "bold");
             const severityText = pred.severity ? `[${pred.severity.toUpperCase()}]` : "";
             const probText = pred.probability ? ` (${(pred.probability * 100).toFixed(0)}%)` : "";
-            doc.text(`• ${severityText} ${pred.event || pred.timeframe}${probText}`, 14, yPosition);
+            doc.text(`• ${severityText} ${cleanForPDF(pred.event || pred.timeframe)}${probText}`, 14, yPosition);
             yPosition += 5;
-            
+
             doc.setFont("helvetica", "normal");
             if (pred.timestamp) {
               doc.text(`  Timestamp: ${new Date(pred.timestamp).toLocaleDateString("pt-BR")}`, 14, yPosition);
               yPosition += 4;
             }
             if (pred.impact) {
-              const impactLines = doc.splitTextToSize(`  Impacto: ${pred.impact}`, pageWidth - 28);
+              const impactLines = doc.splitTextToSize(`  Impacto: ${cleanForPDF(pred.impact)}`, pageWidth - 28);
               impactLines.forEach((line: string) => {
                 checkPageBreak(5);
                 doc.text(line, 14, yPosition);
@@ -1737,7 +1764,7 @@ export const DeploymentsTab = ({
               yPosition += 4;
               pred.indicators.forEach((ind: string) => {
                 checkPageBreak(5);
-                const indLines = doc.splitTextToSize(`    - ${ind}`, pageWidth - 28);
+                const indLines = doc.splitTextToSize(`    - ${cleanForPDF(ind)}`, pageWidth - 28);
                 indLines.forEach((line: string) => {
                   doc.text(line, 14, yPosition);
                   yPosition += 4;
@@ -1781,7 +1808,7 @@ export const DeploymentsTab = ({
         doc.text("Fator Primário Identificado:", 14, yPosition);
         yPosition += 5;
         doc.setFont("helvetica", "normal");
-        const primaryLines = doc.splitTextToSize(predictionResult.root_cause_analysis.primary_factor, pageWidth - 28);
+        const primaryLines = doc.splitTextToSize(cleanForPDF(predictionResult.root_cause_analysis.primary_factor), pageWidth - 28);
         primaryLines.forEach((line: string) => {
           checkPageBreak(5);
           doc.text(line, 14, yPosition);
@@ -1795,13 +1822,13 @@ export const DeploymentsTab = ({
         doc.setFontSize(10);
         doc.setFont("helvetica", "bold");
         const certainty = cause.certainty ? ` (Certeza: ${(cause.certainty * 100).toFixed(0)}%)` : "";
-        doc.text(`Causa ${idx + 1}: ${cause.cause}${certainty}`, 14, yPosition);
+        doc.text(`Causa ${idx + 1}: ${cleanForPDF(cause.cause)}${certainty}`, 14, yPosition);
         yPosition += 6;
 
         doc.setFontSize(9);
         doc.setFont("helvetica", "normal");
         if (cause.category) {
-          doc.text(`Categoria: ${cause.category}`, 14, yPosition);
+          doc.text(`Categoria: ${cleanForPDF(cause.category)}`, 14, yPosition);
           yPosition += 5;
         }
 
@@ -1812,7 +1839,7 @@ export const DeploymentsTab = ({
           doc.setFont("helvetica", "normal");
           cause.evidence.forEach((ev: string) => {
             checkPageBreak(5);
-            const evLines = doc.splitTextToSize(`• ${ev}`, pageWidth - 28);
+            const evLines = doc.splitTextToSize(`• ${cleanForPDF(ev)}`, pageWidth - 28);
             evLines.forEach((line: string) => {
               doc.text(line, 14, yPosition);
               yPosition += 4;
@@ -1827,7 +1854,7 @@ export const DeploymentsTab = ({
           doc.text("Remediação:", 14, yPosition);
           yPosition += 4;
           doc.setFont("helvetica", "normal");
-          const remLines = doc.splitTextToSize(cause.remediation, pageWidth - 28);
+          const remLines = doc.splitTextToSize(cleanForPDF(cause.remediation), pageWidth - 28);
           remLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -1885,7 +1912,7 @@ export const DeploymentsTab = ({
         doc.setFont("helvetica", "normal");
         const noAction = predictionResult.impact_analysis.if_no_action;
         if (noAction.user_impact) {
-          const userLines = doc.splitTextToSize(`Impacto nos Usuários: ${noAction.user_impact}`, pageWidth - 28);
+          const userLines = doc.splitTextToSize(`Impacto nos Usuários: ${cleanForPDF(noAction.user_impact)}`, pageWidth - 28);
           userLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -1894,7 +1921,7 @@ export const DeploymentsTab = ({
           yPosition += 2;
         }
         if (noAction.infrastructure_impact) {
-          const infraLines = doc.splitTextToSize(`Impacto na Infraestrutura: ${noAction.infrastructure_impact}`, pageWidth - 28);
+          const infraLines = doc.splitTextToSize(`Impacto na Infraestrutura: ${cleanForPDF(noAction.infrastructure_impact)}`, pageWidth - 28);
           infraLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -1909,7 +1936,7 @@ export const DeploymentsTab = ({
           doc.setFont("helvetica", "normal");
           noAction.risks.forEach((risk: string) => {
             checkPageBreak(5);
-            const riskLines = doc.splitTextToSize(`• ${risk}`, pageWidth - 28);
+            const riskLines = doc.splitTextToSize(`• ${cleanForPDF(risk)}`, pageWidth - 28);
             riskLines.forEach((line: string) => {
               doc.text(line, 14, yPosition);
               yPosition += 4;
@@ -1934,7 +1961,7 @@ export const DeploymentsTab = ({
         doc.setFont("helvetica", "normal");
         const withAction = predictionResult.impact_analysis.if_optimizations_applied;
         if (withAction.user_impact) {
-          const userLines = doc.splitTextToSize(`Impacto nos Usuários: ${withAction.user_impact}`, pageWidth - 28);
+          const userLines = doc.splitTextToSize(`Impacto nos Usuários: ${cleanForPDF(withAction.user_impact)}`, pageWidth - 28);
           userLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -1943,7 +1970,7 @@ export const DeploymentsTab = ({
           yPosition += 2;
         }
         if (withAction.infrastructure_impact) {
-          const infraLines = doc.splitTextToSize(`Impacto na Infraestrutura: ${withAction.infrastructure_impact}`, pageWidth - 28);
+          const infraLines = doc.splitTextToSize(`Impacto na Infraestrutura: ${cleanForPDF(withAction.infrastructure_impact)}`, pageWidth - 28);
           infraLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -2033,17 +2060,17 @@ export const DeploymentsTab = ({
         // Destacar economia de custos
         if (rec.category === 'cost-optimization' || rec.category === 'downsizing') {
           doc.setTextColor(255, 152, 0); // Laranja
-          doc.text(`[ECONOMIA] ${idx + 1}. ${rec.title}`, 14, yPosition);
+          doc.text(`[ECONOMIA] ${idx + 1}. ${cleanForPDF(rec.title)}`, 14, yPosition);
           doc.setTextColor(0, 0, 0);
         } else {
-          doc.text(`${idx + 1}. ${rec.title}`, 14, yPosition);
+          doc.text(`${idx + 1}. ${cleanForPDF(rec.title)}`, 14, yPosition);
         }
         yPosition += 6;
 
         if (rec.category) {
           doc.setFontSize(9);
           doc.setFont("helvetica", "normal");
-          doc.text(`Categoria: ${rec.category}`, 14, yPosition);
+          doc.text(`Categoria: ${cleanForPDF(rec.category)}`, 14, yPosition);
           yPosition += 5;
         }
 
@@ -2051,7 +2078,7 @@ export const DeploymentsTab = ({
         doc.text("Por que esta recomendação?", 14, yPosition);
         yPosition += 4;
         doc.setFont("helvetica", "normal");
-        const descLines = doc.splitTextToSize(rec.description, pageWidth - 28);
+        const descLines = doc.splitTextToSize(cleanForPDF(rec.description), pageWidth - 28);
         descLines.forEach((line: string) => {
           checkPageBreak(5);
           doc.text(line, 14, yPosition);
@@ -2065,7 +2092,7 @@ export const DeploymentsTab = ({
           doc.text("Impacto Esperado:", 14, yPosition);
           yPosition += 4;
           doc.setFont("helvetica", "normal");
-          const impactLines = doc.splitTextToSize(rec.expected_impact, pageWidth - 28);
+          const impactLines = doc.splitTextToSize(cleanForPDF(rec.expected_impact), pageWidth - 28);
           impactLines.forEach((line: string) => {
             checkPageBreak(5);
             doc.text(line, 14, yPosition);
@@ -2077,12 +2104,12 @@ export const DeploymentsTab = ({
         if (rec.actions?.length > 0) {
           checkPageBreak(10);
           doc.setFont("helvetica", "bold");
-          doc.text("Ações:", 14, yPosition);
+          doc.text("Acoes:", 14, yPosition);
           yPosition += 4;
           doc.setFont("helvetica", "normal");
           rec.actions.forEach((action: string, actIdx: number) => {
             checkPageBreak(5);
-            const actionLines = doc.splitTextToSize(`${actIdx + 1}. ${action}`, pageWidth - 28);
+            const actionLines = doc.splitTextToSize(`${actIdx + 1}. ${cleanForPDF(action)}`, pageWidth - 28);
             actionLines.forEach((line: string) => {
               doc.text(line, 14, yPosition);
               yPosition += 4;
@@ -3353,10 +3380,10 @@ export const DeploymentsTab = ({
                           {predictionResult.action_summary.top_action && (
                             <div className="mt-3 p-2 bg-background/50 rounded">
                               <div className="text-xs text-muted-foreground mb-1">Ação Principal Recomendada:</div>
-                              <div className="font-medium text-sm">{predictionResult.action_summary.top_action}</div>
+                              <div className="font-medium text-sm">{stripMarkdown(predictionResult.action_summary.top_action)}</div>
                               {predictionResult.action_summary.top_action_command && (
                                 <code className="block mt-1 text-xs bg-secondary/50 p-1 rounded font-mono text-primary">
-                                  {predictionResult.action_summary.top_action_command}
+                                  {stripMarkdown(predictionResult.action_summary.top_action_command)}
                                 </code>
                               )}
                             </div>
