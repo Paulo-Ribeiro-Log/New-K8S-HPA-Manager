@@ -104,6 +104,21 @@ type DeploymentMetrics struct {
 
 	// Logs dos pods (coletados e sanitizados automaticamente)
 	PodLogs []PodLogEntry `json:"pod_logs,omitempty"`
+
+	// Métricas adicionais de observabilidade (Fase 5)
+	AdditionalMetrics AdditionalMetrics `json:"additional_metrics"`
+}
+
+// AdditionalMetrics contém métricas de observabilidade complementares
+type AdditionalMetrics struct {
+	// RPS atual do snapshot "current" (copiado para conveniência)
+	RequestsPerSecond float64 `json:"requests_per_second"` // 0 se http_requests_total não disponível
+
+	// Eventos de OOMKill nos últimos 7 dias (via K8s API Events)
+	OOMKillEvents7d int `json:"oom_kill_events_7d"`
+
+	// Uptime % nos últimos 30 dias baseado em replicas_available > 0
+	UptimePercent30d float64 `json:"uptime_percent_30d"` // 0-100
 }
 
 // PodLogEntry contém logs sanitizados de um pod/container
@@ -154,6 +169,7 @@ type MetricSnapshot struct {
 	NetworkTxAvg   float64        `json:"network_tx_avg"`
 	RestartCount   int            `json:"restart_count"`
 	ErrorRate      float64        `json:"error_rate"` // %
+	RPS            float64        `json:"rps"`        // requests/s (0 se http_requests_total não disponível)
 	Latency        LatencyMetrics `json:"latency"`
 }
 
