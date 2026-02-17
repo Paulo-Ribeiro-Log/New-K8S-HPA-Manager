@@ -552,6 +552,26 @@ export const DeploymentsTab = ({
     rolloutTargetRef.current = null;
   }, [stopRolloutMonitor]);
 
+  // gaugeStatusMessage calculado no nível raiz para funcionar independente do selectedDeployment
+  const gaugeStatusMessage = useMemo(() => {
+    if (!showRolloutGauge) return "";
+    const remainingToUpdate = Math.max(rolloutPodsCount.desired - rolloutPodsCount.updated, 0);
+    const remainingToReady = Math.max(rolloutPodsCount.desired - rolloutPodsCount.newReady, 0);
+    const oldPods = Math.max(rolloutPodsCount.oldPods, 0);
+    const unavailable = Math.max(rolloutPodsCount.unavailable, 0);
+
+    if (!rolloutSawActivity) return "Aguardando o controlador iniciar o restart...";
+    if (rolloutState === "completed") {
+      if (oldPods > 0) return `Encerrando pods antigos (${oldPods} restantes)...`;
+      if (unavailable > 0) return `Aguardando ${unavailable} pod(s) ficarem prontos...`;
+      return "Rollout finalizado e estável";
+    }
+    if (remainingToUpdate > 0) return `Atualizando pods (${rolloutPodsCount.updated}/${rolloutPodsCount.desired})...`;
+    if (remainingToReady > 0 || unavailable > 0) return "Esperando os novos pods ficarem prontos...";
+    if (oldPods > 0) return `Desligando pods antigos (${oldPods} restantes)...`;
+    return "Sincronizando rollout...";
+  }, [showRolloutGauge, rolloutPodsCount, rolloutSawActivity, rolloutState]);
+
   const updateRolloutMetrics = useCallback(
     (summary: DeploymentSummary) => {
       const desired = Math.max(summary.replicas ?? 0, 0);
@@ -2498,41 +2518,6 @@ export const DeploymentsTab = ({
     const appVersion = selectedDeployment.labels?.["app.kubernetes.io/version"] ||
                        selectedDeployment.labels?.["version"] ||
                        selectedDeployment.labels?.["app.version"];
-    const gaugeStatusMessage = (() => {
-      if (!showRolloutGauge) {
-        return "";
-      }
-      const remainingToUpdate = Math.max(rolloutPodsCount.desired - rolloutPodsCount.updated, 0);
-      const remainingToReady = Math.max(rolloutPodsCount.desired - rolloutPodsCount.newReady, 0);
-      const oldPods = Math.max(rolloutPodsCount.oldPods, 0);
-      const unavailable = Math.max(rolloutPodsCount.unavailable, 0);
-
-      if (!rolloutSawActivity) {
-        return "Aguardando o controlador iniciar o restart...";
-      }
-
-      if (rolloutState === "completed") {
-        if (oldPods > 0) {
-          return `Encerrando pods antigos (${oldPods} restantes)...`;
-        }
-        if (unavailable > 0) {
-          return `Aguardando ${unavailable} pod(s) ficarem prontos...`;
-        }
-        return "Rollout finalizado e estável";
-      }
-
-      if (remainingToUpdate > 0) {
-        return `Atualizando pods (${rolloutPodsCount.updated}/${rolloutPodsCount.desired})...`;
-      }
-      if (remainingToReady > 0 || unavailable > 0) {
-        return "Esperando os novos pods ficarem prontos...";
-      }
-      if (oldPods > 0) {
-        return `Desligando pods antigos (${oldPods} restantes)...`;
-      }
-      return "Sincronizando rollout...";
-    })();
-
     return (
       <div className="space-y-3" onKeyDown={handleEditorKeyDown} tabIndex={-1}>
         <div className="flex items-start gap-4 text-xs border-b border-border/50 pb-2">
@@ -2585,24 +2570,6 @@ export const DeploymentsTab = ({
             </div>
           )}
         </div>
-
-        {/* Gauge de rollout - exibido independente do deployment selecionado */}
-        {showRolloutGauge && rolloutDeploymentName && (
-          <RolloutProgressGauge
-            deploymentName={rolloutDeploymentName}
-            progress={rolloutProgress}
-            updated={rolloutPodsCount.updated}
-            newReady={rolloutPodsCount.newReady}
-            desired={rolloutPodsCount.desired}
-            oldPods={rolloutPodsCount.oldPods}
-            unavailable={rolloutPodsCount.unavailable}
-            status={rolloutState === "completed" ? "completed" : "running"}
-            message={gaugeStatusMessage}
-            startTime={rolloutStartTime ?? undefined}
-            pods={rolloutPods}
-            onClose={clearRolloutGauge}
-          />
-        )}
 
         {/* Banner de status com erro - exibido quando deployment tem problemas */}
         {selectedDeployment && (() => {
@@ -4897,6 +4864,44 @@ export const DeploymentsTab = ({
               Fechar
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Progresso do Rollout Restart - visível independente do deployment selecionado */}
+      <Dialog open={showRolloutGauge && !!rolloutDeploymentName} onOpenChange={(open) => { if (!open) clearRolloutGauge(); }}>
+        <DialogContent className="max-w-2xl" onPointerDownOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RotateCw className="w-5 h-5" />
+              Progresso do Rollout Restart
+            </DialogTitle>
+          </DialogHeader>
+          {rolloutDeploymentName && (
+            <RolloutProgressGauge
+              deploymentName={rolloutDeploymentName}
+              progress={rolloutProgress}
+              updated={rolloutPodsCount.updated}
+              newReady={rolloutPodsCount.newReady}
+              desired={rolloutPodsCount.desired}
+              oldPods={rolloutPodsCount.oldPods}
+              unavailable={rolloutPodsCount.unavailable}
+              status={rolloutState === "completed" ? "completed" : "running"}
+              message={gaugeStatusMessage}
+              startTime={rolloutStartTime ?? undefined}
+              pods={rolloutPods}
+            />
+          )}
+          {rolloutState === "completed" && (
+            <div className="flex justify-end mt-2">
+              <button
+                type="button"
+                onClick={clearRolloutGauge}
+                className="px-4 py-1.5 text-sm rounded-md bg-green-500/10 text-green-600 border border-green-500/30 hover:bg-green-500/20 transition-colors font-medium"
+              >
+                Fechar
+              </button>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 
