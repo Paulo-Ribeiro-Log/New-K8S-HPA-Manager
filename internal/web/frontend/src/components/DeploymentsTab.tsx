@@ -14,7 +14,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import yaml from "js-yaml";
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { Switch } from "@/components/ui/switch";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { addLogoHeaderToPDF } from "@/lib/logoUtils";
@@ -117,6 +118,7 @@ export const DeploymentsTab = ({
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<"pdf" | "markdown" | "json">("markdown");
   const [isExporting, setIsExporting] = useState(false);
+  const [showProjection, setShowProjection] = useState(false);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -1035,6 +1037,7 @@ export const DeploymentsTab = ({
 
     console.log("[PredictiveAnalysis] Setting predictionModalOpen to:", open);
     setPredictionModalOpen(open);
+    if (!open) setShowProjection(false);
   }, [predictionLoading, predictionResult]);
 
   // Nova função para análise preditiva
@@ -4131,7 +4134,21 @@ export const DeploymentsTab = ({
                       </AccordionTrigger>
                       <AccordionContent className="px-4 pb-4">
                     <div className="pt-2">
-                      
+
+                      {/* Toggle: Projeção de Cenários */}
+                      <div className="flex items-center justify-between mb-4 p-3 bg-muted/30 rounded-lg border border-border/30">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <TrendingUp className="w-4 h-4 text-primary" />
+                            <span className="text-sm font-medium">Projeção de Cenários (próximos 30 dias)</span>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-0.5 ml-6">
+                            Simula a evolução com e sem aplicação das recomendações
+                          </p>
+                        </div>
+                        <Switch checked={showProjection} onCheckedChange={setShowProjection} />
+                      </div>
+
                       {/* Gráfico de CPU */}
                       <div className="mb-6">
                         <h4 className="text-sm font-semibold mb-2">Uso de CPU (cores)</h4>
@@ -4241,6 +4258,158 @@ export const DeploymentsTab = ({
                           );
                         })()}
                       </div>
+
+                      {/* Projeção de Cenários */}
+                      {showProjection && (() => {
+                        const rm = predictionResult.raw_metrics;
+                        const gb = 1024 * 1024 * 1024;
+                        const curCPU = rm.current?.cpu_usage_p95 ?? 0;
+                        const d7CPU  = rm.day_7_ago?.cpu_usage_p95 ?? 0;
+                        const cpuSlope = (curCPU - d7CPU) / 7; // cores/dia
+
+                        const curMemB = rm.current?.memory_usage_p95 ?? 0;
+                        const d7MemB  = rm.day_7_ago?.memory_usage_p95 ?? 0;
+                        const curMem = curMemB / gb;
+                        const memSlope = (curMemB - d7MemB) / gb / 7; // GB/dia
+
+                        const savPct    = predictionResult.cost_analysis?.savings_percent ?? 0;
+                        const redFactor = Math.min(savPct / 100, 0.40);
+                        const hasOverProv = redFactor > 0.05;
+
+                        const calcCPUWith = (d: number) => hasOverProv
+                          ? Math.max(0, curCPU * (1 - redFactor * (d / 30)))
+                          : Math.max(0, curCPU + cpuSlope * d * 0.25);
+
+                        const calcMemWith = (d: number) => hasOverProv
+                          ? Math.max(0, curMem * (1 - redFactor * (d / 30)))
+                          : Math.max(0, curMem + memSlope * d * 0.25);
+
+                        const cpuData = [
+                          { label: '14d atrás', p95: rm.day_14_ago?.cpu_usage_p95 },
+                          { label: '10d atrás', p95: rm.day_10_ago?.cpu_usage_p95 },
+                          { label: '7d atrás',  p95: d7CPU },
+                          { label: '3d atrás',  p95: rm.day_3_ago?.cpu_usage_p95 },
+                          { label: 'Atual',     p95: curCPU, noAction: curCPU, withAction: curCPU },
+                          { label: 'D+7',  noAction: Math.max(0, curCPU + cpuSlope * 7),  withAction: calcCPUWith(7) },
+                          { label: 'D+14', noAction: Math.max(0, curCPU + cpuSlope * 14), withAction: calcCPUWith(14) },
+                          { label: 'D+30', noAction: Math.max(0, curCPU + cpuSlope * 30), withAction: calcCPUWith(30) },
+                        ];
+
+                        const memData = [
+                          { label: '14d atrás', p95: (rm.day_14_ago?.memory_usage_p95 ?? 0) / gb },
+                          { label: '10d atrás', p95: (rm.day_10_ago?.memory_usage_p95 ?? 0) / gb },
+                          { label: '7d atrás',  p95: (rm.day_7_ago?.memory_usage_p95 ?? 0) / gb },
+                          { label: '3d atrás',  p95: (rm.day_3_ago?.memory_usage_p95 ?? 0) / gb },
+                          { label: 'Atual',     p95: curMem, noAction: curMem, withAction: curMem },
+                          { label: 'D+7',  noAction: Math.max(0, curMem + memSlope * 7),  withAction: calcMemWith(7) },
+                          { label: 'D+14', noAction: Math.max(0, curMem + memSlope * 14), withAction: calcMemWith(14) },
+                          { label: 'D+30', noAction: Math.max(0, curMem + memSlope * 30), withAction: calcMemWith(30) },
+                        ];
+
+                        const tipStyle = { backgroundColor: '#1a1a1a', border: '1px solid #333' };
+                        const fmtCPU = (v: any) => v != null ? (v >= 1 ? `${v.toFixed(3)} cores` : `${(v * 1000).toFixed(0)}m`) : '';
+                        const fmtMem = (v: any) => v != null ? `${Number(v).toFixed(2)} GB` : '';
+
+                        const currentCostBRL = predictionResult.cost_analysis?.current_monthly_cost_brl ?? 0;
+                        const recommendedCostBRL = predictionResult.cost_analysis?.recommended_cost_brl ?? 0;
+                        const noActionCostBRL = currentCostBRL * (cpuSlope > 0.001 ? 1.10 : 1.02);
+
+                        return (
+                          <div className="mt-6 border-t border-border/30 pt-4 space-y-5">
+                            {/* Legenda */}
+                            <div className="flex items-center gap-5 text-xs text-muted-foreground">
+                              <div className="flex items-center gap-1.5">
+                                <svg width="24" height="4"><line x1="0" y1="2" x2="24" y2="2" stroke="#60a5fa" strokeWidth="2"/></svg>
+                                <span>Histórico P95</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <svg width="24" height="4"><line x1="0" y1="2" x2="24" y2="2" stroke="#f87171" strokeWidth="2" strokeDasharray="5 3"/></svg>
+                                <span>Sem Ação</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <svg width="24" height="4"><line x1="0" y1="2" x2="24" y2="2" stroke="#4ade80" strokeWidth="2" strokeDasharray="5 3"/></svg>
+                                <span>Com Recomendações</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <svg width="24" height="4"><line x1="0" y1="2" x2="24" y2="2" stroke="#666" strokeWidth="1" strokeDasharray="3 3"/></svg>
+                                <span>Hoje</span>
+                              </div>
+                            </div>
+
+                            {/* Gráfico Projeção CPU */}
+                            <div>
+                              <h4 className="text-sm font-semibold mb-2">Projeção de CPU (cores)</h4>
+                              <ResponsiveContainer width="100%" height={200}>
+                                <LineChart data={cpuData}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                                  <XAxis dataKey="label" stroke="#888" style={{ fontSize: '11px' }} />
+                                  <YAxis stroke="#888" style={{ fontSize: '11px' }} tickFormatter={(v) => v >= 1 ? v.toFixed(2) : `${(v*1000).toFixed(0)}m`} />
+                                  <Tooltip contentStyle={tipStyle} formatter={(v: any, name: string) => [fmtCPU(v), name]} />
+                                  <ReferenceLine x="Atual" stroke="#555" strokeDasharray="3 3" />
+                                  <Line type="monotone" dataKey="p95"        stroke="#60a5fa" name="Histórico P95"     strokeWidth={2} connectNulls={false} dot={false} />
+                                  <Line type="monotone" dataKey="noAction"   stroke="#f87171" name="Sem Ação"          strokeWidth={2} strokeDasharray="6 3" connectNulls={false} dot={false} />
+                                  <Line type="monotone" dataKey="withAction" stroke="#4ade80" name="Com Recomendações" strokeWidth={2} strokeDasharray="6 3" connectNulls={false} dot={false} />
+                                </LineChart>
+                              </ResponsiveContainer>
+                              {hasOverProv && cpuSlope > 0 && (
+                                <p className="text-xs text-green-400 mt-1">
+                                  Com right-sizing: reducao estimada de {(redFactor * 100).toFixed(0)}% no uso em 30 dias
+                                </p>
+                              )}
+                              {!hasOverProv && cpuSlope > 0.0001 && (
+                                <p className="text-xs text-yellow-400 mt-1">
+                                  Sem acao: crescimento projetado de +{(cpuSlope * 30 * 1000).toFixed(0)}m em 30 dias
+                                </p>
+                              )}
+                            </div>
+
+                            {/* Gráfico Projeção Memória */}
+                            <div>
+                              <h4 className="text-sm font-semibold mb-2">Projeção de Memória (GB)</h4>
+                              <ResponsiveContainer width="100%" height={200}>
+                                <LineChart data={memData}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                                  <XAxis dataKey="label" stroke="#888" style={{ fontSize: '11px' }} />
+                                  <YAxis stroke="#888" style={{ fontSize: '11px' }} tickFormatter={(v) => Number(v).toFixed(2)} />
+                                  <Tooltip contentStyle={tipStyle} formatter={(v: any, name: string) => [fmtMem(v), name]} />
+                                  <ReferenceLine x="Atual" stroke="#555" strokeDasharray="3 3" />
+                                  <Line type="monotone" dataKey="p95"        stroke="#60a5fa" name="Histórico P95"     strokeWidth={2} connectNulls={false} dot={false} />
+                                  <Line type="monotone" dataKey="noAction"   stroke="#f87171" name="Sem Ação"          strokeWidth={2} strokeDasharray="6 3" connectNulls={false} dot={false} />
+                                  <Line type="monotone" dataKey="withAction" stroke="#4ade80" name="Com Recomendações" strokeWidth={2} strokeDasharray="6 3" connectNulls={false} dot={false} />
+                                </LineChart>
+                              </ResponsiveContainer>
+                            </div>
+
+                            {/* Cards de custo projetado */}
+                            {currentCostBRL > 0 && (
+                              <div>
+                                <h4 className="text-sm font-semibold mb-2">Impacto no Custo (D+30)</h4>
+                                <div className="grid grid-cols-3 gap-3">
+                                  <div className="bg-muted/40 rounded-lg p-3 text-center border border-border/30">
+                                    <p className="text-[11px] text-muted-foreground mb-1">Custo Atual/mês</p>
+                                    <p className="text-base font-mono font-bold">R$ {currentCostBRL.toFixed(0)}</p>
+                                  </div>
+                                  <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-center">
+                                    <p className="text-[11px] text-muted-foreground mb-1">Sem Acao (D+30)</p>
+                                    <p className="text-base font-mono font-bold text-red-400">R$ {noActionCostBRL.toFixed(0)}</p>
+                                    <p className="text-[10px] text-red-400/70">+{((noActionCostBRL - currentCostBRL) / currentCostBRL * 100).toFixed(0)}% estimado</p>
+                                  </div>
+                                  <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3 text-center">
+                                    <p className="text-[11px] text-muted-foreground mb-1">Com Recomendacoes</p>
+                                    <p className="text-base font-mono font-bold text-green-400">
+                                      R$ {recommendedCostBRL > 0 ? recommendedCostBRL.toFixed(0) : (currentCostBRL * (1 - redFactor)).toFixed(0)}
+                                    </p>
+                                    {savPct > 1 && (
+                                      <p className="text-[10px] text-green-500">-{savPct.toFixed(0)}% economia</p>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
                     </div>
                       </AccordionContent>
                     </AccordionItem>
