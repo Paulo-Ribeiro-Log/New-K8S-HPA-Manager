@@ -801,6 +801,16 @@ export const DeploymentsTab = ({
           // Calcular se está pronto
           const ready = pod.readyContainers === pod.totalContainers && pod.totalContainers > 0;
 
+          // Coletar motivo de erro do container (ex: ImagePullBackOff, OOMKilled)
+          const errorReason = pod.containers?.reduce<string | undefined>((acc, c) => {
+            if (acc) return acc;
+            const r = c.stateReason || "";
+            if (r && r.toLowerCase() !== "completed" && r.toLowerCase() !== "running") {
+              return r;
+            }
+            return undefined;
+          }, undefined);
+
           return {
             name: pod.name,
             phase,
@@ -808,6 +818,7 @@ export const DeploymentsTab = ({
             isNew,
             restarts: pod.restarts || 0,
             podTemplateHash: podHash,
+            errorReason,
           };
         });
 
