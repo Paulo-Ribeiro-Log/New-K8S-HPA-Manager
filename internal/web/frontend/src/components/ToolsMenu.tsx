@@ -14,6 +14,7 @@ import {
   GitCompareArrows,
   Link2,
   Shield,
+  SplitSquareHorizontal,
 } from "lucide-react";
 
 interface ToolsMenuProps {
@@ -36,6 +37,7 @@ const toolsTabs: ToolsTab[] = [
   { id: "github-releases", label: "GitHub Releases", icon: GitCompareArrows },
   { id: "dependencies", label: "Dependencies", icon: Link2 },
   { id: "certificates", label: "Certificados TLS", icon: Shield },
+  { id: "resource-compare", label: "Edição Lado a Lado", icon: SplitSquareHorizontal },
 ];
 
 export const ToolsMenu = ({ activeTab, onTabChange }: ToolsMenuProps) => {
