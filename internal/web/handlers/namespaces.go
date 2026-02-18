@@ -486,6 +486,7 @@ func (h *NamespaceHandler) Apply(c *gin.Context) {
 		YAML         string `json:"yaml" binding:"required"`
 		FieldManager string `json:"fieldManager"`
 		DryRun       bool   `json:"dryRun"`
+		Force        bool   `json:"force"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -537,7 +538,7 @@ func (h *NamespaceHandler) Apply(c *gin.Context) {
 
 	start := time.Now()
 	// Aplicar namespace
-	result, err := kubeClient.ApplyNamespace(ctx, req.YAML, req.FieldManager, name, req.DryRun)
+	result, err := kubeClient.ApplyNamespace(ctx, req.YAML, req.FieldManager, name, req.DryRun, req.Force)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"success": false,

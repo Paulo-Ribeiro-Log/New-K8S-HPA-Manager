@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Server, MoreVertical, Trash2, RotateCw } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Server, MoreVertical, Trash2, RotateCw, SplitSquareHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 
@@ -60,6 +60,7 @@ interface DaemonSetsTabProps {
   onNamespaceChange: (namespace: string) => void;
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
+  onOpenCompare?: (initial: { type: "daemonset"; namespace: string; name: string }) => void;
 }
 
 export const DaemonSetsTab = ({
@@ -69,6 +70,7 @@ export const DaemonSetsTab = ({
   onNamespaceChange,
   showSystemNamespaces,
   onToggleSystemNamespaces,
+  onOpenCompare,
 }: DaemonSetsTabProps) => {
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('daemonsets', 'searchQuery', "");
@@ -570,6 +572,16 @@ export const DaemonSetsTab = ({
   // Right Panel Title Action (ações no header do editor)
   const rightTitleAction = (
     <div className="flex gap-2">
+      {selectedDaemonSet && onOpenCompare && (
+        <Button
+          variant="ghost"
+          size="sm"
+          title="Abrir em Edição Lado a Lado"
+          onClick={() => onOpenCompare({ type: "daemonset", namespace: selectedDaemonSet.namespace, name: selectedDaemonSet.name })}
+        >
+          <SplitSquareHorizontal className="w-4 h-4" />
+        </Button>
+      )}
       <Button
         variant="outline"
         size="sm"

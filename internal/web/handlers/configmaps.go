@@ -266,7 +266,7 @@ func (h *ConfigMapHandler) Apply(c *gin.Context) {
 		return
 	}
 
-	result, err := kubeClient.ApplyConfigMap(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun)
+	result, err := kubeClient.ApplyConfigMap(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun, req.Force)
 	if err != nil {
 		status := http.StatusInternalServerError
 		errorCode := "APPLY_ERROR"
@@ -323,6 +323,7 @@ type configMapApplyRequest struct {
 	YAML         string `json:"yaml"`
 	FieldManager string `json:"fieldManager"`
 	DryRun       bool   `json:"dryRun"`
+	Force        bool   `json:"force"`
 }
 
 func sanitizeConfigMapYAML(yamlContent string) (string, error) {
