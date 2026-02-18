@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Brain, TrendingUp, BarChart3, Download, History, Server, MoreVertical, Trash2, RotateCw, ArrowUpDown, XCircle, DollarSign, Activity, Database, Lightbulb, SplitSquareHorizontal } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -79,6 +79,7 @@ interface DeploymentsTabProps {
   onNamespaceChange: (namespace: string) => void;
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
+  onOpenCompare?: (initial: { type: "deployment"; namespace: string; name: string }) => void;
 }
 
 export const DeploymentsTab = ({
@@ -88,6 +89,7 @@ export const DeploymentsTab = ({
   onNamespaceChange,
   showSystemNamespaces,
   onToggleSystemNamespaces,
+  onOpenCompare,
 }: DeploymentsTabProps) => {
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('deployments', 'searchQuery', "");
@@ -2242,6 +2244,16 @@ export const DeploymentsTab = ({
 
   const rightTitleAction = (
     <div className="flex gap-2">
+      {selectedDeployment && onOpenCompare && (
+        <Button
+          variant="ghost"
+          size="sm"
+          title="Abrir em Edição Lado a Lado"
+          onClick={() => onOpenCompare({ type: "deployment", namespace: selectedDeployment.namespace, name: selectedDeployment.name })}
+        >
+          <SplitSquareHorizontal className="w-4 h-4" />
+        </Button>
+      )}
       {selectedDeployment && (
         <>
           <Button

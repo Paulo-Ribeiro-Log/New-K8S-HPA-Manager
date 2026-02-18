@@ -308,15 +308,15 @@ func formatAge(t time.Time) string {
 
 // ValidateConfigMap executa um server-side apply com dry-run
 func (c *Client) ValidateConfigMap(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*corev1.ConfigMap, error) {
-	return c.applyConfigMap(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+	return c.applyConfigMap(ctx, yamlContent, fieldManager, enforceNamespace, "", true, true)
 }
 
 // ApplyConfigMap aplica (ou dry-run opcionalmente) o ConfigMap no cluster
-func (c *Client) ApplyConfigMap(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*corev1.ConfigMap, error) {
-	return c.applyConfigMap(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+func (c *Client) ApplyConfigMap(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun, force bool) (*corev1.ConfigMap, error) {
+	return c.applyConfigMap(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun, force)
 }
 
-func (c *Client) applyConfigMap(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*corev1.ConfigMap, error) {
+func (c *Client) applyConfigMap(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun, force bool) (*corev1.ConfigMap, error) {
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("configmap yaml content cannot be empty")
 	}
@@ -329,9 +329,8 @@ func (c *Client) applyConfigMap(ctx context.Context, yamlContent, fieldManager, 
 		return nil, err
 	}
 
-	// Force=true permite assumir ownership de campos gerenciados por outros field managers
-	// Necessário quando ConfigMaps são gerenciados por kubectl, helm, terraform, etc.
-	forceFlag := true
+	// force permite assumir ownership de campos gerenciados por outros field managers (ex: Helm)
+	forceFlag := force
 	options := metav1.PatchOptions{
 		FieldManager: fieldManager,
 		Force:        &forceFlag,
@@ -561,15 +560,15 @@ func buildIngressSummary(cluster string, ing *networkingv1.Ingress) models.Ingre
 
 // ValidateIngress executa um server-side apply com dry-run
 func (c *Client) ValidateIngress(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*networkingv1.Ingress, error) {
-	return c.applyIngress(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+	return c.applyIngress(ctx, yamlContent, fieldManager, enforceNamespace, "", true, true)
 }
 
 // ApplyIngress aplica (ou dry-run opcionalmente) o Ingress no cluster
-func (c *Client) ApplyIngress(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*networkingv1.Ingress, error) {
-	return c.applyIngress(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+func (c *Client) ApplyIngress(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun, force bool) (*networkingv1.Ingress, error) {
+	return c.applyIngress(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun, force)
 }
 
-func (c *Client) applyIngress(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*networkingv1.Ingress, error) {
+func (c *Client) applyIngress(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun, force bool) (*networkingv1.Ingress, error) {
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("ingress yaml content cannot be empty")
 	}
@@ -582,9 +581,8 @@ func (c *Client) applyIngress(ctx context.Context, yamlContent, fieldManager, en
 		return nil, err
 	}
 
-	// Force=true permite assumir ownership de campos gerenciados por outros field managers
-	// Necessário quando Ingresses são gerenciados por kubectl, helm, terraform, etc.
-	forceFlag := true
+	// force permite assumir ownership de campos gerenciados por outros field managers (ex: Helm)
+	forceFlag := force
 	options := metav1.PatchOptions{
 		FieldManager: fieldManager,
 		Force:        &forceFlag,
@@ -750,15 +748,15 @@ func (c *Client) GetNamespace(ctx context.Context, name string) (*models.Namespa
 
 // ValidateNamespace executa um server-side apply com dry-run
 func (c *Client) ValidateNamespace(ctx context.Context, yamlContent, fieldManager string) (*corev1.Namespace, error) {
-	return c.applyNamespace(ctx, yamlContent, fieldManager, "", true)
+	return c.applyNamespace(ctx, yamlContent, fieldManager, "", true, true)
 }
 
 // ApplyNamespace aplica (ou dry-run opcionalmente) o Namespace no cluster
-func (c *Client) ApplyNamespace(ctx context.Context, yamlContent, fieldManager, enforceName string, dryRun bool) (*corev1.Namespace, error) {
-	return c.applyNamespace(ctx, yamlContent, fieldManager, enforceName, dryRun)
+func (c *Client) ApplyNamespace(ctx context.Context, yamlContent, fieldManager, enforceName string, dryRun, force bool) (*corev1.Namespace, error) {
+	return c.applyNamespace(ctx, yamlContent, fieldManager, enforceName, dryRun, force)
 }
 
-func (c *Client) applyNamespace(ctx context.Context, yamlContent, fieldManager, enforceName string, dryRun bool) (*corev1.Namespace, error) {
+func (c *Client) applyNamespace(ctx context.Context, yamlContent, fieldManager, enforceName string, dryRun, force bool) (*corev1.Namespace, error) {
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("namespace yaml content cannot be empty")
 	}
@@ -771,8 +769,8 @@ func (c *Client) applyNamespace(ctx context.Context, yamlContent, fieldManager, 
 		return nil, err
 	}
 
-	// Force=true permite assumir ownership de campos gerenciados por outros field managers
-	forceFlag := true
+	// force permite assumir ownership de campos gerenciados por outros field managers (ex: Helm)
+	forceFlag := force
 	options := metav1.PatchOptions{
 		FieldManager: fieldManager,
 		Force:        &forceFlag,
@@ -1068,15 +1066,15 @@ func buildDeploymentSummary(cluster string, dep *appsv1.Deployment) models.Deplo
 
 // ValidateDeployment executa um server-side apply com dry-run
 func (c *Client) ValidateDeployment(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*appsv1.Deployment, error) {
-	return c.applyDeployment(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+	return c.applyDeployment(ctx, yamlContent, fieldManager, enforceNamespace, "", true, true)
 }
 
 // ApplyDeployment aplica (ou dry-run opcionalmente) o Deployment no cluster
-func (c *Client) ApplyDeployment(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*appsv1.Deployment, error) {
-	return c.applyDeployment(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+func (c *Client) ApplyDeployment(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun, force bool) (*appsv1.Deployment, error) {
+	return c.applyDeployment(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun, force)
 }
 
-func (c *Client) applyDeployment(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*appsv1.Deployment, error) {
+func (c *Client) applyDeployment(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun, force bool) (*appsv1.Deployment, error) {
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("deployment yaml content cannot be empty")
 	}
@@ -1089,16 +1087,17 @@ func (c *Client) applyDeployment(ctx context.Context, yamlContent, fieldManager,
 		return nil, err
 	}
 
-	forceFlag := true
+	// force permite assumir ownership de campos gerenciados por outros field managers (ex: Helm)
+	forceFlag := force
 	options := metav1.PatchOptions{
 		FieldManager: fieldManager,
-		Force:        &forceFlag, // Force ownership transfer (resolve conflicts with helm/other managers)
+		Force:        &forceFlag,
 	}
 	if dryRun {
 		options.DryRun = []string{metav1.DryRunAll}
 		fmt.Printf("[DEBUG] Applying deployment %s/%s in DRY-RUN mode\n", namespace, name)
 	} else {
-		fmt.Printf("[DEBUG] Applying deployment %s/%s with Force=true\n", namespace, name)
+		fmt.Printf("[DEBUG] Applying deployment %s/%s with Force=%v\n", namespace, name, force)
 	}
 
 	result, err := c.clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
@@ -1291,15 +1290,15 @@ func buildDaemonSetSummary(cluster string, ds *appsv1.DaemonSet) models.DaemonSe
 
 // ValidateDaemonSet executa um server-side apply com dry-run
 func (c *Client) ValidateDaemonSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*appsv1.DaemonSet, error) {
-	return c.applyDaemonSet(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+	return c.applyDaemonSet(ctx, yamlContent, fieldManager, enforceNamespace, "", true, true)
 }
 
 // ApplyDaemonSet aplica (ou dry-run opcionalmente) o DaemonSet no cluster
-func (c *Client) ApplyDaemonSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*appsv1.DaemonSet, error) {
-	return c.applyDaemonSet(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+func (c *Client) ApplyDaemonSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun, force bool) (*appsv1.DaemonSet, error) {
+	return c.applyDaemonSet(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun, force)
 }
 
-func (c *Client) applyDaemonSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*appsv1.DaemonSet, error) {
+func (c *Client) applyDaemonSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun, force bool) (*appsv1.DaemonSet, error) {
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("daemonset yaml content cannot be empty")
 	}
@@ -1312,7 +1311,8 @@ func (c *Client) applyDaemonSet(ctx context.Context, yamlContent, fieldManager, 
 		return nil, err
 	}
 
-	forceFlag := true
+	// force permite assumir ownership de campos gerenciados por outros field managers (ex: Helm)
+	forceFlag := force
 	options := metav1.PatchOptions{
 		FieldManager: fieldManager,
 		Force:        &forceFlag,
@@ -1321,7 +1321,7 @@ func (c *Client) applyDaemonSet(ctx context.Context, yamlContent, fieldManager, 
 		options.DryRun = []string{metav1.DryRunAll}
 		fmt.Printf("[DEBUG] Applying daemonset %s/%s in DRY-RUN mode\n", namespace, name)
 	} else {
-		fmt.Printf("[DEBUG] Applying daemonset %s/%s with Force=true\n", namespace, name)
+		fmt.Printf("[DEBUG] Applying daemonset %s/%s with Force=%v\n", namespace, name, force)
 	}
 
 	result, err := c.clientset.AppsV1().DaemonSets(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
@@ -1532,15 +1532,15 @@ func buildStatefulSetSummary(cluster string, sts *appsv1.StatefulSet) models.Sta
 
 // ValidateStatefulSet executa um server-side apply com dry-run
 func (c *Client) ValidateStatefulSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*appsv1.StatefulSet, error) {
-	return c.applyStatefulSet(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+	return c.applyStatefulSet(ctx, yamlContent, fieldManager, enforceNamespace, "", true, true)
 }
 
 // ApplyStatefulSet aplica (ou dry-run opcionalmente) o StatefulSet no cluster
-func (c *Client) ApplyStatefulSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*appsv1.StatefulSet, error) {
-	return c.applyStatefulSet(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+func (c *Client) ApplyStatefulSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun, force bool) (*appsv1.StatefulSet, error) {
+	return c.applyStatefulSet(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun, force)
 }
 
-func (c *Client) applyStatefulSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*appsv1.StatefulSet, error) {
+func (c *Client) applyStatefulSet(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun, force bool) (*appsv1.StatefulSet, error) {
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("statefulset yaml content cannot be empty")
 	}
@@ -1553,7 +1553,8 @@ func (c *Client) applyStatefulSet(ctx context.Context, yamlContent, fieldManager
 		return nil, err
 	}
 
-	forceFlag := true
+	// force permite assumir ownership de campos gerenciados por outros field managers (ex: Helm)
+	forceFlag := force
 	options := metav1.PatchOptions{
 		FieldManager: fieldManager,
 		Force:        &forceFlag,
@@ -1562,7 +1563,7 @@ func (c *Client) applyStatefulSet(ctx context.Context, yamlContent, fieldManager
 		options.DryRun = []string{metav1.DryRunAll}
 		fmt.Printf("[DEBUG] Applying statefulset %s/%s in DRY-RUN mode\n", namespace, name)
 	} else {
-		fmt.Printf("[DEBUG] Applying statefulset %s/%s with Force=true\n", namespace, name)
+		fmt.Printf("[DEBUG] Applying statefulset %s/%s with Force=%v\n", namespace, name, force)
 	}
 
 	result, err := c.clientset.AppsV1().StatefulSets(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
@@ -1771,15 +1772,15 @@ func buildSecretSummary(cluster string, secret *corev1.Secret) models.SecretSumm
 
 // ValidateSecret executa um server-side apply com dry-run
 func (c *Client) ValidateSecret(ctx context.Context, yamlContent, fieldManager, enforceNamespace string) (*corev1.Secret, error) {
-	return c.applySecret(ctx, yamlContent, fieldManager, enforceNamespace, "", true)
+	return c.applySecret(ctx, yamlContent, fieldManager, enforceNamespace, "", true, true)
 }
 
 // ApplySecret aplica (ou dry-run opcionalmente) o Secret no cluster
-func (c *Client) ApplySecret(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*corev1.Secret, error) {
-	return c.applySecret(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun)
+func (c *Client) ApplySecret(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun, force bool) (*corev1.Secret, error) {
+	return c.applySecret(ctx, yamlContent, fieldManager, enforceNamespace, enforceName, dryRun, force)
 }
 
-func (c *Client) applySecret(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun bool) (*corev1.Secret, error) {
+func (c *Client) applySecret(ctx context.Context, yamlContent, fieldManager, enforceNamespace, enforceName string, dryRun, force bool) (*corev1.Secret, error) {
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("secret yaml content cannot be empty")
 	}
@@ -1792,8 +1793,8 @@ func (c *Client) applySecret(ctx context.Context, yamlContent, fieldManager, enf
 		return nil, err
 	}
 
-	// Force=true to assume ownership of fields previously managed via kubectl/helm/etc.
-	forceFlag := true
+	// force permite assumir ownership de campos gerenciados por outros field managers (ex: Helm)
+	forceFlag := force
 	options := metav1.PatchOptions{
 		FieldManager: fieldManager,
 		Force:        &forceFlag,
@@ -4471,7 +4472,7 @@ func (c *Client) PatchDeploymentResources(ctx context.Context, namespace, name s
 	}
 
 	// Usar ApplyDeployment com Force=true para resolver conflitos com Helm
-	return c.ApplyDeployment(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false)
+	return c.ApplyDeployment(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false, true)
 }
 
 // PatchStatefulSetResources atualiza apenas os recursos (CPU/memória) de um StatefulSet
@@ -4542,7 +4543,7 @@ func (c *Client) PatchStatefulSetResources(ctx context.Context, namespace, name 
 		return nil, fmt.Errorf("failed to marshal statefulset: %w", err)
 	}
 
-	return c.ApplyStatefulSet(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false)
+	return c.ApplyStatefulSet(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false, true)
 }
 
 // PatchDaemonSetResources atualiza apenas os recursos (CPU/memória) de um DaemonSet
@@ -4610,5 +4611,5 @@ func (c *Client) PatchDaemonSetResources(ctx context.Context, namespace, name st
 		return nil, fmt.Errorf("failed to marshal daemonset: %w", err)
 	}
 
-	return c.ApplyDaemonSet(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false)
+	return c.ApplyDaemonSet(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false, true)
 }

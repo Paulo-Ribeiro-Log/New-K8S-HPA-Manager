@@ -3,7 +3,7 @@ import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle, Terminal } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle, Terminal, SplitSquareHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import type { Namespace, TopNamespacesResponse, NamespaceManifest, DeploymentSummary, EventSummary, ResourceQuotaSummary, NetworkPolicySummary, ServiceSummary, PodsSummary, PodSummary } from "@/lib/api/types";
@@ -52,6 +52,7 @@ interface NamespacesTabProps {
   onToggleSystemNamespaces: () => void;
   onNamespaceChange: (namespace: string) => void;
   onRefresh: () => void;
+  onOpenCompare?: (initial: { type: "namespace"; namespace: string; name: string }) => void;
 }
 
 export const NamespacesTab = ({
@@ -61,6 +62,7 @@ export const NamespacesTab = ({
   onToggleSystemNamespaces,
   onNamespaceChange,
   onRefresh,
+  onOpenCompare,
 }: NamespacesTabProps) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedNamespace, setSelectedNamespace] = useState<Namespace | null>(null);
@@ -1661,12 +1663,24 @@ export const NamespacesTab = ({
   }
 
   const rightTitleAction = (
-    <ProtectedAction>
-      <Button variant="outline" size="sm" onClick={() => setCreateModalOpen(true)}>
-        <Plus className="w-4 h-4 mr-1" />
-        Criar Namespace
-      </Button>
-    </ProtectedAction>
+    <div className="flex gap-2">
+      {selectedNamespace && onOpenCompare && (
+        <Button
+          variant="ghost"
+          size="sm"
+          title="Abrir em Edição Lado a Lado"
+          onClick={() => onOpenCompare({ type: "namespace", namespace: selectedNamespace.name, name: selectedNamespace.name })}
+        >
+          <SplitSquareHorizontal className="w-4 h-4" />
+        </Button>
+      )}
+      <ProtectedAction>
+        <Button variant="outline" size="sm" onClick={() => setCreateModalOpen(true)}>
+          <Plus className="w-4 h-4 mr-1" />
+          Criar Namespace
+        </Button>
+      </ProtectedAction>
+    </div>
   );
 
   // Render modais

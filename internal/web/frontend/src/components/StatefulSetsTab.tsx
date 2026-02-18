@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Database, MoreVertical, Trash2, RotateCw, ArrowUpDown } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Database, MoreVertical, Trash2, RotateCw, ArrowUpDown, SplitSquareHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 
@@ -60,6 +60,7 @@ interface StatefulSetsTabProps {
   onNamespaceChange: (namespace: string) => void;
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
+  onOpenCompare?: (initial: { type: "statefulset"; namespace: string; name: string }) => void;
 }
 
 export const StatefulSetsTab = ({
@@ -69,6 +70,7 @@ export const StatefulSetsTab = ({
   onNamespaceChange,
   showSystemNamespaces,
   onToggleSystemNamespaces,
+  onOpenCompare,
 }: StatefulSetsTabProps) => {
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('statefulsets', 'searchQuery', "");
@@ -645,6 +647,16 @@ export const StatefulSetsTab = ({
   // Right Panel Title Action (ações no header do editor)
   const rightTitleAction = (
     <div className="flex gap-2">
+      {selectedStatefulSet && onOpenCompare && (
+        <Button
+          variant="ghost"
+          size="sm"
+          title="Abrir em Edição Lado a Lado"
+          onClick={() => onOpenCompare({ type: "statefulset", namespace: selectedStatefulSet.namespace, name: selectedStatefulSet.name })}
+        >
+          <SplitSquareHorizontal className="w-4 h-4" />
+        </Button>
+      )}
       <Button
         variant="outline"
         size="sm"

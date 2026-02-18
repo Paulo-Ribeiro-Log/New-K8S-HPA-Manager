@@ -271,7 +271,7 @@ func (h *StatefulSetHandler) Apply(c *gin.Context) {
 	fmt.Printf("[DEBUG] Handler ApplyStatefulSet: cluster=%s, namespace=%s, name=%s, dryRun=%v, fieldManager=%s\n",
 		cluster, namespace, name, req.DryRun, req.FieldManager)
 
-	result, err := kubeClient.ApplyStatefulSet(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun)
+	result, err := kubeClient.ApplyStatefulSet(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun, req.Force)
 	if err != nil {
 		status := http.StatusInternalServerError
 		errorCode := "APPLY_ERROR"
@@ -331,6 +331,7 @@ type statefulSetApplyRequest struct {
 	YAML         string `json:"yaml"`
 	FieldManager string `json:"fieldManager"`
 	DryRun       bool   `json:"dryRun"`
+	Force        bool   `json:"force"`
 }
 
 func sanitizeStatefulSetYAML(yamlContent string) (string, error) {

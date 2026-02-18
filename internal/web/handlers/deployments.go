@@ -273,7 +273,7 @@ func (h *DeploymentHandler) Apply(c *gin.Context) {
 	fmt.Printf("[DEBUG] Handler ApplyDeployment: cluster=%s, namespace=%s, name=%s, dryRun=%v, fieldManager=%s\n",
 		cluster, namespace, name, req.DryRun, req.FieldManager)
 
-	result, err := kubeClient.ApplyDeployment(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun)
+	result, err := kubeClient.ApplyDeployment(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun, req.Force)
 	if err != nil {
 		status := http.StatusInternalServerError
 		errorCode := "APPLY_ERROR"
@@ -333,6 +333,7 @@ type deploymentApplyRequest struct {
 	YAML         string `json:"yaml"`
 	FieldManager string `json:"fieldManager"`
 	DryRun       bool   `json:"dryRun"`
+	Force        bool   `json:"force"`
 }
 
 func sanitizeDeploymentYAML(yamlContent string) (string, error) {

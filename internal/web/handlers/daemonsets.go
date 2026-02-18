@@ -268,7 +268,7 @@ func (h *DaemonSetHandler) Apply(c *gin.Context) {
 	fmt.Printf("[DEBUG] Handler ApplyDaemonSet: cluster=%s, namespace=%s, name=%s, dryRun=%v, fieldManager=%s\n",
 		cluster, namespace, name, req.DryRun, req.FieldManager)
 
-	result, err := kubeClient.ApplyDaemonSet(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun)
+	result, err := kubeClient.ApplyDaemonSet(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun, req.Force)
 	if err != nil {
 		status := http.StatusInternalServerError
 		errorCode := "APPLY_ERROR"
@@ -328,6 +328,7 @@ type daemonSetApplyRequest struct {
 	YAML         string `json:"yaml"`
 	FieldManager string `json:"fieldManager"`
 	DryRun       bool   `json:"dryRun"`
+	Force        bool   `json:"force"`
 }
 
 func sanitizeDaemonSetYAML(yamlContent string) (string, error) {

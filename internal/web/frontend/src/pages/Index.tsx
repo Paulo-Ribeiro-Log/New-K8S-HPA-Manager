@@ -52,6 +52,8 @@ import { GitHubReleasesTab } from "@/components/GitHubReleasesTab";
 import { NexusValuesDiffPanel } from "@/components/NexusValuesDiffPanel";
 import { DependenciesTab } from "@/components/DependenciesTab";
 import CertificatesTab from "@/components/CertificatesTab";
+import { ResourceCompareModal } from "@/components/ResourceCompareModal";
+import type { CompareInitial } from "@/components/ResourceCompareModal";
 import {
   LayoutDashboard,
   Scale,
@@ -124,6 +126,8 @@ const Index = ({ onLogout }: IndexProps) => {
   const [showHistoryViewer, setShowHistoryViewer] = useState(false);
   const [isContextSwitching, setIsContextSwitching] = useState(false);
   const [showVPNWarning, setShowVPNWarning] = useState(false);
+  const [compareModalOpen, setCompareModalOpen] = useState(false);
+  const [compareInitialLeft, setCompareInitialLeft] = useState<CompareInitial | undefined>();
 
   // Search filters
   const [hpaSearchQuery, setHpaSearchQuery] = useState("");
@@ -276,6 +280,13 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // Wrapper para setActiveTab que dispara evento e verifica VPN
   const handleTabChange = async (newTab: string) => {
+    // "Edição Lado a Lado" abre modal, não troca de aba
+    if (newTab === "resource-compare") {
+      setCompareInitialLeft(undefined);
+      setCompareModalOpen(true);
+      return;
+    }
+
     // Disparar evento de mudança de tab
     if (typeof window !== "undefined") {
       window.dispatchEvent(new Event("tabChanged"));
@@ -286,6 +297,12 @@ const Index = ({ onLogout }: IndexProps) => {
 
     // Mudar tab
     setActiveTab(newTab);
+  };
+
+  // Abre o modal de comparação com recurso pré-selecionado no painel esquerdo
+  const handleOpenCompare = (initial: CompareInitial) => {
+    setCompareInitialLeft(initial);
+    setCompareModalOpen(true);
   };
 
   // API Hooks
@@ -750,6 +767,7 @@ const Index = ({ onLogout }: IndexProps) => {
               onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
               onNamespaceChange={setSelectedNamespace}
               onRefresh={refetchNamespaces}
+              onOpenCompare={handleOpenCompare}
             />
           </ErrorBoundary>
         );
@@ -1000,6 +1018,7 @@ const Index = ({ onLogout }: IndexProps) => {
               onNamespaceChange={setSelectedNamespace}
               showSystemNamespaces={showSystemNamespaces}
               onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              onOpenCompare={handleOpenCompare}
             />
           </ErrorBoundary>
         );
@@ -1014,6 +1033,7 @@ const Index = ({ onLogout }: IndexProps) => {
               onNamespaceChange={setSelectedNamespace}
               showSystemNamespaces={showSystemNamespaces}
               onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              onOpenCompare={handleOpenCompare}
             />
           </ErrorBoundary>
         );
@@ -1155,6 +1175,7 @@ const Index = ({ onLogout }: IndexProps) => {
               onNamespaceChange={setConfigMapsNamespace}
               showSystemNamespaces={showSystemNamespaces}
               onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+              onOpenCompare={handleOpenCompare}
             />
           )}
         </div>
@@ -1170,6 +1191,7 @@ const Index = ({ onLogout }: IndexProps) => {
                 onNamespaceChange={setDeploymentsNamespace}
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+                onOpenCompare={handleOpenCompare}
               />
             </ErrorBoundary>
           )}
@@ -1186,6 +1208,7 @@ const Index = ({ onLogout }: IndexProps) => {
                 onNamespaceChange={setSecretsNamespace}
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+                onOpenCompare={handleOpenCompare}
               />
             </ErrorBoundary>
           )}
@@ -1218,6 +1241,7 @@ const Index = ({ onLogout }: IndexProps) => {
                 onNamespaceChange={setIngressNamespace}
                 showSystemNamespaces={showSystemNamespaces}
                 onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+                onOpenCompare={handleOpenCompare}
               />
             </ErrorBoundary>
           )}
@@ -1394,6 +1418,14 @@ const Index = ({ onLogout }: IndexProps) => {
         clusterName={progressCluster}
         originName={progressOrigin}
         destName={progressDest}
+      />
+
+      {/* Modal de Edição Lado a Lado */}
+      <ResourceCompareModal
+        open={compareModalOpen}
+        onClose={() => setCompareModalOpen(false)}
+        cluster={selectedCluster}
+        initialLeft={compareInitialLeft}
       />
     </div>
   );
