@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock, X, FileText, Plus, MoreVertical, Trash2 } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock, X, FileText, Plus, MoreVertical, Trash2, SplitSquareHorizontal } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -43,6 +43,7 @@ interface SecretsTabProps {
   onNamespaceChange: (namespace: string) => void;
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
+  onOpenCompare?: (initial: { type: "secret"; namespace: string; name: string }) => void;
 }
 
 export const SecretsTab = ({
@@ -52,6 +53,7 @@ export const SecretsTab = ({
   onNamespaceChange,
   showSystemNamespaces,
   onToggleSystemNamespaces,
+  onOpenCompare,
 }: SecretsTabProps) => {
   // ✅ Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('secrets', 'searchQuery', "");
@@ -716,6 +718,16 @@ export const SecretsTab = ({
 
   const rightTitleAction = (
     <div className="flex items-center gap-2">
+      {selectedSecret && onOpenCompare && (
+        <Button
+          variant="ghost"
+          size="sm"
+          title="Abrir em Edição Lado a Lado"
+          onClick={() => onOpenCompare({ type: "secret", namespace: selectedSecret.namespace, name: selectedSecret.name })}
+        >
+          <SplitSquareHorizontal className="w-4 h-4" />
+        </Button>
+      )}
       <Button
         variant="default"
         size="sm"

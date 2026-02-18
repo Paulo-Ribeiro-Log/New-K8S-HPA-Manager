@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Network, MoreVertical, Trash2 } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Network, MoreVertical, Trash2, SplitSquareHorizontal } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,6 +41,7 @@ interface IngressTabProps {
   onNamespaceChange: (namespace: string) => void;
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
+  onOpenCompare?: (initial: { type: "ingress"; namespace: string; name: string }) => void;
 }
 
 export const IngressTab = ({
@@ -50,6 +51,7 @@ export const IngressTab = ({
   onNamespaceChange,
   showSystemNamespaces,
   onToggleSystemNamespaces,
+  onOpenCompare,
 }: IngressTabProps) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedIngress, setSelectedIngress] = useState<IngressSummary | null>(null);
@@ -494,6 +496,16 @@ export const IngressTab = ({
 
   const rightTitleAction = (
     <div className="flex items-center gap-2">
+      {selectedIngress && onOpenCompare && (
+        <Button
+          variant="ghost"
+          size="sm"
+          title="Abrir em Edição Lado a Lado"
+          onClick={() => onOpenCompare({ type: "ingress", namespace: selectedIngress.namespace, name: selectedIngress.name })}
+        >
+          <SplitSquareHorizontal className="w-4 h-4" />
+        </Button>
+      )}
       <Button
         variant="outline"
         size="sm"

@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -266,7 +268,7 @@ func (h *SecretHandler) Apply(c *gin.Context) {
 		return
 	}
 
-	result, err := kubeClient.ApplySecret(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun)
+	result, err := kubeClient.ApplySecret(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun, req.Force)
 	if err != nil {
 		status := http.StatusInternalServerError
 		errorCode := "APPLY_ERROR"
@@ -323,6 +325,7 @@ type secretApplyRequest struct {
 	YAML         string `json:"yaml"`
 	FieldManager string `json:"fieldManager"`
 	DryRun       bool   `json:"dryRun"`
+	Force        bool   `json:"force"`
 }
 
 func sanitizeSecretYAML(yamlContent, enforceName, enforceNamespace string) (string, error) {
@@ -354,12 +357,79 @@ func sanitizeSecretYAML(yamlContent, enforceName, enforceNamespace string) (stri
 
 	obj["metadata"] = metadata
 
+	// ESTRATÉGIA ROBUSTA: Extrair "data" e "stringData" ANTES do yaml.Marshal.
+	//
+	// O sigs.k8s.io/yaml faz internamente YAML→JSON→YAML via go-yaml/v3.
+	// Para strings longas (>80 chars), go-yaml/v3 pode emitir plain scalars com
+	// line-folding implícito, inserindo espaços/newlines nos valores base64.
+	// Esses caracteres tornam o base64 inválido quando a API do Kubernetes tenta
+	// decodificá-lo → "illegal base64 data at input byte N".
+	//
+	// Solução: remover data/stringData do objeto antes do Marshal e reinjetar
+	// manualmente como scalars literais simples (base64 é seguro como plain scalar).
+	dataVals := secretExtractDataValues(obj, "data")
+	stringDataVals := secretExtractDataValues(obj, "stringData")
+	delete(obj, "data")
+	delete(obj, "stringData")
+
 	cleaned, err := yaml.Marshal(obj)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal sanitized configmap: %w", err)
+		return "", fmt.Errorf("failed to marshal sanitized secret: %w", err)
 	}
 
-	return string(cleaned), nil
+	result := string(cleaned)
+
+	// Reintroduzir "data" como scalars literais: base64 usa apenas [A-Za-z0-9+/=]
+	// que são sempre válidos como plain YAML scalars, sem risco de line-folding.
+	if len(dataVals) > 0 {
+		result += "data:\n"
+		for _, k := range secretSortedKeys(dataVals) {
+			result += fmt.Sprintf("  %s: %s\n", k, dataVals[k])
+		}
+	}
+
+	// Reintroduzir "stringData" via yaml.Marshal (valores arbitrários, não base64)
+	if len(stringDataVals) > 0 {
+		sdInterface := make(map[string]interface{}, len(stringDataVals))
+		for k, v := range stringDataVals {
+			sdInterface[k] = v
+		}
+		sdYAML, err := yaml.Marshal(map[string]interface{}{"stringData": sdInterface})
+		if err == nil {
+			result += string(sdYAML)
+		}
+	}
+
+	return result, nil
+}
+
+// secretExtractDataValues extrai valores de um campo map como strings base64.
+// Converte []byte (decodificado por go-yaml como !!binary) de volta para base64 string.
+func secretExtractDataValues(obj map[string]interface{}, field string) map[string]string {
+	result := make(map[string]string)
+	rawMap, ok := obj[field].(map[string]interface{})
+	if !ok {
+		return result
+	}
+	for k, v := range rawMap {
+		switch val := v.(type) {
+		case []byte:
+			result[k] = base64.StdEncoding.EncodeToString(val)
+		case string:
+			result[k] = val
+		}
+	}
+	return result
+}
+
+// secretSortedKeys retorna as chaves de um map ordenadas para output determinístico.
+func secretSortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func secretManifestToHistoryMap(manifest *models.SecretManifest) map[string]interface{} {
@@ -467,7 +537,7 @@ func (h *SecretHandler) Create(c *gin.Context) {
 	startTime := time.Now()
 
 	// Aplicar o secret (usando apply para criar ou atualizar)
-	result, err := kubeClient.ApplySecret(c.Request.Context(), req.YAML, req.FieldManager, namespace, secretName, false)
+	result, err := kubeClient.ApplySecret(c.Request.Context(), req.YAML, req.FieldManager, namespace, secretName, false, true)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,

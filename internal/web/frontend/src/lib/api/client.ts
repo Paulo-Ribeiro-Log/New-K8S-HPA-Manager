@@ -303,7 +303,7 @@ class APIClient {
   async applyNamespace(
     cluster: string,
     name: string,
-    payload: { yaml: string; fieldManager: string; dryRun: boolean }
+    payload: { yaml: string; fieldManager: string; dryRun: boolean; force?: boolean }
   ): Promise<{ success: boolean; message: string }> {
     return await this.request<{ success: boolean; message: string }>(
       `/namespaces/${encodeURIComponent(cluster)}/${encodeURIComponent(name)}`,
@@ -318,7 +318,7 @@ class APIClient {
     cluster: string,
     namespace: string,
     name: string,
-    payload: { yaml: string; fieldManager: string; dryRun: boolean }
+    payload: { yaml: string; fieldManager: string; dryRun: boolean; force?: boolean }
   ): Promise<{ success: boolean; message: string; data?: any }> {
     return await this.request<{ success: boolean; message: string; data?: any }>(
       `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
@@ -508,7 +508,7 @@ class APIClient {
     cluster: string,
     namespace: string,
     name: string,
-    body: { yaml: string; fieldManager?: string; dryRun?: boolean }
+    body: { yaml: string; fieldManager?: string; dryRun?: boolean; force?: boolean }
   ): Promise<ConfigMapApplyResult> {
     const response = await this.request<APIResponse<ConfigMapApplyResult>>(
       `/configmaps/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
@@ -603,7 +603,7 @@ class APIClient {
     cluster: string,
     namespace: string,
     name: string,
-    body: { yaml: string; fieldManager?: string; dryRun?: boolean }
+    body: { yaml: string; fieldManager?: string; dryRun?: boolean; force?: boolean }
   ): Promise<SecretApplyResult> {
     const response = await this.request<APIResponse<SecretApplyResult>>(
       `/secrets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
@@ -722,7 +722,7 @@ class APIClient {
     cluster: string,
     namespace: string,
     name: string,
-    body: { yaml: string; fieldManager?: string; dryRun?: boolean }
+    body: { yaml: string; fieldManager?: string; dryRun?: boolean; force?: boolean }
   ): Promise<DeploymentApplyResult> {
     const response = await this.request<APIResponse<DeploymentApplyResult>>(
       `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
@@ -866,7 +866,7 @@ class APIClient {
     cluster: string,
     namespace: string,
     name: string,
-    body: { yaml: string; fieldManager?: string; dryRun?: boolean }
+    body: { yaml: string; fieldManager?: string; dryRun?: boolean; force?: boolean }
   ): Promise<IngressApplyResult> {
     const response = await this.request<APIResponse<IngressApplyResult>>(
       `/ingresses/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
@@ -967,7 +967,7 @@ class APIClient {
     cluster: string,
     namespace: string,
     name: string,
-    body: { yaml: string; fieldManager?: string; dryRun?: boolean }
+    body: { yaml: string; fieldManager?: string; dryRun?: boolean; force?: boolean }
   ): Promise<StatefulSetApplyResult> {
     const response = await this.request<APIResponse<StatefulSetApplyResult>>(
       `/statefulsets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
@@ -1099,7 +1099,7 @@ class APIClient {
     cluster: string,
     namespace: string,
     name: string,
-    body: { yaml: string; fieldManager?: string; dryRun?: boolean }
+    body: { yaml: string; fieldManager?: string; dryRun?: boolean; force?: boolean }
   ): Promise<DaemonSetApplyResult> {
     const response = await this.request<APIResponse<DaemonSetApplyResult>>(
       `/daemonsets/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
