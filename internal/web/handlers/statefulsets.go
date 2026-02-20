@@ -351,7 +351,22 @@ func sanitizeStatefulSetYAML(yamlContent string) (string, error) {
 	delete(metadata, "generation")
 	delete(metadata, "creationTimestamp")
 	delete(metadata, "selfLink")
-	delete(metadata, "annotations.kubectl.kubernetes.io/last-applied-configuration")
+
+	// Limpar anotações do kubectl
+	if annotations, ok := metadata["annotations"].(map[string]interface{}); ok {
+		// Remover todas as anotações kubectl.*
+		for key := range annotations {
+			if strings.HasPrefix(key, "kubectl.kubernetes.io/") {
+				delete(annotations, key)
+			}
+		}
+		// Se não sobrou nenhuma anotação, remover o map completo
+		if len(annotations) == 0 {
+			delete(metadata, "annotations")
+		} else {
+			metadata["annotations"] = annotations
+		}
+	}
 
 	obj["metadata"] = metadata
 
