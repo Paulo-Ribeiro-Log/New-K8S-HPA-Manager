@@ -2,36 +2,44 @@
 
 **Estudo base:** [ESTUDO_PREDICAO_NODE_POOL.md](ESTUDO_PREDICAO_NODE_POOL.md)
 **Iniciado:** 21/02/2026
-**Status geral:** 🔴 Não iniciado
+**Status geral:** 🟡 Em andamento — Fase 1 concluída
 
 > **Para novos chats:** leia este arquivo + o estudo base antes de começar.
 > Marque cada item com ✅ quando concluído e anote a data.
 
 ---
 
-## Fase 1 — Backend: Models e Queries
-**Arquivo alvo:** `internal/monitoring/nodepoolpredictions/models.go` + `queries.go` (novos)
+## Fase 1 — Backend: Models e Queries ✅ Concluída em 21/02/2026
+**Arquivos criados:** `internal/monitoring/nodepoolpredictions/models.go` + `queries.go`
 
-- [ ] 1.1 Criar pacote `internal/monitoring/nodepoolpredictions/`
-- [ ] 1.2 Criar `models.go` com structs:
-  - [ ] `NodePoolPredictionRequest`
-  - [ ] `NodePoolPredictionResult` (envelope geral, espelho do `PredictionResult`)
-  - [ ] `NodePoolMetrics` (dados coletados)
-  - [ ] `NodePoolNodeSnapshot` (estado por node)
-  - [ ] `TrendSnapshot` (CPU/mem/pods por node, normalizado)
-  - [ ] `AutoscalerEvent` (eventos do cluster autoscaler)
-  - [ ] `NodePressureInfo` (nodes com condições ativas)
-  - [ ] `NodePoolCostAnalysis` (custo baseado em VM SKU real)
-  - [ ] Reutilizar de `predictions/models.go`: `ConntrackNodeInfo`, `ConntrackAnalysis`, `BinPackingAnalysis`, `HealthScore`, `ScoreBreakdown`, `Prediction`, `Recommendation`, `ActionSummary`
-- [ ] 1.3 Criar `queries.go` com queries Prometheus:
-  - [ ] CPU por node (filtrado por IPs do pool)
-  - [ ] Memória por node
-  - [ ] conntrack por node (entries + limit)
-  - [ ] Disk usage por node
-  - [ ] Pod count por node vs capacity
-  - [ ] PID count por node
-  - [ ] Network rx/tx por node
-  - [ ] Helper para montar regex de IPs do pool
+- [x] 1.1 Criar pacote `internal/monitoring/nodepoolpredictions/`
+- [x] 1.2 Criar `models.go` com structs:
+  - [x] `NodePoolPredictionRequest`
+  - [x] `NodePoolPredictionResult` (envelope geral)
+  - [x] `NodePoolMetrics` (dados coletados)
+  - [x] `NodePoolNodeSnapshot` (estado por node — CPU, mem, pods, conntrack, disk, PID)
+  - [x] `TrendSnapshot` (CPU/mem/pods por node, normalizado por node count)
+  - [x] `AutoscalerEvent` (eventos do cluster autoscaler)
+  - [x] `NodePressureInfo` (nodes com condições ativas)
+  - [x] `NodePoolCostAnalysis` (custo baseado em VM SKU real)
+  - [x] `ConntrackNodeInfo`, `ConntrackPoolAnalysis`, `ConntrackClusterContext` (próprios — pool + cluster)
+  - [x] `BinPackingAnalysis`, `NodePoolCapacityForecast` (capacidade e fragmentação)
+  - [x] `NodePoolHealthScore`, `NodePoolHealthBreakdown` (pesos específicos para pool)
+  - [x] `NodePoolActionSummary`, `NodePoolPrediction`, `NodePoolRecommendation`
+  - [x] `NodePoolRootCauseAnalysis`, `NodePoolExecutiveSummary`
+  - [x] `NodePoolTrends`, `TrendDirection`, `DataSourceInfo`
+- [x] 1.3 Criar `queries.go` com queries Prometheus:
+  - [x] CPU por node — uso % e cores absolutos (filtrado por IPs do pool)
+  - [x] Memória por node — uso %, total, disponível
+  - [x] conntrack por node — entries, limit, %, growth rate, offset (trend), cluster-wide
+  - [x] Disk usage por node — uso %, disponível, read/write rates
+  - [x] Pod count por node vs capacity (com offset para trend)
+  - [x] PID count por node + limite do kernel
+  - [x] Network rx/tx por node (excluindo interfaces internas)
+  - [x] `BuildInstanceRegex()` — monta regex de IPs para node_exporter
+  - [x] `BuildNodeNameRegex()` — monta regex de nomes para kube_*
+  - [x] `DayOffsets()` — retorna map D-3/D-7/D-14
+  - [x] `ConntrackStatusFromPercent()` — classifica ok/warning/critical/emergency
 
 ---
 
@@ -256,7 +264,7 @@ query := fmt.Sprintf(`node_nf_conntrack_entries{instance=~"%s"}`, instances)
 | Data | Fase | O que foi feito | Quem |
 |---|---|---|---|
 | 21/02/2026 | Estudo | Análise completa, decisões de design, documentação | Paulo + Claude |
-| — | — | — | — |
+| 21/02/2026 | Fase 1 | `models.go` (22 structs) + `queries.go` (28 funções) — compila sem erros | Paulo + Claude |
 
 ---
 
