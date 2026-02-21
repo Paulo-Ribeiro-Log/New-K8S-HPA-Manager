@@ -234,6 +234,11 @@ function ResourceEditPanel({ label, cluster, namespaces, initial, editorHeight }
   const [diffFullscreen,   setDiffFullscreen]   = useState(false);
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
 
+  // Error Dialog para exibir erros de apply de forma mais proeminente
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false);
+  const [errorTitle,      setErrorTitle]      = useState("");
+  const [errorMessage,    setErrorMessage]    = useState("");
+
   const isClusterScoped = resourceType ? CLUSTER_SCOPED.includes(resourceType) : false;
   const hasChanges = editorValue !== originalYaml && !!originalYaml;
 
@@ -432,7 +437,16 @@ function ResourceEditPanel({ label, cluster, namespaces, initial, editorHeight }
       initHistory(y);
       setViewMode("editor");
     } catch (err) {
-      toast.error("Falha ao aplicar", { description: err instanceof Error ? err.message : "Erro" });
+      // Exibir erro em modal dedicado ao invés de toast
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const resourceFullName = `${RESOURCE_LABELS[resourceType]} ${namespace ? namespace + "/" : ""}${resourceName}`;
+
+      setErrorTitle(`Falha ao aplicar ${resourceFullName}`);
+      setErrorMessage(errorMsg);
+      setErrorDialogOpen(true);
+
+      // Toast como fallback visual rápido
+      toast.error("Falha ao aplicar recurso", { description: "Verifique os detalhes no modal de erro" });
     } finally {
       setIsApplying(false);
     }
@@ -724,6 +738,81 @@ function ResourceEditPanel({ label, cluster, namespaces, initial, editorHeight }
                 Confirmar e Aplicar
               </Button>
             </ProtectedAction>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Modal de erro (destaque para analistas) ───────── */}
+      <Dialog open={errorDialogOpen} onOpenChange={setErrorDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[85vh] bg-background border-destructive/50 border-2">
+          <DialogHeader className="border-b border-destructive/30 pb-4">
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
+                <AlertCircle className="w-6 h-6 text-destructive" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <DialogTitle className="text-destructive text-lg font-semibold">
+                  {errorTitle}
+                </DialogTitle>
+                <DialogDescription className="text-muted-foreground text-sm mt-1">
+                  Detalhes técnicos do erro abaixo. Verifique conflitos de field managers ou validação de YAML.
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <ScrollArea className="max-h-[60vh] pr-4">
+            <div className="space-y-4">
+              {/* Mensagem de erro formatada */}
+              <div className="bg-destructive/5 border border-destructive/20 rounded-lg p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <TriangleAlert className="w-4 h-4 text-destructive" />
+                  <span className="text-sm font-semibold text-destructive">Erro Detalhado</span>
+                </div>
+                <pre className="text-xs font-mono text-foreground/90 whitespace-pre-wrap break-words leading-relaxed">
+                  {errorMessage}
+                </pre>
+              </div>
+
+              {/* Dicas de resolução (se erro contiver palavras-chave conhecidas) */}
+              {errorMessage.includes("conflicts with") && (
+                <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <AlertCircle className="w-4 h-4 text-blue-400" />
+                    <span className="text-sm font-semibold text-blue-400">Sugestão de Resolução</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Este erro indica conflito de <strong>field manager</strong> (Server-Side Apply).
+                    O recurso foi previamente aplicado com <code className="bg-muted px-1 rounded">kubectl apply</code> (client-side)
+                    e agora está sendo aplicado via SSA com field manager diferente.
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                    <strong>Ação recomendada:</strong> O backend já utiliza <code className="bg-muted px-1 rounded">--force=true</code>.
+                    Se o erro persistir, verifique se há anotações <code className="bg-muted px-1 rounded">kubectl.kubernetes.io/*</code>
+                    que precisam ser removidas manualmente do YAML antes de aplicar.
+                  </p>
+                </div>
+              )}
+
+              {errorMessage.includes("illegal base64") && (
+                <div className="bg-yellow-500/5 border border-yellow-500/20 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <AlertCircle className="w-4 h-4 text-yellow-400" />
+                    <span className="text-sm font-semibold text-yellow-400">Sugestão de Resolução</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Erro de validação de base64 no campo <code className="bg-muted px-1 rounded">data</code> do Secret.
+                    Verifique se os valores não foram editados manualmente ou se há caracteres inválidos (espaços, quebras de linha).
+                  </p>
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+
+          <DialogFooter className="border-t border-border/50 pt-4">
+            <Button variant="outline" onClick={() => setErrorDialogOpen(false)}>
+              Fechar
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
