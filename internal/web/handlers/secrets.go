@@ -355,10 +355,12 @@ func sanitizeSecretYAML(yamlContent, enforceName, enforceNamespace string) (stri
 	delete(metadata, "selfLink")
 
 	// Limpar anotações do kubectl
+	removedAnnotations := []string{}
 	if annotations, ok := metadata["annotations"].(map[string]interface{}); ok {
 		// Remover todas as anotações kubectl.*
 		for key := range annotations {
 			if strings.HasPrefix(key, "kubectl.kubernetes.io/") {
+				removedAnnotations = append(removedAnnotations, key)
 				delete(annotations, key)
 			}
 		}
@@ -368,6 +370,9 @@ func sanitizeSecretYAML(yamlContent, enforceName, enforceNamespace string) (stri
 		} else {
 			metadata["annotations"] = annotations
 		}
+	}
+	if len(removedAnnotations) > 0 {
+		fmt.Printf("[DEBUG] sanitizeSecretYAML: removidas %d annotations kubectl: %v\n", len(removedAnnotations), removedAnnotations)
 	}
 
 	obj["metadata"] = metadata
