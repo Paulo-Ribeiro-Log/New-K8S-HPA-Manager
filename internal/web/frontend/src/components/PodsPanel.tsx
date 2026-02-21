@@ -949,7 +949,21 @@ export const PodsPanel = ({
   );
 
   const rightTitleAction = selectedPod && (
-    <DropdownMenu>
+    <div className="flex items-center gap-2">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={handleViewDescribe}
+        disabled={describeLoading}
+      >
+        {describeLoading ? (
+          <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+        ) : (
+          <FileText className="w-4 h-4 mr-1" />
+        )}
+        Describe
+      </Button>
+      <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon">
           <MoreVertical className="w-4 h-4" />
@@ -1011,6 +1025,7 @@ export const PodsPanel = ({
         </ProtectedAction>
       </DropdownMenuContent>
     </DropdownMenu>
+    </div>
   );
 
   const renderPodList = () => {
@@ -1539,16 +1554,6 @@ export const PodsPanel = ({
 
               {/* Botões de ação na parte inferior */}
               <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleViewDescribe}
-                  disabled={!selectedPod}
-                >
-                  <FileText className="w-4 h-4 mr-1" />
-                  Describe
-                </Button>
-
                 <Button
                   variant="outline"
                   size="sm"

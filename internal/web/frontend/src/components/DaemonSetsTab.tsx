@@ -592,6 +592,21 @@ export const DaemonSetsTab = ({
           <SplitSquareHorizontal className="w-4 h-4" />
         </Button>
       )}
+      {selectedDaemonSet && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleDescribe}
+          disabled={describeLoading}
+        >
+          {describeLoading ? (
+            <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+          ) : (
+            <FileText className="w-4 h-4 mr-1" />
+          )}
+          Describe
+        </Button>
+      )}
       <Button
         variant="outline"
         size="sm"
@@ -806,19 +821,6 @@ export const DaemonSetsTab = ({
 
           {/* Botões de ação */}
           <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleDescribe}
-              disabled={!selectedDaemonSet || describeLoading}
-            >
-              {describeLoading ? (
-                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-              ) : (
-                <FileText className="w-4 h-4 mr-1" />
-              )}
-              Describe
-            </Button>
             <Button
               variant="outline"
               size="sm"
