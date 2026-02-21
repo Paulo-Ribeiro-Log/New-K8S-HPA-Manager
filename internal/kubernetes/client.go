@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -320,28 +321,46 @@ func (c *Client) applyConfigMap(ctx context.Context, yamlContent, fieldManager, 
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("configmap yaml content cannot be empty")
 	}
-	if fieldManager == "" {
-		fieldManager = "web-configmap-editor"
-	}
 
 	payload, namespace, name, err := prepareConfigMapApplyPayload(yamlContent, enforceNamespace, enforceName)
 	if err != nil {
 		return nil, err
 	}
 
-	// force permite assumir ownership de campos gerenciados por outros field managers (ex: Helm)
-	forceFlag := force
-	options := metav1.PatchOptions{
-		FieldManager: fieldManager,
-		Force:        &forceFlag,
-	}
-	if dryRun {
-		options.DryRun = []string{metav1.DryRunAll}
+	var cmObj corev1.ConfigMap
+	if err := json.Unmarshal(payload, &cmObj); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal configmap payload: %w", err)
 	}
 
-	result, err := c.clientset.CoreV1().ConfigMaps(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	// GET + Update em vez de SSA (ApplyPatchType).
+	// O SSA não remove chaves de outros field managers (kubectl-client-side-apply, helm, etc.),
+	// impedindo a deleção de entradas do ConfigMap. O Update substitui o recurso inteiro.
+	current, err := c.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to apply configmap %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		if !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to get configmap %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		}
+		createOptions := metav1.CreateOptions{}
+		if dryRun {
+			createOptions.DryRun = []string{metav1.DryRunAll}
+		}
+		result, err := c.clientset.CoreV1().ConfigMaps(namespace).Create(ctx, &cmObj, createOptions)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create configmap %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		}
+		return result, nil
+	}
+
+	cmObj.ResourceVersion = current.ResourceVersion
+
+	updateOptions := metav1.UpdateOptions{}
+	if dryRun {
+		updateOptions.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.CoreV1().ConfigMaps(namespace).Update(ctx, &cmObj, updateOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update configmap %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
 
 	return result, nil
@@ -841,6 +860,22 @@ func prepareNamespaceApplyPayload(yamlContent, enforceName string) ([]byte, stri
 	delete(metadata, "generation")
 	delete(metadata, "selfLink")
 
+	// Limpar anotações do kubectl para evitar conflitos SSA com field manager
+	if annotations, ok := metadata["annotations"].(map[string]interface{}); ok {
+		// Remover todas as anotações kubectl.*
+		for key := range annotations {
+			if strings.HasPrefix(key, "kubectl.kubernetes.io/") {
+				delete(annotations, key)
+			}
+		}
+		// Se não sobrou nenhuma anotação, remover o map completo
+		if len(annotations) == 0 {
+			delete(metadata, "annotations")
+		} else {
+			metadata["annotations"] = annotations
+		}
+	}
+
 	ns["metadata"] = metadata
 
 	// Remover campo status (read-only, gerenciado pelo servidor)
@@ -1078,34 +1113,48 @@ func (c *Client) applyDeployment(ctx context.Context, yamlContent, fieldManager,
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("deployment yaml content cannot be empty")
 	}
-	if fieldManager == "" {
-		fieldManager = "web-deployment-editor"
-	}
 
 	payload, namespace, name, err := prepareDeploymentApplyPayload(yamlContent, enforceNamespace, enforceName)
 	if err != nil {
 		return nil, err
 	}
 
-	// force permite assumir ownership de campos gerenciados por outros field managers (ex: Helm)
-	forceFlag := force
-	options := metav1.PatchOptions{
-		FieldManager: fieldManager,
-		Force:        &forceFlag,
-	}
-	if dryRun {
-		options.DryRun = []string{metav1.DryRunAll}
-		fmt.Printf("[DEBUG] Applying deployment %s/%s in DRY-RUN mode\n", namespace, name)
-	} else {
-		fmt.Printf("[DEBUG] Applying deployment %s/%s with Force=%v\n", namespace, name, force)
+	var depObj appsv1.Deployment
+	if err := json.Unmarshal(payload, &depObj); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal deployment payload: %w", err)
 	}
 
-	result, err := c.clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	// GET + Update em vez de SSA (ApplyPatchType).
+	// O SSA não remove campos de outros field managers (kubectl-client-side-apply, helm, etc.),
+	// impedindo alterações completas no Deployment. O Update substitui o recurso inteiro.
+	current, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to apply deployment %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		if !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to get deployment %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		}
+		createOptions := metav1.CreateOptions{}
+		if dryRun {
+			createOptions.DryRun = []string{metav1.DryRunAll}
+		}
+		result, err := c.clientset.AppsV1().Deployments(namespace).Create(ctx, &depObj, createOptions)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create deployment %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		}
+		return result, nil
 	}
 
-	fmt.Printf("[DEBUG] Successfully applied deployment %s/%s, resourceVersion: %s\n", namespace, name, result.ResourceVersion)
+	depObj.ResourceVersion = current.ResourceVersion
+
+	updateOptions := metav1.UpdateOptions{}
+	if dryRun {
+		updateOptions.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.AppsV1().Deployments(namespace).Update(ctx, &depObj, updateOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update deployment %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
 	return result, nil
 }
 
@@ -1302,34 +1351,48 @@ func (c *Client) applyDaemonSet(ctx context.Context, yamlContent, fieldManager, 
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("daemonset yaml content cannot be empty")
 	}
-	if fieldManager == "" {
-		fieldManager = "web-daemonset-editor"
-	}
 
 	payload, namespace, name, err := prepareDaemonSetApplyPayload(yamlContent, enforceNamespace, enforceName)
 	if err != nil {
 		return nil, err
 	}
 
-	// force permite assumir ownership de campos gerenciados por outros field managers (ex: Helm)
-	forceFlag := force
-	options := metav1.PatchOptions{
-		FieldManager: fieldManager,
-		Force:        &forceFlag,
-	}
-	if dryRun {
-		options.DryRun = []string{metav1.DryRunAll}
-		fmt.Printf("[DEBUG] Applying daemonset %s/%s in DRY-RUN mode\n", namespace, name)
-	} else {
-		fmt.Printf("[DEBUG] Applying daemonset %s/%s with Force=%v\n", namespace, name, force)
+	var dsObj appsv1.DaemonSet
+	if err := json.Unmarshal(payload, &dsObj); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal daemonset payload: %w", err)
 	}
 
-	result, err := c.clientset.AppsV1().DaemonSets(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	// GET + Update em vez de SSA (ApplyPatchType).
+	// O SSA não remove campos de outros field managers (kubectl-client-side-apply, helm, etc.),
+	// impedindo alterações completas no DaemonSet. O Update substitui o recurso inteiro.
+	current, err := c.clientset.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to apply daemonset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		if !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to get daemonset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		}
+		createOptions := metav1.CreateOptions{}
+		if dryRun {
+			createOptions.DryRun = []string{metav1.DryRunAll}
+		}
+		result, err := c.clientset.AppsV1().DaemonSets(namespace).Create(ctx, &dsObj, createOptions)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create daemonset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		}
+		return result, nil
 	}
 
-	fmt.Printf("[DEBUG] Successfully applied daemonset %s/%s, resourceVersion: %s\n", namespace, name, result.ResourceVersion)
+	dsObj.ResourceVersion = current.ResourceVersion
+
+	updateOptions := metav1.UpdateOptions{}
+	if dryRun {
+		updateOptions.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.AppsV1().DaemonSets(namespace).Update(ctx, &dsObj, updateOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update daemonset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
 	return result, nil
 }
 
@@ -1544,34 +1607,48 @@ func (c *Client) applyStatefulSet(ctx context.Context, yamlContent, fieldManager
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("statefulset yaml content cannot be empty")
 	}
-	if fieldManager == "" {
-		fieldManager = "web-statefulset-editor"
-	}
 
 	payload, namespace, name, err := prepareStatefulSetApplyPayload(yamlContent, enforceNamespace, enforceName)
 	if err != nil {
 		return nil, err
 	}
 
-	// force permite assumir ownership de campos gerenciados por outros field managers (ex: Helm)
-	forceFlag := force
-	options := metav1.PatchOptions{
-		FieldManager: fieldManager,
-		Force:        &forceFlag,
-	}
-	if dryRun {
-		options.DryRun = []string{metav1.DryRunAll}
-		fmt.Printf("[DEBUG] Applying statefulset %s/%s in DRY-RUN mode\n", namespace, name)
-	} else {
-		fmt.Printf("[DEBUG] Applying statefulset %s/%s with Force=%v\n", namespace, name, force)
+	var stsObj appsv1.StatefulSet
+	if err := json.Unmarshal(payload, &stsObj); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal statefulset payload: %w", err)
 	}
 
-	result, err := c.clientset.AppsV1().StatefulSets(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	// GET + Update em vez de SSA (ApplyPatchType).
+	// O SSA não remove campos de outros field managers (kubectl-client-side-apply, helm, etc.),
+	// impedindo alterações completas no StatefulSet. O Update substitui o recurso inteiro.
+	current, err := c.clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to apply statefulset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		if !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to get statefulset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		}
+		createOptions := metav1.CreateOptions{}
+		if dryRun {
+			createOptions.DryRun = []string{metav1.DryRunAll}
+		}
+		result, err := c.clientset.AppsV1().StatefulSets(namespace).Create(ctx, &stsObj, createOptions)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create statefulset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		}
+		return result, nil
 	}
 
-	fmt.Printf("[DEBUG] Successfully applied statefulset %s/%s, resourceVersion: %s\n", namespace, name, result.ResourceVersion)
+	stsObj.ResourceVersion = current.ResourceVersion
+
+	updateOptions := metav1.UpdateOptions{}
+	if dryRun {
+		updateOptions.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.AppsV1().StatefulSets(namespace).Update(ctx, &stsObj, updateOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update statefulset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+	}
+
 	return result, nil
 }
 
@@ -1784,28 +1861,52 @@ func (c *Client) applySecret(ctx context.Context, yamlContent, fieldManager, enf
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("secret yaml content cannot be empty")
 	}
-	if fieldManager == "" {
-		fieldManager = "web-secret-editor"
-	}
 
 	payload, namespace, name, err := prepareSecretApplyPayload(yamlContent, enforceNamespace, enforceName)
 	if err != nil {
 		return nil, err
 	}
 
-	// force permite assumir ownership de campos gerenciados por outros field managers (ex: Helm)
-	forceFlag := force
-	options := metav1.PatchOptions{
-		FieldManager: fieldManager,
-		Force:        &forceFlag,
-	}
-	if dryRun {
-		options.DryRun = []string{metav1.DryRunAll}
+	// Converter payload JSON para struct tipado corev1.Secret.
+	// json.Unmarshal decodifica automaticamente base64→[]byte para o campo Data,
+	// que é o comportamento correto para a API Kubernetes.
+	var secretObj corev1.Secret
+	if err := json.Unmarshal(payload, &secretObj); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal secret payload: %w", err)
 	}
 
-	result, err := c.clientset.CoreV1().Secrets(namespace).Patch(ctx, name, types.ApplyPatchType, payload, options)
+	// GET + Update em vez de SSA (ApplyPatchType).
+	// O SSA não remove chaves que pertencem a outros field managers (kubectl-client-side-apply,
+	// web-resource-editor, helm, etc.), impedindo a deleção de entradas do Secret.
+	// O Update substitui o recurso inteiro, respeitando exatamente o que o usuário editou.
+	current, err := c.clientset.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to apply secret %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		if !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to get secret %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		}
+		// Secret não existe — criar
+		createOptions := metav1.CreateOptions{}
+		if dryRun {
+			createOptions.DryRun = []string{metav1.DryRunAll}
+		}
+		result, err := c.clientset.CoreV1().Secrets(namespace).Create(ctx, &secretObj, createOptions)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create secret %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		}
+		return result, nil
+	}
+
+	// Definir resourceVersion obrigatório para o Update (locking otimista)
+	secretObj.ResourceVersion = current.ResourceVersion
+
+	updateOptions := metav1.UpdateOptions{}
+	if dryRun {
+		updateOptions.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.CoreV1().Secrets(namespace).Update(ctx, &secretObj, updateOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update secret %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
 
 	return result, nil

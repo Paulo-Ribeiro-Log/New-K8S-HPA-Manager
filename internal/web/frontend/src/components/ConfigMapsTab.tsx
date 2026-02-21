@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, MoreVertical, Trash2, SplitSquareHorizontal } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -79,6 +79,11 @@ export const ConfigMapsTab = ({
   const [describeLoading, setDescribeLoading] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Error Dialog para exibir erros de apply de forma mais proeminente
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false);
+  const [errorTitle, setErrorTitle] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
 
   // Undo/Redo history with persistent cache
   const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
@@ -377,6 +382,7 @@ export const ConfigMapsTab = ({
           yaml: editorValue,
           fieldManager: "web-configmap-editor",
           dryRun: false,
+          force: true,
         }
       );
       toast.success("ConfigMap aplicado", {
@@ -386,9 +392,14 @@ export const ConfigMapsTab = ({
       // Recarregar manifest do servidor após aplicar
       await refreshManifest();
     } catch (err) {
-      toast.error("Falha ao aplicar", {
-        description: err instanceof Error ? err.message : "Erro desconhecido",
-      });
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const resourceFullName = `ConfigMap ${selectedConfigMap.namespace}/${selectedConfigMap.name}`;
+
+      setErrorTitle(`Falha ao aplicar ${resourceFullName}`);
+      setErrorMessage(errorMsg);
+      setErrorDialogOpen(true);
+
+      toast.error("Falha ao aplicar ConfigMap", { description: "Verifique os detalhes no modal de erro" });
     } finally {
       setIsApplying(false);
     }
@@ -1330,6 +1341,88 @@ export const ConfigMapsTab = ({
               <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
             )}
           </ScrollArea>
+        </DialogContent>
+      </Dialog>
+
+      {/* Error Dialog - Exibe erros de apply de forma proeminente */}
+      <Dialog open={errorDialogOpen} onOpenChange={setErrorDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[85vh] bg-background border-destructive/50 border-2">
+          <DialogHeader className="border-b border-destructive/30 pb-4">
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
+                <AlertCircle className="w-6 h-6 text-destructive" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <DialogTitle className="text-destructive text-lg font-semibold">
+                  {errorTitle}
+                </DialogTitle>
+                <DialogDescription className="text-muted-foreground text-sm mt-1">
+                  Detalhes técnicos do erro abaixo. Verifique conflitos de field managers ou validação de YAML.
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+          <ScrollArea className="max-h-[60vh] pr-4">
+            <div className="space-y-4">
+              {/* Erro Detalhado */}
+              <div className="bg-destructive/5 border border-destructive/20 rounded-lg p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <TriangleAlert className="w-4 h-4 text-destructive" />
+                  <span className="text-sm font-semibold text-destructive">Erro Detalhado</span>
+                </div>
+                <pre className="text-xs font-mono text-foreground/90 whitespace-pre-wrap break-words leading-relaxed">
+                  {errorMessage}
+                </pre>
+              </div>
+
+              {/* Sugestão de Resolução - Aparece apenas se há conflito de field manager */}
+              {errorMessage.includes("conflicts with") && (
+                <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span className="text-sm font-semibold text-blue-500">Sugestão de Resolução</span>
+                  </div>
+                  <div className="text-xs text-foreground/80 space-y-2">
+                    <p>
+                      Este erro indica conflito de <strong>field manager</strong> (Server-Side Apply). O recurso foi previamente aplicado com <code className="px-1.5 py-0.5 bg-muted rounded text-[11px]">kubectl apply</code> (client-side) e agora está sendo aplicado via SSA com field manager diferente.
+                    </p>
+                    <p className="font-semibold mt-3">Ação recomendada:</p>
+                    <ul className="list-disc list-inside space-y-1 ml-2">
+                      <li>O backend já utiliza <code className="px-1.5 py-0.5 bg-muted rounded text-[11px]">--force=true</code>. Se o erro persistir, verifique se há anotações <code className="px-1.5 py-0.5 bg-muted rounded text-[11px]">kubectl.kubernetes.io/*</code> que precisam ser removidas manualmente do YAML antes de aplicar.</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {/* Sugestão para erros de base64 */}
+              {errorMessage.includes("illegal base64") && (
+                <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <TriangleAlert className="w-4 h-4 text-amber-500" />
+                    <span className="text-sm font-semibold text-amber-500">Dados Base64 Inválidos</span>
+                  </div>
+                  <div className="text-xs text-foreground/80 space-y-2">
+                    <p>
+                      O campo <code className="px-1.5 py-0.5 bg-muted rounded text-[11px]">data</code> do ConfigMap contém valores que não são Base64 válidos.
+                    </p>
+                    <p className="font-semibold mt-3">Ações recomendadas:</p>
+                    <ul className="list-disc list-inside space-y-1 ml-2">
+                      <li>Verifique se os valores em <code className="px-1.5 py-0.5 bg-muted rounded text-[11px]">data</code> estão corretamente codificados em Base64</li>
+                      <li>Use ferramentas online ou comando <code className="px-1.5 py-0.5 bg-muted rounded text-[11px]">echo -n "texto" | base64</code> para gerar valores válidos</li>
+                      <li>Verifique se não há espaços ou quebras de linha indesejadas nos valores Base64</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+          <DialogFooter className="border-t border-border/50 pt-4">
+            <Button variant="outline" onClick={() => setErrorDialogOpen(false)}>
+              Fechar
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </>

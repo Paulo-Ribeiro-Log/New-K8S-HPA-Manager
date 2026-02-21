@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Database, MoreVertical, Trash2, RotateCw, ArrowUpDown, SplitSquareHorizontal } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Database, MoreVertical, Trash2, RotateCw, ArrowUpDown, SplitSquareHorizontal, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 
@@ -101,6 +101,11 @@ export const StatefulSetsTab = ({
   const [scaleModalOpen, setScaleModalOpen] = useState(false);
   const [isScaling, setIsScaling] = useState(false);
   const [scaleReplicas, setScaleReplicas] = useState(1);
+
+  // Error Dialog para exibir erros de apply de forma mais proeminente
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false);
+  const [errorTitle, setErrorTitle] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
 
   // Helper: Detectar statefulset problemático
   const isStatefulSetProblematic = (sts: StatefulSetSummary): boolean => {
@@ -333,7 +338,7 @@ export const StatefulSetsTab = ({
         selectedStatefulSet.cluster,
         selectedStatefulSet.namespace,
         selectedStatefulSet.name,
-        { yaml: editorValue, dryRun: false }
+        { yaml: editorValue, dryRun: false, force: true }
       );
       toast.success("StatefulSet aplicado com sucesso");
       setApplyConfirmOpen(false);
@@ -341,9 +346,14 @@ export const StatefulSetsTab = ({
       addToHistory(editorValue);
       refetch();
     } catch (err) {
-      toast.error("Erro ao aplicar StatefulSet", {
-        description: err instanceof Error ? err.message : "Erro desconhecido",
-      });
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const resourceFullName = `StatefulSet ${selectedNamespace}/${selectedStatefulSet.name}`;
+
+      setErrorTitle(`Falha ao aplicar ${resourceFullName}`);
+      setErrorMessage(errorMsg);
+      setErrorDialogOpen(true);
+
+      toast.error("Falha ao aplicar StatefulSet", { description: "Verifique os detalhes no modal de erro" });
     } finally {
       setIsApplying(false);
     }
@@ -1248,6 +1258,69 @@ export const StatefulSetsTab = ({
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* ── Modal de erro (destaque para analistas) ───────── */}
+      <Dialog open={errorDialogOpen} onOpenChange={setErrorDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[85vh] bg-background border-destructive/50 border-2">
+          <DialogHeader className="border-b border-destructive/30 pb-4">
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
+                <AlertCircle className="w-6 h-6 text-destructive" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <DialogTitle className="text-destructive text-lg font-semibold">
+                  {errorTitle}
+                </DialogTitle>
+                <DialogDescription className="text-muted-foreground text-sm mt-1">
+                  Detalhes técnicos do erro abaixo. Verifique conflitos de field managers ou validação de YAML.
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <ScrollArea className="max-h-[60vh] pr-4">
+            <div className="space-y-4">
+              {/* Mensagem de erro formatada */}
+              <div className="bg-destructive/5 border border-destructive/20 rounded-lg p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <TriangleAlert className="w-4 h-4 text-destructive" />
+                  <span className="text-sm font-semibold text-destructive">Erro Detalhado</span>
+                </div>
+                <pre className="text-xs font-mono text-foreground/90 whitespace-pre-wrap break-words leading-relaxed">
+                  {errorMessage}
+                </pre>
+              </div>
+
+              {/* Dicas de resolução (se erro contiver palavras-chave conhecidas) */}
+              {errorMessage.includes("conflicts with") && (
+                <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <AlertCircle className="w-4 h-4 text-blue-400" />
+                    <span className="text-sm font-semibold text-blue-400">Sugestão de Resolução</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Este erro indica conflito de <strong>field manager</strong> (Server-Side Apply).
+                    O recurso foi previamente aplicado com <code className="bg-muted px-1 rounded">kubectl apply</code> (client-side)
+                    e agora está sendo aplicado via SSA com field manager diferente.
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                    <strong>Ação recomendada:</strong> O backend já utiliza <code className="bg-muted px-1 rounded">--force=true</code>.
+                    Se o erro persistir, verifique se há anotações <code className="bg-muted px-1 rounded">kubectl.kubernetes.io/*</code>
+                    que precisam ser removidas manualmente do YAML antes de aplicar.
+                  </p>
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+
+          <DialogFooter className="border-t border-border/50 pt-4">
+            <Button variant="outline" onClick={() => setErrorDialogOpen(false)}>
+              Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
     </>
   );
 };

@@ -300,6 +300,7 @@ export const PodsPanel = ({
           yaml: editedYaml,
           fieldManager: "web-pod-editor",
           dryRun: false,
+          force: true,
         }
       );
       toast.success("✅ Pod atualizado com sucesso!");
