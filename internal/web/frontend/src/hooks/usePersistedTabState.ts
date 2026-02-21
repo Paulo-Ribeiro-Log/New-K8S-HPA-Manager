@@ -21,16 +21,25 @@ export function usePersistedTabState<T>(
   initialValue: T
 ): [T, (value: T | ((prev: T) => T)) => void] {
   const { updateActiveTabState, getActiveTab } = useTabManager();
+
+  // Refs estáveis para acessar as funções do contexto sem adicioná-las às deps
+  // (evita loop infinito: updateActiveTabState → dispatch → state.tabs muda →
+  //  nova ref de getActiveTab → efeito re-dispara → updateActiveTabState → ...)
+  const updateActiveTabStateRef = useRef(updateActiveTabState);
+  const getActiveTabRef = useRef(getActiveTab);
+  useEffect(() => { updateActiveTabStateRef.current = updateActiveTabState; }, [updateActiveTabState]);
+  useEffect(() => { getActiveTabRef.current = getActiveTab; }, [getActiveTab]);
+
   const isRestoringRef = useRef(false);
 
   // Tentar restaurar valor salvo do TabContext
   const getSavedValue = useCallback((): T => {
-    const activeTab = getActiveTab();
+    const activeTab = getActiveTabRef.current();
     if (activeTab?.pageState?.workloadStates?.[namespace]?.[key] !== undefined) {
       return activeTab.pageState.workloadStates[namespace][key] as T;
     }
     return initialValue;
-  }, [getActiveTab, namespace, key, initialValue]);
+  }, [namespace, key, initialValue]);
 
   // Estado local (inicializado com valor salvo ou inicial)
   const [state, setState] = useState<T>(getSavedValue);
@@ -56,7 +65,7 @@ export function usePersistedTabState<T>(
     // Não persistir durante restauração (evita sobrescrever com valor antigo)
     if (isRestoringRef.current) return;
 
-    const activeTab = getActiveTab();
+    const activeTab = getActiveTabRef.current();
     const currentWorkloadStates = activeTab?.pageState?.workloadStates || {};
 
     // Atualizar apenas o namespace específico
@@ -68,10 +77,10 @@ export function usePersistedTabState<T>(
       },
     };
 
-    updateActiveTabState({
+    updateActiveTabStateRef.current({
       workloadStates: updatedWorkloadStates,
     });
-  }, [state, namespace, key, updateActiveTabState, getActiveTab]);
+  }, [state, namespace, key]); // ✅ SEM updateActiveTabState/getActiveTab nas deps
 
   return [state, setState];
 }
