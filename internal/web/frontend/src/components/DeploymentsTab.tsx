@@ -2305,6 +2305,21 @@ export const DeploymentsTab = ({
           />
         </>
       )}
+      {selectedDeployment && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleViewDescribe}
+          disabled={describeLoading}
+        >
+          {describeLoading ? (
+            <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+          ) : (
+            <FileText className="w-4 h-4 mr-1" />
+          )}
+          Describe
+        </Button>
+      )}
       <Button
         variant="outline"
         size="sm"
@@ -2713,15 +2728,6 @@ export const DeploymentsTab = ({
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleViewDescribe}
-              disabled={!selectedDeployment}
-            >
-              <FileText className="w-4 h-4 mr-1" />
-              Describe
-            </Button>
             <Button
               variant="outline"
               size="sm"

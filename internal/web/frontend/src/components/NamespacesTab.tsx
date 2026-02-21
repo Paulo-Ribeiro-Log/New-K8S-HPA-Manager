@@ -1296,15 +1296,6 @@ export const NamespacesTab = ({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleDescribe}
-                disabled={!selectedNamespace}
-              >
-                <FileText className="w-4 h-4 mr-1" />
-                Describe
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
                 onClick={() => handleShowDiffModal(false)}
                 disabled={!selectedNamespace || !hasChanges || isDiffLoading}
               >
@@ -1683,6 +1674,21 @@ export const NamespacesTab = ({
           onClick={() => onOpenCompare({ type: "namespace", namespace: selectedNamespace.name, name: selectedNamespace.name })}
         >
           <SplitSquareHorizontal className="w-4 h-4" />
+        </Button>
+      )}
+      {selectedNamespace && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleDescribe}
+          disabled={describeLoading}
+        >
+          {describeLoading ? (
+            <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+          ) : (
+            <FileText className="w-4 h-4 mr-1" />
+          )}
+          Describe
         </Button>
       )}
       <ProtectedAction>
