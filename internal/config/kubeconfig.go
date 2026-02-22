@@ -84,6 +84,13 @@ func (k *KubeConfigManager) GetK8sClient(clusterName string) (*kubeclient.Client
 		client.SetHistoryTracker(k.historyTracker)
 	}
 
+	// Configurar Metrics Client (para GetNodeRawMetrics, GetNodesWithMetrics, etc.)
+	if metricsClientIface, metricsErr := k.GetMetricsClient(clusterName); metricsErr == nil {
+		if mc, ok := metricsClientIface.(*metricsclientset.Clientset); ok {
+			client.SetMetricsClient(mc)
+		}
+	}
+
 	return client, nil
 }
 

@@ -2384,6 +2384,52 @@ class APIClient {
   async getPlaywrightStatus(): Promise<PlaywrightStatusResponse> {
     return this.request("/servicenow/playwright-status");
   }
+
+  // ==================== NodePool Predictive Analysis ====================
+
+  /**
+   * Analyze a node pool with predictive AI
+   * POST /api/v1/nodepoolpredictions/analyze
+   */
+  async analyzeNodePool(cluster: string, nodepool: string): Promise<any> {
+    return this.request("/nodepoolpredictions/analyze", {
+      method: "POST",
+      body: JSON.stringify({ cluster, nodepool_name: nodepool }),
+    });
+  }
+
+  /**
+   * Get node pool prediction history
+   * GET /api/v1/nodepoolpredictions/history
+   */
+  async getNodePoolPredictionHistory(filters?: {
+    cluster?: string;
+    nodepool?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<any> {
+    const params = new URLSearchParams();
+    if (filters?.cluster) params.set("cluster", filters.cluster);
+    if (filters?.nodepool) params.set("nodepool", filters.nodepool);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    if (filters?.offset) params.set("offset", String(filters.offset));
+    const qs = params.toString();
+    return this.request(`/nodepoolpredictions/history${qs ? `?${qs}` : ""}`);
+  }
+
+  /**
+   * Download node pool prediction markdown report
+   * GET /api/v1/nodepoolpredictions/report/:id/markdown
+   */
+  async getNodePoolPredictionReport(id: string): Promise<string> {
+    const response = await fetch(`/api/v1/nodepoolpredictions/report/${id}/markdown`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
+      },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.text();
+  }
 }
 
 // Singleton instance

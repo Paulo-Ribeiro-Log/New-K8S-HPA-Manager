@@ -11,6 +11,12 @@ type NodePoolPredictionRequest struct {
 	Cluster      string `json:"cluster" binding:"required"`
 	NodePoolName string `json:"nodepool_name" binding:"required"`
 	UserEmail    string `json:"user_email,omitempty"`
+
+	// Campos internos — preenchidos pelo handler a partir do clusters-config.json.
+	// Não são obrigatórios no JSON do frontend; o handler injeta antes de repassar ao collector.
+	ResourceGroup string `json:"resource_group,omitempty"` // RG real do cluster AKS (não o MC_* de infra)
+	Subscription  string `json:"subscription,omitempty"`   // Subscription ID do cluster AKS
+	AzureCluster  string `json:"azure_cluster,omitempty"`  // Nome do cluster sem sufixo -admin
 }
 
 // NodePoolPredictionResult é o resultado completo da análise
@@ -29,11 +35,12 @@ type NodePoolPredictionResult struct {
 	ActionSummary NodePoolActionSummary `json:"action_summary"`
 
 	// Análises
-	HealthScore       NodePoolHealthScore       `json:"health_score"`
+	HealthScore       NodePoolHealthScore         `json:"health_score"`
+	Trends            NodePoolTrends              `json:"trends"`
 	Predictions       NodePoolPredictionsAnalysis `json:"predictions"`
-	RootCauseAnalysis NodePoolRootCauseAnalysis `json:"root_cause_analysis"`
-	ExecutiveSummary  NodePoolExecutiveSummary  `json:"executive_summary"`
-	Recommendations   []NodePoolRecommendation  `json:"recommendations"`
+	RootCauseAnalysis NodePoolRootCauseAnalysis   `json:"root_cause_analysis"`
+	ExecutiveSummary  NodePoolExecutiveSummary    `json:"executive_summary"`
+	Recommendations   []NodePoolRecommendation    `json:"recommendations"`
 
 	// Análise de custo (baseada em VM SKU real — mais precisa que deployment)
 	CostAnalysis *NodePoolCostAnalysis `json:"cost_analysis,omitempty"`
@@ -47,7 +54,8 @@ type NodePoolPredictionResult struct {
 type NodePoolMetrics struct {
 	// Identificação
 	NodePoolName string `json:"nodepool_name"`
-	Cluster      string `json:"cluster"`
+	Cluster      string `json:"cluster"`       // Nome do contexto kubeconfig (pode ter -admin)
+	AzureCluster string `json:"azure_cluster"` // Nome real do cluster AKS no Azure (sem -admin)
 	VMSize       string `json:"vm_size"`
 
 	// Configuração do pool (via Azure API)
@@ -111,6 +119,12 @@ type NodePoolNodeSnapshot struct {
 	// Sistema
 	PIDCount int `json:"pid_count"` // 0 se indisponível
 
+	// Resource allocation (requests somados dos pods no node — sempre via K8s API)
+	CPURequestedPercent float64 `json:"cpu_requested_percent"` // requests.cpu / alocável * 100 (pode ultrapassar 100)
+	MemRequestedPercent float64 `json:"mem_requested_percent"` // requests.memory / alocável * 100 (pode ultrapassar 100)
+	CPURequestedCores   float64 `json:"cpu_requested_cores"`   // soma de requests.cpu em cores
+	MemRequestedGB      float64 `json:"mem_requested_gb"`      // soma de requests.memory em GB
+
 	// Estado
 	IsUnschedulable  bool     `json:"is_unschedulable"`   // node está cordoned
 	ActiveConditions []string `json:"active_conditions"`  // ex: ["MemoryPressure", "DiskPressure"]
@@ -168,6 +182,11 @@ type ConntrackPoolAnalysis struct {
 	NodesWarning  int                 `json:"nodes_warning"`   // nodes entre 70-85%
 	NodesCritical int                 `json:"nodes_critical"`  // nodes acima de 85%
 
+	// Taxa de crescimento média de conntrack por hora (entries/hora somado de todos os nodes do pool).
+	// Calculado via rate(node_nf_conntrack_entries[10m]) * 60 * 60.
+	// Útil para estimar quando o pool vai atingir o limite de conntrack.
+	AvgGrowthRatePerH float64 `json:"avg_growth_rate_per_h"` // entradas/hora (taxa de crescimento do pool)
+
 	HasSufficientData bool   `json:"has_sufficient_data"` // false se node_exporter indisponível
 	MetricSource      string `json:"metric_source"`       // "node_exporter" ou "unavailable"
 }
@@ -218,8 +237,8 @@ type NodePressureInfo struct {
 // BinPackingAnalysis avalia eficiência de empacotamento dos pods nos nodes
 type BinPackingAnalysis struct {
 	// Eficiência atual (% de recursos realmente usados vs capacidade total do pool)
-	CPUEfficiency    float64 `json:"cpu_efficiency_percent"`
-	MemEfficiency    float64 `json:"mem_efficiency_percent"`
+	CPUEfficiency    float64 `json:"cpu_efficiency"`
+	MemEfficiency    float64 `json:"mem_efficiency"`
 	PodEfficiency    float64 `json:"pod_efficiency_percent"`
 
 	// Nível de fragmentação
