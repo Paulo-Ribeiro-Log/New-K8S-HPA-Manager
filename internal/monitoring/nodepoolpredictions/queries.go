@@ -22,12 +22,16 @@ func NewNodePoolQueries() *NodePoolQueries {
 
 // BuildInstanceRegex monta uma regex OR para filtrar node_exporter por IPs do pool.
 // Entrada: []string{"10.0.0.1:9100", "10.0.0.2:9100"}
-// Saída: "10.0.0.1:9100|10.0.0.2:9100"
+// Saída: "10\\.0\\.0\\.1:9100|10\\.0\\.0\\.2:9100"
+//
+// IMPORTANTE: PromQL string literals aceitam apenas \\ como backslash literal.
+// "\." é sequência inválida em PromQL → usar "\\." para que o regex veja "\.".
 func BuildInstanceRegex(instances []string) string {
-	// Escapar pontos para uso em regex Prometheus
 	escaped := make([]string, len(instances))
 	for i, inst := range instances {
-		escaped[i] = strings.ReplaceAll(inst, ".", "\\.")
+		// Substituir "." por "\\." para que PromQL interprete como dot literal no regex.
+		// Go string `"\\\\."` = valor `\\.`; PromQL processa `\\` → `\`, então regex vê `\.`.
+		escaped[i] = strings.ReplaceAll(inst, ".", `\\.`)
 	}
 	return strings.Join(escaped, "|")
 }

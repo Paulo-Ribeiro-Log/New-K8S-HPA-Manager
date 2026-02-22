@@ -225,6 +225,28 @@ func (c *Client) enrichNodeWithMetrics(ctx context.Context, nodeInfo *models.Nod
 	return nil
 }
 
+// GetNodeRawMetrics retorna uso bruto de CPU (milicores) e memória (bytes) via Metrics Server.
+// Retorna (0, 0, error) se o Metrics Server não estiver disponível.
+func (c *Client) GetNodeRawMetrics(ctx context.Context, nodeName string) (cpuMillis int64, memBytes int64, err error) {
+	if c.metricsClient == nil {
+		return 0, 0, fmt.Errorf("metrics client not initialized")
+	}
+
+	nodeMetrics, err := c.metricsClient.MetricsV1beta1().NodeMetricses().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return 0, 0, fmt.Errorf("metrics server unavailable for node %s: %w", nodeName, err)
+	}
+
+	if cpu, ok := nodeMetrics.Usage[corev1.ResourceCPU]; ok {
+		cpuMillis = cpu.MilliValue()
+	}
+	if mem, ok := nodeMetrics.Usage[corev1.ResourceMemory]; ok {
+		memBytes = mem.Value()
+	}
+
+	return cpuMillis, memBytes, nil
+}
+
 // enrichNodeWithPodCount conta pods rodando no node
 func (c *Client) enrichNodeWithPodCount(ctx context.Context, nodeInfo *models.NodeInfo, nodeName string) error {
 	pods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
