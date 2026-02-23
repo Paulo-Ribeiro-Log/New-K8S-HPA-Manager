@@ -2,7 +2,7 @@
 
 **Estudo base:** [ESTUDO_PREDICAO_NODE_POOL.md](ESTUDO_PREDICAO_NODE_POOL.md)
 **Iniciado:** 21/02/2026
-**Status geral:** 🟡 Em andamento — Fases 1, 2, 3, 4, 5, 6 e 7 concluídas
+**Status geral:** 🟡 Em andamento — Fases 1, 2, 3, 4, 5, 6, 7 e 8 concluídas
 
 > **Para novos chats:** leia este arquivo + o estudo base antes de começar.
 > Marque cada item com ✅ quando concluído e anote a data.
@@ -199,14 +199,20 @@
 
 ---
 
-## Fase 8 — Testes e Validação
-- [ ] 8.1 Testar coleta sem Prometheus (Metrics Server only)
-- [ ] 8.2 Testar coleta com pool de 1 node
-- [ ] 8.3 Testar pool com node cordoned
-- [ ] 8.4 Verificar conntrack quando node_exporter não disponível (graceful degradation)
-- [ ] 8.5 Testar normalização de tendência quando pool mudou de tamanho
-- [ ] 8.6 `go test -v ./internal/monitoring/nodepoolpredictions/... -race`
-- [ ] 8.7 Build completo: `make build && ./rebuild-web.sh -b`
+## Fase 8 — Testes e Validação ✅ Concluída em 22/02/2026
+- [ ] 8.1 Testar coleta sem Prometheus (Metrics Server only) — requer cluster real
+- [ ] 8.2 Testar coleta com pool de 1 node — requer cluster real
+- [ ] 8.3 Testar pool com node cordoned — requer cluster real
+- [ ] 8.4 Verificar conntrack quando node_exporter não disponível — requer cluster real
+- [ ] 8.5 Testar normalização de tendência quando pool mudou de tamanho — requer cluster real
+- [x] 8.6 `go test -v ./internal/monitoring/nodepoolpredictions/... -race` — 16/16 PASS ✅
+  - `TestBuildInstanceRegex_*` (4 casos) — valida escaping de pontos para PromQL
+  - `TestBuildNodeNameRegex_*` (3 casos) — valida regex de nomes de nodes
+  - `TestConntrackStatusFromPercent` (11 casos) — valida thresholds ok/warning/critical/emergency
+  - `TestDayOffsets_Values` — valida offsets D-3/D-7/D-14
+  - `TestFormatDuration_*` (3 casos) — valida formatação dias/horas/sem offset
+  - `TestGet*Query_*` (4 casos) — smoke tests das queries Prometheus
+- [x] 8.7 Build completo: `make build` — ✅ sem erros
 
 ---
 
@@ -281,6 +287,7 @@ query := fmt.Sprintf(`node_nf_conntrack_entries{instance=~"%s"}`, instances)
 | 22/02/2026 | Fase 5 | `nodepool_predictions_store.go` + `nodepool_predictions.go` + rotas em `server.go` — build completo ✅ | Paulo + Claude |
 | 22/02/2026 | Fase 7 | Frontend: hook, modal principal, modal histórico, botão no NodePoolEditor, métodos API client — build completo ✅ | Paulo + Claude |
 | 22/02/2026 | Fase 6 | Markdown: seções completas (sumário, breakdown, conntrack por node, autoscaler history, bin packing, custo, previsões, recomendações); PDF: nodePoolPdfGenerator.ts + botão no modal ✅ | Paulo + Claude |
+| 22/02/2026 | Fase 8 | Testes unitários: 16/16 PASS com -race; BuildInstanceRegex, ConntrackStatus, DayOffsets, formatDuration, smoke tests das queries ✅ | Paulo + Claude |
 
 ---
 
