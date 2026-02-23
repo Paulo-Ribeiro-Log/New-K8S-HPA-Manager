@@ -521,6 +521,43 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
       - Comandos de investigação (kubectl get configmap/secret/service, nslookup, nc)
       - Evita workarounds temporários (restart sem investigar causa)
   - **Documentação**: [PLANO_AI_DIAGNOSTICS.md](PLANO_AI_DIAGNOSTICS.md) | [PROGRESSO_AI_DIAGNOSTICS.md](PROGRESSO_AI_DIAGNOSTICS.md)
+✅ **Análise Preditiva de Node Pools (v1.3.20 - 22/02/2026)** - Sistema completo de análise preditiva para Node Pools AKS
+  - **Status**: ✅ Backend 100% | ✅ Frontend 100% | ✅ Relatórios PDF+MD 100% | ✅ Testes 100%
+  - **Fases Concluídas**: 1 (Models/Queries) + 2 (Collector) + 3 (Analyzer IA) + 4 (Cost) + 5 (API) + 6 (Relatórios) + 7 (Frontend) + 8 (Testes)
+  - **Funcionalidades**:
+    - Health Score 0-100 com 5 componentes ponderados (NodeAvailability 25%, ResourceHeadroom 30%, PodDensity 20%, ConntrackSafety 15%, AutoscalerHealth 10%)
+    - Coleta de métricas: CPU/mem/disco por node via Prometheus + node_exporter, conntrack por node, pods density
+    - Tendências normalizadas por node: D-0/D-3/D-7/D-14 (comparabilidade mesmo quando pool escala)
+    - conntrack: análise crítica por node + aggregate do pool + taxa de crescimento (entries/hora)
+    - Autoscaler: histórico de eventos (ScaleUp/ScaleDown/Failed) via K8s Events API
+    - Bin Packing: eficiência CPU/mem, fragmentação, candidatos scale-in
+    - Análise de Custo Azure: custo atual/máx em USD+BRL, idle waste, right-sizing P95, economia mensal/anual
+    - Previsões IA (curto/médio/longo prazo) com confiança e severidade via Ollama/Claude/Gemini/OpenAI
+    - Causa Raiz com certeza e remediação
+    - Relatório Markdown completo (12 seções) + PDF (jsPDF com logo, footer em todas as páginas)
+    - Histórico persistente SQLite (`./build/nodepool_predictions.db`) com filtros
+    - Fix crítico Azure: enriquecimento do resource group via clusters-config.json (não MC_* de infra)
+    - Fix PromQL: `BuildInstanceRegex()` usa `\\.` (raw string) para escaping correto de IPs
+  - **Backend** (`internal/monitoring/nodepoolpredictions/`):
+    - `models.go` — 22 structs (Request, Result, Metrics, NodeSnapshot, Trends, Predictions, HealthScore, BinPacking, Cost, etc)
+    - `queries.go` — 28 funções Prometheus (CPU, mem, conntrack, disk, pods, PID, rede, autoscaler) + testes
+    - `collector.go` — coleta paralela: K8s API + Prometheus + Azure CLI (`az aks nodepool show`)
+    - `analyzer.go` — Health Score, trends, prompt IA especializado, enrichment de timestamps
+    - `cost_analyzer.go` — custo real por VM SKU, idle waste, right-sizing P95, cotação USD/BRL automática
+  - **Storage**: `internal/storage/nodepool_predictions_store.go` — SQLite separado
+  - **Handler**: `internal/web/handlers/nodepool_predictions.go` — 3 endpoints REST + markdown report (12 seções)
+  - **Frontend**:
+    - `NodePoolPredictionModal.tsx` — modal completo com accordion de seções, conntrack table, bin packing, custo, IA
+    - `NodePoolPredictionHistoryModal.tsx` — histórico com filtros de cluster/pool/data
+    - `useNodePoolPredictions.ts` — hooks React Query (mutation analyze + query history)
+    - `nodePoolPdfGenerator.ts` — exportação PDF com jsPDF+autotable (9 seções, footer em todas as páginas)
+    - `NodePoolEditor.tsx` — botão "Análise Preditiva" integrado com gradiente azul→roxo
+  - **API REST**:
+    - `POST /api/v1/nodepoolpredictions/analyze` — inicia análise (enriquece Azure config automaticamente)
+    - `GET  /api/v1/nodepoolpredictions/history` — histórico com filtros
+    - `GET  /api/v1/nodepoolpredictions/report/:id/markdown` — exportar relatório MD
+  - **Testes**: `queries_test.go` — 16 casos PASS com -race (BuildInstanceRegex, ConntrackStatus, DayOffsets, queries smoke)
+  - **Documentação**: [CHECKLIST_PREDICAO_NODE_POOL.md](CHECKLIST_PREDICAO_NODE_POOL.md)
 ✅ **Análise Preditiva (v1.3.8+ - Produção desde 04/01/2026)** - Sistema completo de análise preditiva de deployments
 ✅ **Health Checking Aprimorado (v1.3.9)** - Melhorias de precisão, métricas e resiliência
   - Seletores de pods agora usam `LabelSelectorAsSelector`, respeitando `matchLabels` e `matchExpressions`
@@ -2040,6 +2077,40 @@ make release                     # Gera binários em build/release/
 ---
 
 ## 📝 Histórico de Sessões Recentes
+
+### Sessão 22/02/2026 - Análise Preditiva de Node Pools (Todas as Fases)
+**Contexto**: Implementação completa do sistema de análise preditiva para Node Pools AKS — Fases 1 a 8
+**Alterações**:
+- **Backend**:
+  - `internal/monitoring/nodepoolpredictions/models.go` — 22 structs (enriquecido com ResourceGroup/Subscription/AzureCluster no Request; fix JSON tags BinPacking)
+  - `internal/monitoring/nodepoolpredictions/queries.go` — 28 funções Prometheus; fix `BuildInstanceRegex` (`\.` → `\\.` para PromQL válido)
+  - `internal/monitoring/nodepoolpredictions/collector.go` — coleta paralela: K8s API + Prometheus + Azure CLI; graceful degradation; resource group via clusters-config.json
+  - `internal/monitoring/nodepoolpredictions/analyzer.go` — Health Score (5 pesos), trends, prompt IA com AzureCluster sem -admin, enrichment de timestamps
+  - `internal/monitoring/nodepoolpredictions/cost_analyzer.go` — custo Azure pay-as-you-go, cotação USD/BRL automática, idle waste, right-sizing P95
+  - `internal/storage/nodepool_predictions_store.go` — SQLite `nodepool_predictions.db`
+  - `internal/web/handlers/nodepool_predictions.go` — 3 endpoints REST + markdown report (12 seções completas + fix ScaleInCandidates + conntrack por node + autoscaler events)
+  - Handler enriquece request com `findClusterInConfig()` antes de chamar analyzer
+
+- **Frontend**:
+  - `NodePoolPredictionModal.tsx` — modal completo: ActionSummary, HealthScore, conntrack table, trends, autoscaler, bin packing, custo, previsões IA, recomendações, botões Exportar PDF + Exportar MD
+  - `NodePoolPredictionHistoryModal.tsx` — histórico com filtros
+  - `useNodePoolPredictions.ts` — hooks React Query
+  - `nodePoolPdfGenerator.ts` — PDF com jsPDF+autotable (logo, 9 seções, footer em todas as páginas)
+  - `NodePoolEditor.tsx` — botão "Análise Preditiva" integrado
+
+- **Testes**:
+  - `queries_test.go` — 16 casos PASS com -race; cobre BuildInstanceRegex, ConntrackStatus, DayOffsets, formatDuration, smoke tests das queries
+
+**Bugs Corrigidos**:
+- `BuildInstanceRegex`: `"\\."` → `` `\\.` `` (raw string) — PromQL não aceita `\.` como escape válido
+- Azure min/max N/A: handler usa `findClusterInConfig()` para RG correto (não MC_* de infra do providerID)
+- `bp.ScaleInSafe` (bool) → `bp.ScaleInCandidates` (int) no markdown e modal
+- Sumário Executivo movido para topo do relatório Markdown
+- AI prompt usa `AzureCluster` (sem -admin) + instrução explícita "SEM sufixo -admin"
+
+**Commits**: b37fa6e (sistema completo) + d93134f (Fase 6 markdown) + 6b1678b (Fase 8 testes)
+
+---
 
 ### Sessão 11/02/2026 - Visualização Completa de Nodes do Node Pool (Refatoração com Tabs)
 **Contexto**: Implementação de sistema completo para visualizar nodes de um node pool com métricas detalhadas, integrado como TAB no painel de visualizações
