@@ -12,7 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { NodePool, NodeInfo } from "@/lib/api/types";
-import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Copy } from "lucide-react";
+import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Copy, TrendingUp, History } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
@@ -23,6 +23,9 @@ import { useNodePoolDiskMetrics } from "@/hooks/useNodePoolDiskMetrics";
 import { useNodes, useNodeDetails } from "@/hooks/useNodes";
 import NodeDetailsModal from "./NodeDetailsModal";
 import { ProtectedAction } from "@/components/rbac";
+import { NodePoolPredictionModal } from "./NodePoolPredictionModal";
+import { NodePoolPredictionHistoryModal } from "./NodePoolPredictionHistoryModal";
+import { useAnalyzeNodePool } from "@/hooks/useNodePoolPredictions";
 
 interface NodePoolEditorProps {
   nodePool: NodePool | null;
@@ -70,6 +73,11 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
 
   // Disk details modal state
   const [showDiskDetailsModal, setShowDiskDetailsModal] = useState(false);
+
+  // Predictive Analysis
+  const { analyze: analyzeNodePool, loading: predictionLoading, result: predictionResult } = useAnalyzeNodePool();
+  const [predictionModalOpen, setPredictionModalOpen] = useState(false);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
 
   // Nodes states
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
@@ -337,6 +345,13 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
     }
   };
 
+  // Handler: Predictive Analysis
+  const handlePredictiveAnalysis = async () => {
+    if (!nodePool) return;
+    setPredictionModalOpen(true);
+    await analyzeNodePool(clusterWithAdmin, nodePool.name);
+  };
+
   // Handlers for nodes table
   const handleViewNodeDetails = (nodeName: string) => {
     setSelectedNode(nodeName);
@@ -514,6 +529,36 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             </Popover>
           )}
         </div>
+      </div>
+
+      {/* Predictive Analysis buttons */}
+      <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          onClick={handlePredictiveAnalysis}
+          disabled={predictionLoading}
+          className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700"
+        >
+          {predictionLoading ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              Analisando...
+            </>
+          ) : (
+            <>
+              <TrendingUp className="w-4 h-4 mr-2" />
+              Análise Preditiva
+            </>
+          )}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setHistoryModalOpen(true)}
+        >
+          <History className="w-4 h-4 mr-2" />
+          Histórico de Análises
+        </Button>
       </div>
 
       <Separator />
@@ -1115,6 +1160,27 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         onOpenChange={handleCloseNodeModal}
         nodeDetails={nodeDetails}
         loading={loadingNodeDetails}
+      />
+
+      {/* NodePool Prediction Modal */}
+      <NodePoolPredictionModal
+        open={predictionModalOpen}
+        onOpenChange={setPredictionModalOpen}
+        loading={predictionLoading}
+        result={predictionResult}
+        nodepoolName={nodePool.name}
+        onShowHistory={() => {
+          setPredictionModalOpen(false);
+          setHistoryModalOpen(true);
+        }}
+      />
+
+      {/* NodePool Prediction History Modal */}
+      <NodePoolPredictionHistoryModal
+        open={historyModalOpen}
+        onOpenChange={setHistoryModalOpen}
+        cluster={clusterWithAdmin}
+        nodepool={nodePool.name}
       />
     </div>
   );
