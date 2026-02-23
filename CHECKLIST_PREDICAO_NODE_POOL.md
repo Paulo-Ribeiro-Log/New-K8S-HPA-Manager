@@ -2,7 +2,7 @@
 
 **Estudo base:** [ESTUDO_PREDICAO_NODE_POOL.md](ESTUDO_PREDICAO_NODE_POOL.md)
 **Iniciado:** 21/02/2026
-**Status geral:** 🟡 Em andamento — Fases 1, 2, 3, 4, 5 e 7 concluídas
+**Status geral:** 🟡 Em andamento — Fases 1, 2, 3, 4, 5, 6 e 7 concluídas
 
 > **Para novos chats:** leia este arquivo + o estudo base antes de começar.
 > Marque cada item com ✅ quando concluído e anote a data.
@@ -139,19 +139,28 @@
 
 ---
 
-## Fase 6 — Relatórios (Markdown + PDF)
-**Arquivo alvo:** `internal/web/handlers/nodepool_predictions.go` + `src/lib/reportGenerator.ts`
+## Fase 6 — Relatórios (Markdown + PDF) ✅ Concluída em 22/02/2026
+**Arquivo alvo:** `internal/web/handlers/nodepool_predictions.go` + `src/lib/nodePoolPdfGenerator.ts`
 
-- [ ] 6.1 Backend: Gerar relatório Markdown com seções:
-  - [ ] Sumário Executivo
-  - [ ] Health Score (breakdown)
-  - [ ] Estado atual dos nodes (tabela: node, CPU%, mem%, pods%, conntrack%, disk%)
-  - [ ] Análise conntrack (por node + cluster-wide)
-  - [ ] Tendências (D-3, D-7, D-14)
-  - [ ] Histórico Autoscaler
-  - [ ] Análise de Custo
-  - [ ] Recomendações
-- [ ] 6.2 Frontend: Suporte a PDF via `reportGenerator.ts` (adaptar o existente)
+- [x] 6.1 Backend: Gerar relatório Markdown com seções:
+  - [x] Sumário Executivo (topo — posição corrigida)
+  - [x] Resumo de Ação (HoursToCritical, TopActionCommand)
+  - [x] Health Score (breakdown com 5 componentes e pesos)
+  - [x] Estado atual do pool (nodes, autoscaler, pressão)
+  - [x] Estado por Node (tabela completa: CPU%, Mem%, Pods, conntrack%, Disk%, Status)
+  - [x] Análise conntrack (pool aggregate + tabela por node com entries/limit/uso%)
+  - [x] Tendências (D-0/D-3/D-7/D-14 para CPU, Memória e Pods por node)
+  - [x] Histórico Autoscaler (tabela com data, tipo, delta, motivo — últimos 10 eventos)
+  - [x] Bin Packing (eficiência, fragmentação, candidatos scale-in, recursos desperdiçados)
+  - [x] Análise de Custo (custo atual/máx/economia em USD e BRL + recomendações)
+  - [x] Previsões IA (curto/médio/longo prazo com confiança e severidade)
+  - [x] Recomendações (com ações e comandos az/kubectl)
+  - [x] Fix: `bp.ScaleInSafe` (bool) → `bp.ScaleInCandidates` (int) para contagem real
+  - [x] Fix: `cn.ConntrackEntries/Limit/Percent` → `cn.CurrentEntries/MaxEntries/UsagePercent`
+- [x] 6.2 Frontend: PDF via `nodePoolPdfGenerator.ts` (novo, jsPDF + jspdf-autotable)
+  - [x] Botão "Exportar PDF" no modal ao lado do "Exportar MD"
+  - [x] Seções: Header logo, Sumário, Infra, Nodes, Tendências, Previsões, Recomendações, Bin Packing, Custo, Causa Raiz
+  - [x] Footer em todas as páginas com nome do node pool e cluster
 
 ---
 
@@ -271,6 +280,7 @@ query := fmt.Sprintf(`node_nf_conntrack_entries{instance=~"%s"}`, instances)
 | 22/02/2026 | Fase 4 | `cost_analyzer.go` — custo real por VM SKU, idle waste, P95 right-sizing, 4 recomendações, câmbio USD/BRL | Paulo + Claude |
 | 22/02/2026 | Fase 5 | `nodepool_predictions_store.go` + `nodepool_predictions.go` + rotas em `server.go` — build completo ✅ | Paulo + Claude |
 | 22/02/2026 | Fase 7 | Frontend: hook, modal principal, modal histórico, botão no NodePoolEditor, métodos API client — build completo ✅ | Paulo + Claude |
+| 22/02/2026 | Fase 6 | Markdown: seções completas (sumário, breakdown, conntrack por node, autoscaler history, bin packing, custo, previsões, recomendações); PDF: nodePoolPdfGenerator.ts + botão no modal ✅ | Paulo + Claude |
 
 ---
 

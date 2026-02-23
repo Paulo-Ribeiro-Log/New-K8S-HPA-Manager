@@ -263,60 +263,55 @@ func (h *NodePoolPredictionsHandler) sendMarkdownFile(c *gin.Context, nodepool s
 func generateNodePoolMarkdownReport(r *np.NodePoolPredictionResult) string {
 	var b strings.Builder
 
+	// ── Cabeçalho ────────────────────────────────────────────────────────────
 	b.WriteString("# ANALISE PREDITIVA: NODE POOL " + r.NodePoolName + "\n\n")
 	b.WriteString("**Cluster**: " + r.Cluster + "  \n")
 	b.WriteString("**Node Pool**: " + r.NodePoolName + "  \n")
 	b.WriteString("**VM Size**: " + r.RawMetrics.VMSize + "  \n")
 	b.WriteString("**Gerado em**: " + r.AnalyzedAt.Format("02/01/2006 15:04:05") + "  \n")
 	b.WriteString(fmt.Sprintf("**Duracao**: %dms  \n", r.DurationMs))
-
-	// Health Score
 	category := npHealthCategory(r.HealthScore.Overall)
 	b.WriteString(fmt.Sprintf("\n**Health Score**: %d/100 — %s\n\n", r.HealthScore.Overall, category))
 	b.WriteString("---\n\n")
 
-	// Action Summary
+	// ── Sumário Executivo (topo) ───────────────────────────────────────────
+	if r.ExecutiveSummary.CurrentState != "" {
+		b.WriteString("## SUMARIO EXECUTIVO\n\n")
+		b.WriteString(r.ExecutiveSummary.CurrentState + "\n\n")
+		b.WriteString("**Nivel de risco**: " + r.ExecutiveSummary.RiskLevel + "  \n")
+		b.WriteString(fmt.Sprintf("**Acao necessaria**: %s\n\n",
+			boolStr(r.ExecutiveSummary.ActionRequired, "SIM", "NAO")))
+		if len(r.ExecutiveSummary.KeyFindings) > 0 {
+			b.WriteString("**Principais achados**:\n\n")
+			for _, f := range r.ExecutiveSummary.KeyFindings {
+				b.WriteString("- " + f + "\n")
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	// ── Resumo de Ação ────────────────────────────────────────────────────
 	b.WriteString("## RESUMO DE ACAO\n\n")
 	b.WriteString("**Status**: " + r.ActionSummary.Status + "  \n")
 	b.WriteString("**Mensagem**: " + r.ActionSummary.StatusMessage + "  \n")
 	if r.ActionSummary.HoursToCritical != nil && *r.ActionSummary.HoursToCritical > 0 {
 		b.WriteString(fmt.Sprintf("**Horas ate critico**: %d  \n", *r.ActionSummary.HoursToCritical))
 		b.WriteString("**Recurso critico**: " + r.ActionSummary.CriticalMetric + "  \n")
+		b.WriteString("**Motivo**: " + r.ActionSummary.CriticalReason + "  \n")
+	}
+	if r.ActionSummary.TopAction != "" {
+		b.WriteString("\n**Acao prioritaria**: " + r.ActionSummary.TopAction + "  \n")
+		if r.ActionSummary.TopActionCommand != "" {
+			b.WriteString("```\n" + r.ActionSummary.TopActionCommand + "\n```\n")
+		}
 	}
 	b.WriteString("\n")
 
-	// Estado atual
-	b.WriteString("## ESTADO ATUAL DO POOL\n\n")
-	b.WriteString(fmt.Sprintf("- Nodes atuais: %d (min: %d, max: %d)\n",
-		r.RawMetrics.CurrentNodes, r.RawMetrics.MinNodes, r.RawMetrics.MaxNodes))
-	b.WriteString(fmt.Sprintf("- Autoscaler: %s\n", boolStr(r.RawMetrics.AutoscalerEnabled, "Habilitado", "Desabilitado")))
-	b.WriteString(fmt.Sprintf("- Nodes com pressao: %d\n", len(r.RawMetrics.NodesWithPressure)))
-	b.WriteString("\n")
-
-	// Nodes snapshot (top 5 mais saturados)
-	if len(r.RawMetrics.NodesSnapshot) > 0 {
-		b.WriteString("### Estado dos Nodes (top saturados)\n\n")
-		b.WriteString("| Node | CPU% | Mem% | Pods | conntrack% | Disk% |\n")
-		b.WriteString("|------|------|------|------|-----------|-------|\n")
-		nodes := r.RawMetrics.NodesSnapshot
-		count := len(nodes)
-		if count > 5 {
-			count = 5
-		}
-		for i := 0; i < count; i++ {
-			n := nodes[i]
-			b.WriteString(fmt.Sprintf("| %s | %.1f | %.1f | %d | %.1f | %.1f |\n",
-				n.NodeName, n.CPUUsagePercent, n.MemUsagePercent,
-				n.PodCount, n.ConntrackPercent, n.DiskUsagePercent))
-		}
-		b.WriteString("\n")
-	}
-
-	// Health Score breakdown
+	// ── Health Score Breakdown ────────────────────────────────────────────
 	b.WriteString("## HEALTH SCORE BREAKDOWN\n\n")
 	hb := r.HealthScore.Breakdown
-	b.WriteString(fmt.Sprintf("| Componente | Peso | Score |\n"))
-	b.WriteString(fmt.Sprintf("|------------|------|-------|\n"))
+	b.WriteString("| Componente | Peso | Score |\n")
+	b.WriteString("|------------|------|-------|\n")
 	b.WriteString(fmt.Sprintf("| Disponibilidade dos Nodes | 25%% | %d |\n", hb.NodeAvailability))
 	b.WriteString(fmt.Sprintf("| Headroom de Recursos | 30%% | %d |\n", hb.ResourceHeadroom))
 	b.WriteString(fmt.Sprintf("| Densidade de Pods | 20%% | %d |\n", hb.PodDensity))
@@ -325,7 +320,28 @@ func generateNodePoolMarkdownReport(r *np.NodePoolPredictionResult) string {
 	b.WriteString(fmt.Sprintf("| **TOTAL** | 100%% | **%d** |\n", r.HealthScore.Overall))
 	b.WriteString("\n")
 
-	// conntrack
+	// ── Estado Atual do Pool ──────────────────────────────────────────────
+	b.WriteString("## ESTADO ATUAL DO POOL\n\n")
+	b.WriteString(fmt.Sprintf("- Nodes atuais: %d (min: %d, max: %d)\n",
+		r.RawMetrics.CurrentNodes, r.RawMetrics.MinNodes, r.RawMetrics.MaxNodes))
+	b.WriteString(fmt.Sprintf("- Autoscaler: %s\n", boolStr(r.RawMetrics.AutoscalerEnabled, "Habilitado", "Desabilitado")))
+	b.WriteString(fmt.Sprintf("- Nodes com pressao: %d\n", len(r.RawMetrics.NodesWithPressure)))
+	b.WriteString("\n")
+
+	// Nodes snapshot (todos)
+	if len(r.RawMetrics.NodesSnapshot) > 0 {
+		b.WriteString("### Estado por Node\n\n")
+		b.WriteString("| Node | CPU% | Mem% | Pods | conntrack% | Disk% | Status |\n")
+		b.WriteString("|------|------|------|------|-----------|-------|--------|\n")
+		for _, n := range r.RawMetrics.NodesSnapshot {
+			b.WriteString(fmt.Sprintf("| %s | %.1f | %.1f | %d | %.1f | %.1f | %s |\n",
+				n.NodeName, n.CPUUsagePercent, n.MemUsagePercent,
+				n.PodCount, n.ConntrackPercent, n.DiskUsagePercent, n.Status))
+		}
+		b.WriteString("\n")
+	}
+
+	// ── Análise conntrack ─────────────────────────────────────────────────
 	if r.RawMetrics.ConntrackPool.HasSufficientData {
 		b.WriteString("## ANALISE CONNTRACK\n\n")
 		cp := r.RawMetrics.ConntrackPool
@@ -337,9 +353,22 @@ func generateNodePoolMarkdownReport(r *np.NodePoolPredictionResult) string {
 			b.WriteString(fmt.Sprintf("- Taxa de crescimento: %.0f entries/hora\n", cp.AvgGrowthRatePerH))
 		}
 		b.WriteString("\n")
+
+		// Tabela por node
+		if len(r.RawMetrics.ConntrackPerNode) > 0 {
+			b.WriteString("### conntrack por Node\n\n")
+			b.WriteString("| Node | Entries | Limit | Uso% | Status |\n")
+			b.WriteString("|------|---------|-------|------|--------|\n")
+			for _, cn := range r.RawMetrics.ConntrackPerNode {
+				b.WriteString(fmt.Sprintf("| %s | %d | %d | %.1f | %s |\n",
+					cn.NodeName, cn.CurrentEntries, cn.MaxEntries,
+					cn.UsagePercent, cn.Status))
+			}
+			b.WriteString("\n")
+		}
 	}
 
-	// Tendencias
+	// ── Tendências ────────────────────────────────────────────────────────
 	b.WriteString("## TENDENCIAS (por node, normalizadas)\n\n")
 	b.WriteString("| Metrica | D-0 | D-3 | D-7 | D-14 | Tendencia |\n")
 	b.WriteString("|---------|-----|-----|-----|------|----------|\n")
@@ -361,19 +390,48 @@ func generateNodePoolMarkdownReport(r *np.NodePoolPredictionResult) string {
 		b.WriteString(fmt.Sprintf("| Mem%% | %.1f | %.1f | %.1f | %.1f | %s |\n",
 			d0, d3, d7, d14, string(r.Trends.MemTrend)))
 	}
+	podSnapshots := r.RawMetrics.PodsTrendPerNode
+	if len(podSnapshots) > 0 {
+		d0 := npTrendVal(podSnapshots, 0)
+		d3 := npTrendVal(podSnapshots, 3)
+		d7 := npTrendVal(podSnapshots, 7)
+		d14 := npTrendVal(podSnapshots, 14)
+		b.WriteString(fmt.Sprintf("| Pods/node | %.1f | %.1f | %.1f | %.1f | %s |\n",
+			d0, d3, d7, d14, string(r.Trends.PodsTrend)))
+	}
 	b.WriteString("\n")
 
-	// BinPacking
+	// ── Histórico do Autoscaler ───────────────────────────────────────────
+	if len(r.RawMetrics.AutoscalerEvents) > 0 {
+		b.WriteString("## HISTORICO DO AUTOSCALER\n\n")
+		b.WriteString("| Data/Hora | Tipo | Delta | Motivo |\n")
+		b.WriteString("|-----------|------|-------|--------|\n")
+		events := r.RawMetrics.AutoscalerEvents
+		if len(events) > 10 {
+			events = events[:10]
+		}
+		for _, e := range events {
+			delta := fmt.Sprintf("%+d", e.NodesDelta)
+			b.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n",
+				e.Timestamp.Format("02/01 15:04"), e.Type, delta, e.Reason))
+		}
+		b.WriteString("\n")
+	}
+
+	// ── Bin Packing ───────────────────────────────────────────────────────
 	bp := r.RawMetrics.BinPacking
 	b.WriteString("## ANALISE DE BIN PACKING\n\n")
 	b.WriteString(fmt.Sprintf("- Eficiencia CPU: %.1f%%\n", bp.CPUEfficiency))
 	b.WriteString(fmt.Sprintf("- Eficiencia Memoria: %.1f%%\n", bp.MemEfficiency))
 	b.WriteString(fmt.Sprintf("- Nivel de Fragmentacao: %s\n", bp.FragmentationLevel))
-	b.WriteString(fmt.Sprintf("- Candidatos a scale-in seguro: %d nodes\n", bp.ScaleInSafe))
-	b.WriteString(fmt.Sprintf("- Recursos desperdicados: %s\n", bp.WastedResources))
+	b.WriteString(fmt.Sprintf("- Candidatos a scale-in: %d nodes\n", bp.ScaleInCandidates))
+	b.WriteString(fmt.Sprintf("- Scale-in seguro: %s\n", boolStr(bp.ScaleInSafe, "Sim", "Nao")))
+	if bp.WastedResources != "" {
+		b.WriteString(fmt.Sprintf("- Recursos desperdicados: %s\n", bp.WastedResources))
+	}
 	b.WriteString("\n")
 
-	// Custo
+	// ── Análise de Custo ──────────────────────────────────────────────────
 	if r.CostAnalysis != nil {
 		ca := r.CostAnalysis
 		b.WriteString("## ANALISE DE CUSTO\n\n")
@@ -408,50 +466,41 @@ func generateNodePoolMarkdownReport(r *np.NodePoolPredictionResult) string {
 		}
 	}
 
-	// Previsoes IA
+	// ── Previsões IA ──────────────────────────────────────────────────────
 	b.WriteString("## PREVISOES (IA)\n\n")
-	if len(r.Predictions.ShortTerm) > 0 {
-		p := r.Predictions.ShortTerm[0]
-		b.WriteString("### Curto Prazo (" + p.Timeframe + ")\n\n")
-		b.WriteString(p.Event + "\n")
-		b.WriteString(fmt.Sprintf("Confianca: %.0f%%  |  Severidade: %s\n\n",
-			p.ConfidencePercent, p.Severity))
+	allPreds := []struct {
+		label string
+		preds []np.NodePoolPrediction
+	}{
+		{"Curto Prazo", r.Predictions.ShortTerm},
+		{"Medio Prazo", r.Predictions.MediumTerm},
+		{"Longo Prazo", r.Predictions.LongTerm},
 	}
-	if len(r.Predictions.MediumTerm) > 0 {
-		p := r.Predictions.MediumTerm[0]
-		b.WriteString("### Medio Prazo (" + p.Timeframe + ")\n\n")
-		b.WriteString(p.Event + "\n")
-		b.WriteString(fmt.Sprintf("Confianca: %.0f%%  |  Severidade: %s\n\n",
-			p.ConfidencePercent, p.Severity))
-	}
-	if len(r.Predictions.LongTerm) > 0 {
-		p := r.Predictions.LongTerm[0]
-		b.WriteString("### Longo Prazo (" + p.Timeframe + ")\n\n")
+	for _, pg := range allPreds {
+		if len(pg.preds) == 0 {
+			continue
+		}
+		p := pg.preds[0]
+		b.WriteString(fmt.Sprintf("### %s (%s)\n\n", pg.label, p.Timeframe))
 		b.WriteString(p.Event + "\n")
 		b.WriteString(fmt.Sprintf("Confianca: %.0f%%  |  Severidade: %s\n\n",
 			p.ConfidencePercent, p.Severity))
 	}
 
-	// Recomendacoes gerais
+	// ── Recomendações Gerais ──────────────────────────────────────────────
 	if len(r.Recommendations) > 0 {
 		b.WriteString("## RECOMENDACOES\n\n")
 		for i, rec := range r.Recommendations {
 			b.WriteString(fmt.Sprintf("%d. **[%s]** %s  \n", i+1, strings.ToUpper(rec.Category), rec.Title))
-			b.WriteString("   " + rec.Description + "\n\n")
+			b.WriteString("   " + rec.Description + "\n")
+			if len(rec.Actions) > 0 {
+				b.WriteString("   **Acoes**:\n")
+				for _, a := range rec.Actions {
+					b.WriteString("   - `" + a + "`\n")
+				}
+			}
+			b.WriteString("\n")
 		}
-	}
-
-	// Sumario executivo
-	if r.ExecutiveSummary.CurrentState != "" {
-		b.WriteString("## SUMARIO EXECUTIVO\n\n")
-		b.WriteString(r.ExecutiveSummary.CurrentState + "\n\n")
-		b.WriteString("**Nivel de risco**: " + r.ExecutiveSummary.RiskLevel + "  \n")
-		b.WriteString(fmt.Sprintf("**Acao necessaria**: %s\n\n",
-			boolStr(r.ExecutiveSummary.ActionRequired, "SIM", "NAO")))
-		for _, f := range r.ExecutiveSummary.KeyFindings {
-			b.WriteString("- " + f + "\n")
-		}
-		b.WriteString("\n")
 	}
 
 	b.WriteString("---\n")
