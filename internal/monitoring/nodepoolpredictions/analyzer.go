@@ -1132,6 +1132,17 @@ func saturationForecastConntrack(metrics *NodePoolMetrics, now time.Time) *Satur
 			} else {
 				remaining := threshold - currentPct
 				days := remaining / forecast.DailyGrowthRate
+
+				// Sanity check: se uso atual é baixo (<30%) mas a projeção é de saturação
+				// em menos de 3 dias, é quase certo que é ruído de medição (ex: gauge
+				// oscilando, janela de coleta muito curta, spike momentâneo de conexões).
+				// Nesses casos, descartamos a projeção alarmante.
+				if currentPct < 30.0 && days < 3.0 {
+					forecast.DailyGrowthRate = 0
+					forecast.UrgencyBadge = "ESTAVEL"
+					return forecast
+				}
+
 				forecast.DaysUntilSaturation = &days
 				estimatedDate := now.Add(time.Duration(days*24) * time.Hour)
 				forecast.EstimatedDate = &estimatedDate
