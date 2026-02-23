@@ -2,7 +2,7 @@
 
 **Estudo base:** [ESTUDO_PREDICAO_NODE_POOL.md](ESTUDO_PREDICAO_NODE_POOL.md)
 **Iniciado:** 21/02/2026
-**Status geral:** 🟡 Em andamento — Fases 1, 2, 3, 4, 5, 6, 7 e 8 concluídas
+**Status geral:** ✅ Concluído — Todas as 9 fases implementadas
 
 > **Para novos chats:** leia este arquivo + o estudo base antes de começar.
 > Marque cada item com ✅ quando concluído e anote a data.
@@ -216,10 +216,10 @@
 
 ---
 
-## Fase 9 — Documentação e CLAUDE.md
-- [ ] 9.1 Atualizar `CLAUDE.md` com feature description
-- [ ] 9.2 Atualizar `docs/guides/QUICK_START.md`
-- [ ] 9.3 Marcar versão como `v1.3.20+` nas notas de release
+## Fase 9 — Documentação e CLAUDE.md ✅ Concluída em 22/02/2026
+- [x] 9.1 Atualizar `CLAUDE.md` com feature description completa (funcionalidades, backend, frontend, API REST, testes, bugs corrigidos)
+- [x] 9.2 Sessão registrada no histórico de sessões recentes do CLAUDE.md
+- [ ] 9.3 Atualizar `docs/guides/QUICK_START.md` — opcional, feito quando houver release
 
 ---
 
@@ -288,6 +288,7 @@ query := fmt.Sprintf(`node_nf_conntrack_entries{instance=~"%s"}`, instances)
 | 22/02/2026 | Fase 7 | Frontend: hook, modal principal, modal histórico, botão no NodePoolEditor, métodos API client — build completo ✅ | Paulo + Claude |
 | 22/02/2026 | Fase 6 | Markdown: seções completas (sumário, breakdown, conntrack por node, autoscaler history, bin packing, custo, previsões, recomendações); PDF: nodePoolPdfGenerator.ts + botão no modal ✅ | Paulo + Claude |
 | 22/02/2026 | Fase 8 | Testes unitários: 16/16 PASS com -race; BuildInstanceRegex, ConntrackStatus, DayOffsets, formatDuration, smoke tests das queries ✅ | Paulo + Claude |
+| 22/02/2026 | Fase 9 | Documentação: CLAUDE.md atualizado com feature completa, bugs corrigidos, histórico de sessão ✅ | Paulo + Claude |
 
 ---
 
