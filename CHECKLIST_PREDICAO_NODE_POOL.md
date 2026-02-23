@@ -2,7 +2,7 @@
 
 **Estudo base:** [ESTUDO_PREDICAO_NODE_POOL.md](ESTUDO_PREDICAO_NODE_POOL.md)
 **Iniciado:** 21/02/2026
-**Status geral:** 🟡 Em andamento — Fases 1-9 concluídas | Fases 10-15 planejadas (melhorias)
+**Status geral:** 🟡 Em andamento — Fases 1-10, 12 concluídas | Fases 11, 13-15 planejadas (melhorias)
 
 > **Para novos chats:** leia este arquivo + o estudo base antes de começar.
 > Marque cada item com ✅ quando concluído e anote a data.
@@ -290,14 +290,23 @@
 
 ---
 
-## Fase 12 — Gráficos de Tendência no Modal
-**Objetivo**: Visualização intuitiva de CPU/conntrack ao longo de 14 dias
+## Fase 12 — Gráficos de Tendência no Modal ✅ Concluída em 23/02/2026
+**Objetivo**: Visualização intuitiva de CPU/Memória/Pods ao longo de 14 dias
 **Impacto**: ⭐⭐⭐⭐ | **Esforço**: Baixo
 
-- [ ] 12.1 Usar dados D-0/D-3/D-7/D-14 já coletados (sem nova query Prometheus)
-- [ ] 12.2 Mini LineChart (Recharts) para CPU, Memória e conntrack no modal
-- [ ] 12.3 Linha de limiar horizontal (ex: 85%) para referência visual
-- [ ] 12.4 Projeção de tendência futura no gráfico (linha tracejada até `EstimatedDate`)
+- [x] 12.1 Usar dados D-0/D-3/D-7/D-14 já coletados (sem nova query Prometheus)
+- [x] 12.2 Mini LineChart (Recharts) para CPU, Memória e Pods no modal
+- [x] 12.3 Linha de limiar horizontal (85%) para CPU e Memória
+- [ ] 12.4 Projeção de tendência futura no gráfico (linha tracejada) — adiado para Fase 14
+
+**Implementado em**: `NodePoolPredictionModal.tsx`
+- Helpers: `buildTrendChartData()`, `trendLineColor()`, `TrendMiniChart` (componente)
+- Importados: `LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine` de recharts
+- CPU e Memória: Y axis 0-100%, threshold em 85% com linha vermelha tracejada
+- Pods: Y axis auto-scale em count/node (sem threshold de percentual)
+- conntrack: mantido como card de texto (sem histórico D-14 disponível)
+- Cor da linha: laranja (crescendo), verde (decrescendo), índigo (estável)
+- Deltas D-3/D-7/D-14 mantidos abaixo de cada gráfico como informação secundária
 
 ---
 
