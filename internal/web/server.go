@@ -948,6 +948,37 @@ func (s *Server) setupRoutes() {
 
 	fmt.Println("✅ Predictions routes registradas")
 
+	// NodePool Predictive Analysis
+	fmt.Println("🔮 Inicializando NodePool Predictions Store...")
+	nodepoolPredictionsDBPath := filepath.Join(baseDir, "nodepool_predictions.db")
+	nodepoolPredictionsStore, npStoreErr := storage.NewNodePoolPredictionsStore(nodepoolPredictionsDBPath)
+	if npStoreErr != nil {
+		fmt.Printf("⚠️  Erro ao criar NodePool Predictions Store: %v\n", npStoreErr)
+	} else {
+		fmt.Println("✅ NodePool Predictions Store criado com sucesso")
+	}
+
+	var nodepoolPredictionsHandler *handlers.NodePoolPredictionsHandler
+	if s.aiHandler != nil && s.kubeManagerWrapper != nil && nodepoolPredictionsStore != nil {
+		nodepoolPredictionsHandler = handlers.NewNodePoolPredictionsHandler(
+			s.kubeManager,
+			s.kubeManagerWrapper,
+			s.aiHandler.GetAnalyzer(),
+			s.aiHandler.GetTokensStore(),
+			nodepoolPredictionsStore,
+			s.aiHandler.GetDefaultConfig(),
+		)
+	} else {
+		nodepoolPredictionsHandler = handlers.NewNodePoolPredictionsHandler(s.kubeManager, nil, nil, nil, nodepoolPredictionsStore, nil)
+		fmt.Println("⚠️  NodePool Predictions sem AI (AI Diagnostics desabilitado)")
+	}
+
+	api.POST("/nodepoolpredictions/analyze", rbacMiddleware.InjectUserEmail(), nodepoolPredictionsHandler.AnalyzeNodePool)
+	api.GET("/nodepoolpredictions/history", rbacMiddleware.InjectUserEmail(), nodepoolPredictionsHandler.GetHistory)
+	api.GET("/nodepoolpredictions/report/:id/markdown", rbacMiddleware.InjectUserEmail(), nodepoolPredictionsHandler.GetMarkdownReport)
+
+	fmt.Println("✅ NodePool Predictions routes registradas")
+
 	// Health Checking System
 	fmt.Println("🏥 Inicializando Health Checking System...")
 	healthCheckDBPath := filepath.Join(baseDir, "health_checks.db")
