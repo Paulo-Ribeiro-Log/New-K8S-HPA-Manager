@@ -117,6 +117,9 @@ func (a *NodePoolAnalyzer) Analyze(ctx context.Context, req NodePoolPredictionRe
 	// 9. Análise de custo (baseada no VM SKU real — mais precisa que deployment)
 	result.CostAnalysis = a.costAnalyzer.Calculate(metrics)
 
+	// 9.5 Timeline de saturação determinística (regressão linear D-0/D-3/D-7/D-14)
+	result.SaturationTimeline = a.calculateSaturationTimeline(metrics, trends)
+
 	// 10. Duração total
 	result.DurationMs = time.Since(startTime).Milliseconds()
 
@@ -903,6 +906,296 @@ func (a *NodePoolAnalyzer) calculateHoursToCritical(metrics *NodePoolMetrics, tr
 
 	h := candidates[0].hours
 	return &h, candidates[0].metric, candidates[0].reason
+}
+
+// ==============================================================================
+// 3.4 – Saturation Timeline (regressão linear determinística)
+// ==============================================================================
+
+// calculateSaturationTimeline projeta datas de saturação para CPU, memória,
+// pods e conntrack usando regressão linear nos snapshots D-0/D-3/D-7/D-14.
+func (a *NodePoolAnalyzer) calculateSaturationTimeline(metrics *NodePoolMetrics, trends NodePoolTrends) PoolSaturationTimeline {
+	now := time.Now()
+	var forecasts []SaturationForecast
+
+	// 1. CPU (threshold 85%)
+	if f := saturationForecastFromTrend("cpu", metrics.CPUTrendPerNode, maxCPUCurrent(metrics.NodesSnapshot), 85.0, now); f != nil {
+		forecasts = append(forecasts, *f)
+	}
+
+	// 2. Memória (threshold 85%)
+	if f := saturationForecastFromTrend("memory", metrics.MemTrendPerNode, maxMemCurrent(metrics.NodesSnapshot), 85.0, now); f != nil {
+		forecasts = append(forecasts, *f)
+	}
+
+	// 3. Densidade de pods por node (threshold 85%)
+	if f := saturationForecastFromTrend("pods", metrics.PodsTrendPerNode, maxPodDensityCurrent(metrics.NodesSnapshot), 85.0, now); f != nil {
+		forecasts = append(forecasts, *f)
+	}
+
+	// 4. Conntrack (threshold 85%) — usa taxa de crescimento do Prometheus quando disponível
+	if metrics.DataSources.NodeExporterAvailable && metrics.ConntrackPool.HasSufficientData {
+		if f := saturationForecastConntrack(metrics, now); f != nil {
+			forecasts = append(forecasts, *f)
+		}
+	}
+
+	// Ordenar: métricas que saturam primeiro aparecem primeiro; nil (estável) vai para o final
+	sort.Slice(forecasts, func(i, j int) bool {
+		di, dj := forecasts[i].DaysUntilSaturation, forecasts[j].DaysUntilSaturation
+		if di == nil && dj == nil {
+			return false
+		}
+		if di == nil {
+			return false
+		}
+		if dj == nil {
+			return true
+		}
+		return *di < *dj
+	})
+
+	timeline := PoolSaturationTimeline{Forecasts: forecasts}
+
+	// Métrica mais crítica = a que satura primeiro (com data concreta)
+	for i := range forecasts {
+		if forecasts[i].DaysUntilSaturation != nil {
+			f := forecasts[i]
+			timeline.MostCritical = &f
+			break
+		}
+	}
+
+	// Sumário legível
+	if timeline.MostCritical != nil {
+		mc := timeline.MostCritical
+		days := *mc.DaysUntilSaturation
+		dateStr := mc.EstimatedDate.Format("02/01/2006")
+		if mc.AffectedNode != "" {
+			timeline.Summary = fmt.Sprintf("%s satura em %.0f dias (%s) — %s", mc.Metric, days, dateStr, mc.AffectedNode)
+		} else {
+			timeline.Summary = fmt.Sprintf("%s satura em %.0f dias (%s)", mc.Metric, days, dateStr)
+		}
+	} else {
+		timeline.Summary = "Sem saturacao projetada nos proximos 30 dias"
+	}
+
+	return timeline
+}
+
+// saturationForecastFromTrend calcula regressão linear sobre snapshots D-0/D-3/D-7/D-14.
+// x = DaysAgo (0=agora, 14=14 dias atrás), y = ValuePerNode.
+// slope < 0 significa que o valor cresce ao longo do tempo (passado < presente).
+func saturationForecastFromTrend(metric string, snapshots []TrendSnapshot, currentValue, threshold float64, now time.Time) *SaturationForecast {
+	if currentValue <= 0 || threshold <= 0 {
+		return nil
+	}
+
+	type pt struct{ x, y float64 }
+	var pts []pt
+	pts = append(pts, pt{0, currentValue}) // D-0 = agora
+
+	for _, s := range snapshots {
+		if s.DaysAgo > 0 && s.ValuePerNode > 0 {
+			pts = append(pts, pt{float64(s.DaysAgo), s.ValuePerNode})
+		}
+	}
+	if len(pts) < 2 {
+		// Apenas 1 ponto: não há histórico suficiente para projeção
+		return &SaturationForecast{
+			Metric:       metric,
+			CurrentValue: currentValue,
+			Threshold:    threshold,
+			Confidence:   "low",
+			DataPoints:   1,
+			UrgencyBadge: "ESTAVEL",
+		}
+	}
+
+	// Regressão linear simples: y = a + b*x
+	n := float64(len(pts))
+	var sumX, sumY, sumXY, sumXX float64
+	for _, p := range pts {
+		sumX += p.x
+		sumY += p.y
+		sumXY += p.x * p.y
+		sumXX += p.x * p.x
+	}
+	denom := n*sumXX - sumX*sumX
+	var slope float64
+	if math.Abs(denom) > 1e-9 {
+		slope = (n*sumXY - sumX*sumY) / denom
+	}
+	// slope negativo: valor era menor no passado → crescendo → taxa de crescimento = -slope
+	dailyGrowthRate := -slope
+
+	// Aceleração: comparar crescimento D-0→D-7 com D-7→D-14
+	var acceleration float64
+	var d0, d7, d14 float64
+	for _, p := range pts {
+		switch int(p.x) {
+		case 0:
+			d0 = p.y
+		case 7:
+			d7 = p.y
+		case 14:
+			d14 = p.y
+		}
+	}
+	if d7 > 0 && d0 > 0 {
+		slopeRecent := (d0 - d7) / 7.0
+		if d14 > 0 {
+			slopeOlder := (d7 - d14) / 7.0
+			acceleration = slopeRecent - slopeOlder // positivo = acelerando
+		}
+	}
+
+	// Confiança baseada em número de snapshots históricos
+	confidence := "low"
+	switch {
+	case len(pts) >= 3:
+		confidence = "high"
+	case len(pts) == 2:
+		confidence = "medium"
+	}
+
+	forecast := &SaturationForecast{
+		Metric:            metric,
+		CurrentValue:      currentValue,
+		Threshold:         threshold,
+		DailyGrowthRate:   dailyGrowthRate,
+		TrendAcceleration: acceleration,
+		Confidence:        confidence,
+		DataPoints:        len(pts),
+	}
+
+	// Projeção apenas se há crescimento e ainda não atingiu threshold
+	if dailyGrowthRate > 0 && currentValue < threshold {
+		days := (threshold - currentValue) / dailyGrowthRate
+		forecast.DaysUntilSaturation = &days
+		estimatedDate := now.Add(time.Duration(days*24) * time.Hour)
+		forecast.EstimatedDate = &estimatedDate
+
+		switch {
+		case days <= 7:
+			forecast.UrgencyBadge = "CRITICO"
+		case days <= 30:
+			forecast.UrgencyBadge = "ATENCAO"
+		default:
+			forecast.UrgencyBadge = "ESTAVEL"
+		}
+	} else if currentValue >= threshold {
+		// Já saturado
+		zero := 0.0
+		forecast.DaysUntilSaturation = &zero
+		t := now
+		forecast.EstimatedDate = &t
+		forecast.UrgencyBadge = "CRITICO"
+	} else {
+		forecast.UrgencyBadge = "ESTAVEL"
+	}
+
+	return forecast
+}
+
+// saturationForecastConntrack usa a taxa de crescimento do Prometheus (entries/hora)
+// ao invés de regressão linear, pois conntrack já fornece taxa via rate().
+func saturationForecastConntrack(metrics *NodePoolMetrics, now time.Time) *SaturationForecast {
+	pool := metrics.ConntrackPool
+	if !pool.HasSufficientData || pool.TotalLimit == 0 {
+		return nil
+	}
+
+	threshold := 85.0
+	currentPct := pool.MaxUsage
+
+	forecast := &SaturationForecast{
+		Metric:       "conntrack",
+		AffectedNode: pool.HighestNode,
+		CurrentValue: currentPct,
+		Threshold:    threshold,
+		DataPoints:   1,
+		Confidence:   "medium",
+	}
+
+	if pool.AvgGrowthRatePerH > 0 {
+		totalCap := float64(pool.TotalLimit)
+		pctGrowthPerHour := pool.AvgGrowthRatePerH / totalCap * 100.0
+		if pctGrowthPerHour > 0 {
+			forecast.DailyGrowthRate = pctGrowthPerHour * 24.0
+			if currentPct >= threshold {
+				zero := 0.0
+				forecast.DaysUntilSaturation = &zero
+				t := now
+				forecast.EstimatedDate = &t
+				forecast.UrgencyBadge = "CRITICO"
+			} else {
+				remaining := threshold - currentPct
+				days := remaining / forecast.DailyGrowthRate
+
+				// Sanity check: se uso atual é baixo (<30%) mas a projeção é de saturação
+				// em menos de 3 dias, é quase certo que é ruído de medição (ex: gauge
+				// oscilando, janela de coleta muito curta, spike momentâneo de conexões).
+				// Nesses casos, descartamos a projeção alarmante.
+				if currentPct < 30.0 && days < 3.0 {
+					forecast.DailyGrowthRate = 0
+					forecast.UrgencyBadge = "ESTAVEL"
+					return forecast
+				}
+
+				forecast.DaysUntilSaturation = &days
+				estimatedDate := now.Add(time.Duration(days*24) * time.Hour)
+				forecast.EstimatedDate = &estimatedDate
+				switch {
+				case days <= 7:
+					forecast.UrgencyBadge = "CRITICO"
+				case days <= 30:
+					forecast.UrgencyBadge = "ATENCAO"
+				default:
+					forecast.UrgencyBadge = "ESTAVEL"
+				}
+			}
+		} else {
+			forecast.UrgencyBadge = "ESTAVEL"
+		}
+	} else {
+		forecast.UrgencyBadge = "ESTAVEL"
+	}
+
+	return forecast
+}
+
+// maxCPUCurrent retorna o maior CPU% entre os nodes snapshot.
+func maxCPUCurrent(snapshots []NodePoolNodeSnapshot) float64 {
+	max := 0.0
+	for _, s := range snapshots {
+		if s.CPUUsagePercent > max {
+			max = s.CPUUsagePercent
+		}
+	}
+	return max
+}
+
+// maxMemCurrent retorna o maior Mem% entre os nodes snapshot.
+func maxMemCurrent(snapshots []NodePoolNodeSnapshot) float64 {
+	max := 0.0
+	for _, s := range snapshots {
+		if s.MemUsagePercent > max {
+			max = s.MemUsagePercent
+		}
+	}
+	return max
+}
+
+// maxPodDensityCurrent retorna o maior PodDensity% entre os nodes snapshot.
+func maxPodDensityCurrent(snapshots []NodePoolNodeSnapshot) float64 {
+	max := 0.0
+	for _, s := range snapshots {
+		if s.PodDensityPercent > max {
+			max = s.PodDensityPercent
+		}
+	}
+	return max
 }
 
 // calculateOverallConfidence estima a confiança geral da análise.
