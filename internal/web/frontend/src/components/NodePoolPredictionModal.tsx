@@ -12,7 +12,7 @@ import {
   TrendingUp, Loader2, X, Download, History,
   CheckCircle2, TriangleAlert, Activity, Server,
   DollarSign, Zap, ArrowUp, ArrowDown, Minus,
-  Network, BarChart3,
+  Network, BarChart3, CalendarClock,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -277,6 +277,20 @@ export function NodePoolPredictionModal({
                           <div className="text-xs text-muted-foreground">até crítico</div>
                         </div>
                       )}
+                      {result.saturation_timeline?.most_critical?.estimated_date && (
+                        <div className="bg-background/50 rounded p-2 text-center">
+                          <div className={`text-base font-bold leading-tight ${
+                            result.saturation_timeline.most_critical.urgency_badge === "CRITICO" ? "text-red-400" :
+                            result.saturation_timeline.most_critical.urgency_badge === "ATENCAO" ? "text-yellow-400" :
+                            "text-green-400"
+                          }`}>
+                            {new Date(result.saturation_timeline.most_critical.estimated_date).toLocaleDateString("pt-BR")}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            satura ({result.saturation_timeline.most_critical.metric})
+                          </div>
+                        </div>
+                      )}
                       <div className="bg-background/50 rounded p-2 text-center">
                         <div className="text-2xl font-bold">{result.action_summary.total_actions}</div>
                         <div className="text-xs text-muted-foreground">
@@ -518,7 +532,7 @@ export function NodePoolPredictionModal({
                                   <tr key={i} className="border-b border-border/20 hover:bg-background/30">
                                     <td className="py-1.5 pr-3 font-mono text-xs truncate max-w-[160px]">{cn.node_name}</td>
                                     <td className="text-right py-1.5 px-2">{cn.current_entries?.toLocaleString()}</td>
-                                    <td className="text-right py-1.5 px-2 text-muted-foreground">{cn.limit?.toLocaleString()}</td>
+                                    <td className="text-right py-1.5 px-2 text-muted-foreground">{cn.max_entries?.toLocaleString()}</td>
                                     <td className={`text-right py-1.5 px-2 font-bold ${conntrackColor(cn.usage_percent)}`}>
                                       {fmtPct(cn.usage_percent)}
                                     </td>
@@ -530,7 +544,7 @@ export function NodePoolPredictionModal({
                                         />
                                       </div>
                                       <div className="text-xs text-muted-foreground/60 mt-0.5">
-                                        {(cn.usage_percent ?? 0).toFixed(2)}% de {cn.limit?.toLocaleString() ?? "131.072"}
+                                        {(cn.usage_percent ?? 0).toFixed(2)}% de {cn.max_entries?.toLocaleString() ?? "131.072"}
                                       </div>
                                     </td>
                                   </tr>
@@ -606,6 +620,110 @@ export function NodePoolPredictionModal({
                               </div>
                             </div>
                           ))}
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+                  )}
+
+                  {/* ── TIMELINE DE SATURAÇÃO ─────────────────────────── */}
+                  {result.saturation_timeline?.forecasts?.length > 0 && (
+                    <AccordionItem value="saturation" className="bg-gradient-card border border-border/50 rounded-lg px-4">
+                      <AccordionTrigger className="hover:no-underline">
+                        <span className="flex items-center gap-2 font-semibold">
+                          <CalendarClock className="w-4 h-4 text-red-400" />
+                          Timeline de Saturação
+                          {result.saturation_timeline.most_critical && (
+                            <Badge variant="outline" className={`ml-2 text-xs ${
+                              result.saturation_timeline.most_critical.urgency_badge === "CRITICO"
+                                ? "border-red-500 text-red-400"
+                                : result.saturation_timeline.most_critical.urgency_badge === "ATENCAO"
+                                ? "border-yellow-500 text-yellow-400"
+                                : "border-green-500 text-green-400"
+                            }`}>
+                              {result.saturation_timeline.most_critical.urgency_badge}
+                            </Badge>
+                          )}
+                        </span>
+                      </AccordionTrigger>
+                      <AccordionContent>
+                        {result.saturation_timeline.summary && (
+                          <p className="text-sm text-muted-foreground mb-3 italic">
+                            {result.saturation_timeline.summary}
+                          </p>
+                        )}
+                        <div className="space-y-2">
+                          {result.saturation_timeline.forecasts.map((f: any, idx: number) => {
+                            const urgencyColor =
+                              f.urgency_badge === "CRITICO"
+                                ? "border-l-red-500 bg-red-500/5"
+                                : f.urgency_badge === "ATENCAO"
+                                ? "border-l-yellow-500 bg-yellow-500/5"
+                                : "border-l-green-500 bg-green-500/5";
+                            const badgeVariant =
+                              f.urgency_badge === "CRITICO"
+                                ? "text-red-400 border-red-500"
+                                : f.urgency_badge === "ATENCAO"
+                                ? "text-yellow-400 border-yellow-500"
+                                : "text-green-400 border-green-500";
+
+                            return (
+                              <div key={idx} className={`border-l-4 rounded-r p-3 ${urgencyColor}`}>
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="font-semibold text-sm capitalize">
+                                    {f.metric}
+                                    {f.affected_node && (
+                                      <span className="text-muted-foreground font-normal ml-1 text-xs">
+                                        ({f.affected_node})
+                                      </span>
+                                    )}
+                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <Badge variant="outline" className={`text-xs ${badgeVariant}`}>
+                                      {f.urgency_badge}
+                                    </Badge>
+                                    <span className="text-xs text-muted-foreground">
+                                      conf. {f.confidence}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs mt-2">
+                                  <div>
+                                    <span className="text-muted-foreground block">Atual</span>
+                                    <span className="font-medium">{f.current_value?.toFixed(1)}%</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-muted-foreground block">Crescimento/dia</span>
+                                    <span className={`font-medium ${f.daily_growth_rate > 0 ? "text-red-400" : "text-green-400"}`}>
+                                      {f.daily_growth_rate > 0 ? "+" : ""}{f.daily_growth_rate?.toFixed(2)}%
+                                    </span>
+                                  </div>
+                                  <div>
+                                    <span className="text-muted-foreground block">Dias restantes</span>
+                                    <span className="font-medium">
+                                      {f.days_until_saturation != null
+                                        ? `${Math.round(f.days_until_saturation)}d`
+                                        : "—"}
+                                    </span>
+                                  </div>
+                                  <div>
+                                    <span className="text-muted-foreground block">Data estimada</span>
+                                    <span className="font-medium">
+                                      {f.estimated_date
+                                        ? new Date(f.estimated_date).toLocaleDateString("pt-BR")
+                                        : "—"}
+                                    </span>
+                                  </div>
+                                </div>
+                                {/* Barra de progresso visual */}
+                                <div className="mt-2">
+                                  <Progress
+                                    value={Math.min(100, f.current_value ?? 0)}
+                                    className="h-1.5"
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </AccordionContent>
                     </AccordionItem>

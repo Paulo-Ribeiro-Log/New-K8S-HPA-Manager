@@ -2,7 +2,7 @@
 
 **Estudo base:** [ESTUDO_PREDICAO_NODE_POOL.md](ESTUDO_PREDICAO_NODE_POOL.md)
 **Iniciado:** 21/02/2026
-**Status geral:** ✅ Concluído — Todas as 9 fases implementadas
+**Status geral:** 🟡 Em andamento — Fases 1-9 concluídas | Fases 10-15 planejadas (melhorias)
 
 > **Para novos chats:** leia este arquivo + o estudo base antes de começar.
 > Marque cada item com ✅ quando concluído e anote a data.
@@ -220,6 +220,118 @@
 - [x] 9.1 Atualizar `CLAUDE.md` com feature description completa (funcionalidades, backend, frontend, API REST, testes, bugs corrigidos)
 - [x] 9.2 Sessão registrada no histórico de sessões recentes do CLAUDE.md
 - [ ] 9.3 Atualizar `docs/guides/QUICK_START.md` — opcional, feito quando houver release
+
+---
+
+---
+
+## Fase 10 — Timeline de Saturação com Data Concreta 🚧 Em andamento
+**Objetivo**: Transformar a análise de "descritiva" para "preditiva de verdade" — responder "quando exatamente?"
+**Impacto**: ⭐⭐⭐⭐⭐ | **Esforço**: Médio
+
+### Design
+- Para cada métrica com tendência crescente, calcular: `diasAtéSaturação = (limiar - valorAtual) / taxaDeVariaçãoPorDia`
+- Métricas analisadas: CPU, memória, conntrack (por node), pods/node, disco
+- Resultado: `SaturationForecast` com data absoluta (ex: "03/03/2026 14:00") + dias restantes + confiança
+- Limiares configuráveis: CPU 85%, Mem 85%, conntrack 85% (critical), Pods 90%, Disk 80%
+- Considerar: variação de tendência (D-7 vs D-14) para calcular aceleração/desaceleração
+
+### Tarefas Backend
+- [ ] 10.1 Criar struct `SaturationForecast` em `models.go`:
+  - `Metric` string — "cpu", "memory", "conntrack", "pods", "disk"
+  - `CurrentValue` float64 — valor atual (%)
+  - `DailyGrowthRate` float64 — taxa de crescimento por dia (p.p./dia)
+  - `Threshold` float64 — limiar de saturação (ex: 85.0)
+  - `DaysUntilSaturation` *float64 — nil se tendência decrescente
+  - `EstimatedDate` *time.Time — data absoluta calculada
+  - `Confidence` string — "high" (D-3+D-7+D-14 consistentes), "medium" (2 pontos), "low" (apenas D-3)
+  - `AffectedNode` string — node mais crítico (para conntrack)
+  - `TrendAcceleration` float64 — se positivo, piora está acelerando
+- [ ] 10.2 Criar struct `PoolSaturationTimeline` em `models.go`:
+  - `Forecasts` []SaturationForecast — uma por métrica
+  - `MostCritical` *SaturationForecast — a que satura primeiro
+  - `Summary` string — "pool saturará em X dias (conntrack, node Y)"
+- [ ] 10.3 Adicionar `SaturationTimeline PoolSaturationTimeline` ao `NodePoolPredictionResult`
+- [ ] 10.4 Implementar `calculateSaturationTimeline()` em `analyzer.go`:
+  - Calcular `dailyGrowthRate` a partir dos snapshots D-0/D-3/D-7/D-14
+  - Usar regressão linear simples: `slope = (D0 - D14) / 14` com fallback para `(D0 - D7) / 7` e `(D0 - D3) / 3`
+  - Calcular `daysUntil = (threshold - current) / dailyGrowthRate`
+  - Retornar nil se `dailyGrowthRate <= 0` (tendência estável ou decrescente)
+  - Para conntrack: analisar por node, retornar o mais crítico
+  - Calcular aceleração: comparar `(D0-D7)/7` vs `(D7-D14)/7`
+  - Confidence: "high" se D-3, D-7 e D-14 têm dados, "medium" se 2, "low" se só D-3
+- [ ] 10.5 Chamar `calculateSaturationTimeline()` dentro de `Analyze()` após calcular health score
+- [ ] 10.6 Incluir timeline no relatório Markdown (nova seção "PREVISAO DE SATURACAO")
+- [ ] 10.7 Incluir timeline no relatório PDF (nova seção após Tendências)
+
+### Tarefas Frontend
+- [ ] 10.8 Criar componente visual `SaturationTimeline` em `NodePoolPredictionModal.tsx`:
+  - Card de destaque para a métrica mais crítica (cor vermelha/laranja conforme proximidade)
+  - Tabela com todas as métricas: Métrica | Atual | Crescimento/dia | Satura em | Data | Confiança
+  - Badge de urgência: "CRÍTICO (<7 dias)", "ATENÇÃO (7-30 dias)", "ESTÁVEL (>30 dias ou N/A)"
+  - Node afetado no caso do conntrack
+- [ ] 10.9 Integrar `SaturationForecast` mais crítico no `ActionSummary` (topo do modal)
+  - Se `DaysUntilSaturation < 7`: status "critical" + mensagem específica
+  - Se `DaysUntilSaturation < 30`: status "attention"
+- [ ] 10.10 Adicionar testes unitários para `calculateSaturationTimeline()`
+
+---
+
+## Fase 11 — Correlação com HPAs do Pool
+**Objetivo**: Identificar quando HPAs em maxReplicas indicam gargalo confirmado no pool
+**Impacto**: ⭐⭐⭐⭐⭐ | **Esforço**: Médio
+
+- [ ] 11.1 Coletar HPAs que rodam em nodes do pool (via K8s API, filtrar por namespace/node affinity)
+- [ ] 11.2 Detectar HPAs com `currentReplicas == maxReplicas` (gargalo confirmado)
+- [ ] 11.3 Struct `HPAPoolCorrelation`: hpaName, namespace, currentReplicas, maxReplicas, targetCPU, atMax bool
+- [ ] 11.4 Adicionar `HPACorrelation []HPAPoolCorrelation` ao `NodePoolMetrics`
+- [ ] 11.5 No analyzer: se HPAs em maxReplicas E CPU alta → rebaixar health score + adicionar finding crítico
+- [ ] 11.6 Frontend: card "HPAs em Limite" com lista de HPAs travados
+
+---
+
+## Fase 12 — Gráficos de Tendência no Modal
+**Objetivo**: Visualização intuitiva de CPU/conntrack ao longo de 14 dias
+**Impacto**: ⭐⭐⭐⭐ | **Esforço**: Baixo
+
+- [ ] 12.1 Usar dados D-0/D-3/D-7/D-14 já coletados (sem nova query Prometheus)
+- [ ] 12.2 Mini LineChart (Recharts) para CPU, Memória e conntrack no modal
+- [ ] 12.3 Linha de limiar horizontal (ex: 85%) para referência visual
+- [ ] 12.4 Projeção de tendência futura no gráfico (linha tracejada até `EstimatedDate`)
+
+---
+
+## Fase 13 — Ephemeral Storage Growth Rate
+**Objetivo**: Detectar nodes com disco efêmero crescendo rapidamente (silent killer)
+**Impacto**: ⭐⭐⭐⭐ | **Esforço**: Baixo
+
+- [ ] 13.1 Query Prometheus para taxa de crescimento de disco: `rate(node_filesystem_avail_bytes[1h])`
+- [ ] 13.2 Calcular `diskGrowthRatePerDay` por node
+- [ ] 13.3 Estimar `daysUntilDiskFull` (complementar ao `SaturationForecast`)
+- [ ] 13.4 Detectar nodes com `DiskPressure` condition
+- [ ] 13.5 Integrar com `calculateSaturationTimeline()` da Fase 10
+
+---
+
+## Fase 14 — Delta Entre Análises (Comparação Histórica)
+**Objetivo**: "Desde a última análise (há 5 dias): conntrack +15%, CPU +8%"
+**Impacto**: ⭐⭐⭐ | **Esforço**: Baixo
+
+- [ ] 14.1 Ao salvar nova análise, buscar a análise anterior do mesmo pool no SQLite
+- [ ] 14.2 Calcular delta para: health score, CPU%, mem%, conntrack%, bin packing efficiency
+- [ ] 14.3 Struct `AnalysisDelta` com deltas e tendência (melhorando/piorando)
+- [ ] 14.4 Exibir delta no modal: badge verde (melhorou) / vermelho (piorou) por métrica
+
+---
+
+## Fase 15 — Recomendação de VM SKU Alternativo
+**Objetivo**: Sugerir SKU concreto baseado no perfil de uso real
+**Impacto**: ⭐⭐⭐ | **Esforço**: Baixo
+
+- [ ] 15.1 Cruzar `azure_vm_specs.go` com métricas de uso para identificar bottleneck (CPU vs RAM vs conntrack)
+- [ ] 15.2 Filtrar SKUs com custo similar (±20%) mas melhor fit para o bottleneck
+- [ ] 15.3 Incluir em `CostRecommendations` com antes/depois de custo e specs
+- [ ] 15.4 Exibir no modal como card de "migração recomendada"
 
 ---
 

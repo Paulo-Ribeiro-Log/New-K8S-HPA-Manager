@@ -44,6 +44,9 @@ type NodePoolPredictionResult struct {
 
 	// Análise de custo (baseada em VM SKU real — mais precisa que deployment)
 	CostAnalysis *NodePoolCostAnalysis `json:"cost_analysis,omitempty"`
+
+	// Timeline de saturação determinística (calculada via regressão linear sobre D-0/D-3/D-7/D-14)
+	SaturationTimeline PoolSaturationTimeline `json:"saturation_timeline"`
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +255,43 @@ type BinPackingAnalysis struct {
 	// Rebalanceamento necessário?
 	RebalancingNeeded bool   `json:"rebalancing_needed"`
 	WastedResources   string `json:"wasted_resources"` // descrição legível (ex: "~4 cores, ~8GB RAM")
+}
+
+// ---------------------------------------------------------------------------
+// Saturation Timeline — previsão determinística de datas de saturação
+// ---------------------------------------------------------------------------
+
+// SaturationForecast previsão de saturação para uma métrica específica.
+// Calculado deterministicamente a partir dos snapshots D-0/D-3/D-7/D-14 via
+// regressão linear — independente da IA.
+type SaturationForecast struct {
+	// Identificação
+	Metric      string `json:"metric"`                 // "cpu", "memory", "conntrack", "pods"
+	AffectedNode string `json:"affected_node,omitempty"` // node mais crítico (conntrack/pods)
+
+	// Valores atuais
+	CurrentValue float64 `json:"current_value"` // valor atual em %
+	Threshold    float64 `json:"threshold"`     // limiar de saturação (ex: 85.0)
+
+	// Tendência calculada
+	DailyGrowthRate   float64 `json:"daily_growth_rate"`   // p.p./dia (positivo = crescendo)
+	TrendAcceleration float64 `json:"trend_acceleration"`  // positivo = piora acelerando (p.p./dia comparado à semana anterior)
+
+	// Projeção
+	DaysUntilSaturation *float64   `json:"days_until_saturation,omitempty"` // nil se estável/decrescente
+	EstimatedDate       *time.Time `json:"estimated_date,omitempty"`        // data absoluta calculada
+
+	// Qualidade da estimativa
+	Confidence   string `json:"confidence"`    // "high" (3+ pontos), "medium" (2 pontos), "low" (1 ponto)
+	DataPoints   int    `json:"data_points"`   // quantos snapshots históricos disponíveis (1-4)
+	UrgencyBadge string `json:"urgency_badge"` // "CRITICO" (<7d), "ATENCAO" (7-30d), "ESTAVEL" (>30d ou N/A)
+}
+
+// PoolSaturationTimeline agrupa previsões de saturação de todas as métricas do pool
+type PoolSaturationTimeline struct {
+	Forecasts    []SaturationForecast `json:"forecasts"`
+	MostCritical *SaturationForecast  `json:"most_critical,omitempty"` // métrica que satura primeiro
+	Summary      string               `json:"summary"`                 // ex: "conntrack satura em 12 dias (aks-node-03)"
 }
 
 // ---------------------------------------------------------------------------

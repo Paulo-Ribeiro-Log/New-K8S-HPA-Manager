@@ -398,6 +398,76 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
     y = (doc as any).lastAutoTable.finalY + 6;
   }
 
+  // ── Timeline de Saturação ─────────────────────────────────────────────────
+  const tl = result.saturation_timeline;
+  if (tl?.forecasts?.length) {
+    y = checkNewPage(doc, y, 40);
+    y = sectionHeader(doc, "TIMELINE DE SATURACAO", y, [244, 67, 54]);
+    y += 2;
+
+    if (tl.summary) {
+      doc.setFontSize(9);
+      doc.setFont("helvetica", "italic");
+      doc.setTextColor(80, 80, 80);
+      const sumLines = doc.splitTextToSize(tl.summary, pageWidth - 28) as string[];
+      doc.text(sumLines, 14, y);
+      y += sumLines.length * 4 + 3;
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(0, 0, 0);
+    }
+
+    const tlBody = tl.forecasts.map((f: any) => {
+      const days = f.days_until_saturation != null ? `${Math.round(f.days_until_saturation)}d` : "—";
+      const date = f.estimated_date ? new Date(f.estimated_date).toLocaleDateString("pt-BR") : "—";
+      const node = f.affected_node ? ` (${f.affected_node})` : "";
+      const growth = f.daily_growth_rate > 0 ? `+${f.daily_growth_rate.toFixed(2)}%/d` : "—";
+      return [
+        `${f.metric}${node}`,
+        `${f.current_value.toFixed(1)}%`,
+        `${f.threshold.toFixed(0)}%`,
+        growth,
+        days,
+        date,
+        f.urgency_badge ?? "—",
+        f.confidence ?? "—",
+      ];
+    });
+
+    const urgencyColor = (badge: string): [number, number, number] => {
+      if (badge === "CRITICO") return [244, 67, 54];
+      if (badge === "ATENCAO") return [255, 152, 0];
+      return [76, 175, 80];
+    };
+
+    autoTable(doc, {
+      startY: y,
+      head: [["Metrica", "Atual", "Thresh.", "Cresc./dia", "Dias", "Data", "Urgencia", "Conf."]],
+      body: tlBody,
+      theme: "grid",
+      headStyles: { fillColor: [244, 67, 54], fontSize: 8 },
+      bodyStyles: { fontSize: 8 },
+      columnStyles: {
+        0: { cellWidth: 35 },
+        1: { cellWidth: 16 },
+        2: { cellWidth: 16 },
+        3: { cellWidth: 22 },
+        4: { cellWidth: 14 },
+        5: { cellWidth: 22 },
+        6: { cellWidth: 20 },
+        7: { cellWidth: 14 },
+      },
+      margin: { left: 14, right: 14 },
+      didParseCell: (data: any) => {
+        if (data.section === "body" && data.column.index === 6) {
+          const badge = String(data.cell.raw ?? "");
+          data.cell.styles.textColor = urgencyColor(badge);
+          data.cell.styles.fontStyle = "bold";
+        }
+      },
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
+  }
+
   // ── Custo ─────────────────────────────────────────────────────────────────
   const cost = result.cost_analysis;
   if (cost) {
