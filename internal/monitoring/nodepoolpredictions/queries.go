@@ -176,11 +176,14 @@ func (q *NodePoolQueries) GetConntrackUsagePercentQuery(instanceRegex string) st
 	)
 }
 
-// GetConntrackGrowthRateQuery retorna taxa de crescimento de conntrack (entradas/minuto)
-// Útil para prever quando a tabela vai saturar
+// GetConntrackGrowthRateQuery retorna taxa de crescimento de conntrack (entradas/minuto).
+// Usa deriv() ao invés de rate() porque node_nf_conntrack_entries é um GAUGE (sobe e desce
+// quando conexões são abertas/fechadas). rate() pressupõe contadores monotônicos e interpreta
+// quedas como "counter reset", gerando taxas absurdamente altas mesmo com uso baixo.
+// deriv() usa regressão linear sobre a janela de 1h, dando resultado estável e correto.
 func (q *NodePoolQueries) GetConntrackGrowthRateQuery(instanceRegex string) string {
 	return fmt.Sprintf(
-		`rate(node_nf_conntrack_entries{instance=~"%s"}[10m]) * 60`,
+		`deriv(node_nf_conntrack_entries{instance=~"%s"}[1h]) * 60`,
 		instanceRegex,
 	)
 }

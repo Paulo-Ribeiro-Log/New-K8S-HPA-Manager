@@ -532,7 +532,7 @@ export function NodePoolPredictionModal({
                                   <tr key={i} className="border-b border-border/20 hover:bg-background/30">
                                     <td className="py-1.5 pr-3 font-mono text-xs truncate max-w-[160px]">{cn.node_name}</td>
                                     <td className="text-right py-1.5 px-2">{cn.current_entries?.toLocaleString()}</td>
-                                    <td className="text-right py-1.5 px-2 text-muted-foreground">{cn.limit?.toLocaleString()}</td>
+                                    <td className="text-right py-1.5 px-2 text-muted-foreground">{cn.max_entries?.toLocaleString()}</td>
                                     <td className={`text-right py-1.5 px-2 font-bold ${conntrackColor(cn.usage_percent)}`}>
                                       {fmtPct(cn.usage_percent)}
                                     </td>
@@ -544,7 +544,7 @@ export function NodePoolPredictionModal({
                                         />
                                       </div>
                                       <div className="text-xs text-muted-foreground/60 mt-0.5">
-                                        {(cn.usage_percent ?? 0).toFixed(2)}% de {cn.limit?.toLocaleString() ?? "131.072"}
+                                        {(cn.usage_percent ?? 0).toFixed(2)}% de {cn.max_entries?.toLocaleString() ?? "131.072"}
                                       </div>
                                     </td>
                                   </tr>
