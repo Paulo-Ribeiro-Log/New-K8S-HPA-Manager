@@ -401,6 +401,38 @@ func generateNodePoolMarkdownReport(r *np.NodePoolPredictionResult) string {
 	}
 	b.WriteString("\n")
 
+	// ── Timeline de Saturação ────────────────────────────────────────────
+	tl := r.SaturationTimeline
+	if len(tl.Forecasts) > 0 {
+		b.WriteString("## TIMELINE DE SATURACAO\n\n")
+		if tl.Summary != "" {
+			b.WriteString("> " + tl.Summary + "\n\n")
+		}
+		b.WriteString("| Metrica | Valor Atual | Threshold | Crescimento/Dia | Dias | Data Estimada | Urgencia | Confianca |\n")
+		b.WriteString("|---------|------------|-----------|----------------|------|--------------|----------|----------|\n")
+		for _, f := range tl.Forecasts {
+			daysStr := "—"
+			dateStr := "—"
+			if f.DaysUntilSaturation != nil {
+				daysStr = fmt.Sprintf("%.0f", *f.DaysUntilSaturation)
+				if f.EstimatedDate != nil {
+					dateStr = f.EstimatedDate.Format("02/01/2006")
+				}
+			}
+			nodeInfo := ""
+			if f.AffectedNode != "" {
+				nodeInfo = " (" + f.AffectedNode + ")"
+			}
+			b.WriteString(fmt.Sprintf("| %s%s | %.1f%% | %.0f%% | %.2f%%/dia | %s | %s | %s | %s |\n",
+				f.Metric, nodeInfo,
+				f.CurrentValue, f.Threshold,
+				f.DailyGrowthRate,
+				daysStr, dateStr,
+				f.UrgencyBadge, f.Confidence))
+		}
+		b.WriteString("\n")
+	}
+
 	// ── Histórico do Autoscaler ───────────────────────────────────────────
 	if len(r.RawMetrics.AutoscalerEvents) > 0 {
 		b.WriteString("## HISTORICO DO AUTOSCALER\n\n")
