@@ -157,3 +157,13 @@ func GetVMSpecs(vmSize string) *VMSpec {
 	}
 	return nil
 }
+
+// GetAllVMSpecs retorna uma cópia de todos os VMSpecs conhecidos.
+// Usado para análise de SKUs alternativos sem acessar o mapa diretamente.
+func GetAllVMSpecs() map[string]VMSpec {
+	result := make(map[string]VMSpec, len(azureVMSpecs))
+	for k, v := range azureVMSpecs {
+		result[k] = v
+	}
+	return result
+}

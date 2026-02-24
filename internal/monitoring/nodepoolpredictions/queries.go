@@ -250,6 +250,30 @@ func (q *NodePoolQueries) GetNodeDiskWriteRateQuery(instanceRegex string) string
 	)
 }
 
+// GetNodeDiskGrowthRateQuery retorna a taxa de crescimento do espaço USADO no disco raiz
+// por node, em bytes/segundo (positivo = espaço livre diminuindo = disco enchendo).
+//
+// Usa deriv() sobre node_filesystem_avail_bytes com janela de 1h:
+//   - deriv() aplica regressão linear — estável mesmo com oscilações curtas
+//   - Valor negativo = bytes livres diminuindo → negamos → resultado positivo = crescimento de uso
+//   - Janela [1h] é o equilíbrio entre sensibilidade (curta) e estabilidade (longa)
+//
+// NÃO usamos rate() pois filesystem_avail_bytes é um gauge que pode cair e subir.
+func (q *NodePoolQueries) GetNodeDiskGrowthRateQuery(instanceRegex string) string {
+	return fmt.Sprintf(
+		`-deriv(node_filesystem_avail_bytes{instance=~"%s", mountpoint="/", fstype!="tmpfs"}[1h])`,
+		instanceRegex,
+	)
+}
+
+// GetNodeDiskSizeBytesQuery retorna o tamanho total do disco raiz por node (bytes)
+func (q *NodePoolQueries) GetNodeDiskSizeBytesQuery(instanceRegex string) string {
+	return fmt.Sprintf(
+		`node_filesystem_size_bytes{instance=~"%s", mountpoint="/", fstype!="tmpfs"}`,
+		instanceRegex,
+	)
+}
+
 // ---------------------------------------------------------------------------
 // Pod density por node
 // ---------------------------------------------------------------------------
