@@ -15,7 +15,7 @@ import {
   TrendingUp, Loader2, X, Download, History,
   CheckCircle2, TriangleAlert, Activity, Server,
   DollarSign, Zap, ArrowUp, ArrowDown, Minus,
-  Network, BarChart3, CalendarClock,
+  Network, BarChart3, CalendarClock, Scale,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -1074,6 +1074,83 @@ export function NodePoolPredictionModal({
                         {result.raw_metrics.bin_packing.wasted_resources && (
                           <p className="text-xs text-muted-foreground mt-2">
                             Recursos desperdiçados: {result.raw_metrics.bin_packing.wasted_resources}
+                          </p>
+                        )}
+                      </AccordionContent>
+                    </AccordionItem>
+                  )}
+
+                  {/* ── HPAs DO POOL ─────────────────────────────────── */}
+                  {(result.raw_metrics?.hpa_correlation?.length ?? 0) > 0 && (
+                    <AccordionItem value="hpa" className="bg-gradient-card border border-border/50 rounded-lg px-4">
+                      <AccordionTrigger className="hover:no-underline">
+                        <span className="flex items-center gap-2 font-semibold">
+                          <Scale className="w-4 h-4 text-blue-400" />
+                          HPAs neste Pool
+                          {result.raw_metrics.hpa_correlation.some((h: any) => h.at_max) && (
+                            <Badge className="ml-2 text-xs bg-red-500/20 text-red-400 border-red-500/30">
+                              {result.raw_metrics.hpa_correlation.filter((h: any) => h.at_max).length} em limite
+                            </Badge>
+                          )}
+                          {!result.raw_metrics.hpa_correlation.some((h: any) => h.at_max) && (
+                            <Badge className="ml-2 text-xs bg-green-500/20 text-green-500 border-green-500/30">
+                              {result.raw_metrics.hpa_correlation.length} HPAs
+                            </Badge>
+                          )}
+                        </span>
+                      </AccordionTrigger>
+                      <AccordionContent>
+                        <div className="space-y-2">
+                          {result.raw_metrics.hpa_correlation.map((hpa: any, i: number) => (
+                            <div
+                              key={i}
+                              className={`flex items-center justify-between rounded p-2 text-xs ${
+                                hpa.at_max
+                                  ? "bg-red-500/10 border border-red-500/30"
+                                  : "bg-background/50 border border-border/30"
+                              }`}
+                            >
+                              <div className="flex flex-col gap-0.5 min-w-0">
+                                <span className="font-medium truncate">{hpa.hpa_name}</span>
+                                <span className="text-muted-foreground">{hpa.namespace} · {hpa.target_kind}/{hpa.target_name}</span>
+                              </div>
+                              <div className="flex items-center gap-3 shrink-0 ml-3">
+                                {/* Réplicas */}
+                                <div className="text-center">
+                                  <div className={`font-bold ${hpa.at_max ? "text-red-400" : "text-foreground"}`}>
+                                    {hpa.current_replicas}/{hpa.max_replicas}
+                                  </div>
+                                  <div className="text-muted-foreground">replicas</div>
+                                </div>
+                                {/* Pods no pool */}
+                                <div className="text-center">
+                                  <div className="font-medium">{hpa.pods_on_pool}/{hpa.total_pods}</div>
+                                  <div className="text-muted-foreground">no pool</div>
+                                </div>
+                                {/* Target CPU */}
+                                {hpa.target_cpu_percent > 0 && (
+                                  <div className="text-center">
+                                    <div className="font-medium">{hpa.target_cpu_percent}%</div>
+                                    <div className="text-muted-foreground">target CPU</div>
+                                  </div>
+                                )}
+                                {/* Badge at_max */}
+                                {hpa.at_max ? (
+                                  <Badge className="text-xs bg-red-500/20 text-red-400 border-red-500/30">
+                                    LIMITE
+                                  </Badge>
+                                ) : (
+                                  <Badge className="text-xs bg-green-500/20 text-green-500 border-green-500/30">
+                                    OK
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        {result.raw_metrics.hpa_correlation.some((h: any) => h.at_max) && (
+                          <p className="text-xs text-red-400/80 mt-3">
+                            HPAs em limite maximo nao conseguem escalar mais. Se a carga aumentar, as replicas existentes absorvem toda a pressao sem possibilidade de escalonamento horizontal.
                           </p>
                         )}
                       </AccordionContent>

@@ -119,6 +119,9 @@ type NodePoolMetrics struct {
 	// Análise de fragmentação (bin-packing)
 	BinPacking BinPackingAnalysis `json:"bin_packing"`
 
+	// Correlação com HPAs do pool (quais HPAs têm pods neste pool)
+	HPACorrelation []HPAPoolCorrelation `json:"hpa_correlation,omitempty"`
+
 	// Capacidade de crescimento
 	CapacityForecast NodePoolCapacityForecast `json:"capacity_forecast"`
 
@@ -283,6 +286,22 @@ type BinPackingAnalysis struct {
 	// Rebalanceamento necessário?
 	RebalancingNeeded bool   `json:"rebalancing_needed"`
 	WastedResources   string `json:"wasted_resources"` // descrição legível (ex: "~4 cores, ~8GB RAM")
+}
+
+// HPAPoolCorrelation representa um HPA que possui pods rodando neste pool.
+type HPAPoolCorrelation struct {
+	HPAName         string `json:"hpa_name"`
+	Namespace       string `json:"namespace"`
+	TargetName      string `json:"target_name"`
+	TargetKind      string `json:"target_kind"`
+	CurrentReplicas int32  `json:"current_replicas"`
+	MaxReplicas     int32  `json:"max_replicas"`
+	DesiredReplicas int32  `json:"desired_replicas"`
+	TargetCPUPct    int32  `json:"target_cpu_percent,omitempty"`
+	// AtMax = true quando current == max (HPA não consegue escalar mais)
+	AtMax      bool `json:"at_max"`
+	PodsOnPool int  `json:"pods_on_pool"` // pods do deployment rodando neste pool
+	TotalPods  int  `json:"total_pods"`   // total de pods do deployment
 }
 
 // ---------------------------------------------------------------------------

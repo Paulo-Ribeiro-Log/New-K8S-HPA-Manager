@@ -602,6 +602,32 @@ func generateNodePoolMarkdownReport(r *np.NodePoolPredictionResult) string {
 	}
 	b.WriteString("\n")
 
+	// ── HPAs do Pool ──────────────────────────────────────────────────────
+	if len(r.RawMetrics.HPACorrelation) > 0 {
+		b.WriteString("## HPAs COM PODS NESTE POOL\n\n")
+		atMax := 0
+		for _, hpa := range r.RawMetrics.HPACorrelation {
+			if hpa.AtMax {
+				atMax++
+			}
+		}
+		b.WriteString(fmt.Sprintf("Total de HPAs correlacionados: %d (%d no limite maximo)\n\n",
+			len(r.RawMetrics.HPACorrelation), atMax))
+		b.WriteString(fmt.Sprintf("| HPA | Namespace | Target | Replicas | Max | Em Limite | Pods no Pool |\n"))
+		b.WriteString(fmt.Sprintf("|-----|-----------|--------|----------|-----|-----------|-------------|\n"))
+		for _, hpa := range r.RawMetrics.HPACorrelation {
+			limiteStr := "Nao"
+			if hpa.AtMax {
+				limiteStr = "*** SIM ***"
+			}
+			b.WriteString(fmt.Sprintf("| %s | %s | %s | %d | %d | %s | %d/%d |\n",
+				hpa.HPAName, hpa.Namespace, hpa.TargetName,
+				hpa.CurrentReplicas, hpa.MaxReplicas,
+				limiteStr, hpa.PodsOnPool, hpa.TotalPods))
+		}
+		b.WriteString("\n")
+	}
+
 	// ── Análise de Custo ──────────────────────────────────────────────────
 	if r.CostAnalysis != nil {
 		ca := r.CostAnalysis
