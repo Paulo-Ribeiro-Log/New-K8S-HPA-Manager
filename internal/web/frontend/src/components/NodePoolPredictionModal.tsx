@@ -1,4 +1,7 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import {
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
+} from "recharts";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
@@ -12,7 +15,7 @@ import {
   TrendingUp, Loader2, X, Download, History,
   CheckCircle2, TriangleAlert, Activity, Server,
   DollarSign, Zap, ArrowUp, ArrowDown, Minus,
-  Network, BarChart3, CalendarClock,
+  Network, BarChart3, CalendarClock, Scale, HardDrive,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -98,6 +101,85 @@ function fmtBRL(v: number | undefined) {
   return `R$ ${v.toFixed(2)}`;
 }
 
+// ── Chart helpers ──────────────────────────────────────────────────────────────
+
+/** Converte array de TrendSnapshot (Go) em dados para Recharts, do mais antigo ao mais recente */
+function buildTrendChartData(snapshots: any[] | undefined) {
+  if (!snapshots?.length) return null;
+  return [...snapshots]
+    .sort((a: any, b: any) => b.days_ago - a.days_ago) // D-14 primeiro, D-0 por último
+    .map((s: any) => ({
+      label: s.days_ago === 0 ? "Hoje" : `D-${s.days_ago}`,
+      value: Math.round((s.value_per_node ?? 0) * 10) / 10,
+    }));
+}
+
+function trendLineColor(dir: string) {
+  if (dir === "up" || dir === "increasing") return "#f97316"; // laranja
+  if (dir === "down" || dir === "decreasing") return "#22c55e"; // verde
+  return "#6366f1"; // índigo (estável)
+}
+
+interface TrendMiniChartProps {
+  data: { label: string; value: number }[];
+  color: string;
+  unit?: string;
+  showThreshold?: boolean;
+}
+
+function TrendMiniChart({ data, color, unit = "%", showThreshold = false }: TrendMiniChartProps) {
+  const maxVal = Math.max(...data.map((d) => d.value), showThreshold ? 90 : 0);
+  const domain: [number, number] = [0, Math.ceil(Math.max(maxVal * 1.1, 10) / 10) * 10];
+  return (
+    <ResponsiveContainer width="100%" height={90}>
+      <LineChart data={data} margin={{ top: 4, right: 6, left: -22, bottom: 0 }}>
+        <XAxis
+          dataKey="label"
+          tick={{ fontSize: 10, fill: "#9ca3af" }}
+          axisLine={false}
+          tickLine={false}
+        />
+        <YAxis
+          domain={domain}
+          tick={{ fontSize: 10, fill: "#9ca3af" }}
+          axisLine={false}
+          tickLine={false}
+          tickFormatter={(v) => `${v}${unit === "%" ? "%" : ""}`}
+        />
+        <Tooltip
+          contentStyle={{
+            fontSize: 11,
+            background: "hsl(var(--background))",
+            border: "1px solid hsl(var(--border))",
+            borderRadius: 6,
+            padding: "4px 8px",
+          }}
+          formatter={(v: any) => [`${v}${unit}`, ""]}
+          labelStyle={{ color: "#9ca3af" }}
+        />
+        {showThreshold && (
+          <ReferenceLine
+            y={85}
+            stroke="#ef4444"
+            strokeDasharray="3 3"
+            strokeWidth={1}
+            label={{ value: "85%", position: "right", fontSize: 9, fill: "#ef4444" }}
+          />
+        )}
+        <Line
+          type="monotone"
+          dataKey="value"
+          stroke={color}
+          strokeWidth={2}
+          dot={{ r: 3, fill: color, strokeWidth: 0 }}
+          activeDot={{ r: 4 }}
+          isAnimationActive={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
 // ── Componente principal ───────────────────────────────────────────────────────
 
 export function NodePoolPredictionModal({
@@ -111,6 +193,11 @@ export function NodePoolPredictionModal({
 
   const [exportingMD, setExportingMD] = useState(false);
   const [exportingPDF, setExportingPDF] = useState(false);
+
+  // Dados dos gráficos de tendência (memoizados para evitar recálculo em renders)
+  const cpuChartData = useMemo(() => buildTrendChartData(result?.raw_metrics?.cpu_trend_per_node), [result]);
+  const memChartData = useMemo(() => buildTrendChartData(result?.raw_metrics?.mem_trend_per_node), [result]);
+  const podsChartData = useMemo(() => buildTrendChartData(result?.raw_metrics?.pods_trend_per_node), [result]);
 
   const handleClose = () => {
     if (loading) return;
@@ -278,7 +365,10 @@ export function NodePoolPredictionModal({
                         </div>
                       )}
                       {result.saturation_timeline?.most_critical?.estimated_date && (
-                        <div className="bg-background/50 rounded p-2 text-center">
+                        <div className="bg-background/50 rounded p-2 text-center" title={`Previsão de quando a métrica ${result.saturation_timeline.most_critical.metric} atingirá o limite de saturação (${result.saturation_timeline.most_critical.threshold ?? 85}%)`}>
+                          <div className="text-xs text-muted-foreground mb-0.5 font-medium">
+                            saturação prevista
+                          </div>
                           <div className={`text-base font-bold leading-tight ${
                             result.saturation_timeline.most_critical.urgency_badge === "CRITICO" ? "text-red-400" :
                             result.saturation_timeline.most_critical.urgency_badge === "ATENCAO" ? "text-yellow-400" :
@@ -287,7 +377,12 @@ export function NodePoolPredictionModal({
                             {new Date(result.saturation_timeline.most_critical.estimated_date).toLocaleDateString("pt-BR")}
                           </div>
                           <div className="text-xs text-muted-foreground">
-                            satura ({result.saturation_timeline.most_critical.metric})
+                            métrica: <span className="font-medium">{result.saturation_timeline.most_critical.metric}</span>
+                            {result.saturation_timeline.most_critical.days_until_saturation != null && (
+                              <span className="ml-1">
+                                (~{Math.round(result.saturation_timeline.most_critical.days_until_saturation)}d)
+                              </span>
+                            )}
                           </div>
                         </div>
                       )}
@@ -325,6 +420,105 @@ export function NodePoolPredictionModal({
                           <code className="block mt-1 text-xs bg-secondary/50 p-1 rounded font-mono text-primary">
                             {result.action_summary.top_action_command}
                           </code>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── DELTA (comparação com análise anterior) ─────────── */}
+                {result.delta && (
+                  <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                    <h3 className="font-semibold mb-2 flex items-center gap-2">
+                      <History className="w-4 h-4 text-primary" />
+                      Comparação com análise anterior
+                      <span className="text-xs text-muted-foreground font-normal">
+                        — há {result.delta.days_since < 1
+                          ? `${Math.round(result.delta.days_since * 24)}h`
+                          : `${Math.round(result.delta.days_since)}d`}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-muted-foreground italic mb-3">{result.delta.summary}</p>
+                    <div className="flex flex-wrap gap-2">
+                      {/* Health Score */}
+                      {result.delta.health_score_delta !== 0 && (
+                        <Badge variant="outline" className={
+                          result.delta.health_score_delta > 0
+                            ? "border-green-500 text-green-400"
+                            : "border-red-500 text-red-400"
+                        }>
+                          Health {result.delta.health_score_delta > 0 ? "+" : ""}{result.delta.health_score_delta}
+                        </Badge>
+                      )}
+                      {/* CPU */}
+                      {Math.abs(result.delta.cpu_delta_pp ?? 0) >= 1 && (
+                        <Badge variant="outline" className={
+                          result.delta.cpu_delta_pp < 0
+                            ? "border-green-500 text-green-400"
+                            : "border-red-500 text-red-400"
+                        }>
+                          CPU {result.delta.cpu_delta_pp > 0 ? "+" : ""}{(result.delta.cpu_delta_pp).toFixed(1)}pp
+                        </Badge>
+                      )}
+                      {/* Memória */}
+                      {Math.abs(result.delta.mem_delta_pp ?? 0) >= 1 && (
+                        <Badge variant="outline" className={
+                          result.delta.mem_delta_pp < 0
+                            ? "border-green-500 text-green-400"
+                            : "border-red-500 text-red-400"
+                        }>
+                          Mem {result.delta.mem_delta_pp > 0 ? "+" : ""}{(result.delta.mem_delta_pp).toFixed(1)}pp
+                        </Badge>
+                      )}
+                      {/* Pods */}
+                      {Math.abs(result.delta.pods_delta ?? 0) >= 0.5 && (
+                        <Badge variant="outline" className={
+                          result.delta.pods_delta < 0
+                            ? "border-green-500 text-green-400"
+                            : "border-yellow-500 text-yellow-400"
+                        }>
+                          Pods {result.delta.pods_delta > 0 ? "+" : ""}{(result.delta.pods_delta).toFixed(1)}/node
+                        </Badge>
+                      )}
+                      {/* conntrack */}
+                      {Math.abs(result.delta.conntrack_delta_pp ?? 0) >= 0.5 && (
+                        <Badge variant="outline" className={
+                          result.delta.conntrack_delta_pp < 0
+                            ? "border-green-500 text-green-400"
+                            : "border-red-500 text-red-400"
+                        }>
+                          conntrack {result.delta.conntrack_delta_pp > 0 ? "+" : ""}{(result.delta.conntrack_delta_pp).toFixed(1)}pp
+                        </Badge>
+                      )}
+                      {/* Fragmentação */}
+                      {Math.abs(result.delta.bin_packing_delta_pp ?? 0) >= 2 && (
+                        <Badge variant="outline" className={
+                          result.delta.bin_packing_delta_pp > 0
+                            ? "border-green-500 text-green-400"
+                            : "border-yellow-500 text-yellow-400"
+                        }>
+                          Frag. {result.delta.bin_packing_delta_pp > 0 ? "+" : ""}{(result.delta.bin_packing_delta_pp).toFixed(1)}pp
+                        </Badge>
+                      )}
+                      {/* Nenhuma variação significativa */}
+                      {(result.delta.improving?.length ?? 0) === 0 &&
+                       (result.delta.degrading?.length ?? 0) === 0 && (
+                        <span className="text-xs text-muted-foreground">
+                          Sem variação significativa nas métricas
+                        </span>
+                      )}
+                    </div>
+                    {((result.delta.improving?.length ?? 0) > 0 || (result.delta.degrading?.length ?? 0) > 0) && (
+                      <div className="mt-2 flex flex-wrap gap-4 text-xs">
+                        {(result.delta.improving?.length ?? 0) > 0 && (
+                          <span className="text-green-400">
+                            Melhorando: {result.delta.improving.join(", ")}
+                          </span>
+                        )}
+                        {(result.delta.degrading?.length ?? 0) > 0 && (
+                          <span className="text-red-400">
+                            Degradando: {result.delta.degrading.join(", ")}
+                          </span>
                         )}
                       </div>
                     )}
@@ -577,49 +771,133 @@ export function NodePoolPredictionModal({
                         </span>
                       </AccordionTrigger>
                       <AccordionContent>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          {[
-                            { label: "CPU", dir: result.trends.cpu_trend, change3d: result.trends.cpu_change_3d_percent, change7d: result.trends.cpu_change_7d_percent, change14d: result.trends.cpu_change_14d_percent },
-                            { label: "Memória", dir: result.trends.mem_trend, change3d: null, change7d: result.trends.mem_change_7d_percent, change14d: result.trends.mem_change_14d_percent },
-                            { label: "Pods", dir: result.trends.pods_trend, change3d: null, change7d: result.trends.pods_change_7d_percent, change14d: null },
-                            { label: "conntrack", dir: result.trends.conntrack_trend, change3d: null, change7d: (result.trends.conntrack_change_7d_percent !== 0 ? result.trends.conntrack_change_7d_percent : null), change14d: null },
-                          ].map((t) => (
-                            <div key={t.label} className="bg-background/50 rounded p-3">
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="font-medium text-sm">{t.label}</span>
-                                <div className="flex items-center gap-1">
-                                  {trendIcon(t.dir)}
-                                  <span className="text-xs text-muted-foreground">{trendLabel(t.dir)}</span>
-                                </div>
-                              </div>
-                              <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                                {t.change3d !== null && t.change3d !== undefined && (
-                                  <div>
-                                    <div className={`font-bold ${(t.change3d ?? 0) > 0 ? "text-red-400" : "text-green-400"}`}>
-                                      {(t.change3d ?? 0) > 0 ? "+" : ""}{(t.change3d ?? 0).toFixed(1)}%
-                                    </div>
-                                    <div className="text-muted-foreground">D-3</div>
-                                  </div>
-                                )}
-                                {t.change7d !== null && t.change7d !== undefined && (
-                                  <div>
-                                    <div className={`font-bold ${(t.change7d ?? 0) > 0 ? "text-red-400" : "text-green-400"}`}>
-                                      {(t.change7d ?? 0) > 0 ? "+" : ""}{(t.change7d ?? 0).toFixed(1)}%
-                                    </div>
-                                    <div className="text-muted-foreground">D-7</div>
-                                  </div>
-                                )}
-                                {t.change14d !== null && t.change14d !== undefined && (
-                                  <div>
-                                    <div className={`font-bold ${(t.change14d ?? 0) > 0 ? "text-red-400" : "text-green-400"}`}>
-                                      {(t.change14d ?? 0) > 0 ? "+" : ""}{(t.change14d ?? 0).toFixed(1)}%
-                                    </div>
-                                    <div className="text-muted-foreground">D-14</div>
-                                  </div>
-                                )}
+                        <div className="space-y-3">
+
+                          {/* CPU */}
+                          <div className="bg-background/50 rounded p-3">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="font-medium text-sm">CPU por node</span>
+                              <div className="flex items-center gap-1">
+                                {trendIcon(result.trends.cpu_trend)}
+                                <span className="text-xs text-muted-foreground">{trendLabel(result.trends.cpu_trend)}</span>
                               </div>
                             </div>
-                          ))}
+                            {cpuChartData ? (
+                              <TrendMiniChart
+                                data={cpuChartData}
+                                color={trendLineColor(result.trends.cpu_trend)}
+                                unit="%"
+                                showThreshold={true}
+                              />
+                            ) : null}
+                            <div className="flex gap-4 justify-end text-xs mt-1">
+                              {[
+                                ["D-3", result.trends.cpu_change_3d_percent],
+                                ["D-7", result.trends.cpu_change_7d_percent],
+                                ["D-14", result.trends.cpu_change_14d_percent],
+                              ].map(([lbl, val]) =>
+                                val != null && val !== undefined ? (
+                                  <span key={lbl as string}>
+                                    <span className="text-muted-foreground">{lbl}: </span>
+                                    <span className={`font-bold ${(val as number) > 0 ? "text-red-400" : "text-green-400"}`}>
+                                      {(val as number) > 0 ? "+" : ""}{(val as number).toFixed(1)}%
+                                    </span>
+                                  </span>
+                                ) : null
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Memória */}
+                          <div className="bg-background/50 rounded p-3">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="font-medium text-sm">Memória por node</span>
+                              <div className="flex items-center gap-1">
+                                {trendIcon(result.trends.mem_trend)}
+                                <span className="text-xs text-muted-foreground">{trendLabel(result.trends.mem_trend)}</span>
+                              </div>
+                            </div>
+                            {memChartData ? (
+                              <TrendMiniChart
+                                data={memChartData}
+                                color={trendLineColor(result.trends.mem_trend)}
+                                unit="%"
+                                showThreshold={true}
+                              />
+                            ) : null}
+                            <div className="flex gap-4 justify-end text-xs mt-1">
+                              {[
+                                ["D-7", result.trends.mem_change_7d_percent],
+                                ["D-14", result.trends.mem_change_14d_percent],
+                              ].map(([lbl, val]) =>
+                                val != null && val !== undefined ? (
+                                  <span key={lbl as string}>
+                                    <span className="text-muted-foreground">{lbl}: </span>
+                                    <span className={`font-bold ${(val as number) > 0 ? "text-red-400" : "text-green-400"}`}>
+                                      {(val as number) > 0 ? "+" : ""}{(val as number).toFixed(1)}%
+                                    </span>
+                                  </span>
+                                ) : null
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Pods/node */}
+                          <div className="bg-background/50 rounded p-3">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="font-medium text-sm">Pods por node</span>
+                              <div className="flex items-center gap-1">
+                                {trendIcon(result.trends.pods_trend)}
+                                <span className="text-xs text-muted-foreground">{trendLabel(result.trends.pods_trend)}</span>
+                              </div>
+                            </div>
+                            {podsChartData ? (
+                              <TrendMiniChart
+                                data={podsChartData}
+                                color={trendLineColor(result.trends.pods_trend)}
+                                unit=" pods"
+                                showThreshold={false}
+                              />
+                            ) : null}
+                            <div className="flex gap-4 justify-end text-xs mt-1">
+                              {result.trends.pods_change_7d_percent != null && (
+                                <span>
+                                  <span className="text-muted-foreground">D-7: </span>
+                                  <span className={`font-bold ${result.trends.pods_change_7d_percent > 0 ? "text-red-400" : "text-green-400"}`}>
+                                    {result.trends.pods_change_7d_percent > 0 ? "+" : ""}{result.trends.pods_change_7d_percent.toFixed(1)}%
+                                  </span>
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* conntrack — texto apenas (sem histórico de snapshots) */}
+                          {result.trends.conntrack_trend && (
+                            <div className="bg-background/50 rounded p-3">
+                              <div className="flex items-center justify-between">
+                                <span className="font-medium text-sm">conntrack</span>
+                                <div className="flex items-center gap-1">
+                                  {trendIcon(result.trends.conntrack_trend)}
+                                  <span className="text-xs text-muted-foreground">{trendLabel(result.trends.conntrack_trend)}</span>
+                                </div>
+                              </div>
+                              {result.trends.conntrack_change_7d_percent !== 0 &&
+                               result.trends.conntrack_change_7d_percent != null && (
+                                <div className="flex gap-4 justify-end text-xs mt-1">
+                                  <span>
+                                    <span className="text-muted-foreground">D-7 est.: </span>
+                                    <span className={`font-bold ${result.trends.conntrack_change_7d_percent > 0 ? "text-red-400" : "text-green-400"}`}>
+                                      {result.trends.conntrack_change_7d_percent > 0 ? "+" : ""}{result.trends.conntrack_change_7d_percent.toFixed(1)}%
+                                    </span>
+                                  </span>
+                                </div>
+                              )}
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Tendência estimada via taxa de crescimento (sem histórico D-14)
+                              </p>
+                            </div>
+                          )}
+
                         </div>
                       </AccordionContent>
                     </AccordionItem>
@@ -810,6 +1088,164 @@ export function NodePoolPredictionModal({
                     </AccordionItem>
                   )}
 
+                  {/* ── HPAs DO POOL ─────────────────────────────────── */}
+                  {(result.raw_metrics?.hpa_correlation?.length ?? 0) > 0 && (
+                    <AccordionItem value="hpa" className="bg-gradient-card border border-border/50 rounded-lg px-4">
+                      <AccordionTrigger className="hover:no-underline">
+                        <span className="flex items-center gap-2 font-semibold">
+                          <Scale className="w-4 h-4 text-blue-400" />
+                          HPAs neste Pool
+                          {result.raw_metrics.hpa_correlation.some((h: any) => h.at_max) && (
+                            <Badge className="ml-2 text-xs bg-red-500/20 text-red-400 border-red-500/30">
+                              {result.raw_metrics.hpa_correlation.filter((h: any) => h.at_max).length} em limite
+                            </Badge>
+                          )}
+                          {!result.raw_metrics.hpa_correlation.some((h: any) => h.at_max) && (
+                            <Badge className="ml-2 text-xs bg-green-500/20 text-green-500 border-green-500/30">
+                              {result.raw_metrics.hpa_correlation.length} HPAs
+                            </Badge>
+                          )}
+                        </span>
+                      </AccordionTrigger>
+                      <AccordionContent>
+                        <div className="space-y-2">
+                          {result.raw_metrics.hpa_correlation.map((hpa: any, i: number) => (
+                            <div
+                              key={i}
+                              className={`flex items-center justify-between rounded p-2 text-xs ${
+                                hpa.at_max
+                                  ? "bg-red-500/10 border border-red-500/30"
+                                  : "bg-background/50 border border-border/30"
+                              }`}
+                            >
+                              <div className="flex flex-col gap-0.5 min-w-0">
+                                <span className="font-medium truncate">{hpa.hpa_name}</span>
+                                <span className="text-muted-foreground">{hpa.namespace} · {hpa.target_kind}/{hpa.target_name}</span>
+                              </div>
+                              <div className="flex items-center gap-3 shrink-0 ml-3">
+                                {/* Réplicas */}
+                                <div className="text-center">
+                                  <div className={`font-bold ${hpa.at_max ? "text-red-400" : "text-foreground"}`}>
+                                    {hpa.current_replicas}/{hpa.max_replicas}
+                                  </div>
+                                  <div className="text-muted-foreground">replicas</div>
+                                </div>
+                                {/* Pods no pool */}
+                                <div className="text-center">
+                                  <div className="font-medium">{hpa.pods_on_pool}/{hpa.total_pods}</div>
+                                  <div className="text-muted-foreground">no pool</div>
+                                </div>
+                                {/* Target CPU */}
+                                {hpa.target_cpu_percent > 0 && (
+                                  <div className="text-center">
+                                    <div className="font-medium">{hpa.target_cpu_percent}%</div>
+                                    <div className="text-muted-foreground">target CPU</div>
+                                  </div>
+                                )}
+                                {/* Badge at_max */}
+                                {hpa.at_max ? (
+                                  <Badge className="text-xs bg-red-500/20 text-red-400 border-red-500/30">
+                                    LIMITE
+                                  </Badge>
+                                ) : (
+                                  <Badge className="text-xs bg-green-500/20 text-green-500 border-green-500/30">
+                                    OK
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        {result.raw_metrics.hpa_correlation.some((h: any) => h.at_max) && (
+                          <p className="text-xs text-red-400/80 mt-3">
+                            HPAs em limite maximo nao conseguem escalar mais. Se a carga aumentar, as replicas existentes absorvem toda a pressao sem possibilidade de escalonamento horizontal.
+                          </p>
+                        )}
+                      </AccordionContent>
+                    </AccordionItem>
+                  )}
+
+                  {/* ── DISCO EFÊMERO ────────────────────────────────── */}
+                  {result.raw_metrics?.disk_growth?.has_data && (
+                    <AccordionItem value="disk" className="bg-gradient-card border border-border/50 rounded-lg px-4">
+                      <AccordionTrigger className="hover:no-underline">
+                        <span className="flex items-center gap-2 font-semibold">
+                          <HardDrive className="w-4 h-4 text-orange-400" />
+                          Disco Efêmero
+                          {(() => {
+                            const dg = result.raw_metrics.disk_growth;
+                            if (dg.nodes_critical > 0)
+                              return <Badge className="ml-2 text-xs bg-red-500/20 text-red-400 border-red-500/30">{dg.nodes_critical} crítico(s)</Badge>;
+                            if (dg.nodes_warning > 0)
+                              return <Badge className="ml-2 text-xs bg-yellow-500/20 text-yellow-400 border-yellow-500/30">{dg.nodes_warning} em alerta</Badge>;
+                            if (dg.max_growth_pct_day > 0)
+                              return <Badge className="ml-2 text-xs bg-blue-500/20 text-blue-400 border-blue-500/30">crescendo</Badge>;
+                            return <Badge className="ml-2 text-xs bg-green-500/20 text-green-500 border-green-500/30">estável</Badge>;
+                          })()}
+                        </span>
+                      </AccordionTrigger>
+                      <AccordionContent>
+                        {(() => {
+                          const dg = result.raw_metrics.disk_growth;
+                          if (!dg.max_growth_pct_day || dg.max_growth_pct_day <= 0) {
+                            return (
+                              <p className="text-sm text-muted-foreground">
+                                Nenhum crescimento detectado. Disco estável.
+                              </p>
+                            );
+                          }
+                          return (
+                            <div className="space-y-3">
+                              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                <div className="bg-background/50 rounded p-3">
+                                  <div className="text-xs text-muted-foreground mb-1">Uso atual (max)</div>
+                                  <div className={`text-xl font-bold ${
+                                    dg.max_usage_pct >= 85 ? "text-red-400" :
+                                    dg.max_usage_pct >= 70 ? "text-yellow-400" : "text-foreground"
+                                  }`}>
+                                    {dg.max_usage_pct?.toFixed(1)}%
+                                  </div>
+                                </div>
+                                <div className="bg-background/50 rounded p-3">
+                                  <div className="text-xs text-muted-foreground mb-1">Taxa crescimento</div>
+                                  <div className="text-xl font-bold text-orange-400">
+                                    {dg.max_growth_pct_day?.toFixed(3)}%<span className="text-sm font-normal">/dia</span>
+                                  </div>
+                                </div>
+                                <div className="bg-background/50 rounded p-3">
+                                  <div className="text-xs text-muted-foreground mb-1">Dias até cheio</div>
+                                  <div className={`text-xl font-bold ${
+                                    dg.min_days_until_full > 0 && dg.min_days_until_full <= 7 ? "text-red-400" :
+                                    dg.min_days_until_full > 0 && dg.min_days_until_full <= 30 ? "text-yellow-400" :
+                                    "text-muted-foreground"
+                                  }`}>
+                                    {dg.min_days_until_full > 0 ? `~${Math.round(dg.min_days_until_full)}d` : "—"}
+                                  </div>
+                                </div>
+                              </div>
+                              {dg.fastest_node && (
+                                <p className="text-xs text-muted-foreground">
+                                  Node mais crítico: <span className="font-medium text-foreground">{dg.fastest_node}</span>
+                                </p>
+                              )}
+                              {(dg.nodes_warning > 0 || dg.nodes_critical > 0) && (
+                                <p className="text-xs text-yellow-400/80">
+                                  {dg.nodes_critical > 0 && `${dg.nodes_critical} node(s) crítico(s) (>85% de uso). `}
+                                  {dg.nodes_warning > 0 && `${dg.nodes_warning} node(s) em alerta (>70% de uso).`}
+                                </p>
+                              )}
+                              {dg.min_days_until_full > 0 && dg.min_days_until_full <= 30 && (
+                                <p className="text-xs text-red-400/80 mt-1">
+                                  Atenção: disco pode atingir capacidade em breve. Verifique logs volumosos, coredumps ou dados de aplicação acumulando no disco raiz.
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </AccordionContent>
+                    </AccordionItem>
+                  )}
+
                   {/* ── CUSTO ────────────────────────────────────────── */}
                   {result.cost_analysis && (
                     <AccordionItem value="cost" className="bg-gradient-card border border-border/50 rounded-lg px-4">
@@ -875,6 +1311,62 @@ export function NodePoolPredictionModal({
                                     Economia: {fmtUSD(rec.savings_usd)}/mês · Impacto: {rec.impact}
                                   </div>
                                 )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* VMs alternativas baseadas em consumo histórico P95 */}
+                        {result.cost_analysis.sku_alternatives?.length > 0 && (
+                          <div className="space-y-2 mt-4">
+                            <div className="text-sm font-medium text-muted-foreground flex items-center gap-1">
+                              <HardDrive className="w-3.5 h-3.5" />
+                              VMs Alternativas (baseado em P95 histórico de {(() => {
+                                const alts = result.cost_analysis.sku_alternatives;
+                                const bn = alts[0]?.bottleneck ?? "balanced";
+                                return bn === "cpu" ? "CPU" : bn === "memory" ? "Memória" : "CPU e Memória";
+                              })()})
+                            </div>
+                            {result.cost_analysis.sku_alternatives.map((alt: any, i: number) => (
+                              <div
+                                key={i}
+                                className={`rounded border p-3 text-sm ${
+                                  alt.savings_usd > 0
+                                    ? "bg-green-500/5 border-green-500/20"
+                                    : "bg-orange-500/5 border-orange-500/20"
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2 mb-1">
+                                  <span className="font-semibold">{alt.vm_size}</span>
+                                  <div className="flex items-center gap-2">
+                                    <Badge className="text-xs bg-background/50">
+                                      {alt.vm_cpu_cores} vCPUs · {alt.vm_memory_gb} GB
+                                    </Badge>
+                                    {alt.savings_usd > 0 ? (
+                                      <Badge className="text-xs bg-green-500/20 text-green-500 border-green-500/30">
+                                        -{fmtUSD(alt.savings_usd)}/mês ({alt.savings_percent?.toFixed(1)}%)
+                                      </Badge>
+                                    ) : (
+                                      <Badge className="text-xs bg-orange-500/20 text-orange-400 border-orange-500/30">
+                                        +{fmtUSD(-alt.savings_usd)}/mês ({Math.abs(alt.savings_percent)?.toFixed(1)}% mais)
+                                      </Badge>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="text-xs text-muted-foreground mb-1">
+                                  Pool ({result.raw_metrics?.current_nodes ?? "?"} nodes): {fmtUSD(alt.pool_monthly_cost_usd)}/mês
+                                  {alt.cpu_delta_percent !== 0 && (
+                                    <span className={`ml-2 ${alt.cpu_delta_percent > 0 ? "text-blue-400" : "text-yellow-400"}`}>
+                                      CPU {alt.cpu_delta_percent > 0 ? "+" : ""}{alt.cpu_delta_percent?.toFixed(0)}%
+                                    </span>
+                                  )}
+                                  {alt.mem_delta_percent !== 0 && (
+                                    <span className={`ml-1 ${alt.mem_delta_percent > 0 ? "text-blue-400" : "text-yellow-400"}`}>
+                                      · RAM {alt.mem_delta_percent > 0 ? "+" : ""}{alt.mem_delta_percent?.toFixed(0)}%
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-muted-foreground italic">{alt.rationale}</div>
                               </div>
                             ))}
                           </div>

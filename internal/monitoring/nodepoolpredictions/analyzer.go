@@ -255,6 +255,26 @@ func (a *NodePoolAnalyzer) calculateHealthScore(metrics *NodePoolMetrics, trends
 		breakdown.ConntrackSafety*15 +
 		breakdown.AutoscalerHealth*10) / 100
 
+	// --- Penalidade: HPAs em limite máximo de réplicas com CPU elevada ---
+	// Se HPAs não conseguem mais escalar horizontalmente E o pool está sob pressão,
+	// o risco real é maior do que as métricas estáticas indicam.
+	atMaxCount := 0
+	for _, hpa := range metrics.HPACorrelation {
+		if hpa.AtMax {
+			atMaxCount++
+		}
+	}
+	if atMaxCount > 0 && worstUtil >= 70 {
+		// Penalidade proporcional: cada HPA em limite com CPU alta reduz 5 pontos (máx -15)
+		penalty := clampInt(atMaxCount*5, 0, 15)
+		overall = clampInt(overall-penalty, 0, 100)
+		log.Debug().
+			Int("at_max_hpas", atMaxCount).
+			Float64("worst_util", worstUtil).
+			Int("penalty", penalty).
+			Msg("Penalidade de HPA em limite aplicada ao health score")
+	}
+
 	category := "healthy"
 	if overall < 50 {
 		category = "critical"
@@ -711,6 +731,43 @@ func (a *NodePoolAnalyzer) fallbackAnalysis(
 			fmt.Sprintf("%d node(s) candidatos para scale-in (< 30%% utilização)", metrics.BinPacking.ScaleInCandidates))
 	}
 
+	// HPAs em limite máximo no pool
+	hpaAtMax := 0
+	var hpaAtMaxNames []string
+	for _, hpa := range metrics.HPACorrelation {
+		if hpa.AtMax {
+			hpaAtMax++
+			hpaAtMaxNames = append(hpaAtMaxNames, hpa.HPAName)
+		}
+	}
+	if hpaAtMax > 0 {
+		finding := fmt.Sprintf("%d HPA(s) no limite maximo de replicas: %s",
+			hpaAtMax, strings.Join(hpaAtMaxNames, ", "))
+		result.ExecutiveSummary.KeyFindings = append(result.ExecutiveSummary.KeyFindings, finding)
+
+		// Predição de curto prazo: risco de falta de capacidade
+		result.Predictions.ShortTerm = append(result.Predictions.ShortTerm, NodePoolPrediction{
+			Timeframe:   "4h",
+			Event:       fmt.Sprintf("%d HPA(s) no limite maximo — pool pode precisar de mais nodes para absorver carga", hpaAtMax),
+			Probability: 0.65,
+			Severity:    "high",
+			Impact:      "Sem escalonamento horizontal disponível; carga extra vai para replicas existentes",
+			Indicators:  []string{fmt.Sprintf("HPAs bloqueados: %s", strings.Join(hpaAtMaxNames, ", "))},
+		})
+
+		// Recomendação: aumentar maxReplicas ou o pool
+		result.Recommendations = append(result.Recommendations, NodePoolRecommendation{
+			Priority:    1,
+			Title:       fmt.Sprintf("Revisar maxReplicas dos HPAs em limite (%d)", hpaAtMax),
+			Description: fmt.Sprintf("HPAs %s atingiram maxReplicas e não conseguem mais escalar. Se a carga continuar crescendo, replicas existentes vão saturar.", strings.Join(hpaAtMaxNames, ", ")),
+			Actions:     []string{fmt.Sprintf("kubectl edit hpa %s -n <namespace>", hpaAtMaxNames[0])},
+			ExpectedImpact: "Permite escalonamento horizontal quando carga aumentar; reduz risco de degradação",
+			Category:    "scaling",
+			Complexity:  "low",
+			RiskLevel:   "low",
+		})
+	}
+
 	// Recomendação básica
 	if metrics.ConntrackPool.HasSufficientData && metrics.ConntrackPool.NodesCritical > 0 {
 		result.Recommendations = append(result.Recommendations, NodePoolRecommendation{
@@ -940,6 +997,13 @@ func (a *NodePoolAnalyzer) calculateSaturationTimeline(metrics *NodePoolMetrics,
 		}
 	}
 
+	// 5. Disco efêmero (threshold 85%) — taxa de crescimento via deriv() no node_exporter
+	if metrics.DataSources.NodeExporterAvailable && metrics.DiskGrowth.HasData {
+		if f := saturationForecastDisk(metrics, now); f != nil {
+			forecasts = append(forecasts, *f)
+		}
+	}
+
 	// Ordenar: métricas que saturam primeiro aparecem primeiro; nil (estável) vai para o final
 	sort.Slice(forecasts, func(i, j int) bool {
 		di, dj := forecasts[i].DaysUntilSaturation, forecasts[j].DaysUntilSaturation
@@ -957,14 +1021,20 @@ func (a *NodePoolAnalyzer) calculateSaturationTimeline(metrics *NodePoolMetrics,
 
 	timeline := PoolSaturationTimeline{Forecasts: forecasts}
 
-	// Métrica mais crítica = a que satura primeiro (com data concreta)
+	// Métrica mais crítica = a que satura primeiro COM data concreta E dentro de 180 dias
+	// Projeções além de 180 dias em pools com baixa utilização são ruído de ramp-up —
+	// o sistema ainda está crescendo e a taxa de crescimento inicial não é representativa.
+	const maxActionableDays = 180.0
 	for i := range forecasts {
-		if forecasts[i].DaysUntilSaturation != nil {
+		d := forecasts[i].DaysUntilSaturation
+		if d != nil && *d <= maxActionableDays {
 			f := forecasts[i]
 			timeline.MostCritical = &f
 			break
 		}
 	}
+	// Se nenhuma satura em 180 dias: não há most_critical (pool está estável a médio prazo)
+	// A lista de forecasts ainda é exibida no accordion para referência.
 
 	// Sumário legível
 	if timeline.MostCritical != nil {
@@ -1072,6 +1142,21 @@ func saturationForecastFromTrend(metric string, snapshots []TrendSnapshot, curre
 	// Projeção apenas se há crescimento e ainda não atingiu threshold
 	if dailyGrowthRate > 0 && currentValue < threshold {
 		days := (threshold - currentValue) / dailyGrowthRate
+
+		// Filtro de ramp-up: pools com uso atual baixo (<15%) e projeção longa (>90d)
+		// estão em fase inicial — a taxa de crescimento de ramp-up não é representativa
+		// do crescimento em regime estacionário. Exibir data é enganoso.
+		if currentValue < 15.0 && days > 90 {
+			forecast.UrgencyBadge = "ESTAVEL"
+			forecast.Confidence = "low"
+			log.Debug().
+				Str("metric", metric).
+				Float64("current_value", currentValue).
+				Float64("days", days).
+				Msg("projeção descartada: pool em ramp-up (uso baixo + projeção longa)")
+			return forecast
+		}
+
 		forecast.DaysUntilSaturation = &days
 		estimatedDate := now.Add(time.Duration(days*24) * time.Hour)
 		forecast.EstimatedDate = &estimatedDate
@@ -1118,6 +1203,18 @@ func saturationForecastConntrack(metrics *NodePoolMetrics, now time.Time) *Satur
 		Confidence:   "medium",
 	}
 
+	// Mínimo de uso para projeção confiável: pools com < 5% de conntrack estão em
+	// fase de ramp-up ou têm tráfego negligenciável — qualquer taxa de crescimento
+	// medida é provavelmente ruído, não tendência real.
+	if currentPct < 5.0 {
+		forecast.UrgencyBadge = "ESTAVEL"
+		forecast.Confidence = "low"
+		log.Debug().
+			Float64("conntrack_pct", currentPct).
+			Msg("conntrack < 5%: pool em ramp-up, projeção descartada")
+		return forecast
+	}
+
 	if pool.AvgGrowthRatePerH > 0 {
 		totalCap := float64(pool.TotalLimit)
 		pctGrowthPerHour := pool.AvgGrowthRatePerH / totalCap * 100.0
@@ -1156,6 +1253,68 @@ func saturationForecastConntrack(metrics *NodePoolMetrics, now time.Time) *Satur
 				}
 			}
 		} else {
+			forecast.UrgencyBadge = "ESTAVEL"
+		}
+	} else {
+		forecast.UrgencyBadge = "ESTAVEL"
+	}
+
+	return forecast
+}
+
+// saturationForecastDisk usa a taxa de crescimento de disco (DiskGrowthPctPerDay)
+// coletada via deriv(node_filesystem_avail_bytes[1h]) no node_exporter.
+// Reporta o node com menor DiskDaysUntilFull (mais crítico).
+func saturationForecastDisk(metrics *NodePoolMetrics, now time.Time) *SaturationForecast {
+	dg := metrics.DiskGrowth
+	if !dg.HasData || dg.MaxGrowthPctDay <= 0 {
+		return nil
+	}
+
+	threshold := 85.0
+	currentPct := dg.MaxUsagePct
+
+	forecast := &SaturationForecast{
+		Metric:          "disco",
+		AffectedNode:    dg.FastestNode,
+		CurrentValue:    currentPct,
+		Threshold:       threshold,
+		DailyGrowthRate: dg.MaxGrowthPctDay,
+		DataPoints:      1,
+		Confidence:      "medium",
+	}
+
+	// Filtro ramp-up: uso atual baixo + projeção longa → provavelmente ruído ou período inicial
+	if currentPct < 15.0 && dg.MinDaysUntilFull > 90 {
+		forecast.UrgencyBadge = "ESTAVEL"
+		forecast.Confidence = "low"
+		log.Debug().
+			Float64("disk_pct", currentPct).
+			Float64("days_until_full", dg.MinDaysUntilFull).
+			Msg("disco < 15% e projeção > 90d: pool em ramp-up, projeção descartada")
+		return forecast
+	}
+
+	if currentPct >= threshold {
+		zero := 0.0
+		forecast.DaysUntilSaturation = &zero
+		t := now
+		forecast.EstimatedDate = &t
+		forecast.UrgencyBadge = "CRITICO"
+		return forecast
+	}
+
+	if dg.MinDaysUntilFull > 0 {
+		days := dg.MinDaysUntilFull
+		forecast.DaysUntilSaturation = &days
+		estimatedDate := now.Add(time.Duration(days*24) * time.Hour)
+		forecast.EstimatedDate = &estimatedDate
+		switch {
+		case days <= 7:
+			forecast.UrgencyBadge = "CRITICO"
+		case days <= 30:
+			forecast.UrgencyBadge = "ATENCAO"
+		default:
 			forecast.UrgencyBadge = "ESTAVEL"
 		}
 	} else {

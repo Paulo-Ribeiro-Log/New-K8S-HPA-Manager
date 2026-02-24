@@ -47,6 +47,34 @@ type NodePoolPredictionResult struct {
 
 	// Timeline de saturação determinística (calculada via regressão linear sobre D-0/D-3/D-7/D-14)
 	SaturationTimeline PoolSaturationTimeline `json:"saturation_timeline"`
+
+	// Delta em relação à análise anterior do mesmo pool (nil se for a primeira análise)
+	Delta *NodePoolAnalysisDelta `json:"delta,omitempty"`
+}
+
+// NodePoolAnalysisDelta compara a análise atual com a anterior do mesmo pool.
+// Todos os campos de delta são: positivo = métrica aumentou, negativo = diminuiu.
+// "IsGood" depende da métrica: para recursos (CPU/Mem/etc), aumento = risco maior.
+type NodePoolAnalysisDelta struct {
+	// Referência à análise anterior
+	PreviousID         string    `json:"previous_id"`
+	PreviousAnalyzedAt time.Time `json:"previous_analyzed_at"`
+	DaysSince          float64   `json:"days_since"` // horas / 24
+
+	// Deltas de métricas (em pontos percentuais, exceto HealthScore em pontos absolutos)
+	HealthScoreDelta   int     `json:"health_score_delta"`    // positivo = melhorou
+	CPUDeltaPP         float64 `json:"cpu_delta_pp"`          // positivo = mais pressão (pior)
+	MemDeltaPP         float64 `json:"mem_delta_pp"`          // positivo = mais pressão (pior)
+	PodsDelta          float64 `json:"pods_delta"`            // positivo = mais pods/node
+	ConntrackDeltaPP   float64 `json:"conntrack_delta_pp"`    // positivo = mais pressão (pior)
+	BinPackingDeltaPP  float64 `json:"bin_packing_delta_pp"`  // positivo = menos desperdício (melhor)
+
+	// Listas de métricas que melhoraram ou pioraram (para exibição rápida)
+	Improving []string `json:"improving"` // ex: ["cpu", "mem"]
+	Degrading []string `json:"degrading"` // ex: ["conntrack", "pods"]
+
+	// Resumo legível
+	Summary string `json:"summary"` // ex: "Desde análise anterior (há 2d): conntrack +15.3pp, CPU -8.2pp"
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +119,12 @@ type NodePoolMetrics struct {
 	// Análise de fragmentação (bin-packing)
 	BinPacking BinPackingAnalysis `json:"bin_packing"`
 
+	// Correlação com HPAs do pool (quais HPAs têm pods neste pool)
+	HPACorrelation []HPAPoolCorrelation `json:"hpa_correlation,omitempty"`
+
+	// Crescimento do disco efêmero por node (silent killer)
+	DiskGrowth DiskGrowthAnalysis `json:"disk_growth"`
+
 	// Capacidade de crescimento
 	CapacityForecast NodePoolCapacityForecast `json:"capacity_forecast"`
 
@@ -118,6 +152,12 @@ type NodePoolNodeSnapshot struct {
 	ConntrackEntries  int64   `json:"conntrack_entries"`   // 0 se node_exporter indisponível
 	ConntrackLimit    int64   `json:"conntrack_limit"`     // 0 se indisponível
 	ConntrackPercent  float64 `json:"conntrack_percent"`   // 0 se indisponível
+
+	// Disco efêmero — crescimento (requer node_exporter com [1h] de dados)
+	DiskSizeGB          float64 `json:"disk_size_gb"`            // tamanho total do disco raiz (GB)
+	DiskGrowthBytesPerSec float64 `json:"disk_growth_bytes_per_sec"` // bytes/s sendo consumidos (0 se estável/decrescendo)
+	DiskGrowthPctPerDay   float64 `json:"disk_growth_pct_per_day"`   // crescimento em %/dia do disco raiz
+	DiskDaysUntilFull     float64 `json:"disk_days_until_full"`      // 0 = sem dados, <0 = estável/decrescendo
 
 	// Sistema
 	PIDCount int `json:"pid_count"` // 0 se indisponível
@@ -255,6 +295,34 @@ type BinPackingAnalysis struct {
 	// Rebalanceamento necessário?
 	RebalancingNeeded bool   `json:"rebalancing_needed"`
 	WastedResources   string `json:"wasted_resources"` // descrição legível (ex: "~4 cores, ~8GB RAM")
+}
+
+// DiskGrowthAnalysis resumo do crescimento de disco efêmero do pool.
+// Foca no node mais crítico (que cheia mais rápido).
+type DiskGrowthAnalysis struct {
+	HasData         bool    `json:"has_data"`          // true quando node_exporter forneceu dados
+	FastestNode     string  `json:"fastest_node"`      // node enchendo mais rápido
+	MaxGrowthPctDay float64 `json:"max_growth_pct_day"` // maior taxa de crescimento (pp/dia)
+	MaxUsagePct     float64 `json:"max_usage_pct"`      // maior % de uso atual entre os nodes
+	MinDaysUntilFull float64 `json:"min_days_until_full"` // menor "dias até cheio" do pool (0 = N/A)
+	NodesWarning    int     `json:"nodes_warning"`     // nodes com > 70% de uso
+	NodesCritical   int     `json:"nodes_critical"`    // nodes com > 85% de uso
+}
+
+// HPAPoolCorrelation representa um HPA que possui pods rodando neste pool.
+type HPAPoolCorrelation struct {
+	HPAName         string `json:"hpa_name"`
+	Namespace       string `json:"namespace"`
+	TargetName      string `json:"target_name"`
+	TargetKind      string `json:"target_kind"`
+	CurrentReplicas int32  `json:"current_replicas"`
+	MaxReplicas     int32  `json:"max_replicas"`
+	DesiredReplicas int32  `json:"desired_replicas"`
+	TargetCPUPct    int32  `json:"target_cpu_percent,omitempty"`
+	// AtMax = true quando current == max (HPA não consegue escalar mais)
+	AtMax      bool `json:"at_max"`
+	PodsOnPool int  `json:"pods_on_pool"` // pods do deployment rodando neste pool
+	TotalPods  int  `json:"total_pods"`   // total de pods do deployment
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +560,29 @@ type NodePoolCostAnalysis struct {
 
 	// Recomendações de custo
 	Recommendations []NodePoolCostRecommendation `json:"recommendations,omitempty"`
+
+	// SKUs alternativos recomendados (Fase 15)
+	SKUAlternatives []NodePoolSKUAlternative `json:"sku_alternatives,omitempty"`
+}
+
+// NodePoolSKUAlternative sugestão de VM SKU alternativo mais adequado ao perfil de uso real.
+// Custos calculados assumindo o mesmo número de nodes do pool atual.
+type NodePoolSKUAlternative struct {
+	VMSize             string  `json:"vm_size"`
+	VMFamily           string  `json:"vm_family"`
+	VMCPUCores         int     `json:"vm_cpu_cores"`
+	VMMemoryGB         int     `json:"vm_memory_gb"`
+	CostPerNodeHourUSD float64 `json:"cost_per_node_hour_usd"`
+	CostPerNodeMonthly float64 `json:"cost_per_node_monthly_usd"`
+	PoolMonthlyCostUSD float64 `json:"pool_monthly_cost_usd"` // mesmo número de nodes atual
+	PoolMonthlyCostBRL float64 `json:"pool_monthly_cost_brl"`
+	SavingsUSD         float64 `json:"savings_usd"`     // vs custo atual do pool (negativo = mais caro)
+	SavingsBRL         float64 `json:"savings_brl"`
+	SavingsPercent     float64 `json:"savings_percent"` // negativo = mais caro
+	Bottleneck         string  `json:"bottleneck"`      // "cpu", "memory", "balanced"
+	Rationale          string  `json:"rationale"`       // ex: "Mais vCPUs para workload CPU-bound"
+	CPUDeltaPercent    float64 `json:"cpu_delta_percent"` // +100 = 2x CPU, -50 = metade
+	MemDeltaPercent    float64 `json:"mem_delta_percent"` // +100 = 2x RAM, -50 = metade
 }
 
 // NodePoolCostBreakdown detalhamento do custo do pool

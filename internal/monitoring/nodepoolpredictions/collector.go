@@ -18,6 +18,7 @@ import (
 
 	"github.com/prometheus/common/model"
 	"github.com/rs/zerolog/log"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -236,6 +237,21 @@ func (c *NodePoolCollector) Collect(ctx context.Context, req NodePoolPredictionR
 	// ------------------------------------------------------------------
 	metrics.BinPacking = c.calculateBinPacking(snapshots)
 
+	// ------------------------------------------------------------------
+	// 2.8b – Disk Growth analysis (crescimento de disco efêmero)
+	// ------------------------------------------------------------------
+	metrics.DiskGrowth = c.calculateDiskGrowth(snapshots)
+
+	// ------------------------------------------------------------------
+	// 2.9 – Correlação com HPAs que têm pods neste pool
+	// ------------------------------------------------------------------
+	hpaCorr, hpaErr := c.collectHPACorrelation(ctx, nodeNames)
+	if hpaErr != nil {
+		log.Warn().Err(hpaErr).Msg("Correlação com HPAs indisponível")
+	} else {
+		metrics.HPACorrelation = hpaCorr
+	}
+
 	// Nodes com pressão ativa (derivado do snapshot)
 	metrics.NodesWithPressure = c.extractNodePressures(snapshots)
 
@@ -422,6 +438,8 @@ func (c *NodePoolCollector) collectCurrentSnapshot(
 	var cpuByInstance map[string]float64
 	var memByInstance map[string]float64
 	var diskByInstance map[string]float64
+	var diskGrowthByInstance map[string]float64  // bytes/s (positivo = enchendo)
+	var diskSizeByInstance map[string]float64    // bytes totais
 	var pidByInstance map[string]float64
 	var conntrackPctByInstance map[string]float64
 	var podCountByNode map[string]int
@@ -430,6 +448,8 @@ func (c *NodePoolCollector) collectCurrentSnapshot(
 		cpuByInstance = c.queryVectorByInstance(ctx, c.queries.GetNodeCPUUsageQuery(instanceRegex, 0))
 		memByInstance = c.queryVectorByInstance(ctx, c.queries.GetNodeMemUsagePercentQuery(instanceRegex, 0))
 		diskByInstance = c.queryVectorByInstance(ctx, c.queries.GetNodeDiskUsagePercentQuery(instanceRegex))
+		diskGrowthByInstance = c.queryVectorByInstance(ctx, c.queries.GetNodeDiskGrowthRateQuery(instanceRegex))
+		diskSizeByInstance = c.queryVectorByInstance(ctx, c.queries.GetNodeDiskSizeBytesQuery(instanceRegex))
 		pidByInstance = c.queryVectorByInstance(ctx, c.queries.GetNodePIDCountQuery(instanceRegex))
 
 		// conntrack %: entries / limit * 100
@@ -481,6 +501,20 @@ func (c *NodePoolCollector) collectCurrentSnapshot(
 			if v, ok := diskByInstance[inst]; ok {
 				// Disk query retorna 0-1 (fração), converter para %
 				snap.DiskUsagePercent = clamp(v*100.0, 0, 100)
+			}
+			// Taxa de crescimento do disco (bytes/s positivo = enchendo)
+			if growthBytesPerSec, ok := diskGrowthByInstance[inst]; ok && growthBytesPerSec > 0 {
+				snap.DiskGrowthBytesPerSec = growthBytesPerSec
+				// Calcular %/dia a partir do tamanho total
+				if sizeBytes, hasSz := diskSizeByInstance[inst]; hasSz && sizeBytes > 0 {
+					snap.DiskSizeGB = sizeBytes / (1024 * 1024 * 1024)
+					// bytes/s → bytes/dia → % do disco/dia
+					snap.DiskGrowthPctPerDay = growthBytesPerSec * 86400.0 / sizeBytes * 100.0
+					remainingPct := 100.0 - snap.DiskUsagePercent
+					if snap.DiskGrowthPctPerDay > 0 {
+						snap.DiskDaysUntilFull = remainingPct / snap.DiskGrowthPctPerDay
+					}
+				}
 			}
 			if v, ok := pidByInstance[inst]; ok {
 				snap.PIDCount = int(v)
@@ -1292,4 +1326,246 @@ func formatAge(t time.Time) string {
 // clamp garante que v está dentro do intervalo [minVal, maxVal].
 func clamp(v, minVal, maxVal float64) float64 {
 	return math.Max(minVal, math.Min(maxVal, v))
+}
+
+// ==============================================================================
+// 2.8b – Disk Growth Analysis
+// ==============================================================================
+
+// calculateDiskGrowth consolida os dados de crescimento de disco dos snapshots
+// individuais de nodes em uma análise do pool.
+func (c *NodePoolCollector) calculateDiskGrowth(snapshots []NodePoolNodeSnapshot) DiskGrowthAnalysis {
+	analysis := DiskGrowthAnalysis{}
+	if len(snapshots) == 0 {
+		return analysis
+	}
+
+	// Verificar se temos dados de crescimento de disco
+	hasData := false
+	for _, s := range snapshots {
+		if s.DiskSizeGB > 0 {
+			hasData = true
+			break
+		}
+	}
+	analysis.HasData = hasData
+	if !hasData {
+		return analysis
+	}
+
+	for _, s := range snapshots {
+		// Pressões de disco
+		if s.DiskUsagePercent >= 85 {
+			analysis.NodesCritical++
+		} else if s.DiskUsagePercent >= 70 {
+			analysis.NodesWarning++
+		}
+
+		// Maior uso atual
+		if s.DiskUsagePercent > analysis.MaxUsagePct {
+			analysis.MaxUsagePct = s.DiskUsagePercent
+		}
+
+		// Node que está enchendo mais rápido
+		if s.DiskGrowthPctPerDay > analysis.MaxGrowthPctDay {
+			analysis.MaxGrowthPctDay = s.DiskGrowthPctPerDay
+			analysis.FastestNode = s.NodeName
+		}
+
+		// Node que vai encher primeiro (menor dias até cheio > 0)
+		if s.DiskDaysUntilFull > 0 {
+			if analysis.MinDaysUntilFull == 0 || s.DiskDaysUntilFull < analysis.MinDaysUntilFull {
+				analysis.MinDaysUntilFull = s.DiskDaysUntilFull
+			}
+		}
+	}
+
+	log.Debug().
+		Bool("has_data", hasData).
+		Float64("max_usage_pct", analysis.MaxUsagePct).
+		Float64("max_growth_pct_day", analysis.MaxGrowthPctDay).
+		Float64("min_days_until_full", analysis.MinDaysUntilFull).
+		Str("fastest_node", analysis.FastestNode).
+		Int("nodes_warning", analysis.NodesWarning).
+		Int("nodes_critical", analysis.NodesCritical).
+		Msg("Disk Growth Analysis concluída")
+
+	return analysis
+}
+
+// ==============================================================================
+// 2.9 – Correlação com HPAs do pool
+// ==============================================================================
+
+// collectHPACorrelation lista todos os HPAs do cluster e faz cross-reference
+// com os pods que estão rodando nos nodes do pool.
+// Estratégia:
+//  1. Listar todos os pods dos nodes do pool → set de workloads presentes
+//  2. Listar todos os HPAs → filtrar pelos que referenciam esses workloads
+//  3. Construir HPAPoolCorrelation por HPA encontrado
+func (c *NodePoolCollector) collectHPACorrelation(ctx context.Context, nodeNames []string) ([]HPAPoolCorrelation, error) {
+	if len(nodeNames) == 0 {
+		return nil, nil
+	}
+
+	clientset := c.kubeClient.GetClientset()
+	if clientset == nil {
+		return nil, fmt.Errorf("clientset indisponível")
+	}
+
+	// Passo 1: listar pods nos nodes do pool
+	// Usamos field selector para cada node (mais eficiente que listar tudo)
+	nodeSet := make(map[string]bool, len(nodeNames))
+	for _, n := range nodeNames {
+		nodeSet[n] = true
+	}
+
+	allPods, err := clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar pods: %w", err)
+	}
+
+	// workloadKey → (namespace, workloadName, kind) → quantidade de pods no pool
+	type workloadKey struct {
+		Namespace string
+		Name      string
+	}
+	podsOnPool := make(map[workloadKey]int)  // pods deste workload no pool
+	podsTotal := make(map[workloadKey]int)   // pods totais deste workload
+
+	for i := range allPods.Items {
+		pod := &allPods.Items[i]
+		// Determinar owner (Deployment via ReplicaSet → pegar ownerRef do pod OU rótulo "app")
+		ownerName := podOwnerName(pod)
+		if ownerName == "" {
+			continue
+		}
+		key := workloadKey{Namespace: pod.Namespace, Name: ownerName}
+		podsTotal[key]++
+		if nodeSet[pod.Spec.NodeName] {
+			podsOnPool[key]++
+		}
+	}
+
+	// Passo 2: listar todos os HPAs
+	hpaList, err := clientset.AutoscalingV2().HorizontalPodAutoscalers("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("falha ao listar HPAs: %w", err)
+	}
+
+	var result []HPAPoolCorrelation
+	for i := range hpaList.Items {
+		hpa := &hpaList.Items[i]
+		key := workloadKey{
+			Namespace: hpa.Namespace,
+			Name:      hpa.Spec.ScaleTargetRef.Name,
+		}
+		onPool, hasPool := podsOnPool[key]
+		if !hasPool || onPool == 0 {
+			continue // nenhum pod deste HPA está no pool
+		}
+
+		corr := HPAPoolCorrelation{
+			HPAName:         hpa.Name,
+			Namespace:       hpa.Namespace,
+			TargetName:      hpa.Spec.ScaleTargetRef.Name,
+			TargetKind:      hpa.Spec.ScaleTargetRef.Kind,
+			CurrentReplicas: hpa.Status.CurrentReplicas,
+			MaxReplicas:     hpa.Spec.MaxReplicas,
+			DesiredReplicas: hpa.Status.DesiredReplicas,
+			AtMax:           hpa.Status.CurrentReplicas >= hpa.Spec.MaxReplicas,
+			PodsOnPool:      onPool,
+			TotalPods:       podsTotal[key],
+		}
+
+		// Extrair target CPU percent (métrica de utilização de recurso)
+		for _, metric := range hpa.Spec.Metrics {
+			if metric.Type == autoscalingv2.ResourceMetricSourceType &&
+				metric.Resource != nil &&
+				metric.Resource.Name == "cpu" &&
+				metric.Resource.Target.AverageUtilization != nil {
+				corr.TargetCPUPct = *metric.Resource.Target.AverageUtilization
+				break
+			}
+		}
+
+		result = append(result, corr)
+	}
+
+	// Ordenar: HPAs no limite primeiro, depois por nome
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].AtMax != result[j].AtMax {
+			return result[i].AtMax // at_max primeiro
+		}
+		return result[i].HPAName < result[j].HPAName
+	})
+
+	log.Debug().
+		Int("pool_nodes", len(nodeNames)).
+		Int("hpa_count", len(result)).
+		Int("at_max", countAtMax(result)).
+		Msg("Correlação HPA-Pool concluída")
+
+	return result, nil
+}
+
+// podOwnerName retorna o nome do workload raiz de um pod via ownerReferences.
+// Para pods de Deployment: pod → ReplicaSet → Deployment.
+// Heurística simples: usa label "app" ou "app.kubernetes.io/name" como fallback.
+func podOwnerName(pod *corev1.Pod) string {
+	for _, ref := range pod.OwnerReferences {
+		if ref.Kind == "ReplicaSet" || ref.Kind == "StatefulSet" || ref.Kind == "DaemonSet" {
+			// Para ReplicaSet: remover sufixo hash do nome (ex: myapp-6b7d8f9c → myapp)
+			if ref.Kind == "ReplicaSet" {
+				return trimReplicaSetSuffix(ref.Name)
+			}
+			return ref.Name
+		}
+		if ref.Kind == "Deployment" || ref.Kind == "StatefulSet" {
+			return ref.Name
+		}
+	}
+	// Fallback: label "app"
+	if app, ok := pod.Labels["app"]; ok && app != "" {
+		return app
+	}
+	return ""
+}
+
+// trimReplicaSetSuffix remove o sufixo hash de um ReplicaSet para obter o nome do Deployment.
+// Ex: "myapp-6b7d8f9c4d" → "myapp"
+func trimReplicaSetSuffix(rsName string) string {
+	// ReplicaSet gerado por Deployment tem formato: <deployment-name>-<hash-8-10-chars>
+	// O hash é alphanumeric lowercase, ~8-10 chars
+	parts := strings.Split(rsName, "-")
+	if len(parts) <= 1 {
+		return rsName
+	}
+	last := parts[len(parts)-1]
+	// Se o último segmento parece um hash (5-12 chars, só letras e números)
+	if len(last) >= 5 && len(last) <= 12 && isAlphanumericLower(last) {
+		return strings.Join(parts[:len(parts)-1], "-")
+	}
+	return rsName
+}
+
+// isAlphanumericLower verifica se string contém apenas letras minúsculas e dígitos.
+func isAlphanumericLower(s string) bool {
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+// countAtMax retorna quantos HPAs estão no limite de réplicas.
+func countAtMax(corrs []HPAPoolCorrelation) int {
+	n := 0
+	for _, c := range corrs {
+		if c.AtMax {
+			n++
+		}
+	}
+	return n
 }

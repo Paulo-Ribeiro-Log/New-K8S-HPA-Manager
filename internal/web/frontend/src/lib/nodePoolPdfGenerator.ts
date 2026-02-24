@@ -475,12 +475,30 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
     y = sectionHeader(doc, "ANALISE DE CUSTO", y, [255, 152, 0]);
     y += 2;
 
+    const fmtUSD = (v: number | undefined | null) =>
+      v != null && v > 0 ? `$${v.toFixed(2)}` : "—";
+    const fmtBRL = (v: number | undefined | null) =>
+      v != null && v > 0 ? `R$ ${v.toFixed(2)}` : "—";
+
     const costRows = [
-      ["Custo atual/mes (USD)", cost.monthly_cost_usd != null ? `$${cost.monthly_cost_usd.toFixed(2)}` : "—"],
-      ["Custo atual/mes (BRL)", cost.monthly_cost_brl != null ? `R$ ${cost.monthly_cost_brl.toFixed(2)}` : "—"],
-      ["Economia potencial/mes", cost.monthly_savings_usd != null ? `$${cost.monthly_savings_usd.toFixed(2)}` : "—"],
-      ["VM Size", cost.vm_size ?? "—"],
-      ["Custo por vCPU/hora", cost.cost_per_vcpu_hour != null ? `$${cost.cost_per_vcpu_hour.toFixed(4)}` : "—"],
+      ["VM Size", `${cost.vm_size ?? "—"}  (${cost.vm_cpu_cores ?? "?"} vCPUs, ${cost.vm_memory_gb ?? "?"} GB)`],
+      ["Custo por node/hora", fmtUSD(cost.cost_per_node_per_hour_usd)],
+      ["Custo por node/mes", fmtUSD(cost.cost_per_node_monthly_usd)],
+      ["Custo atual/mes (USD)", fmtUSD(cost.current_monthly_cost_usd)],
+      ["Custo atual/mes (BRL)", fmtBRL(cost.current_monthly_cost_brl)],
+      ["Custo maximo/mes (USD)", fmtUSD(cost.max_monthly_cost_usd)],
+      ["Nodes recomendados (P95)", cost.recommended_nodes > 0 ? String(cost.recommended_nodes) : "—"],
+      ["Custo otimizado/mes (USD)", fmtUSD(cost.optimized_monthly_cost_usd)],
+      ["Economia potencial/mes", cost.monthly_savings_usd > 0
+        ? `$${cost.monthly_savings_usd.toFixed(2)}  (${cost.savings_percent?.toFixed(0) ?? "?"}%)`
+        : "—"],
+      ["Economia potencial/ano", fmtUSD(cost.annual_savings_usd)],
+      ["Desperdicio (idle)", cost.idle_waste_percent > 0
+        ? `${cost.idle_waste_percent.toFixed(0)}%  ($${(cost.waste_monthly_cost_usd ?? 0).toFixed(2)}/mes)`
+        : "—"],
+      ["Cotacao USD/BRL", cost.exchange_rate > 0
+        ? `R$ ${cost.exchange_rate.toFixed(2)}  (${cost.exchange_rate_date ?? ""})`
+        : "—"],
     ];
 
     autoTable(doc, {
@@ -496,19 +514,30 @@ export const generateNodePoolPredictionPDF = async (result: any): Promise<void> 
     y = (doc as any).lastAutoTable.finalY + 6;
 
     if (cost.recommendations?.length) {
+      y = checkNewPage(doc, y, 20);
       doc.setFontSize(10);
       doc.setFont("helvetica", "bold");
       doc.text("Recomendacoes de custo:", 14, y);
       y += 5;
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
-      for (const cr of cost.recommendations.slice(0, 4)) {
-        y = checkNewPage(doc, y, 12);
-        const txt = `• ${removeEmojis(cr.title ?? cr.description ?? "")}`;
-        const lines = doc.splitTextToSize(txt, pageWidth - 32) as string[];
-        doc.text(lines, 18, y);
-        y += lines.length * 5;
-      }
+
+      const crRows = cost.recommendations.slice(0, 4).map((cr: any) => [
+        removeEmojis(cr.title ?? ""),
+        cr.savings_usd > 0 ? `$${cr.savings_usd.toFixed(2)}/mes` : "—",
+        cr.impact?.toUpperCase() ?? "—",
+        removeEmojis(cr.description ?? ""),
+      ]);
+
+      autoTable(doc, {
+        startY: y,
+        head: [["Recomendacao", "Economia", "Impacto", "Descricao"]],
+        body: crRows,
+        theme: "grid",
+        headStyles: { fillColor: [255, 193, 7], fontSize: 8 },
+        bodyStyles: { fontSize: 8 },
+        columnStyles: { 0: { cellWidth: 45 }, 1: { cellWidth: 25 }, 2: { cellWidth: 18 }, 3: { cellWidth: 75 } },
+        margin: { left: 14, right: 14 },
+      });
+      y = (doc as any).lastAutoTable.finalY + 6;
     }
   }
 

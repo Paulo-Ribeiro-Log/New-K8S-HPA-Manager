@@ -2,7 +2,7 @@
 
 **Estudo base:** [ESTUDO_PREDICAO_NODE_POOL.md](ESTUDO_PREDICAO_NODE_POOL.md)
 **Iniciado:** 21/02/2026
-**Status geral:** 🟡 Em andamento — Fases 1-9 concluídas | Fases 10-15 planejadas (melhorias)
+**Status geral:** ✅ Concluída — Fases 1-15 concluídas (24/02/2026)
 
 > **Para novos chats:** leia este arquivo + o estudo base antes de começar.
 > Marque cada item com ✅ quando concluído e anote a data.
@@ -277,61 +277,116 @@
 
 ---
 
-## Fase 11 — Correlação com HPAs do Pool
+## Fase 11 — Correlação com HPAs do Pool ✅ Concluída em 24/02/2026
 **Objetivo**: Identificar quando HPAs em maxReplicas indicam gargalo confirmado no pool
 **Impacto**: ⭐⭐⭐⭐⭐ | **Esforço**: Médio
 
-- [ ] 11.1 Coletar HPAs que rodam em nodes do pool (via K8s API, filtrar por namespace/node affinity)
-- [ ] 11.2 Detectar HPAs com `currentReplicas == maxReplicas` (gargalo confirmado)
-- [ ] 11.3 Struct `HPAPoolCorrelation`: hpaName, namespace, currentReplicas, maxReplicas, targetCPU, atMax bool
-- [ ] 11.4 Adicionar `HPACorrelation []HPAPoolCorrelation` ao `NodePoolMetrics`
-- [ ] 11.5 No analyzer: se HPAs em maxReplicas E CPU alta → rebaixar health score + adicionar finding crítico
-- [ ] 11.6 Frontend: card "HPAs em Limite" com lista de HPAs travados
+- [x] 11.1 Coletar HPAs que rodam em nodes do pool (via K8s API, cross-reference pods → HPAs)
+- [x] 11.2 Detectar HPAs com `currentReplicas == maxReplicas` (atMax bool)
+- [x] 11.3 Struct `HPAPoolCorrelation`: hpaName, namespace, targetName, targetKind, currentReplicas, maxReplicas, desiredReplicas, targetCPUPct, atMax, podsOnPool, totalPods
+- [x] 11.4 Adicionar `HPACorrelation []HPAPoolCorrelation` ao `NodePoolMetrics`
+- [x] 11.5 Penalidade no health score: HPAs em limite + CPU >= 70% → -5pts/HPA (máx -15)
+- [x] 11.5 KeyFinding automático + predição ShortTerm + recomendação de revisar maxReplicas
+- [x] 11.6 Frontend: accordion "HPAs neste Pool" com badge "em limite" e linha por HPA (réplicas, pods, target CPU)
+- [x] 11.7 Relatório markdown: seção "HPAs COM PODS NESTE POOL" com tabela
+
+**Implementado em**:
+- `models.go`: struct `HPAPoolCorrelation` + campo `HPACorrelation` em `NodePoolMetrics`
+- `collector.go`: `collectHPACorrelation()` + helpers `podOwnerName()`, `trimReplicaSetSuffix()`, `countAtMax()`
+- `analyzer.go`: penalidade de health score + findings + predição + recomendação
+- `nodepool_predictions.go`: seção markdown com tabela
+- `NodePoolPredictionModal.tsx`: accordion com ícone Scale, badge "em limite", grid de HPAs
 
 ---
 
-## Fase 12 — Gráficos de Tendência no Modal
-**Objetivo**: Visualização intuitiva de CPU/conntrack ao longo de 14 dias
+## Fase 12 — Gráficos de Tendência no Modal ✅ Concluída em 23/02/2026
+**Objetivo**: Visualização intuitiva de CPU/Memória/Pods ao longo de 14 dias
 **Impacto**: ⭐⭐⭐⭐ | **Esforço**: Baixo
 
-- [ ] 12.1 Usar dados D-0/D-3/D-7/D-14 já coletados (sem nova query Prometheus)
-- [ ] 12.2 Mini LineChart (Recharts) para CPU, Memória e conntrack no modal
-- [ ] 12.3 Linha de limiar horizontal (ex: 85%) para referência visual
-- [ ] 12.4 Projeção de tendência futura no gráfico (linha tracejada até `EstimatedDate`)
+- [x] 12.1 Usar dados D-0/D-3/D-7/D-14 já coletados (sem nova query Prometheus)
+- [x] 12.2 Mini LineChart (Recharts) para CPU, Memória e Pods no modal
+- [x] 12.3 Linha de limiar horizontal (85%) para CPU e Memória
+- [ ] 12.4 Projeção de tendência futura no gráfico (linha tracejada) — adiado para Fase 14
+
+**Implementado em**: `NodePoolPredictionModal.tsx`
+- Helpers: `buildTrendChartData()`, `trendLineColor()`, `TrendMiniChart` (componente)
+- Importados: `LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine` de recharts
+- CPU e Memória: Y axis 0-100%, threshold em 85% com linha vermelha tracejada
+- Pods: Y axis auto-scale em count/node (sem threshold de percentual)
+- conntrack: mantido como card de texto (sem histórico D-14 disponível)
+- Cor da linha: laranja (crescendo), verde (decrescendo), índigo (estável)
+- Deltas D-3/D-7/D-14 mantidos abaixo de cada gráfico como informação secundária
 
 ---
 
-## Fase 13 — Ephemeral Storage Growth Rate
+## Fase 13 — Ephemeral Storage Growth Rate ✅ Concluída em 24/02/2026
 **Objetivo**: Detectar nodes com disco efêmero crescendo rapidamente (silent killer)
 **Impacto**: ⭐⭐⭐⭐ | **Esforço**: Baixo
 
-- [ ] 13.1 Query Prometheus para taxa de crescimento de disco: `rate(node_filesystem_avail_bytes[1h])`
-- [ ] 13.2 Calcular `diskGrowthRatePerDay` por node
-- [ ] 13.3 Estimar `daysUntilDiskFull` (complementar ao `SaturationForecast`)
-- [ ] 13.4 Detectar nodes com `DiskPressure` condition
-- [ ] 13.5 Integrar com `calculateSaturationTimeline()` da Fase 10
+- [x] 13.1 Query Prometheus: `deriv(node_filesystem_avail_bytes[1h])` negado — positivo = disco enchendo (gauge, não counter)
+- [x] 13.2 Calcular `MaxGrowthPctDay` + `MinDaysUntilFull` por node (struct `DiskGrowthAnalysis`)
+- [x] 13.3 `saturationForecastDisk()` em `analyzer.go` → integrada como item 5 em `calculateSaturationTimeline()`
+- [x] 13.4 Filtro ramp-up: uso < 15% E projeção > 90d → retorna ESTAVEL (evita falsos alarmes em nodes novos)
+- [x] 13.5 Accordion "Disco Efêmero" em `NodePoolPredictionModal.tsx` (ícone HardDrive)
+  - 3 cards: uso atual (colorido por threshold), taxa %/dia, dias até cheio
+  - Alerta inline quando disco preenche em ≤ 30 dias
+
+**Implementado em**:
+- `queries.go` — query `deriv()` + funções de growth rate por node
+- `models.go` — struct `DiskGrowthAnalysis` (MaxGrowthPctDay, MinDaysUntilFull, FastestNode, MaxUsagePct)
+- `collector.go` — `calculateDiskGrowth()` com graceful degradation quando node_exporter indisponível
+- `analyzer.go` — `saturationForecastDisk()` + integração no item 5 de `calculateSaturationTimeline()`
+- `nodepool_predictions.go` — seção markdown "DISCO EFEMERO" no relatório
+- `NodePoolPredictionModal.tsx` — accordion completo com cards e badge de urgência
+- `saturation_test.go` — 7 novos casos; 28 testes PASS com -race ✅
 
 ---
 
-## Fase 14 — Delta Entre Análises (Comparação Histórica)
+## Fase 14 — Delta Entre Análises (Comparação Histórica) ✅ Concluída em 23/02/2026
 **Objetivo**: "Desde a última análise (há 5 dias): conntrack +15%, CPU +8%"
 **Impacto**: ⭐⭐⭐ | **Esforço**: Baixo
 
-- [ ] 14.1 Ao salvar nova análise, buscar a análise anterior do mesmo pool no SQLite
-- [ ] 14.2 Calcular delta para: health score, CPU%, mem%, conntrack%, bin packing efficiency
-- [ ] 14.3 Struct `AnalysisDelta` com deltas e tendência (melhorando/piorando)
-- [ ] 14.4 Exibir delta no modal: badge verde (melhorou) / vermelho (piorou) por métrica
+- [x] 14.1 Ao salvar nova análise, buscar a análise anterior do mesmo pool no SQLite
+- [x] 14.2 Calcular delta para: health score, CPU%, mem%, pods, conntrack%, bin packing efficiency
+- [x] 14.3 Struct `NodePoolAnalysisDelta` com deltas, listas improving/degrading e summary legível
+- [x] 14.4 Exibir delta no modal: badges verde (melhorou) / vermelho (piorou) por métrica
+
+**Implementado em**:
+- `models.go` — struct `NodePoolAnalysisDelta` adicionada a `NodePoolPredictionResult`
+- `handlers/nodepool_predictions.go` — função `calculateNodePoolDelta()` chamada após Save()
+  - Busca 2 análises mais recentes via `store.List(limit=2)`, compara records[0] vs records[1]
+  - Delta de: HealthScore, CPU pp, Mem pp, Pods/node, conntrack pp, BinPacking pp
+  - Listas `Improving` / `Degrading` com threshold mínimo por métrica
+  - Summary: "Desde análise anterior (há Xd): CPU +8.2pp, conntrack +15.3pp"
+- `NodePoolPredictionModal.tsx` — seção "Comparação com análise anterior"
+  - Exibida entre ActionSummary e HealthScore (seção sempre visível)
+  - Badges coloridos: verde (menos pressão = melhora), vermelho (mais pressão = piora)
+  - Listas "Melhorando" / "Degradando" resumidas em texto
 
 ---
 
-## Fase 15 — Recomendação de VM SKU Alternativo
-**Objetivo**: Sugerir SKU concreto baseado no perfil de uso real
+## Fase 15 — Recomendação de VM SKU Alternativo ✅ Concluída em 24/02/2026
+**Objetivo**: Sugerir SKU concreto baseado no perfil de uso real (consumo histórico P95)
 **Impacto**: ⭐⭐⭐ | **Esforço**: Baixo
 
-- [ ] 15.1 Cruzar `azure_vm_specs.go` com métricas de uso para identificar bottleneck (CPU vs RAM vs conntrack)
-- [ ] 15.2 Filtrar SKUs com custo similar (±20%) mas melhor fit para o bottleneck
-- [ ] 15.3 Incluir em `CostRecommendations` com antes/depois de custo e specs
-- [ ] 15.4 Exibir no modal como card de "migração recomendada"
+- [x] 15.1 `historicalP95()`: combina snapshots D-0 + `CPUTrendPerNode` + `MemTrendPerNode` (14 dias históricos)
+- [x] 15.2 Filtro primário obrigatório: SKU deve suportar `cpuUsedAtP95` e `memUsedAtP95` com 20% headroom
+  - `minVCPUs = ⌈cpuUsedAtP95 / 0.80⌉`, `minMemGB = ⌈memUsedAtP95 / 0.80⌉`
+  - Cap de custo: máximo 1.50× custo atual (sem SKUs muito mais caros)
+- [x] 15.3 `identifyBottleneckFromP95()`: "cpu" (P95 ≥ 60% e 1.4× dominância), "memory" (inverso), "balanced"
+- [x] 15.4 Score composto: alívio do bottleneck (×8) + economia de custo (×5) + bônus de geração (v5 +0.3, v4 +0.2, v3 +0.1)
+- [x] 15.5 `GetAllVMSpecs()` exportado em `predictions/azure_vm_specs.go` para iteração do catálogo
+- [x] 15.6 Struct `NodePoolSKUAlternative` + campo `SKUAlternatives` em `NodePoolCostAnalysis`
+- [x] 15.7 Cards de alternativas no modal (dentro do accordion de Custo) com deltas CPU/RAM e justificativa P95
+- [x] 15.8 Seção markdown "VMs Alternativas (baseado em consumo historico P95)" no relatório
+
+**Implementado em**:
+- `predictions/azure_vm_specs.go` — `GetAllVMSpecs()` exportado para acesso externo ao catálogo
+- `models.go` — struct `NodePoolSKUAlternative` (vmSize, vCPUs, memGB, custos USD/BRL, savings, bottleneck, rationale, deltas)
+- `cost_analyzer.go` — `suggestAlternativeSKUs()`, `historicalP95()`, `identifyBottleneckFromP95()`, `buildSKURationale()`
+- `nodepool_predictions.go` — tabela markdown de alternativas dentro da seção de Custo
+- `NodePoolPredictionModal.tsx` — cards de SKUs (até 3) com badge de economia, deltas coloridos e rationale em itálico
+- `saturation_test.go` — 8 novos casos (bottleneck detection, historicalP95, suggestSKU); 57 testes PASS com -race ✅
 
 ---
 
@@ -401,6 +456,12 @@ query := fmt.Sprintf(`node_nf_conntrack_entries{instance=~"%s"}`, instances)
 | 22/02/2026 | Fase 6 | Markdown: seções completas (sumário, breakdown, conntrack por node, autoscaler history, bin packing, custo, previsões, recomendações); PDF: nodePoolPdfGenerator.ts + botão no modal ✅ | Paulo + Claude |
 | 22/02/2026 | Fase 8 | Testes unitários: 16/16 PASS com -race; BuildInstanceRegex, ConntrackStatus, DayOffsets, formatDuration, smoke tests das queries ✅ | Paulo + Claude |
 | 22/02/2026 | Fase 9 | Documentação: CLAUDE.md atualizado com feature completa, bugs corrigidos, histórico de sessão ✅ | Paulo + Claude |
+| 23/02/2026 | Fase 10 | Timeline de Saturação: structs `SaturationForecast`/`PoolSaturationTimeline`, `calculateSaturationTimeline()` com 4 métricas (CPU/mem/conntrack/pods), filtro ramp-up, accordion no modal, seção markdown/PDF | Paulo + Claude |
+| 23/02/2026 | Fase 12 | Gráficos de tendência: `TrendMiniChart` (Recharts LineChart) para CPU/Mem/Pods com threshold 85% (ReferenceLine), cor dinâmica (laranja/verde/índigo), D-0/D-3/D-7/D-14 | Paulo + Claude |
+| 23/02/2026 | Fase 14 | Delta entre análises: `calculateNodePoolDelta()` no handler, struct `NodePoolAnalysisDelta`, badges verde/vermelho no modal, summary "há Xd: CPU +8.2pp" | Paulo + Claude |
+| 24/02/2026 | Fase 11 | Correlação com HPAs: `collectHPACorrelation()`, struct `HPAPoolCorrelation`, penalidade -5pts/HPA no health score, finding automático, accordion "HPAs neste Pool", seção markdown | Paulo + Claude |
+| 24/02/2026 | Fase 13 | Disco efêmero: query `deriv()` negada, `DiskGrowthAnalysis`, `saturationForecastDisk()` como item 5 da timeline, filtro ramp-up (<15% + >90d), accordion modal, seção markdown; 28 testes PASS -race ✅ | Paulo + Claude |
+| 24/02/2026 | Fase 15 | SKU alternativo histórico: `historicalP95()` (D-0+D-3/D-7/D-14), `identifyBottleneckFromP95()`, `suggestAlternativeSKUs()` (filtro P95 + cap 1.5×), `GetAllVMSpecs()`, cards no modal, tabela markdown; 57 testes PASS -race ✅ | Paulo + Claude |
 
 ---
 
