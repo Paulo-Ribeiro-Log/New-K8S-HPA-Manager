@@ -19,6 +19,135 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// calculateNodePoolDelta compara o resultado atual com a análise anterior do mesmo pool.
+// Retorna nil se não houver análise anterior ou se ocorrer erro ao desserializar.
+func calculateNodePoolDelta(curr *np.NodePoolPredictionResult, store *storage.NodePoolPredictionsStore) *np.NodePoolAnalysisDelta {
+	if store == nil {
+		return nil
+	}
+
+	// Busca as 2 análises mais recentes (a salva agora + a anterior)
+	records, err := store.List(&storage.NodePoolPredictionQueryFilters{
+		Cluster:      curr.Cluster,
+		NodePoolName: curr.NodePoolName,
+		Limit:        2,
+	})
+	if err != nil || len(records) < 2 {
+		return nil // primeira análise ou erro — sem delta
+	}
+
+	// records[0] = atual (recém salva), records[1] = anterior
+	prevRecord := records[1]
+	var prev np.NodePoolPredictionResult
+	if unmarshalErr := json.Unmarshal([]byte(prevRecord.FullResult), &prev); unmarshalErr != nil {
+		log.Warn().Err(unmarshalErr).Str("id", prevRecord.ID).Msg("Falha ao desserializar análise anterior para delta")
+		return nil
+	}
+
+	daysSince := curr.AnalyzedAt.Sub(prev.AnalyzedAt).Hours() / 24.0
+
+	delta := &np.NodePoolAnalysisDelta{
+		PreviousID:         prevRecord.ID,
+		PreviousAnalyzedAt: prev.AnalyzedAt,
+		DaysSince:          daysSince,
+		HealthScoreDelta:   curr.HealthScore.Overall - prev.HealthScore.Overall,
+	}
+
+	// Helper: pega value_per_node do snapshot D-0 de um TrendSnapshot slice
+	currentVal := func(snapshots []np.TrendSnapshot) (float64, bool) {
+		for _, s := range snapshots {
+			if s.DaysAgo == 0 {
+				return s.ValuePerNode, true
+			}
+		}
+		return 0, false
+	}
+
+	// CPU
+	if cCPU, ok1 := currentVal(curr.RawMetrics.CPUTrendPerNode); ok1 {
+		if pCPU, ok2 := currentVal(prev.RawMetrics.CPUTrendPerNode); ok2 {
+			delta.CPUDeltaPP = cCPU - pCPU
+		}
+	}
+	// Memória
+	if cMem, ok1 := currentVal(curr.RawMetrics.MemTrendPerNode); ok1 {
+		if pMem, ok2 := currentVal(prev.RawMetrics.MemTrendPerNode); ok2 {
+			delta.MemDeltaPP = cMem - pMem
+		}
+	}
+	// Pods
+	if cPods, ok1 := currentVal(curr.RawMetrics.PodsTrendPerNode); ok1 {
+		if pPods, ok2 := currentVal(prev.RawMetrics.PodsTrendPerNode); ok2 {
+			delta.PodsDelta = cPods - pPods
+		}
+	}
+	// Conntrack
+	if curr.RawMetrics.ConntrackPool.HasSufficientData && prev.RawMetrics.ConntrackPool.HasSufficientData {
+		delta.ConntrackDeltaPP = curr.RawMetrics.ConntrackPool.MaxUsage - prev.RawMetrics.ConntrackPool.MaxUsage
+	}
+	// BinPacking (eficiência CPU — aumento = menos fragmentação = melhor)
+	delta.BinPackingDeltaPP = curr.RawMetrics.BinPacking.CPUEfficiency - prev.RawMetrics.BinPacking.CPUEfficiency
+
+	// Listas improving / degrading
+	// Para recursos: delta < 0 = menos pressão = melhora
+	// Para HealthScore e BinPacking: delta > 0 = melhora
+	type metricCheck struct {
+		name    string
+		delta   float64
+		higher  bool // true = aumento é bom (HealthScore, BinPacking)
+		minDiff float64
+	}
+	checks := []metricCheck{
+		{"health_score", float64(delta.HealthScoreDelta), true, 2},
+		{"cpu", delta.CPUDeltaPP, false, 1},
+		{"mem", delta.MemDeltaPP, false, 1},
+		{"pods", delta.PodsDelta, false, 0.5},
+		{"conntrack", delta.ConntrackDeltaPP, false, 0.5},
+		{"bin_packing", delta.BinPackingDeltaPP, true, 2},
+	}
+	for _, c := range checks {
+		if c.delta > c.minDiff {
+			if c.higher {
+				delta.Improving = append(delta.Improving, c.name)
+			} else {
+				delta.Degrading = append(delta.Degrading, c.name)
+			}
+		} else if c.delta < -c.minDiff {
+			if c.higher {
+				delta.Degrading = append(delta.Degrading, c.name)
+			} else {
+				delta.Improving = append(delta.Improving, c.name)
+			}
+		}
+	}
+
+	// Resumo legível
+	daysLabel := fmt.Sprintf("%.0fd", daysSince)
+	if daysSince < 1 {
+		daysLabel = fmt.Sprintf("%.0fh", daysSince*24)
+	}
+	parts := []string{}
+	if delta.CPUDeltaPP != 0 {
+		parts = append(parts, fmt.Sprintf("CPU %+.1fpp", delta.CPUDeltaPP))
+	}
+	if delta.MemDeltaPP != 0 {
+		parts = append(parts, fmt.Sprintf("Mem %+.1fpp", delta.MemDeltaPP))
+	}
+	if delta.ConntrackDeltaPP != 0 && curr.RawMetrics.ConntrackPool.HasSufficientData {
+		parts = append(parts, fmt.Sprintf("conntrack %+.1fpp", delta.ConntrackDeltaPP))
+	}
+	if delta.HealthScoreDelta != 0 {
+		parts = append(parts, fmt.Sprintf("health %+d", delta.HealthScoreDelta))
+	}
+	if len(parts) > 0 {
+		delta.Summary = fmt.Sprintf("Desde análise anterior (há %s): %s", daysLabel, strings.Join(parts, ", "))
+	} else {
+		delta.Summary = fmt.Sprintf("Sem variação significativa desde análise anterior (há %s)", daysLabel)
+	}
+
+	return delta
+}
+
 // NodePoolPredictionsHandler gerencia análises preditivas de node pools
 type NodePoolPredictionsHandler struct {
 	kubeManager   *config.KubeConfigManager
@@ -175,6 +304,16 @@ func (h *NodePoolPredictionsHandler) AnalyzeNodePool(c *gin.Context) {
 				Str("nodepool", result.NodePoolName).
 				Msg("Análise de node pool salva no banco")
 		}
+	}
+
+	// 6. Calcular delta em relação à análise anterior (enriquece o resultado antes de retornar)
+	result.Delta = calculateNodePoolDelta(result, h.store)
+	if result.Delta != nil {
+		log.Info().
+			Str("previous_id", result.Delta.PreviousID).
+			Float64("days_since", result.Delta.DaysSince).
+			Str("summary", result.Delta.Summary).
+			Msg("Delta calculado em relação à análise anterior")
 	}
 
 	c.JSON(http.StatusOK, result)
