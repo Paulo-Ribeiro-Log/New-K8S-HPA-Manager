@@ -1014,14 +1014,20 @@ func (a *NodePoolAnalyzer) calculateSaturationTimeline(metrics *NodePoolMetrics,
 
 	timeline := PoolSaturationTimeline{Forecasts: forecasts}
 
-	// Métrica mais crítica = a que satura primeiro (com data concreta)
+	// Métrica mais crítica = a que satura primeiro COM data concreta E dentro de 180 dias
+	// Projeções além de 180 dias em pools com baixa utilização são ruído de ramp-up —
+	// o sistema ainda está crescendo e a taxa de crescimento inicial não é representativa.
+	const maxActionableDays = 180.0
 	for i := range forecasts {
-		if forecasts[i].DaysUntilSaturation != nil {
+		d := forecasts[i].DaysUntilSaturation
+		if d != nil && *d <= maxActionableDays {
 			f := forecasts[i]
 			timeline.MostCritical = &f
 			break
 		}
 	}
+	// Se nenhuma satura em 180 dias: não há most_critical (pool está estável a médio prazo)
+	// A lista de forecasts ainda é exibida no accordion para referência.
 
 	// Sumário legível
 	if timeline.MostCritical != nil {
@@ -1129,6 +1135,21 @@ func saturationForecastFromTrend(metric string, snapshots []TrendSnapshot, curre
 	// Projeção apenas se há crescimento e ainda não atingiu threshold
 	if dailyGrowthRate > 0 && currentValue < threshold {
 		days := (threshold - currentValue) / dailyGrowthRate
+
+		// Filtro de ramp-up: pools com uso atual baixo (<15%) e projeção longa (>90d)
+		// estão em fase inicial — a taxa de crescimento de ramp-up não é representativa
+		// do crescimento em regime estacionário. Exibir data é enganoso.
+		if currentValue < 15.0 && days > 90 {
+			forecast.UrgencyBadge = "ESTAVEL"
+			forecast.Confidence = "low"
+			log.Debug().
+				Str("metric", metric).
+				Float64("current_value", currentValue).
+				Float64("days", days).
+				Msg("projeção descartada: pool em ramp-up (uso baixo + projeção longa)")
+			return forecast
+		}
+
 		forecast.DaysUntilSaturation = &days
 		estimatedDate := now.Add(time.Duration(days*24) * time.Hour)
 		forecast.EstimatedDate = &estimatedDate
@@ -1173,6 +1194,18 @@ func saturationForecastConntrack(metrics *NodePoolMetrics, now time.Time) *Satur
 		Threshold:    threshold,
 		DataPoints:   1,
 		Confidence:   "medium",
+	}
+
+	// Mínimo de uso para projeção confiável: pools com < 5% de conntrack estão em
+	// fase de ramp-up ou têm tráfego negligenciável — qualquer taxa de crescimento
+	// medida é provavelmente ruído, não tendência real.
+	if currentPct < 5.0 {
+		forecast.UrgencyBadge = "ESTAVEL"
+		forecast.Confidence = "low"
+		log.Debug().
+			Float64("conntrack_pct", currentPct).
+			Msg("conntrack < 5%: pool em ramp-up, projeção descartada")
+		return forecast
 	}
 
 	if pool.AvgGrowthRatePerH > 0 {
