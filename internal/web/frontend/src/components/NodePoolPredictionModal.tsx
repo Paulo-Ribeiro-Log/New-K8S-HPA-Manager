@@ -1315,6 +1315,62 @@ export function NodePoolPredictionModal({
                             ))}
                           </div>
                         )}
+
+                        {/* VMs alternativas baseadas em consumo histórico P95 */}
+                        {result.cost_analysis.sku_alternatives?.length > 0 && (
+                          <div className="space-y-2 mt-4">
+                            <div className="text-sm font-medium text-muted-foreground flex items-center gap-1">
+                              <HardDrive className="w-3.5 h-3.5" />
+                              VMs Alternativas (baseado em P95 histórico de {(() => {
+                                const alts = result.cost_analysis.sku_alternatives;
+                                const bn = alts[0]?.bottleneck ?? "balanced";
+                                return bn === "cpu" ? "CPU" : bn === "memory" ? "Memória" : "CPU e Memória";
+                              })()})
+                            </div>
+                            {result.cost_analysis.sku_alternatives.map((alt: any, i: number) => (
+                              <div
+                                key={i}
+                                className={`rounded border p-3 text-sm ${
+                                  alt.savings_usd > 0
+                                    ? "bg-green-500/5 border-green-500/20"
+                                    : "bg-orange-500/5 border-orange-500/20"
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2 mb-1">
+                                  <span className="font-semibold">{alt.vm_size}</span>
+                                  <div className="flex items-center gap-2">
+                                    <Badge className="text-xs bg-background/50">
+                                      {alt.vm_cpu_cores} vCPUs · {alt.vm_memory_gb} GB
+                                    </Badge>
+                                    {alt.savings_usd > 0 ? (
+                                      <Badge className="text-xs bg-green-500/20 text-green-500 border-green-500/30">
+                                        -{fmtUSD(alt.savings_usd)}/mês ({alt.savings_percent?.toFixed(1)}%)
+                                      </Badge>
+                                    ) : (
+                                      <Badge className="text-xs bg-orange-500/20 text-orange-400 border-orange-500/30">
+                                        +{fmtUSD(-alt.savings_usd)}/mês ({Math.abs(alt.savings_percent)?.toFixed(1)}% mais)
+                                      </Badge>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="text-xs text-muted-foreground mb-1">
+                                  Pool ({result.raw_metrics?.current_nodes ?? "?"} nodes): {fmtUSD(alt.pool_monthly_cost_usd)}/mês
+                                  {alt.cpu_delta_percent !== 0 && (
+                                    <span className={`ml-2 ${alt.cpu_delta_percent > 0 ? "text-blue-400" : "text-yellow-400"}`}>
+                                      CPU {alt.cpu_delta_percent > 0 ? "+" : ""}{alt.cpu_delta_percent?.toFixed(0)}%
+                                    </span>
+                                  )}
+                                  {alt.mem_delta_percent !== 0 && (
+                                    <span className={`ml-1 ${alt.mem_delta_percent > 0 ? "text-blue-400" : "text-yellow-400"}`}>
+                                      · RAM {alt.mem_delta_percent > 0 ? "+" : ""}{alt.mem_delta_percent?.toFixed(0)}%
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-muted-foreground italic">{alt.rationale}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </AccordionContent>
                     </AccordionItem>
                   )}

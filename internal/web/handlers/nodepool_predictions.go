@@ -681,6 +681,22 @@ func generateNodePoolMarkdownReport(r *np.NodePoolPredictionResult) string {
 				b.WriteString(fmt.Sprintf("   Impacto: %s | Acao: `%s`\n\n", rec.Impact, rec.Action))
 			}
 		}
+		if len(ca.SKUAlternatives) > 0 {
+			b.WriteString("\n### VMs Alternativas (baseado em consumo historico P95)\n\n")
+			b.WriteString("| VM SKU | vCPUs | RAM (GB) | Custo/Node/Mes | Pool/Mes (atual N nodes) | Economia | Justificativa |\n")
+			b.WriteString("|--------|-------|----------|----------------|--------------------------|----------|---------------|\n")
+			for _, alt := range ca.SKUAlternatives {
+				economiaStr := fmt.Sprintf("USD %.2f (%.1f%%)", alt.SavingsUSD, alt.SavingsPercent)
+				if alt.SavingsUSD < 0 {
+					economiaStr = fmt.Sprintf("+USD %.2f (%.1f%% mais caro)", -alt.SavingsUSD, -alt.SavingsPercent)
+				}
+				b.WriteString(fmt.Sprintf("| %s | %d | %d | USD %.2f | USD %.2f | %s | %s |\n",
+					alt.VMSize, alt.VMCPUCores, alt.VMMemoryGB,
+					alt.CostPerNodeMonthly, alt.PoolMonthlyCostUSD,
+					economiaStr, alt.Rationale))
+			}
+			b.WriteString("\n")
+		}
 	}
 
 	// ── Previsões IA ──────────────────────────────────────────────────────

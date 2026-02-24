@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -127,6 +128,9 @@ func (ca *NodePoolCostAnalyzer) Calculate(metrics *NodePoolMetrics) *NodePoolCos
 	// 8. Recomendações de economia
 	recs := ca.generateRecommendations(metrics, rate, idleNodes, recommendedNodes, costPerNodeMonthly)
 
+	// 9. SKUs alternativos (Fase 15)
+	skuAlts := ca.suggestAlternativeSKUs(metrics, vmCPUs, vmMemGB, costPerNodePerHour, rate, currentNodes)
+
 	analysis := &NodePoolCostAnalysis{
 		ExchangeRate:     rate,
 		ExchangeRateDate: rateDate,
@@ -160,6 +164,7 @@ func (ca *NodePoolCostAnalyzer) Calculate(metrics *NodePoolMetrics) *NodePoolCos
 		SavingsPercent:          math.Round(savingsPercent*10) / 10,
 
 		Recommendations: recs,
+		SKUAlternatives: skuAlts,
 	}
 
 	log.Info().
@@ -347,6 +352,268 @@ func (ca *NodePoolCostAnalyzer) generateRecommendations(
 	}
 
 	return recs
+}
+
+// ---------------------------------------------------------------------------
+// Fase 15 — Sugestão de VM SKU alternativo baseada em consumo histórico
+// ---------------------------------------------------------------------------
+
+// historicalP95 calcula P95 de CPU% e Mem% combinando snapshot atual (D-0) com
+// os dados históricos de tendência (D-3, D-7, D-14).
+// Usar histórico evita sugerir alternativas baseadas em um momento atípico.
+func (ca *NodePoolCostAnalyzer) historicalP95(metrics *NodePoolMetrics) (cpuP95, memP95 float64) {
+	var cpuValues, memValues []float64
+
+	// D-0: snapshot atual de cada node
+	for _, snap := range metrics.NodesSnapshot {
+		cpuValues = append(cpuValues, snap.CPUUsagePercent)
+		memValues = append(memValues, snap.MemUsagePercent)
+	}
+
+	// D-3, D-7, D-14: ValuePerNode é a média por node naquele ponto histórico
+	for _, trend := range metrics.CPUTrendPerNode {
+		if trend.ValuePerNode > 0 {
+			cpuValues = append(cpuValues, trend.ValuePerNode)
+		}
+	}
+	for _, trend := range metrics.MemTrendPerNode {
+		if trend.ValuePerNode > 0 {
+			memValues = append(memValues, trend.ValuePerNode)
+		}
+	}
+
+	return percentile95(cpuValues), percentile95(memValues)
+}
+
+// identifyBottleneckFromP95 determina o bottleneck a partir dos P95 históricos.
+// cpu → CPU domina (P95 ≥ 60% e 40% maior que mem) | memory → Mem domina | balanced → nenhum domina
+func identifyBottleneckFromP95(cpuP95, memP95 float64) string {
+	const pressureThreshold = 60.0
+	const dominanceRatio = 1.4
+
+	cpuHigh := cpuP95 >= pressureThreshold
+	memHigh := memP95 >= pressureThreshold
+
+	if cpuHigh && memP95 > 0 && cpuP95 > memP95*dominanceRatio {
+		return "cpu"
+	}
+	if memHigh && cpuP95 > 0 && memP95 > cpuP95*dominanceRatio {
+		return "memory"
+	}
+	return "balanced"
+}
+
+// suggestAlternativeSKUs sugere até 3 VMs alternativas baseado no consumo histórico real.
+//
+// Algoritmo:
+//  1. Calcular P95 histórico de CPU% e Mem% (D-0 + D-3/D-7/D-14)
+//  2. Derivar uso real: cpuUsed = currentVCPUs × cpuP95/100; memUsed = currentMemGB × memP95/100
+//  3. FILTRO PRIMÁRIO: candidato deve acomodar cpuUsed e memUsed com 20% de headroom
+//     (vCPUs ≥ ceil(cpuUsed/0.80) e memGB ≥ ceil(memUsed/0.80))
+//  4. SCORE: bottleneck relief + cost savings + generation bonus
+func (ca *NodePoolCostAnalyzer) suggestAlternativeSKUs(
+	metrics *NodePoolMetrics,
+	currentVCPUs, currentMemGB int,
+	currentCostPerHour, rate float64,
+	currentNodes int,
+) []NodePoolSKUAlternative {
+	if currentVCPUs == 0 || currentMemGB == 0 || currentCostPerHour == 0 {
+		return nil
+	}
+
+	// 1. P95 histórico (snapshot atual + D-3/D-7/D-14)
+	cpuP95, memP95 := ca.historicalP95(metrics)
+	if cpuP95 == 0 && memP95 == 0 {
+		// Sem dados históricos → evitar recomendação sem base
+		return nil
+	}
+
+	// 2. Consumo real a P95
+	cpuUsedAtP95 := float64(currentVCPUs) * cpuP95 / 100.0 // vCPUs efetivamente usados
+	memUsedAtP95 := float64(currentMemGB) * memP95 / 100.0 // GB efetivamente usados
+
+	// 3. Requisito mínimo: SKU deve acomodar P95 com 20% de headroom (max 80% util)
+	const headroom = 0.80
+	minVCPUs := int(math.Ceil(cpuUsedAtP95 / headroom))
+	minMemGB := int(math.Ceil(memUsedAtP95 / headroom))
+	if minVCPUs < 1 {
+		minVCPUs = 1
+	}
+	if minMemGB < 1 {
+		minMemGB = 1
+	}
+
+	// 4. Bottleneck e pool cost
+	bottleneck := identifyBottleneckFromP95(cpuP95, memP95)
+	currentPoolMonthly := float64(currentNodes) * currentCostPerHour * npHoursPerMonth
+
+	isExoticFamily := func(family string) bool {
+		return strings.HasPrefix(family, "NC") ||
+			strings.HasPrefix(family, "NV") ||
+			family == "M-Series"
+	}
+
+	type candidate struct {
+		spec  predictions.VMSpec
+		score float64
+	}
+	var candidates []candidate
+
+	for _, spec := range predictions.GetAllVMSpecs() {
+		if spec.Size == metrics.VMSize {
+			continue
+		}
+		if isExoticFamily(spec.Family) {
+			continue
+		}
+
+		// FILTRO PRIMÁRIO: capacidade mínima para lidar com carga histórica P95
+		if spec.VCPUs < minVCPUs || spec.MemoryGiB < minMemGB {
+			continue
+		}
+
+		altCostPerHour := float64(spec.VCPUs)*npPriceCPUCoreHour + float64(spec.MemoryGiB)*npPriceMemGBHour
+
+		// Rejeitar SKUs muito mais caros sem ganho justificável
+		if altCostPerHour > currentCostPerHour*1.50 {
+			continue
+		}
+
+		var score float64
+
+		// Custo: cada 10% mais barato vale 5 pts
+		costFactor := (currentCostPerHour - altCostPerHour) / currentCostPerHour
+		score += costFactor * 5.0
+
+		// Utilização esperada após migração (baseia o score no alívio real do bottleneck)
+		cpuUtilAfter := cpuUsedAtP95 / float64(spec.VCPUs) * 100.0
+		memUtilAfter := memUsedAtP95 / float64(spec.MemoryGiB) * 100.0
+
+		switch bottleneck {
+		case "cpu":
+			// Priorizar SKUs que reduzem pressão de CPU historicamente alta
+			cpuRelief := (cpuP95 - cpuUtilAfter) / cpuP95
+			score += cpuRelief * 8.0
+		case "memory":
+			// Priorizar SKUs que reduzem pressão de memória historicamente alta
+			memRelief := (memP95 - memUtilAfter) / memP95
+			score += memRelief * 8.0
+		case "balanced":
+			// Sem bottleneck definido: priorizar economia, penalizar over-provision
+			if spec.VCPUs > currentVCPUs {
+				overCPU := float64(spec.VCPUs-currentVCPUs) / float64(currentVCPUs)
+				score -= overCPU * 2.0
+			}
+		}
+
+		// Bônus de geração: VMs mais novas tendem a ter melhor perf/custo
+		if strings.Contains(spec.Size, "_v5") {
+			score += 0.3
+		} else if strings.Contains(spec.Size, "_v4") {
+			score += 0.2
+		} else if strings.Contains(spec.Size, "_v3") {
+			score += 0.1
+		}
+
+		candidates = append(candidates, candidate{spec: spec, score: score})
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
+	maxResults := 3
+	if len(candidates) < maxResults {
+		maxResults = len(candidates)
+	}
+
+	result := make([]NodePoolSKUAlternative, 0, maxResults)
+	for i := 0; i < maxResults; i++ {
+		spec := candidates[i].spec
+		altCostPerHour := float64(spec.VCPUs)*npPriceCPUCoreHour + float64(spec.MemoryGiB)*npPriceMemGBHour
+		altPoolMonthly := float64(currentNodes) * altCostPerHour * npHoursPerMonth
+		savingsUSD := currentPoolMonthly - altPoolMonthly
+
+		savingsPct := 0.0
+		if currentPoolMonthly > 0 {
+			savingsPct = savingsUSD / currentPoolMonthly * 100.0
+		}
+
+		cpuDelta := float64(spec.VCPUs-currentVCPUs) / float64(currentVCPUs) * 100.0
+		memDelta := float64(spec.MemoryGiB-currentMemGB) / float64(currentMemGB) * 100.0
+
+		// Utilização esperada após migração (para mostrar no rationale)
+		cpuUtilAfter := cpuUsedAtP95 / float64(spec.VCPUs) * 100.0
+		memUtilAfter := memUsedAtP95 / float64(spec.MemoryGiB) * 100.0
+
+		result = append(result, NodePoolSKUAlternative{
+			VMSize:             spec.Size,
+			VMFamily:           spec.Family,
+			VMCPUCores:         spec.VCPUs,
+			VMMemoryGB:         spec.MemoryGiB,
+			CostPerNodeHourUSD: round2(altCostPerHour),
+			CostPerNodeMonthly: round2(altCostPerHour * npHoursPerMonth),
+			PoolMonthlyCostUSD: round2(altPoolMonthly),
+			PoolMonthlyCostBRL: round2(altPoolMonthly * rate),
+			SavingsUSD:         round2(savingsUSD),
+			SavingsBRL:         round2(savingsUSD * rate),
+			SavingsPercent:     math.Round(savingsPct*10) / 10,
+			Bottleneck:         bottleneck,
+			Rationale:          buildSKURationale(bottleneck, spec, cpuP95, memP95, cpuUtilAfter, memUtilAfter, savingsPct),
+			CPUDeltaPercent:    math.Round(cpuDelta*10) / 10,
+			MemDeltaPercent:    math.Round(memDelta*10) / 10,
+		})
+	}
+
+	log.Info().
+		Str("nodepool", metrics.NodePoolName).
+		Str("bottleneck", bottleneck).
+		Float64("cpu_p95_hist", math.Round(cpuP95*10)/10).
+		Float64("mem_p95_hist", math.Round(memP95*10)/10).
+		Int("min_vcpus_needed", minVCPUs).
+		Int("min_mem_gb_needed", minMemGB).
+		Int("alternatives_found", len(result)).
+		Msg("SKU alternatives gerados baseado em consumo historico P95")
+
+	return result
+}
+
+// buildSKURationale gera explicação legível mencionando os P95 históricos que motivaram a sugestão.
+func buildSKURationale(
+	bottleneck string,
+	spec predictions.VMSpec,
+	cpuP95, memP95 float64,
+	cpuUtilAfter, memUtilAfter float64,
+	savingsPct float64,
+) string {
+	switch bottleneck {
+	case "cpu":
+		return fmt.Sprintf(
+			"CPU P95 historico %.0f%% — %s (%d vCPUs) reduziria para ~%.0f%% de utilizacao com headroom adequado.",
+			cpuP95, spec.Size, spec.VCPUs, cpuUtilAfter,
+		)
+	case "memory":
+		return fmt.Sprintf(
+			"Mem P95 historico %.0f%% — %s (%dGB) reduziria para ~%.0f%% de utilizacao com headroom adequado.",
+			memP95, spec.Size, spec.MemoryGiB, memUtilAfter,
+		)
+	case "balanced":
+		if savingsPct > 0 {
+			return fmt.Sprintf(
+				"Consumo historico balanceado (CPU P95 %.0f%%, Mem P95 %.0f%%). %s acomoda esta carga com %.1f%% de reducao de custo.",
+				cpuP95, memP95, spec.Size, savingsPct,
+			)
+		}
+		return fmt.Sprintf(
+			"Consumo historico balanceado (CPU P95 %.0f%%, Mem P95 %.0f%%). %s oferece geracao mais nova com melhor relacao custo/desempenho.",
+			cpuP95, memP95, spec.Size,
+		)
+	}
+	return fmt.Sprintf("Compativel com consumo historico: CPU P95 %.0f%%, Mem P95 %.0f%%.", cpuP95, memP95)
 }
 
 // ---------------------------------------------------------------------------
