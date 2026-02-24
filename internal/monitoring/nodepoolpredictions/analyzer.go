@@ -255,6 +255,26 @@ func (a *NodePoolAnalyzer) calculateHealthScore(metrics *NodePoolMetrics, trends
 		breakdown.ConntrackSafety*15 +
 		breakdown.AutoscalerHealth*10) / 100
 
+	// --- Penalidade: HPAs em limite máximo de réplicas com CPU elevada ---
+	// Se HPAs não conseguem mais escalar horizontalmente E o pool está sob pressão,
+	// o risco real é maior do que as métricas estáticas indicam.
+	atMaxCount := 0
+	for _, hpa := range metrics.HPACorrelation {
+		if hpa.AtMax {
+			atMaxCount++
+		}
+	}
+	if atMaxCount > 0 && worstUtil >= 70 {
+		// Penalidade proporcional: cada HPA em limite com CPU alta reduz 5 pontos (máx -15)
+		penalty := clampInt(atMaxCount*5, 0, 15)
+		overall = clampInt(overall-penalty, 0, 100)
+		log.Debug().
+			Int("at_max_hpas", atMaxCount).
+			Float64("worst_util", worstUtil).
+			Int("penalty", penalty).
+			Msg("Penalidade de HPA em limite aplicada ao health score")
+	}
+
 	category := "healthy"
 	if overall < 50 {
 		category = "critical"
@@ -709,6 +729,43 @@ func (a *NodePoolAnalyzer) fallbackAnalysis(
 	if metrics.BinPacking.ScaleInCandidates > 0 {
 		result.ExecutiveSummary.KeyFindings = append(result.ExecutiveSummary.KeyFindings,
 			fmt.Sprintf("%d node(s) candidatos para scale-in (< 30%% utilização)", metrics.BinPacking.ScaleInCandidates))
+	}
+
+	// HPAs em limite máximo no pool
+	hpaAtMax := 0
+	var hpaAtMaxNames []string
+	for _, hpa := range metrics.HPACorrelation {
+		if hpa.AtMax {
+			hpaAtMax++
+			hpaAtMaxNames = append(hpaAtMaxNames, hpa.HPAName)
+		}
+	}
+	if hpaAtMax > 0 {
+		finding := fmt.Sprintf("%d HPA(s) no limite maximo de replicas: %s",
+			hpaAtMax, strings.Join(hpaAtMaxNames, ", "))
+		result.ExecutiveSummary.KeyFindings = append(result.ExecutiveSummary.KeyFindings, finding)
+
+		// Predição de curto prazo: risco de falta de capacidade
+		result.Predictions.ShortTerm = append(result.Predictions.ShortTerm, NodePoolPrediction{
+			Timeframe:   "4h",
+			Event:       fmt.Sprintf("%d HPA(s) no limite maximo — pool pode precisar de mais nodes para absorver carga", hpaAtMax),
+			Probability: 0.65,
+			Severity:    "high",
+			Impact:      "Sem escalonamento horizontal disponível; carga extra vai para replicas existentes",
+			Indicators:  []string{fmt.Sprintf("HPAs bloqueados: %s", strings.Join(hpaAtMaxNames, ", "))},
+		})
+
+		// Recomendação: aumentar maxReplicas ou o pool
+		result.Recommendations = append(result.Recommendations, NodePoolRecommendation{
+			Priority:    1,
+			Title:       fmt.Sprintf("Revisar maxReplicas dos HPAs em limite (%d)", hpaAtMax),
+			Description: fmt.Sprintf("HPAs %s atingiram maxReplicas e não conseguem mais escalar. Se a carga continuar crescendo, replicas existentes vão saturar.", strings.Join(hpaAtMaxNames, ", ")),
+			Actions:     []string{fmt.Sprintf("kubectl edit hpa %s -n <namespace>", hpaAtMaxNames[0])},
+			ExpectedImpact: "Permite escalonamento horizontal quando carga aumentar; reduz risco de degradação",
+			Category:    "scaling",
+			Complexity:  "low",
+			RiskLevel:   "low",
+		})
 	}
 
 	// Recomendação básica
