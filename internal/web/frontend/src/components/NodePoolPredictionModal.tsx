@@ -418,6 +418,105 @@ export function NodePoolPredictionModal({
                   </div>
                 )}
 
+                {/* ── DELTA (comparação com análise anterior) ─────────── */}
+                {result.delta && (
+                  <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
+                    <h3 className="font-semibold mb-2 flex items-center gap-2">
+                      <History className="w-4 h-4 text-primary" />
+                      Comparação com análise anterior
+                      <span className="text-xs text-muted-foreground font-normal">
+                        — há {result.delta.days_since < 1
+                          ? `${Math.round(result.delta.days_since * 24)}h`
+                          : `${Math.round(result.delta.days_since)}d`}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-muted-foreground italic mb-3">{result.delta.summary}</p>
+                    <div className="flex flex-wrap gap-2">
+                      {/* Health Score */}
+                      {result.delta.health_score_delta !== 0 && (
+                        <Badge variant="outline" className={
+                          result.delta.health_score_delta > 0
+                            ? "border-green-500 text-green-400"
+                            : "border-red-500 text-red-400"
+                        }>
+                          Health {result.delta.health_score_delta > 0 ? "+" : ""}{result.delta.health_score_delta}
+                        </Badge>
+                      )}
+                      {/* CPU */}
+                      {Math.abs(result.delta.cpu_delta_pp ?? 0) >= 1 && (
+                        <Badge variant="outline" className={
+                          result.delta.cpu_delta_pp < 0
+                            ? "border-green-500 text-green-400"
+                            : "border-red-500 text-red-400"
+                        }>
+                          CPU {result.delta.cpu_delta_pp > 0 ? "+" : ""}{(result.delta.cpu_delta_pp).toFixed(1)}pp
+                        </Badge>
+                      )}
+                      {/* Memória */}
+                      {Math.abs(result.delta.mem_delta_pp ?? 0) >= 1 && (
+                        <Badge variant="outline" className={
+                          result.delta.mem_delta_pp < 0
+                            ? "border-green-500 text-green-400"
+                            : "border-red-500 text-red-400"
+                        }>
+                          Mem {result.delta.mem_delta_pp > 0 ? "+" : ""}{(result.delta.mem_delta_pp).toFixed(1)}pp
+                        </Badge>
+                      )}
+                      {/* Pods */}
+                      {Math.abs(result.delta.pods_delta ?? 0) >= 0.5 && (
+                        <Badge variant="outline" className={
+                          result.delta.pods_delta < 0
+                            ? "border-green-500 text-green-400"
+                            : "border-yellow-500 text-yellow-400"
+                        }>
+                          Pods {result.delta.pods_delta > 0 ? "+" : ""}{(result.delta.pods_delta).toFixed(1)}/node
+                        </Badge>
+                      )}
+                      {/* conntrack */}
+                      {Math.abs(result.delta.conntrack_delta_pp ?? 0) >= 0.5 && (
+                        <Badge variant="outline" className={
+                          result.delta.conntrack_delta_pp < 0
+                            ? "border-green-500 text-green-400"
+                            : "border-red-500 text-red-400"
+                        }>
+                          conntrack {result.delta.conntrack_delta_pp > 0 ? "+" : ""}{(result.delta.conntrack_delta_pp).toFixed(1)}pp
+                        </Badge>
+                      )}
+                      {/* Fragmentação */}
+                      {Math.abs(result.delta.bin_packing_delta_pp ?? 0) >= 2 && (
+                        <Badge variant="outline" className={
+                          result.delta.bin_packing_delta_pp > 0
+                            ? "border-green-500 text-green-400"
+                            : "border-yellow-500 text-yellow-400"
+                        }>
+                          Frag. {result.delta.bin_packing_delta_pp > 0 ? "+" : ""}{(result.delta.bin_packing_delta_pp).toFixed(1)}pp
+                        </Badge>
+                      )}
+                      {/* Nenhuma variação significativa */}
+                      {(result.delta.improving?.length ?? 0) === 0 &&
+                       (result.delta.degrading?.length ?? 0) === 0 && (
+                        <span className="text-xs text-muted-foreground">
+                          Sem variação significativa nas métricas
+                        </span>
+                      )}
+                    </div>
+                    {((result.delta.improving?.length ?? 0) > 0 || (result.delta.degrading?.length ?? 0) > 0) && (
+                      <div className="mt-2 flex flex-wrap gap-4 text-xs">
+                        {(result.delta.improving?.length ?? 0) > 0 && (
+                          <span className="text-green-400">
+                            Melhorando: {result.delta.improving.join(", ")}
+                          </span>
+                        )}
+                        {(result.delta.degrading?.length ?? 0) > 0 && (
+                          <span className="text-red-400">
+                            Degradando: {result.delta.degrading.join(", ")}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* ── HEALTH SCORE ──────────────────────────────────────── */}
                 <div className="bg-gradient-card border border-border/50 rounded-lg p-4">
                   <h3 className="font-semibold mb-3 flex items-center gap-2">

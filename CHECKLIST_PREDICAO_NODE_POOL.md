@@ -2,7 +2,7 @@
 
 **Estudo base:** [ESTUDO_PREDICAO_NODE_POOL.md](ESTUDO_PREDICAO_NODE_POOL.md)
 **Iniciado:** 21/02/2026
-**Status geral:** 🟡 Em andamento — Fases 1-10, 12 concluídas | Fases 11, 13-15 planejadas (melhorias)
+**Status geral:** 🟡 Em andamento — Fases 1-10, 12, 14 concluídas | Fases 11, 13, 15 planejadas (melhorias)
 
 > **Para novos chats:** leia este arquivo + o estudo base antes de começar.
 > Marque cada item com ✅ quando concluído e anote a data.
@@ -322,14 +322,26 @@
 
 ---
 
-## Fase 14 — Delta Entre Análises (Comparação Histórica)
+## Fase 14 — Delta Entre Análises (Comparação Histórica) ✅ Concluída em 23/02/2026
 **Objetivo**: "Desde a última análise (há 5 dias): conntrack +15%, CPU +8%"
 **Impacto**: ⭐⭐⭐ | **Esforço**: Baixo
 
-- [ ] 14.1 Ao salvar nova análise, buscar a análise anterior do mesmo pool no SQLite
-- [ ] 14.2 Calcular delta para: health score, CPU%, mem%, conntrack%, bin packing efficiency
-- [ ] 14.3 Struct `AnalysisDelta` com deltas e tendência (melhorando/piorando)
-- [ ] 14.4 Exibir delta no modal: badge verde (melhorou) / vermelho (piorou) por métrica
+- [x] 14.1 Ao salvar nova análise, buscar a análise anterior do mesmo pool no SQLite
+- [x] 14.2 Calcular delta para: health score, CPU%, mem%, pods, conntrack%, bin packing efficiency
+- [x] 14.3 Struct `NodePoolAnalysisDelta` com deltas, listas improving/degrading e summary legível
+- [x] 14.4 Exibir delta no modal: badges verde (melhorou) / vermelho (piorou) por métrica
+
+**Implementado em**:
+- `models.go` — struct `NodePoolAnalysisDelta` adicionada a `NodePoolPredictionResult`
+- `handlers/nodepool_predictions.go` — função `calculateNodePoolDelta()` chamada após Save()
+  - Busca 2 análises mais recentes via `store.List(limit=2)`, compara records[0] vs records[1]
+  - Delta de: HealthScore, CPU pp, Mem pp, Pods/node, conntrack pp, BinPacking pp
+  - Listas `Improving` / `Degrading` com threshold mínimo por métrica
+  - Summary: "Desde análise anterior (há Xd): CPU +8.2pp, conntrack +15.3pp"
+- `NodePoolPredictionModal.tsx` — seção "Comparação com análise anterior"
+  - Exibida entre ActionSummary e HealthScore (seção sempre visível)
+  - Badges coloridos: verde (menos pressão = melhora), vermelho (mais pressão = piora)
+  - Listas "Melhorando" / "Degradando" resumidas em texto
 
 ---
 

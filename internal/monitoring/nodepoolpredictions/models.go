@@ -47,6 +47,34 @@ type NodePoolPredictionResult struct {
 
 	// Timeline de saturação determinística (calculada via regressão linear sobre D-0/D-3/D-7/D-14)
 	SaturationTimeline PoolSaturationTimeline `json:"saturation_timeline"`
+
+	// Delta em relação à análise anterior do mesmo pool (nil se for a primeira análise)
+	Delta *NodePoolAnalysisDelta `json:"delta,omitempty"`
+}
+
+// NodePoolAnalysisDelta compara a análise atual com a anterior do mesmo pool.
+// Todos os campos de delta são: positivo = métrica aumentou, negativo = diminuiu.
+// "IsGood" depende da métrica: para recursos (CPU/Mem/etc), aumento = risco maior.
+type NodePoolAnalysisDelta struct {
+	// Referência à análise anterior
+	PreviousID         string    `json:"previous_id"`
+	PreviousAnalyzedAt time.Time `json:"previous_analyzed_at"`
+	DaysSince          float64   `json:"days_since"` // horas / 24
+
+	// Deltas de métricas (em pontos percentuais, exceto HealthScore em pontos absolutos)
+	HealthScoreDelta   int     `json:"health_score_delta"`    // positivo = melhorou
+	CPUDeltaPP         float64 `json:"cpu_delta_pp"`          // positivo = mais pressão (pior)
+	MemDeltaPP         float64 `json:"mem_delta_pp"`          // positivo = mais pressão (pior)
+	PodsDelta          float64 `json:"pods_delta"`            // positivo = mais pods/node
+	ConntrackDeltaPP   float64 `json:"conntrack_delta_pp"`    // positivo = mais pressão (pior)
+	BinPackingDeltaPP  float64 `json:"bin_packing_delta_pp"`  // positivo = menos desperdício (melhor)
+
+	// Listas de métricas que melhoraram ou pioraram (para exibição rápida)
+	Improving []string `json:"improving"` // ex: ["cpu", "mem"]
+	Degrading []string `json:"degrading"` // ex: ["conntrack", "pods"]
+
+	// Resumo legível
+	Summary string `json:"summary"` // ex: "Desde análise anterior (há 2d): conntrack +15.3pp, CPU -8.2pp"
 }
 
 // ---------------------------------------------------------------------------
