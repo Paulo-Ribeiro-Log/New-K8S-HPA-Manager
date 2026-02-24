@@ -238,6 +238,11 @@ func (c *NodePoolCollector) Collect(ctx context.Context, req NodePoolPredictionR
 	metrics.BinPacking = c.calculateBinPacking(snapshots)
 
 	// ------------------------------------------------------------------
+	// 2.8b – Disk Growth analysis (crescimento de disco efêmero)
+	// ------------------------------------------------------------------
+	metrics.DiskGrowth = c.calculateDiskGrowth(snapshots)
+
+	// ------------------------------------------------------------------
 	// 2.9 – Correlação com HPAs que têm pods neste pool
 	// ------------------------------------------------------------------
 	hpaCorr, hpaErr := c.collectHPACorrelation(ctx, nodeNames)
@@ -433,6 +438,8 @@ func (c *NodePoolCollector) collectCurrentSnapshot(
 	var cpuByInstance map[string]float64
 	var memByInstance map[string]float64
 	var diskByInstance map[string]float64
+	var diskGrowthByInstance map[string]float64  // bytes/s (positivo = enchendo)
+	var diskSizeByInstance map[string]float64    // bytes totais
 	var pidByInstance map[string]float64
 	var conntrackPctByInstance map[string]float64
 	var podCountByNode map[string]int
@@ -441,6 +448,8 @@ func (c *NodePoolCollector) collectCurrentSnapshot(
 		cpuByInstance = c.queryVectorByInstance(ctx, c.queries.GetNodeCPUUsageQuery(instanceRegex, 0))
 		memByInstance = c.queryVectorByInstance(ctx, c.queries.GetNodeMemUsagePercentQuery(instanceRegex, 0))
 		diskByInstance = c.queryVectorByInstance(ctx, c.queries.GetNodeDiskUsagePercentQuery(instanceRegex))
+		diskGrowthByInstance = c.queryVectorByInstance(ctx, c.queries.GetNodeDiskGrowthRateQuery(instanceRegex))
+		diskSizeByInstance = c.queryVectorByInstance(ctx, c.queries.GetNodeDiskSizeBytesQuery(instanceRegex))
 		pidByInstance = c.queryVectorByInstance(ctx, c.queries.GetNodePIDCountQuery(instanceRegex))
 
 		// conntrack %: entries / limit * 100
@@ -492,6 +501,20 @@ func (c *NodePoolCollector) collectCurrentSnapshot(
 			if v, ok := diskByInstance[inst]; ok {
 				// Disk query retorna 0-1 (fração), converter para %
 				snap.DiskUsagePercent = clamp(v*100.0, 0, 100)
+			}
+			// Taxa de crescimento do disco (bytes/s positivo = enchendo)
+			if growthBytesPerSec, ok := diskGrowthByInstance[inst]; ok && growthBytesPerSec > 0 {
+				snap.DiskGrowthBytesPerSec = growthBytesPerSec
+				// Calcular %/dia a partir do tamanho total
+				if sizeBytes, hasSz := diskSizeByInstance[inst]; hasSz && sizeBytes > 0 {
+					snap.DiskSizeGB = sizeBytes / (1024 * 1024 * 1024)
+					// bytes/s → bytes/dia → % do disco/dia
+					snap.DiskGrowthPctPerDay = growthBytesPerSec * 86400.0 / sizeBytes * 100.0
+					remainingPct := 100.0 - snap.DiskUsagePercent
+					if snap.DiskGrowthPctPerDay > 0 {
+						snap.DiskDaysUntilFull = remainingPct / snap.DiskGrowthPctPerDay
+					}
+				}
 			}
 			if v, ok := pidByInstance[inst]; ok {
 				snap.PIDCount = int(v)
@@ -1303,6 +1326,71 @@ func formatAge(t time.Time) string {
 // clamp garante que v está dentro do intervalo [minVal, maxVal].
 func clamp(v, minVal, maxVal float64) float64 {
 	return math.Max(minVal, math.Min(maxVal, v))
+}
+
+// ==============================================================================
+// 2.8b – Disk Growth Analysis
+// ==============================================================================
+
+// calculateDiskGrowth consolida os dados de crescimento de disco dos snapshots
+// individuais de nodes em uma análise do pool.
+func (c *NodePoolCollector) calculateDiskGrowth(snapshots []NodePoolNodeSnapshot) DiskGrowthAnalysis {
+	analysis := DiskGrowthAnalysis{}
+	if len(snapshots) == 0 {
+		return analysis
+	}
+
+	// Verificar se temos dados de crescimento de disco
+	hasData := false
+	for _, s := range snapshots {
+		if s.DiskSizeGB > 0 {
+			hasData = true
+			break
+		}
+	}
+	analysis.HasData = hasData
+	if !hasData {
+		return analysis
+	}
+
+	for _, s := range snapshots {
+		// Pressões de disco
+		if s.DiskUsagePercent >= 85 {
+			analysis.NodesCritical++
+		} else if s.DiskUsagePercent >= 70 {
+			analysis.NodesWarning++
+		}
+
+		// Maior uso atual
+		if s.DiskUsagePercent > analysis.MaxUsagePct {
+			analysis.MaxUsagePct = s.DiskUsagePercent
+		}
+
+		// Node que está enchendo mais rápido
+		if s.DiskGrowthPctPerDay > analysis.MaxGrowthPctDay {
+			analysis.MaxGrowthPctDay = s.DiskGrowthPctPerDay
+			analysis.FastestNode = s.NodeName
+		}
+
+		// Node que vai encher primeiro (menor dias até cheio > 0)
+		if s.DiskDaysUntilFull > 0 {
+			if analysis.MinDaysUntilFull == 0 || s.DiskDaysUntilFull < analysis.MinDaysUntilFull {
+				analysis.MinDaysUntilFull = s.DiskDaysUntilFull
+			}
+		}
+	}
+
+	log.Debug().
+		Bool("has_data", hasData).
+		Float64("max_usage_pct", analysis.MaxUsagePct).
+		Float64("max_growth_pct_day", analysis.MaxGrowthPctDay).
+		Float64("min_days_until_full", analysis.MinDaysUntilFull).
+		Str("fastest_node", analysis.FastestNode).
+		Int("nodes_warning", analysis.NodesWarning).
+		Int("nodes_critical", analysis.NodesCritical).
+		Msg("Disk Growth Analysis concluída")
+
+	return analysis
 }
 
 // ==============================================================================

@@ -997,6 +997,13 @@ func (a *NodePoolAnalyzer) calculateSaturationTimeline(metrics *NodePoolMetrics,
 		}
 	}
 
+	// 5. Disco efêmero (threshold 85%) — taxa de crescimento via deriv() no node_exporter
+	if metrics.DataSources.NodeExporterAvailable && metrics.DiskGrowth.HasData {
+		if f := saturationForecastDisk(metrics, now); f != nil {
+			forecasts = append(forecasts, *f)
+		}
+	}
+
 	// Ordenar: métricas que saturam primeiro aparecem primeiro; nil (estável) vai para o final
 	sort.Slice(forecasts, func(i, j int) bool {
 		di, dj := forecasts[i].DaysUntilSaturation, forecasts[j].DaysUntilSaturation
@@ -1246,6 +1253,68 @@ func saturationForecastConntrack(metrics *NodePoolMetrics, now time.Time) *Satur
 				}
 			}
 		} else {
+			forecast.UrgencyBadge = "ESTAVEL"
+		}
+	} else {
+		forecast.UrgencyBadge = "ESTAVEL"
+	}
+
+	return forecast
+}
+
+// saturationForecastDisk usa a taxa de crescimento de disco (DiskGrowthPctPerDay)
+// coletada via deriv(node_filesystem_avail_bytes[1h]) no node_exporter.
+// Reporta o node com menor DiskDaysUntilFull (mais crítico).
+func saturationForecastDisk(metrics *NodePoolMetrics, now time.Time) *SaturationForecast {
+	dg := metrics.DiskGrowth
+	if !dg.HasData || dg.MaxGrowthPctDay <= 0 {
+		return nil
+	}
+
+	threshold := 85.0
+	currentPct := dg.MaxUsagePct
+
+	forecast := &SaturationForecast{
+		Metric:          "disco",
+		AffectedNode:    dg.FastestNode,
+		CurrentValue:    currentPct,
+		Threshold:       threshold,
+		DailyGrowthRate: dg.MaxGrowthPctDay,
+		DataPoints:      1,
+		Confidence:      "medium",
+	}
+
+	// Filtro ramp-up: uso atual baixo + projeção longa → provavelmente ruído ou período inicial
+	if currentPct < 15.0 && dg.MinDaysUntilFull > 90 {
+		forecast.UrgencyBadge = "ESTAVEL"
+		forecast.Confidence = "low"
+		log.Debug().
+			Float64("disk_pct", currentPct).
+			Float64("days_until_full", dg.MinDaysUntilFull).
+			Msg("disco < 15% e projeção > 90d: pool em ramp-up, projeção descartada")
+		return forecast
+	}
+
+	if currentPct >= threshold {
+		zero := 0.0
+		forecast.DaysUntilSaturation = &zero
+		t := now
+		forecast.EstimatedDate = &t
+		forecast.UrgencyBadge = "CRITICO"
+		return forecast
+	}
+
+	if dg.MinDaysUntilFull > 0 {
+		days := dg.MinDaysUntilFull
+		forecast.DaysUntilSaturation = &days
+		estimatedDate := now.Add(time.Duration(days*24) * time.Hour)
+		forecast.EstimatedDate = &estimatedDate
+		switch {
+		case days <= 7:
+			forecast.UrgencyBadge = "CRITICO"
+		case days <= 30:
+			forecast.UrgencyBadge = "ATENCAO"
+		default:
 			forecast.UrgencyBadge = "ESTAVEL"
 		}
 	} else {

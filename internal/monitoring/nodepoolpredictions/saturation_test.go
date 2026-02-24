@@ -479,3 +479,124 @@ func TestMaxHelpers_EmptySlice(t *testing.T) {
 		t.Error("maxPodDensityCurrent(nil) deveria retornar 0")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// saturationForecastDisk — crescimento de disco efêmero
+// ---------------------------------------------------------------------------
+
+func makeDiskMetrics(maxGrowthPctDay, maxUsagePct, minDaysUntilFull float64, fastestNode string, hasSufficientData bool) *NodePoolMetrics {
+	return &NodePoolMetrics{
+		DiskGrowth: DiskGrowthAnalysis{
+			HasData:          true,
+			FastestNode:      fastestNode,
+			MaxGrowthPctDay:  maxGrowthPctDay,
+			MaxUsagePct:      maxUsagePct,
+			MinDaysUntilFull: minDaysUntilFull,
+		},
+		DataSources: DataSourceInfo{NodeExporterAvailable: hasSufficientData},
+	}
+}
+
+func TestDiskForecast_StableNilGrowth(t *testing.T) {
+	// MaxGrowthPctDay == 0 → nenhum crescimento → retorna nil
+	metrics := makeDiskMetrics(0, 45.0, 0, "node-a", true)
+	f := saturationForecastDisk(metrics, time.Now())
+	if f != nil {
+		t.Errorf("sem crescimento: esperado nil, obtido forecast com badge=%q", f.UrgencyBadge)
+	}
+}
+
+func TestDiskForecast_RampUp_LowUsage_LongProjection(t *testing.T) {
+	// Pool com 8% de uso e crescimento levíssimo (365 dias até cheio) → ramp-up, descarta
+	metrics := makeDiskMetrics(0.003, 8.0, 365, "node-a", true)
+	now := time.Now()
+	f := saturationForecastDisk(metrics, now)
+	if f == nil {
+		t.Fatal("esperava forecast não-nil mesmo para ramp-up")
+	}
+	if f.DaysUntilSaturation != nil {
+		t.Errorf("ramp-up não deveria ter DaysUntilSaturation, obtido %.2f", *f.DaysUntilSaturation)
+	}
+	if f.UrgencyBadge != "ESTAVEL" {
+		t.Errorf("esperado ESTAVEL para ramp-up, obtido %q", f.UrgencyBadge)
+	}
+	if f.Confidence != "low" {
+		t.Errorf("esperado confidence=low para ramp-up, obtido %q", f.Confidence)
+	}
+}
+
+func TestDiskForecast_RampUp_ShortProjection_NotFiltered(t *testing.T) {
+	// Pool com 8% de uso MAS crescimento acelerado (apenas 15 dias até cheio) → NÃO filtra
+	metrics := makeDiskMetrics(5.0, 8.0, 15, "node-b", true)
+	now := time.Now()
+	f := saturationForecastDisk(metrics, now)
+	if f == nil {
+		t.Fatal("esperava forecast não-nil para crescimento acelerado")
+	}
+	// 15 dias → ATENCAO
+	if f.UrgencyBadge != "ATENCAO" {
+		t.Errorf("esperado ATENCAO para 15 dias, obtido %q", f.UrgencyBadge)
+	}
+	if f.DaysUntilSaturation == nil {
+		t.Fatal("esperava DaysUntilSaturation para crescimento acelerado")
+	}
+}
+
+func TestDiskForecast_Critical_HighUsage(t *testing.T) {
+	// Disco já em 88% → já saturado
+	metrics := makeDiskMetrics(0.5, 88.0, 0, "node-c", true)
+	now := time.Now()
+	f := saturationForecastDisk(metrics, now)
+	if f == nil {
+		t.Fatal("esperava forecast para disco já saturado")
+	}
+	if f.UrgencyBadge != "CRITICO" {
+		t.Errorf("esperado CRITICO para disco >85%%, obtido %q", f.UrgencyBadge)
+	}
+	if f.DaysUntilSaturation == nil || *f.DaysUntilSaturation != 0 {
+		t.Errorf("esperado DaysUntilSaturation=0 para disco já saturado")
+	}
+}
+
+func TestDiskForecast_Atencao_30Days(t *testing.T) {
+	// 50% de uso, 28 dias até cheio → ATENCAO
+	metrics := makeDiskMetrics(1.25, 50.0, 28, "node-d", true)
+	now := time.Now()
+	f := saturationForecastDisk(metrics, now)
+	if f == nil {
+		t.Fatal("esperava forecast não-nil")
+	}
+	if f.UrgencyBadge != "ATENCAO" {
+		t.Errorf("esperado ATENCAO para 28 dias, obtido %q", f.UrgencyBadge)
+	}
+	if f.DaysUntilSaturation == nil {
+		t.Fatal("esperava DaysUntilSaturation")
+	}
+	if math.Abs(*f.DaysUntilSaturation-28) > 1 {
+		t.Errorf("esperado ~28 dias, obtido %.2f", *f.DaysUntilSaturation)
+	}
+}
+
+func TestDiskForecast_Estavel_LongProjection_HighUsage(t *testing.T) {
+	// 60% de uso, 120 dias até cheio → ESTAVEL (acima do filtro ramp-up mas além de 30d)
+	metrics := makeDiskMetrics(0.2, 60.0, 120, "node-e", true)
+	now := time.Now()
+	f := saturationForecastDisk(metrics, now)
+	if f == nil {
+		t.Fatal("esperava forecast não-nil")
+	}
+	if f.UrgencyBadge != "ESTAVEL" {
+		t.Errorf("esperado ESTAVEL para 120 dias, obtido %q", f.UrgencyBadge)
+	}
+}
+
+func TestDiskForecast_AffectedNodePropagated(t *testing.T) {
+	metrics := makeDiskMetrics(2.0, 55.0, 12, "meu-node-123", true)
+	f := saturationForecastDisk(metrics, time.Now())
+	if f == nil {
+		t.Fatal("esperava forecast não-nil")
+	}
+	if f.AffectedNode != "meu-node-123" {
+		t.Errorf("esperado AffectedNode=meu-node-123, obtido %q", f.AffectedNode)
+	}
+}

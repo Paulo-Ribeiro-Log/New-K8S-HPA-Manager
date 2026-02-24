@@ -628,6 +628,26 @@ func generateNodePoolMarkdownReport(r *np.NodePoolPredictionResult) string {
 		b.WriteString("\n")
 	}
 
+	// ── Crescimento de Disco Efêmero ──────────────────────────────────────
+	if dg := r.RawMetrics.DiskGrowth; dg.HasData {
+		b.WriteString("## CRESCIMENTO DE DISCO EFEMERO\n\n")
+		if dg.MaxGrowthPctDay > 0 {
+			b.WriteString(fmt.Sprintf("- Node mais critico: **%s**\n", dg.FastestNode))
+			b.WriteString(fmt.Sprintf("- Taxa de crescimento: %.3f%%/dia\n", dg.MaxGrowthPctDay))
+			b.WriteString(fmt.Sprintf("- Uso atual (max): %.1f%%\n", dg.MaxUsagePct))
+			if dg.MinDaysUntilFull > 0 {
+				b.WriteString(fmt.Sprintf("- **Dias ate cheio (estimativa): %.0f dias**\n", dg.MinDaysUntilFull))
+			}
+			if dg.NodesWarning > 0 || dg.NodesCritical > 0 {
+				b.WriteString(fmt.Sprintf("- Nodes em alerta (>70%%): %d | Nodes criticos (>85%%): %d\n",
+					dg.NodesWarning, dg.NodesCritical))
+			}
+		} else {
+			b.WriteString("- Sem crescimento detectado (disco estavel)\n")
+		}
+		b.WriteString("\n")
+	}
+
 	// ── Análise de Custo ──────────────────────────────────────────────────
 	if r.CostAnalysis != nil {
 		ca := r.CostAnalysis

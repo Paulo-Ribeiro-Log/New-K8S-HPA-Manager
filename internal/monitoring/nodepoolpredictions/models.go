@@ -122,6 +122,9 @@ type NodePoolMetrics struct {
 	// Correlação com HPAs do pool (quais HPAs têm pods neste pool)
 	HPACorrelation []HPAPoolCorrelation `json:"hpa_correlation,omitempty"`
 
+	// Crescimento do disco efêmero por node (silent killer)
+	DiskGrowth DiskGrowthAnalysis `json:"disk_growth"`
+
 	// Capacidade de crescimento
 	CapacityForecast NodePoolCapacityForecast `json:"capacity_forecast"`
 
@@ -149,6 +152,12 @@ type NodePoolNodeSnapshot struct {
 	ConntrackEntries  int64   `json:"conntrack_entries"`   // 0 se node_exporter indisponível
 	ConntrackLimit    int64   `json:"conntrack_limit"`     // 0 se indisponível
 	ConntrackPercent  float64 `json:"conntrack_percent"`   // 0 se indisponível
+
+	// Disco efêmero — crescimento (requer node_exporter com [1h] de dados)
+	DiskSizeGB          float64 `json:"disk_size_gb"`            // tamanho total do disco raiz (GB)
+	DiskGrowthBytesPerSec float64 `json:"disk_growth_bytes_per_sec"` // bytes/s sendo consumidos (0 se estável/decrescendo)
+	DiskGrowthPctPerDay   float64 `json:"disk_growth_pct_per_day"`   // crescimento em %/dia do disco raiz
+	DiskDaysUntilFull     float64 `json:"disk_days_until_full"`      // 0 = sem dados, <0 = estável/decrescendo
 
 	// Sistema
 	PIDCount int `json:"pid_count"` // 0 se indisponível
@@ -286,6 +295,18 @@ type BinPackingAnalysis struct {
 	// Rebalanceamento necessário?
 	RebalancingNeeded bool   `json:"rebalancing_needed"`
 	WastedResources   string `json:"wasted_resources"` // descrição legível (ex: "~4 cores, ~8GB RAM")
+}
+
+// DiskGrowthAnalysis resumo do crescimento de disco efêmero do pool.
+// Foca no node mais crítico (que cheia mais rápido).
+type DiskGrowthAnalysis struct {
+	HasData         bool    `json:"has_data"`          // true quando node_exporter forneceu dados
+	FastestNode     string  `json:"fastest_node"`      // node enchendo mais rápido
+	MaxGrowthPctDay float64 `json:"max_growth_pct_day"` // maior taxa de crescimento (pp/dia)
+	MaxUsagePct     float64 `json:"max_usage_pct"`      // maior % de uso atual entre os nodes
+	MinDaysUntilFull float64 `json:"min_days_until_full"` // menor "dias até cheio" do pool (0 = N/A)
+	NodesWarning    int     `json:"nodes_warning"`     // nodes com > 70% de uso
+	NodesCritical   int     `json:"nodes_critical"`    // nodes com > 85% de uso
 }
 
 // HPAPoolCorrelation representa um HPA que possui pods rodando neste pool.

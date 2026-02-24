@@ -15,7 +15,7 @@ import {
   TrendingUp, Loader2, X, Download, History,
   CheckCircle2, TriangleAlert, Activity, Server,
   DollarSign, Zap, ArrowUp, ArrowDown, Minus,
-  Network, BarChart3, CalendarClock, Scale,
+  Network, BarChart3, CalendarClock, Scale, HardDrive,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -1161,6 +1161,87 @@ export function NodePoolPredictionModal({
                             HPAs em limite maximo nao conseguem escalar mais. Se a carga aumentar, as replicas existentes absorvem toda a pressao sem possibilidade de escalonamento horizontal.
                           </p>
                         )}
+                      </AccordionContent>
+                    </AccordionItem>
+                  )}
+
+                  {/* ── DISCO EFÊMERO ────────────────────────────────── */}
+                  {result.raw_metrics?.disk_growth?.has_data && (
+                    <AccordionItem value="disk" className="bg-gradient-card border border-border/50 rounded-lg px-4">
+                      <AccordionTrigger className="hover:no-underline">
+                        <span className="flex items-center gap-2 font-semibold">
+                          <HardDrive className="w-4 h-4 text-orange-400" />
+                          Disco Efêmero
+                          {(() => {
+                            const dg = result.raw_metrics.disk_growth;
+                            if (dg.nodes_critical > 0)
+                              return <Badge className="ml-2 text-xs bg-red-500/20 text-red-400 border-red-500/30">{dg.nodes_critical} crítico(s)</Badge>;
+                            if (dg.nodes_warning > 0)
+                              return <Badge className="ml-2 text-xs bg-yellow-500/20 text-yellow-400 border-yellow-500/30">{dg.nodes_warning} em alerta</Badge>;
+                            if (dg.max_growth_pct_day > 0)
+                              return <Badge className="ml-2 text-xs bg-blue-500/20 text-blue-400 border-blue-500/30">crescendo</Badge>;
+                            return <Badge className="ml-2 text-xs bg-green-500/20 text-green-500 border-green-500/30">estável</Badge>;
+                          })()}
+                        </span>
+                      </AccordionTrigger>
+                      <AccordionContent>
+                        {(() => {
+                          const dg = result.raw_metrics.disk_growth;
+                          if (!dg.max_growth_pct_day || dg.max_growth_pct_day <= 0) {
+                            return (
+                              <p className="text-sm text-muted-foreground">
+                                Nenhum crescimento detectado. Disco estável.
+                              </p>
+                            );
+                          }
+                          return (
+                            <div className="space-y-3">
+                              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                <div className="bg-background/50 rounded p-3">
+                                  <div className="text-xs text-muted-foreground mb-1">Uso atual (max)</div>
+                                  <div className={`text-xl font-bold ${
+                                    dg.max_usage_pct >= 85 ? "text-red-400" :
+                                    dg.max_usage_pct >= 70 ? "text-yellow-400" : "text-foreground"
+                                  }`}>
+                                    {dg.max_usage_pct?.toFixed(1)}%
+                                  </div>
+                                </div>
+                                <div className="bg-background/50 rounded p-3">
+                                  <div className="text-xs text-muted-foreground mb-1">Taxa crescimento</div>
+                                  <div className="text-xl font-bold text-orange-400">
+                                    {dg.max_growth_pct_day?.toFixed(3)}%<span className="text-sm font-normal">/dia</span>
+                                  </div>
+                                </div>
+                                <div className="bg-background/50 rounded p-3">
+                                  <div className="text-xs text-muted-foreground mb-1">Dias até cheio</div>
+                                  <div className={`text-xl font-bold ${
+                                    dg.min_days_until_full > 0 && dg.min_days_until_full <= 7 ? "text-red-400" :
+                                    dg.min_days_until_full > 0 && dg.min_days_until_full <= 30 ? "text-yellow-400" :
+                                    "text-muted-foreground"
+                                  }`}>
+                                    {dg.min_days_until_full > 0 ? `~${Math.round(dg.min_days_until_full)}d` : "—"}
+                                  </div>
+                                </div>
+                              </div>
+                              {dg.fastest_node && (
+                                <p className="text-xs text-muted-foreground">
+                                  Node mais crítico: <span className="font-medium text-foreground">{dg.fastest_node}</span>
+                                </p>
+                              )}
+                              {(dg.nodes_warning > 0 || dg.nodes_critical > 0) && (
+                                <p className="text-xs text-yellow-400/80">
+                                  {dg.nodes_critical > 0 && `${dg.nodes_critical} node(s) crítico(s) (>85% de uso). `}
+                                  {dg.nodes_warning > 0 && `${dg.nodes_warning} node(s) em alerta (>70% de uso).`}
+                                </p>
+                              )}
+                              {dg.min_days_until_full > 0 && dg.min_days_until_full <= 30 && (
+                                <p className="text-xs text-red-400/80 mt-1">
+                                  Atenção: disco pode atingir capacidade em breve. Verifique logs volumosos, coredumps ou dados de aplicação acumulando no disco raiz.
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </AccordionContent>
                     </AccordionItem>
                   )}
