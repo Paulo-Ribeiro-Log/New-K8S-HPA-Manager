@@ -560,6 +560,29 @@ type NodePoolCostAnalysis struct {
 
 	// Recomendações de custo
 	Recommendations []NodePoolCostRecommendation `json:"recommendations,omitempty"`
+
+	// SKUs alternativos recomendados (Fase 15)
+	SKUAlternatives []NodePoolSKUAlternative `json:"sku_alternatives,omitempty"`
+}
+
+// NodePoolSKUAlternative sugestão de VM SKU alternativo mais adequado ao perfil de uso real.
+// Custos calculados assumindo o mesmo número de nodes do pool atual.
+type NodePoolSKUAlternative struct {
+	VMSize             string  `json:"vm_size"`
+	VMFamily           string  `json:"vm_family"`
+	VMCPUCores         int     `json:"vm_cpu_cores"`
+	VMMemoryGB         int     `json:"vm_memory_gb"`
+	CostPerNodeHourUSD float64 `json:"cost_per_node_hour_usd"`
+	CostPerNodeMonthly float64 `json:"cost_per_node_monthly_usd"`
+	PoolMonthlyCostUSD float64 `json:"pool_monthly_cost_usd"` // mesmo número de nodes atual
+	PoolMonthlyCostBRL float64 `json:"pool_monthly_cost_brl"`
+	SavingsUSD         float64 `json:"savings_usd"`     // vs custo atual do pool (negativo = mais caro)
+	SavingsBRL         float64 `json:"savings_brl"`
+	SavingsPercent     float64 `json:"savings_percent"` // negativo = mais caro
+	Bottleneck         string  `json:"bottleneck"`      // "cpu", "memory", "balanced"
+	Rationale          string  `json:"rationale"`       // ex: "Mais vCPUs para workload CPU-bound"
+	CPUDeltaPercent    float64 `json:"cpu_delta_percent"` // +100 = 2x CPU, -50 = metade
+	MemDeltaPercent    float64 `json:"mem_delta_percent"` // +100 = 2x RAM, -50 = metade
 }
 
 // NodePoolCostBreakdown detalhamento do custo do pool

@@ -600,3 +600,154 @@ func TestDiskForecast_AffectedNodePropagated(t *testing.T) {
 		t.Errorf("esperado AffectedNode=meu-node-123, obtido %q", f.AffectedNode)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// identifyBottleneckFromP95 e historicalP95 (Fase 15)
+// ---------------------------------------------------------------------------
+
+func TestIdentifyBottleneck_CPU(t *testing.T) {
+	// CPU 80% >> Mem 30% → cpu-bound
+	bn := identifyBottleneckFromP95(80.0, 30.0)
+	if bn != "cpu" {
+		t.Errorf("esperado 'cpu', obtido %q", bn)
+	}
+}
+
+func TestIdentifyBottleneck_Memory(t *testing.T) {
+	// Mem 78% >> CPU 25% → memory-bound
+	bn := identifyBottleneckFromP95(25.0, 78.0)
+	if bn != "memory" {
+		t.Errorf("esperado 'memory', obtido %q", bn)
+	}
+}
+
+func TestIdentifyBottleneck_Balanced_BothHigh(t *testing.T) {
+	// CPU 70% e Mem 65% — ambos altos mas sem dominância → balanced
+	bn := identifyBottleneckFromP95(70.0, 65.0)
+	if bn != "balanced" {
+		t.Errorf("esperado 'balanced' (ambos altos), obtido %q", bn)
+	}
+}
+
+func TestIdentifyBottleneck_Balanced_BothLow(t *testing.T) {
+	// Pool sob-utilizado → balanced
+	bn := identifyBottleneckFromP95(20.0, 25.0)
+	if bn != "balanced" {
+		t.Errorf("esperado 'balanced' (uso baixo), obtido %q", bn)
+	}
+}
+
+func TestHistoricalP95_IncludesTrendData(t *testing.T) {
+	// Snapshot atual: 40% CPU. Tendência D-7 mostra pico de 90%.
+	// P95 histórico deve capturar o pico, não só o snapshot atual.
+	ca := NewNodePoolCostAnalyzer()
+	metrics := &NodePoolMetrics{
+		NodesSnapshot: []NodePoolNodeSnapshot{
+			{CPUUsagePercent: 40.0, MemUsagePercent: 20.0},
+		},
+		CPUTrendPerNode: []TrendSnapshot{
+			{DaysAgo: 7, ValuePerNode: 90.0},
+			{DaysAgo: 14, ValuePerNode: 85.0},
+		},
+		MemTrendPerNode: []TrendSnapshot{
+			{DaysAgo: 7, ValuePerNode: 30.0},
+		},
+	}
+	cpuP95, memP95 := ca.historicalP95(metrics)
+
+	// P95 dos 3 valores de CPU: [40, 90, 85] → P95 ≈ 90
+	if cpuP95 < 85 {
+		t.Errorf("historicalP95 deveria incluir picos de tendência, obtido cpuP95=%.1f", cpuP95)
+	}
+	if memP95 <= 0 {
+		t.Errorf("historicalP95 deveria retornar memP95>0, obtido %.1f", memP95)
+	}
+}
+
+func TestSuggestAlternativeSKUs_NoDataReturnsNil(t *testing.T) {
+	// Sem snapshots nem tendências → sem dados históricos → nil
+	ca := NewNodePoolCostAnalyzer()
+	metrics := &NodePoolMetrics{
+		VMSize:      "Standard_D4s_v3",
+		NodePoolName: "test-pool",
+	}
+	alts := ca.suggestAlternativeSKUs(metrics, 4, 16, 0.28, 5.50, 3)
+	if alts != nil {
+		t.Errorf("sem dados históricos: esperado nil, obtido %d alternativas", len(alts))
+	}
+}
+
+func TestSuggestAlternativeSKUs_SKUMustHandleHistoricalLoad(t *testing.T) {
+	// Pool com CPU P95 histórico de 75% em VM de 4 vCPUs
+	// cpuUsedAtP95 = 4 * 0.75 = 3 vCPUs
+	// minVCPUs = ceil(3 / 0.80) = 4
+	// Candidatos com < 4 vCPUs devem ser rejeitados
+	ca := NewNodePoolCostAnalyzer()
+	metrics := &NodePoolMetrics{
+		VMSize:       "Standard_D4s_v3",
+		NodePoolName: "test-pool",
+		NodesSnapshot: []NodePoolNodeSnapshot{
+			{CPUUsagePercent: 75.0, MemUsagePercent: 30.0},
+		},
+	}
+
+	alts := ca.suggestAlternativeSKUs(metrics, 4, 16, 0.28, 5.50, 3)
+	// Todas alternativas devem ter vCPUs >= 4
+	for _, alt := range alts {
+		if alt.VMCPUCores < 4 {
+			t.Errorf("alternativa %s tem %d vCPUs < 4, mas carga exige mínimo de 4 vCPUs",
+				alt.VMSize, alt.VMCPUCores)
+		}
+	}
+}
+
+func TestSuggestAlternativeSKUs_MemoryBound(t *testing.T) {
+	// Pool memory-bound: Mem P95 = 80%, CPU P95 = 20%
+	// Em VM 4 vCPU / 16 GB: memUsed = 12.8 GB → minMemGB = ceil(12.8/0.8) = 16
+	// Bottleneck = memory → todas alternativas devem ter ≥16 GB
+	ca := NewNodePoolCostAnalyzer()
+	metrics := &NodePoolMetrics{
+		VMSize:       "Standard_D4s_v3",
+		NodePoolName: "mem-pool",
+		NodesSnapshot: []NodePoolNodeSnapshot{
+			{CPUUsagePercent: 20.0, MemUsagePercent: 80.0},
+		},
+	}
+
+	alts := ca.suggestAlternativeSKUs(metrics, 4, 16, 0.28, 5.50, 3)
+	for _, alt := range alts {
+		if alt.VMMemoryGB < 16 {
+			t.Errorf("alternativa %s tem %d GB < 16, insuficiente para carga histórica",
+				alt.VMSize, alt.VMMemoryGB)
+		}
+		if alt.Bottleneck != "memory" {
+			t.Errorf("esperado bottleneck=memory, obtido %q", alt.Bottleneck)
+		}
+	}
+}
+
+func TestSuggestAlternativeSKUs_RationaleContainsP95(t *testing.T) {
+	// O rationale deve mencionar o P95 histórico
+	ca := NewNodePoolCostAnalyzer()
+	metrics := &NodePoolMetrics{
+		VMSize:       "Standard_D4s_v3",
+		NodePoolName: "test-pool",
+		NodesSnapshot: []NodePoolNodeSnapshot{
+			{CPUUsagePercent: 75.0, MemUsagePercent: 25.0},
+		},
+		CPUTrendPerNode: []TrendSnapshot{
+			{DaysAgo: 7, ValuePerNode: 78.0},
+		},
+	}
+
+	alts := ca.suggestAlternativeSKUs(metrics, 4, 16, 0.28, 5.50, 2)
+	for _, alt := range alts {
+		if alt.Rationale == "" {
+			t.Errorf("alternativa %s tem Rationale vazio", alt.VMSize)
+		}
+		// Rationale deve mencionar P95 (conter "%" para indicar percentual)
+		if len(alt.Rationale) < 20 {
+			t.Errorf("alternativa %s tem Rationale muito curto: %q", alt.VMSize, alt.Rationale)
+		}
+	}
+}
