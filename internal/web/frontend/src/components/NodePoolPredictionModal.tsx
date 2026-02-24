@@ -365,7 +365,10 @@ export function NodePoolPredictionModal({
                         </div>
                       )}
                       {result.saturation_timeline?.most_critical?.estimated_date && (
-                        <div className="bg-background/50 rounded p-2 text-center">
+                        <div className="bg-background/50 rounded p-2 text-center" title={`Previsão de quando a métrica ${result.saturation_timeline.most_critical.metric} atingirá o limite de saturação (${result.saturation_timeline.most_critical.threshold ?? 85}%)`}>
+                          <div className="text-xs text-muted-foreground mb-0.5 font-medium">
+                            saturação prevista
+                          </div>
                           <div className={`text-base font-bold leading-tight ${
                             result.saturation_timeline.most_critical.urgency_badge === "CRITICO" ? "text-red-400" :
                             result.saturation_timeline.most_critical.urgency_badge === "ATENCAO" ? "text-yellow-400" :
@@ -374,7 +377,12 @@ export function NodePoolPredictionModal({
                             {new Date(result.saturation_timeline.most_critical.estimated_date).toLocaleDateString("pt-BR")}
                           </div>
                           <div className="text-xs text-muted-foreground">
-                            satura ({result.saturation_timeline.most_critical.metric})
+                            métrica: <span className="font-medium">{result.saturation_timeline.most_critical.metric}</span>
+                            {result.saturation_timeline.most_critical.days_until_saturation != null && (
+                              <span className="ml-1">
+                                (~{Math.round(result.saturation_timeline.most_critical.days_until_saturation)}d)
+                              </span>
+                            )}
                           </div>
                         </div>
                       )}
