@@ -2,7 +2,7 @@
 
 **Estudo base:** [ESTUDO_PREDICAO_NODE_POOL.md](ESTUDO_PREDICAO_NODE_POOL.md)
 **Iniciado:** 21/02/2026
-**Status geral:** 🟡 Em andamento — Fases 1-10, 12, 14 concluídas | Fases 11, 13, 15 planejadas (melhorias)
+**Status geral:** 🟡 Em andamento — Fases 1-12, 14 concluídas | Fases 13, 15 planejadas (melhorias)
 
 > **Para novos chats:** leia este arquivo + o estudo base antes de começar.
 > Marque cada item com ✅ quando concluído e anote a data.
@@ -277,16 +277,25 @@
 
 ---
 
-## Fase 11 — Correlação com HPAs do Pool
+## Fase 11 — Correlação com HPAs do Pool ✅ Concluída em 24/02/2026
 **Objetivo**: Identificar quando HPAs em maxReplicas indicam gargalo confirmado no pool
 **Impacto**: ⭐⭐⭐⭐⭐ | **Esforço**: Médio
 
-- [ ] 11.1 Coletar HPAs que rodam em nodes do pool (via K8s API, filtrar por namespace/node affinity)
-- [ ] 11.2 Detectar HPAs com `currentReplicas == maxReplicas` (gargalo confirmado)
-- [ ] 11.3 Struct `HPAPoolCorrelation`: hpaName, namespace, currentReplicas, maxReplicas, targetCPU, atMax bool
-- [ ] 11.4 Adicionar `HPACorrelation []HPAPoolCorrelation` ao `NodePoolMetrics`
-- [ ] 11.5 No analyzer: se HPAs em maxReplicas E CPU alta → rebaixar health score + adicionar finding crítico
-- [ ] 11.6 Frontend: card "HPAs em Limite" com lista de HPAs travados
+- [x] 11.1 Coletar HPAs que rodam em nodes do pool (via K8s API, cross-reference pods → HPAs)
+- [x] 11.2 Detectar HPAs com `currentReplicas == maxReplicas` (atMax bool)
+- [x] 11.3 Struct `HPAPoolCorrelation`: hpaName, namespace, targetName, targetKind, currentReplicas, maxReplicas, desiredReplicas, targetCPUPct, atMax, podsOnPool, totalPods
+- [x] 11.4 Adicionar `HPACorrelation []HPAPoolCorrelation` ao `NodePoolMetrics`
+- [x] 11.5 Penalidade no health score: HPAs em limite + CPU >= 70% → -5pts/HPA (máx -15)
+- [x] 11.5 KeyFinding automático + predição ShortTerm + recomendação de revisar maxReplicas
+- [x] 11.6 Frontend: accordion "HPAs neste Pool" com badge "em limite" e linha por HPA (réplicas, pods, target CPU)
+- [x] 11.7 Relatório markdown: seção "HPAs COM PODS NESTE POOL" com tabela
+
+**Implementado em**:
+- `models.go`: struct `HPAPoolCorrelation` + campo `HPACorrelation` em `NodePoolMetrics`
+- `collector.go`: `collectHPACorrelation()` + helpers `podOwnerName()`, `trimReplicaSetSuffix()`, `countAtMax()`
+- `analyzer.go`: penalidade de health score + findings + predição + recomendação
+- `nodepool_predictions.go`: seção markdown com tabela
+- `NodePoolPredictionModal.tsx`: accordion com ícone Scale, badge "em limite", grid de HPAs
 
 ---
 
