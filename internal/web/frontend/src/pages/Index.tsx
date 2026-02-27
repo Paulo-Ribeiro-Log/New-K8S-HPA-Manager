@@ -43,7 +43,7 @@ import { HistoryViewer } from "@/components/HistoryViewer";
 import { StagingPanel } from "@/components/StagingPanel";
 import { VPNWarningBanner } from "@/components/VPNWarningBanner";
 import { CriticalAlertsBanner } from "@/components/CriticalAlertsBanner";
-import { CronJobsPage } from "./CronJobsPage";
+import { CronJobsTab } from "@/components/CronJobsTab";
 import { PrometheusPage } from "./PrometheusPage";
 import { MonitoringPage } from "./MonitoringPage";
 import { ServiceMeshGraph } from "@/components/ServiceMeshGraph";
@@ -909,9 +909,16 @@ const Index = ({ onLogout }: IndexProps) => {
 
       case "cronjobs":
         return (
-          <CronJobsPage
-            selectedCluster={selectedCluster}
-          />
+          <ErrorBoundary componentName="CronJobs Tab">
+            <CronJobsTab
+              cluster={selectedCluster}
+              namespaces={namespaces}
+              selectedNamespace={selectedNamespace}
+              onNamespaceChange={setSelectedNamespace}
+              showSystemNamespaces={showSystemNamespaces}
+              onToggleSystemNamespaces={() => setShowSystemNamespaces(!showSystemNamespaces)}
+            />
+          </ErrorBoundary>
         );
 
       case "prometheus":

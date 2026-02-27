@@ -13,6 +13,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -4956,4 +4957,101 @@ func (c *Client) DeleteService(ctx context.Context, namespace, name string) erro
 		return fmt.Errorf("failed to delete service %s/%s: %w", namespace, name, err)
 	}
 	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CronJobs — typed K8s API
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GetCronJobYAML retorna o manifesto YAML de um CronJob específico
+func (c *Client) GetCronJobYAML(ctx context.Context, namespace, name string) (string, error) {
+	cj, err := c.clientset.BatchV1().CronJobs(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get cronjob %s/%s: %w", namespace, name, err)
+	}
+	cj.ManagedFields = nil
+
+	yamlBytes, err := yaml.Marshal(cj)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal cronjob yaml: %w", err)
+	}
+	return string(yamlBytes), nil
+}
+
+// ApplyCronJob aplica (update) um CronJob a partir de YAML, com dryRun opcional.
+// Usa Get + Update (replace completo) para evitar conflitos de field manager (Helm).
+func (c *Client) ApplyCronJob(ctx context.Context, yamlContent, namespace, name string, dryRun bool) (*batchv1.CronJob, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("cronjob yaml content cannot be empty")
+	}
+
+	var cjObj batchv1.CronJob
+	if err := yaml.Unmarshal([]byte(yamlContent), &cjObj); err != nil {
+		return nil, fmt.Errorf("invalid cronjob yaml: %w", err)
+	}
+
+	if namespace != "" {
+		cjObj.Namespace = namespace
+	}
+	if name != "" {
+		cjObj.Name = name
+	}
+	cjObj.ManagedFields = nil
+
+	current, err := c.clientset.BatchV1().CronJobs(cjObj.Namespace).Get(ctx, cjObj.Name, metav1.GetOptions{})
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to get cronjob %s/%s: %w", cjObj.Namespace, cjObj.Name, err)
+		}
+		cjObj.ResourceVersion = ""
+		createOpts := metav1.CreateOptions{}
+		if dryRun {
+			createOpts.DryRun = []string{metav1.DryRunAll}
+		}
+		return c.clientset.BatchV1().CronJobs(cjObj.Namespace).Create(ctx, &cjObj, createOpts)
+	}
+
+	cjObj.ResourceVersion = current.ResourceVersion
+	updateOpts := metav1.UpdateOptions{}
+	if dryRun {
+		updateOpts.DryRun = []string{metav1.DryRunAll}
+	}
+	return c.clientset.BatchV1().CronJobs(cjObj.Namespace).Update(ctx, &cjObj, updateOpts)
+}
+
+// TriggerCronJob cria um Job manualmente a partir do template do CronJob.
+// Retorna o nome do Job criado.
+func (c *Client) TriggerCronJob(ctx context.Context, namespace, name string) (string, error) {
+	cj, err := c.clientset.BatchV1().CronJobs(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get cronjob %s/%s: %w", namespace, name, err)
+	}
+
+	trueVal := true
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: fmt.Sprintf("%s-manual-", cj.Name),
+			Namespace:    cj.Namespace,
+			Annotations: map[string]string{
+				"cronjob.kubernetes.io/instantiate": "manual",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "batch/v1",
+					Kind:               "CronJob",
+					Name:               cj.Name,
+					UID:                cj.UID,
+					BlockOwnerDeletion: &trueVal,
+					Controller:         &trueVal,
+				},
+			},
+		},
+		Spec: *cj.Spec.JobTemplate.Spec.DeepCopy(),
+	}
+
+	result, err := c.clientset.BatchV1().Jobs(namespace).Create(ctx, job, metav1.CreateOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to create job for cronjob %s/%s: %w", namespace, name, err)
+	}
+	return result.Name, nil
 }
