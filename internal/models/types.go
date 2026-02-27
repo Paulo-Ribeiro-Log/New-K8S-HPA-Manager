@@ -1821,3 +1821,31 @@ type NodeDetailsResponse struct {
 	Events          []NodeEvent `json:"events"`
 	KubectlDescribe string      `json:"kubectl_describe,omitempty"` // Output do kubectl describe
 }
+
+// VPASummary descreve informações resumidas de um VPA (Vertical Pod Autoscaler)
+type VPASummary struct {
+	Cluster           string `json:"cluster"`
+	Namespace         string `json:"namespace"`
+	Name              string `json:"name"`
+	UpdateMode        string `json:"updateMode"`        // Auto, Off, Initial, Recreate
+	TargetRefName     string `json:"targetRefName"`
+	TargetRefKind     string `json:"targetRefKind"`
+	ContainerCount    int    `json:"containerCount"`
+	HasRecommendation bool   `json:"hasRecommendation"`
+}
+
+// VPAManifest contém o YAML bruto de um VPA para edição
+type VPAManifest struct {
+	Cluster   string `json:"cluster"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	YAML      string `json:"yaml"`
+}
+
+// ServiceManifest contém o YAML bruto de um Service para edição
+type ServiceManifest struct {
+	Cluster   string `json:"cluster"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	YAML      string `json:"yaml"`
+}

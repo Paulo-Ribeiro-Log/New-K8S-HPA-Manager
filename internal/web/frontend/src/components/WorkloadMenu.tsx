@@ -18,6 +18,8 @@ import {
   Calendar,
   Server,
   Database,
+  TrendingUp,
+  Globe,
 } from "lucide-react";
 
 interface WorkloadMenuProps {
@@ -38,6 +40,8 @@ const workloadTabs: WorkloadTab[] = [
   { id: "deployments", label: "Deployments", icon: Package },
   { id: "daemonsets", label: "DaemonSets", icon: Server },
   { id: "statefulsets", label: "StatefulSets", icon: Database },
+  { id: "vpas", label: "VPAs", icon: TrendingUp },
+  { id: "services", label: "Services", icon: Globe },
   { id: "containers", label: "Containers", icon: Box },
   { id: "pods", label: "Pods", icon: Layers },
   { id: "events", label: "Events", icon: Calendar },
