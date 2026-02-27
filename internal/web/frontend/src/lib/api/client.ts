@@ -57,6 +57,15 @@ import type {
   ResourceQuotaSummary,
   NetworkPolicySummary,
   ServiceSummary,
+  ServiceManifest,
+  ServiceDiffResult,
+  ServiceValidateResult,
+  ServiceApplyResult,
+  VPASummary,
+  VPAManifest,
+  VPADiffResult,
+  VPAValidateResult,
+  VPAApplyResult,
   PodsSummary,
   VersionInfo,
   SequenceExecuteRequest,
@@ -1358,16 +1367,152 @@ class APIClient {
 
   async getServices(
     cluster: string,
-    namespaces: string[]
+    namespaces: string[],
+    showSystem: boolean = false
   ): Promise<ServiceSummary[]> {
     const params = new URLSearchParams({ cluster });
     if (namespaces.length > 0) {
       params.append("namespaces", namespaces.join(","));
     }
+    if (showSystem) params.append("showSystem", "true");
     const response = await this.request<APIResponse<{ services: ServiceSummary[]; count: number }>>(
       `/services?${params}`
     );
     return response.data?.services || [];
+  }
+
+  async getServiceManifest(cluster: string, namespace: string, name: string): Promise<ServiceManifest> {
+    const response = await this.request<APIResponse<ServiceManifest>>(
+      `/services/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) throw new Error("Service not found");
+    return response.data;
+  }
+
+  async diffService(payload: { originalYaml: string; updatedYaml: string; fileName?: string }): Promise<ServiceDiffResult> {
+    const response = await this.request<APIResponse<ServiceDiffResult>>(
+      `/services/diff`,
+      { method: "POST", body: JSON.stringify(payload) }
+    );
+    if (!response.data) throw new Error("Diff response inválida");
+    return response.data;
+  }
+
+  async validateService(payload: { cluster: string; namespace: string; name?: string; yaml: string }): Promise<ServiceValidateResult> {
+    const response = await this.request<APIResponse<ServiceValidateResult>>(
+      `/services/validate`,
+      { method: "POST", body: JSON.stringify(payload) }
+    );
+    if (!response.data) throw new Error("Validação sem retorno");
+    return response.data;
+  }
+
+  async applyService(
+    cluster: string,
+    namespace: string,
+    name: string,
+    body: { yaml: string; dryRun?: boolean; force?: boolean }
+  ): Promise<ServiceApplyResult> {
+    const response = await this.request<APIResponse<ServiceApplyResult>>(
+      `/services/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      { method: "PUT", body: JSON.stringify(body) }
+    );
+    if (!response.data) throw new Error("Aplicação sem retorno");
+    return response.data;
+  }
+
+  async createService(cluster: string, namespace: string, yaml: string): Promise<{ name: string; namespace: string; cluster: string }> {
+    const response = await this.request<APIResponse<{ name: string; namespace: string; cluster: string }>>(
+      `/services/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}`,
+      { method: "POST", body: JSON.stringify({ yaml }) }
+    );
+    if (!response.data) throw new Error("Criação sem retorno");
+    return response.data;
+  }
+
+  async deleteService(cluster: string, namespace: string, name: string): Promise<{ success: boolean; message: string }> {
+    const response = await this.request<APIResponse<{ success: boolean; message: string }>>(
+      `/services/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    );
+    return response.data || { success: false, message: "Unknown error" };
+  }
+
+  async describeService(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/services/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
+  }
+
+  // VPAs API Methods
+  async getVPAs(
+    cluster: string,
+    namespaces?: string[],
+    showSystem: boolean = false
+  ): Promise<{ data: VPASummary[]; crdNotInstalled?: boolean }> {
+    const params = new URLSearchParams({ cluster });
+    if (namespaces && namespaces.length > 0) params.append("namespaces", namespaces.join(","));
+    if (showSystem) params.append("showSystem", "true");
+    const response = await this.request<{ success: boolean; data: VPASummary[]; count: number; crdNotInstalled?: boolean }>(
+      `/vpas?${params}`
+    );
+    return { data: response.data || [], crdNotInstalled: response.crdNotInstalled };
+  }
+
+  async getVPAManifest(cluster: string, namespace: string, name: string): Promise<VPAManifest> {
+    const response = await this.request<APIResponse<VPAManifest>>(
+      `/vpas/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) throw new Error("VPA not found");
+    return response.data;
+  }
+
+  async diffVPA(payload: { originalYaml: string; updatedYaml: string; fileName?: string }): Promise<VPADiffResult> {
+    const response = await this.request<APIResponse<VPADiffResult>>(
+      `/vpas/diff`,
+      { method: "POST", body: JSON.stringify(payload) }
+    );
+    if (!response.data) throw new Error("Diff response inválida");
+    return response.data;
+  }
+
+  async validateVPA(payload: { cluster: string; namespace: string; yaml: string }): Promise<VPAValidateResult> {
+    const response = await this.request<APIResponse<VPAValidateResult>>(
+      `/vpas/validate`,
+      { method: "POST", body: JSON.stringify(payload) }
+    );
+    if (!response.data) throw new Error("Validação sem retorno");
+    return response.data;
+  }
+
+  async applyVPA(
+    cluster: string,
+    namespace: string,
+    name: string,
+    body: { yaml: string; dryRun?: boolean; force?: boolean }
+  ): Promise<VPAApplyResult> {
+    const response = await this.request<APIResponse<VPAApplyResult>>(
+      `/vpas/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      { method: "PUT", body: JSON.stringify(body) }
+    );
+    if (!response.data) throw new Error("Aplicação sem retorno");
+    return response.data;
+  }
+
+  async deleteVPA(cluster: string, namespace: string, name: string): Promise<{ success: boolean; message: string }> {
+    const response = await this.request<APIResponse<{ success: boolean; message: string }>>(
+      `/vpas/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    );
+    return response.data || { success: false, message: "Unknown error" };
+  }
+
+  async describeVPA(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/vpas/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
   }
 
   async getPodsSummary(cluster: string, namespace: string): Promise<PodsSummary> {
@@ -1519,15 +1664,65 @@ class APIClient {
   }
 
   // CronJobs
-  async getCronJobs(cluster?: string): Promise<CronJob[]> {
+  async getCronJobs(cluster?: string, namespaces?: string[]): Promise<CronJob[]> {
     const params = new URLSearchParams();
     if (cluster) params.append("cluster", cluster);
+    if (namespaces?.length) namespaces.forEach(ns => params.append("namespaces", ns));
     const query = params.toString() ? `?${params.toString()}` : "";
-
-    const response = await this.request<APIResponse<CronJob[]>>(
-      `/cronjobs${query}`
-    );
+    const response = await this.request<APIResponse<CronJob[]>>(`/cronjobs${query}`);
     return response.data || [];
+  }
+
+  async getCronJobManifest(cluster: string, namespace: string, name: string): Promise<{ yaml: string }> {
+    const response = await this.request<APIResponse<{ yaml: string; cluster: string; namespace: string; name: string }>>(
+      `/cronjobs/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+    );
+    if (!response.data) throw new Error("Manifesto sem retorno");
+    return response.data;
+  }
+
+  async applyCronJob(
+    cluster: string, namespace: string, name: string,
+    body: { yaml: string; dryRun?: boolean }
+  ): Promise<{ name: string; namespace: string; cluster: string; resourceVersion?: string; dryRun?: boolean }> {
+    const response = await this.request<APIResponse<{ name: string; namespace: string; cluster: string; resourceVersion?: string; dryRun?: boolean }>>(
+      `/cronjobs/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/yaml`,
+      { method: "PUT", body: JSON.stringify(body) }
+    );
+    if (!response.data) throw new Error("Aplicação sem retorno");
+    return response.data;
+  }
+
+  async describeCronJob(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
+    const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
+      `/cronjobs/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
+    );
+    return response;
+  }
+
+  async diffCronJob(payload: { originalYaml: string; updatedYaml: string; fileName: string }): Promise<{ unifiedDiff: string; hasChanges: boolean }> {
+    const response = await this.request<APIResponse<{ unifiedDiff: string; hasChanges: boolean }>>(
+      "/cronjobs/diff", { method: "POST", body: JSON.stringify(payload) }
+    );
+    if (!response.data) throw new Error("Diff sem retorno");
+    return response.data;
+  }
+
+  async validateCronJob(payload: { cluster: string; namespace: string; name: string; yaml: string }): Promise<{ valid: boolean }> {
+    const response = await this.request<APIResponse<{ valid: boolean }>>(
+      "/cronjobs/validate", { method: "POST", body: JSON.stringify(payload) }
+    );
+    if (!response.data) throw new Error("Validação sem retorno");
+    return response.data;
+  }
+
+  async triggerCronJob(cluster: string, namespace: string, name: string): Promise<{ jobName: string; namespace: string; cluster: string }> {
+    const response = await this.request<APIResponse<{ jobName: string; namespace: string; cluster: string }>>(
+      `/cronjobs/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/trigger`,
+      { method: "POST", body: "{}" }
+    );
+    if (!response.data) throw new Error("Trigger sem retorno");
+    return response.data;
   }
 
   async updateCronJob(
@@ -1537,13 +1732,8 @@ class APIClient {
     cronJob: Partial<CronJob>
   ): Promise<CronJob> {
     return this.request(
-      `/cronjobs/${encodeURIComponent(cluster)}/${encodeURIComponent(
-        namespace
-      )}/${encodeURIComponent(name)}`,
-      {
-        method: "PUT",
-        body: JSON.stringify(cronJob),
-      }
+      `/cronjobs/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+      { method: "PUT", body: JSON.stringify(cronJob) }
     );
   }
 
