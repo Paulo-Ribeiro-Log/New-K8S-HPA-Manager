@@ -312,6 +312,11 @@ export function ServiceNowImportModal({
                 placeholder="https://viavarejo.service-now.com/change_request.do?sys_id=..."
                 value={chgUrl}
                 onChange={(e) => setChgUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !isLoading && chgUrl.trim()) {
+                    handleExtractWithPlaywright();
+                  }
+                }}
                 disabled={isLoading}
               />
             </div>

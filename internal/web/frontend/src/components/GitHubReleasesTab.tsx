@@ -92,6 +92,7 @@ interface DeploymentRecord {
   servicenow_task: string;
   last_seen: string;
   age: string;
+  resource_kind?: string;
 }
 
 interface ComparisonItem {
@@ -755,9 +756,17 @@ export const GitHubReleasesTab = () => {
                     <div className="absolute z-50 w-full mt-1 bg-popover border border-border rounded-md shadow-lg max-h-[300px] overflow-auto">
                       <div className="p-1">
                         <p className="text-[10px] text-muted-foreground px-2 py-1 border-b mb-1">
-                          {filteredSuggestions.length} deployment(s) encontrado(s)
+                          {filteredSuggestions.length} workload(s) encontrado(s)
                         </p>
-                        {filteredSuggestions.map((suggestion, index) => (
+                        {filteredSuggestions.map((suggestion, index) => {
+                          const kind = suggestion.resource_kind || "Deployment";
+                          const kindColors: Record<string, string> = {
+                            Deployment: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+                            CronJob: "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
+                            StatefulSet: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
+                            DaemonSet: "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
+                          };
+                          return (
                           <div
                             key={`${suggestion.deployment_name}-${index}`}
                             className="flex items-center justify-between px-2 py-1.5 text-sm hover:bg-muted rounded cursor-pointer"
@@ -769,7 +778,12 @@ export const GitHubReleasesTab = () => {
                             }}
                           >
                             <div className="flex-1 min-w-0">
-                              <p className="font-medium truncate">{suggestion.deployment_name}</p>
+                              <div className="flex items-center gap-1.5">
+                                <p className="font-medium truncate">{suggestion.deployment_name}</p>
+                                <span className={`text-[9px] px-1 py-0.5 rounded font-medium shrink-0 ${kindColors[kind] || kindColors["Deployment"]}`}>
+                                  {kind}
+                                </span>
+                              </div>
                               <p className="text-[10px] text-muted-foreground truncate">
                                 {suggestion.cluster} / {suggestion.namespace}
                               </p>
@@ -778,7 +792,8 @@ export const GitHubReleasesTab = () => {
                               {normalizeVersion(suggestion.version)}
                             </Badge>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -809,14 +824,14 @@ export const GitHubReleasesTab = () => {
                 {filteredSuggestions.length > 0 && !deploymentSelected && deploymentName.length >= 2 && (
                   <p className="text-xs text-blue-600 dark:text-blue-400 flex items-center gap-1">
                     <Info className="h-3 w-3" />
-                    {filteredSuggestions.length} deployment(s) encontrado(s) - selecione um da lista acima
+                    {filteredSuggestions.length} workload(s) encontrado(s) - selecione um da lista acima
                   </p>
                 )}
                 {/* ✅ Mensagem quando não há sugestões e não foi selecionado */}
                 {filteredSuggestions.length === 0 && !deploymentSelected && deploymentName.length >= 3 && !isSearching && (
                   <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
                     <AlertCircle className="h-3 w-3" />
-                    Nenhum deployment encontrado com "{deploymentName}". Execute o Scan.
+                    Nenhum workload encontrado com "{deploymentName}". Execute o Scan.
                   </p>
                 )}
               </div>
