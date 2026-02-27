@@ -3,12 +3,16 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
+	kubeclient "k8s-hpa-manager/internal/kubernetes"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pmezard/go-difflib/difflib"
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -40,78 +44,299 @@ type CronJobResponse struct {
 	FailedJobs       int32   `json:"failed_jobs"`
 }
 
-// List retorna todos os CronJobs (de todos os namespaces se namespace não especificado)
+// List retorna todos os CronJobs do cluster (todos os namespaces ou filtrado)
+// GET /api/v1/cronjobs?cluster=X&namespace=Y&namespaces=A,B&show_system=true
 func (h *CronJobHandler) List(c *gin.Context) {
 	cluster := c.Query("cluster")
 	namespace := c.Query("namespace")
+	namespacesParam := c.QueryArray("namespaces")
 
 	if cluster == "" {
-		c.JSON(400, gin.H{
+		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{
-				"code":    "MISSING_PARAMETERS",
-				"message": "Parameter 'cluster' is required",
-			},
+			"error":   gin.H{"code": "MISSING_PARAMETERS", "message": "Parameter 'cluster' is required"},
 		})
 		return
 	}
 
-	// Definir namespace para busca (vazio significa todos os namespaces)
-	namespaceFilter := namespace
-	if namespace == "" {
-		namespaceFilter = metav1.NamespaceAll
+	namespaceFilter := metav1.NamespaceAll
+	if namespace != "" {
+		namespaceFilter = namespace
+	} else if len(namespacesParam) == 1 && namespacesParam[0] != "" {
+		namespaceFilter = namespacesParam[0]
 	}
 
-	fmt.Printf("[DEBUG] CronJobs - Listing for cluster: %s, namespace filter: %s\n", cluster, namespaceFilter)
-
-	// Obter client do cluster
 	client, err := h.kubeManager.GetClient(cluster)
 	if err != nil {
-		fmt.Printf("[DEBUG] CronJobs - Failed to get client for cluster %s: %v\n", cluster, err)
-		c.JSON(500, gin.H{
+		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"error": gin.H{
-				"code":    "KUBERNETES_CLIENT_ERROR",
-				"message": fmt.Sprintf("Failed to get Kubernetes client: %v", err),
-			},
+			"error":   gin.H{"code": "KUBERNETES_CLIENT_ERROR", "message": fmt.Sprintf("Failed to get Kubernetes client: %v", err)},
 		})
 		return
 	}
 
-	// Listar CronJobs
 	cronJobList, err := client.BatchV1().CronJobs(namespaceFilter).List(context.Background(), metav1.ListOptions{})
 	if err != nil {
-		fmt.Printf("[DEBUG] CronJobs - Error listing cronjobs with filter %s: %v\n", namespaceFilter, err)
-		c.JSON(500, gin.H{
+		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"error": gin.H{
-				"code":    "KUBERNETES_API_ERROR",
-				"message": fmt.Sprintf("Failed to list CronJobs: %v", err),
-			},
+			"error":   gin.H{"code": "KUBERNETES_API_ERROR", "message": fmt.Sprintf("Failed to list CronJobs: %v", err)},
 		})
 		return
 	}
 
-	fmt.Printf("[DEBUG] CronJobs - Found %d cronjobs with namespace filter %s\n", len(cronJobList.Items), namespaceFilter)
-
-	// Converter para resposta
-	cronJobs := make([]CronJobResponse, 0)
+	cronJobs := make([]CronJobResponse, 0, len(cronJobList.Items))
 	for _, cj := range cronJobList.Items {
-		fmt.Printf("[DEBUG] CronJobs - Processing cronjob: %s\n", cj.Name)
-		cronJob := convertCronJobToResponse(&cj)
-		cronJobs = append(cronJobs, cronJob)
+		cronJobs = append(cronJobs, convertCronJobToResponse(&cj))
 	}
 
-	fmt.Printf("[DEBUG] CronJobs - Total cronjobs processed: %d\n", len(cronJobs))
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": cronJobs, "count": len(cronJobs)})
+}
 
-	c.JSON(200, gin.H{
+// Get retorna o manifesto YAML de um CronJob específico
+// GET /api/v1/cronjobs/:cluster/:namespace/:name
+func (h *CronJobHandler) Get(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+	name := strings.TrimSpace(c.Param("name"))
+
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster, namespace and name are required"))
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("CLIENT_ERROR", fmt.Sprintf("Failed to get client: %v", err)))
+		return
+	}
+
+	kc := kubeclient.NewClient(clientset, cluster)
+	yamlStr, err := kc.GetCronJobYAML(c.Request.Context(), namespace, name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("GET_ERROR", err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    cronJobs,
-		"count":   len(cronJobs),
+		"data": gin.H{
+			"cluster":   cluster,
+			"namespace": namespace,
+			"name":      name,
+			"yaml":      yamlStr,
+		},
 	})
 }
 
-// Update atualiza o estado de suspend ou schedule de um CronJob
+// Apply aplica um manifesto CronJob no cluster (YAML completo)
+// PUT /api/v1/cronjobs/:cluster/:namespace/:name/yaml
+func (h *CronJobHandler) Apply(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+	name := strings.TrimSpace(c.Param("name"))
+
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster, namespace and name are required"))
+		return
+	}
+
+	var req struct {
+		YAML   string `json:"yaml"`
+		DryRun bool   `json:"dryRun"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", fmt.Sprintf("Invalid body: %v", err)))
+		return
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", "yaml is required"))
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("CLIENT_ERROR", fmt.Sprintf("Failed to get client: %v", err)))
+		return
+	}
+
+	start := time.Now()
+	kc := kubeclient.NewClient(clientset, cluster)
+	result, err := kc.ApplyCronJob(c.Request.Context(), req.YAML, namespace, name, req.DryRun)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", err.Error()))
+		return
+	}
+
+	if !req.DryRun && h.historyTracker != nil {
+		entry := history.HistoryEntry{
+			Action:   "apply_cronjob_yaml",
+			Resource: fmt.Sprintf("%s/%s", namespace, name),
+			Cluster:  cluster,
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history: %v\n", err)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"name":            result.Name,
+			"namespace":       result.Namespace,
+			"cluster":         cluster,
+			"resourceVersion": result.ResourceVersion,
+			"dryRun":          req.DryRun,
+		},
+	})
+}
+
+// Describe executa kubectl describe em um CronJob
+// GET /api/v1/cronjobs/:cluster/:namespace/:name/describe
+func (h *CronJobHandler) Describe(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+	name := strings.TrimSpace(c.Param("name"))
+
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster, namespace and name are required"))
+		return
+	}
+
+	output, err := kubeclient.ExecuteKubectlDescribe(cluster, "cronjob", name, namespace)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("DESCRIBE_ERROR", err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":   true,
+		"describe":  output,
+		"cluster":   cluster,
+		"namespace": namespace,
+		"name":      name,
+	})
+}
+
+// Diff retorna o diff unificado entre o YAML original e o editado
+// POST /api/v1/cronjobs/diff
+func (h *CronJobHandler) Diff(c *gin.Context) {
+	var req struct {
+		OriginalYAML string `json:"originalYaml"`
+		UpdatedYAML  string `json:"updatedYaml"`
+		FileName     string `json:"fileName"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", fmt.Sprintf("Invalid body: %v", err)))
+		return
+	}
+
+	ud := difflib.UnifiedDiff{
+		A:        difflib.SplitLines(req.OriginalYAML),
+		B:        difflib.SplitLines(req.UpdatedYAML),
+		FromFile: fmt.Sprintf("a/%s", req.FileName),
+		ToFile:   fmt.Sprintf("b/%s", req.FileName),
+		Context:  3,
+	}
+	text, err := difflib.GetUnifiedDiffString(ud)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("DIFF_ERROR", err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"unifiedDiff": text,
+			"hasChanges":  text != "",
+		},
+	})
+}
+
+// Validate executa dry-run do YAML do CronJob
+// POST /api/v1/cronjobs/validate
+func (h *CronJobHandler) Validate(c *gin.Context) {
+	var req struct {
+		Cluster   string `json:"cluster"`
+		Namespace string `json:"namespace"`
+		Name      string `json:"name"`
+		YAML      string `json:"yaml"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("INVALID_REQUEST", fmt.Sprintf("Invalid body: %v", err)))
+		return
+	}
+	if req.Cluster == "" || strings.TrimSpace(req.YAML) == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster and yaml are required"))
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(req.Cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("CLIENT_ERROR", fmt.Sprintf("Failed to get client: %v", err)))
+		return
+	}
+
+	kc := kubeclient.NewClient(clientset, req.Cluster)
+	_, err = kc.ApplyCronJob(c.Request.Context(), req.YAML, req.Namespace, req.Name, true)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, errorResponse("VALIDATION_ERROR", err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"valid": true}})
+}
+
+// Trigger cria um Job manualmente a partir do CronJob
+// POST /api/v1/cronjobs/:cluster/:namespace/:name/trigger
+func (h *CronJobHandler) Trigger(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+	name := strings.TrimSpace(c.Param("name"))
+
+	if cluster == "" || namespace == "" || name == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster, namespace and name are required"))
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("CLIENT_ERROR", fmt.Sprintf("Failed to get client: %v", err)))
+		return
+	}
+
+	start := time.Now()
+	kc := kubeclient.NewClient(clientset, cluster)
+	jobName, err := kc.TriggerCronJob(c.Request.Context(), namespace, name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("TRIGGER_ERROR", err.Error()))
+		return
+	}
+
+	if h.historyTracker != nil {
+		entry := history.HistoryEntry{
+			Action:   "trigger_cronjob",
+			Resource: fmt.Sprintf("%s/%s", namespace, name),
+			Cluster:  cluster,
+			After:    map[string]interface{}{"jobName": jobName},
+			Status:   "success",
+			Duration: time.Since(start).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history: %v\n", err)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Job '%s' criado com sucesso a partir do CronJob '%s'", jobName, name),
+		"data":    gin.H{"jobName": jobName, "namespace": namespace, "cluster": cluster},
+	})
+}
+
+// Update atualiza suspend ou schedule de um CronJob (toggle rápido)
+// PUT /api/v1/cronjobs/:cluster/:namespace/:name
 func (h *CronJobHandler) Update(c *gin.Context) {
 	cluster := c.Param("cluster")
 	namespace := c.Param("namespace")
@@ -121,63 +346,41 @@ func (h *CronJobHandler) Update(c *gin.Context) {
 		Suspend  *bool   `json:"suspend,omitempty"`
 		Schedule *string `json:"schedule,omitempty"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{
+		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{
-				"code":    "INVALID_REQUEST",
-				"message": fmt.Sprintf("Invalid request body: %v", err),
-			},
+			"error":   gin.H{"code": "INVALID_REQUEST", "message": fmt.Sprintf("Invalid request body: %v", err)},
 		})
 		return
 	}
-
-	// Validar que pelo menos um campo foi fornecido
 	if req.Suspend == nil && req.Schedule == nil {
-		c.JSON(400, gin.H{
+		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
-			"error": gin.H{
-				"code":    "INVALID_REQUEST",
-				"message": "At least one of 'suspend' or 'schedule' must be provided",
-			},
+			"error":   gin.H{"code": "INVALID_REQUEST", "message": "At least one of 'suspend' or 'schedule' must be provided"},
 		})
 		return
 	}
 
-	// Obter client do cluster
 	client, err := h.kubeManager.GetClient(cluster)
 	if err != nil {
-		c.JSON(500, gin.H{
+		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"error": gin.H{
-				"code":    "KUBERNETES_CLIENT_ERROR",
-				"message": fmt.Sprintf("Failed to get Kubernetes client: %v", err),
-			},
+			"error":   gin.H{"code": "KUBERNETES_CLIENT_ERROR", "message": fmt.Sprintf("Failed to get Kubernetes client: %v", err)},
 		})
 		return
 	}
 
-	// Buscar CronJob atual
 	cronJob, err := client.BatchV1().CronJobs(namespace).Get(context.Background(), name, metav1.GetOptions{})
 	if err != nil {
-		c.JSON(404, gin.H{
+		c.JSON(http.StatusNotFound, gin.H{
 			"success": false,
-			"error": gin.H{
-				"code":    "CRONJOB_NOT_FOUND",
-				"message": fmt.Sprintf("CronJob not found: %v", err),
-			},
+			"error":   gin.H{"code": "CRONJOB_NOT_FOUND", "message": fmt.Sprintf("CronJob not found: %v", err)},
 		})
 		return
 	}
 
-	// Capturar estado antes da atualização
-	before := map[string]interface{}{
-		"schedule": cronJob.Spec.Schedule,
-		"suspend":  cronJob.Spec.Suspend,
-	}
+	before := map[string]interface{}{"schedule": cronJob.Spec.Schedule, "suspend": cronJob.Spec.Suspend}
 
-	// Atualizar campos conforme fornecido
 	if req.Suspend != nil {
 		cronJob.Spec.Suspend = req.Suspend
 	}
@@ -185,32 +388,21 @@ func (h *CronJobHandler) Update(c *gin.Context) {
 		cronJob.Spec.Schedule = *req.Schedule
 	}
 
-	// Aplicar atualização
 	start := time.Now()
 	updatedCronJob, err := client.BatchV1().CronJobs(namespace).Update(context.Background(), cronJob, metav1.UpdateOptions{})
 	if err != nil {
-		c.JSON(500, gin.H{
+		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"error": gin.H{
-				"code":    "KUBERNETES_UPDATE_ERROR",
-				"message": fmt.Sprintf("Failed to update CronJob: %v", err),
-			},
+			"error":   gin.H{"code": "KUBERNETES_UPDATE_ERROR", "message": fmt.Sprintf("Failed to update CronJob: %v", err)},
 		})
 		return
 	}
 
 	if h.historyTracker != nil {
-		after := map[string]interface{}{
-			"schedule": updatedCronJob.Spec.Schedule,
-			"suspend":  updatedCronJob.Spec.Suspend,
-		}
+		after := map[string]interface{}{"schedule": updatedCronJob.Spec.Schedule, "suspend": updatedCronJob.Spec.Suspend}
 		entry := history.HistoryEntry{
-			Action:   "update_cronjob",
-			Resource: fmt.Sprintf("%s/%s", namespace, name),
-			Cluster:  cluster,
-			Before:   before,
-			After:    after,
-			Status:   "success",
+			Action: "update_cronjob", Resource: fmt.Sprintf("%s/%s", namespace, name),
+			Cluster: cluster, Before: before, After: after, Status: "success",
 			Duration: time.Since(start).Milliseconds(),
 		}
 		if err := h.historyTracker.Log(entry); err != nil {
@@ -218,7 +410,7 @@ func (h *CronJobHandler) Update(c *gin.Context) {
 		}
 	}
 
-	c.JSON(200, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": fmt.Sprintf("CronJob '%s' updated successfully", name),
 		"data":    convertCronJobToResponse(updatedCronJob),
@@ -237,20 +429,14 @@ func convertCronJobToResponse(cj *batchv1.CronJob) CronJobResponse {
 		SuccessfulJobs: getHistoryCount(cj.Spec.SuccessfulJobsHistoryLimit),
 		FailedJobs:     getHistoryCount(cj.Spec.FailedJobsHistoryLimit),
 	}
-
-	// LastScheduleTime
 	if cj.Status.LastScheduleTime != nil {
 		timeStr := cj.Status.LastScheduleTime.Format("2006-01-02 15:04:05")
 		resp.LastScheduleTime = &timeStr
 	}
-
 	return resp
 }
 
-// describeCronSchedule converte cron expression para texto legível
 func describeCronSchedule(schedule string) string {
-	// Formato cron: "minute hour day month weekday"
-	// Exemplos básicos (pode ser expandido)
 	switch schedule {
 	case "0 * * * *":
 		return "A cada hora"
@@ -263,11 +449,10 @@ func describeCronSchedule(schedule string) string {
 	case "0 0 * * 0":
 		return "Todo domingo à meia-noite"
 	default:
-		return schedule // Retornar expressão original se não reconhecida
+		return schedule
 	}
 }
 
-// getHistoryCount retorna o valor de um pointer int32 ou 0
 func getHistoryCount(limit *int32) int32 {
 	if limit == nil {
 		return 0

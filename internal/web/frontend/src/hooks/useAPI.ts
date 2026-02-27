@@ -16,6 +16,8 @@ import type {
   StatefulSetSummary,
   IngressSummary,
   PodSummary,
+  ServiceSummary,
+  VPASummary,
 } from "@/lib/api/types";
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
@@ -675,4 +677,73 @@ export function usePrometheusOld(cluster?: string, namespace?: string) {
     refetch: fetchResources,
     updateResource,
   };
+}
+
+export function useServices(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
+  const [services, setServices] = useState<ServiceSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
+
+  const fetchServices = async (bypassCache: boolean = false) => {
+    if (!cluster) {
+      setServices([]);
+      return;
+    }
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await apiClient.getServices(cluster, namespaces || [], showSystem);
+      void bypassCache;
+      setServices(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch services");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchServices();
+  }, [cluster, namespaceKey, showSystem]);
+
+  const refetch = () => fetchServices(true);
+
+  return { services, loading, error, refetch };
+}
+
+export function useVPAs(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
+  const [vpas, setVPAs] = useState<VPASummary[]>([]);
+  const [crdNotInstalled, setCrdNotInstalled] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
+
+  const fetchVPAs = async () => {
+    if (!cluster) {
+      setVPAs([]);
+      return;
+    }
+    try {
+      setLoading(true);
+      setError(null);
+      const result = await apiClient.getVPAs(cluster, namespaces, showSystem);
+      setVPAs(result.data);
+      setCrdNotInstalled(result.crdNotInstalled || false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch VPAs");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchVPAs();
+  }, [cluster, namespaceKey, showSystem]);
+
+  const refetch = () => fetchVPAs();
+
+  return { vpas, crdNotInstalled, loading, error, refetch };
 }
