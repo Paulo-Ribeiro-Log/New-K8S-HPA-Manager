@@ -484,6 +484,16 @@ const Index = ({ onLogout }: IndexProps) => {
     setShowApplyModal(true);
   };
 
+  // Handler para aplicar Node Pool individual (via "Aplicar Agora") - abre modal de aprovação
+  const handleNodePoolApplyNow = (current: NodePool, original: NodePool) => {
+    setNodePoolsToApply([{
+      key: `${current.cluster_name}/${current.name}`,
+      current,
+      original,
+    }]);
+    setShowNodePoolApplyModal(true);
+  };
+
   const renderTabContent = () => {
     switch (activeTab) {
       case "dashboard":
@@ -899,7 +909,11 @@ const Index = ({ onLogout }: IndexProps) => {
             }}
             rightPanel={{
               title: "Node Pool Editor",
-              content: <NodePoolEditor nodePool={selectedNodePool} />,
+              content: <NodePoolEditor
+                nodePool={selectedNodePool}
+                onApply={handleNodePoolApplyNow}
+                onApplied={refetchNodePools}
+              />,
             }}
           />
         );

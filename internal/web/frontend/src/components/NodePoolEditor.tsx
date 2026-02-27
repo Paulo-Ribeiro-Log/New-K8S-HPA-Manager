@@ -245,14 +245,30 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const handleApplyNow = async () => {
     if (!nodePool) return;
 
-    // Se Cordon/Drain habilitado, abrir modal de configuração
+    // Se Cordon/Drain habilitado, abrir modal de configuração primeiro
     if (cordonDrainEnabled) {
       setModalContext('applyNow');
       setShowCordonDrainModal(true);
       return;
     }
 
-    // Aplicar normalmente se Cordon/Drain desabilitado
+    // Se callback de aprovação fornecido, abrir modal de aprovação
+    if (onApply) {
+      const nodeCountNum = nodeCount === "" ? 0 : parseInt(nodeCount);
+      const minNodeCountNum = minNodeCount === "" ? 0 : parseInt(minNodeCount);
+      const maxNodeCountNum = maxNodeCount === "" ? 0 : parseInt(maxNodeCount);
+      const currentNodePool: NodePool = {
+        ...nodePool,
+        node_count: nodeCountNum,
+        min_node_count: minNodeCountNum,
+        max_node_count: maxNodeCountNum,
+        autoscaling_enabled: autoscalingEnabled,
+      };
+      onApply(currentNodePool, nodePool);
+      return;
+    }
+
+    // Fallback: aplicar diretamente (sem modal de aprovação)
     await executeApplyNow(null);
   };
 
