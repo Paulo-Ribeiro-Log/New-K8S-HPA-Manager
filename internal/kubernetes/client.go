@@ -4808,9 +4808,37 @@ func GetVPAYAML(cluster, namespace, name string) (*models.VPAManifest, error) {
 	}, nil
 }
 
+// sanitizeVPAYAML remove campos de metadados que causam conflito no server-side apply:
+// resourceVersion (optimistic concurrency), managedFields (field manager ownership),
+// uid e generation (campos somente-leitura).
+func sanitizeVPAYAML(yamlContent string) (string, error) {
+	var obj map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &obj); err != nil {
+		return "", fmt.Errorf("invalid vpa yaml: %w", err)
+	}
+	if meta, ok := obj["metadata"].(map[string]interface{}); ok {
+		delete(meta, "resourceVersion")
+		delete(meta, "managedFields")
+		delete(meta, "uid")
+		delete(meta, "generation")
+		delete(meta, "creationTimestamp")
+	}
+	cleaned, err := yaml.Marshal(obj)
+	if err != nil {
+		return "", fmt.Errorf("failed to re-marshal vpa yaml: %w", err)
+	}
+	return string(cleaned), nil
+}
+
 // ApplyVPA aplica um manifesto VPA via kubectl apply (stdin), com suporte a dry-run e force-conflicts.
 // force=true adiciona --server-side --force-conflicts para sobrescrever campos gerenciados por Helm.
+// O YAML é sanitizado antes do apply (remove resourceVersion/managedFields) para evitar conflitos de versão.
 func ApplyVPA(cluster, namespace, yamlContent string, dryRun, force bool) error {
+	sanitized, err := sanitizeVPAYAML(yamlContent)
+	if err != nil {
+		return err
+	}
+
 	args := []string{"apply", "-f", "-", "--context", cluster, "-n", namespace}
 	if force {
 		args = append(args, "--server-side", "--force-conflicts")
@@ -4819,7 +4847,7 @@ func ApplyVPA(cluster, namespace, yamlContent string, dryRun, force bool) error 
 		args = append(args, "--dry-run=server")
 	}
 	cmd := exec.Command("kubectl", args...)
-	cmd.Stdin = strings.NewReader(yamlContent)
+	cmd.Stdin = strings.NewReader(sanitized)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("kubectl apply vpa failed: %w - %s", err, string(out))
