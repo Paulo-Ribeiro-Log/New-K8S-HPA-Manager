@@ -469,9 +469,15 @@ func (s *Server) setupRoutes() {
 	// CronJobs
 	cronJobHandler := handlers.NewCronJobHandler(s.kubeManager, s.historyTracker)
 	api.GET("/cronjobs", cronJobHandler.List)
+	api.GET("/cronjobs/:cluster/:namespace/:name", cronJobHandler.Get)
+	api.GET("/cronjobs/:cluster/:namespace/:name/describe", cronJobHandler.Describe)
+	api.POST("/cronjobs/diff", cronJobHandler.Diff)
+	api.POST("/cronjobs/validate", cronJobHandler.Validate)
 
 	// CronJobs - Write Operations (SRE-only)
 	api.PUT("/cronjobs/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), cronJobHandler.Update)
+	api.PUT("/cronjobs/:cluster/:namespace/:name/yaml", rbacMiddleware.RequireSREGroup(), cronJobHandler.Apply)
+	api.POST("/cronjobs/:cluster/:namespace/:name/trigger", rbacMiddleware.RequireSREGroup(), cronJobHandler.Trigger)
 
 	// Prometheus Stack
 	prometheusHandler := handlers.NewPrometheusHandler(s.kubeManager, s.historyTracker)
