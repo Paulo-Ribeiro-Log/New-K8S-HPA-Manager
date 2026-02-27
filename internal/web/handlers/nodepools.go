@@ -1497,7 +1497,134 @@ type StorageOverview struct {
 	UsedCapacity   float64            `json:"used_capacity_bytes"`
 }
 
-// GetNodePoolDiskMetrics retorna métricas de disco agregadas por node pool
+// nodeDiskData armazena total e disponível de disco de um node vindos do Prometheus
+type nodeDiskData struct {
+	total float64
+	avail float64
+}
+
+// getNodeDiskFromPrometheus busca uso real de disco por node via Prometheus node_exporter.
+// nodeIPToName mapeia IP interno → nome do node; nodeNames é o set de nomes K8s.
+// Tenta match por IP e por hostname (VMSS format), sem filtrar instance no PromQL
+// para suportar qualquer formato de label usado na configuração do Prometheus.
+// Retorna nil quando Prometheus não está disponível ou nenhum node é encontrado.
+func (h *NodePoolHandler) getNodeDiskFromPrometheus(cluster string, nodeIPToName map[string]string, nodeNames []string) map[string]nodeDiskData {
+	promClient, err := promclient.NewPrometheusClient(cluster)
+	if err != nil {
+		log.Debug().Err(err).Str("cluster", cluster).Msg("Prometheus indisponível para métricas de disco")
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Sem filtro de instance — o Prometheus pode usar IP ou hostname (VMSS format)
+	// Filtramos apenas pelo mountpoint e excluímos filesystems virtuais
+	const querySize = `node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs",fstype!="overlay",fstype!="rootfs"}`
+	const queryAvail = `node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs",fstype!="overlay",fstype!="rootfs"}`
+
+	sizeRes, err := promClient.Query(ctx, querySize)
+	if err != nil {
+		log.Warn().Err(err).Str("cluster", cluster).Msg("Erro ao consultar node_filesystem_size_bytes")
+		return nil
+	}
+	if len(sizeRes.Data.Result) == 0 {
+		log.Warn().Str("cluster", cluster).Msg("Prometheus não retornou métricas node_filesystem_size_bytes")
+		return nil
+	}
+
+	availRes, err := promClient.Query(ctx, queryAvail)
+	if err != nil {
+		log.Warn().Err(err).Str("cluster", cluster).Msg("Erro ao consultar node_filesystem_avail_bytes")
+		return nil
+	}
+
+	parseValue := func(v []interface{}) float64 {
+		if len(v) < 2 {
+			return 0
+		}
+		s, ok := v[1].(string)
+		if !ok {
+			return 0
+		}
+		f, _ := strconv.ParseFloat(s, 64)
+		return f
+	}
+
+	// Extrai o host de "host:porta" removendo apenas o sufixo ":porta"
+	extractHost := func(instance string) string {
+		if idx := strings.LastIndex(instance, ":"); idx > 0 {
+			return instance[:idx]
+		}
+		return instance
+	}
+
+	// Mapear host (IP ou hostname) → [total, avail], mantendo o maior valor por host
+	sizeByHost := make(map[string]float64)
+	for _, r := range sizeRes.Data.Result {
+		host := extractHost(r.Metric["instance"])
+		if val := parseValue(r.Value); host != "" && val > sizeByHost[host] {
+			sizeByHost[host] = val
+		}
+	}
+	availByHost := make(map[string]float64)
+	for _, r := range availRes.Data.Result {
+		host := extractHost(r.Metric["instance"])
+		if val := parseValue(r.Value); host != "" && val > availByHost[host] {
+			availByHost[host] = val
+		}
+	}
+
+	result := make(map[string]nodeDiskData)
+
+	// Tentar match por IP primeiro
+	for ip, nodeName := range nodeIPToName {
+		total := sizeByHost[ip]
+		avail := availByHost[ip]
+		if total > 0 || avail > 0 {
+			result[nodeName] = nodeDiskData{total: total, avail: avail}
+		}
+	}
+
+	// Para nodes ainda não encontrados, tentar match por hostname K8s
+	for _, nodeName := range nodeNames {
+		if _, found := result[nodeName]; found {
+			continue
+		}
+		total := sizeByHost[nodeName]
+		avail := availByHost[nodeName]
+		if total > 0 || avail > 0 {
+			result[nodeName] = nodeDiskData{total: total, avail: avail}
+		}
+	}
+
+	log.Debug().Str("cluster", cluster).
+		Int("prom_results", len(sizeRes.Data.Result)).
+		Int("nodes_matched", len(result)).
+		Int("nodes_expected", len(nodeNames)).
+		Msg("Prometheus disk metrics")
+
+	if len(result) == 0 {
+		// Log os primeiros 3 instances retornados para facilitar diagnóstico
+		for i, r := range sizeRes.Data.Result {
+			if i >= 3 {
+				break
+			}
+			log.Warn().
+				Str("cluster", cluster).
+				Str("instance", r.Metric["instance"]).
+				Str("fstype", r.Metric["fstype"]).
+				Str("node_label", r.Metric["node"]).
+				Msg("Prometheus retornou dados mas nenhum node bateu — verifique o formato do label instance")
+		}
+		return nil
+	}
+	return result
+}
+
+// GetNodePoolDiskMetrics retorna métricas de disco agregadas por node pool.
+// Tenta buscar uso real via Prometheus node_exporter; se indisponível, usa os
+// valores estáticos da API Kubernetes (ephemeral-storage capacity/allocatable).
 func (h *NodePoolHandler) GetNodePoolDiskMetrics(c *gin.Context) {
 	cluster := c.Query("cluster")
 	nodePoolName := c.Query("nodepool")
@@ -1539,6 +1666,22 @@ func (h *NodePoolHandler) GetNodePoolDiskMetrics(c *gin.Context) {
 		return
 	}
 
+	// Construir mapa IP → nome do node e lista de nomes para correlação com Prometheus
+	nodeIPToName := make(map[string]string)
+	nodeNames := make([]string, 0, len(nodes.Items))
+	for _, node := range nodes.Items {
+		nodeNames = append(nodeNames, node.Name)
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == "InternalIP" {
+				nodeIPToName[addr.Address] = node.Name
+				break
+			}
+		}
+	}
+
+	// Tentar buscar métricas reais do Prometheus
+	promDisk := h.getNodeDiskFromPrometheus(cluster, nodeIPToName, nodeNames)
+
 	// Agrupar métricas por node pool
 	poolMetrics := make(map[string]*NodePoolDiskMetrics)
 
@@ -1554,28 +1697,9 @@ func (h *NodePoolHandler) GetNodePoolDiskMetrics(c *gin.Context) {
 			continue
 		}
 
-		// Calcular uso de disco (ephemeral-storage)
-		var totalBytes, usedBytes, availableBytes float64
-
-		// Buscar capacidade total do node
-		if capacity, ok := node.Status.Capacity["ephemeral-storage"]; ok {
-			totalBytes = float64(capacity.Value())
-		}
-
-		// Buscar espaço alocável (disponível para pods)
-		if allocatable, ok := node.Status.Allocatable["ephemeral-storage"]; ok {
-			availableBytes = float64(allocatable.Value())
-		}
-
-		// Calcular usado
-		usedBytes = totalBytes - availableBytes
-
 		// Determinar tipo de disco (efêmero ou persistente)
-		// Verificar se tem label indicando disco efêmero
 		isEphemeral := false
 		diskType := "Managed Disk"
-
-		// Azure AKS usa a anotação "storageprofile" ou verifica o tamanho do disco temporário
 		if storageProfile, ok := node.Labels["storageprofile"]; ok {
 			if storageProfile == "ephemeral" {
 				isEphemeral = true
@@ -1586,7 +1710,24 @@ func (h *NodePoolHandler) GetNodePoolDiskMetrics(c *gin.Context) {
 			diskType = "Ephemeral OS Disk"
 		}
 
-		// Criar métrica do node individual
+		var totalBytes, usedBytes, availableBytes float64
+
+		if promData, ok := promDisk[node.Name]; ok {
+			// Dados reais do Prometheus (uso efetivo do filesystem)
+			totalBytes = promData.total
+			availableBytes = promData.avail
+			usedBytes = totalBytes - availableBytes
+		} else {
+			// Fallback: valores estáticos da API K8s (iguais para todos os nodes do mesmo SKU)
+			if capacity, ok := node.Status.Capacity["ephemeral-storage"]; ok {
+				totalBytes = float64(capacity.Value())
+			}
+			if allocatable, ok := node.Status.Allocatable["ephemeral-storage"]; ok {
+				availableBytes = float64(allocatable.Value())
+			}
+			usedBytes = totalBytes - availableBytes
+		}
+
 		nodeMetric := NodeDiskMetrics{
 			NodeName:       node.Name,
 			NodePoolName:   nodePool,
