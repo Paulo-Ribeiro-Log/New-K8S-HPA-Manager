@@ -615,10 +615,34 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Services
-	serviceHandler := handlers.NewServiceHandler(s.kubeManager)
+	serviceHandler := handlers.NewServiceHandlerWithHistory(s.kubeManager, s.historyTracker)
 	services := api.Group("/services")
 	{
 		services.GET("", serviceHandler.List)
+		services.GET("/:cluster/:namespace/:name", serviceHandler.Get)
+		services.GET("/:cluster/:namespace/:name/describe", serviceHandler.Describe)
+		services.POST("/diff", serviceHandler.Diff)
+		services.POST("/validate", serviceHandler.Validate)
+
+		// Services - Write Operations (SRE-only)
+		services.POST("/:cluster/:namespace", rbacMiddleware.RequireSREGroup(), serviceHandler.Create)
+		services.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), serviceHandler.Apply)
+		services.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), serviceHandler.Delete)
+	}
+
+	// VPAs (Vertical Pod Autoscalers)
+	vpaHandler := handlers.NewVPAHandler(s.kubeManager)
+	vpas := api.Group("/vpas")
+	{
+		vpas.GET("", vpaHandler.List)
+		vpas.GET("/:cluster/:namespace/:name", vpaHandler.Get)
+		vpas.GET("/:cluster/:namespace/:name/describe", vpaHandler.Describe)
+		vpas.POST("/diff", vpaHandler.Diff)
+		vpas.POST("/validate", vpaHandler.Validate)
+
+		// VPAs - Write Operations (SRE-only)
+		vpas.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), vpaHandler.Apply)
+		vpas.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), vpaHandler.Delete)
 	}
 
 	// Helm

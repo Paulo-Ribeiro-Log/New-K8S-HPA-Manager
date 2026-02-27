@@ -4714,3 +4714,218 @@ func (c *Client) PatchDaemonSetResources(ctx context.Context, namespace, name st
 
 	return c.ApplyDaemonSet(ctx, string(yamlBytes), "prometheus-resource-editor", namespace, name, false, true)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VPA (Vertical Pod Autoscaler) — via kubectl (CRD, sem typed client)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// VPACRDExists verifica se o CRD do VPA está instalado no cluster
+func VPACRDExists(cluster string) bool {
+	cmd := exec.Command("kubectl", "get", "crd", "verticalpodautoscalers.autoscaling.k8s.io",
+		"--context", cluster, "--ignore-not-found")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "verticalpodautoscalers")
+}
+
+// GetVPAs lista VPAs de um namespace (ou todos os namespaces se namespace == "")
+func GetVPAs(cluster, namespace string) ([]models.VPASummary, error) {
+	args := []string{"get", "verticalpodautoscaler", "--context", cluster, "-o", "json"}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	} else {
+		args = append(args, "--all-namespaces")
+	}
+
+	cmd := exec.Command("kubectl", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("kubectl get vpa failed: %w - %s", err, string(out))
+	}
+
+	var result struct {
+		Items []map[string]interface{} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse vpa list: %w", err)
+	}
+
+	summaries := make([]models.VPASummary, 0, len(result.Items))
+	for _, item := range result.Items {
+		summary := models.VPASummary{Cluster: cluster}
+
+		if meta, ok := item["metadata"].(map[string]interface{}); ok {
+			summary.Name, _ = meta["name"].(string)
+			summary.Namespace, _ = meta["namespace"].(string)
+		}
+
+		if spec, ok := item["spec"].(map[string]interface{}); ok {
+			if policy, ok := spec["updatePolicy"].(map[string]interface{}); ok {
+				summary.UpdateMode, _ = policy["updateMode"].(string)
+			}
+			if summary.UpdateMode == "" {
+				summary.UpdateMode = "Auto"
+			}
+			if targetRef, ok := spec["targetRef"].(map[string]interface{}); ok {
+				summary.TargetRefName, _ = targetRef["name"].(string)
+				summary.TargetRefKind, _ = targetRef["kind"].(string)
+			}
+			if policies, ok := spec["resourcePolicy"].(map[string]interface{}); ok {
+				if containers, ok := policies["containerPolicies"].([]interface{}); ok {
+					summary.ContainerCount = len(containers)
+				}
+			}
+		}
+
+		if status, ok := item["status"].(map[string]interface{}); ok {
+			if rec, ok := status["recommendation"].(map[string]interface{}); ok {
+				if recs, ok := rec["containerRecommendations"].([]interface{}); ok {
+					summary.HasRecommendation = len(recs) > 0
+				}
+			}
+		}
+
+		summaries = append(summaries, summary)
+	}
+	return summaries, nil
+}
+
+// GetVPAYAML retorna o manifesto YAML de um VPA específico
+func GetVPAYAML(cluster, namespace, name string) (*models.VPAManifest, error) {
+	cmd := exec.Command("kubectl", "get", "verticalpodautoscaler", name,
+		"--context", cluster, "-n", namespace, "-o", "yaml")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("kubectl get vpa yaml failed: %w - %s", err, string(out))
+	}
+	return &models.VPAManifest{
+		Cluster:   cluster,
+		Namespace: namespace,
+		Name:      name,
+		YAML:      string(out),
+	}, nil
+}
+
+// ApplyVPA aplica um manifesto VPA via kubectl apply (stdin), com suporte a dry-run e force-conflicts.
+// force=true adiciona --server-side --force-conflicts para sobrescrever campos gerenciados por Helm.
+func ApplyVPA(cluster, namespace, yamlContent string, dryRun, force bool) error {
+	args := []string{"apply", "-f", "-", "--context", cluster, "-n", namespace}
+	if force {
+		args = append(args, "--server-side", "--force-conflicts")
+	}
+	if dryRun {
+		args = append(args, "--dry-run=server")
+	}
+	cmd := exec.Command("kubectl", args...)
+	cmd.Stdin = strings.NewReader(yamlContent)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("kubectl apply vpa failed: %w - %s", err, string(out))
+	}
+	return nil
+}
+
+// DeleteVPA deleta um VPA via kubectl delete
+func DeleteVPA(cluster, namespace, name string) error {
+	cmd := exec.Command("kubectl", "delete", "verticalpodautoscaler", name,
+		"--context", cluster, "-n", namespace)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("kubectl delete vpa failed: %w - %s", err, string(out))
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Services — typed K8s API
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GetServiceYAML retorna o manifesto YAML de um Service específico
+func (c *Client) GetServiceYAML(ctx context.Context, namespace, name string) (*models.ServiceManifest, error) {
+	svc, err := c.clientset.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get service %s/%s: %w", namespace, name, err)
+	}
+	svc.ManagedFields = nil
+
+	yamlBytes, err := yaml.Marshal(svc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal service %s/%s: %w", namespace, name, err)
+	}
+	return &models.ServiceManifest{
+		Cluster:   c.cluster,
+		Namespace: namespace,
+		Name:      name,
+		YAML:      string(yamlBytes),
+	}, nil
+}
+
+// ApplyService aplica (create ou update) um Service a partir de YAML, com dryRun e force opcionais.
+// force é aceito por consistência; Update() já faz replace completo (bypassa field managers do Helm).
+func (c *Client) ApplyService(ctx context.Context, yamlContent, namespace, name string, dryRun, force bool) (*corev1.Service, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("service yaml content cannot be empty")
+	}
+
+	var svcObj corev1.Service
+	if err := yaml.Unmarshal([]byte(yamlContent), &svcObj); err != nil {
+		return nil, fmt.Errorf("invalid service yaml: %w", err)
+	}
+
+	if namespace != "" {
+		svcObj.Namespace = namespace
+	}
+	if name != "" {
+		svcObj.Name = name
+	}
+
+	// Limpar campos de leitura
+	svcObj.ManagedFields = nil
+	svcObj.GenerateName = ""
+
+	// Verificar se já existe (update) ou criar
+	current, err := c.clientset.CoreV1().Services(svcObj.Namespace).Get(ctx, svcObj.Name, metav1.GetOptions{})
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to get service %s/%s: %w", svcObj.Namespace, svcObj.Name, err)
+		}
+		// Criar
+		svcObj.ResourceVersion = ""
+		createOpts := metav1.CreateOptions{}
+		if dryRun {
+			createOpts.DryRun = []string{metav1.DryRunAll}
+		}
+		result, err := c.clientset.CoreV1().Services(svcObj.Namespace).Create(ctx, &svcObj, createOpts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create service %s/%s: %w", svcObj.Namespace, svcObj.Name, err)
+		}
+		return result, nil
+	}
+
+	// Preservar clusterIP e resourceVersion (campos imutáveis)
+	svcObj.ResourceVersion = current.ResourceVersion
+	if svcObj.Spec.ClusterIP == "" {
+		svcObj.Spec.ClusterIP = current.Spec.ClusterIP
+	}
+
+	updateOpts := metav1.UpdateOptions{}
+	if dryRun {
+		updateOpts.DryRun = []string{metav1.DryRunAll}
+	}
+	result, err := c.clientset.CoreV1().Services(svcObj.Namespace).Update(ctx, &svcObj, updateOpts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update service %s/%s: %w", svcObj.Namespace, svcObj.Name, err)
+	}
+	return result, nil
+}
+
+// DeleteService deleta um Service
+func (c *Client) DeleteService(ctx context.Context, namespace, name string) error {
+	err := c.clientset.CoreV1().Services(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete service %s/%s: %w", namespace, name, err)
+	}
+	return nil
+}

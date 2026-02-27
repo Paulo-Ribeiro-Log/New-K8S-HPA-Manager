@@ -453,7 +453,72 @@ export interface ServiceSummary {
   name: string;
   type: string;
   clusterIP: string;
+  externalIP?: string;
   ports: string[];
+  selector?: Record<string, string>;
+  age?: string;
+}
+
+export interface ServiceManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  yaml: string;
+}
+
+export interface ServiceDiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface ServiceValidateResult {
+  name: string;
+  namespace: string;
+  resourceVersion?: string;
+}
+
+export interface ServiceApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  resourceVersion?: string;
+  dryRun?: boolean;
+  appliedAt?: string;
+}
+
+// VPA Types
+export interface VPASummary {
+  cluster: string;
+  namespace: string;
+  name: string;
+  updateMode: string;
+  targetRefName: string;
+  targetRefKind: string;
+  containerCount: number;
+  hasRecommendation: boolean;
+}
+
+export interface VPAManifest {
+  cluster: string;
+  namespace: string;
+  name: string;
+  yaml: string;
+}
+
+export interface VPADiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface VPAValidateResult {
+  valid: boolean;
+}
+
+export interface VPAApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  dryRun?: boolean;
 }
 
 export interface PodsSummary {
