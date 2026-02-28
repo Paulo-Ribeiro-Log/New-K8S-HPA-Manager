@@ -90,10 +90,18 @@ export const NodePoolApplyModal = ({
     .sort((a, b) => (a.order || 0) - (b.order || 0));
   const normalPools = modifiedNodePools.filter((np) => np.order === undefined);
 
+  const dispatchPoolEvent = (poolName: string, status: "start" | "end", result?: "success" | "error") => {
+    window.dispatchEvent(new CustomEvent("nodePoolApplying", {
+      detail: { poolName, status, result }
+    }));
+  };
+
   const handleApplyIndividual = async (key: string, current: NodePool) => {
     setApplyingIndividual(key);
     setNodePoolStates(prev => ({ ...prev, [key]: { status: 'applying' } }));
+    dispatchPoolEvent(current.name, "start");
 
+    let success = false;
     try {
       await apiClient.updateNodePool(
         current.cluster_name,
@@ -107,6 +115,7 @@ export const NodePoolApplyModal = ({
         }
       );
 
+      success = true;
       setNodePoolStates(prev => ({
         ...prev,
         [key]: { status: 'success', message: 'Aplicado com sucesso' }
@@ -122,6 +131,7 @@ export const NodePoolApplyModal = ({
       toast.error(`❌ Erro ao aplicar ${current.name}`);
     } finally {
       setApplyingIndividual(null);
+      dispatchPoolEvent(current.name, "end", success ? "success" : "error");
     }
   };
 
@@ -211,56 +221,40 @@ export const NodePoolApplyModal = ({
         // Execução SEQUENCIAL via endpoint dedicado
         for (const { key, current } of sequentialPools) {
           setNodePoolStates(prev => ({ ...prev, [key]: { status: 'applying' } }));
+          dispatchPoolEvent(current.name, "start");
         }
 
-        const cluster = sequentialPools[0].current.cluster_name;
-
         const response = await apiClient.applyNodePoolsSequential(
-          cluster,
-          sequentialPools.map((np) => ({
-            name: np.current.name,
-            autoscaling_enabled: np.current.autoscaling_enabled,
-            node_count: np.current.node_count,
-            min_node_count: np.current.min_node_count,
-            max_node_count: np.current.max_node_count,
-            order: np.order || 0,
-          }))
+          sequentialPools.map((np) => np.current)
         );
 
         // Processar resultados do endpoint sequencial
-        if (response.success && response.results) {
-          for (const result of response.results) {
-            const matchingPool = sequentialPools.find(
-              (p) => p.current.name === result.pool_name
-            );
-            if (matchingPool) {
-              setNodePoolStates(prev => ({
-                ...prev,
-                [matchingPool.key]: {
-                  status: result.success ? 'success' : 'error',
-                  message: result.message || (result.success ? 'Aplicado com sucesso' : 'Erro na aplicação'),
-                }
-              }));
-            }
+        if (response.success) {
+          for (const np of sequentialPools) {
+            setNodePoolStates(prev => ({
+              ...prev,
+              [np.key]: { status: 'success', message: 'Aplicado com sucesso' },
+            }));
+            dispatchPoolEvent(np.current.name, "end", "success");
           }
         } else {
           // Erro geral no endpoint
-          sequentialPools.forEach((np) => {
+          for (const np of sequentialPools) {
             setNodePoolStates(prev => ({
               ...prev,
-              [np.key]: {
-                status: 'error',
-                message: response.error?.message || 'Erro ao executar sequencialmente',
-              }
+              [np.key]: { status: 'error', message: 'Erro ao executar sequencialmente' },
             }));
-          });
+            dispatchPoolEvent(np.current.name, "end", "error");
+          }
         }
       }
 
       // Executar node pools NORMAIS (sem ordem) em paralelo
       for (const { key, current } of normalPools) {
         setNodePoolStates(prev => ({ ...prev, [key]: { status: 'applying' } }));
+        dispatchPoolEvent(current.name, "start");
 
+        let normalSuccess = false;
         try {
           await apiClient.updateNodePool(
             current.cluster_name,
@@ -274,6 +268,7 @@ export const NodePoolApplyModal = ({
             }
           );
 
+          normalSuccess = true;
           setNodePoolStates(prev => ({
             ...prev,
             [key]: { status: 'success', message: 'Aplicado com sucesso' }
@@ -284,6 +279,8 @@ export const NodePoolApplyModal = ({
             ...prev,
             [key]: { status: 'error', message: errorMessage }
           }));
+        } finally {
+          dispatchPoolEvent(current.name, "end", normalSuccess ? "success" : "error");
         }
       }
 

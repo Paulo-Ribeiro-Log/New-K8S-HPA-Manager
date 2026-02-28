@@ -281,7 +281,11 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
     const maxNodeCountNum = maxNodeCount === "" ? 0 : parseInt(maxNodeCount);
 
     setIsApplying(true);
+    window.dispatchEvent(new CustomEvent("nodePoolApplying", {
+      detail: { poolName: nodePool.name, status: "start" }
+    }));
 
+    let applySuccess = false;
     try {
       // Log changes
       console.log('⚙️ Applying Node Pool changes:', {
@@ -310,6 +314,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         config || undefined
       );
 
+      applySuccess = true;
       toast.success(`✅ Node Pool ${nodePool.name} aplicado com sucesso`);
       setHasChanges(false);
 
@@ -321,6 +326,9 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
       toast.error(`❌ Erro ao aplicar ${nodePool.name}: ${errorMessage}`);
     } finally {
       setIsApplying(false);
+      window.dispatchEvent(new CustomEvent("nodePoolApplying", {
+        detail: { poolName: nodePool.name, status: "end", result: applySuccess ? "success" : "error" }
+      }));
     }
   };
 
