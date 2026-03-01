@@ -11,7 +11,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// DeploymentRecord representa um registro de deployment na base de conhecimento
+// DeploymentRecord representa um registro de workload na base de conhecimento
 type DeploymentRecord struct {
 	ID              int       `json:"id"`
 	DeploymentName  string    `json:"deployment_name"`
@@ -26,7 +26,8 @@ type DeploymentRecord struct {
 	Status          string    `json:"status"`           // healthy, warning, critical
 	Squad           string    `json:"squad"`            // devops.k8s.io/squad
 	ServiceNowTask  string    `json:"servicenow_task"`  // devops.k8s.io/servicenow-task-number (CHG prefix)
-	CreatedAt       time.Time `json:"created_at"`       // ✅ Data de criação real do deployment (metadata.creationTimestamp)
+	ResourceKind    string    `json:"resource_kind"`    // Deployment, CronJob, StatefulSet, DaemonSet
+	CreatedAt       time.Time `json:"created_at"`       // Data de criação real do workload (metadata.creationTimestamp)
 	FirstSeen       time.Time `json:"first_seen"`
 	LastSeen        time.Time `json:"last_seen"`
 	LastHealthCheck time.Time `json:"last_health_check"`
@@ -85,6 +86,7 @@ func (r *DeploymentRegistry) createSchema() error {
 		status TEXT,
 		squad TEXT,
 		servicenow_task TEXT,
+		resource_kind TEXT DEFAULT 'Deployment',
 		created_at TIMESTAMP,
 		first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -114,12 +116,9 @@ func (r *DeploymentRegistry) createSchema() error {
 		return err
 	}
 
-	// ✅ Migração: Adicionar coluna created_at se não existir (para bancos existentes)
-	migration := `
-	ALTER TABLE deployments ADD COLUMN created_at TIMESTAMP;
-	`
-	// Ignorar erro se coluna já existir
-	r.db.Exec(migration)
+	// Migrações: adicionar colunas novas em bancos existentes (erros ignorados se já existirem)
+	r.db.Exec(`ALTER TABLE deployments ADD COLUMN created_at TIMESTAMP;`)
+	r.db.Exec(`ALTER TABLE deployments ADD COLUMN resource_kind TEXT DEFAULT 'Deployment';`)
 
 	return nil
 }
@@ -134,13 +133,19 @@ func (r *DeploymentRegistry) UpsertDeployment(record DeploymentRecord) error {
 	queryOld := `SELECT id, version FROM deployments WHERE cluster = ? AND namespace = ? AND deployment_name = ?`
 	r.db.QueryRow(queryOld, record.Cluster, record.Namespace, record.DeploymentName).Scan(&deploymentID, &oldVersion)
 
+	// Garantir resource_kind com default
+	resourceKind := record.ResourceKind
+	if resourceKind == "" {
+		resourceKind = "Deployment"
+	}
+
 	// Insert ou Update
 	query := `
 	INSERT INTO deployments (
 		deployment_name, namespace, cluster, version, image_tag, full_image,
 		replicas_current, replicas_desired, app_name, status, squad, servicenow_task,
-		created_at, last_seen, last_health_check
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		resource_kind, created_at, last_seen, last_health_check
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(cluster, namespace, deployment_name) DO UPDATE SET
 		version = excluded.version,
 		image_tag = excluded.image_tag,
@@ -151,6 +156,7 @@ func (r *DeploymentRegistry) UpsertDeployment(record DeploymentRecord) error {
 		status = excluded.status,
 		squad = excluded.squad,
 		servicenow_task = excluded.servicenow_task,
+		resource_kind = excluded.resource_kind,
 		last_seen = excluded.last_seen,
 		last_health_check = excluded.last_health_check
 		-- ⚠️ NÃO atualizar created_at - manter data original de criação
@@ -161,7 +167,7 @@ func (r *DeploymentRegistry) UpsertDeployment(record DeploymentRecord) error {
 		record.Version, record.ImageTag, record.FullImage,
 		record.ReplicasCurrent, record.ReplicasDesired, record.AppName,
 		record.Status, record.Squad, record.ServiceNowTask,
-		record.CreatedAt, now, now,
+		resourceKind, record.CreatedAt, now, now,
 	)
 
 	if err != nil {
@@ -188,7 +194,7 @@ func (r *DeploymentRegistry) SearchByAppName(appName string) ([]DeploymentRecord
 	query := `
 	SELECT id, deployment_name, namespace, cluster, version, image_tag, full_image,
 	       replicas_current, replicas_desired, app_name, status, squad, servicenow_task,
-	       created_at, first_seen, last_seen, last_health_check
+	       resource_kind, created_at, first_seen, last_seen, last_health_check
 	FROM deployments
 	WHERE app_name = ? OR deployment_name LIKE ? OR deployment_name = ?
 	ORDER BY last_seen DESC
@@ -203,6 +209,7 @@ func (r *DeploymentRegistry) SearchByAppName(appName string) ([]DeploymentRecord
 	var records []DeploymentRecord
 	for rows.Next() {
 		var r DeploymentRecord
+		var resourceKind sql.NullString
 		var createdAt, firstSeen, lastSeen, lastHealthCheck sql.NullTime
 
 		err := rows.Scan(
@@ -210,13 +217,18 @@ func (r *DeploymentRegistry) SearchByAppName(appName string) ([]DeploymentRecord
 			&r.Version, &r.ImageTag, &r.FullImage,
 			&r.ReplicasCurrent, &r.ReplicasDesired, &r.AppName,
 			&r.Status, &r.Squad, &r.ServiceNowTask,
-			&createdAt, &firstSeen, &lastSeen, &lastHealthCheck,
+			&resourceKind, &createdAt, &firstSeen, &lastSeen, &lastHealthCheck,
 		)
 
 		if err != nil {
 			continue
 		}
 
+		if resourceKind.Valid {
+			r.ResourceKind = resourceKind.String
+		} else {
+			r.ResourceKind = "Deployment"
+		}
 		if createdAt.Valid {
 			r.CreatedAt = createdAt.Time
 		}
@@ -243,7 +255,7 @@ func (r *DeploymentRegistry) GetProductionVersion(appName string) (*DeploymentRe
 	query := `
 	SELECT id, deployment_name, namespace, cluster, version, image_tag, full_image,
 	       replicas_current, replicas_desired, app_name, status, squad, servicenow_task,
-	       created_at, first_seen, last_seen, last_health_check
+	       resource_kind, created_at, first_seen, last_seen, last_health_check
 	FROM deployments
 	WHERE (app_name = ? OR deployment_name LIKE ? OR deployment_name = ?)
 	  AND (cluster LIKE '%prod%' OR cluster LIKE '%prd%')
@@ -257,6 +269,7 @@ func (r *DeploymentRegistry) GetProductionVersion(appName string) (*DeploymentRe
 	`
 
 	var record DeploymentRecord
+	var resourceKind sql.NullString
 	var createdAt, firstSeen, lastSeen, lastHealthCheck sql.NullTime
 
 	// Parâmetros: WHERE(app_name=, LIKE, deployment_name=), ORDER BY CASE(deployment_name=, app_name=)
@@ -265,7 +278,7 @@ func (r *DeploymentRegistry) GetProductionVersion(appName string) (*DeploymentRe
 		&record.Version, &record.ImageTag, &record.FullImage,
 		&record.ReplicasCurrent, &record.ReplicasDesired, &record.AppName,
 		&record.Status, &record.Squad, &record.ServiceNowTask,
-		&createdAt, &firstSeen, &lastSeen, &lastHealthCheck,
+		&resourceKind, &createdAt, &firstSeen, &lastSeen, &lastHealthCheck,
 	)
 
 	if err == sql.ErrNoRows {
@@ -276,6 +289,11 @@ func (r *DeploymentRegistry) GetProductionVersion(appName string) (*DeploymentRe
 		return nil, fmt.Errorf("failed to get production version: %w", err)
 	}
 
+	if resourceKind.Valid {
+		record.ResourceKind = resourceKind.String
+	} else {
+		record.ResourceKind = "Deployment"
+	}
 	if createdAt.Valid {
 		record.CreatedAt = createdAt.Time
 	}
@@ -365,7 +383,7 @@ func (r *DeploymentRegistry) GetAll(cluster, namespace string, onlyValidVersions
 	query := `
 	SELECT id, deployment_name, namespace, cluster, version, image_tag, full_image,
 	       replicas_current, replicas_desired, app_name, status, squad, servicenow_task,
-	       first_seen, last_seen, last_health_check
+	       resource_kind, first_seen, last_seen, last_health_check
 	FROM deployments
 	WHERE 1=1
 	`
@@ -404,6 +422,7 @@ func (r *DeploymentRegistry) GetAll(cluster, namespace string, onlyValidVersions
 	var records []DeploymentRecord
 	for rows.Next() {
 		var r DeploymentRecord
+		var resourceKind sql.NullString
 		var firstSeen, lastSeen, lastHealthCheck sql.NullTime
 
 		err := rows.Scan(
@@ -411,13 +430,18 @@ func (r *DeploymentRegistry) GetAll(cluster, namespace string, onlyValidVersions
 			&r.Version, &r.ImageTag, &r.FullImage,
 			&r.ReplicasCurrent, &r.ReplicasDesired, &r.AppName,
 			&r.Status, &r.Squad, &r.ServiceNowTask,
-			&firstSeen, &lastSeen, &lastHealthCheck,
+			&resourceKind, &firstSeen, &lastSeen, &lastHealthCheck,
 		)
 
 		if err != nil {
 			continue
 		}
 
+		if resourceKind.Valid {
+			r.ResourceKind = resourceKind.String
+		} else {
+			r.ResourceKind = "Deployment"
+		}
 		if firstSeen.Valid {
 			r.FirstSeen = firstSeen.Time
 		}

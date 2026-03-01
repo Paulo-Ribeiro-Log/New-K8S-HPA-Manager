@@ -932,7 +932,8 @@ func (c *DeploymentChecker) populateDeploymentRegistry(deployment *appsv1.Deploy
 		Status:          status,
 		Squad:           squad,
 		ServiceNowTask:  servicenowTask,
-		CreatedAt:       deployment.CreationTimestamp.Time, // ✅ Data real de criação do deployment do Kubernetes
+		ResourceKind:    "Deployment",
+		CreatedAt:       deployment.CreationTimestamp.Time,
 	}
 
 	// Upsert na base (ignora erros para não quebrar health check)
