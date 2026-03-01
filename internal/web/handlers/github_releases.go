@@ -15,6 +15,8 @@ import (
 	"golang.org/x/oauth2"
 	"gopkg.in/yaml.v3"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -1210,63 +1212,89 @@ func (h *GitHubReleasesHandler) ScanDeployments(c *gin.Context) {
 		Int("namespaces", len(namespaces)).
 		Msg("Found namespaces")
 
-	// 3. Escanear deployments em cada namespace
-	deploymentsFound := 0
-	deploymentsSaved := 0
+	// 3. Escanear todos os tipos de workload em cada namespace
+	counts := map[string]int{
+		"Deployment":  0,
+		"CronJob":     0,
+		"StatefulSet": 0,
+		"DaemonSet":   0,
+	}
+	totalSaved := 0
 	errors := []string{}
 
-	for _, namespace := range namespaces {
-		deploymentList, err := client.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			h.logger.Warn().
-				Err(err).
+	upsert := func(record storage.DeploymentRecord) {
+		if err := h.deploymentRegistry.UpsertDeployment(record); err != nil {
+			h.logger.Warn().Err(err).
 				Str("cluster", clusterName).
-				Str("namespace", namespace).
-				Msg("Failed to list deployments in namespace")
-			errors = append(errors, fmt.Sprintf("%s: %v", namespace, err))
-			continue
-		}
-
-		deploymentsFound += len(deploymentList.Items)
-
-		// 4. Popular registry para cada deployment
-		for _, deployment := range deploymentList.Items {
-			record := h.extractDeploymentRecord(&deployment, clusterName)
-
-			if err := h.deploymentRegistry.UpsertDeployment(record); err != nil {
-				h.logger.Warn().
-					Err(err).
-					Str("cluster", clusterName).
-					Str("namespace", namespace).
-					Str("deployment", deployment.Name).
-					Msg("Failed to save deployment to registry")
-				errors = append(errors, fmt.Sprintf("%s/%s: %v", namespace, deployment.Name, err))
-			} else {
-				deploymentsSaved++
-				h.logger.Debug().
-					Str("cluster", clusterName).
-					Str("namespace", namespace).
-					Str("deployment", deployment.Name).
-					Str("version", record.Version).
-					Str("squad", record.Squad).
-					Str("servicenow_task", record.ServiceNowTask).
-					Msg("Saved deployment to registry")
-			}
+				Str("kind", record.ResourceKind).
+				Str("name", record.DeploymentName).
+				Msg("Failed to save workload to registry")
+			errors = append(errors, fmt.Sprintf("%s/%s/%s: %v", record.ResourceKind, record.Namespace, record.DeploymentName, err))
+		} else {
+			totalSaved++
 		}
 	}
 
+	for _, namespace := range namespaces {
+		// Deployments
+		if deploymentList, err := client.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{}); err == nil {
+			counts["Deployment"] += len(deploymentList.Items)
+			for i := range deploymentList.Items {
+				upsert(h.extractDeploymentRecord(&deploymentList.Items[i], clusterName))
+			}
+		} else {
+			errors = append(errors, fmt.Sprintf("Deployment/%s: %v", namespace, err))
+		}
+
+		// CronJobs
+		if cronList, err := client.BatchV1().CronJobs(namespace).List(ctx, metav1.ListOptions{}); err == nil {
+			counts["CronJob"] += len(cronList.Items)
+			for i := range cronList.Items {
+				upsert(h.extractCronJobRecord(&cronList.Items[i], clusterName))
+			}
+		} else {
+			errors = append(errors, fmt.Sprintf("CronJob/%s: %v", namespace, err))
+		}
+
+		// StatefulSets
+		if ssList, err := client.AppsV1().StatefulSets(namespace).List(ctx, metav1.ListOptions{}); err == nil {
+			counts["StatefulSet"] += len(ssList.Items)
+			for i := range ssList.Items {
+				upsert(h.extractStatefulSetRecord(&ssList.Items[i], clusterName))
+			}
+		} else {
+			errors = append(errors, fmt.Sprintf("StatefulSet/%s: %v", namespace, err))
+		}
+
+		// DaemonSets
+		if dsList, err := client.AppsV1().DaemonSets(namespace).List(ctx, metav1.ListOptions{}); err == nil {
+			counts["DaemonSet"] += len(dsList.Items)
+			for i := range dsList.Items {
+				upsert(h.extractDaemonSetRecord(&dsList.Items[i], clusterName))
+			}
+		} else {
+			errors = append(errors, fmt.Sprintf("DaemonSet/%s: %v", namespace, err))
+		}
+	}
+
+	totalFound := counts["Deployment"] + counts["CronJob"] + counts["StatefulSet"] + counts["DaemonSet"]
+
 	h.logger.Info().
 		Str("cluster", clusterName).
-		Int("found", deploymentsFound).
-		Int("saved", deploymentsSaved).
+		Int("found", totalFound).
+		Int("saved", totalSaved).
 		Int("errors", len(errors)).
-		Msg("Deployment scan completed")
+		Msg("Workload scan completed")
 
 	response := gin.H{
 		"cluster":            clusterName,
 		"namespaces_scanned": len(namespaces),
-		"deployments_found":  deploymentsFound,
-		"deployments_saved":  deploymentsSaved,
+		"deployments_found":  counts["Deployment"],
+		"cronjobs_found":     counts["CronJob"],
+		"statefulsets_found": counts["StatefulSet"],
+		"daemonsets_found":   counts["DaemonSet"],
+		"total_found":        totalFound,
+		"total_saved":        totalSaved,
 		"status":             "success",
 	}
 
@@ -1351,6 +1379,170 @@ func (h *GitHubReleasesHandler) extractDeploymentRecord(deployment *appsv1.Deplo
 		Status:          status,
 		Squad:           squad,
 		ServiceNowTask:  servicenowTask,
-		CreatedAt:       deployment.CreationTimestamp.Time, // ✅ Data real de criação do deployment do Kubernetes
+		ResourceKind:    "Deployment",
+		CreatedAt:       deployment.CreationTimestamp.Time,
+	}
+}
+
+// extractLabelsMetadata extrai squad, servicenow task e app name de labels/annotations
+func extractLabelsMetadata(labels, annotations map[string]string, fallbackName string) (appName, squad, servicenowTask string) {
+	appName = labels["app.kubernetes.io/name"]
+	if appName == "" {
+		appName = labels["app"]
+	}
+	if appName == "" {
+		appName = fallbackName
+	}
+
+	squad = labels["devops.k8s.io/squad"]
+	if squad == "" {
+		squad = annotations["devops.k8s.io/squad"]
+	}
+
+	servicenowTask = labels["devops.k8s.io/servicenow-task-number"]
+	if servicenowTask == "" {
+		servicenowTask = annotations["devops.k8s.io/servicenow-task-number"]
+	}
+	if servicenowTask != "" && !strings.HasPrefix(servicenowTask, "CHG") {
+		servicenowTask = "CHG" + servicenowTask
+	}
+	return
+}
+
+// extractFirstContainerImage extrai imagem e tag do primeiro container de uma lista
+func extractFirstContainerImage(containers []corev1.Container) (fullImage, imageTag string) {
+	if len(containers) > 0 {
+		fullImage = containers[0].Image
+		imageTag = storage.ExtractVersionFromImage(fullImage)
+	}
+	return
+}
+
+// extractCronJobRecord extrai um DeploymentRecord a partir de um CronJob
+func (h *GitHubReleasesHandler) extractCronJobRecord(cj *batchv1.CronJob, clusterName string) storage.DeploymentRecord {
+	labels := cj.Labels
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	annotations := cj.Annotations
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+
+	version := labels["app.kubernetes.io/version"]
+	appName, squad, servicenowTask := extractLabelsMetadata(labels, annotations, cj.Name)
+	fullImage, imageTag := extractFirstContainerImage(cj.Spec.JobTemplate.Spec.Template.Spec.Containers)
+	if version == "" {
+		version = imageTag
+	}
+
+	return storage.DeploymentRecord{
+		DeploymentName: cj.Name,
+		Namespace:      cj.Namespace,
+		Cluster:        clusterName,
+		Version:        version,
+		ImageTag:       imageTag,
+		FullImage:      fullImage,
+		AppName:        appName,
+		Status:         "healthy",
+		Squad:          squad,
+		ServiceNowTask: servicenowTask,
+		ResourceKind:   "CronJob",
+		CreatedAt:      cj.CreationTimestamp.Time,
+	}
+}
+
+// extractStatefulSetRecord extrai um DeploymentRecord a partir de um StatefulSet
+func (h *GitHubReleasesHandler) extractStatefulSetRecord(ss *appsv1.StatefulSet, clusterName string) storage.DeploymentRecord {
+	labels := ss.Labels
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	annotations := ss.Annotations
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+
+	version := labels["app.kubernetes.io/version"]
+	appName, squad, servicenowTask := extractLabelsMetadata(labels, annotations, ss.Name)
+	fullImage, imageTag := extractFirstContainerImage(ss.Spec.Template.Spec.Containers)
+	if version == "" {
+		version = imageTag
+	}
+
+	desiredReplicas := int32(1)
+	if ss.Spec.Replicas != nil {
+		desiredReplicas = *ss.Spec.Replicas
+	}
+	readyReplicas := ss.Status.ReadyReplicas
+
+	status := "healthy"
+	if readyReplicas == 0 && desiredReplicas > 0 {
+		status = "critical"
+	} else if readyReplicas < desiredReplicas {
+		status = "warning"
+	}
+
+	return storage.DeploymentRecord{
+		DeploymentName:  ss.Name,
+		Namespace:       ss.Namespace,
+		Cluster:         clusterName,
+		Version:         version,
+		ImageTag:        imageTag,
+		FullImage:       fullImage,
+		ReplicasCurrent: int(readyReplicas),
+		ReplicasDesired: int(desiredReplicas),
+		AppName:         appName,
+		Status:          status,
+		Squad:           squad,
+		ServiceNowTask:  servicenowTask,
+		ResourceKind:    "StatefulSet",
+		CreatedAt:       ss.CreationTimestamp.Time,
+	}
+}
+
+// extractDaemonSetRecord extrai um DeploymentRecord a partir de um DaemonSet
+func (h *GitHubReleasesHandler) extractDaemonSetRecord(ds *appsv1.DaemonSet, clusterName string) storage.DeploymentRecord {
+	labels := ds.Labels
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	annotations := ds.Annotations
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+
+	version := labels["app.kubernetes.io/version"]
+	appName, squad, servicenowTask := extractLabelsMetadata(labels, annotations, ds.Name)
+	fullImage, imageTag := extractFirstContainerImage(ds.Spec.Template.Spec.Containers)
+	if version == "" {
+		version = imageTag
+	}
+
+	desiredReplicas := ds.Status.DesiredNumberScheduled
+	readyReplicas := ds.Status.NumberReady
+
+	status := "healthy"
+	if readyReplicas == 0 && desiredReplicas > 0 {
+		status = "critical"
+	} else if readyReplicas < desiredReplicas {
+		status = "warning"
+	}
+
+	return storage.DeploymentRecord{
+		DeploymentName:  ds.Name,
+		Namespace:       ds.Namespace,
+		Cluster:         clusterName,
+		Version:         version,
+		ImageTag:        imageTag,
+		FullImage:       fullImage,
+		ReplicasCurrent: int(readyReplicas),
+		ReplicasDesired: int(desiredReplicas),
+		AppName:         appName,
+		Status:          status,
+		Squad:           squad,
+		ServiceNowTask:  servicenowTask,
+		ResourceKind:    "DaemonSet",
+		CreatedAt:       ds.CreationTimestamp.Time,
 	}
 }
