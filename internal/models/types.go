@@ -1849,3 +1849,33 @@ type ServiceManifest struct {
 	Name      string `json:"name"`
 	YAML      string `json:"yaml"`
 }
+
+// APIResourceInfo descreve um tipo de recurso disponível no cluster (built-in ou CRD)
+type APIResourceInfo struct {
+	Kind       string   `json:"kind"`
+	Name       string   `json:"name"`       // plural (e.g. "externalsecrets")
+	Group      string   `json:"group"`      // e.g. "external-secrets.io" (vazio para core)
+	Version    string   `json:"version"`    // e.g. "v1", "v1beta1"
+	Namespaced bool     `json:"namespaced"`
+	Verbs      []string `json:"verbs"`      // list, get, update, delete, etc.
+}
+
+// GenericResourceSummary representa um recurso de qualquer tipo na listagem do Explorer
+type GenericResourceSummary struct {
+	Name              string            `json:"name"`
+	Namespace         string            `json:"namespace"`
+	Kind              string            `json:"kind"`
+	APIVersion        string            `json:"apiVersion"`
+	Age               string            `json:"age"`
+	Labels            map[string]string `json:"labels"`
+	AdditionalColumns map[string]string `json:"additionalColumns"` // status, phase, etc.
+}
+
+// GenericResourceManifest contém o YAML bruto de qualquer recurso para edição no Explorer
+type GenericResourceManifest struct {
+	Cluster   string `json:"cluster"`
+	Namespace string `json:"namespace"`
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	YAML      string `json:"yaml"`
+}
