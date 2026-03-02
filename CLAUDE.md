@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **06 de fevereiro de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **02 de março de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -357,6 +357,69 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
     - `POST /api/v1/statefulsets/:cluster/:namespace/:name/restart` - Rollout restart
     - `DELETE /api/v1/statefulsets/:cluster/:namespace/:name` - Deletar
   - Componente: `StatefulSetsTab.tsx` (~650 linhas)
+✅ **Aba VPAs (v1.3.21 - 26/02/2026)** - Gerenciamento completo de Vertical Pod Autoscalers
+  - Listagem de VPAs com filtros por namespace e busca
+  - Badge de updateMode (Auto/Off/Initial/Recreate) e badge "Recomendação" quando há sugestões da IA
+  - Monaco YAML Editor com edição completa:
+    - Undo/Redo com histórico de 50 versões
+    - Toggle Editor/Diff (side-by-side)
+    - Validação YAML com feedback visual
+    - Aplicar com modal de confirmação
+    - Cancelar (restaura original)
+    - Expandir fullscreen
+  - kubectl describe integrado
+  - RBAC: Apply e Delete protegidos com `<ProtectedAction>`
+  - Backend: `internal/web/handlers/vpas.go` (kubectl-based, pois VPA é CRD sem typed client)
+    - `VPACRDExists()` verifica se CRD está instalado antes de listar (graceful degradation)
+  - API REST:
+    - `GET  /api/v1/vpas?cluster=...&namespaces=...` - Listar
+    - `GET  /api/v1/vpas/:cluster/:namespace/:name` - Obter manifesto YAML
+    - `GET  /api/v1/vpas/:cluster/:namespace/:name/describe` - kubectl describe
+    - `POST /api/v1/vpas/diff` - Gerar diff
+    - `POST /api/v1/vpas/validate` - Validar YAML
+    - `PUT  /api/v1/vpas/:cluster/:namespace/:name` - Aplicar YAML (RBAC)
+    - `DELETE /api/v1/vpas/:cluster/:namespace/:name` - Deletar (RBAC)
+  - Componente: `VPAsTab.tsx`
+✅ **Aba Services (v1.3.21 - 26/02/2026)** - Gerenciamento completo de Services Kubernetes
+  - Listagem de Services com filtros por namespace e busca
+  - Tipos exibidos: ClusterIP, NodePort, LoadBalancer, ExternalName
+  - Monaco YAML Editor com edição completa (igual DaemonSetsTab)
+  - Botão "Criar" no header com modal Monaco Editor e template YAML padrão
+  - RBAC: Apply, Create e Delete protegidos com `<ProtectedAction>`
+  - Backend: `internal/web/handlers/services.go` (typed API Kubernetes)
+    - `ApplyService` preserva clusterIP (campo imutável no K8s)
+  - API REST:
+    - `GET  /api/v1/services?cluster=...&namespaces=...` - Listar
+    - `GET  /api/v1/services/:cluster/:namespace/:name` - Obter manifesto YAML
+    - `GET  /api/v1/services/:cluster/:namespace/:name/describe` - kubectl describe
+    - `POST /api/v1/services/:cluster/:namespace` - Criar (RBAC)
+    - `PUT  /api/v1/services/:cluster/:namespace/:name` - Aplicar YAML (RBAC)
+    - `DELETE /api/v1/services/:cluster/:namespace/:name` - Deletar (RBAC)
+  - Componente: `ServicesTab.tsx`
+✅ **Aba Resource Explorer (v1.3.22 - 02/03/2026)** - Navegador universal de recursos Kubernetes (K9s-like)
+  - **Conceito**: Busca e gerencia qualquer tipo de recurso Kubernetes (built-in + CRDs) sem precisar de uma aba dedicada
+  - Combobox com autocomplete (shadcn/ui `Command` + `Popover`) para selecionar tipo de recurso
+    - Agrupa: "Recursos Built-in" / "CRDs"
+    - Exibe: `Kind` (built-in) ou `Kind · group` (ex: "ExternalSecret · external-secrets.io")
+    - Cache local de 5 minutos para lista de tipos (rara mudança)
+  - Select de namespace (oculto automaticamente para recursos cluster-scoped via `namespaced: false`)
+  - Toggle "Sistema" (Eye/EyeOff) igual às demais abas
+  - Lista de recursos com Name, Namespace, Age e colunas adicionais (status, phase) quando disponíveis
+  - Monaco YAML Editor completo: Undo/Redo (50 versões), Diff, Validar (dry-run), Aplicar, Cancelar, Fullscreen
+  - Menu 3 pontos: Describe (kubectl describe), Deletar (protegido com `<ProtectedAction>` RBAC SRE)
+  - **Discovery API**: `clientset.Discovery().ServerPreferredResources()` lista TODOS os tipos (built-in + CRDs instalados)
+  - **kubectl-based CRUD**: get/apply/delete via kubectl shell (padrão do projeto — dynamic client não está no vendor)
+  - Backend: `internal/web/handlers/explorer.go` + métodos em `internal/kubernetes/client.go`
+  - API REST:
+    - `GET  /api/v1/explorer/api-resources?cluster=X` — Lista todos os tipos de recursos disponíveis
+    - `GET  /api/v1/explorer/items?cluster=X&resource=Y&group=Z&namespace=W` — Lista recursos de um tipo
+    - `GET  /api/v1/explorer/:cluster/:namespace/:resource/:name?group=Z` — Obter manifesto YAML
+    - `GET  /api/v1/explorer/:cluster/:namespace/:resource/:name/describe` — kubectl describe
+    - `POST /api/v1/explorer/diff` — Gera unified diff entre dois YAMLs
+    - `POST /api/v1/explorer/validate` — Dry-run de validação
+    - `PUT  /api/v1/explorer/:cluster/:namespace/:resource/:name` - Apply (RBAC SRE)
+    - `DELETE /api/v1/explorer/:cluster/:namespace/:resource/:name` - Deletar (RBAC SRE)
+  - Componente: `ResourceExplorerTab.tsx`
 ✅ **UX Improvements - Pods/Containers (v1.3.3)**
   - **Métricas inline**: Layout horizontal "RESTARTS: 3  CPU/R: 800m  CPU/L: 1" (ao invés de grid vertical)
   - **Badge de versão**: Extrai versão da imagem do container (ex: nginx:1.21.0 → "1.21.0")
@@ -2077,6 +2140,48 @@ make release                     # Gera binários em build/release/
 ---
 
 ## 📝 Histórico de Sessões Recentes
+
+### Sessão 02/03/2026 - Resource Explorer (Todas as Fases)
+**Contexto**: Implementação completa do Resource Explorer — navegador universal de recursos Kubernetes estilo K9s
+**Alterações**:
+- **Backend**:
+  - `internal/models/types.go` — Adicionados: `APIResourceInfo`, `GenericResourceSummary`, `GenericResourceManifest`
+  - `internal/kubernetes/client.go` — Adicionados 5 métodos: `ListAPIResources` (Discovery API), `ListGenericResources`, `GetGenericResourceYAML`, `ApplyGenericResource`, `DeleteGenericResource` + helpers `buildResourceSelector`, `sanitizeGenericYAML`, `explorerHasVerb`, `splitGroupVersion`
+  - `internal/web/handlers/explorer.go` — Criado handler completo: `ListResources`, `ListByKind`, `GetYAML`, `Describe`, `Diff`, `Validate`, `Apply`, `Delete`
+  - `internal/web/server.go` — Rotas `/api/v1/explorer/...` registradas com RBAC SRE em PUT e DELETE
+- **Frontend**:
+  - `internal/web/frontend/src/lib/api/types.ts` — `APIResourceInfo`, `GenericResourceSummary`, `GenericResourceManifest`, `ExplorerDiffResult`, `ExplorerApplyResult`
+  - `internal/web/frontend/src/lib/api/client.ts` — 8 métodos Explorer adicionados à classe `APIClient`
+  - `internal/web/frontend/src/hooks/useAPI.ts` — `useAPIResources` (com cache 5min) e `useGenericResources`
+  - `internal/web/frontend/src/components/ResourceExplorerTab.tsx` — Componente completo criado
+  - `internal/web/frontend/src/components/WorkloadMenu.tsx` — `{ id: "explorer", label: "Explorer", icon: Search }` adicionado
+  - `internal/web/frontend/src/pages/Index.tsx` — case "explorer" registrado + oculta stats cards
+- **Documentação**:
+  - `PLANO_RESOURCE_EXPLORER.md` — Checklist 100% concluído
+  - `CLAUDE.md` — Feature documentada
+
+**Decisões Técnicas**:
+- Discovery API (`clientset.Discovery().ServerPreferredResources()`) para listar tipos — já vendorizado
+- dynamic client **NÃO** no vendor → kubectl shell para todos os CRUDs
+- `group` como query param (`?group=X`) para evitar conflito com dots nos URLs de CRDs
+- `sanitizeGenericYAML` remove `resourceVersion`, `managedFields`, `uid`, `generation` antes do apply
+
+---
+
+### Sessão 26/02/2026 - Abas VPA e Services
+**Contexto**: Implementação completa das abas VPA (Vertical Pod Autoscaler) e Services
+**Alterações**:
+- `internal/models/types.go` — adicionado VPASummary, VPAManifest, ServiceManifest + ServiceSummary expandida
+- `internal/kubernetes/client.go` — métodos VPA (kubectl-based) + Services (typed API)
+- `internal/web/handlers/vpas.go` — novo handler completo
+- `internal/web/handlers/services.go` — reescrito com CRUD completo + Create
+- `internal/web/server.go` — rotas VPA e Services registradas
+- `internal/web/frontend/src/components/VPAsTab.tsx` — novo componente
+- `internal/web/frontend/src/components/ServicesTab.tsx` — novo componente (com modal criação)
+- `internal/web/frontend/src/components/WorkloadMenu.tsx` — VPAs (TrendingUp) e Services (Globe) adicionados
+- `internal/web/frontend/src/pages/Index.tsx` — casos "vpas" e "services" registrados
+
+---
 
 ### Sessão 22/02/2026 - Análise Preditiva de Node Pools (Todas as Fases)
 **Contexto**: Implementação completa do sistema de análise preditiva para Node Pools AKS — Fases 1 a 8

@@ -18,6 +18,8 @@ import type {
   PodSummary,
   ServiceSummary,
   VPASummary,
+  APIResourceInfo,
+  GenericResourceSummary,
 } from "@/lib/api/types";
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
@@ -746,4 +748,86 @@ export function useVPAs(cluster?: string, namespaces?: string[], showSystem: boo
   const refetch = () => fetchVPAs();
 
   return { vpas, crdNotInstalled, loading, error, refetch };
+}
+
+// Cache local para tipos de recursos (lista raramente muda)
+const apiResourcesCache: Record<string, { data: APIResourceInfo[]; ts: number }> = {};
+const API_RESOURCES_TTL = 5 * 60 * 1000; // 5 minutos
+
+export function useAPIResources(cluster?: string) {
+  const [resources, setResources] = useState<APIResourceInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!cluster) {
+      setResources([]);
+      return;
+    }
+    const cached = apiResourcesCache[cluster];
+    if (cached && Date.now() - cached.ts < API_RESOURCES_TTL) {
+      setResources(cached.data);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    apiClient
+      .getAPIResources(cluster)
+      .then((data) => {
+        if (cancelled) return;
+        apiResourcesCache[cluster] = { data, ts: Date.now() };
+        setResources(data);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Failed to fetch API resources");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [cluster]);
+
+  const invalidateCache = () => {
+    if (cluster) delete apiResourcesCache[cluster];
+  };
+
+  return { resources, loading, error, invalidateCache };
+}
+
+export function useGenericResources(
+  cluster?: string,
+  resourceName?: string,
+  group?: string,
+  namespace?: string,
+) {
+  const [items, setItems] = useState<GenericResourceSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchItems = async () => {
+    if (!cluster || !resourceName) {
+      setItems([]);
+      return;
+    }
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await apiClient.listGenericResources(cluster, resourceName, group || "", namespace);
+      setItems(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch resources");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchItems();
+  }, [cluster, resourceName, group, namespace]);
+
+  const refetch = () => fetchItems();
+
+  return { items, loading, error, refetch };
 }
