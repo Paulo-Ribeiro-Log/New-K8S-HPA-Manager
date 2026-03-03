@@ -29,6 +29,7 @@ interface HistoryRecord {
   user_email: string;
   analyzed_at: string;
   created_at: string;
+  full_result?: string;
 }
 
 function riskColor(level: string) {
@@ -85,26 +86,31 @@ export function NodePoolPredictionHistoryModal({
     if (open) loadRecords(0);
   }, [open, cluster, nodepool]);
 
-  const handleSelectRecord = async (record: HistoryRecord) => {
+  const handleSelectRecord = (record: HistoryRecord) => {
     if (!onSelectRecord) return;
-    // Buscar full_result pelo ID via endpoint de markdown e desserializar
-    // Como o backend retorna JSON no full_result, vamos buscar o registro completo
-    try {
-      // O GetByID não existe como endpoint público, então re-usamos o history com id
-      // Na prática o fullResult já está no record se o backend o retornar
-      // Por ora passamos o record direto — o caller pode adaptar
-      onSelectRecord(record);
-      onOpenChange(false);
-    } catch (err) {
-      toast.error("Erro ao carregar análise");
+    // full_result é o JSON completo do NodePoolPredictionResult retornado pelo backend
+    if (record.full_result) {
+      try {
+        const parsed = JSON.parse(record.full_result);
+        onSelectRecord(parsed);
+        onOpenChange(false);
+        return;
+      } catch {
+        // fallback: passa o record metadata
+      }
     }
+    onSelectRecord(record);
+    onOpenChange(false);
   };
 
   const totalPages = Math.ceil(total / limit);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl h-[80vh] flex flex-col p-0">
+      <DialogContent
+        className="max-w-3xl h-[80vh] flex flex-col p-0"
+        onInteractOutside={(e) => e.preventDefault()}
+      >
         <DialogHeader className="flex-shrink-0 px-6 pt-6 pb-4 border-b">
           <div className="flex items-center justify-between">
             <div>

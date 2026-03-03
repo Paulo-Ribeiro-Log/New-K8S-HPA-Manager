@@ -2141,6 +2141,30 @@ make release                     # Gera binários em build/release/
 
 ## 📝 Histórico de Sessões Recentes
 
+### Sessão 03/03/2026 - Melhorias no NodeDetailsModal (Pods Tab + Modais)
+**Contexto**: Correções visuais e de UX no modal de detalhes de nodes do Node Pool
+**Alterações**:
+- **`NodeDetailsModal.tsx`**:
+  - **Fix bug SVG gauge**: `largeArc` era `pct > 50 ? 1 : 0` — acima de 50% o SVG traçava o arco pelo lado de baixo do círculo, saindo do `viewBox` e sendo cortado. Corrigido para `largeArc = 0` sempre (arco preenchido nunca ultrapassa 180°)
+  - **Layout Pods tab redesenhado**: dois painéis side-by-side (`grid-cols-2`) com `justify-center` — gauge + Uso/Req/Lim centralizados em cada painel, sem espaço vazio
+  - **Modal não some ao clicar fora**: `onInteractOutside={(e) => e.preventDefault()}` no `DialogContent`
+  - **Limpeza de código**: removidos imports não-utilizados (`Terminal`), `loading` tornado opcional, `formatBytes` removida, `PodOnNode` importado explicitamente para resolver cache do tsserver
+- **`NodePoolPredictionHistoryModal.tsx`**:
+  - **Modal não some ao clicar fora**: `onInteractOutside={(e) => e.preventDefault()}` adicionado
+  - (o `NodePoolPredictionModal` já tinha esse fix)
+- **`internal/web/frontend/src/lib/api/types.ts`**:
+  - Adicionado comentário em `PodOnNode` para forçar re-parse do tsserver (campos opcionais `cpu_usage?`, `memory_usage?`, `cpu_usage_pct?`, `memory_usage_pct?` não eram reconhecidos pelo LSP apesar de existirem)
+
+**Padrão estabelecido — modais que não devem fechar ao clicar fora:**
+```tsx
+<DialogContent
+  className="..."
+  onInteractOutside={(e) => e.preventDefault()}
+>
+```
+
+---
+
 ### Sessão 02/03/2026 - Resource Explorer (Todas as Fases)
 **Contexto**: Implementação completa do Resource Explorer — navegador universal de recursos Kubernetes estilo K9s
 **Alterações**:

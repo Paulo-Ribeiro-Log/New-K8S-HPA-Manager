@@ -78,6 +78,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const { analyze: analyzeNodePool, loading: predictionLoading, result: predictionResult } = useAnalyzeNodePool();
   const [predictionModalOpen, setPredictionModalOpen] = useState(false);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [historyResult, setHistoryResult] = useState<any>(null);
 
   // Nodes states
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
@@ -372,6 +373,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   // Handler: Predictive Analysis
   const handlePredictiveAnalysis = async () => {
     if (!nodePool) return;
+    setHistoryResult(null);
     setPredictionModalOpen(true);
     await analyzeNodePool(clusterWithAdmin, nodePool.name);
   };
@@ -1184,14 +1186,15 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         onOpenChange={handleCloseNodeModal}
         nodeDetails={nodeDetails}
         loading={loadingNodeDetails}
+        vmSize={nodePool?.vm_size}
       />
 
       {/* NodePool Prediction Modal */}
       <NodePoolPredictionModal
         open={predictionModalOpen}
         onOpenChange={setPredictionModalOpen}
-        loading={predictionLoading}
-        result={predictionResult}
+        loading={predictionLoading && !historyResult}
+        result={historyResult ?? predictionResult}
         nodepoolName={nodePool.name}
         onShowHistory={() => {
           setPredictionModalOpen(false);
@@ -1205,6 +1208,11 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         onOpenChange={setHistoryModalOpen}
         cluster={clusterWithAdmin}
         nodepool={nodePool.name}
+        onSelectRecord={(result) => {
+          setHistoryResult(result);
+          setHistoryModalOpen(false);
+          setPredictionModalOpen(true);
+        }}
       />
     </div>
   );
