@@ -696,6 +696,11 @@ export interface PodOnNode {
   cpu_limit: string;
   memory_limit: string;
   restart_count: number;
+  // Métricas em tempo real via Metrics Server (opcionais)
+  cpu_usage?: string;
+  memory_usage?: string;
+  cpu_usage_pct?: number;
+  memory_usage_pct?: number;
 }
 
 export interface NodeDetailsResponse {

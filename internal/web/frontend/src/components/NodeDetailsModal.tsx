@@ -5,17 +5,84 @@ import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Server, Activity, AlertTriangle, CheckCircle2, Package, Terminal, Copy, Tag, Tags } from "lucide-react";
-import type { NodeDetailsResponse } from "@/lib/api/types";
+import { Server, Activity, AlertTriangle, CheckCircle2, Package, Copy, Tag, Tags, Cpu, HardDrive } from "lucide-react";
+import type { NodeDetailsResponse, PodOnNode } from "@/lib/api/types";
 import { format } from "date-fns";
 import { toast } from "sonner";
+import { getVMSpecs, formatVMSpecs, formatDiskSpecs } from "@/lib/azure-vm-specs";
 
 interface NodeDetailsModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   nodeDetails: NodeDetailsResponse | null;
-  loading: boolean;
+  loading?: boolean;
+  vmSize?: string;
 }
+
+// Gauge semicircular SVG para exibir % de uso de CPU/Memória por pod
+const ResourceGauge = ({
+  pct,
+  label,
+  dimmed = false,
+}: {
+  pct: number;
+  label: string;
+  dimmed?: boolean;
+}) => {
+  const clamped = Math.min(100, Math.max(0, pct));
+  const r = 22;
+  const cx = 28;
+  const cy = 28;
+  const startX = cx - r;
+  const startY = cy;
+  const angleRad = (clamped / 100) * Math.PI;
+  const endX = cx + r * Math.cos(Math.PI - angleRad);
+  const endY = cy - r * Math.sin(angleRad);
+  // largeArc SEMPRE 0: o arco preenchido é sempre ≤ 180° (semicírculo),
+  // usar 1 acima de 50% faz o SVG traçar o caminho pelo lado de baixo (fora do viewBox).
+  const largeArc = 0;
+
+  const color =
+    clamped >= 90 ? "#ef4444" : clamped >= 70 ? "#f97316" : clamped >= 50 ? "#eab308" : "#22c55e";
+
+  return (
+    <div className={`flex flex-col items-center gap-0.5 min-w-[52px] flex-shrink-0${dimmed ? " opacity-30" : ""}`}>
+      <svg viewBox="0 0 56 32" className="w-14">
+        {/* Track */}
+        <path
+          d={`M ${startX} ${startY} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
+          fill="none"
+          stroke="hsl(var(--muted))"
+          strokeWidth="5"
+          strokeLinecap="round"
+        />
+        {/* Fill */}
+        {clamped > 0 && (
+          <path
+            d={`M ${startX} ${startY} A ${r} ${r} 0 ${largeArc} 1 ${endX} ${endY}`}
+            fill="none"
+            stroke={color}
+            strokeWidth="5"
+            strokeLinecap="round"
+          />
+        )}
+        {/* % texto */}
+        <text
+          x={cx}
+          y={cy - 3}
+          textAnchor="middle"
+          fontSize="9"
+          fontWeight="700"
+          fill={color}
+        >
+          {clamped.toFixed(0)}%
+        </text>
+      </svg>
+      {/* Label fora do SVG — legível */}
+      <span className="text-[10px] font-semibold text-muted-foreground leading-none">{label}</span>
+    </div>
+  );
+};
 
 const StatusBadge = ({ status }: { status: string }) => {
   const getVariant = () => {
@@ -35,22 +102,18 @@ export default function NodeDetailsModal({
   open,
   onOpenChange,
   nodeDetails,
-  loading,
+  vmSize,
 }: NodeDetailsModalProps) {
   if (!nodeDetails) return null;
 
   const { node, pods, events, kubectl_describe } = nodeDetails;
 
-  const formatBytes = (bytes: number) => {
-    if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
-    if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(2)} MiB`;
-    if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KiB`;
-    return `${bytes} B`;
-  };
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[1400px] max-h-[95vh] overflow-hidden">
+      <DialogContent
+        className="max-w-[1400px] max-h-[95vh] overflow-hidden"
+        onInteractOutside={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Server className="w-5 h-5" />
@@ -244,6 +307,63 @@ export default function NodeDetailsModal({
               </div>
 
               <Separator />
+
+              {/* VM Configuration */}
+              {vmSize && (() => {
+                const vmSpecs = getVMSpecs(vmSize);
+                const specsFormatted = formatVMSpecs(vmSize);
+                const diskSpecsFormatted = formatDiskSpecs(vmSize);
+                return (
+                  <>
+                    <div>
+                      <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                        <Cpu className="w-4 h-4" />
+                        VM Configuration
+                      </h3>
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <div>
+                          <span className="text-muted-foreground">VM Size:</span>{" "}
+                          <span className="font-mono font-medium">{vmSize}</span>
+                        </div>
+                        {vmSpecs && (
+                          <>
+                            <div>
+                              <span className="text-muted-foreground">vCPUs:</span>{" "}
+                              <span className="font-medium">{vmSpecs.vCPUs}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Memory:</span>{" "}
+                              <span className="font-medium">{vmSpecs.memoryGiB} GiB</span>
+                            </div>
+                            {vmSpecs.family && (
+                              <div>
+                                <span className="text-muted-foreground">Family:</span>{" "}
+                                <span className="font-medium">{vmSpecs.family}</span>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                      {vmSpecs?.description && (
+                        <p className="text-xs text-muted-foreground mt-2">{vmSpecs.description}</p>
+                      )}
+                      {specsFormatted && (
+                        <p className="text-sm font-medium text-primary mt-2">{specsFormatted}</p>
+                      )}
+                      {diskSpecsFormatted && (
+                        <div className="mt-3 p-3 bg-muted/50 rounded-lg flex items-start gap-2 text-sm">
+                          <HardDrive className="w-4 h-4 text-muted-foreground mt-0.5 flex-shrink-0" />
+                          <div>
+                            <p className="text-xs text-muted-foreground mb-1">Disk Performance</p>
+                            <p className="text-xs font-medium">{diskSpecsFormatted}</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <Separator />
+                  </>
+                );
+              })()}
 
               {/* Resources */}
               <div>
@@ -483,46 +603,86 @@ export default function NodeDetailsModal({
                   No pods running on this node
                 </div>
               ) : (
-                pods.map((pod, index) => (
-                  <div key={index} className="p-4 border rounded-lg">
-                    <div className="flex items-start justify-between mb-2">
-                      <div>
-                        <h4 className="text-sm font-medium flex items-center gap-2">
-                          <Package className="w-4 h-4" />
-                          {pod.name}
-                        </h4>
-                        <p className="text-xs text-muted-foreground">Namespace: {pod.namespace}</p>
+                pods.map((pod: PodOnNode, index) => {
+                  const hasMetrics = pod.cpu_usage !== undefined || pod.memory_usage !== undefined;
+                  // Fallback: usa request vs limit quando não há métricas reais
+                  const cpuPct = pod.cpu_usage_pct ?? 0;
+                  const memPct = pod.memory_usage_pct ?? 0;
+
+                  return (
+                    <div key={index} className="p-4 border rounded-lg">
+                      {/* Header: nome + namespace + fase + restarts */}
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex-1 min-w-0">
+                          <h4 className="text-sm font-medium flex items-center gap-2 truncate">
+                            <Package className="w-4 h-4 flex-shrink-0" />
+                            <span className="truncate" title={pod.name}>{pod.name}</span>
+                          </h4>
+                          <p className="text-xs text-muted-foreground mt-0.5">{pod.namespace}</p>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                          <Badge variant={pod.restart_count > 3 ? "destructive" : "secondary"} className="text-xs">
+                            {pod.restart_count} restart{pod.restart_count !== 1 ? "s" : ""}
+                          </Badge>
+                          <Badge variant={pod.phase === "Running" ? "default" : "secondary"} className="text-xs">
+                            {pod.phase}
+                          </Badge>
+                        </div>
                       </div>
-                      <Badge variant={pod.phase === "Running" ? "default" : "secondary"}>
-                        {pod.phase}
-                      </Badge>
+
+                      {/* Resources: CPU e Memory em dois painéis lado a lado */}
+                      <div className="grid grid-cols-2 gap-2 mt-1">
+                        {/* CPU */}
+                        <div className="flex items-center justify-center gap-5 p-3 bg-muted/30 rounded-lg">
+                          <ResourceGauge pct={cpuPct} label="CPU" dimmed={!hasMetrics} />
+                          <div className="text-xs space-y-1">
+                            {hasMetrics && pod.cpu_usage && (
+                              <div>
+                                <span className="text-muted-foreground">Uso: </span>
+                                <span className="font-mono font-semibold">{pod.cpu_usage}</span>
+                              </div>
+                            )}
+                            <div>
+                              <span className="text-muted-foreground">Req: </span>
+                              <span className="font-mono">{pod.cpu_request || "—"}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Lim: </span>
+                              <span className="font-mono">{pod.cpu_limit || "—"}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Memory */}
+                        <div className="flex items-center justify-center gap-5 p-3 bg-muted/30 rounded-lg">
+                          <ResourceGauge pct={memPct} label="MEM" dimmed={!hasMetrics} />
+                          <div className="text-xs space-y-1">
+                            {hasMetrics && pod.memory_usage && (
+                              <div>
+                                <span className="text-muted-foreground">Uso: </span>
+                                <span className="font-mono font-semibold">{pod.memory_usage}</span>
+                              </div>
+                            )}
+                            <div>
+                              <span className="text-muted-foreground">Req: </span>
+                              <span className="font-mono">{pod.memory_request || "—"}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Lim: </span>
+                              <span className="font-mono">{pod.memory_limit || "—"}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {!hasMetrics && (
+                        <p className="text-[10px] text-muted-foreground/50 mt-1.5 text-center">
+                          Metrics Server indisponível — exibindo requests/limits
+                        </p>
+                      )}
                     </div>
-                    <div className="grid grid-cols-2 gap-2 text-xs mt-3">
-                      <div>
-                        <span className="text-muted-foreground">CPU Request:</span>{" "}
-                        <span className="font-mono">{pod.cpu_request || "N/A"}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">CPU Limit:</span>{" "}
-                        <span className="font-mono">{pod.cpu_limit || "N/A"}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Memory Request:</span>{" "}
-                        <span className="font-mono">{pod.memory_request || "N/A"}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Memory Limit:</span>{" "}
-                        <span className="font-mono">{pod.memory_limit || "N/A"}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Restarts:</span>{" "}
-                        <Badge variant={pod.restart_count > 3 ? "destructive" : "secondary"}>
-                          {pod.restart_count}
-                        </Badge>
-                      </div>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </TabsContent>
 

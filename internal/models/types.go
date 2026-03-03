@@ -1804,14 +1804,19 @@ type NodeEvent struct {
 
 // PodOnNode representa um pod rodando em um node específico
 type PodOnNode struct {
-	Name          string `json:"name"`
-	Namespace     string `json:"namespace"`
-	Phase         string `json:"phase"` // "Running", "Pending", etc.
-	CPURequest    string `json:"cpu_request"`
-	MemoryRequest string `json:"memory_request"`
-	CPULimit      string `json:"cpu_limit"`
-	MemoryLimit   string `json:"memory_limit"`
-	RestartCount  int    `json:"restart_count"`
+	Name          string  `json:"name"`
+	Namespace     string  `json:"namespace"`
+	Phase         string  `json:"phase"` // "Running", "Pending", etc.
+	CPURequest    string  `json:"cpu_request"`
+	MemoryRequest string  `json:"memory_request"`
+	CPULimit      string  `json:"cpu_limit"`
+	MemoryLimit   string  `json:"memory_limit"`
+	RestartCount  int     `json:"restart_count"`
+	// Métricas de uso atual (via Metrics Server — omitempty se indisponível)
+	CPUUsage      string  `json:"cpu_usage,omitempty"`
+	MemoryUsage   string  `json:"memory_usage,omitempty"`
+	CPUUsagePct   float64 `json:"cpu_usage_pct,omitempty"`    // % do limit (ou request se sem limit)
+	MemoryUsagePct float64 `json:"memory_usage_pct,omitempty"` // % do limit (ou request se sem limit)
 }
 
 // NodeDetailsResponse é o payload completo retornado pela API
