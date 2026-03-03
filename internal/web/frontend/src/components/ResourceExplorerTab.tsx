@@ -296,6 +296,33 @@ export const ResourceExplorerTab = ({
     setEditorValue(history[newIndex]);
   }, [history, historyIndex]);
 
+  const refreshManifest = async () => {
+    if (!selectedItem || !selectedResource) return;
+    setManifestLoading(true);
+    try {
+      const detail = await apiClient.getGenericResourceYAML(
+        cluster,
+        selectedItem.namespace,
+        selectedResource.name,
+        selectedItem.name,
+        selectedResource.group,
+      );
+      setManifest(detail);
+      const yaml = detail.yaml || "";
+      setOriginalYaml(yaml);
+      setEditorValue(yaml);
+      setHistory([yaml]);
+      setHistoryIndex(0);
+      toast.success("Manifesto recarregado do cluster");
+    } catch (err) {
+      toast.error("Erro ao recarregar manifesto", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setManifestLoading(false);
+    }
+  };
+
   // ── Validate (dry-run) ─────────────────────────────────────────────────
   const handleValidate = async () => {
     if (!selectedItem || !selectedResource) return;
@@ -460,6 +487,16 @@ export const ResourceExplorerTab = ({
         {isValidating
           ? <Loader2 className="w-4 h-4 animate-spin" />
           : <CheckCircle2 className="w-4 h-4" />}
+      </Button>
+      <Button
+        variant="outline" size="sm"
+        onClick={refreshManifest}
+        disabled={!selectedItem || manifestLoading}
+        title="Recarregar YAML do cluster"
+      >
+        {manifestLoading
+          ? <Loader2 className="w-4 h-4 animate-spin" />
+          : <RefreshCcw className="w-4 h-4" />}
       </Button>
       <Button
         variant="outline" size="sm"
