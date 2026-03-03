@@ -844,6 +844,11 @@ export const SecretsTab = ({
             >
               <div className="font-semibold text-sm">{cm.name}</div>
               <div className="text-xs text-muted-foreground">{cm.namespace}</div>
+              {cm.serviceClusterIPs && cm.serviceClusterIPs.length > 0 && (
+                <div className="text-[10px] text-blue-400/80 font-mono mt-0.5">
+                  {cm.serviceClusterIPs.join(" · ")}
+                </div>
+              )}
               <div className="text-[11px] text-muted-foreground mt-1">
                 {cm.dataKeys.length} {cm.dataKeys.length === 1 ? 'key' : 'keys'}
               </div>

@@ -2141,6 +2141,34 @@ make release                     # Gera binários em build/release/
 
 ## 📝 Histórico de Sessões Recentes
 
+### Sessão 03/03/2026 (2) - IPs de Serviços nas Abas Deployments e Secrets
+**Contexto**: Exibir os ClusterIPs dos Services Kubernetes associados a cada Deployment e Secret nos cards da lista
+**Alterações**:
+- **`internal/models/types.go`**:
+  - `DeploymentSummary`: adicionado `ServiceClusterIPs []string \`json:"serviceClusterIPs,omitempty"\``
+  - `SecretSummary`: adicionado `ServiceClusterIPs []string \`json:"serviceClusterIPs,omitempty"\``
+- **`internal/kubernetes/client.go`**:
+  - Adicionado helper `serviceIPsForLabels(svcs []corev1.Service, labels map[string]string) []string`
+    - Itera services, verifica se `svc.Spec.Selector` é subconjunto dos labels fornecidos
+    - Retorna ClusterIPs únicos (exclui `""` e `"None"`)
+  - `ListDeployments`: busca services por namespace (lazy cache `nsSvcMap`), popula `ServiceClusterIPs` usando `dep.Spec.Template.Labels` (labels dos pods, não do deployment)
+  - `ListSecrets`: idêntico, usa `secret.Labels` para match
+- **`internal/web/frontend/src/lib/api/types.ts`**:
+  - `DeploymentSummary`: adicionado `serviceClusterIPs?: string[]`
+  - `SecretSummary`: adicionado `serviceClusterIPs?: string[]`
+- **`internal/web/frontend/src/components/DeploymentsTab.tsx`**:
+  - Card de deployment: exibe IPs em azul (`text-blue-400/80 font-mono`) entre namespace e linha de réplicas
+- **`internal/web/frontend/src/components/SecretsTab.tsx`**:
+  - Card de secret: exibe IPs em azul entre namespace e contagem de keys
+
+**Decisão técnica — matching Service→Deployment**:
+- Services usam `spec.selector` que corresponde às labels dos **pods** (não do deployment metadata)
+- Por isso usa-se `dep.Spec.Template.Labels` (labels do pod template do deployment) para matching
+- Para Secrets: usa `secret.Labels` (heurístico — convenção de mesmo `app` label)
+- IPs exibidos apenas quando `serviceClusterIPs` tem valores (campo omitempty — secretos sem service associado não exibem nada)
+
+---
+
 ### Sessão 03/03/2026 - Melhorias no NodeDetailsModal (Pods Tab + Modais)
 **Contexto**: Correções visuais e de UX no modal de detalhes de nodes do Node Pool
 **Alterações**:

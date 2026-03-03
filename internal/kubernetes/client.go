@@ -960,6 +960,21 @@ func (c *Client) ListDeployments(ctx context.Context, namespaces []string, searc
 		uniqueNamespaces[ns] = struct{}{}
 	}
 
+	// Cache de services por namespace para associar ClusterIPs aos deployments
+	nsSvcMap := make(map[string][]corev1.Service)
+	getSvcs := func(ns string) []corev1.Service {
+		if svcs, ok := nsSvcMap[ns]; ok {
+			return svcs
+		}
+		svcList, err := c.clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			nsSvcMap[ns] = nil
+			return nil
+		}
+		nsSvcMap[ns] = svcList.Items
+		return svcList.Items
+	}
+
 	appendSummaries := func(items []appsv1.Deployment) {
 		for _, dep := range items {
 			if !showSystemNamespaces && isSystemNamespace(dep.Namespace) {
@@ -968,7 +983,9 @@ func (c *Client) ListDeployments(ctx context.Context, namespaces []string, searc
 			if search != "" && !matchesDeploymentSearch(&dep, search) {
 				continue
 			}
-			result = append(result, buildDeploymentSummary(c.cluster, &dep))
+			summary := buildDeploymentSummary(c.cluster, &dep)
+			summary.ServiceClusterIPs = serviceIPsForLabels(getSvcs(dep.Namespace), dep.Spec.Template.Labels)
+			result = append(result, summary)
 		}
 	}
 
@@ -1098,6 +1115,36 @@ func buildDeploymentSummary(cluster string, dep *appsv1.Deployment) models.Deplo
 		ResourceVersion:     dep.ResourceVersion,
 		UpdatedAt:           updatedAt,
 	}
+}
+
+// serviceIPsForLabels retorna ClusterIPs dos Services cujo selector é subconjunto dos labels fornecidos.
+func serviceIPsForLabels(svcs []corev1.Service, labels map[string]string) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+	var ips []string
+	seen := make(map[string]bool)
+	for _, svc := range svcs {
+		if len(svc.Spec.Selector) == 0 {
+			continue
+		}
+		match := true
+		for k, v := range svc.Spec.Selector {
+			if labels[k] != v {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		ip := svc.Spec.ClusterIP
+		if ip != "" && ip != "None" && !seen[ip] {
+			ips = append(ips, ip)
+			seen[ip] = true
+		}
+	}
+	return ips
 }
 
 // ValidateDeployment executa um server-side apply com dry-run
@@ -1751,6 +1798,21 @@ func (c *Client) ListSecrets(ctx context.Context, namespaces []string, search st
 		uniqueNamespaces[ns] = struct{}{}
 	}
 
+	// Cache de services por namespace para associar ClusterIPs aos secrets
+	nsSvcMap := make(map[string][]corev1.Service)
+	getSvcs := func(ns string) []corev1.Service {
+		if svcs, ok := nsSvcMap[ns]; ok {
+			return svcs
+		}
+		svcList, err := c.clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			nsSvcMap[ns] = nil
+			return nil
+		}
+		nsSvcMap[ns] = svcList.Items
+		return svcList.Items
+	}
+
 	appendSummaries := func(items []corev1.Secret) {
 		for _, secret := range items {
 			if !showSystemNamespaces && isSystemNamespace(secret.Namespace) {
@@ -1759,7 +1821,9 @@ func (c *Client) ListSecrets(ctx context.Context, namespaces []string, search st
 			if search != "" && !matchesSecretSearch(&secret, search) {
 				continue
 			}
-			result = append(result, buildSecretSummary(c.cluster, &secret))
+			summary := buildSecretSummary(c.cluster, &secret)
+			summary.ServiceClusterIPs = serviceIPsForLabels(getSvcs(secret.Namespace), secret.Labels)
+			result = append(result, summary)
 		}
 	}
 

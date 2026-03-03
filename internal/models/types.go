@@ -133,6 +133,7 @@ type DeploymentSummary struct {
 	StatusMessage       string            `json:"statusMessage,omitempty"`
 	ResourceVersion     string            `json:"resourceVersion,omitempty"`
 	UpdatedAt           time.Time         `json:"updatedAt"`
+	ServiceClusterIPs   []string          `json:"serviceClusterIPs,omitempty"`
 }
 
 // DeploymentMetadata consolida metadados relevantes do Deployment
@@ -219,14 +220,15 @@ type StatefulSetManifest struct {
 
 // SecretSummary descreve informações resumidas de um Secret
 type SecretSummary struct {
-	Cluster         string            `json:"cluster"`
-	Namespace       string            `json:"namespace"`
-	Name            string            `json:"name"`
-	Type            string            `json:"type"`
-	Labels          map[string]string `json:"labels,omitempty"`
-	DataKeys        []string          `json:"dataKeys"`
-	ResourceVersion string            `json:"resourceVersion,omitempty"`
-	UpdatedAt       time.Time         `json:"updatedAt"`
+	Cluster           string            `json:"cluster"`
+	Namespace         string            `json:"namespace"`
+	Name              string            `json:"name"`
+	Type              string            `json:"type"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	DataKeys          []string          `json:"dataKeys"`
+	ResourceVersion   string            `json:"resourceVersion,omitempty"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
+	ServiceClusterIPs []string          `json:"serviceClusterIPs,omitempty"`
 }
 
 // SecretMetadata consolida metadados relevantes do Secret
