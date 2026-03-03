@@ -2713,6 +2713,19 @@ export const DeploymentsTab = ({
                 <Button
                   variant="outline"
                   size="sm"
+                  onClick={refreshManifest}
+                  title="Recarregar YAML do cluster"
+                  disabled={!selectedDeployment || manifestLoading}
+                >
+                  {manifestLoading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCcw className="w-3.5 h-3.5" />
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => setEditorFullScreen(true)}
                   title="Abrir editor em tela cheia"
                   disabled={!selectedDeployment}
@@ -2978,6 +2991,19 @@ export const DeploymentsTab = ({
                       Diff
                     </button>
                   </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={refreshManifest}
+                    title="Recarregar YAML do cluster"
+                    disabled={manifestLoading}
+                  >
+                    {manifestLoading ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCcw className="w-3.5 h-3.5" />
+                    )}
+                  </Button>
                   <ProtectedAction>
                     <Button
                       variant="secondary"
