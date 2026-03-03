@@ -134,6 +134,7 @@ type DeploymentSummary struct {
 	ResourceVersion     string            `json:"resourceVersion,omitempty"`
 	UpdatedAt           time.Time         `json:"updatedAt"`
 	ServiceClusterIPs   []string          `json:"serviceClusterIPs,omitempty"`
+	ServiceExternalIPs  []string          `json:"serviceExternalIPs,omitempty"`
 }
 
 // DeploymentMetadata consolida metadados relevantes do Deployment
@@ -229,6 +230,7 @@ type SecretSummary struct {
 	ResourceVersion   string            `json:"resourceVersion,omitempty"`
 	UpdatedAt         time.Time         `json:"updatedAt"`
 	ServiceClusterIPs []string          `json:"serviceClusterIPs,omitempty"`
+	ServiceExternalIPs []string         `json:"serviceExternalIPs,omitempty"`
 }
 
 // SecretMetadata consolida metadados relevantes do Secret

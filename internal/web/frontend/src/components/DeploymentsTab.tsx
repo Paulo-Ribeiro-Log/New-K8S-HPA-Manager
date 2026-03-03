@@ -2498,8 +2498,15 @@ export const DeploymentsTab = ({
                 </div>
                 <div className="text-xs text-muted-foreground">{dep.namespace}</div>
                 {dep.serviceClusterIPs && dep.serviceClusterIPs.length > 0 && (
-                  <div className="text-[10px] text-blue-400/80 font-mono mt-0.5">
-                    {dep.serviceClusterIPs.join(" · ")}
+                  <div className="text-[10px] font-mono mt-0.5 flex items-center gap-1">
+                    <span className="text-muted-foreground/60 uppercase tracking-wide">CIP</span>
+                    <span className="text-blue-400/80">{dep.serviceClusterIPs.join(" · ")}</span>
+                  </div>
+                )}
+                {dep.serviceExternalIPs && dep.serviceExternalIPs.length > 0 && (
+                  <div className="text-[10px] font-mono mt-0.5 flex items-center gap-1">
+                    <span className="text-muted-foreground/60 uppercase tracking-wide">EXT</span>
+                    <span className="text-green-400/80">{dep.serviceExternalIPs.join(" · ")}</span>
                   </div>
                 )}
                 <div className={`text-[11px] mt-1 font-medium ${statusColor}`}>

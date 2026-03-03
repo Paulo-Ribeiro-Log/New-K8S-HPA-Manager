@@ -111,6 +111,7 @@ export interface SecretSummary {
   resourceVersion?: string;
   updatedAt: string;
   serviceClusterIPs?: string[];
+  serviceExternalIPs?: string[];
 }
 
 export interface SecretMetadata {
@@ -167,6 +168,7 @@ export interface DeploymentSummary {
   resourceVersion?: string;
   updatedAt: string;
   serviceClusterIPs?: string[];
+  serviceExternalIPs?: string[];
 }
 
 // Nota: statusCondition/statusReason/statusMessage vêm das Conditions do Deployment K8s
