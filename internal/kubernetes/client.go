@@ -984,7 +984,9 @@ func (c *Client) ListDeployments(ctx context.Context, namespaces []string, searc
 				continue
 			}
 			summary := buildDeploymentSummary(c.cluster, &dep)
-			summary.ServiceClusterIPs = serviceIPsForLabels(getSvcs(dep.Namespace), dep.Spec.Template.Labels)
+			ips := serviceIPsForLabels(getSvcs(dep.Namespace), dep.Spec.Template.Labels)
+			summary.ServiceClusterIPs = ips.clusterIPs
+			summary.ServiceExternalIPs = ips.externalIPs
 			result = append(result, summary)
 		}
 	}
@@ -1117,13 +1119,21 @@ func buildDeploymentSummary(cluster string, dep *appsv1.Deployment) models.Deplo
 	}
 }
 
-// serviceIPsForLabels retorna ClusterIPs dos Services cujo selector é subconjunto dos labels fornecidos.
-func serviceIPsForLabels(svcs []corev1.Service, labels map[string]string) []string {
+type serviceIPResult struct {
+	clusterIPs  []string
+	externalIPs []string
+}
+
+// serviceIPsForLabels retorna ClusterIPs e ExternalIPs dos Services cujo selector
+// é subconjunto dos labels fornecidos.
+// ExternalIPs inclui: spec.externalIPs + status.loadBalancer.ingress[].ip/hostname.
+func serviceIPsForLabels(svcs []corev1.Service, labels map[string]string) serviceIPResult {
 	if len(labels) == 0 {
-		return nil
+		return serviceIPResult{}
 	}
-	var ips []string
-	seen := make(map[string]bool)
+	seenCluster := make(map[string]bool)
+	seenExt := make(map[string]bool)
+	var result serviceIPResult
 	for _, svc := range svcs {
 		if len(svc.Spec.Selector) == 0 {
 			continue
@@ -1138,13 +1148,31 @@ func serviceIPsForLabels(svcs []corev1.Service, labels map[string]string) []stri
 		if !match {
 			continue
 		}
-		ip := svc.Spec.ClusterIP
-		if ip != "" && ip != "None" && !seen[ip] {
-			ips = append(ips, ip)
-			seen[ip] = true
+		// ClusterIP
+		if ip := svc.Spec.ClusterIP; ip != "" && ip != "None" && !seenCluster[ip] {
+			result.clusterIPs = append(result.clusterIPs, ip)
+			seenCluster[ip] = true
+		}
+		// ExternalIPs definidos manualmente
+		for _, ip := range svc.Spec.ExternalIPs {
+			if ip != "" && !seenExt[ip] {
+				result.externalIPs = append(result.externalIPs, ip)
+				seenExt[ip] = true
+			}
+		}
+		// LoadBalancer ingress (IP ou hostname)
+		for _, ingress := range svc.Status.LoadBalancer.Ingress {
+			addr := ingress.IP
+			if addr == "" {
+				addr = ingress.Hostname
+			}
+			if addr != "" && !seenExt[addr] {
+				result.externalIPs = append(result.externalIPs, addr)
+				seenExt[addr] = true
+			}
 		}
 	}
-	return ips
+	return result
 }
 
 // ValidateDeployment executa um server-side apply com dry-run
@@ -1822,7 +1850,9 @@ func (c *Client) ListSecrets(ctx context.Context, namespaces []string, search st
 				continue
 			}
 			summary := buildSecretSummary(c.cluster, &secret)
-			summary.ServiceClusterIPs = serviceIPsForLabels(getSvcs(secret.Namespace), secret.Labels)
+			ips := serviceIPsForLabels(getSvcs(secret.Namespace), secret.Labels)
+			summary.ServiceClusterIPs = ips.clusterIPs
+			summary.ServiceExternalIPs = ips.externalIPs
 			result = append(result, summary)
 		}
 	}
