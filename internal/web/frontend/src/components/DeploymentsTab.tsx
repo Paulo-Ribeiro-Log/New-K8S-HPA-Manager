@@ -2497,6 +2497,11 @@ export const DeploymentsTab = ({
                   )}
                 </div>
                 <div className="text-xs text-muted-foreground">{dep.namespace}</div>
+                {dep.serviceClusterIPs && dep.serviceClusterIPs.length > 0 && (
+                  <div className="text-[10px] text-blue-400/80 font-mono mt-0.5">
+                    {dep.serviceClusterIPs.join(" · ")}
+                  </div>
+                )}
                 <div className={`text-[11px] mt-1 font-medium ${statusColor}`}>
                   {dep.readyReplicas}/{dep.replicas} ready • {dep.availableReplicas}/{dep.replicas} available
                 </div>
