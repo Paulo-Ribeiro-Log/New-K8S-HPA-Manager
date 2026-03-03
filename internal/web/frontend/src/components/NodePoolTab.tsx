@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Select,
   SelectContent,
@@ -24,6 +24,8 @@ interface NodePoolTabProps {
 export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
   const [selectedCluster, setSelectedCluster] = useState("");
   const [selectedNodePool, setSelectedNodePool] = useState<NodePool | null>(null);
+  const [applyingPools, setApplyingPools] = useState<Set<string>>(new Set());
+  const [poolResults, setPoolResults] = useState<Record<string, "success" | "error">>({});
 
   const staging = useStaging();
   
@@ -42,6 +44,33 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
   useEffect(() => {
     setSelectedNodePool(null);
   }, [selectedCluster]);
+
+  // Escutar eventos de progresso de aplicação de node pools
+  const handleApplyingEvent = useCallback((e: Event) => {
+    const { poolName, status } = (e as CustomEvent<{ poolName: string; status: "start" | "end"; result?: "success" | "error" }>).detail;
+
+    if (status === "start") {
+      setApplyingPools((prev) => new Set(prev).add(poolName));
+      // Limpar resultado anterior ao iniciar nova operação
+      setPoolResults((prev) => { const next = { ...prev }; delete next[poolName]; return next; });
+    } else {
+      setApplyingPools((prev) => { const next = new Set(prev); next.delete(poolName); return next; });
+      if (e instanceof CustomEvent && e.detail.result) {
+        setPoolResults((prev) => ({ ...prev, [poolName]: e.detail.result }));
+        // Auto-limpar resultado de sucesso após 5s
+        if (e.detail.result === "success") {
+          setTimeout(() => {
+            setPoolResults((prev) => { const next = { ...prev }; delete next[poolName]; return next; });
+          }, 5000);
+        }
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("nodePoolApplying", handleApplyingEvent);
+    return () => window.removeEventListener("nodePoolApplying", handleApplyingEvent);
+  }, [handleApplyingEvent]);
 
   const handleClusterChange = async (newCluster: string) => {
     if (newCluster === selectedCluster) return;
@@ -108,9 +137,9 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
                   <NodePoolListItem
                     key={`${nodePool.cluster_name}-${nodePool.name}`}
                     nodePool={nodePool}
-                    isSelected={
-                      selectedNodePool?.name === nodePool.name
-                    }
+                    isSelected={selectedNodePool?.name === nodePool.name}
+                    isApplying={applyingPools.has(nodePool.name)}
+                    applyResult={poolResults[nodePool.name] ?? null}
                     onClick={() => setSelectedNodePool(nodePool)}
                   />
                 ))}

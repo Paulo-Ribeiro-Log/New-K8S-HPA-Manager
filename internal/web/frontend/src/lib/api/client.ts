@@ -84,6 +84,11 @@ import type {
   ServiceNowParseResponse,
   ServiceNowPlaywrightResponse,
   PlaywrightStatusResponse,
+  APIResourceInfo,
+  GenericResourceSummary,
+  GenericResourceManifest,
+  ExplorerDiffResult,
+  ExplorerApplyResult,
 } from "./types";
 
 import type {
@@ -2619,6 +2624,152 @@ class APIClient {
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.text();
+  }
+
+  // ==================== Resource Explorer ====================
+
+  /**
+   * Lista todos os tipos de recursos disponíveis no cluster (built-in + CRDs)
+   * GET /api/v1/explorer/api-resources?cluster=X
+   */
+  async getAPIResources(cluster: string): Promise<APIResourceInfo[]> {
+    const params = new URLSearchParams({ cluster });
+    const response = await this.request<{ success: boolean; data: APIResourceInfo[]; count: number }>(
+      `/explorer/api-resources?${params}`
+    );
+    return response.data || [];
+  }
+
+  /**
+   * Lista recursos de um tipo específico
+   * GET /api/v1/explorer/items?cluster=X&resource=Y&group=Z&namespace=W
+   */
+  async listGenericResources(
+    cluster: string,
+    resource: string,
+    group: string,
+    namespace?: string
+  ): Promise<GenericResourceSummary[]> {
+    const params = new URLSearchParams({ cluster, resource });
+    if (group) params.set("group", group);
+    if (namespace) params.set("namespace", namespace);
+    const response = await this.request<{ success: boolean; data: GenericResourceSummary[]; count: number }>(
+      `/explorer/items?${params}`
+    );
+    return response.data || [];
+  }
+
+  /**
+   * Retorna o YAML completo de um recurso específico
+   * GET /api/v1/explorer/:cluster/:namespace/:resource/:name
+   */
+  async getGenericResourceYAML(
+    cluster: string,
+    namespace: string,
+    resource: string,
+    name: string,
+    group?: string
+  ): Promise<GenericResourceManifest> {
+    const params = new URLSearchParams();
+    if (group) params.set("group", group);
+    const qs = params.toString();
+    const response = await this.request<{ success: boolean; data: GenericResourceManifest }>(
+      `/explorer/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(resource)}/${encodeURIComponent(name)}${qs ? `?${qs}` : ""}`
+    );
+    if (!response.data) throw new Error("Resource not found");
+    return response.data;
+  }
+
+  /**
+   * Aplica um manifesto YAML (qualquer tipo de recurso)
+   * PUT /api/v1/explorer/:cluster/:namespace/:resource/:name
+   */
+  async applyGenericResource(
+    cluster: string,
+    namespace: string,
+    resource: string,
+    name: string,
+    body: { yaml: string; dryRun?: boolean; force?: boolean },
+    group?: string
+  ): Promise<ExplorerApplyResult> {
+    const params = new URLSearchParams();
+    if (group) params.set("group", group);
+    const qs = params.toString();
+    const response = await this.request<{ success: boolean; data: ExplorerApplyResult }>(
+      `/explorer/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(resource)}/${encodeURIComponent(name)}${qs ? `?${qs}` : ""}`,
+      { method: "PUT", body: JSON.stringify(body) }
+    );
+    if (!response.data) throw new Error("Apply failed");
+    return response.data;
+  }
+
+  /**
+   * Deleta qualquer recurso Kubernetes
+   * DELETE /api/v1/explorer/:cluster/:namespace/:resource/:name
+   */
+  async deleteGenericResource(
+    cluster: string,
+    namespace: string,
+    resource: string,
+    name: string,
+    group?: string
+  ): Promise<{ success: boolean; message: string }> {
+    const params = new URLSearchParams();
+    if (group) params.set("group", group);
+    const qs = params.toString();
+    return this.request(
+      `/explorer/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(resource)}/${encodeURIComponent(name)}${qs ? `?${qs}` : ""}`,
+      { method: "DELETE" }
+    );
+  }
+
+  /**
+   * Gera diff unificado entre dois YAMLs
+   * POST /api/v1/explorer/diff
+   */
+  async diffGenericResource(
+    original: string,
+    updated: string,
+    fileName?: string
+  ): Promise<ExplorerDiffResult> {
+    const response = await this.request<{ success: boolean; data: ExplorerDiffResult }>(
+      "/explorer/diff",
+      { method: "POST", body: JSON.stringify({ originalYaml: original, updatedYaml: updated, fileName }) }
+    );
+    if (!response.data) throw new Error("Diff failed");
+    return response.data;
+  }
+
+  /**
+   * Valida um manifesto via dry-run
+   * POST /api/v1/explorer/validate
+   */
+  async validateGenericResource(
+    cluster: string,
+    namespace: string,
+    yaml: string
+  ): Promise<{ valid: boolean }> {
+    const response = await this.request<{ success: boolean; data: { valid: boolean } }>(
+      "/explorer/validate",
+      { method: "POST", body: JSON.stringify({ cluster, namespace, yaml }) }
+    );
+    if (!response.data) throw new Error("Validation failed");
+    return response.data;
+  }
+
+  /**
+   * Retorna output do kubectl describe para qualquer recurso
+   * GET /api/v1/explorer/:cluster/:namespace/:resource/:name/describe
+   */
+  async describeGenericResource(
+    cluster: string,
+    namespace: string,
+    resource: string,
+    name: string
+  ): Promise<{ describe: string }> {
+    return this.request(
+      `/explorer/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(resource)}/${encodeURIComponent(name)}/describe`
+    );
   }
 }
 

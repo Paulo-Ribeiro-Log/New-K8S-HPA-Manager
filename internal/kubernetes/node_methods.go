@@ -312,6 +312,31 @@ func (c *Client) getPodsOnNode(ctx context.Context, nodeName string) ([]models.P
 		return nil, err
 	}
 
+	// Buscar métricas de pods via Metrics Server (graceful degradation se indisponível)
+	type podKey struct{ name, ns string }
+	podCPUUsage := map[podKey]resource.Quantity{}
+	podMemUsage := map[podKey]resource.Quantity{}
+
+	if c.metricsClient != nil {
+		podMetricsList, mErr := c.metricsClient.MetricsV1beta1().PodMetricses("").List(ctx, metav1.ListOptions{})
+		if mErr == nil {
+			for _, pm := range podMetricsList.Items {
+				var totalCPU, totalMem resource.Quantity
+				for _, c := range pm.Containers {
+					if v, ok := c.Usage[corev1.ResourceCPU]; ok {
+						totalCPU.Add(v)
+					}
+					if v, ok := c.Usage[corev1.ResourceMemory]; ok {
+						totalMem.Add(v)
+					}
+				}
+				k := podKey{pm.Name, pm.Namespace}
+				podCPUUsage[k] = totalCPU
+				podMemUsage[k] = totalMem
+			}
+		}
+	}
+
 	pods := make([]models.PodOnNode, 0, len(podsList.Items))
 	for _, pod := range podsList.Items {
 		podInfo := models.PodOnNode{
@@ -349,6 +374,30 @@ func (c *Client) getPodsOnNode(ctx context.Context, nodeName string) ([]models.P
 		podInfo.MemoryRequest = formatMemory(memReq.Value())
 		podInfo.MemoryLimit = formatMemory(memLim.Value())
 		podInfo.RestartCount = int(restarts)
+
+		// Popular métricas de uso atual se disponíveis
+		k := podKey{pod.Name, pod.Namespace}
+		if cpuUsed, ok := podCPUUsage[k]; ok {
+			podInfo.CPUUsage = fmt.Sprintf("%dm", cpuUsed.MilliValue())
+			// % em relação ao limit; se sem limit, usa request
+			ref := cpuLim
+			if ref.IsZero() {
+				ref = cpuReq
+			}
+			if !ref.IsZero() {
+				podInfo.CPUUsagePct = float64(cpuUsed.MilliValue()) / float64(ref.MilliValue()) * 100
+			}
+		}
+		if memUsed, ok := podMemUsage[k]; ok {
+			podInfo.MemoryUsage = formatMemory(memUsed.Value())
+			ref := memLim
+			if ref.IsZero() {
+				ref = memReq
+			}
+			if !ref.IsZero() {
+				podInfo.MemoryUsagePct = float64(memUsed.Value()) / float64(ref.Value()) * 100
+			}
+		}
 
 		pods = append(pods, podInfo)
 	}

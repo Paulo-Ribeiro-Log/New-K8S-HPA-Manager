@@ -20,6 +20,7 @@ import {
   Database,
   TrendingUp,
   Globe,
+  Search,
 } from "lucide-react";
 
 interface WorkloadMenuProps {
@@ -49,6 +50,7 @@ const workloadTabs: WorkloadTab[] = [
   { id: "namespaces", label: "Namespaces", icon: Database },
   { id: "helm", label: "Helm", icon: PackageOpen },
   { id: "prometheus", label: "Prometheus", icon: Activity },
+  { id: "explorer", label: "Explorer", icon: Search },
 ];
 
 export const WorkloadMenu = ({ activeTab, onTabChange }: WorkloadMenuProps) => {

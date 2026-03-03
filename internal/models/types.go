@@ -133,6 +133,8 @@ type DeploymentSummary struct {
 	StatusMessage       string            `json:"statusMessage,omitempty"`
 	ResourceVersion     string            `json:"resourceVersion,omitempty"`
 	UpdatedAt           time.Time         `json:"updatedAt"`
+	ServiceClusterIPs   []string          `json:"serviceClusterIPs,omitempty"`
+	ServiceExternalIPs  []string          `json:"serviceExternalIPs,omitempty"`
 }
 
 // DeploymentMetadata consolida metadados relevantes do Deployment
@@ -219,14 +221,16 @@ type StatefulSetManifest struct {
 
 // SecretSummary descreve informações resumidas de um Secret
 type SecretSummary struct {
-	Cluster         string            `json:"cluster"`
-	Namespace       string            `json:"namespace"`
-	Name            string            `json:"name"`
-	Type            string            `json:"type"`
-	Labels          map[string]string `json:"labels,omitempty"`
-	DataKeys        []string          `json:"dataKeys"`
-	ResourceVersion string            `json:"resourceVersion,omitempty"`
-	UpdatedAt       time.Time         `json:"updatedAt"`
+	Cluster           string            `json:"cluster"`
+	Namespace         string            `json:"namespace"`
+	Name              string            `json:"name"`
+	Type              string            `json:"type"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	DataKeys          []string          `json:"dataKeys"`
+	ResourceVersion   string            `json:"resourceVersion,omitempty"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
+	ServiceClusterIPs []string          `json:"serviceClusterIPs,omitempty"`
+	ServiceExternalIPs []string         `json:"serviceExternalIPs,omitempty"`
 }
 
 // SecretMetadata consolida metadados relevantes do Secret
@@ -1804,14 +1808,19 @@ type NodeEvent struct {
 
 // PodOnNode representa um pod rodando em um node específico
 type PodOnNode struct {
-	Name          string `json:"name"`
-	Namespace     string `json:"namespace"`
-	Phase         string `json:"phase"` // "Running", "Pending", etc.
-	CPURequest    string `json:"cpu_request"`
-	MemoryRequest string `json:"memory_request"`
-	CPULimit      string `json:"cpu_limit"`
-	MemoryLimit   string `json:"memory_limit"`
-	RestartCount  int    `json:"restart_count"`
+	Name          string  `json:"name"`
+	Namespace     string  `json:"namespace"`
+	Phase         string  `json:"phase"` // "Running", "Pending", etc.
+	CPURequest    string  `json:"cpu_request"`
+	MemoryRequest string  `json:"memory_request"`
+	CPULimit      string  `json:"cpu_limit"`
+	MemoryLimit   string  `json:"memory_limit"`
+	RestartCount  int     `json:"restart_count"`
+	// Métricas de uso atual (via Metrics Server — omitempty se indisponível)
+	CPUUsage      string  `json:"cpu_usage,omitempty"`
+	MemoryUsage   string  `json:"memory_usage,omitempty"`
+	CPUUsagePct   float64 `json:"cpu_usage_pct,omitempty"`    // % do limit (ou request se sem limit)
+	MemoryUsagePct float64 `json:"memory_usage_pct,omitempty"` // % do limit (ou request se sem limit)
 }
 
 // NodeDetailsResponse é o payload completo retornado pela API
@@ -1846,6 +1855,36 @@ type VPAManifest struct {
 type ServiceManifest struct {
 	Cluster   string `json:"cluster"`
 	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	YAML      string `json:"yaml"`
+}
+
+// APIResourceInfo descreve um tipo de recurso disponível no cluster (built-in ou CRD)
+type APIResourceInfo struct {
+	Kind       string   `json:"kind"`
+	Name       string   `json:"name"`       // plural (e.g. "externalsecrets")
+	Group      string   `json:"group"`      // e.g. "external-secrets.io" (vazio para core)
+	Version    string   `json:"version"`    // e.g. "v1", "v1beta1"
+	Namespaced bool     `json:"namespaced"`
+	Verbs      []string `json:"verbs"`      // list, get, update, delete, etc.
+}
+
+// GenericResourceSummary representa um recurso de qualquer tipo na listagem do Explorer
+type GenericResourceSummary struct {
+	Name              string            `json:"name"`
+	Namespace         string            `json:"namespace"`
+	Kind              string            `json:"kind"`
+	APIVersion        string            `json:"apiVersion"`
+	Age               string            `json:"age"`
+	Labels            map[string]string `json:"labels"`
+	AdditionalColumns map[string]string `json:"additionalColumns"` // status, phase, etc.
+}
+
+// GenericResourceManifest contém o YAML bruto de qualquer recurso para edição no Explorer
+type GenericResourceManifest struct {
+	Cluster   string `json:"cluster"`
+	Namespace string `json:"namespace"`
+	Kind      string `json:"kind"`
 	Name      string `json:"name"`
 	YAML      string `json:"yaml"`
 }
