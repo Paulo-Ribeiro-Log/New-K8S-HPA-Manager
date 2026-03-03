@@ -651,6 +651,22 @@ func (s *Server) setupRoutes() {
 		vpas.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), vpaHandler.Delete)
 	}
 
+	// Resource Explorer — navegador universal de recursos K8s (built-in + CRDs)
+	explorerHandler := handlers.NewExplorerHandler(s.kubeManager)
+	explorer := api.Group("/explorer")
+	{
+		explorer.GET("/api-resources", explorerHandler.ListResources)
+		explorer.GET("/items", explorerHandler.ListByKind)
+		explorer.GET("/:cluster/:namespace/:resource/:name", explorerHandler.GetYAML)
+		explorer.GET("/:cluster/:namespace/:resource/:name/describe", explorerHandler.Describe)
+		explorer.POST("/diff", explorerHandler.Diff)
+		explorer.POST("/validate", explorerHandler.Validate)
+
+		// Explorer - Write Operations (SRE-only)
+		explorer.PUT("/:cluster/:namespace/:resource/:name", rbacMiddleware.RequireSREGroup(), explorerHandler.Apply)
+		explorer.DELETE("/:cluster/:namespace/:resource/:name", rbacMiddleware.RequireSREGroup(), explorerHandler.Delete)
+	}
+
 	// Helm
 	helmLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "helm-cli").Logger()
 	helmOptions := []helmclient.Option{helmclient.WithLogger(helmLogger)}

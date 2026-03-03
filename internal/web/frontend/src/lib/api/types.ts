@@ -110,6 +110,8 @@ export interface SecretSummary {
   dataKeys: string[];
   resourceVersion?: string;
   updatedAt: string;
+  serviceClusterIPs?: string[];
+  serviceExternalIPs?: string[];
 }
 
 export interface SecretMetadata {
@@ -165,6 +167,8 @@ export interface DeploymentSummary {
   statusMessage?: string;
   resourceVersion?: string;
   updatedAt: string;
+  serviceClusterIPs?: string[];
+  serviceExternalIPs?: string[];
 }
 
 // Nota: statusCondition/statusReason/statusMessage vêm das Conditions do Deployment K8s
@@ -696,6 +700,11 @@ export interface PodOnNode {
   cpu_limit: string;
   memory_limit: string;
   restart_count: number;
+  // Métricas em tempo real via Metrics Server (opcionais)
+  cpu_usage?: string;
+  memory_usage?: string;
+  cpu_usage_pct?: number;
+  memory_usage_pct?: number;
 }
 
 export interface NodeDetailsResponse {
@@ -1240,4 +1249,46 @@ export interface PlaywrightStatusResponse {
   script_exists: boolean;
   npx_available: boolean;
   ts_node_available: boolean;
+}
+
+// ==================== Resource Explorer Types ====================
+
+export interface APIResourceInfo {
+  kind: string;
+  name: string;       // plural (e.g. "externalsecrets")
+  group: string;      // API group (e.g. "external-secrets.io"; vazio para core)
+  version: string;    // e.g. "v1", "v1beta1"
+  namespaced: boolean;
+  verbs: string[];
+}
+
+export interface GenericResourceSummary {
+  name: string;
+  namespace: string;
+  kind: string;
+  apiVersion: string;
+  age: string;
+  labels: Record<string, string>;
+  additionalColumns: Record<string, string>;
+}
+
+export interface GenericResourceManifest {
+  cluster: string;
+  namespace: string;
+  kind: string;
+  name: string;
+  yaml: string;
+}
+
+export interface ExplorerDiffResult {
+  unifiedDiff: string;
+  hasChanges: boolean;
+}
+
+export interface ExplorerApplyResult {
+  name: string;
+  namespace: string;
+  cluster: string;
+  resource: string;
+  dryRun: boolean;
 }

@@ -960,6 +960,21 @@ func (c *Client) ListDeployments(ctx context.Context, namespaces []string, searc
 		uniqueNamespaces[ns] = struct{}{}
 	}
 
+	// Cache de services por namespace para associar ClusterIPs aos deployments
+	nsSvcMap := make(map[string][]corev1.Service)
+	getSvcs := func(ns string) []corev1.Service {
+		if svcs, ok := nsSvcMap[ns]; ok {
+			return svcs
+		}
+		svcList, err := c.clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			nsSvcMap[ns] = nil
+			return nil
+		}
+		nsSvcMap[ns] = svcList.Items
+		return svcList.Items
+	}
+
 	appendSummaries := func(items []appsv1.Deployment) {
 		for _, dep := range items {
 			if !showSystemNamespaces && isSystemNamespace(dep.Namespace) {
@@ -968,7 +983,11 @@ func (c *Client) ListDeployments(ctx context.Context, namespaces []string, searc
 			if search != "" && !matchesDeploymentSearch(&dep, search) {
 				continue
 			}
-			result = append(result, buildDeploymentSummary(c.cluster, &dep))
+			summary := buildDeploymentSummary(c.cluster, &dep)
+			ips := serviceIPsForLabels(getSvcs(dep.Namespace), dep.Spec.Template.Labels)
+			summary.ServiceClusterIPs = ips.clusterIPs
+			summary.ServiceExternalIPs = ips.externalIPs
+			result = append(result, summary)
 		}
 	}
 
@@ -1098,6 +1117,62 @@ func buildDeploymentSummary(cluster string, dep *appsv1.Deployment) models.Deplo
 		ResourceVersion:     dep.ResourceVersion,
 		UpdatedAt:           updatedAt,
 	}
+}
+
+type serviceIPResult struct {
+	clusterIPs  []string
+	externalIPs []string
+}
+
+// serviceIPsForLabels retorna ClusterIPs e ExternalIPs dos Services cujo selector
+// é subconjunto dos labels fornecidos.
+// ExternalIPs inclui: spec.externalIPs + status.loadBalancer.ingress[].ip/hostname.
+func serviceIPsForLabels(svcs []corev1.Service, labels map[string]string) serviceIPResult {
+	if len(labels) == 0 {
+		return serviceIPResult{}
+	}
+	seenCluster := make(map[string]bool)
+	seenExt := make(map[string]bool)
+	var result serviceIPResult
+	for _, svc := range svcs {
+		if len(svc.Spec.Selector) == 0 {
+			continue
+		}
+		match := true
+		for k, v := range svc.Spec.Selector {
+			if labels[k] != v {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		// ClusterIP
+		if ip := svc.Spec.ClusterIP; ip != "" && ip != "None" && !seenCluster[ip] {
+			result.clusterIPs = append(result.clusterIPs, ip)
+			seenCluster[ip] = true
+		}
+		// ExternalIPs definidos manualmente
+		for _, ip := range svc.Spec.ExternalIPs {
+			if ip != "" && !seenExt[ip] {
+				result.externalIPs = append(result.externalIPs, ip)
+				seenExt[ip] = true
+			}
+		}
+		// LoadBalancer ingress (IP ou hostname)
+		for _, ingress := range svc.Status.LoadBalancer.Ingress {
+			addr := ingress.IP
+			if addr == "" {
+				addr = ingress.Hostname
+			}
+			if addr != "" && !seenExt[addr] {
+				result.externalIPs = append(result.externalIPs, addr)
+				seenExt[addr] = true
+			}
+		}
+	}
+	return result
 }
 
 // ValidateDeployment executa um server-side apply com dry-run
@@ -1751,6 +1826,21 @@ func (c *Client) ListSecrets(ctx context.Context, namespaces []string, search st
 		uniqueNamespaces[ns] = struct{}{}
 	}
 
+	// Cache de services por namespace para associar ClusterIPs aos secrets
+	nsSvcMap := make(map[string][]corev1.Service)
+	getSvcs := func(ns string) []corev1.Service {
+		if svcs, ok := nsSvcMap[ns]; ok {
+			return svcs
+		}
+		svcList, err := c.clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			nsSvcMap[ns] = nil
+			return nil
+		}
+		nsSvcMap[ns] = svcList.Items
+		return svcList.Items
+	}
+
 	appendSummaries := func(items []corev1.Secret) {
 		for _, secret := range items {
 			if !showSystemNamespaces && isSystemNamespace(secret.Namespace) {
@@ -1759,7 +1849,11 @@ func (c *Client) ListSecrets(ctx context.Context, namespaces []string, search st
 			if search != "" && !matchesSecretSearch(&secret, search) {
 				continue
 			}
-			result = append(result, buildSecretSummary(c.cluster, &secret))
+			summary := buildSecretSummary(c.cluster, &secret)
+			ips := serviceIPsForLabels(getSvcs(secret.Namespace), secret.Labels)
+			summary.ServiceClusterIPs = ips.clusterIPs
+			summary.ServiceExternalIPs = ips.externalIPs
+			result = append(result, summary)
 		}
 	}
 
@@ -5054,4 +5148,277 @@ func (c *Client) TriggerCronJob(ctx context.Context, namespace, name string) (st
 		return "", fmt.Errorf("failed to create job for cronjob %s/%s: %w", namespace, name, err)
 	}
 	return result.Name, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Resource Explorer — navegador universal de recursos Kubernetes
+// Suporta qualquer tipo: built-in (Pods, Deployments) e CRDs (ExternalSecret, etc.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ListAPIResources retorna todos os tipos de recursos disponíveis no cluster,
+// incluindo CRDs instalados. Usa a Discovery API via clientset (já vendorizado).
+// Filtra apenas recursos que suportam os verbos "list" e "get".
+// O clientset é obtido pelo handler via kubeManager.GetClient(cluster).
+func ListAPIResources(clientset kubernetes.Interface) ([]models.APIResourceInfo, error) {
+	discoveryClient := clientset.Discovery()
+	resourceLists, err := discoveryClient.ServerPreferredResources()
+	if err != nil {
+		// ServerPreferredResources pode retornar erro parcial quando algum grupo
+		// de API está temporariamente indisponível, mas ainda retorna os demais.
+		// Só abortamos se não veio nada.
+		if resourceLists == nil {
+			return nil, fmt.Errorf("failed to discover API resources: %w", err)
+		}
+	}
+
+	var resources []models.APIResourceInfo
+	for _, list := range resourceLists {
+		group, version := splitGroupVersion(list.GroupVersion)
+		for _, r := range list.APIResources {
+			if !explorerHasVerb(r.Verbs, "list") || !explorerHasVerb(r.Verbs, "get") {
+				continue
+			}
+			verbs := make([]string, len(r.Verbs))
+			copy(verbs, r.Verbs)
+			resources = append(resources, models.APIResourceInfo{
+				Kind:       r.Kind,
+				Name:       r.Name,
+				Group:      group,
+				Version:    version,
+				Namespaced: r.Namespaced,
+				Verbs:      verbs,
+			})
+		}
+	}
+
+	sort.Slice(resources, func(i, j int) bool {
+		return resources[i].Kind < resources[j].Kind
+	})
+	return resources, nil
+}
+
+// splitGroupVersion separa "apps/v1" em ("apps","v1") e "v1" em ("","v1")
+func splitGroupVersion(gv string) (group, version string) {
+	parts := strings.SplitN(gv, "/", 2)
+	if len(parts) == 1 {
+		return "", parts[0]
+	}
+	return parts[0], parts[1]
+}
+
+// explorerHasVerb verifica se um verbo está presente na lista de verbos do recurso
+func explorerHasVerb(verbs []string, verb string) bool {
+	for _, v := range verbs {
+		if v == verb {
+			return true
+		}
+	}
+	return false
+}
+
+// buildResourceSelector constrói o seletor para kubectl:
+// Se group == "" (core), retorna apenas o nome plural (e.g. "pods").
+// Se group != "" (CRD), retorna "plural.group" (e.g. "externalsecrets.external-secrets.io").
+func buildResourceSelector(name, group string) string {
+	if group == "" {
+		return name
+	}
+	return fmt.Sprintf("%s.%s", name, group)
+}
+
+// ListGenericResources lista recursos de qualquer tipo via kubectl get -o json.
+// name é o nome plural do recurso (e.g. "pods", "externalsecrets").
+// group é o API group (e.g. "external-secrets.io"; vazio para recursos core).
+// Se namespace == "", busca em todos os namespaces (--all-namespaces).
+func ListGenericResources(cluster, namespace, name, group string) ([]models.GenericResourceSummary, error) {
+	selector := buildResourceSelector(name, group)
+	args := []string{"get", selector, "--context", cluster, "-o", "json"}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	} else {
+		args = append(args, "--all-namespaces")
+	}
+
+	cmd := exec.Command("kubectl", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("kubectl get %s failed: %w - %s", selector, err, string(out))
+	}
+
+	var result struct {
+		Items []map[string]interface{} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse %s list: %w", name, err)
+	}
+
+	summaries := make([]models.GenericResourceSummary, 0, len(result.Items))
+	for _, item := range result.Items {
+		summary := models.GenericResourceSummary{
+			Labels:            map[string]string{},
+			AdditionalColumns: map[string]string{},
+		}
+		summary.APIVersion, _ = item["apiVersion"].(string)
+		summary.Kind, _ = item["kind"].(string)
+
+		if meta, ok := item["metadata"].(map[string]interface{}); ok {
+			summary.Name, _ = meta["name"].(string)
+			summary.Namespace, _ = meta["namespace"].(string)
+			if ts, ok := meta["creationTimestamp"].(string); ok {
+				if t, err := time.Parse(time.RFC3339, ts); err == nil {
+					summary.Age = formatAge(t)
+				}
+			}
+			if labels, ok := meta["labels"].(map[string]interface{}); ok {
+				for k, v := range labels {
+					if sv, ok := v.(string); ok {
+						summary.Labels[k] = sv
+					}
+				}
+			}
+		}
+
+		// Tenta extrair campos de status comuns como colunas adicionais
+		if status, ok := item["status"].(map[string]interface{}); ok {
+			if phase, ok := status["phase"].(string); ok && phase != "" {
+				summary.AdditionalColumns["phase"] = phase
+			}
+			if ready, ok := status["ready"].(bool); ok {
+				if ready {
+					summary.AdditionalColumns["ready"] = "true"
+				} else {
+					summary.AdditionalColumns["ready"] = "false"
+				}
+			}
+		}
+
+		summaries = append(summaries, summary)
+	}
+	return summaries, nil
+}
+
+// GetGenericResourceYAML retorna o manifesto YAML de qualquer recurso Kubernetes.
+// name é o nome plural do recurso; group é o API group (vazio para core).
+func GetGenericResourceYAML(cluster, namespace, resourceName, group, name string) (*models.GenericResourceManifest, error) {
+	selector := buildResourceSelector(resourceName, group)
+	args := []string{"get", selector, name, "--context", cluster, "-o", "yaml"}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+
+	cmd := exec.Command("kubectl", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("kubectl get %s yaml failed: %w - %s", selector, err, string(out))
+	}
+
+	// Extrai o kind do YAML retornado
+	kind := resourceName
+	var obj map[string]interface{}
+	if err := yaml.Unmarshal(out, &obj); err == nil {
+		if k, ok := obj["kind"].(string); ok {
+			kind = k
+		}
+	}
+
+	return &models.GenericResourceManifest{
+		Cluster:   cluster,
+		Namespace: namespace,
+		Kind:      kind,
+		Name:      name,
+		YAML:      string(out),
+	}, nil
+}
+
+// sanitizeGenericYAML remove campos de metadados read-only que causam conflito no apply.
+func sanitizeGenericYAML(yamlContent string) (string, error) {
+	var obj map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &obj); err != nil {
+		return "", fmt.Errorf("invalid yaml: %w", err)
+	}
+	if meta, ok := obj["metadata"].(map[string]interface{}); ok {
+		delete(meta, "resourceVersion")
+		delete(meta, "managedFields")
+		delete(meta, "uid")
+		delete(meta, "generation")
+		delete(meta, "creationTimestamp")
+	}
+	// Remove status: é gerenciado pelo controller, não deve ser enviado no apply/replace.
+	// k9s também remove status antes de aplicar.
+	delete(obj, "status")
+	cleaned, err := yaml.Marshal(obj)
+	if err != nil {
+		return "", fmt.Errorf("failed to re-marshal yaml: %w", err)
+	}
+	return string(cleaned), nil
+}
+
+// ApplyGenericResource aplica qualquer manifesto YAML.
+// Estratégia (mesma do k9s): tenta kubectl replace primeiro (PUT completo, sem annotation de apply),
+// fallback para kubectl apply se o recurso não existir ainda.
+func ApplyGenericResource(cluster, namespace, yamlContent string, dryRun, force bool) error {
+	sanitized, err := sanitizeGenericYAML(yamlContent)
+	if err != nil {
+		return err
+	}
+
+	buildArgs := func(verb string, extra ...string) []string {
+		args := []string{verb, "-f", "-", "--context", cluster}
+		if namespace != "" {
+			args = append(args, "-n", namespace)
+		}
+		if dryRun {
+			args = append(args, "--dry-run=server")
+		}
+		return append(args, extra...)
+	}
+
+	// 1ª tentativa: kubectl replace (PUT — comportamento do k9s/kubectl edit)
+	replaceCmd := exec.Command("kubectl", buildArgs("replace")...)
+	replaceCmd.Stdin = strings.NewReader(sanitized)
+	out, err := replaceCmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	outStr := string(out)
+
+	// Se o recurso não existe, cria com apply
+	if strings.Contains(outStr, "not found") || strings.Contains(outStr, "does not exist") {
+		applyCmd := exec.Command("kubectl", buildArgs("apply")...)
+		applyCmd.Stdin = strings.NewReader(sanitized)
+		applyOut, applyErr := applyCmd.CombinedOutput()
+		if applyErr != nil {
+			return fmt.Errorf("kubectl apply failed: %w - %s", applyErr, string(applyOut))
+		}
+		return nil
+	}
+
+	// Se replace falhou por outro motivo e force=true, tenta server-side apply
+	if force {
+		ssaCmd := exec.Command("kubectl", buildArgs("apply", "--server-side", "--force-conflicts")...)
+		ssaCmd.Stdin = strings.NewReader(sanitized)
+		ssaOut, ssaErr := ssaCmd.CombinedOutput()
+		if ssaErr != nil {
+			return fmt.Errorf("kubectl replace failed: %w - %s\nkubectl apply (SSA) failed: %v - %s", err, outStr, ssaErr, string(ssaOut))
+		}
+		return nil
+	}
+
+	return fmt.Errorf("kubectl replace failed: %w - %s", err, outStr)
+}
+
+// DeleteGenericResource deleta qualquer recurso via kubectl delete.
+// resourceName é o nome plural do recurso; group é o API group (vazio para core).
+func DeleteGenericResource(cluster, namespace, resourceName, group, name string) error {
+	selector := buildResourceSelector(resourceName, group)
+	args := []string{"delete", selector, name, "--context", cluster}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+	cmd := exec.Command("kubectl", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("kubectl delete %s failed: %w - %s", selector, err, string(out))
+	}
+	return nil
 }
