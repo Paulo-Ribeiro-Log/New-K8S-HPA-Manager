@@ -1,0 +1,367 @@
+import { useState, useEffect, useRef, useMemo } from "react";
+import { ShieldCheck, Loader2, CheckCircle2, XCircle, Search } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
+import { apiClient } from "@/lib/api/client";
+import type { AWXCertificate } from "@/lib/api/types";
+
+interface AWXCertModalProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  cluster: string;    // ex: "akspriv-prod-admin"
+  namespace: string;  // ex: "logreversa"
+}
+
+type JobStatus = "idle" | "running" | "successful" | "failed";
+
+interface SSEEvent {
+  type: "log" | "status" | "complete" | "error";
+  data: string;
+}
+
+export function AWXCertModal({ open, onOpenChange, cluster, namespace }: AWXCertModalProps) {
+  // app_name = cluster sem sufixo "-admin"
+  const appName = cluster.replace(/-admin$/i, "");
+
+  // Campos auto-preenchidos via clusters-config.json
+  const [subsEnv, setSubsEnv] = useState("");
+  const [resourceGroup, setResourceGroup] = useState("");
+  const [infoLoading, setInfoLoading] = useState(false);
+
+  // Certificados
+  const [certs, setCerts] = useState<AWXCertificate[]>([]);
+  const [certsLoading, setCertsLoading] = useState(false);
+  const [certSearch, setCertSearch] = useState("");
+  const [certTLS, setCertTLS] = useState("");
+
+  // Job
+  const [jobStatus, setJobStatus] = useState<JobStatus>("idle");
+  const [logs, setLogs] = useState<string[]>([]);
+  const [currentStatus, setCurrentStatus] = useState("");
+
+  const logsEndRef = useRef<HTMLDivElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+
+  // Carregar info do cluster e certificados ao abrir
+  useEffect(() => {
+    if (!open) return;
+
+    // Auto-preencher resource_group e subs_env
+    setInfoLoading(true);
+    apiClient.getAWXClusterInfo(cluster)
+      .then((info) => {
+        setResourceGroup(info.resource_group);
+        setSubsEnv(info.subs_env);
+      })
+      .catch(() => {
+        // cluster não encontrado no config — campos editáveis manualmente
+      })
+      .finally(() => setInfoLoading(false));
+
+    // Carregar opções de cert_tls do survey do job template 25
+    setCertsLoading(true);
+    apiClient.getAWXTemplateSurvey(25)
+      .then((choices) => setCerts(choices.map((name, i) => ({ id: i, name }))))
+      .catch((err) => toast.error("Erro ao carregar certificados: " + err.message))
+      .finally(() => setCertsLoading(false));
+  }, [open, cluster]);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logs]);
+
+  // Limpar EventSource ao fechar
+  useEffect(() => {
+    if (!open) {
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+    }
+  }, [open]);
+
+  // Filtro client-side dos certificados
+  const filteredCerts = useMemo(() => {
+    if (!certSearch.trim()) return certs;
+    const q = certSearch.toLowerCase();
+    return certs.filter((c) => c.name.toLowerCase().includes(q));
+  }, [certs, certSearch]);
+
+  function resetJob() {
+    setJobStatus("idle");
+    setLogs([]);
+    setCurrentStatus("");
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+  }
+
+  function handleClose(value: boolean) {
+    if (jobStatus === "running") return;
+    resetJob();
+    onOpenChange(value);
+  }
+
+  async function launchJob(templateId: number) {
+    if (!subsEnv.trim() || !resourceGroup.trim() || !certTLS) {
+      toast.error("Preencha todos os campos antes de lançar o job.");
+      return;
+    }
+
+    resetJob();
+    setJobStatus("running");
+
+    try {
+      const resp = await apiClient.launchAWXCertJob({
+        template_id: templateId,
+        app_name: appName,
+        subs_env: subsEnv.trim(),
+        cluster_resource_group_name: resourceGroup.trim(),
+        namespace,
+        cert_tls: certTLS,
+      });
+
+      const es = new EventSource(apiClient.getAWXJobStreamURL(resp.job_id));
+      eventSourceRef.current = es;
+
+      es.onmessage = (event) => {
+        try {
+          const parsed: SSEEvent = JSON.parse(event.data);
+          if (parsed.type === "log") {
+            setLogs((prev) => [...prev, parsed.data]);
+          } else if (parsed.type === "status") {
+            setCurrentStatus(parsed.data);
+          } else if (parsed.type === "complete") {
+            setJobStatus("successful");
+            setCurrentStatus("successful");
+            es.close();
+            toast.success("Certificado instalado/atualizado com sucesso!");
+          } else if (parsed.type === "error") {
+            setJobStatus("failed");
+            setCurrentStatus(parsed.data);
+            es.close();
+            toast.error("Job AWX falhou: " + parsed.data);
+          }
+        } catch {
+          // linha sem JSON válido
+        }
+      };
+
+      es.onerror = () => {
+        if (jobStatus === "running") {
+          setJobStatus("failed");
+          toast.error("Conexão SSE perdida.");
+        }
+        es.close();
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setJobStatus("failed");
+      toast.error("Erro ao lançar job: " + message);
+    }
+  }
+
+  const isRunning = jobStatus === "running";
+  const canSubmit = !isRunning && subsEnv.trim() !== "" && resourceGroup.trim() !== "" && certTLS !== "";
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent
+        className="max-w-2xl"
+        onInteractOutside={(e) => e.preventDefault()}
+      >
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ShieldCheck className="w-5 h-5 text-blue-500" />
+            Certificado TLS — AWX
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          {/* Campos readonly */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">app_name</Label>
+              <Input value={appName} readOnly className="bg-muted text-sm" />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">namespace</Label>
+              <Input value={namespace} readOnly className="bg-muted text-sm" />
+            </div>
+          </div>
+
+          {/* Campos auto-preenchidos (editáveis) */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="subs-env" className="text-xs">
+                subs_env <span className="text-red-500">*</span>
+              </Label>
+              <div className="relative">
+                <Input
+                  id="subs-env"
+                  placeholder={infoLoading ? "Carregando..." : "ex: DEV_HLG_ONLINE"}
+                  value={subsEnv}
+                  onChange={(e) => setSubsEnv(e.target.value)}
+                  disabled={isRunning || infoLoading}
+                  className="text-sm"
+                />
+                {infoLoading && (
+                  <Loader2 className="absolute right-2 top-2.5 h-3 w-3 animate-spin text-muted-foreground" />
+                )}
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="resource-group" className="text-xs">
+                cluster_resource_group_name <span className="text-red-500">*</span>
+              </Label>
+              <div className="relative">
+                <Input
+                  id="resource-group"
+                  placeholder={infoLoading ? "Carregando..." : "ex: rg-app-hlg"}
+                  value={resourceGroup}
+                  onChange={(e) => setResourceGroup(e.target.value)}
+                  disabled={isRunning || infoLoading}
+                  className="text-sm"
+                />
+                {infoLoading && (
+                  <Loader2 className="absolute right-2 top-2.5 h-3 w-3 animate-spin text-muted-foreground" />
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Seleção de certificado com busca */}
+          <div className="space-y-1">
+            <Label className="text-xs">
+              Certificado TLS <span className="text-red-500">*</span>
+            </Label>
+            {certsLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Carregando credenciais do AWX...
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {certs.length > 5 && (
+                  <div className="relative">
+                    <Search className="absolute left-2 top-2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      placeholder="Filtrar certificados..."
+                      value={certSearch}
+                      onChange={(e) => setCertSearch(e.target.value)}
+                      className="pl-8 h-8 text-sm"
+                      disabled={isRunning}
+                    />
+                  </div>
+                )}
+                <Select value={certTLS} onValueChange={setCertTLS} disabled={isRunning}>
+                  <SelectTrigger className="text-sm">
+                    <SelectValue placeholder={
+                      certs.length === 0
+                        ? "Nenhuma credencial encontrada"
+                        : filteredCerts.length === 0
+                        ? "Nenhum resultado para a busca"
+                        : "Selecione um certificado..."
+                    } />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {filteredCerts.length === 0 ? (
+                      <SelectItem value="__none__" disabled>
+                        {certs.length === 0 ? "Nenhuma credencial no AWX" : "Nenhum resultado"}
+                      </SelectItem>
+                    ) : (
+                      filteredCerts.map((c) => (
+                        <SelectItem key={c.id} value={c.name}>
+                          {c.name}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+                {certs.length > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    {filteredCerts.length} de {certs.length} credencial(is)
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Botões de ação */}
+          <div className="flex items-center justify-between pt-1">
+            <Button variant="outline" onClick={() => handleClose(false)} disabled={isRunning}>
+              Cancelar
+            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => launchJob(25)}
+                disabled={!canSubmit}
+                className="border-blue-500 text-blue-600 hover:bg-blue-50"
+              >
+                {isRunning && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
+                Instalar (Job 25)
+              </Button>
+              <Button onClick={() => launchJob(26)} disabled={!canSubmit}>
+                {isRunning && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
+                Atualizar (Job 26)
+              </Button>
+            </div>
+          </div>
+
+          {/* Painel de logs */}
+          {(logs.length > 0 || isRunning || jobStatus !== "idle") && (
+            <div className="space-y-2 pt-1">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-muted-foreground">Logs do Job AWX</span>
+                {currentStatus && (
+                  <Badge
+                    variant={
+                      jobStatus === "successful" ? "default" :
+                      jobStatus === "failed" ? "destructive" :
+                      "secondary"
+                    }
+                    className="text-xs"
+                  >
+                    {currentStatus}
+                  </Badge>
+                )}
+                {jobStatus === "successful" && <CheckCircle2 className="w-4 h-4 text-green-500" />}
+                {jobStatus === "failed" && <XCircle className="w-4 h-4 text-red-500" />}
+              </div>
+              <ScrollArea className="h-48 rounded border bg-black/80 p-3">
+                <div className="font-mono text-xs text-green-300 space-y-0.5">
+                  {logs.map((line, i) => (
+                    <div key={i}>{line}</div>
+                  ))}
+                  {isRunning && (
+                    <div className="flex items-center gap-1 text-yellow-400">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Aguardando output do job...
+                    </div>
+                  )}
+                  <div ref={logsEndRef} />
+                </div>
+              </ScrollArea>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}

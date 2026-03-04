@@ -3,7 +3,7 @@ import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle, Terminal, SplitSquareHorizontal } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle, Terminal, SplitSquareHorizontal, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import type { Namespace, TopNamespacesResponse, NamespaceManifest, DeploymentSummary, EventSummary, ResourceQuotaSummary, NetworkPolicySummary, ServiceSummary, PodsSummary, PodSummary } from "@/lib/api/types";
@@ -44,6 +44,7 @@ import { html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
 import * as yaml from "js-yaml";
 import { ProtectedAction } from "@/components/rbac";
+import { AWXCertModal } from "@/components/AWXCertModal";
 
 interface NamespacesTabProps {
   cluster: string;
@@ -120,6 +121,10 @@ export const NamespacesTab = ({
   const [creatingDebugPod, setCreatingDebugPod] = useState(false);
   const [debugPodName, setDebugPodName] = useState("");
   const [isStandalonePod, setIsStandalonePod] = useState(false);
+
+  // AWX Integration
+  const [awxConfigured, setAwxConfigured] = useState(false);
+  const [awxCertOpen, setAwxCertOpen] = useState(false);
 
   // Estados de edição (copiado de ConfigMapsTab)
   const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
@@ -581,12 +586,19 @@ export const NamespacesTab = ({
     }
   }, [newNamespaceName, cluster, isSpotInstance, onRefresh]);
 
+  // Verificar se AWX está configurado ao montar o componente
+  useEffect(() => {
+    apiClient.getAWXStatus()
+      .then((s) => setAwxConfigured(s.configured && s.reachable))
+      .catch(() => setAwxConfigured(false));
+  }, []);
+
   useEffect(() => {
     setSelectedNamespace(null);
     setMetrics(null);
     setNamespaceManifest(null);
     setEditorValue("");
-    
+
     // Carregar métricas de overview quando cluster muda
     if (cluster) {
       loadOverviewMetrics();
@@ -1691,6 +1703,19 @@ export const NamespacesTab = ({
           Describe
         </Button>
       )}
+      {selectedNamespace && awxConfigured && (
+        <ProtectedAction showWarning={false}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setAwxCertOpen(true)}
+            title="Instalar ou renovar certificado TLS via AWX"
+          >
+            <ShieldCheck className="w-4 h-4 mr-1" />
+            Certificado TLS
+          </Button>
+        </ProtectedAction>
+      )}
       <ProtectedAction>
         <Button variant="outline" size="sm" onClick={() => setCreateModalOpen(true)}>
           <Plus className="w-4 h-4 mr-1" />
@@ -2573,6 +2598,14 @@ export const NamespacesTab = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* AWX Certificado TLS Modal */}
+      <AWXCertModal
+        open={awxCertOpen}
+        onOpenChange={setAwxCertOpen}
+        cluster={cluster}
+        namespace={selectedNamespace?.name ?? ""}
+      />
 
     </>
   );
