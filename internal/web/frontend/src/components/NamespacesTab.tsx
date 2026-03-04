@@ -52,7 +52,7 @@ interface NamespacesTabProps {
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
   onNamespaceChange: (namespace: string) => void;
-  onRefresh: () => void;
+  onRefresh: () => Promise<void> | void;
   onOpenCompare?: (initial: { type: "namespace"; namespace: string; name: string }) => void;
 }
 
@@ -66,6 +66,7 @@ export const NamespacesTab = ({
   onOpenCompare,
 }: NamespacesTabProps) => {
   const [searchQuery, setSearchQuery] = useState("");
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedNamespace, setSelectedNamespace] = useState<Namespace | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [metrics, setMetrics] = useState<TopNamespacesResponse | null>(null);
@@ -636,9 +637,14 @@ export const NamespacesTab = ({
     onNamespaceChange(ns.name);
   };
 
-  const refreshNamespaces = () => {
-    if (!cluster) return;
-    onRefresh();
+  const refreshNamespaces = async () => {
+    if (!cluster || isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   const collapseButton = (
@@ -676,8 +682,11 @@ export const NamespacesTab = ({
       >
         {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
       </Button>
-      <Button variant="outline" size="sm" onClick={refreshNamespaces} disabled={!cluster}>
-        <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
+      <Button variant="outline" size="sm" onClick={refreshNamespaces} disabled={!cluster || isRefreshing}>
+        {isRefreshing
+          ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+          : <RefreshCcw className="w-4 h-4 mr-2" />}
+        Atualizar
       </Button>
       {collapseButton}
     </div>
