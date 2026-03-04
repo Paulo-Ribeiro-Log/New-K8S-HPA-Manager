@@ -27,6 +27,7 @@ import { useUserProfile } from '@/hooks/useUserProfile';
 import { NexusCredentialModal } from '@/components/profile/NexusCredentialModal';
 import { GitHubCredentialModal } from '@/components/profile/GitHubCredentialModal';
 import { ServiceNowSessionModal } from '@/components/profile/ServiceNowSessionModal';
+import { AWXCredentialModal } from '@/components/profile/AWXCredentialModal';
 import type { CredentialStatus } from '@/types/profile';
 
 interface UserProfileMenuProps {
@@ -41,6 +42,7 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
   const [nexusModalOpen, setNexusModalOpen] = useState(false);
   const [githubModalOpen, setGithubModalOpen] = useState(false);
   const [serviceNowModalOpen, setServiceNowModalOpen] = useState(false);
+  const [awxModalOpen, setAwxModalOpen] = useState(false);
 
   // Renderizar icone de status da credencial
   const renderStatusIcon = (status: CredentialStatus) => {
@@ -188,6 +190,13 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
               <span className="flex-1">ServiceNow Session</span>
               {renderStatusIcon(credentials.servicenow?.status || 'not_configured')}
             </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => setAwxModalOpen(true)}
+              className="cursor-pointer"
+            >
+              <span className="flex-1">AWX / Ansible Tower</span>
+              {renderStatusIcon(credentials.awx?.status || 'not_configured')}
+            </DropdownMenuItem>
           </DropdownMenuGroup>
 
           <DropdownMenuSeparator />
@@ -217,6 +226,11 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
       <ServiceNowSessionModal
         open={serviceNowModalOpen}
         onOpenChange={setServiceNowModalOpen}
+        onSaved={refreshCredentials}
+      />
+      <AWXCredentialModal
+        open={awxModalOpen}
+        onOpenChange={setAwxModalOpen}
         onSaved={refreshCredentials}
       />
     </>

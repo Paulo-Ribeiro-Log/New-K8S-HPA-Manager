@@ -76,6 +76,9 @@ type Server struct {
 
 	// KubeManager wrapper para AI (pode ser nil se AI estiver desabilitado)
 	kubeManagerWrapper *kubernetes.KubeManager
+
+	// AWX Integration Handler (pode ser nil se AWX não estiver configurado)
+	awxHandler *handlers.AWXHandler
 }
 
 // NewServer cria uma nova instância do servidor web
@@ -232,6 +235,12 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		}
 	}
 
+	// AWX Integration (URL configurada via UI — perfil do usuário)
+	awxHandler := handlers.NewAWXHandler(baseDir)
+	{
+		fmt.Println("ℹ️  AWX Integration: URL e credenciais configuradas via perfil do usuário")
+	}
+
 	server := &Server{
 		router:              router,
 		kubeManager:         kubeManager,
@@ -253,6 +262,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		aiHandler:          aiHandler,          // Pode ser nil se AI estiver desabilitado
 		aiTokensHandler:    aiTokensHandler,    // Gerencia tokens AI dos usuários
 		kubeManagerWrapper: kubeManagerWrapper, // Para predictions RBAC
+		awxHandler:         awxHandler,         // AWX Integration (certificados TLS)
 	}
 
 	server.setupMiddleware()
@@ -736,6 +746,23 @@ func (s *Server) setupRoutes() {
 		certGroup.POST("/copy", rbacMiddleware.RequireSREGroup(), certificatesHandler.Copy)
 		certGroup.POST("/upload", rbacMiddleware.RequireSREGroup(), certificatesHandler.Upload)
 	}
+
+	// AWX Integration (gerenciamento de certificados TLS via Ansible AWX/Tower)
+	awxRoutes := api.Group("/awx")
+	{
+		awxRoutes.GET("/status",                 s.awxHandler.Status)
+		awxRoutes.GET("/certificates",           s.awxHandler.ListCerts)
+		awxRoutes.GET("/cluster-info",           s.awxHandler.GetClusterInfo)
+		awxRoutes.GET("/templates/:id/survey",   s.awxHandler.GetTemplateSurvey)
+		awxRoutes.POST("/jobs/launch",           rbacMiddleware.RequireSREGroup(), s.awxHandler.LaunchJob)
+		// Credenciais por usuário (usuário/senha do SSO)
+		awxRoutes.GET("/credentials/status",   s.awxHandler.GetCredentialsStatus)
+		awxRoutes.POST("/credentials",         s.awxHandler.SaveCredentials)
+		awxRoutes.DELETE("/credentials",       s.awxHandler.DeleteCredentials)
+	}
+	// SSE de logs do job: EventSource não suporta headers customizados, sem auth
+	s.router.GET("/api/v1/awx/jobs/:id/stream", s.awxHandler.StreamJobLogs)
+	fmt.Println("✅ AWX Integration routes registradas")
 
 	// Validation (VPN + Azure CLI)
 	validationHandler := handlers.NewValidationHandler()

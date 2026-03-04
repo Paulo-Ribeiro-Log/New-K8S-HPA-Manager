@@ -89,6 +89,9 @@ import type {
   GenericResourceManifest,
   ExplorerDiffResult,
   ExplorerApplyResult,
+  AWXStatus,
+  AWXCertificate,
+  AWXJobLaunch,
 } from "./types";
 
 import type {
@@ -2770,6 +2773,64 @@ class APIClient {
     return this.request(
       `/explorer/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(resource)}/${encodeURIComponent(name)}/describe`
     );
+  }
+
+  // ── AWX Integration ────────────────────────────────────────────────────────
+
+  /** Verifica se o AWX está configurado e acessível */
+  async getAWXStatus(): Promise<AWXStatus> {
+    return this.request<AWXStatus>("/awx/status");
+  }
+
+  /** Lista credenciais/certificados disponíveis no AWX */
+  async getAWXCertificates(): Promise<AWXCertificate[]> {
+    const data = await this.request<{ certificates: AWXCertificate[] }>("/awx/certificates");
+    return data.certificates ?? [];
+  }
+
+  /** Busca as opções de cert_tls do survey do job template AWX (ex: template 25 ou 26) */
+  async getAWXTemplateSurvey(templateId: number): Promise<string[]> {
+    const data = await this.request<{ choices: string[] }>(`/awx/templates/${templateId}/survey`);
+    return data.choices ?? [];
+  }
+
+  /** Lança job no AWX (template 25 = instalar, 26 = atualizar) */
+  async launchAWXCertJob(payload: {
+    template_id: number;
+    app_name: string;
+    subs_env: string;
+    cluster_resource_group_name: string;
+    namespace: string;
+    cert_tls: string;
+  }): Promise<AWXJobLaunch> {
+    return this.request<AWXJobLaunch>("/awx/jobs/launch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  /** Retorna a URL do SSE stream de logs de um job AWX */
+  getAWXJobStreamURL(jobId: number): string {
+    return `/api/v1/awx/jobs/${jobId}/stream`;
+  }
+
+  /** Retorna resource_group e subs_env do cluster a partir do clusters-config.json */
+  async getAWXClusterInfo(cluster: string): Promise<{ resource_group: string; subs_env: string; subscription: string }> {
+    return this.request(`/awx/cluster-info?cluster=${encodeURIComponent(cluster)}`);
+  }
+
+  /** Salva credenciais AWX (URL + usuário + senha SSO) */
+  async saveAWXCredentials(baseURL: string, username: string, password: string): Promise<void> {
+    await this.request<void>("/awx/credentials", {
+      method: "POST",
+      body: JSON.stringify({ base_url: baseURL, username, password }),
+    });
+  }
+
+  /** Remove credenciais AWX salvas */
+  async deleteAWXCredentials(): Promise<void> {
+    await this.request<void>("/awx/credentials", { method: "DELETE" });
   }
 }
 
