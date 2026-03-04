@@ -13,6 +13,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { PodTerminal } from "@/components/PodTerminal";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -84,6 +85,8 @@ export const NamespacesTab = ({
   const [newNamespaceName, setNewNamespaceName] = useState("");
   const [isSpotInstance, setIsSpotInstance] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [showAnnotationsEditor, setShowAnnotationsEditor] = useState(false);
+  const [annotationsYaml, setAnnotationsYaml] = useState("");
 
   // Estados para deployments
   const [deployments, setDeployments] = useState<DeploymentSummary[]>([]);
@@ -569,14 +572,35 @@ export const NamespacesTab = ({
   const handleCreate = useCallback(async () => {
     if (!newNamespaceName.trim() || !cluster) return;
 
+    // Parsear annotations do editor YAML (se habilitado)
+    let annotations: Record<string, string> | undefined;
+    if (showAnnotationsEditor && annotationsYaml.trim()) {
+      try {
+        const parsed = yaml.load(annotationsYaml.trim());
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          annotations = Object.fromEntries(
+            Object.entries(parsed as Record<string, unknown>).map(([k, v]) => [k, String(v)])
+          );
+        } else {
+          toast.error("Annotations inválidas", { description: "O YAML deve ser um mapa chave: valor" });
+          return;
+        }
+      } catch {
+        toast.error("YAML de annotations inválido");
+        return;
+      }
+    }
+
     setIsCreating(true);
     try {
-      await apiClient.createNamespace(cluster, newNamespaceName.trim(), isSpotInstance);
+      await apiClient.createNamespace(cluster, newNamespaceName.trim(), isSpotInstance, annotations);
       const spotMsg = isSpotInstance ? " (Spot Instance)" : "";
       toast.success(`Namespace ${newNamespaceName.trim()}${spotMsg} criado com sucesso`);
       setCreateModalOpen(false);
       setNewNamespaceName("");
       setIsSpotInstance(false);
+      setShowAnnotationsEditor(false);
+      setAnnotationsYaml("");
       onRefresh();
     } catch (err) {
       toast.error("Erro ao criar namespace", {
@@ -585,7 +609,7 @@ export const NamespacesTab = ({
     } finally {
       setIsCreating(false);
     }
-  }, [newNamespaceName, cluster, isSpotInstance, onRefresh]);
+  }, [newNamespaceName, cluster, isSpotInstance, showAnnotationsEditor, annotationsYaml, onRefresh]);
 
   // Verificar se AWX está configurado ao montar o componente
   useEffect(() => {
@@ -1566,9 +1590,11 @@ export const NamespacesTab = ({
         if (!open) {
           setNewNamespaceName("");
           setIsSpotInstance(false);
+          setShowAnnotationsEditor(false);
+          setAnnotationsYaml("");
         }
       }}>
-        <DialogContent className="max-w-md">
+        <DialogContent className={showAnnotationsEditor ? "max-w-xl" : "max-w-md"}>
           <DialogHeader>
             <DialogTitle>Criar Novo Namespace</DialogTitle>
             <DialogDescription>
@@ -1614,6 +1640,36 @@ export const NamespacesTab = ({
                 <p className="text-xs text-muted-foreground mt-1">
                   Adiciona tolerations para pods rodarem em nodes Spot do Azure
                 </p>
+              )}
+            </div>
+
+            {/* Switch + Editor de Annotations */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-3">
+                <Switch
+                  id="annotations-switch"
+                  checked={showAnnotationsEditor}
+                  onCheckedChange={setShowAnnotationsEditor}
+                  disabled={isCreating}
+                />
+                <Label htmlFor="annotations-switch" className="cursor-pointer">
+                  Adicionar Annotations
+                </Label>
+              </div>
+              {showAnnotationsEditor && (
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">
+                    Formato YAML — uma annotation por linha: <code className="font-mono">chave: valor</code>
+                  </p>
+                  <div className="rounded border overflow-hidden">
+                    <MonacoYamlEditor
+                      value={annotationsYaml}
+                      onChange={setAnnotationsYaml}
+                      readOnly={isCreating}
+                      height={180}
+                    />
+                  </div>
+                </div>
               )}
             </div>
           </div>
