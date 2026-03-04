@@ -572,8 +572,10 @@ func (h *AWXHandler) LaunchJob(c *gin.Context) {
 // ── SSE de Logs do Job ────────────────────────────────────────────────────────
 
 type awxJobStatus struct {
-	ID     int    `json:"id"`
-	Status string `json:"status"`
+	ID              int    `json:"id"`
+	Status          string `json:"status"`
+	ResultTraceback string `json:"result_traceback"`
+	JobExplanation  string `json:"job_explanation"`
 }
 
 type awxJobEvent struct {
@@ -662,6 +664,19 @@ func (h *AWXHandler) StreamJobLogs(c *gin.Context) {
 			}
 
 			if terminalStatuses[jobSt.Status] {
+				// Enviar detalhes do erro como linhas de log antes do evento final
+				if jobSt.Status != "successful" {
+					if jobSt.JobExplanation != "" {
+						sendEvent("log", "[AWX] "+jobSt.JobExplanation)
+					}
+					if jobSt.ResultTraceback != "" {
+						for _, line := range strings.Split(jobSt.ResultTraceback, "\n") {
+							if trimmed := strings.TrimRight(line, " \t\r"); trimmed != "" {
+								sendEvent("log", trimmed)
+							}
+						}
+					}
+				}
 				if jobSt.Status == "successful" {
 					sendEvent("complete", "successful")
 				} else {

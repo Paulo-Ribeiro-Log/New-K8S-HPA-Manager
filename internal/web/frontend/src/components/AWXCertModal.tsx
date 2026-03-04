@@ -37,8 +37,16 @@ interface SSEEvent {
 }
 
 export function AWXCertModal({ open, onOpenChange, cluster, namespace }: AWXCertModalProps) {
-  // app_name = cluster sem sufixo "-admin"
-  const appName = cluster.replace(/-admin$/i, "");
+  // app_name = extrai apenas o nome da aplicação do cluster
+  // Ex: "akspriv-faturamento-hlg-admin" → "faturamento"
+  //     "akspriv-logreversa-prd"        → "logreversa"
+  const appName = (() => {
+    let name = cluster;
+    name = name.replace(/-admin$/i, "");                               // remove -admin
+    name = name.replace(/-(?:hlg|prd|prod|dev|stg|hom|uat|qa)$/i, ""); // remove sufixo de ambiente
+    name = name.replace(/^aks(?:priv|pub)?-/i, "");                    // remove prefixo aks*-
+    return name;
+  })();
 
   // Campos auto-preenchidos via clusters-config.json
   const [subsEnv, setSubsEnv] = useState("");
@@ -154,6 +162,7 @@ export function AWXCertModal({ open, onOpenChange, cluster, namespace }: AWXCert
           } else if (parsed.type === "error") {
             setJobStatus("failed");
             setCurrentStatus(parsed.data);
+            setLogs((prev) => [...prev, `[ERRO] ${parsed.data}`]);
             es.close();
             toast.error("Job AWX falhou: " + parsed.data);
           }
