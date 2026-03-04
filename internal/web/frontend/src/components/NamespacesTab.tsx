@@ -569,31 +569,70 @@ export const NamespacesTab = ({
     }
   }, [selectedNamespace, cluster, onNamespaceChange, onRefresh]);
 
+  const getAnnotationsTemplate = useCallback((spotInstance: boolean): string => {
+    const lines: string[] = [];
+    if (spotInstance) {
+      lines.push("# AVISO: A annotation de Spot Instance já é adicionada automaticamente.");
+      lines.push("#");
+    }
+    lines.push("annotations:");
+    lines.push("  # Exemplo: app.kubernetes.io/managed-by: terraform");
+    lines.push("labels:");
+    lines.push("  # Exemplo: environment: production");
+    return lines.join("\n");
+  }, []);
+
   const handleCreate = useCallback(async () => {
     if (!newNamespaceName.trim() || !cluster) return;
 
-    // Parsear annotations do editor YAML (se habilitado)
+    // Parsear annotations e labels do editor YAML (se habilitado)
     let annotations: Record<string, string> | undefined;
+    let labels: Record<string, string> | undefined;
     if (showAnnotationsEditor && annotationsYaml.trim()) {
       try {
         const parsed = yaml.load(annotationsYaml.trim());
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          annotations = Object.fromEntries(
-            Object.entries(parsed as Record<string, unknown>).map(([k, v]) => [k, String(v)])
-          );
+          const obj = parsed as Record<string, unknown>;
+          // Formato estruturado: { annotations: {}, labels: {} }
+          if (obj.annotations || obj.labels) {
+            if (obj.annotations && typeof obj.annotations === "object") {
+              annotations = Object.fromEntries(
+                Object.entries(obj.annotations as Record<string, unknown>)
+                  .filter(([, v]) => v !== null && v !== undefined)
+                  .map(([k, v]) => [k, String(v)])
+              );
+            }
+            if (obj.labels && typeof obj.labels === "object") {
+              labels = Object.fromEntries(
+                Object.entries(obj.labels as Record<string, unknown>)
+                  .filter(([, v]) => v !== null && v !== undefined)
+                  .map(([k, v]) => [k, String(v)])
+              );
+            }
+          } else {
+            // Formato legado: mapa plano (apenas annotations)
+            annotations = Object.fromEntries(
+              Object.entries(obj)
+                .filter(([, v]) => v !== null && v !== undefined)
+                .map(([k, v]) => [k, String(v)])
+            );
+          }
+          // Limpar mapas vazios
+          if (annotations && Object.keys(annotations).length === 0) annotations = undefined;
+          if (labels && Object.keys(labels).length === 0) labels = undefined;
         } else {
-          toast.error("Annotations inválidas", { description: "O YAML deve ser um mapa chave: valor" });
+          toast.error("YAML inválido", { description: "O YAML deve conter as seções 'annotations' e/ou 'labels'" });
           return;
         }
       } catch {
-        toast.error("YAML de annotations inválido");
+        toast.error("YAML inválido");
         return;
       }
     }
 
     setIsCreating(true);
     try {
-      await apiClient.createNamespace(cluster, newNamespaceName.trim(), isSpotInstance, annotations);
+      await apiClient.createNamespace(cluster, newNamespaceName.trim(), isSpotInstance, annotations, labels);
       const spotMsg = isSpotInstance ? " (Spot Instance)" : "";
       toast.success(`Namespace ${newNamespaceName.trim()}${spotMsg} criado com sucesso`);
       setCreateModalOpen(false);
@@ -609,7 +648,7 @@ export const NamespacesTab = ({
     } finally {
       setIsCreating(false);
     }
-  }, [newNamespaceName, cluster, isSpotInstance, showAnnotationsEditor, annotationsYaml, onRefresh]);
+  }, [newNamespaceName, cluster, isSpotInstance, showAnnotationsEditor, annotationsYaml, onRefresh, getAnnotationsTemplate]);
 
   // Verificar se AWX está configurado ao montar o componente
   useEffect(() => {
@@ -1643,30 +1682,35 @@ export const NamespacesTab = ({
               )}
             </div>
 
-            {/* Switch + Editor de Annotations */}
+            {/* Switch + Editor de Annotations e Labels */}
             <div className="space-y-2">
               <div className="flex items-center gap-3">
                 <Switch
                   id="annotations-switch"
                   checked={showAnnotationsEditor}
-                  onCheckedChange={setShowAnnotationsEditor}
+                  onCheckedChange={(checked) => {
+                    setShowAnnotationsEditor(checked);
+                    if (checked && !annotationsYaml.trim()) {
+                      setAnnotationsYaml(getAnnotationsTemplate(isSpotInstance));
+                    }
+                  }}
                   disabled={isCreating}
                 />
                 <Label htmlFor="annotations-switch" className="cursor-pointer">
-                  Adicionar Annotations
+                  Adicionar Annotations e Labels
                 </Label>
               </div>
               {showAnnotationsEditor && (
                 <div className="space-y-1">
                   <p className="text-xs text-muted-foreground">
-                    Formato YAML — uma annotation por linha: <code className="font-mono">chave: valor</code>
+                    Edite as seções <code className="font-mono">annotations</code> e <code className="font-mono">labels</code> conforme necessário. Linhas com <code className="font-mono">#</code> são comentários e serão ignoradas.
                   </p>
                   <div className="rounded border overflow-hidden">
                     <MonacoYamlEditor
                       value={annotationsYaml}
                       onChange={setAnnotationsYaml}
                       readOnly={isCreating}
-                      height={180}
+                      height={200}
                     />
                   </div>
                 </div>

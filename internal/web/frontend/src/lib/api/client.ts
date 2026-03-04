@@ -311,13 +311,14 @@ class APIClient {
     cluster: string,
     name: string,
     isSpotInstance: boolean = false,
-    annotations?: Record<string, string>
+    annotations?: Record<string, string>,
+    labels?: Record<string, string>
   ): Promise<{ success: boolean; message: string }> {
     return await this.request<{ success: boolean; message: string }>(
       `/namespaces/${encodeURIComponent(cluster)}`,
       {
         method: "POST",
-        body: JSON.stringify({ name, isSpotInstance, annotations })
+        body: JSON.stringify({ name, isSpotInstance, annotations, labels })
       }
     );
   }

@@ -891,9 +891,9 @@ func prepareNamespaceApplyPayload(yamlContent, enforceName string) ([]byte, stri
 }
 
 // CreateNamespace cria um novo namespace no cluster.
-// Se isSpotInstance for true, adiciona annotation de toleration para Spot do Azure.
-// extraAnnotations são mergeadas (as do isSpotInstance têm prioridade).
-func (c *Client) CreateNamespace(ctx context.Context, name string, isSpotInstance bool, extraAnnotations map[string]string) error {
+// Se isSpotInstance for true, adiciona annotation de toleration para Spot do Azure (tem prioridade).
+// extraAnnotations e extraLabels são mergeadas ao metadata do namespace.
+func (c *Client) CreateNamespace(ctx context.Context, name string, isSpotInstance bool, extraAnnotations, extraLabels map[string]string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("namespace name cannot be empty")
 	}
@@ -903,6 +903,7 @@ func (c *Client) CreateNamespace(ctx context.Context, name string, isSpotInstanc
 		annotations[k] = v
 	}
 	if isSpotInstance {
+		// Sobrescreve caso o usuário tenha digitado a mesma chave por engano
 		annotations["scheduler.alpha.kubernetes.io/defaultTolerations"] = `[{"Key": "kubernetes.azure.com/scalesetpriority","Operator": "Equal", "Value": "spot", "Effect": "NoSchedule"}]`
 	}
 
@@ -913,6 +914,9 @@ func (c *Client) CreateNamespace(ctx context.Context, name string, isSpotInstanc
 	}
 	if len(annotations) > 0 {
 		namespace.ObjectMeta.Annotations = annotations
+	}
+	if len(extraLabels) > 0 {
+		namespace.ObjectMeta.Labels = extraLabels
 	}
 
 	_, err := c.clientset.CoreV1().Namespaces().Create(ctx, namespace, metav1.CreateOptions{})
