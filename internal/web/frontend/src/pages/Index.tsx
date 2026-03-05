@@ -1491,6 +1491,7 @@ const Index = ({ onLogout }: IndexProps) => {
         open={compareModalOpen}
         onClose={() => setCompareModalOpen(false)}
         cluster={selectedCluster}
+        clusters={clusters}
         initialLeft={compareInitialLeft}
       />
     </div>

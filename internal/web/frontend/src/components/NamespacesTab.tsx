@@ -3,7 +3,7 @@ import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle, Terminal, SplitSquareHorizontal } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle, Terminal, SplitSquareHorizontal, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import type { Namespace, TopNamespacesResponse, NamespaceManifest, DeploymentSummary, EventSummary, ResourceQuotaSummary, NetworkPolicySummary, ServiceSummary, PodsSummary, PodSummary } from "@/lib/api/types";
@@ -13,6 +13,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { PodTerminal } from "@/components/PodTerminal";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -44,6 +45,7 @@ import { html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
 import * as yaml from "js-yaml";
 import { ProtectedAction } from "@/components/rbac";
+import { AWXCertModal } from "@/components/AWXCertModal";
 
 interface NamespacesTabProps {
   cluster: string;
@@ -51,7 +53,7 @@ interface NamespacesTabProps {
   showSystemNamespaces: boolean;
   onToggleSystemNamespaces: () => void;
   onNamespaceChange: (namespace: string) => void;
-  onRefresh: () => void;
+  onRefresh: () => Promise<void> | void;
   onOpenCompare?: (initial: { type: "namespace"; namespace: string; name: string }) => void;
 }
 
@@ -65,6 +67,7 @@ export const NamespacesTab = ({
   onOpenCompare,
 }: NamespacesTabProps) => {
   const [searchQuery, setSearchQuery] = useState("");
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedNamespace, setSelectedNamespace] = useState<Namespace | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [metrics, setMetrics] = useState<TopNamespacesResponse | null>(null);
@@ -82,6 +85,8 @@ export const NamespacesTab = ({
   const [newNamespaceName, setNewNamespaceName] = useState("");
   const [isSpotInstance, setIsSpotInstance] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [showAnnotationsEditor, setShowAnnotationsEditor] = useState(false);
+  const [annotationsYaml, setAnnotationsYaml] = useState("");
 
   // Estados para deployments
   const [deployments, setDeployments] = useState<DeploymentSummary[]>([]);
@@ -120,6 +125,10 @@ export const NamespacesTab = ({
   const [creatingDebugPod, setCreatingDebugPod] = useState(false);
   const [debugPodName, setDebugPodName] = useState("");
   const [isStandalonePod, setIsStandalonePod] = useState(false);
+
+  // AWX Integration
+  const [awxConfigured, setAwxConfigured] = useState(false);
+  const [awxCertOpen, setAwxCertOpen] = useState(false);
 
   // Estados de edição (copiado de ConfigMapsTab)
   const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
@@ -560,17 +569,77 @@ export const NamespacesTab = ({
     }
   }, [selectedNamespace, cluster, onNamespaceChange, onRefresh]);
 
+  const getAnnotationsTemplate = useCallback((spotInstance: boolean): string => {
+    const lines: string[] = [];
+    if (spotInstance) {
+      lines.push("# AVISO: A annotation de Spot Instance já é adicionada automaticamente.");
+      lines.push("#");
+    }
+    lines.push("annotations:");
+    lines.push("  # Exemplo: app.kubernetes.io/managed-by: terraform");
+    lines.push("labels:");
+    lines.push("  # Exemplo: environment: production");
+    return lines.join("\n");
+  }, []);
+
   const handleCreate = useCallback(async () => {
     if (!newNamespaceName.trim() || !cluster) return;
 
+    // Parsear annotations e labels do editor YAML (se habilitado)
+    let annotations: Record<string, string> | undefined;
+    let labels: Record<string, string> | undefined;
+    if (showAnnotationsEditor && annotationsYaml.trim()) {
+      try {
+        const parsed = yaml.load(annotationsYaml.trim());
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const obj = parsed as Record<string, unknown>;
+          // Formato estruturado: { annotations: {}, labels: {} }
+          if (obj.annotations || obj.labels) {
+            if (obj.annotations && typeof obj.annotations === "object") {
+              annotations = Object.fromEntries(
+                Object.entries(obj.annotations as Record<string, unknown>)
+                  .filter(([, v]) => v !== null && v !== undefined)
+                  .map(([k, v]) => [k, String(v)])
+              );
+            }
+            if (obj.labels && typeof obj.labels === "object") {
+              labels = Object.fromEntries(
+                Object.entries(obj.labels as Record<string, unknown>)
+                  .filter(([, v]) => v !== null && v !== undefined)
+                  .map(([k, v]) => [k, String(v)])
+              );
+            }
+          } else {
+            // Formato legado: mapa plano (apenas annotations)
+            annotations = Object.fromEntries(
+              Object.entries(obj)
+                .filter(([, v]) => v !== null && v !== undefined)
+                .map(([k, v]) => [k, String(v)])
+            );
+          }
+          // Limpar mapas vazios
+          if (annotations && Object.keys(annotations).length === 0) annotations = undefined;
+          if (labels && Object.keys(labels).length === 0) labels = undefined;
+        } else {
+          toast.error("YAML inválido", { description: "O YAML deve conter as seções 'annotations' e/ou 'labels'" });
+          return;
+        }
+      } catch {
+        toast.error("YAML inválido");
+        return;
+      }
+    }
+
     setIsCreating(true);
     try {
-      await apiClient.createNamespace(cluster, newNamespaceName.trim(), isSpotInstance);
+      await apiClient.createNamespace(cluster, newNamespaceName.trim(), isSpotInstance, annotations, labels);
       const spotMsg = isSpotInstance ? " (Spot Instance)" : "";
       toast.success(`Namespace ${newNamespaceName.trim()}${spotMsg} criado com sucesso`);
       setCreateModalOpen(false);
       setNewNamespaceName("");
       setIsSpotInstance(false);
+      setShowAnnotationsEditor(false);
+      setAnnotationsYaml("");
       onRefresh();
     } catch (err) {
       toast.error("Erro ao criar namespace", {
@@ -579,14 +648,21 @@ export const NamespacesTab = ({
     } finally {
       setIsCreating(false);
     }
-  }, [newNamespaceName, cluster, isSpotInstance, onRefresh]);
+  }, [newNamespaceName, cluster, isSpotInstance, showAnnotationsEditor, annotationsYaml, onRefresh, getAnnotationsTemplate]);
+
+  // Verificar se AWX está configurado ao montar o componente
+  useEffect(() => {
+    apiClient.getAWXStatus()
+      .then((s) => setAwxConfigured(s.configured && s.reachable))
+      .catch(() => setAwxConfigured(false));
+  }, []);
 
   useEffect(() => {
     setSelectedNamespace(null);
     setMetrics(null);
     setNamespaceManifest(null);
     setEditorValue("");
-    
+
     // Carregar métricas de overview quando cluster muda
     if (cluster) {
       loadOverviewMetrics();
@@ -624,9 +700,14 @@ export const NamespacesTab = ({
     onNamespaceChange(ns.name);
   };
 
-  const refreshNamespaces = () => {
-    if (!cluster) return;
-    onRefresh();
+  const refreshNamespaces = async () => {
+    if (!cluster || isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   const collapseButton = (
@@ -664,8 +745,11 @@ export const NamespacesTab = ({
       >
         {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
       </Button>
-      <Button variant="outline" size="sm" onClick={refreshNamespaces} disabled={!cluster}>
-        <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
+      <Button variant="outline" size="sm" onClick={refreshNamespaces} disabled={!cluster || isRefreshing}>
+        {isRefreshing
+          ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+          : <RefreshCcw className="w-4 h-4 mr-2" />}
+        Atualizar
       </Button>
       {collapseButton}
     </div>
@@ -1545,9 +1629,11 @@ export const NamespacesTab = ({
         if (!open) {
           setNewNamespaceName("");
           setIsSpotInstance(false);
+          setShowAnnotationsEditor(false);
+          setAnnotationsYaml("");
         }
       }}>
-        <DialogContent className="max-w-md">
+        <DialogContent className={showAnnotationsEditor ? "max-w-xl" : "max-w-md"}>
           <DialogHeader>
             <DialogTitle>Criar Novo Namespace</DialogTitle>
             <DialogDescription>
@@ -1593,6 +1679,41 @@ export const NamespacesTab = ({
                 <p className="text-xs text-muted-foreground mt-1">
                   Adiciona tolerations para pods rodarem em nodes Spot do Azure
                 </p>
+              )}
+            </div>
+
+            {/* Switch + Editor de Annotations e Labels */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-3">
+                <Switch
+                  id="annotations-switch"
+                  checked={showAnnotationsEditor}
+                  onCheckedChange={(checked) => {
+                    setShowAnnotationsEditor(checked);
+                    if (checked && !annotationsYaml.trim()) {
+                      setAnnotationsYaml(getAnnotationsTemplate(isSpotInstance));
+                    }
+                  }}
+                  disabled={isCreating}
+                />
+                <Label htmlFor="annotations-switch" className="cursor-pointer">
+                  Adicionar Annotations e Labels
+                </Label>
+              </div>
+              {showAnnotationsEditor && (
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">
+                    Edite as seções <code className="font-mono">annotations</code> e <code className="font-mono">labels</code> conforme necessário. Linhas com <code className="font-mono">#</code> são comentários e serão ignoradas.
+                  </p>
+                  <div className="rounded border overflow-hidden">
+                    <MonacoYamlEditor
+                      value={annotationsYaml}
+                      onChange={setAnnotationsYaml}
+                      readOnly={isCreating}
+                      height={200}
+                    />
+                  </div>
+                </div>
               )}
             </div>
           </div>
@@ -1690,6 +1811,19 @@ export const NamespacesTab = ({
           )}
           Describe
         </Button>
+      )}
+      {selectedNamespace && awxConfigured && (
+        <ProtectedAction showWarning={false}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setAwxCertOpen(true)}
+            title="Instalar ou renovar certificado TLS via AWX"
+          >
+            <ShieldCheck className="w-4 h-4 mr-1" />
+            Certificado TLS
+          </Button>
+        </ProtectedAction>
       )}
       <ProtectedAction>
         <Button variant="outline" size="sm" onClick={() => setCreateModalOpen(true)}>
@@ -2573,6 +2707,14 @@ export const NamespacesTab = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* AWX Certificado TLS Modal */}
+      <AWXCertModal
+        open={awxCertOpen}
+        onOpenChange={setAwxCertOpen}
+        cluster={cluster}
+        namespace={selectedNamespace?.name ?? ""}
+      />
 
     </>
   );

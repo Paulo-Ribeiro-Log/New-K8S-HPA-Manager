@@ -400,8 +400,10 @@ func (h *NamespaceHandler) Create(c *gin.Context) {
 	cluster := c.Param("cluster")
 
 	var req struct {
-		Name           string `json:"name" binding:"required"`
-		IsSpotInstance bool   `json:"isSpotInstance"`
+		Name           string            `json:"name" binding:"required"`
+		IsSpotInstance bool              `json:"isSpotInstance"`
+		Annotations    map[string]string `json:"annotations"`
+		Labels         map[string]string `json:"labels"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -440,7 +442,7 @@ func (h *NamespaceHandler) Create(c *gin.Context) {
 
 	kubeClient := kubeclient.NewClient(clientset, cluster)
 	start := time.Now()
-	err = kubeClient.CreateNamespace(c.Request.Context(), req.Name, req.IsSpotInstance)
+	err = kubeClient.CreateNamespace(c.Request.Context(), req.Name, req.IsSpotInstance, req.Annotations, req.Labels)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"success": false,
@@ -456,6 +458,12 @@ func (h *NamespaceHandler) Create(c *gin.Context) {
 		after := map[string]interface{}{"name": req.Name}
 		if req.IsSpotInstance {
 			after["isSpotInstance"] = true
+		}
+		if len(req.Annotations) > 0 {
+			after["annotations"] = req.Annotations
+		}
+		if len(req.Labels) > 0 {
+			after["labels"] = req.Labels
 		}
 		entry := history.HistoryEntry{
 			Action:   "create_namespace",
