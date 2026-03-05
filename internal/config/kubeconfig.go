@@ -28,9 +28,10 @@ import (
 
 // ClusterConfig representa a configuração de um cluster no arquivo JSON
 type ClusterConfig struct {
-	Name          string `json:"clusterName"` // Mudado para "clusterName" para coincidir com o formato original
-	ResourceGroup string `json:"resourceGroup"`
-	Subscription  string `json:"subscription"`
+	Name           string `json:"clusterName"` // Mudado para "clusterName" para coincidir com o formato original
+	ResourceGroup  string `json:"resourceGroup"`
+	Subscription   string `json:"subscription"`             // Nome legível: "PRD - ONLINE 2"
+	SubscriptionID string `json:"subscriptionId,omitempty"` // UUID do Azure: "a1b2c3d4-..."
 }
 
 // KubeConfigManager gerencia a configuração do Kubernetes
@@ -398,16 +399,17 @@ func (k *KubeConfigManager) AutoDiscoverClusterConfig(clusterName string) (*Clus
 		return nil, fmt.Errorf("failed to extract resource group: %w", err)
 	}
 
-	// 2. Descobrir subscription via Azure CLI
-	subscription, err := k.discoverSubscriptionViaAzureCLI(clusterName, resourceGroup)
+	// 2. Descobrir subscription via Azure CLI (retorna UUID e nome legível)
+	subscriptionID, subscriptionName, err := k.discoverSubscriptionViaAzureCLI(clusterName, resourceGroup)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover subscription: %w", err)
 	}
 
 	return &ClusterConfig{
-		Name:          clusterName,
-		ResourceGroup: resourceGroup,
-		Subscription:  subscription,
+		Name:           clusterName,
+		ResourceGroup:  resourceGroup,
+		Subscription:   subscriptionName, // Nome legível: "PRD - ONLINE 2"
+		SubscriptionID: subscriptionID,   // UUID do Azure
 	}, nil
 }
 
@@ -443,24 +445,25 @@ func (k *KubeConfigManager) extractResourceGroupFromKubeconfig(clusterName strin
 	return resourceGroup, nil
 }
 
-// discoverSubscriptionViaAzureCLI descobre a subscription buscando em todas as subscriptions disponíveis (paralelo controlado)
-func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourceGroup string) (string, error) {
+// discoverSubscriptionViaAzureCLI descobre a subscription buscando em todas as subscriptions disponíveis (paralelo controlado).
+// Retorna (subscriptionID, subscriptionName, error). O nome é resolvido via "az account show" após encontrar o UUID.
+func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourceGroup string) (string, string, error) {
 	// 0. Validar que o token do Azure está válido antes de tentar qualquer operação
 	validateTokenCmd := exec.Command("az", "account", "get-access-token", "--only-show-errors")
 	if err := validateTokenCmd.Run(); err != nil {
-		return "", fmt.Errorf("token Azure expirado ou inválido - execute 'az login' novamente: %w", err)
+		return "", "", fmt.Errorf("token Azure expirado ou inválido - execute 'az login' novamente: %w", err)
 	}
 
 	// 1. Listar todas as subscriptions disponíveis
 	cmd := exec.Command("az", "account", "list", "--query", "[].id", "-o", "tsv", "--only-show-errors")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to list subscriptions (erro 401 indica token expirado - execute 'az login'): %w\nOutput: %s", err, string(output))
+		return "", "", fmt.Errorf("failed to list subscriptions (erro 401 indica token expirado - execute 'az login'): %w\nOutput: %s", err, string(output))
 	}
 
 	subscriptions := strings.Split(strings.TrimSpace(string(output)), "\n")
 	if len(subscriptions) == 0 {
-		return "", fmt.Errorf("no subscriptions found")
+		return "", "", fmt.Errorf("no subscriptions found")
 	}
 
 	// Filtrar subscriptions vazias
@@ -473,7 +476,7 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 	}
 
 	if len(validSubscriptions) == 0 {
-		return "", fmt.Errorf("no valid subscriptions found")
+		return "", "", fmt.Errorf("no valid subscriptions found")
 	}
 
 	// 2. Testar subscriptions com paralelismo controlado (máximo 5 simultâneas)
@@ -546,14 +549,14 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 
 	// 3. Coletar resultados - retornar assim que encontrar a primeira match
 	// MAS continuar drenando o canal para evitar vazamento de goroutines
-	var foundSubscription string
+	var foundSubscriptionID string
 	for res := range resultChan {
-		if foundSubscription == "" && res.err == nil && res.resourceID != "" {
-			// Cluster encontrado! Extrair subscription do resource ID
+		if foundSubscriptionID == "" && res.err == nil && res.resourceID != "" {
+			// Cluster encontrado! Extrair subscription ID do resource ID
 			parts := strings.Split(res.resourceID, "/")
 			for j, part := range parts {
 				if part == "subscriptions" && j+1 < len(parts) {
-					foundSubscription = parts[j+1]
+					foundSubscriptionID = parts[j+1]
 					cancel() // Cancelar goroutines restantes
 					break
 				}
@@ -561,11 +564,27 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 		}
 	}
 
-	if foundSubscription != "" {
-		return foundSubscription, nil
+	if foundSubscriptionID == "" {
+		return "", "", fmt.Errorf("cluster not found in any subscription or no access")
 	}
 
-	return "", fmt.Errorf("cluster not found in any subscription or no access")
+	// 4. Resolver o nome legível da subscription via "az account show"
+	nameCtx, nameCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer nameCancel()
+	nameCmd := exec.CommandContext(nameCtx, "az", "account", "show",
+		"--subscription", foundSubscriptionID,
+		"--query", "name",
+		"-o", "tsv",
+		"--only-show-errors")
+	nameOut, nameErr := nameCmd.Output()
+	if nameErr == nil {
+		if name := strings.TrimSpace(string(nameOut)); name != "" {
+			return foundSubscriptionID, name, nil
+		}
+	}
+
+	// Fallback: usar o UUID como nome (compatibilidade com ambientes sem acesso ao account show)
+	return foundSubscriptionID, foundSubscriptionID, nil
 }
 
 // AutoDiscoverAllClusters descobre automaticamente configurações de todos os clusters do kubeconfig (paralelo)
@@ -640,11 +659,16 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 			if res.err != nil {
 				logFunc(fmt.Sprintf("[%d/%d] ❌ %s: %v", count, len(clusters), clusters[res.index].Name, res.err))
 			} else {
-				logFunc(fmt.Sprintf("[%d/%d] ✅ %s - RG: %s, Sub: %s",
+				subIDPreview := res.config.SubscriptionID
+				if len(subIDPreview) > 8 {
+					subIDPreview = subIDPreview[:8] + "..."
+				}
+				logFunc(fmt.Sprintf("[%d/%d] ✅ %s - RG: %s, Sub: %s (ID: %s)",
 					count, len(clusters),
 					clusters[res.index].Name,
 					res.config.ResourceGroup,
-					res.config.Subscription[:8]+"...")) // Mostrar apenas início do UUID
+					res.config.Subscription,
+					subIDPreview))
 			}
 		}
 	}

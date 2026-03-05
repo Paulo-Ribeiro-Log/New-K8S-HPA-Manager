@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -278,9 +280,10 @@ func isUUID(s string) bool {
 
 // awxClusterEntry é uma entrada do clusters-config.json lido diretamente para o AWX.
 type awxClusterEntry struct {
-	ClusterName   string `json:"clusterName"`
-	ResourceGroup string `json:"resourceGroup"`
-	Subscription  string `json:"subscription"`
+	ClusterName    string `json:"clusterName"`
+	ResourceGroup  string `json:"resourceGroup"`
+	Subscription   string `json:"subscription"`             // Nome legível ou UUID (configs antigas)
+	SubscriptionID string `json:"subscriptionId,omitempty"` // UUID (configs novas geradas pelo autodiscover)
 }
 
 // loadClustersConfigDirect lê clusters-config.json priorizando:
@@ -367,10 +370,37 @@ func (h *AWXHandler) GetClusterInfo(c *gin.Context) {
 	normalized := strings.TrimSuffix(clusterParam, "-admin")
 	for _, e := range entries {
 		if strings.TrimSuffix(e.ClusterName, "-admin") == normalized || e.ClusterName == clusterParam {
+			subscription := e.Subscription
+
+			// Se subscription é UUID (config gerada pelo autodiscover antigo sem resolução de nome),
+			// tentar resolver o nome legível via Azure CLI.
+			// Se subscription é UUID (config antiga gerada pelo autodiscover),
+			// resolver o nome legível passando o próprio UUID para o Azure CLI.
+			if isUUID(subscription) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				nameCmd := exec.CommandContext(ctx, "az", "account", "show",
+					"--subscription", subscription,
+					"--query", "name",
+					"-o", "tsv",
+					"--only-show-errors")
+				if nameOut, err := nameCmd.Output(); err == nil {
+					if name := strings.TrimSpace(string(nameOut)); name != "" {
+						log.Info().
+							Str("cluster", clusterParam).
+							Str("uuid", subscription).
+							Str("name", name).
+							Msg("[AWX] Subscription UUID resolvido para nome legível")
+						subscription = name
+					}
+				}
+			}
+
 			c.JSON(http.StatusOK, gin.H{
-				"resource_group": e.ResourceGroup,
-				"subs_env":       subscriptionToSubsEnv(e.Subscription),
-				"subscription":   e.Subscription,
+				"resource_group":  e.ResourceGroup,
+				"subs_env":        subscriptionToSubsEnv(subscription),
+				"subscription":    subscription,
+				"subscription_id": e.SubscriptionID,
 			})
 			return
 		}
