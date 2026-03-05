@@ -200,12 +200,15 @@ function generateCompactDiff(originalYaml: string, updatedYaml: string) {
 interface ResourceEditPanelProps {
   label: "Esquerdo" | "Direito";
   cluster: string;
-  namespaces: string[];
   initial?: CompareInitial;
   editorHeight: string;
 }
 
-function ResourceEditPanel({ label, cluster, namespaces, initial, editorHeight }: ResourceEditPanelProps) {
+function ResourceEditPanel({ label, cluster, initial, editorHeight }: ResourceEditPanelProps) {
+  // Namespaces do cluster deste painel (buscados internamente)
+  const [namespaces,       setNamespaces]       = useState<string[]>([]);
+  const [nsLoading,        setNsLoading]        = useState(false);
+
   // Seleção de recurso
   const [resourceType, setResourceType] = useState<ResourceType | "">(initial?.type ?? "");
   const [namespace,    setNamespace]    = useState(initial?.namespace ?? "");
@@ -241,6 +244,18 @@ function ResourceEditPanel({ label, cluster, namespaces, initial, editorHeight }
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [errorTitle,      setErrorTitle]      = useState("");
   const [errorMessage,    setErrorMessage]    = useState("");
+
+  // ── Busca namespaces do próprio cluster ──────────────────────────────────
+  useEffect(() => {
+    if (!cluster) return;
+    let cancelled = false;
+    setNsLoading(true);
+    apiClient.getNamespaces(cluster)
+      .then(list => { if (!cancelled) setNamespaces(list.map(n => n.name)); })
+      .catch(() => { if (!cancelled) setNamespaces([]); })
+      .finally(() => { if (!cancelled) setNsLoading(false); });
+    return () => { cancelled = true; };
+  }, [cluster]);
 
   const isClusterScoped = resourceType ? CLUSTER_SCOPED.includes(resourceType) : false;
   const hasChanges = editorValue !== originalYaml && !!originalYaml;
@@ -505,8 +520,11 @@ function ResourceEditPanel({ label, cluster, namespaces, initial, editorHeight }
           <>
             <ChevronRight className="w-3 h-3 text-muted-foreground mb-1 shrink-0" />
             <div className="flex flex-col gap-1">
-              <Label className="text-xs text-muted-foreground">Namespace</Label>
-              <Select value={namespace} onValueChange={handleNamespaceChange} disabled={!resourceType}>
+              <Label className="text-xs text-muted-foreground">
+                Namespace
+                {nsLoading && <Loader2 className="w-3 h-3 inline ml-1 animate-spin" />}
+              </Label>
+              <Select value={namespace} onValueChange={handleNamespaceChange} disabled={!resourceType || nsLoading}>
                 <SelectTrigger className="h-8 text-xs w-[140px]">
                   <SelectValue placeholder="Namespace..." />
                 </SelectTrigger>
@@ -826,40 +844,39 @@ function ResourceEditPanel({ label, cluster, namespaces, initial, editorHeight }
 // ─── Modal principal ──────────────────────────────────────────────────────────
 
 export function ResourceCompareModal({ open, onClose, cluster, clusters: allClusters, initialLeft }: ResourceCompareModalProps) {
-  const [namespaces, setNamespaces] = useState<string[]>([]);
-  const [crossCluster, setCrossCluster]       = useState(false);
-  const [rightCluster, setRightCluster]       = useState(cluster);
-  const [rightNamespaces, setRightNamespaces] = useState<string[]>([]);
+  // Cross-cluster
+  const [crossCluster, setCrossCluster]               = useState(false);
+  const [rightCluster, setRightCluster]               = useState(cluster);
+  const [isRightContextSwitching, setIsRightCtxSwitch] = useState(false);
 
   // Altura dos editores dentro do modal fullscreen
   const EDITOR_HEIGHT = "calc(100vh - 310px)";
-
-  // Carrega namespaces do cluster esquerdo ao abrir
-  useEffect(() => {
-    if (!open || !cluster) return;
-    apiClient.getNamespaces(cluster)
-      .then(list => setNamespaces(list.map(n => n.name)))
-      .catch(() => {});
-  }, [open, cluster]);
 
   // Sincronizar rightCluster quando switch está OFF ou cluster esquerdo muda
   useEffect(() => {
     if (!crossCluster) setRightCluster(cluster);
   }, [cluster, crossCluster]);
 
-  // Carregar namespaces do cluster direito
-  useEffect(() => {
-    if (!open || !rightCluster) return;
-    if (!crossCluster) { setRightNamespaces([]); return; }
-    apiClient.getNamespaces(rightCluster)
-      .then(list => setRightNamespaces(list.map(n => n.name)))
-      .catch(() => setRightNamespaces([]));
-  }, [open, rightCluster, crossCluster]);
+  // Troca o contexto do painel direito (igual ao handleClusterChange do Index.tsx)
+  const handleRightClusterChange = async (newCluster: string) => {
+    if (newCluster === rightCluster) return;
+    setIsRightCtxSwitch(true);
+    try {
+      await apiClient.switchContext(newCluster);
+      setRightCluster(newCluster);
+      toast.success(`Painel direito: contexto alterado para ${newCluster}`);
+    } catch (err) {
+      toast.error("Erro ao alterar contexto do painel direito", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsRightCtxSwitch(false);
+    }
+  };
 
   const handleClose = () => {
     setCrossCluster(false);
     setRightCluster(cluster);
-    setRightNamespaces([]);
     onClose();
   };
 
@@ -888,15 +905,18 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
                 Clusters diferentes
               </Label>
               {crossCluster && (
-                <Select value={rightCluster} onValueChange={setRightCluster}>
+                <Select value={rightCluster} onValueChange={handleRightClusterChange} disabled={isRightContextSwitching}>
                   <SelectTrigger className="h-7 text-xs w-60 font-mono">
-                    <SelectValue placeholder="Selecione cluster direito..." />
+                    {isRightContextSwitching
+                      ? <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" />Trocando contexto...</span>
+                      : <SelectValue placeholder="Selecione cluster direito..." />
+                    }
                   </SelectTrigger>
                   <SelectContent>
                     {allClusters.map(c => (
-                      <SelectItem key={c.name} value={c.name} className="text-xs font-mono">
-                        {c.name}
-                        {c.name === cluster && (
+                      <SelectItem key={c.context} value={c.context} className="text-xs font-mono">
+                        {c.context}
+                        {c.context === cluster && (
                           <span className="ml-2 text-muted-foreground text-xs">(esquerdo)</span>
                         )}
                       </SelectItem>
@@ -924,7 +944,6 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
                 key={`left-${open}`}
                 label="Esquerdo"
                 cluster={cluster}
-                namespaces={namespaces}
                 initial={initialLeft}
                 editorHeight={EDITOR_HEIGHT}
               />
@@ -952,7 +971,6 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
                 key={`right-${open}-${crossCluster ? rightCluster : cluster}`}
                 label="Direito"
                 cluster={crossCluster ? rightCluster : cluster}
-                namespaces={crossCluster ? rightNamespaces : namespaces}
                 editorHeight={EDITOR_HEIGHT}
               />
             </div>
