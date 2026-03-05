@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
@@ -28,6 +29,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useClusters } from "@/hooks/useAPI";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -825,10 +827,16 @@ function ResourceEditPanel({ label, cluster, namespaces, initial, editorHeight }
 export function ResourceCompareModal({ open, onClose, cluster, initialLeft }: ResourceCompareModalProps) {
   const [namespaces, setNamespaces] = useState<string[]>([]);
 
+  // Cross-cluster
+  const { clusters: allClusters } = useClusters();
+  const [crossCluster, setCrossCluster]       = useState(false);
+  const [rightCluster, setRightCluster]       = useState(cluster);
+  const [rightNamespaces, setRightNamespaces] = useState<string[]>([]);
+
   // Altura dos editores dentro do modal fullscreen
   const EDITOR_HEIGHT = "calc(100vh - 310px)";
 
-  // Carrega namespaces uma vez ao abrir
+  // Carrega namespaces do cluster esquerdo ao abrir
   useEffect(() => {
     if (!open || !cluster) return;
     apiClient.getNamespaces(cluster)
@@ -836,18 +844,71 @@ export function ResourceCompareModal({ open, onClose, cluster, initialLeft }: Re
       .catch(() => {});
   }, [open, cluster]);
 
+  // Sincronizar rightCluster quando switch está OFF ou cluster esquerdo muda
+  useEffect(() => {
+    if (!crossCluster) setRightCluster(cluster);
+  }, [cluster, crossCluster]);
+
+  // Carregar namespaces do cluster direito
+  useEffect(() => {
+    if (!open || !rightCluster) return;
+    if (!crossCluster) { setRightNamespaces([]); return; }
+    apiClient.getNamespaces(rightCluster)
+      .then(list => setRightNamespaces(list.map(n => n.name)))
+      .catch(() => setRightNamespaces([]));
+  }, [open, rightCluster, crossCluster]);
+
+  const handleClose = () => {
+    setCrossCluster(false);
+    setRightCluster(cluster);
+    setRightNamespaces([]);
+    onClose();
+  };
+
   return (
-    <Dialog open={open} onOpenChange={val => { if (!val) onClose(); }}>
+    <Dialog open={open} onOpenChange={val => { if (!val) handleClose(); }}>
       <DialogContent className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none p-0 bg-background border-border flex flex-col">
 
         {/* Header */}
         <div className="flex-none flex items-center justify-between px-6 py-3 border-b border-border bg-muted/30">
-          <div className="flex items-center gap-3">
-            <SplitSquareHorizontal className="w-5 h-5 text-primary" />
-            <h2 className="text-base font-semibold">Edição Lado a Lado</h2>
+          <div className="flex items-center gap-3 flex-wrap">
+            <SplitSquareHorizontal className="w-5 h-5 text-primary shrink-0" />
+            <h2 className="text-base font-semibold shrink-0">Edição Lado a Lado</h2>
             {cluster && <Badge variant="outline" className="text-xs font-mono">{cluster}</Badge>}
+
+            {/* Switch cross-cluster */}
+            <div className="flex items-center gap-2 ml-2 pl-4 border-l border-border/50">
+              <Switch
+                id="cross-cluster"
+                checked={crossCluster}
+                onCheckedChange={(val) => {
+                  setCrossCluster(val);
+                  if (!val) setRightCluster(cluster);
+                }}
+              />
+              <Label htmlFor="cross-cluster" className="text-xs cursor-pointer text-muted-foreground whitespace-nowrap">
+                Clusters diferentes
+              </Label>
+              {crossCluster && (
+                <Select value={rightCluster} onValueChange={setRightCluster}>
+                  <SelectTrigger className="h-7 text-xs w-60 font-mono">
+                    <SelectValue placeholder="Selecione cluster direito..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {allClusters.map(c => (
+                      <SelectItem key={c.name} value={c.name} className="text-xs font-mono">
+                        {c.name}
+                        {c.name === cluster && (
+                          <span className="ml-2 text-muted-foreground text-xs">(esquerdo)</span>
+                        )}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
           </div>
-          <Button variant="ghost" size="sm" onClick={onClose} title="Fechar">
+          <Button variant="ghost" size="sm" onClick={handleClose} title="Fechar">
             <X className="w-4 h-4" />
           </Button>
         </div>
@@ -856,8 +917,9 @@ export function ResourceCompareModal({ open, onClose, cluster, initialLeft }: Re
         <div className="flex-1 min-h-0 grid grid-cols-2">
           {/* Painel Esquerdo */}
           <div className="flex flex-col h-full overflow-hidden border-r border-border">
-            <div className="shrink-0 px-4 pt-3 pb-1 border-b border-border/40 bg-muted/10">
+            <div className="shrink-0 px-4 pt-3 pb-1 border-b border-border/40 bg-muted/10 flex items-center gap-2">
               <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Painel Esquerdo</span>
+              <Badge variant="secondary" className="text-xs font-mono">{cluster}</Badge>
             </div>
             <div className="flex-1 min-h-0 p-4 overflow-hidden">
               <ResourceEditPanel
@@ -873,15 +935,26 @@ export function ResourceCompareModal({ open, onClose, cluster, initialLeft }: Re
 
           {/* Painel Direito */}
           <div className="flex flex-col h-full overflow-hidden">
-            <div className="shrink-0 px-4 pt-3 pb-1 border-b border-border/40 bg-muted/10">
+            <div className="shrink-0 px-4 pt-3 pb-1 border-b border-border/40 bg-muted/10 flex items-center gap-2">
               <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Painel Direito</span>
+              <Badge
+                variant="secondary"
+                className={`text-xs font-mono ${crossCluster && rightCluster !== cluster ? "border border-amber-400/40 text-amber-400" : ""}`}
+              >
+                {crossCluster ? rightCluster : cluster}
+              </Badge>
+              {crossCluster && rightCluster !== cluster && (
+                <Badge variant="outline" className="text-xs text-amber-400 border-amber-400/40">
+                  cluster diferente
+                </Badge>
+              )}
             </div>
             <div className="flex-1 min-h-0 p-4 overflow-hidden">
               <ResourceEditPanel
-                key={`right-${open}`}
+                key={`right-${open}-${crossCluster ? rightCluster : cluster}`}
                 label="Direito"
-                cluster={cluster}
-                namespaces={namespaces}
+                cluster={crossCluster ? rightCluster : cluster}
+                namespaces={crossCluster ? rightNamespaces : namespaces}
                 editorHeight={EDITOR_HEIGHT}
               />
             </div>
