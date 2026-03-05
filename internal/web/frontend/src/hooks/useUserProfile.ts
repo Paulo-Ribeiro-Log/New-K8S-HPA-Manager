@@ -34,7 +34,11 @@ export function useUserProfile() {
   } | null>(null);
   const [serviceNowLoading, setServiceNowLoading] = useState(true);
 
-  // Verificar status do Nexus e ServiceNow ao montar
+  // Status do AWX
+  const [awxStatus, setAwxStatus] = useState<{ configured: boolean; reachable: boolean } | null>(null);
+  const [awxLoading, setAwxLoading] = useState(true);
+
+  // Verificar status do Nexus, ServiceNow e AWX ao montar
   useEffect(() => {
     const checkNexus = async () => {
       try {
@@ -58,19 +62,33 @@ export function useUserProfile() {
       }
     };
 
+    const checkAWX = async () => {
+      try {
+        const status = await apiClient.getAWXStatus();
+        setAwxStatus(status);
+      } catch {
+        setAwxStatus(null);
+      } finally {
+        setAwxLoading(false);
+      }
+    };
+
     checkNexus();
     checkServiceNow();
+    checkAWX();
   }, []);
 
   // Funcao para refresh manual do status
   const refreshCredentials = useCallback(async () => {
     setNexusLoading(true);
     setServiceNowLoading(true);
+    setAwxLoading(true);
 
     try {
-      const [nexus, servicenow] = await Promise.allSettled([
+      const [nexus, servicenow, awx] = await Promise.allSettled([
         apiClient.get<NexusStatus>('/nexus/status'),
         apiClient.get<{ valid: boolean; status: string }>('/servicenow/session-status'),
+        apiClient.getAWXStatus(),
       ]);
 
       if (nexus.status === 'fulfilled') {
@@ -84,9 +102,16 @@ export function useUserProfile() {
       } else {
         setServiceNowStatus(null);
       }
+
+      if (awx.status === 'fulfilled') {
+        setAwxStatus(awx.value);
+      } else {
+        setAwxStatus(null);
+      }
     } finally {
       setNexusLoading(false);
       setServiceNowLoading(false);
+      setAwxLoading(false);
     }
   }, []);
 
@@ -127,6 +152,16 @@ export function useUserProfile() {
       serviceNowCredStatus = 'error'; // Sessao expirada
     }
 
+    // Determinar status do AWX
+    let awxCredStatus: CredentialStatus = 'not_configured';
+    if (awxLoading) {
+      awxCredStatus = 'validating';
+    } else if (awxStatus?.configured && awxStatus?.reachable) {
+      awxCredStatus = 'configured';
+    } else if (awxStatus?.configured && !awxStatus?.reachable) {
+      awxCredStatus = 'error';
+    }
+
     return {
       nexus: {
         id: 'nexus',
@@ -149,8 +184,15 @@ export function useUserProfile() {
         status: serviceNowCredStatus,
         lastChecked: new Date(),
       },
+      awx: {
+        id: 'awx',
+        name: 'AWX / Ansible Tower',
+        description: 'Credenciais SSO para gerenciamento de certificados TLS',
+        status: awxCredStatus,
+        lastChecked: new Date(),
+      },
     };
-  }, [githubStatus, nexusStatus, nexusLoading, serviceNowStatus, serviceNowLoading]);
+  }, [githubStatus, nexusStatus, nexusLoading, serviceNowStatus, serviceNowLoading, awxStatus, awxLoading]);
 
   const isLoading = permissionsLoading || githubLoading;
 

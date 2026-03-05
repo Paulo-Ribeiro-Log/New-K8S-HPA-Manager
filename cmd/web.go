@@ -277,4 +277,5 @@ func init() {
 	webCmd.Flags().StringVar(&ollamaModel, "ollama-model", "llama3.2", "Ollama model name")
 	webCmd.Flags().StringVar(&claudeAPIKey, "claude-api-key", "", "Claude API key (or set CLAUDE_API_KEY env var)")
 	webCmd.Flags().StringVar(&claudeModel, "claude-model", "claude-3-5-sonnet-20241022", "Claude model name")
+
 }

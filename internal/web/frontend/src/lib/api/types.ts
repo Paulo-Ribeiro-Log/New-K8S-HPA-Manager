@@ -1292,3 +1292,22 @@ export interface ExplorerApplyResult {
   resource: string;
   dryRun: boolean;
 }
+
+// AWX Integration (certificados TLS via Ansible AWX/Tower)
+export interface AWXStatus {
+  configured: boolean;
+  reachable: boolean;
+  base_url?: string;
+  username?: string;
+  version?: string;
+  error?: string;
+}
+
+export interface AWXCertificate {
+  id: number;
+  name: string;
+}
+
+export interface AWXJobLaunch {
+  job_id: number;
+}
