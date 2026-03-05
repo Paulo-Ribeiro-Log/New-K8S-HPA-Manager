@@ -29,7 +29,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useClusters } from "@/hooks/useAPI";
+import type { Cluster } from "@/lib/api/types";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +53,7 @@ interface ResourceCompareModalProps {
   open: boolean;
   onClose: () => void;
   cluster: string;
+  clusters: Cluster[];
   initialLeft?: CompareInitial;
 }
 
@@ -824,11 +825,8 @@ function ResourceEditPanel({ label, cluster, namespaces, initial, editorHeight }
 
 // ─── Modal principal ──────────────────────────────────────────────────────────
 
-export function ResourceCompareModal({ open, onClose, cluster, initialLeft }: ResourceCompareModalProps) {
+export function ResourceCompareModal({ open, onClose, cluster, clusters: allClusters, initialLeft }: ResourceCompareModalProps) {
   const [namespaces, setNamespaces] = useState<string[]>([]);
-
-  // Cross-cluster
-  const { clusters: allClusters } = useClusters();
   const [crossCluster, setCrossCluster]       = useState(false);
   const [rightCluster, setRightCluster]       = useState(cluster);
   const [rightNamespaces, setRightNamespaces] = useState<string[]>([]);
