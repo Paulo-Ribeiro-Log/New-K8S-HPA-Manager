@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Plus } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -79,6 +79,11 @@ export const ConfigMapsTab = ({
   const [describeLoading, setDescribeLoading] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Create modal
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [createYaml, setCreateYaml] = useState("");
+  const [isCreating, setIsCreating] = useState(false);
 
   // Error Dialog para exibir erros de apply de forma mais proeminente
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
@@ -468,6 +473,59 @@ export const ConfigMapsTab = ({
     </Button>
   );
 
+  const configMapCreateTemplate = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: meu-configmap
+  namespace: ${selectedNamespace || "default"}
+  labels:
+    app: meu-app
+data:
+  chave: valor
+  config.properties: |
+    propriedade1=valor1
+    propriedade2=valor2
+`;
+
+  const handleOpenCreateModal = () => {
+    setCreateYaml(configMapCreateTemplate);
+    setCreateModalOpen(true);
+  };
+
+  const handleCreateConfigMap = async () => {
+    if (!cluster || !selectedNamespace) {
+      toast.error("Selecione um cluster e namespace antes de criar");
+      return;
+    }
+    setIsCreating(true);
+    try {
+      const response = await fetch(`/api/v1/configmaps/${cluster}/${selectedNamespace}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
+        },
+        body: JSON.stringify({ yaml: createYaml, fieldManager: "k8s-hpa-manager" }),
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || `HTTP ${response.status}`);
+      }
+      const result = await response.json();
+      toast.success("ConfigMap criado com sucesso!", {
+        description: `${selectedNamespace}/${result.data?.name}`,
+      });
+      setCreateModalOpen(false);
+      await refetch();
+    } catch (err) {
+      toast.error("Erro ao criar ConfigMap", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
   const leftTitleAction = (
     <div className="flex items-center gap-2 flex-wrap">
       {namespaceSelector}
@@ -514,6 +572,17 @@ export const ConfigMapsTab = ({
 
   const rightTitleAction = (
     <div className="flex items-center gap-2">
+      <ProtectedAction>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleOpenCreateModal}
+          disabled={!cluster || !selectedNamespace}
+          title="Criar novo ConfigMap"
+        >
+          <Plus className="w-4 h-4 mr-2" /> Criar
+        </Button>
+      </ProtectedAction>
       {selectedConfigMap && onOpenCompare && (
         <Button
           variant="ghost"
@@ -1347,6 +1416,46 @@ export const ConfigMapsTab = ({
               <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
             )}
           </ScrollArea>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Criar ConfigMap */}
+      <Dialog open={createModalOpen} onOpenChange={(open) => { if (!isCreating) setCreateModalOpen(open); }}
+      >
+        <DialogContent className="max-w-3xl" onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Plus className="w-5 h-5" />
+              Criar ConfigMap
+            </DialogTitle>
+            <DialogDescription>
+              Cluster: <strong>{cluster}</strong> — Namespace: <strong>{selectedNamespace}</strong>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Edite o YAML abaixo e clique em <strong>Criar</strong> para adicionar o ConfigMap ao cluster.
+            </p>
+            <MonacoYamlEditor
+              value={createYaml}
+              onChange={(v) => setCreateYaml(v ?? "")}
+              height={420}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setCreateModalOpen(false)} disabled={isCreating}>
+              Cancelar
+            </Button>
+            <ProtectedAction>
+              <Button onClick={handleCreateConfigMap} disabled={isCreating || !createYaml.trim()}>
+                {isCreating ? (
+                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Criando...</>
+                ) : (
+                  <><Plus className="w-4 h-4 mr-2" />Criar</>
+                )}
+              </Button>
+            </ProtectedAction>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
