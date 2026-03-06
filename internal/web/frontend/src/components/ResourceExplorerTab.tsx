@@ -43,7 +43,13 @@ import {
   ChevronsUpDown,
   Check,
   Info,
+  ScrollText,
+  Download,
+  RefreshCw,
 } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 
 import type { Namespace, APIResourceInfo, GenericResourceSummary, GenericResourceManifest } from "@/lib/api/types";
@@ -132,11 +138,24 @@ export const ResourceExplorerTab = ({
   const [describeModalOpen, setDescribeModalOpen] = useState(false);
   const [describeContent, setDescribeContent] = useState("");
   const [describeLoading, setDescribeLoading] = useState(false);
+  const [describeFullScreen, setDescribeFullScreen] = useState(false);
+  const [describeAutoRefresh, setDescribeAutoRefresh] = useState(false);
+  const describeAutoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [errorTitle, setErrorTitle] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+
+  // ── Logs state ─────────────────────────────────────────────────────────
+  const [rightTab, setRightTab] = useState<"yaml" | "logs">("yaml");
+  const [logsContent, setLogsContent] = useState("");
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsContainer, setLogsContainer] = useState("");
+  const [logsTailLines, setLogsTailLines] = useState(500);
+  const [logsAutoRefresh, setLogsAutoRefresh] = useState(false);
+  const logsAutoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const logsScrollRef = useRef<HTMLDivElement>(null);
 
   const historyCache = useRef<Map<string, { history: string[]; index: number }>>(new Map());
   const [history, setHistory] = useState<string[]>([]);
@@ -394,10 +413,9 @@ export const ResourceExplorerTab = ({
   };
 
   // ── Describe ───────────────────────────────────────────────────────────
-  const handleDescribe = async () => {
+  const fetchDescribe = useCallback(async () => {
     if (!selectedItem || !selectedResource) return;
     setDescribeLoading(true);
-    setDescribeModalOpen(true);
     try {
       const result = await apiClient.describeGenericResource(
         cluster,
@@ -411,6 +429,29 @@ export const ResourceExplorerTab = ({
     } finally {
       setDescribeLoading(false);
     }
+  }, [cluster, selectedItem, selectedResource]);
+
+  const handleDescribe = async () => {
+    setDescribeModalOpen(true);
+    await fetchDescribe();
+  };
+
+  // Auto-refresh do describe
+  useEffect(() => {
+    if (describeAutoRefreshRef.current) clearInterval(describeAutoRefreshRef.current);
+    if (describeAutoRefresh && describeModalOpen) {
+      describeAutoRefreshRef.current = setInterval(() => fetchDescribe(), 5000);
+    }
+    return () => { if (describeAutoRefreshRef.current) clearInterval(describeAutoRefreshRef.current); };
+  }, [describeAutoRefresh, describeModalOpen, fetchDescribe]);
+
+  // Limpa auto-refresh ao fechar modal
+  const handleDescribeOpenChange = (open: boolean) => {
+    if (!open) {
+      setDescribeAutoRefresh(false);
+      if (describeAutoRefreshRef.current) clearInterval(describeAutoRefreshRef.current);
+    }
+    setDescribeModalOpen(open);
   };
 
   // ── Delete ─────────────────────────────────────────────────────────────
@@ -438,6 +479,91 @@ export const ResourceExplorerTab = ({
     } finally {
       setIsDeleting(false);
     }
+  };
+
+  // ── Container names from YAML (for Pod logs) ──────────────────────────
+  const containerNames = useMemo(() => {
+    if (selectedResource?.kind !== "Pod" || !originalYaml) return [];
+    const matches = [...originalYaml.matchAll(/^  - name:\s+(\S+)/gm)];
+    return matches.map((m) => m[1]);
+  }, [originalYaml, selectedResource?.kind]);
+
+  // Reset tab e logs ao trocar de item
+  useEffect(() => {
+    setRightTab("yaml");
+    setLogsContent("");
+    setLogsContainer("");
+    setLogsAutoRefresh(false);
+    if (logsAutoRefreshRef.current) clearInterval(logsAutoRefreshRef.current);
+  }, [selectedItem?.name, selectedItem?.namespace]);
+
+  // ── Fetch logs ─────────────────────────────────────────────────────────
+  const fetchLogs = useCallback(async (container?: string) => {
+    if (!selectedItem || selectedResource?.kind !== "Pod") return;
+    setLogsLoading(true);
+    try {
+      const result = await apiClient.getPodLogs(
+        cluster,
+        selectedItem.namespace,
+        selectedItem.name,
+        container || logsContainer || undefined,
+        logsTailLines,
+      );
+      setLogsContent(result.logs || "(sem logs)");
+      // Auto-scroll para o final
+      setTimeout(() => {
+        if (logsScrollRef.current) {
+          logsScrollRef.current.scrollTop = logsScrollRef.current.scrollHeight;
+        }
+      }, 50);
+    } catch (err) {
+      setLogsContent(`Erro ao carregar logs: ${err instanceof Error ? err.message : "Erro desconhecido"}`);
+    } finally {
+      setLogsLoading(false);
+    }
+  }, [cluster, selectedItem, selectedResource, logsContainer, logsTailLines]);
+
+  // Inicia auto-refresh
+  useEffect(() => {
+    if (logsAutoRefreshRef.current) clearInterval(logsAutoRefreshRef.current);
+    if (logsAutoRefresh && rightTab === "logs") {
+      logsAutoRefreshRef.current = setInterval(() => fetchLogs(), 3000);
+    }
+    return () => { if (logsAutoRefreshRef.current) clearInterval(logsAutoRefreshRef.current); };
+  }, [logsAutoRefresh, rightTab, fetchLogs]);
+
+  // Carrega logs ao abrir a aba
+  useEffect(() => {
+    if (rightTab === "logs" && selectedItem && selectedResource?.kind === "Pod") {
+      fetchLogs();
+    }
+  }, [rightTab]);
+
+  // ── Export logs ────────────────────────────────────────────────────────
+  const handleExportLogs = () => {
+    if (!logsContent || !selectedItem) return;
+    const filename = `logs-${selectedItem.name}${logsContainer ? `-${logsContainer}` : ""}-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+    const blob = new Blob([logsContent], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Logs exportados: ${filename}`);
+  };
+
+  // ── Log line highlighting ───────────────────────────────────────────────
+  const highlightLogLine = (line: string): React.CSSProperties => {
+    const u = line.toUpperCase();
+    if (/\b(ERROR|FATAL|EXCEPTION|PANIC)\b/.test(u)) return { color: "#f87171", background: "rgba(248,113,113,0.08)", borderLeft: "2px solid #f87171", paddingLeft: "4px" };
+    if (/\b(WARN|WARNING)\b/.test(u)) return { color: "#fbbf24", background: "rgba(251,191,36,0.08)", borderLeft: "2px solid #fbbf24", paddingLeft: "4px" };
+    if (/ [45]\d\d /.test(line)) return { color: "#fb923c" };
+    if (/ [23]\d\d /.test(line)) return { color: "#86efac" };
+    if (/\b(INFO)\b/.test(u)) return { color: "#60a5fa" };
+    if (/\b(DEBUG|TRACE)\b/.test(u)) return { color: "#c084fc", fontSize: "0.75rem" };
+    if (/\b(SUCCESS|COMPLETED|OK)\b/.test(u)) return { color: "#4ade80" };
+    return {};
   };
 
   const hasChanges = editorValue !== originalYaml;
@@ -736,6 +862,9 @@ export const ResourceExplorerTab = ({
   const rightTitleAction = selectedItem ? (
     <div className="flex items-center gap-2">
       {editorToolbar}
+      <Button variant="outline" size="sm" onClick={handleDescribe} title="kubectl describe">
+        <FileText className="h-4 w-4" />
+      </Button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="outline" size="sm">
@@ -743,11 +872,6 @@ export const ResourceExplorerTab = ({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={handleDescribe}>
-            <FileText className="h-4 w-4 mr-2" />
-            Describe
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
           <ProtectedAction>
             <DropdownMenuItem
               className="text-destructive focus:text-destructive"
@@ -797,14 +921,128 @@ export const ResourceExplorerTab = ({
         )}
       </div>
 
-      {/* Editor */}
-      <MonacoYamlEditor
-        value={editorValue}
-        onChange={handleEditorChange}
-        originalValue={originalYaml}
-        mode={viewMode}
-        height={520}
-      />
+      {/* Editor / Logs tabs */}
+      <Tabs value={rightTab} onValueChange={(v) => setRightTab(v as "yaml" | "logs")} className="flex flex-col flex-1 min-h-0">
+        <TabsList className="w-fit">
+          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="logs" className="flex items-center gap-1">
+            <ScrollText className="h-3.5 w-3.5" />
+            Logs
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="yaml" className="flex-1 min-h-0 mt-2">
+          <MonacoYamlEditor
+            value={editorValue}
+            onChange={handleEditorChange}
+            originalValue={originalYaml}
+            mode={viewMode}
+            height={470}
+          />
+        </TabsContent>
+
+        <TabsContent value="logs" className="flex flex-col flex-1 min-h-0 mt-2 gap-2">
+          {(selectedItem?.kind ?? selectedResource?.kind) !== "Pod" ? (
+            <div className="flex flex-col items-center justify-center h-40 gap-2 text-muted-foreground">
+              <ScrollText className="h-8 w-8 opacity-30" />
+              <p className="text-sm">Logs disponíveis apenas para Pods</p>
+            </div>
+          ) : (
+            <>
+              {/* Toolbar */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <Select
+                  value={logsContainer || "__default__"}
+                  onValueChange={(v) => {
+                    const c = v === "__default__" ? "" : v;
+                    setLogsContainer(c);
+                    fetchLogs(c || undefined);
+                  }}
+                >
+                  <SelectTrigger className="h-7 text-xs w-40">
+                    <SelectValue placeholder="Container" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__default__">Container padrão</SelectItem>
+                    {containerNames.map((c) => (
+                      <SelectItem key={c} value={c}>{c}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                <Select value={String(logsTailLines)} onValueChange={(v) => setLogsTailLines(Number(v))}>
+                  <SelectTrigger className="h-7 text-xs w-28">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="100">100 linhas</SelectItem>
+                    <SelectItem value="500">500 linhas</SelectItem>
+                    <SelectItem value="1000">1000 linhas</SelectItem>
+                    <SelectItem value="5000">5000 linhas</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Button
+                  variant={logsAutoRefresh ? "secondary" : "outline"}
+                  size="sm"
+                  className="h-7 text-xs px-2"
+                  onClick={() => setLogsAutoRefresh(!logsAutoRefresh)}
+                  title={logsAutoRefresh ? "Parar auto-refresh" : "Iniciar auto-refresh (3s)"}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 mr-1 ${logsAutoRefresh ? "animate-spin" : ""}`} />
+                  Auto
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs px-2"
+                  onClick={() => fetchLogs()}
+                  disabled={logsLoading}
+                  title="Atualizar logs"
+                >
+                  {logsLoading
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <RefreshCcw className="h-3.5 w-3.5" />}
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs px-2"
+                  onClick={handleExportLogs}
+                  disabled={!logsContent}
+                  title="Exportar logs como .txt"
+                >
+                  <Download className="h-3.5 w-3.5 mr-1" />
+                  Exportar
+                </Button>
+              </div>
+
+              {/* Log content */}
+              <div
+                ref={logsScrollRef}
+                className="flex-1 min-h-0 overflow-auto bg-black/60 rounded-md border p-2 font-mono text-xs"
+                style={{ maxHeight: "calc(100vh - 350px)" }}
+              >
+                {logsLoading && !logsContent ? (
+                  <div className="flex justify-center py-4">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  </div>
+                ) : logsContent ? (
+                  logsContent.split("\n").map((line, i) => (
+                    <div key={i} style={highlightLogLine(line)} className="leading-5 whitespace-pre-wrap break-all">
+                      {line || "\u00A0"}
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-muted-foreground py-4 text-center">Nenhum log disponível</p>
+                )}
+              </div>
+            </>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 
@@ -866,17 +1104,46 @@ export const ResourceExplorerTab = ({
       </Dialog>
 
       {/* Describe modal */}
-      <Dialog open={describeModalOpen} onOpenChange={setDescribeModalOpen}>
-        <DialogContent className="max-w-3xl max-h-[85vh]">
+      <Dialog open={describeModalOpen} onOpenChange={handleDescribeOpenChange}>
+        <DialogContent
+          className={describeFullScreen ? "max-w-[98vw] w-[98vw] h-[98vh] max-h-[98vh] flex flex-col" : "max-w-3xl max-h-[85vh] flex flex-col"}
+          onInteractOutside={(e) => e.preventDefault()}
+        >
           <DialogHeader>
-            <DialogTitle>kubectl describe — {selectedItem?.name}</DialogTitle>
+            <DialogTitle className="flex items-center justify-between gap-2 flex-wrap">
+              <span>kubectl describe — {selectedItem?.name}</span>
+              <div className="flex items-center gap-3">
+                {/* Auto-refresh switch */}
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="describe-autorefresh"
+                    checked={describeAutoRefresh}
+                    onCheckedChange={setDescribeAutoRefresh}
+                  />
+                  <Label htmlFor="describe-autorefresh" className="text-xs font-normal cursor-pointer flex items-center gap-1">
+                    <RefreshCw className={`h-3.5 w-3.5 ${describeAutoRefresh ? "animate-spin" : ""}`} />
+                    Auto (5s)
+                  </Label>
+                </div>
+                {/* Manual refresh */}
+                <Button variant="ghost" size="sm" onClick={fetchDescribe} disabled={describeLoading} title="Atualizar">
+                  {describeLoading
+                    ? <Loader2 className="h-4 w-4 animate-spin" />
+                    : <RefreshCcw className="h-4 w-4" />}
+                </Button>
+                {/* Fullscreen toggle */}
+                <Button variant="ghost" size="sm" onClick={() => setDescribeFullScreen(!describeFullScreen)}>
+                  {describeFullScreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                </Button>
+              </div>
+            </DialogTitle>
           </DialogHeader>
-          {describeLoading ? (
+          {describeLoading && !describeContent ? (
             <div className="flex justify-center py-8">
               <Loader2 className="h-6 w-6 animate-spin" />
             </div>
           ) : (
-            <ScrollArea className="max-h-[65vh]">
+            <ScrollArea className={describeFullScreen ? "flex-1" : "max-h-[65vh]"}>
               <pre className="text-xs font-mono whitespace-pre-wrap break-words">{describeContent}</pre>
             </ScrollArea>
           )}
