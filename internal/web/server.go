@@ -82,7 +82,7 @@ type Server struct {
 }
 
 // NewServer cria uma nova instância do servidor web
-func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiProvider, ollamaURL, ollamaModel, claudeAPIKey, claudeModel string) (*Server, error) {
+func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiProvider, ollamaURL, ollamaModel, claudeAPIKey, claudeModel, geminiAuthMode, geminiProject, geminiLocation string) (*Server, error) {
 	// Reutilizar gerenciador de kube existente
 	kubeManager, err := config.NewKubeConfigManager(kubeconfig)
 	if err != nil {
@@ -191,12 +191,15 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 
 		// 2. Criar AI config
 		aiConfig = &ai.Config{
-			Provider:      aiProvider,
-			OllamaBaseURL: ollamaURL,
-			OllamaModel:   ollamaModel,
-			ClaudeAPIKey:  claudeAPIKey,
-			ClaudeModel:   claudeModel,
-			Timeout:       300, // 5 minutos para análises preditivas complexas
+			Provider:             aiProvider,
+			OllamaBaseURL:        ollamaURL,
+			OllamaModel:          ollamaModel,
+			ClaudeAPIKey:         claudeAPIKey,
+			ClaudeModel:          claudeModel,
+			GeminiAuthMode:       geminiAuthMode,
+			GeminiVertexProject:  geminiProject,
+			GeminiVertexLocation: geminiLocation,
+			Timeout:              300, // 5 minutos para análises preditivas complexas
 		}
 
 		// 3. Criar KubeManager wrapper
@@ -226,7 +229,9 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 			fmt.Printf("✅ AI Diagnostics habilitado (Provider padrão: %s)\n", aiProvider)
 			fmt.Println("   ℹ️  Usuários podem configurar seus próprios modelos em Settings → AI")
 			if aiProvider == "gemini" {
-				if os.Getenv("GEMINI_API_KEY") != "" {
+				if geminiAuthMode == "vertex" {
+					fmt.Printf("   ✅ Modo Vertex AI (SSO/ADC via gcloud) — projeto: %s, região: %s\n", geminiProject, geminiLocation)
+				} else if os.Getenv("GEMINI_API_KEY") != "" {
 					fmt.Println("   ✅ GEMINI_API_KEY detectado (env var)")
 				} else {
 					fmt.Println("   ⚠️  GEMINI_API_KEY não encontrado (pode falhar na análise)")

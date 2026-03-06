@@ -54,6 +54,11 @@ export function AISettingsTab() {
   const [aiEmail, setAiEmail] = useState(""); // Email para identificar configurações AI (independente do Azure AD)
   const [geminiKey, setGeminiKey] = useState("");
   const [geminiModel, setGeminiModel] = useState("");
+  const [geminiAuthMode, setGeminiAuthMode] = useState<"apikey" | "vertex">("apikey");
+  const [geminiVertexProject, setGeminiVertexProject] = useState("");
+  const [geminiVertexLocation, setGeminiVertexLocation] = useState("us-central1");
+  const [testingVertex, setTestingVertex] = useState(false);
+  const [vertexTestResult, setVertexTestResult] = useState<boolean | null>(null);
   const [openaiKey, setOpenaiKey] = useState("");
   const [openaiModel, setOpenaiModel] = useState("");
   const [claudeKey, setClaudeKey] = useState("");
@@ -122,6 +127,9 @@ export function AISettingsTab() {
 
       // Carregar modelos salvos
       if (response.gemini_model) setGeminiModel(response.gemini_model);
+      if (response.gemini_auth_mode) setGeminiAuthMode(response.gemini_auth_mode as "apikey" | "vertex");
+      if (response.gemini_vertex_project) setGeminiVertexProject(response.gemini_vertex_project);
+      if (response.gemini_vertex_location) setGeminiVertexLocation(response.gemini_vertex_location);
       if (response.claude_model) setClaudeModel(response.claude_model);
       if (response.openai_model) setOpenaiModel(response.openai_model);
       if (response.ollama_model) setOllamaModel(response.ollama_model);
@@ -266,6 +274,13 @@ export function AISettingsTab() {
 
       // API Keys - enviar apenas se foram preenchidas (não vazias)
       if (geminiKey) payload.gemini_api_key = geminiKey;
+
+      // Gemini Vertex AI (SSO) - sempre enviar modo e configs
+      payload.gemini_auth_mode = geminiAuthMode;
+      if (geminiAuthMode === "vertex") {
+        payload.gemini_vertex_project = geminiVertexProject;
+        payload.gemini_vertex_location = geminiVertexLocation || "us-central1";
+      }
       if (openaiKey) payload.openai_api_key = openaiKey;
       if (claudeKey) payload.claude_api_key = claudeKey;
       if (copilotKey) payload.copilot_api_key = copilotKey;
@@ -327,6 +342,31 @@ export function AISettingsTab() {
     }
   };
 
+  const testVertexConnection = async () => {
+    setTestingVertex(true);
+    setVertexTestResult(null);
+    try {
+      const response = await apiClient.validateAIToken("gemini-vertex", "", undefined, undefined, geminiVertexProject, geminiVertexLocation);
+      setVertexTestResult(response.valid);
+      toast({
+        title: response.valid ? "Conexão Vertex AI OK" : "Falha na conexão",
+        description: response.valid
+          ? `Autenticado com sucesso no projeto ${geminiVertexProject}`
+          : response.error || "Verifique se o gcloud está autenticado com seu email SSO",
+        variant: response.valid ? "default" : "destructive",
+      });
+    } catch (error) {
+      setVertexTestResult(false);
+      toast({
+        title: "Erro ao testar Vertex AI",
+        description: "Execute: gcloud auth application-default login",
+        variant: "destructive",
+      });
+    } finally {
+      setTestingVertex(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!window.confirm("Tem certeza que deseja remover todas as suas configurações AI?")) {
       return;
@@ -350,6 +390,10 @@ export function AISettingsTab() {
       // Limpar form
       setAiEmail("");
       setGeminiKey("");
+      setGeminiAuthMode("apikey");
+      setGeminiVertexProject("");
+      setGeminiVertexLocation("us-central1");
+      setVertexTestResult(null);
       setOpenaiKey("");
       setClaudeKey("");
       setCopilotKey("");
@@ -462,64 +506,115 @@ export function AISettingsTab() {
 
           <Separator />
 
-          {/* Gemini API Key */}
-          <div className="space-y-2">
-            <Label htmlFor="gemini-key" className="flex items-center gap-2">
+          {/* Gemini */}
+          <div className="space-y-3">
+            <Label className="flex items-center gap-2 text-sm font-medium">
               <Key className="h-4 w-4" />
-              Gemini API Key
-              {geminiValid === true && <CheckCircle2 className="h-4 w-4 text-green-500" />}
-              {geminiValid === false && <XCircle className="h-4 w-4 text-red-500" />}
+              Gemini
+              {tokenStatus?.has_gemini && <CheckCircle2 className="h-4 w-4 text-green-500" />}
             </Label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Input
-                  id="gemini-key"
-                  type={showGemini ? "text" : "password"}
-                  placeholder="AIza..."
-                  value={geminiKey}
-                  onChange={(e) => {
-                    setGeminiKey(e.target.value);
-                    setGeminiValid(null);
-                  }}
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="absolute right-0 top-0 h-full px-3"
-                  onClick={() => setShowGemini(!showGemini)}
-                >
-                  {showGemini ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </Button>
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => validateToken("gemini", geminiKey)}
-                disabled={!geminiKey || validating === "gemini"}
-              >
-                {validating === "gemini" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  "Validar Formato"
-                )}
-              </Button>
+
+            {/* Modo de autenticação */}
+            <div className="space-y-1">
+              <Label htmlFor="gemini-auth-mode" className="text-xs text-muted-foreground">Modo de Autenticação</Label>
+              <Select value={geminiAuthMode} onValueChange={(v) => { setGeminiAuthMode(v as "apikey" | "vertex"); setVertexTestResult(null); }}>
+                <SelectTrigger id="gemini-auth-mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="apikey">API Key (Google AI Studio)</SelectItem>
+                  <SelectItem value="vertex">Vertex AI — SSO da Organização (gcloud)</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Obtenha sua chave em:{" "}
-              <a
-                href="https://aistudio.google.com/app/apikey"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-500 hover:underline"
-              >
-                https://aistudio.google.com/app/apikey
-              </a>
-            </p>
+
+            {/* API Key mode */}
+            {geminiAuthMode === "apikey" && (
+              <div className="space-y-2">
+                <Label htmlFor="gemini-key" className="text-xs text-muted-foreground flex items-center gap-2">
+                  API Key
+                  {geminiValid === true && <CheckCircle2 className="h-3 w-3 text-green-500" />}
+                  {geminiValid === false && <XCircle className="h-3 w-3 text-red-500" />}
+                </Label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Input
+                      id="gemini-key"
+                      type={showGemini ? "text" : "password"}
+                      placeholder="AIza..."
+                      value={geminiKey}
+                      onChange={(e) => { setGeminiKey(e.target.value); setGeminiValid(null); }}
+                    />
+                    <Button type="button" variant="ghost" size="sm" className="absolute right-0 top-0 h-full px-3"
+                      onClick={() => setShowGemini(!showGemini)}>
+                      {showGemini ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => validateToken("gemini", geminiKey)}
+                    disabled={!geminiKey || validating === "gemini"}>
+                    {validating === "gemini" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Validar Formato"}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Obtenha sua chave em:{" "}
+                  <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
+                    className="text-blue-500 hover:underline">
+                    https://aistudio.google.com/app/apikey
+                  </a>
+                </p>
+              </div>
+            )}
+
+            {/* Vertex AI (SSO) mode */}
+            {geminiAuthMode === "vertex" && (
+              <div className="space-y-2 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 p-3">
+                <p className="text-xs text-blue-800 dark:text-blue-200 font-medium">
+                  Usa o email SSO da sua organização via <code className="font-mono">gcloud auth application-default login</code>.
+                  Nenhuma API key necessária.
+                </p>
+                <div className="space-y-1">
+                  <Label htmlFor="vertex-project" className="text-xs text-muted-foreground">
+                    Projeto GCP da Empresa <span className="text-red-500">*</span>
+                  </Label>
+                  <Input
+                    id="vertex-project"
+                    placeholder="meu-projeto-gcp"
+                    value={geminiVertexProject}
+                    onChange={(e) => { setGeminiVertexProject(e.target.value); setVertexTestResult(null); }}
+                    className="font-mono text-sm"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="vertex-location" className="text-xs text-muted-foreground">Região GCP</Label>
+                  <Select value={geminiVertexLocation} onValueChange={setGeminiVertexLocation}>
+                    <SelectTrigger id="vertex-location" className="text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="us-central1">us-central1 (Iowa)</SelectItem>
+                      <SelectItem value="us-east1">us-east1 (Carolina do Sul)</SelectItem>
+                      <SelectItem value="europe-west1">europe-west1 (Bélgica)</SelectItem>
+                      <SelectItem value="europe-west4">europe-west4 (Holanda)</SelectItem>
+                      <SelectItem value="southamerica-east1">southamerica-east1 (São Paulo)</SelectItem>
+                      <SelectItem value="asia-northeast1">asia-northeast1 (Tóquio)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <Button size="sm" variant="outline" onClick={testVertexConnection}
+                    disabled={!geminiVertexProject || testingVertex}>
+                    {testingVertex ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                    Testar Conexão
+                  </Button>
+                  {vertexTestResult === true && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 className="h-3 w-3" /> Autenticado</span>}
+                  {vertexTestResult === false && <span className="text-xs text-red-600 flex items-center gap-1"><XCircle className="h-3 w-3" /> Falha — execute gcloud auth application-default login</span>}
+                </div>
+              </div>
+            )}
 
             {/* Seleção de Modelo Gemini */}
-            <div className="space-y-2">
-              <Label htmlFor="gemini-model">Modelo Gemini</Label>
+            <div className="space-y-1">
+              <Label htmlFor="gemini-model" className="text-xs text-muted-foreground">Modelo</Label>
               <Select value={geminiModel} onValueChange={setGeminiModel}>
                 <SelectTrigger id="gemini-model">
                   <SelectValue placeholder="Selecione o modelo" />
@@ -814,7 +909,7 @@ export function AISettingsTab() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="ollama">Ollama (Local - Grátis - Recomendado)</SelectItem>
-                <SelectItem value="gemini">Gemini (Grátis)</SelectItem>
+                <SelectItem value="gemini">Gemini (API Key — Google AI Studio)</SelectItem>
                 <SelectItem value="openai">OpenAI GPT-4o-mini (Pago - Barato)</SelectItem>
                 <SelectItem value="claude">Claude (Pago - Alta Qualidade)</SelectItem>
                 <SelectItem value="copilot">Microsoft Copilot (Azure OpenAI - Pago)</SelectItem>
