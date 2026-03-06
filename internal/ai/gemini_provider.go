@@ -7,24 +7,32 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
+	"strings"
 	"time"
 )
 
-// GeminiProvider implementa Provider para Google Gemini API
+// GeminiProvider implementa Provider para Google Gemini API (AI Studio ou Vertex AI)
 type GeminiProvider struct {
-	apiKey  string
-	model   string
-	timeout time.Duration
-	client  *http.Client
+	apiKey   string
+	model    string
+	timeout  time.Duration
+	client   *http.Client
+	authMode string // "apikey" ou "vertex"
+	project  string // projeto GCP (modo vertex)
+	location string // região GCP (modo vertex, ex: us-central1)
 }
 
 // NewGeminiProvider cria um novo GeminiProvider
 func NewGeminiProvider(config *Config) *GeminiProvider {
 	return &GeminiProvider{
-		apiKey:  config.GeminiAPIKey,
-		model:   config.GeminiModel,
-		timeout: time.Duration(config.Timeout) * time.Second,
-		client:  &http.Client{Timeout: time.Duration(config.Timeout) * time.Second},
+		apiKey:   config.GeminiAPIKey,
+		model:    config.GeminiModel,
+		timeout:  time.Duration(config.Timeout) * time.Second,
+		client:   &http.Client{Timeout: time.Duration(config.Timeout) * time.Second},
+		authMode: config.GeminiAuthMode,
+		project:  config.GeminiVertexProject,
+		location: config.GeminiVertexLocation,
 	}
 }
 
@@ -55,11 +63,35 @@ type geminiResponse struct {
 
 // Analyze envia prompt para Gemini API e retorna análise
 func (p *GeminiProvider) Analyze(ctx context.Context, prompt string) (string, error) {
-	// URL da API Gemini
+	if p.authMode == "vertex" {
+		return p.analyzeVertex(ctx, prompt)
+	}
+	return p.analyzeAPIKey(ctx, prompt)
+}
+
+// analyzeAPIKey usa a API do AI Studio com chave de API
+func (p *GeminiProvider) analyzeAPIKey(ctx context.Context, prompt string) (string, error) {
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
 		p.model, p.apiKey)
 
-	// Preparar requisição
+	return p.doRequest(ctx, url, "", prompt)
+}
+
+// analyzeVertex usa o Vertex AI com Application Default Credentials (SSO via gcloud)
+func (p *GeminiProvider) analyzeVertex(ctx context.Context, prompt string) (string, error) {
+	token, err := getGcloudAccessToken(ctx)
+	if err != nil {
+		return "", fmt.Errorf("falha ao obter token gcloud (execute 'gcloud auth application-default login'): %w", err)
+	}
+
+	url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent",
+		p.location, p.project, p.location, p.model)
+
+	return p.doRequest(ctx, url, token, prompt)
+}
+
+// doRequest executa a requisição HTTP para a API Gemini (AI Studio ou Vertex AI)
+func (p *GeminiProvider) doRequest(ctx context.Context, url, bearerToken, prompt string) (string, error) {
 	reqBody := geminiRequest{
 		Contents: []geminiContent{
 			{
@@ -75,44 +107,55 @@ func (p *GeminiProvider) Analyze(ctx context.Context, prompt string) (string, er
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Criar requisição HTTP
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	if bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+bearerToken)
+	}
 
-	// Executar requisição
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Ler resposta
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Verificar status code
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	// Parse resposta
 	var geminiResp geminiResponse
 	if err := json.Unmarshal(body, &geminiResp); err != nil {
 		return "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// Extrair texto da resposta
 	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
 		return "", fmt.Errorf("empty response from gemini")
 	}
 
 	return geminiResp.Candidates[0].Content.Parts[0].Text, nil
+}
+
+// getGcloudAccessToken obtém o access token via Application Default Credentials (gcloud)
+func getGcloudAccessToken(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "gcloud", "auth", "print-access-token")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("gcloud auth print-access-token: %w", err)
+	}
+	token := strings.TrimSpace(string(output))
+	if token == "" {
+		return "", fmt.Errorf("gcloud retornou token vazio")
+	}
+	return token, nil
 }
 
 // GetModel retorna nome do modelo
@@ -122,9 +165,12 @@ func (p *GeminiProvider) GetModel() string {
 
 // IsAvailable verifica se Gemini API está configurado
 // NOTA: Não faz chamadas à API para evitar consumo de quota automático
-// A validação real da chave acontece apenas quando o usuário clica em "Validar" explicitamente
 func (p *GeminiProvider) IsAvailable(ctx context.Context) bool {
-	// Apenas verificar se API key está presente (não faz requisição)
+	if p.authMode == "vertex" {
+		// Verificar se gcloud está disponível e autenticado
+		cmd := exec.CommandContext(ctx, "gcloud", "auth", "print-access-token")
+		return cmd.Run() == nil
+	}
 	return p.apiKey != ""
 }
 

@@ -10,11 +10,20 @@ type Config struct {
 	// Provider provider selecionado (gemini, ollama, claude, openai)
 	Provider string
 
-	// GeminiAPIKey chave de API do Gemini
+	// GeminiAPIKey chave de API do Gemini (modo apikey)
 	GeminiAPIKey string
 
 	// GeminiModel modelo do Gemini (padrão: gemini-2.5-flash)
 	GeminiModel string
+
+	// GeminiAuthMode modo de autenticação: "apikey" (padrão) ou "vertex" (SSO/ADC via gcloud)
+	GeminiAuthMode string
+
+	// GeminiVertexProject ID do projeto GCP para Vertex AI (modo vertex)
+	GeminiVertexProject string
+
+	// GeminiVertexLocation região GCP para Vertex AI (padrão: us-central1)
+	GeminiVertexLocation string
 
 	// OllamaBaseURL URL base do Ollama (padrão: http://localhost:11434)
 	OllamaBaseURL string
@@ -54,7 +63,9 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Provider:          "ollama", // Ollama llama3.2 3B
-		GeminiModel:       "gemini-2.5-flash", // Modelo estável recomendado (Free tier: 15 RPM / 1M+ tokens/dia)
+		GeminiModel:         "gemini-2.5-flash", // Modelo estável recomendado (Free tier: 15 RPM / 1M+ tokens/dia)
+		GeminiAuthMode:      "apikey",
+		GeminiVertexLocation: "us-central1",
 		OllamaBaseURL:     "http://localhost:11434",
 		OllamaModel:       "llama3.2:3b", // Llama3.2 3B - melhor qualidade
 		ClaudeModel:       "claude-3-5-sonnet-20241022",
@@ -73,17 +84,39 @@ func (c *Config) Validate() error {
 
 	// Validações específicas do provider
 	if c.Provider == "gemini" {
-		// Tentar obter API key de variável de ambiente se não foi fornecida
-		if c.GeminiAPIKey == "" {
-			c.GeminiAPIKey = os.Getenv("GEMINI_API_KEY")
-		}
-
-		if c.GeminiAPIKey == "" {
-			return fmt.Errorf("gemini API key not provided (use --gemini-api-key or GEMINI_API_KEY env var)")
+		if c.GeminiAuthMode == "" {
+			c.GeminiAuthMode = "apikey"
 		}
 
 		if c.GeminiModel == "" {
-			c.GeminiModel = "gemini-2.5-flash" // Modelo padrão (estável, com boa quota no Free Tier)
+			c.GeminiModel = "gemini-2.5-flash"
+		}
+
+		if c.GeminiAuthMode == "vertex" {
+			// Modo Vertex AI: autenticação via Application Default Credentials (SSO/gcloud)
+			if c.GeminiVertexProject == "" {
+				c.GeminiVertexProject = os.Getenv("GOOGLE_CLOUD_PROJECT")
+			}
+			if c.GeminiVertexProject == "" {
+				c.GeminiVertexProject = os.Getenv("GCLOUD_PROJECT")
+			}
+			if c.GeminiVertexProject == "" {
+				return fmt.Errorf("gemini vertex project not provided (use --gemini-project or GOOGLE_CLOUD_PROJECT env var)")
+			}
+			if c.GeminiVertexLocation == "" {
+				c.GeminiVertexLocation = os.Getenv("GOOGLE_CLOUD_LOCATION")
+			}
+			if c.GeminiVertexLocation == "" {
+				c.GeminiVertexLocation = "us-central1"
+			}
+		} else {
+			// Modo API Key (padrão)
+			if c.GeminiAPIKey == "" {
+				c.GeminiAPIKey = os.Getenv("GEMINI_API_KEY")
+			}
+			if c.GeminiAPIKey == "" {
+				return fmt.Errorf("gemini API key not provided (use --gemini-api-key or GEMINI_API_KEY env var)")
+			}
 		}
 	}
 
