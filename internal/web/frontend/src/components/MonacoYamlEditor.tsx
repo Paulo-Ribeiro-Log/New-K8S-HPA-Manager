@@ -262,6 +262,7 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
           height={height}
           defaultLanguage="yaml"
           value={value}
+          beforeMount={handleBeforeMount}
           onMount={handleMount}
           onChange={handleChange}
           theme="vs-dark"
