@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"os/exec"
 	"strings"
+	"time"
 
 	"k8s-hpa-manager/internal/storage"
 
@@ -27,10 +30,13 @@ func NewAITokensHandler(tokensStore *storage.UserTokensStore, localSettingsStore
 
 // SaveTokensRequest request para salvar tokens
 type SaveTokensRequest struct {
-	AIEmail             string `json:"ai_email"`                 // Email para identificar configurações (independente do Azure AD)
-	GeminiAPIKey        string `json:"gemini_api_key,omitempty"`
-	GeminiModel         string `json:"gemini_model,omitempty"`
-	OpenAIAPIKey        string `json:"openai_api_key,omitempty"`
+	AIEmail              string `json:"ai_email"`                          // Email para identificar configurações (independente do Azure AD)
+	GeminiAPIKey         string `json:"gemini_api_key,omitempty"`
+	GeminiModel          string `json:"gemini_model,omitempty"`
+	GeminiAuthMode       string `json:"gemini_auth_mode,omitempty"`        // "apikey" ou "vertex"
+	GeminiVertexProject  string `json:"gemini_vertex_project,omitempty"`   // projeto GCP para Vertex AI
+	GeminiVertexLocation string `json:"gemini_vertex_location,omitempty"`  // região GCP (ex: us-central1)
+	OpenAIAPIKey         string `json:"openai_api_key,omitempty"`
 	OpenAIModel         string `json:"openai_model,omitempty"`
 	ClaudeAPIKey        string `json:"claude_api_key,omitempty"`
 	ClaudeModel         string `json:"claude_model,omitempty"`
@@ -43,10 +49,13 @@ type SaveTokensRequest struct {
 
 // TokensResponse response com tokens (sem expor valores completos)
 type TokensResponse struct {
-	AIEmail           string `json:"ai_email,omitempty"`        // Email usado para identificar configurações
-	HasGemini         bool   `json:"has_gemini"`
-	GeminiModel       string `json:"gemini_model,omitempty"`
-	HasOpenAI         bool   `json:"has_openai"`
+	AIEmail              string `json:"ai_email,omitempty"`               // Email usado para identificar configurações
+	HasGemini            bool   `json:"has_gemini"`
+	GeminiModel          string `json:"gemini_model,omitempty"`
+	GeminiAuthMode       string `json:"gemini_auth_mode,omitempty"`       // "apikey" ou "vertex"
+	GeminiVertexProject  string `json:"gemini_vertex_project,omitempty"`  // não sensível - é o ID do projeto
+	GeminiVertexLocation string `json:"gemini_vertex_location,omitempty"` // região GCP
+	HasOpenAI            bool   `json:"has_openai"`
 	OpenAIModel       string `json:"openai_model,omitempty"`
 	HasClaude         bool   `json:"has_claude"`
 	ClaudeModel       string `json:"claude_model,omitempty"`
@@ -175,6 +184,22 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 		tokens.GeminiModel = req.GeminiModel
 	} else {
 		tokens.GeminiModel = existingTokens.GeminiModel
+	}
+	// Gemini Vertex AI (SSO)
+	if req.GeminiAuthMode != "" {
+		tokens.GeminiAuthMode = req.GeminiAuthMode
+	} else {
+		tokens.GeminiAuthMode = existingTokens.GeminiAuthMode
+	}
+	if req.GeminiVertexProject != "" {
+		tokens.GeminiVertexProject = req.GeminiVertexProject
+	} else {
+		tokens.GeminiVertexProject = existingTokens.GeminiVertexProject
+	}
+	if req.GeminiVertexLocation != "" {
+		tokens.GeminiVertexLocation = req.GeminiVertexLocation
+	} else {
+		tokens.GeminiVertexLocation = existingTokens.GeminiVertexLocation
 	}
 
 	// OpenAI
@@ -320,21 +345,26 @@ func (h *AITokensHandler) GetTokens(c *gin.Context) {
 		return
 	}
 
+	hasGemini := tokens.GeminiAPIKey != "" || (tokens.GeminiAuthMode == "vertex" && tokens.GeminiVertexProject != "")
+
 	// Retornar apenas status (não expor tokens completos)
 	c.JSON(http.StatusOK, TokensResponse{
-		AIEmail:           tokens.UserEmail,
-		HasGemini:         tokens.GeminiAPIKey != "",
-		GeminiModel:       tokens.GeminiModel,
-		HasOpenAI:         tokens.OpenAIAPIKey != "",
-		OpenAIModel:       tokens.OpenAIModel,
-		HasClaude:         tokens.ClaudeAPIKey != "",
-		ClaudeModel:       tokens.ClaudeModel,
-		HasCopilot:        tokens.CopilotAPIKey != "",
-		CopilotEndpoint:   tokens.CopilotEndpoint,
-		CopilotDeployment: tokens.CopilotDeployment,
-		OllamaModel:       tokens.OllamaModel,
-		PreferredProvider: tokens.PreferredProvider,
-		UpdatedAt:         tokens.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		AIEmail:              tokens.UserEmail,
+		HasGemini:            hasGemini,
+		GeminiModel:          tokens.GeminiModel,
+		GeminiAuthMode:       tokens.GeminiAuthMode,
+		GeminiVertexProject:  tokens.GeminiVertexProject,
+		GeminiVertexLocation: tokens.GeminiVertexLocation,
+		HasOpenAI:            tokens.OpenAIAPIKey != "",
+		OpenAIModel:          tokens.OpenAIModel,
+		HasClaude:            tokens.ClaudeAPIKey != "",
+		ClaudeModel:          tokens.ClaudeModel,
+		HasCopilot:           tokens.CopilotAPIKey != "",
+		CopilotEndpoint:      tokens.CopilotEndpoint,
+		CopilotDeployment:    tokens.CopilotDeployment,
+		OllamaModel:          tokens.OllamaModel,
+		PreferredProvider:    tokens.PreferredProvider,
+		UpdatedAt:            tokens.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	})
 }
 
@@ -383,10 +413,12 @@ func (h *AITokensHandler) DeleteTokens(c *gin.Context) {
 // ValidateToken valida um token específico sem salvar
 func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 	var req struct {
-		Provider   string `json:"provider"`
-		APIKey     string `json:"api_key"`
-		Endpoint   string `json:"endpoint,omitempty"`   // Para Copilot
-		Deployment string `json:"deployment,omitempty"` // Para Copilot
+		Provider      string `json:"provider"`
+		APIKey        string `json:"api_key"`
+		Endpoint      string `json:"endpoint,omitempty"`       // Para Copilot
+		Deployment    string `json:"deployment,omitempty"`     // Para Copilot
+		VertexProject string `json:"vertex_project,omitempty"` // Para Gemini Vertex AI
+		VertexLocation string `json:"vertex_location,omitempty"` // Para Gemini Vertex AI
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -400,6 +432,8 @@ func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 	switch req.Provider {
 	case "gemini":
 		validationErr = validateGeminiToken(req.APIKey)
+	case "gemini-vertex":
+		validationErr = validateGeminiVertexConnection(req.VertexProject)
 	case "claude":
 		validationErr = validateClaudeToken(req.APIKey)
 	case "openai":
@@ -425,6 +459,29 @@ func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 		"valid":   true,
 		"message": fmt.Sprintf("%s token is valid", req.Provider),
 	})
+}
+
+// validateGeminiVertexConnection testa autenticação via gcloud ADC para Vertex AI
+func validateGeminiVertexConnection(project string) error {
+	if project == "" {
+		return fmt.Errorf("projeto GCP é obrigatório para Vertex AI")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "gcloud", "auth", "print-access-token")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("gcloud não está autenticado — execute: gcloud auth application-default login")
+	}
+
+	token := strings.TrimSpace(string(output))
+	if token == "" {
+		return fmt.Errorf("gcloud retornou token vazio")
+	}
+
+	return nil
 }
 
 // validateGeminiToken valida token do Gemini
