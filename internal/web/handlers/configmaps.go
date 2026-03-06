@@ -449,6 +449,114 @@ func (h *ConfigMapHandler) Describe(c *gin.Context) {
 }
 
 // Delete deleta um ConfigMap específico
+// Create cria um novo ConfigMap a partir de um YAML completo
+func (h *ConfigMapHandler) Create(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+
+	if cluster == "" || namespace == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "MISSING_PARAMETER",
+				"message": "Cluster and namespace must be provided",
+			},
+		})
+		return
+	}
+
+	var req configMapApplyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_REQUEST",
+				"message": fmt.Sprintf("Invalid request body: %v", err),
+			},
+		})
+		return
+	}
+
+	// Extrair nome do YAML
+	var obj map[string]interface{}
+	if err := yaml.Unmarshal([]byte(req.YAML), &obj); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_YAML",
+				"message": fmt.Sprintf("Invalid YAML: %v", err),
+			},
+		})
+		return
+	}
+	metadata, _ := obj["metadata"].(map[string]interface{})
+	if metadata == nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{"code": "MISSING_METADATA", "message": "ConfigMap YAML must contain metadata"},
+		})
+		return
+	}
+	cmName, _ := metadata["name"].(string)
+	if cmName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{"code": "MISSING_NAME", "message": "ConfigMap YAML must contain metadata.name"},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{"code": "CLIENT_ERROR", "message": fmt.Sprintf("Failed to get client: %v", err)},
+		})
+		return
+	}
+
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	startTime := time.Now()
+
+	result, err := kubeClient.ApplyConfigMap(c.Request.Context(), req.YAML, req.FieldManager, namespace, cmName, false, false)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{"code": "CREATE_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	if h.historyTracker != nil {
+		entry := history.HistoryEntry{
+			Action:   "create_configmap",
+			Resource: fmt.Sprintf("%s/%s", namespace, cmName),
+			Cluster:  cluster,
+			After: map[string]interface{}{
+				"name":            cmName,
+				"namespace":       namespace,
+				"resourceVersion": result.ResourceVersion,
+			},
+			Status:   "success",
+			Duration: time.Since(startTime).Milliseconds(),
+		}
+		if err := h.historyTracker.Log(entry); err != nil {
+			fmt.Printf("warning: failed to record history entry: %v\n", err)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"name":            result.Name,
+			"namespace":       result.Namespace,
+			"cluster":         cluster,
+			"resourceVersion": result.ResourceVersion,
+			"createdAt":       time.Now().UTC(),
+		},
+	})
+}
+
 func (h *ConfigMapHandler) Delete(c *gin.Context) {
 	cluster := c.Param("cluster")
 	namespace := c.Param("namespace")
