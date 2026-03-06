@@ -371,9 +371,7 @@ func sanitizeSecretYAML(yamlContent, enforceName, enforceNamespace string) (stri
 			metadata["annotations"] = annotations
 		}
 	}
-	if len(removedAnnotations) > 0 {
-		fmt.Printf("[DEBUG] sanitizeSecretYAML: removidas %d annotations kubectl: %v\n", len(removedAnnotations), removedAnnotations)
-	}
+
 
 	obj["metadata"] = metadata
 
