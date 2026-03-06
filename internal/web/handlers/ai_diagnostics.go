@@ -186,10 +186,25 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 
 	switch tokens.PreferredProvider {
 	case "gemini":
-		if tokens.GeminiAPIKey == "" {
-			return nil, fmt.Errorf("provider 'gemini' selecionado mas API key não configurada - acesse AI Settings e preencha a chave do Gemini")
+		if tokens.GeminiAuthMode == "vertex" {
+			// Modo Vertex AI (SSO organizacional via gcloud)
+			if tokens.GeminiVertexProject == "" {
+				return nil, fmt.Errorf("provider 'gemini' modo Vertex AI selecionado mas projeto GCP não configurado - acesse AI Settings e preencha o Projeto GCP")
+			}
+			config.GeminiAuthMode = "vertex"
+			config.GeminiVertexProject = tokens.GeminiVertexProject
+			if tokens.GeminiVertexLocation != "" {
+				config.GeminiVertexLocation = tokens.GeminiVertexLocation
+			} else {
+				config.GeminiVertexLocation = "us-central1"
+			}
+		} else {
+			// Modo API Key (padrão)
+			if tokens.GeminiAPIKey == "" {
+				return nil, fmt.Errorf("provider 'gemini' selecionado mas API key não configurada - acesse AI Settings e preencha a chave do Gemini")
+			}
+			config.GeminiAPIKey = tokens.GeminiAPIKey
 		}
-		config.GeminiAPIKey = tokens.GeminiAPIKey
 		if tokens.GeminiModel != "" {
 			config.GeminiModel = tokens.GeminiModel
 		} else {
@@ -198,6 +213,7 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 		log.Info().
 			Str("ai_email", aiEmail).
 			Str("provider", "gemini").
+			Str("auth_mode", config.GeminiAuthMode).
 			Str("model", config.GeminiModel).
 			Msg("Using Gemini API")
 

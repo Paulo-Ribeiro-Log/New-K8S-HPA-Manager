@@ -2201,11 +2201,15 @@ class APIClient {
     provider: string,
     apiKey: string,
     endpoint?: string,
-    deployment?: string
+    deployment?: string,
+    vertexProject?: string,
+    vertexLocation?: string
   ): Promise<{ valid: boolean; error?: string; message?: string }> {
     const body: any = { provider, api_key: apiKey };
     if (endpoint) body.endpoint = endpoint;
     if (deployment) body.deployment = deployment;
+    if (vertexProject) body.vertex_project = vertexProject;
+    if (vertexLocation) body.vertex_location = vertexLocation;
 
     return this.request(`/ai/tokens/validate`, {
       method: "POST",

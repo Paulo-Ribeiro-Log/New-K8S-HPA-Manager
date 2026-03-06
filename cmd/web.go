@@ -22,11 +22,14 @@ var (
 	disableADAuth bool // Flag oculta para desabilitar verificação AD em caso de erro
 
 	// AI Diagnostics flags
-	aiProvider   string
-	ollamaURL    string
-	ollamaModel  string
-	claudeAPIKey string
-	claudeModel  string
+	aiProvider      string
+	ollamaURL       string
+	ollamaModel     string
+	claudeAPIKey    string
+	claudeModel     string
+	geminiAuthMode  string
+	geminiProject   string
+	geminiLocation  string
 )
 
 // runInBackground executes the web server as a background process
@@ -75,6 +78,18 @@ func runInBackground() error {
 
 	if claudeModel != "" {
 		args = append(args, "--claude-model", claudeModel)
+	}
+
+	if geminiAuthMode != "" && geminiAuthMode != "apikey" {
+		args = append(args, "--gemini-auth-mode", geminiAuthMode)
+	}
+
+	if geminiProject != "" {
+		args = append(args, "--gemini-project", geminiProject)
+	}
+
+	if geminiLocation != "" && geminiLocation != "us-central1" {
+		args = append(args, "--gemini-location", geminiLocation)
 	}
 
 	// Start process in background
@@ -212,7 +227,7 @@ API Endpoints:
 		}
 
 		// Criar servidor web
-		server, err := web.NewServer(kubeconfig, webPort, debug, disableADAuth, aiProvider, ollamaURL, ollamaModel, claudeAPIKey, claudeModel)
+		server, err := web.NewServer(kubeconfig, webPort, debug, disableADAuth, aiProvider, ollamaURL, ollamaModel, claudeAPIKey, claudeModel, geminiAuthMode, geminiProject, geminiLocation)
 		if err != nil {
 			return fmt.Errorf("failed to create web server: %w", err)
 		}
@@ -277,5 +292,8 @@ func init() {
 	webCmd.Flags().StringVar(&ollamaModel, "ollama-model", "llama3.2", "Ollama model name")
 	webCmd.Flags().StringVar(&claudeAPIKey, "claude-api-key", "", "Claude API key (or set CLAUDE_API_KEY env var)")
 	webCmd.Flags().StringVar(&claudeModel, "claude-model", "claude-3-5-sonnet-20241022", "Claude model name")
+	webCmd.Flags().StringVar(&geminiAuthMode, "gemini-auth-mode", "apikey", "Gemini auth mode: 'apikey' (API key) ou 'vertex' (SSO/ADC via gcloud)")
+	webCmd.Flags().StringVar(&geminiProject, "gemini-project", "", "ID do projeto GCP para Vertex AI (ou env GOOGLE_CLOUD_PROJECT)")
+	webCmd.Flags().StringVar(&geminiLocation, "gemini-location", "us-central1", "Região GCP para Vertex AI")
 
 }

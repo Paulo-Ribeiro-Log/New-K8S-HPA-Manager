@@ -19,10 +19,13 @@ func NewUserTokensStore(client *SQLiteClient) *UserTokensStore {
 
 // UserTokens representa tokens de um usuário
 type UserTokens struct {
-	UserEmail           string            `json:"user_email"`
-	GeminiAPIKey        string            `json:"gemini_api_key,omitempty"`
-	GeminiModel         string            `json:"gemini_model,omitempty"`
-	OpenAIAPIKey        string            `json:"openai_api_key,omitempty"`
+	UserEmail            string            `json:"user_email"`
+	GeminiAPIKey         string            `json:"gemini_api_key,omitempty"`
+	GeminiModel          string            `json:"gemini_model,omitempty"`
+	GeminiAuthMode       string            `json:"gemini_auth_mode,omitempty"`       // "apikey" ou "vertex"
+	GeminiVertexProject  string            `json:"gemini_vertex_project,omitempty"`  // projeto GCP para Vertex AI
+	GeminiVertexLocation string            `json:"gemini_vertex_location,omitempty"` // região GCP (ex: us-central1)
+	OpenAIAPIKey         string            `json:"openai_api_key,omitempty"`
 	OpenAIModel         string            `json:"openai_model,omitempty"`
 	ClaudeAPIKey        string            `json:"claude_api_key,omitempty"`
 	ClaudeModel         string            `json:"claude_model,omitempty"`
@@ -72,6 +75,9 @@ func (s *UserTokensStore) CreateTable() error {
 		`ALTER TABLE user_ai_tokens ADD COLUMN openai_model TEXT`,
 		`ALTER TABLE user_ai_tokens ADD COLUMN claude_model TEXT`,
 		`ALTER TABLE user_ai_tokens ADD COLUMN ollama_model TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN gemini_auth_mode TEXT DEFAULT 'apikey'`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN gemini_vertex_project TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN gemini_vertex_location TEXT`,
 	}
 
 	for _, migration := range migrations {
@@ -103,13 +109,16 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 
 	query := `
 	INSERT INTO user_ai_tokens (
-		user_email, gemini_api_key, gemini_model, openai_api_key, openai_model,
-		claude_api_key, claude_model, copilot_api_key, copilot_endpoint,
+		user_email, gemini_api_key, gemini_model, gemini_auth_mode, gemini_vertex_project, gemini_vertex_location,
+		openai_api_key, openai_model, claude_api_key, claude_model, copilot_api_key, copilot_endpoint,
 		copilot_deployment, ollama_model, preferred_provider, metadata, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(user_email) DO UPDATE SET
 		gemini_api_key = excluded.gemini_api_key,
 		gemini_model = excluded.gemini_model,
+		gemini_auth_mode = excluded.gemini_auth_mode,
+		gemini_vertex_project = excluded.gemini_vertex_project,
+		gemini_vertex_location = excluded.gemini_vertex_location,
 		openai_api_key = excluded.openai_api_key,
 		openai_model = excluded.openai_model,
 		claude_api_key = excluded.claude_api_key,
@@ -127,6 +136,9 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 		userEmail,
 		tokens.GeminiAPIKey,
 		tokens.GeminiModel,
+		tokens.GeminiAuthMode,
+		tokens.GeminiVertexProject,
+		tokens.GeminiVertexLocation,
 		tokens.OpenAIAPIKey,
 		tokens.OpenAIModel,
 		tokens.ClaudeAPIKey,
@@ -154,8 +166,8 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	}
 
 	query := `
-	SELECT user_email, gemini_api_key, gemini_model, openai_api_key, openai_model,
-	       claude_api_key, claude_model, copilot_api_key, copilot_endpoint,
+	SELECT user_email, gemini_api_key, gemini_model, gemini_auth_mode, gemini_vertex_project, gemini_vertex_location,
+	       openai_api_key, openai_model, claude_api_key, claude_model, copilot_api_key, copilot_endpoint,
 	       copilot_deployment, ollama_model, preferred_provider, metadata,
 	       updated_at, created_at
 	FROM user_ai_tokens
@@ -166,11 +178,15 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 
 	var tokens UserTokens
 	var metadataJSON string
+	var geminiAuthMode, geminiVertexProject, geminiVertexLocation sql.NullString
 
 	err := row.Scan(
 		&tokens.UserEmail,
 		&tokens.GeminiAPIKey,
 		&tokens.GeminiModel,
+		&geminiAuthMode,
+		&geminiVertexProject,
+		&geminiVertexLocation,
 		&tokens.OpenAIAPIKey,
 		&tokens.OpenAIModel,
 		&tokens.ClaudeAPIKey,
@@ -184,6 +200,9 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 		&tokens.UpdatedAt,
 		&tokens.CreatedAt,
 	)
+	tokens.GeminiAuthMode = geminiAuthMode.String
+	tokens.GeminiVertexProject = geminiVertexProject.String
+	tokens.GeminiVertexLocation = geminiVertexLocation.String
 
 	if err == sql.ErrNoRows {
 		return nil, nil // Usuário não tem tokens configurados
@@ -226,5 +245,6 @@ func (s *UserTokensStore) HasTokens(userEmail string) (bool, error) {
 		return false, nil
 	}
 
-	return tokens.GeminiAPIKey != "" || tokens.OpenAIAPIKey != "" || tokens.ClaudeAPIKey != "" || tokens.CopilotAPIKey != "", nil
+	hasGemini := tokens.GeminiAPIKey != "" || (tokens.GeminiAuthMode == "vertex" && tokens.GeminiVertexProject != "")
+	return hasGemini || tokens.OpenAIAPIKey != "" || tokens.ClaudeAPIKey != "" || tokens.CopilotAPIKey != "", nil
 }
