@@ -406,7 +406,17 @@ grep -E "index-.*\.(js|css)" internal/web/static/index.html
   - Toggle "Sistema" (Eye/EyeOff) igual às demais abas
   - Lista de recursos com Name, Namespace, Age e colunas adicionais (status, phase) quando disponíveis
   - Monaco YAML Editor completo: Undo/Redo (50 versões), Diff, Validar (dry-run), Aplicar, Cancelar, Fullscreen
-  - Menu 3 pontos: Describe (kubectl describe), Deletar (protegido com `<ProtectedAction>` RBAC SRE)
+  - **Aba Logs no painel de visualizações** (06/03/2026):
+    - Tabs YAML | Logs sempre visíveis no painel direito
+    - Para **Pods**: seletor de container (extraído do YAML), tail lines (100/500/1000/5000), auto-refresh 3s, exportação `.txt`, syntax highlighting por nível (ERROR/WARN/INFO/DEBUG)
+    - Para outros recursos: mensagem informativa "Logs disponíveis apenas para Pods"
+  - **Modal Describe aprimorado** (06/03/2026):
+    - Botão Describe movido do menu de 3 pontos para o header do painel (ícone `FileText`)
+    - Switch de auto-refresh (5s) com ícone animado
+    - Botão de refresh manual sem fechar o modal
+    - Toggle fullscreen (98vw × 98vh)
+    - Não fecha ao clicar fora; limpa auto-refresh ao fechar
+  - Menu 3 pontos: apenas Deletar (protegido com `<ProtectedAction>` RBAC SRE)
   - **Discovery API**: `clientset.Discovery().ServerPreferredResources()` lista TODOS os tipos (built-in + CRDs instalados)
   - **kubectl-based CRUD**: get/apply/delete via kubectl shell (padrão do projeto — dynamic client não está no vendor)
   - Backend: `internal/web/handlers/explorer.go` + métodos em `internal/kubernetes/client.go`
@@ -2140,6 +2150,33 @@ make release                     # Gera binários em build/release/
 ---
 
 ## 📝 Histórico de Sessões Recentes
+
+### Sessão 06/03/2026 - Melhorias no Resource Explorer (Logs, Describe aprimorado)
+**Contexto**: Adicionar aba de Logs no painel de visualizações do Explorer e melhorar o modal de describe com fullscreen e auto-refresh
+**Alterações**:
+- **`ResourceExplorerTab.tsx`**:
+  - Tabs YAML | Logs sempre visíveis no painel direito (não apenas para Pods)
+  - Para Pods: seletor de container (extraído do YAML via regex `^  - name:\s+(\S+)`), tail lines select, auto-refresh 3s, exportação `.txt`, syntax highlighting por linha
+  - Para outros recursos: mensagem "Logs disponíveis apenas para Pods"
+  - Botão Describe (`FileText`) movido do menu de 3 pontos para o header do painel
+  - `fetchDescribe()` extraída como `useCallback` (reutilizável por auto-refresh e botão manual)
+  - `handleDescribeOpenChange()` limpa auto-refresh ao fechar modal
+  - Modal describe: Switch auto-refresh 5s, botão refresh manual, toggle fullscreen (98vw×98vh), `onInteractOutside` prevent
+  - Novos imports: `Switch`, `Label` de shadcn/ui
+
+**Padrão estabelecido — describe com auto-refresh:**
+```tsx
+// Auto-refresh via useEffect + setInterval
+useEffect(() => {
+  if (describeAutoRefreshRef.current) clearInterval(describeAutoRefreshRef.current);
+  if (describeAutoRefresh && describeModalOpen) {
+    describeAutoRefreshRef.current = setInterval(() => fetchDescribe(), 5000);
+  }
+  return () => { if (describeAutoRefreshRef.current) clearInterval(describeAutoRefreshRef.current); };
+}, [describeAutoRefresh, describeModalOpen, fetchDescribe]);
+```
+
+---
 
 ### Sessão 03/03/2026 (2) - IPs de Serviços nas Abas Deployments e Secrets
 **Contexto**: Exibir os ClusterIPs dos Services Kubernetes associados a cada Deployment e Secret nos cards da lista
