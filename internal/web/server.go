@@ -508,6 +508,7 @@ func (s *Server) setupRoutes() {
 		configMaps.POST("/validate", configMapHandler.Validate)
 
 		// ConfigMaps - Write Operations (SRE-only)
+		configMaps.POST("/:cluster/:namespace", rbacMiddleware.RequireSREGroup(), configMapHandler.Create)
 		configMaps.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), configMapHandler.Apply)
 		configMaps.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), configMapHandler.Delete)
 	}
