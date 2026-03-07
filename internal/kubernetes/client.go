@@ -189,6 +189,7 @@ func (c *Client) GetConfigMap(ctx context.Context, namespace, name string) (*mod
 	}
 
 	cm.ManagedFields = nil
+	cm.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}
 
 	yamlBytes, err := yaml.Marshal(cm)
 	if err != nil {
@@ -1006,6 +1007,7 @@ func (c *Client) GetDeployment(ctx context.Context, namespace, name string) (*mo
 	// Limpar campos server-side que poluem o YAML exibido
 	// ManagedFields gera entradas "f:campo: {}" que não são valores reais
 	dep.ManagedFields = nil
+	dep.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}
 	// Status é gerenciado pelo cluster e não deve aparecer no editor
 	dep.Status = appsv1.DeploymentStatus{}
 
@@ -1319,6 +1321,7 @@ func (c *Client) GetDaemonSet(ctx context.Context, namespace, name string) (*mod
 	}
 
 	ds.ManagedFields = nil
+	ds.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "DaemonSet"}
 	ds.Status = appsv1.DaemonSetStatus{}
 
 	yamlBytes, err := yaml.Marshal(ds)
@@ -1547,6 +1550,7 @@ func (c *Client) GetStatefulSet(ctx context.Context, namespace, name string) (*m
 	}
 
 	sts.ManagedFields = nil
+	sts.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "StatefulSet"}
 	sts.Status = appsv1.StatefulSetStatus{}
 
 	yamlBytes, err := yaml.Marshal(sts)
@@ -1798,6 +1802,7 @@ func (c *Client) GetSecret(ctx context.Context, namespace, name string) (*models
 	}
 
 	secret.ManagedFields = nil
+	secret.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}
 
 	yamlBytes, err := yaml.Marshal(secret)
 	if err != nil {
