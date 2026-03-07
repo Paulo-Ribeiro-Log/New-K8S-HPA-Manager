@@ -325,10 +325,13 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
       const errorMessage = error instanceof Error ? error.message : "Erro desconhecido";
       console.error('❌ Error applying node pool:', errorMessage);
       toast.error(`❌ Erro ao aplicar ${nodePool.name}: ${errorMessage}`);
+      window.dispatchEvent(new CustomEvent("nodePoolApplying", {
+        detail: { poolName: nodePool.name, status: "end", result: "error", errorMessage }
+      }));
     } finally {
       setIsApplying(false);
-      window.dispatchEvent(new CustomEvent("nodePoolApplying", {
-        detail: { poolName: nodePool.name, status: "end", result: applySuccess ? "success" : "error" }
+      if (applySuccess) window.dispatchEvent(new CustomEvent("nodePoolApplying", {
+        detail: { poolName: nodePool.name, status: "end", result: "success" }
       }));
     }
   };

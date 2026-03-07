@@ -189,6 +189,7 @@ func (c *Client) GetConfigMap(ctx context.Context, namespace, name string) (*mod
 	}
 
 	cm.ManagedFields = nil
+	cm.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}
 
 	yamlBytes, err := yaml.Marshal(cm)
 	if err != nil {
@@ -323,47 +324,25 @@ func (c *Client) applyConfigMap(ctx context.Context, yamlContent, fieldManager, 
 		return nil, fmt.Errorf("configmap yaml content cannot be empty")
 	}
 
-	payload, namespace, name, err := prepareConfigMapApplyPayload(yamlContent, enforceNamespace, enforceName)
+	// Valida e extrai namespace/name; o YAML sanitizado vai direto para o kubectl.
+	_, namespace, name, err := prepareConfigMapApplyPayload(yamlContent, enforceNamespace, enforceName)
 	if err != nil {
 		return nil, err
 	}
 
-	var cmObj corev1.ConfigMap
-	if err := json.Unmarshal(payload, &cmObj); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal configmap payload: %w", err)
+	// kubectl apply --server-side --force-conflicts: resolve conflitos com Helm/GitOps field managers.
+	if err := applyViaKubectlSSA(c.cluster, namespace, yamlContent, dryRun); err != nil {
+		return nil, fmt.Errorf("failed to apply configmap %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
 
-	// GET + Update em vez de SSA (ApplyPatchType).
-	// O SSA não remove chaves de outros field managers (kubectl-client-side-apply, helm, etc.),
-	// impedindo a deleção de entradas do ConfigMap. O Update substitui o recurso inteiro.
-	current, err := c.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("failed to get configmap %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
-		}
-		createOptions := metav1.CreateOptions{}
-		if dryRun {
-			createOptions.DryRun = []string{metav1.DryRunAll}
-		}
-		result, err := c.clientset.CoreV1().ConfigMaps(namespace).Create(ctx, &cmObj, createOptions)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create configmap %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
-		}
-		return result, nil
-	}
-
-	cmObj.ResourceVersion = current.ResourceVersion
-
-	updateOptions := metav1.UpdateOptions{}
 	if dryRun {
-		updateOptions.DryRun = []string{metav1.DryRunAll}
+		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}, nil
 	}
 
-	result, err := c.clientset.CoreV1().ConfigMaps(namespace).Update(ctx, &cmObj, updateOptions)
+	result, err := c.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to update configmap %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		return nil, fmt.Errorf("failed to get configmap after apply %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
-
 	return result, nil
 }
 
@@ -1028,6 +1007,7 @@ func (c *Client) GetDeployment(ctx context.Context, namespace, name string) (*mo
 	// Limpar campos server-side que poluem o YAML exibido
 	// ManagedFields gera entradas "f:campo: {}" que não são valores reais
 	dep.ManagedFields = nil
+	dep.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}
 	// Status é gerenciado pelo cluster e não deve aparecer no editor
 	dep.Status = appsv1.DeploymentStatus{}
 
@@ -1197,47 +1177,23 @@ func (c *Client) applyDeployment(ctx context.Context, yamlContent, fieldManager,
 		return nil, fmt.Errorf("deployment yaml content cannot be empty")
 	}
 
-	payload, namespace, name, err := prepareDeploymentApplyPayload(yamlContent, enforceNamespace, enforceName)
+	_, namespace, name, err := prepareDeploymentApplyPayload(yamlContent, enforceNamespace, enforceName)
 	if err != nil {
 		return nil, err
 	}
 
-	var depObj appsv1.Deployment
-	if err := json.Unmarshal(payload, &depObj); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal deployment payload: %w", err)
+	if err := applyViaKubectlSSA(c.cluster, namespace, yamlContent, dryRun); err != nil {
+		return nil, fmt.Errorf("failed to apply deployment %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
 
-	// GET + Update em vez de SSA (ApplyPatchType).
-	// O SSA não remove campos de outros field managers (kubectl-client-side-apply, helm, etc.),
-	// impedindo alterações completas no Deployment. O Update substitui o recurso inteiro.
-	current, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("failed to get deployment %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
-		}
-		createOptions := metav1.CreateOptions{}
-		if dryRun {
-			createOptions.DryRun = []string{metav1.DryRunAll}
-		}
-		result, err := c.clientset.AppsV1().Deployments(namespace).Create(ctx, &depObj, createOptions)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create deployment %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
-		}
-		return result, nil
-	}
-
-	depObj.ResourceVersion = current.ResourceVersion
-
-	updateOptions := metav1.UpdateOptions{}
 	if dryRun {
-		updateOptions.DryRun = []string{metav1.DryRunAll}
+		return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}, nil
 	}
 
-	result, err := c.clientset.AppsV1().Deployments(namespace).Update(ctx, &depObj, updateOptions)
+	result, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to update deployment %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		return nil, fmt.Errorf("failed to get deployment after apply %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
-
 	return result, nil
 }
 
@@ -1365,6 +1321,7 @@ func (c *Client) GetDaemonSet(ctx context.Context, namespace, name string) (*mod
 	}
 
 	ds.ManagedFields = nil
+	ds.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "DaemonSet"}
 	ds.Status = appsv1.DaemonSetStatus{}
 
 	yamlBytes, err := yaml.Marshal(ds)
@@ -1435,47 +1392,23 @@ func (c *Client) applyDaemonSet(ctx context.Context, yamlContent, fieldManager, 
 		return nil, fmt.Errorf("daemonset yaml content cannot be empty")
 	}
 
-	payload, namespace, name, err := prepareDaemonSetApplyPayload(yamlContent, enforceNamespace, enforceName)
+	_, namespace, name, err := prepareDaemonSetApplyPayload(yamlContent, enforceNamespace, enforceName)
 	if err != nil {
 		return nil, err
 	}
 
-	var dsObj appsv1.DaemonSet
-	if err := json.Unmarshal(payload, &dsObj); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal daemonset payload: %w", err)
+	if err := applyViaKubectlSSA(c.cluster, namespace, yamlContent, dryRun); err != nil {
+		return nil, fmt.Errorf("failed to apply daemonset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
 
-	// GET + Update em vez de SSA (ApplyPatchType).
-	// O SSA não remove campos de outros field managers (kubectl-client-side-apply, helm, etc.),
-	// impedindo alterações completas no DaemonSet. O Update substitui o recurso inteiro.
-	current, err := c.clientset.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("failed to get daemonset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
-		}
-		createOptions := metav1.CreateOptions{}
-		if dryRun {
-			createOptions.DryRun = []string{metav1.DryRunAll}
-		}
-		result, err := c.clientset.AppsV1().DaemonSets(namespace).Create(ctx, &dsObj, createOptions)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create daemonset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
-		}
-		return result, nil
-	}
-
-	dsObj.ResourceVersion = current.ResourceVersion
-
-	updateOptions := metav1.UpdateOptions{}
 	if dryRun {
-		updateOptions.DryRun = []string{metav1.DryRunAll}
+		return &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}, nil
 	}
 
-	result, err := c.clientset.AppsV1().DaemonSets(namespace).Update(ctx, &dsObj, updateOptions)
+	result, err := c.clientset.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to update daemonset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		return nil, fmt.Errorf("failed to get daemonset after apply %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
-
 	return result, nil
 }
 
@@ -1617,6 +1550,7 @@ func (c *Client) GetStatefulSet(ctx context.Context, namespace, name string) (*m
 	}
 
 	sts.ManagedFields = nil
+	sts.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "StatefulSet"}
 	sts.Status = appsv1.StatefulSetStatus{}
 
 	yamlBytes, err := yaml.Marshal(sts)
@@ -1691,47 +1625,23 @@ func (c *Client) applyStatefulSet(ctx context.Context, yamlContent, fieldManager
 		return nil, fmt.Errorf("statefulset yaml content cannot be empty")
 	}
 
-	payload, namespace, name, err := prepareStatefulSetApplyPayload(yamlContent, enforceNamespace, enforceName)
+	_, namespace, name, err := prepareStatefulSetApplyPayload(yamlContent, enforceNamespace, enforceName)
 	if err != nil {
 		return nil, err
 	}
 
-	var stsObj appsv1.StatefulSet
-	if err := json.Unmarshal(payload, &stsObj); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal statefulset payload: %w", err)
+	if err := applyViaKubectlSSA(c.cluster, namespace, yamlContent, dryRun); err != nil {
+		return nil, fmt.Errorf("failed to apply statefulset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
 
-	// GET + Update em vez de SSA (ApplyPatchType).
-	// O SSA não remove campos de outros field managers (kubectl-client-side-apply, helm, etc.),
-	// impedindo alterações completas no StatefulSet. O Update substitui o recurso inteiro.
-	current, err := c.clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("failed to get statefulset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
-		}
-		createOptions := metav1.CreateOptions{}
-		if dryRun {
-			createOptions.DryRun = []string{metav1.DryRunAll}
-		}
-		result, err := c.clientset.AppsV1().StatefulSets(namespace).Create(ctx, &stsObj, createOptions)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create statefulset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
-		}
-		return result, nil
-	}
-
-	stsObj.ResourceVersion = current.ResourceVersion
-
-	updateOptions := metav1.UpdateOptions{}
 	if dryRun {
-		updateOptions.DryRun = []string{metav1.DryRunAll}
+		return &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}, nil
 	}
 
-	result, err := c.clientset.AppsV1().StatefulSets(namespace).Update(ctx, &stsObj, updateOptions)
+	result, err := c.clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to update statefulset %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		return nil, fmt.Errorf("failed to get statefulset after apply %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
-
 	return result, nil
 }
 
@@ -1892,6 +1802,7 @@ func (c *Client) GetSecret(ctx context.Context, namespace, name string) (*models
 	}
 
 	secret.ManagedFields = nil
+	secret.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}
 
 	yamlBytes, err := yaml.Marshal(secret)
 	if err != nil {
@@ -1964,53 +1875,26 @@ func (c *Client) applySecret(ctx context.Context, yamlContent, fieldManager, enf
 		return nil, fmt.Errorf("secret yaml content cannot be empty")
 	}
 
-	payload, namespace, name, err := prepareSecretApplyPayload(yamlContent, enforceNamespace, enforceName)
+	_, namespace, name, err := prepareSecretApplyPayload(yamlContent, enforceNamespace, enforceName)
 	if err != nil {
 		return nil, err
 	}
 
-	// Converter payload JSON para struct tipado corev1.Secret.
-	// json.Unmarshal decodifica automaticamente base64→[]byte para o campo Data,
-	// que é o comportamento correto para a API Kubernetes.
-	var secretObj corev1.Secret
-	if err := json.Unmarshal(payload, &secretObj); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal secret payload: %w", err)
+	// Usa kubectl apply --server-side --force-conflicts para compatibilidade com clusters
+	// gerenciados por Helm (SSA desde Helm 3.2+). O Update() seria revertido pelo Helm
+	// na próxima reconciliação; o SSA com --force-conflicts toma ownership dos campos editados.
+	if err := applyViaKubectlSSA(c.cluster, namespace, yamlContent, dryRun); err != nil {
+		return nil, fmt.Errorf("failed to apply secret %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
 	}
 
-	// GET + Update em vez de SSA (ApplyPatchType).
-	// O SSA não remove chaves que pertencem a outros field managers (kubectl-client-side-apply,
-	// web-resource-editor, helm, etc.), impedindo a deleção de entradas do Secret.
-	// O Update substitui o recurso inteiro, respeitando exatamente o que o usuário editou.
-	current, err := c.clientset.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("failed to get secret %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
-		}
-		// Secret não existe — criar
-		createOptions := metav1.CreateOptions{}
-		if dryRun {
-			createOptions.DryRun = []string{metav1.DryRunAll}
-		}
-		result, err := c.clientset.CoreV1().Secrets(namespace).Create(ctx, &secretObj, createOptions)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create secret %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
-		}
-		return result, nil
-	}
-
-	// Definir resourceVersion obrigatório para o Update (locking otimista)
-	secretObj.ResourceVersion = current.ResourceVersion
-
-	updateOptions := metav1.UpdateOptions{}
 	if dryRun {
-		updateOptions.DryRun = []string{metav1.DryRunAll}
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}, nil
 	}
 
-	result, err := c.clientset.CoreV1().Secrets(namespace).Update(ctx, &secretObj, updateOptions)
+	result, err := c.clientset.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to update secret %s/%s in cluster %s: %w", namespace, name, c.cluster, err)
+		return nil, err
 	}
-
 	return result, nil
 }
 
@@ -4935,6 +4819,26 @@ func sanitizeVPAYAML(yamlContent string) (string, error) {
 // ApplyVPA aplica um manifesto VPA via kubectl apply (stdin), com suporte a dry-run e force-conflicts.
 // force=true adiciona --server-side --force-conflicts para sobrescrever campos gerenciados por Helm.
 // O YAML é sanitizado antes do apply (remove resourceVersion/managedFields) para evitar conflitos de versão.
+// applyViaKubectlSSA aplica YAML via kubectl apply --server-side --force-conflicts.
+// Resolve conflitos de field managers do Helm, Flux, ArgoCD e ESO sem rejeição.
+// A mudança persiste até a próxima reconciliação do GitOps/Helm.
+func applyViaKubectlSSA(cluster, namespace, yamlContent string, dryRun bool) error {
+	args := []string{"apply", "-f", "-", "--server-side", "--force-conflicts", "--context", cluster}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+	if dryRun {
+		args = append(args, "--dry-run=server")
+	}
+	cmd := exec.Command("kubectl", args...)
+	cmd.Stdin = strings.NewReader(yamlContent)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("kubectl apply --server-side failed: %w\n%s", err, string(out))
+	}
+	return nil
+}
+
 func ApplyVPA(cluster, namespace, yamlContent string, dryRun, force bool) error {
 	sanitized, err := sanitizeVPAYAML(yamlContent)
 	if err != nil {
@@ -4992,61 +4896,40 @@ func (c *Client) GetServiceYAML(ctx context.Context, namespace, name string) (*m
 	}, nil
 }
 
-// ApplyService aplica (create ou update) um Service a partir de YAML, com dryRun e force opcionais.
-// force é aceito por consistência; Update() já faz replace completo (bypassa field managers do Helm).
+// ApplyService aplica um Service via kubectl apply --server-side --force-conflicts.
+// Resolve conflitos com field managers do Helm/GitOps. ClusterIP é imutável e preservado pelo servidor.
 func (c *Client) ApplyService(ctx context.Context, yamlContent, namespace, name string, dryRun, force bool) (*corev1.Service, error) {
 	if strings.TrimSpace(yamlContent) == "" {
 		return nil, fmt.Errorf("service yaml content cannot be empty")
 	}
 
-	var svcObj corev1.Service
-	if err := yaml.Unmarshal([]byte(yamlContent), &svcObj); err != nil {
+	// Extrair namespace/name do YAML para fallback e validação
+	var svcMap map[string]interface{}
+	if err := yaml.Unmarshal([]byte(yamlContent), &svcMap); err != nil {
 		return nil, fmt.Errorf("invalid service yaml: %w", err)
 	}
-
-	if namespace != "" {
-		svcObj.Namespace = namespace
-	}
-	if name != "" {
-		svcObj.Name = name
-	}
-
-	// Limpar campos de leitura
-	svcObj.ManagedFields = nil
-	svcObj.GenerateName = ""
-
-	// Verificar se já existe (update) ou criar
-	current, err := c.clientset.CoreV1().Services(svcObj.Namespace).Get(ctx, svcObj.Name, metav1.GetOptions{})
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("failed to get service %s/%s: %w", svcObj.Namespace, svcObj.Name, err)
+	if namespace == "" {
+		if meta, ok := svcMap["metadata"].(map[string]interface{}); ok {
+			namespace, _ = meta["namespace"].(string)
 		}
-		// Criar
-		svcObj.ResourceVersion = ""
-		createOpts := metav1.CreateOptions{}
-		if dryRun {
-			createOpts.DryRun = []string{metav1.DryRunAll}
+	}
+	if name == "" {
+		if meta, ok := svcMap["metadata"].(map[string]interface{}); ok {
+			name, _ = meta["name"].(string)
 		}
-		result, err := c.clientset.CoreV1().Services(svcObj.Namespace).Create(ctx, &svcObj, createOpts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create service %s/%s: %w", svcObj.Namespace, svcObj.Name, err)
-		}
-		return result, nil
 	}
 
-	// Preservar clusterIP e resourceVersion (campos imutáveis)
-	svcObj.ResourceVersion = current.ResourceVersion
-	if svcObj.Spec.ClusterIP == "" {
-		svcObj.Spec.ClusterIP = current.Spec.ClusterIP
+	if err := applyViaKubectlSSA(c.cluster, namespace, yamlContent, dryRun); err != nil {
+		return nil, fmt.Errorf("failed to apply service %s/%s: %w", namespace, name, err)
 	}
 
-	updateOpts := metav1.UpdateOptions{}
 	if dryRun {
-		updateOpts.DryRun = []string{metav1.DryRunAll}
+		return &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}, nil
 	}
-	result, err := c.clientset.CoreV1().Services(svcObj.Namespace).Update(ctx, &svcObj, updateOpts)
+
+	result, err := c.clientset.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to update service %s/%s: %w", svcObj.Namespace, svcObj.Name, err)
+		return nil, fmt.Errorf("failed to get service after apply %s/%s: %w", namespace, name, err)
 	}
 	return result, nil
 }

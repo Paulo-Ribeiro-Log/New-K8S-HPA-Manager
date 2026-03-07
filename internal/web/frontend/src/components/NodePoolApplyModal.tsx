@@ -302,10 +302,8 @@ export const NodePoolApplyModal = ({
   };
 
   const handleClose = () => {
-    if (!isApplying && !applyingIndividual) {
-      onOpenChange(false);
-      setNodePoolStates({});
-    }
+    onOpenChange(false);
+    // Não limpa nodePoolStates para preservar status quando modal for reaberto
   };
 
   const renderStatusIcon = (status: NodePoolStatus) => {
@@ -551,9 +549,8 @@ export const NodePoolApplyModal = ({
               <Button
                 variant="outline"
                 onClick={handleClose}
-                disabled={isApplying || applyingIndividual !== null}
               >
-                {isApplying || applyingIndividual !== null ? "Aguarde..." : "Fechar"}
+                {isApplying || applyingIndividual !== null ? "Fechar (em execução)" : "Fechar"}
               </Button>
               <ProtectedAction>
                 <Button
