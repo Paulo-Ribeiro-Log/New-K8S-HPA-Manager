@@ -1372,16 +1372,6 @@ export const NamespacesTab = ({
                     </button>
                   </div>
                   <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 w-7 p-0"
-                    onClick={handleReloadYaml}
-                    disabled={manifestLoading || !selectedNamespace}
-                    title="Recarregar YAML do cluster"
-                  >
-                    {manifestLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCcw className="w-3.5 h-3.5" />}
-                  </Button>
-                  <Button
                     variant="outline"
                     size="sm"
                     onClick={() => setEditorFullScreen(true)}
@@ -1549,16 +1539,6 @@ export const NamespacesTab = ({
                         Dry-run
                       </Button>
                     </ProtectedAction>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 w-8 p-0"
-                      onClick={handleReloadYaml}
-                      disabled={manifestLoading}
-                      title="Recarregar YAML do cluster"
-                    >
-                      {manifestLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCcw className="w-3.5 h-3.5" />}
-                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
@@ -1839,6 +1819,21 @@ export const NamespacesTab = ({
           onClick={() => onOpenCompare({ type: "namespace", namespace: selectedNamespace.name, name: selectedNamespace.name })}
         >
           <SplitSquareHorizontal className="w-4 h-4" />
+        </Button>
+      )}
+      {selectedNamespace && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleReloadYaml}
+          disabled={manifestLoading}
+        >
+          {manifestLoading ? (
+            <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+          ) : (
+            <RefreshCcw className="w-4 h-4 mr-1" />
+          )}
+          Recarregar YAML
         </Button>
       )}
       {selectedNamespace && (

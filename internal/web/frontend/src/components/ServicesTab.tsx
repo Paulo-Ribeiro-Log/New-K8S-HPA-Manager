@@ -506,6 +506,10 @@ export const ServicesTab = ({
           {selectedService.type}
         </span>
       )}
+      <Button variant="outline" size="sm" onClick={handleReloadYaml} disabled={manifestLoading}>
+        {manifestLoading ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCcw className="w-4 h-4 mr-1" />}
+        Recarregar YAML
+      </Button>
       <Button variant="outline" size="sm" onClick={handleDescribe}>
         <FileText className="w-4 h-4 mr-1" />
         Describe
@@ -572,10 +576,6 @@ export const ServicesTab = ({
             <Button variant="ghost" size="sm" onClick={handleValidate} disabled={isValidating}>
               {isValidating ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
               <span className="ml-1 text-xs">Validar</span>
-            </Button>
-            <Button variant="ghost" size="sm" onClick={handleReloadYaml} disabled={manifestLoading} title="Recarregar YAML do cluster">
-              {manifestLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
-              <span className="ml-1 text-xs">Recarregar</span>
             </Button>
           </div>
           <Button variant="ghost" size="sm" onClick={() => setEditorFullScreen(true)} title="Tela cheia">
