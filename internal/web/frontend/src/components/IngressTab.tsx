@@ -470,10 +470,10 @@ export const IngressTab = ({
         onClick={onToggleSystemNamespaces}
         title={showSystemNamespaces ? "Mostrar namespaces e ingresses de sistema" : "Ocultar namespaces e ingresses de sistema"}
       >
-        {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
+        {showSystemNamespaces ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
       </Button>
       <Button variant="outline" size="sm" onClick={refreshIngresses} disabled={!cluster || loading}>
-        <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
+        <RefreshCcw className="w-4 h-4" />
       </Button>
       {collapseButton}
     </div>

@@ -389,12 +389,10 @@ export function CronJobsTab({
         onClick={onToggleSystemNamespaces}
         title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
       >
-        {showSystemNamespaces ? <Eye className="w-4 h-4 mr-1" /> : <EyeOff className="w-4 h-4 mr-1" />}
-        Sistema
+        {showSystemNamespaces ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
       </Button>
       <Button variant="ghost" size="sm" className="h-7 px-2" onClick={fetchCronJobs} title="Atualizar">
-        <RefreshCcw className={`w-4 h-4 mr-1 ${loading ? "animate-spin" : ""}`} />
-        Atualizar
+        <RefreshCcw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
       </Button>
     </div>
   );

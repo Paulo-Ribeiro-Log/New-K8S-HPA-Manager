@@ -127,7 +127,7 @@ export const Header = ({
               variant="outline"
               role="combobox"
               aria-expanded={open}
-              className="w-[400px] justify-between bg-white/20 border-white/30 text-white hover:bg-white/25 hover:text-white"
+              className="w-[180px] sm:w-[240px] lg:w-[300px] xl:w-[400px] justify-between bg-white/20 border-white/30 text-white hover:bg-white/25 hover:text-white"
             >
               {selectedCluster
                 ? clusters.find((cluster) => cluster === selectedCluster)
@@ -135,7 +135,7 @@ export const Header = ({
               <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="w-[400px] p-0">
+          <PopoverContent className="w-[300px] xl:w-[400px] p-0">
             <Command>
               <CommandInput placeholder="Buscar cluster..." />
               <CommandList>
@@ -176,8 +176,8 @@ export const Header = ({
             onClick={onLoadSession}
             title="Load Session"
           >
-            <FolderOpen className="w-4 h-4 mr-2" />
-            Load Session
+            <FolderOpen className="w-4 h-4 xl:mr-2" />
+            <span className="hidden xl:inline">Load Session</span>
           </Button>
         )}
         
@@ -189,8 +189,8 @@ export const Header = ({
             onClick={onSaveSession}
             title="Save Session"
           >
-            <Save className="w-4 h-4 mr-2" />
-            Save Session
+            <Save className="w-4 h-4 xl:mr-2" />
+            <span className="hidden xl:inline">Save Session</span>
           </Button>
         )}
         
