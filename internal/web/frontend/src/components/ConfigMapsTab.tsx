@@ -535,10 +535,10 @@ data:
         onClick={onToggleSystemNamespaces}
         title={showSystemNamespaces ? "Mostrar namespaces e configmaps de sistema (istio, kube, udp, tcp, prometheus)" : "Ocultar namespaces e configmaps de sistema (istio, kube, udp, tcp, prometheus)"}
       >
-        {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
+        {showSystemNamespaces ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
       </Button>
       <Button variant="outline" size="sm" onClick={refreshConfigMaps} disabled={!cluster || loading}>
-        <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
+        <RefreshCcw className="w-4 h-4" />
       </Button>
       {collapseButton}
     </div>
