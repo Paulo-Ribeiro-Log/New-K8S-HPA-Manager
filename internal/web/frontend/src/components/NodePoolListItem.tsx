@@ -1,6 +1,6 @@
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Server, HardDrive, TrendingUp, TrendingDown, Loader2, CheckCircle2 } from "lucide-react";
+import { Server, HardDrive, TrendingUp, TrendingDown, Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
 import type { NodePool } from "@/lib/api/types";
 
 interface NodePoolListItemProps {
@@ -8,7 +8,9 @@ interface NodePoolListItemProps {
   isSelected: boolean;
   isApplying?: boolean;
   applyResult?: "success" | "error" | null;
+  applyError?: string;
   onClick: () => void;
+  onProgressClick?: () => void;
 }
 
 export const NodePoolListItem = ({
@@ -16,21 +18,34 @@ export const NodePoolListItem = ({
   isSelected,
   isApplying = false,
   applyResult = null,
+  applyError,
   onClick,
+  onProgressClick,
 }: NodePoolListItemProps) => {
+  const handleClick = () => {
+    if (isApplying && onProgressClick) {
+      onProgressClick();
+    } else {
+      onClick();
+    }
+  };
+
   return (
     <Card
       className={`relative p-4 cursor-pointer transition-all hover:shadow-md ${
         isSelected ? "border-primary bg-accent" : "border-border"
-      } ${isApplying ? "opacity-80" : ""}`}
-      onClick={onClick}
+      } ${isApplying ? "border-blue-400 dark:border-blue-500 opacity-90" : ""}`}
+      onClick={handleClick}
     >
-      {/* Overlay de progresso */}
+      {/* Overlay de progresso — clicável para reabrir modal */}
       {isApplying && (
-        <div className="absolute inset-0 rounded-lg bg-background/60 backdrop-blur-[1px] flex items-center justify-center z-10">
-          <div className="flex items-center gap-2 bg-background border border-border rounded-md px-3 py-1.5 shadow-sm">
-            <Loader2 className="w-4 h-4 animate-spin text-primary" />
+        <div className="absolute inset-0 rounded-lg bg-background/50 backdrop-blur-[1px] flex items-center justify-center z-10">
+          <div className="flex items-center gap-2 bg-background border border-blue-400 dark:border-blue-500 rounded-md px-3 py-1.5 shadow-sm">
+            <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
             <span className="text-xs font-medium text-foreground">Aplicando...</span>
+            {onProgressClick && (
+              <span className="text-xs text-blue-500 underline ml-1">ver detalhes</span>
+            )}
           </div>
         </div>
       )}
@@ -98,6 +113,14 @@ export const NodePoolListItem = ({
         <div className="text-xs text-muted-foreground border-t pt-2">
           {nodePool.resource_group}
         </div>
+
+        {/* Mensagem de erro */}
+        {applyResult === "error" && applyError && (
+          <div className="flex items-start gap-1.5 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded p-2 mt-1">
+            <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+            <span className="break-all">{applyError}</span>
+          </div>
+        )}
       </div>
     </Card>
   );

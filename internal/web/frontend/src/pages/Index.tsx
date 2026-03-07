@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Header } from "@/components/Header";
 import { StatsCard } from "@/components/StatsCard";
 import { TabNavigation } from "@/components/TabNavigation";
@@ -116,6 +116,10 @@ const Index = ({ onLogout }: IndexProps) => {
   const [hpasToApply, setHpasToApply] = useState<Array<{ key: string; current: HPA; original: HPA }>>([]);
   const [showNodePoolApplyModal, setShowNodePoolApplyModal] = useState(false);
   const [nodePoolsToApply, setNodePoolsToApply] = useState<Array<{ key: string; current: NodePool; original: NodePool }>>([]);
+  // Tracking de operações em andamento por pool — alimentado pelos eventos nodePoolApplying
+  const [applyingNodePools, setApplyingNodePools] = useState<Set<string>>(new Set());
+  const [nodePoolResults, setNodePoolResults] = useState<Record<string, "success" | "error">>({});
+  const [nodePoolErrors, setNodePoolErrors] = useState<Record<string, string>>({});
   const [showSequencingModal, setShowSequencingModal] = useState(false);
   const [sequencedNodePools, setSequencedNodePools] = useState<NodePool[]>([]);
   const [showProgressModal, setShowProgressModal] = useState(false);
@@ -199,6 +203,33 @@ const Index = ({ onLogout }: IndexProps) => {
     ingresses: false,
     healthcheck: false,
   });
+
+  // Listener de eventos de aplicação de node pools — atualiza spinner/resultado na lista
+  const handleNodePoolApplyingEvent = useCallback((e: Event) => {
+    const detail = (e as CustomEvent<{ poolName: string; status: "start" | "end"; result?: "success" | "error"; errorMessage?: string }>).detail;
+    const { poolName, status } = detail;
+    if (status === "start") {
+      setApplyingNodePools(prev => new Set(prev).add(poolName));
+      setNodePoolResults(prev => { const next = { ...prev }; delete next[poolName]; return next; });
+      setNodePoolErrors(prev => { const next = { ...prev }; delete next[poolName]; return next; });
+    } else {
+      setApplyingNodePools(prev => { const next = new Set(prev); next.delete(poolName); return next; });
+      if (detail.result) {
+        setNodePoolResults(prev => ({ ...prev, [poolName]: detail.result! }));
+        if (detail.result === "error" && detail.errorMessage) {
+          setNodePoolErrors(prev => ({ ...prev, [poolName]: detail.errorMessage! }));
+        }
+        if (detail.result === "success") {
+          setTimeout(() => setNodePoolResults(prev => { const next = { ...prev }; delete next[poolName]; return next; }), 8000);
+        }
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("nodePoolApplying", handleNodePoolApplyingEvent);
+    return () => window.removeEventListener("nodePoolApplying", handleNodePoolApplyingEvent);
+  }, [handleNodePoolApplyingEvent]);
 
   // 🔄 Marcar componente como montado quando usuário acessa a aba
   useEffect(() => {
@@ -891,6 +922,7 @@ const Index = ({ onLogout }: IndexProps) => {
                         );
                         const displayPool = stagedPool || pool;
 
+                        const isApplying = applyingNodePools.has(pool.name);
                         return (
                           <NodePoolListItem
                             key={`${pool.cluster_name}-${pool.name}`}
@@ -899,7 +931,11 @@ const Index = ({ onLogout }: IndexProps) => {
                               selectedNodePool?.name === pool.name &&
                               selectedNodePool?.cluster_name === pool.cluster_name
                             }
+                            isApplying={isApplying}
+                            applyResult={nodePoolResults[pool.name] ?? null}
+                            applyError={nodePoolErrors[pool.name]}
                             onClick={() => setSelectedNodePool(displayPool)}
+                            onProgressClick={() => setShowNodePoolApplyModal(true)}
                           />
                         );
                       })
