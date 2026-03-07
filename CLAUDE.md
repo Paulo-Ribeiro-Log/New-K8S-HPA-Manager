@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
+**IMPORTANTE**: Versão atual oficial: **v1.3.26** (GitHub release).
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **02 de março de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **07 de março de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -2150,6 +2150,35 @@ make release                     # Gera binários em build/release/
 ---
 
 ## 📝 Histórico de Sessões Recentes
+
+### Sessão 07/03/2026 - Layout Responsivo 1080p + Correções Editor YAML (v1.3.26)
+**Contexto**: Layout quebrado em telas 1080p (wrapping multi-linha no header dos painéis); editor Monaco falhava com "apiVersion not set, kind not set" ao aplicar YAMLs; botão Recarregar YAML ausente em algumas abas.
+
+**Correções de Layout (responsivo 1080p)**:
+- **`SplitView.tsx`**: headers com `flex-wrap`, título com `shrink-0`/`whitespace-nowrap`, `gap-1` no container de ações, `min-w-0` para evitar overflow. Tamanho `text-base` → `text-sm`.
+- **`Header.tsx`**: combobox de cluster `w-[400px]` → `w-[180px] sm:w-[240px] lg:w-[300px] xl:w-[400px]`; PopoverContent `w-[400px]` → `w-[300px] xl:w-[400px]`; botões Load/Save Session icon-only abaixo de `xl:` (`hidden xl:inline` no texto).
+- **13 abas** (PodsPanel, SecretsTab, ConfigMapsTab, DeploymentsTab, DaemonSetsTab, StatefulSetsTab, IngressTab, CronJobsTab, ContainersTab, NamespacesTab, ServicesTab, VPAsTab, ResourceExplorerTab): botões "Sistema" e "Atualizar" tornados **icon-only** com `title` tooltip — economia de ~110px no header do painel esquerdo.
+
+**Correções de Editor YAML (`internal/kubernetes/client.go`)**:
+- `GetSecret`: adicionado `secret.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}` antes do `yaml.Marshal`
+- `GetConfigMap`: adicionado `cm.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}`
+- `GetDeployment`: adicionado `dep.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}` + `dep.Status = appsv1.DeploymentStatus{}`
+- `GetDaemonSet`: adicionado `ds.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "DaemonSet"}` + `ds.Status = appsv1.DaemonSetStatus{}`
+- `GetStatefulSet`: adicionado `sts.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "StatefulSet"}` + `sts.Status = appsv1.StatefulSetStatus{}`
+- **Root cause**: typed API (`clientset.CoreV1().Secrets().Get()`) não preenche TypeMeta — `yaml.Marshal` omitia `apiVersion`/`kind` — kubectl apply SSA falhava com "apiVersion not set, kind not set"
+- **Por que Explorer funcionava**: `kubectl get -o yaml` sempre inclui TypeMeta
+
+**Botão "Recarregar YAML" adicionado**:
+- `ServicesTab.tsx`: `handleReloadYaml` via `apiClient.getServiceManifest`, botão no `rightTitleAction`
+- `VPAsTab.tsx`: `handleReloadYaml` via `apiClient.getVPAManifest`, botão no `rightTitleAction`
+- `NamespacesTab.tsx`: `handleReloadYaml` que limpa o `historyCache` para sempre buscar do servidor (bypass do cache de edições)
+
+**Correções de Node Pools** (commits anteriores desta branch):
+- Falha silenciosa ao aplicar `minCount`/`maxCount` corrigida (Azure CLI)
+- Spinner de loading na listagem de nodes durante operações
+- Auto-refresh das abas restaurado após operações
+
+---
 
 ### Sessão 06/03/2026 - Melhorias no Resource Explorer (Logs, Describe aprimorado)
 **Contexto**: Adicionar aba de Logs no painel de visualizações do Explorer e melhorar o modal de describe com fullscreen e auto-refresh
