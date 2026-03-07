@@ -352,6 +352,27 @@ export const ServicesTab = ({
     }
   };
 
+  const handleReloadYaml = async () => {
+    if (!selectedService) return;
+    setManifestLoading(true);
+    try {
+      const detail = await apiClient.getServiceManifest(selectedService.cluster, selectedService.namespace, selectedService.name);
+      const freshYaml = detail.yaml || "";
+      setManifest(detail);
+      setOriginalYaml(freshYaml);
+      setEditorValue(freshYaml);
+      setHistory([freshYaml]);
+      setHistoryIndex(0);
+      toast.success("YAML recarregado do cluster");
+    } catch (err) {
+      toast.error("Falha ao recarregar", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setManifestLoading(false);
+    }
+  };
+
   const hasChanges = editorValue !== originalYaml;
   void manifest;
 
@@ -551,6 +572,10 @@ export const ServicesTab = ({
             <Button variant="ghost" size="sm" onClick={handleValidate} disabled={isValidating}>
               {isValidating ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
               <span className="ml-1 text-xs">Validar</span>
+            </Button>
+            <Button variant="ghost" size="sm" onClick={handleReloadYaml} disabled={manifestLoading} title="Recarregar YAML do cluster">
+              {manifestLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+              <span className="ml-1 text-xs">Recarregar</span>
             </Button>
           </div>
           <Button variant="ghost" size="sm" onClick={() => setEditorFullScreen(true)} title="Tela cheia">
