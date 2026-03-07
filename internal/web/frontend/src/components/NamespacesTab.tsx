@@ -215,6 +215,30 @@ export const NamespacesTab = ({
     }
   };
 
+  const handleReloadYaml = async () => {
+    if (!selectedNamespace || !cluster) return;
+    setManifestLoading(true);
+    try {
+      const manifest = await apiClient.getNamespace(cluster, selectedNamespace.name);
+      const yamlContent = manifest.yaml || "";
+      setNamespaceManifest(manifest);
+      setEditorValue(yamlContent);
+      setOriginalYaml(yamlContent);
+      setViewMode("editor");
+      setHistory([yamlContent]);
+      setHistoryIndex(0);
+      const cacheKey = `${cluster}/${selectedNamespace.name}`;
+      historyCache.current.delete(cacheKey);
+      toast.success("YAML recarregado do cluster");
+    } catch (err) {
+      toast.error("Erro ao recarregar manifesto", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setManifestLoading(false);
+    }
+  };
+
   // Helper para verificar se Istio está habilitado
   const isIstioEnabled = useMemo(() => {
     if (!namespaceManifest?.yaml) return false;
@@ -1795,6 +1819,21 @@ export const NamespacesTab = ({
           onClick={() => onOpenCompare({ type: "namespace", namespace: selectedNamespace.name, name: selectedNamespace.name })}
         >
           <SplitSquareHorizontal className="w-4 h-4" />
+        </Button>
+      )}
+      {selectedNamespace && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleReloadYaml}
+          disabled={manifestLoading}
+        >
+          {manifestLoading ? (
+            <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+          ) : (
+            <RefreshCcw className="w-4 h-4 mr-1" />
+          )}
+          Recarregar YAML
         </Button>
       )}
       {selectedNamespace && (

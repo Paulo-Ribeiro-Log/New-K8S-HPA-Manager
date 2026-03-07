@@ -6,14 +6,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { RefreshCcw } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { RefreshCcw, Loader2, CheckCircle2, XCircle } from "lucide-react";
 import { SplitView } from "@/components/SplitView";
 import { NodePoolListItem } from "@/components/NodePoolListItem";
 import { NodePoolEditor } from "@/components/NodePoolEditor";
 import { useClusters, useNodePools } from "@/hooks/useAPI";
 import type { NodePool } from "@/lib/api/types";
-import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 
@@ -26,8 +32,9 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
   const [selectedNodePool, setSelectedNodePool] = useState<NodePool | null>(null);
   const [applyingPools, setApplyingPools] = useState<Set<string>>(new Set());
   const [poolResults, setPoolResults] = useState<Record<string, "success" | "error">>({});
-
-  const staging = useStaging();
+  const [poolErrors, setPoolErrors] = useState<Record<string, string>>({});
+  // Modal de status individual por pool (permite reabrir ao clicar no spinner)
+  const [statusModalPool, setStatusModalPool] = useState<string | null>(null);
   
   // API hooks - só executam quando cluster está selecionado
   const { clusters } = useClusters();
@@ -47,21 +54,24 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
 
   // Escutar eventos de progresso de aplicação de node pools
   const handleApplyingEvent = useCallback((e: Event) => {
-    const { poolName, status } = (e as CustomEvent<{ poolName: string; status: "start" | "end"; result?: "success" | "error" }>).detail;
+    const detail = (e as CustomEvent<{ poolName: string; status: "start" | "end"; result?: "success" | "error"; errorMessage?: string }>).detail;
+    const { poolName, status } = detail;
 
     if (status === "start") {
       setApplyingPools((prev) => new Set(prev).add(poolName));
-      // Limpar resultado anterior ao iniciar nova operação
       setPoolResults((prev) => { const next = { ...prev }; delete next[poolName]; return next; });
+      setPoolErrors((prev) => { const next = { ...prev }; delete next[poolName]; return next; });
     } else {
       setApplyingPools((prev) => { const next = new Set(prev); next.delete(poolName); return next; });
-      if (e instanceof CustomEvent && e.detail.result) {
-        setPoolResults((prev) => ({ ...prev, [poolName]: e.detail.result }));
-        // Auto-limpar resultado de sucesso após 5s
-        if (e.detail.result === "success") {
+      if (detail.result) {
+        setPoolResults((prev) => ({ ...prev, [poolName]: detail.result! }));
+        if (detail.result === "error" && detail.errorMessage) {
+          setPoolErrors((prev) => ({ ...prev, [poolName]: detail.errorMessage! }));
+        }
+        if (detail.result === "success") {
           setTimeout(() => {
             setPoolResults((prev) => { const next = { ...prev }; delete next[poolName]; return next; });
-          }, 5000);
+          }, 8000);
         }
       }
     }
@@ -140,7 +150,9 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
                     isSelected={selectedNodePool?.name === nodePool.name}
                     isApplying={applyingPools.has(nodePool.name)}
                     applyResult={poolResults[nodePool.name] ?? null}
+                    applyError={poolErrors[nodePool.name]}
                     onClick={() => setSelectedNodePool(nodePool)}
+                    onProgressClick={() => setStatusModalPool(nodePool.name)}
                   />
                 ))}
               </div>
@@ -160,6 +172,70 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
           }}
         />
       </div>
+
+      {/* Modal de status individual de operação */}
+      {statusModalPool && (() => {
+        const isApplying = applyingPools.has(statusModalPool);
+        const result = poolResults[statusModalPool];
+        const errorMsg = poolErrors[statusModalPool];
+        const pool = nodePools.find(np => np.name === statusModalPool);
+        return (
+          <Dialog open={!!statusModalPool} onOpenChange={(open) => { if (!open) setStatusModalPool(null); }}>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle>Status da Operação</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3 py-2">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold">{statusModalPool}</span>
+                  <Badge variant="secondary">{pool?.cluster_name}</Badge>
+                </div>
+                <div className="text-xs text-muted-foreground">{pool?.resource_group}</div>
+                {pool && (
+                  <div className="text-sm text-muted-foreground">
+                    {pool.autoscaling_enabled
+                      ? `Autoscaling: ${pool.min_node_count}–${pool.max_node_count} nodes`
+                      : `Manual: ${pool.node_count} node(s)`}
+                  </div>
+                )}
+                <div className="flex items-center gap-2 pt-2">
+                  {isApplying && (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                      <span className="text-sm font-medium">Aguardando resposta do Azure...</span>
+                    </>
+                  )}
+                  {!isApplying && result === "success" && (
+                    <>
+                      <CheckCircle2 className="w-5 h-5 text-green-500" />
+                      <span className="text-sm font-medium text-green-600 dark:text-green-400">Aplicado com sucesso</span>
+                    </>
+                  )}
+                  {!isApplying && result === "error" && (
+                    <div className="space-y-2 w-full">
+                      <div className="flex items-center gap-2">
+                        <XCircle className="w-5 h-5 text-red-500 flex-shrink-0" />
+                        <span className="text-sm font-medium text-red-600 dark:text-red-400">Falha na operação</span>
+                      </div>
+                      {errorMsg && (
+                        <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded p-2 break-all">
+                          {errorMsg}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {!isApplying && !result && (
+                    <span className="text-sm text-muted-foreground">Nenhuma operação em andamento</span>
+                  )}
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <Button variant="outline" size="sm" onClick={() => setStatusModalPool(null)}>Fechar</Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        );
+      })()}
     </div>
   );
 };

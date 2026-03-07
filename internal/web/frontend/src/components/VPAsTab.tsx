@@ -311,6 +311,27 @@ export const VPAsTab = ({
     }
   };
 
+  const handleReloadYaml = async () => {
+    if (!selectedVPA) return;
+    setManifestLoading(true);
+    try {
+      const detail = await apiClient.getVPAManifest(selectedVPA.cluster, selectedVPA.namespace, selectedVPA.name);
+      const freshYaml = detail.yaml || "";
+      setManifest(detail);
+      setOriginalYaml(freshYaml);
+      setEditorValue(freshYaml);
+      setHistory([freshYaml]);
+      setHistoryIndex(0);
+      toast.success("YAML recarregado do cluster");
+    } catch (err) {
+      toast.error("Falha ao recarregar", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setManifestLoading(false);
+    }
+  };
+
   const hasChanges = editorValue !== originalYaml;
   void manifest;
 
@@ -435,6 +456,10 @@ export const VPAsTab = ({
   // ─── Right panel ─────────────────────────────────────────────────────────
   const rightTitleAction = selectedVPA ? (
     <div className="flex items-center gap-1">
+      <Button variant="outline" size="sm" onClick={handleReloadYaml} disabled={manifestLoading}>
+        {manifestLoading ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCcw className="w-4 h-4 mr-1" />}
+        Recarregar YAML
+      </Button>
       <Button variant="outline" size="sm" onClick={handleDescribe}>
         <FileText className="w-4 h-4 mr-1" />
         Describe

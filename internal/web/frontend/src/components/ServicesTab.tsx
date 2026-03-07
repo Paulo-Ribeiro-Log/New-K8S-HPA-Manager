@@ -352,6 +352,27 @@ export const ServicesTab = ({
     }
   };
 
+  const handleReloadYaml = async () => {
+    if (!selectedService) return;
+    setManifestLoading(true);
+    try {
+      const detail = await apiClient.getServiceManifest(selectedService.cluster, selectedService.namespace, selectedService.name);
+      const freshYaml = detail.yaml || "";
+      setManifest(detail);
+      setOriginalYaml(freshYaml);
+      setEditorValue(freshYaml);
+      setHistory([freshYaml]);
+      setHistoryIndex(0);
+      toast.success("YAML recarregado do cluster");
+    } catch (err) {
+      toast.error("Falha ao recarregar", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setManifestLoading(false);
+    }
+  };
+
   const hasChanges = editorValue !== originalYaml;
   void manifest;
 
@@ -485,6 +506,10 @@ export const ServicesTab = ({
           {selectedService.type}
         </span>
       )}
+      <Button variant="outline" size="sm" onClick={handleReloadYaml} disabled={manifestLoading}>
+        {manifestLoading ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCcw className="w-4 h-4 mr-1" />}
+        Recarregar YAML
+      </Button>
       <Button variant="outline" size="sm" onClick={handleDescribe}>
         <FileText className="w-4 h-4 mr-1" />
         Describe
