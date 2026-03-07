@@ -215,6 +215,30 @@ export const NamespacesTab = ({
     }
   };
 
+  const handleReloadYaml = async () => {
+    if (!selectedNamespace || !cluster) return;
+    setManifestLoading(true);
+    try {
+      const manifest = await apiClient.getNamespace(cluster, selectedNamespace.name);
+      const yamlContent = manifest.yaml || "";
+      setNamespaceManifest(manifest);
+      setEditorValue(yamlContent);
+      setOriginalYaml(yamlContent);
+      setViewMode("editor");
+      setHistory([yamlContent]);
+      setHistoryIndex(0);
+      const cacheKey = `${cluster}/${selectedNamespace.name}`;
+      historyCache.current.delete(cacheKey);
+      toast.success("YAML recarregado do cluster");
+    } catch (err) {
+      toast.error("Erro ao recarregar manifesto", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setManifestLoading(false);
+    }
+  };
+
   // Helper para verificar se Istio está habilitado
   const isIstioEnabled = useMemo(() => {
     if (!namespaceManifest?.yaml) return false;
@@ -1348,6 +1372,16 @@ export const NamespacesTab = ({
                     </button>
                   </div>
                   <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 w-7 p-0"
+                    onClick={handleReloadYaml}
+                    disabled={manifestLoading || !selectedNamespace}
+                    title="Recarregar YAML do cluster"
+                  >
+                    {manifestLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCcw className="w-3.5 h-3.5" />}
+                  </Button>
+                  <Button
                     variant="outline"
                     size="sm"
                     onClick={() => setEditorFullScreen(true)}
@@ -1515,6 +1549,16 @@ export const NamespacesTab = ({
                         Dry-run
                       </Button>
                     </ProtectedAction>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0"
+                      onClick={handleReloadYaml}
+                      disabled={manifestLoading}
+                      title="Recarregar YAML do cluster"
+                    >
+                      {manifestLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCcw className="w-3.5 h-3.5" />}
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
