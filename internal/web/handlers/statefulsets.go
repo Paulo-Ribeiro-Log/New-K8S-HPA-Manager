@@ -268,9 +268,6 @@ func (h *StatefulSetHandler) Apply(c *gin.Context) {
 		return
 	}
 
-	fmt.Printf("[DEBUG] Handler ApplyStatefulSet: cluster=%s, namespace=%s, name=%s, dryRun=%v, fieldManager=%s\n",
-		cluster, namespace, name, req.DryRun, req.FieldManager)
-
 	result, err := kubeClient.ApplyStatefulSet(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun, req.Force)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -278,12 +275,9 @@ func (h *StatefulSetHandler) Apply(c *gin.Context) {
 		if apierrors.IsConflict(err) {
 			status = http.StatusConflict
 		}
-		fmt.Printf("[ERROR] Failed to apply statefulset: %v\n", err)
 		c.JSON(status, errorResponse(errorCode, err.Error()))
 		return
 	}
-
-	fmt.Printf("[DEBUG] Handler ApplyStatefulSet SUCCESS: resourceVersion=%s\n", result.ResourceVersion)
 
 	if !req.DryRun && h.historyTracker != nil {
 		after := statefulSetToHistoryMap(result)

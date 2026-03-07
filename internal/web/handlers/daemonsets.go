@@ -265,9 +265,6 @@ func (h *DaemonSetHandler) Apply(c *gin.Context) {
 		return
 	}
 
-	fmt.Printf("[DEBUG] Handler ApplyDaemonSet: cluster=%s, namespace=%s, name=%s, dryRun=%v, fieldManager=%s\n",
-		cluster, namespace, name, req.DryRun, req.FieldManager)
-
 	result, err := kubeClient.ApplyDaemonSet(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun, req.Force)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -275,12 +272,9 @@ func (h *DaemonSetHandler) Apply(c *gin.Context) {
 		if apierrors.IsConflict(err) {
 			status = http.StatusConflict
 		}
-		fmt.Printf("[ERROR] Failed to apply daemonset: %v\n", err)
 		c.JSON(status, errorResponse(errorCode, err.Error()))
 		return
 	}
-
-	fmt.Printf("[DEBUG] Handler ApplyDaemonSet SUCCESS: resourceVersion=%s\n", result.ResourceVersion)
 
 	if !req.DryRun && h.historyTracker != nil {
 		after := daemonSetToHistoryMap(result)
