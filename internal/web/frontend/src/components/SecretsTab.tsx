@@ -696,10 +696,10 @@ export const SecretsTab = ({
         onClick={onToggleSystemNamespaces}
         title={showSystemNamespaces ? "Mostrar namespaces e secrets de sistema (incluindo Helm)" : "Ocultar namespaces e secrets de sistema (incluindo Helm)"}
       >
-        {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
+        {showSystemNamespaces ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
       </Button>
       <Button variant="outline" size="sm" onClick={refreshSecrets} disabled={!cluster || loading}>
-        <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
+        <RefreshCcw className="w-4 h-4" />
       </Button>
     </div>
   );
@@ -1653,10 +1653,10 @@ export const SecretsTab = ({
                 onClick={onToggleSystemNamespaces}
                 title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
               >
-                {showSystemNamespaces ? <Eye className="w-4 h-4 mr-2" /> : <EyeOff className="w-4 h-4 mr-2" />}Sistema
+                {showSystemNamespaces ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
               </Button>
               <Button variant="outline" size="sm" onClick={refreshSecrets} disabled={!cluster || loading}>
-                <RefreshCcw className="w-4 h-4 mr-2" /> Atualizar
+                <RefreshCcw className="w-4 h-4" />
               </Button>
               {collapseButton}
             </div>
