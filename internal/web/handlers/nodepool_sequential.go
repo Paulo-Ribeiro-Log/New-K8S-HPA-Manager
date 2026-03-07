@@ -180,19 +180,48 @@ func applyNodePoolChanges(clusterName, resourceGroup string, op NodePoolOperatio
 			"--node-count", fmt.Sprintf("%d", op.NodeCount),
 		})
 	} else {
-		// Cenário 2: Habilitar autoscaling com min/max (ex: *2 - scale up com autoscaling)
-		commands = append(commands, []string{
+		// Cenário 2: Atualizar autoscaling com min/max
+		// Tenta --update-cluster-autoscaler primeiro (autoscaling já habilitado)
+		// Fallback para --enable-cluster-autoscaler (primeira habilitação)
+		minStr := fmt.Sprintf("%d", op.MinNodeCount)
+		maxStr := fmt.Sprintf("%d", op.MaxNodeCount)
+
+		updateArgs := []string{
 			"az", "aks", "nodepool", "update",
 			"--resource-group", resourceGroup,
 			"--cluster-name", clusterName,
 			"--name", op.Name,
-			"--enable-cluster-autoscaler",
-			"--min-count", fmt.Sprintf("%d", op.MinNodeCount),
-			"--max-count", fmt.Sprintf("%d", op.MaxNodeCount),
-		})
+			"--update-cluster-autoscaler",
+			"--min-count", minStr,
+			"--max-count", maxStr,
+		}
+		fmt.Printf("   🔧 Tentando --update-cluster-autoscaler: %s\n", strings.Join(updateArgs, " "))
+		outputUpdate, errUpdate := exec.Command(updateArgs[0], updateArgs[1:]...).CombinedOutput()
+		if errUpdate != nil {
+			fmt.Printf("   ⚠️  --update-cluster-autoscaler falhou: %s\nOutput: %s\n   Tentando --enable-cluster-autoscaler...\n", errUpdate, strings.TrimSpace(string(outputUpdate)))
+			enableArgs := []string{
+				"az", "aks", "nodepool", "update",
+				"--resource-group", resourceGroup,
+				"--cluster-name", clusterName,
+				"--name", op.Name,
+				"--enable-cluster-autoscaler",
+				"--min-count", minStr,
+				"--max-count", maxStr,
+			}
+			fmt.Printf("   🔧 Tentando --enable-cluster-autoscaler: %s\n", strings.Join(enableArgs, " "))
+			outputEnable, errEnable := exec.Command(enableArgs[0], enableArgs[1:]...).CombinedOutput()
+			if errEnable != nil {
+				return fmt.Errorf("falha ao atualizar autoscaling.\n--update-cluster-autoscaler: %s (output: %s)\n--enable-cluster-autoscaler: %s (output: %s)",
+					errUpdate, strings.TrimSpace(string(outputUpdate)), errEnable, strings.TrimSpace(string(outputEnable)))
+			}
+			fmt.Printf("   ✅ --enable-cluster-autoscaler executado com sucesso\n")
+		} else {
+			fmt.Printf("   ✅ --update-cluster-autoscaler executado com sucesso\n")
+		}
+		return nil
 	}
 
-	// Executar comandos sequencialmente
+	// Executar comandos sequencialmente (cenário sem autoscaling)
 	for cmdIdx, cmdArgs := range commands {
 		fmt.Printf("   🔧 Executando comando %d/%d: %s\n", cmdIdx+1, len(commands), strings.Join(cmdArgs, " "))
 

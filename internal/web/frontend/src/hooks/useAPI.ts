@@ -152,6 +152,13 @@ export function useHPAs(cluster?: string, namespace?: string, showSystem: boolea
 
   useEffect(() => {
     fetchHPAs();
+    if (!cluster) return;
+    const interval = setInterval(() => {
+      apiClient.getHPAs(cluster, namespace || undefined, true, showSystem)
+        .then(data => setHPAs(data))
+        .catch(() => {});
+    }, 30000);
+    return () => clearInterval(interval);
   }, [cluster, namespace, showSystem]);
 
   useEffect(() => {
@@ -228,6 +235,13 @@ export function useNodePools(cluster?: string) {
 
   useEffect(() => {
     fetchNodePools();
+    if (!cluster) return;
+    const interval = setInterval(() => {
+      apiClient.getNodePools(cluster)
+        .then(data => setNodePools(data))
+        .catch(() => {});
+    }, 60000);
+    return () => clearInterval(interval);
   }, [cluster]);
 
   // Listen for rescan events
@@ -298,6 +312,13 @@ export function useConfigMaps(cluster?: string, namespaces?: string[], showSyste
 
   useEffect(() => {
     fetchConfigMaps();
+    if (!cluster) return;
+    const interval = setInterval(() => {
+      apiClient.getConfigMaps(cluster, namespaces, undefined, showSystem, true)
+        .then(data => setConfigMaps(data))
+        .catch(() => {});
+    }, 60000);
+    return () => clearInterval(interval);
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchConfigMaps(true);
@@ -332,6 +353,13 @@ export function useSecrets(cluster?: string, namespaces?: string[], showSystem: 
 
   useEffect(() => {
     fetchSecrets();
+    if (!cluster) return;
+    const interval = setInterval(() => {
+      apiClient.getSecrets(cluster, namespaces, showSystem, true)
+        .then(data => setSecrets(data))
+        .catch(() => {});
+    }, 60000);
+    return () => clearInterval(interval);
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchSecrets(true);
@@ -366,6 +394,13 @@ export function useDeployments(cluster?: string, namespaces?: string[], showSyst
 
   useEffect(() => {
     fetchDeployments();
+    if (!cluster) return;
+    const interval = setInterval(() => {
+      apiClient.getDeployments(cluster, namespaces, undefined, showSystem, true)
+        .then(data => setDeployments(data))
+        .catch(() => {});
+    }, 60000);
+    return () => clearInterval(interval);
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchDeployments(true);
@@ -400,6 +435,13 @@ export function useDaemonSets(cluster?: string, namespaces?: string[], showSyste
 
   useEffect(() => {
     fetchDaemonSets();
+    if (!cluster) return;
+    const interval = setInterval(() => {
+      apiClient.getDaemonSets(cluster, namespaces, undefined, showSystem, true)
+        .then(data => setDaemonSets(data))
+        .catch(() => {});
+    }, 60000);
+    return () => clearInterval(interval);
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchDaemonSets(true);
@@ -434,6 +476,13 @@ export function useStatefulSets(cluster?: string, namespaces?: string[], showSys
 
   useEffect(() => {
     fetchStatefulSets();
+    if (!cluster) return;
+    const interval = setInterval(() => {
+      apiClient.getStatefulSets(cluster, namespaces, undefined, showSystem, true)
+        .then(data => setStatefulSets(data))
+        .catch(() => {});
+    }, 60000);
+    return () => clearInterval(interval);
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchStatefulSets(true);
