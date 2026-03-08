@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -107,6 +108,7 @@ func (h *NodePoolHandler) ApplySequential(c *gin.Context) {
 
 		// Aplicar alterações no node pool
 		err := applyNodePoolChanges(
+			context.Background(),
 			clusterNameForAzure,
 			clusterConfig.ResourceGroup,
 			poolOp,
@@ -156,7 +158,7 @@ func (h *NodePoolHandler) ApplySequential(c *gin.Context) {
 }
 
 // applyNodePoolChanges aplica alterações em um node pool via Azure CLI
-func applyNodePoolChanges(clusterName, resourceGroup string, op NodePoolOperation) error {
+func applyNodePoolChanges(ctx context.Context, clusterName, resourceGroup string, op NodePoolOperation) error {
 	// Construir comandos baseado nas mudanças
 	commands := make([][]string, 0)
 
@@ -196,7 +198,7 @@ func applyNodePoolChanges(clusterName, resourceGroup string, op NodePoolOperatio
 			"--max-count", maxStr,
 		}
 		fmt.Printf("   🔧 Tentando --update-cluster-autoscaler: %s\n", strings.Join(updateArgs, " "))
-		outputUpdate, errUpdate := exec.Command(updateArgs[0], updateArgs[1:]...).CombinedOutput()
+		outputUpdate, errUpdate := exec.CommandContext(ctx, updateArgs[0], updateArgs[1:]...).CombinedOutput()
 		if errUpdate != nil {
 			fmt.Printf("   ⚠️  --update-cluster-autoscaler falhou: %s\nOutput: %s\n   Tentando --enable-cluster-autoscaler...\n", errUpdate, strings.TrimSpace(string(outputUpdate)))
 			enableArgs := []string{
@@ -209,7 +211,7 @@ func applyNodePoolChanges(clusterName, resourceGroup string, op NodePoolOperatio
 				"--max-count", maxStr,
 			}
 			fmt.Printf("   🔧 Tentando --enable-cluster-autoscaler: %s\n", strings.Join(enableArgs, " "))
-			outputEnable, errEnable := exec.Command(enableArgs[0], enableArgs[1:]...).CombinedOutput()
+			outputEnable, errEnable := exec.CommandContext(ctx, enableArgs[0], enableArgs[1:]...).CombinedOutput()
 			if errEnable != nil {
 				return fmt.Errorf("falha ao atualizar autoscaling.\n--update-cluster-autoscaler: %s (output: %s)\n--enable-cluster-autoscaler: %s (output: %s)",
 					errUpdate, strings.TrimSpace(string(outputUpdate)), errEnable, strings.TrimSpace(string(outputEnable)))
@@ -225,7 +227,7 @@ func applyNodePoolChanges(clusterName, resourceGroup string, op NodePoolOperatio
 	for cmdIdx, cmdArgs := range commands {
 		fmt.Printf("   🔧 Executando comando %d/%d: %s\n", cmdIdx+1, len(commands), strings.Join(cmdArgs, " "))
 
-		cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+		cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
 		output, err := cmd.CombinedOutput()
 
 		if err != nil {

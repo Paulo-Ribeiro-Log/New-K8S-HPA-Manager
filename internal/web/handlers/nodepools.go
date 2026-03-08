@@ -44,6 +44,58 @@ func NewNodePoolHandler(km *config.KubeConfigManager, ht *history.HistoryTracker
 	}
 }
 
+// Abort cancela uma operação em andamento de um node pool via Azure ARM abort API
+// Usa: az aks nodepool operation-abort --resource-group <rg> --cluster-name <cluster> --name <pool>
+// Isso efetivamente para a operação no Azure (não apenas o polling local).
+func (h *NodePoolHandler) Abort(c *gin.Context) {
+	cluster := c.Param("cluster")
+	resourceGroup := c.Param("resource_group")
+	nodePoolName := c.Param("name")
+
+	// Buscar configuração do cluster
+	clusterConfig, err := findClusterInConfig(cluster)
+	if err != nil {
+		c.JSON(404, gin.H{"success": false, "message": fmt.Sprintf("Cluster não encontrado: %v", err)})
+		return
+	}
+
+	clusterNameForAzure := strings.TrimSuffix(clusterConfig.ClusterName, "-admin")
+
+	// Configurar subscription
+	if out, err := exec.Command("az", "account", "set", "--subscription", clusterConfig.Subscription).CombinedOutput(); err != nil {
+		c.JSON(500, gin.H{"success": false, "message": fmt.Sprintf("Erro ao configurar subscription: %s", string(out))})
+		return
+	}
+
+	// Chamar az aks nodepool operation-abort — cancela a operação ARM em andamento
+	out, err := exec.Command(
+		"az", "aks", "nodepool", "operation-abort",
+		"--resource-group", resourceGroup,
+		"--cluster-name", clusterNameForAzure,
+		"--name", nodePoolName,
+	).CombinedOutput()
+
+	if err != nil {
+		log.Error().Str("output", string(out)).Err(err).Msg("Falha ao abortar operação do node pool")
+		c.JSON(500, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Falha ao abortar operação no Azure: %s", strings.TrimSpace(string(out))),
+		})
+		return
+	}
+
+	log.Info().
+		Str("cluster", clusterNameForAzure).
+		Str("resource_group", resourceGroup).
+		Str("node_pool", nodePoolName).
+		Msg("Operação de node pool abortada via ARM abort API")
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"message": "Operação abortada no Azure. O provisioningState mudará para Canceled. Aguarde antes de tentar Reconcile.",
+	})
+}
+
 // ProgressEvent representa um evento de progresso
 type ProgressEvent struct {
 	Phase     int     `json:"phase"`      // 1-5
@@ -564,7 +616,7 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 		reporter.SendAzureStarted()
 	}
 
-	if err := applyNodePoolChanges(clusterNameForAzure, resourceGroup, op); err != nil {
+	if err := applyNodePoolChanges(context.Background(), clusterNameForAzure, resourceGroup, op); err != nil {
 		if reporter != nil {
 			reporter.SendError("azure", fmt.Sprintf("Failed to update node pool: %v", err))
 		}
