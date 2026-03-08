@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.26** (GitHub release).
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **07 de março de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **08 de março de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -2150,6 +2150,43 @@ make release                     # Gera binários em build/release/
 ---
 
 ## 📝 Histórico de Sessões Recentes
+
+### Sessão 08/03/2026 - Abort e Reconcile para Node Pools (v1.3.26)
+**Contexto**: Implementar botão de abortar e reconcile para operações em andamento na aba Node Pools.
+
+**Problema identificado**: A primeira versão do "abort" apenas matava o processo `az` CLI local — o que é uma farça, pois o CLI apenas faz polling da operação ARM. Matar o CLI não cancela nada no Azure.
+
+**Solução correta — Abort real via ARM API**:
+- Botão **"Abortar"** aparece no card (overlay) e no modal de status **durante** apply (quando `isApplying = true`)
+- Chama `POST /api/v1/nodepools/:cluster/:rg/:name/abort` no backend
+- Backend executa `az aks nodepool operation-abort --resource-group <rg> --cluster-name <cluster> --name <pool>`
+- Isso chama a API ARM real: `POST .../agentPools/{name}/abort` — muda `provisioningState` para `Canceled` no Azure
+- Frontend também cancela o fetch via `AbortController` (para de aguardar a resposta do polling)
+
+**Botão "Reconcile — Tentar novamente"**:
+- Aparece somente após falha explícita (`applyResult === "error"`)
+- Retentar com os parâmetros do staging via `apiClient.updateNodePool()`
+- Suporta `AbortController` para o caso de reconcilar e precisar abortar novamente
+
+**Fluxo de estados por `provisioningState` do Azure**:
+- `Updating` → disponível: **Abortar**
+- `Canceled` / `Failed` → disponível: **Reconcile**
+- `Succeeded` → nenhuma ação
+
+**Arquivos modificados**:
+- `internal/web/handlers/nodepools.go` — handler `Abort()` com `az aks nodepool operation-abort`
+- `internal/web/handlers/nodepool_sequential.go` — `applyNodePoolChanges` aceita `context.Context`
+- `internal/web/server.go` — rota `POST /nodepools/:cluster/:resource_group/:name/abort`
+- `internal/web/frontend/src/lib/api/client.ts` — `abortNodePoolOperation()` + `signal` em `updateNodePool`
+- `internal/web/frontend/src/components/NodePoolTab.tsx` — `handleAbort()` async (chama backend + CustomEvent), `reconcilingAbortRef`, botão Abortar no modal de status
+- `internal/web/frontend/src/components/NodePoolListItem.tsx` — prop `onAbort`, botão "Abortar" vermelho no overlay
+- `internal/web/frontend/src/components/NodePoolApplyModal.tsx` — `AbortController` por pool, listener `nodePoolAbort`, tratamento especial para `signal.aborted`
+
+**Fix adicional**: `healthz` endpoint retornava versão hardcoded `v1.3.16` — corrigido para usar `updater.Version` (injetado em build time via ldflags).
+
+**Commit**: `c0afbe3`
+
+---
 
 ### Sessão 07/03/2026 - Layout Responsivo 1080p + Correções Editor YAML (v1.3.26)
 **Contexto**: Layout quebrado em telas 1080p (wrapping multi-linha no header dos painéis); editor Monaco falhava com "apiVersion not set, kind not set" ao aplicar YAMLs; botão Recarregar YAML ausente em algumas abas.
