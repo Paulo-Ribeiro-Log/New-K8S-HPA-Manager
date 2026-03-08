@@ -1639,7 +1639,8 @@ class APIClient {
       ignoreDaemonSets: boolean;
       deleteEmptyDir: boolean;
       chunkSize: number;
-    }
+    },
+    signal?: AbortSignal
   ): Promise<NodePool> {
     const payload = cordonDrainConfig
       ? {
@@ -1664,7 +1665,15 @@ class APIClient {
       {
         method: "PUT",
         body: JSON.stringify(payload),
+        signal,
       }
+    );
+  }
+
+  async abortNodePoolOperation(cluster: string, resourceGroup: string, name: string): Promise<{ success: boolean; message: string }> {
+    return this.request(
+      `/nodepools/${encodeURIComponent(cluster)}/${encodeURIComponent(resourceGroup)}/${encodeURIComponent(name)}/abort`,
+      { method: "POST" }
     );
   }
 

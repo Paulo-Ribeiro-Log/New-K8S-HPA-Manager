@@ -1,6 +1,7 @@
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Server, HardDrive, TrendingUp, TrendingDown, Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Server, HardDrive, TrendingUp, TrendingDown, Loader2, CheckCircle2, AlertTriangle, RotateCw, XCircle } from "lucide-react";
 import type { NodePool } from "@/lib/api/types";
 
 interface NodePoolListItemProps {
@@ -11,6 +12,8 @@ interface NodePoolListItemProps {
   applyError?: string;
   onClick: () => void;
   onProgressClick?: () => void;
+  onReconcile?: () => void;
+  onAbort?: () => void;
 }
 
 export const NodePoolListItem = ({
@@ -21,6 +24,8 @@ export const NodePoolListItem = ({
   applyError,
   onClick,
   onProgressClick,
+  onReconcile,
+  onAbort,
 }: NodePoolListItemProps) => {
   const handleClick = () => {
     if (isApplying && onProgressClick) {
@@ -39,7 +44,7 @@ export const NodePoolListItem = ({
     >
       {/* Overlay de progresso — clicável para reabrir modal */}
       {isApplying && (
-        <div className="absolute inset-0 rounded-lg bg-background/50 backdrop-blur-[1px] flex items-center justify-center z-10">
+        <div className="absolute inset-0 rounded-lg bg-background/50 backdrop-blur-[1px] flex flex-col items-center justify-center gap-2 z-10">
           <div className="flex items-center gap-2 bg-background border border-blue-400 dark:border-blue-500 rounded-md px-3 py-1.5 shadow-sm">
             <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
             <span className="text-xs font-medium text-foreground">Aplicando...</span>
@@ -47,6 +52,17 @@ export const NodePoolListItem = ({
               <span className="text-xs text-blue-500 underline ml-1">ver detalhes</span>
             )}
           </div>
+          {onAbort && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs border-red-400 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 bg-background shadow-sm"
+              onClick={(e) => { e.stopPropagation(); onAbort(); }}
+            >
+              <XCircle className="w-3 h-3 mr-1.5" />
+              Abortar
+            </Button>
+          )}
         </div>
       )}
 
@@ -114,11 +130,26 @@ export const NodePoolListItem = ({
           {nodePool.resource_group}
         </div>
 
-        {/* Mensagem de erro */}
-        {applyResult === "error" && applyError && (
-          <div className="flex items-start gap-1.5 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded p-2 mt-1">
-            <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-            <span className="break-all">{applyError}</span>
+        {/* Mensagem de erro + botão Reconcile */}
+        {applyResult === "error" && (
+          <div className="space-y-1.5 mt-1">
+            {applyError && (
+              <div className="flex items-start gap-1.5 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded p-2">
+                <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                <span className="break-all">{applyError}</span>
+              </div>
+            )}
+            {onReconcile && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full h-7 text-xs border-amber-400 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                onClick={(e) => { e.stopPropagation(); onReconcile(); }}
+              >
+                <RotateCw className="w-3 h-3 mr-1.5" />
+                Reconcile — Tentar novamente
+              </Button>
+            )}
           </div>
         )}
       </div>
