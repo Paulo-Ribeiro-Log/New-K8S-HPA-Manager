@@ -108,6 +108,9 @@ export default function NodeDetailsModal({
 
   const { node, pods, events, kubectl_describe } = nodeDetails;
 
+  // Debug: Track node data
+  console.log('🎯 [NodeDetailsModal] Rendering node:', node.name);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent

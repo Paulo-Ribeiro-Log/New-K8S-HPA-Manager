@@ -83,6 +83,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   // Nodes states
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [showNodeDetailsModal, setShowNodeDetailsModal] = useState(false);
+  const [modalKey, setModalKey] = useState(0); // Force modal re-creation
 
   // Fetch nodes from API
   const { nodes, loading: nodesLoading, error: nodesError, refetch: refetchNodes } = useNodes(
@@ -384,6 +385,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   // Handlers for nodes table
   const handleViewNodeDetails = (nodeName: string) => {
     setSelectedNode(nodeName);
+    setModalKey(prev => prev + 1); // Force modal re-creation
     setShowNodeDetailsModal(true);
   };
 
@@ -1221,7 +1223,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
 
       {/* Node Details Modal */}
       <NodeDetailsModal
-        key={selectedNode || "no-node"} // Force re-render when node changes
+        key={`modal-${modalKey}`} // Force complete re-render with controlled key
         open={showNodeDetailsModal}
         onOpenChange={handleCloseNodeModal}
         nodeDetails={nodeDetails}

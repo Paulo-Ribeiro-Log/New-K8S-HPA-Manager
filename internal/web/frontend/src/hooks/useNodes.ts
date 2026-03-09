@@ -57,6 +57,7 @@ export function useNodeDetails(cluster: string, nodePoolName: string, nodeName: 
       // Clear previous data before fetching new data to avoid state confusion
       setNodeDetails(null);
       const response: NodeDetailsResponse = await apiClient.getNodeDetails(cluster, nodePoolName, nodeName);
+      console.log('📊 [useNodeDetails] Response received for node:', response.node.name);
       setNodeDetails(response);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch node details");
@@ -66,8 +67,20 @@ export function useNodeDetails(cluster: string, nodePoolName: string, nodeName: 
     }
   };
 
+  // Clear state immediately when parameters change
   useEffect(() => {
-    fetchNodeDetails();
+    setNodeDetails(null);
+    setError(null);
+    setLoading(false);
+  }, [cluster, nodePoolName, nodeName]);
+
+  // Fetch data after state is cleared
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchNodeDetails();
+    }, 50); // Small delay to ensure state is cleared
+
+    return () => clearTimeout(timer);
   }, [cluster, nodePoolName, nodeName]);
 
   return { nodeDetails, loading, error, refetch: fetchNodeDetails };

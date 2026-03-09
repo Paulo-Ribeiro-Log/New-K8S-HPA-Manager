@@ -78,6 +78,13 @@ func (c *Client) getNodeInfo(ctx context.Context, nodeName, nodePoolName string)
 		return models.NodeInfo{}, fmt.Errorf("failed to get node %s: %w", nodeName, err)
 	}
 
+	log.Info().
+		Str("nodeName", nodeName).
+		Str("nodePoolName", nodePoolName).
+		Int("labelsCount", len(node.Labels)).
+		Int("taintsCount", len(node.Spec.Taints)).
+		Msg("🔍 [getNodeInfo] Node data collected")
+
 	// Buscar informações do cluster (resource group, subscription, tags)
 	clusterInfo := c.getClusterInfo()
 
