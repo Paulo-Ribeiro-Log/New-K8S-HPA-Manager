@@ -11,8 +11,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Separator } from "@/components/ui/separator";
 import type { NodePool, NodeInfo } from "@/lib/api/types";
-import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Copy, TrendingUp, History } from "lucide-react";
+import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Tags, AlertTriangle, Copy, TrendingUp, History } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
@@ -565,46 +566,57 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             </>
           )}
 
-          {/* Botão de Tags do Cluster */}
-          {nodePool.cluster_tags && Object.keys(nodePool.cluster_tags).length > 0 && (
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" size="sm" className="h-6 gap-1 px-2">
-                  <Tag className="h-3 w-3" />
-                  <span className="text-xs">Tags ({Object.keys(nodePool.cluster_tags).length})</span>
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-80">
-                <div className="space-y-2">
-                  <h4 className="font-semibold text-sm">Cluster Tags</h4>
-                  <Separator />
+          {/* Node Labels Popover */}
+          {nodes && nodes.length > 0 && (() => {
+            // Coleta todas as labels únicas de todos os nodes
+            const allNodeLabels = new Map<string, Set<string>>();
+            nodes.forEach(node => {
+              if (node.labels) {
+                Object.entries(node.labels).forEach(([key, value]) => {
+                  if (!allNodeLabels.has(key)) {
+                    allNodeLabels.set(key, new Set());
+                  }
+                  allNodeLabels.get(key)!.add(value);
+                });
+              }
+            });
+
+            return allNodeLabels.size > 0 ? (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    <Tags className="h-4 w-4 mr-2" />
+                    Node Labels ({allNodeLabels.size})
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-80">
                   <div className="space-y-1 max-h-60 overflow-y-auto">
-                    {Object.entries(nodePool.cluster_tags).map(([key, value]) => (
-                      <div key={key} className="flex items-center justify-between gap-2 text-xs">
-                        <div className="flex items-start gap-2 flex-1 min-w-0">
-                          <Badge variant="secondary" className="font-mono text-xs shrink-0">
-                            {key}
-                          </Badge>
-                          <span className="text-muted-foreground break-all">{value}</span>
+                    {Array.from(allNodeLabels.entries()).map(([key, values]) => (
+                      <div key={key} className="flex items-center justify-between px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm cursor-pointer">
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <span className="font-mono text-xs">{key}</span>
+                          <span className="text-xs text-muted-foreground truncate">
+                            {Array.from(values).join(', ')}
+                          </span>
                         </div>
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-5 w-5 p-0 shrink-0"
+                          className="h-4 w-4 p-0 shrink-0"
                           onClick={() => {
-                            navigator.clipboard.writeText(`${key}=${value}`);
-                            toast.success(`Tag ${key} copiada!`);
+                            navigator.clipboard.writeText(key);
+                            toast.success(`Label ${key} copiada!`);
                           }}
                         >
-                          <Copy className="h-3 w-3" />
+                          <Copy className="h-2.5 w-2.5" />
                         </Button>
                       </div>
                     ))}
                   </div>
-                </div>
-              </PopoverContent>
-            </Popover>
-          )}
+                </PopoverContent>
+              </Popover>
+            ) : null;
+          })()}
         </div>
       </div>
 
@@ -1020,6 +1032,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                         <TableHead>CPU</TableHead>
                         <TableHead>Memory</TableHead>
                         <TableHead>Pods</TableHead>
+                        <TableHead>Metadados</TableHead>
                         <TableHead>Age</TableHead>
                         <TableHead className="text-right">Actions</TableHead>
                       </TableRow>
@@ -1078,6 +1091,46 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                             </div>
                             <div className="text-xs text-muted-foreground">
                               of {node.pods_capacity} max
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-col gap-1">
+                              {/* Node Pool Tags (Azure Level) */}
+                              {node.cluster_tags && Object.keys(node.cluster_tags).length > 0 && (
+                                <div className="flex items-center gap-1">
+                                  <Tag className="h-3 w-3 text-blue-500" />
+                                  <Badge variant="outline" className="text-[10px] px-1 py-0 bg-blue-50 text-blue-700 border-blue-300">
+                                    Pool: {Object.keys(node.cluster_tags).length}
+                                  </Badge>
+                                </div>
+                              )}
+
+                              {/* Node Labels (Kubernetes Individual) */}
+                              {node.labels && Object.keys(node.labels).length > 0 && (
+                                <div className="flex items-center gap-1">
+                                  <Tags className="h-3 w-3 text-green-500" />
+                                  <Badge variant="outline" className="text-[10px] px-1 py-0 bg-green-50 text-green-700 border-green-300">
+                                    Node: {Object.keys(node.labels).length}
+                                  </Badge>
+                                </div>
+                              )}
+
+                              {/* Node Taints */}
+                              {node.taints && node.taints.length > 0 && (
+                                <div className="flex items-center gap-1">
+                                  <AlertTriangle className="h-3 w-3 text-orange-500" />
+                                  <Badge variant="outline" className="text-[10px] px-1 py-0 bg-orange-50 text-orange-700 border-orange-300">
+                                    Taints: {node.taints.length}
+                                  </Badge>
+                                </div>
+                              )}
+
+                              {/* Empty state */}
+                              {(!node.cluster_tags || Object.keys(node.cluster_tags).length === 0) &&
+                               (!node.labels || Object.keys(node.labels).length === 0) &&
+                               (!node.taints || node.taints.length === 0) && (
+                                <span className="text-xs text-muted-foreground">Nenhum</span>
+                              )}
                             </div>
                           </TableCell>
                           <TableCell className="text-sm">{node.age}</TableCell>
