@@ -85,6 +85,20 @@ func (c *Client) getNodeInfo(ctx context.Context, nodeName, nodePoolName string)
 		Int("taintsCount", len(node.Spec.Taints)).
 		Msg("🔍 [getNodeInfo] Node data collected")
 
+	// Debug: Log unique labels/taints to verify no sharing
+	if len(node.Labels) > 0 {
+		log.Debug().
+			Str("nodeName", nodeName).
+			Interface("sampleLabels", extractSampleLabels(node.Labels, 3)).
+			Msg("📋 [getNodeInfo] Sample labels for node")
+	}
+	if len(node.Spec.Taints) > 0 {
+		log.Debug().
+			Str("nodeName", nodeName).
+			Interface("sampleTaints", extractSampleTaints(node.Spec.Taints, 2)).
+			Msg("🔶 [getNodeInfo] Sample taints for node")
+	}
+
 	// Buscar informações do cluster (resource group, subscription, tags)
 	clusterInfo := c.getClusterInfo()
 
@@ -611,4 +625,38 @@ func getClusterTagsForNode(clusterName, resourceGroup string) (map[string]string
 	}
 
 	return tags, nil
+}
+
+// extractSampleLabels extracts a sample of labels for debugging (not for production)
+func extractSampleLabels(labels map[string]string, maxSamples int) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+
+	sample := make(map[string]string)
+	count := 0
+	for k, v := range labels {
+		if count >= maxSamples {
+			break
+		}
+		sample[k] = v
+		count++
+	}
+	return sample
+}
+
+// extractSampleTaints extracts a sample of taints for debugging (not for production)
+func extractSampleTaints(taints []corev1.Taint, maxSamples int) []string {
+	if len(taints) == 0 {
+		return nil
+	}
+
+	sample := make([]string, 0, maxSamples)
+	for i, taint := range taints {
+		if i >= maxSamples {
+			break
+		}
+		sample = append(sample, fmt.Sprintf("%s=%s:%s", taint.Key, taint.Value, taint.Effect))
+	}
+	return sample
 }
