@@ -222,20 +222,26 @@ export default function NodeDetailsModal({
               {node.cluster_tags && Object.keys(node.cluster_tags).length > 0 && (
                 <Popover>
                   <PopoverTrigger asChild>
-                    <Button variant="outline" size="sm" className="h-5 gap-1 px-2">
-                      <Tag className="h-3 w-3" />
-                      <span className="text-xs">Tags ({Object.keys(node.cluster_tags).length})</span>
+                    <Button variant="outline" size="sm" className="h-5 gap-1 px-2 border-blue-200 hover:border-blue-400">
+                      <Tag className="h-3 w-3 text-blue-500" />
+                      <span className="text-xs text-blue-700">Cluster Tags ({Object.keys(node.cluster_tags).length})</span>
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-80">
                     <div className="space-y-2">
-                      <h4 className="font-semibold text-sm">Cluster Tags</h4>
+                      <h4 className="font-semibold text-sm text-blue-700 flex items-center gap-2">
+                        <Tag className="h-4 w-4" />
+                        Cluster Tags (Azure Level)
+                      </h4>
+                      <p className="text-xs text-muted-foreground">
+                        Metadados definidos no Azure Resource Manager para o cluster/nodepool
+                      </p>
                       <Separator />
                       <div className="space-y-1 max-h-60 overflow-y-auto">
                         {Object.entries(node.cluster_tags).map(([key, value]) => (
-                          <div key={key} className="flex items-center justify-between gap-2 text-xs">
+                          <div key={key} className="flex items-center justify-between gap-2 text-xs p-2 bg-blue-50 rounded border-l-2 border-blue-400">
                             <div className="flex items-start gap-2 flex-1 min-w-0">
-                              <Badge variant="secondary" className="font-mono text-xs shrink-0">
+                              <Badge variant="secondary" className="font-mono text-xs shrink-0 bg-blue-100 text-blue-800">
                                 {key}
                               </Badge>
                               <span className="text-muted-foreground break-all">{value}</span>
@@ -246,7 +252,7 @@ export default function NodeDetailsModal({
                               className="h-5 w-5 p-0 shrink-0"
                               onClick={() => {
                                 navigator.clipboard.writeText(`${key}=${value}`);
-                                toast.success(`Tag ${key} copiada!`);
+                                toast.success(`Cluster Tag ${key} copiada!`);
                               }}
                             >
                               <Copy className="h-3 w-3" />
@@ -458,19 +464,22 @@ export default function NodeDetailsModal({
 
                   {/* Taints & Labels */}
                   <div className="p-4 border rounded-lg">
-                    {/* Taints */}
+                    {/* Node Taints */}
                     <h4 className="text-xs font-medium mb-2 flex items-center gap-2">
-                      <AlertTriangle className="w-3 h-3" />
-                      Taints {node.taints && node.taints.length > 0 && `(${node.taints.length})`}
+                      <AlertTriangle className="w-3 h-3 text-orange-500" />
+                      <span className="text-orange-700">Node Taints {node.taints && node.taints.length > 0 && `(${node.taints.length})`}</span>
                     </h4>
+                    <p className="text-[10px] text-muted-foreground mb-2">
+                      Restrições de scheduling específicas deste node
+                    </p>
                     {node.taints && node.taints.length > 0 ? (
                       <div className="space-y-2 max-h-32 overflow-y-auto mb-4">
                         {node.taints.map((taint, index) => (
-                          <div key={index} className="p-2 border rounded text-xs space-y-1">
+                          <div key={index} className="p-2 border rounded text-xs space-y-1 bg-orange-50 border-l-2 border-orange-400">
                             <div className="flex items-center justify-between gap-1">
                               <Badge
                                 variant="secondary"
-                                className="font-mono text-[10px] px-1 py-0 truncate max-w-[150px]"
+                                className="font-mono text-[10px] px-1 py-0 truncate max-w-[150px] bg-orange-100 text-orange-800 border-orange-300"
                                 title={taint.key}
                               >
                                 {taint.key}
@@ -484,7 +493,7 @@ export default function NodeDetailsModal({
                                     ? `${taint.key}=${taint.value}:${taint.effect}`
                                     : `${taint.key}:${taint.effect}`;
                                   navigator.clipboard.writeText(taintStr);
-                                  toast.success("Taint copiado!");
+                                  toast.success("Node Taint copiado!");
                                 }}
                               >
                                 <Copy className="h-2.5 w-2.5" />
@@ -503,22 +512,25 @@ export default function NodeDetailsModal({
                         ))}
                       </div>
                     ) : (
-                      <div className="text-xs text-muted-foreground mb-4">No taints</div>
+                      <div className="text-xs text-muted-foreground mb-4">No node taints</div>
                     )}
 
-                    {/* Labels */}
+                    {/* Node Labels */}
                     <h4 className="text-xs font-medium mb-2 flex items-center gap-2">
-                      <Tags className="w-3 h-3" />
-                      Labels {node.labels && `(${Object.keys(node.labels).length})`}
+                      <Tags className="w-3 h-3 text-green-500" />
+                      <span className="text-green-700">Node Labels {node.labels && `(${Object.keys(node.labels).length})`}</span>
                     </h4>
+                    <p className="text-[10px] text-muted-foreground mb-2">
+                      Metadados específicos deste node no Kubernetes
+                    </p>
                     {node.labels && Object.keys(node.labels).length > 0 ? (
                       <div className="space-y-2 max-h-32 overflow-y-auto">
                         {Object.entries(node.labels).slice(0, 10).map(([key, value]) => (
-                          <div key={key} className="p-1.5 border rounded flex items-center justify-between gap-1 text-xs">
+                          <div key={key} className="p-1.5 border rounded flex items-center justify-between gap-1 text-xs bg-green-50 border-l-2 border-green-400">
                             <div className="flex items-center gap-1 flex-1 min-w-0">
                               <Badge
                                 variant="outline"
-                                className="font-mono text-[10px] px-1 py-0 shrink-0 max-w-[100px] truncate"
+                                className="font-mono text-[10px] px-1 py-0 shrink-0 max-w-[100px] truncate bg-green-100 text-green-800 border-green-300"
                                 title={key}
                               >
                                 {key.split('/').pop()}
@@ -537,7 +549,7 @@ export default function NodeDetailsModal({
                               onClick={() => {
                                 // IMPORTANTE: Copia valor COMPLETO (não truncado)
                                 navigator.clipboard.writeText(`${key}=${value}`);
-                                toast.success(`Label copiado!`);
+                                toast.success(`Node Label copiado!`);
                               }}
                             >
                               <Copy className="h-2.5 w-2.5" />
@@ -551,7 +563,7 @@ export default function NodeDetailsModal({
                         )}
                       </div>
                     ) : (
-                      <div className="text-xs text-muted-foreground">No labels</div>
+                      <div className="text-xs text-muted-foreground">No node labels</div>
                     )}
                   </div>
                 </div>
