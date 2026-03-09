@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Plus } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Plus, Copy } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -424,11 +424,10 @@ export const ConfigMapsTab = ({
     await handleApply();
   };
 
-  const handleViewDescribe = async () => {
+  const fetchDescribe = async () => {
     if (!selectedConfigMap) return;
 
     setDescribeLoading(true);
-    setDescribeModalOpen(true);
     try {
       const result = await apiClient.describeConfigMap(selectedConfigMap.cluster, selectedConfigMap.namespace, selectedConfigMap.name);
       setDescribeContent(result.describe);
@@ -440,6 +439,16 @@ export const ConfigMapsTab = ({
     } finally {
       setDescribeLoading(false);
     }
+  };
+
+  const handleViewDescribe = async () => {
+    if (!selectedConfigMap) return;
+    setDescribeModalOpen(true);
+    await fetchDescribe();
+  };
+
+  const handleRefreshDescribe = async () => {
+    await fetchDescribe();
   };
 
   const namespaceSelector = (
@@ -1416,6 +1425,37 @@ data:
               <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
             )}
           </ScrollArea>
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefreshDescribe}
+              disabled={describeLoading}
+              className="text-xs"
+            >
+              {describeLoading ? (
+                <Loader2 className="w-3 h-3 animate-spin mr-1" />
+              ) : (
+                <RefreshCcw className="w-3 h-3 mr-1" />
+              )}
+              Atualizar
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                navigator.clipboard.writeText(describeContent);
+                toast.success("Describe copiado para a área de transferência!");
+              }}
+              disabled={!describeContent || describeLoading}
+              className="text-xs"
+            >
+              <Copy className="w-3 h-3 mr-1" />
+              Copiar
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

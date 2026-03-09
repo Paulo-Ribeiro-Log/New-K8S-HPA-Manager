@@ -46,6 +46,7 @@ import {
   ScrollText,
   Download,
   RefreshCw,
+  Copy,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
