@@ -778,13 +778,13 @@ export function CronJobsTab({
           <DialogHeader>
             <DialogTitle>kubectl describe — {selectedCronJob?.name}</DialogTitle>
           </DialogHeader>
-          <ScrollArea className="flex-1 max-h-[60vh]">
+          <ScrollArea className="h-[70vh]">
             {describeLoading ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="h-6 w-6 animate-spin" />
               </div>
             ) : (
-              <pre className="text-xs font-mono whitespace-pre-wrap break-words p-2">
+              <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">
                 {describeContent}
               </pre>
             )}
