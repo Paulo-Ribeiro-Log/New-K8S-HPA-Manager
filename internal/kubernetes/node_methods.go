@@ -97,7 +97,7 @@ func (c *Client) getNodeInfo(ctx context.Context, nodeName, nodePoolName string)
 		Unschedulable:     node.Spec.Unschedulable,
 		Labels:            copyStringMap(node.Labels),
 		Annotations:       copyStringMap(node.Annotations),
-		Taints:            node.Spec.Taints,
+		Taints:            copyTaints(node.Spec.Taints),
 	}
 
 	// Extrair IPs

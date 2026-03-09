@@ -47,12 +47,15 @@ export function useNodeDetails(cluster: string, nodePoolName: string, nodeName: 
   const fetchNodeDetails = async () => {
     if (!cluster || !nodePoolName || !nodeName) {
       setNodeDetails(null);
+      setError(null);
       return;
     }
 
     try {
       setLoading(true);
       setError(null);
+      // Clear previous data before fetching new data to avoid state confusion
+      setNodeDetails(null);
       const response: NodeDetailsResponse = await apiClient.getNodeDetails(cluster, nodePoolName, nodeName);
       setNodeDetails(response);
     } catch (err) {
