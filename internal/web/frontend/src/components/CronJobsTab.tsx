@@ -52,6 +52,7 @@ import {
   Trash2,
   AlertTriangle,
   TriangleAlert,
+  Copy,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -89,7 +90,7 @@ export function CronJobsTab({
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
-  const [selectedCronJob, setSelectedCronJob] = usePersistedTabState<CronJob | null>("cronjobs-selected", null);
+  const [selectedCronJob, setSelectedCronJob] = usePersistedTabState<CronJob | null>("cronjobs", "selected", null);
   const [originalYaml, setOriginalYaml] = useState("");
   const [editorValue, setEditorValue] = useState("");
   const [manifestLoading, setManifestLoading] = useState(false);
@@ -168,7 +169,7 @@ export function CronJobsTab({
     setHistoryIndex(-1);
     setViewMode("editor");
     try {
-      const result = await apiClient.getCronJobManifest(cj.cluster || cluster, cj.namespace, cj.name);
+      const result = await apiClient.getCronJobManifest(cluster, cj.namespace, cj.name);
       setOriginalYaml(result.yaml);
       setEditorValue(result.yaml);
       setHistory([result.yaml]);
@@ -253,7 +254,7 @@ export function CronJobsTab({
     setIsValidating(true);
     try {
       await apiClient.validateCronJob({
-        cluster: selectedCronJob.cluster || cluster,
+        cluster: cluster,
         namespace: selectedCronJob.namespace,
         name: selectedCronJob.name,
         yaml: editorValue,
@@ -272,7 +273,7 @@ export function CronJobsTab({
     if (!selectedCronJob) return;
     setIsApplying(true);
     try {
-      await apiClient.applyCronJob(selectedCronJob.cluster || cluster, selectedCronJob.namespace, selectedCronJob.name, {
+      await apiClient.applyCronJob(cluster, selectedCronJob.namespace, selectedCronJob.name, {
         yaml: editorValue,
       });
       toast.success("CronJob aplicado com sucesso");
@@ -295,13 +296,12 @@ export function CronJobsTab({
     setViewMode("editor");
   };
 
-  const handleDescribe = async () => {
+  const fetchDescribe = useCallback(async () => {
     if (!selectedCronJob) return;
     setDescribeLoading(true);
-    setDescribeOpen(true);
     try {
       const result = await apiClient.describeCronJob(
-        selectedCronJob.cluster || cluster,
+        cluster,
         selectedCronJob.namespace,
         selectedCronJob.name
       );
@@ -311,6 +311,15 @@ export function CronJobsTab({
     } finally {
       setDescribeLoading(false);
     }
+  }, [cluster, selectedCronJob]);
+
+  const handleViewDescribe = async () => {
+    setDescribeOpen(true);
+    await fetchDescribe();
+  };
+
+  const handleRefreshDescribe = async () => {
+    await fetchDescribe();
   };
 
   const handleTrigger = async () => {
@@ -318,7 +327,7 @@ export function CronJobsTab({
     setIsTriggering(true);
     try {
       const result = await apiClient.triggerCronJob(
-        selectedCronJob.cluster || cluster,
+        cluster,
         selectedCronJob.namespace,
         selectedCronJob.name
       );
@@ -342,7 +351,7 @@ export function CronJobsTab({
     setIsSuspending(true);
     try {
       await apiClient.updateCronJob(
-        selectedCronJob.cluster || cluster,
+        cluster,
         selectedCronJob.namespace,
         selectedCronJob.name,
         { suspend }
@@ -528,7 +537,7 @@ export function CronJobsTab({
       </ProtectedAction>
 
       {/* Describe */}
-      <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={handleDescribe}>
+      <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={handleViewDescribe}>
         <FileText className="h-3 w-3 mr-1" />
         Describe
       </Button>
@@ -769,19 +778,37 @@ export function CronJobsTab({
           <DialogHeader>
             <DialogTitle>kubectl describe — {selectedCronJob?.name}</DialogTitle>
           </DialogHeader>
-          <ScrollArea className="flex-1 max-h-[60vh]">
+          <ScrollArea className="h-[70vh]">
             {describeLoading ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="h-6 w-6 animate-spin" />
               </div>
             ) : (
-              <pre className="text-xs font-mono whitespace-pre-wrap break-words p-2">
+              <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">
                 {describeContent}
               </pre>
             )}
           </ScrollArea>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDescribeOpen(false)}>Fechar</Button>
+            <Button
+              variant="outline"
+              onClick={handleRefreshDescribe}
+              disabled={describeLoading}
+            >
+              <RefreshCcw className={`h-4 w-4 mr-2 ${describeLoading ? "animate-spin" : ""}`} />
+              Atualizar
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                navigator.clipboard.writeText(describeContent);
+                toast.success("Conteúdo copiado para a área de transferência");
+              }}
+            >
+              <Copy className="h-4 w-4 mr-2" />
+              Copiar
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

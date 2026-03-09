@@ -13,7 +13,7 @@ import {
   Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert,
   FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X,
   FileText, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle,
-  TrendingUp, Info
+  TrendingUp, Info, Copy
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -273,10 +273,10 @@ export const VPAsTab = ({
     }
   };
 
-  const handleDescribe = async () => {
+  const fetchDescribe = async () => {
     if (!selectedVPA) return;
+
     setDescribeLoading(true);
-    setDescribeModalOpen(true);
     try {
       const result = await apiClient.describeVPA(
         selectedVPA.cluster,
@@ -285,10 +285,23 @@ export const VPAsTab = ({
       );
       setDescribeContent(result.describe);
     } catch (err) {
-      setDescribeContent(`Erro: ${err instanceof Error ? err.message : "Erro desconhecido"}`);
+      toast.error("Erro ao buscar describe", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+      setDescribeContent("Error loading describe");
     } finally {
       setDescribeLoading(false);
     }
+  };
+
+  const handleViewDescribe = async () => {
+    if (!selectedVPA) return;
+    setDescribeModalOpen(true);
+    await fetchDescribe();
+  };
+
+  const handleRefreshDescribe = async () => {
+    await fetchDescribe();
   };
 
   const handleDelete = async () => {
@@ -458,7 +471,7 @@ export const VPAsTab = ({
         {manifestLoading ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCcw className="w-4 h-4 mr-1" />}
         Recarregar YAML
       </Button>
-      <Button variant="outline" size="sm" onClick={handleDescribe}>
+      <Button variant="outline" size="sm" onClick={handleViewDescribe}>
         <FileText className="w-4 h-4 mr-1" />
         Describe
       </Button>
@@ -660,11 +673,32 @@ export const VPAsTab = ({
                 <Loader2 className="h-6 w-6 animate-spin" />
               </div>
             ) : (
-              <pre className="text-xs font-mono whitespace-pre-wrap break-words p-2">
+              <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">
                 {describeContent}
               </pre>
             )}
           </ScrollArea>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefreshDescribe}
+              disabled={describeLoading}
+            >
+              <RefreshCcw className={`w-3 h-3 mr-1 ${describeLoading ? "animate-spin" : ""}`} />
+              Atualizar
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigator.clipboard.writeText(describeContent)}
+              disabled={!describeContent || describeContent === "Error loading describe"}
+              className="text-xs"
+            >
+              <Copy className="w-3 h-3 mr-1" />
+              Copiar
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
