@@ -102,6 +102,37 @@ func (c *Client) getNodeInfo(ctx context.Context, nodeName, nodePoolName string)
 	// Buscar informações do cluster (resource group, subscription, tags)
 	clusterInfo := c.getClusterInfo()
 
+	// Create deep copy of cluster tags to avoid sharing
+	clusterTagsCopy := make(map[string]string)
+	for k, v := range clusterInfo.ClusterTags {
+		clusterTagsCopy[k] = v
+	}
+
+	// Create deep copy of node labels with detailed logging
+	nodeLabels := make(map[string]string)
+	for k, v := range node.Labels {
+		nodeLabels[k] = v
+	}
+
+	// Create deep copy of node annotations
+	nodeAnnotations := make(map[string]string)
+	for k, v := range node.Annotations {
+		nodeAnnotations[k] = v
+	}
+
+	// Create deep copy of taints
+	nodeTaints := make([]corev1.Taint, len(node.Spec.Taints))
+	copy(nodeTaints, node.Spec.Taints)
+
+	log.Debug().
+		Str("nodeName", nodeName).
+		Interface("nodeLabels", nodeLabels).
+		Interface("clusterTags", clusterTagsCopy).
+		Int("nodeLabelsCount", len(nodeLabels)).
+		Int("clusterTagsCount", len(clusterTagsCopy)).
+		Int("nodeTaintsCount", len(nodeTaints)).
+		Msg("🔍 [getNodeInfo] Deep copies created - data should be isolated per node")
+
 	nodeInfo := models.NodeInfo{
 		Name:              node.Name,
 		NodePoolName:      nodePoolName,
@@ -109,16 +140,16 @@ func (c *Client) getNodeInfo(ctx context.Context, nodeName, nodePoolName string)
 		ResourceGroup:     clusterInfo.ResourceGroup,
 		Subscription:      clusterInfo.Subscription,
 		SubscriptionName:  clusterInfo.SubscriptionName,
-		ClusterTags:       clusterInfo.ClusterTags,
+		ClusterTags:       clusterTagsCopy,
 		KubernetesVersion: node.Status.NodeInfo.KubeletVersion,
 		ProviderID:        node.Spec.ProviderID,
 		Hostname:          node.Name, // Usar nome do node como hostname
 		CreatedAt:         node.CreationTimestamp.Time,
 		Age:               formatAge(node.CreationTimestamp.Time),
 		Unschedulable:     node.Spec.Unschedulable,
-		Labels:            copyStringMap(node.Labels),
-		Annotations:       copyStringMap(node.Annotations),
-		Taints:            copyTaints(node.Spec.Taints),
+		Labels:            nodeLabels,
+		Annotations:       nodeAnnotations,
+		Taints:            nodeTaints,
 	}
 
 	// Extrair IPs
