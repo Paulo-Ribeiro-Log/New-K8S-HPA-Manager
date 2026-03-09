@@ -484,18 +484,38 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                     >
                       <Copy className="h-3 w-3" />
                     </Button>
-                    <span className="text-xs text-muted-foreground/60 font-mono">({nodePool.subscription})</span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-5 w-5 p-0"
-                      onClick={() => {
-                        navigator.clipboard.writeText(nodePool.subscription);
-                        toast.success("Subscription ID copiado!");
-                      }}
-                    >
-                      <Copy className="h-3 w-3" />
-                    </Button>
+                    {nodePool.subscription !== nodePool.subscription_name && (
+                      <>
+                        <span className="text-xs text-muted-foreground/60 font-mono">({nodePool.subscription})</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-5 w-5 p-0"
+                          onClick={() => {
+                            navigator.clipboard.writeText(nodePool.subscription);
+                            toast.success("Subscription ID copiado!");
+                          }}
+                        >
+                          <Copy className="h-3 w-3" />
+                        </Button>
+                      </>
+                    )}
+                    {nodePool.subscription_uuid && (
+                      <>
+                        <span className="text-xs text-muted-foreground/40 font-mono">{nodePool.subscription_uuid}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-5 w-5 p-0"
+                          onClick={() => {
+                            navigator.clipboard.writeText(nodePool.subscription_uuid || '');
+                            toast.success("UUID copiado!");
+                          }}
+                        >
+                          <Copy className="h-3 w-3" />
+                        </Button>
+                      </>
+                    )}
                   </>
                 ) : (
                   <>
@@ -511,6 +531,22 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                     >
                       <Copy className="h-3 w-3" />
                     </Button>
+                    {nodePool.subscription_uuid && (
+                      <>
+                        <span className="text-xs text-muted-foreground/40 font-mono">{nodePool.subscription_uuid}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-5 w-5 p-0"
+                          onClick={() => {
+                            navigator.clipboard.writeText(nodePool.subscription_uuid || '');
+                            toast.success("UUID copiado!");
+                          }}
+                        >
+                          <Copy className="h-3 w-3" />
+                        </Button>
+                      </>
+                    )}
                   </>
                 )}
               </div>
