@@ -1221,6 +1221,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
 
       {/* Node Details Modal */}
       <NodeDetailsModal
+        key={selectedNode || "no-node"} // Force re-render when node changes
         open={showNodeDetailsModal}
         onOpenChange={handleCloseNodeModal}
         nodeDetails={nodeDetails}
