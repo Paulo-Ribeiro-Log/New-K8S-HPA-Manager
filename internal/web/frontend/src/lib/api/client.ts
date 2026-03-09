@@ -1622,8 +1622,10 @@ class APIClient {
   }
 
   async getNodeDetails(cluster: string, nodePoolName: string, nodeName: string): Promise<NodeDetailsResponse> {
+    // Add cache-busting timestamp to ensure fresh data
+    const cacheBuster = Date.now();
     const response = await this.request<APIResponse<NodeDetailsResponse>>(
-      `/nodes/${encodeURIComponent(cluster)}/${encodeURIComponent(nodePoolName)}/${encodeURIComponent(nodeName)}`
+      `/nodes/${encodeURIComponent(cluster)}/${encodeURIComponent(nodePoolName)}/${encodeURIComponent(nodeName)}?_t=${cacheBuster}`
     );
     if (!response.data) {
       throw new Error('No data returned from server');
