@@ -374,21 +374,21 @@ export function useDeployments(cluster?: string, namespaces?: string[], showSyst
 
   const namespaceKey = namespaces && namespaces.length > 0 ? namespaces.join(",") : "";
 
-  const fetchDeployments = async (bypassCache: boolean = false) => {
+  const fetchDeployments = async (bypassCache: boolean = false, silent: boolean = false) => {
     if (!cluster) {
       setDeployments([]);
       return;
     }
 
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       setError(null);
       const data = await apiClient.getDeployments(cluster, namespaces, undefined, showSystem, bypassCache);
       setDeployments(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch deployments");
+      if (!silent) setError(err instanceof Error ? err.message : "Failed to fetch deployments");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -404,8 +404,9 @@ export function useDeployments(cluster?: string, namespaces?: string[], showSyst
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchDeployments(true);
+  const silentRefetch = () => fetchDeployments(true, true);
 
-  return { deployments, loading, error, refetch };
+  return { deployments, loading, error, refetch, silentRefetch };
 }
 
 export function useDaemonSets(cluster?: string, namespaces?: string[], showSystem: boolean = false) {

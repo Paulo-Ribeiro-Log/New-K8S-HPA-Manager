@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -35,8 +35,11 @@ import { createTwoFilesPatch } from "diff";
 import { html } from "diff2html";
 import * as yaml from "js-yaml";
 
-import type { Namespace, PodSummary } from "@/lib/api/types";
+import type { Namespace, PodSummary, BatchPodMetrics } from "@/lib/api/types";
 import { apiClient } from "@/lib/api/client";
+import { PodMonitorTable } from "@/components/PodMonitorTable";
+import { PodLogsPanel } from "@/components/PodLogsPanel";
+import { PodQuickViewModal } from "@/components/PodQuickViewModal";
 
 interface PodsPanelProps {
   cluster: string;
@@ -66,6 +69,14 @@ export const PodsPanel = ({
   // Estados locais (não persistidos)
   const [pods, setPods] = useState<PodSummary[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // Live monitoring state
+  type PodRightView = { kind: "pod-table" } | { kind: "pod-logs"; pod: PodSummary };
+  const [rightView, setRightView] = useState<PodRightView>({ kind: "pod-table" });
+  const [batchMetrics, setBatchMetrics] = useState<BatchPodMetrics | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  // Modal de detalhes rápido (abre ao clicar na tabela de monitoramento)
+  const [quickViewPod, setQuickViewPod] = useState<PodSummary | null>(null);
   const [podYaml, setPodYaml] = useState("");
   const [yamlLoading, setYamlLoading] = useState(false);
   const [podLogs, setPodLogs] = useState<Record<string, string>>({});
@@ -536,7 +547,34 @@ export const PodsPanel = ({
     setPodYaml("");
     setPodLogs({});
     setExpandedLabels(false);
+    setRightView({ kind: "pod-table" });
   }, [cluster, selectedNamespace]);
+
+  // Busca métricas automaticamente quando pods muda ou cluster/namespace mudam
+  // Usando useEffect em pods evita todos os problemas de closure/timing
+  useEffect(() => {
+    if (!cluster || pods.length === 0) { setBatchMetrics(null); return; }
+    const fetchMetrics = async () => {
+      try {
+        let result: BatchPodMetrics;
+        if (!selectedNamespace || selectedNamespace === "__all__") {
+          const uniqueNs = [...new Set(pods.map(p => p.namespace).filter(Boolean) as string[])];
+          const results = await Promise.all(uniqueNs.map(ns => apiClient.getBatchPodMetrics(cluster, ns)));
+          result = { available: false, pods: {} };
+          for (const r of results) {
+            if (r.available) { result.available = true; Object.assign(result.pods, r.pods); }
+          }
+        } else {
+          result = await apiClient.getBatchPodMetrics(cluster, selectedNamespace);
+        }
+        setBatchMetrics(result);
+      } catch { /* graceful degradation */ }
+    };
+    fetchMetrics();
+    const id = setInterval(fetchMetrics, 10000);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pods, cluster, selectedNamespace]);
 
   const filteredPods = useMemo(() => {
     let result = pods;
@@ -944,6 +982,17 @@ export const PodsPanel = ({
       <Button variant="outline" size="sm" onClick={() => fetchPods()} disabled={!cluster || loading}>
         <RefreshCcw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
       </Button>
+      {selectedPod && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setSelectedPod(null)}
+          title="Desmarcar pod selecionado"
+          className="text-muted-foreground hover:text-foreground"
+        >
+          <X className="w-4 h-4" />
+        </Button>
+      )}
       {collapseButton}
     </div>
   );
@@ -1193,9 +1242,35 @@ export const PodsPanel = ({
     }
 
     if (!selectedPod) {
+      // Live monitoring table / logs view
+      if (rightView.kind === "pod-logs") {
+        return (
+          <div className="flex flex-col h-full p-2">
+            <PodLogsPanel
+              cluster={cluster}
+              pod={rightView.pod}
+              onBack={() => setRightView({ kind: "pod-table" })}
+              backLabel="Voltar para tabela"
+            />
+          </div>
+        );
+      }
+
+      // Default: pod monitor table
       return (
-        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Escolha um Pod para visualizar os detalhes
+        <div className="flex flex-col h-full p-2">
+          <PodMonitorTable
+            cluster={cluster}
+            pods={filteredPods}
+            loading={loading}
+            metrics={batchMetrics}
+            metricsLoading={metricsLoading}
+            onOpenDetail={(pod) => setQuickViewPod(pod)}
+            headerLabel={selectedNamespace && selectedNamespace !== "__all__"
+              ? `${selectedNamespace} — pods (${filteredPods.length})`
+              : `todos os namespaces — pods (${filteredPods.length})`}
+            onRequestRefresh={() => fetchPods(true)}
+          />
         </div>
       );
     }
@@ -1980,6 +2055,15 @@ export const PodsPanel = ({
 
   return (
     <>
+      {/* Modal de detalhes rápidos (click na tabela de monitoramento) */}
+      <PodQuickViewModal
+        pod={quickViewPod}
+        cluster={cluster}
+        metrics={quickViewPod ? batchMetrics?.pods[quickViewPod.name] : null}
+        onClose={() => setQuickViewPod(null)}
+        onRefresh={() => fetchPods(true)}
+      />
+
       {/* Modal de Configuração do Shell */}
       <Dialog open={shellModalOpen} onOpenChange={setShellModalOpen}>
         <DialogContent className="sm:max-w-md">

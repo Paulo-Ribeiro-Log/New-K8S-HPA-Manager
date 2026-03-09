@@ -593,6 +593,7 @@ func (s *Server) setupRoutes() {
 	pods := api.Group("/pods")
 	{
 		pods.GET("", podHandler.List)
+		pods.GET("/metrics", podHandler.GetBatchMetrics)
 		pods.GET("/:cluster/:namespace/:name", podHandler.Get)
 		pods.GET("/:cluster/:namespace/:name/describe", podHandler.Describe)
 		pods.GET("/:cluster/:namespace/:name/logs", podHandler.GetLogs)

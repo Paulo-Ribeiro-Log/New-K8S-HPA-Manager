@@ -4210,6 +4210,109 @@ func (c *Client) GetPodMetricsFromServer(ctx context.Context, namespace, name st
 	return &metrics, nil
 }
 
+// BatchPodMetricsSingle contains metrics for a single pod
+type BatchPodMetricsSingle struct {
+	CPUMillicores     int64   `json:"cpuMillicores"`
+	MemoryBytes       int64   `json:"memoryBytes"`
+	CPUPercentRequest float64 `json:"cpuPercentRequest"` // -1 se sem request
+	CPUPercentLimit   float64 `json:"cpuPercentLimit"`   // -1 se sem limit
+	MemPercentRequest float64 `json:"memPercentRequest"` // -1 se sem request
+	MemPercentLimit   float64 `json:"memPercentLimit"`   // -1 se sem limit
+}
+
+// BatchPodMetricsResult contains batch metrics for all pods in a namespace
+type BatchPodMetricsResult struct {
+	Available bool                             `json:"available"`
+	Pods      map[string]BatchPodMetricsSingle `json:"pods"`
+}
+
+// GetBatchPodMetrics returns real-time metrics for all pods in a namespace using metrics-server
+func (c *Client) GetBatchPodMetrics(ctx context.Context, namespace string) (*BatchPodMetricsResult, error) {
+	result := &BatchPodMetricsResult{
+		Available: false,
+		Pods:      make(map[string]BatchPodMetricsSingle),
+	}
+
+	restClient := c.clientset.CoreV1().RESTClient()
+	data, err := restClient.Get().
+		AbsPath("/apis/metrics.k8s.io/v1beta1/namespaces/" + namespace + "/pods").
+		DoRaw(ctx)
+	if err != nil {
+		return result, nil // graceful degradation
+	}
+
+	var metricsList metricsv1beta1.PodMetricsList
+	if err := json.Unmarshal(data, &metricsList); err != nil {
+		return result, nil
+	}
+
+	// Build map: podName → total CPU/Mem usage
+	usageMap := make(map[string]struct{ cpu, mem int64 })
+	for _, pm := range metricsList.Items {
+		var cpu, mem int64
+		for _, ct := range pm.Containers {
+			cpu += ct.Usage.Cpu().MilliValue()
+			mem += ct.Usage.Memory().Value()
+		}
+		usageMap[pm.Name] = struct{ cpu, mem int64 }{cpu, mem}
+	}
+
+	// Fetch pods to get requests/limits for percent calculation
+	pods, err := c.clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return result, nil
+	}
+
+	result.Available = true
+	for _, pod := range pods.Items {
+		usage, hasMetrics := usageMap[pod.Name]
+		if !hasMetrics {
+			continue
+		}
+
+		var cpuReq, cpuLim, memReq, memLim int64
+		for _, container := range pod.Spec.Containers {
+			if v := container.Resources.Requests[corev1.ResourceCPU]; !v.IsZero() {
+				cpuReq += v.MilliValue()
+			}
+			if v := container.Resources.Limits[corev1.ResourceCPU]; !v.IsZero() {
+				cpuLim += v.MilliValue()
+			}
+			if v := container.Resources.Requests[corev1.ResourceMemory]; !v.IsZero() {
+				memReq += v.Value()
+			}
+			if v := container.Resources.Limits[corev1.ResourceMemory]; !v.IsZero() {
+				memLim += v.Value()
+			}
+		}
+
+		single := BatchPodMetricsSingle{
+			CPUMillicores:     usage.cpu,
+			MemoryBytes:       usage.mem,
+			CPUPercentRequest: -1,
+			CPUPercentLimit:   -1,
+			MemPercentRequest: -1,
+			MemPercentLimit:   -1,
+		}
+		if cpuReq > 0 {
+			single.CPUPercentRequest = float64(usage.cpu) / float64(cpuReq) * 100
+		}
+		if cpuLim > 0 {
+			single.CPUPercentLimit = float64(usage.cpu) / float64(cpuLim) * 100
+		}
+		if memReq > 0 {
+			single.MemPercentRequest = float64(usage.mem) / float64(memReq) * 100
+		}
+		if memLim > 0 {
+			single.MemPercentLimit = float64(usage.mem) / float64(memLim) * 100
+		}
+
+		result.Pods[pod.Name] = single
+	}
+
+	return result, nil
+}
+
 // CopyFromPod copia arquivo/diretório do pod para arquivo temporário local
 // Retorna o caminho do arquivo temporário criado
 func (c *Client) CopyFromPod(namespace, podName, container, remotePath string, isDirectory bool) (string, error) {

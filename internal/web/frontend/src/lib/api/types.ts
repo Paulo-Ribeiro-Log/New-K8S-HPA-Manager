@@ -389,6 +389,20 @@ export interface PodSummary {
   restarts: number;
 }
 
+export interface PodMetricsSingle {
+  cpuMillicores: number;
+  memoryBytes: number;
+  cpuPercentRequest: number;   // -1 se não disponível
+  cpuPercentLimit: number;
+  memPercentRequest: number;
+  memPercentLimit: number;
+}
+
+export interface BatchPodMetrics {
+  available: boolean;
+  pods: Record<string, PodMetricsSingle>;  // key: podName
+}
+
 export interface PodMetadata {
   uid?: string;
   resourceVersion?: string;

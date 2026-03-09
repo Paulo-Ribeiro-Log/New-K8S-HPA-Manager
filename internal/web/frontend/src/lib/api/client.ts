@@ -92,6 +92,7 @@ import type {
   AWXStatus,
   AWXCertificate,
   AWXJobLaunch,
+  BatchPodMetrics,
 } from "./types";
 
 import type {
@@ -1316,6 +1317,16 @@ class APIClient {
       `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}/logs${query}`
     );
     return response.data || { logs: "" };
+  }
+
+  async getBatchPodMetrics(cluster: string, namespace: string): Promise<BatchPodMetrics> {
+    try {
+      const params = new URLSearchParams({ cluster, namespace });
+      const result = await this.request<{ success: boolean; data: BatchPodMetrics }>(`/pods/metrics?${params}`);
+      return result.data;
+    } catch {
+      return { available: false, pods: {} };
+    }
   }
 
   async describePod(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {

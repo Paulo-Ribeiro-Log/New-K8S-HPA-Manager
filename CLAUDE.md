@@ -2151,6 +2151,37 @@ make release                     # Gera binários em build/release/
 
 ## 📝 Histórico de Sessões Recentes
 
+### Sessão 08/03/2026 - Live Monitoring Tables (Deployments e Pods)
+**Contexto**: Implementar tabelas live estilo kubectl no painel direito das abas Deployments e Pods quando nenhum item está selecionado. Navegação hierárquica: deployment → pods → logs.
+
+**Backend**:
+- `GetBatchPodMetrics()` em `internal/kubernetes/client.go` — chama `/apis/metrics.k8s.io/v1beta1/namespaces/{ns}/pods` (PodMetricsList), faz join com `Pods().List()` para calcular `cpuPercentRequest/Limit` e `memPercentRequest/Limit`. Graceful degradation: retorna `available: false` se metrics-server indisponível
+- Handler `GetBatchMetrics` em `internal/web/handlers/pods.go` — `GET /api/v1/pods/metrics?cluster=&namespace=`
+- Rota registrada em `server.go` **antes** das rotas com parâmetros `/:cluster/:namespace/:name` (evita conflito Gin)
+
+**Novos componentes frontend**:
+- `src/lib/monitorUtils.ts` — `formatAge`, `formatBytes`, `formatMillicores`, `formatPercent`, `podRowColor`, `podDotColor`
+- `src/components/PodLogsPanel.tsx` — painel de logs inline com container selector, tail lines, auto-refresh 3s, copiar, syntax highlighting
+- `src/components/PodMonitorTable.tsx` — tabela de pods com filtros (Status, Node, Namespace via popovers com checkboxes), busca, chips de filtros ativos, auto-refresh 5s, indicador "X atrás"
+- `src/components/DeploymentMonitorTable.tsx` — tabela de deployments com filtros (Status Saudável/Degradado, Namespace), busca, auto-refresh 10s, botão lápis para abrir editor YAML
+- `src/components/PodQuickViewModal.tsx` — modal de detalhes rápido ao clicar pod na tabela:
+  - Gauge duplo concêntrico CPU (interno) / MEM (externo) com % vs request
+  - Grid de informações com Node em `col-span-2 break-all` (nunca trunca)
+  - Tab Logs: container selector, tail lines, auto-refresh 5s, scroll corrigido (`div overflow-auto` ao invés de `ScrollArea flex-1`)
+  - Seção "Ações" no final da tab Detalhes: **Rollout Restart** (azul), **Kill (Forçar)** (laranja), **Deletar Pod** (vermelho)
+  - Confirmação inline com descrição antes de executar; Delete fecha modal + onRefresh; Restart/Kill mantém aberto + onRefresh
+  - Todos os botões protegidos com `<ProtectedAction>` (RBAC SRE)
+  - Props: `onRefresh?` conectado a `fetchPods(true)` no PodsPanel e `refreshMonitorPods` no DeploymentsTab
+
+**Integração**:
+- `DeploymentsTab.tsx`: `rightView` (`deployment-table` | `pod-table` | reservado para expansão futura), `handleMonitorDeployment()` drill-down, `refreshMonitorPods()`, `silentRefetch` conectado à `DeploymentMonitorTable`
+- `PodsPanel.tsx`: `rightView` (`pod-table` | `pod-logs`), batchMetrics com fetch por namespace + auto-refresh 10s, `PodMonitorTable` → `onOpenDetail` abre `PodQuickViewModal`
+- Comportamento YAML editor preservado: `selectedDeployment !== null` tem prioridade total sobre `rightView`
+
+**Arquivos criados**: `monitorUtils.ts`, `PodLogsPanel.tsx`, `PodMonitorTable.tsx`, `DeploymentMonitorTable.tsx`, `PodQuickViewModal.tsx`, `CHECKLIST_MONITORING_TABLES.md`
+
+---
+
 ### Sessão 08/03/2026 - Abort e Reconcile para Node Pools (v1.3.26)
 **Contexto**: Implementar botão de abortar e reconcile para operações em andamento na aba Node Pools.
 
