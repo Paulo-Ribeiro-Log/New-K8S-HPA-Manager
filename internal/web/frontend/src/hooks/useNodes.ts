@@ -46,10 +46,13 @@ export function useNodeDetails(cluster: string, nodePoolName: string, nodeName: 
 
   const fetchNodeDetails = async () => {
     if (!cluster || !nodePoolName || !nodeName) {
+      console.log('🚫 [useNodeDetails] Skipping fetch - missing params:', { cluster, nodePoolName, nodeName });
       setNodeDetails(null);
       setError(null);
       return;
     }
+
+    console.log('🔄 [useNodeDetails] Starting fetch for node:', nodeName);
 
     try {
       setLoading(true);
@@ -58,8 +61,12 @@ export function useNodeDetails(cluster: string, nodePoolName: string, nodeName: 
       setNodeDetails(null);
       const response: NodeDetailsResponse = await apiClient.getNodeDetails(cluster, nodePoolName, nodeName);
       console.log('📊 [useNodeDetails] Response received for node:', response.node.name);
+      console.log('🏷️ [useNodeDetails] Labels count:', Object.keys(response.node.labels || {}).length);
+      console.log('🏷️ [useNodeDetails] Tags count:', Object.keys(response.node.cluster_tags || {}).length);
+      console.log('🔶 [useNodeDetails] Taints count:', (response.node.taints || []).length);
       setNodeDetails(response);
     } catch (err) {
+      console.error('❌ [useNodeDetails] Error fetching node details:', err);
       setError(err instanceof Error ? err.message : "Failed to fetch node details");
       setNodeDetails(null);
     } finally {
@@ -69,6 +76,7 @@ export function useNodeDetails(cluster: string, nodePoolName: string, nodeName: 
 
   // Clear state immediately when parameters change
   useEffect(() => {
+    console.log('🧹 [useNodeDetails] Clearing state for new params:', { cluster, nodePoolName, nodeName });
     setNodeDetails(null);
     setError(null);
     setLoading(false);

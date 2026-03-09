@@ -384,12 +384,22 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
 
   // Handlers for nodes table
   const handleViewNodeDetails = (nodeName: string) => {
-    setSelectedNode(nodeName);
-    setModalKey(prev => prev + 1); // Force modal re-creation
-    setShowNodeDetailsModal(true);
+    console.log('🔍 [NodePoolEditor] Opening modal for node:', nodeName);
+    // First close any existing modal and clear state
+    setShowNodeDetailsModal(false);
+    setSelectedNode(null);
+
+    // Small delay to ensure state is cleared before opening new modal
+    setTimeout(() => {
+      setSelectedNode(nodeName);
+      setModalKey(prev => prev + 1); // Force modal re-creation
+      setShowNodeDetailsModal(true);
+      console.log('✅ [NodePoolEditor] Modal opened for node:', nodeName, 'with modalKey:', modalKey + 1);
+    }, 100);
   };
 
   const handleCloseNodeModal = () => {
+    console.log('🔒 [NodePoolEditor] Closing modal and clearing state');
     setShowNodeDetailsModal(false);
     setSelectedNode(null);
   };
