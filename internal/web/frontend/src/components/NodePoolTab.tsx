@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Select,
   SelectContent,
@@ -14,13 +14,14 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { RefreshCcw, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { RefreshCcw, Loader2, CheckCircle2, XCircle, RotateCw, Ban } from "lucide-react";
 import { SplitView } from "@/components/SplitView";
 import { NodePoolListItem } from "@/components/NodePoolListItem";
 import { NodePoolEditor } from "@/components/NodePoolEditor";
 import { useClusters, useNodePools } from "@/hooks/useAPI";
 import type { NodePool } from "@/lib/api/types";
 import { apiClient } from "@/lib/api/client";
+import { useStaging } from "@/contexts/StagingContext";
 import { toast } from "sonner";
 
 interface NodePoolTabProps {
@@ -35,10 +36,13 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
   const [poolErrors, setPoolErrors] = useState<Record<string, string>>({});
   // Modal de status individual por pool (permite reabrir ao clicar no spinner)
   const [statusModalPool, setStatusModalPool] = useState<string | null>(null);
-  
+  const [reconcilingPool, setReconcilingPool] = useState<string | null>(null);
+  const reconcilingAbortRef = useRef<AbortController | null>(null);
+
   // API hooks - só executam quando cluster está selecionado
   const { clusters } = useClusters();
   const { nodePools, loading: nodePoolsLoading, refetch: refetchNodePools } = useNodePools(selectedCluster);
+  const staging = useStaging();
 
   // Auto-select first cluster
   useEffect(() => {
@@ -82,6 +86,29 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
     return () => window.removeEventListener("nodePoolApplying", handleApplyingEvent);
   }, [handleApplyingEvent]);
 
+  const handleAbort = useCallback(async (poolName: string) => {
+    // 1. Abortar reconcile local se estiver ativo para este pool
+    if (reconcilingPool === poolName && reconcilingAbortRef.current) {
+      reconcilingAbortRef.current.abort();
+    }
+    // 2. Abortar apply do NodePoolApplyModal via CustomEvent (cancela o fetch)
+    window.dispatchEvent(new CustomEvent("nodePoolAbort", { detail: { poolName } }));
+
+    // 3. Chamar backend para matar o processo az CLI em execução
+    const pool = nodePools.find(np => np.name === poolName);
+    if (pool) {
+      try {
+        const result = await apiClient.abortNodePoolOperation(pool.cluster_name, pool.resource_group, poolName);
+        if (result.success) {
+          toast.warning();
+        }
+      } catch {
+        // Pool pode não ter operação ativa no backend (ex: já terminou)
+        toast.info();
+      }
+    }
+  }, [reconcilingPool, nodePools]);
+
   const handleClusterChange = async (newCluster: string) => {
     if (newCluster === selectedCluster) return;
 
@@ -91,6 +118,60 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
       toast.success(`Contexto alterado para: ${newCluster}`);
     } catch (error) {
       toast.error(`Erro ao alterar contexto: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
+    }
+  };
+
+  const handleReconcile = async (poolName: string) => {
+    // Buscar pool no staging pelo nome + cluster
+    const staged = staging?.stagedNodePools.find(
+      (np) => np.name === poolName && np.cluster_name === selectedCluster && np.isModified
+    );
+
+    if (!staged) {
+      toast.error("Alterações não encontradas no staging", {
+        description: "Re-edite o Node Pool e aplique novamente.",
+      });
+      return;
+    }
+
+    setReconcilingPool(poolName);
+    setApplyingPools((prev) => new Set(prev).add(poolName));
+    setPoolResults((prev) => { const next = { ...prev }; delete next[poolName]; return next; });
+    setPoolErrors((prev) => { const next = { ...prev }; delete next[poolName]; return next; });
+
+    let success = false;
+    let capturedError: string | undefined;
+    try {
+      await apiClient.updateNodePool(
+        staged.cluster_name,
+        staged.resource_group,
+        staged.name,
+        {
+          node_count: staged.node_count,
+          min_node_count: staged.min_node_count,
+          max_node_count: staged.max_node_count,
+          autoscaling_enabled: staged.autoscaling_enabled,
+        }
+      );
+      success = true;
+      setPoolResults((prev) => ({ ...prev, [poolName]: "success" }));
+      toast.success(`Node Pool ${poolName} reconciliado com sucesso`);
+      refetchNodePools();
+      onNodePoolModified?.();
+    } catch (error) {
+      capturedError = error instanceof Error ? error.message : "Erro desconhecido";
+      setPoolResults((prev) => ({ ...prev, [poolName]: "error" }));
+      setPoolErrors((prev) => ({ ...prev, [poolName]: capturedError! }));
+      toast.error(`Falha ao reconciliar ${poolName}`, { description: capturedError });
+    } finally {
+      setApplyingPools((prev) => { const next = new Set(prev); next.delete(poolName); return next; });
+      setReconcilingPool(null);
+      // Limpa resultado de sucesso após 8s
+      if (success) {
+        setTimeout(() => {
+          setPoolResults((prev) => { const next = { ...prev }; delete next[poolName]; return next; });
+        }, 8000);
+      }
     }
   };
 
@@ -153,6 +234,8 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
                     applyError={poolErrors[nodePool.name]}
                     onClick={() => setSelectedNodePool(nodePool)}
                     onProgressClick={() => setStatusModalPool(nodePool.name)}
+                    onAbort={applyingPools.has(nodePool.name) ? () => handleAbort(nodePool.name) : undefined}
+                    onReconcile={poolResults[nodePool.name] === "error" ? () => handleReconcile(nodePool.name) : undefined}
                   />
                 ))}
               </div>
@@ -200,10 +283,21 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
                 )}
                 <div className="flex items-center gap-2 pt-2">
                   {isApplying && (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
-                      <span className="text-sm font-medium">Aguardando resposta do Azure...</span>
-                    </>
+                    <div className="space-y-2 w-full">
+                      <div className="flex items-center gap-2">
+                        <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                        <span className="text-sm font-medium">Aguardando resposta do Azure...</span>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full border-red-400 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30"
+                        onClick={() => handleAbort(statusModalPool!)}
+                      >
+                        <Ban className="w-4 h-4 mr-2" />
+                        Abortar operação
+                      </Button>
+                    </div>
                   )}
                   {!isApplying && result === "success" && (
                     <>
@@ -222,6 +316,19 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
                           {errorMsg}
                         </div>
                       )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full border-amber-400 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                        disabled={reconcilingPool === statusModalPool}
+                        onClick={() => handleReconcile(statusModalPool!)}
+                      >
+                        {reconcilingPool === statusModalPool ? (
+                          <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Reconciliando...</>
+                        ) : (
+                          <><RotateCw className="w-4 h-4 mr-2" />Reconcile — Tentar novamente</>
+                        )}
+                      </Button>
                     </div>
                   )}
                   {!isApplying && !result && (

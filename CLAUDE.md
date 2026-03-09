@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual oficial: **v1.3.1** (GitHub release). Tags locais v1.3.2+ são do projeto antigo e devem ser ignoradas.
+**IMPORTANTE**: Versão atual oficial: **v1.3.26** (GitHub release).
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **02 de março de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **08 de março de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -2150,6 +2150,103 @@ make release                     # Gera binários em build/release/
 ---
 
 ## 📝 Histórico de Sessões Recentes
+
+### Sessão 08/03/2026 - Live Monitoring Tables (Deployments e Pods)
+**Contexto**: Implementar tabelas live estilo kubectl no painel direito das abas Deployments e Pods quando nenhum item está selecionado. Navegação hierárquica: deployment → pods → logs.
+
+**Backend**:
+- `GetBatchPodMetrics()` em `internal/kubernetes/client.go` — chama `/apis/metrics.k8s.io/v1beta1/namespaces/{ns}/pods` (PodMetricsList), faz join com `Pods().List()` para calcular `cpuPercentRequest/Limit` e `memPercentRequest/Limit`. Graceful degradation: retorna `available: false` se metrics-server indisponível
+- Handler `GetBatchMetrics` em `internal/web/handlers/pods.go` — `GET /api/v1/pods/metrics?cluster=&namespace=`
+- Rota registrada em `server.go` **antes** das rotas com parâmetros `/:cluster/:namespace/:name` (evita conflito Gin)
+
+**Novos componentes frontend**:
+- `src/lib/monitorUtils.ts` — `formatAge`, `formatBytes`, `formatMillicores`, `formatPercent`, `podRowColor`, `podDotColor`
+- `src/components/PodLogsPanel.tsx` — painel de logs inline com container selector, tail lines, auto-refresh 3s, copiar, syntax highlighting
+- `src/components/PodMonitorTable.tsx` — tabela de pods com filtros (Status, Node, Namespace via popovers com checkboxes), busca, chips de filtros ativos, auto-refresh 5s, indicador "X atrás"
+- `src/components/DeploymentMonitorTable.tsx` — tabela de deployments com filtros (Status Saudável/Degradado, Namespace), busca, auto-refresh 10s, botão lápis para abrir editor YAML
+- `src/components/PodQuickViewModal.tsx` — modal de detalhes rápido ao clicar pod na tabela:
+  - Gauge duplo concêntrico CPU (interno) / MEM (externo) com % vs request
+  - Grid de informações com Node em `col-span-2 break-all` (nunca trunca)
+  - Tab Logs: container selector, tail lines, auto-refresh 5s, scroll corrigido (`div overflow-auto` ao invés de `ScrollArea flex-1`)
+  - Seção "Ações" no final da tab Detalhes: **Rollout Restart** (azul), **Kill (Forçar)** (laranja), **Deletar Pod** (vermelho)
+  - Confirmação inline com descrição antes de executar; Delete fecha modal + onRefresh; Restart/Kill mantém aberto + onRefresh
+  - Todos os botões protegidos com `<ProtectedAction>` (RBAC SRE)
+  - Props: `onRefresh?` conectado a `fetchPods(true)` no PodsPanel e `refreshMonitorPods` no DeploymentsTab
+
+**Integração**:
+- `DeploymentsTab.tsx`: `rightView` (`deployment-table` | `pod-table` | reservado para expansão futura), `handleMonitorDeployment()` drill-down, `refreshMonitorPods()`, `silentRefetch` conectado à `DeploymentMonitorTable`
+- `PodsPanel.tsx`: `rightView` (`pod-table` | `pod-logs`), batchMetrics com fetch por namespace + auto-refresh 10s, `PodMonitorTable` → `onOpenDetail` abre `PodQuickViewModal`
+- Comportamento YAML editor preservado: `selectedDeployment !== null` tem prioridade total sobre `rightView`
+
+**Arquivos criados**: `monitorUtils.ts`, `PodLogsPanel.tsx`, `PodMonitorTable.tsx`, `DeploymentMonitorTable.tsx`, `PodQuickViewModal.tsx`, `CHECKLIST_MONITORING_TABLES.md`
+
+---
+
+### Sessão 08/03/2026 - Abort e Reconcile para Node Pools (v1.3.26)
+**Contexto**: Implementar botão de abortar e reconcile para operações em andamento na aba Node Pools.
+
+**Problema identificado**: A primeira versão do "abort" apenas matava o processo `az` CLI local — o que é uma farça, pois o CLI apenas faz polling da operação ARM. Matar o CLI não cancela nada no Azure.
+
+**Solução correta — Abort real via ARM API**:
+- Botão **"Abortar"** aparece no card (overlay) e no modal de status **durante** apply (quando `isApplying = true`)
+- Chama `POST /api/v1/nodepools/:cluster/:rg/:name/abort` no backend
+- Backend executa `az aks nodepool operation-abort --resource-group <rg> --cluster-name <cluster> --name <pool>`
+- Isso chama a API ARM real: `POST .../agentPools/{name}/abort` — muda `provisioningState` para `Canceled` no Azure
+- Frontend também cancela o fetch via `AbortController` (para de aguardar a resposta do polling)
+
+**Botão "Reconcile — Tentar novamente"**:
+- Aparece somente após falha explícita (`applyResult === "error"`)
+- Retentar com os parâmetros do staging via `apiClient.updateNodePool()`
+- Suporta `AbortController` para o caso de reconcilar e precisar abortar novamente
+
+**Fluxo de estados por `provisioningState` do Azure**:
+- `Updating` → disponível: **Abortar**
+- `Canceled` / `Failed` → disponível: **Reconcile**
+- `Succeeded` → nenhuma ação
+
+**Arquivos modificados**:
+- `internal/web/handlers/nodepools.go` — handler `Abort()` com `az aks nodepool operation-abort`
+- `internal/web/handlers/nodepool_sequential.go` — `applyNodePoolChanges` aceita `context.Context`
+- `internal/web/server.go` — rota `POST /nodepools/:cluster/:resource_group/:name/abort`
+- `internal/web/frontend/src/lib/api/client.ts` — `abortNodePoolOperation()` + `signal` em `updateNodePool`
+- `internal/web/frontend/src/components/NodePoolTab.tsx` — `handleAbort()` async (chama backend + CustomEvent), `reconcilingAbortRef`, botão Abortar no modal de status
+- `internal/web/frontend/src/components/NodePoolListItem.tsx` — prop `onAbort`, botão "Abortar" vermelho no overlay
+- `internal/web/frontend/src/components/NodePoolApplyModal.tsx` — `AbortController` por pool, listener `nodePoolAbort`, tratamento especial para `signal.aborted`
+
+**Fix adicional**: `healthz` endpoint retornava versão hardcoded `v1.3.16` — corrigido para usar `updater.Version` (injetado em build time via ldflags).
+
+**Commit**: `c0afbe3`
+
+---
+
+### Sessão 07/03/2026 - Layout Responsivo 1080p + Correções Editor YAML (v1.3.26)
+**Contexto**: Layout quebrado em telas 1080p (wrapping multi-linha no header dos painéis); editor Monaco falhava com "apiVersion not set, kind not set" ao aplicar YAMLs; botão Recarregar YAML ausente em algumas abas.
+
+**Correções de Layout (responsivo 1080p)**:
+- **`SplitView.tsx`**: headers com `flex-wrap`, título com `shrink-0`/`whitespace-nowrap`, `gap-1` no container de ações, `min-w-0` para evitar overflow. Tamanho `text-base` → `text-sm`.
+- **`Header.tsx`**: combobox de cluster `w-[400px]` → `w-[180px] sm:w-[240px] lg:w-[300px] xl:w-[400px]`; PopoverContent `w-[400px]` → `w-[300px] xl:w-[400px]`; botões Load/Save Session icon-only abaixo de `xl:` (`hidden xl:inline` no texto).
+- **13 abas** (PodsPanel, SecretsTab, ConfigMapsTab, DeploymentsTab, DaemonSetsTab, StatefulSetsTab, IngressTab, CronJobsTab, ContainersTab, NamespacesTab, ServicesTab, VPAsTab, ResourceExplorerTab): botões "Sistema" e "Atualizar" tornados **icon-only** com `title` tooltip — economia de ~110px no header do painel esquerdo.
+
+**Correções de Editor YAML (`internal/kubernetes/client.go`)**:
+- `GetSecret`: adicionado `secret.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}` antes do `yaml.Marshal`
+- `GetConfigMap`: adicionado `cm.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"}`
+- `GetDeployment`: adicionado `dep.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}` + `dep.Status = appsv1.DeploymentStatus{}`
+- `GetDaemonSet`: adicionado `ds.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "DaemonSet"}` + `ds.Status = appsv1.DaemonSetStatus{}`
+- `GetStatefulSet`: adicionado `sts.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "StatefulSet"}` + `sts.Status = appsv1.StatefulSetStatus{}`
+- **Root cause**: typed API (`clientset.CoreV1().Secrets().Get()`) não preenche TypeMeta — `yaml.Marshal` omitia `apiVersion`/`kind` — kubectl apply SSA falhava com "apiVersion not set, kind not set"
+- **Por que Explorer funcionava**: `kubectl get -o yaml` sempre inclui TypeMeta
+
+**Botão "Recarregar YAML" adicionado**:
+- `ServicesTab.tsx`: `handleReloadYaml` via `apiClient.getServiceManifest`, botão no `rightTitleAction`
+- `VPAsTab.tsx`: `handleReloadYaml` via `apiClient.getVPAManifest`, botão no `rightTitleAction`
+- `NamespacesTab.tsx`: `handleReloadYaml` que limpa o `historyCache` para sempre buscar do servidor (bypass do cache de edições)
+
+**Correções de Node Pools** (commits anteriores desta branch):
+- Falha silenciosa ao aplicar `minCount`/`maxCount` corrigida (Azure CLI)
+- Spinner de loading na listagem de nodes durante operações
+- Auto-refresh das abas restaurado após operações
+
+---
 
 ### Sessão 06/03/2026 - Melhorias no Resource Explorer (Logs, Describe aprimorado)
 **Contexto**: Adicionar aba de Logs no painel de visualizações do Explorer e melhorar o modal de describe com fullscreen e auto-refresh

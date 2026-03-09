@@ -24,8 +24,13 @@ import type {
   Namespace,
   DeploymentSummary,
   DeploymentManifest,
+  PodSummary,
+  BatchPodMetrics,
 } from "@/lib/api/types";
 import { useDeployments } from "@/hooks/useAPI";
+import { DeploymentMonitorTable } from "@/components/DeploymentMonitorTable";
+import { PodMonitorTable } from "@/components/PodMonitorTable";
+import { PodQuickViewModal } from "@/components/PodQuickViewModal";
 import { apiClient } from "@/lib/api/client";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { AITriggerButton } from "@/components/AITriggerButton";
@@ -172,6 +177,17 @@ export const DeploymentsTab = ({
   const rolloutPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const selectedDeploymentRef = useRef<DeploymentSummary | null>(null);
   const rolloutTargetRef = useRef<DeploymentSummary | null>(null);
+
+  // Live monitoring state
+  type DeploymentRightView =
+    | { kind: "deployment-table" }
+    | { kind: "pod-table"; deployment: DeploymentSummary }
+    | { kind: "pod-logs"; pod: PodSummary; fromDeployment: DeploymentSummary };
+  const [rightView, setRightView] = useState<DeploymentRightView>({ kind: "deployment-table" });
+  const [monitorPods, setMonitorPods] = useState<PodSummary[]>([]);
+  const [monitorPodsLoading, setMonitorPodsLoading] = useState(false);
+  const [batchMetrics, setBatchMetrics] = useState<BatchPodMetrics | null>(null);
+  const [quickViewPod, setQuickViewPod] = useState<PodSummary | null>(null);
 
 
   // Funções de seleção em lote
@@ -330,7 +346,7 @@ export const DeploymentsTab = ({
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
-  const { deployments, loading, error, refetch } = useDeployments(
+  const { deployments, loading, error, refetch, silentRefetch } = useDeployments(
     cluster,
     namespaceFilter,
     showSystemNamespaces
@@ -353,7 +369,50 @@ export const DeploymentsTab = ({
     setViewMode("editor");
     setHistory([]);
     setHistoryIndex(-1);
+    setRightView({ kind: "deployment-table" });
+    setMonitorPods([]);
+    setBatchMetrics(null);
   }, [cluster, selectedNamespace]);
+
+  // Fetch pods for a specific deployment (for monitoring)
+  const handleMonitorDeployment = useCallback(async (dep: DeploymentSummary) => {
+    setRightView({ kind: "pod-table", deployment: dep });
+    setMonitorPodsLoading(true);
+    setMonitorPods([]);
+    setBatchMetrics(null);
+    try {
+      const pods = await apiClient.getPods(dep.cluster, [dep.namespace], dep.name, false, true);
+      const deploymentPods = pods.filter((p) =>
+        p.labels?.["app"] === dep.labels?.["app"] ||
+        p.name.startsWith(dep.name + "-")
+      );
+      setMonitorPods(deploymentPods.length > 0 ? deploymentPods : pods);
+      // Fetch batch metrics
+      const m = await apiClient.getBatchPodMetrics(dep.cluster, dep.namespace);
+      setBatchMetrics(m);
+    } catch {
+      // graceful degradation
+    } finally {
+      setMonitorPodsLoading(false);
+    }
+  }, []);
+
+  const refreshMonitorPods = useCallback(async () => {
+    if (rightView.kind !== "pod-table") return;
+    const dep = rightView.deployment;
+    try {
+      const pods = await apiClient.getPods(dep.cluster, [dep.namespace], dep.name, false, true);
+      const deploymentPods = pods.filter((p) =>
+        p.labels?.["app"] === dep.labels?.["app"] ||
+        p.name.startsWith(dep.name + "-")
+      );
+      setMonitorPods(deploymentPods.length > 0 ? deploymentPods : pods);
+      const m = await apiClient.getBatchPodMetrics(dep.cluster, dep.namespace);
+      setBatchMetrics(m);
+    } catch {
+      // silently ignore
+    }
+  }, [rightView]);
 
   useEffect(() => {
     selectedDeploymentRef.current = selectedDeployment;
@@ -2249,6 +2308,17 @@ export const DeploymentsTab = ({
       <Button variant="outline" size="sm" onClick={refreshDeployments} disabled={!cluster || loading}>
         <RefreshCcw className="w-4 h-4" />
       </Button>
+      {selectedDeployment && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => { setSelectedDeployment(null); setRightView({ kind: "deployment-table" }); }}
+          title="Desmarcar deployment selecionado"
+          className="text-muted-foreground hover:text-foreground"
+        >
+          <X className="w-4 h-4" />
+        </Button>
+      )}
       {collapseButton}
     </div>
   );
@@ -2537,6 +2607,42 @@ export const DeploymentsTab = ({
     }
 
     if (!selectedDeployment) {
+      // Live monitoring views
+      if (rightView.kind === "pod-table") {
+        return (
+          <div className="flex flex-col h-full p-2">
+            <PodMonitorTable
+              cluster={cluster}
+              pods={monitorPods}
+              loading={monitorPodsLoading}
+              metrics={batchMetrics}
+              metricsLoading={false}
+              onOpenDetail={(pod) => setQuickViewPod(pod)}
+              headerLabel={`${rightView.deployment.name} — pods (${monitorPods.length})`}
+              onRequestRefresh={refreshMonitorPods}
+              onBack={() => setRightView({ kind: "deployment-table" })}
+              backLabel="Deployments"
+            />
+          </div>
+        );
+      }
+
+      // Default: deployment monitor table
+      if (cluster) {
+        return (
+          <div className="flex flex-col h-full p-2">
+            <DeploymentMonitorTable
+              deployments={filteredDeployments}
+              loading={loading}
+              headerLabel={selectedNamespace ? `${selectedNamespace} — deployments (${filteredDeployments.length})` : `deployments (${filteredDeployments.length})`}
+              onSelectDeployment={handleMonitorDeployment}
+              onOpenEditor={(dep) => setSelectedDeployment(dep)}
+              onRequestRefresh={silentRefetch}
+            />
+          </div>
+        );
+      }
+
       return (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
           Escolha um Deployment para visualizar o manifesto
@@ -3241,6 +3347,15 @@ export const DeploymentsTab = ({
 
   return (
     <>
+      {/* Modal de detalhes rápidos do pod (click na tabela de pods do deployment) */}
+      <PodQuickViewModal
+        pod={quickViewPod}
+        cluster={cluster}
+        metrics={quickViewPod ? batchMetrics?.pods[quickViewPod.name] : null}
+        onClose={() => setQuickViewPod(null)}
+        onRefresh={refreshMonitorPods}
+      />
+
       <SplitView
         leftPanel={{
           title: "Deployments",

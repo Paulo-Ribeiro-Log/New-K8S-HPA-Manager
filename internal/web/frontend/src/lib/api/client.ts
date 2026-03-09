@@ -92,6 +92,7 @@ import type {
   AWXStatus,
   AWXCertificate,
   AWXJobLaunch,
+  BatchPodMetrics,
 } from "./types";
 
 import type {
@@ -1318,6 +1319,16 @@ class APIClient {
     return response.data || { logs: "" };
   }
 
+  async getBatchPodMetrics(cluster: string, namespace: string): Promise<BatchPodMetrics> {
+    try {
+      const params = new URLSearchParams({ cluster, namespace });
+      const result = await this.request<{ success: boolean; data: BatchPodMetrics }>(`/pods/metrics?${params}`);
+      return result.data;
+    } catch {
+      return { available: false, pods: {} };
+    }
+  }
+
   async describePod(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
     const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
       `/pods/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
@@ -1639,7 +1650,8 @@ class APIClient {
       ignoreDaemonSets: boolean;
       deleteEmptyDir: boolean;
       chunkSize: number;
-    }
+    },
+    signal?: AbortSignal
   ): Promise<NodePool> {
     const payload = cordonDrainConfig
       ? {
@@ -1664,7 +1676,15 @@ class APIClient {
       {
         method: "PUT",
         body: JSON.stringify(payload),
+        signal,
       }
+    );
+  }
+
+  async abortNodePoolOperation(cluster: string, resourceGroup: string, name: string): Promise<{ success: boolean; message: string }> {
+    return this.request(
+      `/nodepools/${encodeURIComponent(cluster)}/${encodeURIComponent(resourceGroup)}/${encodeURIComponent(name)}/abort`,
+      { method: "POST" }
     );
   }
 
