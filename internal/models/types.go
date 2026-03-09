@@ -957,8 +957,9 @@ type NodePool struct {
 	// Cluster info
 	ClusterName      string            `json:"cluster_name"`
 	ResourceGroup    string            `json:"resource_group"`
-	Subscription     string            `json:"subscription"`      // Subscription ID (UUID)
-	SubscriptionName string            `json:"subscription_name"` // Nome legível da subscription
+	Subscription     string            `json:"subscription"`       // Valor da config (pode ser nome ou UUID)
+	SubscriptionName string            `json:"subscription_name"`  // Nome legível da subscription
+	SubscriptionUUID string            `json:"subscription_uuid"`  // UUID real resolvido via az account show
 	ClusterTags      map[string]string `json:"cluster_tags,omitempty"` // Tags do cluster AKS
 
 	// Valores originais para rollback

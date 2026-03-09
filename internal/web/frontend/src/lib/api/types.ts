@@ -610,8 +610,9 @@ export interface NodePool {
   is_system_pool: boolean;
   cluster_name: string;
   resource_group: string;
-  subscription: string; // Subscription ID (UUID)
+  subscription: string; // Valor da config (pode ser nome ou UUID)
   subscription_name?: string; // Nome legível da subscription
+  subscription_uuid?: string; // UUID real resolvido via az account show
   cluster_tags?: Record<string, string>; // Tags do cluster AKS
   modified: boolean;
   selected: boolean;
