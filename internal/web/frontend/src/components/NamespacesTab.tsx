@@ -555,22 +555,31 @@ export const NamespacesTab = ({
     await handleApply();
   };
 
-  const handleDescribe = async () => {
+  const fetchDescribe = async () => {
     if (!selectedNamespace || !cluster) return;
 
     setDescribeLoading(true);
-    setDescribeModalOpen(true);
     try {
       const result = await apiClient.describeNamespace(cluster, selectedNamespace.name);
       setDescribeContent(result.describe);
     } catch (err) {
       toast.error("Erro ao buscar describe", {
-        description: err instanceof Error ? err.message : "Erro desconhecido",
+        description: err instanceof Error ? err.message : "Unknown error",
       });
       setDescribeContent("Error loading describe");
     } finally {
       setDescribeLoading(false);
     }
+  };
+
+  const handleViewDescribe = async () => {
+    if (!selectedNamespace || !cluster) return;
+    setDescribeModalOpen(true);
+    await fetchDescribe();
+  };
+
+  const handleRefreshDescribe = async () => {
+    await fetchDescribe();
   };
 
   const handleDelete = useCallback(async () => {
@@ -1644,6 +1653,27 @@ export const NamespacesTab = ({
               <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
             )}
           </ScrollArea>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefreshDescribe}
+              disabled={describeLoading}
+            >
+              <RefreshCcw className={`w-3 h-3 mr-1 ${describeLoading ? "animate-spin" : ""}`} />
+              Atualizar
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigator.clipboard.writeText(describeContent)}
+              disabled={!describeContent || describeContent === "Error loading describe"}
+              className="text-xs"
+            >
+              <Copy className="w-3 h-3 mr-1" />
+              Copiar
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -1840,7 +1870,7 @@ export const NamespacesTab = ({
         <Button
           variant="outline"
           size="sm"
-          onClick={handleDescribe}
+          onClick={handleViewDescribe}
           disabled={describeLoading}
         >
           {describeLoading ? (

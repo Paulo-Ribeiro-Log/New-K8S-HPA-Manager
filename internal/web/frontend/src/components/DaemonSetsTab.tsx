@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Server, MoreVertical, Trash2, RotateCw, SplitSquareHorizontal, AlertCircle } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Server, MoreVertical, Trash2, RotateCw, SplitSquareHorizontal, AlertCircle, Copy } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 
@@ -357,8 +357,9 @@ export const DaemonSetsTab = ({
     }
   };
 
-  const handleDescribe = async () => {
+  const fetchDescribe = async () => {
     if (!selectedDaemonSet) return;
+
     setDescribeLoading(true);
     try {
       const result = await apiClient.describeDaemonSet(
@@ -367,14 +368,24 @@ export const DaemonSetsTab = ({
         selectedDaemonSet.name
       );
       setDescribeContent(result.describe);
-      setDescribeModalOpen(true);
     } catch (err) {
-      toast.error("Erro ao executar describe", {
-        description: err instanceof Error ? err.message : "Erro desconhecido",
+      toast.error("Erro ao buscar describe", {
+        description: err instanceof Error ? err.message : "Unknown error",
       });
+      setDescribeContent("Error loading describe");
     } finally {
       setDescribeLoading(false);
     }
+  };
+
+  const handleViewDescribe = async () => {
+    if (!selectedDaemonSet) return;
+    setDescribeModalOpen(true);
+    await fetchDescribe();
+  };
+
+  const handleRefreshDescribe = async () => {
+    await fetchDescribe();
   };
 
   const handleDelete = async () => {
@@ -596,7 +607,7 @@ export const DaemonSetsTab = ({
         <Button
           variant="outline"
           size="sm"
-          onClick={handleDescribe}
+          onClick={handleViewDescribe}
           disabled={describeLoading}
         >
           {describeLoading ? (
@@ -923,8 +934,35 @@ export const DaemonSetsTab = ({
             <DialogTitle>kubectl describe daemonset {selectedDaemonSet?.name}</DialogTitle>
           </DialogHeader>
           <ScrollArea className="h-[60vh]">
-            <pre className="text-xs font-mono whitespace-pre-wrap">{describeContent}</pre>
+            {describeLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            ) : (
+              <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
+            )}
           </ScrollArea>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefreshDescribe}
+              disabled={describeLoading}
+            >
+              <RefreshCcw className={`w-3 h-3 mr-1 ${describeLoading ? "animate-spin" : ""}`} />
+              Atualizar
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigator.clipboard.writeText(describeContent)}
+              disabled={!describeContent || describeContent === "Error loading describe"}
+              className="text-xs"
+            >
+              <Copy className="w-3 h-3 mr-1" />
+              Copiar
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
