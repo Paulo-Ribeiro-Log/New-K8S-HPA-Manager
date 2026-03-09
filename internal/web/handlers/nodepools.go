@@ -803,8 +803,9 @@ func loadNodePoolsFromAzure(clusterName, resourceGroup, subscription string) ([]
 		clusterTags = make(map[string]string) // Mapa vazio se falhar
 	}
 
-	// Buscar nome da subscription (uma única vez para todos os node pools)
+	// Buscar nome e UUID real da subscription (uma única vez para todos os node pools)
 	subscriptionName := getSubscriptionName(subscription)
+	subscriptionUUID := getSubscriptionUUID(subscription)
 
 	// Converter para nosso modelo
 	var nodePools []models.NodePool
@@ -829,8 +830,9 @@ func loadNodePoolsFromAzure(clusterName, resourceGroup, subscription string) ([]
 			IsSystemPool:       azPool.Mode == "System",
 			ClusterName:        clusterName,
 			ResourceGroup:      resourceGroup,
-			Subscription:       subscription,     // Subscription ID (UUID)
-			SubscriptionName:   subscriptionName, // Nome legível
+			Subscription:       subscription,     // Valor da config (pode ser nome ou UUID)
+			SubscriptionName:   subscriptionName, // Nome legível da subscription
+			SubscriptionUUID:   subscriptionUUID, // UUID real resolvido via az account show
 			ClusterTags:        clusterTags,      // Tags do cluster
 		}
 
@@ -883,9 +885,24 @@ func getSubscriptionName(subscriptionID string) string {
 		return "" // Retorna vazio se falhar
 	}
 
-	// Remover quebras de linha e espaços em branco
 	name := strings.TrimSpace(string(output))
 	return name
+}
+
+// getSubscriptionUUID busca o UUID real da subscription via Azure CLI
+func getSubscriptionUUID(subscription string) string {
+	cmd := exec.Command("az", "account", "show",
+		"--subscription", subscription,
+		"--query", "id",
+		"--output", "tsv")
+
+	output, err := cmd.Output()
+	if err != nil {
+		log.Warn().Err(err).Msgf("Failed to fetch subscription UUID for %s", subscription)
+		return ""
+	}
+
+	return strings.TrimSpace(string(output))
 }
 
 // AzureNodePool representa a estrutura retornada pela Azure CLI

@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, RefreshCw, Copy, Check } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Loader2, RefreshCw, Copy, Check, FileText } from "lucide-react";
 import type { PodSummary, PodMetricsSingle } from "@/lib/api/types";
 import { formatAge, formatMillicores, formatBytes, formatPercent } from "@/lib/monitorUtils";
 import { apiClient } from "@/lib/api/client";
@@ -92,6 +93,11 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [copied, setCopied] = useState(false);
 
+  // Describe state
+  const [describe, setDescribe] = useState("");
+  const [describeLoading, setDescribeLoading] = useState(false);
+  const [showDescribe, setShowDescribe] = useState(false);
+
   // Action state
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [actionLoading, setActionLoading] = useState(false);
@@ -108,6 +114,8 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
     setAutoRefresh(true);
     setPendingAction(null);
     setSelectedContainer(pod.containers?.[0]?.name ?? "");
+    setDescribe("");
+    setShowDescribe(false);
   }, [pod?.namespace, pod?.name]);
 
   const fetchLogs = useCallback(async () => {
@@ -145,6 +153,26 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
     navigator.clipboard.writeText(logs);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const fetchDescribe = useCallback(async () => {
+    if (!pod || !cluster) return;
+    setDescribeLoading(true);
+    try {
+      const res = await apiClient.describePod(cluster, pod.namespace, pod.name);
+      setDescribe(res.describe || "");
+    } catch {
+      setDescribe("Erro ao carregar describe.");
+    } finally {
+      setDescribeLoading(false);
+    }
+  }, [pod, cluster]);
+
+  const handleDescribeClick = () => {
+    if (!showDescribe) {
+      fetchDescribe();
+    }
+    setShowDescribe(!showDescribe);
   };
 
   const executeAction = async () => {
@@ -216,10 +244,26 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
             <span className="text-muted-foreground text-xs">{pod.namespace}/</span>
             <span className="text-foreground">{pod.name}</span>
           </DialogTitle>
-          <div className="flex items-center gap-2 mt-1 flex-wrap">
-            <Badge variant={statusVariant} className="text-[10px] h-4 px-1.5">
-              {pod.statusReason || pod.phase}
-            </Badge>
+          <div className="flex items-center justify-between mt-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge variant={statusVariant} className="text-[10px] h-4 px-1.5">
+                {pod.statusReason || pod.phase}
+              </Badge>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1"
+              onClick={handleDescribeClick}
+              disabled={describeLoading}
+            >
+              {describeLoading ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <FileText className="w-3 h-3" />
+              )}
+              Describe
+            </Button>
           </div>
         </DialogHeader>
 
@@ -470,6 +514,71 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
           </TabsContent>
         </Tabs>
       </DialogContent>
+
+      {/* Modal Describe */}
+      <Dialog open={showDescribe} onOpenChange={setShowDescribe}>
+        <DialogContent className="max-w-4xl w-[90vw] max-h-[80vh]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-sm">
+              <FileText className="w-4 h-4" />
+              kubectl describe pod {pod.name}
+              <Badge variant="secondary" className="text-xs font-mono">
+                {pod.namespace}
+              </Badge>
+            </DialogTitle>
+          </DialogHeader>
+
+          <ScrollArea className="h-[60vh] w-full border rounded">
+            <div className="p-4">
+              {describeLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-6 h-6 animate-spin mr-2" />
+                  <span className="text-sm text-muted-foreground">Carregando describe...</span>
+                </div>
+              ) : describe ? (
+                <pre className="text-xs font-mono whitespace-pre-wrap leading-relaxed">
+                  {describe}
+                </pre>
+              ) : (
+                <div className="text-center py-8 text-muted-foreground text-sm">
+                  Nenhuma informação de describe disponível.
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+
+          <div className="flex justify-between items-center pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={fetchDescribe}
+              disabled={describeLoading}
+              className="text-xs"
+            >
+              {describeLoading ? (
+                <Loader2 className="w-3 h-3 animate-spin mr-1" />
+              ) : (
+                <RefreshCw className="w-3 h-3 mr-1" />
+              )}
+              Atualizar
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                navigator.clipboard.writeText(describe);
+                toast.success("Describe copiado para a área de transferência!");
+              }}
+              disabled={!describe}
+              className="text-xs"
+            >
+              <Copy className="w-3 h-3 mr-1" />
+              Copiar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }
