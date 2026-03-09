@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -70,6 +70,7 @@ export const NodePoolApplyModal = ({
   checkVPN,
 }: NodePoolApplyModalProps) => {
   const staging = useStaging();
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const [isApplying, setIsApplying] = useState(false);
   const [applyingIndividual, setApplyingIndividual] = useState<string | null>(null);
   const [nodePoolStates, setNodePoolStates] = useState<Record<string, NodePoolApplyState>>({});
@@ -90,18 +91,34 @@ export const NodePoolApplyModal = ({
     .sort((a, b) => (a.order || 0) - (b.order || 0));
   const normalPools = modifiedNodePools.filter((np) => np.order === undefined);
 
-  const dispatchPoolEvent = (poolName: string, status: "start" | "end", result?: "success" | "error") => {
+  useEffect(() => {
+    const handleAbortEvent = (e: Event) => {
+      const { poolName } = (e as CustomEvent<{ poolName: string }>).detail;
+      abortControllersRef.current.forEach((controller, key) => {
+        if (key.endsWith(`-${poolName}`) || key === poolName) {
+          controller.abort();
+        }
+      });
+    };
+    window.addEventListener("nodePoolAbort", handleAbortEvent);
+    return () => window.removeEventListener("nodePoolAbort", handleAbortEvent);
+  }, []);
+
+  const dispatchPoolEvent = (poolName: string, status: "start" | "end", result?: "success" | "error", errorMessage?: string) => {
     window.dispatchEvent(new CustomEvent("nodePoolApplying", {
-      detail: { poolName, status, result }
+      detail: { poolName, status, result, errorMessage }
     }));
   };
 
   const handleApplyIndividual = async (key: string, current: NodePool) => {
+    const abortController = new AbortController();
+    abortControllersRef.current.set(`${key}-${current.name}`, abortController);
     setApplyingIndividual(key);
     setNodePoolStates(prev => ({ ...prev, [key]: { status: 'applying' } }));
     dispatchPoolEvent(current.name, "start");
 
     let success = false;
+    let capturedError: string | undefined;
     try {
       await apiClient.updateNodePool(
         current.cluster_name,
@@ -112,7 +129,9 @@ export const NodePoolApplyModal = ({
           min_node_count: current.min_node_count,
           max_node_count: current.max_node_count,
           autoscaling_enabled: current.autoscaling_enabled,
-        }
+        },
+        undefined,
+        abortController.signal
       );
 
       success = true;
@@ -123,15 +142,25 @@ export const NodePoolApplyModal = ({
       toast.success(`✅ Node Pool ${current.name} aplicado com sucesso`);
       onApplied?.();
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Erro desconhecido";
+      if (abortController.signal.aborted) {
+        capturedError = "Operação abortada pelo usuário";
+        setNodePoolStates(prev => ({ ...prev, [key]: { status: 'idle' } }));
+        toast.info(`Operação de ${current.name} abortada`);
+        dispatchPoolEvent(current.name, "end");
+        setApplyingIndividual(null);
+        abortControllersRef.current.delete(`${key}-${current.name}`);
+        return;
+      }
+      capturedError = error instanceof Error ? error.message : "Erro desconhecido";
       setNodePoolStates(prev => ({
         ...prev,
-        [key]: { status: 'error', message: errorMessage }
+        [key]: { status: 'error', message: capturedError }
       }));
       toast.error(`❌ Erro ao aplicar ${current.name}`);
     } finally {
+      abortControllersRef.current.delete(`${key}-${current.name}`);
       setApplyingIndividual(null);
-      dispatchPoolEvent(current.name, "end", success ? "success" : "error");
+      dispatchPoolEvent(current.name, "end", success ? "success" : "error", capturedError);
     }
   };
 
@@ -251,10 +280,13 @@ export const NodePoolApplyModal = ({
 
       // Executar node pools NORMAIS (sem ordem) em paralelo
       for (const { key, current } of normalPools) {
+        const normalAbortController = new AbortController();
+        abortControllersRef.current.set(`${key}-${current.name}`, normalAbortController);
         setNodePoolStates(prev => ({ ...prev, [key]: { status: 'applying' } }));
         dispatchPoolEvent(current.name, "start");
 
         let normalSuccess = false;
+        let normalError: string | undefined;
         try {
           await apiClient.updateNodePool(
             current.cluster_name,
@@ -265,7 +297,9 @@ export const NodePoolApplyModal = ({
               min_node_count: current.min_node_count,
               max_node_count: current.max_node_count,
               autoscaling_enabled: current.autoscaling_enabled,
-            }
+            },
+            undefined,
+            normalAbortController.signal
           );
 
           normalSuccess = true;
@@ -274,13 +308,20 @@ export const NodePoolApplyModal = ({
             [key]: { status: 'success', message: 'Aplicado com sucesso' }
           }));
         } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : "Erro desconhecido";
+          if (normalAbortController.signal.aborted) {
+            setNodePoolStates(prev => ({ ...prev, [key]: { status: 'idle' } }));
+            dispatchPoolEvent(current.name, "end");
+            abortControllersRef.current.delete(`${key}-${current.name}`);
+            continue;
+          }
+          normalError = error instanceof Error ? error.message : "Erro desconhecido";
           setNodePoolStates(prev => ({
             ...prev,
-            [key]: { status: 'error', message: errorMessage }
+            [key]: { status: 'error', message: normalError }
           }));
         } finally {
-          dispatchPoolEvent(current.name, "end", normalSuccess ? "success" : "error");
+          abortControllersRef.current.delete(`${key}-${current.name}`);
+          dispatchPoolEvent(current.name, "end", normalSuccess ? "success" : "error", normalError);
         }
       }
 

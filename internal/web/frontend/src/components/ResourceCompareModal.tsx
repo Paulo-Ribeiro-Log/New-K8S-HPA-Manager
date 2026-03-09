@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +29,8 @@ import {
   CheckCircle2,
   TriangleAlert,
   ChevronRight,
+  ChevronsUpDown,
+  Check,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Cluster } from "@/lib/api/types";
@@ -848,6 +852,7 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
   const [crossCluster, setCrossCluster]               = useState(false);
   const [rightCluster, setRightCluster]               = useState(cluster);
   const [isRightContextSwitching, setIsRightCtxSwitch] = useState(false);
+  const [clusterComboOpen, setClusterComboOpen]        = useState(false);
 
   // Altura dos editores dentro do modal fullscreen
   const EDITOR_HEIGHT = "calc(100vh - 310px)";
@@ -882,7 +887,7 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
 
   return (
     <Dialog open={open} onOpenChange={val => { if (!val) handleClose(); }}>
-      <DialogContent className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none p-0 bg-background border-border flex flex-col">
+      <DialogContent className="w-screen h-screen max-w-none max-h-none sm:max-w-none sm:max-h-none rounded-none p-0 bg-background border-border flex flex-col [&>button:last-child]:hidden">
 
         {/* Header */}
         <div className="flex-none flex items-center justify-between px-6 py-3 border-b border-border bg-muted/30">
@@ -905,24 +910,60 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
                 Clusters diferentes
               </Label>
               {crossCluster && (
-                <Select value={rightCluster} onValueChange={handleRightClusterChange} disabled={isRightContextSwitching}>
-                  <SelectTrigger className="h-7 text-xs w-60 font-mono">
-                    {isRightContextSwitching
-                      ? <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" />Trocando contexto...</span>
-                      : <SelectValue placeholder="Selecione cluster direito..." />
-                    }
-                  </SelectTrigger>
-                  <SelectContent>
-                    {allClusters.map(c => (
-                      <SelectItem key={c.context} value={c.context} className="text-xs font-mono">
-                        {c.context}
-                        {c.context === cluster && (
-                          <span className="ml-2 text-muted-foreground text-xs">(esquerdo)</span>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={clusterComboOpen} onOpenChange={setClusterComboOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={clusterComboOpen}
+                      disabled={isRightContextSwitching}
+                      className="h-7 text-xs w-64 font-mono justify-between px-2"
+                    >
+                      {isRightContextSwitching ? (
+                        <span className="flex items-center gap-1.5">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          Trocando contexto...
+                        </span>
+                      ) : (
+                        <span className="truncate">
+                          {rightCluster || "Selecione cluster direito..."}
+                        </span>
+                      )}
+                      <ChevronsUpDown className="ml-1 h-3 w-3 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-80 p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Buscar cluster..." className="text-xs h-8" />
+                      <CommandList>
+                        <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">
+                          Nenhum cluster encontrado.
+                        </CommandEmpty>
+                        <CommandGroup>
+                          {allClusters.map(c => (
+                            <CommandItem
+                              key={c.context}
+                              value={c.context}
+                              onSelect={(val) => {
+                                handleRightClusterChange(val);
+                                setClusterComboOpen(false);
+                              }}
+                              className="text-xs font-mono"
+                            >
+                              <Check
+                                className={`mr-2 h-3 w-3 shrink-0 ${rightCluster === c.context ? "opacity-100" : "opacity-0"}`}
+                              />
+                              <span className="truncate">{c.context}</span>
+                              {c.context === cluster && (
+                                <span className="ml-auto text-muted-foreground text-xs shrink-0">(esquerdo)</span>
+                              )}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               )}
             </div>
           </div>

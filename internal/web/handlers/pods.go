@@ -1145,6 +1145,29 @@ func (h *PodHandler) GetMetrics(c *gin.Context) {
 	})
 }
 
+// GetBatchMetrics retorna métricas de todos os pods de um namespace em uma única chamada
+// GET /api/v1/pods/metrics?cluster=...&namespace=...
+func (h *PodHandler) GetBatchMetrics(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Query("cluster"))
+	namespace := strings.TrimSpace(c.Query("namespace"))
+	if cluster == "" || namespace == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_PARAMETER", "cluster and namespace are required"))
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("CLIENT_ERROR", fmt.Sprintf("Failed to get client: %v", err)))
+		return
+	}
+
+	ctx := c.Request.Context()
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+
+	result, _ := kubeClient.GetBatchPodMetrics(ctx, namespace)
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
+}
+
 // DownloadFromPod faz download de arquivo/diretório do pod
 // GET /api/v1/pods/:cluster/:namespace/:name/download?container=nginx&path=/path/to/file&type=file
 func (h *PodHandler) DownloadFromPod(c *gin.Context) {

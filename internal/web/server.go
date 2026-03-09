@@ -24,6 +24,7 @@ import (
 	"k8s-hpa-manager/internal/notifications"
 	"k8s-hpa-manager/internal/rbac"
 	"k8s-hpa-manager/internal/storage"
+	"k8s-hpa-manager/internal/updater"
 
 	// TODO: Remover após migração completa para V2
 	// "k8s-hpa-manager/internal/monitoring/analyzer"
@@ -470,6 +471,7 @@ func (s *Server) setupRoutes() {
 
 	// Node Pools - Write Operations (SRE-only)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)
+	api.POST("/nodepools/:cluster/:resource_group/:name/abort", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Abort)
 	api.POST("/nodepools/apply-sequential", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ApplySequential)
 	api.POST("/nodepools/sequence/execute", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ExecuteSequence) // NOVO: Cordon/Drain sequencing
 
@@ -591,6 +593,7 @@ func (s *Server) setupRoutes() {
 	pods := api.Group("/pods")
 	{
 		pods.GET("", podHandler.List)
+		pods.GET("/metrics", podHandler.GetBatchMetrics)
 		pods.GET("/:cluster/:namespace/:name", podHandler.Get)
 		pods.GET("/:cluster/:namespace/:name/describe", podHandler.Describe)
 		pods.GET("/:cluster/:namespace/:name/logs", podHandler.GetLogs)
@@ -1072,7 +1075,7 @@ func (s *Server) setupRoutes() {
 		healthCheckHandler := handlers.NewHealthCheckHandler(s.kubeManager, healthCheckOrchestrator, progressTracker)
 
 		// System Health endpoints (padrão Kubernetes) - sem auth
-		systemHealthHandler := handlers.NewSystemHealthHandler(s.kubeManager, healthCheckOrchestrator, "v1.3.16")
+		systemHealthHandler := handlers.NewSystemHealthHandler(s.kubeManager, healthCheckOrchestrator, updater.Version)
 		s.router.GET("/healthz", systemHealthHandler.Health)
 		s.router.GET("/healthz/live", systemHealthHandler.Live)
 		s.router.GET("/healthz/ready", systemHealthHandler.Ready)
