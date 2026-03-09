@@ -1142,8 +1142,8 @@ export const ResourceExplorerTab = ({
               <Loader2 className="h-6 w-6 animate-spin" />
             </div>
           ) : (
-            <ScrollArea className={describeFullScreen ? "flex-1" : "max-h-[65vh]"}>
-              <pre className="text-xs font-mono whitespace-pre-wrap break-words">{describeContent}</pre>
+            <ScrollArea className={describeFullScreen ? "flex-1" : "h-[70vh]"}>
+              <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
             </ScrollArea>
           )}
         </DialogContent>
