@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.26** (GitHub release).
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **08 de março de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **10 de março de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -2623,5 +2623,64 @@ useEffect(() => {
 - UX Geral: 6.1/10 → **8.5/10** (+39%)
 
 **Status Final**: ✅ **ABA HELM PRONTA PARA PRODUÇÃO**
+
+---
+
+### Sessão 10/03/2026 - Implementação de Números CHG no GitHub Releases
+**Contexto**: Implementar exibição de números CHG (ServiceNow) na aba GitHub Releases, tanto na lista de comparações quanto no painel de visualização.
+
+**Alterações**:
+- **Sistema de Coleta Dual de CHG**:
+  - ✅ **Estado `serviceNowCHG`**: Armazena CHG capturado do modal ServiceNow
+  - ✅ **Lógica de Priorização** em `handleAddToBatch()`:
+    - **Prioridade 1**: CHG do modal ServiceNow (mais recente)
+    - **Prioridade 2**: CHG da API de produção (backup)
+  - ✅ **Captura no ServiceNow** via `handleServiceNowImport()`:
+    - Armazena CHG em `serviceNowCHG` para uso posterior
+    - Adiciona CHG diretamente ao item da comparação
+- **Exibição Visual Completa**:
+  - ✅ **Lista de Comparações**: Badge azul com número CHG posicionado à direita do nome do repositório
+    - Layout `justify-between` com `gap-3` para espaçamento adequado
+    - Badge com fundo azul sólido (`bg-blue-600`) e texto branco (`text-white`) para máximo contraste
+    - Estilo: `px-2 py-1 rounded-md border` com `flex-shrink-0`
+  - ✅ **Painel de Visualização**: Seção dedicada para CHG ServiceNow
+    - Badge destacado com styling especializado para ambiente de visualização
+    - Posicionado entre informações de versão e estatísticas
+- **Debug e Logging**:
+  - ✅ Logs detalhados para rastreamento de CHG em todas as etapas
+  - Console debugging para identificar origem do CHG (API vs ServiceNow)
+  - Validação de dados em cada ponto de captura
+
+**Arquivos Modificados**:
+- `internal/web/frontend/src/components/GitHubReleasesTab.tsx` - Implementação completa da coleta dual e exibição
+- `internal/web/frontend/src/lib/api/types.ts` - Adicionado campo `chgNumber?: string` ao `ComparisonItem`
+
+**Interface ComparisonItem Atualizada**:
+```typescript
+interface ComparisonItem {
+  id: string;
+  deploymentName?: string;
+  githubRepo: string;
+  productionTag: string;
+  newTag: string;
+  chgNumber?: string;  // ✨ NOVO: CHG coletado de fonte dual
+  status: 'pending' | 'loading' | 'completed' | 'error';
+  result?: ComparisonResult;
+}
+```
+
+**Funcionalidades**:
+- Coleta automática de CHG da API de produção como fallback
+- Captura manual de CHG via modal ServiceNow com prioridade alta
+- Exibição visual em dois locais: lista de comparações + painel de visualização
+- Badge com excelente contraste visual (texto branco sobre fundo azul)
+- Posicionamento responsivo com espaçamento adequado
+- Sistema de debug completo para rastreabilidade
+
+**Commits**:
+- `8843dbd` - feat(github-releases): coleta dual de números CHG (API + ServiceNow)
+- `3317c89` - fix(github-releases): reposicionar CHG number na lista de comparações
+- `b0568cb` - fix(github-releases): melhorar espaçamento do badge CHG
+- `8584bf2` - fix(github-releases): texto branco no badge CHG para melhor contraste
 
 ---
