@@ -1075,14 +1075,16 @@ export const GitHubReleasesTab = () => {
                                   <p className="text-sm font-medium truncate">
                                     {item.deploymentName}
                                   </p>
-                                  <p className="text-xs text-muted-foreground truncate">
-                                    {item.githubRepo}
-                                  </p>
-                                  {item.chgNumber && (
-                                    <p className="text-[10px] font-mono text-blue-600 dark:text-blue-400 truncate">
-                                      CHG: {item.chgNumber}
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <p className="text-xs text-muted-foreground truncate">
+                                      {item.githubRepo}
                                     </p>
-                                  )}
+                                    {item.chgNumber && (
+                                      <span className="text-[10px] font-mono text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950 px-1.5 py-0.5 rounded border border-blue-200 dark:border-blue-800">
+                                        CHG: {item.chgNumber}
+                                      </span>
+                                    )}
+                                  </div>
                                   <div className="flex items-center gap-2 mt-1">
                                     <Badge variant="outline" className="text-[10px] py-0">
                                       {item.productionTag}
