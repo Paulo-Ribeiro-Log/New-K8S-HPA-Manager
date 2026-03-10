@@ -1080,7 +1080,7 @@ export const GitHubReleasesTab = () => {
                                       {item.githubRepo}
                                     </p>
                                     {item.chgNumber && (
-                                      <span className="text-[10px] font-mono text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950 px-2 py-1 rounded-md border border-blue-200 dark:border-blue-800 flex-shrink-0">
+                                      <span className="text-[10px] font-mono text-white bg-blue-600 dark:bg-blue-700 px-2 py-1 rounded-md border border-blue-700 dark:border-blue-600 flex-shrink-0">
                                         CHG: {item.chgNumber}
                                       </span>
                                     )}
