@@ -263,6 +263,16 @@ func copyStringMap(in map[string]string) map[string]string {
 	return out
 }
 
+// copyTaints creates a deep copy of taints slice to avoid shared references
+func copyTaints(in []corev1.Taint) []corev1.Taint {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]corev1.Taint, len(in))
+	copy(out, in)
+	return out
+}
+
 // formatAge formata a idade de um recurso em formato legível (exibe as 2 unidades mais significativas)
 func formatAge(t time.Time) string {
 	duration := time.Since(t)

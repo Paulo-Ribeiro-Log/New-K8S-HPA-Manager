@@ -78,8 +78,60 @@ func (c *Client) getNodeInfo(ctx context.Context, nodeName, nodePoolName string)
 		return models.NodeInfo{}, fmt.Errorf("failed to get node %s: %w", nodeName, err)
 	}
 
+	log.Info().
+		Str("nodeName", nodeName).
+		Str("nodePoolName", nodePoolName).
+		Int("labelsCount", len(node.Labels)).
+		Int("taintsCount", len(node.Spec.Taints)).
+		Msg("🔍 [getNodeInfo] Node data collected")
+
+	// Debug: Log unique labels/taints to verify no sharing
+	if len(node.Labels) > 0 {
+		log.Debug().
+			Str("nodeName", nodeName).
+			Interface("sampleLabels", extractSampleLabels(node.Labels, 3)).
+			Msg("📋 [getNodeInfo] Sample labels for node")
+	}
+	if len(node.Spec.Taints) > 0 {
+		log.Debug().
+			Str("nodeName", nodeName).
+			Interface("sampleTaints", extractSampleTaints(node.Spec.Taints, 2)).
+			Msg("🔶 [getNodeInfo] Sample taints for node")
+	}
+
 	// Buscar informações do cluster (resource group, subscription, tags)
 	clusterInfo := c.getClusterInfo()
+
+	// Create deep copy of cluster tags to avoid sharing
+	clusterTagsCopy := make(map[string]string)
+	for k, v := range clusterInfo.ClusterTags {
+		clusterTagsCopy[k] = v
+	}
+
+	// Create deep copy of node labels with detailed logging
+	nodeLabels := make(map[string]string)
+	for k, v := range node.Labels {
+		nodeLabels[k] = v
+	}
+
+	// Create deep copy of node annotations
+	nodeAnnotations := make(map[string]string)
+	for k, v := range node.Annotations {
+		nodeAnnotations[k] = v
+	}
+
+	// Create deep copy of taints
+	nodeTaints := make([]corev1.Taint, len(node.Spec.Taints))
+	copy(nodeTaints, node.Spec.Taints)
+
+	log.Debug().
+		Str("nodeName", nodeName).
+		Interface("nodeLabels", nodeLabels).
+		Interface("clusterTags", clusterTagsCopy).
+		Int("nodeLabelsCount", len(nodeLabels)).
+		Int("clusterTagsCount", len(clusterTagsCopy)).
+		Int("nodeTaintsCount", len(nodeTaints)).
+		Msg("🔍 [getNodeInfo] Deep copies created - data should be isolated per node")
 
 	nodeInfo := models.NodeInfo{
 		Name:              node.Name,
@@ -88,16 +140,16 @@ func (c *Client) getNodeInfo(ctx context.Context, nodeName, nodePoolName string)
 		ResourceGroup:     clusterInfo.ResourceGroup,
 		Subscription:      clusterInfo.Subscription,
 		SubscriptionName:  clusterInfo.SubscriptionName,
-		ClusterTags:       clusterInfo.ClusterTags,
+		ClusterTags:       clusterTagsCopy,
 		KubernetesVersion: node.Status.NodeInfo.KubeletVersion,
 		ProviderID:        node.Spec.ProviderID,
 		Hostname:          node.Name, // Usar nome do node como hostname
 		CreatedAt:         node.CreationTimestamp.Time,
 		Age:               formatAge(node.CreationTimestamp.Time),
 		Unschedulable:     node.Spec.Unschedulable,
-		Labels:            copyStringMap(node.Labels),
-		Annotations:       copyStringMap(node.Annotations),
-		Taints:            node.Spec.Taints,
+		Labels:            nodeLabels,
+		Annotations:       nodeAnnotations,
+		Taints:            nodeTaints,
 	}
 
 	// Extrair IPs
@@ -604,4 +656,38 @@ func getClusterTagsForNode(clusterName, resourceGroup string) (map[string]string
 	}
 
 	return tags, nil
+}
+
+// extractSampleLabels extracts a sample of labels for debugging (not for production)
+func extractSampleLabels(labels map[string]string, maxSamples int) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+
+	sample := make(map[string]string)
+	count := 0
+	for k, v := range labels {
+		if count >= maxSamples {
+			break
+		}
+		sample[k] = v
+		count++
+	}
+	return sample
+}
+
+// extractSampleTaints extracts a sample of taints for debugging (not for production)
+func extractSampleTaints(taints []corev1.Taint, maxSamples int) []string {
+	if len(taints) == 0 {
+		return nil
+	}
+
+	sample := make([]string, 0, maxSamples)
+	for i, taint := range taints {
+		if i >= maxSamples {
+			break
+		}
+		sample = append(sample, fmt.Sprintf("%s=%s:%s", taint.Key, taint.Value, taint.Effect))
+	}
+	return sample
 }
