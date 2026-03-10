@@ -8,6 +8,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ProtectedAction } from "@/components/rbac/ProtectedAction";
+import { apiClient } from "@/lib/api/client";
+import { toast } from "sonner";
 
 const REFRESH_INTERVAL_MS = 5000;
 
@@ -67,7 +70,7 @@ function ColumnFilter({
           <div className="space-y-1">
             {options.map((opt) => (
               <label key={opt} className="flex items-center gap-2 px-1 py-0.5 rounded cursor-pointer hover:bg-muted/50 text-xs">
-                <Checkbox checked={selected.has(opt)} onCheckedChange={() => toggle(opt)} className="w-3.5 h-3.5" />
+                <Checkbox checked={selected.has(opt)} onCheckedChange={() => toggle(opt)} className="w-3.5 h-3.5 rounded-full" />
                 <span className="truncate flex-1" title={opt}>{opt}</span>
                 {selected.has(opt) && <Check className="w-3 h-3 text-primary flex-shrink-0" />}
               </label>
@@ -92,10 +95,11 @@ function useSecondsTick(date: Date | null): string {
   return `${Math.floor(secs / 60)}m atrás`;
 }
 
-// Colunas: NAME/NS | dot | READY | STATUS | REST. | CPU | MEM | NODE | AGE
-const GRID = "minmax(180px,1fr) 22px 56px 100px 50px 64px 72px minmax(130px,1fr) 56px";
+// Colunas: SEL | NAME/NS | dot | READY | STATUS | REST. | CPU | MEM | NODE | AGE
+const GRID = "32px minmax(180px,1fr) 22px 56px 100px 50px 64px 72px minmax(130px,1fr) 56px";
 
 export const PodMonitorTable = ({
+  cluster,
   pods,
   loading,
   metrics,
@@ -112,6 +116,11 @@ export const PodMonitorTable = ({
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Seleção de pods
+  const [selectedPods, setSelectedPods] = useState<Set<string>>(new Set());
+  const [bulkAction, setBulkAction] = useState<"kill" | "delete" | "restart" | null>(null);
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+
   const refreshRef = useRef(onRequestRefresh);
   useEffect(() => { refreshRef.current = onRequestRefresh; }, [onRequestRefresh]);
 
@@ -126,6 +135,16 @@ export const PodMonitorTable = ({
 
   useEffect(() => {
     setLastUpdated(new Date());
+  }, [pods]);
+
+  // Limpar seleção de pods que sumiram da lista
+  useEffect(() => {
+    setSelectedPods((prev) => {
+      if (prev.size === 0) return prev;
+      const podKeys = new Set(pods.map((p) => `${p.namespace}/${p.name}`));
+      const next = new Set([...prev].filter((k) => podKeys.has(k)));
+      return next.size !== prev.size ? next : prev;
+    });
   }, [pods]);
 
   const lastUpdatedLabel = useSecondsTick(lastUpdated);
@@ -180,13 +199,101 @@ export const PodMonitorTable = ({
     return result;
   }, [pods, searchQuery, statusFilter, nodeFilter, namespaceFilter]);
 
+  // Helpers de seleção
+  const podKey = (p: PodSummary) => `${p.namespace}/${p.name}`;
+  const allFilteredSelected = filtered.length > 0 && filtered.every((p) => selectedPods.has(podKey(p)));
+  const someFilteredSelected = filtered.some((p) => selectedPods.has(podKey(p)));
+
+  const toggleSelectAll = () => {
+    if (allFilteredSelected) {
+      const next = new Set(selectedPods);
+      filtered.forEach((p) => next.delete(podKey(p)));
+      setSelectedPods(next);
+    } else {
+      const next = new Set(selectedPods);
+      filtered.forEach((p) => next.add(podKey(p)));
+      setSelectedPods(next);
+    }
+  };
+
+  const togglePod = (p: PodSummary) => {
+    const key = podKey(p);
+    const next = new Set(selectedPods);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setSelectedPods(next);
+  };
+
+  // Pods selecionados com dados completos
+  const selectedPodObjects = useMemo(
+    () => pods.filter((p) => selectedPods.has(podKey(p))),
+    [pods, selectedPods]
+  );
+
+  // Executa ação em massa
+  const executeBulkAction = async () => {
+    if (!bulkAction || bulkProcessing) return;
+    setBulkProcessing(true);
+    const targets = selectedPodObjects;
+    let succeeded = 0;
+    let failed = 0;
+
+    if (bulkAction === "restart") {
+      // Batch restart via endpoint dedicado
+      const result = await apiClient.batchRestartPods(
+        cluster,
+        targets.map((p) => ({ namespace: p.namespace, name: p.name }))
+      );
+      succeeded = result.success_count;
+      failed = result.failed_count;
+    } else {
+      for (const pod of targets) {
+        try {
+          if (bulkAction === "kill") {
+            await apiClient.killPod(cluster, pod.namespace, pod.name);
+          } else {
+            await apiClient.deletePod(cluster, pod.namespace, pod.name);
+          }
+          succeeded++;
+        } catch {
+          failed++;
+        }
+      }
+    }
+
+    const actionLabel = bulkAction === "kill" ? "Kill" : bulkAction === "restart" ? "Rollout Restart" : "Delete";
+    const successMsg = bulkAction === "kill"
+      ? "encerrado(s) forçadamente"
+      : bulkAction === "restart"
+      ? "reiniciado(s)"
+      : "deletado(s)";
+
+    if (succeeded > 0 && failed === 0) {
+      toast.success(`${actionLabel} concluído`, {
+        description: `${succeeded} pod(s) ${successMsg} com sucesso.`,
+      });
+    } else if (succeeded > 0 && failed > 0) {
+      toast.warning("Parcialmente concluído", {
+        description: `${succeeded} sucesso(s), ${failed} falha(s).`,
+      });
+    } else {
+      toast.error("Falha na operação", {
+        description: `Não foi possível executar ${actionLabel} em nenhum pod.`,
+      });
+    }
+
+    setBulkProcessing(false);
+    setBulkAction(null);
+    setSelectedPods(new Set());
+    onRequestRefresh();
+  };
+
   return (
     <div className="flex flex-col h-full border border-border rounded-lg overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/30 flex-shrink-0">
         {onBack && (
-          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1" onClick={onBack}>
-            <ChevronLeft className="w-3 h-3" />
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={onBack}>
             {backLabel ?? "Voltar"}
           </Button>
         )}
@@ -264,6 +371,17 @@ export const PodMonitorTable = ({
         className="grid font-mono text-[10px] px-3 py-1.5 border-b border-border bg-muted/20 flex-shrink-0"
         style={{ gridTemplateColumns: GRID }}
       >
+        {/* Select-all circular */}
+        <span className="flex items-center">
+          <Checkbox
+            checked={allFilteredSelected}
+            data-state={someFilteredSelected && !allFilteredSelected ? "indeterminate" : undefined}
+            onCheckedChange={toggleSelectAll}
+            className="w-3.5 h-3.5 rounded-full"
+            title={allFilteredSelected ? "Desmarcar todos" : "Selecionar todos (ou use Espaço na linha)"}
+            disabled={filtered.length === 0}
+          />
+        </span>
         <span>
           {uniqueNamespaces.length > 1
             ? <ColumnFilter label="NAME/NS" options={uniqueNamespaces} selected={namespaceFilter} onChange={setNamespaceFilter} />
@@ -294,15 +412,35 @@ export const PodMonitorTable = ({
           const m = metrics?.pods[pod.name];
           const rowColor = podRowColor(pod.phase ?? "", pod.statusReason);
           const dotColor = podDotColor(pod.phase ?? "", pod.statusReason);
+          const isSelected = selectedPods.has(podKey(pod));
 
           return (
             <button
               key={`${pod.namespace}/${pod.name}`}
-              className={`grid w-full px-3 py-1.5 hover:bg-muted/40 text-left transition-colors border-b border-border/40 font-mono text-xs ${rowColor} cursor-pointer`}
+              className={`grid w-full px-3 py-1.5 hover:bg-muted/40 text-left transition-colors border-b border-border/40 font-mono text-xs ${rowColor} cursor-pointer ${isSelected ? "bg-primary/10 hover:bg-primary/15 outline-none ring-inset ring-1 ring-primary/30" : ""}`}
               style={{ gridTemplateColumns: GRID }}
               onClick={() => onOpenDetail(pod)}
-              title="Clique para ver detalhes e logs"
+              // Barra de espaço faz toggle da seleção sem abrir o modal
+              onKeyDown={(e) => {
+                if (e.key === " ") {
+                  e.preventDefault();
+                  togglePod(pod);
+                }
+              }}
+              title="Clique para detalhes • Espaço para selecionar"
             >
+              {/* Checkbox circular — clique no span faz toggle sem propagar para onOpenDetail */}
+              <span
+                className="flex items-center"
+                onClick={(e) => { e.stopPropagation(); togglePod(pod); }}
+              >
+                <Checkbox
+                  checked={isSelected}
+                  onCheckedChange={() => {}}
+                  className="w-3.5 h-3.5 rounded-full pointer-events-none"
+                />
+              </span>
+
               {/* NAME / NS */}
               <span className="min-w-0">
                 {uniqueNamespaces.length > 1 && (
@@ -340,6 +478,105 @@ export const PodMonitorTable = ({
           );
         })}
       </div>
+
+      {/* Barra de ações em massa — visível quando há seleção */}
+      {selectedPods.size > 0 && (
+        <div className="flex-shrink-0 border-t border-border">
+          {/* Confirmação da ação */}
+          {bulkAction && (
+            <div className={`flex items-center gap-2 px-3 py-2 text-xs ${
+              bulkAction === "delete"
+                ? "bg-destructive/10 border-b border-destructive/30"
+                : bulkAction === "restart"
+                ? "bg-blue-500/10 border-b border-blue-500/30"
+                : "bg-orange-500/10 border-b border-orange-500/30"
+            }`}>
+              <span className="flex-1">
+                {bulkAction === "kill"
+                  ? `Forçar encerramento de ${selectedPodObjects.length} pod(s)? Os pods serão reiniciados pelo controlador.`
+                  : bulkAction === "restart"
+                  ? `Reiniciar ${selectedPodObjects.length} pod(s) via rollout restart?`
+                  : `Deletar ${selectedPodObjects.length} pod(s) permanentemente?`}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-xs"
+                onClick={() => setBulkAction(null)}
+                disabled={bulkProcessing}
+              >
+                Cancelar
+              </Button>
+              <Button
+                size="sm"
+                className={`h-6 px-3 text-xs gap-1 text-white ${
+                bulkAction === "delete"
+                  ? "bg-destructive hover:bg-destructive/90"
+                  : bulkAction === "restart"
+                  ? "bg-blue-600 hover:bg-blue-700"
+                  : "bg-orange-500 hover:bg-orange-600"
+              }`}
+                onClick={executeBulkAction}
+                disabled={bulkProcessing}
+              >
+                Confirmar
+              </Button>
+            </div>
+          )}
+
+          {/* Toolbar principal */}
+          {!bulkAction && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/30">
+              <span className="text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">{selectedPods.size}</span> pod(s) selecionado(s)
+              </span>
+              <div className="flex-1" />
+              <ProtectedAction showWarning={false}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs text-blue-500 border-blue-500/40 hover:bg-blue-500/10 hover:border-blue-500"
+                  onClick={() => setBulkAction("restart")}
+                  title="Rollout restart nos pods selecionados"
+                >
+                  Restart ({selectedPods.size})
+                </Button>
+              </ProtectedAction>
+              <ProtectedAction showWarning={false}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs text-orange-500 border-orange-500/40 hover:bg-orange-500/10 hover:border-orange-500"
+                  onClick={() => setBulkAction("kill")}
+                  title="Forçar encerramento (SIGKILL)"
+                >
+                  Kill ({selectedPods.size})
+                </Button>
+              </ProtectedAction>
+              <ProtectedAction showWarning={false}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs text-destructive border-destructive/40 hover:bg-destructive/10 hover:border-destructive"
+                  onClick={() => setBulkAction("delete")}
+                  title="Deletar pods selecionados"
+                >
+                  Deletar ({selectedPods.size})
+                </Button>
+              </ProtectedAction>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0 text-muted-foreground"
+                onClick={() => setSelectedPods(new Set())}
+                title="Limpar seleção"
+              >
+                <X className="w-3 h-3" />
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
