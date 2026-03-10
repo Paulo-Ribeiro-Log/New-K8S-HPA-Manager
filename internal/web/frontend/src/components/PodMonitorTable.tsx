@@ -61,17 +61,17 @@ function ColumnFilter({
           )}
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-48 p-2" align="start">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-medium">{label}</span>
-          {active && <button onClick={() => onChange(new Set())} className="text-xs text-muted-foreground hover:text-foreground">Limpar</button>}
+      <PopoverContent className="w-max min-w-[160px] max-w-[520px] p-2" align="start">
+        <div className="flex items-center justify-between gap-4 mb-2">
+          <span className="text-xs font-medium whitespace-nowrap">{label}</span>
+          {active && <button onClick={() => onChange(new Set())} className="text-xs text-muted-foreground hover:text-foreground whitespace-nowrap">Limpar</button>}
         </div>
-        <ScrollArea className="max-h-48">
+        <ScrollArea className="max-h-72">
           <div className="space-y-1">
             {options.map((opt) => (
               <label key={opt} className="flex items-center gap-2 px-1 py-0.5 rounded cursor-pointer hover:bg-muted/50 text-xs">
-                <Checkbox checked={selected.has(opt)} onCheckedChange={() => toggle(opt)} className="w-3.5 h-3.5 rounded-full" />
-                <span className="truncate flex-1" title={opt}>{opt}</span>
+                <Checkbox checked={selected.has(opt)} onCheckedChange={() => toggle(opt)} className="w-3.5 h-3.5 rounded-full flex-shrink-0" />
+                <span className="whitespace-nowrap" title={opt}>{opt}</span>
                 {selected.has(opt) && <Check className="w-3 h-3 text-primary flex-shrink-0" />}
               </label>
             ))}
@@ -124,6 +124,14 @@ export const PodMonitorTable = ({
   const refreshRef = useRef(onRequestRefresh);
   useEffect(() => { refreshRef.current = onRequestRefresh; }, [onRequestRefresh]);
 
+  const rowsContainerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const focusRow = (idx: number) => {
+    const el = rowsContainerRef.current?.querySelector<HTMLElement>(`[data-row-index="${idx}"]`);
+    if (el) { el.focus(); el.scrollIntoView({ block: "nearest" }); }
+  };
+
   useEffect(() => {
     const id = setInterval(async () => {
       setRefreshing(true);
@@ -136,6 +144,18 @@ export const PodMonitorTable = ({
   useEffect(() => {
     setLastUpdated(new Date());
   }, [pods]);
+
+  // Ctrl+\ desmarca todos os pods selecionados
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === "\\") {
+        e.preventDefault();
+        setSelectedPods(new Set());
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   // Limpar seleção de pods que sumiram da lista
   useEffect(() => {
@@ -329,10 +349,17 @@ export const PodMonitorTable = ({
         <div className="relative w-40">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
           <Input
+            ref={searchInputRef}
             placeholder="Buscar..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="h-7 text-xs pl-6 pr-6"
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                focusRow(0);
+              }
+            }}
           />
           {searchQuery && (
             <button onClick={() => setSearchQuery("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
@@ -402,13 +429,13 @@ export const PodMonitorTable = ({
       </div>
 
       {/* Linhas */}
-      <div className="flex-1 overflow-auto">
+      <div ref={rowsContainerRef} className="rows-container flex-1 overflow-auto">
         {filtered.length === 0 && !loading && (
           <div className="text-muted-foreground text-xs text-center py-6">
             {searchQuery || hasFilters ? "Nenhum pod encontrado para os filtros aplicados" : "Nenhum pod encontrado"}
           </div>
         )}
-        {filtered.map((pod) => {
+        {filtered.map((pod, index) => {
           const m = metrics?.pods[pod.name];
           const rowColor = podRowColor(pod.phase ?? "", pod.statusReason);
           const dotColor = podDotColor(pod.phase ?? "", pod.statusReason);
@@ -417,17 +444,28 @@ export const PodMonitorTable = ({
           return (
             <button
               key={`${pod.namespace}/${pod.name}`}
-              className={`grid w-full px-3 py-1.5 hover:bg-muted/40 text-left transition-colors border-b border-border/40 font-mono text-xs ${rowColor} cursor-pointer ${isSelected ? "bg-primary/10 hover:bg-primary/15 outline-none ring-inset ring-1 ring-primary/30" : ""}`}
+              data-row-index={index}
+              className={`grid w-full px-3 py-1.5 hover:bg-muted/40 text-left transition-colors border-b border-border/40 font-mono text-xs ${rowColor} cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60 ${isSelected ? "bg-primary/10 hover:bg-primary/15 ring-inset ring-1 ring-primary/30" : ""}`}
               style={{ gridTemplateColumns: GRID }}
               onClick={() => onOpenDetail(pod)}
-              // Barra de espaço faz toggle da seleção sem abrir o modal
               onKeyDown={(e) => {
                 if (e.key === " ") {
                   e.preventDefault();
                   togglePod(pod);
+                } else if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  focusRow(index + 1);
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  if (index === 0) {
+                    searchInputRef.current?.focus();
+                  } else {
+                    focusRow(index - 1);
+                  }
                 }
+                // Enter aciona onClick naturalmente (abre o modal)
               }}
-              title="Clique para detalhes • Espaço para selecionar"
+              title="Enter para detalhes • Espaço para selecionar • ↑↓ para navegar"
             >
               {/* Checkbox circular — clique no span faz toggle sem propagar para onOpenDetail */}
               <span
@@ -527,6 +565,15 @@ export const PodMonitorTable = ({
           {/* Toolbar principal */}
           {!bulkAction && (
             <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/30">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => setSelectedPods(new Set())}
+                title="Desmarcar todos (Ctrl+\)"
+              >
+                Desmarcar tudo
+              </Button>
               <span className="text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">{selectedPods.size}</span> pod(s) selecionado(s)
               </span>
@@ -564,15 +611,6 @@ export const PodMonitorTable = ({
                   Deletar ({selectedPods.size})
                 </Button>
               </ProtectedAction>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 w-7 p-0 text-muted-foreground"
-                onClick={() => setSelectedPods(new Set())}
-                title="Limpar seleção"
-              >
-                <X className="w-3 h-3" />
-              </Button>
             </div>
           )}
         </div>
