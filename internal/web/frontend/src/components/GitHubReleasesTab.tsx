@@ -1075,12 +1075,12 @@ export const GitHubReleasesTab = () => {
                                   <p className="text-sm font-medium truncate">
                                     {item.deploymentName}
                                   </p>
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <p className="text-xs text-muted-foreground truncate">
+                                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                                    <p className="text-xs text-muted-foreground truncate flex-shrink-0">
                                       {item.githubRepo}
                                     </p>
                                     {item.chgNumber && (
-                                      <span className="text-[10px] font-mono text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950 px-1.5 py-0.5 rounded border border-blue-200 dark:border-blue-800">
+                                      <span className="text-[10px] font-mono text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950 px-2 py-1 rounded-md border border-blue-200 dark:border-blue-800 flex-shrink-0">
                                         CHG: {item.chgNumber}
                                       </span>
                                     )}
