@@ -101,6 +101,7 @@ interface ComparisonItem {
   githubRepo: string;
   productionTag: string;
   newTag: string;
+  chgNumber?: string;  // Número da mudança ServiceNow
   status: 'pending' | 'loading' | 'success' | 'error';
   result?: ComparisonResult;
   error?: string;
@@ -143,6 +144,7 @@ export const GitHubReleasesTab = () => {
   const [selectedComparison, setSelectedComparison] = useState<string | null>(() => {
     return localStorage.getItem('github-selected-comparison') || null;
   });
+  const [serviceNowCHG, setServiceNowCHG] = useState<string | null>(null); // CHG do ServiceNow
 
   // ✅ Persistir lote no localStorage sempre que mudar
   React.useEffect(() => {
@@ -345,14 +347,38 @@ export const GitHubReleasesTab = () => {
       return;
     }
 
+    // ✨ Coleta dual de CHG: API + ServiceNow
+    let chgNumber: string | undefined = undefined;
+
+    // Prioridade 1: CHG do ServiceNow modal (mais recente)
+    if (serviceNowCHG) {
+      chgNumber = serviceNowCHG;
+      console.log('[GitHubReleasesTab] CHG do ServiceNow:', serviceNowCHG);
+    }
+    // Prioridade 2: CHG da API de produção
+    else if (productionData?.servicenow_task) {
+      chgNumber = productionData.servicenow_task;
+      console.log('[GitHubReleasesTab] CHG da API:', productionData.servicenow_task);
+    }
+
+    console.log('[GitHubReleasesTab] Debug CHG final:', {
+      serviceNowCHG: serviceNowCHG,
+      apiCHG: productionData?.servicenow_task,
+      finalCHG: chgNumber,
+      deploymentName: deploymentName
+    });
+
     const newItem: ComparisonItem = {
       id: `${Date.now()}-${githubRepo}`,
       deploymentName: deploymentName || undefined,  // Opcional
       githubRepo,
       productionTag,
       newTag,
+      chgNumber: chgNumber,  // CHG coletado de fonte dual
       status: 'pending',
     };
+
+    console.log('[GitHubReleasesTab] New item with CHG:', newItem);
 
     setComparisonBatch(prev => [...prev, newItem]);
 
@@ -589,6 +615,12 @@ export const GitHubReleasesTab = () => {
       }
     }
 
+    // ✨ Capturar CHG do ServiceNow para uso posterior
+    if (data.changeNumber) {
+      setServiceNowCHG(data.changeNumber);
+      console.log('[GitHubReleasesTab] CHG capturado do ServiceNow:', data.changeNumber);
+    }
+
     // Adicionar a comparações
     const newItem: ComparisonItem = {
       id: `${Date.now()}-${data.githubRepo}`,
@@ -596,6 +628,7 @@ export const GitHubReleasesTab = () => {
       githubRepo: data.githubRepo,
       productionTag: prodTag,
       newTag: data.newVersion,
+      chgNumber: data.changeNumber || undefined,  // CHG diretamente do ServiceNow
       status: 'pending',
     };
 
@@ -1024,7 +1057,9 @@ export const GitHubReleasesTab = () => {
 
                     <ScrollArea className="h-[300px]">
                       <div className="space-y-2">
-                        {comparisonBatch.map((item) => (
+                        {comparisonBatch.map((item) => {
+                          console.log('[GitHubReleasesTab] Rendering item:', { id: item.id, chgNumber: item.chgNumber });
+                          return (
                           <Card
                             key={item.id}
                             className={`cursor-pointer transition-colors ${
@@ -1043,6 +1078,11 @@ export const GitHubReleasesTab = () => {
                                   <p className="text-xs text-muted-foreground truncate">
                                     {item.githubRepo}
                                   </p>
+                                  {item.chgNumber && (
+                                    <p className="text-[10px] font-mono text-blue-600 dark:text-blue-400 truncate">
+                                      CHG: {item.chgNumber}
+                                    </p>
+                                  )}
                                   <div className="flex items-center gap-2 mt-1">
                                     <Badge variant="outline" className="text-[10px] py-0">
                                       {item.productionTag}
@@ -1127,7 +1167,8 @@ export const GitHubReleasesTab = () => {
                               </div>
                             </CardContent>
                           </Card>
-                        ))}
+                          );
+                        })}
                       </div>
                     </ScrollArea>
                   </div>
@@ -1138,7 +1179,12 @@ export const GitHubReleasesTab = () => {
         }}
         rightPanel={{
           title: selectedComparison
-            ? `Comparação: ${comparisonBatch.find(i => i.id === selectedComparison)?.deploymentName || ''}`
+            ? (() => {
+                const comparison = comparisonBatch.find(i => i.id === selectedComparison);
+                const deploymentName = comparison?.deploymentName || '';
+                const chgNumber = comparison?.chgNumber;
+                return `Comparação: ${deploymentName}${chgNumber ? ` (CHG: ${chgNumber})` : ''}`;
+              })()
             : "Comparação",
           titleAction: displayedComparison && (
             <div className="flex items-center gap-4">
@@ -1321,6 +1367,23 @@ export const GitHubReleasesTab = () => {
                             </Badge>
                           </div>
                         </div>
+
+                        {/* CHG Number do ServiceNow (se disponível) */}
+                        {(() => {
+                          const comparison = comparisonBatch.find(item => item.id === selectedComparison);
+                          return comparison?.chgNumber && (
+                            <div className="pt-2 pb-1">
+                              <div className="text-center">
+                                <Label className="text-[10px] text-muted-foreground">CHG ServiceNow</Label>
+                                <div className="mt-1">
+                                  <Badge variant="outline" className="font-mono text-xs bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800">
+                                    {comparison.chgNumber}
+                                  </Badge>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()}
 
                         {/* Estatísticas */}
                         <div className="flex items-center justify-around pt-1.5 border-t">
