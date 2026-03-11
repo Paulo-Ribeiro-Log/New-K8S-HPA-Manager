@@ -25,6 +25,14 @@ type Config struct {
 	// GeminiVertexLocation região GCP para Vertex AI (padrão: us-central1)
 	GeminiVertexLocation string
 
+	// GeminiServiceAccountJSON conteúdo JSON do service account para Vertex AI
+	// Obtido em: Google Cloud Console → IAM → Service Accounts → Create Key (JSON)
+	GeminiServiceAccountJSON string
+
+	// GeminiRefreshToken OAuth refresh token obtido via Device Authorization Grant
+	// Armazenado automaticamente após autenticação pelo botão "Autenticar com Google"
+	GeminiRefreshToken string
+
 	// OllamaBaseURL URL base do Ollama (padrão: http://localhost:11434)
 	OllamaBaseURL string
 
