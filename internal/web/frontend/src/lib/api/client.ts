@@ -2161,10 +2161,56 @@ class APIClient {
   /**
    * Get user's AI tokens status
    */
+  async startGoogleDeviceAuth(): Promise<{
+    device_code: string;
+    user_code: string;
+    verification_url: string;
+    expires_in: number;
+    interval: number;
+  }> {
+    return this.request(`/ai/tokens/google-auth/start`, { method: "POST", body: "{}" });
+  }
+
+  async pollGoogleDeviceAuth(deviceCode: string, aiEmail: string): Promise<{
+    status: "pending" | "authenticated" | "error";
+    access_token?: string;
+    error?: string;
+  }> {
+    return this.request(`/ai/tokens/google-auth/poll`, {
+      method: "POST",
+      body: JSON.stringify({ device_code: deviceCode, ai_email: aiEmail }),
+    });
+  }
+
+  // ─── gcloud install + auth flow ───────────────────────────────────────────
+  async startGoogleInstallAuth(): Promise<{ session_id: string; auth_url?: string; status?: string }> {
+    return this.request(`/ai/tokens/google-auth/install/start`, { method: "POST", body: "{}" });
+  }
+
+  async getGoogleAuthStatus(sessionId: string): Promise<{
+    status: "waiting_browser" | "authenticated" | "error";
+    auth_url?: string;
+    error?: string;
+  }> {
+    return this.request(`/ai/tokens/google-auth/install/status?session_id=${encodeURIComponent(sessionId)}`);
+  }
+
+  async submitGoogleAuthCode(sessionId: string, code: string, aiEmail: string): Promise<{ status: string }> {
+    return this.request(`/ai/tokens/google-auth/install/code`, {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId, code, ai_email: aiEmail }),
+    });
+  }
+
   async getAITokens(): Promise<{
     ai_email?: string;
     has_gemini: boolean;
     gemini_model?: string;
+    gemini_auth_mode?: string;
+    gemini_vertex_project?: string;
+    gemini_vertex_location?: string;
+    has_gemini_service_account: boolean;
+    has_gemini_refresh_token: boolean;
     has_openai: boolean;
     openai_model?: string;
     has_claude: boolean;
@@ -2191,6 +2237,10 @@ class APIClient {
     ai_email: string; // Email para identificar configurações (independente do Azure AD)
     gemini_api_key?: string;
     gemini_model?: string;
+    gemini_auth_mode?: string;
+    gemini_vertex_project?: string;
+    gemini_vertex_location?: string;
+    gemini_service_account_json?: string;
     openai_api_key?: string;
     openai_model?: string;
     claude_api_key?: string;
@@ -2225,13 +2275,15 @@ class APIClient {
     endpoint?: string,
     deployment?: string,
     vertexProject?: string,
-    vertexLocation?: string
+    vertexLocation?: string,
+    serviceAccountJSON?: string
   ): Promise<{ valid: boolean; error?: string; message?: string }> {
     const body: any = { provider, api_key: apiKey };
     if (endpoint) body.endpoint = endpoint;
     if (deployment) body.deployment = deployment;
     if (vertexProject) body.vertex_project = vertexProject;
     if (vertexLocation) body.vertex_location = vertexLocation;
+    if (serviceAccountJSON) body.service_account_json = serviceAccountJSON;
 
     return this.request(`/ai/tokens/validate`, {
       method: "POST",
