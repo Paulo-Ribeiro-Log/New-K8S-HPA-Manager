@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"strings"
 	"time"
 
+	"k8s-hpa-manager/internal/ai"
 	"k8s-hpa-manager/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -30,41 +30,44 @@ func NewAITokensHandler(tokensStore *storage.UserTokensStore, localSettingsStore
 
 // SaveTokensRequest request para salvar tokens
 type SaveTokensRequest struct {
-	AIEmail              string `json:"ai_email"`                          // Email para identificar configurações (independente do Azure AD)
-	GeminiAPIKey         string `json:"gemini_api_key,omitempty"`
-	GeminiModel          string `json:"gemini_model,omitempty"`
-	GeminiAuthMode       string `json:"gemini_auth_mode,omitempty"`        // "apikey" ou "vertex"
-	GeminiVertexProject  string `json:"gemini_vertex_project,omitempty"`   // projeto GCP para Vertex AI
-	GeminiVertexLocation string `json:"gemini_vertex_location,omitempty"`  // região GCP (ex: us-central1)
-	OpenAIAPIKey         string `json:"openai_api_key,omitempty"`
-	OpenAIModel         string `json:"openai_model,omitempty"`
-	ClaudeAPIKey        string `json:"claude_api_key,omitempty"`
-	ClaudeModel         string `json:"claude_model,omitempty"`
-	CopilotAPIKey       string `json:"copilot_api_key,omitempty"`
-	CopilotEndpoint     string `json:"copilot_endpoint,omitempty"`
-	CopilotDeployment   string `json:"copilot_deployment,omitempty"`
-	OllamaModel         string `json:"ollama_model,omitempty"`
-	PreferredProvider   string `json:"preferred_provider"`
+	AIEmail                  string `json:"ai_email"`                              // Email para identificar configurações (independente do Azure AD)
+	GeminiAPIKey             string `json:"gemini_api_key,omitempty"`
+	GeminiModel              string `json:"gemini_model,omitempty"`
+	GeminiAuthMode           string `json:"gemini_auth_mode,omitempty"`            // "apikey" ou "vertex"
+	GeminiVertexProject      string `json:"gemini_vertex_project,omitempty"`       // projeto GCP para Vertex AI
+	GeminiVertexLocation     string `json:"gemini_vertex_location,omitempty"`      // região GCP (ex: us-central1)
+	GeminiServiceAccountJSON string `json:"gemini_service_account_json,omitempty"` // JSON do service account GCP
+	OpenAIAPIKey             string `json:"openai_api_key,omitempty"`
+	OpenAIModel              string `json:"openai_model,omitempty"`
+	ClaudeAPIKey             string `json:"claude_api_key,omitempty"`
+	ClaudeModel              string `json:"claude_model,omitempty"`
+	CopilotAPIKey            string `json:"copilot_api_key,omitempty"`
+	CopilotEndpoint          string `json:"copilot_endpoint,omitempty"`
+	CopilotDeployment        string `json:"copilot_deployment,omitempty"`
+	OllamaModel              string `json:"ollama_model,omitempty"`
+	PreferredProvider        string `json:"preferred_provider"`
 }
 
 // TokensResponse response com tokens (sem expor valores completos)
 type TokensResponse struct {
-	AIEmail              string `json:"ai_email,omitempty"`               // Email usado para identificar configurações
-	HasGemini            bool   `json:"has_gemini"`
-	GeminiModel          string `json:"gemini_model,omitempty"`
-	GeminiAuthMode       string `json:"gemini_auth_mode,omitempty"`       // "apikey" ou "vertex"
-	GeminiVertexProject  string `json:"gemini_vertex_project,omitempty"`  // não sensível - é o ID do projeto
-	GeminiVertexLocation string `json:"gemini_vertex_location,omitempty"` // região GCP
-	HasOpenAI            bool   `json:"has_openai"`
-	OpenAIModel       string `json:"openai_model,omitempty"`
-	HasClaude         bool   `json:"has_claude"`
-	ClaudeModel       string `json:"claude_model,omitempty"`
-	HasCopilot        bool   `json:"has_copilot"`
-	CopilotEndpoint   string `json:"copilot_endpoint,omitempty"`
-	CopilotDeployment string `json:"copilot_deployment,omitempty"`
-	OllamaModel       string `json:"ollama_model,omitempty"`
-	PreferredProvider string `json:"preferred_provider"`
-	UpdatedAt         string `json:"updated_at,omitempty"`
+	AIEmail                  string `json:"ai_email,omitempty"`                  // Email usado para identificar configurações
+	HasGemini                bool   `json:"has_gemini"`
+	GeminiModel              string `json:"gemini_model,omitempty"`
+	GeminiAuthMode           string `json:"gemini_auth_mode,omitempty"`          // "apikey" ou "vertex"
+	GeminiVertexProject      string `json:"gemini_vertex_project,omitempty"`     // não sensível - é o ID do projeto
+	GeminiVertexLocation     string `json:"gemini_vertex_location,omitempty"`    // região GCP
+	HasGeminiServiceAccount  bool   `json:"has_gemini_service_account"`          // true se service account JSON configurado
+	HasGeminiRefreshToken    bool   `json:"has_gemini_refresh_token"`            // true se autenticado via Device Auth Google
+	HasOpenAI                bool   `json:"has_openai"`
+	OpenAIModel              string `json:"openai_model,omitempty"`
+	HasClaude                bool   `json:"has_claude"`
+	ClaudeModel              string `json:"claude_model,omitempty"`
+	HasCopilot               bool   `json:"has_copilot"`
+	CopilotEndpoint          string `json:"copilot_endpoint,omitempty"`
+	CopilotDeployment        string `json:"copilot_deployment,omitempty"`
+	OllamaModel              string `json:"ollama_model,omitempty"`
+	PreferredProvider        string `json:"preferred_provider"`
+	UpdatedAt                string `json:"updated_at,omitempty"`
 }
 
 // SaveTokens salva tokens do usuário
@@ -200,6 +203,11 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 		tokens.GeminiVertexLocation = req.GeminiVertexLocation
 	} else {
 		tokens.GeminiVertexLocation = existingTokens.GeminiVertexLocation
+	}
+	if req.GeminiServiceAccountJSON != "" {
+		tokens.GeminiServiceAccountJSON = req.GeminiServiceAccountJSON
+	} else {
+		tokens.GeminiServiceAccountJSON = existingTokens.GeminiServiceAccountJSON
 	}
 
 	// OpenAI
@@ -345,16 +353,20 @@ func (h *AITokensHandler) GetTokens(c *gin.Context) {
 		return
 	}
 
-	hasGemini := tokens.GeminiAPIKey != "" || (tokens.GeminiAuthMode == "vertex" && tokens.GeminiVertexProject != "")
+	hasGeminiServiceAccount := tokens.GeminiServiceAccountJSON != ""
+	hasGeminiRefreshToken := tokens.GeminiRefreshToken != ""
+	hasGemini := tokens.GeminiAPIKey != "" || (tokens.GeminiAuthMode == "vertex" && tokens.GeminiVertexProject != "") || hasGeminiRefreshToken
 
 	// Retornar apenas status (não expor tokens completos)
 	c.JSON(http.StatusOK, TokensResponse{
-		AIEmail:              tokens.UserEmail,
-		HasGemini:            hasGemini,
-		GeminiModel:          tokens.GeminiModel,
-		GeminiAuthMode:       tokens.GeminiAuthMode,
-		GeminiVertexProject:  tokens.GeminiVertexProject,
-		GeminiVertexLocation: tokens.GeminiVertexLocation,
+		AIEmail:                 tokens.UserEmail,
+		HasGemini:               hasGemini,
+		GeminiModel:             tokens.GeminiModel,
+		GeminiAuthMode:          tokens.GeminiAuthMode,
+		GeminiVertexProject:     tokens.GeminiVertexProject,
+		GeminiVertexLocation:    tokens.GeminiVertexLocation,
+		HasGeminiServiceAccount: hasGeminiServiceAccount,
+		HasGeminiRefreshToken:   hasGeminiRefreshToken,
 		HasOpenAI:            tokens.OpenAIAPIKey != "",
 		OpenAIModel:          tokens.OpenAIModel,
 		HasClaude:            tokens.ClaudeAPIKey != "",
@@ -413,12 +425,13 @@ func (h *AITokensHandler) DeleteTokens(c *gin.Context) {
 // ValidateToken valida um token específico sem salvar
 func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 	var req struct {
-		Provider      string `json:"provider"`
-		APIKey        string `json:"api_key"`
-		Endpoint      string `json:"endpoint,omitempty"`       // Para Copilot
-		Deployment    string `json:"deployment,omitempty"`     // Para Copilot
-		VertexProject string `json:"vertex_project,omitempty"` // Para Gemini Vertex AI
-		VertexLocation string `json:"vertex_location,omitempty"` // Para Gemini Vertex AI
+		Provider             string `json:"provider"`
+		APIKey               string `json:"api_key"`
+		Endpoint             string `json:"endpoint,omitempty"`                // Para Copilot
+		Deployment           string `json:"deployment,omitempty"`              // Para Copilot
+		VertexProject        string `json:"vertex_project,omitempty"`          // Para Gemini Vertex AI
+		VertexLocation       string `json:"vertex_location,omitempty"`         // Para Gemini Vertex AI
+		ServiceAccountJSON   string `json:"service_account_json,omitempty"`    // JSON do service account GCP
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -433,7 +446,7 @@ func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 	case "gemini":
 		validationErr = validateGeminiToken(req.APIKey)
 	case "gemini-vertex":
-		validationErr = validateGeminiVertexConnection(req.VertexProject)
+		validationErr = validateGeminiVertexConnection(req.VertexProject, req.ServiceAccountJSON)
 	case "claude":
 		validationErr = validateClaudeToken(req.APIKey)
 	case "openai":
@@ -461,27 +474,18 @@ func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 	})
 }
 
-// validateGeminiVertexConnection testa autenticação via gcloud ADC para Vertex AI
-func validateGeminiVertexConnection(project string) error {
+// validateGeminiVertexConnection testa autenticação para Vertex AI
+// Prioridade: service account JSON → ADC file (gcloud)
+func validateGeminiVertexConnection(project, serviceAccountJSON string) error {
 	if project == "" {
 		return fmt.Errorf("projeto GCP é obrigatório para Vertex AI")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "gcloud", "auth", "print-access-token")
-	output, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("gcloud não está autenticado — execute: gcloud auth application-default login")
-	}
-
-	token := strings.TrimSpace(string(output))
-	if token == "" {
-		return fmt.Errorf("gcloud retornou token vazio")
-	}
-
-	return nil
+	_, err := ai.GetVertexAccessToken(ctx, serviceAccountJSON, "")
+	return err
 }
 
 // validateGeminiToken valida token do Gemini
@@ -665,6 +669,81 @@ func (h *AITokensHandler) GetAvailableModels(c *gin.Context) {
 	})
 }
 
+// StartGoogleDeviceAuth inicia o Device Authorization Grant do Google.
+// Retorna user_code e verification_url para o usuário autenticar no browser.
+func (h *AITokensHandler) StartGoogleDeviceAuth(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	deviceAuth, err := ai.StartDeviceAuth(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("Falha ao iniciar autenticação Google: %s", err.Error()),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"device_code":      deviceAuth.DeviceCode,
+		"user_code":        deviceAuth.UserCode,
+		"verification_url": deviceAuth.VerificationURL,
+		"expires_in":       deviceAuth.ExpiresIn,
+		"interval":         deviceAuth.Interval,
+	})
+}
+
+// PollGoogleDeviceAuth faz uma tentativa de trocar o device_code por token.
+// O frontend chama este endpoint periodicamente até receber sucesso.
+func (h *AITokensHandler) PollGoogleDeviceAuth(c *gin.Context) {
+	var req struct {
+		DeviceCode string `json:"device_code"`
+		AIEmail    string `json:"ai_email"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil || req.DeviceCode == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "device_code é obrigatório"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Uma tentativa apenas — o frontend faz o loop de polling
+	token, pending, err := ai.TryExchangeDeviceToken(ctx, req.DeviceCode)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	if pending {
+		c.JSON(http.StatusOK, gin.H{"status": "pending"})
+		return
+	}
+
+	// Autenticado! Salvar refresh_token no banco se ai_email fornecido
+	if req.AIEmail != "" && token.RefreshToken != "" {
+		existing, _ := h.tokensStore.GetTokens(req.AIEmail)
+		if existing == nil {
+			existing = &storage.UserTokens{UserEmail: req.AIEmail}
+		}
+		existing.GeminiRefreshToken = token.RefreshToken
+		existing.GeminiAuthMode = "vertex"
+		if err := h.tokensStore.SaveTokens(req.AIEmail, existing); err != nil {
+			log.Warn().Err(err).Str("ai_email", req.AIEmail).Msg("⚠️ Falha ao salvar refresh_token")
+		} else {
+			log.Info().Str("ai_email", req.AIEmail).Msg("✅ Google refresh_token salvo")
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":       "authenticated",
+		"access_token": token.AccessToken,
+	})
+}
+
 // RegisterRoutes registra rotas do handler
 func (h *AITokensHandler) RegisterRoutes(router *gin.RouterGroup, rbacMiddleware interface{ InjectUserEmail() gin.HandlerFunc }) {
 	// Rotas de tokens AI - NÃO usam middleware InjectUserEmail
@@ -675,6 +754,11 @@ func (h *AITokensHandler) RegisterRoutes(router *gin.RouterGroup, rbacMiddleware
 		tokens.POST("", h.SaveTokens)             // POST /api/v1/ai/tokens (body: {ai_email, ...})
 		tokens.DELETE("", h.DeleteTokens)         // DELETE /api/v1/ai/tokens?ai_email=...
 		tokens.POST("/validate", h.ValidateToken) // POST /api/v1/ai/tokens/validate
+		tokens.POST("/google-auth/start", h.StartGoogleDeviceAuth)           // Device Authorization Grant (legado)
+		tokens.POST("/google-auth/poll", h.PollGoogleDeviceAuth)             // Polling de token (legado)
+		tokens.POST("/google-auth/install/start", h.StartGoogleInstallAuth)  // Instala gcloud + inicia auth
+		tokens.GET("/google-auth/install/status", h.GetGoogleAuthStatus)     // Polling de status da sessão
+		tokens.POST("/google-auth/install/code", h.SubmitGoogleAuthCode)     // Submete código de verificação
 	}
 
 	// Endpoint de modelos disponíveis (não precisa de ai_email)
