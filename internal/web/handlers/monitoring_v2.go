@@ -446,6 +446,7 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 	// Extrair query results para cada métrica
 	replicasData, _ := historicalData["replicas"].(*client.QueryRangeResult)
 	desiredReplicasData, _ := historicalData["desired_replicas"].(*client.QueryRangeResult)
+	readyReplicasData, _ := historicalData["ready_replicas"].(*client.QueryRangeResult)
 	minReplicasData, _ := historicalData["min_replicas"].(*client.QueryRangeResult)
 	maxReplicasData, _ := historicalData["max_replicas"].(*client.QueryRangeResult)
 	cpuData, _ := historicalData["cpu"].(*client.QueryRangeResult)
@@ -491,6 +492,7 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 			"timestamp":        timestampISO, // ISO8601 string (ex: "2025-11-18T18:01:28-03:00")
 			"replicas_current": replicas,
 			"replicas_desired": 0,
+			"replicas_ready":   0,
 			"replicas_min":     0,
 			"replicas_max":     0,
 			"cpu_current":      0.0,
@@ -540,6 +542,20 @@ func convertHistoricalToAPI(historicalData map[string]interface{}, cpuTarget, me
 					var desiredValue int
 					fmt.Sscanf(desiredStr, "%d", &desiredValue)
 					snapshot["replicas_desired"] = desiredValue
+					break
+				}
+			}
+		}
+
+		// Buscar Ready Replicas correspondente
+		if readyReplicasData != nil && len(readyReplicasData.Data.Result) > 0 {
+			for _, readyPair := range readyReplicasData.Data.Result[0].Values {
+				readyTimestamp := int64(readyPair[0].(float64))
+				if abs(readyTimestamp-timestamp) <= 30 {
+					readyStr := readyPair[1].(string)
+					var readyValue int
+					fmt.Sscanf(readyStr, "%d", &readyValue)
+					snapshot["replicas_ready"] = readyValue
 					break
 				}
 			}
