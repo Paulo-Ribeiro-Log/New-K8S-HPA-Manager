@@ -43,7 +43,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
     ? (nodePool.cluster_name.endsWith('-admin') ? nodePool.cluster_name : `${nodePool.cluster_name}-admin`)
     : "";
 
-  const { metrics: diskMetrics, loading: diskMetricsLoading } = useNodePoolDiskMetrics(
+  const { metrics: diskMetrics, loading: diskMetricsLoading, refetch: refetchDiskMetrics } = useNodePoolDiskMetrics(
     clusterWithAdmin,
     nodePool?.name
   );
@@ -1170,13 +1170,21 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           ) : (
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <HardDrive className="w-5 h-5" />
-                  Disk Usage - {nodePool.name}
-                </CardTitle>
-                <CardDescription>
-                  {diskMetrics.node_count} node{diskMetrics.node_count !== 1 ? "s" : ""} in this pool
-                </CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <HardDrive className="w-5 h-5" />
+                      Disk Usage - {nodePool.name}
+                    </CardTitle>
+                    <CardDescription>
+                      {diskMetrics.node_count} node{diskMetrics.node_count !== 1 ? "s" : ""} in this pool
+                    </CardDescription>
+                  </div>
+                  <Button onClick={() => refetchDiskMetrics()} variant="outline" size="sm" disabled={diskMetricsLoading}>
+                    <RefreshCcw className={`w-4 h-4 mr-2 ${diskMetricsLoading ? "animate-spin" : ""}`} />
+                    Atualizar
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-3 gap-4">
