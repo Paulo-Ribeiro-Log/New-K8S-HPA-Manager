@@ -132,6 +132,16 @@ export const PodMonitorTable = ({
     if (el) { el.focus(); el.scrollIntoView({ block: "nearest" }); }
   };
 
+  // Foca a primeira linha (ou o input de busca) ao abrir o painel
+  useEffect(() => {
+    const id = setTimeout(() => {
+      const first = rowsContainerRef.current?.querySelector<HTMLElement>("[data-row-index=\"0\"]");
+      if (first) first.focus();
+      else searchInputRef.current?.focus();
+    }, 50);
+    return () => clearTimeout(id);
+  }, []);
+
   useEffect(() => {
     const id = setInterval(async () => {
       setRefreshing(true);

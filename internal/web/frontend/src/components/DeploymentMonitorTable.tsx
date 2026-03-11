@@ -137,6 +137,24 @@ export const DeploymentMonitorTable = ({
   const refreshRef = useRef(onRequestRefresh);
   useEffect(() => { refreshRef.current = onRequestRefresh; }, [onRequestRefresh]);
 
+  const rowsContainerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const focusRow = (idx: number) => {
+    const el = rowsContainerRef.current?.querySelector<HTMLElement>(`[data-row-index="${idx}"]`);
+    if (el) { el.focus(); el.scrollIntoView({ block: "nearest" }); }
+  };
+
+  // Foca a primeira linha (ou o input de busca) ao abrir o painel
+  useEffect(() => {
+    const id = setTimeout(() => {
+      const first = rowsContainerRef.current?.querySelector<HTMLElement>("[data-row-index=\"0\"]");
+      if (first) first.focus();
+      else searchInputRef.current?.focus();
+    }, 50);
+    return () => clearTimeout(id);
+  }, []);
+
   useEffect(() => {
     const id = setInterval(() => {
       setRefreshing(true);
@@ -374,10 +392,17 @@ export const DeploymentMonitorTable = ({
         <div className="relative w-40">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
           <Input
+            ref={searchInputRef}
             placeholder="Buscar..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="h-7 text-xs pl-6 pr-6"
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                focusRow(0);
+              }
+            }}
           />
           {searchQuery && (
             <button
@@ -461,7 +486,7 @@ export const DeploymentMonitorTable = ({
       </div>
 
       {/* Rows */}
-      <div className="flex-1 overflow-auto">
+      <div ref={rowsContainerRef} className="flex-1 overflow-auto">
         {filtered.length === 0 && !loading && (
           <div className="text-muted-foreground text-xs text-center py-6">
             {searchQuery || hasFilters
@@ -469,7 +494,7 @@ export const DeploymentMonitorTable = ({
               : "Nenhum deployment encontrado"}
           </div>
         )}
-        {filtered.map((dep) => {
+        {filtered.map((dep, index) => {
           const ready = dep.readyReplicas ?? 0;
           const desired = dep.replicas ?? 0;
           const available = dep.availableReplicas ?? 0;
@@ -484,10 +509,30 @@ export const DeploymentMonitorTable = ({
           const isSelected = selectedDeps.has(depKey(dep));
 
           return (
-            <div
+            <button
               key={`${dep.namespace}/${dep.name}`}
-              className={`grid w-full px-3 py-1.5 hover:bg-muted/40 transition-colors border-b border-border/40 font-mono text-xs ${rowColor} ${isSelected ? "bg-primary/10 hover:bg-primary/15 ring-inset ring-1 ring-primary/30" : ""}`}
+              data-row-index={index}
+              className={`grid w-full px-3 py-1.5 hover:bg-muted/40 text-left transition-colors border-b border-border/40 font-mono text-xs ${rowColor} cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60 ${isSelected ? "bg-primary/10 hover:bg-primary/15 ring-inset ring-1 ring-primary/30" : ""}`}
               style={{ gridTemplateColumns: GRID }}
+              onClick={() => onSelectDeployment(dep)}
+              onKeyDown={(e) => {
+                if (e.key === " ") {
+                  e.preventDefault();
+                  toggleDep(dep);
+                } else if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  focusRow(index + 1);
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  if (index === 0) {
+                    searchInputRef.current?.focus();
+                  } else {
+                    focusRow(index - 1);
+                  }
+                }
+                // Enter aciona onClick naturalmente (abre detalhe)
+              }}
+              title="Enter para detalhes • Espaço para selecionar • ↑↓ para navegar"
             >
               {/* Checkbox — clique no span faz toggle sem propagar para onSelectDeployment */}
               <span
@@ -500,32 +545,28 @@ export const DeploymentMonitorTable = ({
                   className="w-3.5 h-3.5 rounded-full pointer-events-none"
                 />
               </span>
-              <button
-                className="truncate pr-1 text-left cursor-pointer"
-                title={`${dep.namespace}/${dep.name}`}
-                onClick={() => onSelectDeployment(dep)}
-              >
+              <span className="truncate pr-1 min-w-0">
                 {uniqueNamespaces.length > 1 && (
-                  <span className="text-muted-foreground text-[10px]">{dep.namespace}/</span>
+                  <span className="text-muted-foreground text-[10px] block leading-tight">{dep.namespace}</span>
                 )}
-                {dep.name}
-              </button>
-              <button className={`text-left cursor-pointer ${readyColor}`} onClick={() => onSelectDeployment(dep)}>{ready}/{desired}</button>
-              <button className="text-left cursor-pointer" onClick={() => onSelectDeployment(dep)}>{updated}</button>
-              <button className="text-left cursor-pointer" onClick={() => onSelectDeployment(dep)}>{available}</button>
-              <button className="text-left text-muted-foreground cursor-pointer" onClick={() => onSelectDeployment(dep)}>
+                <span className="truncate block" title={`${dep.namespace}/${dep.name}`}>{dep.name}</span>
+              </span>
+              <span className={readyColor}>{ready}/{desired}</span>
+              <span>{updated}</span>
+              <span>{available}</span>
+              <span className="text-muted-foreground">
                 {dep.updatedAt ? formatAge(dep.updatedAt) : "-"}
-              </button>
+              </span>
               <span className="flex items-center justify-center">
-                <button
+                <span
                   className="text-muted-foreground hover:text-foreground p-0.5 rounded"
                   onClick={(e) => { e.stopPropagation(); onOpenEditor(dep); }}
                   title="Abrir editor YAML"
                 >
                   <Pencil className="w-3 h-3" />
-                </button>
+                </span>
               </span>
-            </div>
+            </button>
           );
         })}
       </div>
