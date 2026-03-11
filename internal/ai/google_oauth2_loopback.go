@@ -103,10 +103,10 @@ func StartOAuth2LoopbackFlow(ctx context.Context) (*OAuth2LoopbackSession, error
 		// Trocar code por tokens
 		token, err := exchangeAuthCode(flowCtx, code, redirectURI, verifier)
 		if err != nil {
-			fmt.Fprintf(w, successHTML("❌ Falha na autenticação", "Erro: "+err.Error(), false))
+			fmt.Fprint(w, successHTML("❌ Falha na autenticação", "Erro: "+err.Error(), false))
 			resultChan <- OAuth2Result{Error: err}
 		} else {
-			fmt.Fprintf(w, successHTML("✅ Autenticado com sucesso!", "Você pode fechar esta aba e voltar à aplicação.", true))
+			fmt.Fprint(w, successHTML("✅ Autenticado com sucesso!", "Você pode fechar esta aba e voltar à aplicação.", true))
 			resultChan <- OAuth2Result{AccessToken: token.AccessToken, RefreshToken: token.RefreshToken}
 		}
 
