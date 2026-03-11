@@ -38,6 +38,10 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
   const [statusModalPool, setStatusModalPool] = useState<string | null>(null);
   const [reconcilingPool, setReconcilingPool] = useState<string | null>(null);
   const reconcilingAbortRef = useRef<AbortController | null>(null);
+  // Chave para forçar remount do NodePoolEditor com dados frescos após Atualizar
+  const [editorKey, setEditorKey] = useState(0);
+  // Flag para sinalizar que o remount deve ocorrer após o próximo update de nodePools
+  const pendingEditorRemountRef = useRef(false);
 
   // API hooks - só executam quando cluster está selecionado
   const { clusters } = useClusters();
@@ -55,6 +59,20 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
   useEffect(() => {
     setSelectedNodePool(null);
   }, [selectedCluster]);
+
+  // Sincroniza selectedNodePool com dados frescos após refetchNodePools
+  useEffect(() => {
+    if (!selectedNodePool || nodePools.length === 0) return;
+    const updated = nodePools.find(
+      (np) => np.name === selectedNodePool.name && np.cluster_name === selectedNodePool.cluster_name
+    );
+    if (!updated) return;
+    setSelectedNodePool(updated);
+    if (pendingEditorRemountRef.current) {
+      setEditorKey((k) => k + 1);
+      pendingEditorRemountRef.current = false;
+    }
+  }, [nodePools, selectedNodePool]);
 
   // Escutar eventos de progresso de aplicação de node pools
   const handleApplyingEvent = useCallback((e: Event) => {
@@ -243,8 +261,23 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
           }}
           rightPanel={{
             title: "Node Pool Editor",
+            titleAction: selectedNodePool ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  pendingEditorRemountRef.current = true;
+                  refetchNodePools();
+                }}
+                disabled={nodePoolsLoading}
+                title="Atualizar dados do Node Pool"
+              >
+                <RefreshCcw className={`w-4 h-4 ${nodePoolsLoading ? "animate-spin" : ""}`} />
+              </Button>
+            ) : undefined,
             content: (
               <NodePoolEditor
+                key={editorKey}
                 nodePool={selectedNodePool}
                 onApplied={() => {
                   refetchNodePools();

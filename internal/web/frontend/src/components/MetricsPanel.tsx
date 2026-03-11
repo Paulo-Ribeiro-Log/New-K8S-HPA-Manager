@@ -128,7 +128,7 @@ export function MetricsPanel({
   const alertsCount = alerts?.length || 0;
   const criticalAlertsCount = alerts?.filter(a => a.severity === "critical").length || 0;
   const hasAlerts = alertsCount > 0;
-  const { metrics, loading, error, refetch } = useHPAMetrics(
+  const { metrics, loading, refetching, error, refetch } = useHPAMetrics(
     cluster,
     namespace,
     hpaName,
@@ -956,11 +956,11 @@ export function MetricsPanel({
               variant="outline"
               size="icon"
               onClick={() => refetch(duration)}
-              disabled={loading}
+              disabled={loading || refetching}
               title="Atualizar métricas"
               className="h-8 w-8"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3.5 w-3.5 ${loading || refetching ? "animate-spin" : ""}`} />
             </Button>
             {onEditHPA && (
               <Button
@@ -1550,11 +1550,11 @@ export function MetricsPanel({
                   variant="outline"
                   size="icon"
                   onClick={() => refetch(duration)}
-                  disabled={loading}
+                  disabled={loading || refetching}
                   title="Atualizar métricas"
                   className="h-8 w-8"
                 >
-                  <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                  <RefreshCw className={`h-3.5 w-3.5 ${loading || refetching ? "animate-spin" : ""}`} />
                 </Button>
                 {/* Controles de Zoom */}
                 <div className="flex items-center gap-1 border rounded-md px-1">
