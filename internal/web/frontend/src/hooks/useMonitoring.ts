@@ -1,6 +1,6 @@
 // Custom React hooks for Monitoring operations
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { apiClient } from "@/lib/api/client";
 import type {
   MonitoringStatus,
@@ -52,8 +52,9 @@ export function useHPAMetrics(
 ) {
   const [metrics, setMetrics] = useState<HPAMetrics | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refetching, setRefetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const isInitialLoadRef = useRef(true);
 
   const fetchMetrics = useCallback(
     async (customDuration?: string) => {
@@ -63,9 +64,12 @@ export function useHPAMetrics(
       }
 
       try {
-        // Só mostra loading na primeira carga, não nos refreshes
-        if (isInitialLoad) {
+        if (isInitialLoadRef.current) {
+          // Primeira carga: mostra o loading completo do painel
           setLoading(true);
+        } else {
+          // Refreshes manuais/automáticos: só mostra no botão (refetching)
+          setRefetching(true);
         }
         setError(null);
         const data = await apiClient.getHPAMetrics(
@@ -76,25 +80,25 @@ export function useHPAMetrics(
           daysOffset
         );
         setMetrics(data);
-        setIsInitialLoad(false);
+        isInitialLoadRef.current = false;
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to fetch HPA metrics"
         );
       } finally {
-        if (isInitialLoad) {
-          setLoading(false);
-        }
+        setLoading(false);
+        setRefetching(false);
       }
     },
-    [cluster, namespace, hpaName, duration, daysOffset, isInitialLoad]
+    [cluster, namespace, hpaName, duration, daysOffset]
   );
 
   useEffect(() => {
+    isInitialLoadRef.current = true;
     fetchMetrics();
   }, [fetchMetrics]);
 
-  return { metrics, loading, error, refetch: fetchMetrics };
+  return { metrics, loading, refetching, error, refetch: fetchMetrics };
 }
 
 /**
