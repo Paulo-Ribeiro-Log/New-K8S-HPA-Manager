@@ -6,7 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { CertificateDetailModal } from "@/components/CertificateDetailModal";
 import {
   Dialog,
   DialogContent,
@@ -32,8 +32,6 @@ import {
   Upload,
   FileText,
   Loader2,
-  ExternalLink,
-  Lock,
   Download,
   ArrowUpDown,
   X,
@@ -1006,160 +1004,27 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
       />
 
       {/* Modal de Detalhes do Certificado */}
-      <Dialog open={detailModalOpen} onOpenChange={setDetailModalOpen}>
-        <DialogContent className="max-w-2xl max-h-[85vh]">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Shield className="h-5 w-5" />
-              {selectedCert?.secretName}
-            </DialogTitle>
-            <DialogDescription>
-              {selectedCert?.namespace} / {selectedCert?.cluster}
-            </DialogDescription>
-          </DialogHeader>
-          {selectedCert && (
-            <ScrollArea className="max-h-[60vh] pr-4">
-              <div className="space-y-4">
-                {/* Status + Timeline */}
-                <div className="flex items-center justify-between">
-                  {getStatusBadge(selectedCert.status)}
-                  <span className={`text-sm font-bold ${
-                    selectedCert.daysRemaining < 0 ? "text-red-400" :
-                    selectedCert.daysRemaining <= 30 ? "text-yellow-400" :
-                    "text-green-400"
-                  }`}>
-                    {selectedCert.daysRemaining} dias restantes
-                  </span>
-                </div>
-
-                <TimelineBar cert={selectedCert} />
-
-                {/* x509 Info */}
-                <Card className="bg-card/50">
-                  <CardHeader className="py-2 px-3">
-                    <CardTitle className="text-xs font-medium">Informacoes x509</CardTitle>
-                  </CardHeader>
-                  <CardContent className="px-3 pb-3 space-y-1">
-                    <InfoRow label="Subject" value={selectedCert.subject} />
-                    <InfoRow label="Issuer" value={selectedCert.issuer} />
-                    <InfoRow label="Serial" value={selectedCert.serialNumber} />
-                    <InfoRow label="Algoritmo" value={`${selectedCert.keyAlgorithm} ${selectedCert.keySize}bit`} />
-                    <InfoRow label="CA" value={selectedCert.isCA ? "Sim" : "Nao"} />
-                    <InfoRow label="Emitido" value={new Date(selectedCert.notBefore).toLocaleDateString("pt-BR")} />
-                    <InfoRow label="Expira" value={new Date(selectedCert.notAfter).toLocaleDateString("pt-BR")} />
-                  </CardContent>
-                </Card>
-
-                {/* SANs */}
-                {selectedCert.dnsNames && selectedCert.dnsNames.length > 0 && (
-                  <Card className="bg-card/50">
-                    <CardHeader className="py-2 px-3">
-                      <CardTitle className="text-xs font-medium">
-                        SANs ({selectedCert.dnsNames.length})
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="px-3 pb-3">
-                      <div className="flex flex-wrap gap-1">
-                        {selectedCert.dnsNames.map((san, i) => (
-                          <Badge key={i} variant="secondary" className="text-xs">
-                            {san}
-                          </Badge>
-                        ))}
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* Ingresses */}
-                {selectedCert.usedByIngresses && selectedCert.usedByIngresses.length > 0 && (
-                  <Card className="bg-card/50">
-                    <CardHeader className="py-2 px-3">
-                      <CardTitle className="text-xs font-medium flex items-center gap-1">
-                        <ExternalLink className="h-3 w-3" />
-                        Ingresses ({selectedCert.usedByIngresses.length})
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="px-3 pb-3 space-y-2">
-                      {selectedCert.usedByIngresses.map((ing, i) => (
-                        <div key={i} className="text-xs border-b border-border/30 pb-1">
-                          <p className="font-medium">{ing.namespace}/{ing.name}</p>
-                          <div className="flex flex-wrap gap-1 mt-1">
-                            {ing.hosts?.map((host, j) => (
-                              <Badge key={j} variant="outline" className="text-xs">
-                                {host}
-                              </Badge>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* cert-manager */}
-                {selectedCert.certManager && (
-                  <Card className="bg-card/50">
-                    <CardHeader className="py-2 px-3">
-                      <CardTitle className="text-xs font-medium flex items-center gap-1">
-                        <Lock className="h-3 w-3" />
-                        cert-manager
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="px-3 pb-3 space-y-1">
-                      <InfoRow label="Certificate" value={selectedCert.certManager.certificateName} />
-                      <InfoRow label="Issuer" value={selectedCert.certManager.issuerName} />
-                      <InfoRow label="Tipo" value={selectedCert.certManager.issuerKind} />
-                      <InfoRow label="Ready" value={selectedCert.certManager.isReady ? "Sim" : "Nao"} />
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* Chain */}
-                {selectedCert.chainDetails && selectedCert.chainDetails.length > 0 && (
-                  <Card className="bg-card/50">
-                    <CardHeader className="py-2 px-3">
-                      <CardTitle className="text-xs font-medium">
-                        Chain ({selectedCert.chainLength} certificados)
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="px-3 pb-3 space-y-2">
-                      {selectedCert.chainDetails.map((chain, i) => (
-                        <div key={i} className="text-xs border-b border-border/30 pb-1">
-                          <p className="font-medium">{chain.subject}</p>
-                          <p className="text-muted-foreground">Issuer: {chain.issuer}</p>
-                          <p className="text-muted-foreground">
-                            Expira: {new Date(chain.notAfter).toLocaleDateString("pt-BR")}
-                            {chain.isCA && <Badge className="ml-1 text-xs" variant="secondary">CA</Badge>}
-                          </p>
-                        </div>
-                      ))}
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
-            </ScrollArea>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDetailModalOpen(false)}>
-              Fechar
+      <CertificateDetailModal
+        open={detailModalOpen}
+        onOpenChange={setDetailModalOpen}
+        cert={selectedCert}
+        footerExtra={
+          <ProtectedAction>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setCopyTargetClusters([]);
+                setCopyTargetNamespaces("");
+                setDetailModalOpen(false);
+                setCopyModalOpen(true);
+              }}
+            >
+              <Copy className="h-4 w-4 mr-2" />
+              Copiar para...
             </Button>
-            <ProtectedAction>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setCopyTargetClusters([]);
-                  setCopyTargetNamespaces("");
-                  setDetailModalOpen(false);
-                  setCopyModalOpen(true);
-                }}
-              >
-                <Copy className="h-4 w-4 mr-2" />
-                Copiar para...
-              </Button>
-            </ProtectedAction>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </ProtectedAction>
+        }
+      />
 
       {/* Modal de Copia */}
       <Dialog open={copyModalOpen} onOpenChange={setCopyModalOpen}>
@@ -1362,49 +1227,3 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
   );
 }
 
-// Componente auxiliar para linhas de info
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex justify-between text-xs">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium truncate ml-2 max-w-[60%] text-right" title={value}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-// Componente de timeline visual
-function TimelineBar({ cert }: { cert: CertificateInfo }) {
-  const now = new Date().getTime();
-  const start = new Date(cert.notBefore).getTime();
-  const end = new Date(cert.notAfter).getTime();
-  const total = end - start;
-  const elapsed = now - start;
-  const percent = Math.max(0, Math.min(100, (elapsed / total) * 100));
-
-  const barColor =
-    cert.status === "expired"
-      ? "bg-red-500"
-      : cert.status === "expiring"
-      ? "bg-yellow-500"
-      : "bg-green-500";
-
-  return (
-    <div>
-      <div className="flex justify-between text-xs text-muted-foreground mb-1">
-        <span>{new Date(cert.notBefore).toLocaleDateString("pt-BR")}</span>
-        <span>{new Date(cert.notAfter).toLocaleDateString("pt-BR")}</span>
-      </div>
-      <div className="w-full h-3 bg-muted rounded-full overflow-hidden">
-        <div
-          className={`h-full ${barColor} rounded-full transition-all`}
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-      <p className="text-xs text-center text-muted-foreground mt-1">
-        {percent.toFixed(0)}% decorrido
-      </p>
-    </div>
-  );
-}

@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock, X, FileText, Plus, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Copy } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, Lock, Unlock, X, FileText, Plus, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Copy, Shield } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,7 +25,10 @@ import type {
   SecretManifest,
 } from "@/lib/api/types";
 import { useSecrets } from "@/hooks/useAPI";
+import { useCertificates } from "@/hooks/useCertificates";
 import { apiClient } from "@/lib/api/client";
+import { CertificateDetailModal } from "@/components/CertificateDetailModal";
+import type { CertificateInfo } from "@/types/certificates";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
@@ -84,6 +87,14 @@ export const SecretsTab = ({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Visualização do certificado TLS (quando type === "kubernetes.io/tls")
+  const [tlsCertModalOpen, setTlsCertModalOpen] = useState(false);
+  const [tlsCertInfo, setTlsCertInfo] = useState<CertificateInfo | null>(null);
+  const [tlsCertLoading, setTlsCertLoading] = useState(false);
+
+  // Mapa de validade TLS para indicador na lista (apenas expirando/expirado, atualizado a cada 1h)
+  const [tlsCertMap, setTlsCertMap] = useState<Map<string, CertificateInfo>>(new Map());
+
   // Error Dialog para exibir erros de apply de forma mais proeminente
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [errorTitle, setErrorTitle] = useState("");
@@ -114,6 +125,43 @@ export const SecretsTab = ({
     namespaceFilter,
     showSystemNamespaces
   );
+
+  const { getCertificateDetails, scanCertificates } = useCertificates();
+
+  // Scan TLS ao montar e a cada 1h — popula o mapa de validade para indicadores na lista
+  useEffect(() => {
+    if (!cluster) return;
+    const run = () => {
+      scanCertificates({ clusters: [cluster] })
+        .then((result) => {
+          const map = new Map<string, CertificateInfo>();
+          result.certificates.forEach((cert) => {
+            if (cert.status === "expiring" || cert.status === "expired") {
+              map.set(`${cert.namespace}/${cert.secretName}`, cert);
+            }
+          });
+          setTlsCertMap(map);
+        })
+        .catch(() => {});
+    };
+    run();
+    const id = setInterval(run, 60 * 60 * 1000); // 1 hora
+    return () => clearInterval(id);
+  }, [cluster]);
+
+  const handleViewTlsCert = useCallback(async () => {
+    if (!selectedSecret) return;
+    setTlsCertLoading(true);
+    try {
+      const info = await getCertificateDetails(selectedSecret.cluster, selectedSecret.namespace, selectedSecret.name);
+      setTlsCertInfo(info);
+      setTlsCertModalOpen(true);
+    } catch {
+      toast.error("Erro ao obter dados do certificado TLS");
+    } finally {
+      setTlsCertLoading(false);
+    }
+  }, [selectedSecret, getCertificateDetails]);
 
   useEffect(() => {
     if (error) {
@@ -851,7 +899,22 @@ export const SecretsTab = ({
                   : "border-border/60 hover:border-primary/40"
               }`}
             >
-              <div className="font-semibold text-sm">{cm.name}</div>
+              <div className="flex items-center gap-1.5">
+                <span className="font-semibold text-sm truncate">{cm.name}</span>
+                {(() => {
+                  const cert = tlsCertMap.get(`${cm.namespace}/${cm.name}`);
+                  if (!cert) return null;
+                  return cert.status === "expired" ? (
+                    <span className="flex-shrink-0 text-[10px] font-medium px-1 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30">
+                      Expirado
+                    </span>
+                  ) : (
+                    <span className="flex-shrink-0 text-[10px] font-medium px-1 py-0.5 rounded bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">
+                      {cert.daysRemaining}d
+                    </span>
+                  );
+                })()}
+              </div>
               <div className="text-xs text-muted-foreground">{cm.namespace}</div>
               {cm.serviceClusterIPs && cm.serviceClusterIPs.length > 0 && (
                 <div className="text-[10px] font-mono mt-0.5 flex items-center gap-1">
@@ -1059,6 +1122,26 @@ export const SecretsTab = ({
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Botão de visualização do certificado TLS */}
+          {selectedSecret.type === "kubernetes.io/tls" && (
+            <div className="mx-4 flex-shrink-0">
+              <Button
+                variant="default"
+                size="sm"
+                className="h-7 text-xs gap-1.5 bg-blue-600 hover:bg-blue-700 text-white border-0"
+                onClick={handleViewTlsCert}
+                disabled={tlsCertLoading}
+                title="Visualizar detalhes do certificado TLS (Subject, Issuer, SANs, validade)"
+              >
+                {tlsCertLoading
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : <Shield className="w-3.5 h-3.5" />
+                }
+                Ver Certificado TLS
+              </Button>
             </div>
           )}
         </div>
@@ -1692,6 +1775,13 @@ export const SecretsTab = ({
         onSuccess={() => {
           refetch();
         }}
+      />
+
+      {/* Modal de visualização do certificado TLS */}
+      <CertificateDetailModal
+        open={tlsCertModalOpen}
+        onOpenChange={setTlsCertModalOpen}
+        cert={tlsCertInfo}
       />
 
       {/* Modal Delete Confirm */}
