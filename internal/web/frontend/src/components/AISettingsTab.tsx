@@ -13,12 +13,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Key, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Shield, Trash2 } from "lucide-react";
+import { Key, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Shield, Trash2, FileJson, LogIn, Copy } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { apiClient } from "@/lib/api/client";
 
 interface TokenStatus {
   has_gemini: boolean;
   gemini_model?: string;
+  gemini_auth_mode?: string;
+  gemini_vertex_project?: string;
+  gemini_vertex_location?: string;
+  has_gemini_service_account: boolean;
+  has_gemini_refresh_token: boolean;
   has_openai: boolean;
   openai_model?: string;
   has_claude: boolean;
@@ -38,10 +45,6 @@ interface ModelInfo {
   is_default: boolean;
 }
 
-interface ModelsResponse {
-  provider: string;
-  models: ModelInfo[];
-}
 
 export function AISettingsTab() {
   const { toast } = useToast();
@@ -57,8 +60,21 @@ export function AISettingsTab() {
   const [geminiAuthMode, setGeminiAuthMode] = useState<"apikey" | "vertex">("apikey");
   const [geminiVertexProject, setGeminiVertexProject] = useState("");
   const [geminiVertexLocation, setGeminiVertexLocation] = useState("us-central1");
+  const [geminiServiceAccountJSON, setGeminiServiceAccountJSON] = useState("");
+  const [hasGeminiServiceAccount, setHasGeminiServiceAccount] = useState(false);
+  const [hasGeminiRefreshToken, setHasGeminiRefreshToken] = useState(false);
+
+  // OAuth2 loopback auth flow
+  const [googleAuthModalOpen, setGoogleAuthModalOpen] = useState(false);
+  const [googleAuthSessionId, setGoogleAuthSessionId] = useState("");
+  const [googleAuthStatus, setGoogleAuthStatus] = useState<"idle" | "installing" | "waiting_browser" | "authenticated" | "error">("idle");
+  const [googleAuthURL, setGoogleAuthURL] = useState("");
+  const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
+  const [startingGoogleAuth, setStartingGoogleAuth] = useState(false);
+
   const [testingVertex, setTestingVertex] = useState(false);
   const [vertexTestResult, setVertexTestResult] = useState<boolean | null>(null);
+  const [vertexTestError, setVertexTestError] = useState<string | null>(null);
   const [openaiKey, setOpenaiKey] = useState("");
   const [openaiModel, setOpenaiModel] = useState("");
   const [claudeKey, setClaudeKey] = useState("");
@@ -130,6 +146,8 @@ export function AISettingsTab() {
       if (response.gemini_auth_mode) setGeminiAuthMode(response.gemini_auth_mode as "apikey" | "vertex");
       if (response.gemini_vertex_project) setGeminiVertexProject(response.gemini_vertex_project);
       if (response.gemini_vertex_location) setGeminiVertexLocation(response.gemini_vertex_location);
+      setHasGeminiServiceAccount(!!response.has_gemini_service_account);
+      setHasGeminiRefreshToken(!!response.has_gemini_refresh_token);
       if (response.claude_model) setClaudeModel(response.claude_model);
       if (response.openai_model) setOpenaiModel(response.openai_model);
       if (response.ollama_model) setOllamaModel(response.ollama_model);
@@ -275,11 +293,14 @@ export function AISettingsTab() {
       // API Keys - enviar apenas se foram preenchidas (não vazias)
       if (geminiKey) payload.gemini_api_key = geminiKey;
 
-      // Gemini Vertex AI (SSO) - sempre enviar modo e configs
+      // Gemini Vertex AI - sempre enviar modo e configs
       payload.gemini_auth_mode = geminiAuthMode;
       if (geminiAuthMode === "vertex") {
         payload.gemini_vertex_project = geminiVertexProject;
         payload.gemini_vertex_location = geminiVertexLocation || "us-central1";
+        if (geminiServiceAccountJSON.trim()) {
+          payload.gemini_service_account_json = geminiServiceAccountJSON.trim();
+        }
       }
       if (openaiKey) payload.openai_api_key = openaiKey;
       if (claudeKey) payload.claude_api_key = claudeKey;
@@ -342,24 +363,92 @@ export function AISettingsTab() {
     }
   };
 
+  const startGoogleAuth = async () => {
+    if (!aiEmail) {
+      toast({ title: "Preencha o email antes de autenticar", variant: "destructive" });
+      return;
+    }
+    setStartingGoogleAuth(true);
+    setGoogleAuthError(null);
+    setGoogleAuthStatus("installing"); // estado transitório enquanto aguarda session_id
+    setGoogleAuthURL("");
+    setGoogleAuthModalOpen(true);
+
+    try {
+      // Backend inicia servidor loopback + retorna auth_url imediatamente
+      const result = await apiClient.startGoogleInstallAuth();
+      const session_id = result.session_id;
+      setGoogleAuthSessionId(session_id);
+
+      // auth_url já pode vir na resposta inicial
+      if (result.auth_url) {
+        setGoogleAuthURL(result.auth_url);
+        setGoogleAuthStatus("waiting_browser");
+      }
+
+      // Polling de status a cada 3s para detectar quando o usuário autenticar
+      let stopped = false;
+      const pollStatus = async () => {
+        if (stopped) return;
+        try {
+          const s = await apiClient.getGoogleAuthStatus(session_id);
+          if (s.auth_url && !result.auth_url) setGoogleAuthURL(s.auth_url);
+          if (s.status === "waiting_browser") {
+            setGoogleAuthStatus("waiting_browser");
+            setTimeout(pollStatus, 3000);
+          } else if (s.status === "authenticated") {
+            stopped = true;
+            setGoogleAuthStatus("authenticated");
+            setHasGeminiRefreshToken(true);
+            toast({ title: "✅ Autenticado com Google!", description: "Pronto para usar Gemini Vertex AI." });
+            await loadTokenStatus();
+          } else if (s.status === "error") {
+            stopped = true;
+            setGoogleAuthStatus("error");
+            setGoogleAuthError(s.error || "Erro desconhecido");
+          } else {
+            setTimeout(pollStatus, 3000);
+          }
+        } catch {
+          setTimeout(pollStatus, 5000);
+        }
+      };
+
+      setTimeout(pollStatus, 3000);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Erro desconhecido";
+      setGoogleAuthStatus("error");
+      setGoogleAuthError(msg);
+      toast({ title: "Falha ao iniciar autenticação Google", description: msg, variant: "destructive" });
+    } finally {
+      setStartingGoogleAuth(false);
+    }
+  };
+
   const testVertexConnection = async () => {
     setTestingVertex(true);
     setVertexTestResult(null);
+    setVertexTestError(null);
     try {
-      const response = await apiClient.validateAIToken("gemini-vertex", "", undefined, undefined, geminiVertexProject, geminiVertexLocation);
+      const response = await apiClient.validateAIToken("gemini-vertex", "", undefined, undefined, geminiVertexProject, geminiVertexLocation, geminiServiceAccountJSON || undefined);
       setVertexTestResult(response.valid);
+      if (!response.valid) {
+        setVertexTestError(response.error || "Falha na autenticação ADC");
+      }
       toast({
         title: response.valid ? "Conexão Vertex AI OK" : "Falha na conexão",
         description: response.valid
           ? `Autenticado com sucesso no projeto ${geminiVertexProject}`
-          : response.error || "Verifique se o gcloud está autenticado com seu email SSO",
+          : response.error || "Verifique as credenciais ADC",
         variant: response.valid ? "default" : "destructive",
       });
     } catch (error) {
+      const msg = error instanceof Error ? error.message : "Erro desconhecido";
       setVertexTestResult(false);
+      setVertexTestError(msg);
       toast({
         title: "Erro ao testar Vertex AI",
-        description: "Execute: gcloud auth application-default login",
+        description: msg,
         variant: "destructive",
       });
     } finally {
@@ -517,7 +606,7 @@ export function AISettingsTab() {
             {/* Modo de autenticação */}
             <div className="space-y-1">
               <Label htmlFor="gemini-auth-mode" className="text-xs text-muted-foreground">Modo de Autenticação</Label>
-              <Select value={geminiAuthMode} onValueChange={(v) => { setGeminiAuthMode(v as "apikey" | "vertex"); setVertexTestResult(null); }}>
+              <Select value={geminiAuthMode} onValueChange={(v) => { setGeminiAuthMode(v as "apikey" | "vertex"); setVertexTestResult(null); setVertexTestError(null); }}>
                 <SelectTrigger id="gemini-auth-mode">
                   <SelectValue />
                 </SelectTrigger>
@@ -565,22 +654,41 @@ export function AISettingsTab() {
               </div>
             )}
 
-            {/* Vertex AI (SSO) mode */}
+            {/* Vertex AI mode */}
             {geminiAuthMode === "vertex" && (
-              <div className="space-y-2 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 p-3">
-                <p className="text-xs text-blue-800 dark:text-blue-200 font-medium">
-                  Usa o email SSO da sua organização via <code className="font-mono">gcloud auth application-default login</code>.
-                  Nenhuma API key necessária.
-                </p>
+              <div className="space-y-3 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 p-3">
+                {/* Botão principal de autenticação */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-blue-800 dark:text-blue-200">
+                      Autenticação via SSO corporativo
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Abre uma página Google para login com sua conta da empresa
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {hasGeminiRefreshToken && (
+                      <Badge variant="secondary" className="text-green-700 bg-green-100 border-green-300 text-xs">
+                        <CheckCircle2 className="h-3 w-3 mr-1" /> Autenticado
+                      </Badge>
+                    )}
+                    <Button size="sm" onClick={startGoogleAuth} disabled={startingGoogleAuth}>
+                      {startingGoogleAuth ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <LogIn className="h-4 w-4 mr-1" />}
+                      {hasGeminiRefreshToken ? "Re-autenticar" : "Autenticar com Google"}
+                    </Button>
+                  </div>
+                </div>
+                <Separator />
                 <div className="space-y-1">
                   <Label htmlFor="vertex-project" className="text-xs text-muted-foreground">
-                    Projeto GCP da Empresa <span className="text-red-500">*</span>
+                    Projeto GCP <span className="text-red-500">*</span>
                   </Label>
                   <Input
                     id="vertex-project"
                     placeholder="meu-projeto-gcp"
                     value={geminiVertexProject}
-                    onChange={(e) => { setGeminiVertexProject(e.target.value); setVertexTestResult(null); }}
+                    onChange={(e) => { setGeminiVertexProject(e.target.value); setVertexTestResult(null); setVertexTestError(null); }}
                     className="font-mono text-sm"
                   />
                 </div>
@@ -600,6 +708,31 @@ export function AISettingsTab() {
                     </SelectContent>
                   </Select>
                 </div>
+
+                {/* Service Account JSON */}
+                <div className="space-y-1">
+                  <Label htmlFor="vertex-sa-json" className="text-xs text-muted-foreground flex items-center gap-1">
+                    <FileJson className="h-3 w-3" />
+                    Service Account JSON
+                    {hasGeminiServiceAccount && !geminiServiceAccountJSON && (
+                      <Badge variant="secondary" className="text-xs ml-1">Configurado</Badge>
+                    )}
+                  </Label>
+                  <Textarea
+                    id="vertex-sa-json"
+                    placeholder='Cole aqui o conteúdo do arquivo JSON do Service Account do Google Cloud...'
+                    value={geminiServiceAccountJSON}
+                    onChange={(e) => { setGeminiServiceAccountJSON(e.target.value); setVertexTestResult(null); setVertexTestError(null); }}
+                    className="font-mono text-xs h-24 resize-none"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Obtenha em: GCP Console → IAM → Service Accounts → Criar chave (JSON).
+                    {hasGeminiServiceAccount && !geminiServiceAccountJSON && (
+                      <span className="text-green-600 ml-1">Um JSON já está armazenado — deixe em branco para mantê-lo.</span>
+                    )}
+                  </p>
+                </div>
+
                 <div className="flex items-center gap-2 pt-1">
                   <Button size="sm" variant="outline" onClick={testVertexConnection}
                     disabled={!geminiVertexProject || testingVertex}>
@@ -607,7 +740,12 @@ export function AISettingsTab() {
                     Testar Conexão
                   </Button>
                   {vertexTestResult === true && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 className="h-3 w-3" /> Autenticado</span>}
-                  {vertexTestResult === false && <span className="text-xs text-red-600 flex items-center gap-1"><XCircle className="h-3 w-3" /> Falha — execute gcloud auth application-default login</span>}
+                  {vertexTestResult === false && (
+                    <span className="text-xs text-red-600 flex items-center gap-1">
+                      <XCircle className="h-3 w-3" />
+                      {vertexTestError || "Falha na autenticação"}
+                    </span>
+                  )}
                 </div>
               </div>
             )}
@@ -956,6 +1094,92 @@ export function AISettingsTab() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Modal OAuth2 Loopback Auth */}
+      <Dialog open={googleAuthModalOpen} onOpenChange={(open) => {
+        if (!open && googleAuthStatus === "waiting_browser") return; // não fechar enquanto aguarda
+        setGoogleAuthModalOpen(open);
+        if (!open) setGoogleAuthStatus("idle");
+      }}>
+        <DialogContent className="sm:max-w-lg" onInteractOutside={(e) => {
+          if (googleAuthStatus === "waiting_browser") e.preventDefault();
+        }}>
+          <DialogHeader>
+            <DialogTitle>Autenticar com Google</DialogTitle>
+            <DialogDescription>
+              Autenticação OAuth2 para Gemini Vertex AI (conta corporativa / SSO)
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            {googleAuthStatus === "authenticated" ? (
+              <div className="flex flex-col items-center gap-3 py-4">
+                <CheckCircle2 className="h-12 w-12 text-green-500" />
+                <p className="text-center font-medium text-green-700">Autenticado com sucesso!</p>
+                <p className="text-center text-sm text-muted-foreground">
+                  Sua conta Google foi vinculada. Pode fechar esta janela.
+                </p>
+                <Button onClick={() => { setGoogleAuthModalOpen(false); setGoogleAuthStatus("idle"); }}>Fechar</Button>
+              </div>
+
+            ) : googleAuthStatus === "error" ? (
+              <div className="flex flex-col items-center gap-3 py-4">
+                <XCircle className="h-12 w-12 text-red-500" />
+                <p className="text-center text-sm text-red-600">{googleAuthError}</p>
+                <Button variant="outline" onClick={() => { setGoogleAuthModalOpen(false); setGoogleAuthStatus("idle"); }}>Fechar</Button>
+              </div>
+
+            ) : googleAuthStatus === "installing" && !googleAuthURL ? (
+              // Estado transitório enquanto aguarda session_id do backend
+              <div className="flex flex-col items-center gap-4 py-6">
+                <Loader2 className="h-10 w-10 animate-spin text-blue-500" />
+                <p className="text-center font-medium">Preparando autenticação...</p>
+              </div>
+
+            ) : (
+              // Estado principal: waiting_browser — mostrar URL para o usuário abrir
+              <div className="space-y-4">
+                <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+                  <p className="font-medium mb-1">Como autenticar:</p>
+                  <ol className="list-decimal list-inside space-y-1 text-blue-700">
+                    <li>Clique em <strong>"Abrir Google Login"</strong> abaixo</li>
+                    <li>Faça login com sua conta corporativa (SSO/SAML)</li>
+                    <li>Após o login, esta janela será atualizada automaticamente</li>
+                  </ol>
+                </div>
+
+                {googleAuthURL ? (
+                  <div className="space-y-2">
+                    <Button
+                      className="w-full"
+                      onClick={() => window.open(googleAuthURL, "_blank")}
+                    >
+                      <LogIn className="h-4 w-4 mr-2" />
+                      Abrir Google Login
+                    </Button>
+                    <div className="flex items-center gap-2 bg-muted rounded p-2">
+                      <code className="text-xs flex-1 break-all text-muted-foreground">{googleAuthURL}</code>
+                      <Button size="sm" variant="ghost" className="shrink-0" onClick={() => navigator.clipboard.writeText(googleAuthURL)}>
+                        <Copy className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center gap-2 py-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-sm text-muted-foreground">Preparando URL...</span>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 text-xs text-muted-foreground justify-center pt-1">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Aguardando login no browser...
+                </div>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
