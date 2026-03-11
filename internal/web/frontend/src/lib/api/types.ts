@@ -375,6 +375,7 @@ export interface PodSummary {
   podIP?: string;
   nodeName?: string;
   phase: string;
+  status?: string;
   statusReason?: string;
   labels?: Record<string, string>;
   containers: ContainerStatus[];
