@@ -455,6 +455,18 @@ func (c *PrometheusClient) GetHPAHistoricalMetrics(ctx context.Context, namespac
 		historicalMetrics["desired_replicas"] = result
 	}
 
+
+	// Réplicas prontas ao longo do tempo (deployment com mesmo nome do HPA)
+	readyReplicasQuery := fmt.Sprintf(
+		`kube_deployment_status_replicas_ready{namespace="%s",deployment="%s"}`,
+		namespace, hpaName,
+	)
+
+	result, err = c.QueryRange(ctx, readyReplicasQuery, start, end, step)
+	if err == nil {
+		historicalMetrics["ready_replicas"] = result
+	}
+
 	// Min replicas ao longo do tempo
 	minReplicasQuery := fmt.Sprintf(
 		`kube_horizontalpodautoscaler_spec_min_replicas{namespace="%s",horizontalpodautoscaler="%s"}`,
@@ -608,6 +620,18 @@ func (c *PrometheusClient) GetHPAHistoricalMetricsWithOffset(ctx context.Context
 	result, err = c.QueryRange(ctx, desiredReplicasQuery, start, end, step)
 	if err == nil {
 		historicalMetrics["desired_replicas"] = result
+	}
+
+
+	// Réplicas prontas ao longo do tempo (deployment com mesmo nome do HPA)
+	readyReplicasQuery := fmt.Sprintf(
+		`kube_deployment_status_replicas_ready{namespace="%s",deployment="%s"}`,
+		namespace, hpaName,
+	)
+
+	result, err = c.QueryRange(ctx, readyReplicasQuery, start, end, step)
+	if err == nil {
+		historicalMetrics["ready_replicas"] = result
 	}
 
 	// Min replicas ao longo do tempo

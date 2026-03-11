@@ -96,7 +96,7 @@ function useSecondsTick(date: Date | null): string {
 }
 
 // Colunas: SEL | NAME/NS | dot | READY | STATUS | REST. | CPU | MEM | NODE | AGE
-const GRID = "32px minmax(180px,1fr) 22px 56px 100px 50px 64px 72px minmax(130px,1fr) 56px";
+const GRID = "32px minmax(180px,1fr) 22px 56px 140px 50px 90px 90px minmax(130px,1fr) 56px";
 
 export const PodMonitorTable = ({
   cluster,
@@ -171,7 +171,7 @@ export const PodMonitorTable = ({
 
   const uniqueStatuses = useMemo(() => {
     const s = new Set<string>();
-    pods.forEach((p) => { const v = p.statusReason || p.phase; if (v) s.add(v); });
+    pods.forEach((p) => { const v = p.status || p.phase; if (v) s.add(v); });
     return Array.from(s).sort();
   }, [pods]);
 
@@ -211,7 +211,7 @@ export const PodMonitorTable = ({
       );
     }
     if (statusFilter.size > 0)
-      result = result.filter((p) => statusFilter.has(p.statusReason || p.phase || ""));
+      result = result.filter((p) => statusFilter.has(p.status || p.phase || ""));
     if (nodeFilter.size > 0)
       result = result.filter((p) => nodeFilter.has(p.nodeName ?? ""));
     if (namespaceFilter.size > 0)
@@ -420,8 +420,8 @@ export const PodMonitorTable = ({
           <ColumnFilter label="STATUS" options={uniqueStatuses} selected={statusFilter} onChange={setStatusFilter} />
         </span>
         <span className="text-muted-foreground uppercase">REST.</span>
-        <span className="text-muted-foreground uppercase">CPU</span>
-        <span className="text-muted-foreground uppercase">MEM</span>
+        <span className="text-muted-foreground uppercase text-right pr-2">CPU</span>
+        <span className="text-muted-foreground uppercase text-right pr-2">MEM</span>
         <span>
           <ColumnFilter label="NODE" options={uniqueNodes} selected={nodeFilter} onChange={setNodeFilter} />
         </span>
@@ -496,16 +496,26 @@ export const PodMonitorTable = ({
               <span>{pod.readyContainers}/{pod.totalContainers}</span>
 
               {/* STATUS */}
-              <span className="truncate" title={pod.statusReason || pod.phase}>{pod.statusReason || pod.phase || "-"}</span>
+              <span className="truncate" title={pod.statusReason || pod.status || pod.phase}>{pod.status || pod.phase || "-"}</span>
 
               {/* REST. */}
               <span>{pod.restarts}</span>
 
               {/* CPU */}
-              <span>{m ? formatMillicores(m.cpuMillicores) : "n/a"}</span>
+              <div className="flex flex-col text-right pr-2">
+                <span>{m ? formatMillicores(m.cpuMillicores) : "-"}</span>
+                <span className="text-muted-foreground/70 text-[10px] -mt-0.5">
+                  {pod.cpuRequest || "0"} / {pod.cpuLimit || "∞"}
+                </span>
+              </div>
 
               {/* MEM */}
-              <span>{m ? formatBytes(m.memoryBytes) : "n/a"}</span>
+              <div className="flex flex-col text-right pr-2">
+                <span>{m ? formatBytes(m.memoryBytes) : "-"}</span>
+                <span className="text-muted-foreground/70 text-[10px] -mt-0.5">
+                  {pod.memoryRequest || "0"} / {pod.memoryLimit || "∞"}
+                </span>
+              </div>
 
               {/* NODE */}
               <span className="truncate" title={pod.nodeName}>{pod.nodeName || "-"}</span>

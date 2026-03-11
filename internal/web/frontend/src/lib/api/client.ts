@@ -811,6 +811,17 @@ class APIClient {
     return response.data || { results: [], total: 0, success_count: 0, failed_count: 0 };
   }
 
+  async scaleDeployment(cluster: string, namespace: string, name: string, replicas: number): Promise<{ success: boolean; message: string; replicas: number }> {
+    const response = await this.request<APIResponse<{ success: boolean; message: string; replicas: number }>>(
+      `/deployments/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/scale`,
+      {
+        method: "POST",
+        body: JSON.stringify({ replicas }),
+      }
+    );
+    return response.data || { success: false, message: "Sem resposta", replicas };
+  }
+
   // Ingress API Methods
   async getIngresses(
     cluster?: string,

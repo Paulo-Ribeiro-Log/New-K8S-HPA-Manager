@@ -64,24 +64,36 @@ type ContainerStatus struct {
 
 // PodSummary representa um resumo de Pod
 type PodSummary struct {
-	Cluster         string            `json:"cluster"`
-	Namespace       string            `json:"namespace"`
-	Name            string            `json:"name"`
-	PodIP           string            `json:"podIP,omitempty"`
-	NodeName        string            `json:"nodeName,omitempty"`
-	Phase           string            `json:"phase"`
-	StatusReason    string            `json:"statusReason,omitempty"`
-	Labels          map[string]string `json:"labels,omitempty"`
-	Containers      []ContainerStatus `json:"containers"`
-	ReadyContainers int               `json:"readyContainers"`
-	TotalContainers int               `json:"totalContainers"`
-	CPURequest      string            `json:"cpuRequest,omitempty"`
-	MemoryRequest   string            `json:"memoryRequest,omitempty"`
-	CPULimit        string            `json:"cpuLimit,omitempty"`
-	MemoryLimit     string            `json:"memoryLimit,omitempty"`
-	ResourceVersion string            `json:"resourceVersion,omitempty"`
-	CreatedAt       string            `json:"createdAt"`
-	Restarts        int32             `json:"restarts"`
+	Cluster              string            `json:"cluster"`
+	Namespace            string            `json:"namespace"`
+	Name                 string            `json:"name"`
+	PodIP                string            `json:"podIP,omitempty"`
+	NodeName             string            `json:"nodeName,omitempty"`
+	Phase                string            `json:"phase"`
+	Status               string            `json:"status,omitempty"`
+	StatusReason         string            `json:"statusReason,omitempty"`
+	Labels               map[string]string `json:"labels,omitempty"`
+	Containers           []ContainerStatus `json:"containers"`
+	ReadyContainers      int               `json:"readyContainers"`
+	TotalContainers      int               `json:"totalContainers"`
+	CPURequest           string            `json:"cpuRequest,omitempty"`
+	CPURequestMillicores int64             `json:"cpuRequestMillicores,omitempty"`
+	MemoryRequest        string            `json:"memoryRequest,omitempty"`
+	MemoryRequestBytes   int64             `json:"memoryRequestBytes,omitempty"`
+	CPULimit             string            `json:"cpuLimit,omitempty"`
+	CPULimitMillicores   int64             `json:"cpuLimitMillicores,omitempty"`
+	MemoryLimit          string            `json:"memoryLimit,omitempty"`
+	MemoryLimitBytes     int64             `json:"memoryLimitBytes,omitempty"`
+	CPUUsage             string            `json:"cpuUsage,omitempty"`
+	CPUUsageMillicores   int64             `json:"cpuUsageMillicores,omitempty"`
+	MemoryUsage          string            `json:"memoryUsage,omitempty"`
+	MemoryUsageBytes     int64             `json:"memoryUsageBytes,omitempty"`
+	CPUUsagePercentage   float64           `json:"cpuUsagePercentage"`
+	MemoryUsagePercentage float64           `json:"memoryUsagePercentage"`
+	ResourceVersion      string            `json:"resourceVersion,omitempty"`
+	CreatedAt            string            `json:"createdAt"`
+	Restarts             int32             `json:"restarts"`
+	Terminating          bool              `json:"terminating"`
 }
 
 // PodManifest representa o manifest completo de um Pod
@@ -123,52 +135,58 @@ func (h *PodHandler) List(c *gin.Context) {
 		return
 	}
 
-	var pods []PodSummary
+	// Get all pods
 	var allPods *corev1.PodList
-
 	if len(namespaces) == 0 {
-		// Lista todos os namespaces
 		allPods, err = clientset.CoreV1().Pods("").List(c.Request.Context(), metav1.ListOptions{})
 	} else {
-		// Lista múltiplos namespaces específicos
 		allPods = &corev1.PodList{}
 		for _, ns := range namespaces {
 			podList, err := clientset.CoreV1().Pods(ns).List(c.Request.Context(), metav1.ListOptions{})
-			if err != nil {
-				continue
+			if err == nil {
+				allPods.Items = append(allPods.Items, podList.Items...)
 			}
-			allPods.Items = append(allPods.Items, podList.Items...)
 		}
 	}
-
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "LIST_ERROR",
-				"message": err.Error(),
-			},
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": gin.H{"code": "LIST_ERROR", "message": err.Error()}})
 		return
 	}
 
+	// Get metrics for all relevant namespaces
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	metricsMap := make(map[string]map[string]kubeclient.BatchPodMetricsSingle)
+
+	nsToQuery := namespaces
+	if len(nsToQuery) == 0 {
+		// If no namespaces specified, get all namespaces from the pods list
+		nsSet := make(map[string]struct{})
+		for _, pod := range allPods.Items {
+			nsSet[pod.Namespace] = struct{}{}
+		}
+		for ns := range nsSet {
+			nsToQuery = append(nsToQuery, ns)
+		}
+	}
+
+	for _, ns := range nsToQuery {
+		if metrics, err := kubeClient.GetBatchPodMetrics(c.Request.Context(), ns); err == nil && metrics.Available {
+			metricsMap[ns] = metrics.Pods
+		}
+	}
+
+	// Process pods
+	var pods []PodSummary
 	for _, pod := range allPods.Items {
-		// Filtrar namespaces do sistema se necessário
 		if !showSystem && isSystemNamespace(pod.Namespace) {
 			continue
 		}
 
-		// Filtrar por busca
 		if search != "" {
 			podName := strings.ToLower(pod.Name)
-			namespace := strings.ToLower(pod.Namespace)
+			ns := strings.ToLower(pod.Namespace)
 			nodeName := strings.ToLower(pod.Spec.NodeName)
-
-			matchFound := strings.Contains(podName, search) ||
-				strings.Contains(namespace, search) ||
-				strings.Contains(nodeName, search)
-
-			// Buscar também em nomes de containers
+			matchFound := strings.Contains(podName, search) || strings.Contains(ns, search) || strings.Contains(nodeName, search)
 			if !matchFound {
 				for _, container := range pod.Spec.Containers {
 					if strings.Contains(strings.ToLower(container.Name), search) {
@@ -177,13 +195,19 @@ func (h *PodHandler) List(c *gin.Context) {
 					}
 				}
 			}
-
 			if !matchFound {
 				continue
 			}
 		}
 
-		summary := h.convertToPodSummary(cluster, &pod)
+		var podMetrics *kubeclient.BatchPodMetricsSingle
+		if nsMetrics, ok := metricsMap[pod.Namespace]; ok {
+			if m, ok := nsMetrics[pod.Name]; ok {
+				podMetrics = &m
+			}
+		}
+
+		summary := h.convertToPodSummary(cluster, &pod, podMetrics)
 		pods = append(pods, summary)
 	}
 
@@ -615,33 +639,18 @@ func (h *PodHandler) GetLogs(c *gin.Context) {
 	})
 }
 
-// convertToPodSummary converte um Pod do Kubernetes para PodSummary
-func (h *PodHandler) convertToPodSummary(cluster string, pod *corev1.Pod) PodSummary {
+func (h *PodHandler) convertToPodSummary(cluster string, pod *corev1.Pod, metrics *kubeclient.BatchPodMetricsSingle) PodSummary {
 	containers := []ContainerStatus{}
 	readyCount := 0
 	totalRestarts := int32(0)
+	isTerminating := pod.DeletionTimestamp != nil
 
-	// Processar containers
 	for _, cs := range pod.Status.ContainerStatuses {
-		state := "unknown"
-		stateReason := ""
-
-		if cs.State.Running != nil {
-			state = "running"
-		} else if cs.State.Waiting != nil {
-			state = "waiting"
-			stateReason = cs.State.Waiting.Reason
-		} else if cs.State.Terminated != nil {
-			state = "terminated"
-			stateReason = cs.State.Terminated.Reason
-		}
-
+		state, stateReason := getContainerState(cs)
 		if cs.Ready {
 			readyCount++
 		}
-
 		totalRestarts += cs.RestartCount
-
 		containers = append(containers, ContainerStatus{
 			Name:         cs.Name,
 			Image:        cs.Image,
@@ -653,86 +662,141 @@ func (h *PodHandler) convertToPodSummary(cluster string, pod *corev1.Pod) PodSum
 		})
 	}
 
-	// Calcular recursos totais (soma de todos os containers)
-	var cpuRequest, memoryRequest, cpuLimit, memoryLimit string
-	var totalCPUReq, totalMemReq, totalCPULim, totalMemLim resource.Quantity
+	totalCPUReq, totalMemReq, totalCPULim, totalMemLim := getPodResourceTotals(pod)
 
-	for _, container := range pod.Spec.Containers {
-		if req := container.Resources.Requests.Cpu(); req != nil && !req.IsZero() {
-			totalCPUReq.Add(*req)
-		}
-		if req := container.Resources.Requests.Memory(); req != nil && !req.IsZero() {
-			totalMemReq.Add(*req)
-		}
-		if lim := container.Resources.Limits.Cpu(); lim != nil && !lim.IsZero() {
-			totalCPULim.Add(*lim)
-		}
-		if lim := container.Resources.Limits.Memory(); lim != nil && !lim.IsZero() {
-			totalMemLim.Add(*lim)
-		}
-	}
+	status, statusReason := getPodStatus(pod, isTerminating)
 
-	if !totalCPUReq.IsZero() {
-		cpuRequest = totalCPUReq.String()
-	}
-	if !totalMemReq.IsZero() {
-		memoryRequest = totalMemReq.String()
-	}
-	if !totalCPULim.IsZero() {
-		cpuLimit = totalCPULim.String()
-	}
-	if !totalMemLim.IsZero() {
-		memoryLimit = totalMemLim.String()
-	}
-
-	createdAt := pod.CreationTimestamp.Format(time.RFC3339)
-
-	// Calcular statusReason (como k9s faz): pegar razão do container com problema
-	statusReason := ""
-	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
-			statusReason = cs.State.Waiting.Reason // Ex: CrashLoopBackOff, ImagePullBackOff, ErrImagePull
-			break
-		}
-		if cs.State.Terminated != nil && cs.State.Terminated.Reason != "" && cs.State.Terminated.ExitCode != 0 {
-			statusReason = cs.State.Terminated.Reason // Ex: Error, OOMKilled
-			break
-		}
-	}
-	// Fallback: init containers com problema
-	if statusReason == "" {
-		for _, cs := range pod.Status.InitContainerStatuses {
-			if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
-				statusReason = "Init:" + cs.State.Waiting.Reason
-				break
-			}
-			if cs.State.Terminated != nil && cs.State.Terminated.Reason != "" && cs.State.Terminated.ExitCode != 0 {
-				statusReason = "Init:" + cs.State.Terminated.Reason
-				break
-			}
-		}
-	}
-
-	return PodSummary{
+	summary := PodSummary{
 		Cluster:         cluster,
 		Namespace:       pod.Namespace,
 		Name:            pod.Name,
 		PodIP:           pod.Status.PodIP,
 		NodeName:        pod.Spec.NodeName,
 		Phase:           string(pod.Status.Phase),
+		Status:          status,
 		StatusReason:    statusReason,
 		Labels:          pod.Labels,
 		Containers:      containers,
 		ReadyContainers: readyCount,
 		TotalContainers: len(pod.Spec.Containers),
-		CPURequest:      cpuRequest,
-		MemoryRequest:   memoryRequest,
-		CPULimit:        cpuLimit,
-		MemoryLimit:     memoryLimit,
+		CPURequest:      totalCPUReq.String(),
+		MemoryRequest:   totalMemReq.String(),
+		CPULimit:        totalCPULim.String(),
+		MemoryLimit:     totalMemLim.String(),
+		CPURequestMillicores: totalCPUReq.MilliValue(),
+		MemoryRequestBytes:   totalMemReq.Value(),
+		CPULimitMillicores:   totalCPULim.MilliValue(),
+		MemoryLimitBytes:     totalMemLim.Value(),
 		ResourceVersion: pod.ResourceVersion,
-		CreatedAt:       createdAt,
+		CreatedAt:       pod.CreationTimestamp.Format(time.RFC3339),
 		Restarts:        totalRestarts,
+		Terminating:     isTerminating,
 	}
+
+	if metrics != nil {
+		summary.CPUUsageMillicores = metrics.CPUMillicores
+		summary.MemoryUsageBytes = metrics.MemoryBytes
+		summary.CPUUsage = fmt.Sprintf("%dm", metrics.CPUMillicores)
+		summary.MemoryUsage = formatBytes(metrics.MemoryBytes)
+
+		// Choose limit-based percentage if available, otherwise fall back to request-based.
+		if metrics.CPUPercentLimit >= 0 {
+			summary.CPUUsagePercentage = metrics.CPUPercentLimit
+		} else {
+			summary.CPUUsagePercentage = metrics.CPUPercentRequest
+		}
+		if metrics.MemPercentLimit >= 0 {
+			summary.MemoryUsagePercentage = metrics.MemPercentLimit
+		} else {
+			summary.MemoryUsagePercentage = metrics.MemPercentRequest
+		}
+	}
+
+	return summary
+}
+
+// getContainerState determines the state and reason for a container status.
+func getContainerState(cs corev1.ContainerStatus) (state, reason string) {
+	if cs.State.Running != nil {
+		return "Running", ""
+	}
+	if cs.State.Waiting != nil {
+		return "Waiting", cs.State.Waiting.Reason
+	}
+	if cs.State.Terminated != nil {
+		return "Terminated", cs.State.Terminated.Reason
+	}
+	return "Unknown", ""
+}
+
+// getPodResourceTotals calculates the total resource requests and limits for a pod.
+func getPodResourceTotals(pod *corev1.Pod) (cpuReq, memReq, cpuLim, memLim resource.Quantity) {
+	for _, container := range pod.Spec.Containers {
+		if req := container.Resources.Requests.Cpu(); req != nil {
+			cpuReq.Add(*req)
+		}
+		if req := container.Resources.Requests.Memory(); req != nil {
+			memReq.Add(*req)
+		}
+		if lim := container.Resources.Limits.Cpu(); lim != nil {
+			cpuLim.Add(*lim)
+		}
+		if lim := container.Resources.Limits.Memory(); lim != nil {
+			memLim.Add(*lim)
+		}
+	}
+	return
+}
+
+// getPodStatus determines the overall status and reason for a pod.
+func getPodStatus(pod *corev1.Pod, isTerminating bool) (status, reason string) {
+	if isTerminating {
+		return "Terminating", ""
+	}
+
+	if pod.Status.Reason != "" {
+		return pod.Status.Reason, pod.Status.Message
+	}
+
+	// Check container statuses for issues
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
+			return cs.State.Waiting.Reason, cs.State.Waiting.Message
+		}
+		if cs.State.Terminated != nil && cs.State.Terminated.Reason != "" {
+			if cs.State.Terminated.Reason == "Completed" {
+				return "Completed", ""
+			}
+			return cs.State.Terminated.Reason, cs.State.Terminated.Message
+		}
+	}
+
+	// Check init container statuses
+	for _, cs := range pod.Status.InitContainerStatuses {
+		if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" && cs.State.Waiting.Reason != "PodInitializing" {
+			return "Init:" + cs.State.Waiting.Reason, cs.State.Waiting.Message
+		}
+		if cs.State.Terminated != nil && cs.State.Terminated.Reason != "" && cs.State.Terminated.Reason != "Completed" {
+			return "Init:" + cs.State.Terminated.Reason, cs.State.Terminated.Message
+		}
+	}
+	
+	// Fallback to phase
+	return string(pod.Status.Phase), ""
+}
+
+// formatBytes converts bytes to a human-readable string (e.g., Ki, Mi, Gi).
+func formatBytes(b int64) string {
+    const unit = 1024
+    if b < unit {
+        return fmt.Sprintf("%d B", b)
+    }
+    div, exp := int64(unit), 0
+    for n := b / unit; n >= unit; n /= unit {
+        div *= unit
+        exp++
+    }
+    return fmt.Sprintf("%.1f %ci", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 // Describe retorna a saída do kubectl describe para um Pod

@@ -1,14 +1,20 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import type { DeploymentSummary } from "@/lib/api/types";
 import { formatAge } from "@/lib/monitorUtils";
-import { Pencil, Loader2, ChevronLeft, Search, X, ListFilter, Check, RefreshCw } from "lucide-react";
+import { Pencil, Loader2, ChevronLeft, Search, X, ListFilter, Check, RefreshCw, RotateCw, Trash2, ArrowUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
+import { apiClient } from "@/lib/api/client";
+import { ProtectedAction } from "@/components/rbac";
 
 const REFRESH_INTERVAL_MS = 10000;
+
+// Colunas: SEL | NAME/NS | READY | UP-TO-DATE | AVAILABLE | AGE | EDIT
+const GRID = "28px 1fr 80px 90px 80px 64px 28px";
 
 function useSecondsTick(date: Date | null): string {
   const [, setTick] = useState(0);
@@ -121,6 +127,12 @@ export const DeploymentMonitorTable = ({
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Seleção em lote
+  const [selectedDeps, setSelectedDeps] = useState<Set<string>>(new Set());
+  const [bulkAction, setBulkAction] = useState<"delete" | "restart" | "scale" | null>(null);
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [scaleReplicasValue, setScaleReplicasValue] = useState(1);
+
   // Ref estável — evita recriar o interval a cada render
   const refreshRef = useRef(onRequestRefresh);
   useEffect(() => { refreshRef.current = onRequestRefresh; }, [onRequestRefresh]);
@@ -137,6 +149,28 @@ export const DeploymentMonitorTable = ({
   useEffect(() => {
     setLastUpdated(new Date());
   }, [deployments]);
+
+  // Limpar seleção de deployments que sumiram
+  useEffect(() => {
+    setSelectedDeps((prev) => {
+      if (prev.size === 0) return prev;
+      const keys = new Set(deployments.map((d) => `${d.namespace}/${d.name}`));
+      const next = new Set([...prev].filter((k) => keys.has(k)));
+      return next.size !== prev.size ? next : prev;
+    });
+  }, [deployments]);
+
+  // Ctrl+\ desmarca todos
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === "\\") {
+        e.preventDefault();
+        setSelectedDeps(new Set());
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   const lastUpdatedLabel = useSecondsTick(lastUpdated);
 
@@ -186,6 +220,114 @@ export const DeploymentMonitorTable = ({
   }, [deployments, searchQuery, statusFilter, namespaceFilter]);
 
   const activeFilterCount = statusFilter.size + namespaceFilter.size;
+
+  // Helpers de seleção
+  const depKey = (d: DeploymentSummary) => `${d.namespace}/${d.name}`;
+  const allFilteredSelected = filtered.length > 0 && filtered.every((d) => selectedDeps.has(depKey(d)));
+  const someFilteredSelected = filtered.some((d) => selectedDeps.has(depKey(d)));
+
+  const toggleSelectAll = () => {
+    if (allFilteredSelected) {
+      const next = new Set(selectedDeps);
+      filtered.forEach((d) => next.delete(depKey(d)));
+      setSelectedDeps(next);
+    } else {
+      const next = new Set(selectedDeps);
+      filtered.forEach((d) => next.add(depKey(d)));
+      setSelectedDeps(next);
+    }
+  };
+
+  const toggleDep = (d: DeploymentSummary) => {
+    const key = depKey(d);
+    const next = new Set(selectedDeps);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setSelectedDeps(next);
+  };
+
+  const selectedDepObjects = useMemo(
+    () => deployments.filter((d) => selectedDeps.has(depKey(d))),
+    [deployments, selectedDeps]
+  );
+
+  // Executa ação em massa
+  const executeBulkAction = async () => {
+    if (!bulkAction || bulkProcessing || selectedDepObjects.length === 0) return;
+    setBulkProcessing(true);
+
+    try {
+      if (bulkAction === "delete" || bulkAction === "restart") {
+        // Agrupar por cluster (normalmente um único cluster)
+        const byCluster = new Map<string, Array<{ namespace: string; name: string }>>();
+        for (const dep of selectedDepObjects) {
+          const list = byCluster.get(dep.cluster) ?? [];
+          list.push({ namespace: dep.namespace, name: dep.name });
+          byCluster.set(dep.cluster, list);
+        }
+
+        let successCount = 0;
+        let failedCount = 0;
+
+        for (const [cluster, deps] of byCluster) {
+          const result = bulkAction === "delete"
+            ? await apiClient.batchDeleteDeployments(cluster, deps)
+            : await apiClient.batchRestartDeployments(cluster, deps);
+          successCount += result.success_count;
+          failedCount += result.failed_count;
+        }
+
+        const actionLabel = bulkAction === "delete" ? "Delete" : "Rollout Restart";
+        const successMsg = bulkAction === "delete" ? "deletado(s)" : "reiniciado(s)";
+
+        if (successCount > 0 && failedCount === 0) {
+          toast.success(`${actionLabel} concluído`, {
+            description: `${successCount} deployment(s) ${successMsg} com sucesso.`,
+          });
+        } else if (successCount > 0 && failedCount > 0) {
+          toast.warning("Parcialmente concluído", {
+            description: `${successCount} sucesso(s), ${failedCount} falha(s).`,
+          });
+        } else {
+          toast.error("Falha na operação", {
+            description: `Não foi possível executar ${actionLabel}.`,
+          });
+        }
+      } else if (bulkAction === "scale") {
+        let succeeded = 0;
+        let failed = 0;
+        for (const dep of selectedDepObjects) {
+          try {
+            await apiClient.scaleDeployment(dep.cluster, dep.namespace, dep.name, scaleReplicasValue);
+            succeeded++;
+          } catch {
+            failed++;
+          }
+        }
+
+        if (succeeded > 0 && failed === 0) {
+          toast.success("Scale concluído", {
+            description: `${succeeded} deployment(s) escalado(s) para ${scaleReplicasValue} réplica(s).`,
+          });
+        } else if (succeeded > 0 && failed > 0) {
+          toast.warning("Parcialmente concluído", {
+            description: `${succeeded} sucesso(s), ${failed} falha(s).`,
+          });
+        } else {
+          toast.error("Falha no scale");
+        }
+      }
+    } catch (err) {
+      toast.error("Erro na operação em lote", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setBulkProcessing(false);
+      setBulkAction(null);
+      setSelectedDeps(new Set());
+      onRequestRefresh();
+    }
+  };
 
   return (
     <div className="flex flex-col h-full border border-border rounded-lg overflow-hidden">
@@ -274,12 +416,23 @@ export const DeploymentMonitorTable = ({
         </div>
       )}
 
-      {/* Column headers com filtros */}
+      {/* Column headers */}
       <div
         className="grid font-mono text-[10px] px-3 py-1.5 border-b border-border bg-muted/20 flex-shrink-0"
-        style={{ gridTemplateColumns: "1fr 80px 90px 80px 64px 28px" }}
+        style={{ gridTemplateColumns: GRID }}
       >
-        {/* NAME / NAMESPACE com filtro */}
+        {/* Select-all */}
+        <span className="flex items-center">
+          <Checkbox
+            checked={allFilteredSelected}
+            data-state={someFilteredSelected && !allFilteredSelected ? "indeterminate" : undefined}
+            onCheckedChange={toggleSelectAll}
+            className="w-3.5 h-3.5 rounded-full"
+            title={allFilteredSelected ? "Desmarcar todos" : "Selecionar todos (ou use Espaço na linha)"}
+            disabled={filtered.length === 0}
+          />
+        </span>
+        {/* NAME / NAMESPACE */}
         <span>
           {uniqueNamespaces.length > 1 ? (
             <ColumnFilter
@@ -292,7 +445,7 @@ export const DeploymentMonitorTable = ({
             <span className="text-muted-foreground uppercase">NAME</span>
           )}
         </span>
-        {/* STATUS com filtro */}
+        {/* READY com filtro */}
         <span>
           <ColumnFilter
             label="READY"
@@ -328,26 +481,41 @@ export const DeploymentMonitorTable = ({
           const readyColor = ready < desired
             ? "text-orange-600 dark:text-orange-400"
             : "text-green-600 dark:text-green-400";
+          const isSelected = selectedDeps.has(depKey(dep));
 
           return (
-            <button
+            <div
               key={`${dep.namespace}/${dep.name}`}
-              className={`grid w-full px-3 py-1.5 hover:bg-muted/40 text-left transition-colors border-b border-border/40 font-mono text-xs ${rowColor}`}
-              style={{ gridTemplateColumns: "1fr 80px 90px 80px 64px 28px" }}
-              onClick={() => onSelectDeployment(dep)}
+              className={`grid w-full px-3 py-1.5 hover:bg-muted/40 transition-colors border-b border-border/40 font-mono text-xs ${rowColor} ${isSelected ? "bg-primary/10 hover:bg-primary/15 ring-inset ring-1 ring-primary/30" : ""}`}
+              style={{ gridTemplateColumns: GRID }}
             >
-              <span className="truncate pr-1" title={`${dep.namespace}/${dep.name}`}>
+              {/* Checkbox — clique no span faz toggle sem propagar para onSelectDeployment */}
+              <span
+                className="flex items-center"
+                onClick={(e) => { e.stopPropagation(); toggleDep(dep); }}
+              >
+                <Checkbox
+                  checked={isSelected}
+                  onCheckedChange={() => {}}
+                  className="w-3.5 h-3.5 rounded-full pointer-events-none"
+                />
+              </span>
+              <button
+                className="truncate pr-1 text-left cursor-pointer"
+                title={`${dep.namespace}/${dep.name}`}
+                onClick={() => onSelectDeployment(dep)}
+              >
                 {uniqueNamespaces.length > 1 && (
                   <span className="text-muted-foreground text-[10px]">{dep.namespace}/</span>
                 )}
                 {dep.name}
-              </span>
-              <span className={readyColor}>{ready}/{desired}</span>
-              <span>{updated}</span>
-              <span>{available}</span>
-              <span className="text-muted-foreground">
+              </button>
+              <button className={`text-left cursor-pointer ${readyColor}`} onClick={() => onSelectDeployment(dep)}>{ready}/{desired}</button>
+              <button className="text-left cursor-pointer" onClick={() => onSelectDeployment(dep)}>{updated}</button>
+              <button className="text-left cursor-pointer" onClick={() => onSelectDeployment(dep)}>{available}</button>
+              <button className="text-left text-muted-foreground cursor-pointer" onClick={() => onSelectDeployment(dep)}>
                 {dep.updatedAt ? formatAge(dep.updatedAt) : "-"}
-              </span>
+              </button>
               <span className="flex items-center justify-center">
                 <button
                   className="text-muted-foreground hover:text-foreground p-0.5 rounded"
@@ -357,10 +525,125 @@ export const DeploymentMonitorTable = ({
                   <Pencil className="w-3 h-3" />
                 </button>
               </span>
-            </button>
+            </div>
           );
         })}
       </div>
+
+      {/* Barra de ações em massa — visível quando há seleção */}
+      {selectedDeps.size > 0 && (
+        <div className="flex-shrink-0 border-t border-border">
+          {/* Confirmação da ação */}
+          {bulkAction && (
+            <div className={`flex items-center gap-2 px-3 py-2 text-xs ${
+              bulkAction === "delete"
+                ? "bg-destructive/10 border-b border-destructive/30"
+                : bulkAction === "restart"
+                ? "bg-blue-500/10 border-b border-blue-500/30"
+                : "bg-amber-500/10 border-b border-amber-500/30"
+            }`}>
+              {bulkAction === "scale" ? (
+                <span className="flex items-center gap-2 flex-1">
+                  Escalar {selectedDepObjects.length} deployment(s) para
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={scaleReplicasValue}
+                    onChange={(e) => setScaleReplicasValue(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="h-6 w-16 text-xs px-2"
+                  />
+                  réplica(s)?
+                </span>
+              ) : (
+                <span className="flex-1">
+                  {bulkAction === "restart"
+                    ? `Reiniciar ${selectedDepObjects.length} deployment(s) via rollout restart?`
+                    : `Deletar ${selectedDepObjects.length} deployment(s) permanentemente?`}
+                </span>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-xs"
+                onClick={() => setBulkAction(null)}
+                disabled={bulkProcessing}
+              >
+                Cancelar
+              </Button>
+              <Button
+                size="sm"
+                className={`h-6 px-3 text-xs gap-1 text-white ${
+                  bulkAction === "delete"
+                    ? "bg-destructive hover:bg-destructive/90"
+                    : bulkAction === "restart"
+                    ? "bg-blue-600 hover:bg-blue-700"
+                    : "bg-amber-600 hover:bg-amber-700"
+                }`}
+                onClick={executeBulkAction}
+                disabled={bulkProcessing}
+              >
+                {bulkProcessing ? <Loader2 className="w-3 h-3 animate-spin" /> : "Confirmar"}
+              </Button>
+            </div>
+          )}
+
+          {/* Toolbar principal */}
+          {!bulkAction && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/30">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => setSelectedDeps(new Set())}
+                title="Desmarcar todos (Ctrl+\)"
+              >
+                Desmarcar tudo
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">{selectedDeps.size}</span> deployment(s) selecionado(s)
+              </span>
+              <div className="flex-1" />
+              <ProtectedAction showWarning={false}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs text-amber-500 border-amber-500/40 hover:bg-amber-500/10 hover:border-amber-500 gap-1"
+                  onClick={() => setBulkAction("scale")}
+                  title="Escalar deployments selecionados"
+                >
+                  <ArrowUpDown className="w-3 h-3" />
+                  Scale ({selectedDeps.size})
+                </Button>
+              </ProtectedAction>
+              <ProtectedAction showWarning={false}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs text-blue-500 border-blue-500/40 hover:bg-blue-500/10 hover:border-blue-500 gap-1"
+                  onClick={() => setBulkAction("restart")}
+                  title="Rollout restart nos deployments selecionados"
+                >
+                  <RotateCw className="w-3 h-3" />
+                  Restart ({selectedDeps.size})
+                </Button>
+              </ProtectedAction>
+              <ProtectedAction showWarning={false}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs text-destructive border-destructive/40 hover:bg-destructive/10 hover:border-destructive gap-1"
+                  onClick={() => setBulkAction("delete")}
+                  title="Deletar deployments selecionados"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  Deletar ({selectedDeps.size})
+                </Button>
+              </ProtectedAction>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

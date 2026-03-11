@@ -95,6 +95,7 @@ interface ChartPoint {
   memoryYesterday: number | null;
   replicasCurrent: number;
   replicasDesired: number;
+  replicasReady: number | null;
   replicasMin: number;
   replicasMax: number;
   replicasYesterday: number | null;
@@ -244,6 +245,7 @@ export function MetricsPanel({
         memoryYesterday: yesterdaySnapshot?.memory_current ?? null,
         replicasCurrent: snapshot.replicas_current,
         replicasDesired: snapshot.replicas_desired,
+        replicasReady: snapshot.replicas_ready ?? null,
         replicasMin: snapshot.replicas_min,
         replicasMax: snapshot.replicas_max,
         replicasYesterday: yesterdaySnapshot?.replicas_current ?? null,
@@ -1425,6 +1427,26 @@ export function MetricsPanel({
                       dot={false}
                       isAnimationActive={false}
                     />
+                    <Line
+                      type="stepAfter"
+                      dataKey="replicasDesired"
+                      name="Réplicas Desejadas"
+                      stroke="#f59e0b"
+                      strokeWidth={1.5}
+                      strokeDasharray="4 2"
+                      dot={false}
+                      isAnimationActive={false}
+                    />
+                    <Line
+                      type="stepAfter"
+                      dataKey="replicasReady"
+                      name="Réplicas Prontas"
+                      stroke="#22c55e"
+                      strokeWidth={1.5}
+                      dot={false}
+                      connectNulls
+                      isAnimationActive={false}
+                    />
                     {/* Linha D-N - lembrança sutil no gráfico */}
                     <Line
                       type="stepAfter"
@@ -1825,6 +1847,8 @@ export function MetricsPanel({
                       label={{ value: `Max: ${replicaBounds.max}`, position: "right", fill: "#ef4444", fontSize: 12 }}
                     />
                     <Line type="stepAfter" dataKey="replicasCurrent" name="Réplicas Atuais" stroke="#3b82f6" strokeWidth={2} dot={false} unit="" connectNulls isAnimationActive={false} />
+                    <Line type="stepAfter" dataKey="replicasDesired" name="Réplicas Desejadas" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="4 2" dot={false} isAnimationActive={false} />
+                    <Line type="stepAfter" dataKey="replicasReady" name="Réplicas Prontas" stroke="#22c55e" strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />
                     {/* Linha D-N - lembrança sutil */}
                     <Line type="stepAfter" dataKey="replicasYesterday" name={`Réplicas D-${comparisonDays} (${comparisonDays * 24}h atrás)`} stroke="#c084fc" strokeWidth={1.5} strokeOpacity={0.3} dot={false} unit="" connectNulls isAnimationActive={false} />
                     {refAreaValues && (
