@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { apiClient } from "@/lib/api/client";
 
 export interface NodeDiskMetrics {
@@ -27,43 +27,31 @@ export function useNodePoolDiskMetrics(cluster: string, nodePoolName?: string) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    console.log('[useNodePoolDiskMetrics] Effect triggered - cluster:', cluster, 'nodePoolName:', nodePoolName);
-
+  const fetchMetrics = useCallback(async () => {
     if (!cluster || !nodePoolName) {
-      console.log('[useNodePoolDiskMetrics] Missing cluster or nodePoolName, skipping fetch');
       setMetrics(null);
       return;
     }
-
-    const fetchMetrics = async () => {
-      console.log('[useNodePoolDiskMetrics] Fetching metrics for:', cluster, nodePoolName);
-      setLoading(true);
-      setError(null);
-
-      try {
-        const response = await apiClient.getNodePoolDiskMetrics(cluster, nodePoolName);
-        console.log('[useNodePoolDiskMetrics] Response:', response);
-
-        if (response.success && response.data && response.data.length > 0) {
-          // Retornar métricas do primeiro node pool (já filtrado no backend)
-          console.log('[useNodePoolDiskMetrics] Setting metrics:', response.data[0]);
-          setMetrics(response.data[0]);
-        } else {
-          console.log('[useNodePoolDiskMetrics] No metrics found in response');
-          setMetrics(null);
-        }
-      } catch (err) {
-        console.error("[useNodePoolDiskMetrics] Error fetching metrics:", err);
-        setError(err instanceof Error ? err.message : "Failed to fetch disk metrics");
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await apiClient.getNodePoolDiskMetrics(cluster, nodePoolName);
+      if (response.success && response.data && response.data.length > 0) {
+        setMetrics(response.data[0]);
+      } else {
         setMetrics(null);
-      } finally {
-        setLoading(false);
       }
-    };
-
-    fetchMetrics();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch disk metrics");
+      setMetrics(null);
+    } finally {
+      setLoading(false);
+    }
   }, [cluster, nodePoolName]);
 
-  return { metrics, loading, error };
+  useEffect(() => {
+    fetchMetrics();
+  }, [fetchMetrics]);
+
+  return { metrics, loading, error, refetch: fetchMetrics };
 }

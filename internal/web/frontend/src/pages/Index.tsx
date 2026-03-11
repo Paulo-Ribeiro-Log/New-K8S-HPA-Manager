@@ -103,6 +103,7 @@ const Index = ({ onLogout }: IndexProps) => {
   const [selectedNamespace, setSelectedNamespace] = useState("__all__"); // Namespace global (HPAs, Namespaces tab)
   const [selectedHPA, setSelectedHPA] = useState<HPA | null>(null);
   const [selectedNodePool, setSelectedNodePool] = useState<NodePool | null>(null);
+  const [nodePoolEditorKey, setNodePoolEditorKey] = useState(0);
 
   // 🔄 Namespace independente por aba workload (evita interferência ao trocar namespaces em outras abas)
   // ✅ FIX: Inicializar com "__all__" para exibir todos os recursos (incluindo problemáticos) por padrão
@@ -345,6 +346,7 @@ const Index = ({ onLogout }: IndexProps) => {
   // Para HPAs: sempre buscar de TODOS os namespaces (passar undefined ao invés de selectedNamespace)
   const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, undefined, showSystemNamespaces);
   const { nodePools, loading: nodePoolsLoading, refetch: refetchNodePools } = useNodePools(selectedCluster);
+
 
   // Auto-select first cluster (using context instead of name)
   useEffect(() => {
@@ -946,7 +948,18 @@ const Index = ({ onLogout }: IndexProps) => {
             }}
             rightPanel={{
               title: "Node Pool Editor",
+              titleAction: selectedNodePool ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setNodePoolEditorKey((k) => k + 1)}
+                  title="Atualizar dados do Node Pool"
+                >
+                  <RefreshCcw className="w-4 h-4" />
+                </Button>
+              ) : undefined,
               content: <NodePoolEditor
+                key={nodePoolEditorKey}
                 nodePool={selectedNodePool}
                 onApply={handleNodePoolApplyNow}
                 onApplied={refetchNodePools}
