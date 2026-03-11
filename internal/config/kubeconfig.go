@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog/log"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,15 +36,23 @@ type ClusterConfig struct {
 	SubscriptionID string `json:"subscriptionId,omitempty"` // UUID do Azure: "a1b2c3d4-..."
 }
 
+// clientTTL define por quanto tempo um client inativo é mantido em memória
+const clientTTL = 2 * time.Hour
+
+// clientCleanupInterval define com qual frequência o cleanup roda
+const clientCleanupInterval = 1 * time.Hour
+
 // KubeConfigManager gerencia a configuração do Kubernetes
 type KubeConfigManager struct {
-	configPath     string
-	config         *api.Config
-	clients        map[string]kubernetes.Interface
-	clientMutex    sync.RWMutex // Protege acesso concorrente aos clients
-	metricsClients map[string]*metricsclientset.Clientset
-	metricsMutex   sync.RWMutex
-	historyTracker *history.HistoryTracker
+	configPath      string
+	config          *api.Config
+	clients         map[string]kubernetes.Interface
+	clientMutex     sync.RWMutex // Protege acesso concorrente aos clients
+	metricsClients  map[string]*metricsclientset.Clientset
+	metricsMutex    sync.RWMutex
+	lastUsed        map[string]time.Time // Último acesso por cluster (clients + metricsClients)
+	lastUsedMutex   sync.Mutex
+	historyTracker  *history.HistoryTracker
 }
 
 // NewKubeConfigManager cria um novo gerenciador de kubeconfig
@@ -52,13 +62,73 @@ func NewKubeConfigManager(configPath string) (*KubeConfigManager, error) {
 		return nil, fmt.Errorf("failed to load kubeconfig: %w", err)
 	}
 
-	return &KubeConfigManager{
+	km := &KubeConfigManager{
 		configPath:     configPath,
 		config:         config,
 		clients:        make(map[string]kubernetes.Interface),
 		metricsClients: make(map[string]*metricsclientset.Clientset),
+		lastUsed:       make(map[string]time.Time),
 		historyTracker: nil, // Será configurado via SetHistoryTracker
-	}, nil
+	}
+
+	go km.clientCleanupLoop()
+
+	return km, nil
+}
+
+// touchLastUsed atualiza o timestamp de último uso de um cluster
+func (k *KubeConfigManager) touchLastUsed(clusterName string) {
+	k.lastUsedMutex.Lock()
+	k.lastUsed[clusterName] = time.Now()
+	k.lastUsedMutex.Unlock()
+}
+
+// clientCleanupLoop remove clients inativos a cada clientCleanupInterval
+func (k *KubeConfigManager) clientCleanupLoop() {
+	ticker := time.NewTicker(clientCleanupInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		k.evictStaleClients()
+	}
+}
+
+// evictStaleClients remove clients não usados há mais de clientTTL
+func (k *KubeConfigManager) evictStaleClients() {
+	cutoff := time.Now().Add(-clientTTL)
+
+	k.lastUsedMutex.Lock()
+	stale := make([]string, 0)
+	for cluster, t := range k.lastUsed {
+		if t.Before(cutoff) {
+			stale = append(stale, cluster)
+		}
+	}
+	for _, cluster := range stale {
+		delete(k.lastUsed, cluster)
+	}
+	k.lastUsedMutex.Unlock()
+
+	if len(stale) == 0 {
+		return
+	}
+
+	k.clientMutex.Lock()
+	for _, cluster := range stale {
+		delete(k.clients, cluster)
+	}
+	k.clientMutex.Unlock()
+
+	k.metricsMutex.Lock()
+	for _, cluster := range stale {
+		delete(k.metricsClients, cluster)
+	}
+	k.metricsMutex.Unlock()
+
+	log.Info().
+		Strs("clusters", stale).
+		Dur("ttl", clientTTL).
+		Msg("Evicted stale K8s clients from cache")
 }
 
 // ConfigPath retorna o caminho configurado do kubeconfig.
@@ -193,6 +263,7 @@ func (k *KubeConfigManager) GetMetricsClient(clusterName string) (metricsclients
 	k.metricsMutex.RLock()
 	if client, exists := k.metricsClients[clusterName]; exists {
 		k.metricsMutex.RUnlock()
+		k.touchLastUsed(clusterName)
 		return client, nil
 	}
 	k.metricsMutex.RUnlock()
@@ -216,6 +287,7 @@ func (k *KubeConfigManager) GetMetricsClient(clusterName string) (metricsclients
 		return existing, nil
 	}
 	k.metricsClients[clusterName] = metricsClient
+	k.touchLastUsed(clusterName)
 	return metricsClient, nil
 }
 
@@ -263,6 +335,7 @@ func (k *KubeConfigManager) getClient(clusterName string) (kubernetes.Interface,
 	k.clientMutex.RLock()
 	if client, exists := k.clients[clusterName]; exists {
 		k.clientMutex.RUnlock()
+		k.touchLastUsed(clusterName)
 		return client, nil
 	}
 	k.clientMutex.RUnlock()
@@ -318,6 +391,7 @@ func (k *KubeConfigManager) getClient(clusterName string) (kubernetes.Interface,
 
 	// Armazenar cliente para reuso
 	k.clients[clusterName] = client
+	k.touchLastUsed(clusterName)
 
 	return client, nil
 }
