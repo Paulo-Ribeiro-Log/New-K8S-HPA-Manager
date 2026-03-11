@@ -375,6 +375,7 @@ export interface PodSummary {
   podIP?: string;
   nodeName?: string;
   phase: string;
+  status?: string;
   statusReason?: string;
   labels?: Record<string, string>;
   containers: ContainerStatus[];
@@ -983,6 +984,7 @@ export interface HPASnapshot {
   memory_target: number;
   replicas_current: number;
   replicas_desired: number;
+  replicas_ready?: number;
   replicas_min: number;
   replicas_max: number;
   // Resource Request/Limit do deployment (vem do K8s API)
