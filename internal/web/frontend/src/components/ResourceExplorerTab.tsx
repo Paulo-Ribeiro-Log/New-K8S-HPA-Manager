@@ -56,6 +56,7 @@ import { toast } from "sonner";
 import type { Namespace, APIResourceInfo, GenericResourceSummary, GenericResourceManifest } from "@/lib/api/types";
 import { useAPIResources, useGenericResources } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
+import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
@@ -243,7 +244,7 @@ export const ResourceExplorerTab = ({
   const handleSelectItem = async (item: GenericResourceSummary) => {
     if (selectedItem && history.length > 0) {
       const key = `${item.namespace}/${item.name}`;
-      historyCache.current.set(key, { history: [...history], index: historyIndex });
+      setHistoryCacheEntry(historyCache.current, key, { history: [...history], index: historyIndex });
     }
     setSelectedItem(item);
     setManifestLoading(true);

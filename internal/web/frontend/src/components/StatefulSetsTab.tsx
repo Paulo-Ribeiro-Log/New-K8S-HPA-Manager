@@ -20,6 +20,7 @@ import type {
 } from "@/lib/api/types";
 import { useStatefulSets } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
+import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
@@ -196,7 +197,7 @@ export const StatefulSetsTab = ({
     // Salvar histórico atual no cache antes de trocar
     if (selectedStatefulSet && history.length > 0) {
       const cacheKey = `${selectedStatefulSet.namespace}/${selectedStatefulSet.name}`;
-      historyCache.current.set(cacheKey, { history: [...history], index: historyIndex });
+      setHistoryCacheEntry(historyCache.current, cacheKey, { history: [...history], index: historyIndex });
     }
 
     setSelectedStatefulSet(summary);

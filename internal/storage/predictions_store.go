@@ -14,9 +14,25 @@ type PredictionsStore struct {
 
 // NewPredictionsStore cria um novo PredictionsStore
 func NewPredictionsStore(client *SQLiteClient) *PredictionsStore {
-	return &PredictionsStore{
-		client: client,
+	s := &PredictionsStore{client: client}
+	go s.cleanupLoop()
+	return s
+}
+
+// cleanupLoop remove registros antigos automaticamente (executa em background)
+func (s *PredictionsStore) cleanupLoop() {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	s.runCleanup()
+	for range ticker.C {
+		s.runCleanup()
 	}
+}
+
+// runCleanup deleta predições com mais de 30 dias
+func (s *PredictionsStore) runCleanup() {
+	cutoff := time.Now().AddDate(0, 0, -30)
+	_, _ = s.DeleteOlderThan(cutoff)
 }
 
 // SavePrediction salva uma análise preditiva (aceita dados estruturados)
