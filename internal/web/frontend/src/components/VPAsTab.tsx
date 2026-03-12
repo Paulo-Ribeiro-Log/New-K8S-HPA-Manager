@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import type { Namespace, VPASummary, VPAManifest } from "@/lib/api/types";
 import { useVPAs } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
+import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
@@ -143,7 +144,7 @@ export const VPAsTab = ({
   const handleSelectVPA = async (summary: VPASummary) => {
     if (selectedVPA && history.length > 0) {
       const cacheKey = `${selectedVPA.namespace}/${selectedVPA.name}`;
-      historyCache.current.set(cacheKey, { history: [...history], index: historyIndex });
+      setHistoryCacheEntry(historyCache.current, cacheKey, { history: [...history], index: historyIndex });
     }
 
     setSelectedVPA(summary);

@@ -26,6 +26,7 @@ import type {
 } from "@/lib/api/types";
 import { useIngresses } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
+import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
@@ -158,7 +159,7 @@ export const IngressTab = ({
     // Salvar histórico atual no cache antes de trocar
     if (selectedIngress && history.length > 0) {
       const cacheKey = `${selectedIngress.namespace}/${selectedIngress.name}`;
-      historyCache.current.set(cacheKey, { history: [...history], index: historyIndex });
+      setHistoryCacheEntry(historyCache.current, cacheKey, { history: [...history], index: historyIndex });
     }
 
     setSelectedIngress(summary);

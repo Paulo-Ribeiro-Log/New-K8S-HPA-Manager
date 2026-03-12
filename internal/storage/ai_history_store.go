@@ -14,9 +14,25 @@ type AIHistoryStore struct {
 
 // NewAIHistoryStore cria um novo AIHistoryStore
 func NewAIHistoryStore(client *SQLiteClient) *AIHistoryStore {
-	return &AIHistoryStore{
-		client: client,
+	s := &AIHistoryStore{client: client}
+	go s.cleanupLoop()
+	return s
+}
+
+// cleanupLoop remove registros antigos automaticamente (executa em background)
+func (s *AIHistoryStore) cleanupLoop() {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	s.runCleanup()
+	for range ticker.C {
+		s.runCleanup()
 	}
+}
+
+// runCleanup deleta análises AI com mais de 30 dias
+func (s *AIHistoryStore) runCleanup() {
+	cutoff := time.Now().AddDate(0, 0, -30)
+	_, _ = s.DeleteOlderThan(cutoff)
 }
 
 // Save salva um registro de análise AI
