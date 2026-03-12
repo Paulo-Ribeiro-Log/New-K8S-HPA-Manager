@@ -20,6 +20,7 @@ import type {
 } from "@/lib/api/types";
 import { useDaemonSets } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
+import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
@@ -193,7 +194,7 @@ export const DaemonSetsTab = ({
     // Salvar histórico atual no cache antes de trocar
     if (selectedDaemonSet && history.length > 0) {
       const cacheKey = `${selectedDaemonSet.namespace}/${selectedDaemonSet.name}`;
-      historyCache.current.set(cacheKey, { history: [...history], index: historyIndex });
+      setHistoryCacheEntry(historyCache.current, cacheKey, { history: [...history], index: historyIndex });
     }
 
     setSelectedDaemonSet(summary);
@@ -307,10 +308,9 @@ export const DaemonSetsTab = ({
     setIsDiffLoading(true);
     try {
       const result = await apiClient.diffDaemonSet({
-        cluster: selectedDaemonSet.cluster,
-        namespace: selectedDaemonSet.namespace,
-        name: selectedDaemonSet.name,
-        yaml: editorValue,
+        originalYaml,
+        updatedYaml: editorValue,
+        fileName: selectedDaemonSet.name,
       });
       const html = diff2html(result.unifiedDiff, {
         drawFileList: false,

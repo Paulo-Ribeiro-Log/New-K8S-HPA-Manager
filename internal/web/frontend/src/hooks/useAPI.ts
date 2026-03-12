@@ -153,12 +153,13 @@ export function useHPAs(cluster?: string, namespace?: string, showSystem: boolea
   useEffect(() => {
     fetchHPAs();
     if (!cluster) return;
+    let cancelled = false;
     const interval = setInterval(() => {
       apiClient.getHPAs(cluster, namespace || undefined, true, showSystem)
-        .then(data => setHPAs(data))
+        .then(data => { if (!cancelled) setHPAs(data); })
         .catch(() => {});
     }, 30000);
-    return () => clearInterval(interval);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [cluster, namespace, showSystem]);
 
   useEffect(() => {
@@ -236,12 +237,13 @@ export function useNodePools(cluster?: string) {
   useEffect(() => {
     fetchNodePools();
     if (!cluster) return;
+    let cancelled = false;
     const interval = setInterval(() => {
       apiClient.getNodePools(cluster)
-        .then(data => setNodePools(data))
+        .then(data => { if (!cancelled) setNodePools(data); })
         .catch(() => {});
     }, 60000);
-    return () => clearInterval(interval);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [cluster]);
 
   // Listen for rescan events
@@ -313,12 +315,13 @@ export function useConfigMaps(cluster?: string, namespaces?: string[], showSyste
   useEffect(() => {
     fetchConfigMaps();
     if (!cluster) return;
+    let cancelled = false;
     const interval = setInterval(() => {
       apiClient.getConfigMaps(cluster, namespaces, undefined, showSystem, true)
-        .then(data => setConfigMaps(data))
+        .then(data => { if (!cancelled) setConfigMaps(data); })
         .catch(() => {});
     }, 60000);
-    return () => clearInterval(interval);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchConfigMaps(true);
@@ -354,12 +357,13 @@ export function useSecrets(cluster?: string, namespaces?: string[], showSystem: 
   useEffect(() => {
     fetchSecrets();
     if (!cluster) return;
+    let cancelled = false;
     const interval = setInterval(() => {
       apiClient.getSecrets(cluster, namespaces, showSystem, true)
-        .then(data => setSecrets(data))
+        .then(data => { if (!cancelled) setSecrets(data); })
         .catch(() => {});
     }, 60000);
-    return () => clearInterval(interval);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchSecrets(true);
@@ -395,12 +399,13 @@ export function useDeployments(cluster?: string, namespaces?: string[], showSyst
   useEffect(() => {
     fetchDeployments();
     if (!cluster) return;
+    let cancelled = false;
     const interval = setInterval(() => {
       apiClient.getDeployments(cluster, namespaces, undefined, showSystem, true)
-        .then(data => setDeployments(data))
+        .then(data => { if (!cancelled) setDeployments(data); })
         .catch(() => {});
     }, 60000);
-    return () => clearInterval(interval);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchDeployments(true);
@@ -437,12 +442,13 @@ export function useDaemonSets(cluster?: string, namespaces?: string[], showSyste
   useEffect(() => {
     fetchDaemonSets();
     if (!cluster) return;
+    let cancelled = false;
     const interval = setInterval(() => {
       apiClient.getDaemonSets(cluster, namespaces, undefined, showSystem, true)
-        .then(data => setDaemonSets(data))
+        .then(data => { if (!cancelled) setDaemonSets(data); })
         .catch(() => {});
     }, 60000);
-    return () => clearInterval(interval);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchDaemonSets(true);
@@ -478,12 +484,13 @@ export function useStatefulSets(cluster?: string, namespaces?: string[], showSys
   useEffect(() => {
     fetchStatefulSets();
     if (!cluster) return;
+    let cancelled = false;
     const interval = setInterval(() => {
       apiClient.getStatefulSets(cluster, namespaces, undefined, showSystem, true)
-        .then(data => setStatefulSets(data))
+        .then(data => { if (!cancelled) setStatefulSets(data); })
         .catch(() => {});
     }, 60000);
-    return () => clearInterval(interval);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchStatefulSets(true);
@@ -579,7 +586,7 @@ export function useUpdateCronJob() {
       name: string;
       data: { suspend?: boolean; schedule?: string };
     }) => apiClient.updateCronJob(cluster, namespace, name, data),
-    onSuccess: (data, variables) => {
+    onSuccess: (_data, variables) => {
       // Invalidar cache dos CronJobs (query key: ['cronjobs', cluster])
       queryClient.invalidateQueries({
         queryKey: ['cronjobs', variables.cluster]
@@ -615,7 +622,7 @@ export function useUpdatePrometheusResource() {
         replicas?: number;
       };
     }) => apiClient.updatePrometheusResource(cluster, namespace, type, name, data),
-    onSuccess: (data, variables) => {
+    onSuccess: (_data, variables) => {
       // Invalidar cache dos recursos Prometheus
       queryClient.invalidateQueries({ 
         queryKey: ['prometheus', variables.cluster, variables.namespace] 

@@ -27,6 +27,7 @@ import type {
 import { useSecrets } from "@/hooks/useAPI";
 import { useCertificates } from "@/hooks/useCertificates";
 import { apiClient } from "@/lib/api/client";
+import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { CertificateDetailModal } from "@/components/CertificateDetailModal";
 import type { CertificateInfo } from "@/types/certificates";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
@@ -248,7 +249,7 @@ export const SecretsTab = ({
     // Salvar histórico atual no cache antes de trocar
     if (selectedSecret && history.length > 0) {
       const cacheKey = `${selectedSecret.namespace}/${selectedSecret.name}`;
-      historyCache.current.set(cacheKey, { history: [...history], index: historyIndex });
+      setHistoryCacheEntry(historyCache.current, cacheKey, { history: [...history], index: historyIndex });
     }
 
     setSelectedSecret(summary);

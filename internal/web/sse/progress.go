@@ -26,18 +26,20 @@ type ProgressEvent struct {
 
 // Client representa um cliente SSE conectado
 type Client struct {
-	ID       string
-	Channel  chan ProgressEvent
-	IsClosed bool
-	mu       sync.Mutex
+	ID          string
+	Channel     chan ProgressEvent
+	IsClosed    bool
+	ConnectedAt time.Time
+	mu          sync.Mutex
 }
 
 // NewClient cria um novo cliente SSE
 func NewClient(id string) *Client {
 	return &Client{
-		ID:       id,
-		Channel:  make(chan ProgressEvent, 500), // Buffer de 500 eventos (suporta múltiplos clusters simultâneos)
-		IsClosed: false,
+		ID:          id,
+		Channel:     make(chan ProgressEvent, 500), // Buffer de 500 eventos (suporta múltiplos clusters simultâneos)
+		IsClosed:    false,
+		ConnectedAt: time.Now(),
 	}
 }
 
@@ -79,16 +81,18 @@ func (c *Client) Close() {
 
 // ReplayBuffer armazena eventos para replay quando cliente reconecta
 type ReplayBuffer struct {
-	events    []ProgressEvent
-	maxEvents int
-	mu        sync.RWMutex
+	events      []ProgressEvent
+	maxEvents   int
+	lastEventAt time.Time
+	mu          sync.RWMutex
 }
 
 // NewReplayBuffer cria um novo buffer com tamanho máximo
 func NewReplayBuffer(maxEvents int) *ReplayBuffer {
 	return &ReplayBuffer{
-		events:    make([]ProgressEvent, 0, maxEvents),
-		maxEvents: maxEvents,
+		events:      make([]ProgressEvent, 0, maxEvents),
+		maxEvents:   maxEvents,
+		lastEventAt: time.Now(),
 	}
 }
 
@@ -102,6 +106,7 @@ func (rb *ReplayBuffer) Add(event ProgressEvent) {
 		rb.events = rb.events[1:]
 	}
 	rb.events = append(rb.events, event)
+	rb.lastEventAt = time.Now()
 }
 
 // GetAll retorna cópia de todos os eventos no buffer
@@ -122,6 +127,15 @@ func (rb *ReplayBuffer) Clear() {
 	rb.events = rb.events[:0]
 }
 
+// maxClientAge define por quanto tempo um client pode ficar conectado antes de ser considerado zumbi
+const maxClientAge = 4 * time.Hour
+
+// maxReplayBufferAge define por quanto tempo um replay buffer inativo é mantido
+const maxReplayBufferAge = 1 * time.Hour
+
+// sseCleanupInterval define a frequência do cleanup de zumbis
+const sseCleanupInterval = 30 * time.Minute
+
 // ProgressTracker gerencia múltiplos clientes SSE e rastreia progresso de operações
 type ProgressTracker struct {
 	clients       map[string]*Client
@@ -132,10 +146,59 @@ type ProgressTracker struct {
 
 // NewProgressTracker cria um novo tracker de progresso
 func NewProgressTracker() *ProgressTracker {
-	return &ProgressTracker{
+	pt := &ProgressTracker{
 		clients:       make(map[string]*Client),
 		replayBuffers: make(map[string]*ReplayBuffer),
 		bufferSize:    100, // Últimos 100 eventos por sessão
+	}
+	go pt.cleanupLoop()
+	return pt
+}
+
+// cleanupLoop remove periodicamente clientes zumbis e replay buffers órfãos
+func (pt *ProgressTracker) cleanupLoop() {
+	ticker := time.NewTicker(sseCleanupInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		pt.cleanupZombies()
+	}
+}
+
+// cleanupZombies remove clientes conectados há mais de maxClientAge e
+// replay buffers sem atividade há mais de maxReplayBufferAge
+func (pt *ProgressTracker) cleanupZombies() {
+	now := time.Now()
+
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
+	// Clientes zumbis (conexão aberta há mais de maxClientAge)
+	removedClients := 0
+	for id, client := range pt.clients {
+		if now.Sub(client.ConnectedAt) > maxClientAge {
+			client.Close()
+			delete(pt.clients, id)
+			removedClients++
+		}
+	}
+
+	// Replay buffers órfãos (sem atividade há mais de maxReplayBufferAge)
+	removedBuffers := 0
+	for id, buf := range pt.replayBuffers {
+		buf.mu.RLock()
+		age := now.Sub(buf.lastEventAt)
+		buf.mu.RUnlock()
+		if age > maxReplayBufferAge {
+			delete(pt.replayBuffers, id)
+			removedBuffers++
+		}
+	}
+
+	if removedClients > 0 || removedBuffers > 0 {
+		log.Info().
+			Int("zombie_clients", removedClients).
+			Int("orphan_buffers", removedBuffers).
+			Msg("[SSE] Cleanup: removidos clientes zumbis e buffers órfãos")
 	}
 }
 

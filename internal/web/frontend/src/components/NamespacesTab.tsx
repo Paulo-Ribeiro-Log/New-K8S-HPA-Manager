@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Search, RefreshCcw, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, BarChart3, Package, Activity, X, MoreVertical, Trash2, FileText, Copy, Maximize2, Minimize2, Loader2, Plus, Undo2, Redo2, CheckCircle2, TriangleAlert, FileDiff, ChevronDown, ChevronRight, Network, Shield, AlertCircle, Info, AlertTriangle, Terminal, SplitSquareHorizontal, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
+import { setHistoryCacheEntry } from "@/lib/historyCache";
 import type { Namespace, TopNamespacesResponse, NamespaceManifest, DeploymentSummary, EventSummary, ResourceQuotaSummary, NetworkPolicySummary, ServiceSummary, PodsSummary, PodSummary } from "@/lib/api/types";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -181,10 +182,7 @@ export const NamespacesTab = ({
     // Salvar histórico antes de trocar
     if (selectedNamespace && history.length > 0) {
       const cacheKey = `${cluster}/${selectedNamespace.name}`;
-      historyCache.current.set(cacheKey, {
-        history: [...history],
-        index: historyIndex,
-      });
+      setHistoryCacheEntry(historyCache.current, cacheKey, { history: [...history], index: historyIndex });
     }
 
     setManifestLoading(true);
