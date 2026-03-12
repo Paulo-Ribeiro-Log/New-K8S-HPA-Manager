@@ -31,7 +31,31 @@ func NewHealthCheckStorage(dbPath string) (*HealthCheckStorage, error) {
 		return nil, fmt.Errorf("failed to create table: %w", err)
 	}
 
+	go storage.cleanupLoop()
+
 	return storage, nil
+}
+
+// cleanupLoop remove registros antigos automaticamente (executa em background)
+func (s *HealthCheckStorage) cleanupLoop() {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	// Executar uma vez na inicialização
+	s.runCleanup()
+	for range ticker.C {
+		s.runCleanup()
+	}
+}
+
+// runCleanup deleta health checks com mais de 7 dias
+func (s *HealthCheckStorage) runCleanup() {
+	cutoff := time.Now().AddDate(0, 0, -7)
+	n, err := s.DeleteOlderThan(context.Background(), cutoff)
+	if err != nil {
+		log.Warn().Err(err).Msg("[HealthCheck] Falha no cleanup automático de registros antigos")
+	} else if n > 0 {
+		log.Info().Int64("deleted", n).Msg("[HealthCheck] Cleanup: registros antigos removidos (> 7 dias)")
+	}
 }
 
 // createTable cria tabela de health checks

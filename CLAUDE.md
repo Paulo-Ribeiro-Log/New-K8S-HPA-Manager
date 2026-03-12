@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.26** (GitHub release).
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **10 de março de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **12 de março de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -171,6 +171,8 @@ Protocolo JSON em `internal/web/handlers/websocket_shell.go`:
 - Resposta: `{type: "output", data: "base64..."}`
 - SEMPRE usar `event.preventDefault()` em key handlers para evitar duplicação de caracteres
 
+**Auth WebSocket**: WebSockets não enviam headers customizados. O middleware `WebSocketAuthMiddleware` aceita token via query param como fallback: `ws://host/terminal?token=<TOKEN>`.
+
 ### Versionamento
 
 Versão injetada via ldflags em build time (`main.version`). **Nunca hardcodear versão no código.**
@@ -213,6 +215,29 @@ O dynamic client **não está no vendor**. Para recursos CRD (VPAs, recursos do 
 ### Bubble Tea — Texto Unicode-Safe
 
 Sempre usar `[]rune` ao invés de `string` para manipulação de texto no TUI. Cursor position em runes, não bytes.
+
+### Audit Trail (History Tracking)
+
+Toda operação destrutiva deve registrar no `HistoryTracker` (`internal/history/tracker.go`):
+
+```go
+entry := helpers.CreateHistoryEntry(c, "scale-hpa", before, after)
+history.Log(entry)
+```
+
+`CreateHistoryEntry()` obtém `UserEmail`/`UserName` automaticamente via contexto Gin (RBAC). Dados persistidos em `~/.k8s-hpa-manager/history/` (JSON, max 1000 entradas em memória).
+
+### Sanitizer (AI Diagnostics)
+
+`internal/sanitizer/` mascara automaticamente IPv4, JWT, Bearer tokens, passwords, API keys antes de enviar contexto para IA. Nunca enviar dados brutos de log diretamente para AI providers — sempre passar pelo sanitizer.
+
+### Variável de Ambiente
+
+`K8S_HPA_WEB_TOKEN` — token de autenticação da API (default: `poc-token-123` se não definido).
+
+### Monitoring V2
+
+`internal/monitoring/engine/monitoring_v2.go` — sem port-forwards. Discovery automático via HTTPS: `https://prometheus-{cluster}-{env}.viavarejo.com.br/`. Cache em memória (TTL 1h). Endpoints em `/api/v1/monitoring/v2/`.
 
 ### Monaco Editor em Aba Anônima
 

@@ -32,6 +32,7 @@ import { DeploymentMonitorTable } from "@/components/DeploymentMonitorTable";
 import { PodMonitorTable } from "@/components/PodMonitorTable";
 import { PodQuickViewModal } from "@/components/PodQuickViewModal";
 import { apiClient } from "@/lib/api/client";
+import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { AITriggerButton } from "@/components/AITriggerButton";
 import { PredictionHistoryModal } from "@/components/PredictionHistoryModal";
@@ -455,7 +456,7 @@ export const DeploymentsTab = ({
     // Salvar histórico atual no cache antes de trocar
     if (selectedDeployment && history.length > 0) {
       const cacheKey = `${selectedDeployment.namespace}/${selectedDeployment.name}`;
-      historyCache.current.set(cacheKey, { history: [...history], index: historyIndex });
+      setHistoryCacheEntry(historyCache.current, cacheKey, { history: [...history], index: historyIndex });
     }
 
     setSelectedDeployment(summary);

@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import type { Namespace, ServiceSummary, ServiceManifest } from "@/lib/api/types";
 import { useServices } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
+import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
@@ -165,7 +166,7 @@ export const ServicesTab = ({
   const handleSelectService = async (summary: ServiceSummary) => {
     if (selectedService && history.length > 0) {
       const cacheKey = `${selectedService.namespace}/${selectedService.name}`;
-      historyCache.current.set(cacheKey, { history: [...history], index: historyIndex });
+      setHistoryCacheEntry(historyCache.current, cacheKey, { history: [...history], index: historyIndex });
     }
 
     setSelectedService(summary);

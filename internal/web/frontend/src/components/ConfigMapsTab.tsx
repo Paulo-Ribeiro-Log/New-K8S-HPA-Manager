@@ -26,6 +26,7 @@ import type {
 } from "@/lib/api/types";
 import { useConfigMaps } from "@/hooks/useAPI";
 import { apiClient } from "@/lib/api/client";
+import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { html as diff2html } from "diff2html";
 import "diff2html/bundles/css/diff2html.min.css";
@@ -170,7 +171,7 @@ export const ConfigMapsTab = ({
     // Salvar histórico atual no cache antes de trocar
     if (selectedConfigMap && history.length > 0) {
       const cacheKey = `${selectedConfigMap.namespace}/${selectedConfigMap.name}`;
-      historyCache.current.set(cacheKey, { history: [...history], index: historyIndex });
+      setHistoryCacheEntry(historyCache.current, cacheKey, { history: [...history], index: historyIndex });
     }
 
     setSelectedConfigMap(summary);

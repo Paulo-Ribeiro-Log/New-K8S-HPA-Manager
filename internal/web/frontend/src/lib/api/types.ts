@@ -227,6 +227,7 @@ export interface DaemonSetSummary {
 export interface DaemonSetMetadata {
   uid?: string;
   resourceVersion?: string;
+  creationTimestamp?: string;
   labels?: Record<string, string>;
   annotations?: Record<string, string>;
 }
