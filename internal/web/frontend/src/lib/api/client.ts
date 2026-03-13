@@ -2194,8 +2194,9 @@ class APIClient {
   }
 
   // ─── gcloud install + auth flow ───────────────────────────────────────────
-  async startGoogleInstallAuth(): Promise<{ session_id: string; auth_url?: string; status?: string }> {
-    return this.request(`/ai/tokens/google-auth/install/start`, { method: "POST", body: "{}" });
+  async startGoogleInstallAuth(aiEmail?: string): Promise<{ session_id: string; auth_url?: string; status?: string }> {
+    const query = aiEmail ? `?ai_email=${encodeURIComponent(aiEmail)}` : "";
+    return this.request(`/ai/tokens/google-auth/install/start${query}`, { method: "POST", body: "{}" });
   }
 
   async getGoogleAuthStatus(sessionId: string): Promise<{
@@ -2926,6 +2927,30 @@ class APIClient {
   /** Remove credenciais AWX salvas */
   async deleteAWXCredentials(): Promise<void> {
     await this.request<void>("/awx/credentials", { method: "DELETE" });
+  }
+
+  // ─── Command Runner ────────────────────────────────────────────────────────
+
+  /** Inicia execução em lote e retorna session_id para streaming SSE */
+  async executeCommand(req: import("./types").ExecuteCommandRequest): Promise<import("./types").ExecuteCommandResponse> {
+    return this.request<import("./types").ExecuteCommandResponse>("/command-runner/execute", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  }
+
+  /** URL do SSE stream de uma execução */
+  getCommandRunnerStreamURL(sessionId: string): string {
+    const token = localStorage.getItem("auth_token") || "poc-token-123";
+    return `/api/v1/command-runner/stream/${sessionId}?token=${encodeURIComponent(token)}`;
+  }
+
+  /** Gera um comando kubectl/shell via AI a partir de uma descrição */
+  async generateCommand(req: import("./types").GenerateCommandRequest): Promise<import("./types").GenerateCommandResponse> {
+    return this.request<import("./types").GenerateCommandResponse>("/command-runner/generate", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
   }
 }
 
