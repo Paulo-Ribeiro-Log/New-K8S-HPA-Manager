@@ -320,12 +320,18 @@ func findADCFile() (string, error) {
 		return "", fmt.Errorf("não foi possível determinar o home dir: %w", err)
 	}
 
-	path := filepath.Join(home, ".config", "gcloud", "application_default_credentials.json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return "", fmt.Errorf("ADC não encontrado em %s", path)
+	candidates := []string{
+		filepath.Join(home, ".config", "gcloud", "application_default_credentials.json"),
+		filepath.Join(home, ".cache", "google-vscode-extension", "auth", "application_default_credentials.json"),
 	}
 
-	return path, nil
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+
+	return "", fmt.Errorf("ADC não encontrado (procurado em %v)", candidates)
 }
 
 // exchangeRefreshToken troca um refresh_token por um access_token via Google OAuth2.
@@ -400,10 +406,10 @@ func (p *GeminiProvider) GetModel() string {
 // IsAvailable verifica se Gemini API está configurado
 func (p *GeminiProvider) IsAvailable(ctx context.Context) bool {
 	if p.authMode == "vertex" {
-		return p.serviceAccountJSON != "" || func() bool {
-			_, err := findADCFile()
-			return err == nil
-		}()
+		// No modo Vertex, disponível se o projeto GCP está configurado.
+		// A autenticação real (refresh token / service account / ADC) é testada
+		// apenas na análise — consistente com Claude, OpenAI e Copilot.
+		return p.project != ""
 	}
 	return p.apiKey != ""
 }

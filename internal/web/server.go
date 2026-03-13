@@ -670,6 +670,18 @@ func (s *Server) setupRoutes() {
 		vpas.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), vpaHandler.Delete)
 	}
 
+	// Command Runner — execução de comandos em lote em múltiplos clusters/namespaces
+	commandRunnerHandler := handlers.NewCommandRunnerHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker, s.aiHandler)
+	// SSE stream: usa WebSocketAuthMiddleware para aceitar token via query param
+	s.router.GET("/api/v1/command-runner/stream/:sessionId",
+		middleware.WebSocketAuthMiddleware(s.token),
+		commandRunnerHandler.Stream)
+	cmdRunner := api.Group("/command-runner")
+	{
+		cmdRunner.POST("/execute", rbacMiddleware.RequireSREGroup(), commandRunnerHandler.Execute)
+		cmdRunner.POST("/generate", commandRunnerHandler.GenerateCommand) // AI: sem RBAC extra (apenas leitura)
+	}
+
 	// Resource Explorer — navegador universal de recursos K8s (built-in + CRDs)
 	explorerHandler := handlers.NewExplorerHandler(s.kubeManager)
 	explorer := api.Group("/explorer")
