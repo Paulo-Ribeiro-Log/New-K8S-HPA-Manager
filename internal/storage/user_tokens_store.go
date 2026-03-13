@@ -82,11 +82,14 @@ func (s *UserTokensStore) CreateTable() error {
 		`ALTER TABLE user_ai_tokens ADD COLUMN gemini_vertex_location TEXT`,
 		`ALTER TABLE user_ai_tokens ADD COLUMN gemini_service_account_json TEXT`,
 		`ALTER TABLE user_ai_tokens ADD COLUMN gemini_refresh_token TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN copilot_api_key TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN copilot_endpoint TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN copilot_deployment TEXT`,
 	}
 
 	for _, migration := range migrations {
-		// Ignorar erros se coluna já existe
-		s.client.db.Exec(migration)
+		// Ignorar erros — "duplicate column name" é esperado se coluna já existe
+		s.client.Exec(migration) //nolint:errcheck
 	}
 
 	return nil

@@ -291,7 +291,8 @@ export function AISettingsTab() {
       };
 
       // API Keys - enviar apenas se foram preenchidas (não vazias)
-      if (geminiKey) payload.gemini_api_key = geminiKey;
+      // No modo Vertex, auth é via refresh token/service account — nunca enviar gemini_api_key
+      if (geminiKey && geminiAuthMode !== "vertex") payload.gemini_api_key = geminiKey;
 
       // Gemini Vertex AI - sempre enviar modo e configs
       payload.gemini_auth_mode = geminiAuthMode;
@@ -376,7 +377,7 @@ export function AISettingsTab() {
 
     try {
       // Backend inicia servidor loopback + retorna auth_url imediatamente
-      const result = await apiClient.startGoogleInstallAuth();
+      const result = await apiClient.startGoogleInstallAuth(aiEmail);
       const session_id = result.session_id;
       setGoogleAuthSessionId(session_id);
 

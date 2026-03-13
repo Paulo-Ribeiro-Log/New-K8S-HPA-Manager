@@ -1329,3 +1329,52 @@ export interface AWXCertificate {
 export interface AWXJobLaunch {
   job_id: number;
 }
+
+// Command Runner
+export interface CommandTarget {
+  cluster: string;
+  namespace: string;
+}
+
+export type CommandType = 'kubectl' | 'sh' | 'bash' | 'python' | 'go';
+
+export interface ExecuteCommandRequest {
+  targets: CommandTarget[];
+  command: string;
+  type: CommandType;
+  timeout_sec?: number;
+}
+
+export interface ExecuteCommandResponse {
+  session_id: string;
+}
+
+export interface GenerateCommandRequest {
+  prompt: string;
+  cluster: string;
+  namespace: string;
+  clusters?: string[];    // todos os clusters selecionados (contexto para AI)
+  namespaces?: string[];  // todos os namespaces selecionados (contexto para AI)
+  ai_email: string;
+  cmd_type?: string;
+  explain?: boolean;
+}
+
+export interface GenerateCommandResponse {
+  command: string;
+  type: CommandType;
+  explanation?: string;
+}
+
+// SSE event do Command Runner (estende o ProgressEvent do backend)
+export interface CommandRunnerSSEEvent {
+  id: string;
+  type: 'init' | 'output' | 'output_error' | 'cluster_done' | 'complete' | 'error';
+  phase: string;
+  message: string;
+  cluster?: string;
+  details?: string; // namespace
+  progress: number;
+  timestamp: string;
+  error?: string;
+}

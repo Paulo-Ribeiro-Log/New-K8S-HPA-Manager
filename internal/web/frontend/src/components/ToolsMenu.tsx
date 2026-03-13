@@ -15,6 +15,7 @@ import {
   Link2,
   Shield,
   SplitSquareHorizontal,
+  Terminal,
 } from "lucide-react";
 
 interface ToolsMenuProps {
@@ -38,6 +39,7 @@ const toolsTabs: ToolsTab[] = [
   { id: "dependencies", label: "Dependencies", icon: Link2 },
   { id: "certificates", label: "Certificados TLS", icon: Shield },
   { id: "resource-compare", label: "Edição Lado a Lado", icon: SplitSquareHorizontal },
+  { id: "command-runner", label: "Command Runner", icon: Terminal },
 ];
 
 export const ToolsMenu = ({ activeTab, onTabChange }: ToolsMenuProps) => {

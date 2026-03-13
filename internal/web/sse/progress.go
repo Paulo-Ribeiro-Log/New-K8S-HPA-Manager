@@ -22,6 +22,7 @@ type ProgressEvent struct {
 	NodeName  string    `json:"node_name"`  // Nome do node sendo processado (se aplicável)
 	PodsCount int       `json:"pods_count"` // Quantidade de pods (se aplicável)
 	Error     string    `json:"error"`      // Mensagem de erro (se Type == "error")
+	Cluster   string    `json:"cluster,omitempty"` // Cluster de origem (Command Runner)
 }
 
 // Client representa um cliente SSE conectado

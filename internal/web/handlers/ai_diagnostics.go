@@ -191,6 +191,12 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 			if tokens.GeminiVertexProject == "" {
 				return nil, fmt.Errorf("provider 'gemini' modo Vertex AI selecionado mas projeto GCP não configurado - acesse AI Settings e preencha o Projeto GCP")
 			}
+			// Se não há credenciais explícitas (refresh token / service account),
+			// usar o analyzer padrão do servidor (ADC) — igual ao comportamento das predictions.
+			// Evita 403 por modelo não autorizado ao criar um novo provider com modelo do usuário.
+			if tokens.GeminiRefreshToken == "" && tokens.GeminiServiceAccountJSON == "" {
+				return h.analyzer, nil
+			}
 			config.GeminiAuthMode = "vertex"
 			config.GeminiVertexProject = tokens.GeminiVertexProject
 			if tokens.GeminiVertexLocation != "" {
@@ -198,6 +204,8 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 			} else {
 				config.GeminiVertexLocation = "us-central1"
 			}
+			config.GeminiRefreshToken = tokens.GeminiRefreshToken
+			config.GeminiServiceAccountJSON = tokens.GeminiServiceAccountJSON
 		} else {
 			// Modo API Key (padrão)
 			if tokens.GeminiAPIKey == "" {
@@ -303,6 +311,15 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 		Msg("AI analyzer configured successfully")
 
 	return userAnalyzer, nil
+}
+
+// GetProviderForUser retorna o ai.Provider configurado pelo usuário (para uso externo por outros handlers)
+func (h *AIDiagnosticsHandler) GetProviderForUser(aiEmail string) (ai.Provider, error) {
+	analyzer, err := h.getAnalyzerForUser(aiEmail)
+	if err != nil {
+		return nil, err
+	}
+	return analyzer.GetProvider(), nil
 }
 
 // getModelFromConfig extrai o nome do modelo da config
