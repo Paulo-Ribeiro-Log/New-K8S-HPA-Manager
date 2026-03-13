@@ -1353,13 +1353,17 @@ export interface GenerateCommandRequest {
   prompt: string;
   cluster: string;
   namespace: string;
+  clusters?: string[];    // todos os clusters selecionados (contexto para AI)
+  namespaces?: string[];  // todos os namespaces selecionados (contexto para AI)
   ai_email: string;
   cmd_type?: string;
+  explain?: boolean;
 }
 
 export interface GenerateCommandResponse {
   command: string;
   type: CommandType;
+  explanation?: string;
 }
 
 // SSE event do Command Runner (estende o ProgressEvent do backend)

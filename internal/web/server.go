@@ -679,7 +679,8 @@ func (s *Server) setupRoutes() {
 	cmdRunner := api.Group("/command-runner")
 	{
 		cmdRunner.POST("/execute", rbacMiddleware.RequireSREGroup(), commandRunnerHandler.Execute)
-		cmdRunner.POST("/generate", commandRunnerHandler.GenerateCommand) // AI: sem RBAC extra (apenas leitura)
+		cmdRunner.POST("/generate", commandRunnerHandler.GenerateCommand)                             // AI: sem RBAC extra
+		cmdRunner.DELETE("/session/:sessionId", commandRunnerHandler.Cancel) // Forçar parada — sem RBAC extra (quem executa pode parar)
 	}
 
 	// Resource Explorer — navegador universal de recursos K8s (built-in + CRDs)

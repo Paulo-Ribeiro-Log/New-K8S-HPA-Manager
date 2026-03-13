@@ -2952,6 +2952,13 @@ class APIClient {
       body: JSON.stringify(req),
     });
   }
+
+  /** Força a parada de uma execução em andamento (mata os processos no servidor) */
+  async cancelCommand(sessionId: string): Promise<void> {
+    await this.request<void>(`/command-runner/session/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    });
+  }
 }
 
 // Singleton instance
