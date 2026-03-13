@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ type CommandRunnerHandler struct {
 	tracker        *sse.ProgressTracker
 	historyTracker *history.HistoryTracker
 	aiHandler      *AIDiagnosticsHandler // pode ser nil
+	cancelFuncs    sync.Map              // sessionID -> context.CancelFunc
 }
 
 // CommandTarget é um par cluster+namespace alvo de execução.
@@ -43,11 +45,14 @@ type ExecuteCommandRequest struct {
 
 // GenerateCommandRequest é o body do POST /generate.
 type GenerateCommandRequest struct {
-	Prompt    string `json:"prompt"`
-	Cluster   string `json:"cluster"`
-	Namespace string `json:"namespace"`
-	AIEmail   string `json:"ai_email"`
-	CmdType   string `json:"cmd_type"` // linguagem: kubectl | python | go | sh | bash
+	Prompt     string   `json:"prompt"`
+	Cluster    string   `json:"cluster"`
+	Namespace  string   `json:"namespace"`
+	Clusters   []string `json:"clusters,omitempty"`   // todos os clusters selecionados
+	Namespaces []string `json:"namespaces,omitempty"` // todos os namespaces selecionados
+	AIEmail    string   `json:"ai_email"`
+	CmdType    string   `json:"cmd_type"` // linguagem: kubectl | python | go | sh | bash
+	Explain    bool     `json:"explain"`
 }
 
 // allowedCmdTypes define os tipos de comando aceitos.
@@ -101,7 +106,12 @@ func (h *CommandRunnerHandler) Execute(c *gin.Context) {
 	}
 
 	sessionID := uuid.New().String()
-	go h.runParallel(sessionID, req)
+	ctx, cancel := context.WithCancel(context.Background())
+	h.cancelFuncs.Store(sessionID, cancel)
+	go func() {
+		h.runParallel(ctx, sessionID, req)
+		h.cancelFuncs.Delete(sessionID)
+	}()
 
 	c.JSON(http.StatusOK, gin.H{"session_id": sessionID})
 }
@@ -152,6 +162,24 @@ func (h *CommandRunnerHandler) Stream(c *gin.Context) {
 	}
 }
 
+// Cancel força a parada de uma execução em andamento.
+// DELETE /api/v1/command-runner/session/:sessionId
+func (h *CommandRunnerHandler) Cancel(c *gin.Context) {
+	sessionID := c.Param("sessionId")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, errorResponse("MISSING_SESSION", "sessionId obrigatório"))
+		return
+	}
+
+	if val, ok := h.cancelFuncs.Load(sessionID); ok {
+		val.(context.CancelFunc)()
+		h.cancelFuncs.Delete(sessionID)
+		c.JSON(http.StatusOK, gin.H{"cancelled": true})
+	} else {
+		c.JSON(http.StatusNotFound, gin.H{"cancelled": false, "message": "sessão não encontrada ou já finalizada"})
+	}
+}
+
 // GenerateCommand usa AI para gerar um comando a partir de uma descrição em linguagem natural.
 // POST /api/v1/command-runner/generate
 func (h *CommandRunnerHandler) GenerateCommand(c *gin.Context) {
@@ -176,28 +204,51 @@ func (h *CommandRunnerHandler) GenerateCommand(c *gin.Context) {
 		return
 	}
 
-	prompt := buildAIPrompt(req.Prompt, req.Cluster, req.Namespace, req.CmdType)
+	// Usar lista completa de clusters/namespaces se fornecida, senão fallback para campos simples
+	clusters := req.Clusters
+	if len(clusters) == 0 && req.Cluster != "" {
+		clusters = []string{req.Cluster}
+	}
+	namespaces := req.Namespaces
+	if len(namespaces) == 0 && req.Namespace != "" {
+		namespaces = []string{req.Namespace}
+	}
+
+	var prompt string
+	if req.Explain {
+		prompt = buildAIChatPrompt(req.Prompt, clusters, namespaces, req.CmdType)
+	} else {
+		prompt = buildAIPrompt(req.Prompt, req.Cluster, req.Namespace, req.CmdType)
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
 
-	result, err := provider.Analyze(ctx, prompt)
+	rawResult, err := provider.Analyze(ctx, prompt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao gerar comando: " + err.Error()})
 		return
 	}
 
-	result = cleanAICommandResponse(result)
-
-	c.JSON(http.StatusOK, gin.H{
-		"command": result,
-		"type":    detectCommandType(result),
-	})
+	if req.Explain {
+		cmd, expl := parseAIExplainResponse(rawResult)
+		c.JSON(http.StatusOK, gin.H{
+			"command":     cmd,
+			"type":        detectCommandType(cmd),
+			"explanation": expl,
+		})
+	} else {
+		result := cleanAICommandResponse(rawResult)
+		c.JSON(http.StatusOK, gin.H{
+			"command": result,
+			"type":    detectCommandType(result),
+		})
+	}
 }
 
 // ─── execução paralela ────────────────────────────────────────────────────────
 
-func (h *CommandRunnerHandler) runParallel(sessionID string, req ExecuteCommandRequest) {
+func (h *CommandRunnerHandler) runParallel(sessionCtx context.Context, sessionID string, req ExecuteCommandRequest) {
 	total := len(req.Targets)
 
 	h.tracker.SendToClient(sessionID, sse.ProgressEvent{
@@ -220,7 +271,7 @@ func (h *CommandRunnerHandler) runParallel(sessionID string, req ExecuteCommandR
 		wg.Add(1)
 		go func(t CommandTarget) {
 			defer wg.Done()
-			ok := h.runForTarget(sessionID, t, req.Command, req.Type, req.TimeoutSec)
+			ok := h.runForTarget(sessionCtx, sessionID, t, req.Command, req.Type, req.TimeoutSec)
 
 			mu.Lock()
 			completed++
@@ -279,14 +330,22 @@ func (h *CommandRunnerHandler) runParallel(sessionID string, req ExecuteCommandR
 
 // runForTarget executa o comando num único cluster/namespace e envia o output via SSE linha a linha.
 // Retorna true se o comando terminou com exit code 0.
-func (h *CommandRunnerHandler) runForTarget(sessionID string, target CommandTarget, command, cmdType string, timeoutSec int) bool {
+func (h *CommandRunnerHandler) runForTarget(sessionCtx context.Context, sessionID string, target CommandTarget, command, cmdType string, timeoutSec int) bool {
 	// Substituir placeholders
 	resolved := strings.ReplaceAll(command, "{{cluster}}", target.Cluster)
-	resolved = strings.ReplaceAll(resolved, "{{namespace}}", target.Namespace)
+	if target.Namespace == "" {
+		// Namespace vazio = todos os namespaces: substituir flags de namespace por -A
+		resolved = strings.ReplaceAll(resolved, "-n {{namespace}}", "-A")
+		resolved = strings.ReplaceAll(resolved, "--namespace={{namespace}}", "--all-namespaces")
+		resolved = strings.ReplaceAll(resolved, "--namespace {{namespace}}", "--all-namespaces")
+		resolved = strings.ReplaceAll(resolved, "{{namespace}}", "") // fallback
+	} else {
+		resolved = strings.ReplaceAll(resolved, "{{namespace}}", target.Namespace)
+	}
 
 	script := buildShellScript(resolved, cmdType, target.Cluster, target.Namespace)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	ctx, cancel := context.WithTimeout(sessionCtx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", script)
@@ -326,6 +385,10 @@ func (h *CommandRunnerHandler) runForTarget(sessionID string, target CommandTarg
 
 	if ctx.Err() == context.DeadlineExceeded {
 		h.sendLine(sessionID, target.Cluster, target.Namespace, fmt.Sprintf("[TIMEOUT] Limite de %ds excedido", timeoutSec), true)
+		return false
+	}
+	if ctx.Err() == context.Canceled {
+		h.sendLine(sessionID, target.Cluster, target.Namespace, "[CANCELADO] Execução interrompida pelo usuário", true)
 		return false
 	}
 	if err != nil {
@@ -410,9 +473,9 @@ Rules:
 		langInstruction = `Generate a kubectl command (or pipeline) that accomplishes this task.
 Rules:
 - Do NOT include explanations, markdown, code blocks, or backticks
-- Use --context={{cluster}} placeholder — it will be auto-injected as a bash function wrapper
-- Use -n {{namespace}} or --namespace={{namespace}} for namespace targeting
-- For piped commands (kubectl ... | xargs kubectl ...) the kubectl wrapper handles context automatically
+- Do NOT include --context flag — it is automatically injected via a bash wrapper function
+- Use -n {{namespace}} for namespace targeting ({{namespace}} is replaced at runtime)
+- For piped commands the kubectl context wrapper handles all calls automatically
 - If multiple steps are needed, join with && or newlines`
 	}
 
@@ -427,6 +490,98 @@ Target namespace: %s
 Language/type requested: %s
 
 %s`, userRequest, cluster, namespace, cmdType, langInstruction)
+}
+
+// codeBlockRe captura conteúdo de blocos de código markdown (```...```)
+var codeBlockRe = regexp.MustCompile("(?s)```(?:[a-z0-9]*)?\n?(.*?)```")
+
+// parseAIExplainResponse extrai comando (code block) e explicação do texto AI.
+func parseAIExplainResponse(text string) (command, explanation string) {
+	match := codeBlockRe.FindStringSubmatch(text)
+	if len(match) > 1 {
+		command = strings.TrimSpace(match[1])
+		explanation = strings.TrimSpace(codeBlockRe.ReplaceAllString(text, ""))
+		for strings.Contains(explanation, "\n\n\n") {
+			explanation = strings.ReplaceAll(explanation, "\n\n\n", "\n\n")
+		}
+	} else {
+		command = cleanAICommandResponse(text)
+		explanation = ""
+	}
+	return
+}
+
+// buildAIChatPrompt cria prompt para o modo chat — solicita código + explicação.
+// O AI deve gerar comandos específicos para a requisição do usuário, focados nos clusters/namespaces selecionados.
+func buildAIChatPrompt(userRequest string, clusters, namespaces []string, cmdType string) string {
+	if cmdType == "" {
+		cmdType = "kubectl"
+	}
+
+	// Descreve o escopo de execução de forma natural
+	allNs := len(namespaces) == 0 || (len(namespaces) == 1 && namespaces[0] == "*")
+
+	var scopeDesc string
+	switch {
+	case len(clusters) == 0:
+		scopeDesc = "no cluster selected"
+	case len(clusters) == 1 && allNs:
+		scopeDesc = fmt.Sprintf("cluster '%s' (all namespaces)", clusters[0])
+	case len(clusters) == 1 && len(namespaces) == 1:
+		scopeDesc = fmt.Sprintf("cluster '%s', namespace '%s'", clusters[0], namespaces[0])
+	case len(clusters) == 1:
+		scopeDesc = fmt.Sprintf("cluster '%s', namespaces: %s", clusters[0], strings.Join(namespaces, ", "))
+	case allNs:
+		scopeDesc = fmt.Sprintf("%d clusters (%s) — all namespaces", len(clusters), strings.Join(clusters, ", "))
+	default:
+		scopeDesc = fmt.Sprintf("%d clusters (%s), namespaces: %s",
+			len(clusters), strings.Join(clusters, ", "), strings.Join(namespaces, ", "))
+	}
+
+	// Instrução de namespace para o comando
+	var nsInstruction string
+	if allNs {
+		nsInstruction = "Use -A / --all-namespaces (all namespaces are targeted)."
+	} else if len(namespaces) == 1 {
+		nsInstruction = fmt.Sprintf("Use -n {{namespace}} as namespace placeholder (will be replaced with '%s' at runtime).", namespaces[0])
+	} else {
+		nsInstruction = fmt.Sprintf("Use -n {{namespace}} as namespace placeholder (replaced per target: %s).", strings.Join(namespaces, ", "))
+	}
+
+	// Nota sobre multi-cluster
+	multiClusterNote := ""
+	if len(clusters) > 1 {
+		multiClusterNote = fmt.Sprintf("\nIMPORTANT: The command runs independently on each of the %d clusters. The --context flag is auto-injected per cluster — do NOT include it.", len(clusters))
+	}
+
+	langHint := "a kubectl command or pipeline"
+	switch cmdType {
+	case "python", "python3":
+		langHint = "a Python 3 script"
+	case "go":
+		langHint = "a complete Go program (package main)"
+	case "sh", "bash":
+		langHint = "a " + cmdType + " shell script"
+	}
+
+	return fmt.Sprintf(`You are a Kubernetes and DevOps expert assistant integrated into a Command Runner tool.
+IMPORTANT: Always respond in Brazilian Portuguese (pt-BR). Code comments and variable names can be in English, but all explanations must be in pt-BR.
+
+USER REQUEST: "%s"
+
+EXECUTION SCOPE: %s
+LANGUAGE: %s%s
+
+Generate %s that SPECIFICALLY addresses the user's request for the above scope.
+- Be precise and targeted: if the user mentions an app name, resource type, error condition, or label — use it directly in the command.
+- Do NOT generate generic templates. The command should be ready to run as-is for the described scope.
+- For kubectl: NEVER include --context flag (auto-injected). %s
+- For shell/python/go: $CLUSTER and $NAMESPACE env vars are pre-set at runtime.
+
+Structure your response:
+1. Complete code in a fenced code block
+2. Brief explanation (2–4 sentences): what it does, key flags, and any caveats (destructive operations, required permissions, etc.)`,
+		userRequest, scopeDesc, cmdType, multiClusterNote, langHint, nsInstruction)
 }
 
 // cleanAICommandResponse remove markdown artifacts que algumas AIs insistem em incluir.
