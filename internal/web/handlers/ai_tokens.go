@@ -123,7 +123,9 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 	// Validar tokens (testar se são válidos) - apenas se novos tokens forem fornecidos
 	validationErrors := make(map[string]string)
 
-	if req.GeminiAPIKey != "" {
+	// Validar Gemini API key apenas quando NÃO estiver usando Vertex AI (OAuth2).
+	// No modo Vertex, a autenticação é via refresh token — não existe API key "AIza...".
+	if req.GeminiAPIKey != "" && req.GeminiAuthMode != "vertex" {
 		if err := validateGeminiToken(req.GeminiAPIKey); err != nil {
 			validationErrors["gemini"] = err.Error()
 		}
@@ -209,6 +211,8 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 	} else {
 		tokens.GeminiServiceAccountJSON = existingTokens.GeminiServiceAccountJSON
 	}
+	// Refresh token OAuth2 nunca vem no request — sempre preservar o existente
+	tokens.GeminiRefreshToken = existingTokens.GeminiRefreshToken
 
 	// OpenAI
 	if req.OpenAIAPIKey != "" {
@@ -543,18 +547,11 @@ func validateOpenAIToken(apiKey string) error {
 		return fmt.Errorf("API key is empty")
 	}
 
-	// Validar formato básico do token OpenAI
-	// OpenAI API keys começam com "sk-"
+	// ⚠️ IMPORTANTE: NÃO fazer chamadas à API para validar!
+	// Chaves OpenAI/Azure OpenAI têm formatos variados (sk-, sk-proj-, UUID, etc.)
+	// Validar apenas comprimento mínimo — não restringir por prefixo
 	if len(apiKey) < 20 {
 		return fmt.Errorf("API key is too short (minimum 20 characters)")
-	}
-	
-	// ⚠️ IMPORTANTE: NÃO fazer chamadas à API para validar!
-	// Cada chamada pode consumir quota dependendo do plano
-	// Validar apenas formato básico
-	
-	if !strings.HasPrefix(apiKey, "sk-") {
-		return fmt.Errorf("OpenAI API key deve começar com 'sk-'")
 	}
 
 	return nil
