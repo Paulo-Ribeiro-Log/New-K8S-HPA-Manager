@@ -208,6 +208,43 @@ interface ResourceEditPanelProps {
   editorHeight: string;
 }
 
+function ResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
+  const dragging = useRef(false);
+  const lastX = useRef(0);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      onDrag(e.clientX - lastX.current);
+      lastX.current = e.clientX;
+    };
+    const onUp = () => {
+      dragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [onDrag]);
+
+  return (
+    <div
+      className="w-1 flex-shrink-0 bg-border/40 hover:bg-primary/60 active:bg-primary cursor-col-resize transition-colors"
+      onMouseDown={(e) => {
+        dragging.current = true;
+        lastX.current = e.clientX;
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+      }}
+    />
+  );
+}
+
 function ResourceEditPanel({ label, cluster, initial, editorHeight }: ResourceEditPanelProps) {
   // Namespaces do cluster deste painel (buscados internamente)
   const [namespaces,       setNamespaces]       = useState<string[]>([]);
@@ -854,6 +891,9 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
   const [isRightContextSwitching, setIsRightCtxSwitch] = useState(false);
   const [clusterComboOpen, setClusterComboOpen]        = useState(false);
 
+  // Largura do painel esquerdo (resize dinâmico)
+  const [leftWidth, setLeftWidth] = useState<number | null>(null);
+
   // Altura dos editores dentro do modal fullscreen
   const EDITOR_HEIGHT = "calc(100vh - 310px)";
 
@@ -973,9 +1013,12 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
         </div>
 
         {/* Dois painéis independentes */}
-        <div className="flex-1 min-h-0 grid grid-cols-2">
+        <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
           {/* Painel Esquerdo */}
-          <div className="flex flex-col h-full overflow-hidden border-r border-border">
+          <div
+            className="flex flex-col h-full overflow-hidden flex-shrink-0"
+            style={{ width: leftWidth !== null ? leftWidth : "50%" }}
+          >
             <div className="shrink-0 px-4 pt-3 pb-1 border-b border-border/40 bg-muted/10 flex items-center gap-2">
               <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Painel Esquerdo</span>
               <Badge variant="secondary" className="text-xs font-mono">{cluster}</Badge>
@@ -991,8 +1034,17 @@ export function ResourceCompareModal({ open, onClose, cluster, clusters: allClus
             </div>
           </div>
 
+          <ResizeDivider
+            onDrag={(d) =>
+              setLeftWidth((w) => {
+                const current = w ?? window.innerWidth / 2;
+                return Math.max(300, Math.min(window.innerWidth - 300, current + d));
+              })
+            }
+          />
+
           {/* Painel Direito */}
-          <div className="flex flex-col h-full overflow-hidden">
+          <div className="flex flex-col h-full overflow-hidden flex-1 min-w-0">
             <div className="shrink-0 px-4 pt-3 pb-1 border-b border-border/40 bg-muted/10 flex items-center gap-2">
               <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Painel Direito</span>
               <Badge
