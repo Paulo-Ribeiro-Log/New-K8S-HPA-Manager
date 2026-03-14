@@ -631,6 +631,7 @@ export function AISettingsTab() {
                     <Input
                       id="gemini-key"
                       type={showGemini ? "text" : "password"}
+                      autoComplete="new-password"
                       placeholder="AIza..."
                       value={geminiKey}
                       onChange={(e) => { setGeminiKey(e.target.value); setGeminiValid(null); }}
@@ -782,6 +783,7 @@ export function AISettingsTab() {
                 <Input
                   id="openai-key"
                   type={showOpenAI ? "text" : "password"}
+                  autoComplete="new-password"
                   placeholder="sk-..."
                   value={openaiKey}
                   onChange={(e) => {
@@ -855,6 +857,7 @@ export function AISettingsTab() {
                 <Input
                   id="claude-key"
                   type={showClaude ? "text" : "password"}
+                  autoComplete="new-password"
                   placeholder="sk-ant-api03-..."
                   value={claudeKey}
                   onChange={(e) => {
@@ -928,6 +931,7 @@ export function AISettingsTab() {
                 <Input
                   id="copilot-key"
                   type={showCopilot ? "text" : "password"}
+                  autoComplete="new-password"
                   placeholder="Azure OpenAI API Key..."
                   value={copilotKey}
                   onChange={(e) => {
