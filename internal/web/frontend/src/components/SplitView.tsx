@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useRef, useState, useCallback } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { Card } from "@/components/ui/card";
 
 interface SplitViewProps {
@@ -17,17 +17,14 @@ interface SplitViewProps {
 function ResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
   const dragging = useRef(false);
   const lastX = useRef(0);
-  const onDragRef = useRef(onDrag);
-  useEffect(() => { onDragRef.current = onDrag; }, [onDrag]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (!dragging.current) return;
-      onDragRef.current(e.clientX - lastX.current);
+      onDrag(e.clientX - lastX.current);
       lastX.current = e.clientX;
     };
     const onUp = () => {
-      if (!dragging.current) return;
       dragging.current = false;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
@@ -38,11 +35,11 @@ function ResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, []);
+  }, [onDrag]);
 
   return (
     <div
-      className="w-1 flex-shrink-0 bg-border/40 hover:bg-primary/60 active:bg-primary cursor-col-resize transition-colors self-stretch"
+      className="w-1 flex-shrink-0 bg-border/40 hover:bg-primary/60 active:bg-primary cursor-col-resize transition-colors"
       onMouseDown={(e) => {
         dragging.current = true;
         lastX.current = e.clientX;
@@ -55,24 +52,14 @@ function ResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
 }
 
 export const SplitView = ({ leftPanel, rightPanel }: SplitViewProps) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  // 25% esquerda por padrão (equivalente ao 1:3 anterior)
-  const [leftPct, setLeftPct] = useState(25);
-
-  const handleDrag = useCallback((delta: number) => {
-    const containerW = containerRef.current?.offsetWidth ?? 800;
-    setLeftPct((prev) => {
-      const newPct = prev + (delta / containerW) * 100;
-      return Math.max(15, Math.min(70, newPct));
-    });
-  }, []);
+  const [leftWidth, setLeftWidth] = useState(320);
 
   return (
-    <div ref={containerRef} className="flex flex-row gap-0 p-4 h-full" style={{ gap: 0 }}>
+    <div className="flex flex-row p-4 h-full gap-0 overflow-hidden">
       {/* Painel esquerdo */}
       <Card
-        className="p-4 bg-gradient-card border-border/50 flex flex-col min-h-0 min-w-0"
-        style={{ width: `${leftPct}%`, flexShrink: 0 }}
+        className="p-4 bg-gradient-card border-border/50 flex flex-col min-h-0 min-w-0 flex-shrink-0"
+        style={{ width: leftWidth }}
       >
         <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 mb-3 pb-2 border-b-2 border-primary flex-shrink-0">
           <h3 className="text-sm font-semibold text-primary shrink-0 whitespace-nowrap">
@@ -89,12 +76,11 @@ export const SplitView = ({ leftPanel, rightPanel }: SplitViewProps) => {
         </div>
       </Card>
 
-      <ResizeDivider onDrag={handleDrag} />
+      <ResizeDivider onDrag={(d) => setLeftWidth((w) => Math.max(200, Math.min(700, w + d)))} />
 
       {/* Painel direito */}
       <Card
-        className="p-4 bg-gradient-card border-border/50 flex flex-col min-h-0 min-w-0 ml-4"
-        style={{ flex: 1 }}
+        className="flex-1 p-4 bg-gradient-card border-border/50 flex flex-col min-h-0 min-w-0 ml-4"
       >
         <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 mb-3 pb-2 border-b-2 border-primary flex-shrink-0">
           <h3 className="text-sm font-semibold text-primary shrink-0 whitespace-nowrap">
