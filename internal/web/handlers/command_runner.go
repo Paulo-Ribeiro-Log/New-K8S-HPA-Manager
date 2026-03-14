@@ -346,9 +346,11 @@ func (h *CommandRunnerHandler) runForTarget(sessionCtx context.Context, sessionI
 
 	var script string
 	var tmpPyFile string
-	if cmdType == "python" || cmdType == "python3" {
-		// Escrever o script Python em arquivo temporário para evitar problemas de quoting
-		// com multi-line scripts e caracteres especiais gerados pela AI
+	var tmpGoDir string
+	switch {
+	case cmdType == "python" || cmdType == "python3":
+		// Escrever em arquivo temporário para evitar problemas de quoting com scripts
+		// multi-line e caracteres especiais gerados pela AI
 		f, err := os.CreateTemp("", "k8s-hpa-py-*.py")
 		if err != nil {
 			h.sendLine(sessionID, target.Cluster, target.Namespace, fmt.Sprintf("[ERRO] Falha ao criar arquivo temporário Python: %v", err), true)
@@ -363,7 +365,23 @@ func (h *CommandRunnerHandler) runForTarget(sessionCtx context.Context, sessionI
 		}
 		f.Close()
 		script = buildPythonScript(tmpPyFile, target.Cluster, target.Namespace)
-	} else {
+
+	case cmdType == "go":
+		// Go precisa de um diretório temporário com go.mod para suportar imports externos
+		dir, err := os.MkdirTemp("", "k8s-hpa-go-*")
+		if err != nil {
+			h.sendLine(sessionID, target.Cluster, target.Namespace, fmt.Sprintf("[ERRO] Falha ao criar diretório temporário Go: %v", err), true)
+			return false
+		}
+		tmpGoDir = dir
+		if err := os.WriteFile(dir+"/main.go", []byte(resolved), 0644); err != nil {
+			os.RemoveAll(tmpGoDir)
+			h.sendLine(sessionID, target.Cluster, target.Namespace, fmt.Sprintf("[ERRO] Falha ao escrever script Go: %v", err), true)
+			return false
+		}
+		script = buildGoScript(tmpGoDir, target.Cluster, target.Namespace)
+
+	default:
 		script = buildShellScript(resolved, cmdType, target.Cluster, target.Namespace)
 	}
 
@@ -406,6 +424,9 @@ func (h *CommandRunnerHandler) runForTarget(sessionCtx context.Context, sessionI
 	err = cmd.Wait()
 	if tmpPyFile != "" {
 		os.Remove(tmpPyFile)
+	}
+	if tmpGoDir != "" {
+		os.RemoveAll(tmpGoDir)
 	}
 
 	if ctx.Err() == context.DeadlineExceeded {
@@ -489,6 +510,25 @@ export NAMESPACE=%q
 `, venvDir, cluster, namespace, scriptPath)
 }
 
+// buildGoScript executa um script Go a partir de um diretório temporário com go.mod.
+// Suporta imports de qualquer pacote público via go mod tidy automático.
+func buildGoScript(scriptDir, cluster, namespace string) string {
+	return fmt.Sprintf(`
+cd %q
+if [ ! -f go.mod ]; then
+    go mod init k8shpa_script 2>&1
+fi
+# Resolver dependências se houver imports externos (não-stdlib)
+if grep -qE '^\s*"[a-z].*\.[a-z]' main.go 2>/dev/null; then
+    echo "[k8s-hpa] Baixando dependências Go..."
+    GOFLAGS=-mod=mod go mod tidy 2>&1
+fi
+export CLUSTER=%q
+export NAMESPACE=%q
+go run . 2>&1
+`, scriptDir, cluster, namespace)
+}
+
 // buildAIPrompt cria o prompt para o provider de AI respeitando a linguagem escolhida.
 func buildAIPrompt(userRequest, cluster, namespace, cmdType string) string {
 	if cmdType == "" {
@@ -508,8 +548,9 @@ Rules:
 	case "go":
 		langInstruction = `Generate a complete Go program (package main) that accomplishes this task.
 Rules:
-- Use os/exec to run kubectl commands or the client-go SDK
-- Export cluster/namespace via environment variables CLUSTER and NAMESPACE
+- Use os/exec to run kubectl commands (preferred for simplicity) or client-go SDK for advanced use
+- Read cluster/namespace: cluster := os.Getenv("CLUSTER"); namespace := os.Getenv("NAMESPACE")
+- External imports are supported (go mod tidy runs automatically)
 - Do NOT include explanations, markdown, or code fences — return only the Go code`
 	case "sh", "bash":
 		langInstruction = `Generate a shell script (` + cmdType + `) that accomplishes this task.
