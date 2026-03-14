@@ -1159,8 +1159,8 @@ func (s *Server) setupRoutes() {
 			dependenciesGroup.GET("/service/:serviceName", dependenciesHandler.GetServiceUsage) // Uso de serviço específico
 
 			// Rotas de escrita (POST) - Escaneiam K8s e persistem no SQLite
-			dependenciesGroup.POST("/scan", rbacMiddleware.RequireSREGroup(), dependenciesHandler.Scan)                   // Scan múltiplos clusters
-			dependenciesGroup.POST("/scan/:cluster", rbacMiddleware.RequireSREGroup(), dependenciesHandler.ScanCluster)   // Scan cluster único (auto-scan)
+			dependenciesGroup.POST("/scan", dependenciesHandler.Scan)                        // Scan múltiplos clusters (sem RBAC: leitura K8s)
+			dependenciesGroup.POST("/scan/:cluster", dependenciesHandler.ScanCluster)          // Scan cluster único (sem RBAC: auto-scan)
 			dependenciesGroup.POST("/cache/clear", rbacMiddleware.RequireSREGroup(), dependenciesHandler.ClearCache)      // Limpar cache em memória
 		}
 
