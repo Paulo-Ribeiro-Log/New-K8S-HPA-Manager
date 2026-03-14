@@ -83,10 +83,19 @@ type DependencyStats struct {
 }
 
 // DependencyScanner escaneia dependências externas em clusters K8s
+// resourcePrefixRule mapeia prefixo de nome de recurso K8s para tipo de dependência.
+// Usa match de prefixo simples (HasPrefix) então "kfk" casa kfk-, kfka-, kfkp-, kfk01-, etc.
+type resourcePrefixRule struct {
+	Prefix string
+	Type   DependencyType
+	Name   string
+}
+
 type DependencyScanner struct {
-	kubeManager *config.KubeConfigManager
-	patterns    []DependencyPattern
-	mu          sync.RWMutex
+	kubeManager     *config.KubeConfigManager
+	patterns        []DependencyPattern
+	resourcePrefixes []resourcePrefixRule
+	mu              sync.RWMutex
 
 	// Cache de resultados
 	cache     map[string]*DependencyScanResult
@@ -103,46 +112,61 @@ func NewDependencyScanner(kubeManager *config.KubeConfigManager) *DependencyScan
 		cacheTTL:    5 * time.Minute,
 	}
 
-	// Inicializar padrões de detecção
+	// Padrões para valores em ConfigMaps/Secrets/envvars
+	// [a-z0-9]* aceita qualquer sufixo após o prefixo: kfka-, kfkp-, rds01-, etc.
 	scanner.patterns = []DependencyPattern{
-		// RDS (PostgreSQL, MySQL, SQL Server) - inclui rds*, rdsh-*, rdsp-*
-		{Type: DependencyRDS, Pattern: regexp.MustCompile(`(?i)\brds[a-z]*-[a-z0-9\-\.]+`), Name: "RDS Database"},
-		{Type: DependencyRDS, Pattern: regexp.MustCompile(`(?i)\bpsg[a-z]*-[a-z0-9\-\.]+`), Name: "PostgreSQL"},
-		{Type: DependencyRDS, Pattern: regexp.MustCompile(`(?i)\bpostgres[a-z]*-[a-z0-9\-\.]+`), Name: "PostgreSQL"},
-		{Type: DependencyRDS, Pattern: regexp.MustCompile(`(?i)\bmysql[a-z]*-[a-z0-9\-\.]+`), Name: "MySQL"},
+		{Type: DependencyRDS, Pattern: regexp.MustCompile(`(?i)\brds[a-z0-9]*-[a-z0-9\-\.]+`), Name: "RDS Database"},
+		{Type: DependencyRDS, Pattern: regexp.MustCompile(`(?i)\bpsg[a-z0-9]*-[a-z0-9\-\.]+`), Name: "PostgreSQL"},
+		{Type: DependencyRDS, Pattern: regexp.MustCompile(`(?i)\bpostgres[a-z0-9]*-[a-z0-9\-\.]+`), Name: "PostgreSQL"},
+		{Type: DependencyRDS, Pattern: regexp.MustCompile(`(?i)\bmysql[a-z0-9]*-[a-z0-9\-\.]+`), Name: "MySQL"},
 
-		// Kafka - inclui kfk*, kafka*
-		{Type: DependencyKafka, Pattern: regexp.MustCompile(`(?i)\bkfk[a-z]*-[a-z0-9\-\.]+`), Name: "Kafka"},
-		{Type: DependencyKafka, Pattern: regexp.MustCompile(`(?i)\bkafka[a-z]*-[a-z0-9\-\.]+`), Name: "Kafka"},
+		{Type: DependencyKafka, Pattern: regexp.MustCompile(`(?i)\bkfk[a-z0-9]*-[a-z0-9\-\.]+`), Name: "Kafka"},
+		{Type: DependencyKafka, Pattern: regexp.MustCompile(`(?i)\bkafka[a-z0-9]*-[a-z0-9\-\.]+`), Name: "Kafka"},
 
-		// Event Hub - inclui evh*, eventhub*
-		{Type: DependencyEventHub, Pattern: regexp.MustCompile(`(?i)\bevh[a-z]*-[a-z0-9\-\.]+`), Name: "Event Hub"},
-		{Type: DependencyEventHub, Pattern: regexp.MustCompile(`(?i)\beventhub[a-z]*-[a-z0-9\-\.]+`), Name: "Event Hub"},
+		{Type: DependencyEventHub, Pattern: regexp.MustCompile(`(?i)\bevh[a-z0-9]*-[a-z0-9\-\.]+`), Name: "Event Hub"},
+		{Type: DependencyEventHub, Pattern: regexp.MustCompile(`(?i)\beventhub[a-z0-9]*-[a-z0-9\-\.]+`), Name: "Event Hub"},
 		{Type: DependencyEventHub, Pattern: regexp.MustCompile(`(?i)\.servicebus\.windows\.net`), Name: "Azure Service Bus"},
 
-		// Redis - inclui redis*, rds* (redis), cache*
-		{Type: DependencyRedis, Pattern: regexp.MustCompile(`(?i)\bredis[a-z]*-[a-z0-9\-\.]+`), Name: "Redis"},
-		{Type: DependencyRedis, Pattern: regexp.MustCompile(`(?i)\bcache[a-z]*-[a-z0-9\-\.]+`), Name: "Cache"},
+		{Type: DependencyRedis, Pattern: regexp.MustCompile(`(?i)\bredis[a-z0-9]*-[a-z0-9\-\.]+`), Name: "Redis"},
+		{Type: DependencyRedis, Pattern: regexp.MustCompile(`(?i)\bcache[a-z0-9]*-[a-z0-9\-\.]+`), Name: "Cache"},
 		{Type: DependencyRedis, Pattern: regexp.MustCompile(`(?i)\.redis\.cache\.windows\.net`), Name: "Azure Redis"},
 
-		// MongoDB - inclui mdb*, mongo*
-		{Type: DependencyMongo, Pattern: regexp.MustCompile(`(?i)\bmdb[a-z]*-[a-z0-9\-\.]+`), Name: "MongoDB"},
-		{Type: DependencyMongo, Pattern: regexp.MustCompile(`(?i)\bmongo[a-z]*-[a-z0-9\-\.]+`), Name: "MongoDB"},
+		{Type: DependencyMongo, Pattern: regexp.MustCompile(`(?i)\bmdb[a-z0-9]*-[a-z0-9\-\.]+`), Name: "MongoDB"},
+		{Type: DependencyMongo, Pattern: regexp.MustCompile(`(?i)\bmongo[a-z0-9]*-[a-z0-9\-\.]+`), Name: "MongoDB"},
 		{Type: DependencyMongo, Pattern: regexp.MustCompile(`(?i)\.mongo\.cosmos\.azure\.com`), Name: "Azure Cosmos MongoDB"},
 
-		// SQL Server - inclui sql*, mssql*
-		{Type: DependencySQL, Pattern: regexp.MustCompile(`(?i)\bsql[a-z]*-[a-z0-9\-\.]+`), Name: "SQL Server"},
-		{Type: DependencySQL, Pattern: regexp.MustCompile(`(?i)\bmssql[a-z]*-[a-z0-9\-\.]+`), Name: "SQL Server"},
+		{Type: DependencySQL, Pattern: regexp.MustCompile(`(?i)\bsql[a-z0-9]*-[a-z0-9\-\.]+`), Name: "SQL Server"},
+		{Type: DependencySQL, Pattern: regexp.MustCompile(`(?i)\bmssql[a-z0-9]*-[a-z0-9\-\.]+`), Name: "SQL Server"},
 		{Type: DependencySQL, Pattern: regexp.MustCompile(`(?i)\.database\.windows\.net`), Name: "Azure SQL"},
 
-		// Storage - Azure Blob, File, AWS S3
 		{Type: DependencyStorage, Pattern: regexp.MustCompile(`(?i)\.blob\.core\.windows\.net`), Name: "Azure Blob Storage"},
 		{Type: DependencyStorage, Pattern: regexp.MustCompile(`(?i)\.file\.core\.windows\.net`), Name: "Azure File Storage"},
 		{Type: DependencyStorage, Pattern: regexp.MustCompile(`(?i)\bs3\.amazonaws\.com`), Name: "AWS S3"},
-		{Type: DependencyStorage, Pattern: regexp.MustCompile(`(?i)\bstg[a-z]*-[a-z0-9\-\.]+`), Name: "Storage"},
+		{Type: DependencyStorage, Pattern: regexp.MustCompile(`(?i)\bstg[a-z0-9]*-[a-z0-9\-\.]+`), Name: "Storage"},
 
-		// APIs genéricas
-		{Type: DependencyAPI, Pattern: regexp.MustCompile(`(?i)\bapi[a-z]*-[a-z0-9\-\.]+\.(dc|corp|internal)`), Name: "Internal API"},
+		// API: sem restrição de domínio
+		{Type: DependencyAPI, Pattern: regexp.MustCompile(`(?i)\bapi[a-z0-9]*-[a-z0-9\-\.]+`), Name: "Internal API"},
+	}
+
+	// Prefixos de nomes de recursos K8s (Services, StatefulSets).
+	// Usa strings.HasPrefix(name, prefix) — "kfk" casa kfk-, kfka-, kfkp-, kfk01-, etc.
+	scanner.resourcePrefixes = []resourcePrefixRule{
+		{Prefix: "rds", Type: DependencyRDS, Name: "RDS Database"},
+		{Prefix: "psg", Type: DependencyRDS, Name: "PostgreSQL"},
+		{Prefix: "postgres", Type: DependencyRDS, Name: "PostgreSQL"},
+		{Prefix: "mysql", Type: DependencyRDS, Name: "MySQL"},
+		{Prefix: "kfk", Type: DependencyKafka, Name: "Kafka"},
+		{Prefix: "kafka", Type: DependencyKafka, Name: "Kafka"},
+		{Prefix: "evh", Type: DependencyEventHub, Name: "Event Hub"},
+		{Prefix: "eventhub", Type: DependencyEventHub, Name: "Event Hub"},
+		{Prefix: "redis", Type: DependencyRedis, Name: "Redis"},
+		{Prefix: "cache", Type: DependencyRedis, Name: "Cache"},
+		{Prefix: "mdb", Type: DependencyMongo, Name: "MongoDB"},
+		{Prefix: "mongo", Type: DependencyMongo, Name: "MongoDB"},
+		{Prefix: "sql", Type: DependencySQL, Name: "SQL Server"},
+		{Prefix: "mssql", Type: DependencySQL, Name: "SQL Server"},
+		{Prefix: "stg", Type: DependencyStorage, Name: "Storage"},
+		{Prefix: "api", Type: DependencyAPI, Name: "Internal API"},
 	}
 
 	return scanner
@@ -269,6 +293,36 @@ func (s *DependencyScanner) Scan(ctx context.Context, cluster string, namespaces
 				result.Stats.ByType[string(dep.ServiceType)]++
 			}
 		}
+
+		// 4. Escanear Services por nome (prefixo wildcard: kfk* casa kfka-, kfkp-, etc.)
+		services, err := client.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			log.Warn().Err(err).Str("namespace", ns).Msg("Failed to list Services")
+		} else {
+			for _, svc := range services.Items {
+				deps := s.scanResourcesByName(cluster, ns, svc.Name, "service", svc.Name)
+				for _, dep := range deps {
+					result.Dependencies = append(result.Dependencies, dep)
+					uniqueServices[dep.ServiceName] = true
+					result.Stats.ByType[string(dep.ServiceType)]++
+				}
+			}
+		}
+
+		// 5. Escanear StatefulSets por nome (bancos, Kafka, etc. frequentemente são StatefulSets)
+		statefulSets, err := client.AppsV1().StatefulSets(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			log.Warn().Err(err).Str("namespace", ns).Msg("Failed to list StatefulSets")
+		} else {
+			for _, sts := range statefulSets.Items {
+				deps := s.scanResourcesByName(cluster, ns, sts.Name, "statefulset", sts.Name)
+				for _, dep := range deps {
+					result.Dependencies = append(result.Dependencies, dep)
+					uniqueServices[dep.ServiceName] = true
+					result.Stats.ByType[string(dep.ServiceType)]++
+				}
+			}
+		}
 	}
 
 	// Calcular estatísticas finais
@@ -290,6 +344,28 @@ func (s *DependencyScanner) Scan(ctx context.Context, cluster string, namespaces
 		Msg("Dependency scan completed")
 
 	return result, nil
+}
+
+// scanResourcesByName detecta dependências pelo nome do recurso K8s (Service, StatefulSet).
+// Usa prefixo wildcard: "kfk" casa kfk-, kfka-, kfkp-, kfk01-, etc.
+func (s *DependencyScanner) scanResourcesByName(cluster, namespace, resourceName, sourceType, sourceName string) []ExternalDependency {
+	nameLower := strings.ToLower(resourceName)
+	var deps []ExternalDependency
+
+	for _, rule := range s.resourcePrefixes {
+		if strings.HasPrefix(nameLower, rule.Prefix) {
+			deps = append(deps, ExternalDependency{
+				ServiceName: resourceName,
+				ServiceType: rule.Type,
+				Cluster:     cluster,
+				Namespace:   namespace,
+				SourceType:  sourceType,
+				SourceName:  sourceName,
+			})
+			break // primeiro match ganha
+		}
+	}
+	return deps
 }
 
 // scanConfigMapOrSecret analisa um ConfigMap ou Secret em busca de dependências
