@@ -389,6 +389,14 @@ func (h *CommandRunnerHandler) runForTarget(sessionCtx context.Context, sessionI
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", script)
+	// Forçar saída colorida: programas como kubectl, helm, grep detectam ausência de TTY
+	// e desabilitam cores. Estas variáveis simulam um terminal colorido.
+	cmd.Env = append(os.Environ(),
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+		"FORCE_COLOR=1",
+		"CLICOLOR_FORCE=1",
+	)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

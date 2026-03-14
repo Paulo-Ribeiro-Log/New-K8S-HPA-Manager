@@ -140,6 +140,51 @@ function ResizeHDivider({ onDrag }: { onDrag: (delta: number) => void }) {
   );
 }
 
+// Mapa de cores ANSI standard + bright para CSS
+const ANSI_FG: Record<number, string> = {
+  30: "#4e4e4e", 31: "#ff5555", 32: "#50fa7b", 33: "#f1fa8c",
+  34: "#6272a4", 35: "#ff79c6", 36: "#8be9fd", 37: "#f8f8f2",
+  90: "#6272a4", 91: "#ff6e6e", 92: "#69ff94", 93: "#ffffa5",
+  94: "#d6acff", 95: "#ff92df", 96: "#a4ffff", 97: "#ffffff",
+};
+const ANSI_BG: Record<number, string> = {
+  40: "#282a36", 41: "#ff5555", 42: "#50fa7b", 43: "#f1fa8c",
+  44: "#6272a4", 45: "#ff79c6", 46: "#8be9fd", 47: "#f8f8f2",
+  100: "#6272a4", 101: "#ff6e6e", 102: "#69ff94", 103: "#ffffa5",
+  104: "#d6acff", 105: "#ff92df", 106: "#a4ffff", 107: "#ffffff",
+};
+
+/** Converte uma linha com escape codes ANSI em spans React coloridos */
+function AnsiLine({ text }: { text: string }) {
+  const parts: { text: string; style: React.CSSProperties }[] = [];
+  // Remove carriage returns (saída de comandos com \r\n)
+  const clean = text.replace(/\r/g, "");
+  const ansiRe = /\x1b\[([0-9;]*)m/g;
+  let style: React.CSSProperties = {};
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = ansiRe.exec(clean)) !== null) {
+    if (m.index > last) parts.push({ text: clean.slice(last, m.index), style: { ...style } });
+    const codes = m[1].split(";").map(Number);
+    for (let i = 0; i < codes.length; i++) {
+      const c = codes[i];
+      if (c === 0) { style = {}; }
+      else if (c === 1) { style = { ...style, fontWeight: "bold" }; }
+      else if (c === 2) { style = { ...style, opacity: 0.7 }; }
+      else if (c === 3) { style = { ...style, fontStyle: "italic" }; }
+      else if (c === 4) { style = { ...style, textDecoration: "underline" }; }
+      else if (ANSI_FG[c]) { style = { ...style, color: ANSI_FG[c] }; }
+      else if (ANSI_BG[c]) { style = { ...style, backgroundColor: ANSI_BG[c] }; }
+      else if (c === 38 && codes[i + 1] === 5) { style = { ...style, color: `var(--ansi-256-${codes[i + 2]})` }; i += 2; }
+      else if (c === 38 && codes[i + 1] === 2) { style = { ...style, color: `rgb(${codes[i+2]},${codes[i+3]},${codes[i+4]})` }; i += 4; }
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < clean.length) parts.push({ text: clean.slice(last), style: { ...style } });
+  if (parts.length === 0) return <span>{clean}</span>;
+  return <>{parts.map((p, i) => <span key={i} style={p.style}>{p.text}</span>)}</>;
+}
+
 export function CommandRunnerTab({ selectedCluster }: CommandRunnerTabProps) {
   const { clusters: allClusters } = useClusters();
 
@@ -825,15 +870,15 @@ export function CommandRunnerTab({ selectedCluster }: CommandRunnerTabProps) {
               </div>
 
               {activeOutputTab && outputs[activeOutputTab] && (
-                <ScrollArea className="flex-1 bg-black/80 rounded p-2 font-mono text-xs">
+                <ScrollArea className="flex-1 bg-[#1e1e2e] rounded p-2 font-mono text-xs">
                   {outputs[activeOutputTab].map((line, i) => (
                     <div
                       key={i}
                       className={`leading-relaxed whitespace-pre-wrap break-all ${
-                        line.isError ? "text-red-400" : "text-green-300"
+                        line.isError ? "text-red-400" : "text-[#cdd6f4]"
                       }`}
                     >
-                      {line.text}
+                      <AnsiLine text={line.text} />
                     </div>
                   ))}
                   <div ref={terminalEndRef} />
