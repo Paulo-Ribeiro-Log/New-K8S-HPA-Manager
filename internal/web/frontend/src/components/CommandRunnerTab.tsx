@@ -140,16 +140,16 @@ function ResizeHDivider({ onDrag }: { onDrag: (delta: number) => void }) {
   );
 }
 
-// Mapa de cores ANSI standard + bright para CSS
+// Dracula Official theme — https://draculatheme.com/contribute
 const ANSI_FG: Record<number, string> = {
-  30: "#4e4e4e", 31: "#ff5555", 32: "#50fa7b", 33: "#f1fa8c",
-  34: "#6272a4", 35: "#ff79c6", 36: "#8be9fd", 37: "#f8f8f2",
+  30: "#21222c", 31: "#ff5555", 32: "#50fa7b", 33: "#f1fa8c",
+  34: "#bd93f9", 35: "#ff79c6", 36: "#8be9fd", 37: "#f8f8f2",
   90: "#6272a4", 91: "#ff6e6e", 92: "#69ff94", 93: "#ffffa5",
   94: "#d6acff", 95: "#ff92df", 96: "#a4ffff", 97: "#ffffff",
 };
 const ANSI_BG: Record<number, string> = {
-  40: "#282a36", 41: "#ff5555", 42: "#50fa7b", 43: "#f1fa8c",
-  44: "#6272a4", 45: "#ff79c6", 46: "#8be9fd", 47: "#f8f8f2",
+  40: "#21222c", 41: "#ff5555", 42: "#50fa7b", 43: "#f1fa8c",
+  44: "#bd93f9", 45: "#ff79c6", 46: "#8be9fd", 47: "#f8f8f2",
   100: "#6272a4", 101: "#ff6e6e", 102: "#69ff94", 103: "#ffffa5",
   104: "#d6acff", 105: "#ff92df", 106: "#a4ffff", 107: "#ffffff",
 };
@@ -870,12 +870,12 @@ export function CommandRunnerTab({ selectedCluster }: CommandRunnerTabProps) {
               </div>
 
               {activeOutputTab && outputs[activeOutputTab] && (
-                <ScrollArea className="flex-1 bg-[#1e1e2e] rounded p-2 font-mono text-xs">
+                <ScrollArea className="flex-1 bg-[#282a36] rounded p-2 font-mono text-xs">
                   {outputs[activeOutputTab].map((line, i) => (
                     <div
                       key={i}
                       className={`leading-relaxed whitespace-pre-wrap break-all ${
-                        line.isError ? "text-red-400" : "text-[#cdd6f4]"
+                        line.isError ? "text-[#ff5555]" : "text-[#f8f8f2]"
                       }`}
                     >
                       <AnsiLine text={line.text} />

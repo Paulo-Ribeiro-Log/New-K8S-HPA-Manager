@@ -191,13 +191,13 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 			if tokens.GeminiVertexProject == "" {
 				return nil, fmt.Errorf("provider 'gemini' modo Vertex AI selecionado mas projeto GCP não configurado - acesse AI Settings e preencha o Projeto GCP")
 			}
-			// Em ambiente corporativo o servidor tem ADC com as permissões IAM corretas
-			// (aiplatform.endpoints.predict). O refresh token do usuário pode não ter essa
-			// permissão. Priorizar ADC do servidor quando disponível — igual às predições.
-			if h.analyzer != nil {
+			// Se não há credenciais do usuário (refresh token / service account),
+			// usar ADC do servidor como fallback.
+			if tokens.GeminiRefreshToken == "" && tokens.GeminiServiceAccountJSON == "" {
 				return h.analyzer, nil
 			}
-			// Fallback: usar credenciais explícitas do usuário (ambientes sem ADC no servidor)
+			// Usar credenciais do usuário. Se receber 403, o usuário não tem a role
+			// aiplatform.endpoints.predict no projeto GCP — deve solicitar ao admin.
 			config.GeminiAuthMode = "vertex"
 			config.GeminiVertexProject = tokens.GeminiVertexProject
 			if tokens.GeminiVertexLocation != "" {
@@ -300,6 +300,21 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 	provider, err := ai.NewProvider(config)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao inicializar provider '%s': %v", tokens.PreferredProvider, err)
+	}
+
+	// Vertex AI com token OAuth pessoal: adicionar fallback ao servidor caso a conta
+	// não tenha a role aiplatform.endpoints.predict no projeto GCP.
+	// O fallback usa o provider padrão do servidor (AI Studio ou Vertex do servidor).
+	if config.GeminiAuthMode == "vertex" && config.GeminiRefreshToken != "" &&
+		config.GeminiServiceAccountJSON == "" && h.analyzer != nil {
+		serverProvider := h.analyzer.GetProvider()
+		if serverProvider != nil {
+			provider = ai.NewFallbackProvider(provider, serverProvider)
+			log.Info().
+				Str("ai_email", aiEmail).
+				Str("project", config.GeminiVertexProject).
+				Msg("Vertex AI: FallbackProvider ativo (token OAuth → fallback servidor em caso de 403)")
+		}
 	}
 
 	// Criar analyzer para esta requisição
