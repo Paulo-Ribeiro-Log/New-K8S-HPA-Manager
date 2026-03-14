@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.26** (GitHub release).
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **12 de março de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **14 de março de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -50,8 +50,14 @@ go test -run TestGetClient        # Teste específico
 tail -f /tmp/k8s-hpa-manager-web-*.log  # Logs do servidor
 
 # Release
-make release                  # Build multi-plataforma
+make release                  # Build multi-plataforma (linux, darwin Intel, darwin ARM64)
+make build-all                # Alias para release
 ./create-v1-release.sh        # Criar release no GitHub
+
+# Outros
+make test-coverage            # Testes com cobertura HTML
+make web-install              # npm install no frontend
+make web-clean                # Limpa arquivos de build frontend
 ```
 
 ### Antes de Commitar
@@ -78,7 +84,7 @@ ls -lh internal/web/static/assets/ | grep -E "\.(js|css)$"  # Verificar assets
 
 ```
 k8s-hpa-manager/
-├── cmd/                      # CLI commands (Cobra)
+├── cmd/                      # CLI commands (Cobra): web.go, autodiscover.go, diagnose.go
 ├── internal/
 │   ├── tui/                  # Terminal UI (Bubble Tea)
 │   ├── web/
@@ -92,14 +98,19 @@ k8s-hpa-manager/
 │   ├── config/               # Kubeconfig, cache de clients K8s
 │   ├── session/              # Sessions TUI ↔ Web (formato JSON compatível)
 │   ├── monitoring/           # Prometheus, predictions/, nodepoolpredictions/
+│   │   └── engine/           # monitoring_v2.go — discovery automático sem port-forwards
 │   ├── rbac/                 # Azure AD RBAC (azure_ad.go)
-│   ├── ai/                   # AI Diagnostics (Ollama/Claude)
+│   ├── ai/                   # AI Diagnostics (Ollama/Claude/Gemini), reports/
 │   ├── sanitizer/            # Sanitização de logs antes de enviar para IA
-│   ├── storage/              # SQLite (predictions.db, health_check.db, ai_diagnostics.db)
-│   ├── healthcheck/          # Health checking de clusters
+│   ├── storage/              # SQLite: predictions.db, health_check.db, ai_diagnostics.db
+│   │                         # + ai_history_store.go, dependency_registry.go, user_tokens_store.go
+│   ├── certificates/         # Gerenciamento de certificados TLS
+│   ├── servicenow/           # Integração ServiceNow
+│   ├── healthcheck/          # Health checking: orchestrator, deployment/hpa/event/pv checkers
 │   └── history/              # History tracker
 ├── build/                    # Binários compilados
 ├── vendor/                   # Go modules vendored (go build -mod=vendor)
+├── scripts/                  # Scripts de diagnóstico e utilitários
 └── docs/                     # Documentação modular
 ```
 
@@ -108,9 +119,11 @@ k8s-hpa-manager/
 |-----------|------------|
 | Backend | Go 1.24.0+, client-go v0.34.1, Gin v1.11.0 |
 | Frontend | React 18.3.1, TypeScript 5.8.3, Vite 5.4.21 |
-| UI | shadcn/ui (Radix UI), Tailwind CSS 3.4.17 |
-| Editor | Monaco Editor 0.52.2, xterm.js 5.3.0 |
+| UI | shadcn/ui (Radix UI), Tailwind CSS 3.4.17, Recharts |
+| Editor | Monaco Editor 0.52.2, xterm.js 5.3.0, diff2html |
 | Web Server | Gin 1.11.0, SSE, WebSocket |
+| Graphs | Cytoscape.js (dependency graphs) |
+| Forms | react-hook-form + Zod validation |
 
 ---
 
@@ -162,7 +175,7 @@ queryKey: ['resource-type', cluster, namespace],
 
 ### SSE (Server-Sent Events)
 
-Broker em `internal/web/sse/progress.go` gerencia múltiplos clients. Usado em Cordon/Drain, Health Check, Helm Apply, Node Pool operations. Cada operação longa publica eventos via SSE para feedback em tempo real.
+Broker em `internal/web/sse/progress.go` gerencia múltiplos clients. Usado em Cordon/Drain, Health Check, Helm Apply, Node Pool operations, **Command Runner**. Cada operação longa publica eventos via SSE para feedback em tempo real.
 
 ### WebSocket (Terminal)
 
@@ -243,6 +256,26 @@ history.Log(entry)
 
 Erros como "Tracking Prevention blocked access to storage" e "Could not create web worker(s)" são **inofensivos** — Monaco tem fallback automático para modo síncrono. A funcionalidade de edição YAML não é afetada.
 
+### ResizeDivider (SplitView)
+
+`SplitView.tsx` é o componente reutilizável para painéis side-by-side com resize. Usado em `CommandRunnerTab` e `ResourceCompareModal`. Implementação via `useRef` + mouse event listeners. Importar `SplitView` ao criar novas interfaces de edição lado a lado — **não reimplementar o drag logic**.
+
+### Command Runner
+
+`CommandRunnerTab.tsx` + `internal/web/handlers/command_runner.go`: executa comandos (kubectl/shell/python/go) em múltiplos clusters simultaneamente com SSE. Suporta **AI-powered command generation** via `POST /api/v1/command-runner/generate` (gera comandos a partir de prompt em linguagem natural).
+
+### ToolsMenu
+
+`ToolsMenu.tsx` — dropdown com 10 ferramentas avançadas acessíveis no header. Ao adicionar nova ferramenta, registrar aqui como novo item do dropdown.
+
+### AI Providers (Multi-provider)
+
+`internal/ai/` suporta Ollama, Claude API e Gemini. Configurável via `AISettingsTab.tsx`. Tokens de usuário persistidos em `internal/storage/user_tokens_store.go`. **Nunca hardcodear API keys** — sempre via storage de tokens.
+
+### Certificates
+
+`internal/certificates/` + `internal/web/handlers/certificates.go`: discovery de certs TLS em secrets K8s, validação de expiração, import/export. Usar para qualquer operação envolvendo TLS no cluster.
+
 ---
 
 ## RBAC Azure AD
@@ -266,6 +299,9 @@ Erros como "Tracking Prevention blocked access to storage" e "Could not create w
 | AI Diagnostics timeout | Usar modelo llama3.2:3b (max viável com 6GB RAM) |
 | Cluster inacessível | VPN ou cluster desligado — testar `kubectl cluster-info --context <name>` |
 | Terminal duplica "ç" | Verificar `event.preventDefault()` antes de `ws.send()` em PodTerminal.tsx |
+| Command Runner sem resposta | Verificar se SSE broker está iniciado e session ID é único |
+| Dependency graph não carrega | Cytoscape requer container com dimensões definidas (não `height: 0`) |
+| Certificados não listados | Verificar se secrets têm label `type: kubernetes.io/tls` |
 
 ---
 
