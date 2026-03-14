@@ -87,24 +87,46 @@ func (p *GeminiProvider) analyzeAPIKey(ctx context.Context, prompt string) (stri
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
 		p.model, p.apiKey)
 
-	return p.doRequest(ctx, url, "", prompt)
+	return p.doRequest(ctx, url, "", "", prompt)
 }
 
-// analyzeVertex usa o Vertex AI — tenta refresh token, service account JSON ou ADC file
+// analyzeVertex usa o Vertex AI.
+// Estratégia para SSO corporativo (sem service account):
+//  1. AI Studio endpoint (generativelanguage.googleapis.com) + OAuth token + X-Goog-User-Project
+//     → requer apenas serviceusage.services.use (qualquer role básica de projeto)
+//  2. Vertex AI endpoint (aiplatform.googleapis.com) + OAuth/ADC/service account
+//     → requer roles/aiplatform.user
 func (p *GeminiProvider) analyzeVertex(ctx context.Context, prompt string) (string, error) {
+	// Tentativa 1: AI Studio com OAuth SSO corporativo + billing do projeto.
+	// Muitas contas SSO têm serviceusage.services.use mas não aiplatform.endpoints.predict.
+	if p.refreshToken != "" && p.project != "" && p.serviceAccountJSON == "" {
+		if token, err := GetAccessTokenFromRefreshToken(ctx, p.refreshToken); err == nil {
+			aiStudioURL := fmt.Sprintf(
+				"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent",
+				p.model)
+			if result, err := p.doRequest(ctx, aiStudioURL, token, p.project, prompt); err == nil {
+				return result, nil
+			}
+			// AI Studio com SSO falhou — continua para Vertex AI endpoint abaixo
+		}
+	}
+
+	// Tentativa 2: Vertex AI endpoint (service account / ADC / refresh token)
 	token, err := GetVertexAccessToken(ctx, p.serviceAccountJSON, p.refreshToken)
 	if err != nil {
 		return "", err
 	}
 
-	url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent",
+	vertexURL := fmt.Sprintf(
+		"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent",
 		p.location, p.project, p.location, p.model)
 
-	return p.doRequest(ctx, url, token, prompt)
+	return p.doRequest(ctx, vertexURL, token, "", prompt)
 }
 
-// doRequest executa a requisição HTTP para a API Gemini (AI Studio ou Vertex AI)
-func (p *GeminiProvider) doRequest(ctx context.Context, url, bearerToken, prompt string) (string, error) {
+// doRequest executa a requisição HTTP para a API Gemini.
+// userProject, quando não vazio, define o header X-Goog-User-Project (billing/quota).
+func (p *GeminiProvider) doRequest(ctx context.Context, url, bearerToken, userProject, prompt string) (string, error) {
 	reqBody := geminiRequest{
 		Contents: []geminiContent{
 			{
@@ -129,6 +151,9 @@ func (p *GeminiProvider) doRequest(ctx context.Context, url, bearerToken, prompt
 	if bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+bearerToken)
 	}
+	if userProject != "" {
+		req.Header.Set("X-Goog-User-Project", userProject)
+	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -142,7 +167,14 @@ func (p *GeminiProvider) doRequest(ctx context.Context, url, bearerToken, prompt
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, string(body))
+		switch resp.StatusCode {
+		case 403:
+			return "", fmt.Errorf("Vertex AI: permissão negada (403). Sua conta não tem a role 'aiplatform.endpoints.predict' no projeto GCP. Solicite ao administrador a role 'Vertex AI User' ou use uma API key do AI Studio em vez do Vertex")
+		case 429:
+			return "", fmt.Errorf("Cota da API Gemini esgotada (429). Aguarde alguns minutos ou considere usar o plano pago. Detalhes: %s", string(body))
+		default:
+			return "", fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, string(body))
+		}
 	}
 
 	var geminiResp geminiResponse
