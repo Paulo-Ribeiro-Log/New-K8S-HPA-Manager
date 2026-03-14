@@ -1,7 +1,12 @@
 package handlers
 
 import (
+	"os"
+	"os/exec"
+	"time"
+
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 	"k8s-hpa-manager/internal/updater"
 )
 
@@ -38,4 +43,21 @@ func (h *VersionHandler) GetVersion(c *gin.Context) {
 	}
 
 	c.JSON(200, response)
+}
+
+// SelfUpdate executa o script de instalação para atualizar o binário
+// POST /api/v1/version/update
+func (h *VersionHandler) SelfUpdate(c *gin.Context) {
+	c.JSON(200, gin.H{"success": true, "message": "Atualização iniciada. O servidor será reiniciado em breve."})
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		cmd := exec.Command("bash", "-c", "curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/new-k8s-hpa-dev/install-from-github.sh | bash")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		log.Info().Msg("Iniciando self-update via install-from-github.sh")
+		if err := cmd.Run(); err != nil {
+			log.Error().Err(err).Msg("Self-update falhou")
+		}
+	}()
 }
