@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import type { PodSummary, BatchPodMetrics } from "@/lib/api/types";
 import { formatAge, formatBytes, formatMillicores, podRowColor, podDotColor } from "@/lib/monitorUtils";
-import { Loader2, ChevronLeft, Search, X, ListFilter, Check, RefreshCw } from "lucide-react";
+import { Loader2, ChevronLeft, Search, X, ListFilter, Check, RefreshCw, ChevronUp, ChevronDown, ArrowUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -98,6 +98,62 @@ function useSecondsTick(date: Date | null): string {
 // Colunas: SEL | NAME/NS | dot | READY | STATUS | REST. | CPU | MEM | NODE | AGE
 const GRID = "32px minmax(180px,1fr) 22px 56px 140px 50px 90px 90px minmax(130px,1fr) 56px";
 
+type PodSortKey = "name" | "ready" | "restarts" | "cpu" | "mem" | "age" | "node";
+type StatusSortMode = null | "running" | "error" | "completed";
+
+const STATUS_CYCLE: StatusSortMode[] = [null, "running", "error", "completed"];
+const STATUS_PRIORITY: Record<NonNullable<StatusSortMode>, (status: string) => number> = {
+  running:   (s) => (/running/i.test(s) ? 0 : 1),
+  error:     (s) => (/error|failed|crash|oom|evict/i.test(s) ? 0 : 1),
+  completed: (s) => (/completed|succeed/i.test(s) ? 0 : 1),
+};
+
+function SortIcon({ colKey, sortKey, sortDir, onSort }: {
+  colKey: PodSortKey; sortKey: PodSortKey | null; sortDir: "asc" | "desc"; onSort: (k: PodSortKey) => void;
+}) {
+  const active = sortKey === colKey;
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onSort(colKey); }}
+      className={`flex items-center ml-0.5 transition-colors ${active ? "text-primary" : "text-muted-foreground/30 hover:text-muted-foreground"}`}
+      title={active ? (sortDir === "asc" ? "Crescente — clique para decrescente" : "Decrescente — clique para remover") : "Ordenar"}
+    >
+      {active && sortDir === "asc" ? <ChevronUp className="w-2.5 h-2.5" /> : active && sortDir === "desc" ? <ChevronDown className="w-2.5 h-2.5" /> : <ArrowUpDown className="w-2.5 h-2.5" />}
+    </button>
+  );
+}
+
+function SortBtn({ label, colKey, sortKey, sortDir, onSort }: {
+  label: string; colKey: PodSortKey; sortKey: PodSortKey | null; sortDir: "asc" | "desc"; onSort: (k: PodSortKey) => void;
+}) {
+  const active = sortKey === colKey;
+  return (
+    <button
+      onClick={() => onSort(colKey)}
+      className={`flex items-center gap-0.5 uppercase transition-colors ${active ? "text-primary hover:text-primary/80" : "text-muted-foreground hover:text-foreground"}`}
+      title={active ? (sortDir === "asc" ? "Crescente — clique para decrescente" : "Decrescente — clique para remover") : "Ordenar por " + label}
+    >
+      {label}
+      {active && sortDir === "asc" ? <ChevronUp className="w-2.5 h-2.5" /> : active && sortDir === "desc" ? <ChevronDown className="w-2.5 h-2.5" /> : <ArrowUpDown className="w-2.5 h-2.5 opacity-30" />}
+    </button>
+  );
+}
+
+// Ícone de sort cíclico para STATUS (apenas ícone, sem label duplicado)
+function StatusSortIcon({ mode, onCycle }: { mode: StatusSortMode; onCycle: () => void }) {
+  const modeLabel: Record<NonNullable<StatusSortMode>, string> = { running: "Running primeiro", error: "Error primeiro", completed: "Completed primeiro" };
+  const modeColor: Record<NonNullable<StatusSortMode>, string> = { running: "text-green-500", error: "text-red-500", completed: "text-blue-400" };
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onCycle(); }}
+      className={`flex items-center ml-0.5 transition-colors ${mode ? modeColor[mode] + " hover:opacity-80" : "text-muted-foreground/30 hover:text-muted-foreground"}`}
+      title={mode ? `${modeLabel[mode]} — clique para próximo` : "Ordenar por status: Running → Error → Completed"}
+    >
+      {mode === "running" ? <ChevronUp className="w-2.5 h-2.5" /> : mode === "error" ? <ChevronDown className="w-2.5 h-2.5" /> : mode === "completed" ? <ChevronUp className="w-2.5 h-2.5" /> : <ArrowUpDown className="w-2.5 h-2.5" />}
+    </button>
+  );
+}
+
 export const PodMonitorTable = ({
   cluster,
   pods,
@@ -115,6 +171,26 @@ export const PodMonitorTable = ({
   const [namespaceFilter, setNamespaceFilter] = useState<Set<string>>(new Set());
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [sortKey, setSortKey] = useState<PodSortKey | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [statusSortMode, setStatusSortMode] = useState<StatusSortMode>(null);
+
+  const handleSort = (key: PodSortKey) => {
+    setStatusSortMode(null);
+    if (sortKey === key) {
+      if (sortDir === "asc") setSortDir("desc");
+      else { setSortKey(null); setSortDir("asc"); }
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  };
+
+  const cycleStatusSort = () => {
+    setSortKey(null);
+    const idx = STATUS_CYCLE.indexOf(statusSortMode);
+    setStatusSortMode(STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length]);
+  };
 
   // Seleção de pods
   const [selectedPods, setSelectedPods] = useState<Set<string>>(new Set());
@@ -226,8 +302,33 @@ export const PodMonitorTable = ({
       result = result.filter((p) => nodeFilter.has(p.nodeName ?? ""));
     if (namespaceFilter.size > 0)
       result = result.filter((p) => namespaceFilter.has(p.namespace ?? ""));
+
+    if (statusSortMode) {
+      const priority = STATUS_PRIORITY[statusSortMode];
+      result = [...result].sort((a, b) => {
+        const pa = priority(a.status || a.phase || "");
+        const pb = priority(b.status || b.phase || "");
+        return pa !== pb ? pa - pb : (a.name).localeCompare(b.name);
+      });
+    } else if (sortKey) {
+      result = [...result].sort((a, b) => {
+        let va: number | string = 0, vb: number | string = 0;
+        switch (sortKey) {
+          case "name":     va = a.name; vb = b.name; break;
+          case "ready":    va = (a.readyContainers ?? 0) / Math.max(a.totalContainers ?? 1, 1); vb = (b.readyContainers ?? 0) / Math.max(b.totalContainers ?? 1, 1); break;
+          case "restarts": va = a.restarts ?? 0; vb = b.restarts ?? 0; break;
+          case "cpu":      va = metrics?.pods[a.name]?.cpuMillicores ?? 0; vb = metrics?.pods[b.name]?.cpuMillicores ?? 0; break;
+          case "mem":      va = metrics?.pods[a.name]?.memoryBytes ?? 0; vb = metrics?.pods[b.name]?.memoryBytes ?? 0; break;
+          case "age":      va = a.createdAt ? new Date(a.createdAt).getTime() : 0; vb = b.createdAt ? new Date(b.createdAt).getTime() : 0; break;
+          case "node":     va = a.nodeName ?? ""; vb = b.nodeName ?? ""; break;
+        }
+        if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb as string) : (vb as string).localeCompare(va);
+        return sortDir === "asc" ? (va as number) - (vb as number) : (vb as number) - (va as number);
+      });
+    }
+
     return result;
-  }, [pods, searchQuery, statusFilter, nodeFilter, namespaceFilter]);
+  }, [pods, searchQuery, statusFilter, nodeFilter, namespaceFilter, sortKey, sortDir, statusSortMode, metrics]);
 
   // Helpers de seleção
   const podKey = (p: PodSummary) => `${p.namespace}/${p.name}`;
@@ -419,23 +520,25 @@ export const PodMonitorTable = ({
             disabled={filtered.length === 0}
           />
         </span>
-        <span>
+        <span className="flex items-center">
           {uniqueNamespaces.length > 1
-            ? <ColumnFilter label="NAME/NS" options={uniqueNamespaces} selected={namespaceFilter} onChange={setNamespaceFilter} />
-            : <span className="text-muted-foreground uppercase">NAME</span>}
+            ? <><ColumnFilter label="NAME/NS" options={uniqueNamespaces} selected={namespaceFilter} onChange={setNamespaceFilter} /><SortIcon colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></>
+            : <SortBtn label="NAME" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />}
         </span>
         <span></span>
-        <span className="text-muted-foreground uppercase">READY</span>
-        <span>
+        <span><SortBtn label="READY" colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
+        <span className="flex items-center">
           <ColumnFilter label="STATUS" options={uniqueStatuses} selected={statusFilter} onChange={setStatusFilter} />
+          <StatusSortIcon mode={statusSortMode} onCycle={cycleStatusSort} />
         </span>
-        <span className="text-muted-foreground uppercase">REST.</span>
-        <span className="text-muted-foreground uppercase text-right pr-2">CPU</span>
-        <span className="text-muted-foreground uppercase text-right pr-2">MEM</span>
-        <span>
+        <span><SortBtn label="REST." colKey="restarts" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
+        <span className="text-right pr-2"><SortBtn label="CPU" colKey="cpu" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
+        <span className="text-right pr-2"><SortBtn label="MEM" colKey="mem" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
+        <span className="flex items-center">
           <ColumnFilter label="NODE" options={uniqueNodes} selected={nodeFilter} onChange={setNodeFilter} />
+          <SortIcon colKey="node" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
         </span>
-        <span className="text-muted-foreground uppercase">AGE</span>
+        <span><SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
       </div>
 
       {/* Linhas */}
