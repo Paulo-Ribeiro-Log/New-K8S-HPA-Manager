@@ -191,12 +191,13 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 			if tokens.GeminiVertexProject == "" {
 				return nil, fmt.Errorf("provider 'gemini' modo Vertex AI selecionado mas projeto GCP não configurado - acesse AI Settings e preencha o Projeto GCP")
 			}
-			// Se não há credenciais explícitas (refresh token / service account),
-			// usar o analyzer padrão do servidor (ADC) — igual ao comportamento das predictions.
-			// Evita 403 por modelo não autorizado ao criar um novo provider com modelo do usuário.
-			if tokens.GeminiRefreshToken == "" && tokens.GeminiServiceAccountJSON == "" {
+			// Em ambiente corporativo o servidor tem ADC com as permissões IAM corretas
+			// (aiplatform.endpoints.predict). O refresh token do usuário pode não ter essa
+			// permissão. Priorizar ADC do servidor quando disponível — igual às predições.
+			if h.analyzer != nil {
 				return h.analyzer, nil
 			}
+			// Fallback: usar credenciais explícitas do usuário (ambientes sem ADC no servidor)
 			config.GeminiAuthMode = "vertex"
 			config.GeminiVertexProject = tokens.GeminiVertexProject
 			if tokens.GeminiVertexLocation != "" {
