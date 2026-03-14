@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import type { DeploymentSummary } from "@/lib/api/types";
 import { formatAge } from "@/lib/monitorUtils";
-import { Pencil, Loader2, ChevronLeft, Search, X, ListFilter, Check, RefreshCw, RotateCw, Trash2, ArrowUpDown } from "lucide-react";
+import { Pencil, Loader2, ChevronLeft, Search, X, ListFilter, Check, RefreshCw, RotateCw, Trash2, ArrowUpDown, ChevronUp, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -111,6 +111,39 @@ function ColumnFilter({
   );
 }
 
+type DepSortKey = "name" | "ready" | "upToDate" | "available" | "age";
+
+function SortIcon({ colKey, sortKey, sortDir, onSort }: {
+  colKey: DepSortKey; sortKey: DepSortKey | null; sortDir: "asc" | "desc"; onSort: (k: DepSortKey) => void;
+}) {
+  const active = sortKey === colKey;
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onSort(colKey); }}
+      className={`flex items-center ml-0.5 transition-colors ${active ? "text-primary" : "text-muted-foreground/30 hover:text-muted-foreground"}`}
+      title={active ? (sortDir === "asc" ? "Crescente — clique para decrescente" : "Decrescente — clique para remover") : "Ordenar"}
+    >
+      {active && sortDir === "asc" ? <ChevronUp className="w-2.5 h-2.5" /> : active && sortDir === "desc" ? <ChevronDown className="w-2.5 h-2.5" /> : <ArrowUpDown className="w-2.5 h-2.5" />}
+    </button>
+  );
+}
+
+function SortBtn({ label, colKey, sortKey, sortDir, onSort }: {
+  label: string; colKey: DepSortKey; sortKey: DepSortKey | null; sortDir: "asc" | "desc"; onSort: (k: DepSortKey) => void;
+}) {
+  const active = sortKey === colKey;
+  return (
+    <button
+      onClick={() => onSort(colKey)}
+      className={`flex items-center gap-0.5 uppercase transition-colors ${active ? "text-primary hover:text-primary/80" : "text-muted-foreground hover:text-foreground"}`}
+      title={active ? (sortDir === "asc" ? "Crescente — clique para decrescente" : "Decrescente — clique para remover") : "Ordenar por " + label}
+    >
+      {label}
+      {active && sortDir === "asc" ? <ChevronUp className="w-2.5 h-2.5" /> : active && sortDir === "desc" ? <ChevronDown className="w-2.5 h-2.5" /> : <ArrowUpDown className="w-2.5 h-2.5 opacity-30" />}
+    </button>
+  );
+}
+
 export const DeploymentMonitorTable = ({
   deployments,
   loading,
@@ -124,6 +157,18 @@ export const DeploymentMonitorTable = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
   const [namespaceFilter, setNamespaceFilter] = useState<Set<string>>(new Set());
+  const [sortKey, setSortKey] = useState<DepSortKey | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  const handleSort = (key: DepSortKey) => {
+    if (sortKey === key) {
+      if (sortDir === "asc") setSortDir("desc");
+      else { setSortKey(null); setSortDir("asc"); }
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  };
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -234,8 +279,23 @@ export const DeploymentMonitorTable = ({
       result = result.filter((d) => namespaceFilter.has(d.namespace ?? ""));
     }
 
+    if (sortKey) {
+      result = [...result].sort((a, b) => {
+        let va: number | string = 0, vb: number | string = 0;
+        switch (sortKey) {
+          case "name":      va = a.name; vb = b.name; break;
+          case "ready":     va = (a.readyReplicas ?? 0) / Math.max(a.replicas ?? 1, 1); vb = (b.readyReplicas ?? 0) / Math.max(b.replicas ?? 1, 1); break;
+          case "upToDate":  va = a.updatedReplicas ?? 0; vb = b.updatedReplicas ?? 0; break;
+          case "available": va = a.availableReplicas ?? 0; vb = b.availableReplicas ?? 0; break;
+          case "age":       va = a.updatedAt ? new Date(a.updatedAt).getTime() : 0; vb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0; break;
+        }
+        if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb as string) : (vb as string).localeCompare(va);
+        return sortDir === "asc" ? (va as number) - (vb as number) : (vb as number) - (va as number);
+      });
+    }
+
     return result;
-  }, [deployments, searchQuery, statusFilter, namespaceFilter]);
+  }, [deployments, searchQuery, statusFilter, namespaceFilter, sortKey, sortDir]);
 
   const activeFilterCount = statusFilter.size + namespaceFilter.size;
 
@@ -458,30 +518,24 @@ export const DeploymentMonitorTable = ({
           />
         </span>
         {/* NAME / NAMESPACE */}
-        <span>
+        <span className="flex items-center">
           {uniqueNamespaces.length > 1 ? (
-            <ColumnFilter
-              label="NAME/NS"
-              options={uniqueNamespaces}
-              selected={namespaceFilter}
-              onChange={setNamespaceFilter}
-            />
+            <>
+              <ColumnFilter label="NAME/NS" options={uniqueNamespaces} selected={namespaceFilter} onChange={setNamespaceFilter} />
+              <SortIcon colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+            </>
           ) : (
-            <span className="text-muted-foreground uppercase">NAME</span>
+            <SortBtn label="NAME" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           )}
         </span>
-        {/* READY com filtro */}
-        <span>
-          <ColumnFilter
-            label="READY"
-            options={uniqueStatuses}
-            selected={statusFilter}
-            onChange={setStatusFilter}
-          />
+        {/* READY com filtro + sort */}
+        <span className="flex items-center">
+          <ColumnFilter label="READY" options={uniqueStatuses} selected={statusFilter} onChange={setStatusFilter} />
+          <SortIcon colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
         </span>
-        <span className="text-muted-foreground uppercase">UP-TO-DATE</span>
-        <span className="text-muted-foreground uppercase">AVAILABLE</span>
-        <span className="text-muted-foreground uppercase">AGE</span>
+        <span><SortBtn label="UP-TO-DATE" colKey="upToDate" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
+        <span><SortBtn label="AVAILABLE" colKey="available" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
+        <span><SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
         <span></span>
       </div>
 
