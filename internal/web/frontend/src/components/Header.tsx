@@ -23,6 +23,8 @@ import type { InAppNotification } from "@/hooks/useNotifications";
 import { cn } from "@/lib/utils";
 import { apiClient } from "@/lib/api/client";
 import type { VersionInfo } from "@/lib/api/types";
+import { toast } from "sonner";
+import { Loader2 } from "lucide-react";
 
 interface HeaderProps {
   selectedCluster: string;
@@ -53,6 +55,21 @@ export const Header = ({
 }: HeaderProps) => {
   const [open, setOpen] = useState(false);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
+  const [updating, setUpdating] = useState(false);
+
+  const handleUpdate = async () => {
+    setUpdating(true);
+    try {
+      await apiClient.post("/version/update");
+      toast.success("Atualização iniciada", {
+        description: "O servidor será reiniciado em breve. Aguarde e recarregue a página.",
+        duration: 8000,
+      });
+    } catch {
+      toast.error("Falha ao iniciar atualização");
+      setUpdating(false);
+    }
+  };
   const [notificationDrawerOpen, setNotificationDrawerOpen] = useState(false);
   const [alertsDialogOpen, setAlertsDialogOpen] = useState(false);
   const [alertsDialogContext, setAlertsDialogContext] = useState<{
@@ -101,16 +118,15 @@ export const Header = ({
               k8s-hpa-manager
             </h1>
             {versionInfo?.update_available && (
-              <a
-                href={versionInfo.download_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 px-2 py-0.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-medium rounded-full transition-colors"
-                title={`Nova versão disponível: ${versionInfo.latest_version}`}
+              <button
+                onClick={handleUpdate}
+                disabled={updating}
+                className="flex items-center gap-1 px-2 py-0.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-white text-xs font-medium rounded-full transition-colors"
+                title={`Nova versão disponível: ${versionInfo.latest_version} — clique para atualizar`}
               >
-                <AlertCircle className="w-3 h-3" />
-                Update
-              </a>
+                {updating ? <Loader2 className="w-3 h-3 animate-spin" /> : <AlertCircle className="w-3 h-3" />}
+                {updating ? "Atualizando..." : "Update"}
+              </button>
             )}
           </div>
           {versionInfo && (

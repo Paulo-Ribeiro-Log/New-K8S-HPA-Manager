@@ -66,12 +66,12 @@ func NewDependencyRegistry() (*DependencyRegistry, error) {
 
 // initSchema cria as tabelas necessárias
 func (r *DependencyRegistry) initSchema() error {
-	schema := `
+	// Passo 1: criar tabelas base (sem topic_name para compatibilidade)
+	base := `
 	CREATE TABLE IF NOT EXISTS dependencies (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		service_name TEXT NOT NULL,
 		service_type TEXT NOT NULL,
-		topic_name TEXT DEFAULT '',
 		cluster TEXT NOT NULL,
 		namespace TEXT NOT NULL,
 		deployment TEXT DEFAULT '',
@@ -79,16 +79,8 @@ func (r *DependencyRegistry) initSchema() error {
 		source_name TEXT NOT NULL,
 		source_key TEXT DEFAULT '',
 		first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(cluster, namespace, service_name, source_type, source_name, source_key, topic_name)
+		last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
-
-	CREATE INDEX IF NOT EXISTS idx_dependencies_service_name ON dependencies(service_name);
-	CREATE INDEX IF NOT EXISTS idx_dependencies_service_type ON dependencies(service_type);
-	CREATE INDEX IF NOT EXISTS idx_dependencies_topic_name ON dependencies(topic_name);
-	CREATE INDEX IF NOT EXISTS idx_dependencies_cluster ON dependencies(cluster);
-	CREATE INDEX IF NOT EXISTS idx_dependencies_namespace ON dependencies(namespace);
-	CREATE INDEX IF NOT EXISTS idx_dependencies_last_seen ON dependencies(last_seen);
 
 	CREATE TABLE IF NOT EXISTS scan_history (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,24 +91,31 @@ func (r *DependencyRegistry) initSchema() error {
 		duration_ms INTEGER DEFAULT 0,
 		scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
-
-	CREATE INDEX IF NOT EXISTS idx_scan_history_cluster ON scan_history(cluster);
-	CREATE INDEX IF NOT EXISTS idx_scan_history_scanned_at ON scan_history(scanned_at);
 	`
-
-	_, err := r.db.Exec(schema)
-	if err != nil {
+	if _, err := r.db.Exec(base); err != nil {
 		return err
 	}
 
-	// Migração: Adicionar coluna topic_name em bancos existentes
-	migration := `
-	-- Adicionar coluna topic_name se não existir
-	ALTER TABLE dependencies ADD COLUMN topic_name TEXT DEFAULT '';
-	`
+	// Passo 2: migrações — adiciona colunas se não existirem (ignora erro se já existir)
+	r.db.Exec(`ALTER TABLE dependencies ADD COLUMN topic_name TEXT DEFAULT ''`)
 
-	// Tentar executar migração (pode falhar se já existir, ignore erro)
-	r.db.Exec(migration)
+	// Passo 3: criar índices (após garantir que as colunas existem)
+	indexes := `
+	CREATE INDEX IF NOT EXISTS idx_dependencies_service_name ON dependencies(service_name);
+	CREATE INDEX IF NOT EXISTS idx_dependencies_service_type ON dependencies(service_type);
+	CREATE INDEX IF NOT EXISTS idx_dependencies_topic_name ON dependencies(topic_name);
+	CREATE INDEX IF NOT EXISTS idx_dependencies_cluster ON dependencies(cluster);
+	CREATE INDEX IF NOT EXISTS idx_dependencies_namespace ON dependencies(namespace);
+	CREATE INDEX IF NOT EXISTS idx_dependencies_last_seen ON dependencies(last_seen);
+	CREATE INDEX IF NOT EXISTS idx_scan_history_cluster ON scan_history(cluster);
+	CREATE INDEX IF NOT EXISTS idx_scan_history_scanned_at ON scan_history(scanned_at);
+	`
+	if _, err := r.db.Exec(indexes); err != nil {
+		return err
+	}
+
+	// Passo 4: garantir constraint UNIQUE via índice único (SQLite não suporta ADD CONSTRAINT)
+	r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_dependencies_unique ON dependencies(cluster, namespace, service_name, source_type, source_name, source_key, topic_name)`)
 
 	return nil
 }
