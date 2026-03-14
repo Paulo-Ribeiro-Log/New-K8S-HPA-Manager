@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -343,7 +344,28 @@ func (h *CommandRunnerHandler) runForTarget(sessionCtx context.Context, sessionI
 		resolved = strings.ReplaceAll(resolved, "{{namespace}}", target.Namespace)
 	}
 
-	script := buildShellScript(resolved, cmdType, target.Cluster, target.Namespace)
+	var script string
+	var tmpPyFile string
+	if cmdType == "python" || cmdType == "python3" {
+		// Escrever o script Python em arquivo temporário para evitar problemas de quoting
+		// com multi-line scripts e caracteres especiais gerados pela AI
+		f, err := os.CreateTemp("", "k8s-hpa-py-*.py")
+		if err != nil {
+			h.sendLine(sessionID, target.Cluster, target.Namespace, fmt.Sprintf("[ERRO] Falha ao criar arquivo temporário Python: %v", err), true)
+			return false
+		}
+		tmpPyFile = f.Name()
+		if _, err := f.WriteString(resolved); err != nil {
+			f.Close()
+			os.Remove(tmpPyFile)
+			h.sendLine(sessionID, target.Cluster, target.Namespace, fmt.Sprintf("[ERRO] Falha ao escrever script Python: %v", err), true)
+			return false
+		}
+		f.Close()
+		script = buildPythonScript(tmpPyFile, target.Cluster, target.Namespace)
+	} else {
+		script = buildShellScript(resolved, cmdType, target.Cluster, target.Namespace)
+	}
 
 	ctx, cancel := context.WithTimeout(sessionCtx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
@@ -382,6 +404,9 @@ func (h *CommandRunnerHandler) runForTarget(sessionCtx context.Context, sessionI
 	}
 
 	err = cmd.Wait()
+	if tmpPyFile != "" {
+		os.Remove(tmpPyFile)
+	}
 
 	if ctx.Err() == context.DeadlineExceeded {
 		h.sendLine(sessionID, target.Cluster, target.Namespace, fmt.Sprintf("[TIMEOUT] Limite de %ds excedido", timeoutSec), true)
@@ -430,7 +455,8 @@ func buildShellScript(command, cmdType, cluster, namespace string) string {
 			cluster, command,
 		)
 	case "python", "python3":
-		return fmt.Sprintf(`export CLUSTER='%s'; export NAMESPACE='%s'; python3 -c %q`,
+		// Não usar aqui — Python é tratado via buildPythonScript com arquivo temporário
+		return fmt.Sprintf(`export CLUSTER=%q; export NAMESPACE=%q; python3 -c %q`,
 			cluster, namespace, command)
 	case "go":
 		// go run a partir de stdin via processo temporário
@@ -440,6 +466,27 @@ func buildShellScript(command, cmdType, cluster, namespace string) string {
 		return fmt.Sprintf(`export CLUSTER='%s'; export NAMESPACE='%s'; %s`,
 			cluster, namespace, command)
 	}
+}
+
+// buildPythonScript executa um script Python a partir de um arquivo temporário usando um venv
+// isolado em ~/.k8s-hpa-manager/python-venv, criando-o automaticamente na primeira execução.
+// Pacotes pré-instalados: kubernetes, requests, pyyaml, tabulate.
+func buildPythonScript(scriptPath, cluster, namespace string) string {
+	homeDir, _ := os.UserHomeDir()
+	venvDir := homeDir + "/.k8s-hpa-manager/python-venv"
+	return fmt.Sprintf(`
+VENV_DIR=%q
+if [ ! -f "$VENV_DIR/bin/python3" ]; then
+    echo "[k8s-hpa] Preparando ambiente Python (primeira execução, aguarde ~30s)..."
+    python3 -m venv "$VENV_DIR" 2>&1 || { echo "[ERRO] python3-venv não encontrado. Instale: sudo apt install python3-venv"; exit 1; }
+    "$VENV_DIR/bin/pip" install --quiet --upgrade pip 2>&1
+    "$VENV_DIR/bin/pip" install --quiet kubernetes requests pyyaml tabulate 2>&1
+    echo "[k8s-hpa] Ambiente Python pronto."
+fi
+export CLUSTER=%q
+export NAMESPACE=%q
+"$VENV_DIR/bin/python3" %q
+`, venvDir, cluster, namespace, scriptPath)
 }
 
 // buildAIPrompt cria o prompt para o provider de AI respeitando a linguagem escolhida.
@@ -453,8 +500,9 @@ func buildAIPrompt(userRequest, cluster, namespace, cmdType string) string {
 	case "python", "python3":
 		langInstruction = `Generate a complete Python 3 script that accomplishes this task.
 Rules:
-- Use the 'kubernetes' (k8s) Python SDK or 'subprocess' to run kubectl commands
-- Export cluster context via: import os; CLUSTER = os.environ.get('CLUSTER', '` + cluster + `'); NAMESPACE = os.environ.get('NAMESPACE', '` + namespace + `')
+- Available packages: kubernetes, requests, pyyaml, tabulate, subprocess (stdlib)
+- Read cluster/namespace from env: CLUSTER = os.environ.get('CLUSTER', '` + cluster + `'); NAMESPACE = os.environ.get('NAMESPACE', '` + namespace + `')
+- To use the kubernetes SDK: from kubernetes import client, config; config.load_kube_config(context=CLUSTER)
 - Do NOT include explanations, markdown, or code fences — return only the Python code
 - Print output to stdout`
 	case "go":
