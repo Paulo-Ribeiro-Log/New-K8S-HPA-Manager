@@ -36,6 +36,9 @@ type UserTokens struct {
 	CopilotDeployment   string            `json:"copilot_deployment,omitempty"`
 	OllamaModel         string            `json:"ollama_model,omitempty"`
 	PreferredProvider   string            `json:"preferred_provider"`
+	DynatraceURL        string            `json:"dynatrace_url,omitempty"`
+	DynatraceToken      string            `json:"dynatrace_token,omitempty"`
+	DynatraceTagFilter  string            `json:"dynatrace_tag_filter,omitempty"` // filtro de tag: mostrar apenas problems com essa tag
 	Metadata            map[string]string `json:"metadata,omitempty"`
 	UpdatedAt           time.Time         `json:"updated_at"`
 	CreatedAt           time.Time         `json:"created_at"`
@@ -85,6 +88,9 @@ func (s *UserTokensStore) CreateTable() error {
 		`ALTER TABLE user_ai_tokens ADD COLUMN copilot_api_key TEXT`,
 		`ALTER TABLE user_ai_tokens ADD COLUMN copilot_endpoint TEXT`,
 		`ALTER TABLE user_ai_tokens ADD COLUMN copilot_deployment TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN dynatrace_url TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN dynatrace_token TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN dynatrace_tag_filter TEXT`,
 	}
 
 	for _, migration := range migrations {
@@ -118,8 +124,9 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 	INSERT INTO user_ai_tokens (
 		user_email, gemini_api_key, gemini_model, gemini_auth_mode, gemini_vertex_project, gemini_vertex_location,
 		gemini_service_account_json, gemini_refresh_token, openai_api_key, openai_model, claude_api_key, claude_model,
-		copilot_api_key, copilot_endpoint, copilot_deployment, ollama_model, preferred_provider, metadata, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		copilot_api_key, copilot_endpoint, copilot_deployment, ollama_model, preferred_provider,
+		dynatrace_url, dynatrace_token, dynatrace_tag_filter, metadata, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(user_email) DO UPDATE SET
 		gemini_api_key = excluded.gemini_api_key,
 		gemini_model = excluded.gemini_model,
@@ -137,6 +144,9 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 		copilot_deployment = excluded.copilot_deployment,
 		ollama_model = excluded.ollama_model,
 		preferred_provider = excluded.preferred_provider,
+		dynatrace_url = excluded.dynatrace_url,
+		dynatrace_token = excluded.dynatrace_token,
+		dynatrace_tag_filter = excluded.dynatrace_tag_filter,
 		metadata = excluded.metadata,
 		updated_at = excluded.updated_at
 	`
@@ -159,6 +169,9 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 		tokens.CopilotDeployment,
 		tokens.OllamaModel,
 		tokens.PreferredProvider,
+		tokens.DynatraceURL,
+		tokens.DynatraceToken,
+		tokens.DynatraceTagFilter,
 		metadataJSON,
 		tokens.UpdatedAt,
 	)
@@ -179,8 +192,8 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	query := `
 	SELECT user_email, gemini_api_key, gemini_model, gemini_auth_mode, gemini_vertex_project, gemini_vertex_location,
 	       gemini_service_account_json, gemini_refresh_token, openai_api_key, openai_model, claude_api_key, claude_model,
-	       copilot_api_key, copilot_endpoint, copilot_deployment, ollama_model, preferred_provider, metadata,
-	       updated_at, created_at
+	       copilot_api_key, copilot_endpoint, copilot_deployment, ollama_model, preferred_provider,
+	       dynatrace_url, dynatrace_token, dynatrace_tag_filter, metadata, updated_at, created_at
 	FROM user_ai_tokens
 	WHERE user_email = ?
 	`
@@ -190,6 +203,7 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	var tokens UserTokens
 	var metadataJSON string
 	var geminiAuthMode, geminiVertexProject, geminiVertexLocation, geminiServiceAccountJSON, geminiRefreshToken sql.NullString
+	var dynatraceURL, dynatraceToken, dynatraceTagFilter sql.NullString
 
 	err := row.Scan(
 		&tokens.UserEmail,
@@ -209,6 +223,9 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 		&tokens.CopilotDeployment,
 		&tokens.OllamaModel,
 		&tokens.PreferredProvider,
+		&dynatraceURL,
+		&dynatraceToken,
+		&dynatraceTagFilter,
 		&metadataJSON,
 		&tokens.UpdatedAt,
 		&tokens.CreatedAt,
@@ -218,6 +235,9 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	tokens.GeminiVertexLocation = geminiVertexLocation.String
 	tokens.GeminiServiceAccountJSON = geminiServiceAccountJSON.String
 	tokens.GeminiRefreshToken = geminiRefreshToken.String
+	tokens.DynatraceURL = dynatraceURL.String
+	tokens.DynatraceToken = dynatraceToken.String
+	tokens.DynatraceTagFilter = dynatraceTagFilter.String
 
 	if err == sql.ErrNoRows {
 		return nil, nil // Usuário não tem tokens configurados

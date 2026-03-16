@@ -35,6 +35,9 @@ interface TokenStatus {
   copilot_deployment?: string;
   ollama_model?: string;
   preferred_provider: string;
+  has_dynatrace?: boolean;
+  dynatrace_url?: string;
+  dynatrace_tag_filter?: string;
   updated_at?: string;
 }
 
@@ -83,6 +86,11 @@ export function AISettingsTab() {
   const [copilotEndpoint, setCopilotEndpoint] = useState("");
   const [copilotDeployment, setCopilotDeployment] = useState("");
   const [ollamaModel, setOllamaModel] = useState("");
+  const [dynatraceURL, setDynatraceURL] = useState("");
+  const [dynatraceToken, setDynatraceToken] = useState("");
+  const [dynatraceTagFilter, setDynatraceTagFilter] = useState("");
+  const [dtTesting, setDtTesting] = useState(false);
+  const [dtTestResult, setDtTestResult] = useState<{ success: boolean; latency_ms?: number; error?: string } | null>(null);
   const [preferredProvider, setPreferredProvider] = useState("ollama");
 
   // Available models per provider
@@ -97,6 +105,7 @@ export function AISettingsTab() {
   const [showOpenAI, setShowOpenAI] = useState(false);
   const [showClaude, setShowClaude] = useState(false);
   const [showCopilot, setShowCopilot] = useState(false);
+  const [showDynatraceToken, setShowDynatraceToken] = useState(false);
 
   // Validation results
   const [geminiValid, setGeminiValid] = useState<boolean | null>(null);
@@ -153,6 +162,8 @@ export function AISettingsTab() {
       if (response.ollama_model) setOllamaModel(response.ollama_model);
       if (response.copilot_endpoint) setCopilotEndpoint(response.copilot_endpoint);
       if (response.copilot_deployment) setCopilotDeployment(response.copilot_deployment);
+      if (response.dynatrace_url) setDynatraceURL(response.dynatrace_url);
+      if (response.dynatrace_tag_filter !== undefined) setDynatraceTagFilter(response.dynatrace_tag_filter);
     } catch (error) {
       console.error("Failed to load token status:", error);
       toast({
@@ -259,6 +270,20 @@ export function AISettingsTab() {
     }
   };
 
+  const handleTestDynatrace = async () => {
+    if (!aiEmail) return;
+    setDtTesting(true);
+    setDtTestResult(null);
+    try {
+      const result = await apiClient.testDynatraceConnection(aiEmail);
+      setDtTestResult(result);
+    } catch (err: any) {
+      setDtTestResult({ success: false, error: err.message ?? "Erro ao testar conexão" });
+    } finally {
+      setDtTesting(false);
+    }
+  };
+
   const handleSave = async () => {
     // Validar que ai_email está preenchido
     if (!aiEmail || aiEmail.trim() === "") {
@@ -317,6 +342,11 @@ export function AISettingsTab() {
       if (copilotEndpoint) payload.copilot_endpoint = copilotEndpoint;
       if (copilotDeployment) payload.copilot_deployment = copilotDeployment;
 
+      // Dynatrace - URL e tag filter não são sensíveis; token sim
+      if (dynatraceURL) payload.dynatrace_url = dynatraceURL;
+      if (dynatraceToken) payload.dynatrace_token = dynatraceToken;
+      payload.dynatrace_tag_filter = dynatraceTagFilter; // sempre enviar (permite limpar)
+
       console.log("[AISettingsTab] Salvando configurações:", {
         ai_email: payload.ai_email,
         preferred_provider: payload.preferred_provider,
@@ -350,6 +380,7 @@ export function AISettingsTab() {
       setOpenaiKey("");
       setClaudeKey("");
       setCopilotKey("");
+      setDynatraceToken("");
 
       // Recarregar status (apenas indicadores has_gemini, has_claude, etc)
       await loadTokenStatus();
@@ -489,6 +520,9 @@ export function AISettingsTab() {
       setCopilotKey("");
       setCopilotEndpoint("");
       setCopilotDeployment("");
+      setDynatraceURL("");
+      setDynatraceToken("");
+      setDynatraceTagFilter("");
       setGeminiValid(null);
       setOpenaiValid(null);
       setClaudeValid(null);
@@ -563,6 +597,10 @@ export function AISettingsTab() {
                 <Badge variant={tokenStatus.has_copilot ? "default" : "outline"}>
                   {tokenStatus.has_copilot ? <CheckCircle2 className="h-3 w-3 mr-1" /> : <XCircle className="h-3 w-3 mr-1" />}
                   Copilot {tokenStatus.has_copilot ? "Configurado" : "Não Configurado"}
+                </Badge>
+                <Badge variant={tokenStatus.has_dynatrace ? "default" : "outline"}>
+                  {tokenStatus.has_dynatrace ? <CheckCircle2 className="h-3 w-3 mr-1" /> : <XCircle className="h-3 w-3 mr-1" />}
+                  Dynatrace {tokenStatus.has_dynatrace ? "Configurado" : "Não Configurado"}
                 </Badge>
               </div>
               {tokenStatus.updated_at && (
@@ -1039,6 +1077,96 @@ export function AISettingsTab() {
                 https://ollama.com/download
               </a>
             </p>
+          </div>
+
+          <Separator />
+
+          {/* Dynatrace Integration */}
+          <div className="space-y-3">
+            <Label className="flex items-center gap-2 text-base font-semibold">
+              Dynatrace
+              {tokenStatus?.has_dynatrace && <CheckCircle2 className="h-4 w-4 text-green-500" />}
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Token individual para análise de problems com AI. Cada analista usa seu próprio token.
+            </p>
+            <div className="space-y-2">
+              <Label htmlFor="dt-url" className="text-xs">URL do Ambiente Dynatrace</Label>
+              <Input
+                id="dt-url"
+                type="text"
+                placeholder="https://xxxxxxxx.live.dynatrace.com"
+                value={dynatraceURL}
+                onChange={(e) => setDynatraceURL(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="dt-token" className="text-xs">API Token</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="dt-token"
+                  type={showDynatraceToken ? "text" : "password"}
+                  placeholder="dt0c01.XXXXXXXXXX..."
+                  value={dynatraceToken}
+                  onChange={(e) => setDynatraceToken(e.target.value)}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setShowDynatraceToken(!showDynatraceToken)}
+                >
+                  {showDynatraceToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Escopos necessários: <code className="bg-muted px-1 rounded">problems.read</code>{" "}
+                <code className="bg-muted px-1 rounded">entities.read</code>{" "}
+                <code className="bg-muted px-1 rounded">metrics.read</code>{" "}
+                <code className="bg-muted px-1 rounded">events.read</code>
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="dt-tag-filter" className="text-xs">
+                Filtro por Management Zone <span className="text-muted-foreground font-normal">(opcional)</span>
+              </Label>
+              <Input
+                id="dt-tag-filter"
+                type="text"
+                placeholder="ex: SRE-LOGISTICA (use tag:nome para filtrar por entity tag)"
+                value={dynatraceTagFilter}
+                onChange={(e) => setDynatraceTagFilter(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Filtra problems pela Management Zone (corresponde ao alert profile do seu squad).
+                Prefixe com <code className="bg-muted px-1 rounded">tag:</code> para filtrar por entity tag.
+                Deixe em branco para ver todos os problems do ambiente.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleTestDynatrace}
+                disabled={dtTesting || !aiEmail}
+              >
+                {dtTesting
+                  ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Testando...</>
+                  : "Testar Conexão"}
+              </Button>
+              {dtTestResult && (
+                dtTestResult.success
+                  ? <span className="text-xs text-green-600 flex items-center gap-1">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      Conectado ({dtTestResult.latency_ms}ms)
+                    </span>
+                  : <span className="text-xs text-red-500 flex items-center gap-1">
+                      <XCircle className="h-3.5 w-3.5" />
+                      {dtTestResult.error ?? "Falha na conexão"}
+                    </span>
+              )}
+            </div>
           </div>
 
           <Separator />

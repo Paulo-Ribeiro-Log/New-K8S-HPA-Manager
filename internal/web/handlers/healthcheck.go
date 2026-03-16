@@ -13,6 +13,7 @@ import (
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/healthcheck"
+	"k8s-hpa-manager/internal/storage"
 	"k8s-hpa-manager/internal/web/sse"
 
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,7 @@ type HealthCheckHandler struct {
 	kubeManager  *config.KubeConfigManager
 	orchestrator *healthcheck.Orchestrator
 	tracker      *sse.ProgressTracker
+	tokensStore  *storage.UserTokensStore
 
 	// ✅ Map para armazenar funções de cancelamento de cada sessão
 	cancelFuncs map[string]*cancelEntry
@@ -37,11 +39,12 @@ type HealthCheckHandler struct {
 }
 
 // NewHealthCheckHandler cria um novo handler de health checking
-func NewHealthCheckHandler(km *config.KubeConfigManager, orch *healthcheck.Orchestrator, tracker *sse.ProgressTracker) *HealthCheckHandler {
+func NewHealthCheckHandler(km *config.KubeConfigManager, orch *healthcheck.Orchestrator, tracker *sse.ProgressTracker, tokensStore *storage.UserTokensStore) *HealthCheckHandler {
 	return &HealthCheckHandler{
 		kubeManager:  km,
 		orchestrator: orch,
 		tracker:      tracker,
+		tokensStore:  tokensStore,
 		cancelFuncs:  make(map[string]*cancelEntry), // ✅ Inicializar map
 	}
 }
@@ -71,6 +74,15 @@ func (h *HealthCheckHandler) Run(c *gin.Context) {
 			},
 		})
 		return
+	}
+
+	// Popular credenciais Dynatrace do perfil do usuário (se check_dynatrace solicitado)
+	if req.CheckDynatrace && req.AIEmail != "" && h.tokensStore != nil {
+		if tokens, err := h.tokensStore.GetTokens(req.AIEmail); err == nil && tokens != nil {
+			req.DynatraceURL = tokens.DynatraceURL
+			req.DynatraceToken = tokens.DynatraceToken
+			req.DynatraceTagFilter = tokens.DynatraceTagFilter
+		}
 	}
 
 	// Gerar ID da sessão base

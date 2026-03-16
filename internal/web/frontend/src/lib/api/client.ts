@@ -2232,6 +2232,9 @@ class APIClient {
     copilot_deployment?: string;
     ollama_model?: string;
     preferred_provider: string;
+    has_dynatrace?: boolean;
+    dynatrace_url?: string;
+    dynatrace_tag_filter?: string;
     updated_at?: string;
   }> {
     // IMPORTANTE: Enviar ai_email para buscar configurações corretas do usuário
@@ -2957,6 +2960,56 @@ class APIClient {
   async cancelCommand(sessionId: string): Promise<void> {
     await this.request<void>(`/command-runner/session/${encodeURIComponent(sessionId)}`, {
       method: "DELETE",
+    });
+  }
+
+  // ===== DYNATRACE =====
+
+  async getDynatraceConfig(aiEmail: string): Promise<{
+    base_url: string;
+    has_token: boolean;
+    enabled: boolean;
+    tag_filter: string;
+  }> {
+    return this.request(`/dynatrace/config?ai_email=${encodeURIComponent(aiEmail)}`);
+  }
+
+  async testDynatraceConnection(aiEmail: string): Promise<{
+    success: boolean;
+    latency_ms?: number;
+    base_url?: string;
+    error?: string;
+  }> {
+    return this.request("/dynatrace/test", {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail }),
+    });
+  }
+
+  async getDynatraceProblems(aiEmail: string): Promise<{
+    problems: import("../../types/healthcheck").DynatraceProblem[];
+    total: number;
+    fetched_at: string;
+    dt_not_configured?: boolean;
+    message?: string;
+  }> {
+    return this.request(`/dynatrace/problems?ai_email=${encodeURIComponent(aiEmail)}`);
+  }
+
+  async getDynatraceProblem(problemId: string, aiEmail: string): Promise<any> {
+    return this.request(`/dynatrace/problems/${encodeURIComponent(problemId)}?ai_email=${encodeURIComponent(aiEmail)}`);
+  }
+
+  async analyzeDynatraceProblem(problemId: string, aiEmail: string): Promise<{
+    problem_id: string;
+    title: string;
+    severity: string;
+    analysis: string;
+    analyzed_at: string;
+  }> {
+    return this.request(`/dynatrace/problems/${encodeURIComponent(problemId)}/analyze`, {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail }),
     });
   }
 }

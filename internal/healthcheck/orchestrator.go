@@ -24,12 +24,13 @@ type Orchestrator struct {
 	deploymentChecker  *DeploymentChecker
 	serviceChecker     *ServiceChecker
 	configChecker      *ConfigChecker
-	eventChecker       *EventChecker              // ✅ Verificador de eventos K8s
-	hpaChecker         *HPAChecker                // ✅ Verificador de HPAs
-	pvChecker          *PVChecker                 // ✅ Verificador de PVCs
+	eventChecker       *EventChecker               // ✅ Verificador de eventos K8s
+	hpaChecker         *HPAChecker                 // ✅ Verificador de HPAs
+	pvChecker          *PVChecker                  // ✅ Verificador de PVCs
+	dynatraceChecker   *DynatraceChecker           // ✅ Verificador de problems Dynatrace
 	storage            *HealthCheckStorage
 	progressTracker    *sse.ProgressTracker
-	filterManager      *FilterManager         // ✅ Gerenciador de filtros
+	filterManager      *FilterManager              // ✅ Gerenciador de filtros
 	deploymentRegistry *storage.DeploymentRegistry // ✅ Base de conhecimento de deployments
 }
 
@@ -61,6 +62,7 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 		eventChecker:       NewEventChecker(),
 		hpaChecker:         NewHPAChecker(),
 		pvChecker:          NewPVChecker(),
+		dynatraceChecker:   NewDynatraceChecker(),
 		storage:            hcStorage,
 		progressTracker:    progressTracker,
 		filterManager:      filterManager,
@@ -137,6 +139,7 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		ServiceResults:    []ServiceHealth{},
 		ConfigResults:     []ConfigHealth{},
 		EventResults:      []EventHealth{},
+		DynatraceResults:  []DynatraceHealth{},
 	}
 
 	// Obter cliente Kubernetes
@@ -196,6 +199,9 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		enabledChecks++
 	}
 	if req.CheckPVCs {
+		enabledChecks++
+	}
+	if req.CheckDynatrace && req.DynatraceURL != "" {
 		enabledChecks++
 	}
 
@@ -459,6 +465,39 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		}()
 	}
 
+	// Check Dynatrace Problems
+	if req.CheckDynatrace && req.DynatraceURL != "" {
+		dtStart := currentRangeStart
+		dtEnd := currentRangeStart + rangePerCheck
+		currentRangeStart = dtEnd
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.publishProgress(sessionID, cluster, "dynatrace", "Buscando problems abertos no Dynatrace...", dtStart, StatusHealthy)
+
+			dtResults := o.dynatraceChecker.CheckAll(ctx, req.DynatraceURL, req.DynatraceToken, req.DynatraceTagFilter, cluster, req.GetTimeoutDynatrace())
+
+			mu.Lock()
+			result.DynatraceResults = dtResults
+			mu.Unlock()
+
+			critical := 0
+			for _, d := range dtResults {
+				if d.Status == StatusCritical {
+					critical++
+				}
+			}
+			if critical > 0 {
+				o.publishProgress(sessionID, cluster, "dynatrace", fmt.Sprintf("%d problem(s) Dynatrace crítico(s) correlacionado(s) com este cluster", critical), dtEnd, StatusCritical)
+			} else if len(dtResults) > 0 {
+				o.publishProgress(sessionID, cluster, "dynatrace", fmt.Sprintf("%d problem(s) Dynatrace encontrado(s)", len(dtResults)), dtEnd, StatusWarning)
+			} else {
+				o.publishProgress(sessionID, cluster, "dynatrace", "Nenhum problem Dynatrace correlacionado com este cluster", dtEnd, StatusHealthy)
+			}
+		}()
+	}
+
 	// Aguardar conclusão
 	wg.Wait()
 
@@ -523,6 +562,16 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			if p.Status == StatusCritical && criticalShown < maxCritical {
 				o.publishProgress(sessionID, cluster, "summary",
 					fmt.Sprintf("Crítico: PVC %s/%s - %s", p.Namespace, p.Name, p.Message), 97, StatusCritical)
+				criticalShown++
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+
+		// Publicar problems Dynatrace críticos (se ainda tiver espaço)
+		for _, d := range result.DynatraceResults {
+			if d.Status == StatusCritical && criticalShown < maxCritical {
+				o.publishProgress(sessionID, cluster, "summary",
+					fmt.Sprintf("Crítico: Dynatrace %s - %s", d.DisplayID, d.Title), 97, StatusCritical)
 				criticalShown++
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -780,7 +829,12 @@ func (o *Orchestrator) calculateSummary(result *HealthCheckResult) {
 		statusCount[p.Status]++
 	}
 
-	result.TotalChecks = len(result.DeploymentResults) + len(result.ServiceResults) + len(result.ConfigResults) + len(result.EventResults) + len(result.HPAResults) + len(result.PVCResults)
+	// Contar Dynatrace problems
+	for _, d := range result.DynatraceResults {
+		statusCount[d.Status]++
+	}
+
+	result.TotalChecks = len(result.DeploymentResults) + len(result.ServiceResults) + len(result.ConfigResults) + len(result.EventResults) + len(result.HPAResults) + len(result.PVCResults) + len(result.DynatraceResults)
 	result.HealthyCount = statusCount[StatusHealthy]
 	result.WarningCount = statusCount[StatusWarning]
 	result.CriticalCount = statusCount[StatusCritical]
