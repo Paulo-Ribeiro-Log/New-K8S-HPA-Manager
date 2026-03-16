@@ -118,9 +118,18 @@ type HealthCheckRequest struct {
 	CheckEvents      bool `json:"check_events"` // Verificar eventos do Kubernetes (FailedScheduling, etc.)
 	CheckHPAs        bool `json:"check_hpas"`   // Verificar HPAs (min=max, métricas, scaling)
 	CheckPVCs        bool `json:"check_pvcs"`   // Verificar PersistentVolumeClaims (status, storage class)
+	CheckDynatrace   bool `json:"check_dynatrace"` // Verificar problems OPEN no Dynatrace
+
+	// Credenciais Dynatrace (preenchidas pelo handler a partir dos tokens do usuário)
+	AIEmail             string `json:"ai_email,omitempty"`
+	DynatraceURL        string `json:"-"` // não exposto no JSON de request (preenchido internamente)
+	DynatraceToken      string `json:"-"` // não exposto no JSON de request (preenchido internamente)
+	DynatraceTagFilter  string `json:"-"` // tag para filtrar problems (ex: "SRE-LOGISTICA")
 
 	// Timeout geral (segundos) - usado como fallback se timeouts específicos não forem definidos
 	Timeout int `json:"timeout"` // Padrão: 30s
+
+	TimeoutDynatrace int `json:"timeout_dynatrace,omitempty"` // Padrão: 20s
 
 	// Timeouts específicos por tipo de check (segundos)
 	// Se 0, usa o valor de Timeout como fallback
@@ -156,6 +165,9 @@ type HealthCheckResult struct {
 	HPAResults        []HPAHealth        `json:"hpa_results"`   // HPAs com problemas de configuração
 	PVCResults        []PVCHealth        `json:"pvc_results"`   // PVCs com problemas de storage
 
+	// Dynatrace problems correlacionados (opcional)
+	DynatraceResults []DynatraceHealth `json:"dynatrace_results"`
+
 	// Resumo
 	TotalChecks   int          `json:"total_checks"`
 	HealthyCount  int          `json:"healthy_count"`
@@ -165,6 +177,24 @@ type HealthCheckResult struct {
 
 	// Contadores por severidade (novo sistema)
 	SeverityCounts SeverityCounts `json:"severity_counts"`
+}
+
+// DynatraceHealth problema Dynatrace correlacionado com recursos K8s do cluster
+type DynatraceHealth struct {
+	ProblemID        string       `json:"problem_id"`
+	DisplayID        string       `json:"display_id"`
+	Title            string       `json:"title"`
+	DTSeverity       string       `json:"dt_severity"`      // AVAILABILITY, ERROR, PERFORMANCE, etc.
+	ImpactLevel      string       `json:"impact_level"`
+	Status           HealthStatus `json:"status"`
+	Severity         Severity     `json:"severity"`
+	StartTime        time.Time    `json:"start_time"`
+	K8sNamespaces    []string     `json:"k8s_namespaces,omitempty"`
+	K8sWorkloads     []string     `json:"k8s_workloads,omitempty"` // "namespace/workload"
+	AffectedEntities []string     `json:"affected_entities,omitempty"`
+	Message          string       `json:"message"`
+	Suggestions      []string     `json:"suggestions"`
+	CheckedAt        time.Time    `json:"checked_at"`
 }
 
 // SeverityCounts contadores por nível de severidade
@@ -469,6 +499,7 @@ const (
 	DefaultTimeoutEvents      = 30 // segundos (consulta de eventos)
 	DefaultTimeoutHPAs        = 45 // segundos (validação de HPAs + eventos)
 	DefaultTimeoutPVCs        = 30 // segundos (validação de PVCs)
+	DefaultTimeoutDynatrace   = 20 // segundos (consulta à API Dynatrace)
 )
 
 // GetTimeoutDeployments retorna o timeout para deployments com fallback
@@ -535,4 +566,12 @@ func (r *HealthCheckRequest) GetTimeoutPVCs() int {
 		return r.Timeout
 	}
 	return DefaultTimeoutPVCs
+}
+
+// GetTimeoutDynatrace retorna o timeout para Dynatrace com fallback
+func (r *HealthCheckRequest) GetTimeoutDynatrace() int {
+	if r.TimeoutDynatrace > 0 {
+		return r.TimeoutDynatrace
+	}
+	return DefaultTimeoutDynatrace
 }

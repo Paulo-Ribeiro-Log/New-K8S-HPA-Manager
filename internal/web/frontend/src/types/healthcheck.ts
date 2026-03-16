@@ -83,8 +83,12 @@ export interface HealthCheckRequest {
   check_services: boolean;
   check_configs: boolean;
   check_events: boolean; // Verificar eventos K8s (FailedScheduling, etc.)
-  check_hpas: boolean;   // Verificar HPAs (min=max, métricas, scaling)
-  check_pvcs: boolean;   // Verificar PVCs (status, StorageClass, access modes)
+  check_hpas: boolean;       // Verificar HPAs (min=max, métricas, scaling)
+  check_pvcs: boolean;       // Verificar PVCs (status, StorageClass, access modes)
+  check_dynatrace?: boolean; // Verificar problems OPEN no Dynatrace
+
+  // Email do analista (para buscar credenciais Dynatrace)
+  ai_email?: string;
 
   // Timeout geral (segundos) - usado como fallback
   timeout: number;
@@ -117,9 +121,10 @@ export interface HealthCheckResult {
   deployment_results: DeploymentHealth[];
   service_results: ServiceHealth[];
   config_results: ConfigHealth[];
-  event_results: EventHealth[]; // Eventos K8s críticos
-  hpa_results: HPAHealth[];     // HPAs com problemas de configuração
-  pvc_results: PVCHealth[];     // PVCs com problemas de configuração
+  event_results: EventHealth[];          // Eventos K8s críticos
+  hpa_results: HPAHealth[];              // HPAs com problemas de configuração
+  pvc_results: PVCHealth[];              // PVCs com problemas de configuração
+  dynatrace_results?: DynatraceHealth[]; // Problems Dynatrace correlacionados
 
   // Resumo
   total_checks: number;
@@ -456,4 +461,62 @@ export interface HealthCheckErrorResponse {
     message: string;
     details?: string;
   };
+}
+
+// Problem Dynatrace retornado pela API /api/v1/dynatrace/problems (ProblemSummary — camelCase)
+export interface DynatraceEntityStub {
+  entityId: { id: string; type: string };
+  displayName: string;
+  k8sCluster?: string;
+  k8sNamespace?: string;
+  k8sWorkload?: string;
+}
+
+export interface DynatraceProblem {
+  problemId: string;
+  displayId: string;
+  title: string;
+  status: string;           // "OPEN" | "CLOSED"
+  severityLevel: string;    // "AVAILABILITY" | "ERROR" | "PERFORMANCE" | "RESOURCE_CONTENTION" | "CUSTOM_ALERT"
+  impactLevel: string;      // "APPLICATION" | "ENVIRONMENT" | "INFRASTRUCTURE" | "SERVICE"
+  startTime: string;        // ISO timestamp
+  endTime?: string;
+  affectedEntities: DynatraceEntityStub[];
+  impactedEntities?: DynatraceEntityStub[];
+  rootCauseEntity?: DynatraceEntityStub;
+  managementZones?: { id: string; name: string }[];
+  k8sWorkloads?: {
+    Cluster: string;
+    Namespace: string;
+    Workload: string;
+    PodName?: string;
+  }[];
+}
+
+export interface DynatraceHistoryRecord {
+  id: string;
+  resource_name: string;   // "P-XXXXX — título do problem"
+  namespace: string;       // management zones (csv)
+  analysis: string;
+  analyzed_at: string;
+  user_email: string;
+  resource_metadata?: string; // JSON: { display_id, severity, impact_level, management_zones, start_time }
+}
+
+// Problem Dynatrace correlacionado com recursos K8s do cluster
+export interface DynatraceHealth {
+  problem_id: string;
+  display_id: string;
+  title: string;
+  dt_severity: string;      // "AVAILABILITY" | "ERROR" | "PERFORMANCE" | "RESOURCE_CONTENTION" | "CUSTOM_ALERT"
+  impact_level: string;     // "APPLICATION" | "ENVIRONMENT" | "INFRASTRUCTURE" | "SERVICE"
+  status: HealthStatus;
+  severity: Severity;
+  start_time: string;       // ISO timestamp
+  k8s_namespaces?: string[];
+  k8s_workloads?: string[]; // "namespace/workload"
+  affected_entities?: string[];
+  message: string;
+  suggestions: string[];
+  checked_at: string;       // ISO timestamp
 }

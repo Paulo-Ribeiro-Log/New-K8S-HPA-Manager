@@ -75,6 +75,12 @@ type Server struct {
 	// AI Tokens Handler (gerencia tokens AI dos usuários)
 	aiTokensHandler *handlers.AITokensHandler
 
+	// AI Tokens Store (compartilhado com Dynatrace handler)
+	aiTokensStore *storage.UserTokensStore
+
+	// AI History Store (compartilhado com Dynatrace handler)
+	aiHistoryStore *storage.AIHistoryStore
+
 	// KubeManager wrapper para AI (pode ser nil se AI estiver desabilitado)
 	kubeManagerWrapper *kubernetes.KubeManager
 
@@ -267,6 +273,8 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		monitoringEngineV2: monitoringEngineV2,
 		aiHandler:          aiHandler,          // Pode ser nil se AI estiver desabilitado
 		aiTokensHandler:    aiTokensHandler,    // Gerencia tokens AI dos usuários
+		aiTokensStore:      aiTokensStore,      // Compartilhado com Dynatrace handler
+		aiHistoryStore:     aiHistoryStore,     // Compartilhado com Dynatrace handler
 		kubeManagerWrapper: kubeManagerWrapper, // Para predictions RBAC
 		awxHandler:         awxHandler,         // AWX Integration (certificados TLS)
 	}
@@ -700,6 +708,18 @@ func (s *Server) setupRoutes() {
 		explorer.DELETE("/:cluster/:namespace/:resource/:name", rbacMiddleware.RequireSREGroup(), explorerHandler.Delete)
 	}
 
+	// Dynatrace Integration — análise de problems com AI
+	dtHandler := handlers.NewDynatraceHandler(s.aiTokensStore, s.aiHistoryStore, s.aiHandler)
+	dt := api.Group("/dynatrace")
+	{
+		dt.GET("/config", dtHandler.GetConfig)
+		dt.POST("/test", dtHandler.TestConnection)
+		dt.GET("/problems", dtHandler.ListProblems)
+		dt.GET("/problems/:problemId", dtHandler.GetProblem)
+		dt.POST("/problems/:problemId/analyze", dtHandler.AnalyzeProblem)
+		dt.GET("/history", dtHandler.GetHistory)
+	}
+
 	// Helm
 	helmLogger := zerolog.New(os.Stdout).With().Timestamp().Str("component", "helm-cli").Logger()
 	helmOptions := []helmclient.Option{helmclient.WithLogger(helmLogger)}
@@ -1086,7 +1106,7 @@ func (s *Server) setupRoutes() {
 		fmt.Printf("⚠️  Falha ao criar Health Check Orchestrator: %v\n", err)
 	} else {
 		// Criar handler
-		healthCheckHandler := handlers.NewHealthCheckHandler(s.kubeManager, healthCheckOrchestrator, progressTracker)
+		healthCheckHandler := handlers.NewHealthCheckHandler(s.kubeManager, healthCheckOrchestrator, progressTracker, s.aiTokensStore)
 
 		// System Health endpoints (padrão Kubernetes) - sem auth
 		systemHealthHandler := handlers.NewSystemHealthHandler(s.kubeManager, healthCheckOrchestrator, updater.Version)
