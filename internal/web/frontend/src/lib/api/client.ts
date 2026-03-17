@@ -2196,9 +2196,11 @@ class APIClient {
   }
 
   // ─── gcloud install + auth flow ───────────────────────────────────────────
-  async startGoogleInstallAuth(aiEmail?: string): Promise<{ session_id: string; auth_url?: string; status?: string }> {
-    const query = aiEmail ? `?ai_email=${encodeURIComponent(aiEmail)}` : "";
-    return this.request(`/ai/tokens/google-auth/install/start${query}`, { method: "POST", body: "{}" });
+  async startGoogleInstallAuth(aiEmail?: string, baseUrl?: string): Promise<{ session_id: string; auth_url?: string; status?: string }> {
+    return this.request(`/ai/tokens/google-auth/install/start`, {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail || "", base_url: baseUrl || window.location.origin }),
+    });
   }
 
   async getGoogleAuthStatus(sessionId: string): Promise<{
