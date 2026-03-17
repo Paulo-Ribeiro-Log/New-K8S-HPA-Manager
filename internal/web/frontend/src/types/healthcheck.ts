@@ -463,13 +463,38 @@ export interface HealthCheckErrorResponse {
   };
 }
 
+// Tags ricas do OneAgent — DevOps, versão, squad, GitHub repo
+export interface DTLabels {
+  // app.kubernetes.io/*
+  appName?: string;
+  appVersion?: string;
+  appEnvironment?: string; // prd | hlg | dev
+  appInstance?: string;
+  releaseName?: string;
+  stage?: string;          // stable | canary
+  deployedBy?: string;     // spinnaker-helm
+  isCanary?: string;       // "true" | "false"
+  // K8s infra
+  namespace?: string;
+  hostGroup?: string;      // dt.host_group.id → AKS cluster (ex: akspriv-busca-prd)
+  // DevOps / rastreabilidade
+  githubRepoId?: string;
+  componentName?: string;
+  componentSquad?: string;
+  componentJourney?: string;
+  componentTribe?: string;
+  helmChart?: string;
+}
+
 // Problem Dynatrace retornado pela API /api/v1/dynatrace/problems (ProblemSummary — camelCase)
 export interface DynatraceEntityStub {
   entityId: { id: string; type: string };
-  displayName: string;
+  displayName?: string; // da Entity API
+  name?: string;        // da Problems API (campo "name" nos stubs)
   k8sCluster?: string;
   k8sNamespace?: string;
   k8sWorkload?: string;
+  labels?: DTLabels;    // tags ricas do OneAgent (squad, journey, versão, GitHub, etc.)
 }
 
 export interface DynatraceProblem {
@@ -490,7 +515,92 @@ export interface DynatraceProblem {
     Namespace: string;
     Workload: string;
     PodName?: string;
+    AppName?: string;
+    AppVersion?: string;
+    GitHubRepoID?: string;
+    Environment?: string;
   }[];
+}
+
+// ─── Métricas de performance por entidade ─────────────────────────────────────
+
+export interface DTMetricPoint {
+  t: number; // epoch ms
+  v: number;
+}
+
+export interface DTMetricSeries {
+  key: string;
+  label: string;
+  unit: string;
+  points: DTMetricPoint[];
+}
+
+export interface DTEntityMetrics {
+  entityId: string;
+  entityName: string;
+  entityType: string;
+  isRootCause: boolean;
+  metrics: DTMetricSeries[];
+}
+
+export interface DTProblemMetrics {
+  problemId: string;
+  title: string;
+  timeFrom: string;
+  timeTo: string;
+  problemStart: string;
+  entities: DTEntityMetrics[];
+}
+
+// ─── Contexto rico de um problem (evidências, topologia, traces, eventos) ──────
+
+export interface DTEvidenceItem {
+  evidenceType: string;   // "EVENT" | "METRIC" | "TRANSACTIONAL" | "LOG" | "MAINTENANCE_WINDOW"
+  displayName: string;
+  entityId: string;
+  entityName: string;
+  entityType: string;
+  rootCause: boolean;
+  startTime: string; // ISO
+}
+
+export interface DTTopoRelation {
+  entityId: string;
+  entityName: string;
+  entityType: string;
+  direction: string; // "outgoing" | "incoming"
+}
+
+export interface DTTraceEntry {
+  traceId: string;
+  startTime: string; // ISO
+  durationMs: number;
+  name: string;
+  httpMethod?: string;
+  httpStatus?: number;
+  hasError: boolean;
+}
+
+export interface DTContextEventEntry {
+  eventId: string;
+  eventType: string;
+  title: string;
+  startTime: string; // ISO
+  entityId: string;
+  entityName: string;
+}
+
+export interface DTProblemContext {
+  problemId: string;
+  timeFrom: string;
+  timeTo: string;
+  problemStart: string;
+  evidence: DTEvidenceItem[];
+  events: DTContextEventEntry[];
+  topology: DTTopoRelation[];
+  traces: DTTraceEntry[];
+  tracesError?: string; // erro ao buscar traces (403 = falta escopo DataExport no token)
 }
 
 export interface DynatraceHistoryRecord {
@@ -519,4 +629,10 @@ export interface DynatraceHealth {
   message: string;
   suggestions: string[];
   checked_at: string;       // ISO timestamp
+  // Campos enriquecidos via DTLabels (OneAgent tags)
+  app_versions?: Record<string, string>; // appName → version
+  github_repos?: string[];               // IDs dos repos afetados
+  squads?: string[];                     // times donos das apps
+  journeys?: string[];                   // jornadas/domínios
+  environments?: string[];               // prd/hlg/dev
 }

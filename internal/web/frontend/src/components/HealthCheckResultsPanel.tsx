@@ -33,8 +33,13 @@ import {
   AlertTriangle,
   TrendingUp,
   HardDrive,
+  Zap,
+  GitBranch,
+  Users,
+  Tag,
 } from "lucide-react";
-import type { HealthCheckResult } from "@/types/healthcheck";
+import type { HealthCheckResult, DynatraceHealth, Severity } from "@/types/healthcheck";
+import { SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/healthcheck";
 import { HealthCheckCard } from "@/components/HealthCheckCard";
 
 interface HealthCheckResultsPanelProps {
@@ -52,6 +57,104 @@ export interface SelectedAlert {
   resource_type: "Deployment" | "ConfigMap" | "Secret";
   message: string;
 }
+
+// Card compacto para exibir um problem Dynatrace no Health Check
+const DynatraceProblemCard = ({ problem }: { problem: DynatraceHealth }) => {
+  const severityColor = SeverityColors[problem.severity as Severity] || "text-gray-500";
+  const severityBg = SeverityBgColors[problem.severity as Severity] || "bg-gray-500/10 border-gray-500/30";
+  const severityLabel = SeverityLabels[problem.severity as Severity] || problem.severity;
+
+  const dtSeverityIcon: Record<string, string> = {
+    AVAILABILITY: "🔴",
+    ERROR: "🟠",
+    PERFORMANCE: "🟡",
+    RESOURCE_CONTENTION: "🟡",
+    CUSTOM_ALERT: "🔵",
+  };
+
+  const envColor: Record<string, string> = {
+    prd: "bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-400",
+    hlg: "bg-yellow-100 text-yellow-700 dark:bg-yellow-950/30 dark:text-yellow-400",
+    dev: "bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400",
+  };
+
+  return (
+    <div className={`rounded-lg border p-3 space-y-2 ${severityBg}`}>
+      {/* Header: ID + título + severidade */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-base leading-none">{dtSeverityIcon[problem.dt_severity] || "⚪"}</span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="font-mono text-xs text-muted-foreground">{problem.display_id}</span>
+              <Badge variant="outline" className={`text-xs ${severityColor}`}>{severityLabel}</Badge>
+              <Badge variant="outline" className="text-xs">{problem.impact_level}</Badge>
+            </div>
+            <p className="text-sm font-medium mt-0.5 leading-snug">{problem.title}</p>
+          </div>
+        </div>
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
+          {new Date(problem.start_time).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}
+        </span>
+      </div>
+
+      {/* Workloads K8s */}
+      {(problem.k8s_workloads?.length ?? 0) > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <Server className="h-3 w-3 text-muted-foreground shrink-0" />
+          {problem.k8s_workloads!.map((wl, i) => {
+            const version = problem.app_versions?.[wl.split("/")[1]] || problem.app_versions?.[wl];
+            return (
+              <span key={i} className="inline-flex items-center gap-1 text-xs font-mono bg-muted px-1.5 py-0.5 rounded">
+                {wl}
+                {version && <span className="text-blue-600 dark:text-blue-400">v{version}</span>}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Squads + Journeys + Environments */}
+      <div className="flex items-center gap-2 flex-wrap text-xs">
+        {(problem.squads?.length ?? 0) > 0 && (
+          <span className="flex items-center gap-1 text-muted-foreground">
+            <Users className="h-3 w-3" />
+            {problem.squads!.join(", ")}
+          </span>
+        )}
+        {(problem.journeys?.length ?? 0) > 0 && (
+          <span className="flex items-center gap-1 text-muted-foreground">
+            <Tag className="h-3 w-3" />
+            {problem.journeys!.join(", ")}
+          </span>
+        )}
+        {(problem.environments?.length ?? 0) > 0 && (
+          <div className="flex items-center gap-1">
+            {problem.environments!.map((env, i) => (
+              <span key={i} className={`px-1.5 py-0.5 rounded text-xs font-medium ${envColor[env.toLowerCase()] || "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"}`}>
+                {env}
+              </span>
+            ))}
+          </div>
+        )}
+        {(problem.github_repos?.length ?? 0) > 0 && (
+          <span className="flex items-center gap-1 text-muted-foreground">
+            <GitBranch className="h-3 w-3" />
+            {problem.github_repos!.slice(0, 2).join(", ")}
+            {problem.github_repos!.length > 2 && ` +${problem.github_repos!.length - 2}`}
+          </span>
+        )}
+      </div>
+
+      {/* Sugestões (primeira apenas) */}
+      {problem.suggestions.length > 0 && (
+        <p className="text-xs text-muted-foreground border-t pt-1.5">
+          💡 {problem.suggestions[0]}
+        </p>
+      )}
+    </div>
+  );
+};
 
 export const HealthCheckResultsPanel = ({
   results,
@@ -467,7 +570,7 @@ export const HealthCheckResultsPanel = ({
                       <CollapsibleContent>
                         <CardContent className="pt-0 border-t">
                           <Tabs defaultValue="deployments" className="mt-4">
-                            <TabsList className="grid w-full grid-cols-6">
+                            <TabsList className="grid w-full grid-cols-7">
                               <TabsTrigger value="deployments" className="gap-1 text-xs">
                                 <Server className="h-3 w-3" />
                                 Deploys ({result.deployment_results.length})
@@ -491,6 +594,12 @@ export const HealthCheckResultsPanel = ({
                               <TabsTrigger value="pvcs" className="gap-1 text-xs">
                                 <HardDrive className="h-3 w-3" />
                                 PVCs ({result.pvc_results?.length || 0})
+                              </TabsTrigger>
+                              <TabsTrigger value="dynatrace" className="gap-1 text-xs">
+                                <Zap className="h-3 w-3 text-purple-500" />
+                                <span className="text-purple-600 dark:text-purple-400">
+                                  DT ({result.dynatrace_results?.length || 0})
+                                </span>
                               </TabsTrigger>
                             </TabsList>
 
@@ -623,6 +732,26 @@ export const HealthCheckResultsPanel = ({
                                     />
                                   );
                                 })
+                              )}
+                            </TabsContent>
+
+                            <TabsContent value="dynatrace" className="space-y-2 mt-3">
+                              {!result.dynatrace_results || result.dynatrace_results.length === 0 ? (
+                                <div className="text-center py-6 text-xs text-muted-foreground space-y-2">
+                                  <Zap className="h-8 w-8 mx-auto opacity-30 text-purple-500" />
+                                  <p>Nenhum problem Dynatrace correlacionado com este cluster</p>
+                                  <p className="text-[10px]">Ative "Problems Dynatrace" nas opções e certifique-se de que o token DT está configurado nas Configurações de AI</p>
+                                </div>
+                              ) : (
+                                <div className="space-y-2">
+                                  <div className="flex items-center gap-2 text-xs text-muted-foreground pb-1">
+                                    <Zap className="h-3.5 w-3.5 text-purple-500" />
+                                    <span>{result.dynatrace_results.length} problem(s) Dynatrace correlacionado(s) com workloads deste cluster</span>
+                                  </div>
+                                  {result.dynatrace_results.map((problem, i) => (
+                                    <DynatraceProblemCard key={i} problem={problem} />
+                                  ))}
+                                </div>
                               )}
                             </TabsContent>
                           </Tabs>

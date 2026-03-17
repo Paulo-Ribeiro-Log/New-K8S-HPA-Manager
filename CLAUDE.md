@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
 **IMPORTANTE**: Versão atual oficial: **v1.3.26** (GitHub release).
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **14 de março de 2026** - usar esta data ao documentar mudanças.
+**IMPORTANTE**: Data de hoje: **16 de março de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -105,6 +105,7 @@ k8s-hpa-manager/
 │   ├── storage/              # SQLite: predictions.db, health_check.db, ai_diagnostics.db
 │   │                         # + ai_history_store.go, dependency_registry.go, user_tokens_store.go
 │   ├── certificates/         # Gerenciamento de certificados TLS
+│   ├── dynatrace/            # Integração Dynatrace API v2 (problems, entities, metrics)
 │   ├── servicenow/           # Integração ServiceNow
 │   ├── healthcheck/          # Health checking: orchestrator, deployment/hpa/event/pv checkers
 │   └── history/              # History tracker
@@ -270,7 +271,23 @@ Erros como "Tracking Prevention blocked access to storage" e "Could not create w
 
 ### AI Providers (Multi-provider)
 
-`internal/ai/` suporta Ollama, Claude API e Gemini. Configurável via `AISettingsTab.tsx`. Tokens de usuário persistidos em `internal/storage/user_tokens_store.go`. **Nunca hardcodear API keys** — sempre via storage de tokens.
+`internal/ai/` suporta 5 providers: **Ollama**, **Claude** (Anthropic), **Gemini** (API Key ou Vertex AI via ADC/SSO), **OpenAI** e **Copilot** (Azure OpenAI). Configurável via `AISettingsTab.tsx`. Tokens de usuário persistidos em `internal/storage/user_tokens_store.go`. **Nunca hardcodear API keys** — sempre via storage de tokens.
+
+**Gemini Vertex AI (SSO corporativo)**: `GeminiAuthMode = "vertex"` usa Application Default Credentials (`gcloud auth application-default login`). Requer `GeminiVertexProject` (ou env `GOOGLE_CLOUD_PROJECT`). O ADC do servidor tem prioridade sobre credenciais locais — não requer role IAM explícita se o servidor já tiver acesso.
+
+**Copilot (Azure OpenAI)**: requer `CopilotAPIKey`, `CopilotEndpoint` (ex: `https://my-resource.openai.azure.com`) e `CopilotDeployment`. Env vars: `COPILOT_API_KEY`, `COPILOT_ENDPOINT`, `COPILOT_DEPLOYMENT`.
+
+### Dynatrace (Integração de Problems)
+
+`internal/dynatrace/` — cliente HTTP para Dynatrace Environment API v2. `DynatraceHandler` em `internal/web/handlers/dynatrace.go` expõe:
+- `GET /api/v1/dynatrace/config` — configuração atual (sem expor token)
+- `POST /api/v1/dynatrace/test` — testa conectividade
+- `GET /api/v1/dynatrace/problems` — lista problems OPEN (com filtro por management zone ou tag)
+- `GET /api/v1/dynatrace/problems/:problemId` — detalhes de um problem
+- `POST /api/v1/dynatrace/problems/:problemId/analyze` — análise AI do problem
+- `GET /api/v1/dynatrace/history` — histórico de análises
+
+Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fallback para env vars `DT_API_URL` e `DT_API_TOKEN`. **Atenção**: URL deve usar `*.live.dynatrace.com` (API), não `*.apps.dynatrace.com` (UI) — o client corrige automaticamente.
 
 ### Certificates
 
@@ -302,6 +319,9 @@ Erros como "Tracking Prevention blocked access to storage" e "Could not create w
 | Command Runner sem resposta | Verificar se SSE broker está iniciado e session ID é único |
 | Dependency graph não carrega | Cytoscape requer container com dimensões definidas (não `height: 0`) |
 | Certificados não listados | Verificar se secrets têm label `type: kubernetes.io/tls` |
+| Dynatrace 401/403 | Token inválido ou sem permissão `Read problems` no Dynatrace |
+| Dynatrace URL errada | Usar `*.live.dynatrace.com`, não `*.apps.dynatrace.com` |
+| Vertex AI sem permissão | Verificar ADC ativo: `gcloud auth application-default print-access-token` |
 
 ---
 
