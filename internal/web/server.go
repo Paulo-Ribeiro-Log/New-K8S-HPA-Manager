@@ -367,6 +367,11 @@ func (s *Server) setupRoutes() {
 	baseDir := filepath.Join(homeDir, ".k8s-hpa-manager")
 
 	// Health check (sem auth)
+	// OAuth2 Google callback — usa a porta do próprio app (funciona no WSL2 onde portas aleatórias não são forwardadas)
+	if s.aiTokensHandler != nil {
+		s.router.GET("/oauth/google/callback", s.aiTokensHandler.GoogleOAuthCallback)
+	}
+
 	s.router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"status":  "ok",

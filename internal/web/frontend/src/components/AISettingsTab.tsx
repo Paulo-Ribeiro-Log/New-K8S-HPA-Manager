@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Key, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Shield, Trash2, FileJson, LogIn, Copy } from "lucide-react";
+import { Key, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Shield, Trash2, FileJson, LogIn } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { apiClient } from "@/lib/api/client";
 
@@ -66,14 +66,12 @@ export function AISettingsTab() {
   const [hasGeminiServiceAccount, setHasGeminiServiceAccount] = useState(false);
   const [hasGeminiRefreshToken, setHasGeminiRefreshToken] = useState(false);
 
-  // Device Auth flow (Google) — funciona em WSL2, servidor remoto, qualquer topologia
-  // O loopback OAuth era quebrado em WSL2: redirect_uri=127.0.0.1:PORT ia para o Windows,
-  // não para o servidor WSL2. Device Auth elimina o callback — só polling via Google API.
-  const [deviceUserCode, setDeviceUserCode] = useState("");
-  const [deviceVerifURL, setDeviceVerifURL] = useState("");
-  const [deviceExpiresAt, setDeviceExpiresAt] = useState<Date | null>(null);
-  const [deviceStatus, setDeviceStatus] = useState<"idle" | "waiting" | "authenticated" | "error">("idle");
-  const [deviceError, setDeviceError] = useState<string | null>(null);
+  // App-callback OAuth flow (Google) — redireciona para /oauth/google/callback na porta do próprio app
+  // Resolve o WSL2: porta 8080 é forwarded, portas aleatórias não eram.
+  const [googleSessionId, setGoogleSessionId] = useState("");
+  const [googleAuthURL, setGoogleAuthURL] = useState("");
+  const [googleStatus, setGoogleStatus] = useState<"idle" | "waiting" | "authenticated" | "error">("idle");
+  const [googleError, setGoogleError] = useState<string | null>(null);
 
   const [testingVertex, setTestingVertex] = useState(false);
   const [vertexTestResult, setVertexTestResult] = useState<boolean | null>(null);
@@ -395,47 +393,49 @@ export function AISettingsTab() {
     }
   };
 
-  const startGoogleDeviceAuth = async () => {
+  const startGoogleAuth = async () => {
     if (!aiEmail) {
       toast({ title: "Preencha o email antes de autenticar", variant: "destructive" });
       return;
     }
 
-    setDeviceStatus("waiting");
-    setDeviceError(null);
-    setDeviceUserCode("");
+    setGoogleStatus("waiting");
+    setGoogleError(null);
+    setGoogleSessionId("");
+    setGoogleAuthURL("");
 
     try {
-      const result = await apiClient.startGoogleDeviceAuth();
-      setDeviceUserCode(result.user_code);
-      setDeviceVerifURL(result.verification_url || "https://accounts.google.com/device");
-      setDeviceExpiresAt(new Date(Date.now() + (result.expires_in || 600) * 1000));
+      const result = await apiClient.startGoogleInstallAuth(aiEmail, window.location.origin);
+      setGoogleSessionId(result.session_id);
+      if (result.auth_url) {
+        setGoogleAuthURL(result.auth_url);
+        window.open(result.auth_url, "_blank");
+      }
 
-      // Iniciar polling — sem servidor local, só polling à API do Google
-      const intervalSecs = result.interval || 5;
+      // Polling do status via backend
       const poll = async () => {
         try {
-          const r = await apiClient.pollGoogleDeviceAuth(result.device_code, aiEmail);
+          const r = await apiClient.getGoogleAuthStatus(result.session_id);
           if (r.status === "authenticated") {
-            setDeviceStatus("authenticated");
+            setGoogleStatus("authenticated");
             setHasGeminiRefreshToken(true);
             toast({ title: "✅ Autenticado com Google!", description: "Pronto para usar Gemini Vertex AI." });
             await loadTokenStatus();
           } else if (r.status === "error") {
-            setDeviceStatus("error");
-            setDeviceError(r.error || "Erro desconhecido");
+            setGoogleStatus("error");
+            setGoogleError(r.error || "Erro desconhecido");
           } else {
-            setTimeout(poll, intervalSecs * 1000);
+            setTimeout(poll, 3000);
           }
         } catch {
-          setTimeout(poll, intervalSecs * 1000);
+          setTimeout(poll, 5000);
         }
       };
-      setTimeout(poll, intervalSecs * 1000);
+      setTimeout(poll, 3000);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Erro desconhecido";
-      setDeviceStatus("error");
-      setDeviceError(msg);
+      setGoogleStatus("error");
+      setGoogleError(msg);
       toast({ title: "Falha ao iniciar autenticação Google", description: msg, variant: "destructive" });
     }
   };
@@ -692,13 +692,13 @@ export function AISettingsTab() {
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
-                      {hasGeminiRefreshToken && deviceStatus === "idle" && (
+                      {hasGeminiRefreshToken && googleStatus === "idle" && (
                         <Badge variant="secondary" className="text-green-700 bg-green-100 border-green-300 text-xs">
                           <CheckCircle2 className="h-3 w-3 mr-1" /> Autenticado
                         </Badge>
                       )}
-                      {(deviceStatus === "idle" || deviceStatus === "error") && (
-                        <Button size="sm" onClick={startGoogleDeviceAuth}>
+                      {(googleStatus === "idle" || googleStatus === "error") && (
+                        <Button size="sm" onClick={startGoogleAuth}>
                           <LogIn className="h-4 w-4 mr-1" />
                           {hasGeminiRefreshToken ? "Re-autenticar" : "Autenticar com Google"}
                         </Button>
@@ -706,88 +706,43 @@ export function AISettingsTab() {
                     </div>
                   </div>
 
-                  {/* Passo a passo Device Auth */}
-                  {deviceStatus === "waiting" && (
-                    <div className="rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-900 p-3 space-y-3">
-                      <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">
-                        Siga os passos abaixo para autenticar:
-                      </p>
-
-                      <div className="space-y-2">
-                        <p className="text-xs text-muted-foreground">
-                          <span className="font-semibold text-foreground">1.</span> Abra no browser:
-                        </p>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-xs font-mono gap-1.5"
-                          onClick={() => window.open(deviceVerifURL || "https://accounts.google.com/device", "_blank")}
-                        >
-                          {deviceVerifURL || "https://accounts.google.com/device"}
-                        </Button>
+                  {googleStatus === "waiting" && (
+                    <div className="rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-900 p-3 space-y-2">
+                      <div className="flex items-center gap-2 text-xs text-blue-700 dark:text-blue-300">
+                        <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                        <span className="font-semibold">Browser aberto — faça login com sua conta corporativa Google.</span>
                       </div>
-
-                      <div className="space-y-1">
-                        <p className="text-xs text-muted-foreground">
-                          <span className="font-semibold text-foreground">2.</span> Digite o código:
-                        </p>
+                      {googleAuthURL && (
                         <div className="flex items-center gap-2">
-                          <div className="rounded-md border-2 border-blue-400 dark:border-blue-500 bg-blue-50 dark:bg-blue-950 px-4 py-2">
-                            <span className="font-mono font-bold text-xl tracking-[0.35em] text-blue-700 dark:text-blue-300">
-                              {deviceUserCode || "..."}
-                            </span>
-                          </div>
                           <Button
                             size="sm"
-                            variant="ghost"
-                            className="h-8 text-xs gap-1"
-                            onClick={() => {
-                              navigator.clipboard.writeText(deviceUserCode);
-                              toast({ title: "Código copiado!" });
-                            }}
+                            variant="outline"
+                            className="h-7 text-xs gap-1.5"
+                            onClick={() => window.open(googleAuthURL, "_blank")}
                           >
-                            <Copy className="h-3.5 w-3.5" /> Copiar
+                            <LogIn className="h-3 w-3" /> Abrir novamente
                           </Button>
+                          <span className="text-xs text-muted-foreground">Aguardando conclusão do login...</span>
                         </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground pt-1 border-t border-border/40">
-                        <Loader2 className="h-3 w-3 animate-spin shrink-0" />
-                        Aguardando autenticação...
-                        {deviceExpiresAt && (
-                          <span className="ml-auto">
-                            Expira às {deviceExpiresAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
-                          </span>
-                        )}
-                      </div>
+                      )}
                     </div>
                   )}
 
-                  {deviceStatus === "authenticated" && (
+                  {googleStatus === "authenticated" && (
                     <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
                       <CheckCircle2 className="h-3.5 w-3.5" />
                       Autenticado com sucesso! Token salvo.
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-6 text-xs ml-auto"
-                        onClick={() => setDeviceStatus("idle")}
-                      >
+                      <Button size="sm" variant="ghost" className="h-6 text-xs ml-auto" onClick={() => setGoogleStatus("idle")}>
                         OK
                       </Button>
                     </div>
                   )}
 
-                  {deviceStatus === "error" && (
+                  {googleStatus === "error" && (
                     <div className="flex items-start gap-2 text-xs text-red-500 dark:text-red-400">
                       <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                      <span className="flex-1">{deviceError}</span>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-6 text-xs shrink-0"
-                        onClick={() => setDeviceStatus("idle")}
-                      >
+                      <span className="flex-1">{googleError}</span>
+                      <Button size="sm" variant="ghost" className="h-6 text-xs shrink-0" onClick={() => setGoogleStatus("idle")}>
                         Fechar
                       </Button>
                     </div>
