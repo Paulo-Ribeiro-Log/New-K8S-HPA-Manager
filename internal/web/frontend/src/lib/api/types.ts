@@ -1367,6 +1367,25 @@ export interface GenerateCommandResponse {
 }
 
 // SSE event do Command Runner (estende o ProgressEvent do backend)
+// ─── NodePool Registry (correlação Dynatrace aks-<pool>-vmss*) ────────────────
+
+export interface NodePoolRegistryEntry {
+  cluster: string;
+  nodepool: string;
+  node_count: number;
+  vm_size?: string;
+  os_sku?: string;
+  mode?: string;       // System | User
+  last_scanned: string;
+}
+
+export interface NodePoolLookupResult {
+  entity_name: string;
+  nodepool: string;    // nome do pool extraído do entity_name
+  matches: NodePoolRegistryEntry[];
+  found: boolean;
+}
+
 export interface CommandRunnerSSEEvent {
   id: string;
   type: 'init' | 'output' | 'output_error' | 'cluster_done' | 'complete' | 'error';

@@ -86,6 +86,9 @@ type Server struct {
 
 	// AWX Integration Handler (pode ser nil se AWX não estiver configurado)
 	awxHandler *handlers.AWXHandler
+
+	// Node Pool Registry (catálogo de node pools para correlação Dynatrace)
+	nodepoolRegistryHandler *handlers.NodePoolRegistryHandler
 }
 
 // NewServer cria uma nova instância do servidor web
@@ -253,6 +256,16 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("ℹ️  AWX Integration: URL e credenciais configuradas via perfil do usuário")
 	}
 
+	// Node Pool Registry (catálogo para correlação Dynatrace aks-<pool>-vmss*)
+	var nodepoolRegistryHandler *handlers.NodePoolRegistryHandler
+	npRegistryDBPath := filepath.Join(baseDir, "nodepool_registry.db")
+	if npRegistryStore, err := storage.NewNodePoolRegistryStore(npRegistryDBPath); err != nil {
+		fmt.Printf("⚠️  NodePool Registry: falha ao criar store: %v\n", err)
+	} else {
+		nodepoolRegistryHandler = handlers.NewNodePoolRegistryHandler(kubeManager, npRegistryStore)
+		fmt.Println("✅ NodePool Registry inicializado (correlação Dynatrace aks-<pool>-vmss*)")
+	}
+
 	server := &Server{
 		router:              router,
 		kubeManager:         kubeManager,
@@ -276,7 +289,8 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		aiTokensStore:      aiTokensStore,      // Compartilhado com Dynatrace handler
 		aiHistoryStore:     aiHistoryStore,     // Compartilhado com Dynatrace handler
 		kubeManagerWrapper: kubeManagerWrapper, // Para predictions RBAC
-		awxHandler:         awxHandler,         // AWX Integration (certificados TLS)
+		awxHandler:              awxHandler,              // AWX Integration (certificados TLS)
+		nodepoolRegistryHandler: nodepoolRegistryHandler, // Catálogo de node pools Dynatrace
 	}
 
 	server.setupMiddleware()
@@ -487,6 +501,13 @@ func (s *Server) setupRoutes() {
 	// Node Pools - Node Details
 	api.GET("/nodes/:cluster/:nodepool", nodePoolHandler.ListNodesInNodePool)       // Lista nodes do node pool
 	api.GET("/nodes/:cluster/:nodepool/:node", nodePoolHandler.GetNodeDetails)      // Detalhes de um node específico
+
+	// Node Pool Registry (catálogo para correlação Dynatrace aks-<pool>-vmss*)
+	if s.nodepoolRegistryHandler != nil {
+		api.GET("/nodepools/registry", s.nodepoolRegistryHandler.List)
+		api.GET("/nodepools/registry/lookup", s.nodepoolRegistryHandler.Lookup)
+		api.POST("/nodepools/registry/scan", rbacMiddleware.RequireSREGroup(), s.nodepoolRegistryHandler.Scan)
+	}
 
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
 	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)
@@ -717,6 +738,8 @@ func (s *Server) setupRoutes() {
 		dt.GET("/problems", dtHandler.ListProblems)
 		dt.GET("/problems/:problemId", dtHandler.GetProblem)
 		dt.POST("/problems/:problemId/analyze", dtHandler.AnalyzeProblem)
+		dt.GET("/problems/:problemId/metrics", dtHandler.GetProblemMetrics)
+		dt.GET("/problems/:problemId/context", dtHandler.GetProblemContext)
 		dt.GET("/history", dtHandler.GetHistory)
 	}
 

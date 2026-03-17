@@ -243,29 +243,55 @@ func (c *Client) GetEntityEvents(ctx context.Context, entityID string, from, to 
 	return events, nil
 }
 
-// EnrichEntitiesWithK8s busca as entidades afetadas e extrai correlação K8s.
-// Retorna as EntityStubs com os campos K8s preenchidos.
+// enrichFromEntity preenche DisplayName, K8s básico e DTLabels ricos a partir de uma entidade.
+func enrichFromEntity(stub EntityStub, entity *Entity) EntityStub {
+	if entity.DisplayName != "" {
+		stub.DisplayName = entity.DisplayName
+	} else if stub.Name != "" {
+		stub.DisplayName = stub.Name
+	}
+	corr := entity.ExtractK8sCorrelation()
+	if corr != nil {
+		stub.K8sCluster = corr.Cluster
+		stub.K8sNamespace = corr.Namespace
+		stub.K8sWorkload = corr.Workload
+	}
+	// Tags ricas (squad, journey, versão, GitHub repo, etc.)
+	stub.Labels = entity.ExtractDTLabels()
+	// Fallback de namespace via Labels se K8s não extraiu
+	if stub.K8sNamespace == "" && stub.Labels != nil && stub.Labels.Namespace != "" {
+		stub.K8sNamespace = stub.Labels.Namespace
+	}
+	return stub
+}
+
+// EnrichEntitiesWithK8s busca as entidades afetadas e extrai correlação K8s + DTLabels.
 func (c *Client) EnrichEntitiesWithK8s(ctx context.Context, stubs []EntityStub) []EntityStub {
 	enriched := make([]EntityStub, 0, len(stubs))
 	for _, stub := range stubs {
 		entity, err := c.GetEntity(ctx, stub.EntityID.ID)
 		if err != nil {
+			if stub.DisplayName == "" && stub.Name != "" {
+				stub.DisplayName = stub.Name
+			}
 			enriched = append(enriched, stub)
 			continue
 		}
-		// Preencher displayName da entidade real (a stub pode vir sem nome)
-		if entity.DisplayName != "" {
-			stub.DisplayName = entity.DisplayName
-		}
-		corr := entity.ExtractK8sCorrelation()
-		if corr != nil {
-			stub.K8sCluster = corr.Cluster
-			stub.K8sNamespace = corr.Namespace
-			stub.K8sWorkload = corr.Workload
-		}
-		enriched = append(enriched, stub)
+		enriched = append(enriched, enrichFromEntity(stub, entity))
 	}
 	return enriched
+}
+
+// EnrichStub busca detalhes de uma única entidade e preenche DisplayName, K8s e DTLabels.
+func (c *Client) EnrichStub(ctx context.Context, stub EntityStub) EntityStub {
+	entity, err := c.GetEntity(ctx, stub.EntityID.ID)
+	if err != nil {
+		if stub.DisplayName == "" && stub.Name != "" {
+			stub.DisplayName = stub.Name
+		}
+		return stub
+	}
+	return enrichFromEntity(stub, entity)
 }
 
 // ─── raw structs para parsing (timestamps em milissegundos no JSON) ────────────

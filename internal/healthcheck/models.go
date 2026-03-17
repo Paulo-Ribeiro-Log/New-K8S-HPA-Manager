@@ -195,6 +195,12 @@ type DynatraceHealth struct {
 	Message          string       `json:"message"`
 	Suggestions      []string     `json:"suggestions"`
 	CheckedAt        time.Time    `json:"checked_at"`
+	// Campos enriquecidos via DTLabels (OneAgent tags) — para correlação com GitHub releases e ownership
+	AppVersions  map[string]string `json:"app_versions,omitempty"`  // appName → version (ex: "vv-categoria-frontend" → "147-206-7-1")
+	GitHubRepos  []string          `json:"github_repos,omitempty"`  // IDs dos repos afetados (correlação com GitHub releases)
+	Squads       []string          `json:"squads,omitempty"`        // times donos das apps afetadas
+	Journeys     []string          `json:"journeys,omitempty"`      // jornadas/domínios
+	Environments []string          `json:"environments,omitempty"`  // prd/hlg/dev
 }
 
 // SeverityCounts contadores por nível de severidade

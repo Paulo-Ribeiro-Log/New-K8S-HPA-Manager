@@ -35,15 +35,29 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 		return results
 	}
 
+	toSlice := func(m map[string]struct{}) []string {
+		s := make([]string, 0, len(m))
+		for k := range m {
+			if k != "" {
+				s = append(s, k)
+			}
+		}
+		return s
+	}
+
 	for _, p := range dtResult.Problems {
-		// Enriquecer entidades com tags K8s do OneAgent
+		// Enriquecer entidades com tags K8s + DTLabels (squad, journey, version, GitHub, etc.)
 		enriched := client.EnrichEntitiesWithK8s(checkCtx, p.AffectedEntities)
 
-		// Filtrar por cluster (quando cluster está especificado)
+		// Filtrar por cluster — aceita K8sCluster ou DTLabels.HostGroup (AKS: "akspriv-busca-prd")
 		if cluster != "" {
 			hasThisCluster := false
 			for _, e := range enriched {
 				if strings.EqualFold(e.K8sCluster, cluster) {
+					hasThisCluster = true
+					break
+				}
+				if e.Labels != nil && strings.Contains(strings.ToLower(e.Labels.HostGroup), strings.ToLower(cluster)) {
 					hasThisCluster = true
 					break
 				}
@@ -53,31 +67,54 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 			}
 		}
 
-		// Coletar K8s workloads únicos deste problem
+		// Coletar workloads + metadata rico via DTLabels
 		workloadSet := make(map[string]struct{})
 		nsSet := make(map[string]struct{})
+		squadSet := make(map[string]struct{})
+		journeySet := make(map[string]struct{})
+		envSet := make(map[string]struct{})
+		repoSet := make(map[string]struct{})
+		appVersions := make(map[string]string)
 		affectedNames := make([]string, 0, len(enriched))
+
 		for _, e := range enriched {
-			affectedNames = append(affectedNames, e.DisplayName)
-			if e.K8sWorkload != "" {
-				workloadSet[e.K8sNamespace+"/"+e.K8sWorkload] = struct{}{}
-				nsSet[e.K8sNamespace] = struct{}{}
+			if e.DisplayName != "" {
+				affectedNames = append(affectedNames, e.DisplayName)
+			}
+			ns := e.K8sNamespace
+			workload := e.K8sWorkload
+			if e.Labels != nil {
+				if ns == "" {
+					ns = e.Labels.Namespace
+				}
+				if workload == "" {
+					workload = e.Labels.AppName
+				}
+				if workload != "" && e.Labels.AppVersion != "" {
+					appVersions[workload] = e.Labels.AppVersion
+				}
+				if e.Labels.ComponentSquad != "" {
+					squadSet[e.Labels.ComponentSquad] = struct{}{}
+				}
+				if e.Labels.ComponentJourney != "" {
+					journeySet[e.Labels.ComponentJourney] = struct{}{}
+				}
+				if e.Labels.AppEnvironment != "" {
+					envSet[e.Labels.AppEnvironment] = struct{}{}
+				}
+				if e.Labels.GitHubRepoID != "" {
+					repoSet[e.Labels.GitHubRepoID] = struct{}{}
+				}
+			}
+			if workload != "" {
+				workloadSet[ns+"/"+workload] = struct{}{}
+				nsSet[ns] = struct{}{}
 			}
 		}
 
-		workloads := make([]string, 0, len(workloadSet))
-		for w := range workloadSet {
-			workloads = append(workloads, w)
-		}
-		namespaces := make([]string, 0, len(nsSet))
-		for ns := range nsSet {
-			namespaces = append(namespaces, ns)
-		}
-
+		workloads := toSlice(workloadSet)
+		namespaces := toSlice(nsSet)
 		severity, status := mapDTSeverity(p.SeverityLevel)
-
-		msg := fmt.Sprintf("[%s] %s — impacto: %s", p.SeverityLevel, p.Title, p.ImpactLevel)
-		suggestions := buildDTSuggestions(p.SeverityLevel, workloads)
 
 		results = append(results, DynatraceHealth{
 			ProblemID:        p.ProblemID,
@@ -91,9 +128,14 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 			K8sNamespaces:    namespaces,
 			K8sWorkloads:     workloads,
 			AffectedEntities: affectedNames,
-			Message:          msg,
-			Suggestions:      suggestions,
+			Message:          fmt.Sprintf("[%s] %s — impacto: %s", p.SeverityLevel, p.Title, p.ImpactLevel),
+			Suggestions:      buildDTSuggestions(p.SeverityLevel, workloads),
 			CheckedAt:        time.Now(),
+			AppVersions:      appVersions,
+			GitHubRepos:      toSlice(repoSet),
+			Squads:           toSlice(squadSet),
+			Journeys:         toSlice(journeySet),
+			Environments:     toSlice(envSet),
 		})
 	}
 

@@ -136,6 +136,10 @@ func (h *DynatraceHandler) ListProblems(c *gin.Context) {
 			tagFilter = tokens.DynatraceTagFilter
 		}
 	}
+	// Query param sobrescreve o filtro salvo (permite filtro ad-hoc da UI)
+	if filterOverride := c.Query("filter"); filterOverride != "" {
+		tagFilter = filterOverride
+	}
 
 	result, err := client.GetOpenProblems(ctx, tagFilter)
 	if err != nil {
@@ -146,20 +150,46 @@ func (h *DynatraceHandler) ListProblems(c *gin.Context) {
 
 	summaries := make([]dtclient.ProblemSummary, 0, len(result.Problems))
 	for _, p := range result.Problems {
-		// Enriquecer entidades com correlação K8s (tags do OneAgent)
-		enriched := client.EnrichEntitiesWithK8s(ctx, p.AffectedEntities)
+		// Enriquecer affected + impacted com displayName e correlação K8s
+		enrichedAffected := client.EnrichEntitiesWithK8s(ctx, p.AffectedEntities)
+		enrichedImpacted := client.EnrichEntitiesWithK8s(ctx, p.ImpactedEntities)
 
-		// Deduplica correlações K8s únicas deste problem
+		// Enriquecer rootCauseEntity separadamente
+		var rootCause *dtclient.EntityStub
+		if p.RootCauseEntity != nil {
+			enriched := client.EnrichStub(ctx, *p.RootCauseEntity)
+			rootCause = &enriched
+		}
+
+		// Deduplica correlações K8s únicas (de affected + impacted)
+		// Inclui AppName, AppVersion, GitHubRepoID para correlação com deployments e GitHub releases
 		k8sMap := make(map[string]dtclient.K8sCorrelation)
-		for _, e := range enriched {
-			if e.K8sWorkload != "" {
-				key := e.K8sCluster + "/" + e.K8sNamespace + "/" + e.K8sWorkload
-				k8sMap[key] = dtclient.K8sCorrelation{
-					Cluster:   e.K8sCluster,
-					Namespace: e.K8sNamespace,
-					Workload:  e.K8sWorkload,
-				}
+		for _, e := range append(enrichedAffected, enrichedImpacted...) {
+			workload := e.K8sWorkload
+			ns := e.K8sNamespace
+			// Fallback: usar Labels quando K8s básico não extraiu
+			if workload == "" && e.Labels != nil && e.Labels.AppName != "" {
+				workload = e.Labels.AppName
 			}
+			if ns == "" && e.Labels != nil && e.Labels.Namespace != "" {
+				ns = e.Labels.Namespace
+			}
+			if workload == "" && ns == "" {
+				continue
+			}
+			key := e.K8sCluster + "/" + ns + "/" + workload
+			corr := dtclient.K8sCorrelation{
+				Cluster:   e.K8sCluster,
+				Namespace: ns,
+				Workload:  workload,
+			}
+			if e.Labels != nil {
+				corr.AppName = e.Labels.AppName
+				corr.AppVersion = e.Labels.AppVersion
+				corr.GitHubRepoID = e.Labels.GitHubRepoID
+				corr.Environment = e.Labels.AppEnvironment
+			}
+			k8sMap[key] = corr
 		}
 		k8sWorkloads := make([]dtclient.K8sCorrelation, 0, len(k8sMap))
 		for _, v := range k8sMap {
@@ -175,9 +205,9 @@ func (h *DynatraceHandler) ListProblems(c *gin.Context) {
 			ImpactLevel:      p.ImpactLevel,
 			StartTime:        p.StartTime,
 			EndTime:          p.EndTime,
-			AffectedEntities: enriched,
-			ImpactedEntities: p.ImpactedEntities,
-			RootCauseEntity:  p.RootCauseEntity,
+			AffectedEntities: enrichedAffected,
+			ImpactedEntities: enrichedImpacted,
+			RootCauseEntity:  rootCause,
 			ManagementZones:  p.ManagementZones,
 			K8sWorkloads:     k8sWorkloads,
 		})
@@ -362,6 +392,95 @@ func (h *DynatraceHandler) AnalyzeProblem(c *gin.Context) {
 		"analysis":    analysis,
 		"analyzed_at": analyzedAt,
 	})
+}
+
+// ─── GET /api/v1/dynatrace/problems/:problemId/metrics ───────────────────────
+
+// GetProblemMetrics coleta métricas de performance de todas as entidades do problem.
+// Janela: 30min antes do início até agora (ou fim + 15min se já resolvido).
+func (h *DynatraceHandler) GetProblemMetrics(c *gin.Context) {
+	problemID := c.Param("problemId")
+	aiEmail := c.Query("ai_email")
+
+	client, err := h.clientForUser(aiEmail)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"error": err.Error(), "not_configured": true})
+		return
+	}
+
+	// Timeout generoso: múltiplas entidades × múltiplas métricas em paralelo
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
+	defer cancel()
+
+	problem, err := client.GetProblem(ctx, problemID)
+	if err != nil {
+		log.Error().Err(err).Str("problem_id", problemID).Msg("Dynatrace: falha ao buscar problem para métricas")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Enriquecer entidades com displayName e correlação K8s
+	problem.AffectedEntities = client.EnrichEntitiesWithK8s(ctx, problem.AffectedEntities)
+	problem.ImpactedEntities = client.EnrichEntitiesWithK8s(ctx, problem.ImpactedEntities)
+	if problem.RootCauseEntity != nil {
+		enriched := client.EnrichStub(ctx, *problem.RootCauseEntity)
+		problem.RootCauseEntity = &enriched
+	}
+
+	response := client.GetEntityMetricsForProblem(ctx, problem)
+
+	log.Info().
+		Str("problem_id", problemID).
+		Int("entities", len(response.Entities)).
+		Msg("Dynatrace: métricas coletadas")
+
+	c.JSON(http.StatusOK, response)
+}
+
+// ─── GET /api/v1/dynatrace/problems/:problemId/context ───────────────────────
+
+// GetProblemContext coleta evidências Davis AI, eventos, topologia e traces distribuídos.
+func (h *DynatraceHandler) GetProblemContext(c *gin.Context) {
+	problemID := c.Param("problemId")
+	aiEmail := c.Query("ai_email")
+
+	client, err := h.clientForUser(aiEmail)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"error": err.Error(), "not_configured": true})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+
+	problem, err := client.GetProblem(ctx, problemID)
+	if err != nil {
+		log.Error().Err(err).Str("problem_id", problemID).Msg("Dynatrace: falha ao buscar problem para contexto")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Enriquecer entidades para nomes legíveis
+	problem.AffectedEntities = client.EnrichEntitiesWithK8s(ctx, problem.AffectedEntities)
+	if problem.RootCauseEntity != nil {
+		enriched := client.EnrichStub(ctx, *problem.RootCauseEntity)
+		problem.RootCauseEntity = &enriched
+	}
+
+	ctx2, cancel2 := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel2()
+
+	pctx := client.GetProblemContext(ctx2, problem)
+
+	log.Info().
+		Str("problem_id", problemID).
+		Int("evidence", len(pctx.Evidence)).
+		Int("events", len(pctx.Events)).
+		Int("topology", len(pctx.Topology)).
+		Int("traces", len(pctx.Traces)).
+		Msg("Dynatrace: contexto coletado")
+
+	c.JSON(http.StatusOK, pctx)
 }
 
 // ─── GET /api/v1/dynatrace/history ────────────────────────────────────────────
