@@ -366,6 +366,43 @@ func findADCFile() (string, error) {
 	return "", fmt.Errorf("ADC não encontrado (procurado em %v)", candidates)
 }
 
+// WriteADCFile grava o arquivo Application Default Credentials com o refresh_token
+// obtido via Device Auth Grant. Usa o mesmo formato que `gcloud auth application-default login`,
+// permitindo que o servidor use ADC sem precisar ter o gcloud instalado.
+func WriteADCFile(refreshToken string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("não foi possível determinar o home dir: %w", err)
+	}
+
+	adcDir := filepath.Join(home, ".config", "gcloud")
+	if err := os.MkdirAll(adcDir, 0700); err != nil {
+		return fmt.Errorf("erro ao criar diretório ADC: %w", err)
+	}
+
+	// Mesmas credenciais do gcloud SDK (public client — não é segredo)
+	const clientID = "764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com"
+	const clientSecret = "d-FL95Q19q7MQmFpd7hHD0Ty"
+
+	creds := adcCredentials{
+		Type:         "authorized_user",
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RefreshToken: refreshToken,
+	}
+
+	data, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		return fmt.Errorf("erro ao serializar ADC: %w", err)
+	}
+
+	adcPath := filepath.Join(adcDir, "application_default_credentials.json")
+	if err := os.WriteFile(adcPath, data, 0600); err != nil {
+		return fmt.Errorf("erro ao gravar ADC (%s): %w", adcPath, err)
+	}
+	return nil
+}
+
 // exchangeRefreshToken troca um refresh_token por um access_token via Google OAuth2.
 func exchangeRefreshToken(ctx context.Context, clientID, clientSecret, refreshToken string) (string, error) {
 	body := url.Values{

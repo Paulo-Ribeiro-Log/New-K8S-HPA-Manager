@@ -759,6 +759,13 @@ func (h *AITokensHandler) PollGoogleDeviceAuth(c *gin.Context) {
 		} else {
 			log.Info().Str("ai_email", req.AIEmail).Msg("✅ Google refresh_token salvo")
 		}
+
+		// Gravar ADC para que o servidor use as mesmas credenciais sem precisar do gcloud
+		if err := ai.WriteADCFile(token.RefreshToken); err != nil {
+			log.Warn().Err(err).Msg("⚠️ Falha ao gravar ADC — servidor usará apenas token do usuário")
+		} else {
+			log.Info().Msg("✅ ADC gravado — servidor pode usar credenciais Google sem gcloud")
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
