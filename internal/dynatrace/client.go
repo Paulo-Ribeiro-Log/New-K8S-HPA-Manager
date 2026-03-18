@@ -136,22 +136,37 @@ type ProblemsResult struct {
 	TotalCount int // total real no Dynatrace (pode ser maior que len(Problems))
 }
 
-// GetOpenProblems retorna todos os problems com status OPEN, com paginação automática.
-// filter (opcional): filtra por management zone — ex: "SRE-LOGISTICA".
-// Prefixo "tag:" força filtro por entity tag: "tag:minha-tag".
+// GetOpenProblems retorna problems com paginação automática.
+// statusFilter: "OPEN" (padrão), "CLOSED", ou "" (todos).
+// filter (opcional): filtra por management zone ou tag (prefixo "tag:").
 // Limite de segurança: 200 problems por chamada.
-func (c *Client) GetOpenProblems(ctx context.Context, filter string) (*ProblemsResult, error) {
-	selector := `status("OPEN")`
+func (c *Client) GetOpenProblems(ctx context.Context, filter string, statusFilter ...string) (*ProblemsResult, error) {
+	status := "OPEN"
+	if len(statusFilter) > 0 && statusFilter[0] != "" {
+		status = strings.ToUpper(statusFilter[0])
+	}
+
+	var selector string
+	if status == "ALL" {
+		selector = "" // sem filtro de status = todos
+	} else {
+		selector = fmt.Sprintf(`status("%s")`, status)
+	}
+
 	if filter != "" {
+		prefix := ""
+		if selector != "" {
+			prefix = ","
+		}
 		if strings.HasPrefix(filter, "tag:") {
-			selector += fmt.Sprintf(`,tag("%s")`, strings.TrimPrefix(filter, "tag:"))
+			selector += prefix + fmt.Sprintf(`tag("%s")`, strings.TrimPrefix(filter, "tag:"))
 		} else {
-			selector += fmt.Sprintf(`,managementZones("%s")`, filter)
+			selector += prefix + fmt.Sprintf(`managementZones("%s")`, filter)
 		}
 	}
 
 	const maxProblems = 200
-	const pageSize = 50
+	const pageSize = 10 // API Dynatrace limita pageSize=10 quando fields está presente
 
 	allProblems := make([]Problem, 0, pageSize)
 	var totalCount int
@@ -168,9 +183,11 @@ func (c *Client) GetOpenProblems(ctx context.Context, filter string) (*ProblemsR
 		if nextPageKey == "" {
 			// Primeira página: parâmetros completos
 			params = url.Values{
-				"problemSelector": {selector},
-				"fields":          {"+affectedEntities,+impactedEntities,+rootCauseEntity,+managementZones"},
-				"pageSize":        {fmt.Sprintf("%d", pageSize)},
+				"fields":   {"+affectedEntities,+impactedEntities,+rootCauseEntity,+managementZones"},
+				"pageSize": {fmt.Sprintf("%d", pageSize)},
+			}
+			if selector != "" {
+				params["problemSelector"] = []string{selector}
 			}
 		} else {
 			// Páginas seguintes: apenas nextPageKey (os demais parâmetros são codificados nele)

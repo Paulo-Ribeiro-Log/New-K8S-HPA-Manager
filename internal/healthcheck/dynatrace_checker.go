@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	dtclient "k8s-hpa-manager/internal/dynatrace"
 )
 
@@ -45,8 +46,17 @@ func matchesCluster(clusterNorm string, e dtclient.EntityStub) bool {
 func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilter, cluster string, timeoutSec int) []DynatraceHealth {
 	results := []DynatraceHealth{}
 
+	log.Info().
+		Str("cluster", cluster).
+		Str("dtURL", dtURL).
+		Bool("hasToken", dtToken != "").
+		Str("tagFilter", tagFilter).
+		Int("timeoutSec", timeoutSec).
+		Msg("[DynatraceChecker] Iniciando CheckAll")
+
 	client, err := dtclient.NewClient(dtURL, dtToken)
 	if err != nil {
+		log.Error().Err(err).Msg("[DynatraceChecker] Falha ao criar client")
 		return results
 	}
 
@@ -55,10 +65,18 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 
 	dtResult, err := client.GetOpenProblems(checkCtx, tagFilter)
 	if err != nil {
+		log.Error().Err(err).Str("tagFilter", tagFilter).Msg("[DynatraceChecker] Falha ao buscar problems")
 		return results
 	}
 
+	log.Info().
+		Int("totalProblems", dtResult.TotalCount).
+		Int("returnedProblems", len(dtResult.Problems)).
+		Str("tagFilter", tagFilter).
+		Msg("[DynatraceChecker] Problems retornados pela API")
+
 	clusterNorm := normalizeClusterName(cluster)
+	log.Info().Str("clusterNorm", clusterNorm).Msg("[DynatraceChecker] Cluster normalizado para matching")
 	matchedProblems := make([]dtclient.Problem, 0)
 
 	toSlice := func(m map[string]struct{}) []string {
@@ -85,6 +103,21 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 				}
 			}
 			if !hasThisCluster {
+				// Log para diagnosticar quais valores estão nas entidades
+				entityInfo := make([]string, 0, len(enriched))
+				for _, e := range enriched {
+					hostGroup := ""
+					if e.Labels != nil {
+						hostGroup = e.Labels.HostGroup
+					}
+					entityInfo = append(entityInfo, fmt.Sprintf("%s(k8s=%q,hg=%q)", e.BestName(), e.K8sCluster, hostGroup))
+				}
+				log.Debug().
+					Str("problemId", p.ProblemID).
+					Str("title", p.Title).
+					Str("clusterNorm", clusterNorm).
+					Strs("entities", entityInfo).
+					Msg("[DynatraceChecker] Problem descartado: nenhuma entidade pertence a este cluster")
 				continue
 			}
 		}
@@ -173,6 +206,11 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 		// Guardar problem original para enriquecimento na fase 2
 		matchedProblems = append(matchedProblems, p)
 	}
+
+	log.Info().
+		Int("matchedProblems", len(results)).
+		Str("cluster", cluster).
+		Msg("[DynatraceChecker] Problems correlacionados com o cluster")
 
 	// Fase 2: enriquecer com Davis AI context + métricas (Top 5 por severidade, sem bloquear o HC)
 	results = enrichWithContext(checkCtx, client, results, matchedProblems)

@@ -285,6 +285,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       check_hpas: checkHPAs,
       check_pvcs: checkPVCs,
       check_dynatrace: checkDynatrace,
+      ai_email: localStorage.getItem("ai_email") || undefined,
       timeout: timeout,
       // Timeouts específicos (se modo avançado habilitado)
       timeout_deployments: showAdvancedTimeouts ? timeoutDeployments : undefined,
