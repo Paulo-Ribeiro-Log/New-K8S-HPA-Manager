@@ -635,4 +635,9 @@ export interface DynatraceHealth {
   squads?: string[];                     // times donos das apps
   journeys?: string[];                   // jornadas/domínios
   environments?: string[];               // prd/hlg/dev
+  // Campos enriquecidos via Davis AI context (Top 5 problems por severidade)
+  evidence?: string[];                   // Evidências Davis AI, prefixadas com "[Root Cause]" quando root cause
+  recent_events?: string[];              // Top 3 eventos recentes: "TIPO: título"
+  metrics_summary?: Record<string, number>; // ex: { error_rate: 12.5, response_p90_ms: 2300 }
+  context_fetched?: boolean;             // true se GetProblemContext foi chamado com sucesso
 }

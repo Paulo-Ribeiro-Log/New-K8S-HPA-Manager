@@ -3,7 +3,9 @@ package healthcheck
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	dtclient "k8s-hpa-manager/internal/dynatrace"
@@ -57,6 +59,7 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 	}
 
 	clusterNorm := normalizeClusterName(cluster)
+	matchedProblems := make([]dtclient.Problem, 0)
 
 	toSlice := func(m map[string]struct{}) []string {
 		s := make([]string, 0, len(m))
@@ -156,7 +159,12 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 			Journeys:         toSlice(journeySet),
 			Environments:     toSlice(envSet),
 		})
+		// Guardar problem original para enriquecimento na fase 2
+		matchedProblems = append(matchedProblems, p)
 	}
+
+	// Fase 2: enriquecer com Davis AI context + métricas (Top 5 por severidade, sem bloquear o HC)
+	results = enrichWithContext(checkCtx, client, results, matchedProblems)
 
 	return results
 }
@@ -175,6 +183,146 @@ func mapDTSeverity(dtSeverity string) (Severity, HealthStatus) {
 	default: // CUSTOM_ALERT e outros
 		return SeverityLow, StatusWarning
 	}
+}
+
+// severityOrder retorna a prioridade numérica da severidade DT (menor = mais crítico).
+func severityOrder(dtSeverity string) int {
+	switch dtSeverity {
+	case "AVAILABILITY":
+		return 0
+	case "ERROR":
+		return 1
+	case "PERFORMANCE":
+		return 2
+	case "RESOURCE_CONTENTION":
+		return 3
+	default:
+		return 4
+	}
+}
+
+// enrichWithContext enriquece os Top 5 problems com Davis AI context (evidências + eventos)
+// e os críticos (AVAILABILITY/ERROR) com métricas. Roda em paralelo com timeout próprio.
+func enrichWithContext(ctx context.Context, client *dtclient.Client, results []DynatraceHealth, problems []dtclient.Problem) []DynatraceHealth {
+	if len(results) == 0 {
+		return results
+	}
+
+	// Ordenar índices por severidade para processar os mais críticos primeiro
+	indices := make([]int, len(results))
+	for i := range indices {
+		indices[i] = i
+	}
+	sort.Slice(indices, func(a, b int) bool {
+		return severityOrder(results[indices[a]].DTSeverity) < severityOrder(results[indices[b]].DTSeverity)
+	})
+
+	const maxContext = 5
+	const ctxTimeoutSec = 15
+	const metricsTimeoutSec = 10
+
+	ctxTimeout, ctxCancel := context.WithTimeout(ctx, time.Duration(ctxTimeoutSec)*time.Second)
+	defer ctxCancel()
+
+	var wg sync.WaitGroup
+
+	for rank, idx := range indices {
+		if rank >= maxContext {
+			break
+		}
+		wg.Add(1)
+		go func(resultIdx int, p dtclient.Problem) {
+			defer wg.Done()
+
+			pctx := client.GetProblemContext(ctxTimeout, &p)
+			if pctx == nil {
+				return
+			}
+
+			evidence := make([]string, 0, len(pctx.Evidence))
+			for _, ev := range pctx.Evidence {
+				text := ev.DisplayName
+				if ev.RootCause {
+					text = "[Root Cause] " + text
+				}
+				evidence = append(evidence, text)
+			}
+
+			recentEvents := make([]string, 0, 3)
+			for i, ev := range pctx.Events {
+				if i >= 3 {
+					break
+				}
+				recentEvents = append(recentEvents, ev.EventType+": "+ev.Title)
+			}
+
+			results[resultIdx].Evidence = evidence
+			results[resultIdx].RecentEvents = recentEvents
+			results[resultIdx].ContextFetched = true
+		}(idx, problems[idx])
+	}
+
+	wg.Wait()
+
+	// Métricas apenas para AVAILABILITY e ERROR (os mais críticos)
+	metricsCtx, metricsCancel := context.WithTimeout(ctx, time.Duration(metricsTimeoutSec)*time.Second)
+	defer metricsCancel()
+
+	var mwg sync.WaitGroup
+	for _, idx := range indices {
+		sev := results[idx].DTSeverity
+		if sev != "AVAILABILITY" && sev != "ERROR" {
+			continue
+		}
+		mwg.Add(1)
+		go func(resultIdx int, p dtclient.Problem) {
+			defer mwg.Done()
+
+			resp := client.GetEntityMetricsForProblem(metricsCtx, &p)
+			if resp == nil || len(resp.Entities) == 0 {
+				return
+			}
+
+			summary := make(map[string]float64)
+			for _, entity := range resp.Entities {
+				for _, series := range entity.Metrics {
+					var maxVal float64
+					for _, pt := range series.Points {
+						if pt.V > maxVal {
+							maxVal = pt.V
+						}
+					}
+					if maxVal == 0 {
+						continue
+					}
+					switch series.Key {
+					case "error_rate":
+						if maxVal > summary["error_rate"] {
+							summary["error_rate"] = maxVal
+						}
+					case "response_p90":
+						if maxVal > summary["response_p90_ms"] {
+							summary["response_p90_ms"] = maxVal
+						}
+					case "response_p99":
+						if maxVal > summary["response_p99_ms"] {
+							summary["response_p99_ms"] = maxVal
+						}
+					case "throughput":
+						if maxVal > summary["throughput_rpm"] {
+							summary["throughput_rpm"] = maxVal
+						}
+					}
+				}
+			}
+			if len(summary) > 0 {
+				results[resultIdx].MetricsSummary = summary
+			}
+		}(idx, problems[idx])
+	}
+
+	mwg.Wait()
+	return results
 }
 
 // buildDTSuggestions gera sugestões baseadas no tipo de problem

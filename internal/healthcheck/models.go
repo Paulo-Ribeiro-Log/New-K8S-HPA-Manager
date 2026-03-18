@@ -201,6 +201,11 @@ type DynatraceHealth struct {
 	Squads       []string          `json:"squads,omitempty"`        // times donos das apps afetadas
 	Journeys     []string          `json:"journeys,omitempty"`      // jornadas/domínios
 	Environments []string          `json:"environments,omitempty"`  // prd/hlg/dev
+	// Campos enriquecidos via GetProblemContext (Davis AI) — top 5 problems por severidade
+	Evidence      []string           `json:"evidence,omitempty"`        // Evidências Davis AI, prefixadas com "[Root Cause]" quando aplicável
+	RecentEvents  []string           `json:"recent_events,omitempty"`   // Top 3 eventos recentes: "TIPO: título"
+	MetricsSummary map[string]float64 `json:"metrics_summary,omitempty"` // ex: {"error_rate": 12.5, "response_p90_ms": 2300}
+	ContextFetched bool               `json:"context_fetched"`           // true se GetProblemContext foi chamado com sucesso
 }
 
 // SeverityCounts contadores por nível de severidade
@@ -505,7 +510,7 @@ const (
 	DefaultTimeoutEvents      = 30 // segundos (consulta de eventos)
 	DefaultTimeoutHPAs        = 45 // segundos (validação de HPAs + eventos)
 	DefaultTimeoutPVCs        = 30 // segundos (validação de PVCs)
-	DefaultTimeoutDynatrace   = 20 // segundos (consulta à API Dynatrace)
+	DefaultTimeoutDynatrace   = 45 // segundos (inclui GetProblemContext Top5 + métricas críticas)
 )
 
 // GetTimeoutDeployments retorna o timeout para deployments com fallback
