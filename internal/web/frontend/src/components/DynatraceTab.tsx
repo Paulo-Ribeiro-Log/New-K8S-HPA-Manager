@@ -1,4 +1,8 @@
 import { useState, useRef, type ReactNode } from "react";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
+  DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DynatraceMetricsPanel } from "@/components/DynatraceMetricsPanel";
 import { DynatraceContextPanel } from "@/components/DynatraceContextPanel";
@@ -1081,6 +1085,16 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
   const [statusFilter, setStatusFilter] = useState("OPEN"); // OPEN | CLOSED | ALL
   const filterInputRef = useRef<HTMLInputElement>(null);
 
+  // Intervalo de atualização automática
+  const REFRESH_OPTIONS = [
+    { label: "Nunca",    value: 0 },
+    { label: "30s",      value: 30_000 },
+    { label: "1 min",    value: 60_000 },
+    { label: "5 min",    value: 5 * 60_000 },
+    { label: "10 min",   value: 10 * 60_000 },
+  ] as const;
+  const [refreshInterval, setRefreshInterval] = useState<number>(60_000);
+
   const applyFilter = () => {
     const f = filterInput.trim();
     setActiveFilter(f);
@@ -1100,7 +1114,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
     queryKey: ["dynatrace-problems", aiEmail, activeFilter, statusFilter],
     queryFn: () => apiClient.getDynatraceProblems(aiEmail, activeFilter || undefined, statusFilter),
     enabled: !!aiEmail,
-    refetchInterval: 60_000,
+    refetchInterval: refreshInterval > 0 ? refreshInterval : false,
     staleTime: 30_000,
   });
 
@@ -1312,16 +1326,40 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
                   : <><Server className="h-2.5 w-2.5" />Escanear Clusters</>
                 }
               </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6"
-                onClick={() => refetch()}
-                disabled={isRefetching || isLoading}
-                title="Atualizar"
-              >
-                <RefreshCw className={`h-3 w-3 ${isRefetching ? "animate-spin" : ""}`} />
-              </Button>
+              {/* Split button: atualizar agora + seletor de intervalo */}
+              <div className="flex items-center border rounded h-6 overflow-hidden">
+                <button
+                  onClick={() => refetch()}
+                  disabled={isRefetching || isLoading}
+                  title="Atualizar agora"
+                  className="flex items-center justify-center w-6 h-full hover:bg-accent disabled:opacity-50 transition-colors"
+                >
+                  <RefreshCw className={`h-3 w-3 ${isRefetching ? "animate-spin" : ""}`} />
+                </button>
+                <div className="w-px h-full bg-border" />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button className="flex items-center justify-center w-4 h-full hover:bg-accent transition-colors">
+                      <ChevronDown className="h-2.5 w-2.5" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-[130px]">
+                    <DropdownMenuLabel className="text-[11px]">Auto-atualizar</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    {REFRESH_OPTIONS.map(opt => (
+                      <DropdownMenuItem
+                        key={opt.value}
+                        className="text-xs gap-2"
+                        onClick={() => setRefreshInterval(opt.value)}
+                      >
+                        {refreshInterval === opt.value && <span className="text-primary">✓</span>}
+                        {refreshInterval !== opt.value && <span className="w-3" />}
+                        {opt.label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             </div>
           ),
           content: leftContent,
