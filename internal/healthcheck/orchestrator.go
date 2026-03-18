@@ -24,10 +24,10 @@ type Orchestrator struct {
 	deploymentChecker  *DeploymentChecker
 	serviceChecker     *ServiceChecker
 	configChecker      *ConfigChecker
-	eventChecker       *EventChecker               // ✅ Verificador de eventos K8s
-	hpaChecker         *HPAChecker                 // ✅ Verificador de HPAs
-	pvChecker          *PVChecker                  // ✅ Verificador de PVCs
-	dynatraceChecker   *DynatraceChecker           // ✅ Verificador de problems Dynatrace
+	eventChecker       *EventChecker     // ✅ Verificador de eventos K8s
+	hpaChecker         *HPAChecker       // ✅ Verificador de HPAs
+	pvChecker          *PVChecker        // ✅ Verificador de PVCs
+	dynatraceChecker   *DynatraceChecker // ✅ Verificador de problems Dynatrace
 	storage            *HealthCheckStorage
 	progressTracker    *sse.ProgressTracker
 	filterManager      *FilterManager              // ✅ Gerenciador de filtros

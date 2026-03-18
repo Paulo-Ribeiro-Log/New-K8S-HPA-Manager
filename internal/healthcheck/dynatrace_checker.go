@@ -138,6 +138,17 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 		namespaces := toSlice(nsSet)
 		severity, status := mapDTSeverity(p.SeverityLevel)
 
+		// Fase 4.2: Escalada — problem em ambiente prd com impacto ENVIRONMENT → Crítico
+		if p.ImpactLevel == "ENVIRONMENT" {
+			for env := range envSet {
+				if strings.EqualFold(env, "prd") {
+					severity = SeverityCritical
+					status = StatusCritical
+					break
+				}
+			}
+		}
+
 		results = append(results, DynatraceHealth{
 			ProblemID:        p.ProblemID,
 			DisplayID:        p.DisplayID,

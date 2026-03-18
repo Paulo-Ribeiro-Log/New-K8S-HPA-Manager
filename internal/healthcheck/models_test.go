@@ -255,32 +255,32 @@ func TestZeroRequest(t *testing.T) {
 // TestGetTimeoutEvents testa a função GetTimeoutEvents com cenários de fallback
 func TestGetTimeoutEvents(t *testing.T) {
 	tests := []struct {
-		name          string
-		timeoutEvents int
+		name           string
+		timeoutEvents  int
 		timeoutGeneral int
-		expected      int
-		description   string
+		expected       int
+		description    string
 	}{
 		{
-			name:          "usa timeout específico quando definido",
-			timeoutEvents: 45,
+			name:           "usa timeout específico quando definido",
+			timeoutEvents:  45,
 			timeoutGeneral: 30,
-			expected:      45,
-			description:   "Timeout específico tem prioridade sobre geral",
+			expected:       45,
+			description:    "Timeout específico tem prioridade sobre geral",
 		},
 		{
-			name:          "fallback para timeout geral quando específico é zero",
-			timeoutEvents: 0,
+			name:           "fallback para timeout geral quando específico é zero",
+			timeoutEvents:  0,
 			timeoutGeneral: 60,
-			expected:      60,
-			description:   "Backward compatibility: timeout único funciona",
+			expected:       60,
+			description:    "Backward compatibility: timeout único funciona",
 		},
 		{
-			name:          "usa padrão quando ambos são zero",
-			timeoutEvents: 0,
+			name:           "usa padrão quando ambos são zero",
+			timeoutEvents:  0,
 			timeoutGeneral: 0,
-			expected:      DefaultTimeoutEvents, // 30s
-			description:   "Constante padrão é usada como último fallback",
+			expected:       DefaultTimeoutEvents, // 30s
+			description:    "Constante padrão é usada como último fallback",
 		},
 	}
 

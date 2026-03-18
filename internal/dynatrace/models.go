@@ -10,14 +10,14 @@ type ManagementZone struct {
 
 // Problem representa um problema detectado pelo Dynatrace (API v2)
 type Problem struct {
-	ProblemID        string    `json:"problemId"`
-	DisplayID        string    `json:"displayId"`
-	Title            string    `json:"title"`
-	Status           string    `json:"status"`        // OPEN | CLOSED
-	SeverityLevel    string    `json:"severityLevel"` // AVAILABILITY | ERROR | PERFORMANCE | RESOURCE_CONTENTION | CUSTOM_ALERT
-	ImpactLevel      string    `json:"impactLevel"`   // APPLICATION | ENVIRONMENT | INFRASTRUCTURE | SERVICE
-	StartTime        time.Time `json:"startTime"`
-	EndTime          *time.Time `json:"endTime,omitempty"`
+	ProblemID        string           `json:"problemId"`
+	DisplayID        string           `json:"displayId"`
+	Title            string           `json:"title"`
+	Status           string           `json:"status"`        // OPEN | CLOSED
+	SeverityLevel    string           `json:"severityLevel"` // AVAILABILITY | ERROR | PERFORMANCE | RESOURCE_CONTENTION | CUSTOM_ALERT
+	ImpactLevel      string           `json:"impactLevel"`   // APPLICATION | ENVIRONMENT | INFRASTRUCTURE | SERVICE
+	StartTime        time.Time        `json:"startTime"`
+	EndTime          *time.Time       `json:"endTime,omitempty"`
 	AffectedEntities []EntityStub     `json:"affectedEntities"`
 	ImpactedEntities []EntityStub     `json:"impactedEntities"`
 	RootCauseEntity  *EntityStub      `json:"rootCauseEntity,omitempty"`
@@ -26,7 +26,7 @@ type Problem struct {
 
 // EntityStub referência simplificada a uma entidade Dynatrace
 type EntityStub struct {
-	EntityID    EntityID `json:"entityId"`
+	EntityID EntityID `json:"entityId"`
 	// DisplayName vem da Entity API (GetEntity). Name vem da Problems API (campo "name" nos stubs).
 	// A Problems API usa "name", a Entity API usa "displayName" — mapeamos os dois.
 	DisplayName string `json:"displayName,omitempty"`
@@ -58,10 +58,10 @@ type EntityID struct {
 
 // Entity entidade completa com propriedades e tags
 type Entity struct {
-	EntityID    string            `json:"entityId"`
-	DisplayName string            `json:"displayName"`
-	Type        string            `json:"type"`
-	Tags        []Tag             `json:"tags"`
+	EntityID    string                 `json:"entityId"`
+	DisplayName string                 `json:"displayName"`
+	Type        string                 `json:"type"`
+	Tags        []Tag                  `json:"tags"`
 	Properties  map[string]interface{} `json:"properties,omitempty"`
 	// Relações de topologia
 	FromRelationships map[string][]EntityStub `json:"fromRelationships,omitempty"`
@@ -83,12 +83,12 @@ type EvidenceDetails struct {
 
 // Evidence uma evidência específica do problema
 type Evidence struct {
-	EvidenceType  string      `json:"evidenceType"`
-	DisplayName   string      `json:"displayName"`
-	Entity        EntityStub  `json:"entity"`
+	EvidenceType   string      `json:"evidenceType"`
+	DisplayName    string      `json:"displayName"`
+	Entity         EntityStub  `json:"entity"`
 	GroupingEntity *EntityStub `json:"groupingEntity,omitempty"`
-	RootCause     bool        `json:"rootCause"`
-	StartTime     time.Time   `json:"startTime"`
+	RootCause      bool        `json:"rootCause"`
+	StartTime      time.Time   `json:"startTime"`
 }
 
 // MetricData série temporal de uma métrica
@@ -107,14 +107,14 @@ type MetricSeries struct {
 
 // Event evento registrado no Dynatrace
 type Event struct {
-	EventID         string    `json:"eventId"`
-	EventType       string    `json:"eventType"`
-	Title           string    `json:"title"`
-	StartTime       time.Time `json:"startTime"`
-	EndTime         *time.Time `json:"endTime,omitempty"`
-	EntityID        string    `json:"entityId"`
-	EntityName      string    `json:"entityName,omitempty"`
-	Properties      map[string]string `json:"properties,omitempty"`
+	EventID    string            `json:"eventId"`
+	EventType  string            `json:"eventType"`
+	Title      string            `json:"title"`
+	StartTime  time.Time         `json:"startTime"`
+	EndTime    *time.Time        `json:"endTime,omitempty"`
+	EntityID   string            `json:"entityId"`
+	EntityName string            `json:"entityName,omitempty"`
+	Properties map[string]string `json:"properties,omitempty"`
 }
 
 // DTLabels tags Kubernetes e DevOps extraídas do OneAgent.
@@ -135,11 +135,11 @@ type DTLabels struct {
 	HostGroup string `json:"hostGroup,omitempty"` // dt.host_group.id → identifica cluster AKS (ex: akspriv-busca-prd)
 
 	// DevOps / rastreabilidade (devops.k8s.io/*)
-	GitHubRepoID    string `json:"githubRepoId,omitempty"`    // devops.k8s.io/github-repository-id
-	ComponentName   string `json:"componentName,omitempty"`   // devops.k8s.io/component-name
-	ComponentSquad  string `json:"componentSquad,omitempty"`  // devops.k8s.io/component-squad
+	GitHubRepoID     string `json:"githubRepoId,omitempty"`     // devops.k8s.io/github-repository-id
+	ComponentName    string `json:"componentName,omitempty"`    // devops.k8s.io/component-name
+	ComponentSquad   string `json:"componentSquad,omitempty"`   // devops.k8s.io/component-squad
 	ComponentJourney string `json:"componentJourney,omitempty"` // devops.k8s.io/component-journey
-	ComponentTribe  string `json:"componentTribe,omitempty"`  // devops.k8s.io/component-tribe
+	ComponentTribe   string `json:"componentTribe,omitempty"`   // devops.k8s.io/component-tribe
 
 	// Helm
 	HelmChart string `json:"helmChart,omitempty"` // helm.sh/chart
@@ -148,10 +148,10 @@ type DTLabels struct {
 // K8sCorrelation correlação entre entidade Dynatrace e recurso K8s
 // extraída automaticamente das tags do OneAgent
 type K8sCorrelation struct {
-	Cluster      string `json:"Cluster"`
-	Namespace    string `json:"Namespace"`
-	Workload     string `json:"Workload"`
-	PodName      string `json:"PodName,omitempty"`
+	Cluster   string `json:"Cluster"`
+	Namespace string `json:"Namespace"`
+	Workload  string `json:"Workload"`
+	PodName   string `json:"PodName,omitempty"`
 	// Campos extras extraídos das DTLabels — úteis no Health Check e correlação com GitHub releases
 	AppName      string `json:"AppName,omitempty"`
 	AppVersion   string `json:"AppVersion,omitempty"`
@@ -215,39 +215,55 @@ func (e *Entity) ExtractDTLabels() *DTLabels {
 	for _, tag := range e.Tags {
 		switch tag.Key {
 		case "app.kubernetes.io/name":
-			l.AppName = tag.Value; hasAny = true
+			l.AppName = tag.Value
+			hasAny = true
 		case "app.kubernetes.io/version":
-			l.AppVersion = tag.Value; hasAny = true
+			l.AppVersion = tag.Value
+			hasAny = true
 		case "app.kubernetes.io/environment":
-			l.AppEnvironment = tag.Value; hasAny = true
+			l.AppEnvironment = tag.Value
+			hasAny = true
 		case "app.kubernetes.io/instance":
-			l.AppInstance = tag.Value; hasAny = true
+			l.AppInstance = tag.Value
+			hasAny = true
 		case "app.kubernetes.io/release-name":
-			l.ReleaseName = tag.Value; hasAny = true
+			l.ReleaseName = tag.Value
+			hasAny = true
 		case "app.kubernetes.io/stage":
-			l.Stage = tag.Value; hasAny = true
+			l.Stage = tag.Value
+			hasAny = true
 		case "app.kubernetes.io/deployed-by":
-			l.DeployedBy = tag.Value; hasAny = true
+			l.DeployedBy = tag.Value
+			hasAny = true
 		case "app.kubernetes.io/deployed-by-canary":
-			l.IsCanary = tag.Value; hasAny = true
+			l.IsCanary = tag.Value
+			hasAny = true
 		case "k8s.namespace.name", "kubernetes.namespace.name", "Namespace":
 			if l.Namespace == "" {
-				l.Namespace = tag.Value; hasAny = true
+				l.Namespace = tag.Value
+				hasAny = true
 			}
 		case "dt.host_group.id":
-			l.HostGroup = tag.Value; hasAny = true
+			l.HostGroup = tag.Value
+			hasAny = true
 		case "devops.k8s.io/github-repository-id":
-			l.GitHubRepoID = tag.Value; hasAny = true
+			l.GitHubRepoID = tag.Value
+			hasAny = true
 		case "devops.k8s.io/component-name":
-			l.ComponentName = tag.Value; hasAny = true
+			l.ComponentName = tag.Value
+			hasAny = true
 		case "devops.k8s.io/component-squad":
-			l.ComponentSquad = tag.Value; hasAny = true
+			l.ComponentSquad = tag.Value
+			hasAny = true
 		case "devops.k8s.io/component-journey":
-			l.ComponentJourney = tag.Value; hasAny = true
+			l.ComponentJourney = tag.Value
+			hasAny = true
 		case "devops.k8s.io/component-tribe":
-			l.ComponentTribe = tag.Value; hasAny = true
+			l.ComponentTribe = tag.Value
+			hasAny = true
 		case "helm.sh/chart":
-			l.HelmChart = tag.Value; hasAny = true
+			l.HelmChart = tag.Value
+			hasAny = true
 		}
 	}
 	if !hasAny {

@@ -15,9 +15,9 @@ import (
 type FilterType string
 
 const (
-	FilterTypeExact     FilterType = "exact"      // Match exato: namespace + nome
-	FilterTypeNamespace FilterType = "namespace"  // Match por namespace inteiro
-	FilterTypeCategory  FilterType = "category"   // Match por categoria de problema
+	FilterTypeExact     FilterType = "exact"     // Match exato: namespace + nome
+	FilterTypeNamespace FilterType = "namespace" // Match por namespace inteiro
+	FilterTypeCategory  FilterType = "category"  // Match por categoria de problema
 )
 
 // FilterCategory categorias de problemas conhecidos
@@ -33,9 +33,9 @@ const (
 	CategoryConfigMapEmpty FilterCategory = "configmap_empty" // ConfigMap vazio
 
 	// Secrets
-	CategorySecretEmpty           FilterCategory = "secret_empty"             // Secret vazio
-	CategorySecretServiceAccount  FilterCategory = "secret_service_account"   // Service account token
-	CategorySecretInvalidValues   FilterCategory = "secret_invalid_values"    // Secret com valores inválidos
+	CategorySecretEmpty          FilterCategory = "secret_empty"           // Secret vazio
+	CategorySecretServiceAccount FilterCategory = "secret_service_account" // Service account token
+	CategorySecretInvalidValues  FilterCategory = "secret_invalid_values"  // Secret com valores inválidos
 )
 
 // FilterRule representa uma regra de filtro
