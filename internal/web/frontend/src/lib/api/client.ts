@@ -93,6 +93,8 @@ import type {
   AWXCertificate,
   AWXJobLaunch,
   BatchPodMetrics,
+  NodePoolRegistryEntry,
+  NodePoolLookupResult,
 } from "./types";
 
 import type {
@@ -2194,9 +2196,11 @@ class APIClient {
   }
 
   // ─── gcloud install + auth flow ───────────────────────────────────────────
-  async startGoogleInstallAuth(aiEmail?: string): Promise<{ session_id: string; auth_url?: string; status?: string }> {
-    const query = aiEmail ? `?ai_email=${encodeURIComponent(aiEmail)}` : "";
-    return this.request(`/ai/tokens/google-auth/install/start${query}`, { method: "POST", body: "{}" });
+  async startGoogleInstallAuth(aiEmail?: string, baseUrl?: string): Promise<{ session_id: string; auth_url?: string; status?: string }> {
+    return this.request(`/ai/tokens/google-auth/install/start`, {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail || "", base_url: baseUrl || window.location.origin }),
+    });
   }
 
   async getGoogleAuthStatus(sessionId: string): Promise<{
@@ -2232,6 +2236,9 @@ class APIClient {
     copilot_deployment?: string;
     ollama_model?: string;
     preferred_provider: string;
+    has_dynatrace?: boolean;
+    dynatrace_url?: string;
+    dynatrace_tag_filter?: string;
     updated_at?: string;
   }> {
     // IMPORTANTE: Enviar ai_email para buscar configurações corretas do usuário
@@ -2957,6 +2964,84 @@ class APIClient {
   async cancelCommand(sessionId: string): Promise<void> {
     await this.request<void>(`/command-runner/session/${encodeURIComponent(sessionId)}`, {
       method: "DELETE",
+    });
+  }
+
+  // ===== DYNATRACE =====
+
+  async getDynatraceConfig(aiEmail: string): Promise<{
+    base_url: string;
+    has_token: boolean;
+    enabled: boolean;
+    tag_filter: string;
+  }> {
+    return this.request(`/dynatrace/config?ai_email=${encodeURIComponent(aiEmail)}`);
+  }
+
+  async testDynatraceConnection(aiEmail: string): Promise<{
+    success: boolean;
+    latency_ms?: number;
+    base_url?: string;
+    error?: string;
+  }> {
+    return this.request("/dynatrace/test", {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail }),
+    });
+  }
+
+  async getDynatraceProblems(aiEmail: string, filter?: string, status?: string): Promise<{
+    problems: import("../../types/healthcheck").DynatraceProblem[];
+    total: number;
+    fetched_at: string;
+    ui_base_url?: string;
+    dt_not_configured?: boolean;
+    message?: string;
+  }> {
+    let url = `/dynatrace/problems?ai_email=${encodeURIComponent(aiEmail)}`;
+    if (filter) url += `&filter=${encodeURIComponent(filter)}`;
+    if (status) url += `&status=${encodeURIComponent(status)}`;
+    return this.request(url);
+  }
+
+  async getDynatraceProblem(problemId: string, aiEmail: string): Promise<any> {
+    return this.request(`/dynatrace/problems/${encodeURIComponent(problemId)}?ai_email=${encodeURIComponent(aiEmail)}`);
+  }
+
+  async getDynatraceProblemMetrics(problemId: string, aiEmail: string): Promise<import("../../types/healthcheck").DTProblemMetrics> {
+    return this.request(`/dynatrace/problems/${encodeURIComponent(problemId)}/metrics?ai_email=${encodeURIComponent(aiEmail)}`);
+  }
+
+  async getDynatraceProblemContext(problemId: string, aiEmail: string): Promise<import("../../types/healthcheck").DTProblemContext> {
+    return this.request(`/dynatrace/problems/${encodeURIComponent(problemId)}/context?ai_email=${encodeURIComponent(aiEmail)}`);
+  }
+
+  // ─── NodePool Registry (correlação Dynatrace aks-<pool>-vmss*) ──────────────
+
+  async getNodePoolRegistry(cluster?: string): Promise<{ entries: NodePoolRegistryEntry[]; total: number }> {
+    const params = cluster ? `?cluster=${encodeURIComponent(cluster)}` : "";
+    return this.request(`/nodepools/registry${params}`);
+  }
+
+  async lookupNodePoolByEntityName(entityName: string): Promise<NodePoolLookupResult> {
+    return this.request(`/nodepools/registry/lookup?name=${encodeURIComponent(entityName)}`);
+  }
+
+  async scanNodePoolRegistry(cluster?: string): Promise<{ results: any[]; total_inserted: number; scanned_at: string }> {
+    const params = cluster ? `?cluster=${encodeURIComponent(cluster)}` : "";
+    return this.request(`/nodepools/registry/scan${params}`, { method: "POST" });
+  }
+
+  async analyzeDynatraceProblem(problemId: string, aiEmail: string): Promise<{
+    problem_id: string;
+    title: string;
+    severity: string;
+    analysis: string;
+    analyzed_at: string;
+  }> {
+    return this.request(`/dynatrace/problems/${encodeURIComponent(problemId)}/analyze`, {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail }),
     });
   }
 }

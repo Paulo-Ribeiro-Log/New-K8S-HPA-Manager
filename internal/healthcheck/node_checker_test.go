@@ -263,7 +263,7 @@ func TestCheckNodeHighCPUUtilization(t *testing.T) {
 				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
 			},
 			Allocatable: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("4"),    // 4000m
+				corev1.ResourceCPU:    resource.MustParse("4"), // 4000m
 				corev1.ResourceMemory: resource.MustParse("8Gi"),
 				corev1.ResourcePods:   resource.MustParse("110"),
 			},

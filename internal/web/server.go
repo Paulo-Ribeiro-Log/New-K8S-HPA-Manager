@@ -75,11 +75,20 @@ type Server struct {
 	// AI Tokens Handler (gerencia tokens AI dos usuários)
 	aiTokensHandler *handlers.AITokensHandler
 
+	// AI Tokens Store (compartilhado com Dynatrace handler)
+	aiTokensStore *storage.UserTokensStore
+
+	// AI History Store (compartilhado com Dynatrace handler)
+	aiHistoryStore *storage.AIHistoryStore
+
 	// KubeManager wrapper para AI (pode ser nil se AI estiver desabilitado)
 	kubeManagerWrapper *kubernetes.KubeManager
 
 	// AWX Integration Handler (pode ser nil se AWX não estiver configurado)
 	awxHandler *handlers.AWXHandler
+
+	// Node Pool Registry (catálogo de node pools para correlação Dynatrace)
+	nodepoolRegistryHandler *handlers.NodePoolRegistryHandler
 }
 
 // NewServer cria uma nova instância do servidor web
@@ -247,6 +256,16 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("ℹ️  AWX Integration: URL e credenciais configuradas via perfil do usuário")
 	}
 
+	// Node Pool Registry (catálogo para correlação Dynatrace aks-<pool>-vmss*)
+	var nodepoolRegistryHandler *handlers.NodePoolRegistryHandler
+	npRegistryDBPath := filepath.Join(baseDir, "nodepool_registry.db")
+	if npRegistryStore, err := storage.NewNodePoolRegistryStore(npRegistryDBPath); err != nil {
+		fmt.Printf("⚠️  NodePool Registry: falha ao criar store: %v\n", err)
+	} else {
+		nodepoolRegistryHandler = handlers.NewNodePoolRegistryHandler(kubeManager, npRegistryStore)
+		fmt.Println("✅ NodePool Registry inicializado (correlação Dynatrace aks-<pool>-vmss*)")
+	}
+
 	server := &Server{
 		router:              router,
 		kubeManager:         kubeManager,
@@ -267,8 +286,11 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		monitoringEngineV2: monitoringEngineV2,
 		aiHandler:          aiHandler,          // Pode ser nil se AI estiver desabilitado
 		aiTokensHandler:    aiTokensHandler,    // Gerencia tokens AI dos usuários
+		aiTokensStore:      aiTokensStore,      // Compartilhado com Dynatrace handler
+		aiHistoryStore:     aiHistoryStore,     // Compartilhado com Dynatrace handler
 		kubeManagerWrapper: kubeManagerWrapper, // Para predictions RBAC
-		awxHandler:         awxHandler,         // AWX Integration (certificados TLS)
+		awxHandler:              awxHandler,              // AWX Integration (certificados TLS)
+		nodepoolRegistryHandler: nodepoolRegistryHandler, // Catálogo de node pools Dynatrace
 	}
 
 	server.setupMiddleware()
@@ -345,6 +367,11 @@ func (s *Server) setupRoutes() {
 	baseDir := filepath.Join(homeDir, ".k8s-hpa-manager")
 
 	// Health check (sem auth)
+	// OAuth2 Google callback — usa a porta do próprio app (funciona no WSL2 onde portas aleatórias não são forwardadas)
+	if s.aiTokensHandler != nil {
+		s.router.GET("/oauth/google/callback", s.aiTokensHandler.GoogleOAuthCallback)
+	}
+
 	s.router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"status":  "ok",
@@ -479,6 +506,13 @@ func (s *Server) setupRoutes() {
 	// Node Pools - Node Details
 	api.GET("/nodes/:cluster/:nodepool", nodePoolHandler.ListNodesInNodePool)       // Lista nodes do node pool
 	api.GET("/nodes/:cluster/:nodepool/:node", nodePoolHandler.GetNodeDetails)      // Detalhes de um node específico
+
+	// Node Pool Registry (catálogo para correlação Dynatrace aks-<pool>-vmss*)
+	if s.nodepoolRegistryHandler != nil {
+		api.GET("/nodepools/registry", s.nodepoolRegistryHandler.List)
+		api.GET("/nodepools/registry/lookup", s.nodepoolRegistryHandler.Lookup)
+		api.POST("/nodepools/registry/scan", rbacMiddleware.RequireSREGroup(), s.nodepoolRegistryHandler.Scan)
+	}
 
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
 	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)
@@ -698,6 +732,20 @@ func (s *Server) setupRoutes() {
 		// Explorer - Write Operations (SRE-only)
 		explorer.PUT("/:cluster/:namespace/:resource/:name", rbacMiddleware.RequireSREGroup(), explorerHandler.Apply)
 		explorer.DELETE("/:cluster/:namespace/:resource/:name", rbacMiddleware.RequireSREGroup(), explorerHandler.Delete)
+	}
+
+	// Dynatrace Integration — análise de problems com AI
+	dtHandler := handlers.NewDynatraceHandler(s.aiTokensStore, s.aiHistoryStore, s.aiHandler)
+	dt := api.Group("/dynatrace")
+	{
+		dt.GET("/config", dtHandler.GetConfig)
+		dt.POST("/test", dtHandler.TestConnection)
+		dt.GET("/problems", dtHandler.ListProblems)
+		dt.GET("/problems/:problemId", dtHandler.GetProblem)
+		dt.POST("/problems/:problemId/analyze", dtHandler.AnalyzeProblem)
+		dt.GET("/problems/:problemId/metrics", dtHandler.GetProblemMetrics)
+		dt.GET("/problems/:problemId/context", dtHandler.GetProblemContext)
+		dt.GET("/history", dtHandler.GetHistory)
 	}
 
 	// Helm
@@ -1086,7 +1134,7 @@ func (s *Server) setupRoutes() {
 		fmt.Printf("⚠️  Falha ao criar Health Check Orchestrator: %v\n", err)
 	} else {
 		// Criar handler
-		healthCheckHandler := handlers.NewHealthCheckHandler(s.kubeManager, healthCheckOrchestrator, progressTracker)
+		healthCheckHandler := handlers.NewHealthCheckHandler(s.kubeManager, healthCheckOrchestrator, progressTracker, s.aiTokensStore)
 
 		// System Health endpoints (padrão Kubernetes) - sem auth
 		systemHealthHandler := handlers.NewSystemHealthHandler(s.kubeManager, healthCheckOrchestrator, updater.Version)

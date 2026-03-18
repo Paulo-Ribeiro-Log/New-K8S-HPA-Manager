@@ -30,6 +30,9 @@ type DeviceAuthCode struct {
 	VerificationURL string `json:"verification_url"`
 	ExpiresIn       int    `json:"expires_in"`
 	Interval        int    `json:"interval"` // segundos entre polls
+	// Campos de erro (Google retorna quando falha)
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
 }
 
 // DeviceAuthToken resposta do endpoint de token
@@ -64,11 +67,19 @@ func StartDeviceAuth(ctx context.Context) (*DeviceAuthCode, error) {
 
 	var result DeviceAuthCode
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("resposta inválida do Google: %w", err)
+		return nil, fmt.Errorf("resposta inválida do Google (HTTP %d): %w", resp.StatusCode, err)
+	}
+
+	if result.Error != "" {
+		msg := result.Error
+		if result.ErrorDescription != "" {
+			msg += ": " + result.ErrorDescription
+		}
+		return nil, fmt.Errorf("Google recusou device auth — %s", msg)
 	}
 
 	if result.DeviceCode == "" {
-		return nil, fmt.Errorf("Google não retornou device_code (verifique conectividade)")
+		return nil, fmt.Errorf("Google não retornou device_code (HTTP %d)", resp.StatusCode)
 	}
 
 	// Garantir URL de verificação padrão

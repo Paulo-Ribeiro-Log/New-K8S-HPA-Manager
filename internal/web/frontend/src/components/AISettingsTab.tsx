@@ -13,9 +13,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Key, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Shield, Trash2, FileJson, LogIn, Copy } from "lucide-react";
+import { Key, Eye, EyeOff, CheckCircle2, XCircle, Loader2, Shield, Trash2, FileJson, LogIn } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { apiClient } from "@/lib/api/client";
 
 interface TokenStatus {
@@ -35,6 +34,9 @@ interface TokenStatus {
   copilot_deployment?: string;
   ollama_model?: string;
   preferred_provider: string;
+  has_dynatrace?: boolean;
+  dynatrace_url?: string;
+  dynatrace_tag_filter?: string;
   updated_at?: string;
 }
 
@@ -64,13 +66,12 @@ export function AISettingsTab() {
   const [hasGeminiServiceAccount, setHasGeminiServiceAccount] = useState(false);
   const [hasGeminiRefreshToken, setHasGeminiRefreshToken] = useState(false);
 
-  // OAuth2 loopback auth flow
-  const [googleAuthModalOpen, setGoogleAuthModalOpen] = useState(false);
-  const [googleAuthSessionId, setGoogleAuthSessionId] = useState("");
-  const [googleAuthStatus, setGoogleAuthStatus] = useState<"idle" | "installing" | "waiting_browser" | "authenticated" | "error">("idle");
+  // App-callback OAuth flow (Google) — redireciona para /oauth/google/callback na porta do próprio app
+  // Resolve o WSL2: porta 8080 é forwarded, portas aleatórias não eram.
+  const [googleSessionId, setGoogleSessionId] = useState("");
   const [googleAuthURL, setGoogleAuthURL] = useState("");
-  const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
-  const [startingGoogleAuth, setStartingGoogleAuth] = useState(false);
+  const [googleStatus, setGoogleStatus] = useState<"idle" | "waiting" | "authenticated" | "error">("idle");
+  const [googleError, setGoogleError] = useState<string | null>(null);
 
   const [testingVertex, setTestingVertex] = useState(false);
   const [vertexTestResult, setVertexTestResult] = useState<boolean | null>(null);
@@ -83,6 +84,11 @@ export function AISettingsTab() {
   const [copilotEndpoint, setCopilotEndpoint] = useState("");
   const [copilotDeployment, setCopilotDeployment] = useState("");
   const [ollamaModel, setOllamaModel] = useState("");
+  const [dynatraceURL, setDynatraceURL] = useState("");
+  const [dynatraceToken, setDynatraceToken] = useState("");
+  const [dynatraceTagFilter, setDynatraceTagFilter] = useState("");
+  const [dtTesting, setDtTesting] = useState(false);
+  const [dtTestResult, setDtTestResult] = useState<{ success: boolean; latency_ms?: number; error?: string } | null>(null);
   const [preferredProvider, setPreferredProvider] = useState("ollama");
 
   // Available models per provider
@@ -97,6 +103,7 @@ export function AISettingsTab() {
   const [showOpenAI, setShowOpenAI] = useState(false);
   const [showClaude, setShowClaude] = useState(false);
   const [showCopilot, setShowCopilot] = useState(false);
+  const [showDynatraceToken, setShowDynatraceToken] = useState(false);
 
   // Validation results
   const [geminiValid, setGeminiValid] = useState<boolean | null>(null);
@@ -153,6 +160,8 @@ export function AISettingsTab() {
       if (response.ollama_model) setOllamaModel(response.ollama_model);
       if (response.copilot_endpoint) setCopilotEndpoint(response.copilot_endpoint);
       if (response.copilot_deployment) setCopilotDeployment(response.copilot_deployment);
+      if (response.dynatrace_url) setDynatraceURL(response.dynatrace_url);
+      if (response.dynatrace_tag_filter !== undefined) setDynatraceTagFilter(response.dynatrace_tag_filter);
     } catch (error) {
       console.error("Failed to load token status:", error);
       toast({
@@ -259,6 +268,20 @@ export function AISettingsTab() {
     }
   };
 
+  const handleTestDynatrace = async () => {
+    if (!aiEmail) return;
+    setDtTesting(true);
+    setDtTestResult(null);
+    try {
+      const result = await apiClient.testDynatraceConnection(aiEmail);
+      setDtTestResult(result);
+    } catch (err: any) {
+      setDtTestResult({ success: false, error: err.message ?? "Erro ao testar conexão" });
+    } finally {
+      setDtTesting(false);
+    }
+  };
+
   const handleSave = async () => {
     // Validar que ai_email está preenchido
     if (!aiEmail || aiEmail.trim() === "") {
@@ -317,6 +340,11 @@ export function AISettingsTab() {
       if (copilotEndpoint) payload.copilot_endpoint = copilotEndpoint;
       if (copilotDeployment) payload.copilot_deployment = copilotDeployment;
 
+      // Dynatrace - URL e tag filter não são sensíveis; token sim
+      if (dynatraceURL) payload.dynatrace_url = dynatraceURL;
+      if (dynatraceToken) payload.dynatrace_token = dynatraceToken;
+      payload.dynatrace_tag_filter = dynatraceTagFilter; // sempre enviar (permite limpar)
+
       console.log("[AISettingsTab] Salvando configurações:", {
         ai_email: payload.ai_email,
         preferred_provider: payload.preferred_provider,
@@ -350,6 +378,7 @@ export function AISettingsTab() {
       setOpenaiKey("");
       setClaudeKey("");
       setCopilotKey("");
+      setDynatraceToken("");
 
       // Recarregar status (apenas indicadores has_gemini, has_claude, etc)
       await loadTokenStatus();
@@ -369,60 +398,45 @@ export function AISettingsTab() {
       toast({ title: "Preencha o email antes de autenticar", variant: "destructive" });
       return;
     }
-    setStartingGoogleAuth(true);
-    setGoogleAuthError(null);
-    setGoogleAuthStatus("installing"); // estado transitório enquanto aguarda session_id
+
+    setGoogleStatus("waiting");
+    setGoogleError(null);
+    setGoogleSessionId("");
     setGoogleAuthURL("");
-    setGoogleAuthModalOpen(true);
 
     try {
-      // Backend inicia servidor loopback + retorna auth_url imediatamente
-      const result = await apiClient.startGoogleInstallAuth(aiEmail);
-      const session_id = result.session_id;
-      setGoogleAuthSessionId(session_id);
-
-      // auth_url já pode vir na resposta inicial
+      const result = await apiClient.startGoogleInstallAuth(aiEmail, window.location.origin);
+      setGoogleSessionId(result.session_id);
       if (result.auth_url) {
         setGoogleAuthURL(result.auth_url);
-        setGoogleAuthStatus("waiting_browser");
+        window.open(result.auth_url, "_blank");
       }
 
-      // Polling de status a cada 3s para detectar quando o usuário autenticar
-      let stopped = false;
-      const pollStatus = async () => {
-        if (stopped) return;
+      // Polling do status via backend
+      const poll = async () => {
         try {
-          const s = await apiClient.getGoogleAuthStatus(session_id);
-          if (s.auth_url && !result.auth_url) setGoogleAuthURL(s.auth_url);
-          if (s.status === "waiting_browser") {
-            setGoogleAuthStatus("waiting_browser");
-            setTimeout(pollStatus, 3000);
-          } else if (s.status === "authenticated") {
-            stopped = true;
-            setGoogleAuthStatus("authenticated");
+          const r = await apiClient.getGoogleAuthStatus(result.session_id);
+          if (r.status === "authenticated") {
+            setGoogleStatus("authenticated");
             setHasGeminiRefreshToken(true);
             toast({ title: "✅ Autenticado com Google!", description: "Pronto para usar Gemini Vertex AI." });
             await loadTokenStatus();
-          } else if (s.status === "error") {
-            stopped = true;
-            setGoogleAuthStatus("error");
-            setGoogleAuthError(s.error || "Erro desconhecido");
+          } else if (r.status === "error") {
+            setGoogleStatus("error");
+            setGoogleError(r.error || "Erro desconhecido");
           } else {
-            setTimeout(pollStatus, 3000);
+            setTimeout(poll, 3000);
           }
         } catch {
-          setTimeout(pollStatus, 5000);
+          setTimeout(poll, 5000);
         }
       };
-
-      setTimeout(pollStatus, 3000);
+      setTimeout(poll, 3000);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Erro desconhecido";
-      setGoogleAuthStatus("error");
-      setGoogleAuthError(msg);
+      setGoogleStatus("error");
+      setGoogleError(msg);
       toast({ title: "Falha ao iniciar autenticação Google", description: msg, variant: "destructive" });
-    } finally {
-      setStartingGoogleAuth(false);
     }
   };
 
@@ -489,6 +503,9 @@ export function AISettingsTab() {
       setCopilotKey("");
       setCopilotEndpoint("");
       setCopilotDeployment("");
+      setDynatraceURL("");
+      setDynatraceToken("");
+      setDynatraceTagFilter("");
       setGeminiValid(null);
       setOpenaiValid(null);
       setClaudeValid(null);
@@ -563,6 +580,10 @@ export function AISettingsTab() {
                 <Badge variant={tokenStatus.has_copilot ? "default" : "outline"}>
                   {tokenStatus.has_copilot ? <CheckCircle2 className="h-3 w-3 mr-1" /> : <XCircle className="h-3 w-3 mr-1" />}
                   Copilot {tokenStatus.has_copilot ? "Configurado" : "Não Configurado"}
+                </Badge>
+                <Badge variant={tokenStatus.has_dynatrace ? "default" : "outline"}>
+                  {tokenStatus.has_dynatrace ? <CheckCircle2 className="h-3 w-3 mr-1" /> : <XCircle className="h-3 w-3 mr-1" />}
+                  Dynatrace {tokenStatus.has_dynatrace ? "Configurado" : "Não Configurado"}
                 </Badge>
               </div>
               {tokenStatus.updated_at && (
@@ -659,27 +680,73 @@ export function AISettingsTab() {
             {/* Vertex AI mode */}
             {geminiAuthMode === "vertex" && (
               <div className="space-y-3 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 p-3">
-                {/* Botão principal de autenticação */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs font-medium text-blue-800 dark:text-blue-200">
-                      Autenticação via SSO corporativo
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Abre uma página Google para login com sua conta da empresa
-                    </p>
+                {/* Autenticação via Device Auth Grant — funciona em WSL2 e servidor remoto */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-medium text-blue-800 dark:text-blue-200">
+                        Autenticação via SSO corporativo
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Login com conta Google da empresa — funciona em WSL2 e acesso remoto
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {hasGeminiRefreshToken && googleStatus === "idle" && (
+                        <Badge variant="secondary" className="text-green-700 bg-green-100 border-green-300 text-xs">
+                          <CheckCircle2 className="h-3 w-3 mr-1" /> Autenticado
+                        </Badge>
+                      )}
+                      {(googleStatus === "idle" || googleStatus === "error") && (
+                        <Button size="sm" onClick={startGoogleAuth}>
+                          <LogIn className="h-4 w-4 mr-1" />
+                          {hasGeminiRefreshToken ? "Re-autenticar" : "Autenticar com Google"}
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {hasGeminiRefreshToken && (
-                      <Badge variant="secondary" className="text-green-700 bg-green-100 border-green-300 text-xs">
-                        <CheckCircle2 className="h-3 w-3 mr-1" /> Autenticado
-                      </Badge>
-                    )}
-                    <Button size="sm" onClick={startGoogleAuth} disabled={startingGoogleAuth}>
-                      {startingGoogleAuth ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <LogIn className="h-4 w-4 mr-1" />}
-                      {hasGeminiRefreshToken ? "Re-autenticar" : "Autenticar com Google"}
-                    </Button>
-                  </div>
+
+                  {googleStatus === "waiting" && (
+                    <div className="rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-900 p-3 space-y-2">
+                      <div className="flex items-center gap-2 text-xs text-blue-700 dark:text-blue-300">
+                        <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                        <span className="font-semibold">Browser aberto — faça login com sua conta corporativa Google.</span>
+                      </div>
+                      {googleAuthURL && (
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs gap-1.5"
+                            onClick={() => window.open(googleAuthURL, "_blank")}
+                          >
+                            <LogIn className="h-3 w-3" /> Abrir novamente
+                          </Button>
+                          <span className="text-xs text-muted-foreground">Aguardando conclusão do login...</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {googleStatus === "authenticated" && (
+                    <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      Autenticado com sucesso! Token salvo.
+                      <Button size="sm" variant="ghost" className="h-6 text-xs ml-auto" onClick={() => setGoogleStatus("idle")}>
+                        OK
+                      </Button>
+                    </div>
+                  )}
+
+                  {googleStatus === "error" && (
+                    <div className="flex items-start gap-2 text-xs text-red-500 dark:text-red-400">
+                      <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                      <span className="flex-1">{googleError}</span>
+                      <Button size="sm" variant="ghost" className="h-6 text-xs shrink-0" onClick={() => setGoogleStatus("idle")}>
+                        Fechar
+                      </Button>
+                    </div>
+                  )}
                 </div>
                 <Separator />
                 <div className="space-y-1">
@@ -1043,6 +1110,96 @@ export function AISettingsTab() {
 
           <Separator />
 
+          {/* Dynatrace Integration */}
+          <div className="space-y-3">
+            <Label className="flex items-center gap-2 text-base font-semibold">
+              Dynatrace
+              {tokenStatus?.has_dynatrace && <CheckCircle2 className="h-4 w-4 text-green-500" />}
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Token individual para análise de problems com AI. Cada analista usa seu próprio token.
+            </p>
+            <div className="space-y-2">
+              <Label htmlFor="dt-url" className="text-xs">URL do Ambiente Dynatrace</Label>
+              <Input
+                id="dt-url"
+                type="text"
+                placeholder="https://xxxxxxxx.live.dynatrace.com"
+                value={dynatraceURL}
+                onChange={(e) => setDynatraceURL(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="dt-token" className="text-xs">API Token</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="dt-token"
+                  type={showDynatraceToken ? "text" : "password"}
+                  placeholder="dt0c01.XXXXXXXXXX..."
+                  value={dynatraceToken}
+                  onChange={(e) => setDynatraceToken(e.target.value)}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setShowDynatraceToken(!showDynatraceToken)}
+                >
+                  {showDynatraceToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Escopos necessários: <code className="bg-muted px-1 rounded">problems.read</code>{" "}
+                <code className="bg-muted px-1 rounded">entities.read</code>{" "}
+                <code className="bg-muted px-1 rounded">metrics.read</code>{" "}
+                <code className="bg-muted px-1 rounded">events.read</code>
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="dt-tag-filter" className="text-xs">
+                Filtro por Management Zone <span className="text-muted-foreground font-normal">(opcional)</span>
+              </Label>
+              <Input
+                id="dt-tag-filter"
+                type="text"
+                placeholder="ex: SRE-LOGISTICA (use tag:nome para filtrar por entity tag)"
+                value={dynatraceTagFilter}
+                onChange={(e) => setDynatraceTagFilter(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Filtra problems pela Management Zone (corresponde ao alert profile do seu squad).
+                Prefixe com <code className="bg-muted px-1 rounded">tag:</code> para filtrar por entity tag.
+                Deixe em branco para ver todos os problems do ambiente.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleTestDynatrace}
+                disabled={dtTesting || !aiEmail}
+              >
+                {dtTesting
+                  ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Testando...</>
+                  : "Testar Conexão"}
+              </Button>
+              {dtTestResult && (
+                dtTestResult.success
+                  ? <span className="text-xs text-green-600 flex items-center gap-1">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      Conectado ({dtTestResult.latency_ms}ms)
+                    </span>
+                  : <span className="text-xs text-red-500 flex items-center gap-1">
+                      <XCircle className="h-3.5 w-3.5" />
+                      {dtTestResult.error ?? "Falha na conexão"}
+                    </span>
+              )}
+            </div>
+          </div>
+
+          <Separator />
+
           {/* Provider Preferido */}
           <div className="space-y-2">
             <Label htmlFor="preferred-provider">Provider Preferido</Label>
@@ -1100,91 +1257,6 @@ export function AISettingsTab() {
         </CardContent>
       </Card>
 
-      {/* Modal OAuth2 Loopback Auth */}
-      <Dialog open={googleAuthModalOpen} onOpenChange={(open) => {
-        if (!open && googleAuthStatus === "waiting_browser") return; // não fechar enquanto aguarda
-        setGoogleAuthModalOpen(open);
-        if (!open) setGoogleAuthStatus("idle");
-      }}>
-        <DialogContent className="sm:max-w-lg" onInteractOutside={(e) => {
-          if (googleAuthStatus === "waiting_browser") e.preventDefault();
-        }}>
-          <DialogHeader>
-            <DialogTitle>Autenticar com Google</DialogTitle>
-            <DialogDescription>
-              Autenticação OAuth2 para Gemini Vertex AI (conta corporativa / SSO)
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            {googleAuthStatus === "authenticated" ? (
-              <div className="flex flex-col items-center gap-3 py-4">
-                <CheckCircle2 className="h-12 w-12 text-green-500" />
-                <p className="text-center font-medium text-green-700">Autenticado com sucesso!</p>
-                <p className="text-center text-sm text-muted-foreground">
-                  Sua conta Google foi vinculada. Pode fechar esta janela.
-                </p>
-                <Button onClick={() => { setGoogleAuthModalOpen(false); setGoogleAuthStatus("idle"); }}>Fechar</Button>
-              </div>
-
-            ) : googleAuthStatus === "error" ? (
-              <div className="flex flex-col items-center gap-3 py-4">
-                <XCircle className="h-12 w-12 text-red-500" />
-                <p className="text-center text-sm text-red-600">{googleAuthError}</p>
-                <Button variant="outline" onClick={() => { setGoogleAuthModalOpen(false); setGoogleAuthStatus("idle"); }}>Fechar</Button>
-              </div>
-
-            ) : googleAuthStatus === "installing" && !googleAuthURL ? (
-              // Estado transitório enquanto aguarda session_id do backend
-              <div className="flex flex-col items-center gap-4 py-6">
-                <Loader2 className="h-10 w-10 animate-spin text-blue-500" />
-                <p className="text-center font-medium">Preparando autenticação...</p>
-              </div>
-
-            ) : (
-              // Estado principal: waiting_browser — mostrar URL para o usuário abrir
-              <div className="space-y-4">
-                <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
-                  <p className="font-medium mb-1">Como autenticar:</p>
-                  <ol className="list-decimal list-inside space-y-1 text-blue-700">
-                    <li>Clique em <strong>"Abrir Google Login"</strong> abaixo</li>
-                    <li>Faça login com sua conta corporativa (SSO/SAML)</li>
-                    <li>Após o login, esta janela será atualizada automaticamente</li>
-                  </ol>
-                </div>
-
-                {googleAuthURL ? (
-                  <div className="space-y-2">
-                    <Button
-                      className="w-full"
-                      onClick={() => window.open(googleAuthURL, "_blank")}
-                    >
-                      <LogIn className="h-4 w-4 mr-2" />
-                      Abrir Google Login
-                    </Button>
-                    <div className="flex items-center gap-2 bg-muted rounded p-2">
-                      <code className="text-xs flex-1 break-all text-muted-foreground">{googleAuthURL}</code>
-                      <Button size="sm" variant="ghost" className="shrink-0" onClick={() => navigator.clipboard.writeText(googleAuthURL)}>
-                        <Copy className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-center gap-2 py-2">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span className="text-sm text-muted-foreground">Preparando URL...</span>
-                  </div>
-                )}
-
-                <div className="flex items-center gap-2 text-xs text-muted-foreground justify-center pt-1">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Aguardando login no browser...
-                </div>
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

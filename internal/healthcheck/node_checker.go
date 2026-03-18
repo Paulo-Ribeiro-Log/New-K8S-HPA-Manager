@@ -49,10 +49,10 @@ type NodeHealth struct {
 
 // NodeResources representa recursos de um node
 type NodeResources struct {
-	CPUMillis    int64 `json:"cpu_millis"`    // CPU em millicores
-	MemoryBytes  int64 `json:"memory_bytes"`  // Memória em bytes
-	Pods         int64 `json:"pods"`          // Número de pods
-	EphemeralGB  int64 `json:"ephemeral_gb"`  // Storage efêmero em GB
+	CPUMillis   int64 `json:"cpu_millis"`   // CPU em millicores
+	MemoryBytes int64 `json:"memory_bytes"` // Memória em bytes
+	Pods        int64 `json:"pods"`         // Número de pods
+	EphemeralGB int64 `json:"ephemeral_gb"` // Storage efêmero em GB
 }
 
 // AffectedPod representa um pod afetado por problemas no node

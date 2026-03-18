@@ -2,6 +2,8 @@ package cache
 
 import (
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -268,4 +270,34 @@ func TestCleanup(t *testing.T) {
 	if cache.Size() != 0 {
 		t.Errorf("Expected empty cache after cleanup, got size %d", cache.Size())
 	}
+}
+
+func TestConcurrency(t *testing.T) {
+	cache := NewMemoryCache(5 * time.Minute)
+	numGoroutines := 100
+	numOperations := 1000
+
+	// Usar um WaitGroup para esperar todas as goroutines terminarem
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(goroutineID int) {
+			defer wg.Done()
+			for j := 0; j < numOperations; j++ {
+				key := fmt.Sprintf("key-%d-%d", goroutineID, j)
+				value := fmt.Sprintf("value-%d", j)
+
+				// Simular operações de escrita e leitura
+				cache.Set(key, value)
+				retrieved, ok := cache.Get(key)
+
+				if !ok || retrieved != value {
+					t.Errorf("Goroutine %d: Failed to get key %s", goroutineID, key)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
 }

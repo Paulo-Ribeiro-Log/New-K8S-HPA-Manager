@@ -81,6 +81,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   const [checkEvents, setCheckEvents] = useState(false); // Verificar eventos K8s (desabilitado por padrão)
   const [checkHPAs, setCheckHPAs] = useState(true);      // Verificar HPAs (habilitado por padrão)
   const [checkPVCs, setCheckPVCs] = useState(true);      // Verificar PVCs (habilitado por padrão)
+  const [checkDynatrace, setCheckDynatrace] = useState(false); // Verificar problems Dynatrace
   const [timeout, setTimeout] = useState(30); // Timeout geral (fallback)
   const [showAdvancedTimeouts, setShowAdvancedTimeouts] = useState(false);
   const [timeoutDeployments, setTimeoutDeployments] = useState(60); // Padrão: 60s
@@ -262,7 +263,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       return;
     }
 
-    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents && !checkHPAs && !checkPVCs) {
+    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents && !checkHPAs && !checkPVCs && !checkDynatrace) {
       console.error("[HealthCheckingTab] No check types selected");
       toast.error("Selecione pelo menos um tipo de check");
       return;
@@ -283,6 +284,8 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       check_events: checkEvents,
       check_hpas: checkHPAs,
       check_pvcs: checkPVCs,
+      check_dynatrace: checkDynatrace,
+      ai_email: localStorage.getItem("ai_email") || undefined,
       timeout: timeout,
       // Timeouts específicos (se modo avançado habilitado)
       timeout_deployments: showAdvancedTimeouts ? timeoutDeployments : undefined,
@@ -562,6 +565,19 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                       </Label>
                       <Badge variant="outline" className="text-xs">
                         status, StorageClass, bindings
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="check-dynatrace"
+                        checked={checkDynatrace}
+                        onCheckedChange={(checked) => setCheckDynatrace(checked as boolean)}
+                      />
+                      <Label htmlFor="check-dynatrace" className="text-sm cursor-pointer">
+                        Problems Dynatrace
+                      </Label>
+                      <Badge variant="outline" className="text-xs bg-purple-50 dark:bg-purple-950/20 text-purple-700 dark:text-purple-400 border-purple-300">
+                        requer token DT configurado
                       </Badge>
                     </div>
                   </CardContent>

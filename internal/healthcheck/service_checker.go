@@ -21,10 +21,10 @@ import (
 // OTIMIZADO: Usa 1 Pod por namespace ao invés de 1 Job por serviço
 type ServiceChecker struct {
 	// Configurações
-	testTimeoutSeconds int   // Timeout do teste nc (default: 5)
-	workerTTLSeconds   int   // TTL do Pod worker (default: 300 = 5min)
-	batchSize          int   // Máximo de testes por batch (default: 20)
-	maxConcurrent      int   // Máximo de namespaces paralelos (default: 3)
+	testTimeoutSeconds int // Timeout do teste nc (default: 5)
+	workerTTLSeconds   int // TTL do Pod worker (default: 300 = 5min)
+	batchSize          int // Máximo de testes por batch (default: 20)
+	maxConcurrent      int // Máximo de namespaces paralelos (default: 3)
 
 	// REST config para exec
 	restConfig *rest.Config
@@ -218,8 +218,8 @@ func (sc *ServiceChecker) createWorkerPod(ctx context.Context, client kubernetes
 
 	// Valores para SecurityContext
 	runAsNonRoot := true
-	runAsUser := int64(65534)    // nobody
-	runAsGroup := int64(65534)   // nogroup
+	runAsUser := int64(65534)  // nobody
+	runAsGroup := int64(65534) // nogroup
 	readOnlyFS := true
 	allowPrivEsc := false
 
