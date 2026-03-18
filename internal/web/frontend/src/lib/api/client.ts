@@ -2990,15 +2990,17 @@ class APIClient {
     });
   }
 
-  async getDynatraceProblems(aiEmail: string, filter?: string): Promise<{
+  async getDynatraceProblems(aiEmail: string, filter?: string, status?: string): Promise<{
     problems: import("../../types/healthcheck").DynatraceProblem[];
     total: number;
     fetched_at: string;
+    ui_base_url?: string;
     dt_not_configured?: boolean;
     message?: string;
   }> {
     let url = `/dynatrace/problems?ai_email=${encodeURIComponent(aiEmail)}`;
     if (filter) url += `&filter=${encodeURIComponent(filter)}`;
+    if (status) url += `&status=${encodeURIComponent(status)}`;
     return this.request(url);
   }
 

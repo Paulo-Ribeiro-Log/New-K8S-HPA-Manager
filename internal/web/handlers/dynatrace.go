@@ -130,18 +130,12 @@ func (h *DynatraceHandler) ListProblems(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
-	var tagFilter string
-	if aiEmail != "" && h.tokensStore != nil {
-		if tokens, err2 := h.tokensStore.GetTokens(aiEmail); err2 == nil && tokens != nil {
-			tagFilter = tokens.DynatraceTagFilter
-		}
-	}
-	// Query param sobrescreve o filtro salvo (permite filtro ad-hoc da UI)
-	if filterOverride := c.Query("filter"); filterOverride != "" {
-		tagFilter = filterOverride
-	}
+	// Filtro apenas quando o usuário passa explicitamente via query param na UI
+	tagFilter := c.Query("filter")
+	// status: "OPEN" (padrão), "CLOSED" ou "ALL"
+	statusFilter := c.Query("status")
 
-	result, err := client.GetOpenProblems(ctx, tagFilter)
+	result, err := client.GetOpenProblems(ctx, tagFilter, statusFilter)
 	if err != nil {
 		log.Error().Err(err).Str("ai_email", aiEmail).Msg("Dynatrace: falha ao buscar problems")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -220,11 +214,15 @@ func (h *DynatraceHandler) ListProblems(c *gin.Context) {
 		Str("filter", tagFilter).
 		Msg("Dynatrace: problems carregados")
 
+	// UI usa apps.dynatrace.com; API usa live.dynatrace.com
+	uiBaseURL := strings.ReplaceAll(client.BaseURL(), ".live.dynatrace.com", ".apps.dynatrace.com")
+
 	c.JSON(http.StatusOK, gin.H{
 		"problems":    summaries,
 		"total":       len(summaries),
-		"dt_total":    result.TotalCount, // total real no Dynatrace (pode ser > total se houver paginação)
+		"dt_total":    result.TotalCount,
 		"fetched_at":  time.Now(),
+		"ui_base_url": uiBaseURL,
 	})
 }
 

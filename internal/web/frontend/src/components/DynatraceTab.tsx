@@ -13,7 +13,7 @@ import {
   Info, Target, Server, Search, Network, MapPin, ArrowRight,
   Activity, X, BarChart3, GitBranch, Users, Tag, Cpu,
   Package, GitCommit, Rocket, ChevronDown, ChevronRight,
-  Shield, Globe, Database, Boxes,
+  Shield, Globe, Database, Boxes, CheckCircle2,
 } from "lucide-react";
 import { apiClient } from "@/lib/api/client";
 import type { NodePoolLookupResult } from "@/lib/api/types";
@@ -107,25 +107,30 @@ function formatDuration(startIso: string, endIso?: string): string {
 // ── ProblemCard (compacto, lado esquerdo) ────────────────────────────────────────
 
 function ProblemCard({
-  problem, selected, onClick,
+  problem, selected, uiBaseUrl, onClick,
 }: {
   problem: DynatraceProblem;
   selected: boolean;
+  uiBaseUrl?: string;
   onClick: () => void;
 }) {
   const bg = SEV_BG[problem.severityLevel] ?? SEV_BG.CUSTOM_ALERT;
   const badgeColor = SEV_BADGE_COLOR[problem.severityLevel] ?? SEV_BADGE_COLOR.CUSTOM_ALERT;
   const entityCount = problem.affectedEntities?.length ?? 0;
   const k8sCount = (problem.k8sWorkloads ?? []).filter(w => w.Workload).length;
+  const isClosed = problem.status === "CLOSED";
 
   return (
     <div
       onClick={onClick}
       className={`rounded-lg border p-3 cursor-pointer transition-all hover:border-primary/60
-        ${bg} ${selected ? "ring-2 ring-primary border-primary/60" : ""}`}
+        ${bg} ${selected ? "ring-2 ring-primary border-primary/60" : ""} ${isClosed ? "opacity-70" : ""}`}
     >
       <div className="flex items-start gap-2">
-        {sevIcon(problem.severityLevel)}
+        {isClosed
+          ? <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0 mt-0.5" />
+          : sevIcon(problem.severityLevel)
+        }
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap mb-1">
             <span className={`inline-flex items-center rounded border px-1.5 py-0 text-[10px] font-mono font-medium ${badgeColor}`}>
@@ -134,6 +139,11 @@ function ProblemCard({
             <span className={`inline-flex items-center rounded border px-1.5 py-0 text-[10px] font-medium ${badgeColor}`}>
               {sevLabel(problem.severityLevel)}
             </span>
+            {isClosed && (
+              <span className="inline-flex items-center gap-0.5 rounded border border-green-500/40 bg-green-500/10 px-1.5 py-0 text-[10px] font-medium text-green-400">
+                <CheckCircle2 className="h-2.5 w-2.5" />Resolvido
+              </span>
+            )}
             <span className="text-[10px] text-muted-foreground ml-auto shrink-0 flex items-center gap-0.5">
               <Clock className="h-2.5 w-2.5" />
               {formatRelativeTime(problem.startTime)}
@@ -157,22 +167,35 @@ function ProblemCard({
         <ArrowRight className={`h-3.5 w-3.5 shrink-0 mt-1 transition-colors ${selected ? "text-primary" : "text-muted-foreground/40"}`} />
       </div>
 
-      {/* Management zones inline */}
-      {(problem.managementZones ?? []).length > 0 && (
-        <div className="flex items-center gap-1 flex-wrap mt-2 pl-6">
-          <MapPin className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
-          {problem.managementZones!.map(z => (
-            <span key={z.id} className="text-[10px] text-muted-foreground border rounded px-1 py-0">{z.name}</span>
-          ))}
-        </div>
-      )}
+      {/* Management zones + link Dynatrace */}
+      <div className="flex items-center gap-1 flex-wrap mt-2 pl-6">
+        {(problem.managementZones ?? []).length > 0 && (
+          <>
+            <MapPin className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
+            {problem.managementZones!.map(z => (
+              <span key={z.id} className="text-[10px] text-muted-foreground border rounded px-1 py-0">{z.name}</span>
+            ))}
+          </>
+        )}
+        {uiBaseUrl && (
+          <a
+            href={`${uiBaseUrl}/ui/apps/dynatrace.davis.problems/problem/${problem.problemId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            className="ml-auto text-[10px] text-blue-400 hover:text-blue-300 hover:underline flex items-center gap-0.5 shrink-0"
+          >
+            <Globe className="h-2.5 w-2.5" />Ver no Dynatrace
+          </a>
+        )}
+      </div>
     </div>
   );
 }
 
 // ── ProblemHeader (reutilizado nas 3 abas) ──────────────────────────────────────
 
-function ProblemHeader({ problem }: { problem: DynatraceProblem }) {
+function ProblemHeader({ problem, uiBaseUrl }: { problem: DynatraceProblem; uiBaseUrl?: string }) {
   const bg = SEV_BG[problem.severityLevel] ?? SEV_BG.CUSTOM_ALERT;
   const badgeColor = SEV_BADGE_COLOR[problem.severityLevel] ?? SEV_BADGE_COLOR.CUSTOM_ALERT;
   const duration = formatDuration(problem.startTime, problem.endTime);
@@ -181,7 +204,12 @@ function ProblemHeader({ problem }: { problem: DynatraceProblem }) {
   return (
     <div className={`rounded-xl border p-4 space-y-3 ${bg}`}>
       <div className="flex items-start gap-3">
-        <div className="mt-0.5">{sevIcon(problem.severityLevel)}</div>
+        <div className="mt-0.5">
+          {problem.status === "CLOSED"
+            ? <CheckCircle2 className="h-5 w-5 text-green-500" />
+            : sevIcon(problem.severityLevel)
+          }
+        </div>
         <div className="flex-1 min-w-0">
           <h2 className="text-base font-semibold leading-snug">{problem.title}</h2>
           <div className="flex items-center gap-1.5 flex-wrap mt-2">
@@ -192,7 +220,10 @@ function ProblemHeader({ problem }: { problem: DynatraceProblem }) {
               {sevLabel(problem.severityLevel)}
             </span>
             <Badge variant="outline" className="text-xs">{impactLabel(problem.impactLevel)}</Badge>
-            <Badge variant="destructive" className="text-xs">ABERTO</Badge>
+            {problem.status === "CLOSED"
+              ? <Badge className="text-xs bg-green-600 hover:bg-green-600 gap-1"><CheckCircle2 className="h-3 w-3" />Resolvido</Badge>
+              : <Badge variant="destructive" className="text-xs">Aberto</Badge>
+            }
           </div>
         </div>
       </div>
@@ -203,6 +234,16 @@ function ProblemHeader({ problem }: { problem: DynatraceProblem }) {
         <span className="flex items-center gap-1">
           <Activity className="h-3 w-3" /> Duração: <strong className="text-foreground">{duration}</strong>
         </span>
+        {uiBaseUrl && (
+          <a
+            href={`${uiBaseUrl}/ui/apps/dynatrace.davis.problems/problem/${problem.problemId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-auto flex items-center gap-1 text-blue-400 hover:text-blue-300 hover:underline"
+          >
+            <Globe className="h-3 w-3" />Abrir no Dynatrace
+          </a>
+        )}
       </div>
     </div>
   );
@@ -653,7 +694,7 @@ function QuickInvestigation({
 
 // ── Aba Detalhes ────────────────────────────────────────────────────────────────
 
-function DetailsTab({ problem }: { problem: DynatraceProblem }) {
+function DetailsTab({ problem, uiBaseUrl }: { problem: DynatraceProblem; uiBaseUrl?: string }) {
   const affectedEntities = problem.affectedEntities ?? [];
   const impactedEntities = (problem.impactedEntities ?? []).filter(
     e => !affectedEntities.some(a => a.entityId.id === e.entityId.id),
@@ -690,7 +731,7 @@ function DetailsTab({ problem }: { problem: DynatraceProblem }) {
 
   return (
     <div className="space-y-5">
-      <ProblemHeader problem={problem} />
+      <ProblemHeader problem={problem} uiBaseUrl={uiBaseUrl} />
 
       {/* ── O que investigar — guia contextual por tipo de problem ── */}
       <QuickInvestigation
@@ -887,18 +928,20 @@ function DetailsTab({ problem }: { problem: DynatraceProblem }) {
 
 function DiagnosticTab({
   problem,
+  uiBaseUrl,
   onAnalyze,
   analyzing,
   analysisResult,
 }: {
   problem: DynatraceProblem;
+  uiBaseUrl?: string;
   onAnalyze: () => void;
   analyzing: boolean;
   analysisResult: string;
 }) {
   return (
     <div className="space-y-4">
-      <ProblemHeader problem={problem} />
+      <ProblemHeader problem={problem} uiBaseUrl={uiBaseUrl} />
 
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -950,12 +993,14 @@ function DiagnosticTab({
 function ProblemDetailPanel({
   problem,
   aiEmail,
+  uiBaseUrl,
   onAnalyze,
   analyzing,
   analysisResult,
 }: {
   problem: DynatraceProblem;
   aiEmail: string;
+  uiBaseUrl?: string;
   onAnalyze: () => void;
   analyzing: boolean;
   analysisResult: string;
@@ -984,7 +1029,7 @@ function ProblemDetailPanel({
       </TabsList>
 
       <TabsContent value="details" className="mt-0">
-        <DetailsTab problem={problem} />
+        <DetailsTab problem={problem} uiBaseUrl={uiBaseUrl} />
       </TabsContent>
 
       <TabsContent value="metrics" className="mt-0 space-y-6">
@@ -1006,6 +1051,7 @@ function ProblemDetailPanel({
       <TabsContent value="ai" className="mt-0">
         <DiagnosticTab
           problem={problem}
+          uiBaseUrl={uiBaseUrl}
           onAnalyze={onAnalyze}
           analyzing={analyzing}
           analysisResult={analysisResult}
@@ -1032,6 +1078,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
   // Filtro por management zone / tag (na própria aba)
   const [filterInput, setFilterInput] = useState("");
   const [activeFilter, setActiveFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("OPEN"); // OPEN | CLOSED | ALL
   const filterInputRef = useRef<HTMLInputElement>(null);
 
   const applyFilter = () => {
@@ -1039,7 +1086,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
     setActiveFilter(f);
     setSelectedProblem(null);
     setAnalysisResult("");
-    queryClient.invalidateQueries({ queryKey: ["dynatrace-problems", aiEmail, f] });
+    queryClient.invalidateQueries({ queryKey: ["dynatrace-problems", aiEmail, f, statusFilter] });
   };
 
   const clearFilter = () => {
@@ -1050,8 +1097,8 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
   };
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
-    queryKey: ["dynatrace-problems", aiEmail, activeFilter],
-    queryFn: () => apiClient.getDynatraceProblems(aiEmail, activeFilter || undefined),
+    queryKey: ["dynatrace-problems", aiEmail, activeFilter, statusFilter],
+    queryFn: () => apiClient.getDynatraceProblems(aiEmail, activeFilter || undefined, statusFilter),
     enabled: !!aiEmail,
     refetchInterval: 60_000,
     staleTime: 30_000,
@@ -1062,7 +1109,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
   const scanRegistryMutation = useMutation({
     mutationFn: () => apiClient.scanNodePoolRegistry(),
     onMutate: () => setScanStatus("scanning"),
-    onSuccess: (result) => {
+    onSuccess: () => {
       setScanStatus("done");
       queryClient.invalidateQueries({ queryKey: ["nodepool-registry-lookup"] });
       setTimeout(() => setScanStatus("idle"), 3000);
@@ -1120,10 +1167,31 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
   }
 
   const problems = data?.problems ?? [];
+  const uiBaseUrl = data?.ui_base_url ?? "";
 
   // ── Painel esquerdo ────────────────────────────────────────────────────────────
   const leftContent = (
     <div className="flex flex-col gap-3 h-full">
+      {/* Seletor de status */}
+      <div className="flex gap-1">
+        {(["OPEN", "CLOSED", "ALL"] as const).map(s => (
+          <Button
+            key={s}
+            size="sm"
+            variant={statusFilter === s ? "default" : "outline"}
+            className="h-7 text-xs px-2.5 flex-1"
+            onClick={() => {
+              setStatusFilter(s);
+              setSelectedProblem(null);
+              setAnalysisResult("");
+              queryClient.invalidateQueries({ queryKey: ["dynatrace-problems", aiEmail, activeFilter, s] });
+            }}
+          >
+            {s === "OPEN" ? "Abertos" : s === "CLOSED" ? "Fechados" : "Todos"}
+          </Button>
+        ))}
+      </div>
+
       {/* Filtro por tag/management zone */}
       <div className="flex gap-1.5">
         <div className="relative flex-1">
@@ -1179,6 +1247,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
               key={p.problemId}
               problem={p}
               selected={selectedProblem?.problemId === p.problemId}
+              uiBaseUrl={uiBaseUrl}
               onClick={() => {
                 setSelectedProblem(p);
                 setAnalysisResult("");
@@ -1201,6 +1270,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
       <ProblemDetailPanel
         problem={selectedProblem}
         aiEmail={aiEmail}
+        uiBaseUrl={uiBaseUrl}
         analyzing={analyzingId === selectedProblem.problemId}
         analysisResult={analysisResult}
         onAnalyze={() => analyzeMutation.mutate(selectedProblem)}
