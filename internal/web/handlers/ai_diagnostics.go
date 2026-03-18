@@ -302,18 +302,40 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 		return nil, fmt.Errorf("falha ao inicializar provider '%s': %v", tokens.PreferredProvider, err)
 	}
 
-	// Vertex AI com token OAuth pessoal: adicionar fallback ao servidor caso a conta
-	// não tenha a role aiplatform.endpoints.predict no projeto GCP.
-	// O fallback usa o provider padrão do servidor (AI Studio ou Vertex do servidor).
+	// Vertex AI com token OAuth pessoal: adicionar fallback caso a conta não tenha
+	// a role aiplatform.endpoints.predict no projeto GCP.
+	// Prioridade: 1) provider padrão do servidor  2) ADC da máquina (gcloud ou arquivo
+	// gravado automaticamente pelo Device Auth Grant)
 	if config.GeminiAuthMode == "vertex" && config.GeminiRefreshToken != "" &&
-		config.GeminiServiceAccountJSON == "" && h.analyzer != nil {
-		serverProvider := h.analyzer.GetProvider()
-		if serverProvider != nil {
-			provider = ai.NewFallbackProvider(provider, serverProvider)
+		config.GeminiServiceAccountJSON == "" {
+		var fallbackProvider ai.Provider
+		if h.analyzer != nil && h.analyzer.GetProvider() != nil {
+			fallbackProvider = h.analyzer.GetProvider()
 			log.Info().
 				Str("ai_email", aiEmail).
 				Str("project", config.GeminiVertexProject).
-				Msg("Vertex AI: FallbackProvider ativo (token OAuth → fallback servidor em caso de 403)")
+				Msg("Vertex AI: FallbackProvider → provider padrão do servidor")
+		} else {
+			// Servidor sem provider padrão: tentar ADC da máquina
+			// (arquivo gravado automaticamente após Device Auth Grant)
+			adcConfig := &ai.Config{
+				Provider:             "gemini",
+				GeminiAuthMode:       "vertex",
+				GeminiVertexProject:  config.GeminiVertexProject,
+				GeminiVertexLocation: config.GeminiVertexLocation,
+				GeminiModel:          config.GeminiModel,
+				Timeout:              config.Timeout,
+			}
+			if adcProvider, adcErr := ai.NewProvider(adcConfig); adcErr == nil {
+				fallbackProvider = adcProvider
+				log.Info().
+					Str("ai_email", aiEmail).
+					Str("project", config.GeminiVertexProject).
+					Msg("Vertex AI: FallbackProvider → ADC da máquina")
+			}
+		}
+		if fallbackProvider != nil {
+			provider = ai.NewFallbackProvider(provider, fallbackProvider)
 		}
 	}
 
