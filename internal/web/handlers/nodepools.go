@@ -62,9 +62,14 @@ func (h *NodePoolHandler) Abort(c *gin.Context) {
 	clusterNameForAzure := strings.TrimSuffix(clusterConfig.ClusterName, "-admin")
 
 	// Configurar subscription
-	if out, err := exec.Command("az", "account", "set", "--subscription", clusterConfig.Subscription).CombinedOutput(); err != nil {
-		c.JSON(500, gin.H{"success": false, "message": fmt.Sprintf("Erro ao configurar subscription: %s", string(out))})
-		return
+	{
+		abortSubCtx, abortSubCancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+		out, err := exec.CommandContext(abortSubCtx, "az", "account", "set", "--subscription", clusterConfig.Subscription).CombinedOutput()
+		abortSubCancel()
+		if err != nil {
+			c.JSON(500, gin.H{"success": false, "message": fmt.Sprintf("Erro ao configurar subscription: %s", string(out))})
+			return
+		}
 	}
 
 	// Chamar az aks nodepool operation-abort — cancela a operação ARM em andamento
@@ -230,7 +235,7 @@ func (h *NodePoolHandler) List(c *gin.Context) {
 	clusterNameForAzure := strings.TrimSuffix(clusterConfig.ClusterName, "-admin")
 
 	// Listar node pools via Azure CLI
-	nodePools, err := loadNodePoolsFromAzure(clusterNameForAzure, clusterConfig.ResourceGroup, clusterConfig.Subscription)
+	nodePools, err := loadNodePoolsFromAzure(c.Request.Context(), clusterNameForAzure, clusterConfig.ResourceGroup, clusterConfig.Subscription)
 	if err != nil {
 		c.JSON(500, gin.H{
 			"success": false,
@@ -305,16 +310,21 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 	}
 
 	// Configurar subscription
-	cmd := exec.Command("az", "account", "set", "--subscription", clusterConfig.Subscription)
-	if err := cmd.Run(); err != nil {
-		c.JSON(500, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "AZURE_SUBSCRIPTION_ERROR",
-				"message": fmt.Sprintf("Failed to set subscription: %v", err),
-			},
-		})
-		return
+	{
+		updateSubCtx, updateSubCancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+		cmd := exec.CommandContext(updateSubCtx, "az", "account", "set", "--subscription", clusterConfig.Subscription)
+		err := cmd.Run()
+		updateSubCancel()
+		if err != nil {
+			c.JSON(500, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "AZURE_SUBSCRIPTION_ERROR",
+					"message": fmt.Sprintf("Failed to set subscription: %v", err),
+				},
+			})
+			return
+		}
 	}
 
 	// Normalizar nome do cluster
@@ -635,7 +645,7 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 	}
 
 	// Recarregar node pools para retornar o estado atualizado
-	nodePools, err := loadNodePoolsFromAzure(clusterNameForAzure, clusterConfig.ResourceGroup, clusterConfig.Subscription)
+	nodePools, err := loadNodePoolsFromAzure(c.Request.Context(), clusterNameForAzure, clusterConfig.ResourceGroup, clusterConfig.Subscription)
 	if err != nil {
 		if reporter != nil {
 			reporter.SendError("azure", fmt.Sprintf("Failed to reload node pools: %v", err))
@@ -764,9 +774,11 @@ func loadClusterConfig() ([]models.ClusterConfig, error) {
 }
 
 // loadNodePoolsFromAzure carrega node pools via Azure CLI
-func loadNodePoolsFromAzure(clusterName, resourceGroup, subscription string) ([]models.NodePool, error) {
+func loadNodePoolsFromAzure(ctx context.Context, clusterName, resourceGroup, subscription string) ([]models.NodePool, error) {
 	// Executar comando Azure CLI
-	cmd := exec.Command("az", "aks", "nodepool", "list",
+	listCtx, listCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer listCancel()
+	cmd := exec.CommandContext(listCtx, "az", "aks", "nodepool", "list",
 		"--resource-group", resourceGroup,
 		"--cluster-name", clusterName,
 		"--output", "json")
@@ -797,15 +809,15 @@ func loadNodePoolsFromAzure(clusterName, resourceGroup, subscription string) ([]
 	}
 
 	// Buscar tags do cluster (uma única vez para todos os node pools)
-	clusterTags, err := getClusterTags(clusterName, resourceGroup)
+	clusterTags, err := getClusterTags(ctx, clusterName, resourceGroup)
 	if err != nil {
 		log.Warn().Err(err).Msgf("Failed to fetch cluster tags for %s, continuing without tags", clusterName)
 		clusterTags = make(map[string]string) // Mapa vazio se falhar
 	}
 
 	// Buscar nome e UUID real da subscription (uma única vez para todos os node pools)
-	subscriptionName := getSubscriptionName(subscription)
-	subscriptionUUID := getSubscriptionUUID(subscription)
+	subscriptionName := getSubscriptionName(ctx, subscription)
+	subscriptionUUID := getSubscriptionUUID(ctx, subscription)
 
 	// Converter para nosso modelo
 	var nodePools []models.NodePool
@@ -843,8 +855,10 @@ func loadNodePoolsFromAzure(clusterName, resourceGroup, subscription string) ([]
 }
 
 // getClusterTags busca as tags do cluster AKS
-func getClusterTags(clusterName, resourceGroup string) (map[string]string, error) {
-	cmd := exec.Command("az", "aks", "show",
+func getClusterTags(ctx context.Context, clusterName, resourceGroup string) (map[string]string, error) {
+	tagCtx, tagCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer tagCancel()
+	cmd := exec.CommandContext(tagCtx, "az", "aks", "show",
 		"--resource-group", resourceGroup,
 		"--name", clusterName,
 		"--query", "tags",
@@ -873,8 +887,10 @@ func getClusterTags(clusterName, resourceGroup string) (map[string]string, error
 }
 
 // getSubscriptionName busca o nome da subscription via Azure CLI
-func getSubscriptionName(subscriptionID string) string {
-	cmd := exec.Command("az", "account", "show",
+func getSubscriptionName(ctx context.Context, subscriptionID string) string {
+	nameCtx, nameCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer nameCancel()
+	cmd := exec.CommandContext(nameCtx, "az", "account", "show",
 		"--subscription", subscriptionID,
 		"--query", "name",
 		"--output", "tsv")
@@ -890,8 +906,10 @@ func getSubscriptionName(subscriptionID string) string {
 }
 
 // getSubscriptionUUID busca o UUID real da subscription via Azure CLI
-func getSubscriptionUUID(subscription string) string {
-	cmd := exec.Command("az", "account", "show",
+func getSubscriptionUUID(ctx context.Context, subscription string) string {
+	uuidCtx, uuidCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer uuidCancel()
+	cmd := exec.CommandContext(uuidCtx, "az", "account", "show",
 		"--subscription", subscription,
 		"--query", "id",
 		"--output", "tsv")
@@ -1437,10 +1455,15 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 
 // applyNodePoolChanges aplica mudanças em um node pool via Azure CLI
 func (h *NodePoolHandler) applyNodePoolChanges(poolName, resourceGroup, subscription string, changes *models.NodePoolChanges) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
 	// Configurar subscription (se necessário)
 	if subscription != "" {
-		cmd := exec.Command("az", "account", "set", "--subscription", subscription)
-		if err := cmd.Run(); err != nil {
+		subCtx, subCancel := context.WithTimeout(ctx, 30*time.Second)
+		err := exec.CommandContext(subCtx, "az", "account", "set", "--subscription", subscription).Run()
+		subCancel()
+		if err != nil {
 			return fmt.Errorf("failed to set subscription: %w", err)
 		}
 	}
@@ -1481,8 +1504,7 @@ func (h *NodePoolHandler) applyNodePoolChanges(poolName, resourceGroup, subscrip
 
 	// Executar comandos sequencialmente
 	for _, cmd := range commands {
-		execCmd := exec.Command(cmd[0], cmd[1:]...)
-		output, err := execCmd.CombinedOutput()
+		output, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("command failed: %s\nOutput: %s", err, string(output))
 		}
