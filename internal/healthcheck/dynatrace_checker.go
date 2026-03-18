@@ -17,8 +17,29 @@ func NewDynatraceChecker() *DynatraceChecker {
 	return &DynatraceChecker{}
 }
 
+// normalizeClusterName remove o sufixo "-admin" e normaliza o nome do cluster para comparação.
+// O kubeconfig AKS usa "<cluster>-admin" mas o Dynatrace DTLabels.HostGroup não tem esse sufixo.
+func normalizeClusterName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.TrimSuffix(name, "-admin")
+	return name
+}
+
+// matchesCluster verifica se uma entidade enriquecida pertence ao cluster alvo.
+// Compara K8sCluster e DTLabels.HostGroup, ambos normalizados (sem "-admin").
+func matchesCluster(clusterNorm string, e dtclient.EntityStub) bool {
+	if strings.EqualFold(normalizeClusterName(e.K8sCluster), clusterNorm) {
+		return true
+	}
+	if e.Labels != nil && strings.EqualFold(normalizeClusterName(e.Labels.HostGroup), clusterNorm) {
+		return true
+	}
+	return false
+}
+
 // CheckAll busca problems OPEN no Dynatrace filtrados pelo cluster e pela tag do analista.
-// tagFilter (opcional): filtra apenas problems com essa tag — ex: "SRE-LOGISTICA".
+// tagFilter (opcional): filtra por management zone ou tag — ex: "SRE-LOGISTICA".
+// O filtro de cluster é sempre aplicado (mesmo sem tagFilter) usando normalizeClusterName.
 func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilter, cluster string, timeoutSec int) []DynatraceHealth {
 	results := []DynatraceHealth{}
 
@@ -35,6 +56,8 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 		return results
 	}
 
+	clusterNorm := normalizeClusterName(cluster)
+
 	toSlice := func(m map[string]struct{}) []string {
 		s := make([]string, 0, len(m))
 		for k := range m {
@@ -49,15 +72,11 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 		// Enriquecer entidades com tags K8s + DTLabels (squad, journey, version, GitHub, etc.)
 		enriched := client.EnrichEntitiesWithK8s(checkCtx, p.AffectedEntities)
 
-		// Filtrar por cluster — aceita K8sCluster ou DTLabels.HostGroup (AKS: "akspriv-busca-prd")
-		if cluster != "" {
+		// Filtrar por cluster — normaliza ambos os lados para remover sufixo "-admin"
+		if clusterNorm != "" {
 			hasThisCluster := false
 			for _, e := range enriched {
-				if strings.EqualFold(e.K8sCluster, cluster) {
-					hasThisCluster = true
-					break
-				}
-				if e.Labels != nil && strings.Contains(strings.ToLower(e.Labels.HostGroup), strings.ToLower(cluster)) {
+				if matchesCluster(clusterNorm, e) {
 					hasThisCluster = true
 					break
 				}

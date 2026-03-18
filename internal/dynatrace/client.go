@@ -123,40 +123,67 @@ type ProblemsResult struct {
 	TotalCount int // total real no Dynatrace (pode ser maior que len(Problems))
 }
 
-// GetOpenProblems retorna todos os problems com status OPEN.
+// GetOpenProblems retorna todos os problems com status OPEN, com paginação automática.
 // filter (opcional): filtra por management zone — ex: "SRE-LOGISTICA".
 // Prefixo "tag:" força filtro por entity tag: "tag:minha-tag".
+// Limite de segurança: 200 problems por chamada.
 func (c *Client) GetOpenProblems(ctx context.Context, filter string) (*ProblemsResult, error) {
 	selector := `status("OPEN")`
 	if filter != "" {
 		if strings.HasPrefix(filter, "tag:") {
 			selector += fmt.Sprintf(`,tag("%s")`, strings.TrimPrefix(filter, "tag:"))
 		} else {
-			// Default: management zone
 			selector += fmt.Sprintf(`,managementZones("%s")`, filter)
 		}
 	}
-	params := url.Values{
-		"problemSelector": {selector},
-		"fields":          {"+affectedEntities,+impactedEntities,+rootCauseEntity,+managementZones"},
-		"pageSize":        {"10"}, // máximo permitido com fields enriquecidos
+
+	const maxProblems = 200
+	const pageSize = 50
+
+	allProblems := make([]Problem, 0, pageSize)
+	var totalCount int
+	nextPageKey := ""
+
+	for {
+		var result struct {
+			Problems    []problemRaw `json:"problems"`
+			TotalCount  int          `json:"totalCount"`
+			NextPageKey string       `json:"nextPageKey,omitempty"`
+		}
+
+		var params url.Values
+		if nextPageKey == "" {
+			// Primeira página: parâmetros completos
+			params = url.Values{
+				"problemSelector": {selector},
+				"fields":          {"+affectedEntities,+impactedEntities,+rootCauseEntity,+managementZones"},
+				"pageSize":        {fmt.Sprintf("%d", pageSize)},
+			}
+		} else {
+			// Páginas seguintes: apenas nextPageKey (os demais parâmetros são codificados nele)
+			params = url.Values{"nextPageKey": {nextPageKey}}
+		}
+
+		if err := c.get(ctx, "problems", params, &result); err != nil {
+			if len(allProblems) > 0 {
+				// Retornar o que já coletamos em caso de erro numa página intermediária
+				break
+			}
+			return nil, err
+		}
+
+		totalCount = result.TotalCount
+		for _, raw := range result.Problems {
+			allProblems = append(allProblems, raw.toModel())
+		}
+
+		if result.NextPageKey == "" || len(allProblems) >= maxProblems {
+			break
+		}
+		nextPageKey = result.NextPageKey
 	}
 
-	var result struct {
-		Problems    []problemRaw `json:"problems"`
-		TotalCount  int          `json:"totalCount"`
-		NextPageKey string       `json:"nextPageKey,omitempty"`
-	}
-
-	if err := c.get(ctx, "problems", params, &result); err != nil {
-		return nil, err
-	}
-
-	problems := make([]Problem, 0, len(result.Problems))
-	for _, raw := range result.Problems {
-		problems = append(problems, raw.toModel())
-	}
-	return &ProblemsResult{Problems: problems, TotalCount: result.TotalCount}, nil
+	return &ProblemsResult{Problems: allProblems, TotalCount: totalCount}, nil
 }
 
 // GetProblem retorna detalhes completos de um problem pelo ID.
