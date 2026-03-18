@@ -20,10 +20,10 @@ type ConfigCrossRefHealth struct {
 	Status       HealthStatus `json:"status"`
 
 	// Cross-reference
-	IsOrphan       bool     `json:"is_orphan"`        // Não referenciado por nenhum pod/deployment
-	ReferencedBy   []string `json:"referenced_by"`    // Lista de recursos que referenciam
-	MissingRefs    []string `json:"missing_refs"`     // Referências que não existem
-	UnusedKeys     []string `json:"unused_keys"`      // Chaves não utilizadas (opcional)
+	IsOrphan     bool     `json:"is_orphan"`     // Não referenciado por nenhum pod/deployment
+	ReferencedBy []string `json:"referenced_by"` // Lista de recursos que referenciam
+	MissingRefs  []string `json:"missing_refs"`  // Referências que não existem
+	UnusedKeys   []string `json:"unused_keys"`   // Chaves não utilizadas (opcional)
 
 	// Metadados
 	KeyCount    int       `json:"key_count"`

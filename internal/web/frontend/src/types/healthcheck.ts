@@ -83,8 +83,12 @@ export interface HealthCheckRequest {
   check_services: boolean;
   check_configs: boolean;
   check_events: boolean; // Verificar eventos K8s (FailedScheduling, etc.)
-  check_hpas: boolean;   // Verificar HPAs (min=max, métricas, scaling)
-  check_pvcs: boolean;   // Verificar PVCs (status, StorageClass, access modes)
+  check_hpas: boolean;       // Verificar HPAs (min=max, métricas, scaling)
+  check_pvcs: boolean;       // Verificar PVCs (status, StorageClass, access modes)
+  check_dynatrace?: boolean; // Verificar problems OPEN no Dynatrace
+
+  // Email do analista (para buscar credenciais Dynatrace)
+  ai_email?: string;
 
   // Timeout geral (segundos) - usado como fallback
   timeout: number;
@@ -117,9 +121,10 @@ export interface HealthCheckResult {
   deployment_results: DeploymentHealth[];
   service_results: ServiceHealth[];
   config_results: ConfigHealth[];
-  event_results: EventHealth[]; // Eventos K8s críticos
-  hpa_results: HPAHealth[];     // HPAs com problemas de configuração
-  pvc_results: PVCHealth[];     // PVCs com problemas de configuração
+  event_results: EventHealth[];          // Eventos K8s críticos
+  hpa_results: HPAHealth[];              // HPAs com problemas de configuração
+  pvc_results: PVCHealth[];              // PVCs com problemas de configuração
+  dynatrace_results?: DynatraceHealth[]; // Problems Dynatrace correlacionados
 
   // Resumo
   total_checks: number;
@@ -456,4 +461,183 @@ export interface HealthCheckErrorResponse {
     message: string;
     details?: string;
   };
+}
+
+// Tags ricas do OneAgent — DevOps, versão, squad, GitHub repo
+export interface DTLabels {
+  // app.kubernetes.io/*
+  appName?: string;
+  appVersion?: string;
+  appEnvironment?: string; // prd | hlg | dev
+  appInstance?: string;
+  releaseName?: string;
+  stage?: string;          // stable | canary
+  deployedBy?: string;     // spinnaker-helm
+  isCanary?: string;       // "true" | "false"
+  // K8s infra
+  namespace?: string;
+  hostGroup?: string;      // dt.host_group.id → AKS cluster (ex: akspriv-busca-prd)
+  // DevOps / rastreabilidade
+  githubRepoId?: string;
+  componentName?: string;
+  componentSquad?: string;
+  componentJourney?: string;
+  componentTribe?: string;
+  helmChart?: string;
+}
+
+// Problem Dynatrace retornado pela API /api/v1/dynatrace/problems (ProblemSummary — camelCase)
+export interface DynatraceEntityStub {
+  entityId: { id: string; type: string };
+  displayName?: string; // da Entity API
+  name?: string;        // da Problems API (campo "name" nos stubs)
+  k8sCluster?: string;
+  k8sNamespace?: string;
+  k8sWorkload?: string;
+  labels?: DTLabels;    // tags ricas do OneAgent (squad, journey, versão, GitHub, etc.)
+}
+
+export interface DynatraceProblem {
+  problemId: string;
+  displayId: string;
+  title: string;
+  status: string;           // "OPEN" | "CLOSED"
+  severityLevel: string;    // "AVAILABILITY" | "ERROR" | "PERFORMANCE" | "RESOURCE_CONTENTION" | "CUSTOM_ALERT"
+  impactLevel: string;      // "APPLICATION" | "ENVIRONMENT" | "INFRASTRUCTURE" | "SERVICE"
+  startTime: string;        // ISO timestamp
+  endTime?: string;
+  affectedEntities: DynatraceEntityStub[];
+  impactedEntities?: DynatraceEntityStub[];
+  rootCauseEntity?: DynatraceEntityStub;
+  managementZones?: { id: string; name: string }[];
+  k8sWorkloads?: {
+    Cluster: string;
+    Namespace: string;
+    Workload: string;
+    PodName?: string;
+    AppName?: string;
+    AppVersion?: string;
+    GitHubRepoID?: string;
+    Environment?: string;
+  }[];
+}
+
+// ─── Métricas de performance por entidade ─────────────────────────────────────
+
+export interface DTMetricPoint {
+  t: number; // epoch ms
+  v: number;
+}
+
+export interface DTMetricSeries {
+  key: string;
+  label: string;
+  unit: string;
+  points: DTMetricPoint[];
+}
+
+export interface DTEntityMetrics {
+  entityId: string;
+  entityName: string;
+  entityType: string;
+  isRootCause: boolean;
+  metrics: DTMetricSeries[];
+}
+
+export interface DTProblemMetrics {
+  problemId: string;
+  title: string;
+  timeFrom: string;
+  timeTo: string;
+  problemStart: string;
+  entities: DTEntityMetrics[];
+}
+
+// ─── Contexto rico de um problem (evidências, topologia, traces, eventos) ──────
+
+export interface DTEvidenceItem {
+  evidenceType: string;   // "EVENT" | "METRIC" | "TRANSACTIONAL" | "LOG" | "MAINTENANCE_WINDOW"
+  displayName: string;
+  entityId: string;
+  entityName: string;
+  entityType: string;
+  rootCause: boolean;
+  startTime: string; // ISO
+}
+
+export interface DTTopoRelation {
+  entityId: string;
+  entityName: string;
+  entityType: string;
+  direction: string; // "outgoing" | "incoming"
+}
+
+export interface DTTraceEntry {
+  traceId: string;
+  startTime: string; // ISO
+  durationMs: number;
+  name: string;
+  httpMethod?: string;
+  httpStatus?: number;
+  hasError: boolean;
+}
+
+export interface DTContextEventEntry {
+  eventId: string;
+  eventType: string;
+  title: string;
+  startTime: string; // ISO
+  entityId: string;
+  entityName: string;
+}
+
+export interface DTProblemContext {
+  problemId: string;
+  timeFrom: string;
+  timeTo: string;
+  problemStart: string;
+  evidence: DTEvidenceItem[];
+  events: DTContextEventEntry[];
+  topology: DTTopoRelation[];
+  traces: DTTraceEntry[];
+  tracesError?: string; // erro ao buscar traces (403 = falta escopo DataExport no token)
+}
+
+export interface DynatraceHistoryRecord {
+  id: string;
+  resource_name: string;   // "P-XXXXX — título do problem"
+  namespace: string;       // management zones (csv)
+  analysis: string;
+  analyzed_at: string;
+  user_email: string;
+  resource_metadata?: string; // JSON: { display_id, severity, impact_level, management_zones, start_time }
+}
+
+// Problem Dynatrace correlacionado com recursos K8s do cluster
+export interface DynatraceHealth {
+  problem_id: string;
+  display_id: string;
+  title: string;
+  dt_severity: string;      // "AVAILABILITY" | "ERROR" | "PERFORMANCE" | "RESOURCE_CONTENTION" | "CUSTOM_ALERT"
+  impact_level: string;     // "APPLICATION" | "ENVIRONMENT" | "INFRASTRUCTURE" | "SERVICE"
+  status: HealthStatus;
+  severity: Severity;
+  start_time: string;       // ISO timestamp
+  k8s_namespaces?: string[];
+  k8s_workloads?: string[]; // "namespace/workload"
+  affected_entities?: string[];
+  message: string;
+  suggestions: string[];
+  checked_at: string;       // ISO timestamp
+  // Campos enriquecidos via DTLabels (OneAgent tags)
+  app_versions?: Record<string, string>; // appName → version
+  github_repos?: string[];               // IDs dos repos afetados
+  squads?: string[];                     // times donos das apps
+  journeys?: string[];                   // jornadas/domínios
+  environments?: string[];               // prd/hlg/dev
+  // Campos enriquecidos via Davis AI context (Top 5 problems por severidade)
+  evidence?: string[];                   // Evidências Davis AI, prefixadas com "[Root Cause]" quando root cause
+  recent_events?: string[];              // Top 3 eventos recentes: "TIPO: título"
+  metrics_summary?: Record<string, number>; // ex: { error_rate: 12.5, response_p90_ms: 2300 }
+  context_fetched?: boolean;             // true se GetProblemContext foi chamado com sucesso
 }

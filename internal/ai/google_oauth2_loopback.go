@@ -191,6 +191,38 @@ func exchangeAuthCode(ctx context.Context, code, redirectURI, codeVerifier strin
 	return &result, nil
 }
 
+// StartOAuth2AppCallback gera a URL de autenticação OAuth2 usando o próprio app como callback.
+// Não abre servidor local — o callback é tratado pelo endpoint /oauth/google/callback do app.
+// Retorna authURL e o pkceVerifier (que deve ser guardado para trocar o code depois).
+func StartOAuth2AppCallback(redirectURI, sessionID string) (authURL, pkceVerifier string, err error) {
+	verifier, challenge, err := generatePKCE()
+	if err != nil {
+		return "", "", fmt.Errorf("erro ao gerar PKCE: %w", err)
+	}
+
+	params := url.Values{
+		"client_id":             {loopbackClientID},
+		"redirect_uri":          {redirectURI},
+		"response_type":         {"code"},
+		"scope":                 {googleOAuth2Scope},
+		"state":                 {sessionID},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"access_type":           {"offline"},
+		"prompt":                {"consent"},
+	}
+	return googleAuthURL + "?" + params.Encode(), verifier, nil
+}
+
+// ExchangeAuthCode troca o authorization code por tokens. Exportado para uso nos handlers.
+func ExchangeAuthCode(ctx context.Context, code, redirectURI, pkceVerifier string) (accessToken, refreshToken string, err error) {
+	result, err := exchangeAuthCode(ctx, code, redirectURI, pkceVerifier)
+	if err != nil {
+		return "", "", err
+	}
+	return result.AccessToken, result.RefreshToken, nil
+}
+
 func generatePKCE() (verifier, challenge string, err error) {
 	b := make([]byte, 32)
 	if _, err = rand.Read(b); err != nil {

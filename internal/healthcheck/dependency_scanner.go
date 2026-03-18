@@ -92,10 +92,10 @@ type resourcePrefixRule struct {
 }
 
 type DependencyScanner struct {
-	kubeManager     *config.KubeConfigManager
-	patterns        []DependencyPattern
+	kubeManager      *config.KubeConfigManager
+	patterns         []DependencyPattern
 	resourcePrefixes []resourcePrefixRule
-	mu              sync.RWMutex
+	mu               sync.RWMutex
 
 	// Cache de resultados
 	cache     map[string]*DependencyScanResult

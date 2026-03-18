@@ -365,15 +365,15 @@ func (s *HealthCheckStorage) GetStats(ctx context.Context, cluster, daysStr stri
 	}
 
 	var stats struct {
-		TotalRuns      int
-		TotalChecks    int
-		TotalHealthy   int
-		TotalWarnings  int
-		TotalCritical  int
-		AvgDurationMs  float64
-		HealthyRuns    int
-		WarningRuns    int
-		CriticalRuns   int
+		TotalRuns     int
+		TotalChecks   int
+		TotalHealthy  int
+		TotalWarnings int
+		TotalCritical int
+		AvgDurationMs float64
+		HealthyRuns   int
+		WarningRuns   int
+		CriticalRuns  int
 	}
 
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(
@@ -393,17 +393,17 @@ func (s *HealthCheckStorage) GetStats(ctx context.Context, cluster, daysStr stri
 	}
 
 	return map[string]interface{}{
-		"total_runs":       stats.TotalRuns,
-		"total_checks":     stats.TotalChecks,
-		"total_healthy":    stats.TotalHealthy,
-		"total_warnings":   stats.TotalWarnings,
-		"total_critical":   stats.TotalCritical,
-		"avg_duration_ms":  stats.AvgDurationMs,
-		"healthy_runs":     stats.HealthyRuns,
-		"warning_runs":     stats.WarningRuns,
-		"critical_runs":    stats.CriticalRuns,
-		"days":             days,
-		"since":            since,
+		"total_runs":      stats.TotalRuns,
+		"total_checks":    stats.TotalChecks,
+		"total_healthy":   stats.TotalHealthy,
+		"total_warnings":  stats.TotalWarnings,
+		"total_critical":  stats.TotalCritical,
+		"avg_duration_ms": stats.AvgDurationMs,
+		"healthy_runs":    stats.HealthyRuns,
+		"warning_runs":    stats.WarningRuns,
+		"critical_runs":   stats.CriticalRuns,
+		"days":            days,
+		"since":           since,
 	}, nil
 }
 
@@ -518,17 +518,17 @@ func (s *HealthCheckStorage) Close() error {
 
 // ClusterMetrics representa métricas agregadas de um cluster
 type ClusterMetrics struct {
-	Cluster        string    `json:"cluster"`
-	LastStatus     string    `json:"last_status"`
-	LastRunAt      time.Time `json:"last_run_at"`
-	TotalRuns      int       `json:"total_runs"`
-	HealthyRuns    int       `json:"healthy_runs"`
-	WarningRuns    int       `json:"warning_runs"`
-	CriticalRuns   int       `json:"critical_runs"`
-	AvgDurationMs  float64   `json:"avg_duration_ms"`
-	TotalHealthy   int       `json:"total_healthy"`
-	TotalWarnings  int       `json:"total_warnings"`
-	TotalCritical  int       `json:"total_critical"`
+	Cluster       string    `json:"cluster"`
+	LastStatus    string    `json:"last_status"`
+	LastRunAt     time.Time `json:"last_run_at"`
+	TotalRuns     int       `json:"total_runs"`
+	HealthyRuns   int       `json:"healthy_runs"`
+	WarningRuns   int       `json:"warning_runs"`
+	CriticalRuns  int       `json:"critical_runs"`
+	AvgDurationMs float64   `json:"avg_duration_ms"`
+	TotalHealthy  int       `json:"total_healthy"`
+	TotalWarnings int       `json:"total_warnings"`
+	TotalCritical int       `json:"total_critical"`
 }
 
 // DurationDataPoint representa um ponto de dados de duração ao longo do tempo
@@ -558,11 +558,11 @@ type DashboardMetrics struct {
 
 	// Resumo geral
 	Summary struct {
-		TotalClusters   int     `json:"total_clusters"`
-		TotalRuns       int     `json:"total_runs"`
-		HealthRate      float64 `json:"health_rate"`
-		AvgDurationMs   float64 `json:"avg_duration_ms"`
-		LastRunAt       *time.Time `json:"last_run_at"`
+		TotalClusters int        `json:"total_clusters"`
+		TotalRuns     int        `json:"total_runs"`
+		HealthRate    float64    `json:"health_rate"`
+		AvgDurationMs float64    `json:"avg_duration_ms"`
+		LastRunAt     *time.Time `json:"last_run_at"`
 	} `json:"summary"`
 }
 

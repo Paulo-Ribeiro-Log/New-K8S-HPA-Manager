@@ -14,13 +14,13 @@ import (
 
 // EventHealth representa um evento Kubernetes relevante para health checking
 type EventHealth struct {
-	Name           string   `json:"name"`
-	Namespace      string   `json:"namespace"`
-	Reason         string   `json:"reason"`          // FailedScheduling, BackOff, etc.
-	Message        string   `json:"message"`         // Mensagem completa do evento
-	Type           string   `json:"type"`            // Warning, Normal
-	Severity       Severity `json:"severity"`        // critical, high, medium, low, info
-	Count          int32    `json:"count"`           // Número de ocorrências
+	Name           string    `json:"name"`
+	Namespace      string    `json:"namespace"`
+	Reason         string    `json:"reason"`          // FailedScheduling, BackOff, etc.
+	Message        string    `json:"message"`         // Mensagem completa do evento
+	Type           string    `json:"type"`            // Warning, Normal
+	Severity       Severity  `json:"severity"`        // critical, high, medium, low, info
+	Count          int32     `json:"count"`           // Número de ocorrências
 	FirstTimestamp time.Time `json:"first_timestamp"` // Primeira ocorrência
 	LastTimestamp  time.Time `json:"last_timestamp"`  // Última ocorrência
 	// Recurso relacionado
@@ -36,49 +36,49 @@ var CriticalEventReasons = map[string]bool{
 	// Scheduling
 	"FailedScheduling": true,
 	// Container/Pod
-	"BackOff":           true,
-	"CrashLoopBackOff":  true,
-	"Failed":            true,
-	"FailedCreate":      true,
-	"FailedKillPod":     true,
+	"BackOff":          true,
+	"CrashLoopBackOff": true,
+	"Failed":           true,
+	"FailedCreate":     true,
+	"FailedKillPod":    true,
 	// Image
-	"ErrImagePull":      true,
-	"ImagePullBackOff":  true,
-	"InvalidImageName":  true,
+	"ErrImagePull":     true,
+	"ImagePullBackOff": true,
+	"InvalidImageName": true,
 	// Volume/Mount
-	"FailedMount":       true,
+	"FailedMount":        true,
 	"FailedAttachVolume": true,
-	"FailedMapVolume":   true,
+	"FailedMapVolume":    true,
 	// Node
-	"NodeNotReady":      true,
+	"NodeNotReady":       true,
 	"NodeNotSchedulable": true,
-	"Rebooted":          true,
-	"HostPortConflict":  true,
+	"Rebooted":           true,
+	"HostPortConflict":   true,
 	// Resource
 	"FailedCreatePodSandBox": true,
-	"InsufficientCPU":    true,
-	"InsufficientMemory": true,
-	"OutOfDisk":          true,
-	"OutOfMemory":        true,
-	"OOMKilling":         true,
+	"InsufficientCPU":        true,
+	"InsufficientMemory":     true,
+	"OutOfDisk":              true,
+	"OutOfMemory":            true,
+	"OOMKilling":             true,
 	// Network
-	"NetworkNotReady":    true,
+	"NetworkNotReady":               true,
 	"FailedCreatePodNetworkSandbox": true,
 }
 
 // WarningEventReasons lista de reasons que são considerados warnings
 var WarningEventReasons = map[string]bool{
 	// Probes
-	"Unhealthy":         true,
-	"ProbeWarning":      true,
+	"Unhealthy":    true,
+	"ProbeWarning": true,
 	// Scaling
-	"FailedGetScale":    true,
-	"FailedRescale":     true,
+	"FailedGetScale": true,
+	"FailedRescale":  true,
 	// Updates
-	"FailedUpdate":      true,
+	"FailedUpdate": true,
 	// Eviction
-	"Evicted":           true,
-	"Preempted":         true,
+	"Evicted":   true,
+	"Preempted": true,
 	// Storage
 	"VolumeResizeFailed": true,
 	"ProvisioningFailed": true,
