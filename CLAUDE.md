@@ -6,9 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual oficial: **v1.3.26** (GitHub release). Branch `integração-dyna` está à frente com Node Pool Registry e Device Auth Grant para Gemini.
+**IMPORTANTE**: Versão atual: verificar com `git describe --tags --always`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry e Device Auth Grant para Gemini.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
-**IMPORTANTE**: Data de hoje: **17 de março de 2026** - usar esta data ao documentar mudanças.
 
 ---
 
@@ -276,6 +275,12 @@ Erros como "Tracking Prevention blocked access to storage" e "Could not create w
 
 **Gemini Vertex AI (SSO corporativo)**: `GeminiAuthMode = "vertex"` usa Application Default Credentials (`gcloud auth application-default login`). Requer `GeminiVertexProject` (ou env `GOOGLE_CLOUD_PROJECT`). O ADC do servidor tem prioridade sobre credenciais locais — não requer role IAM explícita se o servidor já tiver acesso.
 
+**ADC file path**: `WriteADCFile()` em `internal/ai/google_device_auth.go` grava em `~/.k8s-hpa-manager/google_adc.json` (caminho próprio da app) — **nunca sobrescreve** `~/.config/gcloud/application_default_credentials.json`. Após gravar, define `GOOGLE_APPLICATION_CREDENTIALS` para apontar para esse arquivo.
+
+**FallbackProvider**: quando o servidor não tem provider padrão configurado, tenta usar ADC da máquina host via `GOOGLE_APPLICATION_CREDENTIALS` ou `~/.config/gcloud/application_default_credentials.json`. Útil em ambientes de dev onde o ADC pessoal já está ativo.
+
+**Vertex AI SSO — 3 tentativas com diagnóstico**: a lógica de inicialização do Gemini Vertex tenta até 3 vezes com logs de diagnóstico detalhados (endpoint, projeto, scopes) antes de falhar. Ver `internal/ai/gemini_provider.go`.
+
 **Autenticação Vertex AI via Device Auth Grant (RFC 8628)**: Fluxo sem servidor de callback — obrigatório em WSL2 (loopback Linux isolado do Windows). Frontend chama `POST /ai/tokens/google-auth/start`, backend obtém `user_code` e `device_code` do Google, frontend exibe o código e `accounts.google.com/device`. Backend faz polling em `POST /ai/tokens/google-auth/poll` até receber o token. Implementado em `internal/ai/google_device_auth.go` + `internal/web/handlers/ai_tokens.go (StartGoogleDeviceAuth/PollGoogleDeviceAuth)`.
 
 **Copilot (Azure OpenAI)**: requer `CopilotAPIKey`, `CopilotEndpoint` (ex: `https://my-resource.openai.azure.com`) e `CopilotDeployment`. Env vars: `COPILOT_API_KEY`, `COPILOT_ENDPOINT`, `COPILOT_DEPLOYMENT`.
@@ -326,7 +331,7 @@ Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fa
 | Certificados não listados | Verificar se secrets têm label `type: kubernetes.io/tls` |
 | Dynatrace 401/403 | Token inválido ou sem permissão `Read problems` no Dynatrace |
 | Dynatrace URL errada | Usar `*.live.dynatrace.com`, não `*.apps.dynatrace.com` |
-| Vertex AI sem permissão | Verificar ADC ativo: `gcloud auth application-default print-access-token` |
+| Vertex AI sem permissão | Verificar ADC ativo: `gcloud auth application-default print-access-token`. App usa `~/.k8s-hpa-manager/google_adc.json` — checar se existe e não expirou |
 | Gemini não autentica no WSL2 | OAuth loopback quebrado no WSL2 — usar Device Auth Grant (botão "Autenticar com Google" → código em `accounts.google.com/device`) |
 | Node Pool Registry vazio | Clicar "Escanear Clusters" no tab Dynatrace (requer VPN + clusters acessíveis) |
 | Health Check Dynatrace retorna vazio | **3 bugs conhecidos** — ver `docs/planning/DYNATRACE_HEALTHCHECK_INTEGRATION.md`. Principal: cluster name com `-admin` não bate com `HostGroup` do DT. Fix: `normalizeClusterName()` em `dynatrace_checker.go:52-68` |

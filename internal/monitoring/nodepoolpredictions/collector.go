@@ -374,7 +374,9 @@ func (c *NodePoolCollector) collectAzureNodePoolConfig(nodePoolName, clusterName
 		Str("subscription", subscription).
 		Msg("Chamando az aks nodepool show")
 
-	cmd := exec.Command("az", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "az", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
