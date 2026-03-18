@@ -342,6 +342,7 @@ func GetADCAccessToken(ctx context.Context) (string, error) {
 }
 
 // findADCFile localiza o arquivo Application Default Credentials.
+// Ordem de busca: GOOGLE_APPLICATION_CREDENTIALS → ADC próprio da app → gcloud → vscode extension
 func findADCFile() (string, error) {
 	if path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); path != "" {
 		return path, nil
@@ -353,7 +354,11 @@ func findADCFile() (string, error) {
 	}
 
 	candidates := []string{
+		// Credencial própria da app (gravada pelo Device Auth Grant — não conflita com gcloud)
+		filepath.Join(home, ".config", "k8s-hpa-manager", "google_credentials.json"),
+		// gcloud application-default login
 		filepath.Join(home, ".config", "gcloud", "application_default_credentials.json"),
+		// VSCode extension
 		filepath.Join(home, ".cache", "google-vscode-extension", "auth", "application_default_credentials.json"),
 	}
 
@@ -366,17 +371,25 @@ func findADCFile() (string, error) {
 	return "", fmt.Errorf("ADC não encontrado (procurado em %v)", candidates)
 }
 
-// WriteADCFile grava o arquivo Application Default Credentials com o refresh_token
-// obtido via Device Auth Grant. Usa o mesmo formato que `gcloud auth application-default login`,
-// permitindo que o servidor use ADC sem precisar ter o gcloud instalado.
-func WriteADCFile(refreshToken string) error {
+// appADCPath retorna o caminho do ADC próprio da aplicação (nunca conflita com gcloud).
+func appADCPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("não foi possível determinar o home dir: %w", err)
+		return "", fmt.Errorf("não foi possível determinar o home dir: %w", err)
+	}
+	return filepath.Join(home, ".config", "k8s-hpa-manager", "google_credentials.json"), nil
+}
+
+// WriteADCFile grava credenciais Google em caminho próprio da aplicação.
+// Usa o mesmo formato do gcloud ADC para que GetADCAccessToken possa lê-lo.
+// NÃO toca no arquivo gcloud (~/.config/gcloud/application_default_credentials.json).
+func WriteADCFile(refreshToken string) error {
+	adcPath, err := appADCPath()
+	if err != nil {
+		return err
 	}
 
-	adcDir := filepath.Join(home, ".config", "gcloud")
-	if err := os.MkdirAll(adcDir, 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(adcPath), 0700); err != nil {
 		return fmt.Errorf("erro ao criar diretório ADC: %w", err)
 	}
 
@@ -396,7 +409,6 @@ func WriteADCFile(refreshToken string) error {
 		return fmt.Errorf("erro ao serializar ADC: %w", err)
 	}
 
-	adcPath := filepath.Join(adcDir, "application_default_credentials.json")
 	if err := os.WriteFile(adcPath, data, 0600); err != nil {
 		return fmt.Errorf("erro ao gravar ADC (%s): %w", adcPath, err)
 	}
