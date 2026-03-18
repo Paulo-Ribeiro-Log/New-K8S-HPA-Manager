@@ -218,26 +218,16 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 			nil, // kubectl describe será implementado depois
 		)
 
-		// 4. Criar AI provider padrão
+		// 4. Criar AI provider padrão (opcional — pode falhar se credenciais não estão disponíveis)
+		var defaultAnalyzer *ai.Analyzer
 		aiProviderInstance, err := ai.NewProvider(aiConfig)
 		if err != nil {
 			fmt.Printf("⚠️  Falha ao criar AI provider padrão: %v\n", err)
-			fmt.Println("   AI Diagnostics desabilitado")
+			fmt.Println("   ℹ️  AI Diagnostics funcionará via tokens de usuário (AI Settings)")
 		} else {
-			// 5. Criar AI Analyzer padrão (fallback)
-			aiAnalyzer := ai.NewAnalyzer(aiProviderInstance, kubeManagerWrapper, aiHistoryStore)
-
-			// 6. Criar handler (com suporte a preferências de usuário)
-			aiHandler = handlers.NewAIDiagnosticsHandler(
-				aiAnalyzer,
-				aiHistoryStore,
-				aiTokensStore,
-				kubeManagerWrapper,
-				aiConfig,
-			)
-
+			// 5. Criar AI Analyzer padrão (fallback quando usuário não configurou tokens)
+			defaultAnalyzer = ai.NewAnalyzer(aiProviderInstance, kubeManagerWrapper, aiHistoryStore)
 			fmt.Printf("✅ AI Diagnostics habilitado (Provider padrão: %s)\n", aiProvider)
-			fmt.Println("   ℹ️  Usuários podem configurar seus próprios modelos em Settings → AI")
 			if aiProvider == "gemini" {
 				if geminiAuthMode == "vertex" {
 					fmt.Printf("   ✅ Modo Vertex AI (SSO/ADC via gcloud) — projeto: %s, região: %s\n", geminiProject, geminiLocation)
@@ -248,6 +238,16 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 				}
 			}
 		}
+
+		// 6. Criar handler (sempre criado — suporta tokens por usuário mesmo sem provider padrão)
+		aiHandler = handlers.NewAIDiagnosticsHandler(
+			defaultAnalyzer,
+			aiHistoryStore,
+			aiTokensStore,
+			kubeManagerWrapper,
+			aiConfig,
+		)
+		fmt.Println("   ℹ️  Usuários podem configurar seus próprios modelos em Settings → AI")
 	}
 
 	// AWX Integration (URL configurada via UI — perfil do usuário)
