@@ -61,7 +61,7 @@ type ProblemContext struct {
 	Events       []ContextEventEntry `json:"events"`
 	Topology     []TopoRelation      `json:"topology"`
 	Traces       []TraceEntry        `json:"traces"`
-	TracesError  string              `json:"tracesError,omitempty"`  // erro ao buscar traces (ex: 403 sem permissão)
+	TracesError  string              `json:"tracesError,omitempty"` // erro ao buscar traces (ex: 403 sem permissão)
 }
 
 // ─── Evidências Davis AI ──────────────────────────────────────────────────────

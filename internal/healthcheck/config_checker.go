@@ -24,29 +24,29 @@ var knownEmptyConfigMapsSecretsWhitelist = map[string]map[string]bool{
 	// ConfigMaps conhecidos que podem estar vazios
 	"configmap": {
 		// Ingress NGINX
-		"ingress-nginx-external/ingress-controller-leader":          true,
-		"ingress-nginx-internal/ingress-controller-leader":          true,
-		"ingress-nginx/ingress-controller-leader":                   true,
-		"ingress-nginx-external/ingress-nginx-controller":           true,
-		"ingress-nginx-internal/ingress-nginx-controller":           true,
+		"ingress-nginx-external/ingress-controller-leader": true,
+		"ingress-nginx-internal/ingress-controller-leader": true,
+		"ingress-nginx/ingress-controller-leader":          true,
+		"ingress-nginx-external/ingress-nginx-controller":  true,
+		"ingress-nginx-internal/ingress-nginx-controller":  true,
 
 		// Cert-manager
-		"cert-manager/cert-manager-cainjector-leader-election":      true,
-		"cert-manager/cert-manager-controller":                      true,
+		"cert-manager/cert-manager-cainjector-leader-election": true,
+		"cert-manager/cert-manager-controller":                 true,
 
 		// Kube-system
-		"kube-system/extension-apiserver-authentication":            true,
-		"kube-system/kube-proxy":                                    true,
-		"kube-system/kubeadm-config":                                true,
-		"kube-system/cluster-info":                                  true,
+		"kube-system/extension-apiserver-authentication": true,
+		"kube-system/kube-proxy":                         true,
+		"kube-system/kubeadm-config":                     true,
+		"kube-system/cluster-info":                       true,
 
 		// Istio
-		"istio-system/istio-leader":                                 true,
-		"istio-system/istio-ca-root-cert":                           true,
+		"istio-system/istio-leader":       true,
+		"istio-system/istio-ca-root-cert": true,
 
 		// ArgoCD
-		"argocd/argocd-cm":                                          true,
-		"argocd/argocd-rbac-cm":                                     true,
+		"argocd/argocd-cm":      true,
+		"argocd/argocd-rbac-cm": true,
 	},
 
 	// Secrets conhecidos que podem estar vazios ou ter dados mínimos
@@ -142,7 +142,7 @@ func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interfac
 
 			// ✅ Se filtros ativos e recurso vazio está na whitelist, pular
 			if applyFilters && health.Status == StatusWarning &&
-			   c.isKnownEmptyResource(ns, cm.Name, ResourceConfigMap) {
+				c.isKnownEmptyResource(ns, cm.Name, ResourceConfigMap) {
 				log.Debug().
 					Str("namespace", ns).
 					Str("configmap", cm.Name).
@@ -186,7 +186,7 @@ func (c *ConfigChecker) CheckAll(ctx context.Context, client kubernetes.Interfac
 
 			// ✅ Se filtros ativos e recurso vazio está na whitelist, pular
 			if applyFilters && health.Status == StatusWarning &&
-			   c.isKnownEmptyResource(ns, secret.Name, ResourceSecret) {
+				c.isKnownEmptyResource(ns, secret.Name, ResourceSecret) {
 				log.Debug().
 					Str("namespace", ns).
 					Str("secret", secret.Name).

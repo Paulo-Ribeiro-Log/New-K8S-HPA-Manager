@@ -214,27 +214,27 @@ ContextFetched bool              // Se GetProblemContext foi chamado com sucesso
 - [x] **`internal/healthcheck/dynatrace_checker.go`**: `clusterNorm` calculado antes do loop; tagFilter opcional sem bloquear
 - [ ] **Testar em ambiente real:** Executar health check com Dynatrace habilitado → deve retornar problems do cluster
 
-### 🔲 Fase 2 — Enriquecimento
+### ✅ Fase 2 — Enriquecimento (17/03/2026)
 
-- [ ] **`internal/healthcheck/models.go`**: Adicionar campos `Evidence`, `RecentEvents`, `MetricsSummary`, `ContextFetched` ao `DynatraceHealth`
-- [ ] **`internal/healthcheck/dynatrace_checker.go`**: Chamar `GetProblemContext` nos Top 5 problems (goroutines paralelas, timeout 15s)
-- [ ] **`internal/healthcheck/dynatrace_checker.go`**: Chamar `GetEntityMetricsForProblem` para problems AVAILABILITY/ERROR (timeout 10s)
-- [ ] **`internal/web/frontend/src/types/healthcheck.ts`**: Sincronizar interface `DynatraceHealth` com novos campos
+- [x] **`internal/healthcheck/models.go`**: Adicionar campos `Evidence`, `RecentEvents`, `MetricsSummary`, `ContextFetched` ao `DynatraceHealth`
+- [x] **`internal/healthcheck/dynatrace_checker.go`**: Chamar `GetProblemContext` nos Top 5 problems (goroutines paralelas, timeout 15s)
+- [x] **`internal/healthcheck/dynatrace_checker.go`**: Chamar `GetEntityMetricsForProblem` para problems AVAILABILITY/ERROR (timeout 10s)
+- [x] **`internal/web/frontend/src/types/healthcheck.ts`**: Sincronizar interface `DynatraceHealth` com novos campos
 
-### 🔲 Fase 3 — Frontend
+### ✅ Fase 3 — Frontend (17/03/2026)
 
-- [ ] **`HealthCheckResultsPanel.tsx`**: Mostrar Evidence Davis AI em callout destacado
-- [ ] **`HealthCheckResultsPanel.tsx`**: Mostrar MetricsSummary (error rate %, P90 ms) como badges
-- [ ] **`HealthCheckResultsPanel.tsx`**: Mostrar RecentEvents (top 3, compacto)
-- [ ] **`HealthCheckResultsPanel.tsx`**: Badge "Sem correlação K8s" quando workloads vazio
-- [ ] **`HealthCheckResultsPanel.tsx`**: Botão "Analisar com AI" → chama `/dynatrace/problems/:id/analyze`
-- [ ] **`HealthCheckResultsPanel.tsx`**: Exibir resultado da análise AI colapsável no card
+- [x] **`HealthCheckResultsPanel.tsx`**: Mostrar Evidence Davis AI em callout destacado
+- [x] **`HealthCheckResultsPanel.tsx`**: Mostrar MetricsSummary (error rate %, P90 ms) como badges
+- [x] **`HealthCheckResultsPanel.tsx`**: Mostrar RecentEvents (top 3, compacto)
+- [x] **`HealthCheckResultsPanel.tsx`**: Badge "Sem correlação K8s" quando workloads vazio
+- [x] **`HealthCheckResultsPanel.tsx`**: Botão "Analisar com AI" → chama `/dynatrace/problems/:id/analyze`
+- [x] **`HealthCheckResultsPanel.tsx`**: Exibir resultado da análise AI colapsável no card
 
-### 🔲 Fase 4 — Avançado (quando Fases 1-3 estiverem ok)
+### ✅ Fase 4 — Avançado (18/03/2026)
 
-- [ ] Deduplicação cross-cluster por `DisplayID`
-- [ ] Escalada de severidade para `prd` + `ENVIRONMENT` impact
-- [ ] Cache em memória TTL 5min para `EnrichEntitiesWithK8s`
+- [x] **`HealthCheckResultsPanel.tsx`**: Deduplicação cross-cluster por `DisplayID` — badge "Afeta N clusters" com tooltip de clusters
+- [x] **`internal/healthcheck/dynatrace_checker.go`**: Escalada de severidade para `prd` + `ENVIRONMENT` impact → StatusCritical
+- [x] **`internal/dynatrace/client.go`**: Cache em memória TTL 5min para `EnrichEntitiesWithK8s` (package-level `sync.Map`)
 
 ---
 

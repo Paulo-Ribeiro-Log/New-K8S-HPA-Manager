@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -65,7 +65,7 @@ export interface SelectedAlert {
 }
 
 // Card expandido para exibir um problem Dynatrace no Health Check
-const DynatraceProblemCard = ({ problem }: { problem: DynatraceHealth }) => {
+const DynatraceProblemCard = ({ problem, affectedClusters }: { problem: DynatraceHealth; affectedClusters?: string[] }) => {
   const { toast } = useToast();
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<string | null>(null);
@@ -127,6 +127,11 @@ const DynatraceProblemCard = ({ problem }: { problem: DynatraceHealth }) => {
               {problem.context_fetched && (
                 <Badge variant="outline" className="text-xs text-purple-600 border-purple-400 gap-1">
                   <Brain className="h-2.5 w-2.5" /> Contexto completo
+                </Badge>
+              )}
+              {(affectedClusters?.length ?? 0) > 1 && (
+                <Badge variant="outline" className="text-xs text-blue-600 border-blue-400 gap-1" title={affectedClusters!.join(", ")}>
+                  <Server className="h-2.5 w-2.5" /> Afeta {affectedClusters!.length} clusters
                 </Badge>
               )}
             </div>
@@ -296,6 +301,20 @@ export const HealthCheckResultsPanel = ({
   const [expandedCluster, setExpandedCluster] = useState<string | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedAlerts, setSelectedAlerts] = useState<Set<string>>(new Set());
+
+  // Fase 4.1: mapa display_id → clusters onde o problem foi visto (dedup cross-cluster)
+  const displayIdClusters = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const result of results) {
+      for (const problem of result.dynatrace_results ?? []) {
+        const existing = map.get(problem.display_id) ?? [];
+        if (!existing.includes(result.cluster)) {
+          map.set(problem.display_id, [...existing, result.cluster]);
+        }
+      }
+    }
+    return map;
+  }, [results]);
 
   // Funções de seleção
   const toggleAlert = (alertKey: string) => {
@@ -879,7 +898,11 @@ export const HealthCheckResultsPanel = ({
                                     <span>{result.dynatrace_results.length} problem(s) Dynatrace correlacionado(s) com workloads deste cluster</span>
                                   </div>
                                   {result.dynatrace_results.map((problem, i) => (
-                                    <DynatraceProblemCard key={i} problem={problem} />
+                                    <DynatraceProblemCard
+                                      key={i}
+                                      problem={problem}
+                                      affectedClusters={displayIdClusters.get(problem.display_id)}
+                                    />
                                   ))}
                                 </div>
                               )}

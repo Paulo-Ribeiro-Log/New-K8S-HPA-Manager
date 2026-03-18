@@ -9,8 +9,21 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
+
+// entityCacheEntry guarda o resultado enriquecido de uma entidade Dynatrace com timestamp.
+type entityCacheEntry struct {
+	stub     EntityStub
+	cachedAt time.Time
+}
+
+// entityCache é o cache global em memória para evitar chamadas repetidas à API de entidades.
+// Chave: entityID (string). Valor: entityCacheEntry.
+var entityCache sync.Map
+
+const entityCacheTTL = 5 * time.Minute
 
 // Client cliente HTTP para a Dynatrace Environment API v2
 type Client struct {
@@ -293,9 +306,20 @@ func enrichFromEntity(stub EntityStub, entity *Entity) EntityStub {
 }
 
 // EnrichEntitiesWithK8s busca as entidades afetadas e extrai correlação K8s + DTLabels.
+// Usa cache em memória (TTL 5 min) para evitar chamadas repetidas à API por entityID.
 func (c *Client) EnrichEntitiesWithK8s(ctx context.Context, stubs []EntityStub) []EntityStub {
 	enriched := make([]EntityStub, 0, len(stubs))
 	for _, stub := range stubs {
+		// Verificar cache antes de chamar API
+		if raw, ok := entityCache.Load(stub.EntityID.ID); ok {
+			entry := raw.(entityCacheEntry)
+			if time.Since(entry.cachedAt) < entityCacheTTL {
+				enriched = append(enriched, entry.stub)
+				continue
+			}
+			entityCache.Delete(stub.EntityID.ID) // entrada expirada
+		}
+
 		entity, err := c.GetEntity(ctx, stub.EntityID.ID)
 		if err != nil {
 			if stub.DisplayName == "" && stub.Name != "" {
@@ -304,7 +328,9 @@ func (c *Client) EnrichEntitiesWithK8s(ctx context.Context, stubs []EntityStub) 
 			enriched = append(enriched, stub)
 			continue
 		}
-		enriched = append(enriched, enrichFromEntity(stub, entity))
+		result := enrichFromEntity(stub, entity)
+		entityCache.Store(stub.EntityID.ID, entityCacheEntry{stub: result, cachedAt: time.Now()})
+		enriched = append(enriched, result)
 	}
 	return enriched
 }
@@ -324,16 +350,16 @@ func (c *Client) EnrichStub(ctx context.Context, stub EntityStub) EntityStub {
 // ─── raw structs para parsing (timestamps em milissegundos no JSON) ────────────
 
 type problemRaw struct {
-	ProblemID        string       `json:"problemId"`
-	DisplayID        string       `json:"displayId"`
-	Title            string       `json:"title"`
-	Status           string       `json:"status"`
-	SeverityLevel    string       `json:"severityLevel"`
-	ImpactLevel      string       `json:"impactLevel"`
-	StartTime        int64        `json:"startTime"`
-	EndTime          int64        `json:"endTime,omitempty"`
-	AffectedEntities []EntityStub `json:"affectedEntities"`
-	ImpactedEntities []EntityStub `json:"impactedEntities"`
+	ProblemID        string           `json:"problemId"`
+	DisplayID        string           `json:"displayId"`
+	Title            string           `json:"title"`
+	Status           string           `json:"status"`
+	SeverityLevel    string           `json:"severityLevel"`
+	ImpactLevel      string           `json:"impactLevel"`
+	StartTime        int64            `json:"startTime"`
+	EndTime          int64            `json:"endTime,omitempty"`
+	AffectedEntities []EntityStub     `json:"affectedEntities"`
+	ImpactedEntities []EntityStub     `json:"impactedEntities"`
 	RootCauseEntity  *EntityStub      `json:"rootCauseEntity,omitempty"`
 	ManagementZones  []ManagementZone `json:"managementZones,omitempty"`
 	// EvidenceDetails omitido: StartTime vem como int64 (ms), incompatível com time.Time.
