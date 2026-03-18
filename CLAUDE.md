@@ -21,6 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [Common Pitfalls](docs/guides/COMMON_PITFALLS.md)
 - [RBAC Azure AD](docs/guides/RBAC_AZURE_AD_IMPLEMENTATION.md)
 - [Changelog](docs/history/CHANGELOG.md)
+- [**Plano: Dynatrace × Health Check**](docs/planning/DYNATRACE_HEALTHCHECK_INTEGRATION.md) ← work in progress
 
 ---
 
@@ -328,6 +329,7 @@ Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fa
 | Vertex AI sem permissão | Verificar ADC ativo: `gcloud auth application-default print-access-token` |
 | Gemini não autentica no WSL2 | OAuth loopback quebrado no WSL2 — usar Device Auth Grant (botão "Autenticar com Google" → código em `accounts.google.com/device`) |
 | Node Pool Registry vazio | Clicar "Escanear Clusters" no tab Dynatrace (requer VPN + clusters acessíveis) |
+| Health Check Dynatrace retorna vazio | **3 bugs conhecidos** — ver `docs/planning/DYNATRACE_HEALTHCHECK_INTEGRATION.md`. Principal: cluster name com `-admin` não bate com `HostGroup` do DT. Fix: `normalizeClusterName()` em `dynatrace_checker.go:52-68` |
 
 ---
 
