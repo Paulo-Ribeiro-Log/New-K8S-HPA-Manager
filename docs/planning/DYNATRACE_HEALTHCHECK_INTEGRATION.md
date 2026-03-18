@@ -2,7 +2,7 @@
 
 **Data:** 17/03/2026
 **Branch:** `integração-dyna`
-**Status:** 🔴 Fase 1 pendente (básico quebrado)
+**Status:** 🟡 Fase 1 concluída (commit `8666044`) — Fase 2 pendente
 
 ---
 
@@ -207,12 +207,12 @@ ContextFetched bool              // Se GetProblemContext foi chamado com sucesso
 
 ## Checklist de Implementação
 
-### ✅ Fase 1 — Fix Básico
+### ✅ Fase 1 — Fix Básico (commit `8666044` — 17/03/2026)
 
-- [ ] **`internal/healthcheck/dynatrace_checker.go`**: Adicionar `normalizeClusterName()` e aplicar no match
-- [ ] **`internal/dynatrace/client.go`**: Implementar paginação em `GetOpenProblems` (loop nextPageKey, limite 200)
-- [ ] **`internal/healthcheck/dynatrace_checker.go`**: Quando tagFilter vazio, buscar sem filtro de tag
-- [ ] **Testar:** Executar health check com Dynatrace habilitado → deve retornar problems do cluster
+- [x] **`internal/healthcheck/dynatrace_checker.go`**: `normalizeClusterName()` + `matchesCluster()` aplicados no match
+- [x] **`internal/dynatrace/client.go`**: Paginação em `GetOpenProblems` (pageSize=50, loop nextPageKey, limite 200)
+- [x] **`internal/healthcheck/dynatrace_checker.go`**: `clusterNorm` calculado antes do loop; tagFilter opcional sem bloquear
+- [ ] **Testar em ambiente real:** Executar health check com Dynatrace habilitado → deve retornar problems do cluster
 
 ### 🔲 Fase 2 — Enriquecimento
 
