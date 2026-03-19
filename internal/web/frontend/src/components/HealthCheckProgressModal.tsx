@@ -435,51 +435,82 @@ const ClusterTabContent = ({
 
       {/* Summary Filters (when complete) */}
       {result && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 sm:gap-2">
-          <Button
-            variant={filter === "healthy" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setFilter(filter === "healthy" ? "all" : "healthy")}
-            className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
-          >
-            <div className="text-sm sm:text-xl font-bold text-green-600 leading-none">
-              {result.healthy_count}
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 sm:gap-2">
+            <Button
+              variant={filter === "healthy" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setFilter(filter === "healthy" ? "all" : "healthy")}
+              className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
+            >
+              <div className="text-sm sm:text-xl font-bold text-green-600 leading-none">
+                {result.healthy_count}
+              </div>
+              <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Healthy</div>
+            </Button>
+            <Button
+              variant={filter === "warning" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setFilter(filter === "warning" ? "all" : "warning")}
+              className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
+            >
+              <div className="text-sm sm:text-xl font-bold text-yellow-600 leading-none">
+                {result.warning_count}
+              </div>
+              <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Warning</div>
+            </Button>
+            <Button
+              variant={filter === "critical" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setFilter(filter === "critical" ? "all" : "critical")}
+              className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
+            >
+              <div className="text-sm sm:text-xl font-bold text-red-600 leading-none">
+                {result.critical_count}
+              </div>
+              <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Critical</div>
+            </Button>
+            <Button
+              variant={filter === "all" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setFilter("all")}
+              className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
+            >
+              <div className="text-sm sm:text-xl font-bold leading-none">
+                {result.total_checks}
+              </div>
+              <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Total</div>
+            </Button>
+          </div>
+
+          {/* Resumo Dynatrace (quando disponível) */}
+          {((result.dynatrace_results && result.dynatrace_results.length > 0) ||
+            (result.oneagent_signals && result.oneagent_signals.length > 0) ||
+            (result.correlated_items && result.correlated_items.length > 0)) && (
+            <div className="rounded-md border border-purple-500/30 bg-purple-500/5 px-3 py-2 space-y-1">
+              <div className="text-[10px] sm:text-xs font-semibold text-purple-400 uppercase tracking-wide">Dynatrace</div>
+              <div className="flex flex-wrap gap-2 text-xs">
+                {result.dynatrace_results && result.dynatrace_results.length > 0 && (
+                  <span className="text-orange-400">
+                    ⚠ {result.dynatrace_results.length} problem{result.dynatrace_results.length !== 1 ? "s" : ""} aberto{result.dynatrace_results.length !== 1 ? "s" : ""}
+                  </span>
+                )}
+                {result.oneagent_signals && result.oneagent_signals.length > 0 && (
+                  <span className="text-blue-400">
+                    ◉ {result.oneagent_signals.length} sinal{result.oneagent_signals.length !== 1 ? "is" : ""} OneAgent
+                  </span>
+                )}
+                {result.correlated_items && result.correlated_items.length > 0 && (() => {
+                  const correlated = result.correlated_items.filter(i => i.correlated).length;
+                  return correlated > 0 ? (
+                    <span className="text-red-400">
+                      ✕ {correlated} correlacionado{correlated !== 1 ? "s" : ""} K8s↔DT
+                    </span>
+                  ) : null;
+                })()}
+              </div>
             </div>
-            <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Healthy</div>
-          </Button>
-          <Button
-            variant={filter === "warning" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setFilter(filter === "warning" ? "all" : "warning")}
-            className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
-          >
-            <div className="text-sm sm:text-xl font-bold text-yellow-600 leading-none">
-              {result.warning_count}
-            </div>
-            <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Warning</div>
-          </Button>
-          <Button
-            variant={filter === "critical" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setFilter(filter === "critical" ? "all" : "critical")}
-            className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
-          >
-            <div className="text-sm sm:text-xl font-bold text-red-600 leading-none">
-              {result.critical_count}
-            </div>
-            <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Critical</div>
-          </Button>
-          <Button
-            variant={filter === "all" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setFilter("all")}
-            className="flex flex-col h-auto py-1 sm:py-2 min-w-0 px-0.5 sm:px-3 overflow-hidden"
-          >
-            <div className="text-sm sm:text-xl font-bold leading-none">
-              {result.total_checks}
-            </div>
-            <div className="text-[8px] sm:text-xs leading-none mt-1 truncate w-full">Total</div>
-          </Button>
+          )}
         </div>
       )}
     </div>

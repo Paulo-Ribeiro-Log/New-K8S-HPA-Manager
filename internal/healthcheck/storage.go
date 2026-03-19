@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -108,7 +109,28 @@ func (s *HealthCheckStorage) createTable() error {
 	`
 
 	_, err := s.db.Exec(query)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migração: adicionar coluna extra_json se não existir (compatível com bancos existentes)
+	_, err = s.db.Exec(`ALTER TABLE health_check_results ADD COLUMN extra_json TEXT`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return fmt.Errorf("failed to migrate extra_json column: %w", err)
+	}
+
+	return nil
+}
+
+// extraResultFields agrupa campos que não cabem nas colunas individuais.
+type extraResultFields struct {
+	EventResults    []EventHealth         `json:"event_results,omitempty"`
+	HPAResults      []HPAHealth           `json:"hpa_results,omitempty"`
+	PVCResults      []PVCHealth           `json:"pvc_results,omitempty"`
+	DynatraceResults []DynatraceHealth    `json:"dynatrace_results,omitempty"`
+	CorrelatedItems []CorrelatedHealthItem `json:"correlated_items,omitempty"`
+	OneAgentSignals []OneAgentSignal       `json:"oneagent_signals"` // sem omitempty: [] != null
+	SeverityCounts  SeverityCounts         `json:"severity_counts"`
 }
 
 // Save salva resultado de health check
@@ -129,12 +151,26 @@ func (s *HealthCheckStorage) Save(ctx context.Context, result *HealthCheckResult
 		return fmt.Errorf("failed to marshal config results: %w", err)
 	}
 
+	extra := extraResultFields{
+		EventResults:     result.EventResults,
+		HPAResults:       result.HPAResults,
+		PVCResults:       result.PVCResults,
+		DynatraceResults: result.DynatraceResults,
+		CorrelatedItems:  result.CorrelatedItems,
+		OneAgentSignals:  result.OneAgentSignals,
+		SeverityCounts:   result.SeverityCounts,
+	}
+	extraJSON, err := json.Marshal(extra)
+	if err != nil {
+		return fmt.Errorf("failed to marshal extra fields: %w", err)
+	}
+
 	query := `
 	INSERT INTO health_check_results (
 		id, cluster, namespace, started_at, finished_at, duration_ms,
 		total_checks, healthy_count, warning_count, critical_count, overall_status,
-		deployment_results, service_results, config_results
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		deployment_results, service_results, config_results, extra_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err = s.db.ExecContext(ctx, query,
@@ -152,6 +188,7 @@ func (s *HealthCheckStorage) Save(ctx context.Context, result *HealthCheckResult
 		string(deploymentJSON),
 		string(serviceJSON),
 		string(configJSON),
+		string(extraJSON),
 	)
 
 	if err != nil {
@@ -172,13 +209,14 @@ func (s *HealthCheckStorage) Get(ctx context.Context, id string) (*HealthCheckRe
 	query := `
 	SELECT id, cluster, namespace, started_at, finished_at, duration_ms,
 		   total_checks, healthy_count, warning_count, critical_count, overall_status,
-		   deployment_results, service_results, config_results
+		   deployment_results, service_results, config_results,
+		   COALESCE(extra_json, '{}')
 	FROM health_check_results
 	WHERE id = ?
 	`
 
 	var result HealthCheckResult
-	var deploymentJSON, serviceJSON, configJSON string
+	var deploymentJSON, serviceJSON, configJSON, extraJSON string
 
 	err := s.db.QueryRowContext(ctx, query, id).Scan(
 		&result.ID,
@@ -195,6 +233,7 @@ func (s *HealthCheckStorage) Get(ctx context.Context, id string) (*HealthCheckRe
 		&deploymentJSON,
 		&serviceJSON,
 		&configJSON,
+		&extraJSON,
 	)
 
 	if err == sql.ErrNoRows {
@@ -214,6 +253,16 @@ func (s *HealthCheckStorage) Get(ctx context.Context, id string) (*HealthCheckRe
 	if err := json.Unmarshal([]byte(configJSON), &result.ConfigResults); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config results: %w", err)
 	}
+	var extra extraResultFields
+	if err := json.Unmarshal([]byte(extraJSON), &extra); err == nil {
+		result.EventResults = extra.EventResults
+		result.HPAResults = extra.HPAResults
+		result.PVCResults = extra.PVCResults
+		result.DynatraceResults = extra.DynatraceResults
+		result.CorrelatedItems = extra.CorrelatedItems
+		result.OneAgentSignals = extra.OneAgentSignals
+		result.SeverityCounts = extra.SeverityCounts
+	}
 
 	return &result, nil
 }
@@ -223,7 +272,8 @@ func (s *HealthCheckStorage) GetHistory(ctx context.Context, cluster, namespace 
 	query := `
 	SELECT id, cluster, namespace, started_at, finished_at, duration_ms,
 		   total_checks, healthy_count, warning_count, critical_count, overall_status,
-		   deployment_results, service_results, config_results
+		   deployment_results, service_results, config_results,
+		   COALESCE(extra_json, '{}')
 	FROM health_check_results
 	WHERE 1=1
 	`
@@ -253,7 +303,7 @@ func (s *HealthCheckStorage) GetHistory(ctx context.Context, cluster, namespace 
 
 	for rows.Next() {
 		var result HealthCheckResult
-		var deploymentJSON, serviceJSON, configJSON string
+		var deploymentJSON, serviceJSON, configJSON, extraJSON string
 
 		err := rows.Scan(
 			&result.ID,
@@ -270,6 +320,7 @@ func (s *HealthCheckStorage) GetHistory(ctx context.Context, cluster, namespace 
 			&deploymentJSON,
 			&serviceJSON,
 			&configJSON,
+			&extraJSON,
 		)
 
 		if err != nil {
@@ -285,6 +336,16 @@ func (s *HealthCheckStorage) GetHistory(ctx context.Context, cluster, namespace 
 		}
 		if err := json.Unmarshal([]byte(configJSON), &result.ConfigResults); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal config results: %w", err)
+		}
+		var extra extraResultFields
+		if err := json.Unmarshal([]byte(extraJSON), &extra); err == nil {
+			result.EventResults = extra.EventResults
+			result.HPAResults = extra.HPAResults
+			result.PVCResults = extra.PVCResults
+			result.DynatraceResults = extra.DynatraceResults
+			result.CorrelatedItems = extra.CorrelatedItems
+			result.OneAgentSignals = extra.OneAgentSignals
+			result.SeverityCounts = extra.SeverityCounts
 		}
 
 		results = append(results, &result)

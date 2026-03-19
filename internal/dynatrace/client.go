@@ -451,29 +451,44 @@ func (c *Client) listEntitiesBySelector(ctx context.Context, entitySelector stri
 }
 
 // ListEntitiesByCluster lista entidades de um tipo instrumentadas pelo OneAgent em um cluster.
-// Usa a tag dt.host_group.id como seletor principal (reflete DTLabels.HostGroup = nome do cluster AKS sem "-admin").
-// Fallback para CLOUD_APPLICATION: kubernetesCluster.name — caso as entidades não tenham HostGroup tag.
+// Estratégia de busca em 3 tentativas para cobrir variações de tag e configuração:
+//  1. tag("dt.host_group.id:<cluster>") — primário para todos os tipos
+//  2. kubernetesCluster.name("<cluster>") — fallback K8s nativo (CLOUD_APPLICATION e SERVICE)
+//  3. tag("kubernetes.cluster.name:<cluster>") — fallback via tag K8s propagada pelo OneAgent
+//
 // Retorna até 500 entidades (limite prático por cluster, sem paginação).
 func (c *Client) ListEntitiesByCluster(ctx context.Context, clusterName, entityType string) ([]EntityStub, error) {
 	if clusterName == "" || entityType == "" {
 		return nil, fmt.Errorf("clusterName e entityType são obrigatórios")
 	}
 
-	// Primário: tag dt.host_group.id (preenchida pelo OneAgent em todos os hosts do cluster)
+	// Tentativa 1: tag dt.host_group.id (OneAgent injeta em hosts/processos/serviços do cluster)
 	primarySelector := fmt.Sprintf(`type("%s"),tag("dt.host_group.id:%s")`, entityType, clusterName)
 	stubs, err := c.listEntitiesBySelector(ctx, primarySelector)
 	if err != nil {
-		// falha não fatal — tenta fallback antes de desistir
-		stubs = nil
+		stubs = nil // falha não fatal — continua tentativas
+	}
+	if len(stubs) > 0 {
+		return stubs, nil
 	}
 
-	// Fallback: kubernetesCluster.name para CLOUD_APPLICATION (K8s native)
-	if len(stubs) == 0 && entityType == "CLOUD_APPLICATION" {
-		fallbackSelector := fmt.Sprintf(`type("CLOUD_APPLICATION"),kubernetesCluster.name("%s")`, clusterName)
+	// Tentativa 2: kubernetesCluster.name — relação topológica nativa K8s (CLOUD_APPLICATION e SERVICE)
+	if entityType == "CLOUD_APPLICATION" || entityType == "SERVICE" {
+		fallbackSelector := fmt.Sprintf(`type("%s"),kubernetesCluster.name("%s")`, entityType, clusterName)
 		stubs, err = c.listEntitiesBySelector(ctx, fallbackSelector)
 		if err != nil {
-			return nil, fmt.Errorf("ListEntitiesByCluster fallback: %w", err)
+			stubs = nil
 		}
+		if len(stubs) > 0 {
+			return stubs, nil
+		}
+	}
+
+	// Tentativa 3: tag kubernetes.cluster.name propagada pelo OneAgent em processos K8s
+	tag3Selector := fmt.Sprintf(`type("%s"),tag("kubernetes.cluster.name:%s")`, entityType, clusterName)
+	stubs, err = c.listEntitiesBySelector(ctx, tag3Selector)
+	if err != nil {
+		return nil, fmt.Errorf("ListEntitiesByCluster (todas as tentativas falharam): %w", err)
 	}
 
 	return stubs, nil
