@@ -910,3 +910,99 @@ func buildBatchCorrelatedPrompt(items []healthcheck.CorrelatedHealthItem) string
 
 	return sb.String()
 }
+
+// AnalyzeOneAgentSignal realiza análise AI de um sinal OneAgent individual.
+// POST /api/v1/healthcheck/oneagent/analyze
+func (h *HealthCheckHandler) AnalyzeOneAgentSignal(c *gin.Context) {
+	if h.aiHandler == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI não configurado neste servidor"})
+		return
+	}
+
+	var req struct {
+		AIEmail string                    `json:"ai_email"`
+		Signal  healthcheck.OneAgentSignal `json:"signal"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	provider, err := h.aiHandler.GetProviderForUser(req.AIEmail)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
+	defer cancel()
+
+	prompt := buildOneAgentSignalPrompt(req.Signal)
+	analysis, err := provider.Analyze(ctx, prompt)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Erro na análise AI: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"analysis": analysis})
+}
+
+// buildOneAgentSignalPrompt monta prompt para análise de um sinal OneAgent individual
+func buildOneAgentSignalPrompt(s healthcheck.OneAgentSignal) string {
+	var sb strings.Builder
+
+	sb.WriteString("Você é um especialista em Kubernetes e observabilidade Dynatrace. Analise o sinal de risco abaixo e forneça diagnóstico e recomendações.\n\n")
+	sb.WriteString(fmt.Sprintf("**Workload:** %s/%s (cluster: %s)\n", s.Namespace, s.WorkloadName, s.Cluster))
+	sb.WriteString(fmt.Sprintf("**Entidade DT:** %s (%s)\n", s.EntityID, s.EntityType))
+	sb.WriteString(fmt.Sprintf("**Nível de risco:** %s\n", s.RiskLevel))
+
+	if len(s.RiskReasons) > 0 {
+		sb.WriteString("**Razões:**\n")
+		for _, r := range s.RiskReasons {
+			sb.WriteString(fmt.Sprintf("  - %s\n", r))
+		}
+	}
+
+	sb.WriteString("\n**Métricas (último 60min — valor máximo):**\n")
+	if s.ErrorRate > 0 {
+		sb.WriteString(fmt.Sprintf("  - Taxa de erro: %.1f%%\n", s.ErrorRate))
+	}
+	if s.ResponseP90Ms > 0 {
+		sb.WriteString(fmt.Sprintf("  - Latência P90: %.0fms\n", s.ResponseP90Ms))
+	}
+	if s.PodRestarts > 0 {
+		sb.WriteString(fmt.Sprintf("  - Pod restarts: %.0f\n", s.PodRestarts))
+	}
+	if s.CPUThrottlePct > 0 {
+		sb.WriteString(fmt.Sprintf("  - CPU throttle: %.1f%%\n", s.CPUThrottlePct))
+	}
+	if s.PodsReadyPct > 0 {
+		sb.WriteString(fmt.Sprintf("  - Pods prontos: %.1f%%\n", s.PodsReadyPct))
+	}
+
+	if s.HasDTProblem {
+		sb.WriteString("\n⚠️ Este workload também possui um Problem ativo no Dynatrace.\n")
+	}
+
+	if len(s.DependedBy) > 0 {
+		sb.WriteString(fmt.Sprintf("\n**Dependido por:** %s\n", strings.Join(s.DependedBy, ", ")))
+	}
+	if len(s.DependsOn) > 0 {
+		sb.WriteString(fmt.Sprintf("**Depende de:** %s\n", strings.Join(s.DependsOn, ", ")))
+	}
+
+	if len(s.ClusterPools) > 0 {
+		sb.WriteString("\n**Node Pools do cluster:**\n")
+		for _, p := range s.ClusterPools {
+			sb.WriteString(fmt.Sprintf("  - %s (%s, mode=%s, nodes=%d)\n", p.NodePool, p.VMSize, p.Mode, p.NodeCount))
+		}
+	}
+
+	sb.WriteString("\n## Forneça\n")
+	sb.WriteString("1. **Diagnóstico** — qual é a causa provável do risco identificado?\n")
+	sb.WriteString("2. **Impacto** — qual é o risco de este workload afetar usuários ou outros serviços?\n")
+	sb.WriteString("3. **Ações recomendadas** — passos concretos para mitigar o risco (kubectl ou configuração)\n")
+	sb.WriteString("4. **Monitoramento** — o que observar para confirmar melhora ou deterioração?\n")
+
+	return sb.String()
+}

@@ -85,7 +85,8 @@ export interface HealthCheckRequest {
   check_events: boolean; // Verificar eventos K8s (FailedScheduling, etc.)
   check_hpas: boolean;       // Verificar HPAs (min=max, métricas, scaling)
   check_pvcs: boolean;       // Verificar PVCs (status, StorageClass, access modes)
-  check_dynatrace?: boolean; // Verificar problems OPEN no Dynatrace
+  check_dynatrace?: boolean;        // Verificar problems OPEN no Dynatrace
+  check_oneagent_signals?: boolean; // Escanear métricas OneAgent (sem problem ativo)
 
   // Email do analista (para buscar credenciais Dynatrace)
   ai_email?: string;
@@ -126,6 +127,7 @@ export interface HealthCheckResult {
   pvc_results: PVCHealth[];              // PVCs com problemas de configuração
   dynatrace_results?: DynatraceHealth[]; // Problems Dynatrace correlacionados
   correlated_items?: CorrelatedHealthItem[]; // Correlação K8s ↔ Dynatrace
+  oneagent_signals?: OneAgentSignal[];   // Sinais de risco detectados via OneAgent (sem problem ativo)
 
   // Resumo
   total_checks: number;
@@ -674,4 +676,46 @@ export interface CorrelatedHealthItem {
   // AI Analysis (preenchida sob demanda via POST /healthcheck/correlated/analyze)
   ai_analysis?: string;
   ai_analyzed_at?: string; // ISO timestamp
+}
+
+// Node Pool summary para correlação dentro do OneAgentSignal
+export interface NodePoolSummary {
+  node_pool: string;
+  vm_size: string;
+  mode: string;
+  node_count: number;
+}
+
+// Sinal de risco detectado via OneAgent — sem precisar de um Problem DT ativo
+export interface OneAgentSignal {
+  entity_id: string;
+  entity_type: string;
+  cluster: string;
+  namespace: string;
+  workload_name: string;
+  app_version?: string;
+  squad?: string;
+
+  // Métricas (máximo da última hora)
+  error_rate: number;       // %
+  response_p90_ms: number;  // ms
+  pod_restarts: number;     // count/hora
+  cpu_throttle_pct: number; // %
+  pods_ready_pct: number;   // % (0-100)
+
+  // Avaliação de risco
+  risk_level: Severity;
+  risk_reasons: string[];
+
+  // Flags
+  has_dt_problem: boolean;  // true = workload já coberto por Problem DT ativo
+
+  // Correlação
+  cluster_pools?: NodePoolSummary[];
+  depended_by?: string[];   // serviços que dependem deste workload
+  depends_on?: string[];    // dependências deste workload
+
+  // AI Analysis (preenchida sob demanda)
+  ai_analysis?: string;
+  checked_at: string;       // ISO timestamp
 }
