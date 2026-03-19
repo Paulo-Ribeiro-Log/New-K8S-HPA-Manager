@@ -37,10 +37,10 @@ type ClusterConfig struct {
 }
 
 // clientTTL define por quanto tempo um client inativo é mantido em memória
-const clientTTL = 2 * time.Hour
+const clientTTL = 30 * time.Minute
 
 // clientCleanupInterval define com qual frequência o cleanup roda
-const clientCleanupInterval = 1 * time.Hour
+const clientCleanupInterval = 15 * time.Minute
 
 // KubeConfigManager gerencia a configuração do Kubernetes
 type KubeConfigManager struct {
