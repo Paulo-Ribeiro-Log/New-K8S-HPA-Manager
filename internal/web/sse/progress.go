@@ -135,7 +135,7 @@ const maxClientAge = 4 * time.Hour
 const maxReplayBufferAge = 1 * time.Hour
 
 // sseCleanupInterval define a frequência do cleanup de zumbis
-const sseCleanupInterval = 30 * time.Minute
+const sseCleanupInterval = 5 * time.Minute
 
 // ProgressTracker gerencia múltiplos clientes SSE e rastreia progresso de operações
 type ProgressTracker struct {
@@ -257,13 +257,12 @@ func (pt *ProgressTracker) SendToClient(clientID string, event ProgressEvent) {
 			Msg("[SSE] Cliente não conectado - evento salvo no replay buffer")
 	}
 
-	// Limpar buffer se evento é de conclusão
+	// Agendar limpeza do buffer 5 minutos após conclusão (tempo para o cliente buscar histórico).
+	// time.AfterFunc usa o timer runtime — não bloqueia uma goroutine.
 	if event.Type == "complete" || event.Type == "error" {
-		// Agendar limpeza após 5 minutos (tempo para cliente buscar histórico)
-		go func() {
-			time.Sleep(5 * time.Minute)
+		time.AfterFunc(5*time.Minute, func() {
 			pt.ClearReplayBuffer(clientID)
-		}()
+		})
 	}
 }
 
