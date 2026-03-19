@@ -374,6 +374,175 @@ func enrichWithContext(ctx context.Context, client *dtclient.Client, results []D
 	return results
 }
 
+// SearchProblemsForWorkloads busca problems DT para workloads K8s que não apareceram
+// no CheckAll (tags OneAgent ausentes ou incorretas). É a direção reversa: K8s → DT.
+// existingIDs: conjunto de problem IDs já presentes em DynatraceResults (para deduplicação).
+// timeoutSec: orçamento de tempo para toda a busca reversa.
+func (c *DynatraceChecker) SearchProblemsForWorkloads(
+	ctx context.Context,
+	dtURL, dtToken string,
+	workloads []string, // nomes de workloads K8s sem namespace ("payment-service")
+	cluster string,
+	existingIDs map[string]struct{},
+	timeoutSec int,
+) []DynatraceHealth {
+	if len(workloads) == 0 || dtURL == "" {
+		return nil
+	}
+
+	client, err := dtclient.NewClient(dtURL, dtToken)
+	if err != nil {
+		log.Error().Err(err).Msg("[DynatraceChecker.Reverse] Falha ao criar client")
+		return nil
+	}
+
+	searchCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	// 1. Buscar entidades DT pelo nome dos workloads
+	entities := client.SearchEntitiesByName(searchCtx, workloads)
+	if len(entities) == 0 {
+		log.Debug().Strs("workloads", workloads).Msg("[DynatraceChecker.Reverse] Nenhuma entidade DT encontrada para os workloads K8s")
+		return nil
+	}
+
+	log.Info().
+		Int("entities", len(entities)).
+		Strs("workloads", workloads).
+		Msg("[DynatraceChecker.Reverse] Entidades DT encontradas para workloads K8s")
+
+	// 2. Buscar problems para cada entidade (paralelo, limite de 5 entidades)
+	clusterNorm := normalizeClusterName(cluster)
+	maxEntities := 5
+	if len(entities) > maxEntities {
+		entities = entities[:maxEntities]
+	}
+
+	type problemEntry struct {
+		p       dtclient.Problem
+		enriched []dtclient.EntityStub
+	}
+	type result struct {
+		entries []problemEntry
+	}
+	results := make([]result, len(entities))
+	var wg sync.WaitGroup
+
+	for i, entity := range entities {
+		wg.Add(1)
+		go func(idx int, e dtclient.EntityStub) {
+			defer wg.Done()
+
+			problems, err := client.GetOpenProblemsForEntity(searchCtx, e.EntityID.ID)
+			if err != nil {
+				log.Debug().Err(err).Str("entityID", e.EntityID.ID).Msg("[DynatraceChecker.Reverse] Erro ao buscar problems")
+				return
+			}
+
+			entries := make([]problemEntry, 0, len(problems))
+			for _, p := range problems {
+				if _, skip := existingIDs[p.ProblemID]; skip {
+					continue
+				}
+				enriched := client.EnrichEntitiesWithK8s(searchCtx, p.AffectedEntities)
+				entries = append(entries, problemEntry{p: p, enriched: enriched})
+			}
+			results[idx] = result{entries: entries}
+		}(i, entity)
+	}
+	wg.Wait()
+
+	// 3. Montar DynatraceHealth para problems novos
+	toSlice := func(m map[string]struct{}) []string {
+		s := make([]string, 0, len(m))
+		for k := range m {
+			if k != "" {
+				s = append(s, k)
+			}
+		}
+		return s
+	}
+
+	var newResults []DynatraceHealth
+	seen := make(map[string]struct{})
+
+	for _, r := range results {
+		for _, entry := range r.entries {
+			p := entry.p
+			if _, dup := seen[p.ProblemID]; dup {
+				continue
+			}
+			seen[p.ProblemID] = struct{}{}
+
+			workloadSet := make(map[string]struct{})
+			nsSet := make(map[string]struct{})
+			affectedNames := make([]string, 0, len(entry.enriched))
+
+			for _, e := range entry.enriched {
+				if e.DisplayName != "" {
+					affectedNames = append(affectedNames, e.DisplayName)
+				}
+				ns := e.K8sNamespace
+				wl := e.K8sWorkload
+				if e.Labels != nil {
+					if ns == "" {
+						ns = e.Labels.Namespace
+					}
+					if wl == "" {
+						wl = e.Labels.AppName
+					}
+				}
+				if wl != "" {
+					workloadSet[ns+"/"+wl] = struct{}{}
+					nsSet[ns] = struct{}{}
+				}
+			}
+
+			// Validação de cluster: se a entidade tiver cluster identificado, confirmar
+			if clusterNorm != "" {
+				hasCluster := false
+				for _, e := range entry.enriched {
+					if matchesCluster(clusterNorm, e) {
+						hasCluster = true
+						break
+					}
+				}
+				// Entidade sem K8s tags: aceitar mesmo assim (é o propósito da busca reversa)
+				if !hasCluster && len(entry.enriched) > 0 && entry.enriched[0].K8sCluster != "" {
+					log.Debug().Str("problemId", p.ProblemID).Msg("[DynatraceChecker.Reverse] Problem descartado — cluster não confere")
+					continue
+				}
+			}
+
+			severity, status := mapDTSeverity(p.SeverityLevel)
+			newResults = append(newResults, DynatraceHealth{
+				ProblemID:        p.ProblemID,
+				DisplayID:        p.DisplayID,
+				Title:            p.Title,
+				DTSeverity:       p.SeverityLevel,
+				ImpactLevel:      p.ImpactLevel,
+				Status:           status,
+				Severity:         severity,
+				StartTime:        p.StartTime,
+				K8sNamespaces:    toSlice(nsSet),
+				K8sWorkloads:     toSlice(workloadSet),
+				AffectedEntities: affectedNames,
+				Message:          fmt.Sprintf("[Busca reversa] [%s] %s — impacto: %s", p.SeverityLevel, p.Title, p.ImpactLevel),
+				Suggestions:      buildDTSuggestions(p.SeverityLevel, toSlice(workloadSet)),
+				CheckedAt:        time.Now(),
+			})
+		}
+	}
+
+	if len(newResults) > 0 {
+		log.Info().
+			Int("new_problems", len(newResults)).
+			Str("cluster", cluster).
+			Msg("[DynatraceChecker.Reverse] Problems adicionais encontrados via busca reversa K8s → DT")
+	}
+	return newResults
+}
+
 // buildDTSuggestions gera sugestões baseadas no tipo de problem
 func buildDTSuggestions(dtSeverity string, workloads []string) []string {
 	suggestions := []string{}
