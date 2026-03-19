@@ -27,8 +27,11 @@ type Orchestrator struct {
 	eventChecker       *EventChecker     // ✅ Verificador de eventos K8s
 	hpaChecker         *HPAChecker       // ✅ Verificador de HPAs
 	pvChecker          *PVChecker        // ✅ Verificador de PVCs
-	dynatraceChecker   *DynatraceChecker // ✅ Verificador de problems Dynatrace
-	storage            *HealthCheckStorage
+	dynatraceChecker      *DynatraceChecker      // ✅ Verificador de problems Dynatrace
+	oneAgentChecker       *OneAgentSignalsChecker // ✅ Varredura OneAgent por threshold
+	nodePoolStore         *storage.NodePoolRegistryStore
+	depRegistry           *storage.DependencyRegistry
+	storage               *HealthCheckStorage
 	progressTracker    *sse.ProgressTracker
 	filterManager      *FilterManager              // ✅ Gerenciador de filtros
 	deploymentRegistry *storage.DeploymentRegistry // ✅ Base de conhecimento de deployments
@@ -63,11 +66,19 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 		hpaChecker:         NewHPAChecker(),
 		pvChecker:          NewPVChecker(),
 		dynatraceChecker:   NewDynatraceChecker(),
+		oneAgentChecker:    NewOneAgentSignalsChecker(),
 		storage:            hcStorage,
 		progressTracker:    progressTracker,
 		filterManager:      filterManager,
 		deploymentRegistry: deploymentRegistry,
 	}, nil
+}
+
+// SetStores injeta os stores de node pool e dependências para enriquecimento dos OneAgent Signals.
+// Chamado pelo server após criar o orchestrator.
+func (o *Orchestrator) SetStores(nodePoolStore *storage.NodePoolRegistryStore, depRegistry *storage.DependencyRegistry) {
+	o.nodePoolStore = nodePoolStore
+	o.depRegistry = depRegistry
 }
 
 // ExecuteHealthCheck executa health check em um ou mais clusters
@@ -505,6 +516,96 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 	result.FinishedAt = time.Now()
 	result.Duration = result.FinishedAt.Sub(result.StartedAt).Milliseconds()
 	o.calculateSummary(result)
+
+	// Busca reversa K8s → DT: para workloads K8s com problema que não apareceram nos resultados DT
+	// (tags OneAgent ausentes/incorretas). Timeout: 10s para não atrasar o HC.
+	if req.CheckDynatrace && req.DynatraceURL != "" {
+		troubledWorkloads := extractTroubledWorkloads(result)
+		existingDTWorkloads := extractExistingDTWorkloads(result.DynatraceResults)
+		// Filtra apenas workloads que NÃO têm match DT ainda
+		var unmatched []string
+		for _, w := range troubledWorkloads {
+			if _, ok := existingDTWorkloads[w]; !ok {
+				unmatched = append(unmatched, w)
+			}
+		}
+		if len(unmatched) > 0 {
+			log.Info().
+				Strs("unmatched_workloads", unmatched).
+				Str("cluster", cluster).
+				Msg("[Orchestrator] Iniciando busca reversa DT para workloads K8s sem match")
+
+			existingIDs := make(map[string]struct{}, len(result.DynatraceResults))
+			for _, d := range result.DynatraceResults {
+				existingIDs[d.ProblemID] = struct{}{}
+			}
+
+			extra := o.dynatraceChecker.SearchProblemsForWorkloads(
+				ctx, req.DynatraceURL, req.DynatraceToken,
+				unmatched, cluster, existingIDs, 10,
+			)
+			if len(extra) > 0 {
+				result.DynatraceResults = append(result.DynatraceResults, extra...)
+			}
+		}
+	}
+
+	// OneAgent Signals: varredura por threshold em todas as entidades instrumentadas
+	if req.CheckOneAgentSignals && req.DynatraceURL != "" {
+		o.publishProgress(sessionID, cluster, "oneagent", "Varrendo entidades OneAgent por threshold...", 88, StatusHealthy)
+
+		// Construir mapa de workloads já cobertos por DT problems (para marcar HasDTProblem)
+		existingDTWorkloads := make(map[string]struct{}, len(result.DynatraceResults))
+		for _, d := range result.DynatraceResults {
+			for _, w := range d.K8sWorkloads {
+				existingDTWorkloads[strings.ToLower(w)] = struct{}{}
+			}
+		}
+
+		signals := o.oneAgentChecker.CheckAll(
+			ctx,
+			req.DynatraceURL, req.DynatraceToken,
+			cluster,
+			existingDTWorkloads,
+			o.nodePoolStore,
+			o.depRegistry,
+			req.OneAgentThresholds,
+			req.GetTimeoutOneAgent(),
+		)
+		result.OneAgentSignals = signals
+
+		atRisk := 0
+		for _, s := range signals {
+			if s.RiskLevel != SeverityInfo {
+				atRisk++
+			}
+		}
+		if atRisk > 0 {
+			o.publishProgress(sessionID, cluster, "oneagent",
+				fmt.Sprintf("%d workload(s) com sinais de risco (sem problem DT ativo)", atRisk), 90, StatusWarning)
+		} else {
+			o.publishProgress(sessionID, cluster, "oneagent",
+				fmt.Sprintf("%d entidades varredas — sem sinais de risco por threshold", len(signals)), 90, StatusHealthy)
+		}
+	}
+
+	// Correlacionar K8s ↔ Dynatrace (apenas quando DT está habilitado e retornou dados)
+	if req.CheckDynatrace {
+		result.CorrelatedItems = Correlate(result)
+		if len(result.CorrelatedItems) > 0 {
+			correlated := 0
+			for _, ci := range result.CorrelatedItems {
+				if ci.Correlated {
+					correlated++
+				}
+			}
+			log.Info().
+				Str("cluster", cluster).
+				Int("total_correlated_items", len(result.CorrelatedItems)).
+				Int("bidirectional_matches", correlated).
+				Msg("[Correlator] K8s ↔ Dynatrace correlação concluída")
+		}
+	}
 
 	// Publicar resumo detalhado
 	o.publishProgress(sessionID, cluster, "summary", fmt.Sprintf("Total: %d checks realizados", result.TotalChecks), 95, result.OverallStatus)
@@ -1083,4 +1184,54 @@ func detectEnvironment(clusterName string) string {
 // GetFilterManager retorna o gerenciador de filtros
 func (o *Orchestrator) GetFilterManager() *FilterManager {
 	return o.filterManager
+}
+
+// extractTroubledWorkloads retorna os nomes (sem namespace) dos workloads K8s com problema.
+// Usado para direcionar a busca reversa DT.
+func extractTroubledWorkloads(result *HealthCheckResult) []string {
+	seen := make(map[string]struct{})
+	var names []string
+
+	add := func(name string) {
+		n := strings.ToLower(strings.TrimSpace(name))
+		if n != "" {
+			if _, ok := seen[n]; !ok {
+				seen[n] = struct{}{}
+				names = append(names, name)
+			}
+		}
+	}
+
+	for _, d := range result.DeploymentResults {
+		if d.Status != StatusHealthy {
+			add(d.Name)
+		}
+	}
+	for _, h := range result.HPAResults {
+		if h.Status != StatusHealthy && h.TargetName != "" {
+			add(h.TargetName)
+		}
+	}
+	for _, e := range result.EventResults {
+		if e.Status != StatusHealthy && e.InvolvedKind == "Deployment" {
+			add(e.InvolvedName)
+		}
+	}
+	return names
+}
+
+// extractExistingDTWorkloads retorna um set com os nomes de workloads já cobertos pelos DynatraceResults.
+// Permite filtrar workloads que já têm match DT para não fazer busca reversa desnecessária.
+func extractExistingDTWorkloads(dtResults []DynatraceHealth) map[string]struct{} {
+	set := make(map[string]struct{})
+	for _, d := range dtResults {
+		for _, w := range d.K8sWorkloads {
+			// formato "namespace/workload" — extrair só o nome
+			parts := strings.SplitN(w, "/", 2)
+			if len(parts) == 2 {
+				set[strings.ToLower(parts[1])] = struct{}{}
+			}
+		}
+	}
+	return set
 }

@@ -118,7 +118,11 @@ type HealthCheckRequest struct {
 	CheckEvents      bool `json:"check_events"`    // Verificar eventos do Kubernetes (FailedScheduling, etc.)
 	CheckHPAs        bool `json:"check_hpas"`      // Verificar HPAs (min=max, métricas, scaling)
 	CheckPVCs        bool `json:"check_pvcs"`      // Verificar PersistentVolumeClaims (status, storage class)
-	CheckDynatrace   bool `json:"check_dynatrace"` // Verificar problems OPEN no Dynatrace
+	CheckDynatrace      bool `json:"check_dynatrace"`       // Verificar problems OPEN no Dynatrace
+	CheckOneAgentSignals bool `json:"check_oneagent_signals"` // Varrer entidades OneAgent por threshold (sem problem ativo)
+
+	// Thresholds para OneAgent Signals (zero = usar defaults)
+	OneAgentThresholds OneAgentThresholds `json:"oneagent_thresholds,omitempty"`
 
 	// Credenciais Dynatrace (preenchidas pelo handler a partir dos tokens do usuário)
 	AIEmail            string `json:"ai_email,omitempty"`
@@ -168,6 +172,12 @@ type HealthCheckResult struct {
 	// Dynatrace problems correlacionados (opcional)
 	DynatraceResults []DynatraceHealth `json:"dynatrace_results"`
 
+	// Itens com correlação K8s ↔ Dynatrace (opcional, gerado pelo correlator)
+	CorrelatedItems []CorrelatedHealthItem `json:"correlated_items,omitempty"`
+
+	// Sinais OneAgent: workloads com métricas elevadas sem problem DT ativo (opcional)
+	OneAgentSignals []OneAgentSignal `json:"oneagent_signals,omitempty"`
+
 	// Resumo
 	TotalChecks   int          `json:"total_checks"`
 	HealthyCount  int          `json:"healthy_count"`
@@ -206,6 +216,40 @@ type DynatraceHealth struct {
 	RecentEvents   []string           `json:"recent_events,omitempty"`   // Top 3 eventos recentes: "TIPO: título"
 	MetricsSummary map[string]float64 `json:"metrics_summary,omitempty"` // ex: {"error_rate": 12.5, "response_p90_ms": 2300}
 	ContextFetched bool               `json:"context_fetched"`           // true se GetProblemContext foi chamado com sucesso
+}
+
+// CorrelatedK8sIssue representa um issue K8s de um workload específico para correlação
+type CorrelatedK8sIssue struct {
+	ResourceKind string       `json:"resource_kind"` // "Deployment", "HPA", "Event"
+	ResourceName string       `json:"resource_name"`
+	Status       HealthStatus `json:"status"`
+	Message      string       `json:"message"`
+	Severity     Severity     `json:"severity"`
+	Suggestions  []string     `json:"suggestions,omitempty"`
+}
+
+// CorrelatedHealthItem une sintomas K8s com problems Dynatrace para o mesmo workload.
+// Correlated=true indica que ambos os lados detectaram problema no mesmo workload.
+type CorrelatedHealthItem struct {
+	WorkloadName string `json:"workload_name"`
+	Namespace    string `json:"namespace"`
+	Cluster      string `json:"cluster"`
+
+	// K8s side (pode existir sem match DT)
+	K8sIssues  []CorrelatedK8sIssue `json:"k8s_issues,omitempty"`
+	K8sSeverity Severity             `json:"k8s_severity"`
+
+	// DT side (pode existir sem match K8s)
+	DTProblems []DynatraceHealth `json:"dt_problems,omitempty"`
+	DTSeverity Severity          `json:"dt_severity"`
+
+	// Combined
+	FinalSeverity Severity `json:"final_severity"` // pior dos dois lados; escalada para Critical se ambos >= High
+	Correlated    bool     `json:"correlated"`     // true = match encontrado dos dois lados
+
+	// AI Analysis (preenchida sob demanda via POST /healthcheck/correlated/analyze)
+	AIAnalysis   *string    `json:"ai_analysis,omitempty"`
+	AIAnalyzedAt *time.Time `json:"ai_analyzed_at,omitempty"`
 }
 
 // SeverityCounts contadores por nível de severidade
@@ -511,6 +555,7 @@ const (
 	DefaultTimeoutHPAs        = 45 // segundos (validação de HPAs + eventos)
 	DefaultTimeoutPVCs        = 30 // segundos (validação de PVCs)
 	DefaultTimeoutDynatrace   = 45 // segundos (inclui GetProblemContext Top5 + métricas críticas)
+	DefaultTimeoutOneAgent    = 30 // segundos (ListEntitiesByCluster x2 + BatchQueryMetrics)
 )
 
 // GetTimeoutDeployments retorna o timeout para deployments com fallback
@@ -585,4 +630,121 @@ func (r *HealthCheckRequest) GetTimeoutDynatrace() int {
 		return r.TimeoutDynatrace
 	}
 	return DefaultTimeoutDynatrace
+}
+
+// GetTimeoutOneAgent retorna o timeout para OneAgent Signals com fallback
+func (r *HealthCheckRequest) GetTimeoutOneAgent() int {
+	return DefaultTimeoutOneAgent
+}
+
+// ─── OneAgent Signals ─────────────────────────────────────────────────────────
+
+// NodePoolSummary resumo de um node pool para contextualização de onde o workload roda.
+type NodePoolSummary struct {
+	NodePool  string `json:"nodepool"`
+	VMSize    string `json:"vm_size,omitempty"`
+	Mode      string `json:"mode,omitempty"` // System | User
+	NodeCount int    `json:"node_count"`
+}
+
+// OneAgentThresholds define os limiares de métricas para classificar risco.
+// Campos zero usam os defaults via DefaultOneAgentThresholds().
+type OneAgentThresholds struct {
+	ErrorRateWarnPct     float64 `json:"error_rate_warn_pct,omitempty"`     // default 5
+	ErrorRateCriticalPct float64 `json:"error_rate_critical_pct,omitempty"` // default 10
+	ResponseP90WarnMs    float64 `json:"response_p90_warn_ms,omitempty"`    // default 2000
+	ResponseP90CritMs    float64 `json:"response_p90_crit_ms,omitempty"`    // default 5000
+	PodRestartsWarn      int     `json:"pod_restarts_warn,omitempty"`       // default 3
+	PodRestartsCrit      int     `json:"pod_restarts_crit,omitempty"`       // default 10
+	CPUThrottleWarnPct   float64 `json:"cpu_throttle_warn_pct,omitempty"`   // default 20
+	CPUThrottleCritPct   float64 `json:"cpu_throttle_crit_pct,omitempty"`   // default 50
+	PodsReadyWarnPct     float64 `json:"pods_ready_warn_pct,omitempty"`     // default 90
+	PodsReadyCritPct     float64 `json:"pods_ready_crit_pct,omitempty"`     // default 70
+}
+
+// DefaultOneAgentThresholds retorna os thresholds padrão para OneAgent Signals.
+func DefaultOneAgentThresholds() OneAgentThresholds {
+	return OneAgentThresholds{
+		ErrorRateWarnPct:     5,
+		ErrorRateCriticalPct: 10,
+		ResponseP90WarnMs:    2000,
+		ResponseP90CritMs:    5000,
+		PodRestartsWarn:      3,
+		PodRestartsCrit:      10,
+		CPUThrottleWarnPct:   20,
+		CPUThrottleCritPct:   50,
+		PodsReadyWarnPct:     90,
+		PodsReadyCritPct:     70,
+	}
+}
+
+// resolve substitui campos zero pelos defaults.
+func (t OneAgentThresholds) resolve() OneAgentThresholds {
+	d := DefaultOneAgentThresholds()
+	if t.ErrorRateWarnPct == 0 {
+		t.ErrorRateWarnPct = d.ErrorRateWarnPct
+	}
+	if t.ErrorRateCriticalPct == 0 {
+		t.ErrorRateCriticalPct = d.ErrorRateCriticalPct
+	}
+	if t.ResponseP90WarnMs == 0 {
+		t.ResponseP90WarnMs = d.ResponseP90WarnMs
+	}
+	if t.ResponseP90CritMs == 0 {
+		t.ResponseP90CritMs = d.ResponseP90CritMs
+	}
+	if t.PodRestartsWarn == 0 {
+		t.PodRestartsWarn = d.PodRestartsWarn
+	}
+	if t.PodRestartsCrit == 0 {
+		t.PodRestartsCrit = d.PodRestartsCrit
+	}
+	if t.CPUThrottleWarnPct == 0 {
+		t.CPUThrottleWarnPct = d.CPUThrottleWarnPct
+	}
+	if t.CPUThrottleCritPct == 0 {
+		t.CPUThrottleCritPct = d.CPUThrottleCritPct
+	}
+	if t.PodsReadyWarnPct == 0 {
+		t.PodsReadyWarnPct = d.PodsReadyWarnPct
+	}
+	if t.PodsReadyCritPct == 0 {
+		t.PodsReadyCritPct = d.PodsReadyCritPct
+	}
+	return t
+}
+
+// OneAgentSignal representa um workload instrumentado com métricas elevadas mas sem problem DT ativo.
+// É a visão "pré-alarme": identifica riscos que as policies DT ainda não transformaram em alerta.
+type OneAgentSignal struct {
+	// Identificação
+	WorkloadName string `json:"workload_name"`
+	Namespace    string `json:"namespace"`
+	Cluster      string `json:"cluster"`
+	EntityID     string `json:"entity_id"`
+	EntityType   string `json:"entity_type"` // CLOUD_APPLICATION | SERVICE
+
+	// Métricas coletadas (valor máximo na janela, default 60min)
+	ErrorRate      float64 `json:"error_rate,omitempty"`       // %
+	ResponseP90Ms  float64 `json:"response_p90_ms,omitempty"`  // ms
+	PodRestarts    float64 `json:"pod_restarts,omitempty"`     // contagem
+	CPUThrottlePct float64 `json:"cpu_throttle_pct,omitempty"` // %
+	PodsReadyPct   float64 `json:"pods_ready_pct,omitempty"`   // %
+
+	// Avaliação de risco
+	RiskLevel   Severity `json:"risk_level"`
+	RiskReasons []string `json:"risk_reasons,omitempty"`
+
+	// true = workload já coberto por um DT problem ativo (evita duplicidade com aba K8s↔DT)
+	HasDTProblem bool `json:"has_dt_problem"`
+
+	// Correlações com bancos locais (sem chamada extra à API DT)
+	ClusterPools []NodePoolSummary `json:"cluster_pools,omitempty"` // todos os pools do cluster
+	DependedBy   []string          `json:"depended_by,omitempty"`   // serviços que chamam este
+	DependsOn    []string          `json:"depends_on,omitempty"`    // serviços que este chama
+
+	// Metadata do OneAgent
+	AppVersion string    `json:"app_version,omitempty"`
+	Squad      string    `json:"squad,omitempty"`
+	CheckedAt  time.Time `json:"checked_at"`
 }
