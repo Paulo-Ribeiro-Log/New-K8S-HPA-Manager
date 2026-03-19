@@ -506,6 +506,39 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 	result.Duration = result.FinishedAt.Sub(result.StartedAt).Milliseconds()
 	o.calculateSummary(result)
 
+	// Busca reversa K8s → DT: para workloads K8s com problema que não apareceram nos resultados DT
+	// (tags OneAgent ausentes/incorretas). Timeout: 10s para não atrasar o HC.
+	if req.CheckDynatrace && req.DynatraceURL != "" {
+		troubledWorkloads := extractTroubledWorkloads(result)
+		existingDTWorkloads := extractExistingDTWorkloads(result.DynatraceResults)
+		// Filtra apenas workloads que NÃO têm match DT ainda
+		var unmatched []string
+		for _, w := range troubledWorkloads {
+			if _, ok := existingDTWorkloads[w]; !ok {
+				unmatched = append(unmatched, w)
+			}
+		}
+		if len(unmatched) > 0 {
+			log.Info().
+				Strs("unmatched_workloads", unmatched).
+				Str("cluster", cluster).
+				Msg("[Orchestrator] Iniciando busca reversa DT para workloads K8s sem match")
+
+			existingIDs := make(map[string]struct{}, len(result.DynatraceResults))
+			for _, d := range result.DynatraceResults {
+				existingIDs[d.ProblemID] = struct{}{}
+			}
+
+			extra := o.dynatraceChecker.SearchProblemsForWorkloads(
+				ctx, req.DynatraceURL, req.DynatraceToken,
+				unmatched, cluster, existingIDs, 10,
+			)
+			if len(extra) > 0 {
+				result.DynatraceResults = append(result.DynatraceResults, extra...)
+			}
+		}
+	}
+
 	// Correlacionar K8s ↔ Dynatrace (apenas quando DT está habilitado e retornou dados)
 	if req.CheckDynatrace {
 		result.CorrelatedItems = Correlate(result)
@@ -1101,4 +1134,54 @@ func detectEnvironment(clusterName string) string {
 // GetFilterManager retorna o gerenciador de filtros
 func (o *Orchestrator) GetFilterManager() *FilterManager {
 	return o.filterManager
+}
+
+// extractTroubledWorkloads retorna os nomes (sem namespace) dos workloads K8s com problema.
+// Usado para direcionar a busca reversa DT.
+func extractTroubledWorkloads(result *HealthCheckResult) []string {
+	seen := make(map[string]struct{})
+	var names []string
+
+	add := func(name string) {
+		n := strings.ToLower(strings.TrimSpace(name))
+		if n != "" {
+			if _, ok := seen[n]; !ok {
+				seen[n] = struct{}{}
+				names = append(names, name)
+			}
+		}
+	}
+
+	for _, d := range result.DeploymentResults {
+		if d.Status != StatusHealthy {
+			add(d.Name)
+		}
+	}
+	for _, h := range result.HPAResults {
+		if h.Status != StatusHealthy && h.TargetName != "" {
+			add(h.TargetName)
+		}
+	}
+	for _, e := range result.EventResults {
+		if e.Status != StatusHealthy && e.InvolvedKind == "Deployment" {
+			add(e.InvolvedName)
+		}
+	}
+	return names
+}
+
+// extractExistingDTWorkloads retorna um set com os nomes de workloads já cobertos pelos DynatraceResults.
+// Permite filtrar workloads que já têm match DT para não fazer busca reversa desnecessária.
+func extractExistingDTWorkloads(dtResults []DynatraceHealth) map[string]struct{} {
+	set := make(map[string]struct{})
+	for _, d := range dtResults {
+		for _, w := range d.K8sWorkloads {
+			// formato "namespace/workload" — extrair só o nome
+			parts := strings.SplitN(w, "/", 2)
+			if len(parts) == 2 {
+				set[strings.ToLower(parts[1])] = struct{}{}
+			}
+		}
+	}
+	return set
 }

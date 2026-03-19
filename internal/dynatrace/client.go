@@ -352,6 +352,100 @@ func (c *Client) EnrichEntitiesWithK8s(ctx context.Context, stubs []EntityStub) 
 	return enriched
 }
 
+// SearchEntitiesByName busca entidades DT cujo displayName começa com o nome do workload K8s.
+// Útil para a busca reversa: K8s detectou problema em um workload → encontrar entidade DT correspondente.
+// Faz chamadas paralelas (uma por nome), usa cache e deduplica por entityID.
+// Limite: máximo 10 nomes por chamada para evitar sobrecarga na API.
+func (c *Client) SearchEntitiesByName(ctx context.Context, names []string) []EntityStub {
+	if len(names) == 0 {
+		return nil
+	}
+	// Limitar a 10 nomes para não sobrecarregar a API
+	if len(names) > 10 {
+		names = names[:10]
+	}
+
+	type result struct {
+		stubs []EntityStub
+	}
+	results := make([]result, len(names))
+	var wg sync.WaitGroup
+
+	for i, name := range names {
+		wg.Add(1)
+		go func(idx int, n string) {
+			defer wg.Done()
+
+			// Verificar cache antes: se alguma entrada no cache tem DisplayName que começa com n, reusar
+			// (Otimização: o cache de entityID não serve aqui pois buscamos por nome)
+
+			params := url.Values{
+				// startsWith é mais preciso que contains — evita false positives
+				"entitySelector": {fmt.Sprintf(`entityName.startsWith("%s")`, n)},
+				"fields":         {"+tags,+properties"},
+				"pageSize":       {"5"}, // normalmente 1 entidade por nome
+			}
+
+			var resp struct {
+				Entities []Entity `json:"entities"`
+			}
+			if err := c.get(ctx, "entities", params, &resp); err != nil {
+				return // falha silenciosa — é busca auxiliar
+			}
+
+			stubs := make([]EntityStub, 0, len(resp.Entities))
+			for _, e := range resp.Entities {
+				stub := EntityStub{
+					EntityID:    EntityID{ID: e.EntityID, Type: e.Type},
+					DisplayName: e.DisplayName,
+				}
+				enriched := enrichFromEntity(stub, &e)
+				// Gravar no cache para evitar chamada repetida em GetEntity
+				entityCache.Store(enriched.EntityID.ID, entityCacheEntry{stub: enriched, cachedAt: time.Now()})
+				stubs = append(stubs, enriched)
+			}
+			results[idx] = result{stubs: stubs}
+		}(i, name)
+	}
+	wg.Wait()
+
+	// Deduplicar por entityID
+	seen := make(map[string]struct{})
+	var all []EntityStub
+	for _, r := range results {
+		for _, s := range r.stubs {
+			if _, ok := seen[s.EntityID.ID]; !ok {
+				seen[s.EntityID.ID] = struct{}{}
+				all = append(all, s)
+			}
+		}
+	}
+	return all
+}
+
+// GetOpenProblemsForEntity retorna problems OPEN que afetam uma entidade específica.
+// Usado na busca reversa: entity ID → problems ativos.
+func (c *Client) GetOpenProblemsForEntity(ctx context.Context, entityID string) ([]Problem, error) {
+	params := url.Values{
+		"problemSelector": {fmt.Sprintf(`status("OPEN"),entityId("%s")`, entityID)},
+		"fields":          {"+affectedEntities,+impactedEntities,+rootCauseEntity"},
+		"pageSize":        {"5"}, // poucas entidades → poucos problems esperados
+	}
+
+	var result struct {
+		Problems []problemRaw `json:"problems"`
+	}
+	if err := c.get(ctx, "problems", params, &result); err != nil {
+		return nil, err
+	}
+
+	problems := make([]Problem, 0, len(result.Problems))
+	for _, raw := range result.Problems {
+		problems = append(problems, raw.toModel())
+	}
+	return problems, nil
+}
+
 // EnrichStub busca detalhes de uma única entidade e preenche DisplayName, K8s e DTLabels.
 func (c *Client) EnrichStub(ctx context.Context, stub EntityStub) EntityStub {
 	entity, err := c.GetEntity(ctx, stub.EntityID.ID)

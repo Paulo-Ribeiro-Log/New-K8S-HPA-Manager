@@ -134,6 +134,8 @@ k8s-hpa-manager/
 
 `sync.RWMutex` com double-check locking para o `clientCache` em `internal/config/kubeconfig.go`. Nunca acessar o cache sem o mutex.
 
+**K8s client cache TTL**: `clientTTL = 30min`, `clientCleanupInterval = 15min`. Valores intencionalmente baixos para liberar clients inativos — não aumentar sem motivo (cada client K8s ocupa ~5-10MB).
+
 **Bubble Tea — NUNCA usar goroutines diretas:**
 ```go
 // ❌ ERRADO - Race condition
@@ -178,6 +180,8 @@ queryKey: ['resource-type', cluster, namespace],
 
 Broker em `internal/web/sse/progress.go` gerencia múltiplos clients. Usado em Cordon/Drain, Health Check, Helm Apply, Node Pool operations, **Command Runner**. Cada operação longa publica eventos via SSE para feedback em tempo real.
 
+**Performance SSE**: limpeza de replay buffer pós-conclusão usa `time.AfterFunc` (nunca `go func()+time.Sleep` — goroutine leak). Cleanup de zumbis a cada **5 minutos** (`sseCleanupInterval`). Replay buffers inativos expiram após **1 hora** (`maxReplayBufferAge`).
+
 ### WebSocket (Terminal)
 
 Protocolo JSON em `internal/web/handlers/websocket_shell.go`:
@@ -199,6 +203,10 @@ go build -ldflags "-X main.version=$(VERSION)" -o build/new-k8s-hpa
 ---
 
 ## Peculiaridades Críticas
+
+### Azure CLI — Timeout Obrigatório
+
+Todas as chamadas `exec.Command("az", ...)` devem usar `exec.CommandContext` com `context.WithTimeout`. Nunca usar `exec.Command` sem contexto — o Azure CLI pode travar indefinidamente em caso de VPN instável ou token expirado. Timeouts padrão: **30s** para operações de leitura, **60s** para `nodepool list/show`, **10min** para operações de escala.
 
 ### Azure CLI — Ordem de Operações para Node Pools
 
