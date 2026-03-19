@@ -1159,6 +1159,7 @@ func (s *Server) setupRoutes() {
 			// Rotas de escrita (POST, DELETE) - SRE only
 			healthCheckGroup.POST("/run", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Run)
 			healthCheckGroup.POST("/correlated/analyze", rbacMiddleware.RequireSREGroup(), healthCheckHandler.AnalyzeCorrelated)
+			healthCheckGroup.POST("/correlated/analyze-batch", rbacMiddleware.RequireSREGroup(), healthCheckHandler.AnalyzeCorrelatedBatch)
 			healthCheckGroup.DELETE("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Cancel) // ✅ Cancelar health check
 			healthCheckGroup.DELETE("/:id", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Delete)
 		}

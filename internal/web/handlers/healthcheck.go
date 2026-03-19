@@ -789,3 +789,124 @@ func buildCorrelatedItemPrompt(item healthcheck.CorrelatedHealthItem) string {
 
 	return sb.String()
 }
+
+// AnalyzeCorrelatedBatch realiza análise AI consolidada de múltiplos itens correlacionados K8s ↔ Dynatrace.
+// Útil para obter um diagnóstico geral do ambiente em vez de item por item.
+// POST /api/v1/healthcheck/correlated/analyze-batch
+func (h *HealthCheckHandler) AnalyzeCorrelatedBatch(c *gin.Context) {
+	if h.aiHandler == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI não configurado neste servidor"})
+		return
+	}
+
+	var req struct {
+		AIEmail string                            `json:"ai_email"`
+		Items   []healthcheck.CorrelatedHealthItem `json:"items"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.AIEmail == "" || len(req.Items) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ai_email e items são obrigatórios"})
+		return
+	}
+	// Limita a 20 itens para não explodir o contexto do modelo
+	if len(req.Items) > 20 {
+		req.Items = req.Items[:20]
+	}
+
+	provider, err := h.aiHandler.GetProviderForUser(req.AIEmail)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 120*time.Second)
+	defer cancel()
+
+	prompt := buildBatchCorrelatedPrompt(req.Items)
+
+	analysis, err := provider.Analyze(ctx, prompt)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha na análise AI: " + err.Error()})
+		return
+	}
+
+	log.Info().
+		Str("ai_email", req.AIEmail).
+		Int("item_count", len(req.Items)).
+		Msg("[HealthCheck] Análise AI batch de itens correlacionados concluída")
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"analysis":    analysis,
+		"item_count":  len(req.Items),
+		"analyzed_at": time.Now(),
+	})
+}
+
+// buildBatchCorrelatedPrompt monta prompt consolidado com todos os itens correlacionados para análise em batch
+func buildBatchCorrelatedPrompt(items []healthcheck.CorrelatedHealthItem) string {
+	var sb strings.Builder
+
+	// Contadores para o sumário
+	correlated, critical, high := 0, 0, 0
+	clusters := make(map[string]struct{})
+	for _, it := range items {
+		if it.Correlated {
+			correlated++
+		}
+		if it.FinalSeverity == healthcheck.SeverityCritical {
+			critical++
+		} else if it.FinalSeverity == healthcheck.SeverityHigh {
+			high++
+		}
+		clusters[it.Cluster] = struct{}{}
+	}
+
+	sb.WriteString("Você é um especialista em Kubernetes e observabilidade. Analise o estado geral de saúde do ambiente abaixo, identificando padrões, causa raiz comum e prioridade de ação.\n\n")
+	sb.WriteString(fmt.Sprintf("**Resumo:** %d workloads com problemas | %d correlacionados K8s+DT | %d críticos | %d high | %d cluster(s)\n\n",
+		len(items), correlated, critical, high, len(clusters)))
+
+	// Itens agrupados por severidade (críticos primeiro, já vêm ordenados do correlator)
+	sb.WriteString("## Workloads Afetados\n\n")
+	for i, it := range items {
+		sb.WriteString(fmt.Sprintf("### %d. %s/%s [%s] — Severidade: %s\n",
+			i+1, it.Namespace, it.WorkloadName, it.Cluster, it.FinalSeverity))
+		if it.Correlated {
+			sb.WriteString("*(Correlacionado: K8s e Dynatrace confirmam problema)*\n")
+		}
+
+		if len(it.K8sIssues) > 0 {
+			sb.WriteString("**K8s:** ")
+			for j, issue := range it.K8sIssues {
+				if j > 0 {
+					sb.WriteString("; ")
+				}
+				sb.WriteString(fmt.Sprintf("%s `%s` [%s]: %s", issue.ResourceKind, issue.ResourceName, issue.Severity, issue.Message))
+			}
+			sb.WriteString("\n")
+		}
+
+		if len(it.DTProblems) > 0 {
+			sb.WriteString("**DT:** ")
+			for j, p := range it.DTProblems {
+				if j > 0 {
+					sb.WriteString("; ")
+				}
+				sb.WriteString(fmt.Sprintf("%s [%s/%s]: %s", p.DisplayID, p.DTSeverity, p.ImpactLevel, p.Title))
+				if len(p.Evidence) > 0 {
+					sb.WriteString(fmt.Sprintf(" (Davis: %s)", p.Evidence[0]))
+				}
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("## Forneça\n")
+	sb.WriteString("1. **Panorama geral** — qual é o estado de saúde do ambiente?\n")
+	sb.WriteString("2. **Padrões identificados** — há causa raiz comum entre múltiplos workloads?\n")
+	sb.WriteString("3. **Prioridade de ação** — quais workloads abordar primeiro e por quê?\n")
+	sb.WriteString("4. **Ações imediatas** — comandos kubectl ou passos concretos para os itens mais críticos\n")
+	sb.WriteString("5. **Atenção especial** — workloads que, sozinhos, representam maior risco ao negócio\n")
+
+	return sb.String()
+}

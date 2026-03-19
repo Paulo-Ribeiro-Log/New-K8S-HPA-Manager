@@ -2500,6 +2500,20 @@ class APIClient {
     });
   }
 
+  /**
+   * Análise AI consolidada de múltiplos itens correlacionados K8s ↔ Dynatrace
+   * POST /api/v1/healthcheck/correlated/analyze-batch
+   */
+  async analyzeCorrelatedBatch(
+    items: import("../../types/healthcheck").CorrelatedHealthItem[],
+    aiEmail: string
+  ): Promise<{ success: boolean; analysis: string; item_count: number; analyzed_at: string }> {
+    return this.request("/healthcheck/correlated/analyze-batch", {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail, items }),
+    });
+  }
+
   // ===== HEALTH CHECK FILTERS =====
 
   /**

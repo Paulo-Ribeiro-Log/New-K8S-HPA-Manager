@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual: verificar com `git describe --tags --always`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry e Device Auth Grant para Gemini.
+**IMPORTANTE**: Versão atual: verificar com `git describe --tags --always`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini e correlação bidirecional K8s↔Dynatrace no Health Check (Fases 1-3 concluídas — Fase 4 pendente: análise AI em batch de CorrelatedItems).
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
 ---
@@ -293,7 +293,7 @@ Erros como "Tracking Prevention blocked access to storage" e "Could not create w
 
 **Copilot (Azure OpenAI)**: requer `CopilotAPIKey`, `CopilotEndpoint` (ex: `https://my-resource.openai.azure.com`) e `CopilotDeployment`. Env vars: `COPILOT_API_KEY`, `COPILOT_ENDPOINT`, `COPILOT_DEPLOYMENT`.
 
-### Dynatrace (Integração de Problems)
+### Dynatrace (Integração de Problems + Correlação K8s)
 
 `internal/dynatrace/` — cliente HTTP para Dynatrace Environment API v2. `DynatraceHandler` em `internal/web/handlers/dynatrace.go` expõe:
 - `GET /api/v1/dynatrace/config` — configuração atual (sem expor token)
@@ -304,6 +304,14 @@ Erros como "Tracking Prevention blocked access to storage" e "Could not create w
 - `GET /api/v1/dynatrace/history` — histórico de análises
 
 Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fallback para env vars `DT_API_URL` e `DT_API_TOKEN`. **Atenção**: URL deve usar `*.live.dynatrace.com` (API), não `*.apps.dynatrace.com` (UI) — o client corrige automaticamente.
+
+**Correlação K8s↔DT no Health Check** (`internal/healthcheck/correlator.go`):
+- `Correlate(result)` cruza `DeploymentResults`/`HPAResults`/`EventResults` com `DynatraceResults` pelo mesmo workload (`namespace/nome`)
+- `newWorkloadKey()` normaliza: lowercase + remove sufixo `:port` (DT usa `namespace/workload:8080`)
+- Escalada automática: se K8s severity >= High **E** DT severity >= High → `FinalSeverity = Critical`
+- Busca reversa: workloads K8s sem match DT → `SearchProblemsForWorkloads()` pesquisa por `entityName.startsWith()`
+- `POST /api/v1/healthcheck/correlated/analyze` — análise AI de um `CorrelatedHealthItem`
+- Frontend: 8ª aba "K8s↔DT" em `HealthCheckResultsPanel.tsx` com badges tricolores e botão "Analisar com AI"
 
 **Node Pool Registry**: `internal/storage/nodepool_registry_store.go` — catálogo SQLite de node pools AKS por cluster (`nodepool_registry.db`). Handler em `internal/web/handlers/nodepool_registry.go`. Rotas: `GET /api/v1/nodepools/registry`, `GET /api/v1/nodepools/registry/lookup?name=<entity>`, `POST /api/v1/nodepools/registry/scan`. Usado pelo `DynatraceTab` para correlacionar entity names do padrão `aks-<nodepool>-XXXXXXXX-vmssXXXXX` com cluster/vm-size/mode. Botão "Escanear Clusters" no tab Dynatrace dispara scan em todos os clusters.
 
@@ -342,7 +350,8 @@ Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fa
 | Vertex AI sem permissão | Verificar ADC ativo: `gcloud auth application-default print-access-token`. App usa `~/.k8s-hpa-manager/google_adc.json` — checar se existe e não expirou |
 | Gemini não autentica no WSL2 | OAuth loopback quebrado no WSL2 — usar Device Auth Grant (botão "Autenticar com Google" → código em `accounts.google.com/device`) |
 | Node Pool Registry vazio | Clicar "Escanear Clusters" no tab Dynatrace (requer VPN + clusters acessíveis) |
-| Health Check Dynatrace retorna vazio | **3 bugs conhecidos** — ver `docs/planning/DYNATRACE_HEALTHCHECK_INTEGRATION.md`. Principal: cluster name com `-admin` não bate com `HostGroup` do DT. Fix: `normalizeClusterName()` em `dynatrace_checker.go:52-68` |
+| Health Check Dynatrace retorna vazio | Verificar token DT e URL. Correlação K8s↔DT requer `check_dynatrace: true` no request + token configurado em AI Settings |
+| Aba K8s↔DT vazia após HC | Normal se não há workloads problemáticos — a aba só aparece com dados quando há sintomas K8s ou problems DT ativos |
 
 ---
 

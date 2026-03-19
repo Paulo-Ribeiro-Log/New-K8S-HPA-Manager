@@ -454,6 +454,86 @@ const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
   );
 };
 
+// Aba K8s↔DT com suporte a análise AI em batch de todos os itens correlacionados
+const CorrelatedTab = ({ items }: { items: CorrelatedHealthItem[] }) => {
+  const { toast } = useToast();
+  const [batchAnalyzing, setBatchAnalyzing] = useState(false);
+  const [batchResult, setBatchResult] = useState<string | null>(null);
+  const [batchOpen, setBatchOpen] = useState(false);
+
+  const handleBatchAnalyze = async () => {
+    const aiEmail = localStorage.getItem("ai_email") ?? "";
+    if (!aiEmail) {
+      toast({ title: "Configure seu e-mail em Configurações de AI", variant: "destructive" });
+      return;
+    }
+    setBatchAnalyzing(true);
+    try {
+      const result = await apiClient.analyzeCorrelatedBatch(items, aiEmail);
+      setBatchResult(result.analysis);
+      setBatchOpen(true);
+    } catch (err) {
+      toast({ title: "Falha na análise batch", description: err instanceof Error ? err.message : "Erro desconhecido", variant: "destructive" });
+    } finally {
+      setBatchAnalyzing(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      {/* Cabeçalho com contadores e botão batch */}
+      <div className="flex items-center justify-between gap-2 pb-1">
+        <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-2 h-2 rounded-full bg-violet-500" />
+            {items.filter(i => i.correlated).length} correlacionado(s) K8s+DT
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-2 h-2 rounded-full bg-blue-500" />
+            {items.filter(i => !i.correlated && (i.k8s_issues?.length ?? 0) > 0).length} só K8s
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-2 h-2 rounded-full bg-orange-500" />
+            {items.filter(i => !i.correlated && (i.dt_problems?.length ?? 0) > 0).length} só DT
+          </span>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 text-[10px] gap-1 border-purple-400 text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-950/30"
+          onClick={handleBatchAnalyze}
+          disabled={batchAnalyzing}
+        >
+          {batchAnalyzing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Brain className="h-3 w-3" />}
+          {batchAnalyzing ? "Analisando..." : "Analisar tudo com AI"}
+        </Button>
+      </div>
+
+      {/* Resultado da análise batch */}
+      {batchResult && (
+        <Collapsible open={batchOpen} onOpenChange={setBatchOpen}>
+          <CollapsibleTrigger asChild>
+            <Button variant="ghost" size="sm" className="w-full justify-between h-6 text-[10px] text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-950/30 border border-purple-200 dark:border-purple-800 rounded-md px-2">
+              <span className="flex items-center gap-1"><Brain className="h-3 w-3" /> Diagnóstico Consolidado AI</span>
+              {batchOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="mt-1.5 rounded-md border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/20 p-3">
+              <p className="text-xs text-purple-900 dark:text-purple-100 whitespace-pre-wrap leading-relaxed">{batchResult}</p>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+
+      {/* Cards individuais */}
+      {items.map((item, i) => (
+        <CorrelatedItemCard key={i} item={item} />
+      ))}
+    </div>
+  );
+};
+
 export const HealthCheckResultsPanel = ({
   results,
   isRunning = false,
@@ -1085,25 +1165,7 @@ export const HealthCheckResultsPanel = ({
                                   <p className="text-[10px]">Ative "Problems Dynatrace" nas opções para cruzar sintomas K8s com problems DT</p>
                                 </div>
                               ) : (
-                                <div className="space-y-2">
-                                  <div className="flex items-center gap-3 text-[10px] text-muted-foreground pb-1">
-                                    <span className="flex items-center gap-1">
-                                      <span className="inline-block w-2 h-2 rounded-full bg-violet-500" />
-                                      {result.correlated_items.filter(i => i.correlated).length} correlacionado(s) K8s+DT
-                                    </span>
-                                    <span className="flex items-center gap-1">
-                                      <span className="inline-block w-2 h-2 rounded-full bg-blue-500" />
-                                      {result.correlated_items.filter(i => !i.correlated && (i.k8s_issues?.length ?? 0) > 0).length} só K8s
-                                    </span>
-                                    <span className="flex items-center gap-1">
-                                      <span className="inline-block w-2 h-2 rounded-full bg-orange-500" />
-                                      {result.correlated_items.filter(i => !i.correlated && (i.dt_problems?.length ?? 0) > 0).length} só DT
-                                    </span>
-                                  </div>
-                                  {result.correlated_items.map((item, i) => (
-                                    <CorrelatedItemCard key={i} item={item} />
-                                  ))}
-                                </div>
+                                <CorrelatedTab items={result.correlated_items} />
                               )}
                             </TabsContent>
                           </Tabs>
