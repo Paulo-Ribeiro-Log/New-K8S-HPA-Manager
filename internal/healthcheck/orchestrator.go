@@ -506,6 +506,24 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 	result.Duration = result.FinishedAt.Sub(result.StartedAt).Milliseconds()
 	o.calculateSummary(result)
 
+	// Correlacionar K8s ↔ Dynatrace (apenas quando DT está habilitado e retornou dados)
+	if req.CheckDynatrace {
+		result.CorrelatedItems = Correlate(result)
+		if len(result.CorrelatedItems) > 0 {
+			correlated := 0
+			for _, ci := range result.CorrelatedItems {
+				if ci.Correlated {
+					correlated++
+				}
+			}
+			log.Info().
+				Str("cluster", cluster).
+				Int("total_correlated_items", len(result.CorrelatedItems)).
+				Int("bidirectional_matches", correlated).
+				Msg("[Correlator] K8s ↔ Dynatrace correlação concluída")
+		}
+	}
+
 	// Publicar resumo detalhado
 	o.publishProgress(sessionID, cluster, "summary", fmt.Sprintf("Total: %d checks realizados", result.TotalChecks), 95, result.OverallStatus)
 	o.publishProgress(sessionID, cluster, "summary", fmt.Sprintf("Saudáveis: %d", result.HealthyCount), 96, StatusHealthy)

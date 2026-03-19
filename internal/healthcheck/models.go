@@ -168,6 +168,9 @@ type HealthCheckResult struct {
 	// Dynatrace problems correlacionados (opcional)
 	DynatraceResults []DynatraceHealth `json:"dynatrace_results"`
 
+	// Itens com correlação K8s ↔ Dynatrace (opcional, gerado pelo correlator)
+	CorrelatedItems []CorrelatedHealthItem `json:"correlated_items,omitempty"`
+
 	// Resumo
 	TotalChecks   int          `json:"total_checks"`
 	HealthyCount  int          `json:"healthy_count"`
@@ -206,6 +209,36 @@ type DynatraceHealth struct {
 	RecentEvents   []string           `json:"recent_events,omitempty"`   // Top 3 eventos recentes: "TIPO: título"
 	MetricsSummary map[string]float64 `json:"metrics_summary,omitempty"` // ex: {"error_rate": 12.5, "response_p90_ms": 2300}
 	ContextFetched bool               `json:"context_fetched"`           // true se GetProblemContext foi chamado com sucesso
+}
+
+// CorrelatedK8sIssue representa um issue K8s de um workload específico para correlação
+type CorrelatedK8sIssue struct {
+	ResourceKind string       `json:"resource_kind"` // "Deployment", "HPA", "Event"
+	ResourceName string       `json:"resource_name"`
+	Status       HealthStatus `json:"status"`
+	Message      string       `json:"message"`
+	Severity     Severity     `json:"severity"`
+	Suggestions  []string     `json:"suggestions,omitempty"`
+}
+
+// CorrelatedHealthItem une sintomas K8s com problems Dynatrace para o mesmo workload.
+// Correlated=true indica que ambos os lados detectaram problema no mesmo workload.
+type CorrelatedHealthItem struct {
+	WorkloadName string `json:"workload_name"`
+	Namespace    string `json:"namespace"`
+	Cluster      string `json:"cluster"`
+
+	// K8s side (pode existir sem match DT)
+	K8sIssues  []CorrelatedK8sIssue `json:"k8s_issues,omitempty"`
+	K8sSeverity Severity             `json:"k8s_severity"`
+
+	// DT side (pode existir sem match K8s)
+	DTProblems []DynatraceHealth `json:"dt_problems,omitempty"`
+	DTSeverity Severity          `json:"dt_severity"`
+
+	// Combined
+	FinalSeverity Severity `json:"final_severity"` // pior dos dois lados; escalada para Critical se ambos >= High
+	Correlated    bool     `json:"correlated"`     // true = match encontrado dos dois lados
 }
 
 // SeverityCounts contadores por nível de severidade

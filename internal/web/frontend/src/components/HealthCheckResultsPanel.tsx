@@ -42,7 +42,7 @@ import {
   Radio,
   Unlink,
 } from "lucide-react";
-import type { HealthCheckResult, DynatraceHealth, Severity } from "@/types/healthcheck";
+import type { HealthCheckResult, DynatraceHealth, Severity, CorrelatedHealthItem, CorrelatedK8sIssue } from "@/types/healthcheck";
 import { SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/healthcheck";
 import { HealthCheckCard } from "@/components/HealthCheckCard";
 import { apiClient } from "@/lib/api/client";
@@ -288,6 +288,117 @@ const DynatraceProblemCard = ({ problem, affectedClusters }: { problem: Dynatrac
         </Collapsible>
       )}
     </div>
+  );
+};
+
+// Badge de fonte do item correlacionado
+const CorrelationSourceBadge = ({ item }: { item: CorrelatedHealthItem }) => {
+  const hasK8s = (item.k8s_issues?.length ?? 0) > 0;
+  const hasDT = (item.dt_problems?.length ?? 0) > 0;
+  if (item.correlated) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/15 border border-violet-500/30 text-violet-700 dark:text-violet-300 text-[10px] font-semibold px-2 py-0.5">
+        <Zap className="h-2.5 w-2.5" />
+        K8s + DT
+      </span>
+    );
+  }
+  if (hasK8s) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 border border-blue-500/30 text-blue-700 dark:text-blue-300 text-[10px] font-semibold px-2 py-0.5">
+        <Server className="h-2.5 w-2.5" />
+        K8s only
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/15 border border-orange-500/30 text-orange-700 dark:text-orange-300 text-[10px] font-semibold px-2 py-0.5">
+      <Zap className="h-2.5 w-2.5" />
+      DT only
+    </span>
+  );
+};
+
+// Card de item correlacionado K8s ↔ Dynatrace
+const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
+  const [open, setOpen] = useState(false);
+  const severityColor = SeverityColors[item.final_severity] || "text-gray-500";
+  const severityBg = SeverityBgColors[item.final_severity] || "bg-gray-500/10 border-gray-500/30";
+  const severityLabel = SeverityLabels[item.final_severity] || item.final_severity;
+
+  const k8sIssues = item.k8s_issues ?? [];
+  const dtProblems = item.dt_problems ?? [];
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="w-full text-left">
+        <div className={`rounded-lg border p-3 hover:brightness-95 transition-all ${severityBg} ${item.correlated ? "ring-1 ring-violet-500/30" : ""}`}>
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+              <div className="min-w-0">
+                <p className={`text-xs font-semibold truncate ${severityColor}`}>
+                  {item.workload_name}
+                </p>
+                <p className="text-[10px] text-muted-foreground">{item.namespace}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <CorrelationSourceBadge item={item} />
+              <Badge variant="outline" className={`text-[10px] ${severityColor}`}>
+                {severityLabel}
+              </Badge>
+            </div>
+          </div>
+        </div>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className={`rounded-b-lg border border-t-0 px-3 pb-3 pt-2 space-y-3 ${severityBg}`}>
+          {/* K8s issues */}
+          {k8sIssues.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 flex items-center gap-1">
+                <Server className="h-3 w-3" /> Sintomas K8s ({k8sIssues.length})
+              </p>
+              {k8sIssues.map((issue, i) => (
+                <div key={i} className="rounded border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/20 px-2 py-1.5">
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <Badge variant="outline" className="text-[9px] text-blue-600">{issue.resource_kind}</Badge>
+                    <span className="text-[10px] font-medium">{issue.resource_name}</span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">{issue.message}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* DT problems */}
+          {dtProblems.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-semibold text-orange-600 dark:text-orange-400 flex items-center gap-1">
+                <Zap className="h-3 w-3" /> Problems Dynatrace ({dtProblems.length})
+              </p>
+              {dtProblems.map((p, i) => (
+                <div key={i} className="rounded border border-orange-200 dark:border-orange-800 bg-orange-50/50 dark:bg-orange-950/20 px-2 py-1.5">
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <Badge variant="outline" className="text-[9px] text-orange-600">{p.display_id}</Badge>
+                    <span className="text-[10px] font-medium truncate">{p.title}</span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">{p.dt_severity} · {p.impact_level}</p>
+                  {p.evidence && p.evidence.length > 0 && (
+                    <div className="mt-1 space-y-0.5">
+                      {p.evidence.slice(0, 2).map((ev, j) => (
+                        <p key={j} className="text-[10px] text-violet-700 dark:text-violet-300">🧠 {ev}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 };
 
@@ -719,7 +830,7 @@ export const HealthCheckResultsPanel = ({
                       <CollapsibleContent>
                         <CardContent className="pt-0 border-t">
                           <Tabs defaultValue="deployments" className="mt-4">
-                            <TabsList className="grid w-full grid-cols-7">
+                            <TabsList className="grid w-full grid-cols-8">
                               <TabsTrigger value="deployments" className="gap-1 text-xs">
                                 <Server className="h-3 w-3" />
                                 Deploys ({result.deployment_results.length})
@@ -748,6 +859,12 @@ export const HealthCheckResultsPanel = ({
                                 <Zap className="h-3 w-3 text-purple-500" />
                                 <span className="text-purple-600 dark:text-purple-400">
                                   DT ({result.dynatrace_results?.length || 0})
+                                </span>
+                              </TabsTrigger>
+                              <TabsTrigger value="correlated" className="gap-1 text-xs">
+                                <Radio className="h-3 w-3 text-violet-500" />
+                                <span className={result.correlated_items?.some(i => i.correlated) ? "text-violet-600 dark:text-violet-400 font-semibold" : ""}>
+                                  K8s↔DT ({result.correlated_items?.length || 0})
                                 </span>
                               </TabsTrigger>
                             </TabsList>
@@ -903,6 +1020,36 @@ export const HealthCheckResultsPanel = ({
                                       problem={problem}
                                       affectedClusters={displayIdClusters.get(problem.display_id)}
                                     />
+                                  ))}
+                                </div>
+                              )}
+                            </TabsContent>
+
+                            <TabsContent value="correlated" className="space-y-2 mt-3">
+                              {!result.correlated_items || result.correlated_items.length === 0 ? (
+                                <div className="text-center py-6 text-xs text-muted-foreground space-y-2">
+                                  <Radio className="h-8 w-8 mx-auto opacity-30 text-violet-500" />
+                                  <p>Nenhuma correlação K8s ↔ Dynatrace encontrada</p>
+                                  <p className="text-[10px]">Ative "Problems Dynatrace" nas opções para cruzar sintomas K8s com problems DT</p>
+                                </div>
+                              ) : (
+                                <div className="space-y-2">
+                                  <div className="flex items-center gap-3 text-[10px] text-muted-foreground pb-1">
+                                    <span className="flex items-center gap-1">
+                                      <span className="inline-block w-2 h-2 rounded-full bg-violet-500" />
+                                      {result.correlated_items.filter(i => i.correlated).length} correlacionado(s) K8s+DT
+                                    </span>
+                                    <span className="flex items-center gap-1">
+                                      <span className="inline-block w-2 h-2 rounded-full bg-blue-500" />
+                                      {result.correlated_items.filter(i => !i.correlated && (i.k8s_issues?.length ?? 0) > 0).length} só K8s
+                                    </span>
+                                    <span className="flex items-center gap-1">
+                                      <span className="inline-block w-2 h-2 rounded-full bg-orange-500" />
+                                      {result.correlated_items.filter(i => !i.correlated && (i.dt_problems?.length ?? 0) > 0).length} só DT
+                                    </span>
+                                  </div>
+                                  {result.correlated_items.map((item, i) => (
+                                    <CorrelatedItemCard key={i} item={item} />
                                   ))}
                                 </div>
                               )}

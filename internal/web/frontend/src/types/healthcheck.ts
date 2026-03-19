@@ -125,6 +125,7 @@ export interface HealthCheckResult {
   hpa_results: HPAHealth[];              // HPAs com problemas de configuração
   pvc_results: PVCHealth[];              // PVCs com problemas de configuração
   dynatrace_results?: DynatraceHealth[]; // Problems Dynatrace correlacionados
+  correlated_items?: CorrelatedHealthItem[]; // Correlação K8s ↔ Dynatrace
 
   // Resumo
   total_checks: number;
@@ -640,4 +641,33 @@ export interface DynatraceHealth {
   recent_events?: string[];              // Top 3 eventos recentes: "TIPO: título"
   metrics_summary?: Record<string, number>; // ex: { error_rate: 12.5, response_p90_ms: 2300 }
   context_fetched?: boolean;             // true se GetProblemContext foi chamado com sucesso
+}
+
+// Issue K8s de um workload específico para correlação bidirecional K8s ↔ Dynatrace
+export interface CorrelatedK8sIssue {
+  resource_kind: string;   // "Deployment" | "HPA" | "Event"
+  resource_name: string;
+  status: HealthStatus;
+  message: string;
+  severity: Severity;
+  suggestions?: string[];
+}
+
+// Item correlacionado: une sintomas K8s com problems Dynatrace do mesmo workload
+export interface CorrelatedHealthItem {
+  workload_name: string;
+  namespace: string;
+  cluster: string;
+
+  // K8s side (pode existir sem match DT)
+  k8s_issues?: CorrelatedK8sIssue[];
+  k8s_severity: Severity;
+
+  // DT side (pode existir sem match K8s)
+  dt_problems?: DynatraceHealth[];
+  dt_severity: Severity;
+
+  // Combined
+  final_severity: Severity; // pior dos dois; escalada para critical se ambos >= high
+  correlated: boolean;      // true = match encontrado dos dois lados
 }
