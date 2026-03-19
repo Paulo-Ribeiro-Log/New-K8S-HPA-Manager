@@ -2486,6 +2486,20 @@ class APIClient {
     return this.request(`/healthcheck/events/${sessionId}`);
   }
 
+  /**
+   * Análise AI de item correlacionado K8s ↔ Dynatrace
+   * POST /api/v1/healthcheck/correlated/analyze
+   */
+  async analyzeCorrelatedItem(
+    item: import("../../types/healthcheck").CorrelatedHealthItem,
+    aiEmail: string
+  ): Promise<{ success: boolean; analysis: string; analyzed_at: string }> {
+    return this.request("/healthcheck/correlated/analyze", {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail, item }),
+    });
+  }
+
   // ===== HEALTH CHECK FILTERS =====
 
   /**

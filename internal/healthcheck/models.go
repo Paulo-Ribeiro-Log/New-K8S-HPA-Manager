@@ -239,6 +239,10 @@ type CorrelatedHealthItem struct {
 	// Combined
 	FinalSeverity Severity `json:"final_severity"` // pior dos dois lados; escalada para Critical se ambos >= High
 	Correlated    bool     `json:"correlated"`     // true = match encontrado dos dois lados
+
+	// AI Analysis (preenchida sob demanda via POST /healthcheck/correlated/analyze)
+	AIAnalysis   *string    `json:"ai_analysis,omitempty"`
+	AIAnalyzedAt *time.Time `json:"ai_analyzed_at,omitempty"`
 }
 
 // SeverityCounts contadores por nível de severidade

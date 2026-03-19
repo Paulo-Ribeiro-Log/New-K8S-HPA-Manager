@@ -670,4 +670,8 @@ export interface CorrelatedHealthItem {
   // Combined
   final_severity: Severity; // pior dos dois; escalada para critical se ambos >= high
   correlated: boolean;      // true = match encontrado dos dois lados
+
+  // AI Analysis (preenchida sob demanda via POST /healthcheck/correlated/analyze)
+  ai_analysis?: string;
+  ai_analyzed_at?: string; // ISO timestamp
 }

@@ -32,6 +32,7 @@ type HealthCheckHandler struct {
 	orchestrator *healthcheck.Orchestrator
 	tracker      *sse.ProgressTracker
 	tokensStore  *storage.UserTokensStore
+	aiHandler    *AIDiagnosticsHandler // para análise AI de itens correlacionados (opcional)
 
 	// ✅ Map para armazenar funções de cancelamento de cada sessão
 	cancelFuncs map[string]*cancelEntry
@@ -39,12 +40,13 @@ type HealthCheckHandler struct {
 }
 
 // NewHealthCheckHandler cria um novo handler de health checking
-func NewHealthCheckHandler(km *config.KubeConfigManager, orch *healthcheck.Orchestrator, tracker *sse.ProgressTracker, tokensStore *storage.UserTokensStore) *HealthCheckHandler {
+func NewHealthCheckHandler(km *config.KubeConfigManager, orch *healthcheck.Orchestrator, tracker *sse.ProgressTracker, tokensStore *storage.UserTokensStore, aiHandler *AIDiagnosticsHandler) *HealthCheckHandler {
 	return &HealthCheckHandler{
 		kubeManager:  km,
 		orchestrator: orch,
 		tracker:      tracker,
 		tokensStore:  tokensStore,
+		aiHandler:    aiHandler,
 		cancelFuncs:  make(map[string]*cancelEntry), // ✅ Inicializar map
 	}
 }
@@ -679,4 +681,111 @@ func (h *HealthCheckHandler) validateRequest(req *healthcheck.HealthCheckRequest
 	}
 
 	return nil
+}
+
+// AnalyzeCorrelated realiza análise AI de um item correlacionado K8s ↔ Dynatrace.
+// Recebe o contexto completo no body (K8s issues + DT problems) e retorna o diagnóstico.
+// POST /api/v1/healthcheck/correlated/analyze
+func (h *HealthCheckHandler) AnalyzeCorrelated(c *gin.Context) {
+	if h.aiHandler == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI não configurado neste servidor"})
+		return
+	}
+
+	var req struct {
+		AIEmail      string                       `json:"ai_email"`
+		Item         healthcheck.CorrelatedHealthItem `json:"item"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.AIEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ai_email e item são obrigatórios"})
+		return
+	}
+
+	provider, err := h.aiHandler.GetProviderForUser(req.AIEmail)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
+	defer cancel()
+
+	prompt := buildCorrelatedItemPrompt(req.Item)
+
+	analysis, err := provider.Analyze(ctx, prompt)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha na análise AI: " + err.Error()})
+		return
+	}
+
+	log.Info().
+		Str("ai_email", req.AIEmail).
+		Str("workload", req.Item.WorkloadName).
+		Str("namespace", req.Item.Namespace).
+		Str("cluster", req.Item.Cluster).
+		Bool("correlated", req.Item.Correlated).
+		Msg("[HealthCheck] Análise AI de item correlacionado concluída")
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"analysis":    analysis,
+		"analyzed_at": time.Now(),
+	})
+}
+
+// buildCorrelatedItemPrompt monta prompt combinado com contexto K8s + Dynatrace para AI
+func buildCorrelatedItemPrompt(item healthcheck.CorrelatedHealthItem) string {
+	var sb strings.Builder
+
+	sb.WriteString("Você é um especialista em Kubernetes e observabilidade. Analise o seguinte item de saúde correlacionado entre K8s e Dynatrace e forneça um diagnóstico conciso com causa raiz e ações recomendadas.\n\n")
+	sb.WriteString(fmt.Sprintf("**Workload:** %s\n", item.WorkloadName))
+	sb.WriteString(fmt.Sprintf("**Namespace:** %s\n", item.Namespace))
+	sb.WriteString(fmt.Sprintf("**Cluster:** %s\n", item.Cluster))
+	sb.WriteString(fmt.Sprintf("**Severidade Final:** %s\n", item.FinalSeverity))
+	if item.Correlated {
+		sb.WriteString("**Correlação:** Confirmada — K8s e Dynatrace detectaram problemas no mesmo workload\n")
+	}
+	sb.WriteString("\n")
+
+	if len(item.K8sIssues) > 0 {
+		sb.WriteString("## Sintomas Kubernetes\n")
+		for _, issue := range item.K8sIssues {
+			sb.WriteString(fmt.Sprintf("- **%s** `%s` [%s]: %s\n", issue.ResourceKind, issue.ResourceName, issue.Severity, issue.Message))
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(item.DTProblems) > 0 {
+		sb.WriteString("## Problems Dynatrace\n")
+		for _, p := range item.DTProblems {
+			sb.WriteString(fmt.Sprintf("- **%s** [%s/%s]: %s\n", p.DisplayID, p.DTSeverity, p.ImpactLevel, p.Title))
+			if len(p.Evidence) > 0 {
+				sb.WriteString("  - Davis AI Evidence:\n")
+				for _, ev := range p.Evidence {
+					sb.WriteString(fmt.Sprintf("    - %s\n", ev))
+				}
+			}
+			if len(p.MetricsSummary) > 0 {
+				sb.WriteString("  - Métricas:\n")
+				for k, v := range p.MetricsSummary {
+					sb.WriteString(fmt.Sprintf("    - %s: %.2f\n", k, v))
+				}
+			}
+			if len(p.RecentEvents) > 0 {
+				sb.WriteString("  - Eventos recentes:\n")
+				for _, ev := range p.RecentEvents {
+					sb.WriteString(fmt.Sprintf("    - %s\n", ev))
+				}
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("Forneça:\n")
+	sb.WriteString("1. Causa raiz mais provável\n")
+	sb.WriteString("2. Impacto no usuário/negócio\n")
+	sb.WriteString("3. Ações imediatas recomendadas (comandos kubectl quando aplicável)\n")
+	sb.WriteString("4. Prevenção futura\n")
+
+	return sb.String()
 }
