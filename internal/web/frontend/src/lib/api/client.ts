@@ -2486,6 +2486,48 @@ class APIClient {
     return this.request(`/healthcheck/events/${sessionId}`);
   }
 
+  /**
+   * Análise AI de item correlacionado K8s ↔ Dynatrace
+   * POST /api/v1/healthcheck/correlated/analyze
+   */
+  async analyzeCorrelatedItem(
+    item: import("../../types/healthcheck").CorrelatedHealthItem,
+    aiEmail: string
+  ): Promise<{ success: boolean; analysis: string; analyzed_at: string }> {
+    return this.request("/healthcheck/correlated/analyze", {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail, item }),
+    });
+  }
+
+  /**
+   * Análise AI consolidada de múltiplos itens correlacionados K8s ↔ Dynatrace
+   * POST /api/v1/healthcheck/correlated/analyze-batch
+   */
+  async analyzeCorrelatedBatch(
+    items: import("../../types/healthcheck").CorrelatedHealthItem[],
+    aiEmail: string
+  ): Promise<{ success: boolean; analysis: string; item_count: number; analyzed_at: string }> {
+    return this.request("/healthcheck/correlated/analyze-batch", {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail, items }),
+    });
+  }
+
+  /**
+   * Análise AI de um sinal OneAgent individual
+   * POST /api/v1/healthcheck/oneagent/analyze
+   */
+  async analyzeOneAgentSignal(
+    signal: import("../../types/healthcheck").OneAgentSignal,
+    aiEmail: string
+  ): Promise<{ analysis: string }> {
+    return this.request("/healthcheck/oneagent/analyze", {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail, signal }),
+    });
+  }
+
   // ===== HEALTH CHECK FILTERS =====
 
   /**

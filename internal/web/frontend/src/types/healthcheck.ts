@@ -85,7 +85,8 @@ export interface HealthCheckRequest {
   check_events: boolean; // Verificar eventos K8s (FailedScheduling, etc.)
   check_hpas: boolean;       // Verificar HPAs (min=max, métricas, scaling)
   check_pvcs: boolean;       // Verificar PVCs (status, StorageClass, access modes)
-  check_dynatrace?: boolean; // Verificar problems OPEN no Dynatrace
+  check_dynatrace?: boolean;        // Verificar problems OPEN no Dynatrace
+  check_oneagent_signals?: boolean; // Escanear métricas OneAgent (sem problem ativo)
 
   // Email do analista (para buscar credenciais Dynatrace)
   ai_email?: string;
@@ -125,6 +126,8 @@ export interface HealthCheckResult {
   hpa_results: HPAHealth[];              // HPAs com problemas de configuração
   pvc_results: PVCHealth[];              // PVCs com problemas de configuração
   dynatrace_results?: DynatraceHealth[]; // Problems Dynatrace correlacionados
+  correlated_items?: CorrelatedHealthItem[]; // Correlação K8s ↔ Dynatrace
+  oneagent_signals?: OneAgentSignal[];   // Sinais de risco detectados via OneAgent (sem problem ativo)
 
   // Resumo
   total_checks: number;
@@ -640,4 +643,79 @@ export interface DynatraceHealth {
   recent_events?: string[];              // Top 3 eventos recentes: "TIPO: título"
   metrics_summary?: Record<string, number>; // ex: { error_rate: 12.5, response_p90_ms: 2300 }
   context_fetched?: boolean;             // true se GetProblemContext foi chamado com sucesso
+}
+
+// Issue K8s de um workload específico para correlação bidirecional K8s ↔ Dynatrace
+export interface CorrelatedK8sIssue {
+  resource_kind: string;   // "Deployment" | "HPA" | "Event"
+  resource_name: string;
+  status: HealthStatus;
+  message: string;
+  severity: Severity;
+  suggestions?: string[];
+}
+
+// Item correlacionado: une sintomas K8s com problems Dynatrace do mesmo workload
+export interface CorrelatedHealthItem {
+  workload_name: string;
+  namespace: string;
+  cluster: string;
+
+  // K8s side (pode existir sem match DT)
+  k8s_issues?: CorrelatedK8sIssue[];
+  k8s_severity: Severity;
+
+  // DT side (pode existir sem match K8s)
+  dt_problems?: DynatraceHealth[];
+  dt_severity: Severity;
+
+  // Combined
+  final_severity: Severity; // pior dos dois; escalada para critical se ambos >= high
+  correlated: boolean;      // true = match encontrado dos dois lados
+
+  // AI Analysis (preenchida sob demanda via POST /healthcheck/correlated/analyze)
+  ai_analysis?: string;
+  ai_analyzed_at?: string; // ISO timestamp
+}
+
+// Node Pool summary para correlação dentro do OneAgentSignal
+export interface NodePoolSummary {
+  node_pool: string;
+  vm_size: string;
+  mode: string;
+  node_count: number;
+}
+
+// Sinal de risco detectado via OneAgent — sem precisar de um Problem DT ativo
+export interface OneAgentSignal {
+  entity_id: string;
+  entity_type: string;
+  cluster: string;
+  namespace: string;
+  workload_name: string;
+  app_version?: string;
+  squad?: string;
+
+  // Métricas (máximo da última hora)
+  error_rate: number;       // %
+  response_p90_ms: number;  // ms
+  pod_restarts: number;     // count/hora
+  cpu_throttle_pct: number; // %
+  pods_ready_pct: number;   // % (0-100)
+
+  // Avaliação de risco
+  risk_level: Severity;
+  risk_reasons: string[];
+
+  // Flags
+  has_dt_problem: boolean;  // true = workload já coberto por Problem DT ativo
+
+  // Correlação
+  cluster_pools?: NodePoolSummary[];
+  depended_by?: string[];   // serviços que dependem deste workload
+  depends_on?: string[];    // dependências deste workload
+
+  // AI Analysis (preenchida sob demanda)
+  ai_analysis?: string;
+  checked_at: string;       // ISO timestamp
 }
