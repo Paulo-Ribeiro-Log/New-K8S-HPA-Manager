@@ -29,12 +29,23 @@ func normalizeClusterName(name string) string {
 }
 
 // matchesCluster verifica se uma entidade enriquecida pertence ao cluster alvo.
-// Compara K8sCluster e DTLabels.HostGroup, ambos normalizados (sem "-admin").
+// Compara (em ordem de confiança):
+//  1. K8sCluster (tag kubernetes.cluster.name)
+//  2. DTLabels.HostGroup (tag dt.host_group.id)
+//  3. DisplayName — DT nomeia process groups como "Tech - cluster - proc"
+//     ex: "Envoy - akspriv-busca-prd - envoy vv-categoria..." → contém "akspriv-busca-prd"
 func matchesCluster(clusterNorm string, e dtclient.EntityStub) bool {
 	if strings.EqualFold(normalizeClusterName(e.K8sCluster), clusterNorm) {
 		return true
 	}
 	if e.Labels != nil && strings.EqualFold(normalizeClusterName(e.Labels.HostGroup), clusterNorm) {
+		return true
+	}
+	// Fallback: cluster name aparece em qualquer parte do display name
+	if clusterNorm != "" && strings.Contains(strings.ToLower(e.DisplayName), clusterNorm) {
+		return true
+	}
+	if clusterNorm != "" && strings.Contains(strings.ToLower(e.Name), clusterNorm) {
 		return true
 	}
 	return false
@@ -94,16 +105,28 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 		enriched := client.EnrichEntitiesWithK8s(checkCtx, p.AffectedEntities)
 
 		// Filtrar por cluster — normaliza ambos os lados para remover sufixo "-admin"
+		// Lógica: descartar SOMENTE se alguma entidade tem K8sCluster/HostGroup explicitamente
+		// diferente deste cluster. Entidades sem info de cluster são incluídas (não podemos verificar).
 		if clusterNorm != "" {
 			hasThisCluster := false
+			hasOtherCluster := false
 			for _, e := range enriched {
 				if matchesCluster(clusterNorm, e) {
 					hasThisCluster = true
 					break
 				}
+				// Detectar se pertence explicitamente a outro cluster
+				eCluster := normalizeClusterName(e.K8sCluster)
+				hg := ""
+				if e.Labels != nil {
+					hg = normalizeClusterName(e.Labels.HostGroup)
+				}
+				if (eCluster != "" && eCluster != clusterNorm) || (hg != "" && hg != clusterNorm) {
+					hasOtherCluster = true
+				}
 			}
-			if !hasThisCluster {
-				// Log para diagnosticar quais valores estão nas entidades
+			if !hasThisCluster && hasOtherCluster {
+				// Todas as entidades com info de cluster apontam para outro cluster
 				entityInfo := make([]string, 0, len(enriched))
 				for _, e := range enriched {
 					hostGroup := ""
@@ -117,7 +140,7 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 					Str("title", p.Title).
 					Str("clusterNorm", clusterNorm).
 					Strs("entities", entityInfo).
-					Msg("[DynatraceChecker] Problem descartado: nenhuma entidade pertence a este cluster")
+					Msg("[DynatraceChecker] Problem descartado: entidades pertencem a outro cluster")
 				continue
 			}
 		}

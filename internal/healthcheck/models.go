@@ -175,8 +175,8 @@ type HealthCheckResult struct {
 	// Itens com correlação K8s ↔ Dynatrace (opcional, gerado pelo correlator)
 	CorrelatedItems []CorrelatedHealthItem `json:"correlated_items,omitempty"`
 
-	// Sinais OneAgent: workloads com métricas elevadas sem problem DT ativo (opcional)
-	OneAgentSignals []OneAgentSignal `json:"oneagent_signals,omitempty"`
+	// Sinais OneAgent: workloads com métricas elevadas sem problem DT ativo (nil = não executado, [] = executado sem dados)
+	OneAgentSignals []OneAgentSignal `json:"oneagent_signals"`
 
 	// Resumo
 	TotalChecks   int          `json:"total_checks"`
@@ -714,6 +714,14 @@ func (t OneAgentThresholds) resolve() OneAgentThresholds {
 	return t
 }
 
+// TroubledWorkloadInfo resume um workload K8s com problema, usado como entrada para o scan OneAgent (Fase 1).
+type TroubledWorkloadInfo struct {
+	Name      string   // nome do workload
+	Namespace string   // namespace K8s
+	Issues    []string // resumo dos problemas detectados
+	Severity  Severity // severidade máxima detectada
+}
+
 // OneAgentSignal representa um workload instrumentado com métricas elevadas mas sem problem DT ativo.
 // É a visão "pré-alarme": identifica riscos que as policies DT ainda não transformaram em alerta.
 type OneAgentSignal struct {
@@ -721,8 +729,8 @@ type OneAgentSignal struct {
 	WorkloadName string `json:"workload_name"`
 	Namespace    string `json:"namespace"`
 	Cluster      string `json:"cluster"`
-	EntityID     string `json:"entity_id"`
-	EntityType   string `json:"entity_type"` // CLOUD_APPLICATION | SERVICE
+	EntityID     string `json:"entity_id,omitempty"`
+	EntityType   string `json:"entity_type,omitempty"` // CLOUD_APPLICATION | SERVICE
 
 	// Métricas coletadas (valor máximo na janela, default 60min)
 	ErrorRate      float64 `json:"error_rate,omitempty"`       // %
@@ -737,6 +745,10 @@ type OneAgentSignal struct {
 
 	// true = workload já coberto por um DT problem ativo (evita duplicidade com aba K8s↔DT)
 	HasDTProblem bool `json:"has_dt_problem"`
+
+	// Fase 1: originado de issue K8s sem match DT
+	FromK8sIssue bool     `json:"from_k8s_issue,omitempty"` // true = detectado via K8s, não via scan DT
+	K8sIssues    []string `json:"k8s_issues,omitempty"`     // mensagens dos problemas K8s
 
 	// Correlações com bancos locais (sem chamada extra à API DT)
 	ClusterPools []NodePoolSummary `json:"cluster_pools,omitempty"` // todos os pools do cluster

@@ -78,8 +78,8 @@ func (h *HealthCheckHandler) Run(c *gin.Context) {
 		return
 	}
 
-	// Popular credenciais Dynatrace do perfil do usuário (se check_dynatrace solicitado)
-	if req.CheckDynatrace && req.AIEmail != "" && h.tokensStore != nil {
+	// Popular credenciais Dynatrace do perfil do usuário (se check_dynatrace ou check_oneagent_signals solicitado)
+	if (req.CheckDynatrace || req.CheckOneAgentSignals) && req.AIEmail != "" && h.tokensStore != nil {
 		if tokens, err := h.tokensStore.GetTokens(req.AIEmail); err == nil && tokens != nil {
 			req.DynatraceURL = tokens.DynatraceURL
 			req.DynatraceToken = tokens.DynatraceToken

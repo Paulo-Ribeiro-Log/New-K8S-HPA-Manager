@@ -472,9 +472,14 @@ const OneAgentSignalCard = ({ signal, aiEmail }: { signal: OneAgentSignal; aiEma
     : "border-blue-200 dark:border-blue-800";
 
   const handleAnalyze = async () => {
+    const email = aiEmail || localStorage.getItem("ai_email") || "";
+    if (!email) {
+      toast({ title: "Configure seu e-mail em Configurações de AI primeiro", variant: "destructive" });
+      return;
+    }
     setAnalyzing(true);
     try {
-      const res = await apiClient.analyzeOneAgentSignal(signal, aiEmail ?? "");
+      const res = await apiClient.analyzeOneAgentSignal(signal, email);
       setAnalysis(res.analysis);
       setOpen(true);
     } catch (e: any) {
@@ -490,12 +495,15 @@ const OneAgentSignalCard = ({ signal, aiEmail }: { signal: OneAgentSignal; aiEma
         <div className="space-y-0.5">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className={`font-semibold text-sm ${riskColor}`}>{signal.namespace}/{signal.workload_name}</span>
-            <Badge variant="outline" className="text-[10px] px-1 py-0">{signal.entity_type}</Badge>
+            {signal.entity_type && <Badge variant="outline" className="text-[10px] px-1 py-0">{signal.entity_type}</Badge>}
+            {signal.from_k8s_issue && (
+              <Badge variant="outline" className="text-[10px] px-1 py-0 border-amber-400 text-amber-600 dark:text-amber-400">K8s Issue</Badge>
+            )}
             {signal.has_dt_problem && (
               <Badge variant="outline" className="text-[10px] px-1 py-0 border-purple-400 text-purple-600 dark:text-purple-400">Problem DT ativo</Badge>
             )}
           </div>
-          <p className="text-[10px] text-muted-foreground">{signal.entity_id}</p>
+          {signal.entity_id && <p className="text-[10px] text-muted-foreground">{signal.entity_id}</p>}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <Badge className={`text-[10px] ${SeverityColors[signal.risk_level]}`}>{SeverityLabels[signal.risk_level]}</Badge>
@@ -514,12 +522,21 @@ const OneAgentSignalCard = ({ signal, aiEmail }: { signal: OneAgentSignal; aiEma
         </div>
       )}
 
+      {signal.k8s_issues && signal.k8s_issues.length > 0 && (
+        <div className="text-[10px] bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-2 py-1 space-y-0.5">
+          <span className="font-semibold text-amber-700 dark:text-amber-400">Issues K8s detectados:</span>
+          {signal.k8s_issues.map((issue, i) => (
+            <div key={i} className="text-muted-foreground">• {issue}</div>
+          ))}
+        </div>
+      )}
+
       <div className="grid grid-cols-3 gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
-        {signal.error_rate > 0 && <span>Erro: <strong className="text-foreground">{signal.error_rate.toFixed(1)}%</strong></span>}
-        {signal.response_p90_ms > 0 && <span>P90: <strong className="text-foreground">{signal.response_p90_ms.toFixed(0)}ms</strong></span>}
-        {signal.pod_restarts > 0 && <span>Restarts: <strong className="text-foreground">{signal.pod_restarts.toFixed(0)}</strong></span>}
-        {signal.cpu_throttle_pct > 0 && <span>CPU throttle: <strong className="text-foreground">{signal.cpu_throttle_pct.toFixed(1)}%</strong></span>}
-        {signal.pods_ready_pct > 0 && <span>Pods prontos: <strong className="text-foreground">{signal.pods_ready_pct.toFixed(1)}%</strong></span>}
+        {(signal.error_rate ?? 0) > 0 && <span>Erro: <strong className="text-foreground">{signal.error_rate!.toFixed(1)}%</strong></span>}
+        {(signal.response_p90_ms ?? 0) > 0 && <span>P90: <strong className="text-foreground">{signal.response_p90_ms!.toFixed(0)}ms</strong></span>}
+        {(signal.pod_restarts ?? 0) > 0 && <span>Restarts: <strong className="text-foreground">{signal.pod_restarts!.toFixed(0)}</strong></span>}
+        {(signal.cpu_throttle_pct ?? 0) > 0 && <span>CPU throttle: <strong className="text-foreground">{signal.cpu_throttle_pct!.toFixed(1)}%</strong></span>}
+        {(signal.pods_ready_pct ?? 0) > 0 && <span>Pods prontos: <strong className="text-foreground">{signal.pods_ready_pct!.toFixed(1)}%</strong></span>}
       </div>
 
       {(signal.depended_by?.length || signal.depends_on?.length) ? (
@@ -557,6 +574,7 @@ const OneAgentTab = ({ signals }: { signals: OneAgentSignal[] }) => {
   const filtered = useMemo(() => {
     if (filter === "all") return signals;
     if (filter === "has_problem") return signals.filter(s => s.has_dt_problem);
+    if (filter === "k8s_issue") return signals.filter(s => s.from_k8s_issue);
     return signals.filter(s => s.risk_level === filter);
   }, [signals, filter]);
 
@@ -566,6 +584,7 @@ const OneAgentTab = ({ signals }: { signals: OneAgentSignal[] }) => {
     medium: signals.filter(s => s.risk_level === "medium").length,
     info: signals.filter(s => s.risk_level === "info").length,
     has_problem: signals.filter(s => s.has_dt_problem).length,
+    k8s_issue: signals.filter(s => s.from_k8s_issue).length,
   }), [signals]);
 
   return (
@@ -581,6 +600,14 @@ const OneAgentTab = ({ signals }: { signals: OneAgentSignal[] }) => {
             {lvl === "all" ? `Todos (${signals.length})` : `${SeverityLabels[lvl as Severity] ?? lvl} (${counts[lvl as keyof typeof counts] ?? 0})`}
           </button>
         ))}
+        {counts.k8s_issue > 0 && (
+          <button
+            onClick={() => setFilter("k8s_issue")}
+            className={`px-2 py-0.5 rounded border text-[10px] transition-colors border-amber-400 ${filter === "k8s_issue" ? "bg-amber-600 text-white" : "hover:bg-amber-50 dark:hover:bg-amber-950 text-amber-600 dark:text-amber-400"}`}
+          >
+            K8s Issue ({counts.k8s_issue})
+          </button>
+        )}
         {counts.has_problem > 0 && (
           <button
             onClick={() => setFilter("has_problem")}
@@ -591,8 +618,8 @@ const OneAgentTab = ({ signals }: { signals: OneAgentSignal[] }) => {
         )}
       </div>
       <div className="space-y-2">
-        {filtered.map(signal => (
-          <OneAgentSignalCard key={signal.entity_id} signal={signal} />
+        {filtered.map((signal, idx) => (
+          <OneAgentSignalCard key={signal.entity_id ?? `${signal.namespace}/${signal.workload_name}-${idx}`} signal={signal} />
         ))}
       </div>
     </div>
@@ -1107,7 +1134,7 @@ export const HealthCheckResultsPanel = ({
                       <CollapsibleContent>
                         <CardContent className="pt-0 border-t">
                           <Tabs defaultValue="deployments" className="mt-4">
-                            <TabsList className="grid w-full grid-cols-8">
+                            <TabsList className="grid w-full grid-cols-9">
                               <TabsTrigger value="deployments" className="gap-1 text-xs">
                                 <Server className="h-3 w-3" />
                                 Deploys ({result.deployment_results.length})
@@ -1309,11 +1336,17 @@ export const HealthCheckResultsPanel = ({
                             </TabsContent>
 
                             <TabsContent value="oneagent" className="space-y-2 mt-3">
-                              {!result.oneagent_signals || result.oneagent_signals.length === 0 ? (
+                              {result.oneagent_signals == null ? (
                                 <div className="text-center py-6 text-xs text-muted-foreground space-y-2">
                                   <Activity className="h-8 w-8 mx-auto opacity-30 text-emerald-500" />
-                                  <p className="font-medium">Nenhum sinal de risco detectado</p>
+                                  <p className="font-medium">Scan OneAgent não executado</p>
                                   <p className="text-[10px]">Ative "Sinais OneAgent" nas opções do Health Check para escanear métricas de todas as entidades instrumentadas</p>
+                                </div>
+                              ) : result.oneagent_signals.length === 0 ? (
+                                <div className="text-center py-6 text-xs text-muted-foreground space-y-2">
+                                  <Activity className="h-8 w-8 mx-auto opacity-30 text-emerald-500" />
+                                  <p className="font-medium">Nenhuma entidade encontrada no Dynatrace</p>
+                                  <p className="text-[10px]">Verifique nos logs do servidor: tag <code className="bg-muted px-1 rounded">dt.host_group.id</code> no OneAgent deve conter o nome do cluster sem <code className="bg-muted px-1 rounded">-admin</code>. Token DT precisa da permissão <strong>Read entities</strong>.</p>
                                 </div>
                               ) : (
                                 <OneAgentTab signals={result.oneagent_signals} />
