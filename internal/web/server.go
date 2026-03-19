@@ -1134,7 +1134,7 @@ func (s *Server) setupRoutes() {
 		fmt.Printf("⚠️  Falha ao criar Health Check Orchestrator: %v\n", err)
 	} else {
 		// Criar handler
-		healthCheckHandler := handlers.NewHealthCheckHandler(s.kubeManager, healthCheckOrchestrator, progressTracker, s.aiTokensStore)
+		healthCheckHandler := handlers.NewHealthCheckHandler(s.kubeManager, healthCheckOrchestrator, progressTracker, s.aiTokensStore, s.aiHandler)
 
 		// System Health endpoints (padrão Kubernetes) - sem auth
 		systemHealthHandler := handlers.NewSystemHealthHandler(s.kubeManager, healthCheckOrchestrator, updater.Version)
@@ -1158,6 +1158,7 @@ func (s *Server) setupRoutes() {
 
 			// Rotas de escrita (POST, DELETE) - SRE only
 			healthCheckGroup.POST("/run", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Run)
+			healthCheckGroup.POST("/correlated/analyze", rbacMiddleware.RequireSREGroup(), healthCheckHandler.AnalyzeCorrelated)
 			healthCheckGroup.DELETE("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Cancel) // ✅ Cancelar health check
 			healthCheckGroup.DELETE("/:id", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Delete)
 		}

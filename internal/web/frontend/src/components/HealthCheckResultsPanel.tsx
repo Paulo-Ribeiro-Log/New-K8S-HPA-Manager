@@ -321,13 +321,35 @@ const CorrelationSourceBadge = ({ item }: { item: CorrelatedHealthItem }) => {
 
 // Card de item correlacionado K8s ↔ Dynatrace
 const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
+  const { toast } = useToast();
   const [open, setOpen] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<string | null>(item.ai_analysis ?? null);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
   const severityColor = SeverityColors[item.final_severity] || "text-gray-500";
   const severityBg = SeverityBgColors[item.final_severity] || "bg-gray-500/10 border-gray-500/30";
   const severityLabel = SeverityLabels[item.final_severity] || item.final_severity;
 
   const k8sIssues = item.k8s_issues ?? [];
   const dtProblems = item.dt_problems ?? [];
+
+  const handleAnalyze = async () => {
+    const aiEmail = localStorage.getItem("ai_email") ?? "";
+    if (!aiEmail) {
+      toast({ title: "Configure seu e-mail em Configurações de AI", variant: "destructive" });
+      return;
+    }
+    setAnalyzing(true);
+    try {
+      const result = await apiClient.analyzeCorrelatedItem(item, aiEmail);
+      setAnalysisResult(result.analysis);
+      setAnalysisOpen(true);
+    } catch (err) {
+      toast({ title: "Falha na análise AI", description: err instanceof Error ? err.message : "Erro desconhecido", variant: "destructive" });
+    } finally {
+      setAnalyzing(false);
+    }
+  };
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -395,6 +417,36 @@ const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
                 </div>
               ))}
             </div>
+          )}
+
+          {/* Botão Analisar com AI */}
+          <div className="flex justify-end pt-1 border-t">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleAnalyze}
+              disabled={analyzing}
+              className="h-6 text-xs gap-1 text-violet-600 border-violet-300 hover:bg-violet-50 dark:hover:bg-violet-950/20"
+            >
+              {analyzing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Brain className="h-3 w-3" />}
+              {analyzing ? "Analisando..." : "Analisar com AI"}
+            </Button>
+          </div>
+
+          {/* Resultado da análise AI */}
+          {analysisResult && (
+            <Collapsible open={analysisOpen} onOpenChange={setAnalysisOpen}>
+              <CollapsibleTrigger className="flex items-center gap-1.5 text-xs font-medium text-violet-600 dark:text-violet-400 hover:underline">
+                <Brain className="h-3 w-3" />
+                Análise AI
+                {analysisOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="mt-1.5 rounded-md border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/20 p-2">
+                  <p className="text-xs text-violet-900 dark:text-violet-100 whitespace-pre-wrap leading-relaxed">{analysisResult}</p>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           )}
         </div>
       </CollapsibleContent>
