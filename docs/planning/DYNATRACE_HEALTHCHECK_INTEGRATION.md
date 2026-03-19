@@ -14,7 +14,7 @@
 | 2 | Enriquecimento — Davis AI, métricas, eventos | ✅ Concluída | `4dbe402` |
 | 3 | Frontend — DynatraceProblemCard expandido | ✅ Concluída | `ca95b17` |
 | 4 | Avançado — dedup cross-cluster, cache, batch AI | ✅ Concluída | `bfab22c` |
-| 5 | **DT Sinais — aba OneAgent sem problems ativos** | 🔲 Pendente | — |
+| 5 | **DT Sinais — aba OneAgent sem problems ativos** | ✅ Concluída | `0452c15` |
 
 ---
 
