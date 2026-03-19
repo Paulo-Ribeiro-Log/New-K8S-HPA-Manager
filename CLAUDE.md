@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual: verificar com `git describe --tags --always`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini e correlação bidirecional K8s↔Dynatrace no Health Check (Fases 1-4 concluídas — Fase 5 pendente: aba "DT Sinais" com leitura direta do OneAgent sem depender de problems ativos).
+**IMPORTANTE**: Versão atual: verificar com `git describe --tags --always`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check e aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas — integração Dynatrace×Health Check completa).
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
 ---
