@@ -2514,6 +2514,20 @@ class APIClient {
     });
   }
 
+  /**
+   * Análise AI de um sinal OneAgent individual
+   * POST /api/v1/healthcheck/oneagent/analyze
+   */
+  async analyzeOneAgentSignal(
+    signal: import("../../types/healthcheck").OneAgentSignal,
+    aiEmail: string
+  ): Promise<{ analysis: string }> {
+    return this.request("/healthcheck/oneagent/analyze", {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail, signal }),
+    });
+  }
+
   // ===== HEALTH CHECK FILTERS =====
 
   /**

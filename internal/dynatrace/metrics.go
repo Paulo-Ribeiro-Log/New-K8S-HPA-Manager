@@ -314,3 +314,71 @@ func (c *Client) GetEntityMetricsForProblem(ctx context.Context, problem *Proble
 		Entities:     ordered,
 	}
 }
+
+// BatchQueryMetrics consulta as métricas principais das últimas windowMinutes para múltiplas entidades em paralelo.
+// Usa semáforo de 10 goroutines simultâneas para não sobrecarregar a API.
+// Retorna mapa entityID → (metricKey → valor máximo no período). Entidades sem dados são omitidas.
+func (c *Client) BatchQueryMetrics(ctx context.Context, stubs []EntityStub, windowMinutes int) map[string]map[string]float64 {
+	if len(stubs) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	from := now.Add(-time.Duration(windowMinutes) * time.Minute)
+	fromStr := from.UTC().Format(time.RFC3339)
+	toStr := now.UTC().Format(time.RFC3339)
+	res := autoResolution(from, now)
+
+	const maxConcurrent = 10
+	sem := make(chan struct{}, maxConcurrent)
+
+	type chanResult struct {
+		entityID string
+		metrics  map[string]float64
+	}
+	ch := make(chan chanResult, len(stubs))
+
+	var wg sync.WaitGroup
+	for _, stub := range stubs {
+		wg.Add(1)
+		go func(s EntityStub) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			defs := metricsForEntityType(s.EntityID.Type)
+			if len(defs) == 0 {
+				return
+			}
+
+			series := c.getMetricsBatch(ctx, s.EntityID.ID, defs, fromStr, toStr, res)
+			if len(series) == 0 {
+				return
+			}
+
+			m := make(map[string]float64, len(series))
+			for _, serie := range series {
+				var maxVal float64
+				for _, pt := range serie.Points {
+					if pt.V > maxVal {
+						maxVal = pt.V
+					}
+				}
+				if maxVal > 0 {
+					m[serie.Key] = maxVal
+				}
+			}
+			if len(m) > 0 {
+				ch <- chanResult{entityID: s.EntityID.ID, metrics: m}
+			}
+		}(stub)
+	}
+
+	go func() { wg.Wait(); close(ch) }()
+
+	out := make(map[string]map[string]float64)
+	for r := range ch {
+		out[r.entityID] = r.metrics
+	}
+	return out
+}

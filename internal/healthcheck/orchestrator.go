@@ -27,8 +27,11 @@ type Orchestrator struct {
 	eventChecker       *EventChecker     // ✅ Verificador de eventos K8s
 	hpaChecker         *HPAChecker       // ✅ Verificador de HPAs
 	pvChecker          *PVChecker        // ✅ Verificador de PVCs
-	dynatraceChecker   *DynatraceChecker // ✅ Verificador de problems Dynatrace
-	storage            *HealthCheckStorage
+	dynatraceChecker      *DynatraceChecker      // ✅ Verificador de problems Dynatrace
+	oneAgentChecker       *OneAgentSignalsChecker // ✅ Varredura OneAgent por threshold
+	nodePoolStore         *storage.NodePoolRegistryStore
+	depRegistry           *storage.DependencyRegistry
+	storage               *HealthCheckStorage
 	progressTracker    *sse.ProgressTracker
 	filterManager      *FilterManager              // ✅ Gerenciador de filtros
 	deploymentRegistry *storage.DeploymentRegistry // ✅ Base de conhecimento de deployments
@@ -63,11 +66,19 @@ func NewOrchestrator(kubeManager *config.KubeConfigManager, progressTracker *sse
 		hpaChecker:         NewHPAChecker(),
 		pvChecker:          NewPVChecker(),
 		dynatraceChecker:   NewDynatraceChecker(),
+		oneAgentChecker:    NewOneAgentSignalsChecker(),
 		storage:            hcStorage,
 		progressTracker:    progressTracker,
 		filterManager:      filterManager,
 		deploymentRegistry: deploymentRegistry,
 	}, nil
+}
+
+// SetStores injeta os stores de node pool e dependências para enriquecimento dos OneAgent Signals.
+// Chamado pelo server após criar o orchestrator.
+func (o *Orchestrator) SetStores(nodePoolStore *storage.NodePoolRegistryStore, depRegistry *storage.DependencyRegistry) {
+	o.nodePoolStore = nodePoolStore
+	o.depRegistry = depRegistry
 }
 
 // ExecuteHealthCheck executa health check em um ou mais clusters
@@ -536,6 +547,45 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			if len(extra) > 0 {
 				result.DynatraceResults = append(result.DynatraceResults, extra...)
 			}
+		}
+	}
+
+	// OneAgent Signals: varredura por threshold em todas as entidades instrumentadas
+	if req.CheckOneAgentSignals && req.DynatraceURL != "" {
+		o.publishProgress(sessionID, cluster, "oneagent", "Varrendo entidades OneAgent por threshold...", 88, StatusHealthy)
+
+		// Construir mapa de workloads já cobertos por DT problems (para marcar HasDTProblem)
+		existingDTWorkloads := make(map[string]struct{}, len(result.DynatraceResults))
+		for _, d := range result.DynatraceResults {
+			for _, w := range d.K8sWorkloads {
+				existingDTWorkloads[strings.ToLower(w)] = struct{}{}
+			}
+		}
+
+		signals := o.oneAgentChecker.CheckAll(
+			ctx,
+			req.DynatraceURL, req.DynatraceToken,
+			cluster,
+			existingDTWorkloads,
+			o.nodePoolStore,
+			o.depRegistry,
+			req.OneAgentThresholds,
+			req.GetTimeoutOneAgent(),
+		)
+		result.OneAgentSignals = signals
+
+		atRisk := 0
+		for _, s := range signals {
+			if s.RiskLevel != SeverityInfo {
+				atRisk++
+			}
+		}
+		if atRisk > 0 {
+			o.publishProgress(sessionID, cluster, "oneagent",
+				fmt.Sprintf("%d workload(s) com sinais de risco (sem problem DT ativo)", atRisk), 90, StatusWarning)
+		} else {
+			o.publishProgress(sessionID, cluster, "oneagent",
+				fmt.Sprintf("%d entidades varredas — sem sinais de risco por threshold", len(signals)), 90, StatusHealthy)
 		}
 	}
 

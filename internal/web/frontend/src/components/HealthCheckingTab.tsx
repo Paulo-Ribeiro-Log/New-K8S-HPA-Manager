@@ -82,6 +82,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
   const [checkHPAs, setCheckHPAs] = useState(true);      // Verificar HPAs (habilitado por padrão)
   const [checkPVCs, setCheckPVCs] = useState(true);      // Verificar PVCs (habilitado por padrão)
   const [checkDynatrace, setCheckDynatrace] = useState(false); // Verificar problems Dynatrace
+  const [checkOneAgentSignals, setCheckOneAgentSignals] = useState(false); // Escanear sinais OneAgent
   const [timeout, setTimeout] = useState(30); // Timeout geral (fallback)
   const [showAdvancedTimeouts, setShowAdvancedTimeouts] = useState(false);
   const [timeoutDeployments, setTimeoutDeployments] = useState(60); // Padrão: 60s
@@ -263,7 +264,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       return;
     }
 
-    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents && !checkHPAs && !checkPVCs && !checkDynatrace) {
+    if (!checkDeployments && !checkServices && !checkConfigs && !checkEvents && !checkHPAs && !checkPVCs && !checkDynatrace && !checkOneAgentSignals) {
       console.error("[HealthCheckingTab] No check types selected");
       toast.error("Selecione pelo menos um tipo de check");
       return;
@@ -285,6 +286,7 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
       check_hpas: checkHPAs,
       check_pvcs: checkPVCs,
       check_dynatrace: checkDynatrace,
+      check_oneagent_signals: checkOneAgentSignals,
       ai_email: localStorage.getItem("ai_email") || undefined,
       timeout: timeout,
       // Timeouts específicos (se modo avançado habilitado)
@@ -578,6 +580,19 @@ export const HealthCheckingTab = (props: HealthCheckingTabProps) => {
                       </Label>
                       <Badge variant="outline" className="text-xs bg-purple-50 dark:bg-purple-950/20 text-purple-700 dark:text-purple-400 border-purple-300">
                         requer token DT configurado
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="check-oneagent"
+                        checked={checkOneAgentSignals}
+                        onCheckedChange={(checked) => setCheckOneAgentSignals(checked as boolean)}
+                      />
+                      <Label htmlFor="check-oneagent" className="text-sm cursor-pointer">
+                        Sinais OneAgent
+                      </Label>
+                      <Badge variant="outline" className="text-xs bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border-emerald-300">
+                        escaneia métricas sem problem ativo
                       </Badge>
                     </div>
                   </CardContent>

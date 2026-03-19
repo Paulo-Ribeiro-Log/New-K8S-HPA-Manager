@@ -42,7 +42,7 @@ import {
   Radio,
   Unlink,
 } from "lucide-react";
-import type { HealthCheckResult, DynatraceHealth, Severity, CorrelatedHealthItem, CorrelatedK8sIssue } from "@/types/healthcheck";
+import type { HealthCheckResult, DynatraceHealth, Severity, CorrelatedHealthItem, CorrelatedK8sIssue, OneAgentSignal } from "@/types/healthcheck";
 import { SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/healthcheck";
 import { HealthCheckCard } from "@/components/HealthCheckCard";
 import { apiClient } from "@/lib/api/client";
@@ -451,6 +451,151 @@ const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
         </div>
       </CollapsibleContent>
     </Collapsible>
+  );
+};
+
+// Card individual para sinal OneAgent
+const OneAgentSignalCard = ({ signal, aiEmail }: { signal: OneAgentSignal; aiEmail?: string }) => {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysis, setAnalysis] = useState<string | null>(signal.ai_analysis ?? null);
+
+  const riskColor = signal.risk_level === "critical" ? "text-red-600 dark:text-red-400"
+    : signal.risk_level === "high" ? "text-orange-600 dark:text-orange-400"
+    : signal.risk_level === "medium" ? "text-yellow-600 dark:text-yellow-400"
+    : "text-blue-500";
+
+  const riskBg = signal.risk_level === "critical" ? "border-red-200 dark:border-red-800"
+    : signal.risk_level === "high" ? "border-orange-200 dark:border-orange-800"
+    : signal.risk_level === "medium" ? "border-yellow-200 dark:border-yellow-800"
+    : "border-blue-200 dark:border-blue-800";
+
+  const handleAnalyze = async () => {
+    setAnalyzing(true);
+    try {
+      const res = await apiClient.analyzeOneAgentSignal(signal, aiEmail ?? "");
+      setAnalysis(res.analysis);
+      setOpen(true);
+    } catch (e: any) {
+      toast({ title: "Erro na análise AI", description: e.message, variant: "destructive" });
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  return (
+    <div className={`border rounded-md p-3 space-y-2 ${riskBg}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="space-y-0.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className={`font-semibold text-sm ${riskColor}`}>{signal.namespace}/{signal.workload_name}</span>
+            <Badge variant="outline" className="text-[10px] px-1 py-0">{signal.entity_type}</Badge>
+            {signal.has_dt_problem && (
+              <Badge variant="outline" className="text-[10px] px-1 py-0 border-purple-400 text-purple-600 dark:text-purple-400">Problem DT ativo</Badge>
+            )}
+          </div>
+          <p className="text-[10px] text-muted-foreground">{signal.entity_id}</p>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Badge className={`text-[10px] ${SeverityColors[signal.risk_level]}`}>{SeverityLabels[signal.risk_level]}</Badge>
+          <Button size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={handleAnalyze} disabled={analyzing}>
+            {analyzing ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Brain className="h-3 w-3 mr-1" />}
+            AI
+          </Button>
+        </div>
+      </div>
+
+      {signal.risk_reasons && signal.risk_reasons.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {signal.risk_reasons.map((r, i) => (
+            <span key={i} className="text-[10px] bg-muted px-1.5 py-0.5 rounded">{r}</span>
+          ))}
+        </div>
+      )}
+
+      <div className="grid grid-cols-3 gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
+        {signal.error_rate > 0 && <span>Erro: <strong className="text-foreground">{signal.error_rate.toFixed(1)}%</strong></span>}
+        {signal.response_p90_ms > 0 && <span>P90: <strong className="text-foreground">{signal.response_p90_ms.toFixed(0)}ms</strong></span>}
+        {signal.pod_restarts > 0 && <span>Restarts: <strong className="text-foreground">{signal.pod_restarts.toFixed(0)}</strong></span>}
+        {signal.cpu_throttle_pct > 0 && <span>CPU throttle: <strong className="text-foreground">{signal.cpu_throttle_pct.toFixed(1)}%</strong></span>}
+        {signal.pods_ready_pct > 0 && <span>Pods prontos: <strong className="text-foreground">{signal.pods_ready_pct.toFixed(1)}%</strong></span>}
+      </div>
+
+      {(signal.depended_by?.length || signal.depends_on?.length) ? (
+        <div className="text-[10px] text-muted-foreground space-y-0.5">
+          {signal.depended_by && signal.depended_by.length > 0 && (
+            <div className="flex items-center gap-1"><Users className="h-3 w-3" />Dependido por: {signal.depended_by.join(", ")}</div>
+          )}
+          {signal.depends_on && signal.depends_on.length > 0 && (
+            <div className="flex items-center gap-1"><GitBranch className="h-3 w-3" />Depende de: {signal.depends_on.join(", ")}</div>
+          )}
+        </div>
+      ) : null}
+
+      {analysis && (
+        <Collapsible open={open} onOpenChange={setOpen}>
+          <CollapsibleTrigger asChild>
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px] gap-1 w-full justify-start">
+              {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              <Brain className="h-3 w-3 text-blue-500" />
+              Análise AI
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="mt-1 p-2 bg-muted/50 rounded text-xs whitespace-pre-wrap">{analysis}</div>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+    </div>
+  );
+};
+
+// Aba "DT Sinais" com filtro por risco e scan de sinais OneAgent
+const OneAgentTab = ({ signals }: { signals: OneAgentSignal[] }) => {
+  const [filter, setFilter] = useState<string>("all");
+  const filtered = useMemo(() => {
+    if (filter === "all") return signals;
+    if (filter === "has_problem") return signals.filter(s => s.has_dt_problem);
+    return signals.filter(s => s.risk_level === filter);
+  }, [signals, filter]);
+
+  const counts = useMemo(() => ({
+    critical: signals.filter(s => s.risk_level === "critical").length,
+    high: signals.filter(s => s.risk_level === "high").length,
+    medium: signals.filter(s => s.risk_level === "medium").length,
+    info: signals.filter(s => s.risk_level === "info").length,
+    has_problem: signals.filter(s => s.has_dt_problem).length,
+  }), [signals]);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
+        <span className="text-muted-foreground">Filtro:</span>
+        {(["all", "critical", "high", "medium", "info"] as const).map(lvl => (
+          <button
+            key={lvl}
+            onClick={() => setFilter(lvl)}
+            className={`px-2 py-0.5 rounded border text-[10px] transition-colors ${filter === lvl ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted"}`}
+          >
+            {lvl === "all" ? `Todos (${signals.length})` : `${SeverityLabels[lvl as Severity] ?? lvl} (${counts[lvl as keyof typeof counts] ?? 0})`}
+          </button>
+        ))}
+        {counts.has_problem > 0 && (
+          <button
+            onClick={() => setFilter("has_problem")}
+            className={`px-2 py-0.5 rounded border text-[10px] transition-colors border-purple-400 ${filter === "has_problem" ? "bg-purple-600 text-white" : "hover:bg-purple-50 dark:hover:bg-purple-950 text-purple-600 dark:text-purple-400"}`}
+          >
+            Com Problem DT ({counts.has_problem})
+          </button>
+        )}
+      </div>
+      <div className="space-y-2">
+        {filtered.map(signal => (
+          <OneAgentSignalCard key={signal.entity_id} signal={signal} />
+        ))}
+      </div>
+    </div>
   );
 };
 
@@ -999,6 +1144,12 @@ export const HealthCheckResultsPanel = ({
                                   K8s↔DT ({result.correlated_items?.length || 0})
                                 </span>
                               </TabsTrigger>
+                              <TabsTrigger value="oneagent" className="gap-1 text-xs">
+                                <Activity className="h-3 w-3 text-emerald-500" />
+                                <span className={(result.oneagent_signals?.length ?? 0) > 0 ? "text-emerald-600 dark:text-emerald-400 font-semibold" : ""}>
+                                  DT Sinais ({result.oneagent_signals?.length || 0})
+                                </span>
+                              </TabsTrigger>
                             </TabsList>
 
                             <TabsContent value="deployments" className="space-y-2 mt-3">
@@ -1154,6 +1305,18 @@ export const HealthCheckResultsPanel = ({
                                     />
                                   ))}
                                 </div>
+                              )}
+                            </TabsContent>
+
+                            <TabsContent value="oneagent" className="space-y-2 mt-3">
+                              {!result.oneagent_signals || result.oneagent_signals.length === 0 ? (
+                                <div className="text-center py-6 text-xs text-muted-foreground space-y-2">
+                                  <Activity className="h-8 w-8 mx-auto opacity-30 text-emerald-500" />
+                                  <p className="font-medium">Nenhum sinal de risco detectado</p>
+                                  <p className="text-[10px]">Ative "Sinais OneAgent" nas opções do Health Check para escanear métricas de todas as entidades instrumentadas</p>
+                                </div>
+                              ) : (
+                                <OneAgentTab signals={result.oneagent_signals} />
                               )}
                             </TabsContent>
 

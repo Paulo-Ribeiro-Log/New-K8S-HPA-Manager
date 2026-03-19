@@ -89,6 +89,7 @@ type Server struct {
 
 	// Node Pool Registry (catálogo de node pools para correlação Dynatrace)
 	nodepoolRegistryHandler *handlers.NodePoolRegistryHandler
+	npRegistryStore         *storage.NodePoolRegistryStore
 }
 
 // NewServer cria uma nova instância do servidor web
@@ -258,10 +259,12 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 
 	// Node Pool Registry (catálogo para correlação Dynatrace aks-<pool>-vmss*)
 	var nodepoolRegistryHandler *handlers.NodePoolRegistryHandler
+	var npRegistryStore *storage.NodePoolRegistryStore
 	npRegistryDBPath := filepath.Join(baseDir, "nodepool_registry.db")
-	if npRegistryStore, err := storage.NewNodePoolRegistryStore(npRegistryDBPath); err != nil {
+	if store, err := storage.NewNodePoolRegistryStore(npRegistryDBPath); err != nil {
 		fmt.Printf("⚠️  NodePool Registry: falha ao criar store: %v\n", err)
 	} else {
+		npRegistryStore = store
 		nodepoolRegistryHandler = handlers.NewNodePoolRegistryHandler(kubeManager, npRegistryStore)
 		fmt.Println("✅ NodePool Registry inicializado (correlação Dynatrace aks-<pool>-vmss*)")
 	}
@@ -291,6 +294,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		kubeManagerWrapper: kubeManagerWrapper, // Para predictions RBAC
 		awxHandler:              awxHandler,              // AWX Integration (certificados TLS)
 		nodepoolRegistryHandler: nodepoolRegistryHandler, // Catálogo de node pools Dynatrace
+		npRegistryStore:         npRegistryStore,         // Usado pelo healthcheck orchestrator
 	}
 
 	server.setupMiddleware()
@@ -1160,6 +1164,7 @@ func (s *Server) setupRoutes() {
 			healthCheckGroup.POST("/run", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Run)
 			healthCheckGroup.POST("/correlated/analyze", rbacMiddleware.RequireSREGroup(), healthCheckHandler.AnalyzeCorrelated)
 			healthCheckGroup.POST("/correlated/analyze-batch", rbacMiddleware.RequireSREGroup(), healthCheckHandler.AnalyzeCorrelatedBatch)
+			healthCheckGroup.POST("/oneagent/analyze", rbacMiddleware.RequireSREGroup(), healthCheckHandler.AnalyzeOneAgentSignal)
 			healthCheckGroup.DELETE("/cancel/:sessionId", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Cancel) // ✅ Cancelar health check
 			healthCheckGroup.DELETE("/:id", rbacMiddleware.RequireSREGroup(), healthCheckHandler.Delete)
 		}
@@ -1197,6 +1202,9 @@ func (s *Server) setupRoutes() {
 		} else {
 			fmt.Println("✅ Dependency Registry (SQLite) inicializado")
 		}
+
+		// Injetar stores no orchestrator para enriquecimento dos OneAgent Signals
+		healthCheckOrchestrator.SetStores(s.npRegistryStore, dependencyRegistry)
 		dependenciesHandler := handlers.NewDependenciesHandler(dependencyScanner, dependencyRegistry)
 		dependenciesGroup := api.Group("/dependencies")
 		{

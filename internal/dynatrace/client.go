@@ -423,6 +423,62 @@ func (c *Client) SearchEntitiesByName(ctx context.Context, names []string) []Ent
 	return all
 }
 
+// listEntitiesBySelector busca entidades com um entitySelector arbitrário e retorna EntityStubs enriquecidos.
+// Usa pageSize=500 (limite prático por cluster). Grava no cache entityCache.
+func (c *Client) listEntitiesBySelector(ctx context.Context, entitySelector string) ([]EntityStub, error) {
+	params := url.Values{
+		"entitySelector": {entitySelector},
+		"fields":         {"+tags,+properties"},
+		"pageSize":       {"500"},
+	}
+	var resp struct {
+		Entities []Entity `json:"entities"`
+	}
+	if err := c.get(ctx, "entities", params, &resp); err != nil {
+		return nil, err
+	}
+	stubs := make([]EntityStub, 0, len(resp.Entities))
+	for _, e := range resp.Entities {
+		stub := EntityStub{
+			EntityID:    EntityID{ID: e.EntityID, Type: e.Type},
+			DisplayName: e.DisplayName,
+		}
+		enriched := enrichFromEntity(stub, &e)
+		entityCache.Store(enriched.EntityID.ID, entityCacheEntry{stub: enriched, cachedAt: time.Now()})
+		stubs = append(stubs, enriched)
+	}
+	return stubs, nil
+}
+
+// ListEntitiesByCluster lista entidades de um tipo instrumentadas pelo OneAgent em um cluster.
+// Usa a tag dt.host_group.id como seletor principal (reflete DTLabels.HostGroup = nome do cluster AKS sem "-admin").
+// Fallback para CLOUD_APPLICATION: kubernetesCluster.name — caso as entidades não tenham HostGroup tag.
+// Retorna até 500 entidades (limite prático por cluster, sem paginação).
+func (c *Client) ListEntitiesByCluster(ctx context.Context, clusterName, entityType string) ([]EntityStub, error) {
+	if clusterName == "" || entityType == "" {
+		return nil, fmt.Errorf("clusterName e entityType são obrigatórios")
+	}
+
+	// Primário: tag dt.host_group.id (preenchida pelo OneAgent em todos os hosts do cluster)
+	primarySelector := fmt.Sprintf(`type("%s"),tag("dt.host_group.id:%s")`, entityType, clusterName)
+	stubs, err := c.listEntitiesBySelector(ctx, primarySelector)
+	if err != nil {
+		// falha não fatal — tenta fallback antes de desistir
+		stubs = nil
+	}
+
+	// Fallback: kubernetesCluster.name para CLOUD_APPLICATION (K8s native)
+	if len(stubs) == 0 && entityType == "CLOUD_APPLICATION" {
+		fallbackSelector := fmt.Sprintf(`type("CLOUD_APPLICATION"),kubernetesCluster.name("%s")`, clusterName)
+		stubs, err = c.listEntitiesBySelector(ctx, fallbackSelector)
+		if err != nil {
+			return nil, fmt.Errorf("ListEntitiesByCluster fallback: %w", err)
+		}
+	}
+
+	return stubs, nil
+}
+
 // GetOpenProblemsForEntity retorna problems OPEN que afetam uma entidade específica.
 // Usado na busca reversa: entity ID → problems ativos.
 func (c *Client) GetOpenProblemsForEntity(ctx context.Context, entityID string) ([]Problem, error) {
