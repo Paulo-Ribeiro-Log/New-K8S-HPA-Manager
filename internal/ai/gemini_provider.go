@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // GeminiProvider implementa Provider para Google Gemini API (AI Studio ou Vertex AI)
@@ -92,26 +94,41 @@ func (p *GeminiProvider) analyzeAPIKey(ctx context.Context, prompt string) (stri
 
 // analyzeVertex usa o Vertex AI.
 // Estratégia para SSO corporativo (sem service account):
-//  1. AI Studio endpoint (generativelanguage.googleapis.com) + OAuth token + X-Goog-User-Project
-//     → requer apenas serviceusage.services.use (qualquer role básica de projeto)
-//  2. Vertex AI endpoint (aiplatform.googleapis.com) + OAuth/ADC/service account
+//  1. AI Studio endpoint (generativelanguage.googleapis.com) + OAuth token SEM projeto
+//     → funciona para usuários Gemini for Google Workspace (quota individual)
+//  2. AI Studio endpoint + OAuth token + X-Goog-User-Project
+//     → requer Generative Language API habilitada no projeto
+//  3. Vertex AI endpoint (aiplatform.googleapis.com) + OAuth/ADC/service account
 //     → requer roles/aiplatform.user
 func (p *GeminiProvider) analyzeVertex(ctx context.Context, prompt string) (string, error) {
-	// Tentativa 1: AI Studio com OAuth SSO corporativo + billing do projeto.
-	// Muitas contas SSO têm serviceusage.services.use mas não aiplatform.endpoints.predict.
-	if p.refreshToken != "" && p.project != "" && p.serviceAccountJSON == "" {
-		if token, err := GetAccessTokenFromRefreshToken(ctx, p.refreshToken); err == nil {
+	if p.refreshToken != "" && p.serviceAccountJSON == "" {
+		token, err := GetAccessTokenFromRefreshToken(ctx, p.refreshToken)
+		if err != nil {
+			log.Warn().Err(err).Msg("Vertex AI: falha ao obter access token do refresh token")
+		} else {
 			aiStudioURL := fmt.Sprintf(
 				"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent",
 				p.model)
-			if result, err := p.doRequest(ctx, aiStudioURL, token, p.project, prompt); err == nil {
+
+			// Tentativa 1: sem X-Goog-User-Project (quota individual — Gemini Workspace)
+			if result, err := p.doRequest(ctx, aiStudioURL, token, "", prompt); err == nil {
 				return result, nil
+			} else {
+				log.Warn().Err(err).Str("attempt", "ai-studio-no-project").Msg("Vertex AI: AI Studio sem projeto falhou")
 			}
-			// AI Studio com SSO falhou — continua para Vertex AI endpoint abaixo
+
+			// Tentativa 2: com X-Goog-User-Project (quota do projeto)
+			if p.project != "" {
+				if result, err := p.doRequest(ctx, aiStudioURL, token, p.project, prompt); err == nil {
+					return result, nil
+				} else {
+					log.Warn().Err(err).Str("attempt", "ai-studio-with-project").Str("project", p.project).Msg("Vertex AI: AI Studio com projeto falhou")
+				}
+			}
 		}
 	}
 
-	// Tentativa 2: Vertex AI endpoint (service account / ADC / refresh token)
+	// Tentativa 3: Vertex AI endpoint (service account / ADC / refresh token)
 	token, err := GetVertexAccessToken(ctx, p.serviceAccountJSON, p.refreshToken)
 	if err != nil {
 		return "", err
@@ -169,11 +186,11 @@ func (p *GeminiProvider) doRequest(ctx context.Context, url, bearerToken, userPr
 	if resp.StatusCode != http.StatusOK {
 		switch resp.StatusCode {
 		case 403:
-			return "", fmt.Errorf("Vertex AI: permissão negada (403). Sua conta não tem a role 'aiplatform.endpoints.predict' no projeto GCP. Solicite ao administrador a role 'Vertex AI User' ou use uma API key do AI Studio em vez do Vertex")
+			return "", fmt.Errorf("permissão negada (403) — URL: %s — body: %s", url, string(body))
 		case 429:
-			return "", fmt.Errorf("Cota da API Gemini esgotada (429). Aguarde alguns minutos ou considere usar o plano pago. Detalhes: %s", string(body))
+			return "", fmt.Errorf("cota da API Gemini esgotada (429). Aguarde alguns minutos. Detalhes: %s", string(body))
 		default:
-			return "", fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, string(body))
+			return "", fmt.Errorf("gemini API error (status %d) — URL: %s — body: %s", resp.StatusCode, url, string(body))
 		}
 	}
 
@@ -342,6 +359,7 @@ func GetADCAccessToken(ctx context.Context) (string, error) {
 }
 
 // findADCFile localiza o arquivo Application Default Credentials.
+// Ordem de busca: GOOGLE_APPLICATION_CREDENTIALS → ADC próprio da app → gcloud → vscode extension
 func findADCFile() (string, error) {
 	if path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); path != "" {
 		return path, nil
@@ -353,7 +371,11 @@ func findADCFile() (string, error) {
 	}
 
 	candidates := []string{
+		// Credencial própria da app (gravada pelo Device Auth Grant — não conflita com gcloud)
+		filepath.Join(home, ".config", "k8s-hpa-manager", "google_credentials.json"),
+		// gcloud application-default login
 		filepath.Join(home, ".config", "gcloud", "application_default_credentials.json"),
+		// VSCode extension
 		filepath.Join(home, ".cache", "google-vscode-extension", "auth", "application_default_credentials.json"),
 	}
 
@@ -366,17 +388,25 @@ func findADCFile() (string, error) {
 	return "", fmt.Errorf("ADC não encontrado (procurado em %v)", candidates)
 }
 
-// WriteADCFile grava o arquivo Application Default Credentials com o refresh_token
-// obtido via Device Auth Grant. Usa o mesmo formato que `gcloud auth application-default login`,
-// permitindo que o servidor use ADC sem precisar ter o gcloud instalado.
-func WriteADCFile(refreshToken string) error {
+// appADCPath retorna o caminho do ADC próprio da aplicação (nunca conflita com gcloud).
+func appADCPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("não foi possível determinar o home dir: %w", err)
+		return "", fmt.Errorf("não foi possível determinar o home dir: %w", err)
+	}
+	return filepath.Join(home, ".config", "k8s-hpa-manager", "google_credentials.json"), nil
+}
+
+// WriteADCFile grava credenciais Google em caminho próprio da aplicação.
+// Usa o mesmo formato do gcloud ADC para que GetADCAccessToken possa lê-lo.
+// NÃO toca no arquivo gcloud (~/.config/gcloud/application_default_credentials.json).
+func WriteADCFile(refreshToken string) error {
+	adcPath, err := appADCPath()
+	if err != nil {
+		return err
 	}
 
-	adcDir := filepath.Join(home, ".config", "gcloud")
-	if err := os.MkdirAll(adcDir, 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(adcPath), 0700); err != nil {
 		return fmt.Errorf("erro ao criar diretório ADC: %w", err)
 	}
 
@@ -396,7 +426,6 @@ func WriteADCFile(refreshToken string) error {
 		return fmt.Errorf("erro ao serializar ADC: %w", err)
 	}
 
-	adcPath := filepath.Join(adcDir, "application_default_credentials.json")
 	if err := os.WriteFile(adcPath, data, 0600); err != nil {
 		return fmt.Errorf("erro ao gravar ADC (%s): %w", adcPath, err)
 	}
