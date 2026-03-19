@@ -2,7 +2,7 @@
 
 **Data:** 18/03/2026
 **Branch:** integracao-dyna
-**Status:** Planejamento — pendente implementação
+**Status:** 🟡 Fases 2 e 4 implementadas (19/03/2026) — Fase 1 e 3 pendentes
 
 ---
 
