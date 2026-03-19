@@ -1,46 +1,20 @@
 # Plano de Integração Dynatrace × Health Check
 
-**Data:** 17/03/2026
-**Branch:** `integração-dyna`
-**Status:** 🟡 Fase 1 concluída (commit `8666044`) — Fase 2 pendente
+**Data:** 17/03/2026 → 19/03/2026
+**Branch:** `integracao-dyna`
+**Status:** ✅ Todas as fases concluídas (commit `ca95b17`) — Integração em produção na branch
 
 ---
 
-## Diagnóstico: Por Que Não Funciona Hoje
+## ~~Diagnóstico: Por Que Não Funciona Hoje~~ (Bugs Corrigidos — 17/03/2026)
 
-O health check tem um `DynatraceChecker` implementado, mas 3 bugs fazem com que os resultados venham sempre vazios:
+O health check tinha um `DynatraceChecker` implementado com 3 bugs que faziam os resultados vir sempre vazios. Todos foram corrigidos:
 
-### Bug 1 — Cluster name matching falha (BLOQUEADOR PRINCIPAL)
-**Arquivo:** `internal/healthcheck/dynatrace_checker.go:52-68`
-O checker compara o nome do cluster do kubeconfig (ex: `akspriv-logistica-prd-admin`) com `DTLabels.HostGroup` do Dynatrace (ex: `akspriv-logistica-prd`). O sufixo `-admin` nunca coincide → todos os problems são filtrados silenciosamente.
-
-**Fix:** Normalizar antes do match:
-```go
-func normalizeClusterName(name string) string {
-    name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), "-admin")
-    return name
-}
-// usar normalizeClusterName(stub.K8sCluster) == normalizeClusterName(cluster)
-```
-
-### Bug 2 — pageSize hardcoded em 10
-**Arquivo:** `internal/dynatrace/client.go:129` (`GetOpenProblems`)
-Busca no máximo 10 problems sem paginação. Clusters com mais de 10 problems ativos perdem dados.
-
-**Fix:** Loop com `nextPageKey` até acabar (limite de segurança: 200 problems):
-```go
-for {
-    // fetch page
-    if result.NextPageKey == "" { break }
-    // set nextPageKey param e continuar
-}
-```
-
-### Bug 3 — Tag filter bloqueia quando vazio/incorreto
-**Arquivo:** `internal/healthcheck/dynatrace_checker.go`
-Se `DynatraceTagFilter` está vazio, o seletor muda e pode retornar 0 resultados dependendo da API. Se está preenchido com um valor inexistente, retorna 0 resultados. Nenhum dos dois casos produz erro visível.
-
-**Fix:** Quando tagFilter vazio, buscar sem filtro de tag e depender apenas do cluster match.
+| Bug | Arquivo | Correção aplicada |
+|-----|---------|-------------------|
+| Cluster name matching falha (`-admin` suffix) | `dynatrace_checker.go` | `normalizeClusterName()` + `matchesCluster()` — TrimSuffix + lowercase |
+| `pageSize` hardcoded em 10 | `client.go:GetOpenProblems` | Loop `nextPageKey`, pageSize=50, limite 200 |
+| Tag filter bloqueia quando vazio | `dynatrace_checker.go` | Tag filter é agora opcional — cluster match é o filtro primário |
 
 ---
 
@@ -50,13 +24,13 @@ Se `DynatraceTagFilter` está vazio, o seletor muda e pode retornar 0 resultados
 
 | Método | Arquivo | Descrição | Usado no HC? |
 |--------|---------|-----------|-------------|
-| `GetOpenProblems(filter)` | `client.go:129` | Problems OPEN, pageSize **10 fixo** | ✅ Sim (bugado) |
-| `GetProblem(problemID)` | `client.go:163` | Detalhe de um problem | ❌ Não |
-| `GetEntity(entityID)` | `client.go:177` | Entidade com tags K8s + relações | ❌ Não |
-| `EnrichEntitiesWithK8s(stubs)` | `client.go:269` | Extrai cluster/ns/workload dos tags OneAgent | ✅ Sim |
-| `GetEntityMetricsForProblem(p)` | `metrics.go:236` | Latência P50/P90/P99, error rate, throughput | ❌ Não |
-| `GetEntityEvents(id, from, to)` | `client.go:222` | Eventos recentes da entidade | ❌ Não |
-| `GetProblemContext(problem)` | `context.go:214` | **Davis AI evidence + eventos + topologia + traces** em paralelo | ❌ Não |
+| `GetOpenProblems(filter)` | `client.go` | Problems OPEN, paginado (pageSize=50, loop nextPageKey) | ✅ Sim |
+| `GetProblem(problemID)` | `client.go` | Detalhe de um problem | ❌ Não |
+| `GetEntity(entityID)` | `client.go` | Entidade com tags K8s + relações | ❌ Não |
+| `EnrichEntitiesWithK8s(stubs)` | `client.go` | Extrai cluster/ns/workload dos tags OneAgent (cache TTL 5min) | ✅ Sim |
+| `GetEntityMetricsForProblem(p)` | `metrics.go` | Latência P50/P90/P99, error rate, throughput | ✅ Sim (AVAILABILITY/ERROR) |
+| `GetEntityEvents(id, from, to)` | `client.go` | Eventos recentes da entidade | ❌ Não |
+| `GetProblemContext(problem)` | `context.go` | **Davis AI evidence + eventos + topologia + traces** em paralelo | ✅ Sim (Top 5) |
 | `TestConnection()` | `client.go` | Testa conectividade, retorna latência | ❌ No HC |
 
 ### Model `DynatraceHealth` atual (`internal/healthcheck/models.go:182`)
@@ -230,11 +204,15 @@ ContextFetched bool              // Se GetProblemContext foi chamado com sucesso
 - [x] **`HealthCheckResultsPanel.tsx`**: Botão "Analisar com AI" → chama `/dynatrace/problems/:id/analyze`
 - [x] **`HealthCheckResultsPanel.tsx`**: Exibir resultado da análise AI colapsável no card
 
-### ✅ Fase 4 — Avançado (18/03/2026)
+### ✅ Fase 4 — Avançado (18-19/03/2026)
 
 - [x] **`HealthCheckResultsPanel.tsx`**: Deduplicação cross-cluster por `DisplayID` — badge "Afeta N clusters" com tooltip de clusters
 - [x] **`internal/healthcheck/dynatrace_checker.go`**: Escalada de severidade para `prd` + `ENVIRONMENT` impact → StatusCritical
 - [x] **`internal/dynatrace/client.go`**: Cache em memória TTL 5min para `EnrichEntitiesWithK8s` (package-level `sync.Map`)
+- [x] **`internal/web/handlers/healthcheck.go`**: `AnalyzeCorrelatedBatch` + `buildBatchCorrelatedPrompt` — análise AI consolidada de até 20 itens com panorama geral, padrões e prioridade de ação
+- [x] **`internal/web/server.go`**: Rota `POST /api/v1/healthcheck/correlated/analyze-batch` (SRE only)
+- [x] **`src/lib/api/client.ts`**: `analyzeCorrelatedBatch()` — envia lista de itens, recebe diagnóstico consolidado
+- [x] **`HealthCheckResultsPanel.tsx`**: Componente `CorrelatedTab` com botão "Analisar tudo com AI" e resultado colapsável acima dos cards individuais
 
 ---
 
