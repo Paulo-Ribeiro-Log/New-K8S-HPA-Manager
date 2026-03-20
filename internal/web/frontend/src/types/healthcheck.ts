@@ -498,6 +498,8 @@ export interface DynatraceEntityStub {
   k8sNamespace?: string;
   k8sWorkload?: string;
   labels?: DTLabels;    // tags ricas do OneAgent (squad, journey, versão, GitHub, etc.)
+  callsTo?: { id: string; type: string }[];   // entidades downstream (esta chama)
+  calledBy?: { id: string; type: string }[];  // entidades upstream (chamam esta)
 }
 
 export interface DynatraceProblem {

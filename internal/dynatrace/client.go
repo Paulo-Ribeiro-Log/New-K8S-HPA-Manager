@@ -319,6 +319,13 @@ func enrichFromEntity(stub EntityStub, entity *Entity) EntityStub {
 	if stub.K8sNamespace == "" && stub.Labels != nil && stub.Labels.Namespace != "" {
 		stub.K8sNamespace = stub.Labels.Namespace
 	}
+	// Relações de topologia — chain de chamadas (call chain para o VRP)
+	for _, rel := range entity.ToRelationships["calls"] {
+		stub.CallsTo = append(stub.CallsTo, rel.EntityID)
+	}
+	for _, rel := range entity.FromRelationships["calledBy"] {
+		stub.CalledBy = append(stub.CalledBy, rel.EntityID)
+	}
 	return stub
 }
 
