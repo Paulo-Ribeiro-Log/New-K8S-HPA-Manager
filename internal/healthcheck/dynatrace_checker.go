@@ -101,12 +101,21 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 	}
 
 	for _, p := range dtResult.Problems {
+		// Descartar problems de entidades puramente web/RUM (APPLICATION, BROWSER, SYNTHETIC_TEST, etc.)
+		// que não têm relação com infraestrutura K8s/serviços.
+		if isWebOnlyProblem(p.AffectedEntities) {
+			log.Debug().Str("problemId", p.ProblemID).Str("title", p.Title).
+				Msg("[DynatraceChecker] Problem descartado: apenas entidades web/RUM (APPLICATION/BROWSER/SYNTHETIC)")
+			continue
+		}
+
 		// Enriquecer entidades com tags K8s + DTLabels (squad, journey, version, GitHub, etc.)
 		enriched := client.EnrichEntitiesWithK8s(checkCtx, p.AffectedEntities)
 
-		// Filtrar por cluster — normaliza ambos os lados para remover sufixo "-admin"
-		// Lógica: descartar SOMENTE se alguma entidade tem K8sCluster/HostGroup explicitamente
-		// diferente deste cluster. Entidades sem info de cluster são incluídas (não podemos verificar).
+		// Filtrar por cluster com 3 níveis de confiança:
+		//  1. Entidade com K8sCluster/HostGroup/DisplayName matching → inclui
+		//  2. Entidade com K8sCluster/HostGroup de outro cluster → exclui
+		//  3. Sem info de cluster nas entidades → fallback: Management Zone deve conter cluster name
 		if clusterNorm != "" {
 			hasThisCluster := false
 			hasOtherCluster := false
@@ -115,7 +124,6 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 					hasThisCluster = true
 					break
 				}
-				// Detectar se pertence explicitamente a outro cluster
 				eCluster := normalizeClusterName(e.K8sCluster)
 				hg := ""
 				if e.Labels != nil {
@@ -125,23 +133,34 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 					hasOtherCluster = true
 				}
 			}
-			if !hasThisCluster && hasOtherCluster {
-				// Todas as entidades com info de cluster apontam para outro cluster
-				entityInfo := make([]string, 0, len(enriched))
-				for _, e := range enriched {
-					hostGroup := ""
-					if e.Labels != nil {
-						hostGroup = e.Labels.HostGroup
-					}
-					entityInfo = append(entityInfo, fmt.Sprintf("%s(k8s=%q,hg=%q)", e.BestName(), e.K8sCluster, hostGroup))
+
+			if !hasThisCluster {
+				if hasOtherCluster {
+					// Entidades explicitamente de outro cluster — descartar
+					log.Debug().Str("problemId", p.ProblemID).Str("title", p.Title).
+						Msg("[DynatraceChecker] Problem descartado: entidades pertencem a outro cluster")
+					continue
 				}
-				log.Debug().
-					Str("problemId", p.ProblemID).
-					Str("title", p.Title).
-					Str("clusterNorm", clusterNorm).
-					Strs("entities", entityInfo).
-					Msg("[DynatraceChecker] Problem descartado: entidades pertencem a outro cluster")
-				continue
+				// Sem info de cluster nas entidades — usar Management Zones como fallback
+				mzMatch := false
+				for _, mz := range p.ManagementZones {
+					if strings.Contains(strings.ToLower(mz.Name), clusterNorm) {
+						mzMatch = true
+						break
+					}
+				}
+				if !mzMatch {
+					log.Debug().Str("problemId", p.ProblemID).Str("title", p.Title).
+						Strs("mzNames", func() []string {
+							names := make([]string, len(p.ManagementZones))
+							for i, mz := range p.ManagementZones {
+								names[i] = mz.Name
+							}
+							return names
+						}()).
+						Msg("[DynatraceChecker] Problem descartado: sem match por entidade nem por management zone")
+					continue
+				}
 			}
 		}
 
@@ -592,4 +611,30 @@ func buildDTSuggestions(dtSeverity string, workloads []string) []string {
 	suggestions = append(suggestions, "Use 'Analisar com AI' na aba Dynatrace para diagnóstico completo")
 
 	return suggestions
+}
+
+// webOnlyEntityTypes são tipos de entidade Dynatrace que representam experiência web/RUM/sintético,
+// sem relação com infraestrutura K8s ou serviços de backend.
+var webOnlyEntityTypes = map[string]struct{}{
+	"APPLICATION":        {},
+	"BROWSER":            {},
+	"SYNTHETIC_TEST":     {},
+	"SYNTHETIC_MONITOR":  {},
+	"HTTP_CHECK":         {},
+	"MOBILE_APPLICATION": {},
+	"WEB_APPLICATION":    {},
+}
+
+// isWebOnlyProblem retorna true se TODAS as entidades afetadas são tipos web/RUM/sintético.
+// Esses problems não têm relação com K8s e devem ser ignorados no Health Check.
+func isWebOnlyProblem(entities []dtclient.EntityStub) bool {
+	if len(entities) == 0 {
+		return false
+	}
+	for _, e := range entities {
+		if _, isWeb := webOnlyEntityTypes[strings.ToUpper(e.EntityID.Type)]; !isWeb {
+			return false // tem pelo menos uma entidade não-web → não é web-only
+		}
+	}
+	return true
 }

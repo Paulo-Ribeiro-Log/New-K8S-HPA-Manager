@@ -36,15 +36,13 @@ import {
   Zap,
   GitBranch,
   Users,
-  Tag,
   Brain,
-  Gauge,
   Radio,
-  Unlink,
 } from "lucide-react";
-import type { HealthCheckResult, DynatraceHealth, Severity, CorrelatedHealthItem, CorrelatedK8sIssue, OneAgentSignal } from "@/types/healthcheck";
+import type { HealthCheckResult, Severity, CorrelatedHealthItem, OneAgentSignal } from "@/types/healthcheck";
 import { SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/healthcheck";
 import { HealthCheckCard } from "@/components/HealthCheckCard";
+import { HealthCheckDTTab } from "@/components/HealthCheckDTTab";
 import { apiClient } from "@/lib/api/client";
 import { useToast } from "@/components/ui/use-toast";
 
@@ -64,237 +62,9 @@ export interface SelectedAlert {
   message: string;
 }
 
-// Card expandido para exibir um problem Dynatrace no Health Check
-const DynatraceProblemCard = ({ problem, affectedClusters }: { problem: DynatraceHealth; affectedClusters?: string[] }) => {
-  const { toast } = useToast();
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState<string | null>(null);
-  const [analysisOpen, setAnalysisOpen] = useState(false);
-  const [eventsOpen, setEventsOpen] = useState(false);
-
-  const severityColor = SeverityColors[problem.severity as Severity] || "text-gray-500";
-  const severityBg = SeverityBgColors[problem.severity as Severity] || "bg-gray-500/10 border-gray-500/30";
-  const severityLabel = SeverityLabels[problem.severity as Severity] || problem.severity;
-
-  const dtSeverityIcon: Record<string, string> = {
-    AVAILABILITY: "🔴",
-    ERROR: "🟠",
-    PERFORMANCE: "🟡",
-    RESOURCE_CONTENTION: "🟡",
-    CUSTOM_ALERT: "🔵",
-  };
-
-  const envColor: Record<string, string> = {
-    prd: "bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-400",
-    hlg: "bg-yellow-100 text-yellow-700 dark:bg-yellow-950/30 dark:text-yellow-400",
-    dev: "bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400",
-  };
-
-  const hasMetrics = problem.metrics_summary && Object.keys(problem.metrics_summary).length > 0;
-  const hasEvidence = (problem.evidence?.length ?? 0) > 0;
-  const hasRecentEvents = (problem.recent_events?.length ?? 0) > 0;
-  const noK8sCorrelation = (problem.k8s_workloads?.length ?? 0) === 0;
-
-  const handleAnalyze = async () => {
-    const aiEmail = localStorage.getItem("ai_email") ?? "";
-    if (!aiEmail) {
-      toast({ title: "Configure seu email em Configurações de AI primeiro", variant: "destructive" });
-      return;
-    }
-    setAnalyzing(true);
-    try {
-      const result = await apiClient.analyzeDynatraceProblem(problem.problem_id, aiEmail);
-      setAnalysisResult(result.analysis);
-      setAnalysisOpen(true);
-    } catch (err) {
-      toast({ title: "Falha na análise AI", description: err instanceof Error ? err.message : "Erro desconhecido", variant: "destructive" });
-    } finally {
-      setAnalyzing(false);
-    }
-  };
-
-  return (
-    <div className={`rounded-lg border p-3 space-y-2 ${severityBg}`}>
-      {/* Header: ID + título + severidade + timestamps */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-base leading-none">{dtSeverityIcon[problem.dt_severity] || "⚪"}</span>
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="font-mono text-xs text-muted-foreground">{problem.display_id}</span>
-              <Badge variant="outline" className={`text-xs ${severityColor}`}>{severityLabel}</Badge>
-              <Badge variant="outline" className="text-xs">{problem.impact_level}</Badge>
-              {problem.context_fetched && (
-                <Badge variant="outline" className="text-xs text-purple-600 border-purple-400 gap-1">
-                  <Brain className="h-2.5 w-2.5" /> Contexto completo
-                </Badge>
-              )}
-              {(affectedClusters?.length ?? 0) > 1 && (
-                <Badge variant="outline" className="text-xs text-blue-600 border-blue-400 gap-1" title={affectedClusters!.join(", ")}>
-                  <Server className="h-2.5 w-2.5" /> Afeta {affectedClusters!.length} clusters
-                </Badge>
-              )}
-            </div>
-            <p className="text-sm font-medium mt-0.5 leading-snug">{problem.title}</p>
-          </div>
-        </div>
-        <span className="text-xs text-muted-foreground whitespace-nowrap">
-          {new Date(problem.start_time).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}
-        </span>
-      </div>
-
-      {/* Workloads K8s ou badge de sem correlação */}
-      {noK8sCorrelation ? (
-        <div className="flex items-center gap-1.5">
-          <Unlink className="h-3 w-3 text-muted-foreground shrink-0" />
-          <span className="text-xs text-muted-foreground italic">
-            Sem correlação K8s — verifique tags OneAgent no Dynatrace
-          </span>
-        </div>
-      ) : (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <Server className="h-3 w-3 text-muted-foreground shrink-0" />
-          {problem.k8s_workloads!.map((wl, i) => {
-            const version = problem.app_versions?.[wl.split("/")[1]] || problem.app_versions?.[wl];
-            return (
-              <span key={i} className="inline-flex items-center gap-1 text-xs font-mono bg-muted px-1.5 py-0.5 rounded">
-                {wl}
-                {version && <span className="text-blue-600 dark:text-blue-400">v{version}</span>}
-              </span>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Métricas resumidas */}
-      {hasMetrics && (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <Gauge className="h-3 w-3 text-muted-foreground shrink-0" />
-          {problem.metrics_summary!.error_rate !== undefined && (
-            <Badge variant="outline" className="text-xs text-red-600 border-red-300 gap-1">
-              ERR: {problem.metrics_summary!.error_rate.toFixed(1)}%
-            </Badge>
-          )}
-          {problem.metrics_summary!.response_p90_ms !== undefined && (
-            <Badge variant="outline" className="text-xs text-orange-600 border-orange-300 gap-1">
-              P90: {Math.round(problem.metrics_summary!.response_p90_ms)}ms
-            </Badge>
-          )}
-          {problem.metrics_summary!.response_p99_ms !== undefined && (
-            <Badge variant="outline" className="text-xs text-orange-700 border-orange-400 gap-1">
-              P99: {Math.round(problem.metrics_summary!.response_p99_ms)}ms
-            </Badge>
-          )}
-          {problem.metrics_summary!.throughput_rpm !== undefined && (
-            <Badge variant="outline" className="text-xs gap-1">
-              {Math.round(problem.metrics_summary!.throughput_rpm)} req/min
-            </Badge>
-          )}
-        </div>
-      )}
-
-      {/* Evidências Davis AI */}
-      {hasEvidence && (
-        <div className="rounded-md border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/20 p-2 space-y-1">
-          <p className="text-xs font-semibold text-purple-700 dark:text-purple-300 flex items-center gap-1">
-            <Brain className="h-3 w-3" /> Davis AI — Evidências
-          </p>
-          {problem.evidence!.map((ev, i) => (
-            <p key={i} className={`text-xs ${ev.startsWith("[Root Cause]") ? "text-red-700 dark:text-red-400 font-medium" : "text-purple-700 dark:text-purple-300"}`}>
-              {ev.startsWith("[Root Cause]") ? "🎯 " : "• "}{ev}
-            </p>
-          ))}
-        </div>
-      )}
-
-      {/* Eventos recentes (colapsável) */}
-      {hasRecentEvents && (
-        <Collapsible open={eventsOpen} onOpenChange={setEventsOpen}>
-          <CollapsibleTrigger className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
-            <Radio className="h-3 w-3" />
-            Eventos recentes ({problem.recent_events!.length})
-            {eventsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          </CollapsibleTrigger>
-          <CollapsibleContent className="pt-1 space-y-0.5">
-            {problem.recent_events!.map((ev, i) => (
-              <p key={i} className="text-xs text-muted-foreground pl-4">• {ev}</p>
-            ))}
-          </CollapsibleContent>
-        </Collapsible>
-      )}
-
-      {/* Squads + Journeys + Environments + Repos */}
-      <div className="flex items-center gap-2 flex-wrap text-xs">
-        {(problem.squads?.length ?? 0) > 0 && (
-          <span className="flex items-center gap-1 text-muted-foreground">
-            <Users className="h-3 w-3" />
-            {problem.squads!.join(", ")}
-          </span>
-        )}
-        {(problem.journeys?.length ?? 0) > 0 && (
-          <span className="flex items-center gap-1 text-muted-foreground">
-            <Tag className="h-3 w-3" />
-            {problem.journeys!.join(", ")}
-          </span>
-        )}
-        {(problem.environments?.length ?? 0) > 0 && (
-          <div className="flex items-center gap-1">
-            {problem.environments!.map((env, i) => (
-              <span key={i} className={`px-1.5 py-0.5 rounded text-xs font-medium ${envColor[env.toLowerCase()] || "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"}`}>
-                {env}
-              </span>
-            ))}
-          </div>
-        )}
-        {(problem.github_repos?.length ?? 0) > 0 && (
-          <span className="flex items-center gap-1 text-muted-foreground">
-            <GitBranch className="h-3 w-3" />
-            {problem.github_repos!.slice(0, 2).join(", ")}
-            {problem.github_repos!.length > 2 && ` +${problem.github_repos!.length - 2}`}
-          </span>
-        )}
-      </div>
-
-      {/* Footer: sugestão + botão Analisar com AI */}
-      <div className="flex items-center justify-between gap-2 border-t pt-1.5">
-        {problem.suggestions.length > 0 && (
-          <p className="text-xs text-muted-foreground flex-1">💡 {problem.suggestions[0]}</p>
-        )}
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-6 text-xs gap-1 shrink-0 text-purple-600 border-purple-300 hover:bg-purple-50 dark:hover:bg-purple-950/20"
-          onClick={handleAnalyze}
-          disabled={analyzing}
-        >
-          {analyzing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Brain className="h-3 w-3" />}
-          {analyzing ? "Analisando..." : "Analisar com AI"}
-        </Button>
-      </div>
-
-      {/* Resultado da análise AI (colapsável) */}
-      {analysisResult && (
-        <Collapsible open={analysisOpen} onOpenChange={setAnalysisOpen}>
-          <CollapsibleTrigger className="flex items-center gap-1.5 text-xs font-medium text-purple-600 dark:text-purple-400 hover:underline">
-            <Brain className="h-3 w-3" />
-            Análise AI
-            {analysisOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="mt-1.5 rounded-md border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/20 p-2">
-              <p className="text-xs text-purple-900 dark:text-purple-100 whitespace-pre-wrap leading-relaxed">{analysisResult}</p>
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
-      )}
-    </div>
-  );
-};
-
 // Badge de fonte do item correlacionado
 const CorrelationSourceBadge = ({ item }: { item: CorrelatedHealthItem }) => {
   const hasK8s = (item.k8s_issues?.length ?? 0) > 0;
-  const hasDT = (item.dt_problems?.length ?? 0) > 0;
   if (item.correlated) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/15 border border-violet-500/30 text-violet-700 dark:text-violet-300 text-[10px] font-semibold px-2 py-0.5">
@@ -1311,28 +1081,11 @@ export const HealthCheckResultsPanel = ({
                               )}
                             </TabsContent>
 
-                            <TabsContent value="dynatrace" className="space-y-2 mt-3">
-                              {!result.dynatrace_results || result.dynatrace_results.length === 0 ? (
-                                <div className="text-center py-6 text-xs text-muted-foreground space-y-2">
-                                  <Zap className="h-8 w-8 mx-auto opacity-30 text-purple-500" />
-                                  <p>Nenhum problem Dynatrace correlacionado com este cluster</p>
-                                  <p className="text-[10px]">Ative "Problems Dynatrace" nas opções e certifique-se de que o token DT está configurado nas Configurações de AI</p>
-                                </div>
-                              ) : (
-                                <div className="space-y-2">
-                                  <div className="flex items-center gap-2 text-xs text-muted-foreground pb-1">
-                                    <Zap className="h-3.5 w-3.5 text-purple-500" />
-                                    <span>{result.dynatrace_results.length} problem(s) Dynatrace correlacionado(s) com workloads deste cluster</span>
-                                  </div>
-                                  {result.dynatrace_results.map((problem, i) => (
-                                    <DynatraceProblemCard
-                                      key={i}
-                                      problem={problem}
-                                      affectedClusters={displayIdClusters.get(problem.display_id)}
-                                    />
-                                  ))}
-                                </div>
-                              )}
+                            <TabsContent value="dynatrace" className="mt-3">
+                              <HealthCheckDTTab
+                                problems={result.dynatrace_results ?? []}
+                                displayIdClusters={displayIdClusters}
+                              />
                             </TabsContent>
 
                             <TabsContent value="oneagent" className="space-y-2 mt-3">
