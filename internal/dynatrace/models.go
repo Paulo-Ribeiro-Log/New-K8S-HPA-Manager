@@ -37,6 +37,11 @@ type EntityStub struct {
 	K8sWorkload  string `json:"k8sWorkload,omitempty"`
 	// Tags ricas do OneAgent — DevOps, versão, squad, GitHub, etc.
 	Labels *DTLabels `json:"labels,omitempty"`
+	// Relações de topologia (preenchidas após GetEntity)
+	// CallsTo: entidades que esta entidade chama (downstream)
+	// CalledBy: entidades que chamam esta entidade (upstream)
+	CallsTo  []EntityID `json:"callsTo,omitempty"`
+	CalledBy []EntityID `json:"calledBy,omitempty"`
 }
 
 // BestName retorna o melhor nome disponível para a entidade, na ordem de preferência.
