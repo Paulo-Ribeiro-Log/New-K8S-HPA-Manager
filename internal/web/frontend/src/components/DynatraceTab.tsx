@@ -10,7 +10,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DynatraceMetricsPanel } from "@/components/DynatraceMetricsPanel";
 import { DynatraceContextPanel } from "@/components/DynatraceContextPanel";
 import { DynatraceGitHubSection } from "@/components/DynatraceGitHubSection";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -21,6 +23,7 @@ import {
   Activity, X, BarChart3, GitBranch, Users, Tag, Cpu,
   Package, GitCommit, Rocket, ChevronDown, ChevronRight,
   Shield, Globe, Database, Boxes, CheckCircle2, Maximize2, ZoomIn, ZoomOut,
+  ListChecks, Share2,
 } from "lucide-react";
 import { apiClient } from "@/lib/api/client";
 import type { NodePoolLookupResult } from "@/lib/api/types";
@@ -1066,12 +1069,14 @@ function VRPGraph({
   onNodeLeave,
   scale = 1,
   onDragActive,
+  readonly = false,
 }: {
   problem: DynatraceProblem;
   onNodeHover: (node: DAGNode, x: number, y: number) => void;
   onNodeLeave: () => void;
   scale?: number;
   onDragActive?: (active: boolean) => void;
+  readonly?: boolean;
 }) {
   const { nodes, edges, totalW, totalH } = buildDAGLayout(problem);
 
@@ -1091,6 +1096,7 @@ function VRPGraph({
   };
 
   const onNodeMouseDown = (e: React.MouseEvent, id: string) => {
+    if (readonly) return;
     e.stopPropagation();
     e.preventDefault();
     const off = offsets.get(id) ?? { dx: 0, dy: 0 };
@@ -1178,7 +1184,7 @@ function VRPGraph({
         return (
           <g
             key={id}
-            style={{ cursor: isDragging ? "grabbing" : "grab" }}
+            style={{ cursor: readonly ? "default" : isDragging ? "grabbing" : "grab" }}
             onMouseDown={(e) => onNodeMouseDown(e, id)}
             onMouseEnter={(e) => { if (!dragRef.current) onNodeHover(node, e.clientX, e.clientY); }}
             onMouseMove={(e) => { if (!dragRef.current) onNodeHover(node, e.clientX, e.clientY); }}
@@ -1619,6 +1625,260 @@ function DetailsTab({ problem, uiBaseUrl }: { problem: DynatraceProblem; uiBaseU
 
 // ── Aba Diagnóstico IA ──────────────────────────────────────────────────────────
 
+// ── Painel de contexto do problem para a aba IA ────────────────────────────────
+
+function DiagProblemContext({ problem }: { problem: DynatraceProblem }) {
+  const sevColor = SEV_NODE_COLOR[problem.severityLevel] ?? "#6b7280";
+  const affectedEntities = problem.affectedEntities ?? [];
+  const rootCause = problem.rootCauseEntity;
+  const k8sWorkloads = (problem.k8sWorkloads ?? []).filter(w => w.Workload || w.AppName);
+  const mgmtZones = problem.managementZones ?? [];
+  const hasVRP = affectedEntities.length > 0 || !!rootCause;
+
+  const start = problem.startTime ? new Date(problem.startTime) : null;
+  const end   = problem.endTime   ? new Date(problem.endTime)   : null;
+  const durationMin = start && end ? Math.round((end.getTime() - start.getTime()) / 60000) : null;
+  const fmtTime = (d: Date) => d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+  return (
+    <div className="space-y-3 rounded-lg border border-border/50 bg-muted/5 p-3">
+      {/* Linha 1: badges + duração */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline" style={{ borderColor: sevColor, color: sevColor }} className="text-[10px] font-semibold">
+          {problem.severityLevel}
+        </Badge>
+        <Badge variant="outline" className="text-[10px]">{problem.impactLevel}</Badge>
+        <Badge variant={problem.status === "OPEN" ? "destructive" : "secondary"} className="text-[10px]">
+          {problem.status}
+        </Badge>
+        {durationMin != null && start && (
+          <span className="flex items-center gap-1 text-[10px] text-muted-foreground ml-1">
+            <Clock className="h-3 w-3" />
+            {fmtTime(start)}{end ? ` → ${fmtTime(end)}` : ""} ({durationMin} min)
+          </span>
+        )}
+        {mgmtZones.map(z => (
+          <Badge key={z.id} variant="secondary" className="text-[10px] gap-1">
+            <Users className="h-2.5 w-2.5" />{z.name}
+          </Badge>
+        ))}
+      </div>
+
+      {/* Linha 2: causa raiz */}
+      {rootCause && (
+        <div className="flex items-center gap-2 text-xs bg-red-500/10 border border-red-500/20 rounded-md px-2.5 py-1.5">
+          <Target className="h-3 w-3 text-red-400 shrink-0" />
+          <span className="text-red-300 font-medium truncate">{rootCause.displayName || rootCause.name || rootCause.entityId.id}</span>
+          <span className="text-[9px] text-red-400/70 font-mono ml-auto shrink-0">{rootCause.entityId.type}</span>
+          <Badge variant="outline" className="text-[9px] border-red-500/30 text-red-400 shrink-0">causa raiz</Badge>
+        </div>
+      )}
+
+      {/* Linha 3: entidades afetadas */}
+      {affectedEntities.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {affectedEntities.slice(0, 6).map(e => {
+            const name = e.displayName || e.name || e.entityId.id;
+            const k8s = [e.k8sNamespace, e.k8sWorkload].filter(Boolean).join("/");
+            return (
+              <div key={e.entityId.id} className="flex items-center gap-1.5 text-[10px] bg-muted/20 border border-border/40 rounded px-2 py-1">
+                <Server className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
+                <span className="truncate max-w-[110px]" title={name}>{name}</span>
+                {k8s && <span className="text-muted-foreground/50 font-mono truncate max-w-[80px]">{k8s}</span>}
+              </div>
+            );
+          })}
+          {affectedEntities.length > 6 && (
+            <span className="text-[10px] text-muted-foreground px-2 py-1">+{affectedEntities.length - 6} mais</span>
+          )}
+        </div>
+      )}
+
+      {/* Linha 4: K8s workloads */}
+      {k8sWorkloads.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {k8sWorkloads.slice(0, 5).map((w, i) => (
+            <div key={i} className="flex items-center gap-1 text-[10px] bg-blue-500/10 border border-blue-500/20 rounded px-2 py-1">
+              <Layers className="h-2.5 w-2.5 text-blue-400 shrink-0" />
+              <span className="font-mono text-blue-300 truncate max-w-[140px]">{w.Namespace}/{w.Workload || w.AppName}</span>
+              {w.AppVersion && <span className="text-blue-400/50 font-mono">v{w.AppVersion}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Mini VRP read-only */}
+      {hasVRP && (
+        <div className="rounded-md border border-border/40 bg-muted/10 overflow-hidden">
+          <div className="flex items-center gap-1.5 px-2.5 py-1 bg-muted/20 border-b border-border/30">
+            <Network className="h-3 w-3 text-muted-foreground" />
+            <span className="text-[10px] text-muted-foreground font-medium">Fluxo de propagação</span>
+          </div>
+          <div className="overflow-auto max-h-[200px] p-2">
+            <div style={{ transform: "scale(0.82)", transformOrigin: "top left", display: "inline-block" }}>
+              <VRPGraph
+                problem={problem}
+                scale={1}
+                readonly
+                onNodeHover={() => {}}
+                onNodeLeave={() => {}}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Parse + render resultado da IA em seções visuais ──────────────────────────
+
+interface AIParsedSection { key: string; heading: string; content: string; }
+interface AIParseResult { intro: string; sections: AIParsedSection[]; }
+
+const AI_SECTION_PATTERNS: { key: string; re: RegExp }[] = [
+  { key: "origem",      re: /\n((?:\*\*)?1\.\s+ORIGEM[^\n]*)/i },
+  { key: "propagacao",  re: /\n((?:\*\*)?2\.\s+PROPAGA[ÇC][ÃA]O[^\n]*)/i },
+  { key: "k8s",         re: /\n((?:\*\*)?3\.\s+(?:ANÁLISE|ANALISE|COMPONENTES)[^\n]*)/i },
+  { key: "externas",    re: /\n((?:\*\*)?4\.\s+DEPEND[EÊ]NCIAS[^\n]*)/i },
+  { key: "proximos",    re: /\n((?:\*\*)?5\.\s+(?:A[ÇC][ÕO]ES\s+CORRETIVAS|PR[OÓ]XIMOS)[^\n]*)/i },
+];
+
+function parseAISections(text: string): AIParseResult {
+  type M = { idx: number; key: string; heading: string };
+  const matches: M[] = [];
+  for (const { key, re } of AI_SECTION_PATTERNS) {
+    const m = text.match(re);
+    if (m && m.index != null) matches.push({ idx: m.index, key, heading: m[1].replace(/\*\*/g, "").trim() });
+  }
+  matches.sort((a, b) => a.idx - b.idx);
+  if (matches.length === 0) return { intro: text, sections: [] };
+  const intro = text.slice(0, matches[0].idx).trim();
+  const sections: AIParsedSection[] = matches.map((m, i) => ({
+    key: m.key,
+    heading: m.heading,
+    content: text.slice(m.idx + 1, i + 1 < matches.length ? matches[i + 1].idx : text.length).trim(),
+  }));
+  return { intro, sections };
+}
+
+type SectionMeta = { Icon: React.ComponentType<{ className?: string }>; color: string; border: string; bg: string; label: string };
+const SECTION_META: Record<string, SectionMeta> = {
+  origem:      { Icon: Target,     color: "text-red-400",    border: "border-red-500/30",    bg: "bg-red-500/5",    label: "Origem / Causa Raiz" },
+  propagacao:  { Icon: Share2,     color: "text-orange-400", border: "border-orange-500/30", bg: "bg-orange-500/5", label: "Propagação" },
+  k8s:         { Icon: Layers,     color: "text-blue-400",   border: "border-blue-500/30",   bg: "bg-blue-500/5",   label: "Análise K8s" },
+  externas:    { Icon: Globe,      color: "text-purple-400", border: "border-purple-500/30", bg: "bg-purple-500/5", label: "Dependências Externas" },
+  proximos:    { Icon: ListChecks, color: "text-green-400",  border: "border-green-500/30",  bg: "bg-green-500/5",  label: "Ações Corretivas" },
+};
+
+function AIAnalysisResult({ text, problem }: { text: string; problem: DynatraceProblem }) {
+  const { intro, sections } = parseAISections(text);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(AI_SECTION_PATTERNS.map(p => [p.key, true]))
+  );
+  const hasVRP = (problem.affectedEntities?.length ?? 0) > 0 || !!problem.rootCauseEntity;
+
+  // Fallback: sem seções parseadas — renderiza como AIAnalysisCard faz
+  if (sections.length === 0) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex items-center gap-2">
+            <Bot className="h-4 w-4 text-violet-400" />
+            <span className="text-sm font-semibold">Análise IA</span>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {hasVRP && <VRPEmbed problem={problem} />}
+          <ScrollArea className="h-[400px] w-full rounded border p-4 bg-muted/50">
+            <div className="prose prose-sm dark:prose-invert max-w-none">
+              <ReactMarkdown>{text}</ReactMarkdown>
+            </div>
+          </ScrollArea>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Sumário introdutório do modelo */}
+      {intro && (
+        <Card className="border-border/50 bg-muted/10">
+          <CardContent className="pt-4 pb-3">
+            <p className="text-sm text-muted-foreground italic leading-relaxed">
+              {intro.length > 500 ? intro.slice(0, 497) + "…" : intro}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Seção de propagação com VRP embutido (antes das demais) */}
+      {hasVRP && sections.some(s => s.key === "propagacao") && (
+        <Card className="border-orange-500/30 bg-orange-500/5 overflow-hidden">
+          <CardHeader className="pb-2 pt-3 px-4 bg-orange-500/10 border-b border-orange-500/20">
+            <div className="flex items-center gap-2">
+              <Network className="h-4 w-4 text-orange-400" />
+              <span className="text-sm font-semibold text-orange-300">Fluxo de Propagação</span>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            <VRPEmbed problem={problem} />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Cards por seção */}
+      {sections.map(section => {
+        const meta = SECTION_META[section.key] ?? {
+          Icon: Bot, color: "text-foreground", border: "border-border", bg: "bg-muted/5", label: section.heading,
+        };
+        const { Icon, color, border, bg, label } = meta;
+        const isOpen = expanded[section.key] ?? true;
+
+        return (
+          <Card key={section.key} className={`border ${border} overflow-hidden`}>
+            <CardHeader
+              className={`py-2.5 px-4 ${bg} cursor-pointer select-none`}
+              onClick={() => setExpanded(prev => ({ ...prev, [section.key]: !prev[section.key] }))}
+            >
+              <div className="flex items-center gap-2">
+                <Icon className={`h-4 w-4 shrink-0 ${color}`} />
+                <span className={`text-sm font-semibold flex-1 ${color}`}>{label}</span>
+                {isOpen
+                  ? <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                  : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+              </div>
+            </CardHeader>
+            {isOpen && (
+              <>
+                <Separator className="opacity-20" />
+                <CardContent className="pt-4 pb-4">
+                  <ScrollArea className={section.key === "proximos" ? undefined : "max-h-[500px]"}>
+                    <div className="prose prose-sm dark:prose-invert max-w-none">
+                      <ReactMarkdown>{section.content}</ReactMarkdown>
+                    </div>
+                  </ScrollArea>
+                </CardContent>
+              </>
+            )}
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function VRPEmbed({ problem }: { problem: DynatraceProblem }) {
+  return (
+    <div className="overflow-auto max-h-[220px] p-3">
+      <div style={{ transform: "scale(0.82)", transformOrigin: "top left", display: "inline-block" }}>
+        <VRPGraph problem={problem} scale={1} readonly onNodeHover={() => {}} onNodeLeave={() => {}} />
+      </div>
+    </div>
+  );
+}
+
 function DiagnosticTab({
   problem,
   uiBaseUrl,
@@ -1664,18 +1924,14 @@ function DiagnosticTab({
       )}
 
       {!analyzing && !analysisResult && (
-        <div className="flex flex-col items-center gap-2 py-12 text-center text-muted-foreground">
+        <div className="flex flex-col items-center gap-2 py-8 text-center text-muted-foreground">
           <Bot className="h-10 w-10 opacity-20" />
           <p className="text-sm">Clique em <strong>Analisar com IA</strong> para obter um diagnóstico detalhado.</p>
         </div>
       )}
 
       {analysisResult && !analyzing && (
-        <div className="rounded-lg border bg-muted/10 p-4">
-          <div className="prose prose-sm dark:prose-invert max-w-none">
-            <ReactMarkdown>{analysisResult}</ReactMarkdown>
-          </div>
-        </div>
+        <AIAnalysisResult text={analysisResult} problem={problem} />
       )}
     </div>
   );
