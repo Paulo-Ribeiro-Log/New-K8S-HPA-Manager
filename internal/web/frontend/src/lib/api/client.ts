@@ -3079,6 +3079,15 @@ class APIClient {
     title: string;
     severity: string;
     analysis: string;
+    action_items: Array<{
+      urgency: string;
+      app_section: string;
+      workload?: string;
+      namespace?: string;
+      cluster?: string;
+      action: string;
+      reason: string;
+    }>;
     analyzed_at: string;
   }> {
     return this.request(`/dynatrace/problems/${encodeURIComponent(problemId)}/analyze`, {

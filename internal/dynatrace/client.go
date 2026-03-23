@@ -319,6 +319,13 @@ func enrichFromEntity(stub EntityStub, entity *Entity) EntityStub {
 	if stub.K8sNamespace == "" && stub.Labels != nil && stub.Labels.Namespace != "" {
 		stub.K8sNamespace = stub.Labels.Namespace
 	}
+	// Relações de topologia — chain de chamadas (call chain para o VRP)
+	for _, rel := range entity.ToRelationships["calls"] {
+		stub.CallsTo = append(stub.CallsTo, rel.EntityID)
+	}
+	for _, rel := range entity.FromRelationships["calledBy"] {
+		stub.CalledBy = append(stub.CalledBy, rel.EntityID)
+	}
 	return stub
 }
 
@@ -352,45 +359,112 @@ func (c *Client) EnrichEntitiesWithK8s(ctx context.Context, stubs []EntityStub) 
 	return enriched
 }
 
-// SearchEntitiesByName busca entidades DT cujo displayName começa com o nome do workload K8s.
-// Útil para a busca reversa: K8s detectou problema em um workload → encontrar entidade DT correspondente.
-// Faz chamadas paralelas (uma por nome), usa cache e deduplica por entityID.
-// Limite: máximo 10 nomes por chamada para evitar sobrecarga na API.
+// nameSearchSelectors gera múltiplas variantes de entitySelector para um nome de workload K8s.
+// Nomes K8s usam hifens ("tms-embarcador") enquanto DT pode usar espaços ("TMS Embarcador")
+// ou nomes completamente diferentes. As variantes cobrem os casos mais comuns:
+//
+//  1. contains com o nome original:        entityName.contains("tms-embarcador")
+//  2. contains com espaços no lugar de -:  entityName.contains("tms embarcador")
+//  3. AND dos 2 tokens mais longos (≥4):   entityName.contains("embarcador"),entityName.contains("tms")
+//
+// A variante 3 é a mais poderosa: encontra "TMS Embarcador", "tms-embarcador-api",
+// "Embarcador TMS Service" etc. Tokens muito curtos (<4 chars) são ignorados para evitar
+// falsos positivos (ex: "tms" com 3 chars pode ser omitido se a outra parte é suficiente).
+func nameSearchSelectors(name string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+
+	// 1. contains com nome original (hifenado)
+	add(fmt.Sprintf(`entityName.contains("%s")`, name))
+
+	// 2. troca hifens por espaços
+	withSpaces := strings.ReplaceAll(name, "-", " ")
+	if withSpaces != name {
+		add(fmt.Sprintf(`entityName.contains("%s")`, withSpaces))
+	}
+
+	// 3. AND dos tokens mais específicos (split por "-", ordena por tamanho desc)
+	parts := strings.Split(name, "-")
+	if len(parts) >= 2 {
+		// ordenar por comprimento decrescente para pegar os tokens mais específicos
+		sorted := make([]string, len(parts))
+		copy(sorted, parts)
+		for i := 0; i < len(sorted)-1; i++ {
+			for j := i + 1; j < len(sorted); j++ {
+				if len(sorted[j]) > len(sorted[i]) {
+					sorted[i], sorted[j] = sorted[j], sorted[i]
+				}
+			}
+		}
+		// pegar os 2 tokens mais longos com ao menos 3 caracteres
+		var tokens []string
+		for _, t := range sorted {
+			if len(t) >= 3 {
+				tokens = append(tokens, t)
+				if len(tokens) == 2 {
+					break
+				}
+			}
+		}
+		if len(tokens) == 2 {
+			add(fmt.Sprintf(`entityName.contains("%s"),entityName.contains("%s")`, tokens[0], tokens[1]))
+		} else if len(tokens) == 1 {
+			// apenas 1 token longo — usa sozinho com contains
+			add(fmt.Sprintf(`entityName.contains("%s")`, tokens[0]))
+		}
+	}
+
+	return out
+}
+
+// SearchEntitiesByName busca entidades DT pelo nome de workloads K8s usando múltiplas estratégias.
+// Para cada nome gera variantes de busca (contains com hifens, com espaços, tokens AND) para
+// cobrir os diferentes padrões de nomenclatura entre K8s e Dynatrace.
+// Ex: "tms-embarcador" encontra "TMS Embarcador", "tms-embarcador-api", "Embarcador TMS".
+// Faz chamadas paralelas por variante, deduplica por entityID.
 func (c *Client) SearchEntitiesByName(ctx context.Context, names []string) []EntityStub {
 	if len(names) == 0 {
 		return nil
 	}
-	// Limitar a 10 nomes para não sobrecarregar a API
-	if len(names) > 10 {
-		names = names[:10]
+	if len(names) > 15 {
+		names = names[:15]
 	}
 
-	type result struct {
+	// Gerar todas as variantes de selector para todos os nomes
+	var selectors []string
+	for _, name := range names {
+		selectors = append(selectors, nameSearchSelectors(name)...)
+	}
+
+	type chanResult struct {
 		stubs []EntityStub
 	}
-	results := make([]result, len(names))
+	ch := make(chan chanResult, len(selectors))
 	var wg sync.WaitGroup
 
-	for i, name := range names {
+	for _, sel := range selectors {
 		wg.Add(1)
-		go func(idx int, n string) {
+		go func(entitySelector string) {
 			defer wg.Done()
 
-			// Verificar cache antes: se alguma entrada no cache tem DisplayName que começa com n, reusar
-			// (Otimização: o cache de entityID não serve aqui pois buscamos por nome)
-
 			params := url.Values{
-				// startsWith é mais preciso que contains — evita false positives
-				"entitySelector": {fmt.Sprintf(`entityName.startsWith("%s")`, n)},
+				"entitySelector": {entitySelector},
 				"fields":         {"+tags,+properties"},
-				"pageSize":       {"5"}, // normalmente 1 entidade por nome
+				"pageSize":       {"10"},
 			}
 
 			var resp struct {
 				Entities []Entity `json:"entities"`
 			}
 			if err := c.get(ctx, "entities", params, &resp); err != nil {
-				return // falha silenciosa — é busca auxiliar
+				ch <- chanResult{}
+				return
 			}
 
 			stubs := make([]EntityStub, 0, len(resp.Entities))
@@ -400,19 +474,19 @@ func (c *Client) SearchEntitiesByName(ctx context.Context, names []string) []Ent
 					DisplayName: e.DisplayName,
 				}
 				enriched := enrichFromEntity(stub, &e)
-				// Gravar no cache para evitar chamada repetida em GetEntity
 				entityCache.Store(enriched.EntityID.ID, entityCacheEntry{stub: enriched, cachedAt: time.Now()})
 				stubs = append(stubs, enriched)
 			}
-			results[idx] = result{stubs: stubs}
-		}(i, name)
+			ch <- chanResult{stubs: stubs}
+		}(sel)
 	}
-	wg.Wait()
+
+	go func() { wg.Wait(); close(ch) }()
 
 	// Deduplicar por entityID
 	seen := make(map[string]struct{})
 	var all []EntityStub
-	for _, r := range results {
+	for r := range ch {
 		for _, s := range r.stubs {
 			if _, ok := seen[s.EntityID.ID]; !ok {
 				seen[s.EntityID.ID] = struct{}{}
@@ -451,29 +525,44 @@ func (c *Client) listEntitiesBySelector(ctx context.Context, entitySelector stri
 }
 
 // ListEntitiesByCluster lista entidades de um tipo instrumentadas pelo OneAgent em um cluster.
-// Usa a tag dt.host_group.id como seletor principal (reflete DTLabels.HostGroup = nome do cluster AKS sem "-admin").
-// Fallback para CLOUD_APPLICATION: kubernetesCluster.name — caso as entidades não tenham HostGroup tag.
+// Estratégia de busca em 3 tentativas para cobrir variações de tag e configuração:
+//  1. tag("dt.host_group.id:<cluster>") — primário para todos os tipos
+//  2. kubernetesCluster.name("<cluster>") — fallback K8s nativo (CLOUD_APPLICATION e SERVICE)
+//  3. tag("kubernetes.cluster.name:<cluster>") — fallback via tag K8s propagada pelo OneAgent
+//
 // Retorna até 500 entidades (limite prático por cluster, sem paginação).
 func (c *Client) ListEntitiesByCluster(ctx context.Context, clusterName, entityType string) ([]EntityStub, error) {
 	if clusterName == "" || entityType == "" {
 		return nil, fmt.Errorf("clusterName e entityType são obrigatórios")
 	}
 
-	// Primário: tag dt.host_group.id (preenchida pelo OneAgent em todos os hosts do cluster)
+	// Tentativa 1: tag dt.host_group.id (OneAgent injeta em hosts/processos/serviços do cluster)
 	primarySelector := fmt.Sprintf(`type("%s"),tag("dt.host_group.id:%s")`, entityType, clusterName)
 	stubs, err := c.listEntitiesBySelector(ctx, primarySelector)
 	if err != nil {
-		// falha não fatal — tenta fallback antes de desistir
-		stubs = nil
+		stubs = nil // falha não fatal — continua tentativas
+	}
+	if len(stubs) > 0 {
+		return stubs, nil
 	}
 
-	// Fallback: kubernetesCluster.name para CLOUD_APPLICATION (K8s native)
-	if len(stubs) == 0 && entityType == "CLOUD_APPLICATION" {
-		fallbackSelector := fmt.Sprintf(`type("CLOUD_APPLICATION"),kubernetesCluster.name("%s")`, clusterName)
+	// Tentativa 2: kubernetesCluster.name — relação topológica nativa K8s (CLOUD_APPLICATION e SERVICE)
+	if entityType == "CLOUD_APPLICATION" || entityType == "SERVICE" {
+		fallbackSelector := fmt.Sprintf(`type("%s"),kubernetesCluster.name("%s")`, entityType, clusterName)
 		stubs, err = c.listEntitiesBySelector(ctx, fallbackSelector)
 		if err != nil {
-			return nil, fmt.Errorf("ListEntitiesByCluster fallback: %w", err)
+			stubs = nil
 		}
+		if len(stubs) > 0 {
+			return stubs, nil
+		}
+	}
+
+	// Tentativa 3: tag kubernetes.cluster.name propagada pelo OneAgent em processos K8s
+	tag3Selector := fmt.Sprintf(`type("%s"),tag("kubernetes.cluster.name:%s")`, entityType, clusterName)
+	stubs, err = c.listEntitiesBySelector(ctx, tag3Selector)
+	if err != nil {
+		return nil, fmt.Errorf("ListEntitiesByCluster (todas as tentativas falharam): %w", err)
 	}
 
 	return stubs, nil
