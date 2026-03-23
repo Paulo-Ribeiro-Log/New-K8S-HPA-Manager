@@ -38,6 +38,7 @@ import {
   Users,
   Brain,
   Radio,
+  ArrowRight,
 } from "lucide-react";
 import type { HealthCheckResult, Severity, CorrelatedHealthItem, OneAgentSignal } from "@/types/healthcheck";
 import { SeverityColors, SeverityBgColors, SeverityLabels } from "@/types/healthcheck";
@@ -188,6 +189,29 @@ const CorrelatedItemCard = ({ item }: { item: CorrelatedHealthItem }) => {
               ))}
             </div>
           )}
+
+          {/* Onde atuar: sugestões de navegação do HPA Manager */}
+          {(() => {
+            const allSuggestions = [
+              ...k8sIssues.flatMap(i => i.suggestions ?? []),
+              ...dtProblems.flatMap(p => p.suggestions ?? []),
+            ].filter(Boolean);
+            if (allSuggestions.length === 0) return null;
+            return (
+              <div className="space-y-1">
+                <p className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                  <ArrowRight className="h-3 w-3" /> Onde atuar no HPA Manager
+                </p>
+                <div className="space-y-0.5">
+                  {allSuggestions.map((s, i) => (
+                    <p key={i} className="text-[10px] bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900 rounded px-2 py-1 text-emerald-800 dark:text-emerald-200">
+                      {s}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Botão Analisar com AI */}
           <div className="flex justify-end pt-1 border-t">
