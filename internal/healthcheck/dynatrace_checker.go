@@ -418,12 +418,13 @@ func enrichWithContext(ctx context.Context, client *dtclient.Client, results []D
 
 // SearchProblemsForWorkloads busca problems DT para workloads K8s que não apareceram
 // no CheckAll (tags OneAgent ausentes ou incorretas). É a direção reversa: K8s → DT.
+// workloads: lista com nome + namespace dos workloads K8s problemáticos.
 // existingIDs: conjunto de problem IDs já presentes em DynatraceResults (para deduplicação).
 // timeoutSec: orçamento de tempo para toda a busca reversa.
 func (c *DynatraceChecker) SearchProblemsForWorkloads(
 	ctx context.Context,
 	dtURL, dtToken string,
-	workloads []string, // nomes de workloads K8s sem namespace ("payment-service")
+	workloads []TroubledWorkloadInfo,
 	cluster string,
 	existingIDs map[string]struct{},
 	timeoutSec int,
@@ -441,16 +442,25 @@ func (c *DynatraceChecker) SearchProblemsForWorkloads(
 	searchCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	// 1. Buscar entidades DT pelo nome dos workloads
-	entities := client.SearchEntitiesByName(searchCtx, workloads)
+	// Mapa nome → namespace para fallback de correlação quando entidade DT não tem tags K8s
+	// (ex: APPLICATION "TMS Embarcador" encontrada pela busca de "tms-embarcador")
+	workloadNSMap := make(map[string]string, len(workloads))
+	names := make([]string, len(workloads))
+	for i, tw := range workloads {
+		names[i] = tw.Name
+		workloadNSMap[strings.ToLower(tw.Name)] = tw.Namespace
+	}
+
+	// 1. Buscar entidades DT pelo nome dos workloads (múltiplas estratégias: contains, tokens AND)
+	entities := client.SearchEntitiesByName(searchCtx, names)
 	if len(entities) == 0 {
-		log.Debug().Strs("workloads", workloads).Msg("[DynatraceChecker.Reverse] Nenhuma entidade DT encontrada para os workloads K8s")
+		log.Debug().Strs("workloads", names).Msg("[DynatraceChecker.Reverse] Nenhuma entidade DT encontrada para os workloads K8s")
 		return nil
 	}
 
 	log.Info().
 		Int("entities", len(entities)).
-		Strs("workloads", workloads).
+		Strs("workloads", names).
 		Msg("[DynatraceChecker.Reverse] Entidades DT encontradas para workloads K8s")
 
 	// 2. Buscar problems para cada entidade (paralelo, limite de 5 entidades)
@@ -537,6 +547,28 @@ func (c *DynatraceChecker) SearchProblemsForWorkloads(
 				if wl != "" {
 					workloadSet[ns+"/"+wl] = struct{}{}
 					nsSet[ns] = struct{}{}
+				}
+			}
+
+			// Fallback: entidade sem tags K8s (ex: APPLICATION "TMS Embarcador").
+			// Verifica se o display name da entidade contém tokens de algum workload pesquisado,
+			// e usa esse workload + namespace original como referência de correlação.
+			if len(workloadSet) == 0 {
+				for _, e := range entry.enriched {
+					displayLower := strings.ToLower(strings.ReplaceAll(e.DisplayName, " ", "-"))
+					for wName, wNS := range workloadNSMap {
+						// match se display name contém o nome do workload ou vice-versa
+						if strings.Contains(displayLower, wName) || strings.Contains(wName, displayLower) {
+							workloadSet[wNS+"/"+wName] = struct{}{}
+							nsSet[wNS] = struct{}{}
+							log.Debug().
+								Str("entity", e.DisplayName).
+								Str("workload", wName).
+								Str("namespace", wNS).
+								Msg("[DynatraceChecker.Reverse] Correlação por fallback de nome (sem tags K8s)")
+							break
+						}
+					}
 				}
 			}
 
