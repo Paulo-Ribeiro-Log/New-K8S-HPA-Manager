@@ -29,12 +29,23 @@ func normalizeClusterName(name string) string {
 }
 
 // matchesCluster verifica se uma entidade enriquecida pertence ao cluster alvo.
-// Compara K8sCluster e DTLabels.HostGroup, ambos normalizados (sem "-admin").
+// Compara (em ordem de confiança):
+//  1. K8sCluster (tag kubernetes.cluster.name)
+//  2. DTLabels.HostGroup (tag dt.host_group.id)
+//  3. DisplayName — DT nomeia process groups como "Tech - cluster - proc"
+//     ex: "Envoy - akspriv-busca-prd - envoy vv-categoria..." → contém "akspriv-busca-prd"
 func matchesCluster(clusterNorm string, e dtclient.EntityStub) bool {
 	if strings.EqualFold(normalizeClusterName(e.K8sCluster), clusterNorm) {
 		return true
 	}
 	if e.Labels != nil && strings.EqualFold(normalizeClusterName(e.Labels.HostGroup), clusterNorm) {
+		return true
+	}
+	// Fallback: cluster name aparece em qualquer parte do display name
+	if clusterNorm != "" && strings.Contains(strings.ToLower(e.DisplayName), clusterNorm) {
+		return true
+	}
+	if clusterNorm != "" && strings.Contains(strings.ToLower(e.Name), clusterNorm) {
 		return true
 	}
 	return false
@@ -90,35 +101,66 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 	}
 
 	for _, p := range dtResult.Problems {
+		// Descartar problems de entidades puramente web/RUM (APPLICATION, BROWSER, SYNTHETIC_TEST, etc.)
+		// que não têm relação com infraestrutura K8s/serviços.
+		if isWebOnlyProblem(p.AffectedEntities) {
+			log.Debug().Str("problemId", p.ProblemID).Str("title", p.Title).
+				Msg("[DynatraceChecker] Problem descartado: apenas entidades web/RUM (APPLICATION/BROWSER/SYNTHETIC)")
+			continue
+		}
+
 		// Enriquecer entidades com tags K8s + DTLabels (squad, journey, version, GitHub, etc.)
 		enriched := client.EnrichEntitiesWithK8s(checkCtx, p.AffectedEntities)
 
-		// Filtrar por cluster — normaliza ambos os lados para remover sufixo "-admin"
+		// Filtrar por cluster com 3 níveis de confiança:
+		//  1. Entidade com K8sCluster/HostGroup/DisplayName matching → inclui
+		//  2. Entidade com K8sCluster/HostGroup de outro cluster → exclui
+		//  3. Sem info de cluster nas entidades → fallback: Management Zone deve conter cluster name
 		if clusterNorm != "" {
 			hasThisCluster := false
+			hasOtherCluster := false
 			for _, e := range enriched {
 				if matchesCluster(clusterNorm, e) {
 					hasThisCluster = true
 					break
 				}
-			}
-			if !hasThisCluster {
-				// Log para diagnosticar quais valores estão nas entidades
-				entityInfo := make([]string, 0, len(enriched))
-				for _, e := range enriched {
-					hostGroup := ""
-					if e.Labels != nil {
-						hostGroup = e.Labels.HostGroup
-					}
-					entityInfo = append(entityInfo, fmt.Sprintf("%s(k8s=%q,hg=%q)", e.BestName(), e.K8sCluster, hostGroup))
+				eCluster := normalizeClusterName(e.K8sCluster)
+				hg := ""
+				if e.Labels != nil {
+					hg = normalizeClusterName(e.Labels.HostGroup)
 				}
-				log.Debug().
-					Str("problemId", p.ProblemID).
-					Str("title", p.Title).
-					Str("clusterNorm", clusterNorm).
-					Strs("entities", entityInfo).
-					Msg("[DynatraceChecker] Problem descartado: nenhuma entidade pertence a este cluster")
-				continue
+				if (eCluster != "" && eCluster != clusterNorm) || (hg != "" && hg != clusterNorm) {
+					hasOtherCluster = true
+				}
+			}
+
+			if !hasThisCluster {
+				if hasOtherCluster {
+					// Entidades explicitamente de outro cluster — descartar
+					log.Debug().Str("problemId", p.ProblemID).Str("title", p.Title).
+						Msg("[DynatraceChecker] Problem descartado: entidades pertencem a outro cluster")
+					continue
+				}
+				// Sem info de cluster nas entidades — usar Management Zones como fallback
+				mzMatch := false
+				for _, mz := range p.ManagementZones {
+					if strings.Contains(strings.ToLower(mz.Name), clusterNorm) {
+						mzMatch = true
+						break
+					}
+				}
+				if !mzMatch {
+					log.Debug().Str("problemId", p.ProblemID).Str("title", p.Title).
+						Strs("mzNames", func() []string {
+							names := make([]string, len(p.ManagementZones))
+							for i, mz := range p.ManagementZones {
+								names[i] = mz.Name
+							}
+							return names
+						}()).
+						Msg("[DynatraceChecker] Problem descartado: sem match por entidade nem por management zone")
+					continue
+				}
 			}
 		}
 
@@ -376,12 +418,13 @@ func enrichWithContext(ctx context.Context, client *dtclient.Client, results []D
 
 // SearchProblemsForWorkloads busca problems DT para workloads K8s que não apareceram
 // no CheckAll (tags OneAgent ausentes ou incorretas). É a direção reversa: K8s → DT.
+// workloads: lista com nome + namespace dos workloads K8s problemáticos.
 // existingIDs: conjunto de problem IDs já presentes em DynatraceResults (para deduplicação).
 // timeoutSec: orçamento de tempo para toda a busca reversa.
 func (c *DynatraceChecker) SearchProblemsForWorkloads(
 	ctx context.Context,
 	dtURL, dtToken string,
-	workloads []string, // nomes de workloads K8s sem namespace ("payment-service")
+	workloads []TroubledWorkloadInfo,
 	cluster string,
 	existingIDs map[string]struct{},
 	timeoutSec int,
@@ -399,16 +442,25 @@ func (c *DynatraceChecker) SearchProblemsForWorkloads(
 	searchCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	// 1. Buscar entidades DT pelo nome dos workloads
-	entities := client.SearchEntitiesByName(searchCtx, workloads)
+	// Mapa nome → namespace para fallback de correlação quando entidade DT não tem tags K8s
+	// (ex: APPLICATION "TMS Embarcador" encontrada pela busca de "tms-embarcador")
+	workloadNSMap := make(map[string]string, len(workloads))
+	names := make([]string, len(workloads))
+	for i, tw := range workloads {
+		names[i] = tw.Name
+		workloadNSMap[strings.ToLower(tw.Name)] = tw.Namespace
+	}
+
+	// 1. Buscar entidades DT pelo nome dos workloads (múltiplas estratégias: contains, tokens AND)
+	entities := client.SearchEntitiesByName(searchCtx, names)
 	if len(entities) == 0 {
-		log.Debug().Strs("workloads", workloads).Msg("[DynatraceChecker.Reverse] Nenhuma entidade DT encontrada para os workloads K8s")
+		log.Debug().Strs("workloads", names).Msg("[DynatraceChecker.Reverse] Nenhuma entidade DT encontrada para os workloads K8s")
 		return nil
 	}
 
 	log.Info().
 		Int("entities", len(entities)).
-		Strs("workloads", workloads).
+		Strs("workloads", names).
 		Msg("[DynatraceChecker.Reverse] Entidades DT encontradas para workloads K8s")
 
 	// 2. Buscar problems para cada entidade (paralelo, limite de 5 entidades)
@@ -498,6 +550,28 @@ func (c *DynatraceChecker) SearchProblemsForWorkloads(
 				}
 			}
 
+			// Fallback: entidade sem tags K8s (ex: APPLICATION "TMS Embarcador").
+			// Verifica se o display name da entidade contém tokens de algum workload pesquisado,
+			// e usa esse workload + namespace original como referência de correlação.
+			if len(workloadSet) == 0 {
+				for _, e := range entry.enriched {
+					displayLower := strings.ToLower(strings.ReplaceAll(e.DisplayName, " ", "-"))
+					for wName, wNS := range workloadNSMap {
+						// match se display name contém o nome do workload ou vice-versa
+						if strings.Contains(displayLower, wName) || strings.Contains(wName, displayLower) {
+							workloadSet[wNS+"/"+wName] = struct{}{}
+							nsSet[wNS] = struct{}{}
+							log.Debug().
+								Str("entity", e.DisplayName).
+								Str("workload", wName).
+								Str("namespace", wNS).
+								Msg("[DynatraceChecker.Reverse] Correlação por fallback de nome (sem tags K8s)")
+							break
+						}
+					}
+				}
+			}
+
 			// Validação de cluster: se a entidade tiver cluster identificado, confirmar
 			if clusterNorm != "" {
 				hasCluster := false
@@ -543,30 +617,76 @@ func (c *DynatraceChecker) SearchProblemsForWorkloads(
 	return newResults
 }
 
-// buildDTSuggestions gera sugestões baseadas no tipo de problem
+// buildDTSuggestions gera sugestões de navegação no HPA Manager baseadas no tipo de problem.
+// Cada sugestão indica qual aba/seção acessar e qual ação executar — sem comandos kubectl.
 func buildDTSuggestions(dtSeverity string, workloads []string) []string {
 	suggestions := []string{}
 
+	// Extrair namespace e workload do primeiro item para sugestões contextuais
+	firstNS, firstWL := "", ""
 	if len(workloads) > 0 {
-		suggestions = append(suggestions, fmt.Sprintf("Verifique os workloads K8s afetados: %s", strings.Join(workloads, ", ")))
+		parts := strings.SplitN(workloads[0], "/", 2)
+		if len(parts) == 2 {
+			firstNS, firstWL = parts[0], parts[1]
+		} else {
+			firstWL = workloads[0]
+		}
+	}
+
+	// Formata referência contextual se namespace conhecido
+	ref := func(section string) string {
+		if firstNS != "" && firstWL != "" {
+			return fmt.Sprintf("Aba %s → namespace %q → workload %q", section, firstNS, firstWL)
+		} else if firstWL != "" {
+			return fmt.Sprintf("Aba %s → workload %q", section, firstWL)
+		}
+		return fmt.Sprintf("Aba %s", section)
 	}
 
 	switch dtSeverity {
 	case "AVAILABILITY":
-		suggestions = append(suggestions, "Verifique o status dos pods: kubectl get pods -n <namespace>")
-		suggestions = append(suggestions, "Verifique os logs dos containers com falha: kubectl logs -n <namespace> <pod>")
+		suggestions = append(suggestions, ref("Deployments")+" → verificar pods em CrashLoop ou Pending")
+		suggestions = append(suggestions, ref("HPA")+" → verificar réplicas e escalar se necessário")
 	case "ERROR":
-		suggestions = append(suggestions, "Analise os logs de erro: kubectl logs -n <namespace> <pod> --tail=100")
-		suggestions = append(suggestions, "Verifique eventos recentes: kubectl get events -n <namespace> --sort-by='.lastTimestamp'")
+		suggestions = append(suggestions, ref("Deployments")+" → verificar logs e considerar rollback")
+		suggestions = append(suggestions, ref("Health Check")+" → executar verificação detalhada de eventos recentes")
 	case "PERFORMANCE":
-		suggestions = append(suggestions, "Verifique uso de recursos: kubectl top pods -n <namespace>")
-		suggestions = append(suggestions, "Considere ajustar limits/requests ou escalar o HPA")
+		suggestions = append(suggestions, ref("HPA")+" → aumentar maxReplicas para absorver carga")
+		suggestions = append(suggestions, ref("Resource Explorer")+" → revisar CPU/memory limits do container")
 	case "RESOURCE_CONTENTION":
-		suggestions = append(suggestions, "Verifique uso de CPU/memória: kubectl top pods -n <namespace>")
-		suggestions = append(suggestions, "Verifique se o HPA está no limite máximo de réplicas")
+		suggestions = append(suggestions, ref("Resource Explorer")+" → aumentar CPU/memory requests e limits")
+		suggestions = append(suggestions, ref("HPA")+" → verificar se está no limite de réplicas configurado")
+	default:
+		suggestions = append(suggestions, ref("Health Check")+" → executar verificação detalhada")
 	}
 
-	suggestions = append(suggestions, "Use 'Analisar com AI' na aba Dynatrace para diagnóstico completo")
+	suggestions = append(suggestions, "Aba Dynatrace → 'Analisar com IA' para diagnóstico completo com métricas")
 
 	return suggestions
+}
+
+// webOnlyEntityTypes são tipos de entidade Dynatrace que representam experiência web/RUM/sintético,
+// sem relação com infraestrutura K8s ou serviços de backend.
+var webOnlyEntityTypes = map[string]struct{}{
+	"APPLICATION":        {},
+	"BROWSER":            {},
+	"SYNTHETIC_TEST":     {},
+	"SYNTHETIC_MONITOR":  {},
+	"HTTP_CHECK":         {},
+	"MOBILE_APPLICATION": {},
+	"WEB_APPLICATION":    {},
+}
+
+// isWebOnlyProblem retorna true se TODAS as entidades afetadas são tipos web/RUM/sintético.
+// Esses problems não têm relação com K8s e devem ser ignorados no Health Check.
+func isWebOnlyProblem(entities []dtclient.EntityStub) bool {
+	if len(entities) == 0 {
+		return false
+	}
+	for _, e := range entities {
+		if _, isWeb := webOnlyEntityTypes[strings.ToUpper(e.EntityID.Type)]; !isWeb {
+			return false // tem pelo menos uma entidade não-web → não é web-only
+		}
+	}
+	return true
 }

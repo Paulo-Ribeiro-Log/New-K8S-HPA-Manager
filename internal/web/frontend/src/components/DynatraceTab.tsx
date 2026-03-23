@@ -1,13 +1,18 @@
-import { useState, useRef, type ReactNode } from "react";
+import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DynatraceMetricsPanel } from "@/components/DynatraceMetricsPanel";
 import { DynatraceContextPanel } from "@/components/DynatraceContextPanel";
 import { DynatraceGitHubSection } from "@/components/DynatraceGitHubSection";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -17,7 +22,8 @@ import {
   Info, Target, Server, Search, Network, MapPin, ArrowRight,
   Activity, X, BarChart3, GitBranch, Users, Tag, Cpu,
   Package, GitCommit, Rocket, ChevronDown, ChevronRight,
-  Shield, Globe, Database, Boxes, CheckCircle2,
+  Shield, Globe, Database, Boxes, CheckCircle2, Maximize2, ZoomIn, ZoomOut,
+  ListChecks, Share2,
 } from "lucide-react";
 import { apiClient } from "@/lib/api/client";
 import type { NodePoolLookupResult } from "@/lib/api/types";
@@ -327,6 +333,11 @@ function EntityCard({ entity, isRoot = false }: {
   const l = entity.labels;
   const hasLabels = !!l && Object.values(l).some(Boolean);
 
+  // Dados de topologia (call chain)
+  const callsToCount = entity.callsTo?.length ?? 0;
+  const calledByCount = entity.calledBy?.length ?? 0;
+  const hasTopology = callsToCount > 0 || calledByCount > 0;
+
   // Detectar nó AKS e fazer lookup no registry
   const rawName = entity.name || entity.displayName || "";
   const aksPoolName = extractAksNodePool(rawName);
@@ -354,7 +365,7 @@ function EntityCard({ entity, isRoot = false }: {
     || (parsed?.context ? inferEnvFromContext(parsed.context) : null);
 
   return (
-    <div className={`rounded-lg border text-xs ${isRoot ? "border-orange-500/30 bg-orange-500/5" : "border-border bg-muted/20"}`}>
+    <div className={`rounded-lg border text-xs ${isRoot ? "border-orange-500/40 bg-orange-500/5" : "border-border bg-muted/20"}`}>
       {/* Cabeçalho — sempre clicável para expandir */}
       <div
         className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-muted/30 transition-colors"
@@ -362,6 +373,12 @@ function EntityCard({ entity, isRoot = false }: {
       >
         <div className="flex-1 min-w-0 space-y-0.5">
           <div className="flex items-center gap-1.5 flex-wrap">
+            {/* Badge causa raiz (destaque) */}
+            {isRoot && (
+              <span className="inline-flex items-center gap-0.5 rounded border border-orange-500/50 bg-orange-500/15 px-1.5 py-0 text-[9px] font-semibold text-orange-400 shrink-0">
+                <Target className="h-2.5 w-2.5" />CAUSA RAIZ
+              </span>
+            )}
             {/* Nome principal: prioriza parsed tech+service, senão nome bruto */}
             {isParseable ? (
               <>
@@ -369,7 +386,7 @@ function EntityCard({ entity, isRoot = false }: {
                 <span className="font-semibold truncate max-w-[300px]">{parsed!.service}</span>
               </>
             ) : (
-              <span className="font-medium truncate max-w-[360px]">{displayName || entity.entityId.id}</span>
+              <span className={`font-medium truncate max-w-[360px] ${isRoot ? "text-orange-300" : ""}`}>{displayName || entity.entityId.id}</span>
             )}
             <Badge variant="outline" className="text-[10px] font-mono py-0 h-4 shrink-0">
               {entityTypeLabel(entity.entityId.type)}
@@ -413,6 +430,15 @@ function EntityCard({ entity, isRoot = false }: {
             <div className="flex items-center gap-1 text-muted-foreground text-[10px]">
               <Layers className="h-2.5 w-2.5 shrink-0" />
               {path.join(" › ")}
+            </div>
+          )}
+
+          {/* Topologia de chamadas (quando disponível) */}
+          {hasTopology && (
+            <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+              <Network className="h-2.5 w-2.5 shrink-0 text-blue-400/60" />
+              {calledByCount > 0 && <span className="text-muted-foreground/70"><span className="text-blue-400/80 font-mono">{calledByCount}</span> chamam esta</span>}
+              {callsToCount > 0 && <span className="text-muted-foreground/70">chama <span className="text-cyan-400/80 font-mono">{callsToCount}</span> downstream</span>}
             </div>
           )}
 
@@ -516,6 +542,25 @@ function EntityCard({ entity, isRoot = false }: {
                   <p className="text-[9px] uppercase tracking-wider text-purple-400/70 font-semibold">Rastreabilidade</p>
                   <InfoRow icon={<GitBranch className="h-2.5 w-2.5" />} label="github-repo-id" value={l!.githubRepoId ?? ""} mono subtle />
                   <InfoRow icon={<MapPin className="h-2.5 w-2.5" />} label="ambiente" value={l!.appEnvironment ?? ""} />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Topologia de chamadas (quando disponível via GetEntity) */}
+          {hasTopology && (
+            <div className="space-y-1 border-t border-border/30 pt-2">
+              <p className="text-[9px] font-semibold uppercase tracking-wider text-blue-400/70">Topologia (call chain)</p>
+              {calledByCount > 0 && (
+                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                  <ArrowRight className="h-2.5 w-2.5 rotate-180 text-blue-400/60 shrink-0" />
+                  <span><span className="text-blue-400 font-mono">{calledByCount}</span> entidade(s) upstream chamam esta</span>
+                </div>
+              )}
+              {callsToCount > 0 && (
+                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                  <ArrowRight className="h-2.5 w-2.5 text-cyan-400/60 shrink-0" />
+                  <span>Chama <span className="text-cyan-400 font-mono">{callsToCount}</span> entidade(s) downstream</span>
                 </div>
               )}
             </div>
@@ -696,36 +741,706 @@ function QuickInvestigation({
   );
 }
 
-// ── Aba Detalhes ────────────────────────────────────────────────────────────────
+// ── DTResizeDivider — divisor de coluna arrastável ───────────────────────────────
+
+function DTResizeDivider({ onDrag }: { onDrag: (delta: number) => void }) {
+  const dragging = useRef(false);
+  const lastX = useRef(0);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      onDrag(e.clientX - lastX.current);
+      lastX.current = e.clientX;
+    };
+    const onUp = () => {
+      dragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [onDrag]);
+
+  return (
+    <div
+      className="w-2 flex-shrink-0 mx-1 rounded bg-border/30 hover:bg-primary/50 active:bg-primary cursor-col-resize transition-colors self-stretch"
+      onMouseDown={(e) => {
+        dragging.current = true;
+        lastX.current = e.clientX;
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+      }}
+    />
+  );
+}
+
+// ── Visual Resolution Path (grafo SVG com zoom modal) ───────────────────────────
+
+const SEV_NODE_COLOR: Record<string, string> = {
+  AVAILABILITY:        "#ef4444",
+  ERROR:               "#f97316",
+  PERFORMANCE:         "#eab308",
+  RESOURCE_CONTENTION: "#eab308",
+  CUSTOM_ALERT:        "#3b82f6",
+};
+
+// Ícone SVG por tipo de entidade (inline, monochrome)
+function entityIcon(type: string, cx: number, cy: number, size = 14, color = "#f1f5f9") {
+  switch (type) {
+    case "SERVICE":
+      return <g key={`icon-${cx}-${cy}`}>
+        <circle cx={cx} cy={cy} r={size / 2} fill="none" stroke={color} strokeWidth="1.4" />
+        <circle cx={cx} cy={cy} r={size / 4} fill={color} />
+      </g>;
+    case "HOST":
+      return <rect key={`icon-${cx}-${cy}`} x={cx - size/2} y={cy - size/2} width={size} height={size} rx={2} fill="none" stroke={color} strokeWidth="1.4" />;
+    case "KUBERNETES_NODE": case "KUBERNETES_CLUSTER":
+      return <g key={`icon-${cx}-${cy}`}>
+        <polygon points={`${cx},${cy-size/2} ${cx+size/2},${cy+size/4} ${cx-size/2},${cy+size/4}`} fill="none" stroke={color} strokeWidth="1.4" />
+      </g>;
+    case "PROCESS_GROUP": case "PROCESS_GROUP_INSTANCE":
+      return <g key={`icon-${cx}-${cy}`}>
+        <rect x={cx-size/2} y={cy-size/3} width={size} height={size/1.5} rx={3} fill="none" stroke={color} strokeWidth="1.4"/>
+        <line x1={cx-size/4} y1={cy} x2={cx+size/4} y2={cy} stroke={color} strokeWidth="1.2"/>
+      </g>;
+    default:
+      return <circle key={`icon-${cx}-${cy}`} cx={cx} cy={cy} r={size / 2} fill="none" stroke={color} strokeWidth="1.4" />;
+  }
+}
+
+// Quebra nome em 2 linhas de até `maxChars` chars cada.
+function splitLabel(name: string, maxChars = 20): [string, string | undefined] {
+  if (name.length <= maxChars) return [name, undefined];
+  const breakAt = Math.max(name.lastIndexOf(" ", maxChars), name.lastIndexOf("-", maxChars));
+  if (breakAt > 3) {
+    const l1 = name.slice(0, breakAt + 1).trimEnd();
+    const rest = name.slice(breakAt + 1).trim();
+    return [l1, rest.length > maxChars ? rest.slice(0, maxChars - 1) + "…" : rest];
+  }
+  return [name.slice(0, maxChars - 1) + "…", name.slice(maxChars - 1, maxChars * 2 - 2) + (name.length > maxChars * 2 - 2 ? "…" : "")];
+}
+
+// ── DAG Layout ───────────────────────────────────────────────────────────────
+
+const DAG_NR = 28;        // raio do círculo
+const DAG_SW = 130;       // largura do slot (centro do círculo + espaço para texto)
+const DAG_SH = DAG_NR * 2 + 60; // altura do slot
+const DAG_HGAP = 70;      // gap horizontal entre colunas
+const DAG_VGAP = 20;      // gap vertical entre nós na coluna
+const DAG_PAD = 24;       // padding externo
+
+interface DAGNode {
+  id: string;
+  entity: DynatraceProblem["affectedEntities"][0];
+  isRoot: boolean;
+  hasAlert: boolean;
+  cx: number;
+  cy: number;
+  connections: number; // callsTo + calledBy count (para badge)
+}
+
+function buildDAGLayout(problem: DynatraceProblem): {
+  nodes: DAGNode[];
+  edges: { from: string; to: string; isRoot: boolean }[];
+  totalW: number;
+  totalH: number;
+  hasTopo: boolean;
+} {
+  const rootId = problem.rootCauseEntity?.entityId.id;
+  const affected = problem.affectedEntities ?? [];
+  const impacted = problem.impactedEntities ?? [];
+
+  const entityMap = new Map<string, typeof affected[0]>();
+  for (const e of [...affected, ...impacted]) entityMap.set(e.entityId.id, e);
+  if (rootId && problem.rootCauseEntity && !entityMap.has(rootId)) {
+    entityMap.set(rootId, problem.rootCauseEntity as typeof affected[0]);
+  }
+
+  const allIds = [...entityMap.keys()];
+  if (allIds.length === 0) return { nodes: [], edges: [], totalW: 0, totalH: 0, hasTopo: false };
+
+  const inProblem = new Set(allIds);
+  const callsTo = new Map<string, string[]>();
+  const calledBy = new Map<string, string[]>();
+  for (const id of allIds) { callsTo.set(id, []); calledBy.set(id, []); }
+
+  for (const id of allIds) {
+    const e = entityMap.get(id)!;
+    for (const rel of (e.callsTo ?? [])) {
+      if (inProblem.has(rel.id) && rel.id !== id && !callsTo.get(id)!.includes(rel.id)) {
+        callsTo.get(id)!.push(rel.id);
+        calledBy.get(rel.id)!.push(id);
+      }
+    }
+  }
+
+  const hasTopo = allIds.some(id => (callsTo.get(id)?.length ?? 0) > 0);
+
+  // Longest-path layering via topo sort
+  const layers = new Map<string, number>();
+  const visiting = new Set<string>();
+  function assignLayer(id: string): number {
+    if (layers.has(id)) return layers.get(id)!;
+    if (visiting.has(id)) return 0;
+    visiting.add(id);
+    let max = -1;
+    for (const prev of calledBy.get(id) ?? []) max = Math.max(max, assignLayer(prev));
+    visiting.delete(id);
+    const layer = max + 1;
+    layers.set(id, layer);
+    return layer;
+  }
+  for (const id of allIds) assignLayer(id);
+
+  // Sem topologia: root na camada 0, demais na camada 1
+  if (!hasTopo) {
+    for (const id of allIds) layers.set(id, id === rootId ? 0 : 1);
+  }
+
+  const byLayer = new Map<number, string[]>();
+  for (const [id, l] of layers) {
+    if (!byLayer.has(l)) byLayer.set(l, []);
+    byLayer.get(l)!.push(id);
+  }
+  for (const ids of byLayer.values()) {
+    ids.sort((a, b) => {
+      if (a === rootId) return -1;
+      if (b === rootId) return 1;
+      const na = entityMap.get(a)?.displayName || entityMap.get(a)?.name || "";
+      const nb = entityMap.get(b)?.displayName || entityMap.get(b)?.name || "";
+      return na.localeCompare(nb);
+    });
+  }
+
+  const maxLayer = Math.max(...layers.values(), 0);
+
+  // Sub-colunas: camadas com muitos nós ganham colunas extras p/ evitar pilha alta
+  const MAX_PER_COL = 2;
+  const layerColOffset = new Map<number, number>(); // layer → índice de coluna inicial
+  const nodeEffCol = new Map<string, number>();      // id → coluna efetiva
+  const nodeEffRow = new Map<string, number>();      // id → linha na coluna efetiva
+  let colOffset = 0;
+  for (let l = 0; l <= maxLayer; l++) {
+    const ids = byLayer.get(l) ?? [];
+    layerColOffset.set(l, colOffset);
+    const subCols = Math.max(1, Math.ceil(ids.length / MAX_PER_COL));
+    for (let i = 0; i < ids.length; i++) {
+      nodeEffCol.set(ids[i], colOffset + Math.floor(i / MAX_PER_COL));
+      nodeEffRow.set(ids[i], i % MAX_PER_COL);
+    }
+    colOffset += subCols;
+  }
+  const totalCols = colOffset;
+
+  // Altura máxima: não ultrapassa MAX_PER_COL nós por coluna
+  const maxRowCount = Math.min(MAX_PER_COL, Math.max(...[...byLayer.values()].map(ids => ids.length), 1));
+  const maxLayerH = maxRowCount * DAG_SH + Math.max(0, maxRowCount - 1) * DAG_VGAP;
+
+  const nodePositions = new Map<string, { cx: number; cy: number }>();
+  for (const id of allIds) {
+    const effCol = nodeEffCol.get(id)!;
+    const effRow = nodeEffRow.get(id)!;
+    const l = layers.get(id)!;
+    const layerIds = byLayer.get(l) ?? [];
+    const colStart = layerColOffset.get(l)!;
+    const subColIdx = effCol - colStart;
+    const startInSubCol = subColIdx * MAX_PER_COL;
+    const nodesInSubCol = Math.min(MAX_PER_COL, layerIds.length - startInSubCol);
+    const colH = nodesInSubCol * DAG_SH + Math.max(0, nodesInSubCol - 1) * DAG_VGAP;
+    const startY = DAG_PAD + (maxLayerH - colH) / 2 + DAG_NR;
+    const cx = DAG_PAD + effCol * (DAG_SW + DAG_HGAP) + DAG_SW / 2;
+    nodePositions.set(id, { cx, cy: startY + effRow * (DAG_SH + DAG_VGAP) });
+  }
+
+  const totalW = DAG_PAD * 2 + totalCols * DAG_SW + Math.max(0, totalCols - 1) * DAG_HGAP;
+  const totalH = DAG_PAD * 2 + maxLayerH + 16;
+
+  const affectedIds = new Set(affected.map(e => e.entityId.id));
+  const nodes: DAGNode[] = allIds.map(id => {
+    const pos = nodePositions.get(id)!;
+    const e = entityMap.get(id)!;
+    const connections = (e.callsTo?.length ?? 0) + (e.calledBy?.length ?? 0);
+    return { id, entity: e, isRoot: id === rootId, hasAlert: affectedIds.has(id), cx: pos.cx, cy: pos.cy, connections };
+  });
+
+  // Transitive reduction: remove edge A→C quando já existe A→B→C (evita linhas cruzando nós intermediários)
+  function canReachVia(start: string, target: string): boolean {
+    const visited = new Set<string>();
+    const queue: string[] = [];
+    for (const nb of callsTo.get(start) ?? []) {
+      if (nb !== target) queue.push(nb);
+    }
+    while (queue.length) {
+      const cur = queue.shift()!;
+      if (cur === target) return true;
+      if (!visited.has(cur)) {
+        visited.add(cur);
+        for (const nb of callsTo.get(cur) ?? []) queue.push(nb);
+      }
+    }
+    return false;
+  }
+
+  const rawEdges: { from: string; to: string; isRoot: boolean }[] = [];
+  if (hasTopo) {
+    for (const id of allIds)
+      for (const toId of callsTo.get(id) ?? [])
+        rawEdges.push({ from: id, to: toId, isRoot: id === rootId });
+  } else if (rootId) {
+    for (const id of allIds)
+      if (id !== rootId) rawEdges.push({ from: rootId, to: id, isRoot: true });
+  }
+
+  // Aplica redução transitiva apenas no caso com topologia
+  const edges = hasTopo
+    ? rawEdges.filter(e => !canReachVia(e.from, e.to))
+    : rawEdges;
+
+  return { nodes, edges, totalW, totalH, hasTopo };
+}
+
+// Tooltip para hover nos nós do VRP
+interface VRPTooltip {
+  node: DAGNode;
+  x: number;
+  y: number;
+}
+
+function VRPNodeTooltip({ tooltip }: { tooltip: VRPTooltip }) {
+  const { node, x, y } = tooltip;
+  const e = node.entity;
+  const name = e.displayName || e.name || e.entityId.id;
+  const kind = node.isRoot ? "Causa Raiz" : node.hasAlert ? "Afetado" : "Propagação";
+  const kindColor = node.isRoot ? "text-orange-400" : node.hasAlert ? "text-red-400" : "text-violet-400";
+  const k8sPath = [e.k8sCluster, e.k8sNamespace, e.k8sWorkload].filter(Boolean).join(" › ");
+  const hasTopo = (e.callsTo?.length ?? 0) > 0 || (e.calledBy?.length ?? 0) > 0;
+
+  return (
+    <div
+      className="fixed z-[9999] pointer-events-none"
+      style={{ left: x + 14, top: y - 10 }}
+    >
+      <div className="bg-popover border border-border rounded-lg shadow-xl px-3 py-2.5 text-xs min-w-[220px] max-w-[300px] space-y-1.5">
+        {/* Header */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9px] uppercase tracking-wider text-muted-foreground font-semibold">
+            {entityTypeLabel(e.entityId.type)}
+          </span>
+          <span className={`ml-auto text-[9px] font-semibold ${kindColor}`}>{kind}</span>
+        </div>
+        {/* Nome completo */}
+        <p className="font-medium text-foreground leading-snug break-words">{name}</p>
+        {/* Entity ID */}
+        <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
+          <Database className="h-2.5 w-2.5 shrink-0" />
+          <span className="font-mono truncate">{e.entityId.id}</span>
+        </div>
+        {/* K8s path */}
+        {k8sPath && (
+          <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
+            <Layers className="h-2.5 w-2.5 shrink-0" />
+            <span className="font-mono">{k8sPath}</span>
+          </div>
+        )}
+        {/* Topologia */}
+        {hasTopo && (
+          <div className="flex items-center gap-3 text-[9px] text-muted-foreground border-t border-border/40 pt-1.5">
+            {(e.calledBy?.length ?? 0) > 0 && <span><span className="text-blue-400 font-mono">{e.calledBy!.length}</span> upstream</span>}
+            {(e.callsTo?.length ?? 0) > 0 && <span><span className="text-cyan-400 font-mono">{e.callsTo!.length}</span> downstream</span>}
+          </div>
+        )}
+        <p className="text-[9px] text-muted-foreground/50 border-t border-border/30 pt-1">
+          Clique nos cards abaixo para ver detalhes
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function VRPGraph({
+  problem,
+  onNodeHover,
+  onNodeLeave,
+  scale = 1,
+  onDragActive,
+  readonly = false,
+}: {
+  problem: DynatraceProblem;
+  onNodeHover: (node: DAGNode, x: number, y: number) => void;
+  onNodeLeave: () => void;
+  scale?: number;
+  onDragActive?: (active: boolean) => void;
+  readonly?: boolean;
+}) {
+  const { nodes, edges, totalW, totalH } = buildDAGLayout(problem);
+
+  // Offsets de drag por nó (resetados quando o problem muda)
+  const [offsets, setOffsets] = useState<Map<string, { dx: number; dy: number }>>(new Map());
+  const dragRef = useRef<{ id: string; startX: number; startY: number; origDx: number; origDy: number } | null>(null);
+  useEffect(() => { setOffsets(new Map()); }, [problem.problemId]);
+
+  if (nodes.length === 0) return null;
+
+  const sevColor = SEV_NODE_COLOR[problem.severityLevel] ?? "#6b7280";
+
+  // Posição efetiva = base + offset de drag
+  const getPos = (id: string, baseCx: number, baseCy: number) => {
+    const off = offsets.get(id) ?? { dx: 0, dy: 0 };
+    return { cx: baseCx + off.dx, cy: baseCy + off.dy };
+  };
+
+  const onNodeMouseDown = (e: React.MouseEvent, id: string) => {
+    if (readonly) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const off = offsets.get(id) ?? { dx: 0, dy: 0 };
+    dragRef.current = { id, startX: e.clientX, startY: e.clientY, origDx: off.dx, origDy: off.dy };
+    onDragActive?.(true);
+  };
+
+  const onSvgMouseMove = (e: React.MouseEvent) => {
+    if (!dragRef.current) return;
+    const { id, startX, startY, origDx, origDy } = dragRef.current;
+    setOffsets(prev => {
+      const next = new Map(prev);
+      next.set(id, {
+        dx: origDx + (e.clientX - startX) / scale,
+        dy: origDy + (e.clientY - startY) / scale,
+      });
+      return next;
+    });
+  };
+
+  const onSvgEnd = () => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    onDragActive?.(false);
+  };
+
+  return (
+    <svg
+      width={totalW} height={totalH} viewBox={`0 0 ${totalW} ${totalH}`}
+      style={{ display: "block", overflow: "visible" }}
+      onMouseMove={onSvgMouseMove}
+      onMouseUp={onSvgEnd}
+      onMouseLeave={onSvgEnd}
+    >
+      <defs>
+        <marker id="vrp-arr" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+          <path d="M0,0 L0,8 L8,4 z" fill="#475569" />
+        </marker>
+        <marker id="vrp-arr-root" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+          <path d="M0,0 L0,8 L8,4 z" fill="#ef4444" />
+        </marker>
+        <marker id="vrp-arr-alert" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+          <path d="M0,0 L0,8 L8,4 z" fill={sevColor} />
+        </marker>
+      </defs>
+
+      {/* Arestas — recalculadas com posições efetivas */}
+      {edges.map((edge, i) => {
+        const srcBase = nodes.find(n => n.id === edge.from);
+        const dstBase = nodes.find(n => n.id === edge.to);
+        if (!srcBase || !dstBase) return null;
+        const src = getPos(srcBase.id, srcBase.cx, srcBase.cy);
+        const dst = getPos(dstBase.id, dstBase.cx, dstBase.cy);
+        const x1 = src.cx + DAG_NR, y1 = src.cy;
+        const x2 = dst.cx - DAG_NR, y2 = dst.cy;
+        const mx = (x1 + x2) / 2;
+        const color = srcBase.isRoot ? "#ef4444" : (srcBase.hasAlert || dstBase.hasAlert) ? sevColor : "#475569";
+        const markerId = srcBase.isRoot ? "vrp-arr-root" : (srcBase.hasAlert || dstBase.hasAlert) ? "vrp-arr-alert" : "vrp-arr";
+        return (
+          <path
+            key={`e-${i}`}
+            d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`}
+            fill="none" stroke={color} strokeWidth={srcBase.isRoot ? 2 : 1.5}
+            strokeOpacity={0.8} markerEnd={`url(#${markerId})`}
+          />
+        );
+      })}
+
+      {/* Nós arrastáveis */}
+      {nodes.map(node => {
+        const { id, cx: baseCx, cy: baseCy, isRoot, hasAlert, entity, connections } = node;
+        const { cx, cy } = getPos(id, baseCx, baseCy);
+        const type = entity?.entityId.type ?? "SERVICE";
+        const nameFull = entity?.displayName || entity?.name || entity?.entityId.id || "";
+        const [l1, l2] = splitLabel(nameFull, 18);
+        const stroke    = isRoot ? "#ef4444" : hasAlert ? sevColor : "#475569";
+        const fill      = isRoot ? "#ef4444" : hasAlert ? `${sevColor}33` : "#1e293b";
+        const iconColor = isRoot ? "#ffffff" : hasAlert ? sevColor : "#94a3b8";
+        const textColor = isRoot ? "#fca5a5" : hasAlert ? sevColor : "#94a3b8";
+        const yL1  = cy + DAG_NR + 12;
+        const yL2  = yL1 + 11;
+        const yType = (l2 ? yL2 : yL1) + 11;
+        const isDragging = dragRef.current?.id === id;
+
+        return (
+          <g
+            key={id}
+            style={{ cursor: readonly ? "default" : isDragging ? "grabbing" : "grab" }}
+            onMouseDown={(e) => onNodeMouseDown(e, id)}
+            onMouseEnter={(e) => { if (!dragRef.current) onNodeHover(node, e.clientX, e.clientY); }}
+            onMouseMove={(e) => { if (!dragRef.current) onNodeHover(node, e.clientX, e.clientY); }}
+            onMouseLeave={() => { if (!dragRef.current) onNodeLeave(); }}
+          >
+            {/* Círculo principal */}
+            <circle cx={cx} cy={cy} r={DAG_NR} fill={fill} stroke={stroke} strokeWidth={isRoot ? 2.5 : 1.5} />
+
+            {/* Ícone */}
+            {entityIcon(type, cx, cy, 16, iconColor)}
+
+            {/* Badge de conexões */}
+            {connections > 0 && (
+              <>
+                <rect x={cx - 14} y={cy - DAG_NR - 2} width={28} height={14} rx={7} fill="#1e293b" stroke="#475569" strokeWidth={1} />
+                <text x={cx} y={cy - DAG_NR + 8} fontSize={9} fill="#94a3b8" textAnchor="middle" fontFamily="sans-serif">{connections}</text>
+              </>
+            )}
+
+            {/* Nome */}
+            <text x={cx} y={yL1} fontSize={9} fill={textColor} textAnchor="middle"
+              fontWeight={isRoot ? "700" : "500"} fontFamily="sans-serif">{l1}</text>
+            {l2 && <text x={cx} y={yL2} fontSize={9} fill={textColor} textAnchor="middle"
+              fontWeight={isRoot ? "700" : "500"} fontFamily="sans-serif">{l2}</text>}
+
+            {/* Tipo */}
+            <text x={cx} y={yType} fontSize={8} fill="#475569" textAnchor="middle" fontFamily="sans-serif">
+              {entityTypeLabel(type)}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function VRPLegend({ problem }: { problem: DynatraceProblem }) {
+  const sevColor = SEV_NODE_COLOR[problem.severityLevel] ?? "#6b7280";
+  const hasRoot = !!problem.rootCauseEntity;
+  const { hasTopo, nodes } = buildDAGLayout(problem);
+  const entityCount = nodes.length;
+  return (
+    <div className="flex items-center gap-3 flex-wrap">
+      {hasRoot && <span className="flex items-center gap-1 text-[9px] text-red-400"><span className="w-2.5 h-2.5 rounded-full bg-red-500 border border-red-600 inline-block" />Causa Raiz</span>}
+      <span className="flex items-center gap-1 text-[9px]" style={{ color: sevColor }}><span className="w-2.5 h-2.5 rounded-full inline-block border" style={{ background: `${sevColor}33`, borderColor: sevColor }} />Afetado</span>
+      <span className="flex items-center gap-1 text-[9px] text-muted-foreground"><span className="w-2.5 h-2.5 rounded-full bg-slate-700 border border-slate-600 inline-block" />Entidade DT</span>
+      <span className="text-[9px] text-muted-foreground/50">{entityCount} entidade(s)</span>
+      {hasTopo
+        ? <span className="text-[9px] text-green-400/70 ml-auto flex items-center gap-0.5"><Network className="h-2.5 w-2.5" />topologia real</span>
+        : <span className="text-[9px] text-muted-foreground/50 ml-auto flex items-center gap-0.5"><Network className="h-2.5 w-2.5" />layout estimado</span>
+      }
+    </div>
+  );
+}
+
+function VisualResolutionPath({ problem }: { problem: DynatraceProblem }) {
+  const [zoomOpen, setZoomOpen] = useState(false);
+
+  // ── Visão normal ────────────────────────────────────────────────────────────
+  const [normalScale, setNormalScale] = useState(1.0);
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
+  const [isPanning, setIsPanning] = useState(false);
+  const panStart = useRef<{ x: number; y: number } | null>(null);
+  const normalRef = useRef<HTMLDivElement>(null);
+
+  // ── Modal ampliado ──────────────────────────────────────────────────────────
+  const [modalScale, setModalScale] = useState(1.5);
+  const [modalPanX, setModalPanX] = useState(0);
+  const [modalPanY, setModalPanY] = useState(0);
+  const [isModalPanning, setIsModalPanning] = useState(false);
+  const modalPanStart = useRef<{ x: number; y: number } | null>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+
+  const hasContent = (problem.affectedEntities?.length ?? 0) > 0 || !!problem.rootCauseEntity;
+  const [tooltip, setTooltip] = useState<VRPTooltip | null>(null);
+  // Flag para desabilitar pan do canvas enquanto um nó está sendo arrastado
+  const isNodeDraggingRef = useRef(false);
+
+  // Ctrl+scroll zoom — visão normal (useEffect p/ passive:false obrigatório)
+  useEffect(() => {
+    const el = normalRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      setNormalScale(s => Math.min(4, Math.max(0.3, s - e.deltaY * 0.002)));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // Ctrl+scroll zoom — modal ampliado
+  // Listener no document (com target check) para garantir preventDefault mesmo dentro do Dialog/Portal
+  useEffect(() => {
+    if (!zoomOpen) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      const el = modalRef.current;
+      if (!el || !el.contains(e.target as Node)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setModalScale(s => Math.min(5, Math.max(0.3, s - e.deltaY * 0.002)));
+    };
+    document.addEventListener("wheel", onWheel, { passive: false });
+    return () => document.removeEventListener("wheel", onWheel);
+  }, [zoomOpen]);
+
+  function makePanHandlers(
+    panStartRef: React.MutableRefObject<{ x: number; y: number } | null>,
+    setX: React.Dispatch<React.SetStateAction<number>>,
+    setY: React.Dispatch<React.SetStateAction<number>>,
+    setPanning: React.Dispatch<React.SetStateAction<boolean>>,
+  ) {
+    return {
+      onMouseDown: (e: React.MouseEvent) => {
+        if (isNodeDraggingRef.current) return; // nó sendo arrastado — não iniciar pan
+        panStartRef.current = { x: e.clientX, y: e.clientY };
+        setPanning(true);
+        e.preventDefault();
+      },
+      onMouseMove: (e: React.MouseEvent) => {
+        if (isNodeDraggingRef.current) return;
+        const start = panStartRef.current;
+        if (!start) return;
+        setX(p => p + e.clientX - start.x);
+        setY(p => p + e.clientY - start.y);
+        panStartRef.current = { x: e.clientX, y: e.clientY };
+      },
+      onMouseUp: () => { panStartRef.current = null; setPanning(false); },
+      onMouseLeave: () => { panStartRef.current = null; setPanning(false); },
+    };
+  }
+
+  const normalPan = makePanHandlers(panStart, setPanX, setPanY, setIsPanning);
+  const modalPan = makePanHandlers(modalPanStart, setModalPanX, setModalPanY, setIsModalPanning);
+
+  const resetNormal = () => { setPanX(0); setPanY(0); setNormalScale(1.0); };
+  const resetModal  = () => { setModalPanX(0); setModalPanY(0); setModalScale(1.5); };
+
+  return (
+    <>
+      <div className="rounded-lg border border-border bg-muted/10 overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-1.5 bg-muted/20 border-b border-border/50">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
+            <Network className="h-3 w-3" /> Visual resolution path
+          </span>
+          {hasContent && (
+            <div className="flex items-center gap-2">
+              {/* Indicador de zoom atual */}
+              <span className="text-[10px] tabular-nums text-muted-foreground/60 w-9 text-right">
+                {Math.round(normalScale * 100)}%
+              </span>
+              <button onClick={resetNormal} className="text-[10px] text-muted-foreground hover:text-foreground transition-colors">
+                Reset
+              </button>
+              <button
+                className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setZoomOpen(true)}
+              >
+                <Maximize2 className="h-3 w-3" /> Maximizar
+              </button>
+            </div>
+          )}
+        </div>
+
+        {!hasContent ? (
+          <div className="text-center py-6 text-[11px] text-muted-foreground space-y-1">
+            <p className="font-medium">Sem entidades para visualizar</p>
+            <p className="text-[10px]">Nenhuma entidade de serviço encontrada neste Problem.</p>
+          </div>
+        ) : (
+          <div
+            ref={normalRef}
+            className="overflow-hidden p-3 min-h-[180px] select-none"
+            style={{ cursor: isPanning ? "grabbing" : "grab" }}
+            {...normalPan}
+          >
+            <div style={{ transform: `translate(${panX}px, ${panY}px) scale(${normalScale})`, transformOrigin: "top left", display: "inline-block" }}>
+              <VRPGraph
+                problem={problem}
+                scale={normalScale}
+                onDragActive={active => { isNodeDraggingRef.current = active; }}
+                onNodeHover={(node, x, y) => setTooltip({ node, x, y })}
+                onNodeLeave={() => setTooltip(null)}
+              />
+            </div>
+          </div>
+        )}
+        {!zoomOpen && tooltip && <VRPNodeTooltip tooltip={tooltip} />}
+
+        {hasContent && (
+          <div className="px-3 pb-2 flex items-center justify-between">
+            <VRPLegend problem={problem} />
+            <span className="text-[9px] text-muted-foreground/40 shrink-0 ml-2">arrastar nó = reposicionar · arrastar fundo = pan · Ctrl+scroll = zoom</span>
+          </div>
+        )}
+      </div>
+
+      <Dialog open={zoomOpen} onOpenChange={setZoomOpen}>
+        <DialogContent className="max-w-[95vw] w-[95vw] max-h-[92vh] h-[85vh] flex flex-col gap-3">
+          <DialogHeader>
+            <DialogTitle className="text-sm flex items-center gap-2">
+              <Network className="h-4 w-4" /> Visual Resolution Path — {problem.displayId}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex items-center gap-2 px-1">
+            <button onClick={() => setModalScale(s => Math.max(0.3, +(s - 0.25).toFixed(2)))} className="p-1.5 rounded hover:bg-muted transition-colors" title="Zoom out"><ZoomOut className="h-3.5 w-3.5" /></button>
+            <span className="text-xs tabular-nums w-10 text-center">{Math.round(modalScale * 100)}%</span>
+            <button onClick={() => setModalScale(s => Math.min(5, +(s + 0.25).toFixed(2)))} className="p-1.5 rounded hover:bg-muted transition-colors" title="Zoom in"><ZoomIn className="h-3.5 w-3.5" /></button>
+            <button onClick={resetModal} className="text-[10px] px-2 py-1 rounded hover:bg-muted transition-colors text-muted-foreground">Reset</button>
+            <span className="text-[10px] text-muted-foreground ml-2">Ctrl+scroll = zoom · Arrastar = pan</span>
+          </div>
+          <div
+            ref={modalRef}
+            className="flex-1 overflow-hidden border rounded-lg bg-muted/5 p-4 select-none"
+            style={{ cursor: isModalPanning ? "grabbing" : "grab" }}
+            {...modalPan}
+          >
+            <div style={{ transform: `translate(${modalPanX}px, ${modalPanY}px) scale(${modalScale})`, transformOrigin: "top left", display: "inline-block" }}>
+              <VRPGraph
+                problem={problem}
+                scale={modalScale}
+                onDragActive={active => { isNodeDraggingRef.current = active; }}
+                onNodeHover={(node, x, y) => setTooltip({ node, x, y })}
+                onNodeLeave={() => setTooltip(null)}
+              />
+            </div>
+          </div>
+          {tooltip && <VRPNodeTooltip tooltip={tooltip} />}
+          <div className="border-t pt-2"><VRPLegend problem={problem} /></div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+// ── Aba Detalhes (layout 2 colunas) ─────────────────────────────────────────────
 
 function DetailsTab({ problem, uiBaseUrl }: { problem: DynatraceProblem; uiBaseUrl?: string }) {
   const affectedEntities = problem.affectedEntities ?? [];
-  const impactedEntities = (problem.impactedEntities ?? []).filter(
-    e => !affectedEntities.some(a => a.entityId.id === e.entityId.id),
-  );
+  const impactedEntities = (problem.impactedEntities ?? []).filter(e => !affectedEntities.some(a => a.entityId.id === e.entityId.id));
   const k8sWorkloads = (problem.k8sWorkloads ?? []).filter(w => w.Workload || w.AppName);
   const mgmtZones = problem.managementZones ?? [];
 
-  // Agregados cross-entidade para visão rápida de ownership
   const allLabels = affectedEntities.map(e => e.labels).filter(Boolean);
   const squads = [...new Set(allLabels.map(l => l?.componentSquad).filter(Boolean))];
   const journeys = [...new Set(allLabels.map(l => l?.componentJourney).filter(Boolean))];
   const tribes = [...new Set(allLabels.map(l => l?.componentTribe).filter(Boolean))];
-  const envs = [...new Set([
-    ...allLabels.map(l => l?.appEnvironment).filter(Boolean),
-    ...k8sWorkloads.map(w => w.Environment).filter(Boolean),
-  ])];
-  const gitRepos = [...new Set([
-    ...allLabels.map(l => l?.githubRepoId).filter(Boolean),
-    ...k8sWorkloads.map(w => w.GitHubRepoID).filter(Boolean),
-  ])];
+  const envs = [...new Set([...allLabels.map(l => l?.appEnvironment).filter(Boolean), ...k8sWorkloads.map(w => w.Environment).filter(Boolean)])];
+  const gitRepos = [...new Set([...allLabels.map(l => l?.githubRepoId).filter(Boolean), ...k8sWorkloads.map(w => w.GitHubRepoID).filter(Boolean)])];
   const stages = [...new Set(allLabels.map(l => l?.stage).filter(Boolean))];
   const deployedBys = [...new Set(allLabels.map(l => l?.deployedBy).filter(Boolean))];
-
   const hasOwnership = squads.length > 0 || journeys.length > 0 || tribes.length > 0;
   const hasDevOps = gitRepos.length > 0 || stages.length > 0 || deployedBys.length > 0;
 
-  // Entidades por tipo
   const entityGroups = affectedEntities.reduce((acc, e) => {
     const t = e.entityId.type;
     if (!acc[t]) acc[t] = [];
@@ -733,202 +1448,510 @@ function DetailsTab({ problem, uiBaseUrl }: { problem: DynatraceProblem; uiBaseU
     return acc;
   }, {} as Record<string, typeof affectedEntities>);
 
+  const infraTypes = ["HOST", "KUBERNETES_NODE", "KUBERNETES_CLUSTER"];
+  const serviceTypes = ["SERVICE", "PROCESS_GROUP", "PROCESS_GROUP_INSTANCE"];
+  const infraCount = infraTypes.flatMap(t => entityGroups[t] ?? []).length;
+  const serviceCount = serviceTypes.flatMap(t => entityGroups[t] ?? []).length;
+  const otherGroups = Object.entries(entityGroups).filter(([t]) => ![...infraTypes, ...serviceTypes].includes(t));
+  const otherCount = otherGroups.reduce((s, [, v]) => s + v.length, 0);
+
+  const defaultTab = k8sWorkloads.length > 0 ? "k8s" : infraCount > 0 ? "infra" : serviceCount > 0 ? "services" : "other";
+  const [rightWidth, setRightWidth] = useState(380);
+
+  const impactItems = [
+    { label: "Infraestrutura", count: infraCount, color: "text-orange-400 border-orange-500/30 bg-orange-500/10" },
+    { label: "Serviços", count: serviceCount, color: "text-blue-400 border-blue-500/30 bg-blue-500/10" },
+    { label: "K8s Workloads", count: k8sWorkloads.length, color: "text-cyan-400 border-cyan-500/30 bg-cyan-500/10" },
+    { label: "Propagação", count: impactedEntities.length, color: "text-violet-400 border-violet-500/30 bg-violet-500/10" },
+    { label: "Outras", count: otherCount, color: "text-muted-foreground border-border bg-muted/30" },
+  ].filter(i => i.count > 0);
+
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <ProblemHeader problem={problem} uiBaseUrl={uiBaseUrl} />
 
-      {/* ── O que investigar — guia contextual por tipo de problem ── */}
-      <QuickInvestigation
-        severityType={problem.severityLevel}
-        mgmtZones={problem.managementZones ?? []}
-        entityNames={(problem.affectedEntities ?? []).map(e => e.displayName || e.name || "").filter(Boolean)}
-      />
-
-      {/* ── Painel de Ownership & DevOps (resumo aggregado) ── */}
-      {(hasOwnership || hasDevOps || envs.length > 0) && (
-        <section className="rounded-lg border border-border bg-muted/10 px-4 py-3 space-y-3">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Visão Geral das Aplicações Afetadas</p>
-
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
-            {/* Ambientes */}
-            {envs.length > 0 && (
-              <div className="flex items-center gap-2 flex-wrap col-span-2">
-                <span className="text-muted-foreground text-[10px] w-16 shrink-0">Ambiente:</span>
-                {envs.map(e => <EnvBadge key={e} env={e!} />)}
-              </div>
-            )}
-            {/* Squads */}
-            {squads.length > 0 && (
-              <div className="flex items-start gap-2 col-span-2">
-                <Users className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />
-                <div>
-                  <span className="text-muted-foreground text-[10px]">Squad(s): </span>
-                  {squads.map(s => (
-                    <Badge key={s} variant="outline" className="text-[10px] mr-1 border-green-500/30 text-green-400">{s}</Badge>
-                  ))}
-                </div>
-              </div>
-            )}
-            {/* Jornadas */}
-            {journeys.length > 0 && (
-              <div className="flex items-start gap-2 col-span-2">
-                <Tag className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />
-                <div>
-                  <span className="text-muted-foreground text-[10px]">Jornada(s): </span>
-                  {journeys.map(j => (
-                    <Badge key={j} variant="outline" className="text-[10px] mr-1 border-purple-500/30 text-purple-400">{j}</Badge>
-                  ))}
-                </div>
-              </div>
-            )}
-            {/* Tribos */}
-            {tribes.length > 0 && (
-              <div className="flex items-center gap-2">
-                <Globe className="h-3 w-3 text-muted-foreground shrink-0" />
-                <span className="text-muted-foreground text-[10px]">Tribo: </span>
-                <span className="text-[11px]">{tribes.join(", ")}</span>
-              </div>
-            )}
-            {/* Estágios */}
-            {stages.length > 0 && (
-              <div className="flex items-center gap-2">
-                <Shield className="h-3 w-3 text-muted-foreground shrink-0" />
-                <span className="text-muted-foreground text-[10px]">Estágio: </span>
-                <span className="text-[11px]">{stages.join(", ")}</span>
-              </div>
-            )}
-            {/* Deploy por */}
-            {deployedBys.length > 0 && (
-              <div className="flex items-center gap-2">
-                <Rocket className="h-3 w-3 text-muted-foreground shrink-0" />
-                <span className="text-muted-foreground text-[10px]">Deploy via: </span>
-                <span className="text-[11px] font-mono">{deployedBys.join(", ")}</span>
-              </div>
-            )}
-            {/* GitHub Repos */}
-            {gitRepos.length > 0 && (
-              <div className="flex items-start gap-2 col-span-2">
-                <GitBranch className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />
-                <div className="min-w-0">
-                  <span className="text-muted-foreground text-[10px]">Repos GitHub: </span>
-                  {gitRepos.map(r => (
-                    <span key={r} className="inline-block font-mono text-[10px] text-blue-400 mr-2">{r}</span>
-                  ))}
-                </div>
-              </div>
-            )}
+      {/* Impact summary strip */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {impactItems.map(item => (
+          <div key={item.label} className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 ${item.color}`}>
+            <span className="text-sm font-bold tabular-nums">{item.count}</span>
+            <span className="text-[10px] font-normal">{item.label}</span>
           </div>
-        </section>
-      )}
+        ))}
+      </div>
 
-      {/* ── Causa Raiz ── */}
-      {problem.rootCauseEntity && (
-        <section className="space-y-2">
-          <SectionHeader icon={<Target className="h-3.5 w-3.5" />} title="Causa Raiz (Davis AI)" color="text-orange-400" />
-          <EntityCard entity={problem.rootCauseEntity as any} isRoot />
-        </section>
-      )}
+      {/* 2-column resizable layout */}
+      <div className="flex gap-0 items-start">
 
-      {/* ── Workloads K8s (detalhes completos) ── */}
-      {k8sWorkloads.length > 0 && (
-        <section className="space-y-2">
-          <SectionHeader icon={<Layers className="h-3.5 w-3.5" />} title="Workloads K8s" count={k8sWorkloads.length} />
-          <div className="space-y-2">
-            {k8sWorkloads.map((w, i) => (
-              <div key={i} className="rounded-lg border bg-muted/20 px-3 py-2.5 text-xs space-y-2">
-                {/* Linha 1: caminho + versão */}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {w.Cluster && (
-                    <><span className="text-muted-foreground font-mono text-[10px] bg-muted/50 px-1.5 py-0.5 rounded">{w.Cluster}</span>
-                    <ArrowRight className="h-2.5 w-2.5 text-muted-foreground/40 shrink-0" /></>
-                  )}
-                  <span className="text-muted-foreground font-mono text-[10px] bg-muted/50 px-1.5 py-0.5 rounded">{w.Namespace}</span>
-                  <ArrowRight className="h-2.5 w-2.5 text-muted-foreground/40 shrink-0" />
-                  <span className="font-semibold font-mono">{w.Workload || w.AppName}</span>
-                  {w.AppName && w.AppName !== w.Workload && (
-                    <span className="text-muted-foreground text-[10px]">({w.AppName})</span>
-                  )}
-                  <div className="ml-auto flex items-center gap-1.5 flex-wrap">
-                    {w.AppVersion && (
-                      <Badge className="text-[10px] font-mono h-5 bg-blue-500/15 text-blue-400 border border-blue-500/30">
-                        v{w.AppVersion}
-                      </Badge>
-                    )}
-                    {w.Environment && <EnvBadge env={w.Environment} />}
+        {/* LEFT: Impact section + VRP */}
+        <div className="flex-1 min-w-0 space-y-4">
+          <Tabs defaultValue={defaultTab}>
+            <div className="flex items-center gap-2 mb-2 border-b border-border pb-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1 shrink-0">
+                <Server className="h-3 w-3" /> Impacto
+              </span>
+              <TabsList className="h-6 bg-transparent p-0 gap-0.5 flex-wrap">
+                {k8sWorkloads.length > 0 && <TabsTrigger value="k8s" className="h-6 text-[10px] px-2 rounded data-[state=active]:bg-cyan-500/15 data-[state=active]:text-cyan-400 data-[state=active]:shadow-none">K8s ({k8sWorkloads.length})</TabsTrigger>}
+                {infraCount > 0 && <TabsTrigger value="infra" className="h-6 text-[10px] px-2 rounded data-[state=active]:bg-orange-500/15 data-[state=active]:text-orange-400 data-[state=active]:shadow-none">Infra ({infraCount})</TabsTrigger>}
+                {serviceCount > 0 && <TabsTrigger value="services" className="h-6 text-[10px] px-2 rounded data-[state=active]:bg-blue-500/15 data-[state=active]:text-blue-400 data-[state=active]:shadow-none">Serviços ({serviceCount})</TabsTrigger>}
+                {impactedEntities.length > 0 && <TabsTrigger value="propagation" className="h-6 text-[10px] px-2 rounded data-[state=active]:bg-violet-500/15 data-[state=active]:text-violet-400 data-[state=active]:shadow-none">Propagação ({impactedEntities.length})</TabsTrigger>}
+                {otherCount > 0 && <TabsTrigger value="other" className="h-6 text-[10px] px-2 rounded data-[state=active]:shadow-none">Outras ({otherCount})</TabsTrigger>}
+                {(hasOwnership || hasDevOps || envs.length > 0) && <TabsTrigger value="ownership" className="h-6 text-[10px] px-2 rounded data-[state=active]:bg-green-500/15 data-[state=active]:text-green-400 data-[state=active]:shadow-none">Ownership</TabsTrigger>}
+              </TabsList>
+            </div>
+
+            <TabsContent value="k8s" className="mt-0 space-y-2">
+              {k8sWorkloads.map((w, i) => (
+                <div key={i} className="rounded-lg border bg-cyan-500/5 border-cyan-500/20 px-3 py-2.5 text-xs space-y-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {w.Cluster && <><span className="font-mono text-[10px] bg-muted/50 px-1.5 py-0.5 rounded text-muted-foreground">{w.Cluster}</span><ArrowRight className="h-2.5 w-2.5 text-muted-foreground/40" /></>}
+                    <span className="font-mono text-[10px] bg-muted/50 px-1.5 py-0.5 rounded text-muted-foreground">{w.Namespace}</span>
+                    <ArrowRight className="h-2.5 w-2.5 text-muted-foreground/40" />
+                    <span className="font-semibold font-mono text-cyan-300">{w.Workload || w.AppName}</span>
+                    <div className="ml-auto flex items-center gap-1.5">
+                      {w.AppVersion && <Badge className="text-[10px] font-mono h-5 bg-blue-500/15 text-blue-400 border border-blue-500/30">v{w.AppVersion}</Badge>}
+                      {w.Environment && <EnvBadge env={w.Environment} />}
+                    </div>
                   </div>
+                  {(w.PodName || w.GitHubRepoID) && (
+                    <div className="flex items-center gap-3 text-[10px] text-muted-foreground border-t border-border/30 pt-1.5">
+                      {w.PodName && <span className="flex items-center gap-1"><Cpu className="h-2.5 w-2.5" /><span className="font-mono">{w.PodName}</span></span>}
+                      {w.GitHubRepoID && <span className="flex items-center gap-1"><GitBranch className="h-2.5 w-2.5" /><span className="font-mono text-blue-400/70">{w.GitHubRepoID}</span></span>}
+                    </div>
+                  )}
                 </div>
-                {/* Linha 2: pod + repo */}
-                {(w.PodName || w.GitHubRepoID) && (
-                  <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap border-t border-border/30 pt-1.5">
-                    {w.PodName && (
-                      <span className="flex items-center gap-1">
-                        <Cpu className="h-2.5 w-2.5" />
-                        <span className="font-mono">{w.PodName}</span>
-                      </span>
-                    )}
-                    {w.GitHubRepoID && (
-                      <span className="flex items-center gap-1">
-                        <GitBranch className="h-2.5 w-2.5" />
-                        <span className="font-mono text-blue-400/70">{w.GitHubRepoID}</span>
-                      </span>
-                    )}
+              ))}
+            </TabsContent>
+
+            <TabsContent value="infra" className="mt-0 space-y-1.5">
+              {infraTypes.flatMap(t => entityGroups[t] ?? []).map((e, i) => <EntityCard key={i} entity={e} />)}
+            </TabsContent>
+
+            <TabsContent value="services" className="mt-0 space-y-1.5">
+              {serviceTypes.flatMap(t => entityGroups[t] ?? []).map((e, i) => <EntityCard key={i} entity={e} />)}
+            </TabsContent>
+
+            <TabsContent value="propagation" className="mt-0 space-y-1.5">
+              {impactedEntities.map((e, i) => <EntityCard key={i} entity={e} />)}
+            </TabsContent>
+
+            <TabsContent value="other" className="mt-0 space-y-3">
+              {otherGroups.map(([type, entities]) => (
+                <div key={type}>
+                  <p className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-1.5">{entityTypeLabel(type)} ({entities.length})</p>
+                  <div className="space-y-1.5">{entities.map((e, i) => <EntityCard key={i} entity={e} />)}</div>
+                </div>
+              ))}
+            </TabsContent>
+
+            <TabsContent value="ownership" className="mt-0">
+              <div className="rounded-lg border border-border bg-muted/10 px-4 py-3 space-y-3">
+                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+                  {envs.length > 0 && (
+                    <div className="flex items-center gap-2 flex-wrap col-span-2">
+                      <span className="text-muted-foreground text-[10px] w-20 shrink-0">Ambiente:</span>
+                      {envs.map(e => <EnvBadge key={e} env={e!} />)}
+                    </div>
+                  )}
+                  {squads.length > 0 && (
+                    <div className="flex items-start gap-2 col-span-2">
+                      <Users className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />
+                      <div><span className="text-muted-foreground text-[10px]">Squad(s): </span>{squads.map(s => <Badge key={s} variant="outline" className="text-[10px] mr-1 border-green-500/30 text-green-400">{s}</Badge>)}</div>
+                    </div>
+                  )}
+                  {journeys.length > 0 && (
+                    <div className="flex items-start gap-2 col-span-2">
+                      <Tag className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />
+                      <div><span className="text-muted-foreground text-[10px]">Jornada(s): </span>{journeys.map(j => <Badge key={j} variant="outline" className="text-[10px] mr-1 border-purple-500/30 text-purple-400">{j}</Badge>)}</div>
+                    </div>
+                  )}
+                  {tribes.length > 0 && <div className="flex items-center gap-2"><Globe className="h-3 w-3 text-muted-foreground shrink-0" /><span className="text-muted-foreground text-[10px]">Tribo: </span><span className="text-[11px]">{tribes.join(", ")}</span></div>}
+                  {stages.length > 0 && <div className="flex items-center gap-2"><Shield className="h-3 w-3 text-muted-foreground shrink-0" /><span className="text-muted-foreground text-[10px]">Estágio: </span><span className="text-[11px]">{stages.join(", ")}</span></div>}
+                  {deployedBys.length > 0 && <div className="flex items-center gap-2"><Rocket className="h-3 w-3 text-muted-foreground shrink-0" /><span className="text-muted-foreground text-[10px]">Deploy via: </span><span className="text-[11px] font-mono">{deployedBys.join(", ")}</span></div>}
+                  {gitRepos.length > 0 && (
+                    <div className="flex items-start gap-2 col-span-2">
+                      <GitBranch className="h-3 w-3 text-muted-foreground mt-0.5 shrink-0" />
+                      <div className="min-w-0"><span className="text-muted-foreground text-[10px]">Repos GitHub: </span>{gitRepos.map(r => <span key={r} className="inline-block font-mono text-[10px] text-blue-400 mr-2">{r}</span>)}</div>
+                    </div>
+                  )}
+                </div>
+                {mgmtZones.length > 0 && (
+                  <div className="border-t border-border/30 pt-2 flex flex-wrap gap-1.5 items-center">
+                    <span className="text-[10px] text-muted-foreground flex items-center gap-1"><MapPin className="h-2.5 w-2.5" /> MZ:</span>
+                    {mgmtZones.map(z => <Badge key={z.id} variant="secondary" className="text-[10px]">{z.name}</Badge>)}
                   </div>
                 )}
               </div>
-            ))}
-          </div>
-        </section>
-      )}
+            </TabsContent>
+          </Tabs>
 
-      {/* ── Entidades Afetadas (agrupadas por tipo, expandíveis) ── */}
-      {affectedEntities.length > 0 && (
-        <section className="space-y-2">
-          <SectionHeader icon={<Server className="h-3.5 w-3.5" />} title="Entidades Afetadas" count={affectedEntities.length} />
-          <div className="space-y-3">
-            {Object.entries(entityGroups).map(([type, entities]) => (
-              <div key={type}>
-                <p className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                  {entityTypeLabel(type)} <span className="font-normal">({entities.length})</span>
-                </p>
-                <div className="space-y-1.5">
-                  {entities.map((e, i) => (
-                    <EntityCard key={i} entity={e} />
-                  ))}
+          {/* Visual Resolution Path — mesma largura do card Impacto */}
+          <VisualResolutionPath problem={problem} />
+        </div>
+
+        <DTResizeDivider onDrag={d => setRightWidth(w => Math.max(260, Math.min(700, w - d)))} />
+
+        {/* RIGHT: Root Cause + Investigation */}
+        <div className="flex-shrink-0 space-y-3" style={{ width: rightWidth }}>
+          {/* Root Cause */}
+          <div className="rounded-lg border border-border bg-muted/10 overflow-hidden">
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-muted/20 border-b border-border/50">
+              <Target className="h-3 w-3 text-orange-400" />
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Root cause</span>
+            </div>
+            <div className="p-2">
+              {problem.rootCauseEntity ? (
+                <EntityCard entity={problem.rootCauseEntity as any} isRoot />
+              ) : (
+                <div className="text-center py-5 text-[11px] text-muted-foreground space-y-1">
+                  <p className="font-medium">No root cause</p>
+                  <p className="text-[10px] px-4">Possible causes include the expiration of their retention period or missing permissions.</p>
                 </div>
-              </div>
-            ))}
+              )}
+            </div>
           </div>
-        </section>
-      )}
 
-      {/* ── Propagação do Impacto ── */}
-      {impactedEntities.length > 0 && (
-        <section className="space-y-2">
-          <SectionHeader icon={<Network className="h-3.5 w-3.5" />} title="Propagação do Impacto" count={impactedEntities.length} />
-          <div className="space-y-1">
-            {impactedEntities.map((e, i) => (
-              <EntityCard key={i} entity={e} />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* ── Management Zones ── */}
-      {mgmtZones.length > 0 && (
-        <section className="space-y-2">
-          <SectionHeader icon={<MapPin className="h-3.5 w-3.5" />} title="Management Zones" />
-          <div className="flex flex-wrap gap-1.5">
-            {mgmtZones.map(z => (
-              <Badge key={z.id} variant="secondary" className="text-xs">{z.name}</Badge>
-            ))}
-          </div>
-        </section>
-      )}
+          {/* Quick Investigation */}
+          <QuickInvestigation
+            severityType={problem.severityLevel}
+            mgmtZones={problem.managementZones ?? []}
+            entityNames={(problem.affectedEntities ?? []).map(e => e.displayName || e.name || "").filter(Boolean)}
+          />
+        </div>
+      </div>
     </div>
   );
 }
 
 // ── Aba Diagnóstico IA ──────────────────────────────────────────────────────────
+
+// ── Painel de contexto do problem para a aba IA ────────────────────────────────
+
+function DiagProblemContext({ problem }: { problem: DynatraceProblem }) {
+  const sevColor = SEV_NODE_COLOR[problem.severityLevel] ?? "#6b7280";
+  const affectedEntities = problem.affectedEntities ?? [];
+  const rootCause = problem.rootCauseEntity;
+  const k8sWorkloads = (problem.k8sWorkloads ?? []).filter(w => w.Workload || w.AppName);
+  const mgmtZones = problem.managementZones ?? [];
+  const hasVRP = affectedEntities.length > 0 || !!rootCause;
+
+  const start = problem.startTime ? new Date(problem.startTime) : null;
+  const end   = problem.endTime   ? new Date(problem.endTime)   : null;
+  const durationMin = start && end ? Math.round((end.getTime() - start.getTime()) / 60000) : null;
+  const fmtTime = (d: Date) => d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+  return (
+    <div className="space-y-3 rounded-lg border border-border/50 bg-muted/5 p-3">
+      {/* Linha 1: badges + duração */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline" style={{ borderColor: sevColor, color: sevColor }} className="text-[10px] font-semibold">
+          {problem.severityLevel}
+        </Badge>
+        <Badge variant="outline" className="text-[10px]">{problem.impactLevel}</Badge>
+        <Badge variant={problem.status === "OPEN" ? "destructive" : "secondary"} className="text-[10px]">
+          {problem.status}
+        </Badge>
+        {durationMin != null && start && (
+          <span className="flex items-center gap-1 text-[10px] text-muted-foreground ml-1">
+            <Clock className="h-3 w-3" />
+            {fmtTime(start)}{end ? ` → ${fmtTime(end)}` : ""} ({durationMin} min)
+          </span>
+        )}
+        {mgmtZones.map(z => (
+          <Badge key={z.id} variant="secondary" className="text-[10px] gap-1">
+            <Users className="h-2.5 w-2.5" />{z.name}
+          </Badge>
+        ))}
+      </div>
+
+      {/* Linha 2: causa raiz */}
+      {rootCause && (
+        <div className="flex items-center gap-2 text-xs bg-red-500/10 border border-red-500/20 rounded-md px-2.5 py-1.5">
+          <Target className="h-3 w-3 text-red-400 shrink-0" />
+          <span className="text-red-300 font-medium truncate">{rootCause.displayName || rootCause.name || rootCause.entityId.id}</span>
+          <span className="text-[9px] text-red-400/70 font-mono ml-auto shrink-0">{rootCause.entityId.type}</span>
+          <Badge variant="outline" className="text-[9px] border-red-500/30 text-red-400 shrink-0">causa raiz</Badge>
+        </div>
+      )}
+
+      {/* Linha 3: entidades afetadas */}
+      {affectedEntities.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {affectedEntities.slice(0, 6).map(e => {
+            const name = e.displayName || e.name || e.entityId.id;
+            const k8s = [e.k8sNamespace, e.k8sWorkload].filter(Boolean).join("/");
+            return (
+              <div key={e.entityId.id} className="flex items-center gap-1.5 text-[10px] bg-muted/20 border border-border/40 rounded px-2 py-1">
+                <Server className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
+                <span className="truncate max-w-[110px]" title={name}>{name}</span>
+                {k8s && <span className="text-muted-foreground/50 font-mono truncate max-w-[80px]">{k8s}</span>}
+              </div>
+            );
+          })}
+          {affectedEntities.length > 6 && (
+            <span className="text-[10px] text-muted-foreground px-2 py-1">+{affectedEntities.length - 6} mais</span>
+          )}
+        </div>
+      )}
+
+      {/* Linha 4: K8s workloads */}
+      {k8sWorkloads.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {k8sWorkloads.slice(0, 5).map((w, i) => (
+            <div key={i} className="flex items-center gap-1 text-[10px] bg-blue-500/10 border border-blue-500/20 rounded px-2 py-1">
+              <Layers className="h-2.5 w-2.5 text-blue-400 shrink-0" />
+              <span className="font-mono text-blue-300 truncate max-w-[140px]">{w.Namespace}/{w.Workload || w.AppName}</span>
+              {w.AppVersion && <span className="text-blue-400/50 font-mono">v{w.AppVersion}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Mini VRP read-only */}
+      {hasVRP && (
+        <div className="rounded-md border border-border/40 bg-muted/10 overflow-hidden">
+          <div className="flex items-center gap-1.5 px-2.5 py-1 bg-muted/20 border-b border-border/30">
+            <Network className="h-3 w-3 text-muted-foreground" />
+            <span className="text-[10px] text-muted-foreground font-medium">Fluxo de propagação</span>
+          </div>
+          <div className="overflow-auto max-h-[200px] p-2">
+            <div style={{ transform: "scale(0.82)", transformOrigin: "top left", display: "inline-block" }}>
+              <VRPGraph
+                problem={problem}
+                scale={1}
+                readonly
+                onNodeHover={() => {}}
+                onNodeLeave={() => {}}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Parse + render resultado da IA em seções visuais ──────────────────────────
+
+interface AIParsedSection { key: string; heading: string; content: string; }
+interface AIParseResult { intro: string; sections: AIParsedSection[]; }
+
+interface ActionItem {
+  urgency: string;      // "IMEDIATA" | "ALTA" | "MONITORAR"
+  app_section: string;  // "HPA" | "Deployments" | "Resource Explorer" | "Health Check"
+  workload?: string;
+  namespace?: string;
+  cluster?: string;
+  action: string;
+  reason: string;
+}
+
+function ActionPlanCard({ items }: { items: ActionItem[] }) {
+  if (!items || items.length === 0) return null;
+
+  const urgencyMeta: Record<string, { color: string; bg: string; border: string; dot: string }> = {
+    IMEDIATA: { color: "text-red-700 dark:text-red-300",    bg: "bg-red-50 dark:bg-red-950/30",    border: "border-red-200 dark:border-red-800",    dot: "bg-red-500" },
+    ALTA:     { color: "text-orange-700 dark:text-orange-300", bg: "bg-orange-50 dark:bg-orange-950/30", border: "border-orange-200 dark:border-orange-800", dot: "bg-orange-500" },
+    MONITORAR:{ color: "text-blue-700 dark:text-blue-300",   bg: "bg-blue-50 dark:bg-blue-950/30",   border: "border-blue-200 dark:border-blue-800",   dot: "bg-blue-500" },
+  };
+
+  return (
+    <Card className="border-amber-200 dark:border-amber-800 bg-amber-50/30 dark:bg-amber-950/10">
+      <CardHeader className="pb-2 pt-3 px-4">
+        <div className="flex items-center gap-2">
+          <ListChecks className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <span className="text-sm font-semibold text-amber-800 dark:text-amber-300">Plano de Ação</span>
+          <Badge variant="outline" className="text-[10px] text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700 ml-auto">
+            {items.length} {items.length === 1 ? "ação" : "ações"}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="px-4 pb-4 space-y-2">
+        {items.map((item, i) => {
+          const meta = urgencyMeta[item.urgency] ?? urgencyMeta["ALTA"];
+          return (
+            <div key={i} className={`rounded-md border px-3 py-2 space-y-1.5 ${meta.bg} ${meta.border}`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 mt-0.5 ${meta.dot}`} />
+                  <span className={`text-xs font-semibold ${meta.color}`}>{item.action}</span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <Badge variant="outline" className={`text-[9px] px-1 py-0 ${meta.color} border-current`}>
+                    {item.urgency}
+                  </Badge>
+                  <Badge variant="secondary" className="text-[9px] px-1 py-0">
+                    {item.app_section}
+                  </Badge>
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground pl-3.5">{item.reason}</p>
+              {(item.namespace || item.workload) && (
+                <div className="flex items-center gap-1 pl-3.5 flex-wrap">
+                  {item.namespace && (
+                    <span className="text-[10px] bg-muted/60 px-1.5 py-0.5 rounded font-mono">{item.namespace}</span>
+                  )}
+                  {item.workload && (
+                    <span className="text-[10px] bg-muted/60 px-1.5 py-0.5 rounded font-mono">{item.workload}</span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
+  );
+}
+
+const AI_SECTION_PATTERNS: { key: string; re: RegExp }[] = [
+  { key: "origem",      re: /\n((?:\*\*)?1\.\s+ORIGEM[^\n]*)/i },
+  { key: "propagacao",  re: /\n((?:\*\*)?2\.\s+PROPAGA[ÇC][ÃA]O[^\n]*)/i },
+  { key: "k8s",         re: /\n((?:\*\*)?3\.\s+(?:ANÁLISE|ANALISE|COMPONENTES)[^\n]*)/i },
+  { key: "externas",    re: /\n((?:\*\*)?4\.\s+DEPEND[EÊ]NCIAS[^\n]*)/i },
+  { key: "proximos",    re: /\n((?:\*\*)?5\.\s+(?:A[ÇC][ÕO]ES\s+CORRETIVAS|PR[OÓ]XIMOS)[^\n]*)/i },
+];
+
+function parseAISections(text: string): AIParseResult {
+  type M = { idx: number; key: string; heading: string };
+  const matches: M[] = [];
+  for (const { key, re } of AI_SECTION_PATTERNS) {
+    const m = text.match(re);
+    if (m && m.index != null) matches.push({ idx: m.index, key, heading: m[1].replace(/\*\*/g, "").trim() });
+  }
+  matches.sort((a, b) => a.idx - b.idx);
+  if (matches.length === 0) return { intro: text, sections: [] };
+  const intro = text.slice(0, matches[0].idx).trim();
+  const sections: AIParsedSection[] = matches.map((m, i) => ({
+    key: m.key,
+    heading: m.heading,
+    content: text.slice(m.idx + 1, i + 1 < matches.length ? matches[i + 1].idx : text.length).trim(),
+  }));
+  return { intro, sections };
+}
+
+type SectionMeta = { Icon: React.ComponentType<{ className?: string }>; color: string; border: string; bg: string; label: string };
+const SECTION_META: Record<string, SectionMeta> = {
+  origem:      { Icon: Target,     color: "text-red-400",    border: "border-red-500/30",    bg: "bg-red-500/5",    label: "Origem / Causa Raiz" },
+  propagacao:  { Icon: Share2,     color: "text-orange-400", border: "border-orange-500/30", bg: "bg-orange-500/5", label: "Propagação" },
+  k8s:         { Icon: Layers,     color: "text-blue-400",   border: "border-blue-500/30",   bg: "bg-blue-500/5",   label: "Análise K8s" },
+  externas:    { Icon: Globe,      color: "text-purple-400", border: "border-purple-500/30", bg: "bg-purple-500/5", label: "Dependências Externas" },
+  proximos:    { Icon: ListChecks, color: "text-green-400",  border: "border-green-500/30",  bg: "bg-green-500/5",  label: "Ações Corretivas" },
+};
+
+function AIAnalysisResult({ text, problem, actionItems }: { text: string; problem: DynatraceProblem; actionItems?: ActionItem[] }) {
+  const { intro, sections } = parseAISections(text);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(AI_SECTION_PATTERNS.map(p => [p.key, true]))
+  );
+  const hasVRP = (problem.affectedEntities?.length ?? 0) > 0 || !!problem.rootCauseEntity;
+
+  // Fallback: sem seções parseadas — renderiza como AIAnalysisCard faz
+  if (sections.length === 0) {
+    return (
+      <div className="space-y-3">
+        <ActionPlanCard items={actionItems ?? []} />
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center gap-2">
+              <Bot className="h-4 w-4 text-violet-400" />
+              <span className="text-sm font-semibold">Análise IA</span>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {hasVRP && <VRPEmbed problem={problem} />}
+            <ScrollArea className="h-[400px] w-full rounded border p-4 bg-muted/50">
+              <div className="prose prose-sm dark:prose-invert max-w-none">
+                <ReactMarkdown>{text}</ReactMarkdown>
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Plano de ação determinístico — mostrado ANTES da análise textual da IA */}
+      <ActionPlanCard items={actionItems ?? []} />
+
+      {/* Sumário introdutório do modelo */}
+      {intro && (
+        <Card className="border-border/50 bg-muted/10">
+          <CardContent className="pt-4 pb-3">
+            <p className="text-sm text-muted-foreground italic leading-relaxed">
+              {intro.length > 500 ? intro.slice(0, 497) + "…" : intro}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Seção de propagação com VRP embutido (antes das demais) */}
+      {hasVRP && sections.some(s => s.key === "propagacao") && (
+        <Card className="border-orange-500/30 bg-orange-500/5 overflow-hidden">
+          <CardHeader className="pb-2 pt-3 px-4 bg-orange-500/10 border-b border-orange-500/20">
+            <div className="flex items-center gap-2">
+              <Network className="h-4 w-4 text-orange-400" />
+              <span className="text-sm font-semibold text-orange-300">Fluxo de Propagação</span>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            <VRPEmbed problem={problem} />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Cards por seção */}
+      {sections.map(section => {
+        const meta = SECTION_META[section.key] ?? {
+          Icon: Bot, color: "text-foreground", border: "border-border", bg: "bg-muted/5", label: section.heading,
+        };
+        const { Icon, color, border, bg, label } = meta;
+        const isOpen = expanded[section.key] ?? true;
+
+        return (
+          <Card key={section.key} className={`border ${border} overflow-hidden`}>
+            <CardHeader
+              className={`py-2.5 px-4 ${bg} cursor-pointer select-none`}
+              onClick={() => setExpanded(prev => ({ ...prev, [section.key]: !prev[section.key] }))}
+            >
+              <div className="flex items-center gap-2">
+                <Icon className={`h-4 w-4 shrink-0 ${color}`} />
+                <span className={`text-sm font-semibold flex-1 ${color}`}>{label}</span>
+                {isOpen
+                  ? <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                  : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+              </div>
+            </CardHeader>
+            {isOpen && (
+              <>
+                <Separator className="opacity-20" />
+                <CardContent className="pt-4 pb-4">
+                  <ScrollArea className={section.key === "proximos" ? undefined : "max-h-[500px]"}>
+                    <div className="prose prose-sm dark:prose-invert max-w-none">
+                      <ReactMarkdown>{section.content}</ReactMarkdown>
+                    </div>
+                  </ScrollArea>
+                </CardContent>
+              </>
+            )}
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function VRPEmbed({ problem }: { problem: DynatraceProblem }) {
+  return (
+    <div className="overflow-auto max-h-[220px] p-3">
+      <div style={{ transform: "scale(0.82)", transformOrigin: "top left", display: "inline-block" }}>
+        <VRPGraph problem={problem} scale={1} readonly onNodeHover={() => {}} onNodeLeave={() => {}} />
+      </div>
+    </div>
+  );
+}
 
 function DiagnosticTab({
   problem,
@@ -936,12 +1959,14 @@ function DiagnosticTab({
   onAnalyze,
   analyzing,
   analysisResult,
+  actionItems,
 }: {
   problem: DynatraceProblem;
   uiBaseUrl?: string;
   onAnalyze: () => void;
   analyzing: boolean;
   analysisResult: string;
+  actionItems?: ActionItem[];
 }) {
   return (
     <div className="space-y-4">
@@ -975,18 +2000,14 @@ function DiagnosticTab({
       )}
 
       {!analyzing && !analysisResult && (
-        <div className="flex flex-col items-center gap-2 py-12 text-center text-muted-foreground">
+        <div className="flex flex-col items-center gap-2 py-8 text-center text-muted-foreground">
           <Bot className="h-10 w-10 opacity-20" />
           <p className="text-sm">Clique em <strong>Analisar com IA</strong> para obter um diagnóstico detalhado.</p>
         </div>
       )}
 
       {analysisResult && !analyzing && (
-        <div className="rounded-lg border bg-muted/10 p-4">
-          <div className="prose prose-sm dark:prose-invert max-w-none">
-            <ReactMarkdown>{analysisResult}</ReactMarkdown>
-          </div>
-        </div>
+        <AIAnalysisResult text={analysisResult} problem={problem} actionItems={actionItems} />
       )}
     </div>
   );
@@ -1001,6 +2022,7 @@ function ProblemDetailPanel({
   onAnalyze,
   analyzing,
   analysisResult,
+  actionItems,
 }: {
   problem: DynatraceProblem;
   aiEmail: string;
@@ -1008,14 +2030,16 @@ function ProblemDetailPanel({
   onAnalyze: () => void;
   analyzing: boolean;
   analysisResult: string;
+  actionItems?: ActionItem[];
 }) {
   const hasWorkloads = (problem.k8sWorkloads ?? []).some(w => w.AppName);
+  const [metricsRightWidth, setMetricsRightWidth] = useState(380);
 
   return (
     <Tabs defaultValue="details" className="w-full">
       <TabsList className="w-full grid grid-cols-4 h-8 mb-4">
         <TabsTrigger value="details" className="text-xs gap-1.5">
-          <Info className="h-3 w-3" />Detalhes
+          <Info className="h-3 w-3" />Visão Geral
         </TabsTrigger>
         <TabsTrigger value="metrics" className="text-xs gap-1.5">
           <BarChart3 className="h-3 w-3" />Métricas
@@ -1036,16 +2060,23 @@ function ProblemDetailPanel({
         <DetailsTab problem={problem} uiBaseUrl={uiBaseUrl} />
       </TabsContent>
 
-      <TabsContent value="metrics" className="mt-0 space-y-6">
-        <DynatraceMetricsPanel
-          problemId={problem.problemId}
-          aiEmail={aiEmail}
-          problemTitle={problem.title}
-        />
-        <DynatraceContextPanel
-          problemId={problem.problemId}
-          aiEmail={aiEmail}
-        />
+      <TabsContent value="metrics" className="mt-0">
+        <div className="flex gap-0 items-start">
+          <div className="flex-1 min-w-0">
+            <DynatraceMetricsPanel
+              problemId={problem.problemId}
+              aiEmail={aiEmail}
+              problemTitle={problem.title}
+            />
+          </div>
+          <DTResizeDivider onDrag={d => setMetricsRightWidth(w => Math.max(260, Math.min(700, w - d)))} />
+          <div className="flex-shrink-0" style={{ width: metricsRightWidth }}>
+            <DynatraceContextPanel
+              problemId={problem.problemId}
+              aiEmail={aiEmail}
+            />
+          </div>
+        </div>
       </TabsContent>
 
       <TabsContent value="github" className="mt-0">
@@ -1059,6 +2090,7 @@ function ProblemDetailPanel({
           onAnalyze={onAnalyze}
           analyzing={analyzing}
           analysisResult={analysisResult}
+          actionItems={actionItems}
         />
       </TabsContent>
     </Tabs>
@@ -1077,6 +2109,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
 
   const [selectedProblem, setSelectedProblem] = useState<DynatraceProblem | null>(null);
   const [analysisResult, setAnalysisResult] = useState<string>("");
+  const [actionItems, setActionItems] = useState<ActionItem[]>([]);
   const [analyzingId, setAnalyzingId] = useState<string | null>(null);
 
   // Filtro por management zone / tag (na própria aba)
@@ -1140,9 +2173,11 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
     onMutate: (p) => {
       setAnalyzingId(p.problemId);
       setAnalysisResult("");
+      setActionItems([]);
     },
     onSuccess: (result) => {
       setAnalysisResult(result.analysis);
+      setActionItems(result.action_items ?? []);
       setAnalyzingId(null);
     },
     onError: (err: any) => {
@@ -1287,6 +2322,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
         uiBaseUrl={uiBaseUrl}
         analyzing={analyzingId === selectedProblem.problemId}
         analysisResult={analysisResult}
+        actionItems={actionItems}
         onAnalyze={() => analyzeMutation.mutate(selectedProblem)}
       />
     </div>

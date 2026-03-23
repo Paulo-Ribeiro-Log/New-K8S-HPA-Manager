@@ -1,6 +1,9 @@
 package dynatrace
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // ManagementZone management zone associada ao problem (corresponde ao alerting profile do squad)
 type ManagementZone struct {
@@ -37,6 +40,11 @@ type EntityStub struct {
 	K8sWorkload  string `json:"k8sWorkload,omitempty"`
 	// Tags ricas do OneAgent — DevOps, versão, squad, GitHub, etc.
 	Labels *DTLabels `json:"labels,omitempty"`
+	// Relações de topologia (preenchidas após GetEntity)
+	// CallsTo: entidades que esta entidade chama (downstream)
+	// CalledBy: entidades que chamam esta entidade (upstream)
+	CallsTo  []EntityID `json:"callsTo,omitempty"`
+	CalledBy []EntityID `json:"calledBy,omitempty"`
 }
 
 // BestName retorna o melhor nome disponível para a entidade, na ordem de preferência.
@@ -162,9 +170,30 @@ type K8sCorrelation struct {
 // ExtractK8sCorrelation extrai correlação K8s das tags de uma entidade.
 // O OneAgent injeta essas tags automaticamente em todos os processos K8s.
 // Usa múltiplas fontes: kubernetes.*, k8s.namespace.name, dt.host_group.id, app.kubernetes.io/*
+// Também trata tags com Context="KUBERNETES" (formato usado por KUBERNETES_NAMESPACE e APPLICATION).
 func (e *Entity) ExtractK8sCorrelation() *K8sCorrelation {
 	corr := &K8sCorrelation{}
 	for _, tag := range e.Tags {
+		// Tags com contexto KUBERNETES explícito (usadas por KUBERNETES_NAMESPACE, APPLICATION, etc.)
+		// Ex: {Context:"KUBERNETES", Key:"namespace", Value:"tms-embarcador"}
+		if tag.Context == "KUBERNETES" {
+			switch tag.Key {
+			case "cluster", "cluster.name", "clusterId":
+				if corr.Cluster == "" {
+					corr.Cluster = tag.Value
+				}
+			case "namespace", "namespace.name":
+				if corr.Namespace == "" {
+					corr.Namespace = tag.Value
+				}
+			case "workload.name", "deployment.name", "workload":
+				if corr.Workload == "" {
+					corr.Workload = tag.Value
+				}
+			}
+			// Continua para também checar tag.Key no switch abaixo
+		}
+
 		switch tag.Key {
 		// Fontes primárias (Kubernetes context)
 		case "kubernetes.cluster.name":
@@ -188,8 +217,8 @@ func (e *Entity) ExtractK8sCorrelation() *K8sCorrelation {
 			if corr.Workload == "" {
 				corr.Workload = tag.Value
 			}
-		// Namespace via etiqueta Kubernetes
-		case "Namespace":
+		// Namespace via etiqueta Kubernetes (várias grafias)
+		case "Namespace", "namespace":
 			if corr.Namespace == "" {
 				corr.Namespace = tag.Value
 			}
@@ -202,6 +231,17 @@ func (e *Entity) ExtractK8sCorrelation() *K8sCorrelation {
 			corr.Environment = tag.Value
 		}
 	}
+
+	// Fallback de último recurso: entidade está num cluster AKS (via dt.host_group.id)
+	// mas nenhuma tag de namespace foi encontrada — derivar do displayName.
+	// Ex: "TMS Embarcador" → "tms-embarcador", para entidades APPLICATION sem tags K8s completas.
+	if corr.Cluster != "" && corr.Namespace == "" && corr.Workload == "" && e.DisplayName != "" {
+		derived := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(e.DisplayName), " ", "-"))
+		if derived != "" {
+			corr.Namespace = derived
+		}
+	}
+
 	if corr.Cluster == "" && corr.Namespace == "" && corr.Workload == "" {
 		return nil
 	}
@@ -213,6 +253,15 @@ func (e *Entity) ExtractDTLabels() *DTLabels {
 	l := &DTLabels{}
 	hasAny := false
 	for _, tag := range e.Tags {
+		// Tags com contexto KUBERNETES (formato usado por KUBERNETES_NAMESPACE e APPLICATION)
+		if tag.Context == "KUBERNETES" && l.Namespace == "" {
+			switch tag.Key {
+			case "namespace", "namespace.name":
+				l.Namespace = tag.Value
+				hasAny = true
+			}
+		}
+
 		switch tag.Key {
 		case "app.kubernetes.io/name":
 			l.AppName = tag.Value
@@ -238,7 +287,7 @@ func (e *Entity) ExtractDTLabels() *DTLabels {
 		case "app.kubernetes.io/deployed-by-canary":
 			l.IsCanary = tag.Value
 			hasAny = true
-		case "k8s.namespace.name", "kubernetes.namespace.name", "Namespace":
+		case "k8s.namespace.name", "kubernetes.namespace.name", "Namespace", "namespace":
 			if l.Namespace == "" {
 				l.Namespace = tag.Value
 				hasAny = true

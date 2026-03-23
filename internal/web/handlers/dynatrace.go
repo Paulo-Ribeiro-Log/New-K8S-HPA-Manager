@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -289,45 +291,33 @@ func (h *DynatraceHandler) AnalyzeProblem(c *gin.Context) {
 	// 2. Enriquecer entidades com correlação K8s
 	problem.AffectedEntities = dtClient.EnrichEntitiesWithK8s(ctx, problem.AffectedEntities)
 
-	// 3. Coletar métricas e eventos das principais entidades (até 3)
-	limit := 3
-	if len(problem.AffectedEntities) < limit {
-		limit = len(problem.AffectedEntities)
-	}
+	// 3. Usar GetEntityMetricsForProblem — mesma coleta rica da aba "Métricas"
+	//    (P50/P90/P95/P99, error_rate, throughput, DB calls, pods, CPU throttling…)
+	metricsResponse := dtClient.GetEntityMetricsForProblem(ctx, problem)
 
+	// 4. Coletar eventos das entidades afetadas (até 5 entidades, 10 eventos cada)
 	fromTime := problem.StartTime.Add(-10 * time.Minute)
 	toTime := problem.StartTime.Add(2 * time.Hour)
 	if problem.EndTime != nil {
-		toTime = *problem.EndTime
+		toTime = problem.EndTime.Add(15 * time.Minute)
+	}
+	entityEvents := make(map[string][]dtclient.Event)
+	evLimit := 5
+	if len(problem.AffectedEntities) < evLimit {
+		evLimit = len(problem.AffectedEntities)
+	}
+	for i := 0; i < evLimit; i++ {
+		id := problem.AffectedEntities[i].EntityID.ID
+		if evs, err := dtClient.GetEntityEvents(ctx, id, fromTime, toTime); err == nil {
+			entityEvents[id] = evs
+		}
 	}
 
-	entityContexts := make([]dtEntityCtx, 0, limit)
-	for i := 0; i < limit; i++ {
-		stub := problem.AffectedEntities[i]
-		ec := dtEntityCtx{metrics: make(map[string]string)}
+	// 5. Gerar itens de ação determinísticos por threshold de métricas
+	actionItems := generateActionItems(problem, metricsResponse)
 
-		if entity, err := dtClient.GetEntity(ctx, stub.EntityID.ID); err == nil {
-			ec.entity = entity
-		}
-		if events, err := dtClient.GetEntityEvents(ctx, stub.EntityID.ID, fromTime, toTime); err == nil {
-			ec.events = events
-		}
-		for _, selector := range []string{
-			"builtin:service.errors.total.rate",
-			"builtin:service.response.time",
-		} {
-			if md, err := dtClient.GetEntityMetrics(ctx, stub.EntityID.ID, selector, "now-1h", "now"); err == nil {
-				if len(md.Data) > 0 && len(md.Data[0].Values) > 0 {
-					vals := md.Data[0].Values
-					ec.metrics[selector] = fmt.Sprintf("%.2f", vals[len(vals)-1])
-				}
-			}
-		}
-		entityContexts = append(entityContexts, ec)
-	}
-
-	// 4. Montar e sanitizar prompt
-	prompt := buildDynatracePrompt(problem, entityContexts)
+	// 6. Montar e sanitizar prompt
+	prompt := buildDynatracePrompt(problem, metricsResponse, entityEvents)
 	prompt = h.sanitizer.SanitizeText(prompt)
 
 	// 5. Obter provider AI e analisar
@@ -384,11 +374,12 @@ func (h *DynatraceHandler) AnalyzeProblem(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"problem_id":  problemID,
-		"title":       problem.Title,
-		"severity":    problem.SeverityLevel,
-		"analysis":    analysis,
-		"analyzed_at": analyzedAt,
+		"problem_id":   problemID,
+		"title":        problem.Title,
+		"severity":     problem.SeverityLevel,
+		"analysis":     analysis,
+		"action_items": actionItems,
+		"analyzed_at":  analyzedAt,
 	})
 }
 
@@ -507,94 +498,365 @@ func (h *DynatraceHandler) GetHistory(c *gin.Context) {
 	})
 }
 
-// dtEntityCtx contexto coletado de uma entidade Dynatrace para análise AI
-type dtEntityCtx struct {
-	entity  *dtclient.Entity
-	events  []dtclient.Event
-	metrics map[string]string
+// pointStats calcula min/avg/max/último de uma série MetricPoint
+func pointStats(points []dtclient.MetricPoint) (min, avg, max, last float64, ok bool) {
+	valid := make([]float64, 0, len(points))
+	for _, p := range points {
+		if !math.IsNaN(p.V) && p.V >= 0 {
+			valid = append(valid, p.V)
+		}
+	}
+	if len(valid) == 0 {
+		return 0, 0, 0, 0, false
+	}
+	min, max, sum := valid[0], valid[0], 0.0
+	for _, v := range valid {
+		if v < min {
+			min = v
+		}
+		if v > max {
+			max = v
+		}
+		sum += v
+	}
+	return min, sum / float64(len(valid)), max, valid[len(valid)-1], true
 }
 
-// buildDynatracePrompt constrói o prompt completo com contexto Dynatrace + K8s
-func buildDynatracePrompt(problem *dtclient.Problem, entityContexts []dtEntityCtx) string {
-	var sb strings.Builder
-
-	sb.WriteString("Você é um especialista em observabilidade e Kubernetes.\n")
-	sb.WriteString("Analise o problema detectado pelo Dynatrace abaixo e responda em português.\n\n")
-
-	sb.WriteString("=== PROBLEMA DYNATRACE ===\n")
-	sb.WriteString(fmt.Sprintf("ID: %s (%s)\n", problem.DisplayID, problem.ProblemID))
-	sb.WriteString(fmt.Sprintf("Título: %s\n", problem.Title))
-	sb.WriteString(fmt.Sprintf("Severidade: %s | Impacto: %s\n", problem.SeverityLevel, problem.ImpactLevel))
-	sb.WriteString(fmt.Sprintf("Início: %s\n", problem.StartTime.Format("2006-01-02 15:04:05 UTC")))
-	if problem.EndTime != nil {
-		sb.WriteString(fmt.Sprintf("Fim: %s\n", problem.EndTime.Format("2006-01-02 15:04:05 UTC")))
-	} else {
-		sb.WriteString("Status: ABERTO (ainda ativo)\n")
-	}
-	if problem.RootCauseEntity != nil {
-		sb.WriteString(fmt.Sprintf("Causa raiz (Dynatrace): %s (%s)\n",
-			problem.RootCauseEntity.DisplayName, problem.RootCauseEntity.EntityID.ID))
-	}
-
-	sb.WriteString("\n=== ENTIDADES AFETADAS ===\n")
-	for _, e := range problem.AffectedEntities {
-		sb.WriteString(fmt.Sprintf("- %s [%s]", e.DisplayName, e.EntityID.Type))
-		if e.K8sWorkload != "" {
-			sb.WriteString(fmt.Sprintf(" → K8s: cluster=%s ns=%s workload=%s",
-				e.K8sCluster, e.K8sNamespace, e.K8sWorkload))
+// severity avalia o nível de alerta de uma métrica pelo valor máximo
+func severityLabel(key string, maxVal float64) string {
+	switch key {
+	case "error_rate":
+		if maxVal > 20 {
+			return "🔴 CRÍTICO"
+		} else if maxVal > 5 {
+			return "🟡 ATENÇÃO"
 		}
-		sb.WriteString("\n")
+		return "🟢 normal"
+	case "response_p90", "response_p95", "response_p99":
+		if maxVal > 5000 {
+			return "🔴 CRÍTICO"
+		} else if maxVal > 1000 {
+			return "🟡 ATENÇÃO"
+		}
+		return "🟢 normal"
+	case "pod_restarts":
+		if maxVal > 5 {
+			return "🔴 CRÍTICO"
+		} else if maxVal > 1 {
+			return "🟡 ATENÇÃO"
+		}
+		return "🟢 normal"
+	case "pods_ready_pct":
+		if maxVal < 80 {
+			return "🔴 CRÍTICO"
+		} else if maxVal < 95 {
+			return "🟡 ATENÇÃO"
+		}
+		return "🟢 normal"
+	case "cpu_throttle":
+		if maxVal > 500 {
+			return "🔴 CRÍTICO"
+		} else if maxVal > 100 {
+			return "🟡 ATENÇÃO"
+		}
+		return "🟢 normal"
+	}
+	return ""
+}
+
+// ActionItem ação corretiva determinística gerada por threshold de métricas do Dynatrace.
+// Exibida antes da análise de IA para guiar o usuário nas seções corretas do HPA Manager.
+type ActionItem struct {
+	Urgency    string `json:"urgency"`     // "IMEDIATA" | "ALTA" | "MONITORAR"
+	AppSection string `json:"app_section"` // "HPA" | "Deployments" | "Resource Explorer" | "Health Check"
+	Workload   string `json:"workload,omitempty"`
+	Namespace  string `json:"namespace,omitempty"`
+	Cluster    string `json:"cluster,omitempty"`
+	Action     string `json:"action"`
+	Reason     string `json:"reason"`
+}
+
+// generateActionItems gera ações corretivas determinísticas baseadas em thresholds de métricas.
+// Não usa IA — lê os valores reais das métricas e decide qual seção do HPA Manager o usuário deve acessar.
+func generateActionItems(problem *dtclient.Problem, mr *dtclient.ProblemMetricsResponse) []ActionItem {
+	items := []ActionItem{}
+	seen := map[string]struct{}{}
+
+	add := func(item ActionItem) {
+		key := item.AppSection + "|" + item.Namespace + "/" + item.Workload + "|" + item.Urgency + "|" + item.Action
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
+			items = append(items, item)
+		}
 	}
 
-	for _, ec := range entityContexts {
-		if ec.entity == nil {
+	for _, ed := range mr.Entities {
+		if len(ed.Metrics) == 0 {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("\n--- %s [%s] ---\n", ec.entity.DisplayName, ec.entity.Type))
-
-		if len(ec.metrics) > 0 {
-			sb.WriteString("Métricas (última hora):\n")
-			for k, v := range ec.metrics {
-				name := k
-				if strings.Contains(k, "errors") {
-					name = "error_rate"
-				} else if strings.Contains(k, "response.time") {
-					name = "response_time_us"
+		// Busca contexto K8s da entidade nas stubs do problem
+		var ns, workload, cluster string
+		for _, stub := range problem.AffectedEntities {
+			if stub.EntityID.ID == ed.EntityID {
+				ns, workload, cluster = stub.K8sNamespace, stub.K8sWorkload, stub.K8sCluster
+				if workload == "" && stub.Labels != nil {
+					workload = stub.Labels.AppName
 				}
-				sb.WriteString(fmt.Sprintf("  %s: %s\n", name, v))
+				if ns == "" && stub.Labels != nil {
+					ns = stub.Labels.Namespace
+				}
+				break
 			}
 		}
 
-		if len(ec.events) > 0 {
-			sb.WriteString(fmt.Sprintf("Eventos recentes (%d):\n", len(ec.events)))
-			for i, ev := range ec.events {
-				if i >= 5 {
-					break
-				}
-				sb.WriteString(fmt.Sprintf("  [%s] %s — %s\n",
-					ev.StartTime.Format("15:04"), ev.EventType, ev.Title))
+		for _, m := range ed.Metrics {
+			mn, avg, mx, _, ok := pointStats(m.Points)
+			if !ok {
+				continue
 			}
-		}
 
-		hasTags := false
-		for _, tag := range ec.entity.Tags {
-			if strings.HasPrefix(tag.Key, "kubernetes.") {
-				if !hasTags {
-					sb.WriteString("Tags K8s (OneAgent):\n")
-					hasTags = true
+			switch m.Key {
+			case "error_rate":
+				if mx > 20 {
+					add(ActionItem{
+						Urgency: "IMEDIATA", AppSection: "Deployments",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Verificar crash loops e considerar rollback para versão anterior",
+						Reason: fmt.Sprintf("Taxa de erro crítica: máx=%.1f%% avg=%.1f%%", mx, avg),
+					})
+				} else if mx > 5 {
+					add(ActionItem{
+						Urgency: "ALTA", AppSection: "Deployments",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Verificar logs dos pods para identificar causa dos erros",
+						Reason: fmt.Sprintf("Taxa de erro elevada: máx=%.1f%% avg=%.1f%%", mx, avg),
+					})
 				}
-				sb.WriteString(fmt.Sprintf("  %s: %s\n", tag.Key, tag.Value))
+			case "response_p95":
+				if mx > 5000 {
+					add(ActionItem{
+						Urgency: "IMEDIATA", AppSection: "HPA",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Aumentar maxReplicas — latência P95 indica sobrecarga",
+						Reason: fmt.Sprintf("Latência P95 crítica: máx=%.0fms avg=%.0fms", mx, avg),
+					})
+				} else if mx > 1000 {
+					add(ActionItem{
+						Urgency: "ALTA", AppSection: "HPA",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Revisar minReplicas do HPA — latência elevada",
+						Reason: fmt.Sprintf("Latência P95 alta: máx=%.0fms avg=%.0fms", mx, avg),
+					})
+				}
+			case "pod_restarts":
+				if mx > 5 {
+					add(ActionItem{
+						Urgency: "IMEDIATA", AppSection: "Resource Explorer",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Aumentar memory limit do container — provável OOMKill",
+						Reason: fmt.Sprintf("Pods reiniciando: máx=%.0f avg=%.1f restarts", mx, avg),
+					})
+				} else if mx > 1 {
+					add(ActionItem{
+						Urgency: "ALTA", AppSection: "Deployments",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Verificar logs de crash — possível OOMKill ou falha na inicialização",
+						Reason: fmt.Sprintf("Pods com restarts: máx=%.0f avg=%.1f", mx, avg),
+					})
+				}
+			case "pods_ready_pct":
+				if mn < 80 {
+					add(ActionItem{
+						Urgency: "IMEDIATA", AppSection: "HPA",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Escalar HPA — pods insuficientes servindo tráfego",
+						Reason: fmt.Sprintf("Mínimo de %.0f%% pods prontos (saudável: ≥95%%)", mn),
+					})
+				} else if mn < 95 {
+					add(ActionItem{
+						Urgency: "ALTA", AppSection: "Deployments",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Verificar saúde dos pods — alguns não respondem ao readiness probe",
+						Reason: fmt.Sprintf("Mínimo de %.0f%% pods prontos (ideal: 100%%)", mn),
+					})
+				}
+			case "cpu_throttle":
+				if mx > 500 {
+					add(ActionItem{
+						Urgency: "IMEDIATA", AppSection: "Resource Explorer",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Aumentar CPU limit/request — throttling severo está causando lentidão",
+						Reason: fmt.Sprintf("CPU throttling crítico: máx=%.0f%% avg=%.0f%%", mx, avg),
+					})
+				} else if mx > 100 {
+					add(ActionItem{
+						Urgency: "ALTA", AppSection: "Resource Explorer",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Revisar CPU requests — container subdimensionado",
+						Reason: fmt.Sprintf("CPU throttling elevado: máx=%.0f%% avg=%.0f%%", mx, avg),
+					})
+				}
 			}
 		}
 	}
 
-	sb.WriteString("\n=== ANÁLISE SOLICITADA ===\n")
-	sb.WriteString("Responda de forma estruturada:\n\n")
-	sb.WriteString("1. **ORIGEM**: Causa raiz provável. O problema está no K8s ou em dependência externa?\n")
-	sb.WriteString("2. **PROPAGAÇÃO**: Como o problema se propagou entre os serviços?\n")
-	sb.WriteString("3. **COMPONENTES K8S**: Quais workloads/namespaces investigar com kubectl?\n")
-	sb.WriteString("4. **DEPENDÊNCIAS EXTERNAS**: O que está fora do K8s (banco, Kafka, API, rede)?\n")
-	sb.WriteString("5. **PRÓXIMOS PASSOS**: Ações de investigação em ordem de prioridade.\n")
+	// Fallback: sem métricas suficientes para diagnóstico específico
+	if len(items) == 0 {
+		urgency := "ALTA"
+		if problem.SeverityLevel == "AVAILABILITY" {
+			urgency = "IMEDIATA"
+		}
+		items = append(items, ActionItem{
+			Urgency: urgency, AppSection: "Health Check",
+			Action: "Executar Health Check detalhado para investigar causa da falha",
+			Reason: fmt.Sprintf("Problem %s sem métricas suficientes para diagnóstico automático", problem.SeverityLevel),
+		})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		order := map[string]int{"IMEDIATA": 0, "ALTA": 1, "MONITORAR": 2}
+		return order[items[i].Urgency] < order[items[j].Urgency]
+	})
+
+	return items
+}
+
+// buildDynatracePrompt monta prompt com métricas ricas e instrui IA a sugerir ações corretivas
+func buildDynatracePrompt(problem *dtclient.Problem, mr *dtclient.ProblemMetricsResponse, entityEvents map[string][]dtclient.Event) string {
+	var sb strings.Builder
+
+	sb.WriteString("Você é um SRE sênior especialista em Kubernetes e observabilidade.\n")
+	sb.WriteString("Analise este incidente Dynatrace com base EXCLUSIVAMENTE nos dados abaixo.\n")
+	sb.WriteString("Seja técnico e direto. Cite valores numéricos reais das métricas.\n")
+	sb.WriteString("Não sugira comandos kubectl — sugira ações que a ferramenta HPA Manager pode executar\n")
+	sb.WriteString("(escalar HPA, reiniciar deployment, fazer rollback, ajustar limites de recursos).\n\n")
+
+	// ── Cabeçalho ─────────────────────────────────────────────────────────────
+	sb.WriteString("═══════════════════════════════════════\n")
+	sb.WriteString("INCIDENTE\n")
+	sb.WriteString("═══════════════════════════════════════\n")
+	sb.WriteString(fmt.Sprintf("ID: %s | Severidade: %s | Impacto: %s\n", problem.DisplayID, problem.SeverityLevel, problem.ImpactLevel))
+	sb.WriteString(fmt.Sprintf("Título: %s\n", problem.Title))
+	sb.WriteString(fmt.Sprintf("Início: %s", problem.StartTime.Format("2006-01-02 15:04:05 UTC")))
+	if problem.EndTime != nil {
+		dur := problem.EndTime.Sub(problem.StartTime).Round(time.Second)
+		sb.WriteString(fmt.Sprintf(" → Fim: %s (duração: %s)", problem.EndTime.Format("15:04:05 UTC"), dur))
+	} else {
+		sb.WriteString(" → 🔴 AINDA ABERTO")
+	}
+	sb.WriteString("\n")
+	if len(problem.ManagementZones) > 0 {
+		zones := make([]string, 0, len(problem.ManagementZones))
+		for _, mz := range problem.ManagementZones {
+			zones = append(zones, mz.Name)
+		}
+		sb.WriteString(fmt.Sprintf("Squads/Zones: %s\n", strings.Join(zones, ", ")))
+	}
+	if problem.RootCauseEntity != nil {
+		rc := problem.RootCauseEntity
+		name := rc.DisplayName
+		if name == "" {
+			name = rc.Name
+		}
+		sb.WriteString(fmt.Sprintf("Causa Raiz (Davis): %s [%s]\n", name, rc.EntityID.Type))
+		if rc.K8sWorkload != "" {
+			sb.WriteString(fmt.Sprintf("  → K8s: namespace=%s  workload=%s  cluster=%s\n",
+				rc.K8sNamespace, rc.K8sWorkload, rc.K8sCluster))
+		}
+	}
+
+	// ── Métricas por entidade (mesma coleta da aba Métricas) ──────────────────
+	sb.WriteString("\n═══════════════════════════════════════\n")
+	sb.WriteString("MÉTRICAS COLETADAS (aba Métricas do HPA Manager)\n")
+	sb.WriteString("═══════════════════════════════════════\n")
+
+	hasData := false
+	for _, ed := range mr.Entities {
+		if len(ed.Metrics) == 0 {
+			continue
+		}
+		hasData = true
+		prefix := ""
+		if ed.IsRootCause {
+			prefix = " ⭐ CAUSA RAIZ"
+		}
+		sb.WriteString(fmt.Sprintf("\n▸ %s [%s]%s\n", ed.EntityName, ed.EntityType, prefix))
+
+		// Encontrar stub da entidade para K8s info
+		for _, stub := range problem.AffectedEntities {
+			if stub.EntityID.ID == ed.EntityID && stub.K8sWorkload != "" {
+				sb.WriteString(fmt.Sprintf("  K8s: cluster=%s  namespace=%s  workload=%s\n",
+					stub.K8sCluster, stub.K8sNamespace, stub.K8sWorkload))
+				if stub.Labels != nil && stub.Labels.AppVersion != "" {
+					sb.WriteString(fmt.Sprintf("  Versão: %s", stub.Labels.AppVersion))
+					if stub.Labels.Stage != "" {
+						sb.WriteString(fmt.Sprintf("  Stage: %s", stub.Labels.Stage))
+					}
+					sb.WriteString("\n")
+				}
+				break
+			}
+		}
+
+		for _, m := range ed.Metrics {
+			min, avg, max, last, ok := pointStats(m.Points)
+			if !ok {
+				continue
+			}
+			sev := severityLabel(m.Key, max)
+			sb.WriteString(fmt.Sprintf("  %-28s min=%.2f avg=%.2f max=%.2f último=%.2f %s  [%s]\n",
+				m.Label+":", min, avg, max, last, m.Unit, sev))
+		}
+
+		// Eventos desta entidade
+		if evs, ok := entityEvents[ed.EntityID]; ok && len(evs) > 0 {
+			sb.WriteString(fmt.Sprintf("  Eventos (%d):\n", len(evs)))
+			for i, ev := range evs {
+				if i >= 8 {
+					break
+				}
+				sb.WriteString(fmt.Sprintf("    [%s] %s — %s\n",
+					ev.StartTime.Format("15:04:05"), ev.EventType, ev.Title))
+			}
+		}
+	}
+
+	if !hasData {
+		sb.WriteString("⚠️ Nenhuma métrica retornou dados na janela coletada.\n")
+		sb.WriteString("Possíveis causas: entidades sem instrumentação de serviço, problema já resolvido,\n")
+		sb.WriteString("ou agente DT não coletando nessa janela de tempo.\n")
+	}
+
+	// ── Instrução de análise ──────────────────────────────────────────────────
+	sb.WriteString("\n═══════════════════════════════════════\n")
+	sb.WriteString("ANÁLISE SOLICITADA\n")
+	sb.WriteString("═══════════════════════════════════════\n")
+	sb.WriteString("REGRAS:\n")
+	sb.WriteString("• Cite valores numéricos das métricas acima (ex: 'P95 de 8.4s', 'error_rate avg=34%')\n")
+	sb.WriteString("• NÃO invente dados — se a métrica não constar acima, diga explicitamente\n")
+	sb.WriteString("• As ações corretivas devem ser executáveis pela ferramenta HPA Manager:\n")
+	sb.WriteString("  - Escalar HPA (ajustar minReplicas/maxReplicas)\n")
+	sb.WriteString("  - Reiniciar Deployment (rollout restart)\n")
+	sb.WriteString("  - Fazer rollback para versão anterior\n")
+	sb.WriteString("  - Ajustar resource requests/limits do container\n")
+	sb.WriteString("  - Verificar/ajustar ConfigMap de configuração\n")
+	sb.WriteString("• NÃO sugira comandos kubectl para o usuário executar\n\n")
+
+	sb.WriteString("1. ORIGEM: Qual métrica específica comprova a causa raiz? Cite min/avg/max.\n")
+	sb.WriteString("   Classifique: falha de código (error_rate), gargalo (latência P90+), sobrecarga (throughput), infra K8s (pod_restarts, cpu_throttle).\n\n")
+
+	sb.WriteString("2. PROPAGAÇÃO: Como a falha se cascateou entre os serviços?\n")
+	sb.WriteString("   Use os timestamps dos eventos e os valores de latência/erro para traçar a sequência.\n\n")
+
+	sb.WriteString("3. ANÁLISE K8S: O que as métricas de pods/containers revelam?\n")
+	sb.WriteString("   Analise: restarts, pods_ready_pct, cpu_throttle, memória. Identifique se há pressão de recursos.\n\n")
+
+	sb.WriteString("4. DEPENDÊNCIAS EXTERNAS: Analise as métricas de chamadas downstream.\n")
+	sb.WriteString("   db_calls altos + db_latency alta → banco de dados. ext_calls altos → API externa. Cite os valores.\n\n")
+
+	sb.WriteString("5. AÇÕES CORRETIVAS: Liste ações que a ferramenta HPA Manager pode executar agora.\n")
+	sb.WriteString("   Para cada ação: qual workload, qual namespace, qual parâmetro alterar e por quê (baseado nos dados).\n")
+	sb.WriteString("   Separe: mitigação imediata (ex: escalar HPA) vs correção definitiva (ex: ajustar limites de memória).\n")
 
 	return sb.String()
 }

@@ -520,18 +520,24 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 	// Busca reversa K8s → DT: para workloads K8s com problema que não apareceram nos resultados DT
 	// (tags OneAgent ausentes/incorretas). Timeout: 10s para não atrasar o HC.
 	if req.CheckDynatrace && req.DynatraceURL != "" {
-		troubledWorkloads := extractTroubledWorkloads(result)
+		// Usa extractTroubledWorkloadInfos para ter namespace + nome (necessário para correlação)
+		troubledInfos := extractTroubledWorkloadInfos(result)
 		existingDTWorkloads := extractExistingDTWorkloads(result.DynatraceResults)
 		// Filtra apenas workloads que NÃO têm match DT ainda
-		var unmatched []string
-		for _, w := range troubledWorkloads {
-			if _, ok := existingDTWorkloads[w]; !ok {
-				unmatched = append(unmatched, w)
+		var unmatched []TroubledWorkloadInfo
+		for _, tw := range troubledInfos {
+			key := strings.ToLower(tw.Namespace) + "/" + strings.ToLower(tw.Name)
+			if _, ok := existingDTWorkloads[key]; !ok {
+				unmatched = append(unmatched, tw)
 			}
 		}
 		if len(unmatched) > 0 {
+			names := make([]string, len(unmatched))
+			for i, tw := range unmatched {
+				names[i] = tw.Name
+			}
 			log.Info().
-				Strs("unmatched_workloads", unmatched).
+				Strs("unmatched_workloads", names).
 				Str("cluster", cluster).
 				Msg("[Orchestrator] Iniciando busca reversa DT para workloads K8s sem match")
 
@@ -550,9 +556,9 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 		}
 	}
 
-	// OneAgent Signals: varredura por threshold em todas as entidades instrumentadas
+	// OneAgent Signals: scan híbrido (Fase 1: K8s troubled workloads → DT; Fase 2: varredura geral)
 	if req.CheckOneAgentSignals && req.DynatraceURL != "" {
-		o.publishProgress(sessionID, cluster, "oneagent", "Varrendo entidades OneAgent por threshold...", 88, StatusHealthy)
+		o.publishProgress(sessionID, cluster, "oneagent", "Coletando sinais OneAgent (K8s + DT)...", 88, StatusHealthy)
 
 		// Construir mapa de workloads já cobertos por DT problems (para marcar HasDTProblem)
 		existingDTWorkloads := make(map[string]struct{}, len(result.DynatraceResults))
@@ -562,16 +568,30 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 			}
 		}
 
+		// Fase 1: workloads K8s com problema sem match DT (candidates para enriquecimento)
+		allTroubled := extractTroubledWorkloadInfos(result)
+		var p1Workloads []TroubledWorkloadInfo
+		for _, tw := range allTroubled {
+			key := strings.ToLower(tw.Namespace) + "/" + strings.ToLower(tw.Name)
+			if _, covered := existingDTWorkloads[key]; !covered {
+				p1Workloads = append(p1Workloads, tw)
+			}
+		}
+
 		signals := o.oneAgentChecker.CheckAll(
 			ctx,
 			req.DynatraceURL, req.DynatraceToken,
 			cluster,
 			existingDTWorkloads,
+			p1Workloads,
 			o.nodePoolStore,
 			o.depRegistry,
 			req.OneAgentThresholds,
 			req.GetTimeoutOneAgent(),
 		)
+		if signals == nil {
+			signals = []OneAgentSignal{} // array vazio (não null) para o frontend distinguir "não executado" de "sem dados"
+		}
 		result.OneAgentSignals = signals
 
 		atRisk := 0
@@ -1184,6 +1204,62 @@ func detectEnvironment(clusterName string) string {
 // GetFilterManager retorna o gerenciador de filtros
 func (o *Orchestrator) GetFilterManager() *FilterManager {
 	return o.filterManager
+}
+
+// extractTroubledWorkloadInfos retorna workloads K8s com problema incluindo namespace e resumo de issues.
+// Usado como entrada para a Fase 1 do scan OneAgent.
+func extractTroubledWorkloadInfos(result *HealthCheckResult) []TroubledWorkloadInfo {
+	type key struct{ ns, name string }
+	seenIdx := make(map[key]int)
+	var infos []TroubledWorkloadInfo
+
+	add := func(ns, name, issue string, sev Severity) {
+		ns = strings.TrimSpace(ns)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		k := key{strings.ToLower(ns), strings.ToLower(name)}
+		if idx, ok := seenIdx[k]; ok {
+			infos[idx].Issues = append(infos[idx].Issues, issue)
+			if sev.Weight() > infos[idx].Severity.Weight() {
+				infos[idx].Severity = sev
+			}
+		} else {
+			seenIdx[k] = len(infos)
+			infos = append(infos, TroubledWorkloadInfo{
+				Name:      name,
+				Namespace: ns,
+				Issues:    []string{issue},
+				Severity:  sev,
+			})
+		}
+	}
+
+	for _, d := range result.DeploymentResults {
+		if d.Status != StatusHealthy {
+			sev := SeverityMedium
+			if d.Status == StatusCritical {
+				sev = SeverityCritical
+			}
+			add(d.Namespace, d.Name, d.Message, sev)
+		}
+	}
+	for _, h := range result.HPAResults {
+		if h.Status != StatusHealthy && h.TargetName != "" {
+			sev := SeverityMedium
+			if h.Status == StatusCritical {
+				sev = SeverityCritical
+			}
+			add(h.Namespace, h.TargetName, h.Message, sev)
+		}
+	}
+	for _, e := range result.EventResults {
+		if e.Status != StatusHealthy && e.InvolvedKind == "Deployment" {
+			add(e.Namespace, e.InvolvedName, e.Message, e.Severity)
+		}
+	}
+	return infos
 }
 
 // extractTroubledWorkloads retorna os nomes (sem namespace) dos workloads K8s com problema.

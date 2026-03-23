@@ -498,6 +498,8 @@ export interface DynatraceEntityStub {
   k8sNamespace?: string;
   k8sWorkload?: string;
   labels?: DTLabels;    // tags ricas do OneAgent (squad, journey, versão, GitHub, etc.)
+  callsTo?: { id: string; type: string }[];   // entidades downstream (esta chama)
+  calledBy?: { id: string; type: string }[];  // entidades upstream (chamam esta)
 }
 
 export interface DynatraceProblem {
@@ -688,27 +690,29 @@ export interface NodePoolSummary {
 
 // Sinal de risco detectado via OneAgent — sem precisar de um Problem DT ativo
 export interface OneAgentSignal {
-  entity_id: string;
-  entity_type: string;
+  entity_id?: string;
+  entity_type?: string;
   cluster: string;
   namespace: string;
   workload_name: string;
   app_version?: string;
   squad?: string;
 
-  // Métricas (máximo da última hora)
-  error_rate: number;       // %
-  response_p90_ms: number;  // ms
-  pod_restarts: number;     // count/hora
-  cpu_throttle_pct: number; // %
-  pods_ready_pct: number;   // % (0-100)
+  // Métricas (máximo da última hora; podem ser zero se não encontrado no DT)
+  error_rate?: number;       // %
+  response_p90_ms?: number;  // ms
+  pod_restarts?: number;     // count/hora
+  cpu_throttle_pct?: number; // %
+  pods_ready_pct?: number;   // % (0-100)
 
   // Avaliação de risco
   risk_level: Severity;
   risk_reasons: string[];
 
   // Flags
-  has_dt_problem: boolean;  // true = workload já coberto por Problem DT ativo
+  has_dt_problem: boolean;   // true = workload já coberto por Problem DT ativo
+  from_k8s_issue?: boolean;  // true = Fase 1 (detectado via K8s sem match DT)
+  k8s_issues?: string[];     // mensagens dos problemas K8s (Fase 1)
 
   // Correlação
   cluster_pools?: NodePoolSummary[];
