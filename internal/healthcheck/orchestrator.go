@@ -520,18 +520,24 @@ func (o *Orchestrator) executeClusterCheck(ctx context.Context, sessionID, clust
 	// Busca reversa K8s → DT: para workloads K8s com problema que não apareceram nos resultados DT
 	// (tags OneAgent ausentes/incorretas). Timeout: 10s para não atrasar o HC.
 	if req.CheckDynatrace && req.DynatraceURL != "" {
-		troubledWorkloads := extractTroubledWorkloads(result)
+		// Usa extractTroubledWorkloadInfos para ter namespace + nome (necessário para correlação)
+		troubledInfos := extractTroubledWorkloadInfos(result)
 		existingDTWorkloads := extractExistingDTWorkloads(result.DynatraceResults)
 		// Filtra apenas workloads que NÃO têm match DT ainda
-		var unmatched []string
-		for _, w := range troubledWorkloads {
-			if _, ok := existingDTWorkloads[w]; !ok {
-				unmatched = append(unmatched, w)
+		var unmatched []TroubledWorkloadInfo
+		for _, tw := range troubledInfos {
+			key := strings.ToLower(tw.Namespace) + "/" + strings.ToLower(tw.Name)
+			if _, ok := existingDTWorkloads[key]; !ok {
+				unmatched = append(unmatched, tw)
 			}
 		}
 		if len(unmatched) > 0 {
+			names := make([]string, len(unmatched))
+			for i, tw := range unmatched {
+				names[i] = tw.Name
+			}
 			log.Info().
-				Strs("unmatched_workloads", unmatched).
+				Strs("unmatched_workloads", names).
 				Str("cluster", cluster).
 				Msg("[Orchestrator] Iniciando busca reversa DT para workloads K8s sem match")
 
