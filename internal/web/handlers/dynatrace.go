@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -312,7 +313,10 @@ func (h *DynatraceHandler) AnalyzeProblem(c *gin.Context) {
 		}
 	}
 
-	// 5. Montar e sanitizar prompt
+	// 5. Gerar itens de ação determinísticos por threshold de métricas
+	actionItems := generateActionItems(problem, metricsResponse)
+
+	// 6. Montar e sanitizar prompt
 	prompt := buildDynatracePrompt(problem, metricsResponse, entityEvents)
 	prompt = h.sanitizer.SanitizeText(prompt)
 
@@ -370,11 +374,12 @@ func (h *DynatraceHandler) AnalyzeProblem(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"problem_id":  problemID,
-		"title":       problem.Title,
-		"severity":    problem.SeverityLevel,
-		"analysis":    analysis,
-		"analyzed_at": analyzedAt,
+		"problem_id":   problemID,
+		"title":        problem.Title,
+		"severity":     problem.SeverityLevel,
+		"analysis":     analysis,
+		"action_items": actionItems,
+		"analyzed_at":  analyzedAt,
 	})
 }
 
@@ -557,6 +562,163 @@ func severityLabel(key string, maxVal float64) string {
 		return "🟢 normal"
 	}
 	return ""
+}
+
+// ActionItem ação corretiva determinística gerada por threshold de métricas do Dynatrace.
+// Exibida antes da análise de IA para guiar o usuário nas seções corretas do HPA Manager.
+type ActionItem struct {
+	Urgency    string `json:"urgency"`     // "IMEDIATA" | "ALTA" | "MONITORAR"
+	AppSection string `json:"app_section"` // "HPA" | "Deployments" | "Resource Explorer" | "Health Check"
+	Workload   string `json:"workload,omitempty"`
+	Namespace  string `json:"namespace,omitempty"`
+	Cluster    string `json:"cluster,omitempty"`
+	Action     string `json:"action"`
+	Reason     string `json:"reason"`
+}
+
+// generateActionItems gera ações corretivas determinísticas baseadas em thresholds de métricas.
+// Não usa IA — lê os valores reais das métricas e decide qual seção do HPA Manager o usuário deve acessar.
+func generateActionItems(problem *dtclient.Problem, mr *dtclient.ProblemMetricsResponse) []ActionItem {
+	items := []ActionItem{}
+	seen := map[string]struct{}{}
+
+	add := func(item ActionItem) {
+		key := item.AppSection + "|" + item.Namespace + "/" + item.Workload + "|" + item.Urgency + "|" + item.Action
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
+			items = append(items, item)
+		}
+	}
+
+	for _, ed := range mr.Entities {
+		if len(ed.Metrics) == 0 {
+			continue
+		}
+		// Busca contexto K8s da entidade nas stubs do problem
+		var ns, workload, cluster string
+		for _, stub := range problem.AffectedEntities {
+			if stub.EntityID.ID == ed.EntityID {
+				ns, workload, cluster = stub.K8sNamespace, stub.K8sWorkload, stub.K8sCluster
+				if workload == "" && stub.Labels != nil {
+					workload = stub.Labels.AppName
+				}
+				if ns == "" && stub.Labels != nil {
+					ns = stub.Labels.Namespace
+				}
+				break
+			}
+		}
+
+		for _, m := range ed.Metrics {
+			mn, avg, mx, _, ok := pointStats(m.Points)
+			if !ok {
+				continue
+			}
+
+			switch m.Key {
+			case "error_rate":
+				if mx > 20 {
+					add(ActionItem{
+						Urgency: "IMEDIATA", AppSection: "Deployments",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Verificar crash loops e considerar rollback para versão anterior",
+						Reason: fmt.Sprintf("Taxa de erro crítica: máx=%.1f%% avg=%.1f%%", mx, avg),
+					})
+				} else if mx > 5 {
+					add(ActionItem{
+						Urgency: "ALTA", AppSection: "Deployments",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Verificar logs dos pods para identificar causa dos erros",
+						Reason: fmt.Sprintf("Taxa de erro elevada: máx=%.1f%% avg=%.1f%%", mx, avg),
+					})
+				}
+			case "response_p95":
+				if mx > 5000 {
+					add(ActionItem{
+						Urgency: "IMEDIATA", AppSection: "HPA",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Aumentar maxReplicas — latência P95 indica sobrecarga",
+						Reason: fmt.Sprintf("Latência P95 crítica: máx=%.0fms avg=%.0fms", mx, avg),
+					})
+				} else if mx > 1000 {
+					add(ActionItem{
+						Urgency: "ALTA", AppSection: "HPA",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Revisar minReplicas do HPA — latência elevada",
+						Reason: fmt.Sprintf("Latência P95 alta: máx=%.0fms avg=%.0fms", mx, avg),
+					})
+				}
+			case "pod_restarts":
+				if mx > 5 {
+					add(ActionItem{
+						Urgency: "IMEDIATA", AppSection: "Resource Explorer",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Aumentar memory limit do container — provável OOMKill",
+						Reason: fmt.Sprintf("Pods reiniciando: máx=%.0f avg=%.1f restarts", mx, avg),
+					})
+				} else if mx > 1 {
+					add(ActionItem{
+						Urgency: "ALTA", AppSection: "Deployments",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Verificar logs de crash — possível OOMKill ou falha na inicialização",
+						Reason: fmt.Sprintf("Pods com restarts: máx=%.0f avg=%.1f", mx, avg),
+					})
+				}
+			case "pods_ready_pct":
+				if mn < 80 {
+					add(ActionItem{
+						Urgency: "IMEDIATA", AppSection: "HPA",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Escalar HPA — pods insuficientes servindo tráfego",
+						Reason: fmt.Sprintf("Mínimo de %.0f%% pods prontos (saudável: ≥95%%)", mn),
+					})
+				} else if mn < 95 {
+					add(ActionItem{
+						Urgency: "ALTA", AppSection: "Deployments",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Verificar saúde dos pods — alguns não respondem ao readiness probe",
+						Reason: fmt.Sprintf("Mínimo de %.0f%% pods prontos (ideal: 100%%)", mn),
+					})
+				}
+			case "cpu_throttle":
+				if mx > 500 {
+					add(ActionItem{
+						Urgency: "IMEDIATA", AppSection: "Resource Explorer",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Aumentar CPU limit/request — throttling severo está causando lentidão",
+						Reason: fmt.Sprintf("CPU throttling crítico: máx=%.0f%% avg=%.0f%%", mx, avg),
+					})
+				} else if mx > 100 {
+					add(ActionItem{
+						Urgency: "ALTA", AppSection: "Resource Explorer",
+						Workload: workload, Namespace: ns, Cluster: cluster,
+						Action: "Revisar CPU requests — container subdimensionado",
+						Reason: fmt.Sprintf("CPU throttling elevado: máx=%.0f%% avg=%.0f%%", mx, avg),
+					})
+				}
+			}
+		}
+	}
+
+	// Fallback: sem métricas suficientes para diagnóstico específico
+	if len(items) == 0 {
+		urgency := "ALTA"
+		if problem.SeverityLevel == "AVAILABILITY" {
+			urgency = "IMEDIATA"
+		}
+		items = append(items, ActionItem{
+			Urgency: urgency, AppSection: "Health Check",
+			Action: "Executar Health Check detalhado para investigar causa da falha",
+			Reason: fmt.Sprintf("Problem %s sem métricas suficientes para diagnóstico automático", problem.SeverityLevel),
+		})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		order := map[string]int{"IMEDIATA": 0, "ALTA": 1, "MONITORAR": 2}
+		return order[items[i].Urgency] < order[items[j].Urgency]
+	})
+
+	return items
 }
 
 // buildDynatracePrompt monta prompt com métricas ricas e instrui IA a sugerir ações corretivas

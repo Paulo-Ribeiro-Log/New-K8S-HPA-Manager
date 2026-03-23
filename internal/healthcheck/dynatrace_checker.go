@@ -617,30 +617,50 @@ func (c *DynatraceChecker) SearchProblemsForWorkloads(
 	return newResults
 }
 
-// buildDTSuggestions gera sugestões baseadas no tipo de problem
+// buildDTSuggestions gera sugestões de navegação no HPA Manager baseadas no tipo de problem.
+// Cada sugestão indica qual aba/seção acessar e qual ação executar — sem comandos kubectl.
 func buildDTSuggestions(dtSeverity string, workloads []string) []string {
 	suggestions := []string{}
 
+	// Extrair namespace e workload do primeiro item para sugestões contextuais
+	firstNS, firstWL := "", ""
 	if len(workloads) > 0 {
-		suggestions = append(suggestions, fmt.Sprintf("Verifique os workloads K8s afetados: %s", strings.Join(workloads, ", ")))
+		parts := strings.SplitN(workloads[0], "/", 2)
+		if len(parts) == 2 {
+			firstNS, firstWL = parts[0], parts[1]
+		} else {
+			firstWL = workloads[0]
+		}
+	}
+
+	// Formata referência contextual se namespace conhecido
+	ref := func(section string) string {
+		if firstNS != "" && firstWL != "" {
+			return fmt.Sprintf("Aba %s → namespace %q → workload %q", section, firstNS, firstWL)
+		} else if firstWL != "" {
+			return fmt.Sprintf("Aba %s → workload %q", section, firstWL)
+		}
+		return fmt.Sprintf("Aba %s", section)
 	}
 
 	switch dtSeverity {
 	case "AVAILABILITY":
-		suggestions = append(suggestions, "Verifique o status dos pods: kubectl get pods -n <namespace>")
-		suggestions = append(suggestions, "Verifique os logs dos containers com falha: kubectl logs -n <namespace> <pod>")
+		suggestions = append(suggestions, ref("Deployments")+" → verificar pods em CrashLoop ou Pending")
+		suggestions = append(suggestions, ref("HPA")+" → verificar réplicas e escalar se necessário")
 	case "ERROR":
-		suggestions = append(suggestions, "Analise os logs de erro: kubectl logs -n <namespace> <pod> --tail=100")
-		suggestions = append(suggestions, "Verifique eventos recentes: kubectl get events -n <namespace> --sort-by='.lastTimestamp'")
+		suggestions = append(suggestions, ref("Deployments")+" → verificar logs e considerar rollback")
+		suggestions = append(suggestions, ref("Health Check")+" → executar verificação detalhada de eventos recentes")
 	case "PERFORMANCE":
-		suggestions = append(suggestions, "Verifique uso de recursos: kubectl top pods -n <namespace>")
-		suggestions = append(suggestions, "Considere ajustar limits/requests ou escalar o HPA")
+		suggestions = append(suggestions, ref("HPA")+" → aumentar maxReplicas para absorver carga")
+		suggestions = append(suggestions, ref("Resource Explorer")+" → revisar CPU/memory limits do container")
 	case "RESOURCE_CONTENTION":
-		suggestions = append(suggestions, "Verifique uso de CPU/memória: kubectl top pods -n <namespace>")
-		suggestions = append(suggestions, "Verifique se o HPA está no limite máximo de réplicas")
+		suggestions = append(suggestions, ref("Resource Explorer")+" → aumentar CPU/memory requests e limits")
+		suggestions = append(suggestions, ref("HPA")+" → verificar se está no limite de réplicas configurado")
+	default:
+		suggestions = append(suggestions, ref("Health Check")+" → executar verificação detalhada")
 	}
 
-	suggestions = append(suggestions, "Use 'Analisar com AI' na aba Dynatrace para diagnóstico completo")
+	suggestions = append(suggestions, "Aba Dynatrace → 'Analisar com IA' para diagnóstico completo com métricas")
 
 	return suggestions
 }

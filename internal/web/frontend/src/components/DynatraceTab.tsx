@@ -1736,6 +1736,74 @@ function DiagProblemContext({ problem }: { problem: DynatraceProblem }) {
 interface AIParsedSection { key: string; heading: string; content: string; }
 interface AIParseResult { intro: string; sections: AIParsedSection[]; }
 
+interface ActionItem {
+  urgency: string;      // "IMEDIATA" | "ALTA" | "MONITORAR"
+  app_section: string;  // "HPA" | "Deployments" | "Resource Explorer" | "Health Check"
+  workload?: string;
+  namespace?: string;
+  cluster?: string;
+  action: string;
+  reason: string;
+}
+
+function ActionPlanCard({ items }: { items: ActionItem[] }) {
+  if (!items || items.length === 0) return null;
+
+  const urgencyMeta: Record<string, { color: string; bg: string; border: string; dot: string }> = {
+    IMEDIATA: { color: "text-red-700 dark:text-red-300",    bg: "bg-red-50 dark:bg-red-950/30",    border: "border-red-200 dark:border-red-800",    dot: "bg-red-500" },
+    ALTA:     { color: "text-orange-700 dark:text-orange-300", bg: "bg-orange-50 dark:bg-orange-950/30", border: "border-orange-200 dark:border-orange-800", dot: "bg-orange-500" },
+    MONITORAR:{ color: "text-blue-700 dark:text-blue-300",   bg: "bg-blue-50 dark:bg-blue-950/30",   border: "border-blue-200 dark:border-blue-800",   dot: "bg-blue-500" },
+  };
+
+  return (
+    <Card className="border-amber-200 dark:border-amber-800 bg-amber-50/30 dark:bg-amber-950/10">
+      <CardHeader className="pb-2 pt-3 px-4">
+        <div className="flex items-center gap-2">
+          <ListChecks className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <span className="text-sm font-semibold text-amber-800 dark:text-amber-300">Plano de Ação</span>
+          <Badge variant="outline" className="text-[10px] text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700 ml-auto">
+            {items.length} {items.length === 1 ? "ação" : "ações"}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="px-4 pb-4 space-y-2">
+        {items.map((item, i) => {
+          const meta = urgencyMeta[item.urgency] ?? urgencyMeta["ALTA"];
+          return (
+            <div key={i} className={`rounded-md border px-3 py-2 space-y-1.5 ${meta.bg} ${meta.border}`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 mt-0.5 ${meta.dot}`} />
+                  <span className={`text-xs font-semibold ${meta.color}`}>{item.action}</span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <Badge variant="outline" className={`text-[9px] px-1 py-0 ${meta.color} border-current`}>
+                    {item.urgency}
+                  </Badge>
+                  <Badge variant="secondary" className="text-[9px] px-1 py-0">
+                    {item.app_section}
+                  </Badge>
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground pl-3.5">{item.reason}</p>
+              {(item.namespace || item.workload) && (
+                <div className="flex items-center gap-1 pl-3.5 flex-wrap">
+                  {item.namespace && (
+                    <span className="text-[10px] bg-muted/60 px-1.5 py-0.5 rounded font-mono">{item.namespace}</span>
+                  )}
+                  {item.workload && (
+                    <span className="text-[10px] bg-muted/60 px-1.5 py-0.5 rounded font-mono">{item.workload}</span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
+  );
+}
+
 const AI_SECTION_PATTERNS: { key: string; re: RegExp }[] = [
   { key: "origem",      re: /\n((?:\*\*)?1\.\s+ORIGEM[^\n]*)/i },
   { key: "propagacao",  re: /\n((?:\*\*)?2\.\s+PROPAGA[ÇC][ÃA]O[^\n]*)/i },
@@ -1771,7 +1839,7 @@ const SECTION_META: Record<string, SectionMeta> = {
   proximos:    { Icon: ListChecks, color: "text-green-400",  border: "border-green-500/30",  bg: "bg-green-500/5",  label: "Ações Corretivas" },
 };
 
-function AIAnalysisResult({ text, problem }: { text: string; problem: DynatraceProblem }) {
+function AIAnalysisResult({ text, problem, actionItems }: { text: string; problem: DynatraceProblem; actionItems?: ActionItem[] }) {
   const { intro, sections } = parseAISections(text);
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(AI_SECTION_PATTERNS.map(p => [p.key, true]))
@@ -1781,27 +1849,33 @@ function AIAnalysisResult({ text, problem }: { text: string; problem: DynatraceP
   // Fallback: sem seções parseadas — renderiza como AIAnalysisCard faz
   if (sections.length === 0) {
     return (
-      <Card>
-        <CardHeader className="pb-2">
-          <div className="flex items-center gap-2">
-            <Bot className="h-4 w-4 text-violet-400" />
-            <span className="text-sm font-semibold">Análise IA</span>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {hasVRP && <VRPEmbed problem={problem} />}
-          <ScrollArea className="h-[400px] w-full rounded border p-4 bg-muted/50">
-            <div className="prose prose-sm dark:prose-invert max-w-none">
-              <ReactMarkdown>{text}</ReactMarkdown>
+      <div className="space-y-3">
+        <ActionPlanCard items={actionItems ?? []} />
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center gap-2">
+              <Bot className="h-4 w-4 text-violet-400" />
+              <span className="text-sm font-semibold">Análise IA</span>
             </div>
-          </ScrollArea>
-        </CardContent>
-      </Card>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {hasVRP && <VRPEmbed problem={problem} />}
+            <ScrollArea className="h-[400px] w-full rounded border p-4 bg-muted/50">
+              <div className="prose prose-sm dark:prose-invert max-w-none">
+                <ReactMarkdown>{text}</ReactMarkdown>
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
   return (
     <div className="space-y-3">
+      {/* Plano de ação determinístico — mostrado ANTES da análise textual da IA */}
+      <ActionPlanCard items={actionItems ?? []} />
+
       {/* Sumário introdutório do modelo */}
       {intro && (
         <Card className="border-border/50 bg-muted/10">
@@ -1885,12 +1959,14 @@ function DiagnosticTab({
   onAnalyze,
   analyzing,
   analysisResult,
+  actionItems,
 }: {
   problem: DynatraceProblem;
   uiBaseUrl?: string;
   onAnalyze: () => void;
   analyzing: boolean;
   analysisResult: string;
+  actionItems?: ActionItem[];
 }) {
   return (
     <div className="space-y-4">
@@ -1931,7 +2007,7 @@ function DiagnosticTab({
       )}
 
       {analysisResult && !analyzing && (
-        <AIAnalysisResult text={analysisResult} problem={problem} />
+        <AIAnalysisResult text={analysisResult} problem={problem} actionItems={actionItems} />
       )}
     </div>
   );
@@ -1946,6 +2022,7 @@ function ProblemDetailPanel({
   onAnalyze,
   analyzing,
   analysisResult,
+  actionItems,
 }: {
   problem: DynatraceProblem;
   aiEmail: string;
@@ -1953,6 +2030,7 @@ function ProblemDetailPanel({
   onAnalyze: () => void;
   analyzing: boolean;
   analysisResult: string;
+  actionItems?: ActionItem[];
 }) {
   const hasWorkloads = (problem.k8sWorkloads ?? []).some(w => w.AppName);
   const [metricsRightWidth, setMetricsRightWidth] = useState(380);
@@ -2012,6 +2090,7 @@ function ProblemDetailPanel({
           onAnalyze={onAnalyze}
           analyzing={analyzing}
           analysisResult={analysisResult}
+          actionItems={actionItems}
         />
       </TabsContent>
     </Tabs>
@@ -2030,6 +2109,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
 
   const [selectedProblem, setSelectedProblem] = useState<DynatraceProblem | null>(null);
   const [analysisResult, setAnalysisResult] = useState<string>("");
+  const [actionItems, setActionItems] = useState<ActionItem[]>([]);
   const [analyzingId, setAnalyzingId] = useState<string | null>(null);
 
   // Filtro por management zone / tag (na própria aba)
@@ -2093,9 +2173,11 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
     onMutate: (p) => {
       setAnalyzingId(p.problemId);
       setAnalysisResult("");
+      setActionItems([]);
     },
     onSuccess: (result) => {
       setAnalysisResult(result.analysis);
+      setActionItems(result.action_items ?? []);
       setAnalyzingId(null);
     },
     onError: (err: any) => {
@@ -2240,6 +2322,7 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
         uiBaseUrl={uiBaseUrl}
         analyzing={analyzingId === selectedProblem.problemId}
         analysisResult={analysisResult}
+        actionItems={actionItems}
         onAnalyze={() => analyzeMutation.mutate(selectedProblem)}
       />
     </div>
