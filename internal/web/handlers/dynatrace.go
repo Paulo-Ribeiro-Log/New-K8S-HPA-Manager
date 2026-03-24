@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	dtclient "k8s-hpa-manager/internal/dynatrace"
+	"k8s-hpa-manager/internal/healthcheck"
 	"k8s-hpa-manager/internal/sanitizer"
 	"k8s-hpa-manager/internal/storage"
 
@@ -21,20 +23,36 @@ import (
 
 // DynatraceHandler gerencia integração com Dynatrace para análise de problemas
 type DynatraceHandler struct {
-	tokensStore  *storage.UserTokensStore
-	historyStore *storage.AIHistoryStore
-	aiHandler    *AIDiagnosticsHandler
-	sanitizer    *sanitizer.Sanitizer
+	tokensStore   *storage.UserTokensStore
+	historyStore  *storage.AIHistoryStore
+	aiHandler     *AIDiagnosticsHandler
+	sanitizer     *sanitizer.Sanitizer
+	nodePoolStore *storage.NodePoolRegistryStore
+	orchestrator  *healthcheck.Orchestrator
+	depRegistry   *storage.DependencyRegistry
 }
 
 // NewDynatraceHandler cria o handler
-func NewDynatraceHandler(tokensStore *storage.UserTokensStore, historyStore *storage.AIHistoryStore, aiHandler *AIDiagnosticsHandler) *DynatraceHandler {
+func NewDynatraceHandler(
+	tokensStore *storage.UserTokensStore,
+	historyStore *storage.AIHistoryStore,
+	aiHandler *AIDiagnosticsHandler,
+	nodePoolStore *storage.NodePoolRegistryStore,
+) *DynatraceHandler {
 	return &DynatraceHandler{
-		tokensStore:  tokensStore,
-		historyStore: historyStore,
-		aiHandler:    aiHandler,
-		sanitizer:    sanitizer.New(),
+		tokensStore:   tokensStore,
+		historyStore:  historyStore,
+		aiHandler:     aiHandler,
+		sanitizer:     sanitizer.New(),
+		nodePoolStore: nodePoolStore,
 	}
+}
+
+// SetInvestigateStores injeta orchestrator e dependency registry para investigação profunda.
+// Chamado pelo server após criar os componentes de health check (que dependem de setup posterior).
+func (h *DynatraceHandler) SetInvestigateStores(orchestrator *healthcheck.Orchestrator, depRegistry *storage.DependencyRegistry) {
+	h.orchestrator = orchestrator
+	h.depRegistry = depRegistry
 }
 
 // clientForUser cria um cliente Dynatrace para o usuário.
@@ -113,6 +131,32 @@ func (h *DynatraceHandler) TestConnection(c *gin.Context) {
 	})
 }
 
+// ─── GET /api/v1/dynatrace/management-zones ───────────────────────────────────
+
+// GetManagementZones retorna as management zones (alert profiles) disponíveis no ambiente DT.
+func (h *DynatraceHandler) GetManagementZones(c *gin.Context) {
+	aiEmail := c.Query("ai_email")
+
+	client, err := h.clientForUser(aiEmail)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"zones": []interface{}{}})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	zones, err := client.GetManagementZones(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("Dynatrace: falha ao buscar management zones")
+		c.JSON(http.StatusOK, gin.H{"zones": []interface{}{}, "error": err.Error()})
+		return
+	}
+
+	log.Info().Int("count", len(zones)).Msg("Dynatrace: management zones carregadas")
+	c.JSON(http.StatusOK, gin.H{"zones": zones})
+}
+
 // ─── GET /api/v1/dynatrace/problems ───────────────────────────────────────────
 
 // ListProblems retorna problems OPEN com correlação K8s extraída do OneAgent
@@ -132,12 +176,17 @@ func (h *DynatraceHandler) ListProblems(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
-	// Filtro apenas quando o usuário passa explicitamente via query param na UI
+	// Filtro por management zone ou tag (prefixo "tag:valor")
 	tagFilter := c.Query("filter")
 	// status: "OPEN" (padrão), "CLOSED" ou "ALL"
 	statusFilter := c.Query("status")
+	// Intervalo de tempo para busca histórica.
+	// Aceita: valores relativos ("now-7d", "now-24h"), ISO 8601 completo, ou datas "YYYY-MM-DD"
+	// (que são convertidas para ISO 8601 completo pois a API DT rejeita datas sem hora).
+	fromTime := normalizeDTTime(c.Query("from"), false)
+	toTime := normalizeDTTime(c.Query("to"), true)
 
-	result, err := client.GetOpenProblems(ctx, tagFilter, statusFilter)
+	result, err := client.GetOpenProblems(ctx, tagFilter, statusFilter, fromTime, toTime)
 	if err != nil {
 		log.Error().Err(err).Str("ai_email", aiEmail).Msg("Dynatrace: falha ao buscar problems")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -496,6 +545,446 @@ func (h *DynatraceHandler) GetHistory(c *gin.Context) {
 		"records": records,
 		"total":   len(records),
 	})
+}
+
+// ─── POST /api/v1/dynatrace/problems/:problemId/investigate ───────────────────
+
+// InvestigationReport é o resultado estruturado de uma investigação profunda.
+type InvestigationReport struct {
+	ProblemID   string `json:"problem_id"`
+	ProblemTitle string `json:"problem_title"`
+
+	// Entidades identificadas no alerta DT
+	RootCauseEntityName string `json:"root_cause_entity_name,omitempty"`
+	RootCauseEntityType string `json:"root_cause_entity_type,omitempty"`
+
+	// Cluster identificado via Node Pool Registry (de entidades HOST)
+	IdentifiedCluster string `json:"identified_cluster,omitempty"`
+	IdentifiedNodePool string `json:"identified_node_pool,omitempty"`
+
+	// Namespace e workload identificados (via K8s tags do PROCESS_GROUP/rootCause)
+	IdentifiedNamespace string `json:"identified_namespace,omitempty"`
+	IdentifiedWorkload  string `json:"identified_workload,omitempty"`
+
+	// Métricas DT coletadas para o problem (serviços, hosts, workloads K8s)
+	DTMetrics *dtclient.ProblemMetricsResponse `json:"dt_metrics,omitempty"`
+
+	// Health check K8s direcionado (nil se cluster/namespace não identificados)
+	HealthCheckResult *healthcheck.HealthCheckResult `json:"health_check_result,omitempty"`
+	HealthCheckError  string `json:"health_check_error,omitempty"`
+
+	// Dependências do workload (nil se não encontrado)
+	Dependencies []storage.DependencyRecord `json:"dependencies,omitempty"`
+
+	// Análise AI combinando DT + K8s + dependências
+	AIAnalysis string `json:"ai_analysis,omitempty"`
+	AIError    string `json:"ai_error,omitempty"`
+
+	InvestigatedAt time.Time `json:"investigated_at"`
+}
+
+// reDTHostEntity extrai o nome do node pool de entity names do padrão "aks-<pool>-XXXXXXXX-vmssXXXXX"
+var reDTHostEntity = regexp.MustCompile(`^aks-([a-z0-9]+)-[0-9a-f]+-vmss`)
+
+// InvestigateProblem executa investigação profunda de um problem DT.
+// Usa Node Pool Registry, Health Check Orchestrator e Dependency Registry para
+// produzir análise causa→efeito→correção contextualizada no ambiente K8s.
+func (h *DynatraceHandler) InvestigateProblem(c *gin.Context) {
+	problemID := c.Param("problemId")
+
+	var req struct {
+		AIEmail string `json:"ai_email"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.AIEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ai_email é obrigatório"})
+		return
+	}
+
+	dtClient, err := h.clientForUser(req.AIEmail)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Timeout alto: busca DT + health check K8s em série
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Minute)
+	defer cancel()
+
+	// 1. Buscar problem e enriquecer todas as entidades
+	problem, err := dtClient.GetProblem(ctx, problemID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao buscar problem: " + err.Error()})
+		return
+	}
+	problem.AffectedEntities = dtClient.EnrichEntitiesWithK8s(ctx, problem.AffectedEntities)
+	problem.ImpactedEntities = dtClient.EnrichEntitiesWithK8s(ctx, problem.ImpactedEntities)
+	if problem.RootCauseEntity != nil {
+		enriched := dtClient.EnrichStub(ctx, *problem.RootCauseEntity)
+		problem.RootCauseEntity = &enriched
+	}
+
+	// 2a. Coletar métricas DT (em paralelo, sem bloquear o fluxo principal)
+	// Reutiliza a mesma coleta rica da aba "Métricas": P50/P90/P95/P99, error_rate, throughput,
+	// DB calls, pods_ready_pct, pod_restarts, cpu_throttle, memory
+	dtMetrics := dtClient.GetEntityMetricsForProblem(ctx, problem)
+
+	report := &InvestigationReport{
+		ProblemID:    problemID,
+		ProblemTitle: problem.Title,
+		DTMetrics:    dtMetrics,
+		InvestigatedAt: time.Now(),
+	}
+
+	// 2. Extrair namespace/workload da rootCauseEntity (PROCESS_GROUP com K8s tags injetadas pelo OneAgent)
+	if rc := problem.RootCauseEntity; rc != nil {
+		report.RootCauseEntityName = rc.Name
+		report.RootCauseEntityType = rc.EntityID.Type
+		if rc.K8sNamespace != "" {
+			report.IdentifiedNamespace = rc.K8sNamespace
+		}
+		if rc.K8sWorkload != "" {
+			report.IdentifiedWorkload = rc.K8sWorkload
+		}
+		// Fallback para Labels (OneAgent pode expor via labels em vez de campos diretos)
+		if rc.Labels != nil {
+			if report.IdentifiedNamespace == "" {
+				report.IdentifiedNamespace = rc.Labels.Namespace
+			}
+			if report.IdentifiedWorkload == "" {
+				report.IdentifiedWorkload = rc.Labels.AppName
+			}
+		}
+	}
+
+	// 3. Identificar cluster via HOST entities → Node Pool Registry
+	if h.nodePoolStore != nil {
+		allEntities := append(problem.AffectedEntities, problem.ImpactedEntities...)
+		for _, e := range allEntities {
+			if e.EntityID.Type != "HOST" {
+				continue
+			}
+			// Formato DT: "aks-<nodepool>-XXXXXXXX-vmssXXXXX"
+			m := reDTHostEntity.FindStringSubmatch(strings.ToLower(e.Name))
+			if len(m) < 2 {
+				continue
+			}
+			poolName := m[1]
+			entries, lookupErr := h.nodePoolStore.LookupByNodePool(poolName)
+			if lookupErr != nil || len(entries) == 0 {
+				log.Debug().Str("pool", poolName).Msg("InvestigateProblem: pool não encontrado no registry")
+				continue
+			}
+			report.IdentifiedCluster = entries[0].Cluster
+			report.IdentifiedNodePool = entries[0].NodePool
+			log.Info().
+				Str("host_entity", e.Name).
+				Str("pool", poolName).
+				Str("cluster", report.IdentifiedCluster).
+				Msg("InvestigateProblem: cluster identificado via Node Pool Registry")
+			break
+		}
+	}
+
+	// 4. Health Check K8s direcionado (apenas se cluster identificado)
+	if report.IdentifiedCluster != "" && h.orchestrator != nil {
+		hcReq := healthcheck.HealthCheckRequest{
+			Clusters:         []string{report.IdentifiedCluster},
+			CheckDeployments: true,
+			CheckEvents:      true,
+			CheckHPAs:        true,
+			Timeout:          60,
+			ApplyFilters:     true,
+		}
+		if report.IdentifiedNamespace != "" {
+			hcReq.Namespaces = []string{report.IdentifiedNamespace}
+		}
+
+		sessionID := "dt-investigate-" + uuid.New().String()[:8]
+		hcCtx, hcCancel := context.WithTimeout(ctx, 90*time.Second)
+		defer hcCancel()
+
+		results, hcErr := h.orchestrator.ExecuteHealthCheck(hcCtx, sessionID, hcReq)
+		if hcErr != nil {
+			report.HealthCheckError = hcErr.Error()
+			log.Warn().Err(hcErr).Str("cluster", report.IdentifiedCluster).Msg("InvestigateProblem: health check falhou")
+		} else if len(results) > 0 {
+			report.HealthCheckResult = results[0]
+		}
+	}
+
+	// 5. Buscar dependências do workload
+	if h.depRegistry != nil && report.IdentifiedNamespace != "" {
+		deps, depErr := h.depRegistry.GetAll(report.IdentifiedCluster, report.IdentifiedNamespace, "")
+		if depErr == nil {
+			report.Dependencies = deps
+		}
+	}
+
+	// 6. Análise AI se provider disponível
+	if h.aiHandler != nil {
+		provider, provErr := h.aiHandler.GetProviderForUser(req.AIEmail)
+		if provErr != nil {
+			report.AIError = provErr.Error()
+		} else {
+			prompt := buildInvestigationPrompt(problem, report)
+			prompt = h.sanitizer.SanitizeText(prompt)
+			aiCtx, aiCancel := context.WithTimeout(ctx, 90*time.Second)
+			defer aiCancel()
+			analysis, aiErr := provider.Analyze(aiCtx, prompt)
+			if aiErr != nil {
+				report.AIError = aiErr.Error()
+			} else {
+				report.AIAnalysis = analysis
+			}
+		}
+	}
+
+	log.Info().
+		Str("problem_id", problemID).
+		Str("cluster", report.IdentifiedCluster).
+		Str("namespace", report.IdentifiedNamespace).
+		Str("workload", report.IdentifiedWorkload).
+		Msg("InvestigateProblem: investigação concluída")
+
+	c.JSON(http.StatusOK, report)
+}
+
+// buildInvestigationPrompt monta prompt contextualizado para análise AI de investigação profunda.
+// Inclui: métricas DT (serviços/hosts/workloads K8s), Health Check K8s com recursos de container,
+// e dependências externas — para análise causa→efeito→correção sem lacunas de dados.
+func buildInvestigationPrompt(problem *dtclient.Problem, report *InvestigationReport) string {
+	var sb strings.Builder
+
+	sb.WriteString("Você é um SRE sênior especialista em Kubernetes e observabilidade.\n")
+	sb.WriteString("Analise este incidente com base EXCLUSIVAMENTE nos dados abaixo.\n")
+	sb.WriteString("Cite valores numéricos reais. Se uma métrica não constar, diga explicitamente 'Dados Faltantes'.\n")
+	sb.WriteString("NÃO sugira comandos kubectl — use apenas ações do HPA Manager:\n")
+	sb.WriteString("(escalar HPA, reiniciar/rollback deployment, ajustar requests/limits, ajustar ConfigMap)\n\n")
+
+	// ── Cabeçalho do incidente ────────────────────────────────────────────────
+	sb.WriteString("═══════════════════════════════════════\n")
+	sb.WriteString("INCIDENTE DYNATRACE\n")
+	sb.WriteString("═══════════════════════════════════════\n")
+	sb.WriteString(fmt.Sprintf("ID: %s | Severidade: %s | Impacto: %s | Status: %s\n",
+		problem.DisplayID, problem.SeverityLevel, problem.ImpactLevel, problem.Status))
+	sb.WriteString(fmt.Sprintf("Título: %s\n", problem.Title))
+	sb.WriteString(fmt.Sprintf("Início: %s", problem.StartTime.Format("2006-01-02 15:04:05 UTC")))
+	if problem.EndTime != nil {
+		dur := problem.EndTime.Sub(problem.StartTime).Round(time.Second)
+		sb.WriteString(fmt.Sprintf(" → Fim: %s (duração: %s)", problem.EndTime.Format("15:04:05 UTC"), dur))
+	} else {
+		sb.WriteString(" → AINDA ABERTO")
+	}
+	sb.WriteString("\n")
+	if len(problem.ManagementZones) > 0 {
+		zones := make([]string, 0, len(problem.ManagementZones))
+		for _, mz := range problem.ManagementZones {
+			zones = append(zones, mz.Name)
+		}
+		sb.WriteString(fmt.Sprintf("Squads/Zones: %s\n", strings.Join(zones, ", ")))
+	}
+	if report.RootCauseEntityName != "" {
+		sb.WriteString(fmt.Sprintf("Causa Raiz (Davis): %s [%s]\n", report.RootCauseEntityName, report.RootCauseEntityType))
+	}
+	if report.IdentifiedCluster != "" {
+		sb.WriteString(fmt.Sprintf("Cluster K8s: %s (node pool: %s)\n", report.IdentifiedCluster, report.IdentifiedNodePool))
+	}
+	if report.IdentifiedNamespace != "" {
+		sb.WriteString(fmt.Sprintf("Namespace: %s  Workload: %s\n", report.IdentifiedNamespace, report.IdentifiedWorkload))
+	}
+
+	// ── Métricas Dynatrace (serviço/host/K8s workload) ────────────────────────
+	sb.WriteString("\n═══════════════════════════════════════\n")
+	sb.WriteString("MÉTRICAS DYNATRACE\n")
+	sb.WriteString("═══════════════════════════════════════\n")
+
+	if report.DTMetrics != nil && len(report.DTMetrics.Entities) > 0 {
+		hasMetricData := false
+		for _, ed := range report.DTMetrics.Entities {
+			if len(ed.Metrics) == 0 {
+				continue
+			}
+			hasMetricData = true
+			rootMark := ""
+			if ed.IsRootCause {
+				rootMark = " ⭐CAUSA RAIZ"
+			}
+			sb.WriteString(fmt.Sprintf("\n▸ %s [%s]%s\n", ed.EntityName, ed.EntityType, rootMark))
+			for _, m := range ed.Metrics {
+				mn, avg, mx, last, ok := pointStats(m.Points)
+				if !ok {
+					continue
+				}
+				sev := severityLabel(m.Key, mx)
+				sb.WriteString(fmt.Sprintf("  %-30s min=%.2f avg=%.2f max=%.2f último=%.2f %s %s\n",
+					m.Label+":", mn, avg, mx, last, m.Unit, sev))
+			}
+		}
+		if !hasMetricData {
+			sb.WriteString("⚠️ Métricas DT sem dados nesta janela (entidades sem instrumentação ou problema já resolvido).\n")
+		}
+	} else {
+		sb.WriteString("⚠️ Métricas DT não disponíveis.\n")
+	}
+
+	// ── Health Check K8s ──────────────────────────────────────────────────────
+	sb.WriteString("\n═══════════════════════════════════════\n")
+	sb.WriteString("HEALTH CHECK K8S\n")
+	sb.WriteString("═══════════════════════════════════════\n")
+
+	if report.HealthCheckError != "" {
+		sb.WriteString(fmt.Sprintf("Falhou: %s\n", report.HealthCheckError))
+	} else if report.IdentifiedCluster == "" {
+		sb.WriteString("Cluster não identificado — execute 'Escanear Clusters' no Node Pool Registry.\n")
+	} else if report.HealthCheckResult == nil {
+		sb.WriteString("Health Check não executado.\n")
+	} else {
+		hc := report.HealthCheckResult
+		sb.WriteString(fmt.Sprintf("Cluster: %s | Status geral: %s | Verificações: %d | Críticos: %d | Altos: %d\n",
+			hc.Cluster, hc.OverallStatus, hc.TotalChecks, hc.SeverityCounts.Critical, hc.SeverityCounts.High))
+
+		// Deployments — com métricas de resource e crashes
+		if len(hc.DeploymentResults) > 0 {
+			// Prioriza o workload identificado; mostra todos
+			sb.WriteString("\nDeployments:\n")
+			for _, d := range hc.DeploymentResults {
+				focus := ""
+				if strings.EqualFold(d.Name, report.IdentifiedWorkload) {
+					focus = " ← WORKLOAD IDENTIFICADO"
+				}
+				sb.WriteString(fmt.Sprintf("  %s/%s [%s]%s\n", d.Namespace, d.Name, d.Status, focus))
+				sb.WriteString(fmt.Sprintf("    Pods: %d/%d prontos | Crashes: %d | ImagePullErrors: %d\n",
+					d.ReplicasReady, d.ReplicasDesired, d.ContainersCrash, d.ImagePullErrors))
+				if d.CPUUsagePercent > 0 || d.MemoryUsagePercent > 0 {
+					sb.WriteString(fmt.Sprintf("    CPU uso: %.1f%% | Memória uso: %.1f%% | QoS: %s\n",
+						d.CPUUsagePercent, d.MemoryUsagePercent, d.QoSClass))
+				}
+				// Recursos dos containers
+				for _, cr := range d.ContainerResources {
+					cpuReq := cr.CPURequest
+					if cpuReq == "" {
+						cpuReq = "não definido"
+					}
+					cpuLim := cr.CPULimit
+					if cpuLim == "" {
+						cpuLim = "não definido"
+					}
+					memReq := cr.MemoryRequest
+					if memReq == "" {
+						memReq = "não definido"
+					}
+					memLim := cr.MemoryLimit
+					if memLim == "" {
+						memLim = "não definido"
+					}
+					sb.WriteString(fmt.Sprintf("    Container %s: cpu req=%s lim=%s | mem req=%s lim=%s\n",
+						cr.Name, cpuReq, cpuLim, memReq, memLim))
+				}
+				for _, ri := range d.ResourceIssues {
+					sb.WriteString(fmt.Sprintf("    ⚠️ [%s] container=%s %s=%s\n",
+						string(ri.Severity), ri.Container, ri.ResourceType, ri.Issue))
+				}
+				if d.Message != "" && d.Status != "healthy" {
+					sb.WriteString(fmt.Sprintf("    Mensagem: %s\n", d.Message))
+				}
+			}
+		}
+
+		// HPAs
+		if len(hc.HPAResults) > 0 {
+			sb.WriteString("\nHPAs:\n")
+			for _, h := range hc.HPAResults {
+				focus := ""
+				if strings.EqualFold(h.Name, report.IdentifiedWorkload) {
+					focus = " ← WORKLOAD IDENTIFICADO"
+				}
+				sb.WriteString(fmt.Sprintf("  %s/%s [%s]%s replicas: atual=%d desejado=%d min=%d max=%d\n",
+					h.Namespace, h.Name, h.Status, focus,
+					h.CurrentReplicas, h.DesiredReplicas, h.MinReplicas, h.MaxReplicas))
+			}
+		}
+
+		// Eventos K8s
+		if len(hc.EventResults) > 0 {
+			sb.WriteString(fmt.Sprintf("\nEventos K8s críticos (%d):\n", len(hc.EventResults)))
+			for i, e := range hc.EventResults {
+				if i >= 10 {
+					sb.WriteString(fmt.Sprintf("  ... e mais %d eventos\n", len(hc.EventResults)-10))
+					break
+				}
+				sb.WriteString(fmt.Sprintf("  [%s] %s/%s — %s: %s\n",
+					string(e.Severity), e.Namespace, e.Name, e.Reason, e.Message))
+			}
+		}
+	}
+
+	// ── Dependências externas ─────────────────────────────────────────────────
+	if len(report.Dependencies) > 0 {
+		sb.WriteString("\n═══════════════════════════════════════\n")
+		sb.WriteString("DEPENDÊNCIAS EXTERNAS DO WORKLOAD\n")
+		sb.WriteString("═══════════════════════════════════════\n")
+		seen := map[string]bool{}
+		for _, dep := range report.Dependencies {
+			key := dep.ServiceType + ":" + dep.ServiceName
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			topic := ""
+			if dep.TopicName != "" {
+				topic = " (tópico: " + dep.TopicName + ")"
+			}
+			sb.WriteString(fmt.Sprintf("  [%s] %s%s\n", dep.ServiceType, dep.ServiceName, topic))
+		}
+	}
+
+	// ── Solicitação de análise — 5 seções compatíveis com o parser do frontend ──
+	sb.WriteString("\n═══════════════════════════════════════\n")
+	sb.WriteString("ANÁLISE SOLICITADA\n")
+	sb.WriteString("═══════════════════════════════════════\n")
+	sb.WriteString("REGRAS: Cite valores numéricos reais. Se dados faltarem, diga explicitamente.\n")
+	sb.WriteString("NÃO sugira comandos kubectl. Use ações do HPA Manager.\n")
+	sb.WriteString("Estruture a resposta EXATAMENTE nestas 5 seções (use os títulos abaixo literalmente):\n\n")
+	sb.WriteString("1. ORIGEM\n")
+	sb.WriteString("   Qual métrica corrobora a causa raiz? Cite valores (ex: 'CPU max=96.52%', 'P95=8.4s').\n")
+	sb.WriteString("   Classifique: Sobrecarga (throughput), Degradação (latência), Falha (error_rate), Recurso (CPU/memória).\n\n")
+	sb.WriteString("2. PROPAGAÇÃO\n")
+	sb.WriteString("   Como a falha se propagou entre serviços/pods? Duração? Impacto nos usuários?\n\n")
+	sb.WriteString("3. ANÁLISE K8S\n")
+	sb.WriteString("   Estado atual: pods prontos, HPA configurado, container resources, eventos críticos.\n")
+	sb.WriteString("   O que os dados K8s confirmam ou contradizem sobre a causa raiz DT?\n\n")
+	sb.WriteString("4. DEPENDÊNCIAS EXTERNAS\n")
+	sb.WriteString("   Quais dependências (Kafka, DB, APIs externas) foram afetadas ou podem ter contribuído?\n")
+	sb.WriteString("   Se não houver dados de dependências, diga explicitamente.\n\n")
+	sb.WriteString("5. AÇÕES CORRETIVAS\n")
+	sb.WriteString("   a) Mitigação imediata: Escalar HPA — cite namespace, workload, novos min/maxReplicas sugeridos\n")
+	sb.WriteString("   b) Correção definitiva: Ajustar requests/limits CPU ou memória (cite container e valores)\n")
+	sb.WriteString("   c) Prevenção: O que configurar no HPA Manager para evitar recorrência\n")
+
+	return sb.String()
+}
+
+// normalizeDTTime converte o valor de tempo recebido para o formato aceito pela API DT.
+// Valores relativos ("now-7d", "now-24h") passam sem alteração.
+// Datas no formato "YYYY-MM-DD" são convertidas para ISO 8601 com hora.
+// endOfDay=true arredonda para o fim do dia (23:59:59Z), usado no parâmetro "to".
+func normalizeDTTime(v string, endOfDay bool) string {
+	if v == "" {
+		return ""
+	}
+	// Valores relativos DT passam direto
+	if strings.HasPrefix(v, "now") {
+		return v
+	}
+	// Tenta parsear como "YYYY-MM-DD"
+	if t, err := time.Parse("2006-01-02", v); err == nil {
+		if endOfDay {
+			t = t.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
+		}
+		return t.UTC().Format(time.RFC3339)
+	}
+	// Qualquer outro formato (ISO 8601 já completo) passa sem alteração
+	return v
 }
 
 // pointStats calcula min/avg/max/último de uma série MetricPoint

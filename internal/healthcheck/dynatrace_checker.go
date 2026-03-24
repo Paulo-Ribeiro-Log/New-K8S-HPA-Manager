@@ -74,7 +74,7 @@ func (c *DynatraceChecker) CheckAll(ctx context.Context, dtURL, dtToken, tagFilt
 	checkCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	dtResult, err := client.GetOpenProblems(checkCtx, tagFilter)
+	dtResult, err := client.GetOpenProblems(checkCtx, tagFilter, "OPEN", "", "")
 	if err != nil {
 		log.Error().Err(err).Str("tagFilter", tagFilter).Msg("[DynatraceChecker] Falha ao buscar problems")
 		return results

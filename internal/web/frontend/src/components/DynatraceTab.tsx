@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
+import { AreaChart, Area, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer } from "recharts";
+import jsPDF from "jspdf";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
@@ -18,13 +20,24 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   AlertTriangle, RefreshCw, Bot, Clock, Layers, AlertCircle,
   Info, Target, Server, Search, Network, MapPin, ArrowRight,
   Activity, X, BarChart3, GitBranch, Users, Tag, Cpu,
   Package, GitCommit, Rocket, ChevronDown, ChevronRight,
   Shield, Globe, Database, Boxes, CheckCircle2, Maximize2, ZoomIn, ZoomOut,
-  ListChecks, Share2,
+  ListChecks, Share2, FileDown, FileText, Microscope,
 } from "lucide-react";
+import {
+  Accordion, AccordionContent, AccordionItem, AccordionTrigger,
+} from "@/components/ui/accordion";
+import { addLogoHeaderToPDF } from "@/lib/logoUtils";
 import { apiClient } from "@/lib/api/client";
 import type { NodePoolLookupResult } from "@/lib/api/types";
 import { DynatraceProblem } from "@/types/healthcheck";
@@ -1839,47 +1852,52 @@ const SECTION_META: Record<string, SectionMeta> = {
   proximos:    { Icon: ListChecks, color: "text-green-400",  border: "border-green-500/30",  bg: "bg-green-500/5",  label: "Ações Corretivas" },
 };
 
-function AIAnalysisResult({ text, problem, actionItems }: { text: string; problem: DynatraceProblem; actionItems?: ActionItem[] }) {
+function AIAnalysisResult({ text, actionItems }: { text: string; actionItems?: ActionItem[] }) {
   const { intro, sections } = parseAISections(text);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(AI_SECTION_PATTERNS.map(p => [p.key, true]))
-  );
-  const hasVRP = (problem.affectedEntities?.length ?? 0) > 0 || !!problem.rootCauseEntity;
 
-  // Fallback: sem seções parseadas — renderiza como AIAnalysisCard faz
+  // Fallback: sem seções parseadas
   if (sections.length === 0) {
     return (
       <div className="space-y-3">
         <ActionPlanCard items={actionItems ?? []} />
-        <Card>
-          <CardHeader className="pb-2">
+        <Card className="border-violet-500/20 overflow-hidden">
+          <CardHeader className="pb-3 pt-4 px-5 bg-gradient-to-r from-violet-500/10 to-blue-500/5 border-b border-violet-500/20">
             <div className="flex items-center gap-2">
-              <Bot className="h-4 w-4 text-violet-400" />
-              <span className="text-sm font-semibold">Análise IA</span>
+              <div className="p-1.5 bg-violet-500/10 rounded-md">
+                <Bot className="h-4 w-4 text-violet-400" />
+              </div>
+              <span className="text-sm font-semibold text-violet-300">Análise IA</span>
             </div>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {hasVRP && <VRPEmbed problem={problem} />}
-            <ScrollArea className="h-[400px] w-full rounded border p-4 bg-muted/50">
-              <div className="prose prose-sm dark:prose-invert max-w-none">
-                <ReactMarkdown>{text}</ReactMarkdown>
-              </div>
-            </ScrollArea>
+          <CardContent className="pt-4 pb-4 px-5">
+            <div className="prose prose-sm dark:prose-invert max-w-none">
+              <ReactMarkdown>{text}</ReactMarkdown>
+            </div>
           </CardContent>
         </Card>
       </div>
     );
   }
 
+  const defaultOpen = sections.map(s => s.key);
+
   return (
     <div className="space-y-3">
-      {/* Plano de ação determinístico — mostrado ANTES da análise textual da IA */}
+      {/* Plano de ação determinístico */}
       <ActionPlanCard items={actionItems ?? []} />
 
-      {/* Sumário introdutório do modelo */}
+      {/* Header da análise AI */}
+      <div className="flex items-center gap-2 px-1">
+        <div className="p-1.5 bg-violet-500/10 rounded-md border border-violet-500/20">
+          <Bot className="h-4 w-4 text-violet-400" />
+        </div>
+        <span className="text-sm font-semibold text-violet-300">Análise IA — Diagnóstico Dynatrace</span>
+      </div>
+
+      {/* Sumário introdutório */}
       {intro && (
-        <Card className="border-border/50 bg-muted/10">
-          <CardContent className="pt-4 pb-3">
+        <Card className="border-border/40 bg-muted/10">
+          <CardContent className="pt-3 pb-3 px-4">
             <p className="text-sm text-muted-foreground italic leading-relaxed">
               {intro.length > 500 ? intro.slice(0, 497) + "…" : intro}
             </p>
@@ -1887,58 +1905,41 @@ function AIAnalysisResult({ text, problem, actionItems }: { text: string; proble
         </Card>
       )}
 
-      {/* Seção de propagação com VRP embutido (antes das demais) */}
-      {hasVRP && sections.some(s => s.key === "propagacao") && (
-        <Card className="border-orange-500/30 bg-orange-500/5 overflow-hidden">
-          <CardHeader className="pb-2 pt-3 px-4 bg-orange-500/10 border-b border-orange-500/20">
-            <div className="flex items-center gap-2">
-              <Network className="h-4 w-4 text-orange-400" />
-              <span className="text-sm font-semibold text-orange-300">Fluxo de Propagação</span>
-            </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            <VRPEmbed problem={problem} />
-          </CardContent>
-        </Card>
-      )}
+      {/* Seções como Accordion — estilo AIAnalysisModal */}
+      <div className="space-y-2">
+        <Accordion type="multiple" defaultValue={defaultOpen} className="space-y-2">
+          {sections.map(section => {
+            const meta = SECTION_META[section.key] ?? {
+              Icon: Bot, color: "text-foreground", border: "border-border", bg: "bg-muted/5", label: section.heading,
+            };
+            const { Icon, color, border, bg, label } = meta;
 
-      {/* Cards por seção */}
-      {sections.map(section => {
-        const meta = SECTION_META[section.key] ?? {
-          Icon: Bot, color: "text-foreground", border: "border-border", bg: "bg-muted/5", label: section.heading,
-        };
-        const { Icon, color, border, bg, label } = meta;
-        const isOpen = expanded[section.key] ?? true;
-
-        return (
-          <Card key={section.key} className={`border ${border} overflow-hidden`}>
-            <CardHeader
-              className={`py-2.5 px-4 ${bg} cursor-pointer select-none`}
-              onClick={() => setExpanded(prev => ({ ...prev, [section.key]: !prev[section.key] }))}
-            >
-              <div className="flex items-center gap-2">
-                <Icon className={`h-4 w-4 shrink-0 ${color}`} />
-                <span className={`text-sm font-semibold flex-1 ${color}`}>{label}</span>
-                {isOpen
-                  ? <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                  : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-              </div>
-            </CardHeader>
-            {isOpen && (
-              <>
-                <Separator className="opacity-20" />
-                <CardContent className="pt-4 pb-4">
-                  <ScrollArea className={section.key === "proximos" ? undefined : "max-h-[500px]"}>
-                    <div className="prose prose-sm dark:prose-invert max-w-none">
-                      <ReactMarkdown>{section.content}</ReactMarkdown>
+            return (
+              <AccordionItem
+                key={section.key}
+                value={section.key}
+                className={`border ${border} rounded-lg overflow-hidden`}
+              >
+                <AccordionTrigger
+                  className={`px-4 py-3 ${bg} hover:no-underline hover:brightness-110 [&[data-state=open]]:border-b ${border}`}
+                >
+                  <div className="flex items-center gap-2 text-left">
+                    <div className={`p-1.5 rounded-md ${bg} border ${border}`}>
+                      <Icon className={`h-3.5 w-3.5 ${color}`} />
                     </div>
-                  </ScrollArea>
-                </CardContent>
-              </>
-            )}
-          </Card>
-        );
-      })}
+                    <span className={`text-sm font-semibold ${color}`}>{label}</span>
+                  </div>
+                </AccordionTrigger>
+                <AccordionContent className="px-4 pt-3 pb-4">
+                  <div className="prose prose-sm dark:prose-invert max-w-none">
+                    <ReactMarkdown>{section.content}</ReactMarkdown>
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
+            );
+          })}
+        </Accordion>
+      </div>
     </div>
   );
 }
@@ -1953,61 +1954,651 @@ function VRPEmbed({ problem }: { problem: DynatraceProblem }) {
   );
 }
 
-function DiagnosticTab({
+// ── Helpers de export ────────────────────────────────────────────────────────────
+
+function removeEmojis(text: string): string {
+  return text.replace(/[\u{1F300}-\u{1FFFF}]|[\u2600-\u27FF]|⭐|🔴|🟡|🟢|⚠️|✅|❌/gu, "").trim();
+}
+
+function buildInvestigationMarkdown(problem: DynatraceProblem, inv: any, quickAnalysis: string): string {
+  const lines: string[] = [];
+  lines.push(`# Diagnóstico Dynatrace — ${problem.displayId}`);
+  lines.push(`**${problem.title}**`);
+  lines.push(`Severidade: ${problem.severityLevel} | Impacto: ${problem.impactLevel} | Status: ${problem.status}`);
+  lines.push(`Início: ${new Date(problem.startTime).toLocaleString("pt-BR")}`);
+  if (problem.endTime) lines.push(`Fim: ${new Date(problem.endTime).toLocaleString("pt-BR")}`);
+  lines.push("");
+
+  if (inv) {
+    lines.push("## Entidades Identificadas");
+    if (inv.root_cause_entity_name) lines.push(`- **Causa Raiz (DT):** ${inv.root_cause_entity_name} [${inv.root_cause_entity_type}]`);
+    if (inv.identified_cluster) lines.push(`- **Cluster K8s:** ${inv.identified_cluster} / node pool: ${inv.identified_node_pool}`);
+    if (inv.identified_namespace) lines.push(`- **Namespace:** ${inv.identified_namespace}`);
+    if (inv.identified_workload) lines.push(`- **Workload:** ${inv.identified_workload}`);
+    lines.push("");
+
+    const entities = (inv.dt_metrics?.entities ?? []).filter((e: any) =>
+      (e.metrics ?? []).some((m: any) => (m.points ?? []).some((p: any) => !isNaN(p.v)))
+    );
+    if (entities.length > 0) {
+      lines.push("## Métricas Dynatrace");
+      for (const ed of entities) {
+        lines.push(`\n### ${ed.entityName} [${ed.entityType}]${ed.isRootCause ? " ⭐ Causa Raiz" : ""}`);
+        for (const m of ed.metrics ?? []) {
+          const vals = (m.points ?? []).map((p: any) => p.v).filter((v: number) => !isNaN(v) && v >= 0);
+          if (!vals.length) continue;
+          const max = Math.max(...vals), avg = vals.reduce((a: number, b: number) => a + b, 0) / vals.length;
+          lines.push(`- ${m.label}: avg=${avg.toFixed(2)} max=${max.toFixed(2)} ${m.unit}`);
+        }
+      }
+      lines.push("");
+    }
+
+    if (inv.health_check_result) {
+      const hc = inv.health_check_result as any;
+      lines.push("## Health Check K8s");
+      lines.push(`Status: **${hc.overall_status}** | Total: ${hc.total_checks} | Críticos: ${hc.severity_counts?.critical ?? 0}`);
+      for (const d of hc.deployment_results ?? []) {
+        lines.push(`\n### Deployment ${d.namespace}/${d.name} [${d.status}]`);
+        lines.push(`Pods: ${d.replicas_ready}/${d.replicas_desired} | Crashes: ${d.containers_crash}`);
+        if (d.cpu_usage_percent > 0) lines.push(`CPU: ${d.cpu_usage_percent.toFixed(1)}% | Mem: ${d.memory_usage_percent.toFixed(1)}%`);
+        for (const cr of d.container_resources ?? []) {
+          lines.push(`Container ${cr.name}: cpu ${cr.cpu_request || "—"}/${cr.cpu_limit || "—"} | mem ${cr.memory_request || "—"}/${cr.memory_limit || "—"}`);
+        }
+      }
+      for (const h of (hc.hpa_results ?? []).filter((h: any) => h.status !== "healthy")) {
+        lines.push(`\n### HPA ${h.namespace}/${h.name} [${h.status}]`);
+        lines.push(`Réplicas: atual=${h.current_replicas} desejado=${h.desired_replicas} min=${h.min_replicas} max=${h.max_replicas}`);
+      }
+      lines.push("");
+    }
+
+    if ((inv.dependencies ?? []).length > 0) {
+      lines.push("## Dependências Externas");
+      const seen = new Set<string>();
+      for (const dep of inv.dependencies) {
+        const k = `${dep.service_type}:${dep.service_name}`;
+        if (seen.has(k)) continue; seen.add(k);
+        lines.push(`- [${dep.service_type}] ${dep.service_name}${dep.topic_name ? ` (${dep.topic_name})` : ""}`);
+      }
+      lines.push("");
+    }
+
+    if (inv.ai_analysis) {
+      lines.push("## Análise AI — Investigação Profunda");
+      lines.push(inv.ai_analysis);
+      lines.push("");
+    }
+  }
+
+  if (quickAnalysis && !inv?.ai_analysis) {
+    lines.push("## Análise AI");
+    lines.push(quickAnalysis);
+    lines.push("");
+  }
+
+  lines.push(`---\n*Gerado pelo HPA Manager em ${new Date().toLocaleString("pt-BR")}*`);
+  return lines.join("\n");
+}
+
+function exportMarkdown(problem: DynatraceProblem, inv: any, quickAnalysis: string) {
+  const md = buildInvestigationMarkdown(problem, inv, quickAnalysis);
+  const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `dt-diagnostico-${problem.displayId}-${new Date().toISOString().slice(0, 10)}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function exportPDF(problem: DynatraceProblem, inv: any, quickAnalysis: string) {
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 14;
+  const contentWidth = pageWidth - margin * 2;
+
+  // Header com logo (igual às outras ferramentas)
+  let y = await addLogoHeaderToPDF(
+    doc,
+    "DIAGNOSTICO DYNATRACE",
+    `${removeEmojis(problem.title)} | ${problem.displayId}`,
+    40,
+  );
+
+  const checkPage = (needed = 10) => {
+    if (y + needed > 270) { doc.addPage(); y = 15; }
+  };
+
+  const h1 = (text: string) => {
+    checkPage(14);
+    doc.setFillColor(30, 64, 175);
+    doc.rect(0, y, pageWidth, 12, "F");
+    doc.setFontSize(13); doc.setFont("helvetica", "bold"); doc.setTextColor(255, 255, 255);
+    doc.text(removeEmojis(text), margin, y + 8);
+    doc.setTextColor(0, 0, 0);
+    y += 16;
+  };
+
+  const h2 = (text: string) => {
+    checkPage(10);
+    doc.setFontSize(11); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 64, 175);
+    doc.text(removeEmojis(text), margin, y);
+    doc.setTextColor(0, 0, 0);
+    y += 7;
+  };
+
+  const line = (text: string, indent = 0) => {
+    checkPage(6);
+    doc.setFontSize(9); doc.setFont("helvetica", "normal");
+    const wrapped = doc.splitTextToSize(removeEmojis(text), contentWidth - indent);
+    doc.text(wrapped, margin + indent, y);
+    y += wrapped.length * 5;
+  };
+
+  line(`Severidade: ${problem.severityLevel} | Impacto: ${problem.impactLevel} | Status: ${problem.status}`);
+  line(`Inicio: ${new Date(problem.startTime).toLocaleString("pt-BR")}`);
+  if (problem.endTime) line(`Fim: ${new Date(problem.endTime).toLocaleString("pt-BR")}`);
+  y += 4;
+
+  if (inv) {
+    h1("ENTIDADES IDENTIFICADAS");
+    if (inv.root_cause_entity_name) line(`Causa Raiz (DT): ${inv.root_cause_entity_name} [${inv.root_cause_entity_type}]`);
+    if (inv.identified_cluster) line(`Cluster K8s: ${inv.identified_cluster} / ${inv.identified_node_pool}`);
+    if (inv.identified_namespace) line(`Namespace: ${inv.identified_namespace}  Workload: ${inv.identified_workload}`);
+    y += 4;
+
+    const entities = (inv.dt_metrics?.entities ?? []).filter((e: any) =>
+      (e.metrics ?? []).some((m: any) => (m.points ?? []).some((p: any) => !isNaN(p.v)))
+    );
+    if (entities.length > 0) {
+      h1("METRICAS DYNATRACE");
+      for (const ed of entities) {
+        h2(`${ed.entityName} [${ed.entityType}]${ed.isRootCause ? " - CAUSA RAIZ" : ""}`);
+        for (const m of ed.metrics ?? []) {
+          const vals = (m.points ?? []).map((p: any) => p.v).filter((v: number) => !isNaN(v) && v >= 0);
+          if (!vals.length) continue;
+          const mx = Math.max(...vals), avg = vals.reduce((a: number, b: number) => a + b, 0) / vals.length;
+          line(`${m.label}: avg=${avg.toFixed(2)} max=${mx.toFixed(2)} ${m.unit}`, 4);
+        }
+        y += 2;
+      }
+    }
+
+    if (inv.health_check_result) {
+      const hc = inv.health_check_result as any;
+      h1("HEALTH CHECK K8S");
+      line(`Status: ${hc.overall_status} | Total: ${hc.total_checks} | Criticos: ${hc.severity_counts?.critical ?? 0}`);
+      y += 2;
+      for (const d of hc.deployment_results ?? []) {
+        h2(`Deployment: ${d.namespace}/${d.name} [${d.status}]`);
+        line(`Pods: ${d.replicas_ready}/${d.replicas_desired} | Crashes: ${d.containers_crash}`, 4);
+        if (d.cpu_usage_percent > 0) line(`CPU: ${d.cpu_usage_percent.toFixed(1)}% | Mem: ${d.memory_usage_percent.toFixed(1)}%`, 4);
+        for (const cr of d.container_resources ?? []) {
+          line(`Container ${cr.name}: cpu req=${cr.cpu_request || "n/d"} lim=${cr.cpu_limit || "n/d"} | mem req=${cr.memory_request || "n/d"} lim=${cr.memory_limit || "n/d"}`, 6);
+        }
+      }
+      for (const h of (hc.hpa_results ?? []).filter((h: any) => h.status !== "healthy")) {
+        h2(`HPA: ${h.namespace}/${h.name} [${h.status}]`);
+        line(`Replicas: atual=${h.current_replicas} desejado=${h.desired_replicas} min=${h.min_replicas} max=${h.max_replicas}`, 4);
+      }
+    }
+
+    if ((inv.dependencies ?? []).length > 0) {
+      h1("DEPENDENCIAS EXTERNAS");
+      const seen = new Set<string>();
+      for (const dep of inv.dependencies) {
+        const k = `${dep.service_type}:${dep.service_name}`;
+        if (seen.has(k)) continue; seen.add(k);
+        line(`[${dep.service_type}] ${dep.service_name}${dep.topic_name ? ` (${dep.topic_name})` : ""}`, 4);
+      }
+      y += 4;
+    }
+
+    const aiText = inv.ai_analysis || quickAnalysis;
+    if (aiText) {
+      h1("ANALISE AI");
+      const stripped = removeEmojis(aiText.replace(/[#*`]/g, ""));
+      const paras = stripped.split("\n").filter(Boolean);
+      for (const p of paras) {
+        checkPage(8);
+        const wrapped = doc.splitTextToSize(p, contentWidth);
+        doc.setFontSize(9); doc.setFont("helvetica", "normal");
+        doc.text(wrapped, margin, y);
+        y += wrapped.length * 5 + 1;
+      }
+    }
+  }
+
+  doc.save(`dt-diagnostico-${problem.displayId}-${new Date().toISOString().slice(0, 10)}.pdf`);
+}
+
+// ── DTMetricSparkline — mini chart de série temporal ─────────────────────────────
+
+function DTMetricSparkline({ metric, color = "#6366f1" }: { metric: { label: string; key: string; unit: string; points: { t: number; v: number }[] }; color?: string }) {
+  const data = (metric.points ?? [])
+    .filter(p => !isNaN(p.v) && p.v >= 0)
+    .map(p => ({ t: p.t, v: parseFloat(p.v.toFixed(2)) }));
+
+  if (data.length < 2) return null;
+  const max = Math.max(...data.map(d => d.v));
+  const avg = data.reduce((s, d) => s + d.v, 0) / data.length;
+  const isCritical = (metric.key === "error_rate" && max > 20) || (metric.key === "pods_ready_pct" && max < 80) || (metric.key === "cpu_throttle" && max > 500) || (metric.key === "pod_restarts" && max > 5);
+  const isWarn = !isCritical && ((metric.key === "error_rate" && max > 5) || (metric.key === "response_p95" && max > 1000) || (metric.key === "pod_restarts" && max > 1));
+  const chartColor = isCritical ? "#ef4444" : isWarn ? "#f97316" : color;
+
+  // Ticks a cada 5 minutos
+  const FIVE_MIN = 5 * 60 * 1000;
+  const firstT = data[0].t;
+  const lastT = data[data.length - 1].t;
+  const firstTick = Math.ceil(firstT / FIVE_MIN) * FIVE_MIN;
+  const xTicks: number[] = [];
+  for (let t = firstTick; t <= lastT; t += FIVE_MIN) xTicks.push(t);
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs">
+        <span className={`font-medium ${isCritical ? "text-red-400" : isWarn ? "text-orange-400" : "text-muted-foreground"}`}>{metric.label}</span>
+        <span className="font-mono text-[10px] text-muted-foreground">avg {avg.toFixed(1)} · max {max.toFixed(1)} <span className="opacity-60">{metric.unit}</span></span>
+      </div>
+      <ResponsiveContainer width="100%" height={70}>
+        <AreaChart data={data} margin={{ top: 2, right: 4, bottom: 0, left: 4 }}>
+          <defs>
+            <linearGradient id={`grad-${metric.key}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor={chartColor} stopOpacity={0.3} />
+              <stop offset="95%" stopColor={chartColor} stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <XAxis
+            dataKey="t"
+            type="number"
+            domain={["dataMin", "dataMax"]}
+            ticks={xTicks}
+            tickFormatter={t => new Date(t).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+            tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+            tickLine={false}
+            axisLine={false}
+            scale="time"
+          />
+          <YAxis hide domain={["auto", "auto"]} />
+          <Area type="monotone" dataKey="v" stroke={chartColor} strokeWidth={1.5} fill={`url(#grad-${metric.key})`} dot={false} />
+          <RechartsTooltip
+            contentStyle={{ fontSize: "10px", padding: "2px 6px", background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))" }}
+            formatter={(v: number) => [`${v.toFixed(2)} ${metric.unit}`, metric.label]}
+            labelFormatter={(t: number) => new Date(t).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ── DiagnosticoTab — Diagnóstico unificado (Análise Rápida + Investigação Profunda) ──
+
+function DiagnosticoTab({
   problem,
+  aiEmail,
   uiBaseUrl,
-  onAnalyze,
-  analyzing,
-  analysisResult,
-  actionItems,
+  onQuickAnalyze,
+  quickAnalyzing,
+  quickAnalysisResult,
+  quickActionItems,
+  onCancelQuickAnalyze,
+  onInvestigate,
+  investigating,
+  investigationResult,
+  onCancelInvestigate,
 }: {
   problem: DynatraceProblem;
+  aiEmail: string;
   uiBaseUrl?: string;
-  onAnalyze: () => void;
-  analyzing: boolean;
-  analysisResult: string;
-  actionItems?: ActionItem[];
+  onQuickAnalyze: () => void;
+  quickAnalyzing: boolean;
+  quickAnalysisResult: string;
+  quickActionItems?: ActionItem[];
+  onCancelQuickAnalyze: () => void;
+  onInvestigate: () => void;
+  investigating: boolean;
+  investigationResult: any;
+  onCancelInvestigate: () => void;
 }) {
+  const isWorking = quickAnalyzing || investigating;
+  const hasContent = !!investigationResult || !!quickAnalysisResult;
+  const aiText = investigationResult?.ai_analysis || quickAnalysisResult;
+
   return (
     <div className="space-y-4">
       <ProblemHeader problem={problem} uiBaseUrl={uiBaseUrl} />
 
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold flex items-center gap-1.5">
-            <Bot className="h-4 w-4" /> Diagnóstico com IA
-          </h3>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            A IA analisa métricas, evidências Davis, topologia, traces e eventos para sugerir próximos passos.
-          </p>
-        </div>
-        <Button size="sm" variant={analysisResult ? "ghost" : "default"} onClick={onAnalyze} disabled={analyzing} className="shrink-0">
-          {analyzing
-            ? <><RefreshCw className="h-3 w-3 mr-1.5 animate-spin" />Analisando...</>
-            : analysisResult
-              ? <><RefreshCw className="h-3 w-3 mr-1.5" />Re-analisar</>
-              : <><Bot className="h-3 w-3 mr-1.5" />Analisar com IA</>
-          }
-        </Button>
+      {/* Barra de ações */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {investigating ? (
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={onCancelInvestigate}
+            title="Cancelar investigação"
+          >
+            <X className="h-3 w-3 mr-1.5" />Cancelar
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            onClick={onInvestigate}
+            disabled={quickAnalyzing}
+            title="Identifica cluster K8s, executa Health Check direcionado e analisa com IA"
+          >
+            <Microscope className="h-3 w-3 mr-1.5" />{investigationResult ? "Re-investigar" : "Investigar Profundo"}
+          </Button>
+        )}
+        {quickAnalyzing ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onCancelQuickAnalyze}
+            title="Cancelar análise"
+          >
+            <X className="h-3 w-3 mr-1.5" />Cancelar
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onQuickAnalyze}
+            disabled={investigating}
+            title="Analisa apenas métricas DT + IA (sem Health Check K8s — mais rápido)"
+          >
+            <Bot className="h-3 w-3 mr-1.5" />{quickAnalysisResult ? "Re-analisar" : "Análise Rápida"}
+          </Button>
+        )}
+        {hasContent && (
+          <div className="flex items-center gap-1.5 ml-auto">
+            <Button
+              size="sm" variant="ghost"
+              className="h-7 px-2 text-xs gap-1 text-muted-foreground"
+              onClick={() => exportMarkdown(problem, investigationResult, quickAnalysisResult)}
+              title="Exportar como Markdown"
+            >
+              <FileText className="h-3 w-3" />MD
+            </Button>
+            <Button
+              size="sm" variant="ghost"
+              className="h-7 px-2 text-xs gap-1 text-muted-foreground"
+              onClick={() => void exportPDF(problem, investigationResult, quickAnalysisResult)}
+              title="Exportar como PDF"
+            >
+              <FileDown className="h-3 w-3" />PDF
+            </Button>
+          </div>
+        )}
       </div>
 
-      {analyzing && (
-        <div className="flex flex-col items-center gap-2 py-8 text-center">
-          <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+      {/* Estado de loading */}
+      {investigating && (
+        <div className="flex flex-col items-center gap-2 py-10 text-center">
+          <Microscope className="h-7 w-7 animate-pulse text-blue-400" />
+          <p className="text-sm font-medium">Investigando...</p>
+          <p className="text-xs text-muted-foreground">Node Pool Registry → Health Check K8s → Métricas DT → Análise AI</p>
+        </div>
+      )}
+      {quickAnalyzing && !investigating && (
+        <div className="flex flex-col items-center gap-2 py-10 text-center">
+          <RefreshCw className="h-7 w-7 animate-spin text-muted-foreground" />
           <p className="text-sm font-medium">Analisando com IA...</p>
-          <p className="text-xs text-muted-foreground">Coletando métricas, evidências e correlações K8s do Dynatrace</p>
+          <p className="text-xs text-muted-foreground">Coletando métricas, evidências Davis e correlações</p>
         </div>
       )}
 
-      {!analyzing && !analysisResult && (
-        <div className="flex flex-col items-center gap-2 py-8 text-center text-muted-foreground">
-          <Bot className="h-10 w-10 opacity-20" />
-          <p className="text-sm">Clique em <strong>Analisar com IA</strong> para obter um diagnóstico detalhado.</p>
+      {/* Placeholder */}
+      {!isWorking && !hasContent && (
+        <div className="flex flex-col items-center gap-3 py-12 text-center text-muted-foreground">
+          <Microscope className="h-10 w-10 opacity-20" />
+          <div className="space-y-1">
+            <p className="text-sm font-medium">Nenhum diagnóstico disponível</p>
+            <p className="text-xs">
+              <strong>Investigar Profundo</strong> — identifica cluster, executa HC K8s, analisa dependências e IA<br />
+              <strong>Análise Rápida</strong> — só métricas DT + IA (mais rápido)
+            </p>
+          </div>
         </div>
       )}
 
-      {analysisResult && !analyzing && (
-        <AIAnalysisResult text={analysisResult} problem={problem} actionItems={actionItems} />
+      {/* Resultado da Investigação */}
+      {!isWorking && investigationResult && (
+        <div className="space-y-3">
+          {/* Identificação */}
+          <Card className="border-blue-500/30 bg-blue-500/5">
+            <CardHeader className="py-2 px-3">
+              <p className="text-xs font-semibold text-blue-400 flex items-center gap-1.5">
+                <MapPin className="h-3 w-3" />Entidades Identificadas
+              </p>
+            </CardHeader>
+            <CardContent className="px-3 pb-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              {investigationResult.root_cause_entity_name && (<>
+                <span className="text-muted-foreground">Causa Raiz (DT)</span>
+                <span className="font-mono">{investigationResult.root_cause_entity_name} <span className="text-muted-foreground">({investigationResult.root_cause_entity_type})</span></span>
+              </>)}
+              {investigationResult.identified_cluster ? (<>
+                <span className="text-muted-foreground">Cluster K8s</span>
+                <span className="font-mono">{investigationResult.identified_cluster} <span className="text-muted-foreground">/ {investigationResult.identified_node_pool}</span></span>
+              </>) : (<>
+                <span className="text-muted-foreground">Cluster K8s</span>
+                <span className="text-yellow-500">Não identificado — execute "Escanear Clusters"</span>
+              </>)}
+              {investigationResult.identified_namespace && (<>
+                <span className="text-muted-foreground">Namespace</span>
+                <span className="font-mono">{investigationResult.identified_namespace}</span>
+              </>)}
+              {investigationResult.identified_workload && (<>
+                <span className="text-muted-foreground">Workload</span>
+                <span className="font-mono">{investigationResult.identified_workload}</span>
+              </>)}
+            </CardContent>
+          </Card>
+
+          {/* Métricas DT com charts */}
+          {(() => {
+            const entities = (investigationResult.dt_metrics?.entities ?? []).filter((e: any) =>
+              (e.metrics ?? []).some((m: any) => (m.points ?? []).some((p: any) => !isNaN(p.v) && p.v >= 0))
+            );
+            if (!entities.length) return null;
+            const hasVRP = (problem.affectedEntities?.length ?? 0) > 0 || !!problem.rootCauseEntity;
+
+            // Calcula total de métricas para saber se há slot vazio (ímpar) na última linha
+            let totalMetrics = 0;
+            const entityMetrics = entities.map((ed: any) => {
+              const m = (ed.metrics ?? []).filter((m: any) =>
+                (m.points ?? []).filter((p: any) => !isNaN(p.v) && p.v >= 0).length >= 2
+              );
+              totalMetrics += m.length;
+              return { ed, metricsWithData: m };
+            });
+            const hasEmptySlot = totalMetrics % 2 !== 0;
+            let vrpPlaced = false;
+
+            return (
+              <Card>
+                <CardHeader className="py-2 px-3">
+                  <p className="text-xs font-semibold flex items-center gap-1.5">
+                    <BarChart3 className="h-3 w-3 text-purple-400" />
+                    Métricas Dynatrace
+                    <Badge variant="outline" className="text-[9px] ml-auto">{entities.length} {entities.length === 1 ? "entidade" : "entidades"}</Badge>
+                  </p>
+                </CardHeader>
+                <CardContent className="px-3 pb-3 space-y-4">
+                  {entityMetrics.map(({ ed, metricsWithData }: any, ei: number) => {
+                    if (!metricsWithData.length) return null;
+                    const isLastEntity = ei === entityMetrics.length - 1;
+                    const showVRPInSlot = hasVRP && hasEmptySlot && isLastEntity && !vrpPlaced;
+                    if (showVRPInSlot) vrpPlaced = true;
+                    return (
+                      <div key={ei} className="space-y-2">
+                        <div className="flex items-center gap-1.5 border-b border-border/30 pb-1.5">
+                          {ed.isRootCause && <span className="text-yellow-400 text-[10px]">⭐</span>}
+                          <p className="text-[11px] font-semibold text-muted-foreground">
+                            {ed.entityName} <span className="opacity-50 font-normal">[{ed.entityType}]</span>
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {metricsWithData.map((m: any, mi: number) => (
+                            <div key={mi} className="rounded-lg border border-border/50 bg-muted/10 px-3 pt-2 pb-1">
+                              <DTMetricSparkline metric={m} />
+                            </div>
+                          ))}
+                          {showVRPInSlot && (
+                            <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 overflow-hidden">
+                              <p className="text-[10px] font-semibold text-orange-400 flex items-center gap-1 px-2 pt-1.5 pb-0.5">
+                                <Network className="h-3 w-3" />Propagação
+                              </p>
+                              <VRPEmbed problem={problem} />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {/* VRP abaixo caso não haja slot vazio */}
+                  {hasVRP && !vrpPlaced && (
+                    <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 overflow-hidden">
+                      <p className="text-[10px] font-semibold text-orange-400 flex items-center gap-1 px-2 pt-1.5 pb-0.5">
+                        <Network className="h-3 w-3" />Fluxo de Propagação
+                      </p>
+                      <VRPEmbed problem={problem} />
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })()}
+
+          {/* Health Check K8s */}
+          {investigationResult.health_check_error && (
+            <Card className="border-red-500/30 bg-red-500/5">
+              <CardContent className="px-3 py-2 text-xs text-red-400">
+                Health Check falhou: {investigationResult.health_check_error}
+              </CardContent>
+            </Card>
+          )}
+          {investigationResult.health_check_result && (() => {
+            const hc = investigationResult.health_check_result as any;
+            const allDeploys = hc.deployment_results ?? [];
+            const hpaProblems = (hc.hpa_results ?? []).filter((h: any) => h.status !== "healthy");
+            const events = hc.event_results ?? [];
+            const statusColor = hc.overall_status === "healthy" ? "green" : hc.overall_status === "critical" ? "red" : "yellow";
+            return (
+              <Card className={`border-${statusColor}-500/30 bg-${statusColor}-500/5`}>
+                <CardHeader className="py-2 px-3">
+                  <p className="text-xs font-semibold flex items-center gap-1.5">
+                    <Activity className="h-3 w-3" />Health Check K8s — {investigationResult.identified_cluster}
+                    <Badge variant="outline" className={`text-[9px] ml-auto border-${statusColor}-500 text-${statusColor}-400`}>
+                      {hc.overall_status}
+                    </Badge>
+                  </p>
+                </CardHeader>
+                <CardContent className="px-3 pb-3 space-y-3">
+                  <div className="flex gap-3 text-xs text-muted-foreground">
+                    <span>Total: <strong className="text-foreground">{hc.total_checks}</strong></span>
+                    {hc.severity_counts?.critical > 0 && <span className="text-red-400">Críticos: <strong>{hc.severity_counts.critical}</strong></span>}
+                    {hc.severity_counts?.high > 0 && <span className="text-orange-400">Altos: <strong>{hc.severity_counts.high}</strong></span>}
+                  </div>
+                  {allDeploys.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Deployments</p>
+                      {allDeploys.map((d: any, i: number) => (
+                        <div key={i} className={`text-xs rounded px-2 py-1.5 space-y-1 ${d.status !== "healthy" ? "bg-red-500/10" : "bg-background/50"}`}>
+                          <div className="flex justify-between">
+                            <span className={`font-mono font-medium ${d.status !== "healthy" ? "text-red-300" : ""}`}>
+                              {d.namespace}/{d.name}
+                            </span>
+                            <span className="text-muted-foreground">{d.replicas_ready}/{d.replicas_desired} pods</span>
+                          </div>
+                          {(d.containers_crash > 0 || d.image_pull_errors > 0) && (
+                            <div className="text-red-400 text-[10px]">
+                              {d.containers_crash > 0 && <span>Crashes: {d.containers_crash} </span>}
+                              {d.image_pull_errors > 0 && <span>ImagePull errors: {d.image_pull_errors}</span>}
+                            </div>
+                          )}
+                          {(d.cpu_usage_percent > 0 || d.memory_usage_percent > 0) && (
+                            <div className="text-[10px] text-muted-foreground">
+                              CPU: {d.cpu_usage_percent.toFixed(1)}% | Mem: {d.memory_usage_percent.toFixed(1)}% | QoS: {d.qos_class}
+                            </div>
+                          )}
+                          {(d.container_resources ?? []).map((cr: any, ci: number) => (
+                            <div key={ci} className="text-[10px] font-mono text-muted-foreground/70 pl-2">
+                              {cr.name}: cpu {cr.cpu_request || "—"}/{cr.cpu_limit || "—"} · mem {cr.memory_request || "—"}/{cr.memory_limit || "—"}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {hpaProblems.length > 0 && (
+                    <div className="space-y-1">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">HPAs com problema</p>
+                      {hpaProblems.map((h: any, i: number) => (
+                        <div key={i} className="text-xs bg-orange-500/10 rounded px-2 py-1 flex justify-between">
+                          <span className="font-mono">{h.namespace}/{h.name}</span>
+                          <span className="text-muted-foreground">{h.current_replicas}/{h.desired_replicas} (max {h.max_replicas})</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {events.length > 0 && (
+                    <div className="space-y-1">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Eventos críticos</p>
+                      {events.slice(0, 5).map((e: any, i: number) => (
+                        <div key={i} className="text-xs bg-background/50 rounded px-2 py-1">
+                          <span className="text-orange-400">[{e.severity}]</span> {e.namespace}/{e.name} — {e.reason}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })()}
+
+          {/* Dependências */}
+          {(investigationResult.dependencies ?? []).length > 0 && (
+            <Card>
+              <CardHeader className="py-2 px-3">
+                <p className="text-xs font-semibold flex items-center gap-1.5">
+                  <Network className="h-3 w-3" />Dependências Externas ({investigationResult.dependencies!.length})
+                </p>
+              </CardHeader>
+              <CardContent className="px-3 pb-3 space-y-1">
+                {Array.from(new Map(investigationResult.dependencies!.map((d: any) => [`${d.service_type}:${d.service_name}`, d])).values()).slice(0, 12).map((dep: any, i: number) => (
+                  <div key={i} className="text-xs flex items-center gap-2">
+                    <Badge variant="outline" className="text-[9px] shrink-0">{dep.service_type}</Badge>
+                    <span className="font-mono text-muted-foreground truncate">{dep.service_name}</span>
+                    {dep.topic_name && <span className="text-[9px] text-muted-foreground/60">({dep.topic_name})</span>}
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {/* Análise AI — usa AIAnalysisResult para formatação bela (seções colapsáveis, ícones) */}
+      {!isWorking && aiText && (
+        <AIAnalysisResult
+          text={aiText}
+          actionItems={investigationResult ? undefined : quickActionItems}
+        />
+      )}
+
+      {/* ActionPlanCard para análise rápida (sem investigação) */}
+      {!isWorking && !investigationResult && quickActionItems && quickActionItems.length > 0 && !quickAnalysisResult && (
+        <ActionPlanCard items={quickActionItems} />
+      )}
+
+      {investigationResult?.ai_error && !aiText && (
+        <Card className="border-red-500/30">
+          <CardContent className="px-3 py-2 text-xs text-red-400">
+            Análise AI falhou: {investigationResult.ai_error}
+          </CardContent>
+        </Card>
       )}
     </div>
   );
@@ -2019,21 +2610,32 @@ function ProblemDetailPanel({
   problem,
   aiEmail,
   uiBaseUrl,
-  onAnalyze,
-  analyzing,
-  analysisResult,
-  actionItems,
+  onQuickAnalyze,
+  quickAnalyzing,
+  quickAnalysisResult,
+  quickActionItems,
+  onCancelQuickAnalyze,
+  onInvestigate,
+  investigating,
+  investigationResult,
+  onCancelInvestigate,
 }: {
   problem: DynatraceProblem;
   aiEmail: string;
   uiBaseUrl?: string;
-  onAnalyze: () => void;
-  analyzing: boolean;
-  analysisResult: string;
-  actionItems?: ActionItem[];
+  onQuickAnalyze: () => void;
+  quickAnalyzing: boolean;
+  quickAnalysisResult: string;
+  quickActionItems?: ActionItem[];
+  onCancelQuickAnalyze: () => void;
+  onInvestigate: () => void;
+  investigating: boolean;
+  investigationResult: any;
+  onCancelInvestigate: () => void;
 }) {
   const hasWorkloads = (problem.k8sWorkloads ?? []).some(w => w.AppName);
   const [metricsRightWidth, setMetricsRightWidth] = useState(380);
+  const hasActivity = investigating || quickAnalyzing || !!investigationResult || !!quickAnalysisResult;
 
   return (
     <Tabs defaultValue="details" className="w-full">
@@ -2049,10 +2651,10 @@ function ProblemDetailPanel({
           <span>GitHub</span>
           {hasWorkloads && <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />}
         </TabsTrigger>
-        <TabsTrigger value="ai" className="text-xs gap-1.5">
-          <Bot className="h-3 w-3" />IA
-          {analyzing && <RefreshCw className="h-2.5 w-2.5 animate-spin" />}
-          {analysisResult && !analyzing && <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}
+        <TabsTrigger value="diagnostico" className="text-xs gap-1.5">
+          <Microscope className="h-3 w-3" />Diagnóstico
+          {(investigating || quickAnalyzing) && <RefreshCw className="h-2.5 w-2.5 animate-spin" />}
+          {hasActivity && !investigating && !quickAnalyzing && <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}
         </TabsTrigger>
       </TabsList>
 
@@ -2083,14 +2685,20 @@ function ProblemDetailPanel({
         <DynatraceGitHubSection problem={problem} />
       </TabsContent>
 
-      <TabsContent value="ai" className="mt-0">
-        <DiagnosticTab
+      <TabsContent value="diagnostico" className="mt-0">
+        <DiagnosticoTab
           problem={problem}
+          aiEmail={aiEmail}
           uiBaseUrl={uiBaseUrl}
-          onAnalyze={onAnalyze}
-          analyzing={analyzing}
-          analysisResult={analysisResult}
-          actionItems={actionItems}
+          onQuickAnalyze={onQuickAnalyze}
+          quickAnalyzing={quickAnalyzing}
+          quickAnalysisResult={quickAnalysisResult}
+          quickActionItems={quickActionItems}
+          onCancelQuickAnalyze={onCancelQuickAnalyze}
+          onInvestigate={onInvestigate}
+          investigating={investigating}
+          investigationResult={investigationResult}
+          onCancelInvestigate={onCancelInvestigate}
         />
       </TabsContent>
     </Tabs>
@@ -2108,15 +2716,22 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
   const queryClient = useQueryClient();
 
   const [selectedProblem, setSelectedProblem] = useState<DynatraceProblem | null>(null);
-  const [analysisResult, setAnalysisResult] = useState<string>("");
-  const [actionItems, setActionItems] = useState<ActionItem[]>([]);
-  const [analyzingId, setAnalyzingId] = useState<string | null>(null);
+  const [quickAnalysisResult, setQuickAnalysisResult] = useState<string>("");
+  const [quickActionItems, setQuickActionItems] = useState<ActionItem[]>([]);
+  const [quickAnalyzingId, setQuickAnalyzingId] = useState<string | null>(null);
+  const [investigatingId, setInvestigatingId] = useState<string | null>(null);
+  const [investigationResult, setInvestigationResult] = useState<any>(null);
 
-  // Filtro por management zone / tag (na própria aba)
-  const [filterInput, setFilterInput] = useState("");
+  const analyzeAbortRef = useRef<AbortController | null>(null);
+  const investigateAbortRef = useRef<AbortController | null>(null);
+
+  // Filtro por management zone (alert profile) / tag
+  const [mzFilter, setMzFilter] = useState("");      // management zone selecionada no dropdown
+  const [tagInput, setTagInput] = useState("");       // filtro livre: "tag:valor" ou texto
   const [activeFilter, setActiveFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("OPEN"); // OPEN | CLOSED | ALL
-  const filterInputRef = useRef<HTMLInputElement>(null);
+  const [dateFrom, setDateFrom] = useState("");       // ISO date para busca histórica
+  const [dateTo, setDateTo] = useState("");
 
   // Intervalo de atualização automática
   const REFRESH_OPTIONS = [
@@ -2128,26 +2743,48 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
   ] as const;
   const [refreshInterval, setRefreshInterval] = useState<number>(60_000);
 
+  // Management zones disponíveis no ambiente DT (alert profiles)
+  const { data: mzData } = useQuery({
+    queryKey: ["dynatrace-mz", aiEmail],
+    queryFn: () => apiClient.getDynatraceManagementZones(aiEmail),
+    enabled: !!aiEmail,
+    staleTime: 5 * 60_000,
+  });
+  const managementZones = mzData?.zones ?? [];
+
+  // Filtro efetivo: MZ dropdown tem prioridade sobre texto livre
+  const effectiveFilter = mzFilter || tagInput.trim();
+
   const applyFilter = () => {
-    const f = filterInput.trim();
-    setActiveFilter(f);
+    setActiveFilter(effectiveFilter);
     setSelectedProblem(null);
-    setAnalysisResult("");
-    queryClient.invalidateQueries({ queryKey: ["dynatrace-problems", aiEmail, f, statusFilter] });
+    setQuickAnalysisResult("");
+    setInvestigationResult(null);
+    queryClient.invalidateQueries({ queryKey: ["dynatrace-problems", aiEmail, effectiveFilter, statusFilter, dateFrom, dateTo] });
   };
 
   const clearFilter = () => {
-    setFilterInput("");
+    setMzFilter("");
+    setTagInput("");
     setActiveFilter("");
+    setDateFrom("");
+    setDateTo("");
     setSelectedProblem(null);
-    setAnalysisResult("");
+    setQuickAnalysisResult("");
   };
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
-    queryKey: ["dynatrace-problems", aiEmail, activeFilter, statusFilter],
-    queryFn: () => apiClient.getDynatraceProblems(aiEmail, activeFilter || undefined, statusFilter),
+    queryKey: ["dynatrace-problems", aiEmail, activeFilter, statusFilter, dateFrom, dateTo],
+    queryFn: () => apiClient.getDynatraceProblems(
+      aiEmail,
+      activeFilter || undefined,
+      statusFilter,
+      dateFrom || undefined,
+      dateTo || undefined,
+    ),
     enabled: !!aiEmail,
-    refetchInterval: refreshInterval > 0 ? refreshInterval : false,
+    // Auto-refresh só faz sentido para problems abertos — fechados são histórico estático
+    refetchInterval: statusFilter === "OPEN" && refreshInterval > 0 ? refreshInterval : false,
     staleTime: 30_000,
   });
 
@@ -2168,23 +2805,60 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
   });
 
   const analyzeMutation = useMutation({
-    mutationFn: (p: DynatraceProblem) =>
-      apiClient.analyzeDynatraceProblem(p.problemId, aiEmail),
+    mutationFn: (p: DynatraceProblem) => {
+      analyzeAbortRef.current = new AbortController();
+      return apiClient.analyzeDynatraceProblem(p.problemId, aiEmail, analyzeAbortRef.current.signal);
+    },
     onMutate: (p) => {
-      setAnalyzingId(p.problemId);
-      setAnalysisResult("");
-      setActionItems([]);
+      setQuickAnalyzingId(p.problemId);
+      setQuickAnalysisResult("");
+      setQuickActionItems([]);
     },
     onSuccess: (result) => {
-      setAnalysisResult(result.analysis);
-      setActionItems(result.action_items ?? []);
-      setAnalyzingId(null);
+      setQuickAnalysisResult(result.analysis);
+      setQuickActionItems(result.action_items ?? []);
+      setQuickAnalyzingId(null);
     },
     onError: (err: any) => {
-      setAnalysisResult(`**Erro na análise:** ${err.message ?? "Erro desconhecido"}`);
-      setAnalyzingId(null);
+      if (err?.name === "AbortError") return; // cancelado pelo usuário — não exibe erro
+      setQuickAnalysisResult(`**Erro na análise:** ${err.message ?? "Erro desconhecido"}`);
+      setQuickAnalyzingId(null);
     },
   });
+
+  const investigateMutation = useMutation({
+    mutationFn: (p: DynatraceProblem) => {
+      investigateAbortRef.current = new AbortController();
+      return apiClient.investigateDynatraceProblem(p.problemId, aiEmail, investigateAbortRef.current.signal);
+    },
+    onMutate: (p) => {
+      setInvestigatingId(p.problemId);
+      setInvestigationResult(null);
+    },
+    onSuccess: (result) => {
+      setInvestigationResult(result);
+      setInvestigatingId(null);
+    },
+    onError: (err: any) => {
+      if (err?.name === "AbortError") return; // cancelado pelo usuário — não exibe erro
+      setInvestigationResult({ ai_error: err.message ?? "Erro desconhecido" });
+      setInvestigatingId(null);
+    },
+  });
+
+  const handleCancelInvestigate = () => {
+    investigateAbortRef.current?.abort();
+    investigateAbortRef.current = null;
+    setInvestigatingId(null);
+    investigateMutation.reset();
+  };
+
+  const handleCancelQuickAnalyze = () => {
+    analyzeAbortRef.current?.abort();
+    analyzeAbortRef.current = null;
+    setQuickAnalyzingId(null);
+    analyzeMutation.reset();
+  };
 
   // ── Não configurado ────────────────────────────────────────────────────────────
   if (!aiEmail) {
@@ -2233,7 +2907,9 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
               setStatusFilter(s);
               setSelectedProblem(null);
               setAnalysisResult("");
-              queryClient.invalidateQueries({ queryKey: ["dynatrace-problems", aiEmail, activeFilter, s] });
+              // Limpar datas ao voltar para OPEN (datas só fazem sentido em CLOSED/ALL)
+              if (s === "OPEN") { setDateFrom(""); setDateTo(""); }
+              queryClient.invalidateQueries({ queryKey: ["dynatrace-problems", aiEmail, activeFilter, s, dateFrom, dateTo] });
             }}
           >
             {s === "OPEN" ? "Abertos" : s === "CLOSED" ? "Fechados" : "Todos"}
@@ -2241,36 +2917,120 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
         ))}
       </div>
 
-      {/* Filtro por tag/management zone */}
-      <div className="flex gap-1.5">
-        <div className="relative flex-1">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-          <Input
-            ref={filterInputRef}
-            placeholder="Filtrar por Management Zone ou tag:..."
-            value={filterInput}
-            onChange={e => setFilterInput(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && applyFilter()}
-            className="pl-7 h-8 text-xs"
-          />
+      {/* Filtro por Alert Profile (Management Zone) */}
+      <div className="space-y-2">
+        {/* Dropdown de management zones */}
+        <div className="flex gap-1.5">
+          <Select value={mzFilter} onValueChange={v => { setMzFilter(v === "__all__" ? "" : v); setTagInput(""); }}>
+            <SelectTrigger className="h-8 text-xs flex-1 min-w-0">
+              <SelectValue placeholder={
+                managementZones.length > 0
+                  ? "Alert Profile (Management Zone)..."
+                  : "Carregando alert profiles..."
+              } />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__" className="text-xs text-muted-foreground">— Todos os profiles —</SelectItem>
+              {managementZones.map(mz => (
+                <SelectItem key={mz.id} value={mz.name} className="text-xs">{mz.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {(mzFilter || tagInput.trim() || dateFrom || dateTo || activeFilter) && (
+            <Button size="sm" variant="ghost" className="h-8 w-8 p-0 shrink-0" onClick={clearFilter} title="Limpar filtros">
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          )}
         </div>
-        {activeFilter ? (
-          <Button size="sm" variant="ghost" className="h-8 w-8 p-0 shrink-0" onClick={clearFilter} title="Limpar filtro">
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        ) : (
+
+        {/* Filtro personalizado por tag (opcional, secundário) */}
+        <div className="flex gap-1.5">
+          <div className="relative flex-1">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+            <Input
+              placeholder="tag:valor ou texto livre..."
+              value={tagInput}
+              onChange={e => { setTagInput(e.target.value); if (e.target.value) setMzFilter(""); }}
+              onKeyDown={e => e.key === "Enter" && applyFilter()}
+              className="pl-7 h-8 text-xs"
+              disabled={!!mzFilter}
+            />
+          </div>
           <Button size="sm" variant="secondary" className="h-8 shrink-0 text-xs px-2.5" onClick={applyFilter}>
-            Filtrar
+            Buscar
           </Button>
+        </div>
+
+        {/* Período de busca — relevante para CLOSED/ALL */}
+        {statusFilter !== "OPEN" && (
+          <div className="space-y-1.5">
+            <p className="text-[10px] text-muted-foreground font-medium">Período de busca</p>
+            {/* Atalhos rápidos */}
+            <div className="flex flex-wrap gap-1">
+              {[
+                { label: "6h",     value: "now-6h"  },
+                { label: "24h",    value: "now-24h" },
+                { label: "3 dias", value: "now-3d"  },
+                { label: "7 dias", value: "now-7d"  },
+                { label: "14 dias",value: "now-14d" },
+                { label: "30 dias",value: "now-30d" },
+              ].map(opt => (
+                <Button
+                  key={opt.value}
+                  size="sm"
+                  variant={dateFrom === opt.value ? "default" : "outline"}
+                  className="h-6 text-[10px] px-2"
+                  onClick={() => { setDateFrom(opt.value); setDateTo(""); }}
+                >
+                  {opt.label}
+                </Button>
+              ))}
+            </div>
+            {/* Data customizada */}
+            <div className="flex gap-1.5 items-center">
+              <Input
+                type="date"
+                className="h-7 text-xs flex-1"
+                value={dateFrom.startsWith("now") ? "" : dateFrom}
+                onChange={e => { setDateFrom(e.target.value); }}
+                title="Data inicial"
+              />
+              <span className="text-[10px] text-muted-foreground shrink-0">até</span>
+              <Input
+                type="date"
+                className="h-7 text-xs flex-1"
+                value={dateTo}
+                onChange={e => setDateTo(e.target.value)}
+                title="Data final (vazio = agora)"
+              />
+              {(dateFrom || dateTo) && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 w-7 p-0 shrink-0"
+                  onClick={() => { setDateFrom(""); setDateTo(""); }}
+                  title="Limpar datas"
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              )}
+            </div>
+          </div>
         )}
       </div>
 
-      {/* Status */}
+      {/* Status da busca */}
       {data && !data.dt_not_configured && (
-        <div className="text-[10px] text-muted-foreground flex items-center gap-1.5">
+        <div className="text-[10px] text-muted-foreground flex items-center gap-1.5 flex-wrap">
           {activeFilter && (
             <Badge variant="outline" className="text-[10px] gap-1">
               <MapPin className="h-2.5 w-2.5" />{activeFilter}
+            </Badge>
+          )}
+          {dateFrom && (
+            <Badge variant="outline" className="text-[10px] gap-1">
+              <Clock className="h-2.5 w-2.5" />
+              {dateFrom.startsWith("now-") ? `últimos ${dateFrom.replace("now-", "")}` : dateFrom}
             </Badge>
           )}
           <span>
@@ -2287,8 +3047,11 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
             <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
           </div>
         ) : problems.length === 0 ? (
-          <div className="text-center py-16 text-sm text-muted-foreground">
-            {activeFilter ? `Nenhum problem para "${activeFilter}"` : "Nenhum problem aberto"}
+          <div className="text-center py-16 text-sm text-muted-foreground space-y-1">
+            <p>{activeFilter ? `Nenhum problem para "${activeFilter}"` : `Nenhum problem ${statusFilter === "OPEN" ? "aberto" : statusFilter === "CLOSED" ? "fechado" : ""} encontrado`}</p>
+            {statusFilter !== "OPEN" && !dateFrom && !dateTo && (
+              <p className="text-xs">Tente definir um período de busca acima</p>
+            )}
           </div>
         ) : (
           problems.map(p => (
@@ -2299,7 +3062,9 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
               uiBaseUrl={uiBaseUrl}
               onClick={() => {
                 setSelectedProblem(p);
-                setAnalysisResult("");
+                setQuickAnalysisResult("");
+                setQuickActionItems([]);
+                setInvestigationResult(null);
               }}
             />
           ))
@@ -2320,10 +3085,15 @@ export function DynatraceTab({ selectedCluster: _cluster }: DynatraceTabProps) {
         problem={selectedProblem}
         aiEmail={aiEmail}
         uiBaseUrl={uiBaseUrl}
-        analyzing={analyzingId === selectedProblem.problemId}
-        analysisResult={analysisResult}
-        actionItems={actionItems}
-        onAnalyze={() => analyzeMutation.mutate(selectedProblem)}
+        quickAnalyzing={quickAnalyzingId === selectedProblem.problemId}
+        quickAnalysisResult={quickAnalysisResult}
+        quickActionItems={quickActionItems}
+        onQuickAnalyze={() => analyzeMutation.mutate(selectedProblem)}
+        onCancelQuickAnalyze={handleCancelQuickAnalyze}
+        investigating={investigatingId === selectedProblem.problemId}
+        investigationResult={investigationResult}
+        onInvestigate={() => investigateMutation.mutate(selectedProblem)}
+        onCancelInvestigate={handleCancelInvestigate}
       />
     </div>
   );
