@@ -739,14 +739,16 @@ func (s *Server) setupRoutes() {
 	}
 
 	// Dynatrace Integration — análise de problems com AI
-	dtHandler := handlers.NewDynatraceHandler(s.aiTokensStore, s.aiHistoryStore, s.aiHandler)
+	dtHandler := handlers.NewDynatraceHandler(s.aiTokensStore, s.aiHistoryStore, s.aiHandler, s.npRegistryStore)
 	dt := api.Group("/dynatrace")
 	{
 		dt.GET("/config", dtHandler.GetConfig)
 		dt.POST("/test", dtHandler.TestConnection)
+		dt.GET("/management-zones", dtHandler.GetManagementZones)
 		dt.GET("/problems", dtHandler.ListProblems)
 		dt.GET("/problems/:problemId", dtHandler.GetProblem)
 		dt.POST("/problems/:problemId/analyze", dtHandler.AnalyzeProblem)
+		dt.POST("/problems/:problemId/investigate", dtHandler.InvestigateProblem)
 		dt.GET("/problems/:problemId/metrics", dtHandler.GetProblemMetrics)
 		dt.GET("/problems/:problemId/context", dtHandler.GetProblemContext)
 		dt.GET("/history", dtHandler.GetHistory)
@@ -1205,6 +1207,8 @@ func (s *Server) setupRoutes() {
 
 		// Injetar stores no orchestrator para enriquecimento dos OneAgent Signals
 		healthCheckOrchestrator.SetStores(s.npRegistryStore, dependencyRegistry)
+		// Injetar orchestrator e dependency registry no DT handler para investigação profunda
+		dtHandler.SetInvestigateStores(healthCheckOrchestrator, dependencyRegistry)
 		dependenciesHandler := handlers.NewDependenciesHandler(dependencyScanner, dependencyRegistry)
 		dependenciesGroup := api.Group("/dependencies")
 		{
