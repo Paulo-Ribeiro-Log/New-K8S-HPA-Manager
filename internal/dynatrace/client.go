@@ -165,6 +165,13 @@ func (c *Client) GetOpenProblems(ctx context.Context, filter, status, from, to s
 		}
 	}
 
+	// A API DT usa now-2h como janela padrão quando "from" não é especificado.
+	// Para CLOSED/ALL sem from explícito, ampliamos para now-4h para incluir
+	// problems fechados recentemente (até 4h atrás).
+	if from == "" && status != "OPEN" {
+		from = "now-4h"
+	}
+
 	const maxProblems = 200
 	const pageSize = 10 // API Dynatrace limita pageSize=10 quando fields está presente
 
