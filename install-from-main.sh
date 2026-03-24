@@ -129,7 +129,7 @@ check_requirements() {
         print_info "Instale Go 1.22+ em: https://go.dev/dl/"
         missing_requirements=1
     else
-        GO_VERSION=$(go version | grep -oP 'go\d+\.\d+' | grep -oP '\d+\.\d+')
+        GO_VERSION=$(go version | grep -oE 'go[0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+')
         GO_MAJOR=$(echo $GO_VERSION | cut -d. -f1)
         GO_MINOR=$(echo $GO_VERSION | cut -d. -f2)
 
