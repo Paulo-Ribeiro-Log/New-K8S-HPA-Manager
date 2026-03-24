@@ -3032,7 +3032,19 @@ class APIClient {
     });
   }
 
-  async getDynatraceProblems(aiEmail: string, filter?: string, status?: string): Promise<{
+  async getDynatraceManagementZones(aiEmail: string): Promise<{
+    zones: Array<{ id: string; name: string }>;
+  }> {
+    return this.request(`/dynatrace/management-zones?ai_email=${encodeURIComponent(aiEmail)}`);
+  }
+
+  async getDynatraceProblems(
+    aiEmail: string,
+    filter?: string,
+    status?: string,
+    from?: string,
+    to?: string,
+  ): Promise<{
     problems: import("../../types/healthcheck").DynatraceProblem[];
     total: number;
     fetched_at: string;
@@ -3043,6 +3055,8 @@ class APIClient {
     let url = `/dynatrace/problems?ai_email=${encodeURIComponent(aiEmail)}`;
     if (filter) url += `&filter=${encodeURIComponent(filter)}`;
     if (status) url += `&status=${encodeURIComponent(status)}`;
+    if (from) url += `&from=${encodeURIComponent(from)}`;
+    if (to) url += `&to=${encodeURIComponent(to)}`;
     return this.request(url);
   }
 
@@ -3074,7 +3088,7 @@ class APIClient {
     return this.request(`/nodepools/registry/scan${params}`, { method: "POST" });
   }
 
-  async analyzeDynatraceProblem(problemId: string, aiEmail: string): Promise<{
+  async analyzeDynatraceProblem(problemId: string, aiEmail: string, signal?: AbortSignal): Promise<{
     problem_id: string;
     title: string;
     severity: string;
@@ -3093,6 +3107,36 @@ class APIClient {
     return this.request(`/dynatrace/problems/${encodeURIComponent(problemId)}/analyze`, {
       method: "POST",
       body: JSON.stringify({ ai_email: aiEmail }),
+      signal,
+    });
+  }
+
+  async investigateDynatraceProblem(problemId: string, aiEmail: string, signal?: AbortSignal): Promise<{
+    problem_id: string;
+    problem_title: string;
+    root_cause_entity_name?: string;
+    root_cause_entity_type?: string;
+    identified_cluster?: string;
+    identified_node_pool?: string;
+    identified_namespace?: string;
+    identified_workload?: string;
+    health_check_result?: any;
+    health_check_error?: string;
+    dependencies?: Array<{
+      service_name: string;
+      service_type: string;
+      deployment?: string;
+      namespace: string;
+      cluster: string;
+    }>;
+    ai_analysis?: string;
+    ai_error?: string;
+    investigated_at: string;
+  }> {
+    return this.request(`/dynatrace/problems/${encodeURIComponent(problemId)}/investigate`, {
+      method: "POST",
+      body: JSON.stringify({ ai_email: aiEmail }),
+      signal,
     });
   }
 }

@@ -172,23 +172,64 @@ func (p *GeminiProvider) doRequest(ctx context.Context, url, bearerToken, userPr
 		req.Header.Set("X-Goog-User-Project", userProject)
 	}
 
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
+	const maxRetries = 3
+	var (
+		resp *http.Response
+		body []byte
+	)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			wait := time.Duration(1<<uint(attempt)) * time.Second // 2s, 4s, 8s
+			log.Warn().Int("attempt", attempt).Dur("wait", wait).Int("status", resp.StatusCode).
+				Msg("Gemini: retry após erro temporário")
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(wait):
+			}
+			// Recria o request (body foi consumido)
+			req, err = http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+			if err != nil {
+				return "", fmt.Errorf("failed to recreate request: %w", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if bearerToken != "" {
+				req.Header.Set("Authorization", "Bearer "+bearerToken)
+			}
+			if userProject != "" {
+				req.Header.Set("X-Goog-User-Project", userProject)
+			}
+		}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
-	}
+		var doErr error
+		resp, doErr = p.client.Do(req)
+		if doErr != nil {
+			return "", fmt.Errorf("failed to send request: %w", doErr)
+		}
 
-	if resp.StatusCode != http.StatusOK {
+		body, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return "", fmt.Errorf("failed to read response: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+
+		// Erros retryáveis: 503 (sobrecarga) e 429 (rate limit)
+		if (resp.StatusCode == 503 || resp.StatusCode == 429) && attempt < maxRetries {
+			continue
+		}
+
+		// Erros definitivos
 		switch resp.StatusCode {
 		case 403:
 			return "", fmt.Errorf("permissão negada (403) — URL: %s — body: %s", url, string(body))
 		case 429:
-			return "", fmt.Errorf("cota da API Gemini esgotada (429). Aguarde alguns minutos. Detalhes: %s", string(body))
+			return "", fmt.Errorf("cota da API Gemini esgotada (429) após %d tentativas. Detalhes: %s", attempt+1, string(body))
+		case 503:
+			return "", fmt.Errorf("Gemini indisponível (503) após %d tentativas — modelo sobrecarregado. Tente novamente em alguns minutos. Detalhes: %s", attempt+1, string(body))
 		default:
 			return "", fmt.Errorf("gemini API error (status %d) — URL: %s — body: %s", resp.StatusCode, url, string(body))
 		}
