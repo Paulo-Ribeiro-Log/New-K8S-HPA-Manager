@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -137,19 +138,18 @@ type ProblemsResult struct {
 }
 
 // GetOpenProblems retorna problems com paginação automática.
-// statusFilter: "OPEN" (padrão), "CLOSED", ou "" (todos).
+// status: "OPEN" (padrão), "CLOSED", ou "ALL".
 // filter (opcional): filtra por management zone ou tag (prefixo "tag:").
+// from/to (opcional): intervalo ISO 8601 para busca histórica (ex: "now-7d", "2026-03-01T00:00:00Z").
 // Limite de segurança: 200 problems por chamada.
-func (c *Client) GetOpenProblems(ctx context.Context, filter string, statusFilter ...string) (*ProblemsResult, error) {
-	status := "OPEN"
-	if len(statusFilter) > 0 && statusFilter[0] != "" {
-		status = strings.ToUpper(statusFilter[0])
+func (c *Client) GetOpenProblems(ctx context.Context, filter, status, from, to string) (*ProblemsResult, error) {
+	if status == "" {
+		status = "OPEN"
 	}
+	status = strings.ToUpper(status)
 
 	var selector string
-	if status == "ALL" {
-		selector = "" // sem filtro de status = todos
-	} else {
+	if status != "ALL" {
 		selector = fmt.Sprintf(`status("%s")`, status)
 	}
 
@@ -189,6 +189,13 @@ func (c *Client) GetOpenProblems(ctx context.Context, filter string, statusFilte
 			if selector != "" {
 				params["problemSelector"] = []string{selector}
 			}
+			// Intervalo de tempo para busca histórica (ex: problems encerrados num período)
+			if from != "" {
+				params["from"] = []string{from}
+			}
+			if to != "" {
+				params["to"] = []string{to}
+			}
 		} else {
 			// Páginas seguintes: apenas nextPageKey (os demais parâmetros são codificados nele)
 			params = url.Values{"nextPageKey": {nextPageKey}}
@@ -214,6 +221,95 @@ func (c *Client) GetOpenProblems(ctx context.Context, filter string, statusFilte
 	}
 
 	return &ProblemsResult{Problems: allProblems, TotalCount: totalCount}, nil
+}
+
+// GetManagementZones retorna as management zones (alert profiles) do ambiente Dynatrace.
+// Tenta 3 estratégias em cascata, da mais completa para a mais básica:
+//
+//  1. Settings API (builtin:management-zones) — lista TODAS as zones configuradas.
+//     Requer scope "Read settings" (settings.read). Mais completa.
+//
+//  2. Entities API (type(MANAGEMENT_ZONE)) — management zones são entidades DT.
+//     Requer apenas "Read entities" (entities.read). Quase sempre disponível.
+//
+//  3. Extrai zones dos últimos 30 dias de problems — requer só "Read problems".
+//     Menos completa (só zones com ocorrências recentes), mas sempre funciona.
+func (c *Client) GetManagementZones(ctx context.Context) ([]ManagementZone, error) {
+	// ── Estratégia 1: Settings API ─────────────────────────────────────────────
+	var settingsResult struct {
+		Items []struct {
+			ObjectID string `json:"objectId"`
+			Value    struct {
+				Name string `json:"name"`
+			} `json:"value"`
+		} `json:"items"`
+	}
+	if err := c.get(ctx, "settings/objects", url.Values{
+		"schemaIds": {"builtin:management-zones"},
+		"pageSize":  {"500"},
+		"scope":     {"environment"},
+	}, &settingsResult); err == nil && len(settingsResult.Items) > 0 {
+		zones := make([]ManagementZone, 0, len(settingsResult.Items))
+		for _, item := range settingsResult.Items {
+			if item.Value.Name != "" {
+				zones = append(zones, ManagementZone{ID: item.ObjectID, Name: item.Value.Name})
+			}
+		}
+		sort.Slice(zones, func(i, j int) bool { return zones[i].Name < zones[j].Name })
+		return zones, nil
+	}
+
+	// ── Estratégia 2: Entities API ─────────────────────────────────────────────
+	var entResult struct {
+		Entities []struct {
+			EntityID    string `json:"entityId"`
+			DisplayName string `json:"displayName"`
+		} `json:"entities"`
+	}
+	if err := c.get(ctx, "entities", url.Values{
+		"entitySelector": {"type(MANAGEMENT_ZONE)"},
+		"pageSize":       {"500"},
+		"fields":         {"displayName"},
+	}, &entResult); err == nil && len(entResult.Entities) > 0 {
+		zones := make([]ManagementZone, 0, len(entResult.Entities))
+		for _, e := range entResult.Entities {
+			if e.DisplayName != "" {
+				zones = append(zones, ManagementZone{ID: e.EntityID, Name: e.DisplayName})
+			}
+		}
+		sort.Slice(zones, func(i, j int) bool { return zones[i].Name < zones[j].Name })
+		return zones, nil
+	}
+
+	// ── Estratégia 3: Extrai dos últimos 30 dias de problems ───────────────────
+	// Sem problemSelector + from=now-30d → DT retorna OPEN e CLOSED no período.
+	var probResult struct {
+		Problems []struct {
+			ManagementZones []ManagementZone `json:"managementZones"`
+		} `json:"problems"`
+	}
+	if err := c.get(ctx, "problems", url.Values{
+		"fields":   {"+managementZones"},
+		"pageSize": {"50"},
+		"from":     {"now-30d"},
+	}, &probResult); err != nil {
+		return nil, err
+	}
+
+	seen := map[string]struct{}{}
+	zones := make([]ManagementZone, 0)
+	for _, p := range probResult.Problems {
+		for _, mz := range p.ManagementZones {
+			if mz.Name != "" {
+				if _, ok := seen[mz.ID]; !ok {
+					seen[mz.ID] = struct{}{}
+					zones = append(zones, mz)
+				}
+			}
+		}
+	}
+	sort.Slice(zones, func(i, j int) bool { return zones[i].Name < zones[j].Name })
+	return zones, nil
 }
 
 // GetProblem retorna detalhes completos de um problem pelo ID.
