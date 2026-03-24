@@ -685,6 +685,62 @@ func (h *DynatraceHandler) InvestigateProblem(c *gin.Context) {
 		}
 	}
 
+	// Determinar o ambiente alvo do problema UMA VEZ — usado em 3b e 3c.
+	// Regra: se nenhum marcador não-prd (hlg/sit/stg…) aparece no problema → prd por padrão.
+	problemEnvHint := extractEnvHint(problem)
+
+	// 3b. Fallback por keyword: se cluster ainda não identificado, buscar no Node Pool Registry.
+	//     Prioriza clusters compatíveis com o ambiente do problema: se envHint="prd", escolhe
+	//     o cluster prd dentre os resultados — nunca retorna hlg quando o problema é de prd.
+	if report.IdentifiedCluster == "" && h.nodePoolStore != nil {
+		kwTexts := make([]string, 0, len(problem.ManagementZones)+1)
+		for _, mz := range problem.ManagementZones {
+			kwTexts = append(kwTexts, mz.Name)
+		}
+		if problem.RootCauseEntity != nil {
+			kwTexts = append(kwTexts, problem.RootCauseEntity.Name)
+		}
+		keywords := extractKeywords(kwTexts...)
+		for _, kw := range keywords {
+			entries, kwErr := h.nodePoolStore.LookupByKeyword(kw)
+			if kwErr != nil || len(entries) == 0 {
+				continue
+			}
+			// Escolher entry com cluster compatível com o ambiente do problema
+			chosen := pickEntryByEnv(entries, problemEnvHint)
+			report.IdentifiedCluster = chosen.Cluster
+			report.IdentifiedNodePool = chosen.NodePool
+			log.Info().
+				Str("keyword", kw).
+				Str("cluster", report.IdentifiedCluster).
+				Str("nodepool", report.IdentifiedNodePool).
+				Str("env_hint", problemEnvHint).
+				Msg("InvestigateProblem: cluster identificado via keyword no Node Pool Registry")
+			break
+		}
+	}
+
+	// 3c. Fallback por keyword para namespace: usa o ambiente do PROBLEMA (não do cluster)
+	//     para filtrar namespaces — garante que prd nunca analisa namespaces hlg/sit e vice-versa.
+	if report.IdentifiedCluster != "" && report.IdentifiedNamespace == "" && h.orchestrator != nil {
+		kwTexts := make([]string, 0, len(problem.ManagementZones)+1)
+		for _, mz := range problem.ManagementZones {
+			kwTexts = append(kwTexts, mz.Name)
+		}
+		if problem.RootCauseEntity != nil {
+			kwTexts = append(kwTexts, problem.RootCauseEntity.Name)
+		}
+		keywords := extractKeywords(kwTexts...)
+		if ns := h.orchestrator.FindNamespaceByKeywords(ctx, report.IdentifiedCluster, keywords, problemEnvHint); ns != "" {
+			report.IdentifiedNamespace = ns
+			log.Info().
+				Str("cluster", report.IdentifiedCluster).
+				Str("namespace", ns).
+				Str("env_hint", problemEnvHint).
+				Msg("InvestigateProblem: namespace identificado via keyword em K8s")
+		}
+	}
+
 	// 4. Health Check K8s direcionado (apenas se cluster identificado)
 	if report.IdentifiedCluster != "" && h.orchestrator != nil {
 		hcReq := healthcheck.HealthCheckRequest{
@@ -747,6 +803,122 @@ func (h *DynatraceHandler) InvestigateProblem(c *gin.Context) {
 		Msg("InvestigateProblem: investigação concluída")
 
 	c.JSON(http.StatusOK, report)
+}
+
+// pickEntryByEnv escolhe o NodePoolRegistryEntry cujo cluster mais combina com o envHint.
+// Prioridade: cluster com token de ambiente igual ao envHint → qualquer outro.
+// Evita escolher cluster hlg quando o problema é de prd e vice-versa.
+func pickEntryByEnv(entries []storage.NodePoolRegistryEntry, envHint string) storage.NodePoolRegistryEntry {
+	if len(entries) == 1 || envHint == "" {
+		return entries[0]
+	}
+	for _, e := range entries {
+		if extractEnvFromText(e.Cluster) == envHint {
+			return e
+		}
+	}
+	return entries[0] // fallback: primeiro disponível
+}
+
+// extractEnvFromText extrai o marcador de ambiente de um texto qualquer (ex: nome de cluster)
+// por comparação de token exato. Ex: "akspriv-oferta-hlg-admin" → "hlg".
+// Retorna "" se nenhum marcador reconhecido for encontrado como token.
+func extractEnvFromText(text string) string {
+	allEnvs := []string{"prd", "prod", "hlg", "sit", "stg", "hml", "uat", "dev"}
+	tokens := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return r == '-' || r == '_' || r == '.' || r == ' '
+	})
+	for _, tok := range tokens {
+		for _, env := range allEnvs {
+			if tok == env {
+				return env
+			}
+		}
+	}
+	return ""
+}
+
+// extractEnvHint detecta o ambiente alvo a partir do conteúdo do problema DT.
+// Varre management zones, nome da rootCause e título em busca de marcadores não-prd
+// como tokens completos (separados por espaço, hífen ou underscore) — evita falsos
+// positivos de palavras que contêm "sit"/"stg" como substring (ex: "transition", "staging-area").
+// Se nenhum marcador não-prd for encontrado, retorna "prd" por padrão.
+func extractEnvHint(problem *dtclient.Problem) string {
+	nonPrd := []string{"hlg", "sit", "stg", "hml", "uat", "dev"}
+	candidates := make([]string, 0)
+	for _, mz := range problem.ManagementZones {
+		candidates = append(candidates, mz.Name)
+	}
+	if problem.RootCauseEntity != nil {
+		candidates = append(candidates, problem.RootCauseEntity.Name)
+	}
+	candidates = append(candidates, problem.Title)
+
+	for _, text := range candidates {
+		tokens := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+			return r == ' ' || r == '-' || r == '_' || r == '/' || r == '.'
+		})
+		for _, tok := range tokens {
+			for _, marker := range nonPrd {
+				if tok == marker {
+					return marker
+				}
+			}
+		}
+	}
+	return "prd" // padrão: assumir produção
+}
+
+// removeAccents substitui caracteres acentuados comuns do português/espanhol por equivalentes ASCII.
+// Necessário porque K8s exige nomes ASCII e management zones DT podem ter Unicode.
+var accentReplacer = strings.NewReplacer(
+	"á", "a", "à", "a", "â", "a", "ã", "a", "ä", "a",
+	"é", "e", "è", "e", "ê", "e", "ë", "e",
+	"í", "i", "ì", "i", "î", "i", "ï", "i",
+	"ó", "o", "ò", "o", "ô", "o", "õ", "o", "ö", "o",
+	"ú", "u", "ù", "u", "û", "u", "ü", "u",
+	"ç", "c", "ñ", "n",
+	"Á", "a", "À", "a", "Â", "a", "Ã", "a",
+	"É", "e", "È", "e", "Ê", "e",
+	"Í", "i", "Ì", "i",
+	"Ó", "o", "Ò", "o", "Ô", "o", "Õ", "o",
+	"Ú", "u", "Ù", "u",
+	"Ç", "c", "Ñ", "n",
+)
+
+// extractKeywords extrai palavras-chave de textos livres para busca fuzzy em node pools e namespaces.
+// Normaliza acentos para ASCII, separa por separadores e dígitos, filtra tokens ≥4 chars.
+// Adiciona stems removendo 's' final (plurais). Ex: "Cálculo de Fretes" → ["calculo","fretes","frete"]
+func extractKeywords(texts ...string) []string {
+	seen := map[string]bool{}
+	var result []string
+
+	add := func(token string) {
+		token = accentReplacer.Replace(strings.ToLower(strings.TrimSpace(token)))
+		if len(token) >= 4 && !seen[token] {
+			seen[token] = true
+			result = append(result, token)
+		}
+	}
+
+	for _, text := range texts {
+		tokens := strings.FieldsFunc(text, func(r rune) bool {
+			return r == ' ' || r == '-' || r == '_' || r == '/' || r == ':' || (r >= '0' && r <= '9')
+		})
+		for _, tok := range tokens {
+			add(tok)
+			// Stem: remover 's' final (plural) se a raiz ainda tiver ≥4 chars
+			lower := accentReplacer.Replace(strings.ToLower(tok))
+			if strings.HasSuffix(lower, "s") && len(lower) > 4 {
+				stem := lower[:len(lower)-1]
+				if !seen[stem] {
+					seen[stem] = true
+					result = append(result, stem)
+				}
+			}
+		}
+	}
+	return result
 }
 
 // buildInvestigationPrompt monta prompt contextualizado para análise AI de investigação profunda.
