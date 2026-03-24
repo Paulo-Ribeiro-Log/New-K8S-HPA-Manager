@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual: verificar com `git describe --tags --always`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check e aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas — integração Dynatrace×Health Check completa).
+**IMPORTANTE**: Versão atual: verificar com `git describe --tags --always`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas) e aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI).
+**IMPORTANTE**: Após `make build`, sempre reiniciar o servidor (`kill <PID> && ./build/new-k8s-hpa web -f`) — o processo não recarrega o binário automaticamente.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
 ---
@@ -313,6 +314,16 @@ Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fa
 - `POST /api/v1/healthcheck/correlated/analyze` — análise AI de um `CorrelatedHealthItem`
 - Frontend: 8ª aba "K8s↔DT" em `HealthCheckResultsPanel.tsx` com badges tricolores e botão "Analisar com AI"
 
+**Investigação Profunda (`InvestigateProblem`)** em `internal/web/handlers/dynatrace.go`:
+- Fluxo de identificação de cluster/namespace em 3 etapas:
+  1. HOST entity → regex `aks-<pool>-XXXXXXXX-vmssXXXXX` → `LookupByNodePool` no registry
+  2. Fallback keyword: `extractKeywords(mgmtZones...)` → `LookupByKeyword` (LIKE) → `pickEntryByEnv` escolhe cluster compatível com `extractEnvHint(problem)`
+  3. Fallback namespace: `FindNamespaceByKeywords` lista namespaces K8s, filtra por env token exato, pontua por keyword match + bônus de env
+- **`extractEnvHint`**: retorna `"prd"` por padrão se nenhum token não-prd (hlg/sit/stg/hml/uat/dev) aparecer no problema DT — nunca analisa cluster hlg para problem sem marcador de ambiente
+- **`extractKeywords`**: normaliza acentos PT/ES para ASCII (`"Cálculo"` → `"calculo"`) antes da busca — K8s só aceita nomes ASCII
+- **`pickEntryByEnv`**: dentre resultados do registry, prefere cluster com env token igual ao envHint (`"prd"` → escolhe cluster prd, nunca hlg)
+- Janela padrão para problems fechados: `now-4h` (API DT usa `now-2h` por padrão — insuficiente)
+
 **Node Pool Registry**: `internal/storage/nodepool_registry_store.go` — catálogo SQLite de node pools AKS por cluster (`nodepool_registry.db`). Handler em `internal/web/handlers/nodepool_registry.go`. Rotas: `GET /api/v1/nodepools/registry`, `GET /api/v1/nodepools/registry/lookup?name=<entity>`, `POST /api/v1/nodepools/registry/scan`. Usado pelo `DynatraceTab` para correlacionar entity names do padrão `aks-<nodepool>-XXXXXXXX-vmssXXXXX` com cluster/vm-size/mode. Botão "Escanear Clusters" no tab Dynatrace dispara scan em todos os clusters.
 
 ### Certificates
@@ -352,6 +363,9 @@ Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fa
 | Node Pool Registry vazio | Clicar "Escanear Clusters" no tab Dynatrace (requer VPN + clusters acessíveis) |
 | Health Check Dynatrace retorna vazio | Verificar token DT e URL. Correlação K8s↔DT requer `check_dynatrace: true` no request + token configurado em AI Settings |
 | Aba K8s↔DT vazia após HC | Normal se não há workloads problemáticos — a aba só aparece com dados quando há sintomas K8s ou problems DT ativos |
+| Investigação profunda analisa cluster hlg sendo problem de prd | `extractEnvHint` retornou non-prd indevidamente — verificar se management zone ou título tem token "hlg"/"sit" como substring de outra palavra (ex: "transition") |
+| Investigação profunda não identifica namespace | Keywords com acentos não batiam em nomes K8s (ASCII). Verificar se management zone tem Unicode; `extractKeywords` normaliza automaticamente desde da9a99b |
+| Mudanças no backend não tomam efeito | Servidor não foi reiniciado — `make build` só gera o binário; o processo em execução não recarrega. Matar e reiniciar manualmente |
 
 ---
 
