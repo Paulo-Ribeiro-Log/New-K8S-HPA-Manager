@@ -310,16 +310,15 @@ var vmSpecs = map[string][2]int{
 - [x] Registrar case `"finops"` em `Index.tsx` + exclusão dos stats cards
 - [x] `./rebuild-web.sh -b` sem erros
 
-### Fase 5 — Frontend: Workloads + Oportunidades + AI
-- [ ] Aba "Workloads": tabela ordenável
-  - [ ] Colunas: Namespace · Workload · Pods · CPU Req · Mem Req · Custo/mês R$ · HPA (min/cur/max) · Custo HPA min/max · Verdict
-  - [ ] Badges de veredicto coloridos
-  - [ ] Ordenação padrão: maior custo primeiro
-  - [ ] Filtro por namespace
-- [ ] Aba "Oportunidades": lista filtrada por `superprovisioned` + saving potencial
-- [ ] Botão "Analisar com AI" → envia `FinOpsSummary` + top-10 para AI provider configurado
-- [ ] Exportar CSV (tabela de workloads)
-- [ ] `./rebuild-web.sh -b` sem erros
+### Fase 5 — Frontend: Workloads + Oportunidades + AI ✅ CONCLUÍDA
+- [x] Aba "Workloads": tabela ordenável (já na Fase 4) com filtro por veredicto
+- [x] Aba "Oportunidades": lista cards superprovisioned com saving/mês e /ano
+- [x] Botão "Exportar CSV" → download `finops-<cluster>-<data>.csv` com todos os workloads
+- [x] Botão "Analisar com AI":
+  - Frontend: POST `/api/v1/finops/analyze` com `{ai_email, report}`
+  - Backend: `buildFinOpsPrompt()` envia summary + node pools + top-10 workloads + superprovisionados
+  - Resultado exibido em painel colapsável com ícone Brain acima das abas
+- [x] `./rebuild-web.sh -b` sem erros
 
 ### Fase 6 — Integração Prometheus (desperdício real)
 - [ ] Adicionar parâmetro `with_prometheus=true` na rota `GetReport`

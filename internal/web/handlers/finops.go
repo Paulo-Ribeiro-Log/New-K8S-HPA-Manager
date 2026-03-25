@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
@@ -18,21 +21,22 @@ type FinOpsHandler struct {
 	npRegistryStore *storage.NodePoolRegistryStore
 	pricer          *finops.AzurePricer
 	exchange        *finops.ExchangeRateProvider
+	aiHandler       *AIDiagnosticsHandler // opcional — nil se AI não configurado
 }
 
 // NewFinOpsHandler cria o handler com as dependências compartilhadas.
 // AzurePricer é inicializado uma única vez (cache SQLite interno).
-func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *storage.NodePoolRegistryStore) *FinOpsHandler {
+func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *storage.NodePoolRegistryStore, aiHandler *AIDiagnosticsHandler) *FinOpsHandler {
 	pricer, err := finops.NewAzurePricer("")
 	if err != nil {
 		log.Warn().Err(err).Msg("FinOps: falha ao inicializar AzurePricer, usando apenas fallback")
-		// pricer nil é tratado graciosamente no calculator
 	}
 	return &FinOpsHandler{
 		kubeManager:     kubeManager,
 		npRegistryStore: npRegistryStore,
 		pricer:          pricer,
 		exchange:        finops.NewExchangeRateProvider(),
+		aiHandler:       aiHandler,
 	}
 }
 
@@ -173,4 +177,116 @@ func (h *FinOpsHandler) GetExchangeRate(c *gin.Context) {
 		"source":   "economia.awesomeapi.com.br",
 		"fallback": rate == finops.DefaultExchangeRate,
 	})
+}
+
+// AnalyzeReport godoc
+// POST /api/v1/finops/analyze
+//
+// Envia o relatório FinOps para análise pelo provider AI configurado.
+// Recebe ai_email e o FinOpsReport completo; retorna recomendações de rightsizing e saving.
+func (h *FinOpsHandler) AnalyzeReport(c *gin.Context) {
+	if h.aiHandler == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI não configurado neste servidor"})
+		return
+	}
+
+	var req struct {
+		AIEmail string          `json:"ai_email"`
+		Report  finops.FinOpsReport `json:"report"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.AIEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ai_email e report são obrigatórios"})
+		return
+	}
+
+	provider, err := h.aiHandler.GetProviderForUser(req.AIEmail)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
+	defer cancel()
+
+	prompt := buildFinOpsPrompt(req.Report)
+	analysis, err := provider.Analyze(ctx, prompt)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha na análise AI: " + err.Error()})
+		return
+	}
+
+	log.Info().
+		Str("ai_email", req.AIEmail).
+		Str("cluster", req.Report.Cluster).
+		Float64("cost_brl", req.Report.Summary.TotalMonthlyCostBRL).
+		Msg("FinOps: análise AI concluída")
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"analysis":    analysis,
+		"analyzed_at": time.Now(),
+	})
+}
+
+// buildFinOpsPrompt monta o prompt para análise AI do relatório FinOps
+func buildFinOpsPrompt(r finops.FinOpsReport) string {
+	var sb strings.Builder
+
+	sb.WriteString("Você é um especialista em FinOps e Kubernetes. Analise o relatório de custo abaixo e forneça:\n")
+	sb.WriteString("1. Resumo executivo do custo atual\n")
+	sb.WriteString("2. Top 3 oportunidades de redução de custo com estimativa de saving\n")
+	sb.WriteString("3. Recomendações de rightsizing para os workloads mais caros\n")
+	sb.WriteString("4. Ações práticas ordenadas por impacto financeiro\n\n")
+
+	sb.WriteString(fmt.Sprintf("## Cluster: %s\n", r.Cluster))
+	sb.WriteString(fmt.Sprintf("- Custo total mensal: R$ %.2f (USD %.2f)\n", r.Summary.TotalMonthlyCostBRL, r.Summary.TotalMonthlyCostUSD))
+	sb.WriteString(fmt.Sprintf("- Câmbio USD/BRL: %.4f (%s)\n", r.ExchangeRate, r.ExchangeDate))
+	sb.WriteString(fmt.Sprintf("- Workloads analisados: %d\n", r.Summary.WorkloadsAnalyzed))
+	sb.WriteString(fmt.Sprintf("- Workloads superprovisionados: %d\n", r.Summary.SuperprovisionedCount))
+	sb.WriteString(fmt.Sprintf("- Workloads sem request definido: %d\n", r.Summary.NoRequestCount))
+	sb.WriteString(fmt.Sprintf("- Economia potencial (HPA no mínimo): R$ %.2f/mês\n\n", r.Summary.HPASavingsIfMinBRL))
+
+	sb.WriteString("## Node Pools\n")
+	for _, p := range r.NodePools {
+		sb.WriteString(fmt.Sprintf("- %s: %s × %d nodes = R$ %.2f/mês (%.2f vCPU, %d GB RAM por node)\n",
+			p.Name, p.VMSize, p.NodeCount, p.MonthlyCostBRL, float64(p.VMCPUCores), p.VMMemoryGB))
+	}
+
+	sb.WriteString("\n## Top 5 Namespaces por Custo\n")
+	for i, ns := range r.Namespaces {
+		if i >= 5 {
+			break
+		}
+		sb.WriteString(fmt.Sprintf("- %s: R$ %.2f/mês (%d workloads)\n", ns.Namespace, ns.MonthlyCostBRL, ns.WorkloadCount))
+	}
+
+	sb.WriteString("\n## Top 10 Workloads por Custo\n")
+	for i, w := range r.Workloads {
+		if i >= 10 {
+			break
+		}
+		hpaInfo := "sem HPA"
+		if w.HPAMax > 0 {
+			hpaInfo = fmt.Sprintf("HPA %d/%d/%d", w.HPAMin, w.HPACurrent, w.HPAMax)
+		}
+		sb.WriteString(fmt.Sprintf("- %s/%s: R$ %.2f/mês | CPU %dm | Mem %.0fMi | %s | %s\n",
+			w.Namespace, w.Workload, w.CostShareBRL,
+			int(w.CPURequestMillis), w.MemRequestMi,
+			hpaInfo, w.Verdict))
+	}
+
+	if r.Summary.SuperprovisionedCount > 0 {
+		sb.WriteString("\n## Workloads Superprovisionados (HPA abaixo de 35% do máximo)\n")
+		count := 0
+		for _, w := range r.Workloads {
+			if w.Verdict == "superprovisioned" && count < 10 {
+				saving := w.HPACostCurrentBRL - w.HPACostMinBRL
+				sb.WriteString(fmt.Sprintf("- %s/%s: atual R$ %.2f/mês → mínimo R$ %.2f/mês (saving R$ %.2f/mês)\n",
+					w.Namespace, w.Workload, w.HPACostCurrentBRL, w.HPACostMinBRL, saving))
+				count++
+			}
+		}
+	}
+
+	return sb.String()
 }
