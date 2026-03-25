@@ -270,14 +270,17 @@ var vmSpecs = map[string][2]int{
 - [x] Testes passando: `go test -v ./internal/finops/...`
   - 5x Standard_D4s_v3 = $700 USD = R$ 3.667/mês (cotação real: 5.2334)
 
-### Fase 2 — Exchange Rate + Calculator
-- [ ] Criar `internal/finops/exchange_rate.go`
-  - [ ] Reutilizar lógica de `cost_analyzer.go:fetchExchangeRate()` (não duplicar, extrair para package próprio ou importar)
-- [ ] Criar `internal/finops/calculator.go`
-  - [ ] `CalculateClusterCost(pools []NodePoolRegistryEntry, prices AzurePricer) ([]FinOpsPool, error)`
-  - [ ] `AllocateWorkloadCosts(workloads, clusterCost, clusterCapacity) []FinOpsWorkload`
-  - [ ] `CalculateHPAScenarios(workload, hpaMin, hpaMax, hpaCurrent int) FinOpsWorkload`
-  - [ ] `DetermineVerdict(workload FinOpsWorkload) string`
+### Fase 2 — Exchange Rate + Calculator ✅ CONCLUÍDA
+- [x] `internal/finops/exchange_rate.go` criado na Fase 1
+- [x] Criar `internal/finops/calculator.go`
+  - [x] `Calculator.BuildReport(ctx, cluster, client, pools, namespaces)` → FinOpsReport completo
+  - [x] `calculatePoolCosts()` — custo e capacidade por pool (via AzurePricer)
+  - [x] `collectWorkloads()` — lista pods Running + HPAs, resolve pod→RS→Deployment
+  - [x] `allocateCosts()` — alocação proporcional (50% CPU + 50% RAM), cenários HPA min/max/current
+  - [x] `determineVerdict()` — no_request | superprovisioned | ok (Fase 6 enriquece com Prometheus)
+  - [x] `aggregateNamespaces()` + `buildSummary()`
+- [x] Testes passando (9/9): stripHash, filtros namespace, pool costs, alocação, agregação
+  - Resultado real: D4s_v3=$0.318/h (API), D8s_v3=$0.636/h → cluster 5 nodes = R$9.722/mês
 
 ### Fase 3 — Handler Go
 - [ ] Criar `internal/web/handlers/finops.go`
