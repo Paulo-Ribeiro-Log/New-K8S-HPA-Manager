@@ -282,18 +282,19 @@ var vmSpecs = map[string][2]int{
 - [x] Testes passando (9/9): stripHash, filtros namespace, pool costs, alocação, agregação
   - Resultado real: D4s_v3=$0.318/h (API), D8s_v3=$0.636/h → cluster 5 nodes = R$9.722/mês
 
-### Fase 3 — Handler Go
-- [ ] Criar `internal/web/handlers/finops.go`
-  - [ ] `FinOpsHandler` struct com `clientCache`, `nodePoolStore`, `logger`
-  - [ ] `GetReport(c *gin.Context)` — rota principal
-    - [ ] Parâmetro `cluster` obrigatório
-    - [ ] Parâmetros opcionais: `namespaces` (CSV), `with_prometheus` (bool)
-    - [ ] Timeout de 60s (queries K8s + Prometheus podem ser lentas)
-  - [ ] `GetPricing(c *gin.Context)` — preço de um SKU específico
-  - [ ] `RefreshPricing(c *gin.Context)` — invalida cache
-  - [ ] `GetExchangeRate(c *gin.Context)` — cotação atual
-- [ ] Registrar rotas em `internal/web/server.go`
-- [ ] `make build` sem erros
+### Fase 3 — Handler Go ✅ CONCLUÍDA
+- [x] Criar `internal/web/handlers/finops.go`
+  - [x] `FinOpsHandler` struct com `kubeManager`, `npRegistryStore`, `pricer`, `exchange`
+  - [x] `GetReport` — cluster obrigatório, namespaces opcionais (CSV)
+  - [x] `GetPricing` — preço SKU + specs (vCPU, RAM)
+  - [x] `RefreshPricing` — invalida cache SQLite
+  - [x] `GetExchangeRate` — cotação atual com flag fallback
+- [x] Registrar rotas em `internal/web/server.go`
+- [x] `make build` + testes com cluster real:
+  - `GET /api/v1/finops/exchange-rate` → `{"usd_brl":5.2368,"date":"2026-03-25"}`
+  - `GET /api/v1/finops/pricing?sku=Standard_D4s_v3` → `{"price_usd_hour":0.318,"source":"api"}`
+  - `GET /api/v1/finops/report?cluster=akspriv-abastecimento-hlg-admin` → relatório completo com node pools, namespaces e workloads
+- **Nota**: o registry guarda cluster com sufixo `-admin` — frontend deve usar nome com sufixo
 
 ### Fase 4 — Frontend: Visão Geral + Node Pools
 - [ ] Criar `internal/web/frontend/src/components/FinOpsTab.tsx`
