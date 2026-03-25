@@ -296,14 +296,19 @@ var vmSpecs = map[string][2]int{
   - `GET /api/v1/finops/report?cluster=akspriv-abastecimento-hlg-admin` → relatório completo com node pools, namespaces e workloads
 - **Nota**: o registry guarda cluster com sufixo `-admin` — frontend deve usar nome com sufixo
 
-### Fase 4 — Frontend: Visão Geral + Node Pools
-- [ ] Criar `internal/web/frontend/src/components/FinOpsTab.tsx`
-  - [ ] Seletor de cluster
-  - [ ] Botão "Analisar" com loading state
-  - [ ] Aba "Visão Geral": bar chart de custo por cluster, top-5 namespaces, taxa câmbio
-  - [ ] Aba "Node Pools": tabela (VM SKU · preço/h · nodes · R$/mês)
-- [ ] Registrar `FinOpsTab` no `ToolsMenu.tsx` como novo item do dropdown
-- [ ] `./rebuild-web.sh -b` sem erros
+### Fase 4 — Frontend: Visão Geral + Node Pools ✅ CONCLUÍDA
+- [x] Criar `internal/web/frontend/src/components/FinOpsTab.tsx`
+  - [x] Seletor de cluster (lista clusters com sufixo `-admin`, exibe sem sufixo)
+  - [x] Botão "Analisar" com loading state + auto-fetch por cluster
+  - [x] Aba "Visão Geral": 4 summary cards + bar charts (top namespaces + custo por pool)
+  - [x] Aba "Node Pools": tabela completa (VM SKU · vCPU · RAM · nodes · modo · USD/h · R$/mês · fonte)
+  - [x] Aba "Workloads": tabela ordenável com filtro por veredicto + colunas HPA min/cur/max
+  - [x] Aba "Oportunidades": lista de workloads superprovisioned com saving estimado/mês e /ano
+  - [x] Badges de veredicto coloridos (vermelho/amarelo/verde/cinza)
+  - [x] Alert de economia potencial quando há workloads superprovisioned
+- [x] Registrar `FinOpsTab` no `ToolsMenu.tsx` (item "FinOps" com ícone CircleDollarSign)
+- [x] Registrar case `"finops"` em `Index.tsx` + exclusão dos stats cards
+- [x] `./rebuild-web.sh -b` sem erros
 
 ### Fase 5 — Frontend: Workloads + Oportunidades + AI
 - [ ] Aba "Workloads": tabela ordenável
