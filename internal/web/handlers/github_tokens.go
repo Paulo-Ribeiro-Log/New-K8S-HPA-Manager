@@ -43,10 +43,14 @@ type TokenStatusResponse struct {
 // GetTokenStatus valida token atual do usuário
 // GET /api/v1/github/token/status
 func (h *GitHubTokensHandler) GetTokenStatus(c *gin.Context) {
-	userEmail := strings.TrimSpace(c.GetHeader("X-GitHub-Email"))
+	// Prioridade: 1) contexto RBAC (Azure AD), 2) header X-GitHub-Email (fallback)
+	userEmail := c.GetString("user_email")
+	if userEmail == "" {
+		userEmail = strings.TrimSpace(c.GetHeader("X-GitHub-Email"))
+	}
 	if userEmail == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "X-GitHub-Email header é obrigatório",
+			"error": "Identidade do usuário não disponível. Faça login novamente.",
 		})
 		return
 	}
@@ -117,7 +121,6 @@ func (h *GitHubTokensHandler) GetTokenStatus(c *gin.Context) {
 // SaveTokenRequest representa request para salvar token
 type SaveTokenRequest struct {
 	Token string `json:"token" binding:"required"`
-	Email string `json:"email" binding:"required"`
 }
 
 // SaveToken salva token do usuário (com validação)
@@ -127,16 +130,19 @@ func (h *GitHubTokensHandler) SaveToken(c *gin.Context) {
 	var req SaveTokenRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Token e Email são obrigatórios",
+			"error": "Token é obrigatório",
 		})
 		return
 	}
 
-	// Usar email do request ao invés do middleware
-	userEmail := strings.TrimSpace(req.Email)
+	// Prioridade: 1) contexto RBAC (Azure AD), 2) header X-GitHub-Email (fallback)
+	userEmail := c.GetString("user_email")
+	if userEmail == "" {
+		userEmail = strings.TrimSpace(c.GetHeader("X-GitHub-Email"))
+	}
 	if userEmail == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Email não pode estar vazio",
+			"error": "Identidade do usuário não disponível. Faça login novamente.",
 		})
 		return
 	}
@@ -150,14 +156,15 @@ func (h *GitHubTokensHandler) SaveToken(c *gin.Context) {
 		return
 	}
 
-	// Validar formato básico (GitHub tokens começam com ghp_, gho_, etc)
+	// Validar formato: Classic PATs (ghp_/gho_/ghu_/ghs_/ghr_) e Fine-grained PATs (github_pat_)
 	if !strings.HasPrefix(token, "ghp_") &&
 		!strings.HasPrefix(token, "gho_") &&
 		!strings.HasPrefix(token, "ghu_") &&
 		!strings.HasPrefix(token, "ghs_") &&
-		!strings.HasPrefix(token, "ghr_") {
+		!strings.HasPrefix(token, "ghr_") &&
+		!strings.HasPrefix(token, "github_pat_") {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Formato de token inválido (deve começar com ghp_, gho_, etc)",
+			"error": "Formato inválido. Use Classic PAT (ghp_...) ou Fine-grained PAT (github_pat_...)",
 		})
 		return
 	}
@@ -201,10 +208,14 @@ func (h *GitHubTokensHandler) SaveToken(c *gin.Context) {
 // DeleteToken remove token do usuário
 // DELETE /api/v1/github/token
 func (h *GitHubTokensHandler) DeleteToken(c *gin.Context) {
-	userEmail := strings.TrimSpace(c.GetHeader("X-GitHub-Email"))
+	// Prioridade: 1) contexto RBAC (Azure AD), 2) header X-GitHub-Email (fallback)
+	userEmail := c.GetString("user_email")
+	if userEmail == "" {
+		userEmail = strings.TrimSpace(c.GetHeader("X-GitHub-Email"))
+	}
 	if userEmail == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "X-GitHub-Email header é obrigatório",
+			"error": "Identidade do usuário não disponível. Faça login novamente.",
 		})
 		return
 	}

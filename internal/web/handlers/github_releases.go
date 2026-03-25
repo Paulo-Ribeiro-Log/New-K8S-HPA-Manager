@@ -88,11 +88,15 @@ func (h *GitHubReleasesHandler) getGitHubClient(c *gin.Context) (*github.Client,
 
 	// 1. Tentar usar token individual do usuário
 	if h.tokenStore != nil {
-		userEmail := strings.TrimSpace(c.GetHeader("X-GitHub-Email"))
-		h.logger.Debug().Str("github_email_header", userEmail).Msg("🔍 Checking X-GitHub-Email header")
+		// Prioridade: 1) contexto RBAC (Azure AD), 2) header X-GitHub-Email (fallback)
+		userEmail := c.GetString("user_email")
+		if userEmail == "" {
+			userEmail = strings.TrimSpace(c.GetHeader("X-GitHub-Email"))
+		}
+		h.logger.Debug().Str("github_user_email", userEmail).Msg("🔍 Checking user identity for GitHub token")
 
 		if userEmail != "" {
-			h.logger.Info().Str("email", userEmail).Msg("✅ Using X-GitHub-Email header")
+			h.logger.Info().Str("email", userEmail).Msg("✅ Using user identity for GitHub token")
 			userToken, err := h.tokenStore.GetToken(userEmail)
 			if err != nil {
 				h.logger.Error().Err(err).Str("user", userEmail).Msg("❌ Failed to get user token from store")
@@ -195,7 +199,7 @@ func (h *GitHubReleasesHandler) GetRepos(c *gin.Context) {
 }
 
 // ListUserRepos retorna repositórios acessíveis pelo token do usuário
-// GET /api/v1/github/user/repos?org=viavarejo-internal&search=geolocalizacao
+// GET /api/v1/github/user/repos?org=casas-bahia&search=geolocalizacao
 func (h *GitHubReleasesHandler) ListUserRepos(c *gin.Context) {
 	org := c.Query("org")
 	search := c.Query("search")
@@ -869,8 +873,8 @@ func (h *GitHubReleasesHandler) CompareReleasesWithRegistry(c *gin.Context) {
 		Msg("Found production version")
 
 	// 2. Montar informações do repositório GitHub
-	// Por padrão, assume que o nome da release é o nome do repo em viavarejo-internal
-	owner := "viavarejo-internal"
+	// Owner: query param ?org=X, fallback para "casas-bahia"
+	owner := c.DefaultQuery("org", "casas-bahia")
 	repo := releaseName
 
 	// 3. Criar cliente GitHub
