@@ -154,6 +154,40 @@ func (s *NodePoolRegistryStore) LookupByNodePool(nodepoolName string) ([]NodePoo
 	return entries, rows.Err()
 }
 
+// LookupByKeyword retorna entries onde o nome do nodepool contém a keyword (busca parcial).
+// Usado para correlacionar management zones do Dynatrace com node pools K8s.
+// Ex: keyword "calculo" encontra nodepool "calculofrete".
+func (s *NodePoolRegistryStore) LookupByKeyword(keyword string) ([]NodePoolRegistryEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(
+		`SELECT cluster, nodepool, node_count, vm_size, os_sku, mode, last_scanned
+		 FROM nodepool_registry WHERE nodepool LIKE ? ORDER BY cluster`,
+		"%"+keyword+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []NodePoolRegistryEntry
+	for rows.Next() {
+		var e NodePoolRegistryEntry
+		var vmSize, osSku, mode sql.NullString
+		if err := rows.Scan(&e.Cluster, &e.NodePool, &e.NodeCount, &vmSize, &osSku, &mode, &e.LastScanned); err != nil {
+			return nil, err
+		}
+		e.VMSize = vmSize.String
+		e.OSSku = osSku.String
+		e.Mode = mode.String
+		entries = append(entries, e)
+	}
+	if entries == nil {
+		entries = make([]NodePoolRegistryEntry, 0)
+	}
+	return entries, rows.Err()
+}
+
 // DeleteByCluster remove todos os entries de um cluster (antes de re-scan).
 func (s *NodePoolRegistryStore) DeleteByCluster(cluster string) error {
 	s.mu.Lock()

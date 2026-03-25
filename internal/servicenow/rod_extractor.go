@@ -958,7 +958,7 @@ func (r *RodExtractor) parseDescription(description string) *ExtractedData {
 	}
 
 	// Repositório (GitHubRepo)
-	repoRegex := regexp.MustCompile(`\* Repositório:\s*github\.com/viavarejo-internal/([^.]+)\.git`)
+	repoRegex := regexp.MustCompile(`\* Repositório:\s*github\.com/[^/]+/([^.]+)\.git`)
 	if match := repoRegex.FindStringSubmatch(description); len(match) > 1 {
 		extracted.GitHubRepo = strings.TrimSpace(match[1])
 	}

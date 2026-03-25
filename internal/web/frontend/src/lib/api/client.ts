@@ -153,6 +153,14 @@ class APIClient {
     localStorage.removeItem("github_email");
   }
 
+  getGitHubOrg(): string {
+    return localStorage.getItem("github_org") || "casas-bahia";
+  }
+
+  setGitHubOrg(org: string) {
+    localStorage.setItem("github_org", org);
+  }
+
   private async request<T>(
     endpoint: string,
     options: RequestInit = {}

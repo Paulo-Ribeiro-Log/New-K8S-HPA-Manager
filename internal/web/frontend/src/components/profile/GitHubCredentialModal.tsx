@@ -22,6 +22,8 @@ import {
   Github,
   Eye,
   EyeOff,
+  ShieldCheck,
+  User,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -29,22 +31,28 @@ import {
   useSaveGitHubToken,
   useDeleteGitHubToken,
 } from '@/hooks/useGitHubReleases';
+import { useUserPermissions } from '@/hooks/useUserPermissions';
+import { apiClient } from '@/lib/api/client';
 import type { CredentialModalProps } from '@/types/profile';
 
 export function GitHubCredentialModal({ open, onOpenChange, onSaved }: CredentialModalProps) {
   const [token, setToken] = useState('');
-  const [email, setEmail] = useState('');
+  const [org, setOrg] = useState(() => apiClient.getGitHubOrg());
   const [showToken, setShowToken] = useState(false);
+
+  // Email vem do contexto RBAC (Azure AD) — não é digitado manualmente
+  const { data: userPerms } = useUserPermissions();
+  const rbacEmail = userPerms?.email || '';
 
   const { data: tokenStatus, isLoading: isLoadingStatus, refetch: refetchStatus } = useGitHubTokenStatus();
   const saveTokenMutation = useSaveGitHubToken();
   const deleteTokenMutation = useDeleteGitHubToken();
 
-  // Limpar input ao abrir modal
+  // Recarregar estado ao abrir modal
   useEffect(() => {
     if (open) {
       setToken('');
-      setEmail('');
+      setOrg(apiClient.getGitHubOrg());
       setShowToken(false);
       refetchStatus();
     }
@@ -52,22 +60,22 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
 
   const handleSave = async () => {
     if (!token.trim()) {
-      toast.error('Token e obrigatorio');
-      return;
-    }
-
-    if (!email.trim()) {
-      toast.error('Email/Login do GitHub e obrigatorio');
+      toast.error('Token é obrigatório');
       return;
     }
 
     try {
-      const result = await saveTokenMutation.mutateAsync({ token, email });
+      const result = await saveTokenMutation.mutateAsync({ token, email: rbacEmail });
+      // Armazenar email RBAC para o header X-GitHub-Email (fallback em ambientes sem RBAC)
+      if (rbacEmail) {
+        apiClient.setGitHubEmail(rbacEmail);
+      }
+      // Salvar organização
+      apiClient.setGitHubOrg(org.trim() || 'casas-bahia');
       toast.success(result.message, {
         description: result.github_user ? `Autenticado como: ${result.github_user}` : undefined,
       });
       setToken('');
-      setEmail('');
       refetchStatus();
       onSaved?.();
     } catch (error) {
@@ -107,14 +115,23 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Github className="h-5 w-5" />
-            GitHub Token
+            GitHub Token (SSO/SAML)
           </DialogTitle>
           <DialogDescription>
-            Configure seu token pessoal para acessar repositorios privados
+            Configure seu token para acessar repositórios da organização com SAML SSO
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-2">
+          {/* Identidade vinculada (RBAC) */}
+          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-muted/50 border text-sm">
+            <User className="h-4 w-4 text-muted-foreground shrink-0" />
+            <div className="min-w-0">
+              <p className="text-[11px] text-muted-foreground">Token vinculado ao usuário</p>
+              <p className="font-mono font-medium truncate">{rbacEmail || 'Carregando...'}</p>
+            </div>
+          </div>
+
           {/* Status do Token */}
           {isLoadingStatus ? (
             <Alert>
@@ -124,7 +141,7 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
           ) : tokenStatus?.valid ? (
             <Alert className="border-green-200 bg-green-50 dark:bg-green-950 dark:border-green-800">
               <CheckCircle2 className="h-4 w-4 text-green-600" />
-              <AlertTitle className="text-green-900 dark:text-green-100">Token Valido</AlertTitle>
+              <AlertTitle className="text-green-900 dark:text-green-100">Token Válido</AlertTitle>
               <AlertDescription className="text-green-800 dark:text-green-200">
                 <div className="flex flex-wrap gap-2 mt-1">
                   <Badge variant="secondary">{tokenStatus.username}</Badge>
@@ -137,32 +154,34 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
           ) : tokenStatus?.configured ? (
             <Alert variant="destructive">
               <XCircle className="h-4 w-4" />
-              <AlertTitle>Token Invalido</AlertTitle>
+              <AlertTitle>Token Inválido</AlertTitle>
               <AlertDescription>
-                {tokenStatus.error || 'Token configurado mas nao e valido'}
+                {tokenStatus.error || 'Token configurado mas não é válido'}
               </AlertDescription>
             </Alert>
           ) : (
             <Alert>
               <Info className="h-4 w-4" />
               <AlertDescription className="text-sm">
-                Sem token: 60 req/h. Com token: 5000 req/h
+                Sem token: 60 req/h. Com token autorizado para SSO: 5000 req/h
               </AlertDescription>
             </Alert>
           )}
 
-          {/* Input de Email/Login */}
+          {/* Organização GitHub */}
           <div className="space-y-2">
-            <Label htmlFor="github-email">Email ou Login do GitHub</Label>
+            <Label htmlFor="github-org">Organização GitHub</Label>
             <Input
-              id="github-email"
-              type="text"
-              placeholder="seu-usuario ou email@empresa.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              id="github-org"
+              placeholder="casas-bahia"
+              value={org}
+              onChange={(e) => setOrg(e.target.value)}
               disabled={isProcessing}
               className="font-mono text-sm"
             />
+            <p className="text-[11px] text-muted-foreground">
+              Default: <code>casas-bahia</code> — altere se sua organização for diferente
+            </p>
           </div>
 
           {/* Input do Token */}
@@ -172,9 +191,10 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
               <Input
                 id="github-token"
                 type={showToken ? 'text' : 'password'}
-                placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                placeholder="ghp_... ou github_pat_..."
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSave()}
                 disabled={isProcessing}
                 className="font-mono text-sm"
               />
@@ -190,16 +210,48 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
             </div>
           </div>
 
-          {/* Link para criar token */}
-          <a
-            href="https://github.com/settings/tokens"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-          >
-            <ExternalLink className="h-3 w-3" />
-            Criar novo token no GitHub
-          </a>
+          {/* Guia SSO/SAML */}
+          <Alert className="border-amber-200 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-800">
+            <ShieldCheck className="h-4 w-4 text-amber-600" />
+            <AlertTitle className="text-amber-800 dark:text-amber-300 text-sm">Configuração SSO/SAML obrigatória</AlertTitle>
+            <AlertDescription className="text-xs space-y-1 mt-1">
+              <p className="font-semibold text-amber-700 dark:text-amber-300">Opção A — Classic PAT (recomendado):</p>
+              <ol className="list-decimal list-inside space-y-0.5 text-muted-foreground pl-1">
+                <li>Acesse <strong>Settings → Developer settings → Personal access tokens → Tokens (classic)</strong></li>
+                <li>Crie token com permissão <code className="bg-muted px-1 rounded">repo</code></li>
+                <li>Após criar, clique em <strong>"Configure SSO"</strong> ao lado do token</li>
+                <li>Autorize para <strong>{org || 'casas-bahia'}</strong> e complete o SSO</li>
+              </ol>
+              <p className="font-semibold text-amber-700 dark:text-amber-300 mt-2">Opção B — Fine-grained PAT:</p>
+              <ol className="list-decimal list-inside space-y-0.5 text-muted-foreground pl-1">
+                <li>Acesse <strong>Settings → Developer settings → Fine-grained tokens</strong></li>
+                <li>Selecione <strong>Resource owner: {org || 'casas-bahia'}</strong></li>
+                <li>Conceda permissão <code className="bg-muted px-1 rounded">Contents: Read</code></li>
+              </ol>
+            </AlertDescription>
+          </Alert>
+
+          {/* Links */}
+          <div className="flex gap-4">
+            <a
+              href="https://github.com/settings/tokens"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+            >
+              <ExternalLink className="h-3 w-3" />
+              Classic Tokens
+            </a>
+            <a
+              href="https://github.com/settings/personal-access-tokens"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+            >
+              <ExternalLink className="h-3 w-3" />
+              Fine-grained Tokens
+            </a>
+          </div>
         </div>
 
         <DialogFooter className="flex justify-between sm:justify-between">
@@ -228,7 +280,7 @@ export function GitHubCredentialModal({ open, onOpenChange, onSaved }: Credentia
             <Button
               size="sm"
               onClick={handleSave}
-              disabled={!token.trim() || !email.trim() || isProcessing}
+              disabled={!token.trim() || isProcessing}
             >
               {saveTokenMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />

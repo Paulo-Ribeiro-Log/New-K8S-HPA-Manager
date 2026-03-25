@@ -77,7 +77,7 @@ function hasValidSession(): boolean {
 const EXTRACTION_PATTERNS = {
   application: /\* Aplicação\(ões\):\s*([^.\n]+)\./,
   version: /\* Versão:\s*([\d]+\.[\d]+\.[\d]+-?[\d]*)\./,
-  repository: /\* Repositório:\s*github\.com\/viavarejo-internal\/([^.]+)\.git/,
+  repository: /\* Repositório:\s*github\.com\/[^/]+\/([^.]+)\.git/,
   squad: /\* Squad\(s\):\s*([^.\n]+)\./,
   branch: /\* Branch no GitHub:\s*([^\n]+)\./,
   product: /\* Produto:\s*([^.\n]+)\./,

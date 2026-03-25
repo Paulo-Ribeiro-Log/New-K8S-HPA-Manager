@@ -40,6 +40,7 @@ import { DeploymentScanModal } from "./DeploymentScanModal";
 import { ServiceNowImportModal } from "./ServiceNowImportModal";
 import { useClusters } from "@/hooks/useAPI";
 import { toast } from "sonner";
+import { apiClient } from "@/lib/api/client";
 
 interface ProductionDeployment {
   id: number;
@@ -299,8 +300,8 @@ export const GitHubReleasesTab = () => {
   const { data: comparisonData, isLoading: isComparing, error: compareError, refetch: refetchComparison } = useQuery<ComparisonResult>({
     queryKey: ['github-compare', githubRepo, productionTag, newTag],
     queryFn: async () => {
-      // Construir URL de comparação no formato: viavarejo-internal/<repo>/compare/<base>...<head>
-      const owner = 'viavarejo-internal';
+      // Construir URL de comparação no formato: <org>/<repo>/compare/<base>...<head>
+      const owner = apiClient.getGitHubOrg();
       const base = productionTag.replace(/^v/, ''); // Remove 'v' se existir
       const head = newTag.replace(/^v/, '');
       
@@ -409,7 +410,7 @@ export const GitHubReleasesTab = () => {
     ));
 
     try {
-      const owner = 'viavarejo-internal';
+      const owner = apiClient.getGitHubOrg();
       const base = item.productionTag.replace(/^v/, '');
       const head = item.newTag.replace(/^v/, '');
 
@@ -589,8 +590,8 @@ export const GitHubReleasesTab = () => {
     xlReleaseUrl?: string;
     changeNumber?: string;
   }) => {
-    if (!data.githubRepo || !data.newVersion) {
-      toast.error('Dados insuficientes: repositório e versão são obrigatórios');
+    if (!data.newVersion) {
+      toast.error('Versão não identificada na CHG - verifique o texto extraído');
       return;
     }
 
@@ -621,14 +622,16 @@ export const GitHubReleasesTab = () => {
       console.log('[GitHubReleasesTab] CHG capturado do ServiceNow:', data.changeNumber);
     }
 
-    // Adicionar a comparações
+    // Fallback automático: quando ServiceNow não extrai o repo, usa o deploymentName
+    const resolvedRepo = data.githubRepo || data.deploymentName || '';
+
     const newItem: ComparisonItem = {
-      id: `${Date.now()}-${data.githubRepo}`,
+      id: `${Date.now()}-${resolvedRepo || 'snow'}`,
       deploymentName: data.deploymentName || undefined,
-      githubRepo: data.githubRepo,
+      githubRepo: resolvedRepo,
       productionTag: prodTag,
       newTag: data.newVersion,
-      chgNumber: data.changeNumber || undefined,  // CHG diretamente do ServiceNow
+      chgNumber: data.changeNumber || undefined,
       status: 'pending',
     };
 
@@ -954,7 +957,7 @@ export const GitHubReleasesTab = () => {
                   onChange={(e) => setGithubRepo(e.target.value)}
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Nome do repositório em github.com/viavarejo-internal/
+                  Nome do repositório em github.com/{apiClient.getGitHubOrg()}/
                 </p>
               </div>
 
@@ -1242,14 +1245,14 @@ export const GitHubReleasesTab = () => {
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <p className="text-sm text-foreground">
-                        Seu token GitHub está válido, mas precisa ser re-autorizado para a organização <strong>viavarejo-internal</strong> que usa SAML SSO.
+                        Seu token GitHub está válido, mas precisa ser re-autorizado para a organização <strong>{apiClient.getGitHubOrg()}</strong> que usa SAML SSO.
                       </p>
                       <Alert className="border-amber-300 bg-amber-100 dark:bg-amber-900/50">
                         <Info className="h-4 w-4 text-amber-600" />
                         <AlertDescription className="text-xs space-y-1">
                           <p><strong>1.</strong> Acesse as configurações de tokens do GitHub</p>
                           <p><strong>2.</strong> Encontre seu token e clique em "Configure SSO"</p>
-                          <p><strong>3.</strong> Procure "viavarejo-internal" e clique em "Authorize"</p>
+                          <p><strong>3.</strong> Procure "{apiClient.getGitHubOrg()}" e clique em "Authorize"</p>
                           <p><strong>4.</strong> Complete a autenticação SSO</p>
                           <p><strong>5.</strong> Volte aqui e clique em "Tentar Novamente"</p>
                         </AlertDescription>
