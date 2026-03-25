@@ -518,6 +518,13 @@ func (s *Server) setupRoutes() {
 		api.POST("/nodepools/registry/scan", rbacMiddleware.RequireSREGroup(), s.nodepoolRegistryHandler.Scan)
 	}
 
+	// FinOps — análise de custo real de clusters AKS (Azure Pricing API + alocação por workload)
+	finOpsHandler := handlers.NewFinOpsHandler(s.kubeManager, s.npRegistryStore)
+	api.GET("/finops/report", finOpsHandler.GetReport)
+	api.GET("/finops/pricing", finOpsHandler.GetPricing)
+	api.POST("/finops/pricing/refresh", finOpsHandler.RefreshPricing)
+	api.GET("/finops/exchange-rate", finOpsHandler.GetExchangeRate)
+
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
 	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)
 	s.router.GET("/api/v1/nodepools/progress/:operationId/status", handlers.HandleProgressStatus)
