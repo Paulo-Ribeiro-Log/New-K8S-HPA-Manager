@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual: verificar com `git describe --tags --always`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas) e aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI).
+**IMPORTANTE**: Versão atual: verificar com `git describe --tags --always`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent.
 **IMPORTANTE**: Após `make build`, sempre reiniciar o servidor (`kill <PID> && ./build/new-k8s-hpa web -f`) — o processo não recarrega o binário automaticamente.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
@@ -326,6 +326,30 @@ Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fa
 
 **Node Pool Registry**: `internal/storage/nodepool_registry_store.go` — catálogo SQLite de node pools AKS por cluster (`nodepool_registry.db`). Handler em `internal/web/handlers/nodepool_registry.go`. Rotas: `GET /api/v1/nodepools/registry`, `GET /api/v1/nodepools/registry/lookup?name=<entity>`, `POST /api/v1/nodepools/registry/scan`. Usado pelo `DynatraceTab` para correlacionar entity names do padrão `aks-<nodepool>-XXXXXXXX-vmssXXXXX` com cluster/vm-size/mode. Botão "Escanear Clusters" no tab Dynatrace dispara scan em todos os clusters.
 
+**GitHub Releases (SSO/SAML)**:
+- Autenticação via RBAC Azure AD: email injetado automaticamente pelo middleware `InjectUserEmail` — sem campo de email manual
+- Org configurável via `localStorage["github_org"]` (padrão `casas-bahia`). Editar no modal de credenciais GitHub
+- PATs precisam ter SSO autorizado: Classic (`ghp_*`) → "Configure SSO" no GitHub; Fine-grained (`github_pat_*`) → criar com org autorizada
+- `apiClient.getGitHubOrg()` / `setGitHubOrg()` em `internal/web/frontend/src/lib/api/client.ts`
+- ServiceNow: regex de repositório usa `[^/]+` (qualquer org) — não hardcodado. Fallback: se não extrai `github_repo`, usa `deploymentName`
+
+**DynatraceGitHubSection** (`DynatraceGitHubSection.tsx`) — fallback em 3 níveis para correlação K8s↔GitHub sem OneAgent:
+1. `k8sWorkloads[].AppName` (OneAgent DTLabels) — mais preciso
+2. `k8sWorkloads[].Workload` sem AppName — busca no registry por nome do deployment
+3. `affectedEntities[].k8sWorkload` — entidades impactadas com info K8s
+- Versão: usa `DeploymentConfig.version` do registry quando DT não tem `AppVersion`
+- Requer scan prévio na aba GitHub Releases para popular o registry
+
+**EntityMetricsSection** (`DynatraceMetricsPanel.tsx`) — prop `columns?: 1 | 2`:
+- `columns=1` (padrão): layout vertical, tab Métricas
+- `columns=2`: grid 2 colunas, tab Diagnóstico — P50/P90/P95/P99 agrupados num único chart
+- Fallback: métricas fora dos grupos predefinidos são exibidas como charts individuais genéricos
+
+**Export PDF** (`exportPDF` em `DynatraceTab.tsx`):
+- `sanitizePDF()` substitui todos os caracteres Unicode fora do WinAnsi antes de passar ao jsPDF
+- Sem isso, caracteres como `═══`, `→`, `—`, `•` geram `%P%P%P` no documento
+- `removeEmojis()` mantido apenas para uso fora do PDF
+
 ### Certificates
 
 `internal/certificates/` + `internal/web/handlers/certificates.go`: discovery de certs TLS em secrets K8s, validação de expiração, import/export. Usar para qualquer operação envolvendo TLS no cluster.
@@ -366,6 +390,10 @@ Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fa
 | Investigação profunda analisa cluster hlg sendo problem de prd | `extractEnvHint` retornou non-prd indevidamente — verificar se management zone ou título tem token "hlg"/"sit" como substring de outra palavra (ex: "transition") |
 | Investigação profunda não identifica namespace | Keywords com acentos não batiam em nomes K8s (ASCII). Verificar se management zone tem Unicode; `extractKeywords` normaliza automaticamente desde da9a99b |
 | Mudanças no backend não tomam efeito | Servidor não foi reiniciado — `make build` só gera o binário; o processo em execução não recarrega. Matar e reiniciar manualmente |
+| Aba GitHub (DynatraceTab) vazia | Sem k8sWorkloads nem affectedEntities com info K8s no problem DT. Executar scan na aba GitHub Releases para popular o registry |
+| GitHub Releases: erro "token SAML" | PAT não tem SSO autorizado para a org. Classic PAT: GitHub → Settings → PAT → Configure SSO. Fine-grained: criar novo com org selecionada |
+| GitHub Releases: org errada | Editar org no modal de credenciais GitHub (ícone de perfil). Padrão: `casas-bahia` |
+| Export PDF com "%P%P%P" no texto | Caracteres Unicode fora do WinAnsi na resposta da IA (═══, →, —). `sanitizePDF()` já converte — verificar se está sendo chamada em todos os `doc.text()` dentro de `exportPDF` |
 
 ---
 
