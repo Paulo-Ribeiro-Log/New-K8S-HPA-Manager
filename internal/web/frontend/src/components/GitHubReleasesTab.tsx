@@ -32,7 +32,9 @@ import {
   RefreshCw,
   ExternalLink,
   ShieldAlert,
-  Download
+  Download,
+  Pencil,
+  Check
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CredentialRedirectDialog } from "./profile/CredentialRedirectDialog";
@@ -146,6 +148,7 @@ export const GitHubReleasesTab = () => {
     return localStorage.getItem('github-selected-comparison') || null;
   });
   const [serviceNowCHG, setServiceNowCHG] = useState<string | null>(null); // CHG do ServiceNow
+  const [editingProductionTag, setEditingProductionTag] = useState<Record<string, string>>({}); // Edição inline da productionTag
 
   // ✅ Persistir lote no localStorage sempre que mudar
   React.useEffect(() => {
@@ -413,6 +416,21 @@ export const GitHubReleasesTab = () => {
       const owner = apiClient.getGitHubOrg();
       const base = item.productionTag.replace(/^v/, '');
       const head = item.newTag.replace(/^v/, '');
+
+      if (!base) {
+        setComparisonBatch(prev => prev.map(i =>
+          i.id === item.id ? {
+            ...i,
+            status: 'error',
+            error: 'Versão em produção não identificada. Clique no ícone de edição para informar a versão atual.',
+            errorType: 'unknown'
+          } : i
+        ));
+        toast.error('Versão em produção não identificada', {
+          description: 'Informe a versão atual em produção clicando no campo de edição no item do lote.',
+        });
+        return;
+      }
 
       const githubEmail = localStorage.getItem('github_email');
       const headers: Record<string, string> = {
@@ -1089,9 +1107,67 @@ export const GitHubReleasesTab = () => {
                                     )}
                                   </div>
                                   <div className="flex items-center gap-2 mt-1">
-                                    <Badge variant="outline" className="text-[10px] py-0">
-                                      {item.productionTag}
-                                    </Badge>
+                                    {editingProductionTag[item.id] !== undefined ? (
+                                      <div className="flex items-center gap-1">
+                                        <Input
+                                          className="h-5 text-[10px] w-24 py-0 px-1"
+                                          value={editingProductionTag[item.id]}
+                                          onChange={(e) => setEditingProductionTag(prev => ({ ...prev, [item.id]: e.target.value }))}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                              const val = editingProductionTag[item.id].trim();
+                                              if (val) {
+                                                setComparisonBatch(prev => prev.map(i =>
+                                                  i.id === item.id ? { ...i, productionTag: val, status: 'pending', error: undefined, errorType: undefined } : i
+                                                ));
+                                              }
+                                              setEditingProductionTag(prev => { const n = {...prev}; delete n[item.id]; return n; });
+                                            } else if (e.key === 'Escape') {
+                                              setEditingProductionTag(prev => { const n = {...prev}; delete n[item.id]; return n; });
+                                            }
+                                          }}
+                                          onClick={(e) => e.stopPropagation()}
+                                          autoFocus
+                                          placeholder="ex: 1.4.58-1"
+                                        />
+                                        <Button
+                                          size="sm" variant="ghost"
+                                          className="h-5 w-5 p-0 text-green-600"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            const val = editingProductionTag[item.id].trim();
+                                            if (val) {
+                                              setComparisonBatch(prev => prev.map(i =>
+                                                i.id === item.id ? { ...i, productionTag: val, status: 'pending', error: undefined, errorType: undefined } : i
+                                              ));
+                                            }
+                                            setEditingProductionTag(prev => { const n = {...prev}; delete n[item.id]; return n; });
+                                          }}
+                                        >
+                                          <Check className="h-3 w-3" />
+                                        </Button>
+                                      </div>
+                                    ) : (
+                                      <div className="flex items-center gap-1">
+                                        <Badge
+                                          variant={item.productionTag ? "outline" : "destructive"}
+                                          className="text-[10px] py-0"
+                                        >
+                                          {item.productionTag || "? prod"}
+                                        </Badge>
+                                        <Button
+                                          size="sm" variant="ghost"
+                                          className="h-4 w-4 p-0 text-muted-foreground hover:text-blue-600"
+                                          title="Editar versão em produção"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setEditingProductionTag(prev => ({ ...prev, [item.id]: item.productionTag }));
+                                          }}
+                                        >
+                                          <Pencil className="h-2.5 w-2.5" />
+                                        </Button>
+                                      </div>
+                                    )}
                                     <span className="text-xs text-muted-foreground">→</span>
                                     <Badge variant="secondary" className="text-[10px] py-0">
                                       {item.newTag}
