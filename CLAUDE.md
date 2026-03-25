@@ -22,6 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [RBAC Azure AD](docs/guides/RBAC_AZURE_AD_IMPLEMENTATION.md)
 - [Changelog](docs/history/CHANGELOG.md)
 - [**Plano: Dynatrace × Health Check**](docs/planning/DYNATRACE_HEALTHCHECK_INTEGRATION.md) ← work in progress
+- [**Plano: FinOps Dashboard**](FINOPS_PLAN.md) ← work in progress — custo real AKS via Azure Pricing API, alocação por workload/HPA, conversão USD→BRL
 
 ---
 
