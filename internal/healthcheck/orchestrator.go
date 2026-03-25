@@ -81,6 +81,111 @@ func (o *Orchestrator) SetStores(nodePoolStore *storage.NodePoolRegistryStore, d
 	o.depRegistry = depRegistry
 }
 
+// nonPrdEnvMarkers são marcadores de ambiente não-produtivo reconhecidos em nomes de namespace.
+var nonPrdEnvMarkers = []string{"hlg", "sit", "stg", "hml", "uat", "dev"}
+
+// nsTokens divide o nome do namespace em tokens pelo separador hífen.
+// Ex: "calculo-de-fretes-prd" → ["calculo", "de", "fretes", "prd"]
+func nsTokens(nsName string) []string {
+	return strings.FieldsFunc(strings.ToLower(nsName), func(r rune) bool {
+		return r == '-' || r == '_' || r == '.'
+	})
+}
+
+// namespaceEnvToken retorna o marcador de ambiente presente nos tokens do namespace.
+// "calculo-de-fretes-hlg" → "hlg", "myapp-prd" → "prd", "kube-system" → ""
+func namespaceEnvToken(nsName string) string {
+	allEnvs := append([]string{"prd", "prod"}, nonPrdEnvMarkers...)
+	for _, tok := range nsTokens(nsName) {
+		for _, env := range allEnvs {
+			if tok == env {
+				return env
+			}
+		}
+	}
+	return ""
+}
+
+// FindNamespaceByKeywords lista namespaces do cluster e retorna o melhor match por pontuação.
+// envHint é o marcador de ambiente esperado (ex: "prd", "hlg", "sit") derivado do cluster.
+// Regras de filtragem por token exato:
+//   - envHint prd/prod → rejeita namespaces com marcadores não-prd (hlg, sit, stg…)
+//   - envHint não-prd (hlg, sit…) → rejeita namespaces com marcadores prd/prod
+//   - Bônus de +5 no score quando o env do namespace bate exatamente com o envHint
+//     (desempata "calculo-de-fretes-hlg" sobre "calculo-de-fretes-sit" quando cluster é hlg)
+func (o *Orchestrator) FindNamespaceByKeywords(ctx context.Context, cluster string, keywords []string, envHint string) string {
+	if len(keywords) == 0 {
+		return ""
+	}
+	client, err := o.kubeManager.GetClient(cluster)
+	if err != nil {
+		log.Debug().Err(err).Str("cluster", cluster).Msg("FindNamespaceByKeywords: falha ao obter client K8s")
+		return ""
+	}
+	nsList, err := client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		log.Debug().Err(err).Str("cluster", cluster).Msg("FindNamespaceByKeywords: falha ao listar namespaces")
+		return ""
+	}
+
+	isPrdHint := envHint == "prd" || envHint == "prod"
+
+	bestNS := ""
+	bestScore := 0
+	for _, ns := range nsList.Items {
+		nsEnv := namespaceEnvToken(ns.Name)
+
+		// Filtrar por compatibilidade de ambiente
+		if envHint != "" {
+			if isPrdHint {
+				// Procurando prd: rejeitar namespaces não-prd
+				for _, m := range nonPrdEnvMarkers {
+					if nsEnv == m {
+						goto nextNS
+					}
+				}
+			} else {
+				// Procurando não-prd: rejeitar namespaces de produção
+				if nsEnv == "prd" || nsEnv == "prod" {
+					continue
+				}
+			}
+		}
+
+		{
+			nsName := strings.ToLower(ns.Name)
+			score := 0
+			for _, kw := range keywords {
+				if strings.Contains(nsName, kw) {
+					score++
+				}
+			}
+			if score == 0 {
+				continue
+			}
+			// Bônus: env do namespace bate exatamente com o hint
+			if nsEnv == envHint {
+				score += 5
+			}
+			if score > bestScore {
+				bestScore = score
+				bestNS = ns.Name
+			}
+		}
+	nextNS:
+	}
+
+	if bestNS != "" {
+		log.Info().
+			Str("cluster", cluster).
+			Str("namespace", bestNS).
+			Int("score", bestScore).
+			Str("env_hint", envHint).
+			Msg("FindNamespaceByKeywords: namespace identificado por keyword")
+	}
+	return bestNS
+}
+
 // ExecuteHealthCheck executa health check em um ou mais clusters
 func (o *Orchestrator) ExecuteHealthCheck(ctx context.Context, sessionID string, req HealthCheckRequest) ([]*HealthCheckResult, error) {
 	// Resolver clusters baseado em Environment ou Clusters

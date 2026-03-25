@@ -543,7 +543,7 @@ export function ServiceNowImportModal({
                 </Button>
                 <Button
                   onClick={handleUseData}
-                  disabled={!result.extracted_data?.application && !result.extracted_data?.version}
+                  disabled={!result.extracted_data?.version}
                 >
                   <Plus className="h-4 w-4 mr-2" />
                   Adicionar a Comparações

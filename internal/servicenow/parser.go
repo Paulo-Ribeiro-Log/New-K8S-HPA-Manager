@@ -14,8 +14,8 @@ var extractionPatterns = map[string]*regexp.Regexp{
 	// * Versão: 0.0.6-2. (captura versão semver com pontos e hífens)
 	"version": regexp.MustCompile(`\*\s*Versão:\s*([\d]+\.[\d]+\.[\d]+(?:-[\d]+)?)`),
 
-	// * Repositório: github.com/viavarejo-internal/tms-sync-1p-order-management-acl.git.
-	"repository": regexp.MustCompile(`\*\s*Repositório:\s*github\.com/viavarejo-internal/(.+?)\.git`),
+	// * Repositório: github.com/<org>/tms-sync-1p-order-management-acl.git.
+	"repository": regexp.MustCompile(`\*\s*Repositório:\s*github\.com/[^/]+/(.+?)\.git`),
 
 	// * Squad(s): Planejamento.
 	"squad": regexp.MustCompile(`\*\s*Squad\(s\):\s*(.+?)\.`),
