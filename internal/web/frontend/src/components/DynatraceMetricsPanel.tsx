@@ -441,20 +441,38 @@ const ENTITY_TYPE_LABEL: Record<string, string> = {
   APPLICATION:                "Aplicação",
 };
 
-function EntityMetricsSection({ entity, problemStartMs }: {
+export function EntityMetricsSection({ entity, problemStartMs, columns = 1 }: {
   entity: DTEntityMetrics;
   problemStartMs: number;
+  /** 1 = layout vertical (padrão), 2 = grid 2 colunas (Diagnóstico) */
+  columns?: 1 | 2;
 }) {
   const byKey = Object.fromEntries(entity.metrics.map(m => [m.key, m]));
   const groups = groupsForType(entity.entityType);
 
-  // Filtrar grupos que têm ao menos uma série com dados
+  // Filtrar grupos que têm ao menos uma série com dados E pelo menos 2 pontos
   const visibleGroups = groups.map(g => ({
     group: g,
-    series: g.keys.map(k => byKey[k]).filter(Boolean) as DTMetricSeries[],
+    series: g.keys.map(k => byKey[k]).filter(
+      s => !!s && (s.points ?? []).filter(p => !isNaN(p.v)).length >= 2
+    ) as DTMetricSeries[],
   })).filter(({ series }) => series.length > 0);
 
-  if (visibleGroups.length === 0) {
+  // Fallback: métricas que chegaram mas não pertencem a nenhum grupo predefinido
+  const coveredKeys = new Set(visibleGroups.flatMap(g => g.group.keys));
+  const ungrouped = entity.metrics.filter(
+    m => !coveredKeys.has(m.key) && (m.points ?? []).filter(p => !isNaN(p.v)).length >= 2,
+  );
+
+  // Criar grupos sintéticos para cada métrica não coberta (cada uma em chart individual)
+  const fallbackGroups: { group: ChartGroup; series: DTMetricSeries[] }[] = ungrouped.map(m => ({
+    group: { title: m.label, icon: <Activity className="h-3.5 w-3.5" />, keys: [m.key], style: "area" },
+    series: [m],
+  }));
+
+  const allGroups = [...visibleGroups, ...fallbackGroups];
+
+  if (allGroups.length === 0) {
     return (
       <div className="text-xs text-muted-foreground italic py-2">
         Nenhuma métrica disponível para esta entidade neste período.
@@ -481,15 +499,16 @@ function EntityMetricsSection({ entity, problemStartMs }: {
       </div>
 
       {/* Gráficos por grupo */}
-      <div className="space-y-5">
-        {visibleGroups.map(({ group, series }) => (
-          <MetricChart
-            key={group.title}
-            group={group}
-            availableSeries={series}
-            problemStartMs={problemStartMs}
-            height={series.length > 2 ? 160 : 140}
-          />
+      <div className={columns === 2 ? "grid grid-cols-2 gap-4" : "space-y-5"}>
+        {allGroups.map(({ group, series }) => (
+          <div key={group.title} className={columns === 2 ? "rounded-lg border border-border/50 bg-muted/10 px-3 pt-2 pb-1" : undefined}>
+            <MetricChart
+              group={group}
+              availableSeries={series}
+              problemStartMs={problemStartMs}
+              height={series.length > 2 ? 160 : 140}
+            />
+          </div>
         ))}
       </div>
     </div>

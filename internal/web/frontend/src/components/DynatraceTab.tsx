@@ -9,7 +9,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { DynatraceMetricsPanel } from "@/components/DynatraceMetricsPanel";
+import { DynatraceMetricsPanel, EntityMetricsSection } from "@/components/DynatraceMetricsPanel";
 import { DynatraceContextPanel } from "@/components/DynatraceContextPanel";
 import { DynatraceGitHubSection } from "@/components/DynatraceGitHubSection";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -1960,6 +1960,47 @@ function removeEmojis(text: string): string {
   return text.replace(/[\u{1F300}-\u{1FFFF}]|[\u2600-\u27FF]|⭐|🔴|🟡|🟢|⚠️|✅|❌/gu, "").trim();
 }
 
+/**
+ * Sanitiza texto para uso em jsPDF com fonte helvetica (WinAnsi).
+ * jsPDF renderiza caracteres fora do WinAnsi como "%P" ou similar.
+ * Substitui os mais comuns por equivalentes ASCII.
+ */
+function sanitizePDF(text: string): string {
+  return removeEmojis(text)
+    // Box-drawing e separadores de bloco (comuns em respostas de IA)
+    .replace(/[═─━╌╍╎╏┄┅┆┇┈┉┊┋]/g, "-")
+    .replace(/[║│┃]/g, "|")
+    .replace(/[╔╗╚╝╠╣╦╩╬┌┐└┘├┤┬┴┼]/g, "+")
+    // Setas
+    .replace(/→/g, "->")
+    .replace(/←/g, "<-")
+    .replace(/↑/g, "^")
+    .replace(/↓/g, "v")
+    .replace(/↔/g, "<->")
+    .replace(/⇒/g, "=>")
+    .replace(/⇐/g, "<=")
+    // Travessões e hifens especiais
+    .replace(/[—–]/g, "-")
+    .replace(/…/g, "...")
+    // Aspas tipográficas
+    .replace(/[""]/g, '"')
+    .replace(/['']/g, "'")
+    // Bullets e símbolos de lista
+    .replace(/[•◦▪▫◾◽▸▹►▻]/g, "-")
+    .replace(/[✓✔]/g, "OK")
+    .replace(/[✗✘]/g, "X")
+    // Outros símbolos matemáticos/técnicos fora do WinAnsi
+    .replace(/[×]/g, "x")
+    .replace(/[÷]/g, "/")
+    .replace(/[≥]/g, ">=")
+    .replace(/[≤]/g, "<=")
+    .replace(/[≠]/g, "!=")
+    .replace(/[∞]/g, "inf")
+    // Remove qualquer caractere acima de U+00FF que ainda reste (fallback)
+    .replace(/[^\x00-\xFF]/g, "")
+    .trim();
+}
+
 function buildInvestigationMarkdown(problem: DynatraceProblem, inv: any, quickAnalysis: string): string {
   const lines: string[] = [];
   lines.push(`# Diagnóstico Dynatrace — ${problem.displayId}`);
@@ -2062,7 +2103,7 @@ async function exportPDF(problem: DynatraceProblem, inv: any, quickAnalysis: str
   let y = await addLogoHeaderToPDF(
     doc,
     "DIAGNOSTICO DYNATRACE",
-    `${removeEmojis(problem.title)} | ${problem.displayId}`,
+    `${sanitizePDF(problem.title)} | ${problem.displayId}`,
     40,
   );
 
@@ -2075,7 +2116,7 @@ async function exportPDF(problem: DynatraceProblem, inv: any, quickAnalysis: str
     doc.setFillColor(30, 64, 175);
     doc.rect(0, y, pageWidth, 12, "F");
     doc.setFontSize(13); doc.setFont("helvetica", "bold"); doc.setTextColor(255, 255, 255);
-    doc.text(removeEmojis(text), margin, y + 8);
+    doc.text(sanitizePDF(text), margin, y + 8);
     doc.setTextColor(0, 0, 0);
     y += 16;
   };
@@ -2083,7 +2124,7 @@ async function exportPDF(problem: DynatraceProblem, inv: any, quickAnalysis: str
   const h2 = (text: string) => {
     checkPage(10);
     doc.setFontSize(11); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 64, 175);
-    doc.text(removeEmojis(text), margin, y);
+    doc.text(sanitizePDF(text), margin, y);
     doc.setTextColor(0, 0, 0);
     y += 7;
   };
@@ -2091,7 +2132,7 @@ async function exportPDF(problem: DynatraceProblem, inv: any, quickAnalysis: str
   const line = (text: string, indent = 0) => {
     checkPage(6);
     doc.setFontSize(9); doc.setFont("helvetica", "normal");
-    const wrapped = doc.splitTextToSize(removeEmojis(text), contentWidth - indent);
+    const wrapped = doc.splitTextToSize(sanitizePDF(text), contentWidth - indent);
     doc.text(wrapped, margin + indent, y);
     y += wrapped.length * 5;
   };
@@ -2158,7 +2199,7 @@ async function exportPDF(problem: DynatraceProblem, inv: any, quickAnalysis: str
     const aiText = inv.ai_analysis || quickAnalysis;
     if (aiText) {
       h1("ANALISE AI");
-      const stripped = removeEmojis(aiText.replace(/[#*`]/g, ""));
+      const stripped = sanitizePDF(aiText.replace(/[#*`]/g, ""));
       const paras = stripped.split("\n").filter(Boolean);
       for (const p of paras) {
         checkPage(8);
@@ -2396,25 +2437,14 @@ function DiagnosticoTab({
             </CardContent>
           </Card>
 
-          {/* Métricas DT com charts */}
+          {/* Métricas DT com charts — igual à tab Métricas (agrupado por família) */}
           {(() => {
             const entities = (investigationResult.dt_metrics?.entities ?? []).filter((e: any) =>
               (e.metrics ?? []).some((m: any) => (m.points ?? []).some((p: any) => !isNaN(p.v) && p.v >= 0))
             );
             if (!entities.length) return null;
             const hasVRP = (problem.affectedEntities?.length ?? 0) > 0 || !!problem.rootCauseEntity;
-
-            // Calcula total de métricas para saber se há slot vazio (ímpar) na última linha
-            let totalMetrics = 0;
-            const entityMetrics = entities.map((ed: any) => {
-              const m = (ed.metrics ?? []).filter((m: any) =>
-                (m.points ?? []).filter((p: any) => !isNaN(p.v) && p.v >= 0).length >= 2
-              );
-              totalMetrics += m.length;
-              return { ed, metricsWithData: m };
-            });
-            const hasEmptySlot = totalMetrics % 2 !== 0;
-            let vrpPlaced = false;
+            const problemStartMs = new Date(problem.startTime).getTime();
 
             return (
               <Card>
@@ -2425,40 +2455,16 @@ function DiagnosticoTab({
                     <Badge variant="outline" className="text-[9px] ml-auto">{entities.length} {entities.length === 1 ? "entidade" : "entidades"}</Badge>
                   </p>
                 </CardHeader>
-                <CardContent className="px-3 pb-3 space-y-4">
-                  {entityMetrics.map(({ ed, metricsWithData }: any, ei: number) => {
-                    if (!metricsWithData.length) return null;
-                    const isLastEntity = ei === entityMetrics.length - 1;
-                    const showVRPInSlot = hasVRP && hasEmptySlot && isLastEntity && !vrpPlaced;
-                    if (showVRPInSlot) vrpPlaced = true;
-                    return (
-                      <div key={ei} className="space-y-2">
-                        <div className="flex items-center gap-1.5 border-b border-border/30 pb-1.5">
-                          {ed.isRootCause && <span className="text-yellow-400 text-[10px]">⭐</span>}
-                          <p className="text-[11px] font-semibold text-muted-foreground">
-                            {ed.entityName} <span className="opacity-50 font-normal">[{ed.entityType}]</span>
-                          </p>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          {metricsWithData.map((m: any, mi: number) => (
-                            <div key={mi} className="rounded-lg border border-border/50 bg-muted/10 px-3 pt-2 pb-1">
-                              <DTMetricSparkline metric={m} />
-                            </div>
-                          ))}
-                          {showVRPInSlot && (
-                            <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 overflow-hidden">
-                              <p className="text-[10px] font-semibold text-orange-400 flex items-center gap-1 px-2 pt-1.5 pb-0.5">
-                                <Network className="h-3 w-3" />Propagação
-                              </p>
-                              <VRPEmbed problem={problem} />
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {/* VRP abaixo caso não haja slot vazio */}
-                  {hasVRP && !vrpPlaced && (
+                <CardContent className="px-3 pb-3 space-y-8">
+                  {entities.map((ed: any, ei: number) => (
+                    <div key={ei}>
+                      <EntityMetricsSection entity={ed} problemStartMs={problemStartMs} columns={2} />
+                      {ei < entities.length - 1 && (
+                        <div className="border-t border-dashed border-border/40 mt-4" />
+                      )}
+                    </div>
+                  ))}
+                  {hasVRP && (
                     <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 overflow-hidden">
                       <p className="text-[10px] font-semibold text-orange-400 flex items-center gap-1 px-2 pt-1.5 pb-0.5">
                         <Network className="h-3 w-3" />Fluxo de Propagação
