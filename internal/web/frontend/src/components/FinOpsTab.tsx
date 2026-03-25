@@ -14,8 +14,9 @@ import {
 import {
   DollarSign, TrendingDown, AlertTriangle, CheckCircle2,
   Loader2, RefreshCw, Server, Layers, CircleDollarSign,
-  ArrowUpDown, Info, ChevronDown, ChevronUp
+  ArrowUpDown, Info, ChevronDown, ChevronUp, Download, Brain
 } from "lucide-react";
+import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -469,6 +470,9 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
 
   const [cluster, setCluster] = useState(defaultCluster);
   const [triggerKey, setTriggerKey] = useState(0);
+  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiExpanded, setAiExpanded] = useState(true);
 
   const { data: report, isLoading, error, refetch } = useQuery<FinOpsReport>({
     queryKey: ["finops-report", cluster, triggerKey],
@@ -486,6 +490,62 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
+
+  const exportCSV = () => {
+    if (!report) return;
+    const header = "Namespace,Workload,Pods,CPU Request (m),Mem Request (Mi),Custo R$/mês,HPA Min,HPA Atual,HPA Max,Custo HPA Min R$,Custo HPA Max R$,Veredicto";
+    const rows = report.workloads.map(w =>
+      [w.namespace, w.workload, w.pods,
+       Math.round(w.cpu_request_millis), Math.round(w.mem_request_mi),
+       w.cost_share_brl.toFixed(2),
+       w.hpa_min, w.hpa_current, w.hpa_max,
+       w.hpa_cost_min_brl.toFixed(2), w.hpa_cost_max_brl.toFixed(2),
+       w.verdict
+      ].join(",")
+    );
+    const csv = [header, ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `finops-${report.cluster.replace("-admin", "")}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("CSV exportado com sucesso");
+  };
+
+  const analyzeWithAI = async () => {
+    if (!report) return;
+    const aiEmail = localStorage.getItem("ai_email") ?? "";
+    if (!aiEmail) {
+      toast.error("Configure seu e-mail de AI em Configurações → AI Settings");
+      return;
+    }
+    setAiLoading(true);
+    setAiAnalysis(null);
+    try {
+      const r = await fetch("/api/v1/finops/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}`,
+        },
+        body: JSON.stringify({ ai_email: aiEmail, report }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error ?? `Erro ${r.status}`);
+      }
+      const data = await r.json();
+      setAiAnalysis(data.analysis);
+      setAiExpanded(true);
+      toast.success("Análise AI concluída");
+    } catch (err) {
+      toast.error("Falha na análise AI: " + (err as Error).message);
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full p-4 gap-4 overflow-auto">
@@ -512,11 +572,26 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
             </SelectContent>
           </Select>
           <Button size="sm" variant="outline" className="h-8 gap-1"
-            onClick={() => { setTriggerKey(k => k + 1); refetch(); }}
+            onClick={() => { setTriggerKey(k => k + 1); refetch(); setAiAnalysis(null); }}
             disabled={isLoading}>
             <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
             Analisar
           </Button>
+          {report && (
+            <>
+              <Button size="sm" variant="outline" className="h-8 gap-1" onClick={exportCSV}>
+                <Download className="h-3.5 w-3.5" />
+                CSV
+              </Button>
+              <Button size="sm" variant="outline" className="h-8 gap-1"
+                onClick={analyzeWithAI} disabled={aiLoading}>
+                {aiLoading
+                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  : <Brain className="h-3.5 w-3.5" />}
+                {aiLoading ? "Analisando..." : "Analisar com AI"}
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -553,6 +628,28 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
               {" · "}{report.node_pools.length} node pools · {report.summary.workloads_analyzed} workloads
             </span>
           </div>
+
+          {/* Resultado AI */}
+          {aiAnalysis && (
+            <Card className="border-blue-200 dark:border-blue-800">
+              <CardHeader className="py-2 px-4 cursor-pointer" onClick={() => setAiExpanded(e => !e)}>
+                <CardTitle className="text-sm flex items-center justify-between">
+                  <span className="flex items-center gap-2">
+                    <Brain className="h-4 w-4 text-blue-500" />
+                    Análise AI — Recomendações FinOps
+                  </span>
+                  {aiExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </CardTitle>
+              </CardHeader>
+              {aiExpanded && (
+                <CardContent className="px-4 pb-4">
+                  <pre className="text-xs whitespace-pre-wrap font-sans leading-relaxed text-foreground">
+                    {aiAnalysis}
+                  </pre>
+                </CardContent>
+              )}
+            </Card>
+          )}
 
           <Tabs defaultValue="overview" className="flex-1 flex flex-col min-h-0">
             <TabsList className="w-fit">
