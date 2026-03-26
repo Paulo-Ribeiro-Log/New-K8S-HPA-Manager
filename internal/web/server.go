@@ -525,6 +525,7 @@ func (s *Server) setupRoutes() {
 	api.POST("/finops/pricing/refresh", finOpsHandler.RefreshPricing)
 	api.GET("/finops/exchange-rate", finOpsHandler.GetExchangeRate)
 	api.POST("/finops/analyze", finOpsHandler.AnalyzeReport)
+	api.GET("/finops/timeline", finOpsHandler.GetTimeline)
 
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
 	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)

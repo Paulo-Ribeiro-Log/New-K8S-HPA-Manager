@@ -15,11 +15,8 @@ import (
 	"k8s-hpa-manager/internal/storage"
 )
 
-// clusterCapacity guarda a capacidade total do cluster em millicores e MiB
-type clusterCapacity struct {
-	CPUMillicores int64
-	MemoryMi      int64
-}
+// clusterCapacity é o alias interno de ClusterCapacity (definida em models.go)
+type clusterCapacity = ClusterCapacity
 
 // rawWorkload é a agregação temporária de pods por workload antes do cálculo de custo
 type rawWorkload struct {
@@ -28,6 +25,8 @@ type rawWorkload struct {
 	Pods             int
 	CPURequestMillis float64
 	MemRequestMi     float64
+	CPULimitMillis   float64
+	MemLimitMi       float64
 	HPAMin           int
 	HPAMax           int
 	HPACurrent       int
@@ -46,12 +45,14 @@ func NewCalculator(pricer *AzurePricer, exchange *ExchangeRateProvider) *Calcula
 
 // BuildReport coleta dados do cluster e monta o FinOpsReport completo.
 // namespaces: filtra namespaces específicos; vazio = todos (exceto kube-system/kube-public).
+// enricher: opcional — se não nil, enriquece workloads com dados históricos do Prometheus.
 func (c *Calculator) BuildReport(
 	ctx context.Context,
 	cluster string,
 	client kubernetes.Interface,
 	pools []storage.NodePoolRegistryEntry,
 	namespaces []string,
+	enricher *PrometheusEnricher,
 ) (*FinOpsReport, error) {
 	rate, rateDate := c.exchange.Get()
 
@@ -61,8 +62,8 @@ func (c *Calculator) BuildReport(
 		return nil, err
 	}
 
-	// 2. Coletar workloads do cluster (pods + HPAs)
-	rawWorkloads, err := collectWorkloads(ctx, client, namespaces)
+	// 2. Coletar workloads do cluster (pods + HPAs) + mapa pod→workload para o enricher
+	rawWorkloads, podToWorkload, err := collectWorkloads(ctx, client, namespaces)
 	if err != nil {
 		return nil, err
 	}
@@ -70,10 +71,18 @@ func (c *Calculator) BuildReport(
 	// 3. Alocar custo proporcional a cada workload
 	workloads := allocateCosts(rawWorkloads, capacity, clusterCostUSD, rate)
 
-	// 4. Agregar por namespace
+	// 4. Enriquecer com Prometheus (histórico 30d — opcional)
+	windowDays := 0
+	if enricher != nil {
+		enricher.SetPodMapping(podToWorkload)
+		enricher.EnrichWorkloads(ctx, workloads)
+		windowDays = enricher.window
+	}
+
+	// 5. Agregar por namespace
 	nsMap := aggregateNamespaces(workloads)
 
-	// 5. Montar summary
+	// 6. Montar summary
 	summary := buildSummary(workloads, nsMap, clusterCostUSD, rate)
 
 	return &FinOpsReport{
@@ -81,6 +90,7 @@ func (c *Calculator) BuildReport(
 		GeneratedAt:  time.Now(),
 		ExchangeRate: rate,
 		ExchangeDate: rateDate,
+		WindowDays:   windowDays,
 		NodePools:    finOpsPools,
 		Namespaces:   nsMap,
 		Workloads:    workloads,
@@ -139,16 +149,17 @@ func (c *Calculator) calculatePoolCosts(
 	return finOpsPools, cap, totalCostUSD, nil
 }
 
-// collectWorkloads lista pods Running e HPAs do cluster, agregando por workload (namespace/nome).
+// collectWorkloads lista pods Running e HPAs do cluster.
+// Retorna: lista de rawWorkload + mapa "ns/pod" → "ns/workload" para o enricher Prometheus.
 func collectWorkloads(
 	ctx context.Context,
 	client kubernetes.Interface,
 	namespaces []string,
-) ([]rawWorkload, error) {
+) ([]rawWorkload, map[string]string, error) {
 	// 1. Listar todos os ReplicaSets para resolver RS → Deployment
 	rsList, err := client.AppsV1().ReplicaSets("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rsOwner := make(map[string]string) // "ns/rs-name" → deployment name
 	for _, rs := range rsList.Items {
@@ -162,9 +173,8 @@ func collectWorkloads(
 	// 2. Listar HPAs (todos os namespaces)
 	hpaList, err := client.AutoscalingV2().HorizontalPodAutoscalers("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	// hpaMap: "ns/workload" → {min, max, current}
 	type hpaInfo struct{ min, max, current int }
 	hpaMap := make(map[string]hpaInfo)
 	for _, h := range hpaList.Items {
@@ -186,11 +196,13 @@ func collectWorkloads(
 		FieldSelector: "status.phase=Running",
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	// 4. Agregar por workload
+	// 4. Agregar por workload + construir mapa pod→workload para o enricher Prometheus
 	workloadMap := make(map[string]*rawWorkload)
+	podToWorkload := make(map[string]string, len(podList.Items))
+
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 		if !shouldIncludeNamespace(pod.Namespace, nsFilter) {
@@ -199,6 +211,9 @@ func collectWorkloads(
 
 		workloadName := resolveWorkload(pod, rsOwner)
 		key := pod.Namespace + "/" + workloadName
+
+		// Mapa para o enricher: "ns/pod-name" → "ns/workload-name"
+		podToWorkload[pod.Namespace+"/"+pod.Name] = key
 
 		if _, ok := workloadMap[key]; !ok {
 			h := hpaMap[key]
@@ -215,13 +230,15 @@ func collectWorkloads(
 		wl.Pods++
 		wl.CPURequestMillis += sumCPURequestsMillis(pod)
 		wl.MemRequestMi += sumMemRequestsMi(pod)
+		wl.CPULimitMillis += sumCPULimitsMillis(pod)
+		wl.MemLimitMi += sumMemLimitsMi(pod)
 	}
 
 	result := make([]rawWorkload, 0, len(workloadMap))
 	for _, wl := range workloadMap {
 		result = append(result, *wl)
 	}
-	return result, nil
+	return result, podToWorkload, nil
 }
 
 // allocateCosts distribui o custo do cluster proporcionalmente entre os workloads.
@@ -273,6 +290,8 @@ func allocateCosts(
 			Pods:              wl.Pods,
 			CPURequestMillis:  round2(wl.CPURequestMillis),
 			MemRequestMi:      round2(wl.MemRequestMi),
+			CPULimitMillis:    round2(wl.CPULimitMillis),
+			MemLimitMi:        round2(wl.MemLimitMi),
 			CostShareUSD:      round2(costShareUSD),
 			CostShareBRL:      round2(costShareUSD * rate),
 			HPAMin:            hpaMin,
@@ -336,10 +355,14 @@ func buildSummary(workloads []FinOpsWorkload, namespaces []FinOpsNamespace, clus
 			s.OOMRiskCount++
 		case "no_request":
 			s.NoRequestCount++
+		case "hpa_removable":
+			s.HPARemovableCount++
 		}
-		// Economia potencial se todos HPAs ficassem no mínimo
 		if wl.HPACostMinBRL < wl.HPACostCurrentBRL {
 			s.HPASavingsIfMinBRL = round2(s.HPASavingsIfMinBRL + (wl.HPACostCurrentBRL - wl.HPACostMinBRL))
+		}
+		if wl.WasteBRL > 0 {
+			s.PotentialSavingsBRL = round2(s.PotentialSavingsBRL + wl.WasteBRL)
 		}
 	}
 
@@ -428,6 +451,28 @@ func sumMemRequestsMi(pod *corev1.Pod) float64 {
 	for _, c := range pod.Spec.Containers {
 		if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
 			total += float64(req.Value()) / (1024 * 1024)
+		}
+	}
+	return total
+}
+
+// sumCPULimitsMillis soma os CPU limits de todos os containers de um pod em millicores
+func sumCPULimitsMillis(pod *corev1.Pod) float64 {
+	var total float64
+	for _, c := range pod.Spec.Containers {
+		if lim, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
+			total += float64(lim.MilliValue())
+		}
+	}
+	return total
+}
+
+// sumMemLimitsMi soma os Memory limits de todos os containers de um pod em MiB
+func sumMemLimitsMi(pod *corev1.Pod) float64 {
+	var total float64
+	for _, c := range pod.Spec.Containers {
+		if lim, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
+			total += float64(lim.Value()) / (1024 * 1024)
 		}
 	}
 	return total

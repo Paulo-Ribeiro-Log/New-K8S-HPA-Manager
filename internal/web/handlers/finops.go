@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/finops"
+	"k8s-hpa-manager/internal/monitoring/discovery"
 	"k8s-hpa-manager/internal/storage"
 )
 
@@ -41,10 +43,11 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 }
 
 // GetReport godoc
-// GET /api/v1/finops/report?cluster=X[&namespaces=ns1,ns2]
+// GET /api/v1/finops/report?cluster=X[&namespaces=ns1,ns2][&with_prometheus=true&prometheus_url=http://...&window_days=7]
 //
 // Retorna o relatório FinOps completo: custo de node pools, alocação por workload,
 // cenários HPA e resumo de oportunidades de saving.
+// Com with_prometheus=true, enriquece workloads com P95 CPU/Mem real (mais lento).
 func (h *FinOpsHandler) GetReport(c *gin.Context) {
 	cluster := c.Query("cluster")
 	if cluster == "" {
@@ -60,6 +63,25 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 				namespaces = append(namespaces, trimmed)
 			}
 		}
+	}
+
+	// Prometheus P95 (opcional) — URL auto-descoberta pelo cluster se não fornecida
+	var enricher *finops.PrometheusEnricher
+	if c.Query("with_prometheus") == "true" {
+		promURL := strings.TrimSpace(c.Query("prometheus_url"))
+		if promURL == "" {
+			promURL = discovery.GetPrometheusURL(cluster)
+			log.Info().Str("cluster", cluster).Str("prometheus_url", promURL).Msg("FinOps: URL Prometheus auto-descoberta")
+		}
+		windowDays, _ := strconv.Atoi(c.Query("window_days"))
+		var err error
+		enricher, err = finops.NewPrometheusEnricher(promURL, windowDays)
+		if err != nil {
+			log.Warn().Err(err).Str("prometheus_url", promURL).Msg("FinOps: falha ao criar enricher Prometheus")
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Falha ao conectar ao Prometheus: " + err.Error()})
+			return
+		}
+		log.Info().Str("prometheus_url", promURL).Int("window_days", windowDays).Msg("FinOps: enricher Prometheus criado")
 	}
 
 	if h.npRegistryStore == nil {
@@ -91,9 +113,9 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		return
 	}
 
-	// Gerar relatório com timeout via context do Gin
+	// Gerar relatório (com Prometheus opcional)
 	calc := finops.NewCalculator(h.pricer, h.exchange)
-	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces)
+	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces, enricher)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao gerar relatório")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao gerar relatório FinOps: " + err.Error()})
@@ -104,6 +126,8 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		Str("cluster", cluster).
 		Int("workloads", report.Summary.WorkloadsAnalyzed).
 		Float64("cost_brl", report.Summary.TotalMonthlyCostBRL).
+		Float64("waste_brl", report.Summary.PotentialSavingsBRL).
+		Bool("prometheus", enricher != nil).
 		Msg("FinOps: relatório gerado")
 
 	c.JSON(http.StatusOK, report)
@@ -226,6 +250,51 @@ func (h *FinOpsHandler) AnalyzeReport(c *gin.Context) {
 		"analysis":    analysis,
 		"analyzed_at": time.Now(),
 	})
+}
+
+// GetTimeline godoc
+// GET /api/v1/finops/timeline?cluster=X[&days=30][&prometheus_url=http://...]
+//
+// Retorna a série temporal diária de réplicas de HPA e número de nodes do cluster.
+// Requer acesso ao Prometheus (URL auto-descoberta ou fornecida via query param).
+func (h *FinOpsHandler) GetTimeline(c *gin.Context) {
+	cluster := c.Query("cluster")
+	if cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'cluster' é obrigatório"})
+		return
+	}
+
+	promURL := strings.TrimSpace(c.Query("prometheus_url"))
+	if promURL == "" {
+		promURL = discovery.GetPrometheusURL(cluster)
+	}
+
+	days, _ := strconv.Atoi(c.Query("days"))
+	if days <= 0 {
+		days = 30
+	}
+
+	end := time.Now()
+	start := end.AddDate(0, 0, -days)
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Minute)
+	defer cancel()
+
+	report, err := finops.QueryTimeline(ctx, promURL, start, end)
+	if err != nil {
+		log.Error().Err(err).Str("cluster", cluster).Str("prometheus_url", promURL).Msg("FinOps: falha ao buscar timeline")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao buscar timeline: " + err.Error()})
+		return
+	}
+	report.Cluster = cluster
+
+	log.Info().
+		Str("cluster", cluster).
+		Int("hpas", len(report.HPAs)).
+		Int("days", days).
+		Msg("FinOps: timeline retornada")
+
+	c.JSON(http.StatusOK, report)
 }
 
 // buildFinOpsPrompt monta o prompt para análise AI do relatório FinOps
