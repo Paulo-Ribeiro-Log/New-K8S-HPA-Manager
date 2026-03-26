@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,13 +10,13 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
-  PieChart, Pie, Legend, ComposedChart, Line,
+  PieChart, Pie, Legend, ComposedChart, Line, Area,
   LabelList, ReferenceLine,
 } from "recharts";
 import {
   DollarSign, TrendingDown, AlertTriangle, CheckCircle2,
   Loader2, RefreshCw, Server, Layers, CircleDollarSign,
-  ArrowUpDown, Info, ChevronDown, ChevronUp, Download, Brain, Activity
+  ArrowUpDown, Info, ChevronDown, ChevronUp, Download, Brain, Activity, Cpu, MemoryStick,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
@@ -121,12 +121,26 @@ interface HPATimeline {
   series: HPADayPoint[];
 }
 
+interface CPUDayPoint {
+  date: string;
+  used_millis: number;
+  req_millis: number;
+}
+
+interface MemDayPoint {
+  date: string;
+  used_mi: number;
+  req_mi: number;
+}
+
 interface TimelineReport {
   cluster: string;
   start_date: string;
   end_date: string;
   hpas: HPATimeline[];
   nodes: { date: string; node_count: number }[];
+  cpu: CPUDayPoint[];
+  mem: MemDayPoint[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -179,9 +193,8 @@ function VerdictBadge({ verdict }: { verdict: FinOpsWorkload["verdict"] }) {
   );
 }
 
-// ─── Aba: Visão Geral ─────────────────────────────────────────────────────────
+// ─── Helpers de charts ────────────────────────────────────────────────────────
 
-// Tooltip customizado com sombra e formatação elegante
 function ChartTooltip({ active, payload, label, formatter }: {
   active?: boolean; payload?: { name: string; value: number; color: string }[]; label?: string;
   formatter?: (v: number, name: string) => string;
@@ -200,19 +213,97 @@ function ChartTooltip({ active, payload, label, formatter }: {
   );
 }
 
-function OverviewTab({ report }: { report: FinOpsReport }) {
-  const { summary, namespaces, node_pools, workloads } = report;
+const fmtMi = (v: number) => v >= 1024 ? `${(v / 1024).toFixed(1)}Gi` : `${Math.round(v)}Mi`;
+const fmtM  = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}` : `${Math.round(v)}`;
 
-  // Top 8 namespaces para chart horizontal
-  const topNs = namespaces.slice(0, 8).map(ns => ({
-    name: ns.namespace.length > 24 ? ns.namespace.slice(0, 22) + "…" : ns.namespace,
-    value: ns.monthly_cost_brl,
-    pct: summary.total_monthly_cost_brl > 0
-      ? Math.round((ns.monthly_cost_brl / summary.total_monthly_cost_brl) * 100)
-      : 0,
+const LINE_COLORS = ["#6366f1","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899","#84cc16","#f97316","#14b8a6"];
+
+// ─── Aba: Dashboard ───────────────────────────────────────────────────────────
+
+function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsReport }) {
+  const { summary, namespaces, node_pools, workloads } = report;
+  const [days, setDays] = useState(30);
+
+  // ── Fetch timeline ──────────────────────────────────────────────────────────
+  const { data: tl, isLoading: tlLoading } = useQuery<TimelineReport>({
+    queryKey: ["finops-timeline-dashboard", cluster, days],
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/v1/finops/timeline?cluster=${encodeURIComponent(cluster)}&days=${days}`,
+        { headers: { Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}` } }
+      );
+      if (!r.ok) throw new Error(`Timeline: ${r.status}`);
+      return r.json();
+    },
+    enabled: !!cluster,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  // ── Custo diário estimado ────────────────────────────────────────────────────
+  const totalNodes = node_pools.reduce((s, p) => s + p.node_count, 0);
+  const costPerNodePerDay = totalNodes > 0
+    ? summary.total_monthly_cost_brl / 30 / totalNodes
+    : 0;
+
+  const dailyCostData = (tl?.nodes ?? []).map(n => ({
+    date: n.date.slice(5),
+    custo: parseFloat((n.node_count * costPerNodePerDay).toFixed(0)),
+    nodes: n.node_count,
   }));
 
-  // Node pools para chart
+  // ── CPU série temporal ───────────────────────────────────────────────────────
+  const cpuData = (tl?.cpu ?? []).map(p => ({
+    date: p.date.slice(5),
+    Uso: Math.round(p.used_millis),
+    Request: Math.round(p.req_millis),
+  }));
+
+  // ── Mem série temporal ───────────────────────────────────────────────────────
+  const memData = (tl?.mem ?? []).map(p => ({
+    date: p.date.slice(5),
+    Uso: Math.round(p.used_mi),
+    Request: Math.round(p.req_mi),
+  }));
+
+  // ── HPA top-8 (por max replicas) — multi-line ────────────────────────────────
+  const top8HPAs = (tl?.hpas ?? [])
+    .map(h => ({ ...h, maxObs: Math.max(...h.series.map(p => p.max_replicas), 0) }))
+    .sort((a, b) => b.maxObs - a.maxObs)
+    .slice(0, 8);
+
+  const hpaAllDates = [...new Set((tl?.hpas ?? []).flatMap(h => h.series.map(p => p.date)))].sort();
+  const hpaChartData = hpaAllDates.map(date => {
+    const entry: Record<string, number | string> = { date: date.slice(5) };
+    top8HPAs.forEach((h, i) => {
+      const pt = h.series.find(p => p.date === date);
+      entry[`h${i}`] = pt ? Math.round(pt.avg_replicas) : 0;
+    });
+    return entry;
+  });
+
+  // ── Nodes série temporal ─────────────────────────────────────────────────────
+  const nodesData = (tl?.nodes ?? []).map(n => ({
+    date: n.date.slice(5),
+    Nodes: n.node_count,
+  }));
+
+  // ── Charts auxiliares (snapshot do report) ───────────────────────────────────
+  const topNs = namespaces.slice(0, 8).map(ns => ({
+    name: ns.namespace.length > 22 ? ns.namespace.slice(0, 20) + "…" : ns.namespace,
+    value: ns.monthly_cost_brl,
+    pct: summary.total_monthly_cost_brl > 0
+      ? Math.round((ns.monthly_cost_brl / summary.total_monthly_cost_brl) * 100) : 0,
+  }));
+
+  const okCount = workloads.filter(w => w.verdict === "ok").length;
+  const verdictDist = [
+    { name: "Eficiente",   value: okCount,                       fill: "#10b981" },
+    { name: "Desperdício", value: summary.superprovisioned_count, fill: "#ef4444" },
+    { name: "Risco OOM",   value: summary.oom_risk_count,         fill: "#f59e0b" },
+    { name: "Sem Request", value: summary.no_request_count,       fill: "#9ca3af" },
+  ].filter(d => d.value > 0);
+
   const poolChart = node_pools.map((p, i) => ({
     name: p.name.length > 14 ? p.name.slice(0, 12) + "…" : p.name,
     custo: p.monthly_cost_brl,
@@ -220,146 +311,330 @@ function OverviewTab({ report }: { report: FinOpsReport }) {
     color: POOL_COLORS[i % POOL_COLORS.length],
   }));
 
-  // DonutChart — distribuição de saúde dos workloads
-  const okCount = workloads.filter(w => w.verdict === "ok").length;
-  const verdictDist = [
-    { name: "Eficiente",    value: okCount, fill: "#10b981" },
-    { name: "Desperdício",  value: summary.superprovisioned_count, fill: "#ef4444" },
-    { name: "Risco OOM",    value: summary.oom_risk_count, fill: "#f59e0b" },
-    { name: "Sem Request",  value: summary.no_request_count, fill: "#9ca3af" },
-  ].filter(d => d.value > 0);
-
-  // Top 10 workloads para chart de barras (custo + utilização HPA)
-  const top10 = workloads.slice(0, 10).map(w => ({
-    name: w.workload.length > 18 ? w.workload.slice(0, 16) + "…" : w.workload,
-    custo: w.cost_share_brl,
-    hpa_util: w.hpa_max > 0 ? Math.round((w.hpa_current / w.hpa_max) * 100) : null,
-    color: verdictConfig[w.verdict]?.fill ?? "#6366f1",
-  }));
-
-  const verdictFills: Record<string, string> = {
-    superprovisioned: "#ef4444",
-    oom_risk: "#f59e0b",
-    ok: "#6366f1",
-    no_request: "#9ca3af",
-  };
+  // ── helpers ──────────────────────────────────────────────────────────────────
+  const xTick = { fontSize: 10, fill: "#9ca3af" };
+  const yTick = { fontSize: 10 };
+  const gridProps = { strokeDasharray: "3 3", vertical: false, opacity: 0.35 };
+  const tlEmpty = !tlLoading && (!tl || (tl.nodes.length === 0 && tl.cpu.length === 0));
 
   return (
     <div className="space-y-4">
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <SummaryCard
-          icon={CircleDollarSign} label="Custo Total/mês" color="text-blue-600"
-          value={fmtBRL(summary.total_monthly_cost_brl)}
-          sub={fmtUSD(summary.total_monthly_cost_usd)}
-        />
+        <SummaryCard icon={CircleDollarSign} label="Custo Total/mês" color="text-blue-600"
+          value={fmtBRL(summary.total_monthly_cost_brl)} sub={fmtUSD(summary.total_monthly_cost_usd)} />
         {summary.potential_savings_brl > 0 ? (
-          <SummaryCard
-            icon={Activity} label="Desperdício Real (P95)" color="text-red-600"
-            value={fmtBRL(summary.potential_savings_brl)}
-            sub="baseado em uso P95 Prometheus"
-          />
+          <SummaryCard icon={Activity} label="Desperdício Real (P95)" color="text-red-600"
+            value={fmtBRL(summary.potential_savings_brl)} sub="baseado em uso P95 Prometheus" />
         ) : (
-          <SummaryCard
-            icon={TrendingDown} label="Economia HPA (se mín)" color="text-green-600"
-            value={fmtBRL(summary.hpa_savings_if_min_brl)}
-            sub={`${summary.superprovisioned_count} workloads`}
-          />
+          <SummaryCard icon={TrendingDown} label="Economia HPA (se mín)" color="text-green-600"
+            value={fmtBRL(summary.hpa_savings_if_min_brl)} sub={`${summary.superprovisioned_count} workloads`} />
         )}
-        <SummaryCard
-          icon={Layers} label="Workloads Analisados" color="text-purple-600"
-          value={String(summary.workloads_analyzed)}
-          sub={`${summary.no_request_count} sem request`}
-        />
-        <SummaryCard
-          icon={DollarSign} label="Cotação USD/BRL" color="text-orange-600"
-          value={`R$ ${report.exchange_rate.toFixed(4)}`}
-          sub={report.exchange_date}
-        />
+        <SummaryCard icon={Layers} label="Workloads Analisados" color="text-purple-600"
+          value={String(summary.workloads_analyzed)} sub={`${summary.no_request_count} sem request`} />
+        <SummaryCard icon={DollarSign} label="Cotação USD/BRL" color="text-orange-600"
+          value={`R$ ${report.exchange_rate.toFixed(4)}`} sub={report.exchange_date} />
       </div>
 
-      {/* Row 2: DonutChart + Top Namespaces */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* DonutChart — Saúde dos Workloads */}
+      {/* Seletor de janela temporal */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-muted-foreground">Série temporal:</span>
+        {([7, 15, 30] as const).map(d => (
+          <Button key={d} variant={days === d ? "default" : "outline"} size="sm"
+            className="h-7 text-xs px-3" onClick={() => setDays(d)}>
+            {d}d
+          </Button>
+        ))}
+        {tlLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground ml-1" />}
+        {tl && !tlLoading && (
+          <span className="text-[10px] text-muted-foreground ml-1">
+            {tl.start_date} → {tl.end_date} · {tl.hpas.length} HPAs · {tl.nodes.length} dias
+          </span>
+        )}
+        {tlEmpty && (
+          <span className="text-[10px] text-yellow-600 ml-1">Prometheus sem dados (URL auto-descoberta)</span>
+        )}
+      </div>
+
+      {/* ── Chart 1: Custo Estimado Diário ─────────────────────────────────── */}
+      {dailyCostData.length > 0 && (
         <Card>
-          <CardHeader className="pb-1 pt-4 px-4">
+          <CardHeader className="pb-1 pt-3 px-4">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <CircleDollarSign className="h-4 w-4 text-amber-500" />
+              Custo Estimado Diário (R$)
+              <span className="text-[10px] font-normal text-muted-foreground ml-1">
+                baseado em contagem de nodes × custo médio por node
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-2 pb-3">
+            <ResponsiveContainer width="100%" height={160}>
+              <ComposedChart data={dailyCostData} margin={{ left: 8, right: 8, top: 4, bottom: 0 }}>
+                <CartesianGrid {...gridProps} />
+                <XAxis dataKey="date" tick={xTick} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                <YAxis yAxisId="cost" tickFormatter={v => `R$${(v).toFixed(0)}`} tick={yTick}
+                  axisLine={false} tickLine={false} width={64} />
+                <YAxis yAxisId="nodes" orientation="right" tick={xTick} axisLine={false} tickLine={false} width={28} />
+                <Tooltip content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null;
+                  return (
+                    <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs space-y-0.5">
+                      <p className="font-medium">{label}</p>
+                      <p className="text-amber-500">Custo: {fmtBRL(payload[0]?.value as number)}</p>
+                      <p className="text-cyan-500">Nodes: {payload[1]?.value}</p>
+                    </div>
+                  );
+                }} />
+                <Bar yAxisId="cost" dataKey="custo" name="Custo R$" fill="#f59e0b" fillOpacity={0.75}
+                  radius={[2, 2, 0, 0]} maxBarSize={18} />
+                <Line yAxisId="nodes" dataKey="nodes" name="Nodes" type="monotone"
+                  stroke="#06b6d4" strokeWidth={2} dot={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Charts 2+3: CPU e Memória ────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* CPU */}
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-4">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Cpu className="h-4 w-4 text-indigo-500" />
+              CPU — Uso vs Request (cluster)
+              <span className="text-[10px] font-normal text-muted-foreground">millicores</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-2 pb-3">
+            {cpuData.length === 0 ? (
+              <div className="flex items-center justify-center h-[160px] text-xs text-muted-foreground gap-2">
+                {tlLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4 opacity-30" />}
+                {tlLoading ? "Carregando…" : "Sem dados Prometheus"}
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={160}>
+                <ComposedChart data={cpuData} margin={{ left: 8, right: 8, top: 4, bottom: 0 }}>
+                  <CartesianGrid {...gridProps} />
+                  <XAxis dataKey="date" tick={xTick} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                  <YAxis tickFormatter={v => `${fmtM(v)}m`} tick={yTick} axisLine={false} tickLine={false} width={52} />
+                  <Tooltip content={({ active, payload, label }) => {
+                    if (!active || !payload?.length) return null;
+                    return (
+                      <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs space-y-0.5">
+                        <p className="font-medium">{label}</p>
+                        {payload.map((p, i) => (
+                          <p key={i} style={{ color: p.color }}>{p.name}: {Math.round(p.value as number)}m</p>
+                        ))}
+                      </div>
+                    );
+                  }} />
+                  <Area type="monotone" dataKey="Uso" fill="#6366f1" stroke="#6366f1"
+                    fillOpacity={0.25} strokeWidth={1.5} dot={false} />
+                  <Line type="monotone" dataKey="Request" stroke="#a5b4fc"
+                    strokeWidth={1.5} strokeDasharray="4 2" dot={false} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Memória */}
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-4">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <MemoryStick className="h-4 w-4 text-emerald-500" />
+              Memória — Uso vs Request (cluster)
+              <span className="text-[10px] font-normal text-muted-foreground">MiB / GiB</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-2 pb-3">
+            {memData.length === 0 ? (
+              <div className="flex items-center justify-center h-[160px] text-xs text-muted-foreground gap-2">
+                {tlLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4 opacity-30" />}
+                {tlLoading ? "Carregando…" : "Sem dados Prometheus"}
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={160}>
+                <ComposedChart data={memData} margin={{ left: 8, right: 8, top: 4, bottom: 0 }}>
+                  <CartesianGrid {...gridProps} />
+                  <XAxis dataKey="date" tick={xTick} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                  <YAxis tickFormatter={fmtMi} tick={yTick} axisLine={false} tickLine={false} width={56} />
+                  <Tooltip content={({ active, payload, label }) => {
+                    if (!active || !payload?.length) return null;
+                    return (
+                      <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs space-y-0.5">
+                        <p className="font-medium">{label}</p>
+                        {payload.map((p, i) => (
+                          <p key={i} style={{ color: p.color }}>{p.name}: {fmtMi(p.value as number)}</p>
+                        ))}
+                      </div>
+                    );
+                  }} />
+                  <Area type="monotone" dataKey="Uso" fill="#10b981" stroke="#10b981"
+                    fillOpacity={0.25} strokeWidth={1.5} dot={false} />
+                  <Line type="monotone" dataKey="Request" stroke="#6ee7b7"
+                    strokeWidth={1.5} strokeDasharray="4 2" dot={false} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Charts 4+5: HPA Réplicas e Nodes ────────────────────────────────── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* HPA Réplicas — top 8 */}
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-4">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Activity className="h-4 w-4 text-violet-500" />
+              HPA Réplicas — top {top8HPAs.length}
+              <span className="text-[10px] font-normal text-muted-foreground">(avg diário)</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-2 pb-3">
+            {hpaChartData.length === 0 ? (
+              <div className="flex items-center justify-center h-[180px] text-xs text-muted-foreground gap-2">
+                {tlLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4 opacity-30" />}
+                {tlLoading ? "Carregando…" : "Sem HPAs com histórico"}
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={180}>
+                <ComposedChart data={hpaChartData} margin={{ left: 4, right: 8, top: 4, bottom: 0 }}>
+                  <CartesianGrid {...gridProps} />
+                  <XAxis dataKey="date" tick={xTick} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                  <YAxis tick={yTick} axisLine={false} tickLine={false} width={24} allowDecimals={false} />
+                  <Tooltip content={({ active, payload, label }) => {
+                    if (!active || !payload?.length) return null;
+                    return (
+                      <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs space-y-0.5">
+                        <p className="font-medium mb-1">{label}</p>
+                        {payload.filter(p => (p.value as number) > 0).map((p, i) => (
+                          <p key={i} style={{ color: p.color }}>{p.name}: {p.value} répl.</p>
+                        ))}
+                      </div>
+                    );
+                  }} />
+                  <Legend iconType="plainline" iconSize={12} wrapperStyle={{ fontSize: 9, paddingTop: 4 }}
+                    formatter={(_v, entry) => {
+                      const idx = parseInt((entry.dataKey as string).replace("h", ""));
+                      return top8HPAs[idx]?.workload ?? entry.dataKey;
+                    }} />
+                  {top8HPAs.map((_, i) => (
+                    <Line key={i} type="monotone" dataKey={`h${i}`}
+                      stroke={LINE_COLORS[i % LINE_COLORS.length]}
+                      strokeWidth={1.5} dot={false} connectNulls />
+                  ))}
+                </ComposedChart>
+              </ResponsiveContainer>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Nodes */}
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-4">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Server className="h-4 w-4 text-cyan-500" />
+              Nodes Ready
+              <span className="text-[10px] font-normal text-muted-foreground">(máximo diário)</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-2 pb-3">
+            {nodesData.length === 0 ? (
+              <div className="flex items-center justify-center h-[180px] text-xs text-muted-foreground gap-2">
+                {tlLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Server className="h-4 w-4 opacity-30" />}
+                {tlLoading ? "Carregando…" : "Sem dados Prometheus"}
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={180}>
+                <ComposedChart data={nodesData} margin={{ left: 4, right: 8, top: 4, bottom: 0 }}>
+                  <CartesianGrid {...gridProps} />
+                  <XAxis dataKey="date" tick={xTick} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                  <YAxis tick={yTick} axisLine={false} tickLine={false} width={24} allowDecimals={false} />
+                  <Tooltip content={({ active, payload, label }) => {
+                    if (!active || !payload?.length) return null;
+                    const nodes = payload[0]?.value as number;
+                    const dayCost = nodes * costPerNodePerDay;
+                    return (
+                      <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs space-y-0.5">
+                        <p className="font-medium">{label}</p>
+                        <p className="text-cyan-500">{nodes} nodes</p>
+                        <p className="text-amber-500">≈ {fmtBRL(dayCost)}/dia</p>
+                      </div>
+                    );
+                  }} />
+                  <Area type="stepAfter" dataKey="Nodes" fill="#06b6d4" stroke="#06b6d4"
+                    fillOpacity={0.2} strokeWidth={2} dot={false} />
+                  <ReferenceLine y={totalNodes} stroke="#f59e0b" strokeDasharray="4 2"
+                    strokeOpacity={0.6} label={{ value: "atual", position: "right", fontSize: 9, fill: "#f59e0b" }} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Distribuição financeira (snapshot) ──────────────────────────────── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-4">
             <CardTitle className="text-sm">Saúde dos Workloads</CardTitle>
           </CardHeader>
           <CardContent className="px-2 pb-3">
-            <ResponsiveContainer width="100%" height={220}>
+            <ResponsiveContainer width="100%" height={200}>
               <PieChart>
-                <Pie
-                  data={verdictDist}
-                  cx="42%"
-                  cy="50%"
-                  innerRadius={62}
-                  outerRadius={88}
-                  paddingAngle={3}
-                  dataKey="value"
-                  strokeWidth={0}
-                >
-                  {verdictDist.map((entry, i) => (
-                    <Cell key={i} fill={entry.fill} />
-                  ))}
+                <Pie data={verdictDist} cx="42%" cy="50%"
+                  innerRadius={56} outerRadius={80} paddingAngle={3} dataKey="value" strokeWidth={0}>
+                  {verdictDist.map((e, i) => <Cell key={i} fill={e.fill} />)}
                 </Pie>
-                <Tooltip
-                  content={({ active, payload }) => {
-                    if (!active || !payload?.length) return null;
-                    const d = payload[0].payload;
-                    return (
-                      <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs">
-                        <p className="font-medium" style={{ color: d.fill }}>{d.name}</p>
-                        <p className="text-foreground">{d.value} workloads ({Math.round((d.value / summary.workloads_analyzed) * 100)}%)</p>
-                      </div>
-                    );
-                  }}
-                />
-                <Legend
-                  layout="vertical"
-                  align="right"
-                  verticalAlign="middle"
-                  iconType="circle"
-                  iconSize={8}
+                <Tooltip content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0].payload;
+                  return (
+                    <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs">
+                      <p className="font-medium" style={{ color: d.fill }}>{d.name}</p>
+                      <p>{d.value} workloads ({Math.round((d.value / summary.workloads_analyzed) * 100)}%)</p>
+                    </div>
+                  );
+                }} />
+                <Legend layout="vertical" align="right" verticalAlign="middle" iconType="circle" iconSize={8}
                   formatter={(value, entry) => (
                     <span className="text-[11px] text-foreground">
-                      {value} <span className="text-muted-foreground">({(entry as { payload?: { value?: number } }).payload?.value ?? 0})</span>
+                      {value} <span className="text-muted-foreground">
+                        ({(entry as { payload?: { value?: number } }).payload?.value ?? 0})
+                      </span>
                     </span>
-                  )}
-                />
-                {/* Centro do donut */}
+                  )} />
                 <text x="42%" y="46%" textAnchor="middle" dominantBaseline="middle"
-                  className="fill-foreground" style={{ fontSize: 22, fontWeight: 700 }}>
+                  className="fill-foreground" style={{ fontSize: 20, fontWeight: 700 }}>
                   {summary.workloads_analyzed}
                 </text>
                 <text x="42%" y="58%" textAnchor="middle" dominantBaseline="middle"
-                  style={{ fontSize: 10, fill: "#9ca3af" }}>
-                  workloads
-                </text>
+                  style={{ fontSize: 10, fill: "#9ca3af" }}>workloads</text>
               </PieChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>
 
-        {/* Top Namespaces por Custo */}
         <Card>
-          <CardHeader className="pb-1 pt-4 px-4">
+          <CardHeader className="pb-1 pt-3 px-4">
             <CardTitle className="text-sm">Top Namespaces por Custo</CardTitle>
           </CardHeader>
           <CardContent className="px-2 pb-3">
-            <ResponsiveContainer width="100%" height={220}>
+            <ResponsiveContainer width="100%" height={200}>
               <BarChart data={topNs} layout="vertical" margin={{ left: 6, right: 52, top: 4, bottom: 4 }}>
-                <CartesianGrid strokeDasharray="3 3" horizontal={false} opacity={0.4} />
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} opacity={0.35} />
                 <XAxis type="number" tickFormatter={v => `R$${(v / 1000).toFixed(0)}k`}
-                  tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                  tick={xTick} axisLine={false} tickLine={false} />
                 <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={120}
                   axisLine={false} tickLine={false} />
-                <Tooltip content={<ChartTooltip formatter={(v, n) => `${n}: ${fmtBRL(v)}`} />} />
-                <Bar dataKey="value" name="Custo/mês" radius={[0, 4, 4, 0]} maxBarSize={20}>
-                  {topNs.map((_, i) => (
-                    <Cell key={i} fill={POOL_COLORS[i % POOL_COLORS.length]} fillOpacity={0.85} />
-                  ))}
-                  <LabelList dataKey="pct" position="right"
-                    formatter={(v: number) => `${v}%`}
+                <Tooltip content={<ChartTooltip formatter={(v) => fmtBRL(v)} />} />
+                <Bar dataKey="value" name="Custo/mês" radius={[0, 4, 4, 0]} maxBarSize={18}>
+                  {topNs.map((_, i) => <Cell key={i} fill={POOL_COLORS[i % POOL_COLORS.length]} fillOpacity={0.85} />)}
+                  <LabelList dataKey="pct" position="right" formatter={(v: number) => `${v}%`}
                     style={{ fontSize: 10, fill: "#9ca3af" }} />
                 </Bar>
               </BarChart>
@@ -368,106 +643,100 @@ function OverviewTab({ report }: { report: FinOpsReport }) {
         </Card>
       </div>
 
-      {/* Row 3: Top 10 Workloads + Node Pools */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Top 10 Workloads — Custo + Utilização HPA */}
+        {/* Custo por Node Pool */}
         <Card>
-          <CardHeader className="pb-1 pt-4 px-4">
+          <CardHeader className="pb-1 pt-3 px-4">
+            <CardTitle className="text-sm">Custo por Node Pool</CardTitle>
+          </CardHeader>
+          <CardContent className="px-2 pb-3">
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={poolChart} margin={{ left: 4, right: 12, top: 4, bottom: 20 }}>
+                <CartesianGrid {...gridProps} />
+                <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-25} textAnchor="end"
+                  axisLine={false} tickLine={false} />
+                <YAxis tickFormatter={v => `R$${(v / 1000).toFixed(0)}k`}
+                  tick={yTick} axisLine={false} tickLine={false} />
+                <Tooltip content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null;
+                  const pool = node_pools.find(p => p.name.startsWith(label?.slice(0, 8) ?? ""));
+                  return (
+                    <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs space-y-0.5">
+                      <p className="font-medium">{label}</p>
+                      <p style={{ color: payload[0].color }}>{fmtBRL(payload[0].value as number)}/mês</p>
+                      {pool && <p className="text-muted-foreground">{pool.node_count} nodes · {pool.vm_size}</p>}
+                    </div>
+                  );
+                }} />
+                <Bar dataKey="custo" name="Custo/mês" radius={[4, 4, 0, 0]} maxBarSize={40}>
+                  {poolChart.map((e, i) => <Cell key={i} fill={e.color} />)}
+                  <LabelList dataKey="nos" position="top" formatter={(v: number) => `${v}n`}
+                    style={{ fontSize: 10, fill: "#9ca3af" }} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        {/* Top 10 Workloads — custo + HPA util */}
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-4">
             <CardTitle className="text-sm flex items-center justify-between">
               Top 10 Workloads por Custo
               <span className="text-[10px] text-muted-foreground font-normal">linha = % utiliz. HPA</span>
             </CardTitle>
           </CardHeader>
           <CardContent className="px-2 pb-3">
-            <ResponsiveContainer width="100%" height={220}>
-              <ComposedChart data={top10} margin={{ left: 4, right: 40, top: 4, bottom: 28 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.4} />
+            <ResponsiveContainer width="100%" height={200}>
+              <ComposedChart
+                data={workloads.slice(0, 10).map(w => ({
+                  name: w.workload.length > 16 ? w.workload.slice(0, 14) + "…" : w.workload,
+                  custo: w.cost_share_brl,
+                  hpa_util: w.hpa_max > 0 ? Math.round((w.hpa_current / w.hpa_max) * 100) : null,
+                  fill: verdictConfig[w.verdict]?.fill ?? "#6366f1",
+                }))}
+                margin={{ left: 4, right: 36, top: 4, bottom: 28 }}>
+                <CartesianGrid {...gridProps} />
                 <XAxis dataKey="name" tick={{ fontSize: 9 }} angle={-35} textAnchor="end"
                   axisLine={false} tickLine={false} />
                 <YAxis yAxisId="left" tickFormatter={v => `R$${(v / 1000).toFixed(0)}k`}
-                  tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                  tick={yTick} axisLine={false} tickLine={false} />
                 <YAxis yAxisId="right" orientation="right" unit="%" domain={[0, 100]}
-                  tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={30} />
-                <Tooltip
-                  content={({ active, payload, label }) => {
-                    if (!active || !payload?.length) return null;
-                    return (
-                      <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs">
-                        <p className="font-medium mb-1">{label}</p>
-                        {payload.map((p, i) => (
-                          <p key={i} style={{ color: p.color }}>
-                            {p.name === "custo" ? `Custo: ${fmtBRL(p.value as number)}`
-                              : `HPA util: ${p.value}%`}
-                          </p>
-                        ))}
-                      </div>
-                    );
-                  }}
-                />
-                <Bar yAxisId="left" dataKey="custo" name="custo" radius={[3, 3, 0, 0]} maxBarSize={28}>
-                  {top10.map((w, i) => (
-                    <Cell key={i} fill={verdictFills[
-                      workloads[i]?.verdict ?? "ok"
-                    ] ?? "#6366f1"} fillOpacity={0.8} />
+                  tick={xTick} axisLine={false} tickLine={false} width={28} />
+                <Tooltip content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null;
+                  return (
+                    <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs">
+                      <p className="font-medium mb-1">{label}</p>
+                      {payload.map((p, i) => (
+                        <p key={i} style={{ color: p.color }}>
+                          {p.name === "custo" ? `Custo: ${fmtBRL(p.value as number)}` : `HPA util: ${p.value}%`}
+                        </p>
+                      ))}
+                    </div>
+                  );
+                }} />
+                <Bar yAxisId="left" dataKey="custo" name="custo" radius={[3, 3, 0, 0]} maxBarSize={24}>
+                  {workloads.slice(0, 10).map((w, i) => (
+                    <Cell key={i} fill={verdictConfig[w.verdict]?.fill ?? "#6366f1"} fillOpacity={0.8} />
                   ))}
                 </Bar>
                 <Line yAxisId="right" dataKey="hpa_util" name="hpa_util" type="monotone"
-                  stroke="#f59e0b" strokeWidth={2} dot={{ r: 3, fill: "#f59e0b" }}
-                  connectNulls={false} />
-                <ReferenceLine yAxisId="right" y={35} stroke="#ef4444" strokeDasharray="4 2"
-                  strokeOpacity={0.5} />
+                  stroke="#f59e0b" strokeWidth={2} dot={{ r: 3, fill: "#f59e0b" }} connectNulls={false} />
+                <ReferenceLine yAxisId="right" y={35} stroke="#ef4444" strokeDasharray="4 2" strokeOpacity={0.5} />
               </ComposedChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Custo por Node Pool */}
-        <Card>
-          <CardHeader className="pb-1 pt-4 px-4">
-            <CardTitle className="text-sm">Custo por Node Pool</CardTitle>
-          </CardHeader>
-          <CardContent className="px-2 pb-3">
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={poolChart} margin={{ left: 4, right: 12, top: 4, bottom: 20 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.4} />
-                <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-25} textAnchor="end"
-                  axisLine={false} tickLine={false} />
-                <YAxis tickFormatter={v => `R$${(v / 1000).toFixed(0)}k`}
-                  tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                <Tooltip
-                  content={({ active, payload, label }) => {
-                    if (!active || !payload?.length) return null;
-                    const pool = node_pools.find(p => p.name.startsWith(label?.slice(0, 8) ?? ""));
-                    return (
-                      <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs space-y-0.5">
-                        <p className="font-medium">{label}</p>
-                        <p style={{ color: payload[0].color }}>{fmtBRL(payload[0].value as number)}/mês</p>
-                        {pool && <p className="text-muted-foreground">{pool.node_count} nodes · {pool.vm_size}</p>}
-                      </div>
-                    );
-                  }}
-                />
-                <Bar dataKey="custo" name="Custo/mês" radius={[4, 4, 0, 0]} maxBarSize={40}>
-                  {poolChart.map((entry, i) => (
-                    <Cell key={i} fill={entry.color} />
-                  ))}
-                  <LabelList dataKey="nos" position="top"
-                    formatter={(v: number) => `${v}n`}
-                    style={{ fontSize: 10, fill: "#9ca3af" }} />
-                </Bar>
-              </BarChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>
       </div>
 
-      {/* Alertas */}
+      {/* Alerta de economia */}
       {summary.superprovisioned_count > 0 && (
         <Alert className="border-red-200 bg-red-50 dark:bg-red-950/20">
           <TrendingDown className="h-4 w-4 text-red-600" />
           <AlertDescription className="text-sm">
-            <strong>{summary.superprovisioned_count} workloads</strong> com HPA potencialmente superprovisionado.
-            Economia estimada ajustando para mínimo de replicas:{" "}
+            <strong>{summary.superprovisioned_count} workloads</strong> com HPA superprovisionado.
+            Economia estimada ajustando para mínimo:{" "}
             <strong className="text-red-700 dark:text-red-400">{fmtBRL(summary.hpa_savings_if_min_brl)}/mês</strong>
           </AlertDescription>
         </Alert>
@@ -761,436 +1030,306 @@ function WorkloadsTab({ workloads, windowDays }: { workloads: FinOpsWorkload[]; 
 
 // ─── Aba: HPA Histórico ────────────────────────────────────────────────────────
 
-// Cálculo de rightsizing: sugere novo min/max baseado no uso real histórico
-function calcRightsizing(w: FinOpsWorkload) {
-  const avgReplicas = w.hpa_avg_replicas ?? 0;
-  const maxObserved = w.hpa_max_observed ?? w.hpa_current;
-  const podCostBRL = w.pods > 0 ? w.cost_share_brl / w.pods : 0;
+type SortField = "workload" | "util" | "daysAtMax" | "daysAtMin";
 
-  // Novo mínimo: avg real + 10% de margem, pelo menos 1
-  const suggestedMin = Math.max(1, Math.ceil(avgReplicas * 1.1));
-  // Novo máximo: pico observado + 2 réplicas de buffer
-  const suggestedMax = Math.max(suggestedMin + 1, maxObserved + 2);
-
-  // Economia mensal se aplicar o novo mínimo
-  const savingMin = Math.max(0, w.hpa_min - suggestedMin) * podCostBRL;
-  // Custo após ajuste (usando avg real como baseline)
-  const costAfterBRL = avgReplicas > 0 ? avgReplicas * podCostBRL : w.hpa_cost_current_brl;
-
-  return { suggestedMin, suggestedMax, savingMin, costAfterBRL, podCostBRL };
+function hpaRecommendation(avgUtil: number, daysAtMax: number, daysAtMin: number, totalDays: number) {
+  if (daysAtMax >= Math.ceil(totalDays * 0.1))
+    return { label: "Aumentar maxReplicas", color: "text-red-600", bg: "bg-red-50 dark:bg-red-950/20" };
+  if (daysAtMin >= Math.ceil(totalDays * 0.8))
+    return { label: "Remover HPA / fixar min", color: "text-purple-600", bg: "bg-purple-50 dark:bg-purple-950/20" };
+  if (avgUtil < 25)
+    return { label: "Reduzir minReplicas", color: "text-blue-600", bg: "bg-blue-50 dark:bg-blue-950/20" };
+  return { label: "Normal", color: "text-green-600", bg: "" };
 }
 
-function HPAHistoryTab({ workloads, windowDays, timeline }: {
-  workloads: FinOpsWorkload[];
-  windowDays: number;
-  timeline?: TimelineReport;
-}) {
-  const allHPAs = workloads.filter(w => w.hpa_max > 0).sort((a, b) => b.cost_share_brl - a.cost_share_brl);
-  const hasHistory = allHPAs.some(w => (w.hpa_avg_replicas ?? 0) > 0);
-
-  if (allHPAs.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-3">
-        <Activity className="h-10 w-10 opacity-20" />
-        <p className="font-medium">Nenhum HPA encontrado neste cluster</p>
-      </div>
-    );
-  }
-
-  if (!hasHistory) {
-    return (
-      <div className="space-y-4">
-        <Alert className="border-blue-200 bg-blue-50 dark:bg-blue-950/20">
-          <Activity className="h-4 w-4 text-blue-600" />
-          <AlertDescription className="text-sm">
-            <strong>Análise histórica não disponível.</strong> Marque{" "}
-            <strong>"Análise histórica Prometheus"</strong> no topo e clique em{" "}
-            <strong>Analisar</strong> para ver: quantas vezes cada HPA escalou nos últimos{" "}
-            {windowDays} dias, uso médio real de réplicas, pico de scaling e sugestões de
-            rightsizing para reduzir custo.
-          </AlertDescription>
-        </Alert>
-
-        {/* Tabela de snapshot atual enquanto sem histórico */}
-        <Card>
-          <CardHeader className="pb-1 pt-3 px-4">
-            <CardTitle className="text-sm">HPAs — snapshot atual (sem histórico)</CardTitle>
-          </CardHeader>
-          <ScrollArea className="h-[400px]">
-            <Table>
-              <TableHeader>
-                <TableRow className="text-[11px]">
-                  <TableHead>Namespace / Workload</TableHead>
-                  <TableHead className="text-center">Min</TableHead>
-                  <TableHead className="text-center">Atual</TableHead>
-                  <TableHead className="text-center">Max</TableHead>
-                  <TableHead className="text-center">% Util.</TableHead>
-                  <TableHead className="text-right">R$ se Min</TableHead>
-                  <TableHead className="text-right">R$ Atual</TableHead>
-                  <TableHead className="text-right">R$ se Max</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {allHPAs.map((w, i) => {
-                  const util = Math.round((w.hpa_current / w.hpa_max) * 100);
-                  return (
-                    <TableRow key={i} className="text-xs">
-                      <TableCell>
-                        <p className="text-muted-foreground text-[10px] truncate">{w.namespace}</p>
-                        <p className="font-medium truncate">{w.workload}</p>
-                      </TableCell>
-                      <TableCell className="text-center font-mono">{w.hpa_min}</TableCell>
-                      <TableCell className="text-center font-mono font-semibold">{w.hpa_current}</TableCell>
-                      <TableCell className="text-center font-mono">{w.hpa_max}</TableCell>
-                      <TableCell className="text-center">
-                        <span className={util >= 90 ? "text-red-600 font-medium" : util <= 20 ? "text-purple-600" : "text-foreground"}>
-                          {util}%
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-right text-green-600 font-mono">{fmtBRL(w.hpa_cost_min_brl)}</TableCell>
-                      <TableCell className="text-right font-semibold font-mono">{fmtBRL(w.hpa_cost_current_brl)}</TableCell>
-                      <TableCell className="text-right text-red-500/70 font-mono">{fmtBRL(w.hpa_cost_max_brl)}</TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </ScrollArea>
-        </Card>
-      </div>
-    );
-  }
-
-  // ── Com dados históricos do Prometheus ──────────────────────────────────────
-
-  const hpaWithHistory = allHPAs.filter(w => (w.hpa_avg_replicas ?? 0) > 0);
-  const removable = hpaWithHistory.filter(w => w.hpa_never_scaled);
-  const maxedOut = hpaWithHistory.filter(w => (w.hpa_max_observed ?? 0) >= w.hpa_max);
-
-  // Totais financeiros
-  const totalCurrentCost = hpaWithHistory.reduce((s, w) => s + w.hpa_cost_current_brl, 0);
-  const totalRealCost = hpaWithHistory.reduce((s, w) => s + (w.avg_replicas_cost_brl ?? w.hpa_cost_current_brl), 0);
-  const totalSavingRightsizing = hpaWithHistory.reduce((s, w) => s + calcRightsizing(w).savingMin, 0);
-  const totalSavingRemovable = removable.reduce((s, w) => s + (w.hpa_cost_current_brl - (w.avg_replicas_cost_brl ?? w.hpa_cost_min_brl)), 0);
-
-  // Chart: avg réplicas vs min configurado vs max observado (top 12)
-  const replicasChart = hpaWithHistory.slice(0, 12).map(w => ({
-    name: w.workload.length > 16 ? w.workload.slice(0, 14) + "…" : w.workload,
-    min_config: w.hpa_min,
-    avg_real: parseFloat((w.hpa_avg_replicas ?? 0).toFixed(1)),
-    max_obs: w.hpa_max_observed ?? w.hpa_current,
-    max_config: w.hpa_max,
-  }));
-
-  // Chart: escala de eventos + custo real vs configurado
-  const costChart = hpaWithHistory.slice(0, 10).map(w => ({
-    name: w.workload.length > 14 ? w.workload.slice(0, 12) + "…" : w.workload,
-    custo_real: parseFloat((w.avg_replicas_cost_brl ?? w.hpa_cost_current_brl).toFixed(2)),
-    custo_config: parseFloat(w.hpa_cost_current_brl.toFixed(2)),
-    eventos: w.hpa_scale_events ?? 0,
-  }));
-
+function HPASparkline({ series, hpaMax, days }: { series: HPADayPoint[]; hpaMax: number; days: number }) {
+  const pts = series.slice(-days);
   return (
-    <div className="space-y-4">
-      {/* Cards financeiros */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <SummaryCard icon={Activity} label={`Custo Real ${windowDays}d (avg réplicas)`} color="text-green-600"
-          value={fmtBRL(totalRealCost)} sub={`Config: ${fmtBRL(totalCurrentCost)}`} />
-        <SummaryCard icon={TrendingDown} label="Economia c/ Rightsizing" color="text-blue-600"
-          value={fmtBRL(totalSavingRightsizing)} sub="ajustando minReplicas" />
-        <SummaryCard icon={Info} label="HPAs Nunca Escalaram" color="text-purple-600"
-          value={String(removable.length)}
-          sub={removable.length > 0 ? `Economia: ${fmtBRL(totalSavingRemovable)}` : "nenhum"} />
-        <SummaryCard icon={AlertTriangle} label="HPAs no Limite Máximo" color="text-red-600"
-          value={String(maxedOut.length)}
-          sub={maxedOut.length > 0 ? "risco de throttling" : "nenhum"} />
-      </div>
-
-      {removable.length > 0 && (
-        <Alert className="border-purple-200 bg-purple-50 dark:bg-purple-950/20">
-          <Info className="h-4 w-4 text-purple-600" />
-          <AlertDescription className="text-sm">
-            <strong>{removable.length} HPAs nunca escalaram</strong> além do mínimo configurado nos últimos {windowDays} dias.
-            São candidatos à remoção do HPA (manter replicas fixas no mínimo atual).
-            Economia estimada:{" "}
-            <strong className="text-purple-700 dark:text-purple-400">{fmtBRL(totalSavingRemovable)}/mês</strong>
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {maxedOut.length > 0 && (
-        <Alert className="border-yellow-200 bg-yellow-50 dark:bg-yellow-950/20">
-          <AlertTriangle className="h-4 w-4 text-yellow-600" />
-          <AlertDescription className="text-sm">
-            <strong>{maxedOut.length} HPAs atingiram o limite máximo</strong> nos últimos {windowDays} dias.
-            Considere aumentar <code>maxReplicas</code> para evitar throttling em picos.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {/* Charts: réplicas reais vs configuração */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Card>
-          <CardHeader className="pb-1 pt-3 px-4">
-            <CardTitle className="text-sm">
-              Réplicas: configurado vs uso real {windowDays}d
-              <span className="text-[10px] text-muted-foreground font-normal ml-2">
-                min_cfg / avg_real / max_obs / max_cfg
-              </span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="px-2 pb-3">
-            <ResponsiveContainer width="100%" height={240}>
-              <BarChart data={replicasChart} margin={{ left: 4, right: 8, top: 4, bottom: 32 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.4} />
-                <XAxis dataKey="name" tick={{ fontSize: 9 }} angle={-35} textAnchor="end"
-                  axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false}
-                  label={{ value: "réplicas", angle: -90, position: "insideLeft", style: { fontSize: 9, fill: "#9ca3af" } }} />
-                <Tooltip
-                  content={({ active, payload, label }) => {
-                    if (!active || !payload?.length) return null;
-                    return (
-                      <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs space-y-0.5">
-                        <p className="font-medium">{label}</p>
-                        {payload.map((p, i) => (
-                          <p key={i} style={{ color: p.color }}>{p.name}: {p.value}</p>
-                        ))}
-                      </div>
-                    );
-                  }}
-                />
-                <Legend iconType="circle" iconSize={7} wrapperStyle={{ fontSize: 10 }} />
-                <Bar dataKey="min_config" name="min config" fill="#9ca3af" fillOpacity={0.5} radius={[2, 2, 0, 0]} maxBarSize={14} />
-                <Bar dataKey="avg_real" name="avg real" fill="#10b981" radius={[2, 2, 0, 0]} maxBarSize={14} />
-                <Bar dataKey="max_obs" name="max observado" fill="#f59e0b" radius={[2, 2, 0, 0]} maxBarSize={14} />
-                <Bar dataKey="max_config" name="max config" fill="#ef4444" fillOpacity={0.35} radius={[2, 2, 0, 0]} maxBarSize={14} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-1 pt-3 px-4">
-            <CardTitle className="text-sm">
-              Custo real (avg {windowDays}d) vs configurado
-              <span className="text-[10px] text-muted-foreground font-normal ml-2">verde = economia real</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="px-2 pb-3">
-            <ResponsiveContainer width="100%" height={240}>
-              <ComposedChart data={costChart} margin={{ left: 4, right: 36, top: 4, bottom: 32 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.4} />
-                <XAxis dataKey="name" tick={{ fontSize: 9 }} angle={-35} textAnchor="end"
-                  axisLine={false} tickLine={false} />
-                <YAxis yAxisId="custo" tickFormatter={v => `R$${(v / 1000).toFixed(0)}k`}
-                  tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis yAxisId="eventos" orientation="right" tick={{ fontSize: 10 }}
-                  axisLine={false} tickLine={false} width={28} />
-                <Tooltip
-                  content={({ active, payload, label }) => {
-                    if (!active || !payload?.length) return null;
-                    return (
-                      <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs space-y-0.5">
-                        <p className="font-medium">{label}</p>
-                        {payload.map((p, i) => (
-                          <p key={i} style={{ color: p.color }}>
-                            {p.dataKey === "eventos" ? `${p.value} scale events` : `${p.name}: ${fmtBRL(p.value as number)}`}
-                          </p>
-                        ))}
-                      </div>
-                    );
-                  }}
-                />
-                <Legend iconType="circle" iconSize={7} wrapperStyle={{ fontSize: 10 }} />
-                <Bar yAxisId="custo" dataKey="custo_config" name="Configurado" fill="#6366f1" fillOpacity={0.3} radius={[3, 3, 0, 0]} maxBarSize={22} />
-                <Bar yAxisId="custo" dataKey="custo_real" name="Real (avg)" fill="#10b981" radius={[3, 3, 0, 0]} maxBarSize={22} />
-                <Line yAxisId="eventos" dataKey="eventos" name="eventos" type="monotone"
-                  stroke="#f59e0b" strokeWidth={2} dot={{ r: 3 }} connectNulls />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Tabela de rightsizing */}
-      <Card>
-        <CardHeader className="pb-1 pt-3 px-4">
-          <CardTitle className="text-sm">
-            Sugestões de Rightsizing — baseado em {windowDays} dias de uso real
-          </CardTitle>
-        </CardHeader>
-        <ScrollArea className="h-[400px]">
-          <Table>
-            <TableHeader>
-              <TableRow className="text-[11px]">
-                <TableHead>Namespace / Workload</TableHead>
-                <TableHead className="text-center">Atual (min/max)</TableHead>
-                <TableHead className="text-center text-blue-500">Avg {windowDays}d</TableHead>
-                <TableHead className="text-center text-yellow-500">Max Obs.</TableHead>
-                <TableHead className="text-center text-muted-foreground">Eventos</TableHead>
-                <TableHead className="text-center text-green-600">Sugerido (min/max)</TableHead>
-                <TableHead className="text-right">Custo Real/mês</TableHead>
-                <TableHead className="text-right text-green-600">Economia/mês</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {hpaWithHistory.map((w, i) => {
-                const { suggestedMin, suggestedMax, savingMin, costAfterBRL } = calcRightsizing(w);
-                const noChange = suggestedMin === w.hpa_min && suggestedMax === w.hpa_max;
-                return (
-                  <TableRow key={i} className="text-xs">
-                    <TableCell className="max-w-[180px]">
-                      <p className="text-muted-foreground text-[10px] truncate">{w.namespace}</p>
-                      <p className="font-medium truncate">{w.workload}</p>
-                    </TableCell>
-                    <TableCell className="text-center font-mono">
-                      {w.hpa_min}/{w.hpa_max}
-                    </TableCell>
-                    <TableCell className="text-center font-semibold text-blue-500">
-                      {w.hpa_avg_replicas?.toFixed(1)}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <span className={(w.hpa_max_observed ?? 0) >= w.hpa_max ? "text-red-600 font-medium" : "text-yellow-600"}>
-                        {w.hpa_max_observed ?? "—"}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <span className={
-                        w.hpa_never_scaled ? "text-purple-600 font-medium" :
-                        (w.hpa_scale_events ?? 0) < 5 ? "text-yellow-600" : "text-green-600"
-                      }>
-                        {w.hpa_scale_events ?? 0}×
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {noChange ? (
-                        <span className="text-muted-foreground font-mono">{suggestedMin}/{suggestedMax}</span>
-                      ) : (
-                        <span className="font-mono font-semibold text-green-600">
-                          {suggestedMin}/{suggestedMax}
-                          {suggestedMin < w.hpa_min && (
-                            <span className="text-[9px] text-green-500 ml-1">↓min</span>
-                          )}
-                          {suggestedMax > w.hpa_max && (
-                            <span className="text-[9px] text-yellow-500 ml-1">↑max</span>
-                          )}
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      {fmtBRL(costAfterBRL)}
-                    </TableCell>
-                    <TableCell className="text-right font-semibold">
-                      {savingMin > 0 ? (
-                        <span className="text-green-600">{fmtBRL(savingMin)}</span>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {w.hpa_never_scaled
-                        ? <VerdictBadge verdict="hpa_removable" />
-                        : (w.hpa_max_observed ?? 0) >= w.hpa_max
-                          ? <span className="text-[10px] text-red-600 font-medium">No limite máx</span>
-                          : noChange
-                            ? <VerdictBadge verdict="ok" />
-                            : <span className="text-[10px] text-blue-600 font-medium">Ajustar min</span>}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </ScrollArea>
-      </Card>
-
-      {/* Série temporal diária — disponível quando timeline foi carregado */}
-      {timeline && timeline.hpas.length > 0 && (
-        <HPATimelineChart timeline={timeline} windowDays={windowDays} />
-      )}
+    <div className="flex items-end gap-px" style={{ width: 72, height: 28 }}>
+      {pts.map((p, i) => {
+        const pct = hpaMax > 0 ? p.max_replicas / hpaMax : 0;
+        const h = Math.max(2, Math.round(pct * 26));
+        const color = pct >= 1 ? "#ef4444" : pct >= 0.7 ? "#f59e0b" : "#10b981";
+        return (
+          <div key={i}
+            title={`${p.date.slice(5)}: max ${p.max_replicas}, avg ${p.avg_replicas.toFixed(1)}`}
+            style={{ height: h, background: color, opacity: 0.85, flex: 1, minWidth: 1 }}
+            className="rounded-sm" />
+        );
+      })}
     </div>
   );
 }
 
-// ─── Linha do tempo HPA (série diária via /finops/timeline) ──────────────────
-
-function HPATimelineChart({ timeline, windowDays }: { timeline: TimelineReport; windowDays: number }) {
-  const [selected, setSelected] = useState<string>(
-    timeline.hpas[0] ? `${timeline.hpas[0].namespace}/${timeline.hpas[0].workload}` : ""
-  );
-
-  const hpa = timeline.hpas.find(h => `${h.namespace}/${h.workload}` === selected);
-
-  // Nodes co-plotados para contexto de escala do cluster
-  const nodeMap = Object.fromEntries(timeline.nodes.map(n => [n.date, n.node_count]));
-  const seriesWithNodes = (hpa?.series ?? []).map(p => ({
-    ...p,
-    date: p.date.slice(5), // "MM-DD" para economizar espaço
-    nodes: nodeMap[p.date] ?? null,
+function HPADetailChart({ hpa, nodeMap }: { hpa: HPATimeline; nodeMap: Record<string, number> }) {
+  const series = hpa.series.map(p => ({
+    date: p.date.slice(5),
+    max: p.max_replicas,
+    avg: parseFloat(p.avg_replicas.toFixed(1)),
+    min: p.min_replicas,
+    nodes: nodeMap[p.date.slice(5)] ?? null,
   }));
 
   return (
-    <Card>
-      <CardHeader className="pb-1 pt-3 px-4 flex flex-row items-center gap-3">
-        <CardTitle className="text-sm flex-1">
-          Série temporal diária — últimos {windowDays} dias
-        </CardTitle>
-        <Select value={selected} onValueChange={setSelected}>
-          <SelectTrigger className="h-7 w-[260px] text-xs">
-            <SelectValue placeholder="Selecionar HPA..." />
-          </SelectTrigger>
-          <SelectContent>
-            {timeline.hpas.map(h => (
-              <SelectItem key={`${h.namespace}/${h.workload}`} value={`${h.namespace}/${h.workload}`} className="text-xs">
-                {h.namespace}/{h.workload}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </CardHeader>
-      <CardContent className="px-2 pb-3">
-        {hpa ? (
-          <ResponsiveContainer width="100%" height={220}>
-            <ComposedChart data={seriesWithNodes} margin={{ left: 4, right: 36, top: 8, bottom: 24 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.3} />
-              <XAxis dataKey="date" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-              <YAxis yAxisId="rep" tick={{ fontSize: 10 }} axisLine={false} tickLine={false}
-                label={{ value: "réplicas", angle: -90, position: "insideLeft", style: { fontSize: 9, fill: "#9ca3af" } }} />
-              <YAxis yAxisId="nodes" orientation="right" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={28} />
-              <Tooltip
-                content={({ active, payload, label }) => {
-                  if (!active || !payload?.length) return null;
-                  return (
-                    <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs space-y-0.5">
-                      <p className="font-medium">{label}</p>
-                      {payload.map((p, i) => (
-                        <p key={i} style={{ color: p.color as string }}>
-                          {p.name}: {typeof p.value === "number" ? p.value.toFixed(p.name === "avg" ? 1 : 0) : p.value}
-                        </p>
-                      ))}
-                    </div>
-                  );
-                }}
-              />
-              <Legend iconType="circle" iconSize={7} wrapperStyle={{ fontSize: 10 }} />
-              {/* Linhas de configuração (min/max HPA) */}
-              <ReferenceLine yAxisId="rep" y={hpa.hpa_min} stroke="#9ca3af" strokeDasharray="4 2" label={{ value: `min:${hpa.hpa_min}`, position: "insideTopLeft", fontSize: 9, fill: "#9ca3af" }} />
-              <ReferenceLine yAxisId="rep" y={hpa.hpa_max} stroke="#ef4444" strokeDasharray="4 2" label={{ value: `max:${hpa.hpa_max}`, position: "insideTopLeft", fontSize: 9, fill: "#ef4444" }} />
-              {/* Área de réplicas */}
-              <Bar yAxisId="rep" dataKey="max_replicas" name="max" fill="#f59e0b" fillOpacity={0.25} maxBarSize={8} />
-              <Line yAxisId="rep" type="monotone" dataKey="avg_replicas" name="avg" stroke="#10b981" strokeWidth={2} dot={false} />
-              <Line yAxisId="rep" type="monotone" dataKey="min_replicas" name="min" stroke="#9ca3af" strokeWidth={1} strokeDasharray="3 2" dot={false} />
-              {/* Nodes (eixo direito) */}
-              <Line yAxisId="nodes" type="step" dataKey="nodes" name="nodes" stroke="#8b5cf6" strokeWidth={1.5} dot={false} />
-            </ComposedChart>
-          </ResponsiveContainer>
-        ) : (
-          <p className="text-xs text-muted-foreground text-center py-8">Selecione um HPA para ver a série temporal</p>
+    <div className="border-t bg-muted/20 px-4 pt-3 pb-4">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-xs text-muted-foreground">{hpa.namespace} /</span>
+        <span className="text-xs font-semibold">{hpa.workload}</span>
+        <span className="text-[10px] text-muted-foreground ml-1">
+          config: min={hpa.hpa_min} max={hpa.hpa_max} · {hpa.series.length} dias
+        </span>
+      </div>
+      <ResponsiveContainer width="100%" height={200}>
+        <ComposedChart data={series} margin={{ left: 4, right: 32, top: 6, bottom: 16 }}>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.3} />
+          <XAxis dataKey="date" tick={{ fontSize: 9 }} axisLine={false} tickLine={false}
+            interval={Math.max(0, Math.floor(series.length / 8))} />
+          <YAxis yAxisId="rep" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} width={24}
+            label={{ value: "réplicas", angle: -90, position: "insideLeft", style: { fontSize: 9, fill: "#9ca3af" } }} />
+          <YAxis yAxisId="nodes" orientation="right" tick={{ fontSize: 9 }}
+            axisLine={false} tickLine={false} width={24} />
+          <Tooltip
+            content={({ active, payload, label }) => {
+              if (!active || !payload?.length) return null;
+              return (
+                <div className="bg-background/95 backdrop-blur border rounded-lg shadow-lg px-3 py-2 text-xs space-y-0.5">
+                  <p className="font-medium">{label}</p>
+                  {payload.map((p, i) => (
+                    <p key={i} style={{ color: p.color as string }}>
+                      {p.name}: {typeof p.value === "number" ? p.value.toFixed(p.name === "avg" ? 1 : 0) : p.value}
+                    </p>
+                  ))}
+                </div>
+              );
+            }}
+          />
+          <Legend iconType="circle" iconSize={7} wrapperStyle={{ fontSize: 10 }} />
+          <ReferenceLine yAxisId="rep" y={hpa.hpa_min} stroke="#9ca3af" strokeDasharray="4 2"
+            label={{ value: `min:${hpa.hpa_min}`, position: "insideTopLeft", fontSize: 9, fill: "#9ca3af" }} />
+          <ReferenceLine yAxisId="rep" y={hpa.hpa_max} stroke="#ef4444" strokeDasharray="4 2"
+            label={{ value: `max:${hpa.hpa_max}`, position: "insideTopLeft", fontSize: 9, fill: "#ef4444" }} />
+          <Bar yAxisId="rep" dataKey="max" name="max/dia" fill="#f59e0b" fillOpacity={0.25} maxBarSize={10} radius={[2, 2, 0, 0]} />
+          <Line yAxisId="rep" type="monotone" dataKey="avg" name="avg" stroke="#10b981" strokeWidth={2} dot={false} />
+          <Line yAxisId="rep" type="monotone" dataKey="min" name="min" stroke="#9ca3af" strokeWidth={1} strokeDasharray="3 2" dot={false} />
+          <Line yAxisId="nodes" type="step" dataKey="nodes" name="nodes" stroke="#8b5cf6" strokeWidth={1.5} dot={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function HPAHistoryTab({ cluster }: { cluster: string }) {
+  const [days, setDays] = useState(30);
+  const [timeline, setTimeline] = useState<TimelineReport | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [sortField, setSortField] = useState<SortField>("daysAtMax");
+  const [sortAsc, setSortAsc] = useState(false);
+
+  const fetchTimeline = async () => {
+    setLoading(true);
+    setError(null);
+    setTimeline(null);
+    setExpandedKey(null);
+    try {
+      const token = localStorage.getItem("token") || "poc-token-123";
+      const r = await fetch(`/api/v1/finops/timeline?cluster=${encodeURIComponent(cluster)}&days=${days}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error((e as { error?: string }).error ?? `Erro ${r.status}`);
+      }
+      setTimeline(await r.json());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleSort = (field: SortField) => {
+    if (sortField === field) setSortAsc(a => !a);
+    else { setSortField(field); setSortAsc(false); }
+  };
+
+  const nodeMap = Object.fromEntries((timeline?.nodes ?? []).map(n => [n.date.slice(5), n.node_count]));
+
+  const hpaRows = (timeline?.hpas ?? []).map(h => {
+    const n = h.series.length || 1;
+    const avgUtil = h.series.reduce((s, p) => s + (h.hpa_max > 0 ? p.avg_replicas / h.hpa_max : 0), 0) / n * 100;
+    const daysAtMax = h.series.filter(p => p.max_replicas >= h.hpa_max).length;
+    const daysAtMin = h.series.filter(p => p.max_replicas <= h.hpa_min).length;
+    return { ...h, avgUtil, daysAtMax, daysAtMin };
+  }).sort((a, b) => {
+    let diff = 0;
+    if (sortField === "workload") diff = a.workload.localeCompare(b.workload);
+    else if (sortField === "util")      diff = a.avgUtil - b.avgUtil;
+    else if (sortField === "daysAtMax") diff = a.daysAtMax - b.daysAtMax;
+    else if (sortField === "daysAtMin") diff = a.daysAtMin - b.daysAtMin;
+    return sortAsc ? diff : -diff;
+  });
+
+  // Summary cards
+  const neverScaled  = hpaRows.filter(h => h.daysAtMin >= Math.ceil(days * 0.8)).length;
+  const atMaxRisk    = hpaRows.filter(h => h.daysAtMax >= Math.ceil(days * 0.1)).length;
+  const avgUtilAll   = hpaRows.length > 0 ? hpaRows.reduce((s, h) => s + h.avgUtil, 0) / hpaRows.length : 0;
+  const currentNodes = timeline?.nodes.at(-1)?.node_count ?? 0;
+
+  const SortBtn = ({ field, label }: { field: SortField; label: string }) => (
+    <button className="flex items-center gap-1 hover:text-foreground transition-colors"
+      onClick={() => toggleSort(field)}>
+      {label}
+      <ArrowUpDown className={`h-3 w-3 ${sortField === field ? "opacity-100" : "opacity-30"}`} />
+    </button>
+  );
+
+  return (
+    <div className="space-y-4">
+      {/* Controles */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-1">
+          {([7, 15, 30] as const).map(d => (
+            <Button key={d} variant={days === d ? "default" : "outline"} size="sm"
+              className="h-7 text-xs px-3" onClick={() => setDays(d)}>
+              {d}d
+            </Button>
+          ))}
+        </div>
+        <Button size="sm" className="h-7 text-xs gap-1.5" onClick={fetchTimeline} disabled={loading}>
+          {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+          Buscar histórico
+        </Button>
+        {timeline && (
+          <span className="text-xs text-muted-foreground">
+            {timeline.start_date} → {timeline.end_date} · {timeline.hpas.length} HPAs · {timeline.nodes.length} dias
+          </span>
         )}
-      </CardContent>
-    </Card>
+      </div>
+
+      {error && (
+        <Alert className="border-red-200 bg-red-50 dark:bg-red-950/20">
+          <AlertTriangle className="h-4 w-4 text-red-600" />
+          <AlertDescription className="text-sm text-red-700 dark:text-red-400">{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {!timeline && !loading && !error && (
+        <div className="flex flex-col items-center justify-center py-20 text-muted-foreground gap-3">
+          <Activity className="h-10 w-10 opacity-20" />
+          <p className="text-sm">Selecione o período e clique em <strong>Buscar histórico</strong></p>
+          <p className="text-xs opacity-70">Requer Prometheus acessível pelo servidor</p>
+        </div>
+      )}
+
+      {loading && (
+        <div className="flex items-center justify-center py-20 gap-3 text-muted-foreground">
+          <Loader2 className="h-5 w-5 animate-spin" />
+          <span className="text-sm">Consultando Prometheus ({days} dias)…</span>
+        </div>
+      )}
+
+      {timeline && (
+        <>
+          {/* Summary cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <SummaryCard icon={Activity} label="HPAs monitorados" color="text-indigo-600"
+              value={String(hpaRows.length)} sub={`${days} dias de histórico`} />
+            <SummaryCard icon={TrendingDown} label="Nunca escalaram (≥80% no mín)" color="text-purple-600"
+              value={String(neverScaled)} sub={neverScaled > 0 ? "candidatos a remover HPA" : "nenhum"} />
+            <SummaryCard icon={AlertTriangle} label="No limite máximo (≥10% dos dias)" color="text-red-600"
+              value={String(atMaxRisk)} sub={atMaxRisk > 0 ? "risco de throttling" : "nenhum"} />
+            <SummaryCard icon={Server} label="Nodes ativos / Util. média" color="text-cyan-600"
+              value={String(currentNodes)} sub={`util. avg HPAs: ${avgUtilAll.toFixed(0)}%`} />
+          </div>
+
+          {/* Tabela */}
+          <Card>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow className="text-[11px] text-muted-foreground">
+                    <TableHead className="pl-4 w-[260px]">
+                      <SortBtn field="workload" label="Workload / Namespace" />
+                    </TableHead>
+                    <TableHead className="text-center w-[80px]">Min → Max</TableHead>
+                    <TableHead className="text-center w-[90px]">
+                      <SortBtn field="util" label="Util avg %" />
+                    </TableHead>
+                    <TableHead className="w-[88px]">Scaling ({days}d)</TableHead>
+                    <TableHead className="text-center w-[80px]">
+                      <SortBtn field="daysAtMax" label="Dias@Max" />
+                    </TableHead>
+                    <TableHead className="text-center w-[80px]">
+                      <SortBtn field="daysAtMin" label="Dias@Min" />
+                    </TableHead>
+                    <TableHead>Recomendação</TableHead>
+                    <TableHead className="w-8" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {hpaRows.map(h => {
+                    const key = `${h.namespace}/${h.workload}`;
+                    const isOpen = expandedKey === key;
+                    const rec = hpaRecommendation(h.avgUtil, h.daysAtMax, h.daysAtMin, days);
+                    const utilColor = h.avgUtil >= 80 ? "text-red-500" : h.avgUtil >= 50 ? "text-yellow-500" : "text-green-500";
+                    return (
+                      <>
+                        <TableRow key={key}
+                          className={`text-xs cursor-pointer hover:bg-muted/40 transition-colors ${isOpen ? "bg-muted/30" : ""}`}
+                          onClick={() => setExpandedKey(isOpen ? null : key)}>
+                          <TableCell className="pl-4 py-2">
+                            <p className="font-semibold truncate max-w-[220px]">{h.workload}</p>
+                            <p className="text-[10px] text-muted-foreground truncate max-w-[220px]">{h.namespace}</p>
+                          </TableCell>
+                          <TableCell className="text-center font-mono">
+                            <span className="text-muted-foreground">{h.hpa_min}</span>
+                            <span className="text-muted-foreground mx-1">→</span>
+                            <span>{h.hpa_max}</span>
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <span className={`font-bold ${utilColor}`}>{h.avgUtil.toFixed(0)}%</span>
+                          </TableCell>
+                          <TableCell>
+                            <HPASparkline series={h.series} hpaMax={h.hpa_max} days={days} />
+                          </TableCell>
+                          <TableCell className="text-center">
+                            {h.daysAtMax > 0
+                              ? <span className="text-red-500 font-semibold">{h.daysAtMax}d</span>
+                              : <span className="text-muted-foreground">—</span>}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            {h.daysAtMin > 0
+                              ? <span className="text-purple-500 font-semibold">{h.daysAtMin}d</span>
+                              : <span className="text-muted-foreground">—</span>}
+                          </TableCell>
+                          <TableCell>
+                            <span className={`text-[11px] font-medium ${rec.color}`}>{rec.label}</span>
+                          </TableCell>
+                          <TableCell className="pr-3">
+                            {isOpen
+                              ? <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />
+                              : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />}
+                          </TableCell>
+                        </TableRow>
+                        {isOpen && (
+                          <TableRow key={`${key}-detail`} className="hover:bg-transparent">
+                            <TableCell colSpan={8} className="p-0">
+                              <HPADetailChart hpa={h} nodeMap={nodeMap} />
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1386,7 +1525,6 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
   const [triggerKey, setTriggerKey] = useState(0);
   const [withPrometheus, setWithPrometheus] = useState(false);
   const [windowDays, setWindowDays] = useState(30);
-  const [timeline, setTimeline] = useState<TimelineReport | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiExpanded, setAiExpanded] = useState(true);
@@ -1411,21 +1549,6 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
     staleTime: 5 * 60 * 1000,
     retry: false,
   });
-
-  // Buscar série temporal quando Prometheus está ativo e o relatório foi carregado
-  useEffect(() => {
-    if (!report || !withPrometheus || !cluster) {
-      setTimeline(null);
-      return;
-    }
-    const token = localStorage.getItem("token") || "poc-token-123";
-    fetch(`/api/v1/finops/timeline?cluster=${encodeURIComponent(cluster)}&days=${windowDays}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(r => r.ok ? r.json() : null)
-      .then((data: TimelineReport | null) => setTimeline(data))
-      .catch(() => setTimeline(null));
-  }, [report, withPrometheus, cluster, windowDays]);
 
   const exportCSV = () => {
     if (!report) return;
@@ -1622,9 +1745,9 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
             </Card>
           )}
 
-          <Tabs defaultValue="overview" className="flex-1 flex flex-col min-h-0">
+          <Tabs defaultValue="dashboard" className="flex-1 flex flex-col min-h-0">
             <TabsList className="w-fit">
-              <TabsTrigger value="overview">Visão Geral</TabsTrigger>
+              <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
               <TabsTrigger value="nodepools">
                 Node Pools
                 <Badge variant="secondary" className="ml-1 text-[10px]">{report.node_pools.length}</Badge>
@@ -1650,8 +1773,8 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
             </TabsList>
 
             <div className="flex-1 overflow-auto mt-3">
-              <TabsContent value="overview" className="mt-0 h-full">
-                <OverviewTab report={report} />
+              <TabsContent value="dashboard" className="mt-0 h-full">
+                <DashboardTab cluster={cluster} report={report} />
               </TabsContent>
               <TabsContent value="nodepools" className="mt-0 h-full">
                 <NodePoolsTab pools={report.node_pools} />
@@ -1660,7 +1783,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 <WorkloadsTab workloads={report.workloads} windowDays={report.window_days || windowDays} />
               </TabsContent>
               <TabsContent value="hpa-history" className="mt-0 h-full">
-                <HPAHistoryTab workloads={report.workloads} windowDays={report.window_days || windowDays} timeline={timeline ?? undefined} />
+                <HPAHistoryTab cluster={cluster} />
               </TabsContent>
               <TabsContent value="opportunities" className="mt-0 h-full">
                 <OpportunitiesTab workloads={report.workloads} summary={report.summary} />

@@ -37,13 +37,29 @@ type NodeDayPoint struct {
 	NodeCount int    `json:"node_count"` // máximo de nodes no dia
 }
 
+// CPUDayPoint representa uso e request de CPU do cluster em um dia (aggregate de todos os containers)
+type CPUDayPoint struct {
+	Date      string  `json:"date"`
+	UsedMilli float64 `json:"used_millis"` // millicores usados (avg do dia)
+	ReqMilli  float64 `json:"req_millis"`  // millicores solicitados (avg do dia)
+}
+
+// MemDayPoint representa uso e request de memória do cluster em um dia
+type MemDayPoint struct {
+	Date   string  `json:"date"`
+	UsedMi float64 `json:"used_mi"` // MiB em uso (avg do dia)
+	ReqMi  float64 `json:"req_mi"`  // MiB solicitados (avg do dia)
+}
+
 // TimelineReport é a resposta completa da análise temporal
 type TimelineReport struct {
-	Cluster   string        `json:"cluster"`
-	StartDate string        `json:"start_date"`
-	EndDate   string        `json:"end_date"`
-	HPAs      []HPATimeline `json:"hpas"`
+	Cluster   string         `json:"cluster"`
+	StartDate string         `json:"start_date"`
+	EndDate   string         `json:"end_date"`
+	HPAs      []HPATimeline  `json:"hpas"`
 	Nodes     []NodeDayPoint `json:"nodes"`
+	CPU       []CPUDayPoint  `json:"cpu"`
+	Mem       []MemDayPoint  `json:"mem"`
 }
 
 // QueryTimeline busca série temporal de HPAs e nodes via Prometheus QueryRange.
@@ -86,6 +102,18 @@ func QueryTimeline(ctx context.Context, prometheusURL string, start, end time.Ti
 	// 3. Número de nodes ao longo do tempo
 	nodeMatrix, _ := queryMatrix(ctx, promAPI,
 		`count(kube_node_status_condition{condition="Ready",status="true"})`, r)
+
+	// 4. CPU usage (millicores) e requests — soma de todos os containers do cluster
+	cpuUsedMatrix, _ := queryMatrix(ctx, promAPI,
+		`sum(rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m])) * 1000`, r)
+	cpuReqMatrix, _ := queryMatrix(ctx, promAPI,
+		`sum(kube_pod_container_resource_requests{resource="cpu",container!=""}) * 1000`, r)
+
+	// 5. Memória (MiB) e requests — soma de todos os containers do cluster
+	memUsedMatrix, _ := queryMatrix(ctx, promAPI,
+		`sum(container_memory_working_set_bytes{container!="",container!="POD"}) / 1048576`, r)
+	memReqMatrix, _ := queryMatrix(ctx, promAPI,
+		`sum(kube_pod_container_resource_requests{resource="memory",container!=""}) / 1048576`, r)
 
 	resp := &TimelineReport{
 		StartDate: start.Format("2006-01-02"),
@@ -181,14 +209,97 @@ func QueryTimeline(ctx context.Context, prometheusURL string, start, end time.Ti
 	}
 	sort.Slice(resp.Nodes, func(i, j int) bool { return resp.Nodes[i].Date < resp.Nodes[j].Date })
 
+	// Agrega CPU/Mem: step=2h → daily avg usando helper genérico
+	resp.CPU = buildCPUSeries(cpuUsedMatrix, cpuReqMatrix)
+	resp.Mem = buildMemSeries(memUsedMatrix, memReqMatrix)
+
 	log.Info().
 		Int("hpas", len(resp.HPAs)).
 		Int("node_days", len(resp.Nodes)).
+		Int("cpu_days", len(resp.CPU)).
+		Int("mem_days", len(resp.Mem)).
 		Str("start", resp.StartDate).
 		Str("end", resp.EndDate).
 		Msg("FinOps: timeline carregada")
 
 	return resp, nil
+}
+
+// scalarDayAgg acumula valores de uma série escalar (sum(…)) para média diária
+type scalarDayAgg struct {
+	sum   float64
+	count int
+}
+
+// aggregateScalar itera sobre uma matrix de série escalar e agrega por dia (avg)
+func aggregateScalar(matrix model.Matrix) map[string]*scalarDayAgg {
+	daily := make(map[string]*scalarDayAgg)
+	for _, stream := range matrix {
+		for _, pair := range stream.Values {
+			date := pair.Timestamp.Time().Format("2006-01-02")
+			val := float64(pair.Value)
+			if daily[date] == nil {
+				daily[date] = &scalarDayAgg{}
+			}
+			daily[date].sum += val
+			daily[date].count++
+		}
+	}
+	return daily
+}
+
+func buildCPUSeries(usedMatrix, reqMatrix model.Matrix) []CPUDayPoint {
+	usedByDay := aggregateScalar(usedMatrix)
+	reqByDay := aggregateScalar(reqMatrix)
+
+	dates := make(map[string]struct{})
+	for d := range usedByDay {
+		dates[d] = struct{}{}
+	}
+	for d := range reqByDay {
+		dates[d] = struct{}{}
+	}
+
+	var out []CPUDayPoint
+	for date := range dates {
+		p := CPUDayPoint{Date: date}
+		if a := usedByDay[date]; a != nil && a.count > 0 {
+			p.UsedMilli = round2(a.sum / float64(a.count))
+		}
+		if a := reqByDay[date]; a != nil && a.count > 0 {
+			p.ReqMilli = round2(a.sum / float64(a.count))
+		}
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date < out[j].Date })
+	return out
+}
+
+func buildMemSeries(usedMatrix, reqMatrix model.Matrix) []MemDayPoint {
+	usedByDay := aggregateScalar(usedMatrix)
+	reqByDay := aggregateScalar(reqMatrix)
+
+	dates := make(map[string]struct{})
+	for d := range usedByDay {
+		dates[d] = struct{}{}
+	}
+	for d := range reqByDay {
+		dates[d] = struct{}{}
+	}
+
+	var out []MemDayPoint
+	for date := range dates {
+		p := MemDayPoint{Date: date}
+		if a := usedByDay[date]; a != nil && a.count > 0 {
+			p.UsedMi = round2(a.sum / float64(a.count))
+		}
+		if a := reqByDay[date]; a != nil && a.count > 0 {
+			p.ReqMi = round2(a.sum / float64(a.count))
+		}
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date < out[j].Date })
+	return out
 }
 
 // queryMatrix executa QueryRange e retorna uma model.Matrix
