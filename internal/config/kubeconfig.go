@@ -253,6 +253,29 @@ func (k *KubeConfigManager) TestClusterConnection(ctx context.Context, clusterNa
 	return models.StatusConnected
 }
 
+// resolveContext encontra o nome real do contexto no kubeconfig a partir de um nome informado.
+// Tenta: (1) nome exato, (2) sem sufixo -admin, (3) com sufixo -admin.
+// Isso permite que o sistema funcione em máquinas onde os contextos do kubeconfig
+// têm ou não o sufixo -admin, sem exigir normalização no frontend ou nos handlers.
+func (k *KubeConfigManager) resolveContext(name string) string {
+	if _, ok := k.config.Contexts[name]; ok {
+		return name
+	}
+	// Tentar sem -admin (máquinas cujos contexts não têm o sufixo)
+	if without := strings.TrimSuffix(name, "-admin"); without != name {
+		if _, ok := k.config.Contexts[without]; ok {
+			return without
+		}
+	}
+	// Tentar com -admin (máquinas cujos contexts têm o sufixo mas o chamador não passou)
+	if with := name + "-admin"; name != "" {
+		if _, ok := k.config.Contexts[with]; ok {
+			return with
+		}
+	}
+	return name // retorna original para que o erro eventual seja descritivo
+}
+
 // GetClient retorna um cliente Kubernetes para o cluster especificado
 func (k *KubeConfigManager) GetClient(clusterName string) (kubernetes.Interface, error) {
 	return k.getClient(clusterName)
@@ -293,6 +316,8 @@ func (k *KubeConfigManager) GetMetricsClient(clusterName string) (metricsclients
 
 // GetRestConfig retorna a configuração REST para o cluster especificado
 func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, error) {
+	resolved := k.resolveContext(clusterName)
+
 	// Verificar se o arquivo kubeconfig existe e é válido
 	if k.configPath == "" {
 		return nil, fmt.Errorf("kubeconfig path is empty")
@@ -305,7 +330,7 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 
 	// Criar configuração do cliente para o contexto específico
 	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: k.configPath}
-	configOverrides := &clientcmd.ConfigOverrides{CurrentContext: clusterName}
+	configOverrides := &clientcmd.ConfigOverrides{CurrentContext: resolved}
 
 	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		loadingRules,
@@ -316,9 +341,9 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 	restConfig, err := clientConfig.ClientConfig()
 	if err != nil {
 		if strings.Contains(err.Error(), "yaml") || strings.Contains(err.Error(), "unmarshal") {
-			return nil, fmt.Errorf("kubeconfig file has invalid YAML format for cluster %s: %w", clusterName, err)
+			return nil, fmt.Errorf("kubeconfig file has invalid YAML format for cluster %s: %w", resolved, err)
 		}
-		return nil, fmt.Errorf("failed to create client config for %s: %w", clusterName, err)
+		return nil, fmt.Errorf("failed to create client config for %s: %w", resolved, err)
 	}
 
 	// Configurar timeouts
@@ -331,11 +356,14 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 
 // getClient cria ou retorna um cliente existente para o cluster
 func (k *KubeConfigManager) getClient(clusterName string) (kubernetes.Interface, error) {
+	// Resolver o contexto real (suporta kubeconfigs com e sem sufixo -admin)
+	resolved := k.resolveContext(clusterName)
+
 	// Primeiro, tentar ler o cliente existente com read lock (permite leituras concorrentes)
 	k.clientMutex.RLock()
-	if client, exists := k.clients[clusterName]; exists {
+	if client, exists := k.clients[resolved]; exists {
 		k.clientMutex.RUnlock()
-		k.touchLastUsed(clusterName)
+		k.touchLastUsed(resolved)
 		return client, nil
 	}
 	k.clientMutex.RUnlock()
@@ -345,7 +373,7 @@ func (k *KubeConfigManager) getClient(clusterName string) (kubernetes.Interface,
 	defer k.clientMutex.Unlock()
 
 	// Double-check: outro goroutine pode ter criado o cliente enquanto esperávamos o lock
-	if client, exists := k.clients[clusterName]; exists {
+	if client, exists := k.clients[resolved]; exists {
 		return client, nil
 	}
 
@@ -359,9 +387,9 @@ func (k *KubeConfigManager) getClient(clusterName string) (kubernetes.Interface,
 		return nil, fmt.Errorf("kubeconfig file does not exist at path: %s", k.configPath)
 	}
 
-	// Criar configuração do cliente para o contexto específico
+	// Criar configuração do cliente para o contexto resolvido
 	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: k.configPath}
-	configOverrides := &clientcmd.ConfigOverrides{CurrentContext: clusterName}
+	configOverrides := &clientcmd.ConfigOverrides{CurrentContext: resolved}
 
 	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		loadingRules,
@@ -371,11 +399,10 @@ func (k *KubeConfigManager) getClient(clusterName string) (kubernetes.Interface,
 	// Tentar obter configuração REST com tratamento de erro melhorado
 	restConfig, err := clientConfig.ClientConfig()
 	if err != nil {
-		// Tratar erros específicos de parsing YAML
 		if strings.Contains(err.Error(), "yaml") || strings.Contains(err.Error(), "unmarshal") {
-			return nil, fmt.Errorf("kubeconfig file has invalid YAML format for cluster %s: %w", clusterName, err)
+			return nil, fmt.Errorf("kubeconfig file has invalid YAML format for cluster %s: %w", resolved, err)
 		}
-		return nil, fmt.Errorf("failed to create client config for %s: %w", clusterName, err)
+		return nil, fmt.Errorf("failed to create client config for %s: %w", resolved, err)
 	}
 
 	// Configurar timeouts
@@ -386,12 +413,12 @@ func (k *KubeConfigManager) getClient(clusterName string) (kubernetes.Interface,
 	// Criar cliente Kubernetes
 	client, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create kubernetes client for %s: %w", clusterName, err)
+		return nil, fmt.Errorf("failed to create kubernetes client for %s: %w", resolved, err)
 	}
 
-	// Armazenar cliente para reuso
-	k.clients[clusterName] = client
-	k.touchLastUsed(clusterName)
+	// Armazenar cliente pelo nome resolvido para reuso
+	k.clients[resolved] = client
+	k.touchLastUsed(resolved)
 
 	return client, nil
 }
