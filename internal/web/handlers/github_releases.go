@@ -291,9 +291,9 @@ func (h *GitHubReleasesHandler) GetReleases(c *gin.Context) {
 		return
 	}
 
-	// Buscar releases
+	// Buscar releases — 100 por página (máximo da API GitHub)
 	releases, _, err := client.Repositories.ListReleases(context.Background(), owner, repo, &github.ListOptions{
-		PerPage: 50, // Últimos 50 releases
+		PerPage: 100,
 	})
 
 	if err != nil {
@@ -893,93 +893,19 @@ func (h *GitHubReleasesHandler) CompareReleasesWithRegistry(c *gin.Context) {
 	baseTag := normalizeVersion(prodDeployment.Version)
 	headTag := normalizeVersion(newTag)
 
-	h.logger.Debug().
+	h.logger.Info().
 		Str("owner", owner).
 		Str("repo", repo).
 		Str("base", baseTag).
 		Str("base_original", prodDeployment.Version).
 		Str("head", headTag).
 		Str("head_original", newTag).
-		Msg("Fetching comparison from GitHub")
+		Msg("Comparing GitHub releases")
 
-	// ✅ VALIDAÇÃO: Verificar se repositório existe e listar tags
-	// Buscar apenas últimas 100 tags (suficiente para validação)
-	tags, resp, err := githubClient.Repositories.ListTags(ctx, owner, repo, &github.ListOptions{PerPage: 100})
-	if err != nil {
-		statusCode := http.StatusInternalServerError
-		errorMsg := "Erro ao buscar tags do repositório"
-
-		if resp != nil && resp.StatusCode == 404 {
-			statusCode = http.StatusNotFound
-			errorMsg = fmt.Sprintf("Repositório '%s/%s' não encontrado no GitHub. Verifique se o mapeamento deployment → repositório está correto.", owner, repo)
-		}
-
-		h.logger.Error().
-			Err(err).
-			Str("owner", owner).
-			Str("repo", repo).
-			Int("status_code", resp.StatusCode).
-			Msg("Failed to list tags from repository")
-
-		c.JSON(statusCode, gin.H{
-			"error":      errorMsg,
-			"details":    err.Error(),
-			"repository": fmt.Sprintf("%s/%s", owner, repo),
-			"suggestion": "Configure o mapeamento correto deployment → repositório GitHub ou verifique se o token tem permissão de acesso",
-		})
-		return
-	}
-
-	h.logger.Info().
-		Str("owner", owner).
-		Str("repo", repo).
-		Int("tags_count", len(tags)).
-		Msg("Repository tags fetched successfully")
-
-	// ✅ VALIDAÇÃO: Verificar se a nova tag (headTag) existe no repositório
-	tagExists := false
-	availableTags := make([]string, 0, len(tags))
-	for _, tag := range tags {
-		tagName := tag.GetName()
-		availableTags = append(availableTags, tagName)
-		if tagName == headTag {
-			tagExists = true
-		}
-	}
-
-	if !tagExists {
-		h.logger.Warn().
-			Str("owner", owner).
-			Str("repo", repo).
-			Str("tag", headTag).
-			Str("tag_original", newTag).
-			Int("available_tags", len(availableTags)).
-			Msg("New tag not found in repository")
-
-		// Sugerir tags similares (primeiras 10)
-		suggestedTags := availableTags
-		if len(suggestedTags) > 10 {
-			suggestedTags = suggestedTags[:10]
-		}
-
-		c.JSON(http.StatusNotFound, gin.H{
-			"error":          fmt.Sprintf("Tag '%s' não encontrada no repositório %s/%s", headTag, owner, repo),
-			"tag_searched":   headTag,
-			"tag_original":   newTag,
-			"repository":     fmt.Sprintf("%s/%s", owner, repo),
-			"total_tags":     len(availableTags),
-			"suggested_tags": suggestedTags,
-			"suggestion":     "Verifique se a tag está correta. As tags mais recentes estão listadas em 'suggested_tags'",
-		})
-		return
-	}
-
-	h.logger.Info().
-		Str("tag", headTag).
-		Msg("New tag validated successfully")
-
-	// ✅ Todas as validações passaram, agora comparar
-	comparison, _, err := githubClient.Repositories.CompareCommits(
+	// Comparar diretamente — sem pré-validação de tags por lista paginada.
+	// A pre-validação via ListTags(PerPage:100) falhava em repos com >100 tags
+	// pois tags antigas não apareciam na primeira página.
+	comparison, resp, err := githubClient.Repositories.CompareCommits(
 		ctx,
 		owner,
 		repo,
@@ -989,6 +915,30 @@ func (h *GitHubReleasesHandler) CompareReleasesWithRegistry(c *gin.Context) {
 	)
 
 	if err != nil {
+		statusCode := http.StatusInternalServerError
+		errorMsg := fmt.Sprintf("Erro ao comparar tags '%s' e '%s': %v", baseTag, headTag, err)
+
+		if resp != nil {
+			switch resp.StatusCode {
+			case http.StatusNotFound:
+				statusCode = http.StatusNotFound
+				errorMsg = fmt.Sprintf(
+					"Repositório '%s/%s' ou tags '%s'/'%s' não encontradas no GitHub. "+
+						"Verifique se as tags existem e se o token tem acesso ao repositório.",
+					owner, repo, baseTag, headTag,
+				)
+			case http.StatusUnprocessableEntity:
+				statusCode = http.StatusUnprocessableEntity
+				errorMsg = fmt.Sprintf(
+					"Tags '%s' ou '%s' não existem no repositório %s/%s.",
+					baseTag, headTag, owner, repo,
+				)
+			case http.StatusForbidden:
+				statusCode = http.StatusForbidden
+				errorMsg = "Token sem permissão para acessar este repositório. Verifique SSO/SAML."
+			}
+		}
+
 		h.logger.Error().
 			Err(err).
 			Str("owner", owner).
@@ -996,9 +946,10 @@ func (h *GitHubReleasesHandler) CompareReleasesWithRegistry(c *gin.Context) {
 			Str("base", baseTag).
 			Str("head", headTag).
 			Msg("Failed to compare commits on GitHub")
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   fmt.Sprintf("Erro ao comparar no GitHub: %v", err),
-			"details": "Base e head validadas, mas comparação falhou. Pode ser problema de permissões ou ambas as tags são iguais.",
+
+		c.JSON(statusCode, gin.H{
+			"error":              errorMsg,
+			"github_compare_url": fmt.Sprintf("https://github.com/%s/%s/compare/%s...%s", owner, repo, baseTag, headTag),
 		})
 		return
 	}

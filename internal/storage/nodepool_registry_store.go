@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -85,7 +86,23 @@ ON CONFLICT(cluster, nodepool) DO UPDATE SET
 }
 
 // GetAll retorna todos os entries (opcionalmente filtrado por cluster).
+// Se o cluster informado incluir o sufixo -admin mas o registry tiver a entrada sem ele
+// (ou vice-versa), aplica fallback automático para compatibilidade entre máquinas
+// onde os contextos do kubeconfig têm ou não o sufixo -admin.
 func (s *NodePoolRegistryStore) GetAll(cluster string) ([]NodePoolRegistryEntry, error) {
+	entries, err := s.queryAll(cluster)
+	if err != nil || len(entries) > 0 || cluster == "" {
+		return entries, err
+	}
+	// Fallback: tentar sem sufixo -admin
+	if without := strings.TrimSuffix(cluster, "-admin"); without != cluster {
+		return s.queryAll(without)
+	}
+	return entries, err
+}
+
+// queryAll executa a query de listagem por cluster sem fallback.
+func (s *NodePoolRegistryStore) queryAll(cluster string) ([]NodePoolRegistryEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

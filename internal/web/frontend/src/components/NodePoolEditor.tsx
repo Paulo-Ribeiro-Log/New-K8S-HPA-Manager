@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -11,7 +11,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Separator } from "@/components/ui/separator";
 import type { NodePool, NodeInfo } from "@/lib/api/types";
 import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Tags, AlertTriangle, Copy, TrendingUp, History } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
@@ -37,11 +36,9 @@ interface NodePoolEditorProps {
 export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorProps) => {
   const staging = useStaging();
 
-  // Buscar métricas de disco do node pool
-  // Adicionar sufixo -admin se não tiver (compatibilidade com kubeconfig)
-  const clusterWithAdmin = nodePool?.cluster_name
-    ? (nodePool.cluster_name.endsWith('-admin') ? nodePool.cluster_name : `${nodePool.cluster_name}-admin`)
-    : "";
+  // O backend resolve automaticamente o contexto kubeconfig correto (com ou sem -admin)
+  // via resolveContext em KubeConfigManager — não forçar sufixo no frontend.
+  const clusterWithAdmin = nodePool?.cluster_name ?? "";
 
   const { metrics: diskMetrics, loading: diskMetricsLoading, refetch: refetchDiskMetrics } = useNodePoolDiskMetrics(
     clusterWithAdmin,
@@ -86,11 +83,40 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const [showNodeDetailsModal, setShowNodeDetailsModal] = useState(false);
   const [modalKey, setModalKey] = useState(0); // Force modal re-creation
 
-  // Fetch nodes from API
+  // Fetch nodes from API (sem Azure CLI — resposta rápida)
   const { nodes, loading: nodesLoading, error: nodesError, refetch: refetchNodes } = useNodes(
     clusterWithAdmin,
     nodePool?.name || ""
   );
+
+  // Busca de tags Azure e subscription name — endpoint assíncrono separado para não bloquear nodes
+  const [azureInfo, setAzureInfo] = useState<{
+    cluster_tags: Record<string, string>;
+    subscription_name: string;
+    resource_group: string;
+    subscription: string;
+  } | null>(null);
+  const [azureInfoLoading, setAzureInfoLoading] = useState(false);
+
+  const fetchAzureInfo = useCallback(async () => {
+    if (!clusterWithAdmin || !nodePool?.name) return;
+    setAzureInfoLoading(true);
+    try {
+      const info = await apiClient.getNodePoolAzureInfo(clusterWithAdmin, nodePool.name);
+      setAzureInfo(info);
+    } catch {
+      // silencioso — tags são opcionais
+    } finally {
+      setAzureInfoLoading(false);
+    }
+  }, [clusterWithAdmin, nodePool?.name]);
+
+  useEffect(() => {
+    setAzureInfo(null);
+    if (clusterWithAdmin && nodePool?.name) {
+      fetchAzureInfo();
+    }
+  }, [clusterWithAdmin, nodePool?.name, fetchAzureInfo]);
 
   // Fetch selected node details
   const { nodeDetails, loading: loadingNodeDetails } = useNodeDetails(
@@ -1095,15 +1121,22 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                           </TableCell>
                           <TableCell>
                             <div className="flex flex-col gap-1">
-                              {/* Node Pool Tags (Azure Level) */}
-                              {node.cluster_tags && Object.keys(node.cluster_tags).length > 0 && (
+                              {/* Node Pool Tags (Azure Level) — carregado assincronamente */}
+                              {azureInfoLoading ? (
+                                <div className="flex items-center gap-1">
+                                  <Tag className="h-3 w-3 text-blue-300 animate-pulse" />
+                                  <Badge variant="outline" className="text-[10px] px-1 py-0 bg-blue-50 text-blue-400 border-blue-200">
+                                    Pool: …
+                                  </Badge>
+                                </div>
+                              ) : azureInfo && Object.keys(azureInfo.cluster_tags).length > 0 ? (
                                 <div className="flex items-center gap-1">
                                   <Tag className="h-3 w-3 text-blue-500" />
                                   <Badge variant="outline" className="text-[10px] px-1 py-0 bg-blue-50 text-blue-700 border-blue-300">
-                                    Pool: {Object.keys(node.cluster_tags).length}
+                                    Pool: {Object.keys(azureInfo.cluster_tags).length}
                                   </Badge>
                                 </div>
-                              )}
+                              ) : null}
 
                               {/* Node Labels (Kubernetes Individual) */}
                               {node.labels && Object.keys(node.labels).length > 0 && (
@@ -1126,7 +1159,8 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                               )}
 
                               {/* Empty state */}
-                              {(!node.cluster_tags || Object.keys(node.cluster_tags).length === 0) &&
+                              {!azureInfoLoading &&
+                               (!azureInfo || Object.keys(azureInfo.cluster_tags).length === 0) &&
                                (!node.labels || Object.keys(node.labels).length === 0) &&
                                (!node.taints || node.taints.length === 0) && (
                                 <span className="text-xs text-muted-foreground">Nenhum</span>
@@ -1300,6 +1334,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         nodeDetails={nodeDetails}
         loading={loadingNodeDetails}
         vmSize={nodePool?.vm_size}
+        azureInfo={azureInfo}
       />
 
       {/* NodePool Prediction Modal */}

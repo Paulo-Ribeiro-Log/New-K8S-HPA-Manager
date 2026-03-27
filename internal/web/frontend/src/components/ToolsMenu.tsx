@@ -17,6 +17,7 @@ import {
   SplitSquareHorizontal,
   Terminal,
   AlertTriangle,
+  CircleDollarSign,
 } from "lucide-react";
 
 interface ToolsMenuProps {
@@ -42,6 +43,7 @@ const toolsTabs: ToolsTab[] = [
   { id: "resource-compare", label: "Edição Lado a Lado", icon: SplitSquareHorizontal },
   { id: "command-runner", label: "Command Runner", icon: Terminal },
   { id: "dynatrace", label: "Dynatrace", icon: AlertTriangle },
+  { id: "finops", label: "FinOps", icon: CircleDollarSign },
 ];
 
 export const ToolsMenu = ({ activeTab, onTabChange }: ToolsMenuProps) => {

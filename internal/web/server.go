@@ -90,6 +90,9 @@ type Server struct {
 	// Node Pool Registry (catálogo de node pools para correlação Dynatrace)
 	nodepoolRegistryHandler *handlers.NodePoolRegistryHandler
 	npRegistryStore         *storage.NodePoolRegistryStore
+
+	// FinOps Timeline Store (snapshots históricos de HPA para comparação)
+	finopsTimelineStore *storage.FinOpsTimelineStore
 }
 
 // NewServer cria uma nova instância do servidor web
@@ -269,6 +272,16 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("✅ NodePool Registry inicializado (correlação Dynatrace aks-<pool>-vmss*)")
 	}
 
+	// FinOps Timeline Store (snapshots históricos HPA)
+	var finopsTimelineStore *storage.FinOpsTimelineStore
+	finopsTimelineDBPath := filepath.Join(baseDir, "finops_timeline.db")
+	if store, err := storage.NewFinOpsTimelineStore(finopsTimelineDBPath); err != nil {
+		fmt.Printf("⚠️  FinOps Timeline Store: falha ao criar store: %v\n", err)
+	} else {
+		finopsTimelineStore = store
+		fmt.Println("✅ FinOps Timeline Store inicializado (snapshots históricos HPA)")
+	}
+
 	server := &Server{
 		router:              router,
 		kubeManager:         kubeManager,
@@ -295,6 +308,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		awxHandler:              awxHandler,              // AWX Integration (certificados TLS)
 		nodepoolRegistryHandler: nodepoolRegistryHandler, // Catálogo de node pools Dynatrace
 		npRegistryStore:         npRegistryStore,         // Usado pelo healthcheck orchestrator
+		finopsTimelineStore:     finopsTimelineStore,     // Snapshots históricos HPA para comparação
 	}
 
 	server.setupMiddleware()
@@ -508,8 +522,9 @@ func (s *Server) setupRoutes() {
 	api.POST("/nodepools/sequence/execute", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ExecuteSequence) // NOVO: Cordon/Drain sequencing
 
 	// Node Pools - Node Details
-	api.GET("/nodes/:cluster/:nodepool", nodePoolHandler.ListNodesInNodePool)       // Lista nodes do node pool
-	api.GET("/nodes/:cluster/:nodepool/:node", nodePoolHandler.GetNodeDetails)      // Detalhes de um node específico
+	api.GET("/nodes/:cluster/:nodepool", nodePoolHandler.ListNodesInNodePool)                  // Lista nodes do node pool
+	api.GET("/nodes/:cluster/:nodepool/azure-info", nodePoolHandler.GetNodePoolAzureInfo)      // Info Azure async (tags, subscription)
+	api.GET("/nodes/:cluster/:nodepool/:node", nodePoolHandler.GetNodeDetails)                 // Detalhes de um node específico
 
 	// Node Pool Registry (catálogo para correlação Dynatrace aks-<pool>-vmss*)
 	if s.nodepoolRegistryHandler != nil {
@@ -517,6 +532,19 @@ func (s *Server) setupRoutes() {
 		api.GET("/nodepools/registry/lookup", s.nodepoolRegistryHandler.Lookup)
 		api.POST("/nodepools/registry/scan", rbacMiddleware.RequireSREGroup(), s.nodepoolRegistryHandler.Scan)
 	}
+
+	// FinOps — análise de custo real de clusters AKS (Azure Pricing API + alocação por workload)
+	finOpsHandler := handlers.NewFinOpsHandler(s.kubeManager, s.npRegistryStore, s.finopsTimelineStore, s.aiHandler)
+	api.GET("/finops/report", finOpsHandler.GetReport)
+	api.GET("/finops/pricing", finOpsHandler.GetPricing)
+	api.POST("/finops/pricing/refresh", finOpsHandler.RefreshPricing)
+	api.GET("/finops/exchange-rate", finOpsHandler.GetExchangeRate)
+	api.POST("/finops/analyze", finOpsHandler.AnalyzeReport)
+	api.GET("/finops/timeline", finOpsHandler.GetTimeline)
+	api.GET("/finops/timeline/compare", finOpsHandler.GetTimelineCompare)
+	api.GET("/finops/timeline/compare-snapshot", finOpsHandler.CompareWithSnapshot)
+	api.GET("/finops/timeline/compare-saved", finOpsHandler.CompareSnapshots)
+	api.GET("/finops/timeline/saved", finOpsHandler.GetSavedTimelines)
 
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
 	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)
