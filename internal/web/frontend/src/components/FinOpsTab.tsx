@@ -2098,13 +2098,14 @@ function OpportunitiesTab({ workloads, summary }: { workloads: FinOpsWorkload[];
 export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => {
   const { clusters } = useClusters();
 
-  // Clusters que têm node pools no registry usam sufixo -admin
-  const clusterOptions = (clusters ?? []).map(c =>
-    c.name.endsWith("-admin") ? c.name : c.name + "-admin"
-  ).filter((v, i, a) => a.indexOf(v) === i);
+  // Usar o contexto real do kubeconfig (campo `context`) — cada máquina tem seu próprio
+  // padrão de nomenclatura (com ou sem sufixo -admin). Não forçar sufixo no frontend.
+  const clusterOptions = (clusters ?? [])
+    .map(c => c.context)
+    .filter((v, i, a) => !!v && a.indexOf(v) === i);
 
   const defaultCluster = selectedCluster
-    ? (selectedCluster.endsWith("-admin") ? selectedCluster : selectedCluster + "-admin")
+    ? ((clusters ?? []).find(c => c.context === selectedCluster || c.name === selectedCluster.replace(/-admin$/, ""))?.context ?? selectedCluster)
     : clusterOptions[0] ?? "";
 
   const [cluster, setCluster] = useState(defaultCluster);

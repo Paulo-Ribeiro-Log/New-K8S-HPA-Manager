@@ -37,11 +37,9 @@ interface NodePoolEditorProps {
 export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorProps) => {
   const staging = useStaging();
 
-  // Buscar métricas de disco do node pool
-  // Adicionar sufixo -admin se não tiver (compatibilidade com kubeconfig)
-  const clusterWithAdmin = nodePool?.cluster_name
-    ? (nodePool.cluster_name.endsWith('-admin') ? nodePool.cluster_name : `${nodePool.cluster_name}-admin`)
-    : "";
+  // O backend resolve automaticamente o contexto kubeconfig correto (com ou sem -admin)
+  // via resolveContext em KubeConfigManager — não forçar sufixo no frontend.
+  const clusterWithAdmin = nodePool?.cluster_name ?? "";
 
   const { metrics: diskMetrics, loading: diskMetricsLoading, refetch: refetchDiskMetrics } = useNodePoolDiskMetrics(
     clusterWithAdmin,
