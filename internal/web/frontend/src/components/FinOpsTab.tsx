@@ -170,6 +170,144 @@ const fmtBRL = (v: number) =>
 const fmtUSD = (v: number) =>
   v.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 
+/** Formata millicores: 1500 → "1.5" (cores), 250 → "250m" */
+const fmtMillis = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}` : `${Math.round(v)}m`;
+
+// ─── Recomendações concretas ──────────────────────────────────────────────────
+
+interface Recommendation {
+  lines: { text: string; highlight?: boolean }[];
+  safeMin?: number;        // novo min de réplicas sugerido
+  safeMax?: number;        // novo max de réplicas sugerido
+  savingBRL: number;       // economia imediata estimada (réplicas atuais sendo reduzidas)
+  exposureBRL: number;     // exposição de custo máximo (se escalar ao máximo configurado)
+  needsPrometheus: boolean; // verdadeiro quando saving = 0 só por falta de dados
+  kubectl?: string;
+}
+
+function buildRecommendation(w: FinOpsWorkload, windowDays: number): Recommendation {
+  const lines: { text: string; highlight?: boolean }[] = [];
+  const podCostBRL = w.pods > 0 ? w.cost_share_brl / w.pods : 0;
+  let safeMin: number | undefined;
+  let safeMax: number | undefined;
+  let savingBRL = 0;
+  let needsPrometheus = false;
+
+  // Exposição = custo se HPA escalar ao máximo configurado vs custo atual
+  const exposureBRL = Math.max(0, w.hpa_cost_max_brl - w.hpa_cost_current_brl);
+
+  // ── Caso 1: temos dados Prometheus de HPA ────────────────────────────────
+  if ((w.hpa_avg_replicas ?? 0) > 0 && w.hpa_max > 0) {
+    const avg    = w.hpa_avg_replicas!;
+    const maxObs = w.hpa_max_observed ?? w.hpa_max;
+
+    // Min sugerido: avg × 1.2, garantindo pelo menos 1
+    const candidateMin = Math.max(1, Math.ceil(avg * 1.2));
+    if (candidateMin < w.hpa_min) {
+      safeMin  = candidateMin;
+      savingBRL = (w.hpa_min - safeMin) * podCostBRL;
+      lines.push({ text: `Reduzir min: ${w.hpa_min} → ${safeMin} réplicas`, highlight: true });
+      lines.push({ text: `Média ${windowDays}d: ${avg.toFixed(1)} répl · pico real: ${maxObs}` });
+      if (maxObs <= safeMin) {
+        lines.push({ text: `Pico observado (${maxObs}) ≤ novo min (${safeMin}) — seguro para aplicar` });
+      }
+    } else if (w.verdict === "hpa_removable") {
+      // Nunca escalou além do min — pode remover HPA
+      safeMin = maxObs;
+      lines.push({ text: `Remover HPA — fixar em ${safeMin} réplicas`, highlight: true });
+      lines.push({ text: `Pico observado ${maxObs} ≤ min configurado ${w.hpa_min} em ${windowDays}d` });
+      savingBRL = podCostBRL * 0.5; // overhead de gerenciamento HPA
+    } else {
+      // avg próxima do min — não reduzir min, mas verificar max
+      lines.push({ text: `Min atual (${w.hpa_min}) já é adequado para a média observada (${avg.toFixed(1)})` });
+    }
+
+    // Max desnecessariamente alto vs pico real
+    if (maxObs > 0 && maxObs < w.hpa_max * 0.6) {
+      safeMax = Math.ceil(maxObs * 1.3);
+      if (safeMax < w.hpa_max) {
+        lines.push({ text: `Reduzir max: ${w.hpa_max} → ${safeMax} (pico foi ${maxObs}, +30% buffer)` });
+      }
+    }
+
+  // ── Caso 2: sem Prometheus, workload JÁ está no mínimo (atual == min) ────
+  } else if (w.hpa_max > 0 && w.hpa_min > 0 && w.hpa_current <= w.hpa_min) {
+    needsPrometheus = true;
+    const ratio = Math.round((w.hpa_current / w.hpa_max) * 100);
+    lines.push({ text: `Rodando no mínimo configurado (${w.hpa_min} de ${w.hpa_max} max = ${ratio}% do teto)`, highlight: true });
+    // Sugerir redução do max baseado em heurística 2× o atual
+    const heuristicMax = Math.max(w.hpa_min + 1, w.hpa_current * 3);
+    if (heuristicMax < w.hpa_max) {
+      safeMax = heuristicMax;
+      lines.push({ text: `Reduzir max de ${w.hpa_max} → ${heuristicMax} (3× o uso atual) para limitar exposição` });
+    }
+    lines.push({ text: `Ative "Usar Prometheus" para ver histórico real e recomendar min seguro` });
+
+  // ── Caso 3: sem Prometheus, workload ACIMA do mínimo ─────────────────────
+  } else if (w.hpa_max > 0 && w.hpa_current > w.hpa_min) {
+    needsPrometheus = true;
+    // Usar hpa_current como proxy — saving se reduzir min para atual
+    if (w.hpa_min > w.hpa_current) {
+      safeMin = w.hpa_current;
+      savingBRL = (w.hpa_min - safeMin) * podCostBRL;
+      lines.push({ text: `Reduzir min: ${w.hpa_min} → ${w.hpa_current} (já rodando com ${w.hpa_current})`, highlight: true });
+    } else {
+      const ratio = Math.round((w.hpa_current / w.hpa_max) * 100);
+      lines.push({ text: `Rodando em ${ratio}% do max configurado (${w.hpa_current}/${w.hpa_max})`, highlight: true });
+      lines.push({ text: `Ative "Usar Prometheus" para recomendar novo min baseado em histórico` });
+    }
+  }
+
+  // ── CPU request muito acima do recomendado (Prometheus) ──────────────────
+  if (w.cpu_recommended_millis && w.cpu_request_millis &&
+      w.cpu_recommended_millis < w.cpu_request_millis * 0.85) {
+    const pct = Math.round((1 - w.cpu_recommended_millis / w.cpu_request_millis) * 100);
+    lines.push({
+      text: `CPU request: ${fmtMillis(w.cpu_request_millis)} → ${fmtMillis(w.cpu_recommended_millis)} (-${pct}%, P95=${fmtMillis(w.cpu_p95_millis ?? 0)})`,
+      highlight: !safeMin,
+    });
+  }
+
+  // ── Mem request muito acima do recomendado (Prometheus) ──────────────────
+  if (w.mem_recommended_mi && w.mem_request_mi &&
+      w.mem_recommended_mi < w.mem_request_mi * 0.85) {
+    const pct = Math.round((1 - w.mem_recommended_mi / w.mem_request_mi) * 100);
+    lines.push({
+      text: `Mem request: ${fmtMi(w.mem_request_mi)} → ${fmtMi(w.mem_recommended_mi)} (-${pct}%, P95=${fmtMi(w.mem_p95_mi ?? 0)})`,
+      highlight: !safeMin && lines.length === 0,
+    });
+  }
+
+  // ── OOM Risk ─────────────────────────────────────────────────────────────
+  if (w.verdict === "oom_risk") {
+    if (w.cpu_recommended_millis && w.cpu_request_millis)
+      lines.push({ text: `CPU request: ${fmtMillis(w.cpu_request_millis)} → ${fmtMillis(w.cpu_recommended_millis)} (P95 ≥ 95% do request!)`, highlight: true });
+    if (w.mem_recommended_mi && w.mem_request_mi)
+      lines.push({ text: `Mem request: ${fmtMi(w.mem_request_mi)} → ${fmtMi(w.mem_recommended_mi)} (P95 ≥ 95% do request!)`, highlight: true });
+    if (lines.length === 0)
+      lines.push({ text: "Aumentar CPU/Mem request — risco real de throttling/OOM", highlight: true });
+  }
+
+  // ── Sem requests ─────────────────────────────────────────────────────────
+  if (w.verdict === "no_request") {
+    lines.push({ text: "Definir resource requests (CPU + Mem)", highlight: true });
+    lines.push({ text: "Sem requests: scheduler não garante recursos — custo estimado por heurística" });
+  }
+
+  // ── kubectl hint ─────────────────────────────────────────────────────────
+  let kubectl: string | undefined;
+  if (safeMin !== undefined && safeMin < w.hpa_min) {
+    kubectl = `kubectl patch hpa ${w.workload} -n ${w.namespace} -p '{"spec":{"minReplicas":${safeMin}}}'`;
+  } else if (safeMax !== undefined && safeMax < w.hpa_max) {
+    kubectl = `kubectl patch hpa ${w.workload} -n ${w.namespace} -p '{"spec":{"maxReplicas":${safeMax}}}'`;
+  }
+
+  // waste_brl Prometheus é mais preciso que estimativa HPA
+  if ((w.waste_brl ?? 0) > savingBRL) savingBRL = w.waste_brl!;
+
+  return { lines, safeMin, safeMax, savingBRL, exposureBRL, needsPrometheus, kubectl };
+}
+
 const verdictConfig: Record<string, { label: string; color: string; fill: string; icon: typeof CheckCircle2 }> = {
   superprovisioned: { label: "Desperdício",    fill: "#ef4444", color: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",       icon: TrendingDown },
   oom_risk:         { label: "Risco OOM",      fill: "#f59e0b", color: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400", icon: AlertTriangle },
@@ -212,28 +350,8 @@ function VerdictBadge({ verdict }: { verdict: FinOpsWorkload["verdict"] }) {
   );
 }
 
-// ─── Helpers de charts ────────────────────────────────────────────────────────
-
-function ChartTooltip({ active, payload, label, formatter }: {
-  active?: boolean; payload?: { name: string; value: number; color: string }[]; label?: string;
-  formatter?: (v: number, name: string) => string;
-}) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div style={{ background: "hsl(var(--card) / 0.97)", backdropFilter: "blur(8px)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.4)" }}>
-      {label && <p style={{ fontWeight: 600, marginBottom: 4 }}>{label}</p>}
-      {payload.map((p, i) => (
-        <p key={i} style={{ color: p.color, display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: p.color, flexShrink: 0, display: "inline-block" }} />
-          {formatter ? formatter(p.value, p.name) : `${p.name}: ${fmtBRL(p.value)}`}
-        </p>
-      ))}
-    </div>
-  );
-}
 
 const fmtMi = (v: number) => v >= 1024 ? `${(v / 1024).toFixed(1)}Gi` : `${Math.round(v)}Mi`;
-const fmtM  = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}` : `${Math.round(v)}`;
 
 const LINE_COLORS = ["#6366f1","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899","#84cc16","#f97316","#14b8a6"];
 
@@ -341,24 +459,21 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
   ]));
 
   // ── Opportunities table ───────────────────────────────────────────────────────
+  const windowDays = report.window_days || 30;
   const opportunities = workloads
     .map(w => {
-      const saving = (w.waste_brl ?? 0) > 0
-        ? w.waste_brl!
+      const rec = buildRecommendation(w, windowDays);
+      // Prioridade: waste_brl (Prometheus) > estimativa HPA > fallback
+      const saving = rec.savingBRL > 0
+        ? rec.savingBRL
         : w.verdict === "superprovisioned" ? w.hpa_cost_current_brl - w.hpa_cost_min_brl
-        : w.verdict === "hpa_removable" ? w.hpa_cost_current_brl - w.hpa_cost_min_brl
+        : w.verdict === "hpa_removable"    ? w.hpa_cost_current_brl - w.hpa_cost_min_brl
         : 0;
-      const action =
-        w.verdict === "superprovisioned" ? "Reduzir request/min"
-        : w.verdict === "oom_risk"       ? "Aumentar request"
-        : w.verdict === "hpa_removable"  ? "Remover HPA"
-        : w.verdict === "no_request"     ? "Definir requests"
-        : null;
-      return { ...w, saving, action };
+      return { ...w, saving, rec };
     })
-    .filter(w => w.saving > 10 || (w.verdict !== "ok" && w.cost_share_brl > 50))
+    .filter(w => w.saving > 5 || (w.verdict !== "ok" && w.cost_share_brl > 50))
     .sort((a, b) => b.saving - a.saving)
-    .slice(0, 9);
+    .slice(0, 12);
 
   const opTotalSaving = opportunities.reduce((s, o) => s + o.saving, 0);
 
@@ -620,11 +735,14 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
             <CardTitle className="text-sm flex items-center justify-between">
               <span className="flex items-center gap-2">
                 <TrendingDown className="h-4 w-4 text-red-500" />
-                Top Oportunidades de Economia
+                Oportunidades de Economia
+                {windowDays > 0 && (
+                  <span className="text-[10px] font-normal text-muted-foreground">({windowDays}d de histórico Prometheus)</span>
+                )}
               </span>
               {opTotalSaving > 0 && (
                 <span className="text-[10px] font-semibold text-green-600 dark:text-green-400">
-                  Potencial: {fmtBRL(opTotalSaving)}/mês
+                  Potencial total: {fmtBRL(opTotalSaving)}/mês
                 </span>
               )}
             </CardTitle>
@@ -640,31 +758,75 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
                 <TableHeader>
                   <TableRow className="text-[10px] text-muted-foreground">
                     <TableHead className="pl-4">Workload</TableHead>
-                    <TableHead className="text-right">Custo/mês</TableHead>
+                    <TableHead>Recomendação concreta</TableHead>
+                    <TableHead className="text-right">Custo atual</TableHead>
                     <TableHead className="text-right text-green-600">Economia/mês</TableHead>
-                    <TableHead>Ação</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {opportunities.map((w, i) => (
-                    <TableRow key={i} className={`text-xs ${
+                    <TableRow key={i} className={`text-xs align-top ${
                       w.verdict === "superprovisioned" ? "bg-red-50/40 dark:bg-red-950/10" :
                       w.verdict === "oom_risk"         ? "bg-yellow-50/40 dark:bg-yellow-950/10" :
                       w.verdict === "hpa_removable"    ? "bg-purple-50/40 dark:bg-purple-950/10" : ""
                     }`}>
-                      <TableCell className="pl-4 py-1.5">
-                        <p className="font-medium truncate max-w-[140px]">{w.workload}</p>
-                        <p className="text-[10px] text-muted-foreground truncate max-w-[140px]">{w.namespace}</p>
+                      <TableCell className="pl-4 py-2 min-w-[130px]">
+                        <p className="font-medium truncate max-w-[160px]">{w.workload}</p>
+                        <p className="text-[10px] text-muted-foreground truncate max-w-[160px]">{w.namespace}</p>
+                        <div className="mt-1">
+                          <VerdictBadge verdict={w.verdict} />
+                        </div>
+                        {/* HPA config atual */}
+                        {w.hpa_max > 0 && (
+                          <p className="text-[10px] text-muted-foreground mt-1 font-mono">
+                            HPA: {w.hpa_min}↔{w.hpa_current}↔{w.hpa_max}
+                            {w.hpa_avg_replicas ? ` · avg ${w.hpa_avg_replicas.toFixed(1)}` : ""}
+                          </p>
+                        )}
                       </TableCell>
-                      <TableCell className="text-right font-mono text-[11px]">{fmtBRL(w.cost_share_brl)}</TableCell>
-                      <TableCell className="text-right font-mono text-[11px]">
+                      <TableCell className="py-2 max-w-[340px]">
+                        <div className="space-y-0.5">
+                          {w.rec.lines.map((line, li) => (
+                            <p key={li} className={`text-[11px] leading-snug ${
+                              line.highlight
+                                ? "font-semibold text-foreground"
+                                : "text-muted-foreground"
+                            }`}>
+                              {line.highlight && (
+                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 mr-1.5 mb-px" />
+                              )}
+                              {line.text}
+                            </p>
+                          ))}
+                          {w.rec.kubectl && (
+                            <p className="text-[10px] font-mono bg-muted/50 rounded px-1.5 py-0.5 mt-1 truncate text-muted-foreground" title={w.rec.kubectl}>
+                              $ {w.rec.kubectl}
+                            </p>
+                          )}
+                          {w.rec.safeMin !== undefined && w.hpa_min > 0 && (
+                            <p className="text-[10px] text-green-600 dark:text-green-400 font-medium mt-0.5">
+                              Economia estimada: {fmtBRL((w.hpa_min - w.rec.safeMin) * (w.pods > 0 ? w.cost_share_brl / w.pods : 0))}/mês por réplica removida
+                            </p>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-[11px] py-2 whitespace-nowrap">
+                        {fmtBRL(w.cost_share_brl)}
+                        {w.hpa_cost_min_brl > 0 && w.hpa_cost_min_brl < w.cost_share_brl && (
+                          <p className="text-[10px] text-muted-foreground">
+                            mín: {fmtBRL(w.hpa_cost_min_brl)}
+                          </p>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right py-2 whitespace-nowrap">
                         {w.saving > 0
-                          ? <span className="text-green-600 font-semibold">-{fmtBRL(w.saving)}</span>
-                          : <span className="text-muted-foreground">—</span>}
-                      </TableCell>
-                      <TableCell className="text-[10px]">
-                        <VerdictBadge verdict={w.verdict} />
-                        {w.action && <p className="text-muted-foreground mt-0.5">{w.action}</p>}
+                          ? (
+                            <div>
+                              <span className="text-green-600 font-bold text-sm">-{fmtBRL(w.saving)}</span>
+                              <p className="text-[10px] text-muted-foreground">/ano: -{fmtBRL(w.saving * 12)}</p>
+                            </div>
+                          )
+                          : <span className="text-muted-foreground font-mono text-[11px]">—</span>}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -718,9 +880,9 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
                     );
                   }} />
                   <Legend iconType="plainline" iconSize={12} wrapperStyle={{ fontSize: 9, paddingTop: 4 }}
-                    formatter={(_v, entry) => {
-                      const idx = parseInt((entry.dataKey as string).replace("h",""));
-                      return top8HPAs[idx]?.workload ?? entry.dataKey;
+                    formatter={(_v: unknown, entry: { dataKey?: unknown }) => {
+                      const idx = parseInt(((entry.dataKey as string) ?? "").replace("h",""));
+                      return top8HPAs[idx]?.workload ?? String(entry.dataKey ?? "");
                     }} />
                   {top8HPAs.map((_, i) => (
                     <Line key={i} type="monotone" dataKey={`h${i}`}
@@ -1921,19 +2083,32 @@ function HPAHistoryTab({
 
 // ─── Aba: Oportunidades ───────────────────────────────────────────────────────
 
-function OpportunitiesTab({ workloads, summary }: { workloads: FinOpsWorkload[]; summary: FinOpsSummary }) {
-  const hasPrometheus = workloads.some(w => (w.waste_brl ?? 0) > 0);
+function OpportunitiesTab({ workloads, windowDays }: {
+  workloads: FinOpsWorkload[];
+  summary?: FinOpsSummary;
+  windowDays: number;
+}) {
+  const hasPrometheus = workloads.some(w => (w.waste_brl ?? 0) > 0 || (w.hpa_avg_replicas ?? 0) > 0);
 
   const opportunities = workloads
-    .filter(w => w.verdict === "superprovisioned" || w.verdict === "no_request" || (w.waste_brl ?? 0) > 0)
+    .filter(w => w.verdict === "superprovisioned" || w.verdict === "hpa_removable" || w.verdict === "no_request" || (w.waste_brl ?? 0) > 0)
+    .map(w => {
+      const rec = buildRecommendation(w, windowDays);
+      const saving = rec.savingBRL > 0
+        ? rec.savingBRL
+        : Math.max(0, w.hpa_cost_current_brl - w.hpa_cost_min_brl);
+      return { ...w, rec, saving };
+    })
     .sort((a, b) => {
-      // Ordenar por desperdício Prometheus se disponível, senão por economia HPA
-      const wa = hasPrometheus ? (a.waste_brl ?? 0) : (a.hpa_cost_current_brl - a.hpa_cost_min_brl);
-      const wb = hasPrometheus ? (b.waste_brl ?? 0) : (b.hpa_cost_current_brl - b.hpa_cost_min_brl);
-      return wb - wa;
+      // Prioridade: saving > exposureBRL (precisa Prometheus) > custo
+      if (b.saving !== a.saving) return b.saving - a.saving;
+      return b.rec.exposureBRL - a.rec.exposureBRL;
     });
 
-  const totalWaste = workloads.reduce((s, w) => s + (w.waste_brl ?? 0), 0);
+  const totalSaving   = opportunities.reduce((s, o) => s + o.saving, 0);
+  const totalExposure = opportunities.reduce((s, o) => s + o.rec.exposureBRL, 0);
+  const totalWaste    = workloads.reduce((s, w) => s + (w.waste_brl ?? 0), 0);
+  const needsPrometheusCount = opportunities.filter(o => o.rec.needsPrometheus).length;
 
   return (
     <div className="space-y-3">
@@ -1947,59 +2122,63 @@ function OpportunitiesTab({ workloads, summary }: { workloads: FinOpsWorkload[];
         </Card>
       ) : (
         <>
-          {hasPrometheus ? (
-            <Alert className="border-red-200 bg-red-50 dark:bg-red-950/20">
-              <Activity className="h-4 w-4 text-red-600" />
-              <AlertDescription className="text-sm">
-                <strong>Desperdício real baseado em P95 Prometheus:</strong>{" "}
-                <strong className="text-red-700 dark:text-red-400">{fmtBRL(totalWaste)}/mês</strong>
-                {" "}= <strong>{fmtBRL(totalWaste * 12)}/ano</strong>
-                {summary.hpa_savings_if_min_brl > 0 && (
-                  <span className="text-muted-foreground ml-2">
-                    · Economia HPA adicional: {fmtBRL(summary.hpa_savings_if_min_brl)}/mês
-                  </span>
+          {/* Banner de resumo */}
+          <Alert className={totalWaste > 0 ? "border-red-200 bg-red-50 dark:bg-red-950/20" : totalSaving > 0 ? "border-green-200 bg-green-50 dark:bg-green-950/20" : "border-amber-200 bg-amber-50 dark:bg-amber-950/20"}>
+            <TrendingDown className={`h-4 w-4 ${totalWaste > 0 ? "text-red-600" : totalSaving > 0 ? "text-green-600" : "text-amber-600"}`} />
+            <AlertDescription className="text-sm space-y-1">
+              <span>
+                <strong>{opportunities.length} oportunidades</strong> identificadas
+                {needsPrometheusCount > 0 && (
+                  <span className="text-muted-foreground text-[11px]"> ({needsPrometheusCount} precisam de Prometheus para quantificar)</span>
                 )}
-              </AlertDescription>
-            </Alert>
-          ) : (
-            <Alert className="border-green-200 bg-green-50 dark:bg-green-950/20">
-              <TrendingDown className="h-4 w-4 text-green-600" />
-              <AlertDescription className="text-sm">
-                <strong>{opportunities.length} oportunidades</strong> identificadas.
-                Economia potencial ajustando HPAs para mínimo:{" "}
-                <strong className="text-green-700 dark:text-green-400">{fmtBRL(summary.hpa_savings_if_min_brl)}/mês</strong>
-                {" "}= <strong>{fmtBRL(summary.hpa_savings_if_min_brl * 12)}/ano</strong>
-              </AlertDescription>
-            </Alert>
-          )}
+                {"."}
+              </span>
+              {totalWaste > 0 && (
+                <span className="block">
+                  Desperdício real (P95):{" "}
+                  <strong className="text-red-600">{fmtBRL(totalWaste)}/mês = {fmtBRL(totalWaste * 12)}/ano</strong>
+                </span>
+              )}
+              {totalSaving > 0 && (
+                <span className="block">
+                  Economia imediata estimada:{" "}
+                  <strong className="text-green-600">{fmtBRL(totalSaving)}/mês = {fmtBRL(totalSaving * 12)}/ano</strong>
+                </span>
+              )}
+              {!hasPrometheus && totalExposure > 0 && (
+                <span className="block text-amber-700 dark:text-amber-400">
+                  Exposição máxima (custo se HPAs escalarem ao teto):{" "}
+                  <strong>{fmtBRL(totalExposure)}/mês</strong>
+                  {" "}— ative Prometheus para ver histórico real e recomendar valores seguros
+                </span>
+              )}
+            </AlertDescription>
+          </Alert>
 
           {/* Chart de oportunidades */}
           {opportunities.length > 1 && (() => {
             const chartData = opportunities.slice(0, 10).map(w => ({
               name: w.workload.length > 16 ? w.workload.slice(0, 14) + "…" : w.workload,
-              atual: hasPrometheus
-                ? w.cost_share_brl
-                : w.hpa_cost_current_brl,
-              saving: hasPrometheus
-                ? (w.waste_brl ?? 0)
-                : Math.max(0, w.hpa_cost_current_brl - w.hpa_cost_min_brl),
+              atual: w.cost_share_brl,
+              saving: w.saving,
             })).filter(d => d.saving > 0);
             if (!chartData.length) return null;
             return (
               <Card>
                 <CardHeader className="pb-1 pt-3 px-4">
-                  <CardTitle className="text-sm">Potencial de Economia por Workload</CardTitle>
+                  <CardTitle className="text-sm">Potencial de Economia por Workload (top {chartData.length})</CardTitle>
                 </CardHeader>
                 <CardContent className="px-2 pb-3">
-                  <ResponsiveContainer width="100%" height={180}>
+                  <ResponsiveContainer width="100%" height={Math.max(160, chartData.length * 26)}>
                     <BarChart data={chartData} layout="vertical"
-                      margin={{ left: 8, right: 60, top: 4, bottom: 4 }}>
+                      margin={{ left: 8, right: 70, top: 4, bottom: 4 }}>
                       <CartesianGrid strokeDasharray="3 3" horizontal={false} opacity={0.4} />
-                      <XAxis type="number" tickFormatter={v => `R$${(v / 1000).toFixed(0)}k`}
+                      <XAxis type="number"
+                        tickFormatter={v => v === 0 ? "R$0" : v >= 1000 ? `R$${(v/1000).toFixed(0)}k` : `R$${Math.round(v)}`}
                         tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
                       <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={110}
                         axisLine={false} tickLine={false} />
-                      <Tooltip
+                      <Tooltip cursor={{ fill: "rgba(100,100,100,0.1)" }}
                         content={({ active, payload, label }) => {
                           if (!active || !payload?.length) return null;
                           return (
@@ -2008,20 +2187,20 @@ function OpportunitiesTab({ workloads, summary }: { workloads: FinOpsWorkload[];
                               {payload.map((p, i) => (
                                 <p key={i} style={{ color: p.color }}>
                                   {p.name === "atual" ? `Custo atual: ${fmtBRL(p.value as number)}`
-                                    : `Economia: ${fmtBRL(p.value as number)}`}
+                                    : `Economia estimada: ${fmtBRL(p.value as number)}`}
                                 </p>
                               ))}
                             </div>
                           );
                         }}
                       />
-                      <Bar dataKey="atual" name="atual" stackId="a" fill="#6366f1" fillOpacity={0.3}
+                      <Bar dataKey="atual" name="atual" stackId="a" fill="#6366f1" fillOpacity={0.25}
                         radius={[0, 0, 0, 0]} maxBarSize={18} />
                       <Bar dataKey="saving" name="saving" stackId="a" fill="#ef4444" fillOpacity={0.85}
                         radius={[0, 4, 4, 0]} maxBarSize={18}>
                         <LabelList dataKey="saving" position="right"
-                          formatter={(v: number) => v > 0 ? `R$${(v / 1000).toFixed(1)}k` : ""}
-                          style={{ fontSize: 9, fill: "#ef4444" }} />
+                          formatter={(v: number) => v > 0 ? `-${fmtBRL(v)}` : ""}
+                          style={{ fontSize: 9, fill: "#16a34a" }} />
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
@@ -2030,63 +2209,120 @@ function OpportunitiesTab({ workloads, summary }: { workloads: FinOpsWorkload[];
             );
           })()}
 
+          {/* Lista de oportunidades com recomendações concretas */}
           <div className="space-y-2">
             {opportunities.map((w, i) => {
-              const hpaSaving = w.hpa_cost_current_brl - w.hpa_cost_min_brl;
-              const waste = w.waste_brl ?? 0;
-              const borderColor = w.verdict === "oom_risk" ? "#f59e0b"
+              const borderColor =
+                w.verdict === "oom_risk"         ? "#f59e0b"
                 : w.verdict === "superprovisioned" ? "#ef4444"
-                : waste > 0 ? "#f97316"
+                : w.verdict === "hpa_removable"    ? "#8b5cf6"
                 : "#9ca3af";
+
               return (
                 <Card key={i} className="border-l-4" style={{ borderLeftColor: borderColor }}>
                   <CardContent className="p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-medium text-sm truncate">{w.workload}</span>
-                          <span className="text-xs text-muted-foreground">{w.namespace}</span>
-                          <VerdictBadge verdict={w.verdict} />
-                        </div>
-                        {w.verdict === "superprovisioned" && w.hpa_max > 0 && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            HPA: min={w.hpa_min} / atual={w.hpa_current} / max={w.hpa_max}
-                            {" · "}Rodando em {Math.round((w.hpa_current / w.hpa_max) * 100)}% do máximo
-                          </p>
-                        )}
-                        {(w.cpu_p95_millis ?? 0) > 0 && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            P95: CPU {Math.round(w.cpu_p95_millis!)}m / {Math.round(w.cpu_request_millis)}m req
-                            {(w.mem_p95_mi ?? 0) > 0 && ` · Mem ${Math.round(w.mem_p95_mi!)}Mi / ${Math.round(w.mem_request_mi)}Mi req`}
-                          </p>
-                        )}
-                        {w.verdict === "no_request" && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Sem CPU/Mem request definido — impossível calcular custo real
-                          </p>
-                        )}
+                    {/* Cabeçalho: workload + saving */}
+                    <div className="flex items-start justify-between gap-3 mb-2">
+                      <div className="flex items-center gap-2 flex-wrap min-w-0">
+                        <span className="font-semibold text-sm">{w.workload}</span>
+                        <span className="text-xs text-muted-foreground">{w.namespace}</span>
+                        <VerdictBadge verdict={w.verdict} />
                       </div>
                       <div className="text-right flex-shrink-0 space-y-0.5">
-                        {waste > 0 && (
+                        <p className="text-[10px] text-muted-foreground">custo atual</p>
+                        <p className="text-sm font-semibold">{fmtBRL(w.cost_share_brl)}/mês</p>
+                        {w.saving > 0 ? (
                           <>
-                            <p className="text-[10px] text-muted-foreground">Desperdício/mês</p>
-                            <p className="text-base font-bold text-red-600">{fmtBRL(waste)}</p>
+                            <p className="text-[10px] text-muted-foreground mt-1">economia estimada</p>
+                            <p className="text-base font-bold text-green-600">-{fmtBRL(w.saving)}/mês</p>
+                            <p className="text-[10px] text-muted-foreground">/ano: -{fmtBRL(w.saving * 12)}</p>
                           </>
-                        )}
-                        {!hasPrometheus && hpaSaving > 0 && (
+                        ) : w.rec.exposureBRL > 0 ? (
                           <>
-                            <p className="text-[10px] text-muted-foreground">Economia HPA/mês</p>
-                            <p className="text-base font-bold text-green-600">{fmtBRL(hpaSaving)}</p>
-                            <p className="text-[10px] text-muted-foreground">{fmtBRL(w.hpa_cost_current_brl)} → {fmtBRL(w.hpa_cost_min_brl)}</p>
+                            <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">exposição máxima</p>
+                            <p className="text-sm font-bold text-amber-600">+{fmtBRL(w.rec.exposureBRL)}/mês</p>
+                            <p className="text-[10px] text-muted-foreground">(se escalar ao max={w.hpa_max})</p>
                           </>
-                        )}
+                        ) : null}
                       </div>
+                    </div>
+
+                    {/* Estado atual */}
+                    <div className="text-xs text-muted-foreground mb-2 space-y-0.5">
+                      {w.hpa_max > 0 && (
+                        <p>
+                          HPA configurado: <span className="font-mono">{w.hpa_min} (min) / {w.hpa_current} (atual) / {w.hpa_max} (max)</span>
+                          {w.hpa_max > 0 && (
+                            <span className="ml-1">— atual em <strong>{Math.round((w.hpa_current / w.hpa_max) * 100)}% do máximo</strong></span>
+                          )}
+                          {w.hpa_avg_replicas != null && (
+                            <span className="ml-1">· média {windowDays}d: <strong>{w.hpa_avg_replicas.toFixed(1)}</strong> répl.</span>
+                          )}
+                          {w.hpa_max_observed != null && w.hpa_max_observed > 0 && (
+                            <span className="ml-1">· pico observado: <strong>{w.hpa_max_observed}</strong></span>
+                          )}
+                        </p>
+                      )}
+                      {(w.cpu_p95_millis ?? 0) > 0 && (
+                        <p>
+                          CPU — request: <span className="font-mono">{fmtMillis(w.cpu_request_millis)}</span>
+                          {" · "}P95: <span className="font-mono">{fmtMillis(w.cpu_p95_millis!)}</span>
+                          {w.cpu_recommended_millis ? <span> · recomendado: <span className="font-mono text-amber-600">{fmtMillis(w.cpu_recommended_millis)}</span></span> : null}
+                        </p>
+                      )}
+                      {(w.mem_p95_mi ?? 0) > 0 && (
+                        <p>
+                          Mem — request: <span className="font-mono">{fmtMi(w.mem_request_mi)}</span>
+                          {" · "}P95: <span className="font-mono">{fmtMi(w.mem_p95_mi!)}</span>
+                          {w.mem_recommended_mi ? <span> · recomendado: <span className="font-mono text-amber-600">{fmtMi(w.mem_recommended_mi)}</span></span> : null}
+                        </p>
+                      )}
+                      {w.verdict === "no_request" && (
+                        <p>Sem resource requests definidos — custo alocado por heurística, não por consumo real</p>
+                      )}
+                    </div>
+
+                    {/* Recomendação concreta */}
+                    <div className="border rounded-md bg-muted/30 px-3 py-2 space-y-1">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Ação recomendada</p>
+                      {w.rec.lines.map((line, li) => (
+                        <p key={li} className={`text-xs leading-snug flex items-start gap-1.5 ${
+                          line.highlight ? "font-semibold text-foreground" : "text-muted-foreground"
+                        }`}>
+                          {line.highlight
+                            ? <span className="mt-1 shrink-0 w-2 h-2 rounded-full bg-green-500 inline-block" />
+                            : <span className="mt-1 shrink-0 w-2 h-2 rounded-full bg-muted-foreground/30 inline-block" />
+                          }
+                          {line.text}
+                        </p>
+                      ))}
+                      {w.rec.kubectl && (
+                        <div className="mt-1.5">
+                          <p className="text-[10px] text-muted-foreground mb-0.5">Comando kubectl:</p>
+                          <code className="block text-[10px] font-mono bg-background border rounded px-2 py-1 break-all">
+                            {w.rec.kubectl}
+                          </code>
+                        </div>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
               );
             })}
           </div>
+
+          {/* Rodapé com total */}
+          {totalSaving > 0 && (
+            <Card className="border-green-200 bg-green-50/50 dark:bg-green-950/10">
+              <CardContent className="p-3 flex justify-between items-center">
+                <span className="text-xs text-muted-foreground">Aplicando todas as recomendações acima:</span>
+                <div className="text-right">
+                  <span className="text-sm font-bold text-green-600">-{fmtBRL(totalSaving)}/mês</span>
+                  <p className="text-[10px] text-muted-foreground">/ano: -{fmtBRL(totalSaving * 12)}</p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </>
       )}
     </div>
@@ -2376,7 +2612,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 <HPAHistoryTab cluster={cluster} days={hpaHistoryDays} setDays={setHpaHistoryDays} />
               </TabsContent>
               <TabsContent value="opportunities" className="mt-0 h-full">
-                <OpportunitiesTab workloads={report.workloads} summary={report.summary} />
+                <OpportunitiesTab workloads={report.workloads} summary={report.summary} windowDays={report.window_days || windowDays} />
               </TabsContent>
             </div>
           </Tabs>
