@@ -522,8 +522,9 @@ func (s *Server) setupRoutes() {
 	api.POST("/nodepools/sequence/execute", rbacMiddleware.RequireSREGroup(), nodePoolHandler.ExecuteSequence) // NOVO: Cordon/Drain sequencing
 
 	// Node Pools - Node Details
-	api.GET("/nodes/:cluster/:nodepool", nodePoolHandler.ListNodesInNodePool)       // Lista nodes do node pool
-	api.GET("/nodes/:cluster/:nodepool/:node", nodePoolHandler.GetNodeDetails)      // Detalhes de um node específico
+	api.GET("/nodes/:cluster/:nodepool", nodePoolHandler.ListNodesInNodePool)                  // Lista nodes do node pool
+	api.GET("/nodes/:cluster/:nodepool/azure-info", nodePoolHandler.GetNodePoolAzureInfo)      // Info Azure async (tags, subscription)
+	api.GET("/nodes/:cluster/:nodepool/:node", nodePoolHandler.GetNodeDetails)                 // Detalhes de um node específico
 
 	// Node Pool Registry (catálogo para correlação Dynatrace aks-<pool>-vmss*)
 	if s.nodepoolRegistryHandler != nil {

@@ -1642,6 +1642,18 @@ class APIClient {
     return response.data || { nodes: [], count: 0, node_pool_name: nodePoolName, cluster };
   }
 
+  async getNodePoolAzureInfo(cluster: string, nodePoolName: string): Promise<{
+    cluster_tags: Record<string, string>;
+    subscription_name: string;
+    resource_group: string;
+    subscription: string;
+  }> {
+    const response = await this.request<APIResponse<any>>(
+      `/nodes/${encodeURIComponent(cluster)}/${encodeURIComponent(nodePoolName)}/azure-info`
+    );
+    return response.data || { cluster_tags: {}, subscription_name: "", resource_group: "", subscription: "" };
+  }
+
   async getNodeDetails(cluster: string, nodePoolName: string, nodeName: string): Promise<NodeDetailsResponse> {
     // Add cache-busting timestamp to ensure fresh data
     const cacheBuster = Date.now();
