@@ -57,6 +57,7 @@ import { DependenciesTab } from "@/components/DependenciesTab";
 import CertificatesTab from "@/components/CertificatesTab";
 import { CommandRunnerTab } from "@/components/CommandRunnerTab";
 import { DynatraceTab } from "@/components/DynatraceTab";
+import { FinOpsTab } from "@/components/FinOpsTab";
 import { ResourceCompareModal } from "@/components/ResourceCompareModal";
 import type { CompareInitial } from "@/components/ResourceCompareModal";
 import {
@@ -1155,6 +1156,13 @@ const Index = ({ onLogout }: IndexProps) => {
           </ErrorBoundary>
         );
 
+      case "finops":
+        return (
+          <ErrorBoundary componentName="FinOps Tab">
+            <FinOpsTab selectedCluster={selectedCluster} />
+          </ErrorBoundary>
+        );
+
       case "explorer":
         return (
           <ErrorBoundary componentName="Resource Explorer Tab">
@@ -1224,7 +1232,7 @@ const Index = ({ onLogout }: IndexProps) => {
       />
 
       {/* Ocultar cards de estatísticas nas abas Monitoramento, Namespaces, ConfigMaps, Secrets, Deployments, DaemonSets, StatefulSets, Containers, Pods, CronJobs, Prometheus, Ingresses, Service Mesh, Health Checking, Helm, Nexus Values, AI Diagnostics, GitHub Releases, Dependencies, Certificados TLS e Explorer */}
-      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "daemonsets" && activeTab !== "statefulsets" && activeTab !== "vpas" && activeTab !== "services" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "nexus-values" && activeTab !== "ai-diagnostics" && activeTab !== "github-releases" && activeTab !== "dependencies" && activeTab !== "certificates" && activeTab !== "explorer" && activeTab !== "command-runner" && activeTab !== "dynatrace" && (
+      {activeTab !== "monitoring" && activeTab !== "namespaces" && activeTab !== "configmaps" && activeTab !== "secrets" && activeTab !== "deployments" && activeTab !== "daemonsets" && activeTab !== "statefulsets" && activeTab !== "vpas" && activeTab !== "services" && activeTab !== "containers" && activeTab !== "pods" && activeTab !== "cronjobs" && activeTab !== "prometheus" && activeTab !== "ingresses" && activeTab !== "servicemesh" && activeTab !== "healthcheck" && activeTab !== "helm" && activeTab !== "nexus-values" && activeTab !== "ai-diagnostics" && activeTab !== "github-releases" && activeTab !== "dependencies" && activeTab !== "certificates" && activeTab !== "explorer" && activeTab !== "command-runner" && activeTab !== "dynatrace" && activeTab !== "finops" && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 px-6 py-3 flex-shrink-0">
           {/* Card de Cluster: mostra total na Dashboard, contexto+versão nas outras abas */}
           {activeTab === "dashboard" ? (

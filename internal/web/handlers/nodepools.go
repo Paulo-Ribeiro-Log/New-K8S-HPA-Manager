@@ -2262,6 +2262,45 @@ func (h *NodePoolHandler) ListNodesInNodePool(c *gin.Context) {
 	})
 }
 
+// GetNodePoolAzureInfo retorna informações Azure do cluster (tags + nome da subscription).
+// Endpoint separado para não bloquear a listagem de nodes com chamadas az aks show.
+func (h *NodePoolHandler) GetNodePoolAzureInfo(c *gin.Context) {
+	cluster := c.Param("cluster")
+	nodePoolName := c.Param("nodepool")
+
+	if cluster == "" || nodePoolName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "MISSING_PARAMETERS", "message": "Parameters 'cluster' and 'nodepool' are required"},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   gin.H{"code": "K8S_CLIENT_ERROR", "message": fmt.Sprintf("Failed to get Kubernetes client: %v", err)},
+		})
+		return
+	}
+
+	k8sClient := kubernetes.NewClient(clientset, cluster)
+	info := k8sClient.GetClusterAzureInfo()
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"cluster":           cluster,
+			"node_pool_name":    nodePoolName,
+			"resource_group":    info.ResourceGroup,
+			"subscription":      info.Subscription,
+			"subscription_name": info.SubscriptionName,
+			"cluster_tags":      info.ClusterTags,
+		},
+	})
+}
+
 // GetNodeDetails retorna detalhes completos de um node específico
 func (h *NodePoolHandler) GetNodeDetails(c *gin.Context) {
 	cluster := c.Param("cluster")

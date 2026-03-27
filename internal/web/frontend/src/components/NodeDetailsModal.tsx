@@ -17,6 +17,12 @@ interface NodeDetailsModalProps {
   nodeDetails: NodeDetailsResponse | null;
   loading?: boolean;
   vmSize?: string;
+  azureInfo?: {
+    cluster_tags: Record<string, string>;
+    subscription_name: string;
+    resource_group: string;
+    subscription: string;
+  } | null;
 }
 
 // Gauge semicircular SVG para exibir % de uso de CPU/Memória por pod
@@ -103,10 +109,15 @@ export default function NodeDetailsModal({
   onOpenChange,
   nodeDetails,
   vmSize,
+  azureInfo,
 }: NodeDetailsModalProps) {
   if (!nodeDetails) return null;
 
   const { node, pods, events, kubectl_describe } = nodeDetails;
+
+  // Usar azureInfo (carregado assincronamente) quando disponível
+  const subscriptionName = azureInfo?.subscription_name || node.subscription_name;
+  const clusterTags = azureInfo?.cluster_tags || node.cluster_tags || {};
 
   // Debug: Track node data
   console.log('🎯 [NodeDetailsModal] Rendering node:', node.name);
@@ -171,15 +182,15 @@ export default function NodeDetailsModal({
 
                   {/* Subscription */}
                   <div className="flex items-center gap-1">
-                    {node.subscription_name ? (
+                    {subscriptionName ? (
                       <>
-                        <span className="text-muted-foreground">{node.subscription_name}</span>
+                        <span className="text-muted-foreground">{subscriptionName}</span>
                         <Button
                           variant="ghost"
                           size="sm"
                           className="h-4 w-4 p-0"
                           onClick={() => {
-                            navigator.clipboard.writeText(node.subscription_name || '');
+                            navigator.clipboard.writeText(subscriptionName || '');
                             toast.success("Subscription name copiado!");
                           }}
                         >
@@ -219,12 +230,12 @@ export default function NodeDetailsModal({
               )}
 
               {/* Cluster Tags */}
-              {node.cluster_tags && Object.keys(node.cluster_tags).length > 0 && (
+              {Object.keys(clusterTags).length > 0 && (
                 <Popover>
                   <PopoverTrigger asChild>
                     <Button variant="outline" size="sm" className="h-5 gap-1 px-2 border-blue-200 hover:border-blue-400">
                       <Tag className="h-3 w-3 text-blue-500" />
-                      <span className="text-xs text-blue-700">Cluster Tags ({Object.keys(node.cluster_tags).length})</span>
+                      <span className="text-xs text-blue-700">Cluster Tags ({Object.keys(clusterTags).length})</span>
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-80">
@@ -238,7 +249,7 @@ export default function NodeDetailsModal({
                       </p>
                       <Separator />
                       <div className="space-y-1 max-h-60 overflow-y-auto">
-                        {Object.entries(node.cluster_tags).map(([key, value]) => (
+                        {Object.entries(clusterTags).map(([key, value]) => (
                           <div key={key} className="flex items-center justify-between gap-2 text-xs p-2 bg-blue-50 rounded border-l-2 border-blue-400">
                             <div className="flex items-start gap-2 flex-1 min-w-0">
                               <Badge variant="secondary" className="font-mono text-xs shrink-0 bg-blue-100 text-blue-800">
