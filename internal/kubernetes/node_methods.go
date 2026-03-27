@@ -99,8 +99,9 @@ func (c *Client) getNodeInfo(ctx context.Context, nodeName, nodePoolName string)
 			Msg("🔶 [getNodeInfo] Sample taints for node")
 	}
 
-	// Buscar informações do cluster (resource group, subscription, tags)
-	clusterInfo := c.getClusterInfo()
+	// Buscar informações do cluster a partir do config local (sem Azure CLI)
+	// Tags são buscadas assincronamente via endpoint /azure-info
+	clusterInfo := c.getClusterInfoFast()
 
 	// Create deep copy of cluster tags to avoid sharing
 	clusterTagsCopy := make(map[string]string)
@@ -580,6 +581,28 @@ func (c *Client) getClusterInfo() ClusterInfo {
 	}
 
 	return info
+}
+
+// getClusterInfoFast lê apenas o clusters-config.json (sem chamar Azure CLI).
+// Use em operações que precisam de RG/SubscriptionID mas não precisam esperar az aks show.
+func (c *Client) getClusterInfoFast() ClusterInfo {
+	info := ClusterInfo{
+		ClusterTags: make(map[string]string),
+	}
+	clusterConfig, err := findClusterConfig(c.cluster)
+	if err != nil {
+		log.Warn().Err(err).Str("cluster", c.cluster).Msg("Failed to find cluster config (fast)")
+		return info
+	}
+	info.ResourceGroup = clusterConfig.ResourceGroup
+	info.Subscription = clusterConfig.Subscription
+	return info
+}
+
+// GetClusterAzureInfo retorna informações do cluster incluindo tags e nome da subscription.
+// Faz chamadas Azure CLI (az aks show + az account show) — use em endpoint async dedicado.
+func (c *Client) GetClusterAzureInfo() ClusterInfo {
+	return c.getClusterInfo()
 }
 
 // findClusterConfig busca cluster no clusters-config.json
