@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -17,7 +17,7 @@ import {
   DollarSign, TrendingDown, TrendingUp, AlertTriangle, CheckCircle2,
   Loader2, RefreshCw, Server, Layers, CircleDollarSign,
   ArrowUpDown, Info, ChevronDown, ChevronUp, Download, Brain, Activity, Cpu, MemoryStick,
-  GitCompare, Database,
+  GitCompare, Database, Copy, Check,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
@@ -182,7 +182,7 @@ interface Recommendation {
   savingBRL: number;       // economia imediata estimada (réplicas atuais sendo reduzidas)
   exposureBRL: number;     // exposição de custo máximo (se escalar ao máximo configurado)
   needsPrometheus: boolean; // verdadeiro quando saving = 0 só por falta de dados
-  kubectl?: string;
+  kubectlList: string[];   // lista de comandos kubectl aplicáveis (pode ter HPA + resources)
 }
 
 function buildRecommendation(w: FinOpsWorkload, windowDays: number): Recommendation {
@@ -294,18 +294,42 @@ function buildRecommendation(w: FinOpsWorkload, windowDays: number): Recommendat
     lines.push({ text: "Sem requests: scheduler não garante recursos — custo estimado por heurística" });
   }
 
-  // ── kubectl hint ─────────────────────────────────────────────────────────
-  let kubectl: string | undefined;
-  if (safeMin !== undefined && safeMin < w.hpa_min) {
-    kubectl = `kubectl patch hpa ${w.workload} -n ${w.namespace} -p '{"spec":{"minReplicas":${safeMin}}}'`;
+  // ── kubectl: comandos HPA ─────────────────────────────────────────────────
+  const kubectlList: string[] = [];
+
+  if (safeMin !== undefined && safeMin < w.hpa_min && safeMax !== undefined && safeMax < w.hpa_max) {
+    kubectlList.push(
+      `kubectl patch hpa ${w.workload} -n ${w.namespace} -p '{"spec":{"minReplicas":${safeMin},"maxReplicas":${safeMax}}}'`
+    );
+  } else if (safeMin !== undefined && safeMin < w.hpa_min) {
+    kubectlList.push(
+      `kubectl patch hpa ${w.workload} -n ${w.namespace} -p '{"spec":{"minReplicas":${safeMin}}}'`
+    );
   } else if (safeMax !== undefined && safeMax < w.hpa_max) {
-    kubectl = `kubectl patch hpa ${w.workload} -n ${w.namespace} -p '{"spec":{"maxReplicas":${safeMax}}}'`;
+    kubectlList.push(
+      `kubectl patch hpa ${w.workload} -n ${w.namespace} -p '{"spec":{"maxReplicas":${safeMax}}}'`
+    );
+  }
+
+  // ── kubectl: set resources (CPU e/ou Mem) ─────────────────────────────────
+  const hasCpuRec = w.cpu_recommended_millis && w.cpu_request_millis &&
+    Math.abs(w.cpu_recommended_millis - w.cpu_request_millis) / w.cpu_request_millis > 0.15;
+  const hasMemRec = w.mem_recommended_mi && w.mem_request_mi &&
+    Math.abs(w.mem_recommended_mi - w.mem_request_mi) / w.mem_request_mi > 0.15;
+
+  if (hasCpuRec || hasMemRec) {
+    const parts: string[] = [];
+    if (hasCpuRec) parts.push(`cpu=${Math.round(w.cpu_recommended_millis!)}m`);
+    if (hasMemRec) parts.push(`memory=${Math.round(w.mem_recommended_mi!)}Mi`);
+    kubectlList.push(
+      `kubectl set resources deployment ${w.workload} -n ${w.namespace} --requests=${parts.join(",")}`
+    );
   }
 
   // waste_brl Prometheus é mais preciso que estimativa HPA
   if ((w.waste_brl ?? 0) > savingBRL) savingBRL = w.waste_brl!;
 
-  return { lines, safeMin, safeMax, savingBRL, exposureBRL, needsPrometheus, kubectl };
+  return { lines, safeMin, safeMax, savingBRL, exposureBRL, needsPrometheus, kubectlList };
 }
 
 const verdictConfig: Record<string, { label: string; color: string; fill: string; icon: typeof CheckCircle2 }> = {
@@ -319,6 +343,31 @@ const verdictConfig: Record<string, { label: string; color: string; fill: string
 const POOL_COLORS = ["#6366f1", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ef4444", "#ec4899"];
 
 // ─── Componentes Auxiliares ───────────────────────────────────────────────────
+
+/** Exibe um comando kubectl com botão de copiar */
+function KubectlBlock({ cmd }: { cmd: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(cmd).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [cmd]);
+  return (
+    <div className="flex items-center gap-1.5">
+      <code className="flex-1 text-[10px] font-mono bg-background border rounded px-2 py-1 break-all">
+        {cmd}
+      </code>
+      <button
+        onClick={handleCopy}
+        title={copied ? "Copiado!" : "Copiar"}
+        className="shrink-0 p-1 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+      >
+        {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+      </button>
+    </div>
+  );
+}
 
 function SummaryCard({ icon: Icon, label, value, sub, color }: {
   icon: typeof DollarSign; label: string; value: string; sub?: string; color: string;
@@ -798,9 +847,9 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
                               {line.text}
                             </p>
                           ))}
-                          {w.rec.kubectl && (
-                            <p className="text-[10px] font-mono bg-muted/50 rounded px-1.5 py-0.5 mt-1 truncate text-muted-foreground" title={w.rec.kubectl}>
-                              $ {w.rec.kubectl}
+                          {(w.rec.kubectlList ?? []).length > 0 && (
+                            <p className="text-[10px] font-mono bg-muted/50 rounded px-1.5 py-0.5 mt-1 truncate text-muted-foreground" title={w.rec.kubectlList[0]}>
+                              $ {w.rec.kubectlList[0]}
                             </p>
                           )}
                           {w.rec.safeMin !== undefined && w.hpa_min > 0 && (
@@ -2296,12 +2345,11 @@ function OpportunitiesTab({ workloads, windowDays }: {
                           {line.text}
                         </p>
                       ))}
-                      {w.rec.kubectl && (
-                        <div className="mt-1.5">
-                          <p className="text-[10px] text-muted-foreground mb-0.5">Comando kubectl:</p>
-                          <code className="block text-[10px] font-mono bg-background border rounded px-2 py-1 break-all">
-                            {w.rec.kubectl}
-                          </code>
+                      {(w.rec.kubectlList ?? []).length > 0 && (
+                        <div className="mt-1.5 space-y-1.5">
+                          {w.rec.kubectlList.map((cmd, ci) => (
+                            <KubectlBlock key={ci} cmd={cmd} />
+                          ))}
                         </div>
                       )}
                     </div>
@@ -2540,13 +2588,19 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
       {/* Relatório */}
       {report && !isLoading && (
         <>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground -mb-1">
-            <Server className="h-3.5 w-3.5" />
+          <div className="flex items-center gap-2 text-xs text-muted-foreground -mb-1 flex-wrap">
+            <Server className="h-3.5 w-3.5 shrink-0" />
             <span>
               {report.cluster.replace("-admin", "")} · gerado em {new Date(report.generated_at).toLocaleTimeString("pt-BR")}
               {" · "}câmbio USD/BRL: <strong>R$ {report.exchange_rate.toFixed(4)}</strong> ({report.exchange_date})
               {" · "}{report.node_pools.length} node pools · {report.summary.workloads_analyzed} workloads
             </span>
+            {!withPrometheus && report.window_days === 0 && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border border-amber-300 dark:border-amber-700">
+                <AlertTriangle className="h-3 w-3" />
+                Sem Prometheus — saving estimado por HPA config apenas
+              </span>
+            )}
           </div>
 
           {/* Resultado AI */}
