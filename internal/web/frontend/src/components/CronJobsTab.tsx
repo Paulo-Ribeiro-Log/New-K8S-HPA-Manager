@@ -53,12 +53,14 @@ import {
   AlertTriangle,
   TriangleAlert,
   Copy,
+  ChevronLeft,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import type { CronJob } from "@/lib/api/types";
 import type { Namespace } from "@/lib/api/types";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { CronJobMonitorTable } from "@/components/CronJobMonitorTable";
 
 interface CronJobsTabProps {
   cluster: string;
@@ -159,6 +161,23 @@ export function CronJobsTab({
   useEffect(() => {
     fetchCronJobs();
   }, [fetchCronJobs]);
+
+  const silentFetchCronJobs = useCallback(async () => {
+    if (!cluster) return;
+    try {
+      const nsList = !isAllNamespaces ? [selectedNamespace] : [];
+      const data = await apiClient.getCronJobs(cluster, nsList.length ? nsList : undefined);
+      setCronJobs(data);
+    } catch { /* ignore */ }
+  }, [cluster, selectedNamespace, isAllNamespaces]);
+
+  const handleClearSelection = () => {
+    setSelectedCronJob(null);
+    setEditorValue("");
+    setOriginalYaml("");
+    setHistory([]);
+    setHistoryIndex(-1);
+  };
 
   // ── Manifest loading ───────────────────────────────────────────────────────
   const loadManifest = useCallback(async (cj: CronJob) => {
@@ -408,6 +427,15 @@ export function CronJobsTab({
 
   const leftContent = (
     <div className="flex flex-col h-full gap-2 p-1">
+      {selectedCronJob && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-primary/10 border border-primary/20 text-xs text-primary font-medium">
+          <Clock className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="truncate flex-1">{selectedCronJob.namespace}/{selectedCronJob.name}</span>
+          <button onClick={handleClearSelection} className="flex-shrink-0 hover:text-foreground transition-colors" title="Limpar seleção">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       {/* Namespace Select */}
       <Select value={selectedNamespace || "__all__"} onValueChange={onNamespaceChange}>
         <SelectTrigger className="h-8 w-full">
@@ -497,6 +525,16 @@ export function CronJobsTab({
   );
 
   // ── RIGHT PANEL ────────────────────────────────────────────────────────────
+  const rightTitlePrefix = selectedCronJob ? (
+    <button
+      onClick={handleClearSelection}
+      className="flex items-center justify-center w-7 h-7 rounded-full bg-primary/20 hover:bg-primary/40 active:bg-primary/60 border border-primary/30 text-primary transition-colors flex-shrink-0"
+      title="Voltar para lista"
+    >
+      <ChevronLeft className="w-4 h-4" />
+    </button>
+  ) : undefined;
+
   const rightTitleAction = selectedCronJob ? (
     <div className="flex items-center gap-1 flex-wrap">
       {/* Suspend / Ativar */}
@@ -572,10 +610,14 @@ export function CronJobsTab({
   const renderManifestPanel = () => {
     if (!selectedCronJob) {
       return (
-        <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
-          <Clock className="h-12 w-12 opacity-30" />
-          <p className="text-sm">Selecione um CronJob para visualizar o manifesto</p>
-        </div>
+        <CronJobMonitorTable
+          cluster={cluster}
+          cronJobs={filteredCronJobs}
+          loading={loading}
+          headerLabel={`${filteredCronJobs.length} cronjob(s)`}
+          onOpenEditor={handleSelectCronJob}
+          onRequestRefresh={silentFetchCronJobs}
+        />
       );
     }
 
@@ -663,6 +705,7 @@ export function CronJobsTab({
         leftPanel={{ title: "CronJobs", titleAction: leftTitleAction, content: leftContent }}
         rightPanel={{
           title: selectedCronJob ? `${selectedCronJob.namespace}/${selectedCronJob.name}` : "Visualização",
+          titlePrefix: rightTitlePrefix,
           titleAction: rightTitleAction,
           content: renderManifestPanel(),
         }}

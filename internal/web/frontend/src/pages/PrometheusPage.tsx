@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { Input } from '@/components/ui/input';
-import { Loader2, Activity, Search } from 'lucide-react';
+import { Loader2, Activity, Search, ChevronLeft, X } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { SplitView } from '@/components/SplitView';
 import { PrometheusListItem } from '@/components/PrometheusListItem';
 import { PrometheusEditor } from '@/components/PrometheusEditor';
+import { PrometheusMonitorTable } from '@/components/PrometheusMonitorTable';
 import { usePrometheusResources } from '@/hooks/useAPI';
 import type { PrometheusResource } from '@/lib/api/types';
 
@@ -18,6 +19,8 @@ export function PrometheusPage({ selectedCluster }: PrometheusPageProps) {
   const [searchQuery, setSearchQuery] = useState("");
 
   const { data: resources = [], isLoading, error, refetch } = usePrometheusResources(selectedCluster);
+
+  const handleClearSelection = () => setSelectedResource(null);
 
   // Atualizar selectedResource quando resources mudar (após refetch)
   React.useEffect(() => {
@@ -67,14 +70,35 @@ export function PrometheusPage({ selectedCluster }: PrometheusPageProps) {
     );
   }
 
+  const leftTitleAction = selectedResource ? (
+    <div className="flex items-center gap-2 px-2 py-1 rounded-md bg-primary/10 border border-primary/20 text-xs text-primary font-medium">
+      <Activity className="w-3.5 h-3.5 flex-shrink-0" />
+      <span className="truncate max-w-[140px]">{selectedResource.namespace}/{selectedResource.name}</span>
+      <button onClick={handleClearSelection} className="flex-shrink-0 hover:text-foreground transition-colors" title="Limpar seleção">
+        <X className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  ) : undefined;
+
+  const rightTitlePrefix = selectedResource ? (
+    <button
+      onClick={handleClearSelection}
+      className="flex items-center justify-center w-7 h-7 rounded-full bg-primary/20 hover:bg-primary/40 active:bg-primary/60 border border-primary/30 text-primary transition-colors flex-shrink-0"
+      title="Voltar para lista"
+    >
+      <ChevronLeft className="w-4 h-4" />
+    </button>
+  ) : undefined;
+
   return (
     <SplitView
       leftPanel={{
-        title: "Available Prometheus Resources",
+        title: "Recursos Prometheus",
+        titleAction: leftTitleAction,
         content: isLoading ? (
           <div className="flex items-center justify-center h-64 text-muted-foreground">
             <Loader2 className="h-8 w-8 animate-spin mr-2" />
-            Loading Prometheus resources...
+            Carregando recursos Prometheus...
           </div>
         ) : resources.length === 0 ? (
           <div className="flex items-center justify-center h-64 text-muted-foreground">
@@ -141,12 +165,20 @@ export function PrometheusPage({ selectedCluster }: PrometheusPageProps) {
         ),
       }}
       rightPanel={{
-        title: "Prometheus Resource Editor",
-        content: (
+        title: selectedResource ? `${selectedResource.namespace}/${selectedResource.name}` : "Visualização",
+        titlePrefix: rightTitlePrefix,
+        content: selectedResource ? (
           <PrometheusEditor
             resource={selectedResource}
             selectedCluster={selectedCluster}
             onRefetch={refetch}
+          />
+        ) : (
+          <PrometheusMonitorTable
+            cluster={selectedCluster}
+            resources={filteredResources}
+            headerLabel={`${filteredResources.length} recurso(s)`}
+            onOpenEditor={setSelectedResource}
           />
         ),
       }}

@@ -4,11 +4,13 @@ import { Card } from "@/components/ui/card";
 interface SplitViewProps {
   leftPanel: {
     title: string;
+    titlePrefix?: ReactNode;
     titleAction?: ReactNode;
     content: ReactNode;
   };
   rightPanel: {
     title: string;
+    titlePrefix?: ReactNode;
     titleAction?: ReactNode;
     content: ReactNode;
   };
@@ -62,9 +64,12 @@ export const SplitView = ({ leftPanel, rightPanel }: SplitViewProps) => {
         style={{ width: leftWidth }}
       >
         <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 mb-3 pb-2 border-b-2 border-primary flex-shrink-0">
-          <h3 className="text-sm font-semibold text-primary shrink-0 whitespace-nowrap">
-            {leftPanel.title}
-          </h3>
+          <div className="flex items-center gap-2 shrink-0">
+            {leftPanel.titlePrefix}
+            <h3 className="text-sm font-semibold text-primary whitespace-nowrap">
+              {leftPanel.title}
+            </h3>
+          </div>
           {leftPanel.titleAction && (
             <div className="flex items-center gap-1 flex-wrap min-w-0">
               {leftPanel.titleAction}
@@ -83,9 +88,12 @@ export const SplitView = ({ leftPanel, rightPanel }: SplitViewProps) => {
         className="flex-1 p-4 bg-gradient-card border-border/50 flex flex-col min-h-0 min-w-0 ml-4"
       >
         <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 mb-3 pb-2 border-b-2 border-primary flex-shrink-0">
-          <h3 className="text-sm font-semibold text-primary shrink-0 whitespace-nowrap">
-            {rightPanel.title}
-          </h3>
+          <div className="flex items-center gap-2 shrink-0">
+            {rightPanel.titlePrefix}
+            <h3 className="text-sm font-semibold text-primary whitespace-nowrap">
+              {rightPanel.title}
+            </h3>
+          </div>
           {rightPanel.titleAction && (
             <div className="flex items-center gap-1 flex-wrap min-w-0">
               {rightPanel.titleAction}
