@@ -452,8 +452,14 @@ export function useDaemonSets(cluster?: string, namespaces?: string[], showSyste
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchDaemonSets(true);
+  const silentRefetch = async () => {
+    if (!cluster) return;
+    apiClient.getDaemonSets(cluster, namespaces, undefined, showSystem, true)
+      .then(data => setDaemonSets(data))
+      .catch(() => {});
+  };
 
-  return { daemonsets, loading, error, refetch };
+  return { daemonsets, loading, error, refetch, silentRefetch };
 }
 
 export function useStatefulSets(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
@@ -494,8 +500,14 @@ export function useStatefulSets(cluster?: string, namespaces?: string[], showSys
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchStatefulSets(true);
+  const silentRefetch = async () => {
+    if (!cluster) return;
+    apiClient.getStatefulSets(cluster, namespaces, undefined, showSystem, true)
+      .then(data => setStatefulSets(data))
+      .catch(() => {});
+  };
 
-  return { statefulsets, loading, error, refetch };
+  return { statefulsets, loading, error, refetch, silentRefetch };
 }
 
 export function useIngresses(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
@@ -768,8 +780,14 @@ export function useServices(cluster?: string, namespaces?: string[], showSystem:
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchServices(true);
+  const silentRefetch = async () => {
+    if (!cluster) return;
+    apiClient.getServices(cluster, namespaces || [], showSystem)
+      .then(data => setServices(data))
+      .catch(() => {});
+  };
 
-  return { services, loading, error, refetch };
+  return { services, loading, error, refetch, silentRefetch };
 }
 
 export function useVPAs(cluster?: string, namespaces?: string[], showSystem: boolean = false) {

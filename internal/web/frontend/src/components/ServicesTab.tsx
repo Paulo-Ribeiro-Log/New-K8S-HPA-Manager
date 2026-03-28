@@ -13,12 +13,13 @@ import {
   Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert,
   FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X,
   FileText, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle,
-  Network, Plus, Copy
+  Network, Plus, Copy, ChevronLeft
 } from "lucide-react";
 import { toast } from "sonner";
 
 import type { Namespace, ServiceSummary, ServiceManifest } from "@/lib/api/types";
 import { useServices } from "@/hooks/useAPI";
+import { ServiceMonitorTable } from "@/components/ServiceMonitorTable";
 import { apiClient } from "@/lib/api/client";
 import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
@@ -129,7 +130,7 @@ export const ServicesTab = ({
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
-  const { services, loading, error, refetch } = useServices(
+  const { services, loading, error, refetch, silentRefetch } = useServices(
     cluster,
     namespaceFilter,
     showSystemNamespaces
@@ -366,6 +367,15 @@ export const ServicesTab = ({
     }
   };
 
+  const handleClearSelection = () => {
+    setSelectedService(null);
+    setManifest(null);
+    setEditorValue("");
+    setOriginalYaml("");
+    setHistory([]);
+    setHistoryIndex(-1);
+  };
+
   const handleReloadYaml = async () => {
     if (!selectedService) return;
     setManifestLoading(true);
@@ -418,6 +428,15 @@ export const ServicesTab = ({
 
   const leftContent = (
     <div className="space-y-3">
+      {selectedService && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-primary/10 border border-primary/20 text-xs text-primary font-medium">
+          <Network className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="truncate flex-1">{selectedService.namespace}/{selectedService.name}</span>
+          <button onClick={handleClearSelection} className="flex-shrink-0 hover:text-foreground transition-colors" title="Limpar seleção">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       <Select value={selectedNamespace || "__all__"} onValueChange={(v) => onNamespaceChange(v === "__all__" ? "" : v)}>
         <SelectTrigger className="h-8 w-full">
           <SelectValue placeholder="Todos os namespaces" />
@@ -474,33 +493,37 @@ export const ServicesTab = ({
             return (
               <div
                 key={`${svc.cluster}/${svc.namespace}/${svc.name}`}
-                className={`p-2 rounded-md cursor-pointer transition-colors ${
-                  isSelected ? "bg-accent" : "hover:bg-muted"
+                className={`flex items-start gap-2 p-3 rounded-lg border transition-colors relative cursor-pointer ${
+                  isSelected
+                    ? "border-primary bg-accent shadow-sm"
+                    : "border-border/50 hover:border-primary/50 hover:bg-muted/50"
                 }`}
                 onClick={() => handleSelectService(svc)}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <span className="font-medium text-sm truncate block">{svc.name}</span>
-                    <span className="text-xs text-muted-foreground">{svc.namespace}</span>
-                  </div>
-                  <span className={`px-1.5 py-0.5 rounded text-xs font-medium shrink-0 ${serviceTypeBadgeClass(svc.type)}`}>
-                    {svc.type}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 mt-1 flex-wrap">
-                  {svc.clusterIP && svc.clusterIP !== "None" && (
-                    <span className="text-xs text-muted-foreground">{svc.clusterIP}</span>
-                  )}
-                  {svc.externalIP && (
-                    <span className="text-xs text-green-400">{svc.externalIP}</span>
-                  )}
-                  {svc.ports && svc.ports.length > 0 && (
-                    <span className="text-xs text-muted-foreground truncate">
-                      {svc.ports.slice(0, 2).join(", ")}
-                      {svc.ports.length > 2 && ` +${svc.ports.length - 2}`}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <span className="font-medium text-sm truncate block">{svc.name}</span>
+                      <span className="text-xs text-muted-foreground">{svc.namespace}</span>
+                    </div>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] mt-1 font-medium shrink-0 inline-block ${serviceTypeBadgeClass(svc.type)}`}>
+                      {svc.type}
                     </span>
-                  )}
+                  </div>
+                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    {svc.clusterIP && svc.clusterIP !== "None" && (
+                      <span className="text-xs text-muted-foreground">{svc.clusterIP}</span>
+                    )}
+                    {svc.externalIP && (
+                      <span className="text-xs text-green-400">{svc.externalIP}</span>
+                    )}
+                    {svc.ports && svc.ports.length > 0 && (
+                      <span className="text-xs text-muted-foreground truncate">
+                        {svc.ports.slice(0, 2).join(", ")}
+                        {svc.ports.length > 2 && ` +${svc.ports.length - 2}`}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             );
@@ -511,6 +534,16 @@ export const ServicesTab = ({
   );
 
   // ─── Right panel ─────────────────────────────────────────────────────────
+  const rightTitlePrefix = selectedService ? (
+    <button
+      onClick={handleClearSelection}
+      className="flex items-center justify-center w-7 h-7 rounded-full bg-primary/20 hover:bg-primary/40 active:bg-primary/60 border border-primary/30 text-primary transition-colors flex-shrink-0"
+      title="Voltar para lista"
+    >
+      <ChevronLeft className="w-4 h-4" />
+    </button>
+  ) : undefined;
+
   const rightTitleAction = selectedService ? (
     <div className="flex items-center gap-1">
       {selectedService.type && (
@@ -551,10 +584,13 @@ export const ServicesTab = ({
   const renderManifestPanel = () => {
     if (!selectedService) {
       return (
-        <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
-          <Network className="h-12 w-12 opacity-30" />
-          <p className="text-sm">Selecione um Service para editar</p>
-        </div>
+        <ServiceMonitorTable
+          services={services ?? []}
+          loading={loading}
+          headerLabel={`${(services ?? []).length} service(s)`}
+          onOpenEditor={handleSelectService}
+          onRequestRefresh={silentRefetch}
+        />
       );
     }
 
@@ -641,6 +677,7 @@ export const ServicesTab = ({
         }}
         rightPanel={{
           title: selectedService ? `${selectedService.namespace}/${selectedService.name}` : "Visualização",
+          titlePrefix: rightTitlePrefix,
           titleAction: rightTitleAction,
           content: renderManifestPanel(),
         }}
