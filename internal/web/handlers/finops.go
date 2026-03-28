@@ -383,6 +383,45 @@ func (h *FinOpsHandler) GetTimelineCompare(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// GetVMAlternatives godoc
+// GET /api/v1/finops/vm-alternatives?sku=Standard_F4s_v2&cpu_pct=25&mem_pct=80&node_count=3
+//
+// Retorna até 3 SKUs alternativos sugeridos para o VM SKU informado, levando em conta
+// os percentuais de utilização de CPU e Memória do cluster para identificar o gargalo.
+// Se cpu_pct e mem_pct forem 0, nenhuma sugestão de troca de família é emitida.
+func (h *FinOpsHandler) GetVMAlternatives(c *gin.Context) {
+	sku := c.Query("sku")
+	if sku == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro 'sku' é obrigatório"})
+		return
+	}
+
+	cpuPct, _ := strconv.Atoi(c.DefaultQuery("cpu_pct", "0"))
+	memPct, _ := strconv.Atoi(c.DefaultQuery("mem_pct", "0"))
+	nodeCount, _ := strconv.Atoi(c.DefaultQuery("node_count", "1"))
+	if nodeCount <= 0 {
+		nodeCount = 1
+	}
+
+	rate, _ := h.exchange.Get()
+
+	alternatives := finops.SuggestAlternatives(sku, cpuPct, memPct, h.pricer, rate, nodeCount)
+	if alternatives == nil {
+		alternatives = []finops.VMAlternative{}
+	}
+
+	cpu, mem := finops.GetVMSpecs(sku)
+	c.JSON(http.StatusOK, gin.H{
+		"sku":          sku,
+		"cpu_cores":    cpu,
+		"memory_gb":    mem,
+		"cpu_pct":      cpuPct,
+		"mem_pct":      memPct,
+		"node_count":   nodeCount,
+		"alternatives": alternatives,
+	})
+}
+
 // GetSavedTimelines godoc
 // GET /api/v1/finops/timeline/saved?cluster=X
 //

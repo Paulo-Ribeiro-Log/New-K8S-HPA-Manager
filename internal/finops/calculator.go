@@ -309,6 +309,29 @@ func allocateCosts(
 		return result[i].CostShareBRL > result[j].CostShareBRL
 	})
 
+	// Segunda passagem: identificar workloads caros sem HPA (fixed_high_cost)
+	if len(result) > 0 {
+		var totalCostBRL float64
+		for _, wl := range result {
+			totalCostBRL += wl.CostShareBRL
+		}
+		avgCostBRL := totalCostBRL / float64(len(result))
+
+		// Mapa: ns/workload → HPAMax original (0 = sem HPA)
+		rawMap := make(map[string]int, len(workloads))
+		for _, rw := range workloads {
+			rawMap[rw.Namespace+"/"+rw.Workload] = rw.HPAMax
+		}
+
+		for i := range result {
+			wl := &result[i]
+			origHPAMax := rawMap[wl.Namespace+"/"+wl.Workload]
+			if origHPAMax == 0 && wl.Pods > 3 && wl.CostShareBRL > avgCostBRL*2 && wl.Verdict == "ok" {
+				wl.Verdict = "fixed_high_cost"
+			}
+		}
+	}
+
 	return result
 }
 
@@ -357,6 +380,8 @@ func buildSummary(workloads []FinOpsWorkload, namespaces []FinOpsNamespace, clus
 			s.NoRequestCount++
 		case "hpa_removable":
 			s.HPARemovableCount++
+		case "fixed_high_cost":
+			s.FixedHighCostCount++
 		}
 		if wl.HPACostMinBRL < wl.HPACostCurrentBRL {
 			s.HPASavingsIfMinBRL = round2(s.HPASavingsIfMinBRL + (wl.HPACostCurrentBRL - wl.HPACostMinBRL))

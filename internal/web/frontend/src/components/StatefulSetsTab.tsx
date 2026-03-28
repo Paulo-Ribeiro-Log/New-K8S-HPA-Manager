@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Database, MoreVertical, Trash2, RotateCw, ArrowUpDown, SplitSquareHorizontal, AlertCircle, Copy } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, ChevronLeft, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Database, MoreVertical, Trash2, RotateCw, ArrowUpDown, SplitSquareHorizontal, AlertCircle, Copy } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 
@@ -36,6 +36,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { StatefulSetMonitorTable } from "@/components/StatefulSetMonitorTable";
 
 // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
 const formatVersion = (version: string | undefined): string => {
@@ -115,6 +116,20 @@ export const StatefulSetsTab = ({
     return false;
   };
 
+  // Helper: Retorna info de status para o card
+  const getStatefulSetStatusInfo = (sts: StatefulSetSummary): { label: string; color: string } | null => {
+    if (sts.readyReplicas < sts.replicas) {
+      return { label: `${sts.replicas - sts.readyReplicas} pods pendentes`, color: "bg-yellow-500/20 text-yellow-400" };
+    }
+    if (sts.updatedReplicas < sts.replicas) {
+      return { label: `${sts.replicas - sts.updatedReplicas} pods atualizando`, color: "bg-blue-500/20 text-blue-400" };
+    }
+    if (sts.availableReplicas < sts.replicas) {
+      return { label: `${sts.replicas - sts.availableReplicas} indisponíveis`, color: "bg-yellow-500/20 text-yellow-400" };
+    }
+    return null;
+  };
+
   // Undo/Redo history with persistent cache
   const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
   const [history, setHistory] = useState<string[]>([]);
@@ -135,7 +150,7 @@ export const StatefulSetsTab = ({
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
-  const { statefulsets, loading, error, refetch } = useStatefulSets(
+  const { statefulsets, loading, error, refetch, silentRefetch } = useStatefulSets(
     cluster,
     namespaceFilter,
     showSystemNamespaces
@@ -282,6 +297,15 @@ export const StatefulSetsTab = ({
   const refreshStatefulSets = () => {
     if (!cluster) return;
     refetch();
+  };
+
+  const handleClearSelection = () => {
+    setSelectedStatefulSet(null);
+    setManifest(null);
+    setEditorValue("");
+    setOriginalYaml("");
+    setHistory([]);
+    setHistoryIndex(-1);
   };
 
   const handleValidate = async () => {
@@ -556,6 +580,20 @@ export const StatefulSetsTab = ({
   // Left Panel Content (lista de statefulsets)
   const leftContent = (
     <div className="space-y-3">
+      {/* Breadcrumb de seleção atual */}
+      {selectedStatefulSet && (
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-primary/10 border border-primary/20 text-xs">
+          <Database className="h-3 w-3 text-primary flex-shrink-0" />
+          <span className="flex-1 truncate font-medium text-primary">{selectedStatefulSet.name}</span>
+          <button
+            onClick={handleClearSelection}
+            className="text-primary/60 hover:text-primary flex-shrink-0"
+            title="Voltar para lista geral"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
       {/* Search */}
       <div className="relative">
         <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -595,42 +633,48 @@ export const StatefulSetsTab = ({
           Nenhum StatefulSet encontrado
         </div>
       ) : (
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           {filteredStatefulSets.map((sts) => {
             const isSelected = selectedStatefulSet?.name === sts.name && selectedStatefulSet?.namespace === sts.namespace;
             const isProblematic = isStatefulSetProblematic(sts);
             const version = formatVersion(sts.labels?.["app.kubernetes.io/version"]);
+            const statusInfo = getStatefulSetStatusInfo(sts);
+            const replicaColor = isProblematic ? "text-red-400" : "text-green-400";
 
             return (
               <div
                 key={`${sts.namespace}/${sts.name}`}
-                className={`p-2 rounded-md cursor-pointer transition-colors ${
-                  isSelected ? "bg-accent" : "hover:bg-muted"
+                className={`flex items-start gap-2 p-3 rounded-lg border transition-colors relative cursor-pointer ${
+                  isSelected
+                    ? "border-primary bg-primary/10"
+                    : isProblematic
+                    ? "border-red-500/40 hover:border-red-500/60 bg-red-500/5"
+                    : "border-border/60 hover:border-primary/40"
                 }`}
                 onClick={() => handleSelectStatefulSet(sts)}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1">
-                      <Database className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                      {isProblematic && <TriangleAlert className="h-3 w-3 text-yellow-500 flex-shrink-0" />}
-                      <span className="font-medium text-sm truncate">{sts.name}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
-                      <span>{sts.namespace}</span>
-                      {version && (
-                        <>
-                          <span>•</span>
-                          <span className="text-blue-500">{version}</span>
-                        </>
-                      )}
-                    </div>
+                {isProblematic && (
+                  <div className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full animate-pulse" title="StatefulSet com problemas" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Database className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                    <span className="font-semibold text-sm truncate">{sts.name}</span>
                   </div>
-                  <div className="flex items-center gap-1 text-xs">
-                    <span className={sts.readyReplicas === sts.replicas ? "text-green-500" : "text-yellow-500"}>
-                      {sts.readyReplicas}/{sts.replicas}
-                    </span>
+                  <div className="text-xs text-muted-foreground mt-0.5">{sts.namespace}</div>
+                  {version && (
+                    <div className="text-[10px] mt-0.5">
+                      <span className="text-blue-400/80">{version}</span>
+                    </div>
+                  )}
+                  <div className={`text-[11px] mt-1 font-medium ${replicaColor}`}>
+                    {sts.readyReplicas}/{sts.replicas} ready • {sts.availableReplicas}/{sts.replicas} available
                   </div>
+                  {statusInfo && (
+                    <div className={`text-[10px] mt-1 px-1.5 py-0.5 rounded inline-block font-medium ${statusInfo.color}`}>
+                      {statusInfo.label}
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -665,6 +709,16 @@ export const StatefulSetsTab = ({
       setManifestLoading(false);
     }
   };
+
+  const rightTitlePrefix = selectedStatefulSet ? (
+    <button
+      onClick={handleClearSelection}
+      className="flex items-center justify-center w-7 h-7 rounded-full bg-primary/20 hover:bg-primary/40 active:bg-primary/60 border border-primary/30 text-primary transition-colors flex-shrink-0"
+      title="Voltar para lista"
+    >
+      <ChevronLeft className="w-4 h-4" />
+    </button>
+  ) : undefined;
 
   // Right Panel Title Action (ações no header do editor)
   const rightTitleAction = (
@@ -758,8 +812,14 @@ export const StatefulSetsTab = ({
 
     if (!selectedStatefulSet) {
       return (
-        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Escolha um StatefulSet para visualizar o manifesto
+        <div className="flex flex-col h-full p-2">
+          <StatefulSetMonitorTable
+            statefulsets={filteredStatefulSets}
+            loading={loading}
+            headerLabel={selectedNamespace ? `${selectedNamespace} — statefulsets (${filteredStatefulSets.length})` : `statefulsets (${filteredStatefulSets.length})`}
+            onOpenEditor={(sts) => handleSelectStatefulSet(sts)}
+            onRequestRefresh={silentRefetch}
+          />
         </div>
       );
     }
@@ -983,7 +1043,8 @@ export const StatefulSetsTab = ({
           content: leftContent,
         }}
         rightPanel={{
-          title: "Visualização",
+          title: selectedStatefulSet ? `${selectedStatefulSet.namespace}/${selectedStatefulSet.name}` : "Visualização",
+          titlePrefix: rightTitlePrefix,
           titleAction: rightTitleAction,
           content: renderManifestPanel(),
         }}
