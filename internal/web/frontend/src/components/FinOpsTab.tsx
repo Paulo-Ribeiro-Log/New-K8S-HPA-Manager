@@ -1056,12 +1056,145 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
   );
 }
 
+// ─── Tipo: Resposta de Alternativas de SKU ────────────────────────────────────
+
+interface VMAlternativeItem {
+  vm_size: string;
+  cpu_cores: number;
+  memory_gb: number;
+  mem_per_cpu_gb: number;
+  price_usd_hour: number;
+  price_source: string;
+  cost_delta_pct: number;
+  monthly_savings_brl: number;
+  reason: string;
+  verdict: "recommended" | "consider" | "cheaper";
+}
+
+interface VMAlternativesResp {
+  sku: string;
+  cpu_cores: number;
+  memory_gb: number;
+  cpu_pct: number;
+  mem_pct: number;
+  alternatives: VMAlternativeItem[];
+}
+
+// ─── Componente: Alternativas de SKU por Pool ────────────────────────────────
+
+function PoolSKUAlternatives({ pool, cpuPct, memPct }: {
+  pool: FinOpsPool;
+  cpuPct: number;
+  memPct: number;
+}) {
+  const { data, isLoading } = useQuery<VMAlternativesResp>({
+    queryKey: ["finops-vm-alternatives", pool.vm_size, cpuPct, memPct, pool.node_count],
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/v1/finops/vm-alternatives?sku=${encodeURIComponent(pool.vm_size)}&cpu_pct=${cpuPct}&mem_pct=${memPct}&node_count=${pool.node_count}`,
+        { headers: { Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}` } }
+      );
+      if (!r.ok) throw new Error("vm-alternatives error");
+      return r.json();
+    },
+    enabled: !!pool.vm_size && (cpuPct > 0 || memPct > 0),
+    staleTime: 30 * 60 * 1000,
+    retry: false,
+  });
+
+  if (isLoading) return (
+    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground py-1">
+      <Loader2 className="h-3 w-3 animate-spin" />Buscando alternativas…
+    </div>
+  );
+  if (!data?.alternatives?.length) return (
+    <p className="text-[10px] text-muted-foreground py-1">Nenhuma alternativa identificada para o padrão atual.</p>
+  );
+
+  const verdictCfg = {
+    recommended: { label: "Recomendado", cls: "text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-900/30" },
+    consider:    { label: "Considerar",  cls: "text-blue-600  dark:text-blue-400  bg-blue-100  dark:bg-blue-900/30"  },
+    cheaper:     { label: "Mais barato", cls: "text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/30" },
+  };
+
+  return (
+    <div className="space-y-1.5">
+      {data.alternatives.map(alt => {
+        const cfg = verdictCfg[alt.verdict] ?? verdictCfg.consider;
+        return (
+          <div key={alt.vm_size} className="border rounded-lg p-2.5 space-y-1 bg-muted/20">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-xs font-mono font-semibold">{alt.vm_size}</span>
+              <div className="flex items-center gap-1.5">
+                {alt.monthly_savings_brl > 10 && (
+                  <span className="text-[11px] font-bold text-green-600 dark:text-green-400">
+                    -{fmtBRL(alt.monthly_savings_brl)}/mês
+                  </span>
+                )}
+                {alt.monthly_savings_brl < -10 && (
+                  <span className="text-[11px] font-semibold text-orange-600">
+                    +{fmtBRL(Math.abs(alt.monthly_savings_brl))}/mês
+                  </span>
+                )}
+                <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${cfg.cls}`}>
+                  {cfg.label}
+                </span>
+              </div>
+            </div>
+            <p className="text-[10px] text-foreground">
+              {alt.cpu_cores} vCPU · {alt.memory_gb} GB RAM · <strong>{alt.mem_per_cpu_gb} GB/vCPU</strong>
+              <span className="text-muted-foreground"> · ${alt.price_usd_hour.toFixed(3)}/hora</span>
+              {alt.cost_delta_pct !== 0 && (
+                <span className={`ml-1 font-medium ${alt.cost_delta_pct < 0 ? "text-green-600" : "text-red-500"}`}>
+                  ({alt.cost_delta_pct > 0 ? "+" : ""}{alt.cost_delta_pct.toFixed(1)}%)
+                </span>
+              )}
+            </p>
+            <p className="text-[10px] text-muted-foreground italic">{alt.reason}</p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Aba: Node Pools ──────────────────────────────────────────────────────────
 
-function NodePoolsTab({ pools, workloads }: { pools: FinOpsPool[]; workloads: FinOpsWorkload[] }) {
+function NodePoolsTab({ pools, workloads, cluster }: {
+  pools: FinOpsPool[];
+  workloads: FinOpsWorkload[];
+  cluster: string;
+}) {
   const total = pools.reduce((s, p) => s + p.monthly_cost_brl, 0);
   const totalCPU = pools.reduce((s, p) => s + p.total_cpu_millicores, 0);
   const totalMem = pools.reduce((s, p) => s + p.total_memory_mi, 0);
+  const totalNodes = pools.reduce((s, p) => s + p.node_count, 0);
+
+  // ── Histórico de nodes (reutiliza cache do DashboardTab — mesma query key) ──
+  const { data: tl } = useQuery<TimelineReport>({
+    queryKey: ["finops-timeline-dashboard", cluster, 30],
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/v1/finops/timeline?cluster=${encodeURIComponent(cluster)}&days=30`,
+        { headers: { Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}` } }
+      );
+      if (!r.ok) throw new Error("Timeline error");
+      return r.json();
+    },
+    enabled: !!cluster,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  const nodesHistory = tl?.nodes ?? [];
+  const minObservedNodes = nodesHistory.length > 0 ? Math.min(...nodesHistory.map(n => n.node_count)) : null;
+  const maxObservedNodes = nodesHistory.length > 0 ? Math.max(...nodesHistory.map(n => n.node_count)) : null;
+  const avgObservedNodes = nodesHistory.length > 0
+    ? Math.round(nodesHistory.reduce((s, n) => s + n.node_count, 0) / nodesHistory.length)
+    : null;
+  const nodeChartData = nodesHistory.map(n => ({ date: n.date.slice(5), Nodes: n.node_count }));
+  // Alerta: cluster chegou a ter mais nodes do que o atual → não sugere scale-down agressivo
+  const clusterScaledUp = maxObservedNodes !== null && maxObservedNodes > totalNodes;
 
   // ── Rightsizing: utilização real vs capacidade ──────────────────────────────
   // cpu_request_millis = total de todos os pods do workload (soma acumulada no backend)
@@ -1078,8 +1211,10 @@ function NodePoolsTab({ pools, workloads }: { pools: FinOpsPool[]; workloads: Fi
 
   // Recomendações de scale-down por pool (apenas User pools com node_count > 2)
   const utilizationPct = actualCPUPct ?? allocCPUPct ?? 0;
+  // Se cluster escalou além do atual recentemente, o threshold cai para 40% (mais conservador)
+  const scaleDownThreshold = clusterScaledUp ? 40 : 55;
   const rightsizingRecs = pools
-    .filter(p => p.mode !== "System" && p.node_count > 2 && utilizationPct < 55)
+    .filter(p => p.mode !== "System" && p.node_count > 2 && utilizationPct < scaleDownThreshold)
     .map(p => {
       const cpuPerNode = p.vm_cpu_cores * 1000;
       const memPerNode = p.vm_memory_gb * 1024;
@@ -1194,9 +1329,51 @@ function NodePoolsTab({ pools, workloads }: { pools: FinOpsPool[]; workloads: Fi
                 ))}
               </div>
             )}
+            {/* Histórico de nodes (30d) */}
+            {nodeChartData.length > 3 && (
+              <div className="pt-1 border-t space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                    <Activity className="h-3 w-3" />
+                    Histórico de nodes — 30d
+                  </p>
+                  {(minObservedNodes !== null || maxObservedNodes !== null || avgObservedNodes !== null) && (
+                    <div className="flex gap-3 text-[10px] text-muted-foreground">
+                      {minObservedNodes !== null && <span>mín <strong className="text-foreground">{minObservedNodes}</strong></span>}
+                      {avgObservedNodes !== null && <span>avg <strong className="text-foreground">{avgObservedNodes}</strong></span>}
+                      {maxObservedNodes !== null && <span>máx <strong className="text-foreground">{maxObservedNodes}</strong></span>}
+                    </div>
+                  )}
+                </div>
+                {clusterScaledUp && (
+                  <div className="flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 rounded px-2 py-1">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                    Cluster chegou a {maxObservedNodes} nodes neste período (atual: {totalNodes}) — recomendação de scale-down conservadora ({scaleDownThreshold}% threshold)
+                  </div>
+                )}
+                <ResponsiveContainer width="100%" height={70}>
+                  <ComposedChart data={nodeChartData} margin={{ left: 4, right: 4, top: 2, bottom: 0 }}>
+                    <XAxis dataKey="date" tick={{ fontSize: 9, fill: "#9ca3af" }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                    <YAxis tick={{ fontSize: 9 }} axisLine={false} tickLine={false} width={20} allowDecimals={false} />
+                    <Tooltip content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      return (
+                        <div style={{ background: "hsl(var(--card))", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}>
+                          <p>{label}: <strong>{payload[0]?.value} nodes</strong></p>
+                        </div>
+                      );
+                    }} />
+                    <Area type="stepAfter" dataKey="Nodes" fill="#06b6d4" stroke="#06b6d4" fillOpacity={0.12} strokeWidth={1.5} dot={false} />
+                    {totalNodes && <ReferenceLine y={totalNodes} stroke="#f59e0b" strokeDasharray="4 2" strokeOpacity={0.7}
+                      label={{ value: `atual`, position: "right", fontSize: 9, fill: "#f59e0b" }} />}
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
             {utilizationPct > 0 && rightsizingRecs.length === 0 && (
               <p className="text-[11px] text-muted-foreground">
-                Utilização dentro do esperado — nenhum pool elegível para scale-down com margem segura de 40%.
+                Utilização dentro do esperado — nenhum pool elegível para scale-down com margem segura de {scaleDownThreshold}%.
               </p>
             )}
           </CardContent>
@@ -1298,6 +1475,41 @@ function NodePoolsTab({ pools, workloads }: { pools: FinOpsPool[]; workloads: Fi
           </TableBody>
         </Table>
       </Card>
+
+      {/* ── Sugestões de SKU por Pool ──────────────────────────────────────── */}
+      {(actualCPUPct !== null || actualMemPct !== null) && pools.some(p => p.mode !== "System") && (
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-4">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Database className="h-4 w-4 text-indigo-500" />
+              Sugestões de Família de SKU
+              <span className="text-[10px] font-normal text-muted-foreground">
+                {actualCPUPct !== null
+                  ? `baseado em uso real — CPU: ${actualCPUPct}% · Mem: ${actualMemPct ?? 0}%`
+                  : "ative Prometheus para sugestões baseadas em uso real"}
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4 space-y-4">
+            {pools.filter(p => p.mode !== "System").map(p => (
+              <div key={p.name}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-medium">{p.name}</span>
+                  <span className="text-[10px] text-muted-foreground font-mono">{p.vm_size}</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    · {p.vm_cpu_cores} vCPU / {p.vm_memory_gb} GB · {p.vm_memory_gb / p.vm_cpu_cores} GB/vCPU · {p.node_count} nodes
+                  </span>
+                </div>
+                <PoolSKUAlternatives
+                  pool={p}
+                  cpuPct={actualCPUPct ?? allocCPUPct ?? 0}
+                  memPct={actualMemPct ?? allocMemPct ?? 0}
+                />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
@@ -2997,7 +3209,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 <DashboardTab cluster={cluster} report={report} />
               </TabsContent>
               <TabsContent value="nodepools" className="mt-0 h-full">
-                <NodePoolsTab pools={report.node_pools} workloads={report.workloads} />
+                <NodePoolsTab pools={report.node_pools} workloads={report.workloads} cluster={cluster} />
               </TabsContent>
               <TabsContent value="workloads" className="mt-0 h-full">
                 <WorkloadsTab workloads={report.workloads} windowDays={report.window_days || windowDays} />
