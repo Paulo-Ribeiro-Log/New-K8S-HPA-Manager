@@ -13,14 +13,12 @@
 - [x] **1b** Gerar `kubectl set resources` para OOM Risk e CPU/Mem overprovisioned
 - [x] **1c** Indicador de staleness — badge "⚠ Prometheus não incluído" quando report foi gerado sem Prometheus
 
-### Fase 2 — Filtros e interatividade (médio esforço) ← PRÓXIMA
+### Fase 2 — Filtros e interatividade (médio esforço) ✅ CONCLUÍDA
+- [x] **2a** Filtros na aba Oportunidades: por namespace, tipo de ação, saving mínimo, "só com kubectl"
+- [x] **2b** Checkbox por card + total de saving dinâmico (simular "se aplicar essas 5...")
+- [x] **2c** Agrupamento de Oportunidades por tipo de ação (seções colapsáveis: HPA, CPU, Mem, Sem Request)
 
-### Fase 2 — Filtros e interatividade (médio esforço)
-- [ ] **2a** Filtros na aba Oportunidades: por namespace, tipo de ação, saving mínimo, "só com kubectl"
-- [ ] **2b** Checkbox por card + total de saving dinâmico (simular "se aplicar essas 5...")
-- [ ] **2c** Agrupamento de Oportunidades por tipo de ação (seções colapsáveis: HPA, CPU, Mem, Sem Request)
-
-### Fase 3 — Infraestrutura e projeções (alto esforço)
+### Fase 3 — Infraestrutura e projeções (alto esforço) ← PRÓXIMA
 - [ ] **3a** Recomendação de Node Pool rightsizing (cruzar CPUEff% com node count → sugerir escalar down)
 - [ ] **3b** Projeção de custo futuro (linha de tendência 90d baseada na série temporal)
 - [ ] **3c** Novo veredicto `fixed_high_cost` para workloads caros sem HPA (candidatos a adicionar HPA)
@@ -97,9 +95,9 @@ kubectl set resources deployment <workload> -n <namespace> \
 | 1    | 1a   | ✅ concluído | — |
 | 1    | 1b   | ✅ concluído | — |
 | 1    | 1c   | ✅ concluído | — |
-| 2    | 2a   | ⏳ pendente | — |
-| 2    | 2b   | ⏳ pendente | — |
-| 2    | 2c   | ⏳ pendente | — |
+| 2    | 2a   | ✅ concluído | — |
+| 2    | 2b   | ✅ concluído | — |
+| 2    | 2c   | ✅ concluído | — |
 | 3    | 3a   | ⏳ pendente | — |
 | 3    | 3b   | ⏳ pendente | — |
 | 3    | 3c   | ⏳ pendente | — |
