@@ -545,6 +545,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/finops/timeline/compare-snapshot", finOpsHandler.CompareWithSnapshot)
 	api.GET("/finops/timeline/compare-saved", finOpsHandler.CompareSnapshots)
 	api.GET("/finops/timeline/saved", finOpsHandler.GetSavedTimelines)
+	api.GET("/finops/vm-alternatives", finOpsHandler.GetVMAlternatives)
 
 	// SSE Progress Streaming (sem auth para permitir conexão EventSource)
 	s.router.GET("/api/v1/nodepools/progress/:operationId", handlers.HandleProgressStream)
