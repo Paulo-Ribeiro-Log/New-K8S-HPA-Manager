@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Server, MoreVertical, Trash2, RotateCw, SplitSquareHorizontal, AlertCircle, Copy } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, ChevronLeft, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Server, MoreVertical, Trash2, RotateCw, SplitSquareHorizontal, AlertCircle, Copy } from "lucide-react";
 import { toast } from "sonner";
 import yaml from "js-yaml";
 
@@ -36,6 +36,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { DaemonSetMonitorTable } from "@/components/DaemonSetMonitorTable";
 
 // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
 const formatVersion = (version: string | undefined): string => {
@@ -112,6 +113,20 @@ export const DaemonSetsTab = ({
     return false;
   };
 
+  // Helper: Retorna info de status para o card
+  const getDaemonSetStatusInfo = (ds: DaemonSetSummary): { label: string; color: string } | null => {
+    if (ds.numberMisscheduled > 0) {
+      return { label: `Misscheduled: ${ds.numberMisscheduled}`, color: "bg-orange-500/20 text-orange-400" };
+    }
+    if (ds.numberReady < ds.desiredNumberScheduled) {
+      return { label: `${ds.desiredNumberScheduled - ds.numberReady} pods pendentes`, color: "bg-yellow-500/20 text-yellow-400" };
+    }
+    if (ds.numberAvailable < ds.desiredNumberScheduled) {
+      return { label: `${ds.desiredNumberScheduled - ds.numberAvailable} indisponíveis`, color: "bg-yellow-500/20 text-yellow-400" };
+    }
+    return null;
+  };
+
   // Undo/Redo history with persistent cache
   const historyCache = useRef<Map<string, { history: string[], index: number }>>(new Map());
   const [history, setHistory] = useState<string[]>([]);
@@ -132,7 +147,7 @@ export const DaemonSetsTab = ({
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
-  const { daemonsets, loading, error, refetch } = useDaemonSets(
+  const { daemonsets, loading, error, refetch, silentRefetch } = useDaemonSets(
     cluster,
     namespaceFilter,
     showSystemNamespaces
@@ -279,6 +294,15 @@ export const DaemonSetsTab = ({
   const refreshDaemonSets = () => {
     if (!cluster) return;
     refetch();
+  };
+
+  const handleClearSelection = () => {
+    setSelectedDaemonSet(null);
+    setManifest(null);
+    setEditorValue("");
+    setOriginalYaml("");
+    setHistory([]);
+    setHistoryIndex(-1);
   };
 
   const handleValidate = async () => {
@@ -480,6 +504,20 @@ export const DaemonSetsTab = ({
   // Left Panel Content (lista de daemonsets)
   const leftContent = (
     <div className="space-y-3">
+      {/* Breadcrumb de seleção atual */}
+      {selectedDaemonSet && (
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-primary/10 border border-primary/20 text-xs">
+          <Server className="h-3 w-3 text-primary flex-shrink-0" />
+          <span className="flex-1 truncate font-medium text-primary">{selectedDaemonSet.name}</span>
+          <button
+            onClick={handleClearSelection}
+            className="text-primary/60 hover:text-primary flex-shrink-0"
+            title="Voltar para lista geral"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
       {/* Search */}
       <div className="relative">
         <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -519,42 +557,48 @@ export const DaemonSetsTab = ({
           Nenhum DaemonSet encontrado
         </div>
       ) : (
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           {filteredDaemonSets.map((ds) => {
             const isSelected = selectedDaemonSet?.name === ds.name && selectedDaemonSet?.namespace === ds.namespace;
             const isProblematic = isDaemonSetProblematic(ds);
             const version = formatVersion(ds.labels?.["app.kubernetes.io/version"]);
+            const statusInfo = getDaemonSetStatusInfo(ds);
+            const replicaColor = isProblematic ? "text-red-400" : "text-green-400";
 
             return (
               <div
                 key={`${ds.namespace}/${ds.name}`}
-                className={`p-2 rounded-md cursor-pointer transition-colors ${
-                  isSelected ? "bg-accent" : "hover:bg-muted"
+                className={`flex items-start gap-2 p-3 rounded-lg border transition-colors relative cursor-pointer ${
+                  isSelected
+                    ? "border-primary bg-primary/10"
+                    : isProblematic
+                    ? "border-red-500/40 hover:border-red-500/60 bg-red-500/5"
+                    : "border-border/60 hover:border-primary/40"
                 }`}
                 onClick={() => handleSelectDaemonSet(ds)}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1">
-                      <Server className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                      {isProblematic && <TriangleAlert className="h-3 w-3 text-yellow-500 flex-shrink-0" />}
-                      <span className="font-medium text-sm truncate">{ds.name}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
-                      <span>{ds.namespace}</span>
-                      {version && (
-                        <>
-                          <span>•</span>
-                          <span className="text-blue-500">{version}</span>
-                        </>
-                      )}
-                    </div>
+                {isProblematic && (
+                  <div className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full animate-pulse" title="DaemonSet com problemas" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Server className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                    <span className="font-semibold text-sm truncate">{ds.name}</span>
                   </div>
-                  <div className="flex items-center gap-1 text-xs">
-                    <span className={ds.numberReady === ds.desiredNumberScheduled ? "text-green-500" : "text-yellow-500"}>
-                      {ds.numberReady}/{ds.desiredNumberScheduled}
-                    </span>
+                  <div className="text-xs text-muted-foreground mt-0.5">{ds.namespace}</div>
+                  {version && (
+                    <div className="text-[10px] mt-0.5">
+                      <span className="text-blue-400/80">{version}</span>
+                    </div>
+                  )}
+                  <div className={`text-[11px] mt-1 font-medium ${replicaColor}`}>
+                    {ds.numberReady}/{ds.desiredNumberScheduled} ready • {ds.numberAvailable}/{ds.desiredNumberScheduled} available
                   </div>
+                  {statusInfo && (
+                    <div className={`text-[10px] mt-1 px-1.5 py-0.5 rounded inline-block font-medium ${statusInfo.color}`}>
+                      {statusInfo.label}
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -589,6 +633,16 @@ export const DaemonSetsTab = ({
       setManifestLoading(false);
     }
   };
+
+  const rightTitlePrefix = selectedDaemonSet ? (
+    <button
+      onClick={handleClearSelection}
+      className="flex items-center justify-center w-7 h-7 rounded-full bg-primary/20 hover:bg-primary/40 active:bg-primary/60 border border-primary/30 text-primary transition-colors flex-shrink-0"
+      title="Voltar para lista"
+    >
+      <ChevronLeft className="w-4 h-4" />
+    </button>
+  ) : undefined;
 
   // Right Panel Title Action (ações no header do editor)
   const rightTitleAction = (
@@ -675,8 +729,14 @@ export const DaemonSetsTab = ({
 
     if (!selectedDaemonSet) {
       return (
-        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Escolha um DaemonSet para visualizar o manifesto
+        <div className="flex flex-col h-full p-2">
+          <DaemonSetMonitorTable
+            daemonsets={filteredDaemonSets}
+            loading={loading}
+            headerLabel={selectedNamespace ? `${selectedNamespace} — daemonsets (${filteredDaemonSets.length})` : `daemonsets (${filteredDaemonSets.length})`}
+            onOpenEditor={(ds) => handleSelectDaemonSet(ds)}
+            onRequestRefresh={silentRefetch}
+          />
         </div>
       );
     }
@@ -900,7 +960,8 @@ export const DaemonSetsTab = ({
           content: leftContent,
         }}
         rightPanel={{
-          title: "Visualização",
+          title: selectedDaemonSet ? `${selectedDaemonSet.namespace}/${selectedDaemonSet.name}` : "Visualização",
+          titlePrefix: rightTitlePrefix,
           titleAction: rightTitleAction,
           content: renderManifestPanel(),
         }}
