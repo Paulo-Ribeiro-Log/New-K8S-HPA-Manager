@@ -18,10 +18,10 @@
 - [x] **2b** Checkbox por card + total de saving dinâmico (simular "se aplicar essas 5...")
 - [x] **2c** Agrupamento de Oportunidades por tipo de ação (seções colapsáveis: HPA, CPU, Mem, Sem Request)
 
-### Fase 3 — Infraestrutura e projeções (alto esforço) ← PRÓXIMA
-- [ ] **3a** Recomendação de Node Pool rightsizing (cruzar CPUEff% com node count → sugerir escalar down)
-- [ ] **3b** Projeção de custo futuro (linha de tendência 90d baseada na série temporal)
-- [ ] **3c** Novo veredicto `fixed_high_cost` para workloads caros sem HPA (candidatos a adicionar HPA)
+### Fase 3 — Infraestrutura e projeções (alto esforço) ✅ CONCLUÍDA
+- [x] **3a** Recomendação de Node Pool rightsizing (cruzar CPUEff% com node count → sugerir escalar down)
+- [x] **3b** Projeção de custo futuro (linha de tendência 30d baseada na série temporal)
+- [x] **3c** Novo veredicto `fixed_high_cost` para workloads caros sem HPA (candidatos a adicionar HPA)
 
 ---
 
@@ -98,6 +98,6 @@ kubectl set resources deployment <workload> -n <namespace> \
 | 2    | 2a   | ✅ concluído | — |
 | 2    | 2b   | ✅ concluído | — |
 | 2    | 2c   | ✅ concluído | — |
-| 3    | 3a   | ⏳ pendente | — |
-| 3    | 3b   | ⏳ pendente | — |
-| 3    | 3c   | ⏳ pendente | — |
+| 3    | 3a   | ✅ concluído | 262ab88 |
+| 3    | 3b   | ✅ concluído | 262ab88 |
+| 3    | 3c   | ✅ concluído | 262ab88 |
