@@ -96,14 +96,15 @@ type ClusterCapacity struct {
 
 // FinOpsSummary consolida os números mais importantes do relatório
 type FinOpsSummary struct {
-	TotalMonthlyCostBRL   float64 `json:"total_monthly_cost_brl"`
-	TotalMonthlyCostUSD   float64 `json:"total_monthly_cost_usd"`
-	TopNamespace          string  `json:"top_namespace"`
-	PotentialSavingsBRL   float64 `json:"potential_savings_brl"`  // soma de WasteBRL (Prometheus)
-	HPASavingsIfMinBRL    float64 `json:"hpa_savings_if_min_brl"` // economia se todos HPA no mínimo
-	WorkloadsAnalyzed     int     `json:"workloads_analyzed"`
-	SuperprovisionedCount int     `json:"superprovisioned_count"`
-	OOMRiskCount          int     `json:"oom_risk_count"`
-	NoRequestCount        int     `json:"no_request_count"`
-	HPARemovableCount     int     `json:"hpa_removable_count"` // HPAs que nunca escalaram
+	TotalMonthlyCostBRL    float64 `json:"total_monthly_cost_brl"`
+	TotalMonthlyCostUSD    float64 `json:"total_monthly_cost_usd"`
+	TopNamespace           string  `json:"top_namespace"`
+	PotentialSavingsBRL    float64 `json:"potential_savings_brl"`   // soma de WasteBRL (Prometheus)
+	HPASavingsIfMinBRL     float64 `json:"hpa_savings_if_min_brl"`  // economia se todos HPA no mínimo
+	WorkloadsAnalyzed      int     `json:"workloads_analyzed"`
+	SuperprovisionedCount  int     `json:"superprovisioned_count"`
+	OOMRiskCount           int     `json:"oom_risk_count"`
+	NoRequestCount         int     `json:"no_request_count"`
+	HPARemovableCount      int     `json:"hpa_removable_count"`     // HPAs que nunca escalaram
+	FixedHighCostCount     int     `json:"fixed_high_cost_count"`   // workloads caros sem HPA (candidatos a adicionar HPA)
 }

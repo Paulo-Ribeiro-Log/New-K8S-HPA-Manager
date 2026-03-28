@@ -62,7 +62,7 @@ interface FinOpsWorkload {
   hpa_cost_min_brl: number;
   hpa_cost_max_brl: number;
   hpa_cost_current_brl: number;
-  verdict: "superprovisioned" | "ok" | "oom_risk" | "no_request" | "hpa_removable";
+  verdict: "superprovisioned" | "ok" | "oom_risk" | "no_request" | "hpa_removable" | "fixed_high_cost";
   // Prometheus — uso real CPU/Mem (últimos N dias)
   cpu_avg_millis?: number;
   cpu_p95_millis?: number;
@@ -91,6 +91,7 @@ interface FinOpsSummary {
   oom_risk_count: number;
   no_request_count: number;
   hpa_removable_count: number;
+  fixed_high_cost_count: number;
 }
 
 interface FinOpsReport {
@@ -297,6 +298,17 @@ function buildRecommendation(w: FinOpsWorkload, windowDays: number): Recommendat
   // ── kubectl: comandos HPA ─────────────────────────────────────────────────
   const kubectlList: string[] = [];
 
+  // ── Alto custo fixo sem HPA ───────────────────────────────────────────────
+  if (w.verdict === "fixed_high_cost") {
+    lines.push({ text: `Workload caro (${fmtBRL(w.cost_share_brl)}/mês) rodando com réplicas fixas`, highlight: true });
+    lines.push({ text: `Adicionar HPA permite escalar down em baixa demanda` });
+    const hpaMin = Math.max(1, Math.ceil(w.pods * 0.5));
+    const hpaMax = Math.max(hpaMin + 1, w.pods * 2);
+    kubectlList.push(
+      `kubectl autoscale deployment ${w.workload} -n ${w.namespace} --min=${hpaMin} --max=${hpaMax} --cpu-percent=70`
+    );
+  }
+
   if (safeMin !== undefined && safeMin < w.hpa_min && safeMax !== undefined && safeMax < w.hpa_max) {
     kubectlList.push(
       `kubectl patch hpa ${w.workload} -n ${w.namespace} -p '{"spec":{"minReplicas":${safeMin},"maxReplicas":${safeMax}}}'`
@@ -338,6 +350,7 @@ const verdictConfig: Record<string, { label: string; color: string; fill: string
   ok:               { label: "Eficiente",      fill: "#10b981", color: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",   icon: CheckCircle2 },
   no_request:       { label: "Sem Request",    fill: "#9ca3af", color: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",       icon: Info },
   hpa_removable:    { label: "Remover HPA",    fill: "#8b5cf6", color: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400", icon: Info },
+  fixed_high_cost:  { label: "Sem HPA",        fill: "#f97316", color: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",   icon: TrendingUp },
 };
 
 const POOL_COLORS = ["#6366f1", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ef4444", "#ec4899"];
@@ -478,6 +491,44 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
   });
   const mainTimeline = [...mainByDate.values()].sort((a, b) => a.date.localeCompare(b.date));
   const hasEfficiency = mainTimeline.some(p => p.cpuEff !== null);
+
+  // ── Projeção de custo 30d (regressão linear) ─────────────────────────────────
+  type MainPointExt = MainPoint & { projecao?: number };
+  const mainTimelineExt: MainPointExt[] = (() => {
+    const pts = mainTimeline.filter(p => p.custo !== null);
+    if (pts.length < 5) return mainTimeline;
+    const indexed = pts.map((p, i) => ({ x: i, y: p.custo as number }));
+    const n = indexed.length;
+    const sumX  = indexed.reduce((s, p) => s + p.x, 0);
+    const sumY  = indexed.reduce((s, p) => s + p.y, 0);
+    const sumXY = indexed.reduce((s, p) => s + p.x * p.y, 0);
+    const sumX2 = indexed.reduce((s, p) => s + p.x * p.x, 0);
+    const denom = n * sumX2 - sumX * sumX;
+    const slope = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
+    const intercept = (sumY - slope * sumX) / n;
+    // Função auxiliar para somar dias à string "MM-DD"
+    const addDays = (mmdd: string, d: number) => {
+      const [mm, day] = mmdd.split("-").map(Number);
+      const dt = new Date(2026, mm - 1, day + d);
+      return `${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+    };
+    const lastDate = mainTimeline[mainTimeline.length - 1]?.date ?? "";
+    // Ponto de ponte: último ponto real também recebe projecao
+    const extended: MainPointExt[] = mainTimeline.map(p => ({ ...p }));
+    extended[extended.length - 1].projecao = Math.max(0, Math.round(intercept + slope * (n - 1)));
+    // 30 dias de projeção
+    for (let i = 1; i <= 30; i++) {
+      extended.push({
+        date: addDays(lastDate, i),
+        custo: null,
+        cpuEff: null,
+        memEff: null,
+        nodes: null,
+        projecao: Math.max(0, Math.round(intercept + slope * (n - 1 + i))),
+      });
+    }
+    return extended;
+  })();
 
   // ── Namespace breakdown (stacked by verdict) ─────────────────────────────────
   // IMPORTANTE: total e wastePct ficam fora do objeto de dados do Recharts para não
@@ -652,7 +703,7 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
             <CircleDollarSign className="h-4 w-4 text-amber-500" />
             Custo Diário × Eficiência de Uso
             <span className="text-[10px] font-normal text-muted-foreground">
-              {hasEfficiency ? "barras = custo R$/dia · linhas = % do request realmente utilizado" : "barras = custo estimado R$/dia (baseado em contagem de nodes)"}
+              {hasEfficiency ? "barras = custo R$/dia · linhas = eficiência % · tracejado = projeção 30d" : "barras = custo estimado R$/dia · tracejado = projeção 30d (regressão linear)"}
             </span>
           </CardTitle>
         </CardHeader>
@@ -663,27 +714,34 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
             </div>
           ) : (
             <>
-            {hasEfficiency && (
+            {(hasEfficiency || mainTimelineExt.some(p => p.projecao !== undefined)) && (
               <div className="flex items-center gap-4 px-3 mb-1 flex-wrap">
-                <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                  <span className="inline-block w-5 h-0.5 bg-indigo-500 rounded" />CPU utilizado % (real/request)
-                </span>
-                <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                  <span className="inline-block w-5 h-0.5 bg-emerald-500 rounded" />Mem utilizado % (real/request)
-                </span>
-                <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                  <span className="inline-block w-5 border-t-2 border-dashed border-red-400" />35% — alerta desperdício
-                </span>
-                <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                  <span className="inline-block w-5 border-t-2 border-dashed border-green-500 opacity-60" />70% — uso saudável
-                </span>
-                <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                  <span className="inline-block w-5 border-t-2 border-amber-400" />100% — limite do request (acima = risco OOM)
-                </span>
+                {hasEfficiency && <>
+                  <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                    <span className="inline-block w-5 h-0.5 bg-indigo-500 rounded" />CPU utilizado % (real/request)
+                  </span>
+                  <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                    <span className="inline-block w-5 h-0.5 bg-emerald-500 rounded" />Mem utilizado % (real/request)
+                  </span>
+                  <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                    <span className="inline-block w-5 border-t-2 border-dashed border-red-400" />35% — alerta desperdício
+                  </span>
+                  <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                    <span className="inline-block w-5 border-t-2 border-dashed border-green-500 opacity-60" />70% — uso saudável
+                  </span>
+                  <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                    <span className="inline-block w-5 border-t-2 border-amber-400" />100% — limite do request (acima = risco OOM)
+                  </span>
+                </>}
+                {mainTimelineExt.some(p => p.projecao !== undefined) && (
+                  <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                    <span className="inline-block w-5 border-t-2 border-dashed border-amber-400 opacity-60" />Projeção 30d (tendência)
+                  </span>
+                )}
               </div>
             )}
             <ResponsiveContainer width="100%" height={hasEfficiency ? 190 : 170}>
-              <ComposedChart data={mainTimeline} margin={{ left: 8, right: hasEfficiency ? 44 : 8, top: 4, bottom: 0 }}>
+              <ComposedChart data={mainTimelineExt} margin={{ left: 8, right: hasEfficiency ? 44 : 8, top: 4, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.3} />
                 <XAxis dataKey="date" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
                 <YAxis yAxisId="cost" tickFormatter={v => `R$${v >= 1000 ? (v/1000).toFixed(1)+"k" : v}`}
@@ -694,13 +752,15 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
                 )}
                 <Tooltip content={({ active, payload, label }) => {
                   if (!active || !payload?.length) return null;
-                  const custo = payload.find(p => p.name === "custo");
-                  const cpuE  = payload.find(p => p.name === "cpuEff");
-                  const memE  = payload.find(p => p.name === "memEff");
+                  const custo  = payload.find(p => p.name === "custo");
+                  const proj   = payload.find(p => p.name === "projecao");
+                  const cpuE   = payload.find(p => p.name === "cpuEff");
+                  const memE   = payload.find(p => p.name === "memEff");
                   return (
                     <div style={{ background: "hsl(var(--card) / 0.97)", backdropFilter: "blur(8px)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.4)" }}>
                       <p style={{ fontWeight: 600, marginBottom: 4 }}>{label}</p>
                       {custo && <p style={{ color: "#f59e0b" }}>Custo estimado: {fmtBRL(custo.value as number)}</p>}
+                      {proj && !custo && <p style={{ color: "#f59e0b", opacity: 0.7 }}>Projeção: {fmtBRL(proj.value as number)}</p>}
                       {cpuE  && <p style={{ color: "#6366f1" }}>CPU utilizado: {cpuE.value}% do request{(cpuE.value as number) > 100 ? " ⚠ over-request!" : ""}</p>}
                       {memE  && <p style={{ color: "#10b981" }}>Mem utilizada: {memE.value}% do request{(memE.value as number) > 100 ? " ⚠ risco OOM!" : ""}</p>}
                       {cpuE && (cpuE.value as number) < 35 && <p style={{ color: "#f87171", fontWeight: 600 }}>⚠ CPU abaixo de 35% — alto desperdício</p>}
@@ -708,6 +768,12 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
                   );
                 }} />
                 <Bar yAxisId="cost" dataKey="custo" name="custo" fill="#f59e0b" fillOpacity={0.65} radius={[2,2,0,0]} maxBarSize={16} />
+                {/* Linha de projeção de custo (tracejada) */}
+                {mainTimelineExt.some(p => p.projecao !== undefined) && (
+                  <Line yAxisId="cost" dataKey="projecao" name="projecao" type="monotone"
+                    stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="6 3" dot={false}
+                    strokeOpacity={0.6} connectNulls legendType="none" />
+                )}
                 {hasEfficiency && <>
                   <Line yAxisId="eff" dataKey="cpuEff" name="cpuEff" type="monotone"
                     stroke="#6366f1" strokeWidth={2} dot={false} connectNulls legendType="none" />
@@ -992,10 +1058,54 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
 
 // ─── Aba: Node Pools ──────────────────────────────────────────────────────────
 
-function NodePoolsTab({ pools }: { pools: FinOpsPool[] }) {
+function NodePoolsTab({ pools, workloads }: { pools: FinOpsPool[]; workloads: FinOpsWorkload[] }) {
   const total = pools.reduce((s, p) => s + p.monthly_cost_brl, 0);
   const totalCPU = pools.reduce((s, p) => s + p.total_cpu_millicores, 0);
   const totalMem = pools.reduce((s, p) => s + p.total_memory_mi, 0);
+
+  // ── Rightsizing: utilização real vs capacidade ──────────────────────────────
+  // cpu_request_millis = total de todos os pods do workload (soma acumulada no backend)
+  const totalCPUReqMillis  = workloads.reduce((s, w) => s + w.cpu_request_millis, 0);
+  const totalMemReqMi      = workloads.reduce((s, w) => s + w.mem_request_mi, 0);
+  const totalCPUActualMillis = workloads.reduce((s, w) => s + (w.cpu_avg_millis ?? 0) * w.pods, 0);
+  const totalMemActualMi     = workloads.reduce((s, w) => s + (w.mem_avg_mi ?? 0) * w.pods, 0);
+  const hasPrometheus = totalCPUActualMillis > 0;
+
+  const allocCPUPct  = totalCPU > 0 ? Math.round(totalCPUReqMillis / totalCPU * 100) : null;
+  const allocMemPct  = totalMem > 0 ? Math.round(totalMemReqMi / totalMem * 100) : null;
+  const actualCPUPct = hasPrometheus && totalCPU > 0 ? Math.round(totalCPUActualMillis / totalCPU * 100) : null;
+  const actualMemPct = hasPrometheus && totalMem > 0 ? Math.round(totalMemActualMi / totalMem * 100) : null;
+
+  // Recomendações de scale-down por pool (apenas User pools com node_count > 2)
+  const utilizationPct = actualCPUPct ?? allocCPUPct ?? 0;
+  const rightsizingRecs = pools
+    .filter(p => p.mode !== "System" && p.node_count > 2 && utilizationPct < 55)
+    .map(p => {
+      const cpuPerNode = p.vm_cpu_cores * 1000;
+      const memPerNode = p.vm_memory_gb * 1024;
+      // Capacidade mínima segura: max(request, actual) × 1.4 (40% headroom)
+      const safeCPUMillis = Math.max(totalCPUReqMillis, totalCPUActualMillis) * 1.4;
+      const safeMemMi     = Math.max(totalMemReqMi, totalMemActualMi) * 1.4;
+      // Quantos nodes deste pool seriam necessários apenas para este pool
+      // (heurística: se é o único pool user, seria o total; se há vários, proporcional)
+      const otherUserCPU = totalCPU - p.total_cpu_millicores;
+      const cpuRemainingNeed = Math.max(0, safeCPUMillis - otherUserCPU);
+      const memRemainingNeed = Math.max(0, safeMemMi - (totalMem - p.total_memory_mi));
+      const minByCPU = cpuPerNode > 0 ? Math.ceil(cpuRemainingNeed / cpuPerNode) : p.node_count;
+      const minByMem = memPerNode > 0 ? Math.ceil(memRemainingNeed / memPerNode) : p.node_count;
+      const safeCount = Math.max(2, minByCPU, minByMem);
+      if (safeCount >= p.node_count) return null;
+      const removable = p.node_count - safeCount;
+      const costPerNodeBRL = p.node_count > 0 ? p.monthly_cost_brl / p.node_count : 0;
+      return {
+        pool: p,
+        safeCount,
+        removable,
+        savingBRL: Math.round(removable * costPerNodeBRL),
+        cmd: `az aks nodepool scale --cluster-name <CLUSTER_NAME> --name ${p.name} --node-count ${safeCount} --resource-group <RESOURCE_GROUP>`,
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
 
   // Chart de capacidade: vCPUs e RAM por pool
   const capData = pools.map((p, i) => ({
@@ -1011,6 +1121,87 @@ function NodePoolsTab({ pools }: { pools: FinOpsPool[] }) {
         <span>{pools.length} node pools • Total: <strong className="text-foreground">{fmtBRL(total)}/mês</strong></span>
         <span className="text-xs">Capacidade total: <strong className="text-foreground">{(totalCPU / 1000).toFixed(0)} vCPUs · {(totalMem / 1024).toFixed(0)} GB RAM</strong></span>
       </div>
+
+      {/* ── Utilização do Cluster (Rightsizing 3a) ─────────────────────────── */}
+      {(allocCPUPct !== null || allocMemPct !== null) && (
+        <Card className={rightsizingRecs.length > 0 ? "border-orange-200 dark:border-orange-900/40" : ""}>
+          <CardHeader className="pb-1 pt-3 px-4">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Cpu className="h-4 w-4 text-orange-500" />
+              Utilização do Cluster
+              {!hasPrometheus && (
+                <span className="text-[10px] font-normal text-muted-foreground">(baseado em requests — ative Prometheus para uso real)</span>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-3 space-y-3">
+            {/* Barras de utilização */}
+            <div className="grid grid-cols-2 gap-4">
+              {allocCPUPct !== null && (
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-muted-foreground">CPU alocada</span>
+                    <span className={`font-semibold ${allocCPUPct < 30 ? "text-red-500" : allocCPUPct < 60 ? "text-yellow-500" : "text-green-500"}`}>{allocCPUPct}%</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-muted overflow-hidden">
+                    <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(100, allocCPUPct)}%`, background: allocCPUPct < 30 ? "#ef4444" : allocCPUPct < 60 ? "#f59e0b" : "#10b981" }} />
+                  </div>
+                  {actualCPUPct !== null && (
+                    <div className="flex justify-between text-xs mt-1">
+                      <span className="text-muted-foreground text-[10px]">CPU real (P95 avg)</span>
+                      <span className={`text-[10px] font-semibold ${actualCPUPct < 20 ? "text-red-500" : "text-blue-500"}`}>{actualCPUPct}%</span>
+                    </div>
+                  )}
+                </div>
+              )}
+              {allocMemPct !== null && (
+                <div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-muted-foreground">Mem alocada</span>
+                    <span className={`font-semibold ${allocMemPct < 30 ? "text-red-500" : allocMemPct < 60 ? "text-yellow-500" : "text-green-500"}`}>{allocMemPct}%</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-muted overflow-hidden">
+                    <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(100, allocMemPct)}%`, background: allocMemPct < 30 ? "#ef4444" : allocMemPct < 60 ? "#f59e0b" : "#10b981" }} />
+                  </div>
+                  {actualMemPct !== null && (
+                    <div className="flex justify-between text-xs mt-1">
+                      <span className="text-muted-foreground text-[10px]">Mem real (avg)</span>
+                      <span className={`text-[10px] font-semibold ${actualMemPct < 20 ? "text-red-500" : "text-blue-500"}`}>{actualMemPct}%</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Recomendações de scale-down */}
+            {rightsizingRecs.length > 0 && (
+              <div className="space-y-2 pt-1 border-t">
+                <p className="text-xs font-medium text-orange-600 dark:text-orange-400">
+                  Oportunidades de rightsizing ({rightsizingRecs.length} pool{rightsizingRecs.length > 1 ? "s" : ""}):
+                </p>
+                {rightsizingRecs.map(r => (
+                  <div key={r.pool.name} className="bg-orange-50/60 dark:bg-orange-950/20 rounded-lg p-3 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium">{r.pool.name}</span>
+                      <span className="text-xs font-bold text-green-600">-{fmtBRL(r.savingBRL)}/mês</span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Reduzir de <strong>{r.pool.node_count}</strong> → <strong>{r.safeCount}</strong> nodes
+                      ({r.removable} node{r.removable > 1 ? "s" : ""} • {r.pool.vm_size})
+                    </p>
+                    <KubectlBlock cmd={r.cmd} />
+                  </div>
+                ))}
+              </div>
+            )}
+            {utilizationPct > 0 && rightsizingRecs.length === 0 && (
+              <p className="text-[11px] text-muted-foreground">
+                Utilização dentro do esperado — nenhum pool elegível para scale-down com margem segura de 40%.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Chart de capacidade */}
       <Card>
@@ -1140,7 +1331,7 @@ function WorkloadsTab({ workloads, windowDays }: { workloads: FinOpsWorkload[]; 
       ? (sortAsc ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)
       : <ArrowUpDown className="h-3 w-3 opacity-30" />;
 
-  const filterButtons = ["all", "superprovisioned", "oom_risk", "hpa_removable", "ok", "no_request"];
+  const filterButtons = ["all", "superprovisioned", "fixed_high_cost", "oom_risk", "hpa_removable", "ok", "no_request"];
 
   // Mini chart: custo por namespace (top 6)
   const nsCostMap = workloads.reduce<Record<string, number>>((acc, w) => {
@@ -2137,17 +2328,19 @@ const ACTION_TYPE_LABELS: Record<string, string> = {
   hpa_max:           "Reduzir HPA max",
   hpa_and_resources: "HPA + Resources",
   remove_hpa:        "Remover HPA",
+  add_hpa:           "Adicionar HPA",
   resources:         "Ajustar Resources",
   oom_risk:          "Risco OOM",
   no_request:        "Definir Requests",
   other:             "Outros",
 };
-const GROUP_ORDER = ["hpa_min", "hpa_and_resources", "hpa_max", "remove_hpa", "resources", "oom_risk", "no_request", "other"];
+const GROUP_ORDER = ["hpa_min", "hpa_and_resources", "hpa_max", "remove_hpa", "add_hpa", "resources", "oom_risk", "no_request", "other"];
 
 function deriveActionType(w: FinOpsWorkload, rec: Recommendation): string {
-  if (w.verdict === "hpa_removable") return "remove_hpa";
-  if (w.verdict === "no_request")    return "no_request";
-  if (w.verdict === "oom_risk")      return "oom_risk";
+  if (w.verdict === "hpa_removable")   return "remove_hpa";
+  if (w.verdict === "no_request")      return "no_request";
+  if (w.verdict === "oom_risk")        return "oom_risk";
+  if (w.verdict === "fixed_high_cost") return "add_hpa";
   const hasHpaMin = rec.kubectlList.some(c => c.includes("minReplicas"));
   const hasHpaMax = rec.kubectlList.some(c => c.includes("maxReplicas"));
   const hasRes    = rec.kubectlList.some(c => c.includes("set resources"));
@@ -2180,7 +2373,8 @@ function OpportunitiesTab({ workloads, windowDays }: {
   // ── Build lista completa de oportunidades ─────────────────────────────────────
   const allOpportunities: OpItem[] = workloads
     .filter(w => w.verdict === "superprovisioned" || w.verdict === "hpa_removable" ||
-                 w.verdict === "no_request" || w.verdict === "oom_risk" || (w.waste_brl ?? 0) > 0)
+                 w.verdict === "no_request" || w.verdict === "oom_risk" ||
+                 w.verdict === "fixed_high_cost" || (w.waste_brl ?? 0) > 0)
     .map(w => {
       const rec = buildRecommendation(w, windowDays);
       const saving = rec.savingBRL > 0
@@ -2790,9 +2984,9 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
               </TabsTrigger>
               <TabsTrigger value="opportunities">
                 Oportunidades
-                {(report.summary.superprovisioned_count + report.summary.oom_risk_count) > 0 && (
+                {(report.summary.superprovisioned_count + report.summary.oom_risk_count + (report.summary.fixed_high_cost_count ?? 0)) > 0 && (
                   <Badge variant="destructive" className="ml-1 text-[10px]">
-                    {report.summary.superprovisioned_count + report.summary.oom_risk_count}
+                    {report.summary.superprovisioned_count + report.summary.oom_risk_count + (report.summary.fixed_high_cost_count ?? 0)}
                   </Badge>
                 )}
               </TabsTrigger>
@@ -2803,7 +2997,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 <DashboardTab cluster={cluster} report={report} />
               </TabsContent>
               <TabsContent value="nodepools" className="mt-0 h-full">
-                <NodePoolsTab pools={report.node_pools} />
+                <NodePoolsTab pools={report.node_pools} workloads={report.workloads} />
               </TabsContent>
               <TabsContent value="workloads" className="mt-0 h-full">
                 <WorkloadsTab workloads={report.workloads} windowDays={report.window_days || windowDays} />
