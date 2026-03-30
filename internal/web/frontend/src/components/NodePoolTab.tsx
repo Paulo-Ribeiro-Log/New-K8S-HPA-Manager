@@ -118,11 +118,11 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
       try {
         const result = await apiClient.abortNodePoolOperation(pool.cluster_name, pool.resource_group, poolName);
         if (result.success) {
-          toast.warning();
+          toast.warning("Operação abortada no Azure. Aguarde antes de tentar Reconcile.");
         }
       } catch {
         // Pool pode não ter operação ativa no backend (ex: já terminou)
-        toast.info();
+        toast.info("Nenhuma operação ativa encontrada para abortar.");
       }
     }
   }, [reconcilingPool, nodePools]);

@@ -40,6 +40,7 @@ export function useHealthChecking() {
           return response.session_id;
         } else {
           console.error("[useHealthChecking] Response not successful:", response);
+          setIsRunning(false);
           toast({
             title: "❌ Erro ao iniciar health check",
             description: "Falha ao iniciar health check",

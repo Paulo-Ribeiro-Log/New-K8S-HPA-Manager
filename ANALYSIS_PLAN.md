@@ -14,10 +14,10 @@ Gerado em: 2026-03-29
 
 ## P1 — Alto (bugs que afetam UX de forma perceptível)
 
-- [ ] **MonitoringEngine não é restartável** — `Stop()` fecha `stopCh`/cancela `ctx` sem reiniciar; chamada a `Start()` após `Stop()` falha (`internal/monitoring/engine/monitoring_v2.go:83-110`)
-- [ ] **`context.Background()` em handlers** — operações continuam após cliente desconectar; usar `c.Request.Context()` (`nodepools.go:403,629`, `cronjobs.go:78,373,392`, `prometheus.go:87,105,123,210,484`)
-- [ ] **`isRunning` nunca reseta em sucesso** — botão "Run" do Health Check fica desabilitado permanentemente (`src/hooks/useHealthChecking.ts:26-59`)
-- [ ] **Toast vazio no NodePoolTab** — `toast.warning()` e `toast.info()` sem mensagem (`src/components/NodePoolTab.tsx:121,125`)
+- [x] **MonitoringEngine não é restartável** — `Stop()` fecha `stopCh`/cancela `ctx` sem reiniciar; chamada a `Start()` após `Stop()` falha (`internal/monitoring/engine/monitoring_v2.go:83-110`)
+- [x] **`context.Background()` em handlers** — operações continuam após cliente desconectar; usar `c.Request.Context()` (`nodepools.go:403,629`, `cronjobs.go:78,373,392`, `prometheus.go:87,105,123,210,484`)
+- [x] **`isRunning` nunca reseta em sucesso** — botão "Run" do Health Check fica desabilitado permanentemente (`src/hooks/useHealthChecking.ts:26-59`)
+- [x] **Toast vazio no NodePoolTab** — `toast.warning()` e `toast.info()` sem mensagem (`src/components/NodePoolTab.tsx:121,125`)
 
 ---
 
