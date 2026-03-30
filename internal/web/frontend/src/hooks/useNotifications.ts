@@ -33,7 +33,7 @@ export function useNotifications(pollingInterval = 10000) {
 
       const response = await fetch(API_BASE, {
         headers: {
-          Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}`,
+          Authorization: `Bearer ${localStorage.getItem("auth_token") || ""}`,
         },
       });
 
@@ -58,7 +58,7 @@ export function useNotifications(pollingInterval = 10000) {
       const response = await fetch(`${API_BASE}/${id}/read`, {
         method: "PUT",
         headers: {
-          Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}`,
+          Authorization: `Bearer ${localStorage.getItem("auth_token") || ""}`,
         },
       });
 
@@ -82,7 +82,7 @@ export function useNotifications(pollingInterval = 10000) {
       const response = await fetch(`${API_BASE}/read-all`, {
         method: "PUT",
         headers: {
-          Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}`,
+          Authorization: `Bearer ${localStorage.getItem("auth_token") || ""}`,
         },
       });
 
@@ -104,7 +104,7 @@ export function useNotifications(pollingInterval = 10000) {
       const response = await fetch(API_BASE, {
         method: "DELETE",
         headers: {
-          Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}`,
+          Authorization: `Bearer ${localStorage.getItem("auth_token") || ""}`,
         },
       });
 

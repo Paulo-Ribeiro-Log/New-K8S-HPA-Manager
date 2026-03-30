@@ -35,6 +35,7 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
   const [applyConfirmOpen, setApplyConfirmOpen] = useState(false);
   const [hpaToApply, setHpaToApply] = useState<{ hpa: HPA; original: HPA } | null>(null);
   const [isApplying, setIsApplying] = useState(false);
+  const [isSwitchingContext, setIsSwitchingContext] = useState(false);
 
   const staging = useStaging();
   
@@ -70,14 +71,17 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
   }, [namespaces, selectedNamespace]);
 
   const handleClusterChange = async (newCluster: string) => {
-    if (newCluster === selectedCluster) return;
+    if (newCluster === selectedCluster || isSwitchingContext) return;
 
+    setIsSwitchingContext(true);
     try {
       await apiClient.switchContext(newCluster);
       setSelectedCluster(newCluster);
       toast.success(`Contexto alterado para: ${newCluster}`);
     } catch (error) {
       toast.error(`Erro ao alterar contexto: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
+    } finally {
+      setIsSwitchingContext(false);
     }
   };
 
@@ -144,9 +148,9 @@ export const HPATab = ({ onHPAModified }: HPATabProps) => {
       <div className="flex items-center gap-4 p-4 border-b bg-muted/20">
         <div className="flex items-center gap-2">
           <label className="text-sm font-medium">Cluster:</label>
-          <Select value={selectedCluster} onValueChange={handleClusterChange}>
+          <Select value={selectedCluster} onValueChange={handleClusterChange} disabled={isSwitchingContext}>
             <SelectTrigger className="w-[280px]">
-              <SelectValue placeholder="Selecionar cluster..." />
+              <SelectValue placeholder={isSwitchingContext ? "Alternando..." : "Selecionar cluster..."} />
             </SelectTrigger>
             <SelectContent>
               {clusters.map((cluster) => (
