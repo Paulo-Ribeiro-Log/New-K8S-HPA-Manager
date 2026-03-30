@@ -406,7 +406,7 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 			return
 		}
 
-		ctx := context.Background()
+		ctx := c.Request.Context()
 
 		// Buscar nodes do node pool
 		nodes, err := k8sClient.GetNodesInNodePool(ctx, nodePoolName)
@@ -632,7 +632,7 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 		reporter.SendAzureStarted()
 	}
 
-	if err := applyNodePoolChanges(context.Background(), clusterNameForAzure, resourceGroup, op); err != nil {
+	if err := applyNodePoolChanges(c.Request.Context(), clusterNameForAzure, resourceGroup, op); err != nil {
 		if reporter != nil {
 			reporter.SendError("azure", fmt.Sprintf("Failed to update node pool: %v", err))
 		}

@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -84,7 +83,7 @@ func (h *PrometheusHandler) List(c *gin.Context) {
 	}
 
 	// Listar Deployments relacionados ao Prometheus/Grafana
-	deployments, err := client.AppsV1().Deployments(namespaceFilter).List(context.Background(), metav1.ListOptions{})
+	deployments, err := client.AppsV1().Deployments(namespaceFilter).List(c.Request.Context(), metav1.ListOptions{})
 	if err == nil {
 		fmt.Printf("[DEBUG] Found %d deployments in namespace filter '%s'\n", len(deployments.Items), namespaceFilter)
 		for _, dep := range deployments.Items {
@@ -102,7 +101,7 @@ func (h *PrometheusHandler) List(c *gin.Context) {
 	}
 
 	// Listar StatefulSets relacionados ao Prometheus
-	statefulSets, err := client.AppsV1().StatefulSets(namespaceFilter).List(context.Background(), metav1.ListOptions{})
+	statefulSets, err := client.AppsV1().StatefulSets(namespaceFilter).List(c.Request.Context(), metav1.ListOptions{})
 	if err == nil {
 		fmt.Printf("[DEBUG] Found %d statefulsets in namespace filter '%s'\n", len(statefulSets.Items), namespaceFilter)
 		for _, sts := range statefulSets.Items {
@@ -120,7 +119,7 @@ func (h *PrometheusHandler) List(c *gin.Context) {
 	}
 
 	// Listar DaemonSets relacionados ao Prometheus
-	daemonSets, err := client.AppsV1().DaemonSets(namespaceFilter).List(context.Background(), metav1.ListOptions{})
+	daemonSets, err := client.AppsV1().DaemonSets(namespaceFilter).List(c.Request.Context(), metav1.ListOptions{})
 	if err == nil {
 		fmt.Printf("[DEBUG] Found %d daemonsets in namespace filter '%s'\n", len(daemonSets.Items), namespaceFilter)
 		for _, ds := range daemonSets.Items {
@@ -207,7 +206,7 @@ func (h *PrometheusHandler) Update(c *gin.Context) {
 	}
 
 	// Atualizar usando Server-Side Apply (compatível com Helm)
-	ctx := context.Background()
+	ctx := c.Request.Context()
 	start := time.Now()
 
 	switch resourceType {
@@ -481,7 +480,7 @@ func (h *PrometheusHandler) Rollout(c *gin.Context) {
 	// Criar nosso wrapper personalizado com métodos de rollout
 	client := kubernetes.NewClient(clientSet, cluster)
 
-	ctx := context.Background()
+	ctx := c.Request.Context()
 
 	// Executar rollout com base no tipo de recurso
 	start := time.Now()

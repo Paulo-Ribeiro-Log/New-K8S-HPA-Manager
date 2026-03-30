@@ -72,6 +72,13 @@ func (e *MonitoringEngineV2) Start() error {
 		return fmt.Errorf("engine já está rodando")
 	}
 
+	// Reinicializar ctx, stopCh e cache para suportar restart após Stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	e.ctx = ctx
+	e.cancel = cancel
+	e.stopCh = make(chan struct{})
+	e.cache = cache.NewMemoryCache(30 * time.Second)
+
 	e.running = true
 
 	log.Info().Msg("MonitoringEngineV2 iniciada")
