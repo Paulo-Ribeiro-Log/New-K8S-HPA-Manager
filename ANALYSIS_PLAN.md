@@ -23,12 +23,12 @@ Gerado em: 2026-03-29
 
 ## P2 — Médio (UX e manutenibilidade)
 
-- [ ] **`switchContext` global** — troca de cluster muda contexto kubectl para todos os usuários simultaneamente (`HPATab.tsx:72-81`, `NodePoolTab.tsx:130-139`)
-- [ ] **Token POC hardcoded** — fallback `"poc-token-123"` + chave localStorage errada `"token"` vs `"auth_token"` (`src/hooks/useNotifications.ts:36`)
-- [ ] **`useSSE` reconecta a cada render** — callbacks instáveis nas dependências do `useEffect` causam reconexão e perda de eventos (`src/hooks/useSSE.ts:108`)
-- [ ] **`useSSE` acumula eventos sem limite** — array cresce indefinidamente em operações longas (`src/hooks/useSSE.ts:68`)
+- [x] **`switchContext` global** — adicionado `isSwitchingContext` com disable+placeholder "Alternando..." no Select durante a troca (`HPATab.tsx`, `NodePoolTab.tsx`)
+- [x] **Token POC hardcoded** — `"token"` → `"auth_token"`, fallback `"poc-token-123"` → `""` em todas as 4 ocorrências (`src/hooks/useNotifications.ts`)
+- [x] **`useSSE` reconecta a cada render** — callbacks movidos para refs (`onEventRef`, `onErrorRef`, `onCompleteRef`); removidos das deps do `useEffect` (`src/hooks/useSSE.ts`)
+- [x] **`useSSE` acumula eventos sem limite** — array limitado a `MAX_EVENTS = 200`; entradas antigas descartadas automaticamente (`src/hooks/useSSE.ts`)
 - [ ] **7 hooks duplicados em `useAPI.ts`** — `useConfigMaps`, `useSecrets`, `useDeployments`, `useDaemonSets`, `useStatefulSets`, `useIngresses`, `usePods` são quase idênticos; `useIngresses`/`usePods` sem auto-refresh (inconsistência)
-- [ ] **Código morto** — `useCronJobsOld`, `usePrometheusOld` (`useAPI.ts:646-751`) e `ApplyAllModal_old.tsx` nunca importados
+- [x] **Código morto** — removidos `useCronJobsOld`, `usePrometheusOld` e `ApplyAllModal_old.tsx`
 - [ ] **Padrão de resposta HTTP inconsistente** — campo de erro ora `"error"`, ora `"message"`, ora `"error.message"` entre handlers
 
 ---

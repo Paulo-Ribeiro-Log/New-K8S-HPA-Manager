@@ -42,6 +42,7 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
   const [editorKey, setEditorKey] = useState(0);
   // Flag para sinalizar que o remount deve ocorrer após o próximo update de nodePools
   const pendingEditorRemountRef = useRef(false);
+  const [isSwitchingContext, setIsSwitchingContext] = useState(false);
 
   // API hooks - só executam quando cluster está selecionado
   const { clusters } = useClusters();
@@ -128,14 +129,17 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
   }, [reconcilingPool, nodePools]);
 
   const handleClusterChange = async (newCluster: string) => {
-    if (newCluster === selectedCluster) return;
+    if (newCluster === selectedCluster || isSwitchingContext) return;
 
+    setIsSwitchingContext(true);
     try {
       await apiClient.switchContext(newCluster);
       setSelectedCluster(newCluster);
       toast.success(`Contexto alterado para: ${newCluster}`);
     } catch (error) {
       toast.error(`Erro ao alterar contexto: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
+    } finally {
+      setIsSwitchingContext(false);
     }
   };
 
@@ -199,9 +203,9 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
       <div className="flex items-center gap-4 p-4 border-b bg-muted/20">
         <div className="flex items-center gap-2">
           <label className="text-sm font-medium">Cluster:</label>
-          <Select value={selectedCluster} onValueChange={handleClusterChange}>
+          <Select value={selectedCluster} onValueChange={handleClusterChange} disabled={isSwitchingContext}>
             <SelectTrigger className="w-[280px]">
-              <SelectValue placeholder="Selecionar cluster..." />
+              <SelectValue placeholder={isSwitchingContext ? "Alternando..." : "Selecionar cluster..."} />
             </SelectTrigger>
             <SelectContent>
               {clusters.map((cluster) => (
