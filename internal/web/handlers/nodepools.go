@@ -73,7 +73,9 @@ func (h *NodePoolHandler) Abort(c *gin.Context) {
 	}
 
 	// Chamar az aks nodepool operation-abort — cancela a operação ARM em andamento
-	out, err := exec.Command(
+	abortCtx, abortCancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer abortCancel()
+	out, err := exec.CommandContext(abortCtx,
 		"az", "aks", "nodepool", "operation-abort",
 		"--resource-group", resourceGroup,
 		"--cluster-name", clusterNameForAzure,
@@ -219,16 +221,20 @@ func (h *NodePoolHandler) List(c *gin.Context) {
 	}
 
 	// Configurar subscription
-	cmd := exec.Command("az", "account", "set", "--subscription", clusterConfig.Subscription)
-	if err := cmd.Run(); err != nil {
-		c.JSON(500, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "AZURE_SUBSCRIPTION_ERROR",
-				"message": fmt.Sprintf("Failed to set subscription: %v", err),
-			},
-		})
-		return
+	{
+		subCtx, subCancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+		err := exec.CommandContext(subCtx, "az", "account", "set", "--subscription", clusterConfig.Subscription).Run()
+		subCancel()
+		if err != nil {
+			c.JSON(500, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "AZURE_SUBSCRIPTION_ERROR",
+					"message": fmt.Sprintf("Failed to set subscription: %v", err),
+				},
+			})
+			return
+		}
 	}
 
 	// Normalizar nome do cluster (remover -admin se existir)
