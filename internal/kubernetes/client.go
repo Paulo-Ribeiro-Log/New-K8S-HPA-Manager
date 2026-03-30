@@ -73,6 +73,11 @@ func isSystemNamespace(namespace string) bool {
 	return systemNamespaces[namespace]
 }
 
+// IsSystemNamespace exporta a verificação de namespace de sistema para uso externo
+func IsSystemNamespace(namespace string) bool {
+	return systemNamespaces[namespace]
+}
+
 // Client encapsula as operações do Kubernetes
 type Client struct {
 	clientset      kubernetes.Interface

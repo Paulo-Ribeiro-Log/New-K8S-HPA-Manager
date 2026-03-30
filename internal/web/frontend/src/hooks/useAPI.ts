@@ -315,6 +315,7 @@ export function useConfigMaps(cluster?: string, namespaces?: string[], showSyste
     if (!cluster) return;
     let cancelled = false;
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       apiClient.getConfigMaps(cluster, namespaces, undefined, showSystem, true)
         .then(data => { if (!cancelled) setConfigMaps(data); })
         .catch(() => {});
@@ -357,6 +358,7 @@ export function useSecrets(cluster?: string, namespaces?: string[], showSystem: 
     if (!cluster) return;
     let cancelled = false;
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       apiClient.getSecrets(cluster, namespaces, showSystem, true)
         .then(data => { if (!cancelled) setSecrets(data); })
         .catch(() => {});
@@ -399,6 +401,7 @@ export function useDeployments(cluster?: string, namespaces?: string[], showSyst
     if (!cluster) return;
     let cancelled = false;
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       apiClient.getDeployments(cluster, namespaces, undefined, showSystem, true)
         .then(data => { if (!cancelled) setDeployments(data); })
         .catch(() => {});
@@ -442,6 +445,7 @@ export function useDaemonSets(cluster?: string, namespaces?: string[], showSyste
     if (!cluster) return;
     let cancelled = false;
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       apiClient.getDaemonSets(cluster, namespaces, undefined, showSystem, true)
         .then(data => { if (!cancelled) setDaemonSets(data); })
         .catch(() => {});
@@ -490,6 +494,7 @@ export function useStatefulSets(cluster?: string, namespaces?: string[], showSys
     if (!cluster) return;
     let cancelled = false;
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       apiClient.getStatefulSets(cluster, namespaces, undefined, showSystem, true)
         .then(data => { if (!cancelled) setStatefulSets(data); })
         .catch(() => {});

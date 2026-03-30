@@ -159,7 +159,7 @@ func (e *MonitoringEngineV2) getOrCreateClient(cluster string) (*client.Promethe
 
 // GetHPAMetrics busca métricas de um HPA (com cache de 30s)
 func (e *MonitoringEngineV2) GetHPAMetrics(cluster, namespace, hpaName string) (*HPAMetrics, error) {
-	log.Info().
+	log.Debug().
 		Str("cluster", cluster).
 		Str("namespace", namespace).
 		Str("hpa", hpaName).
