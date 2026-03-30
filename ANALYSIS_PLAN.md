@@ -35,9 +35,9 @@ Gerado em: 2026-03-29
 
 ## P3 — Baixo (performance e limpeza)
 
-- [ ] **N+1 queries no HPA List** — lista namespaces + query por namespace; usar `ListHPAs(ctx, "")` para buscar tudo de uma vez (`internal/web/handlers/hpas.go:70-92`)
-- [ ] **7 polling intervals simultâneos** — cada hook cria próprio `setInterval`; adicionar visibility-based polling (`document.visibilityState`) (`src/hooks/useAPI.ts`)
-- [ ] **Logging excessivo em `Info`** — `GetHPAMetrics` loga em Info a cada chamada; mudar para `Debug` (`internal/monitoring/engine/monitoring_v2.go:153`)
+- [x] **N+1 queries no HPA List** — substituído loop de namespace+query por `ListHPAs(ctx, "")` + filtro pós-query via `IsSystemNamespace` exportado (`internal/web/handlers/hpas.go`, `internal/kubernetes/client.go`)
+- [x] **7 polling intervals simultâneos** — adicionado `if (document.visibilityState !== "visible") return` nos 5 hooks com setInterval (ConfigMaps, Secrets, Deployments, DaemonSets, StatefulSets) (`src/hooks/useAPI.ts`)
+- [x] **Logging excessivo em `Info`** — `GetHPAMetrics` alterado de `log.Info()` para `log.Debug()` (`internal/monitoring/engine/monitoring_v2.go`)
 
 ---
 
