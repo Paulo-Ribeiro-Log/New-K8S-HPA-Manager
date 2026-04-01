@@ -7,8 +7,6 @@ import type {
   Namespace,
   HPA,
   NodePool,
-  CronJob,
-  PrometheusResource,
   ConfigMapSummary,
   SecretSummary,
   DeploymentSummary,
@@ -317,6 +315,7 @@ export function useConfigMaps(cluster?: string, namespaces?: string[], showSyste
     if (!cluster) return;
     let cancelled = false;
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       apiClient.getConfigMaps(cluster, namespaces, undefined, showSystem, true)
         .then(data => { if (!cancelled) setConfigMaps(data); })
         .catch(() => {});
@@ -359,6 +358,7 @@ export function useSecrets(cluster?: string, namespaces?: string[], showSystem: 
     if (!cluster) return;
     let cancelled = false;
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       apiClient.getSecrets(cluster, namespaces, showSystem, true)
         .then(data => { if (!cancelled) setSecrets(data); })
         .catch(() => {});
@@ -401,6 +401,7 @@ export function useDeployments(cluster?: string, namespaces?: string[], showSyst
     if (!cluster) return;
     let cancelled = false;
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       apiClient.getDeployments(cluster, namespaces, undefined, showSystem, true)
         .then(data => { if (!cancelled) setDeployments(data); })
         .catch(() => {});
@@ -444,6 +445,7 @@ export function useDaemonSets(cluster?: string, namespaces?: string[], showSyste
     if (!cluster) return;
     let cancelled = false;
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       apiClient.getDaemonSets(cluster, namespaces, undefined, showSystem, true)
         .then(data => { if (!cancelled) setDaemonSets(data); })
         .catch(() => {});
@@ -492,6 +494,7 @@ export function useStatefulSets(cluster?: string, namespaces?: string[], showSys
     if (!cluster) return;
     let cancelled = false;
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       apiClient.getStatefulSets(cluster, namespaces, undefined, showSystem, true)
         .then(data => { if (!cancelled) setStatefulSets(data); })
         .catch(() => {});
@@ -641,113 +644,6 @@ export function useUpdatePrometheusResource() {
       });
     },
   });
-}
-
-export function useCronJobsOld(cluster?: string, namespace?: string) {
-  const [cronJobs, setCronJobs] = useState<CronJob[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchCronJobs = async () => {
-    if (!cluster) {
-      setCronJobs([]);
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setError(null);
-      const data = await apiClient.getCronJobs(cluster);
-      setCronJobs(data);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to fetch cronjobs"
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const updateCronJob = async (
-    jobCluster: string,
-    jobNamespace: string,
-    jobName: string,
-    updates: Partial<CronJob>
-  ) => {
-    try {
-      await apiClient.updateCronJob(jobCluster, jobNamespace, jobName, updates);
-      await fetchCronJobs(); // Refresh list
-    } catch (err) {
-      throw err;
-    }
-  };
-
-  useEffect(() => {
-    fetchCronJobs();
-  }, [cluster, namespace]);
-
-  return { cronJobs, loading, error, refetch: fetchCronJobs, updateCronJob };
-}
-
-export function usePrometheusOld(cluster?: string, namespace?: string) {
-  const [resources, setResources] = useState<PrometheusResource[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchResources = async () => {
-    if (!cluster) {
-      setResources([]);
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setError(null);
-      const data = await apiClient.getPrometheusResources(cluster);
-      setResources(data);
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to fetch Prometheus resources"
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const updateResource = async (
-    resCluster: string,
-    resNamespace: string,
-    resType: string,
-    resName: string,
-    updates: Partial<PrometheusResource>
-  ) => {
-    try {
-      await apiClient.updatePrometheusResource(
-        resCluster,
-        resNamespace,
-        resType,
-        resName,
-        updates
-      );
-      await fetchResources(); // Refresh list
-    } catch (err) {
-      throw err;
-    }
-  };
-
-  useEffect(() => {
-    fetchResources();
-  }, [cluster, namespace]);
-
-  return {
-    resources,
-    loading,
-    error,
-    refetch: fetchResources,
-    updateResource,
-  };
 }
 
 export function useServices(cluster?: string, namespaces?: string[], showSystem: boolean = false) {

@@ -37,6 +37,8 @@ interface UseSSEOptions {
  * });
  * ```
  */
+const MAX_EVENTS = 200;
+
 export function useSSE(options: UseSSEOptions) {
   const { operationId, onEvent, onError, onComplete, enabled = true } = options;
 
@@ -45,6 +47,14 @@ export function useSSE(options: UseSSEOptions) {
   const [lastEvent, setLastEvent] = useState<ProgressEvent | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // Manter callbacks em refs para não re-disparar o useEffect quando mudam
+  const onEventRef = useRef(onEvent);
+  const onErrorRef = useRef(onError);
+  const onCompleteRef = useRef(onComplete);
+  useEffect(() => { onEventRef.current = onEvent; }, [onEvent]);
+  useEffect(() => { onErrorRef.current = onError; }, [onError]);
+  useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
 
   useEffect(() => {
     if (!enabled || !operationId) {
@@ -63,22 +73,23 @@ export function useSSE(options: UseSSEOptions) {
       try {
         const event: ProgressEvent = JSON.parse(e.data);
 
-        // Atualizar estados
+        // Atualizar estados (cap em MAX_EVENTS para evitar crescimento ilimitado)
         setLastEvent(event);
-        setEvents((prev) => [...prev, event]);
+        setEvents((prev) => {
+          const next = [...prev, event];
+          return next.length > MAX_EVENTS ? next.slice(next.length - MAX_EVENTS) : next;
+        });
 
-        // Callback de evento
-        if (onEvent) {
-          onEvent(event);
-        }
+        // Callback de evento via ref (sem causar reconexão)
+        onEventRef.current?.(event);
 
         // Se evento é de conclusão ou erro, fechar conexão
         if (event.type === 'complete' || event.type === 'error') {
           eventSource.close();
           setIsConnected(false);
 
-          if (event.type === 'complete' && onComplete) {
-            onComplete();
+          if (event.type === 'complete') {
+            onCompleteRef.current?.();
           }
         }
       } catch (error) {
@@ -90,11 +101,7 @@ export function useSSE(options: UseSSEOptions) {
     eventSource.onerror = (error) => {
       console.error('[useSSE] Erro na conexão SSE:', error);
       setIsConnected(false);
-
-      if (onError) {
-        onError(error);
-      }
-
+      onErrorRef.current?.(error);
       eventSource.close();
     };
 
@@ -105,7 +112,7 @@ export function useSSE(options: UseSSEOptions) {
       }
       setIsConnected(false);
     };
-  }, [operationId, enabled, onEvent, onError, onComplete]);
+  }, [operationId, enabled]); // callbacks removidos das deps — usam refs
 
   /**
    * Fecha conexão SSE manualmente

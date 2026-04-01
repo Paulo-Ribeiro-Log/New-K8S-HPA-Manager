@@ -72,6 +72,13 @@ func (e *MonitoringEngineV2) Start() error {
 		return fmt.Errorf("engine já está rodando")
 	}
 
+	// Reinicializar ctx, stopCh e cache para suportar restart após Stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	e.ctx = ctx
+	e.cancel = cancel
+	e.stopCh = make(chan struct{})
+	e.cache = cache.NewMemoryCache(30 * time.Second)
+
 	e.running = true
 
 	log.Info().Msg("MonitoringEngineV2 iniciada")
@@ -101,7 +108,8 @@ func (e *MonitoringEngineV2) Stop() error {
 	e.clients = make(map[string]*client.PrometheusClient)
 	e.clientsMutex.Unlock()
 
-	// Limpar cache
+	// Parar goroutine de cleanup e limpar cache
+	e.cache.Stop()
 	e.cache.Clear()
 
 	log.Info().Msg("MonitoringEngineV2 parada")
@@ -151,7 +159,7 @@ func (e *MonitoringEngineV2) getOrCreateClient(cluster string) (*client.Promethe
 
 // GetHPAMetrics busca métricas de um HPA (com cache de 30s)
 func (e *MonitoringEngineV2) GetHPAMetrics(cluster, namespace, hpaName string) (*HPAMetrics, error) {
-	log.Info().
+	log.Debug().
 		Str("cluster", cluster).
 		Str("namespace", namespace).
 		Str("hpa", hpaName).
@@ -387,7 +395,7 @@ func (e *MonitoringEngineV2) ClearCache() {
 
 // ClearCacheForHPA limpa cache de um HPA específico
 func (e *MonitoringEngineV2) ClearCacheForHPA(cluster, namespace, hpaName string) {
-	cacheKey := fmt.Sprintf("hpa:%s:%s:%s", cluster, namespace, hpaName)
+	cacheKey := fmt.Sprintf("hpa_metrics:%s:%s:%s", cluster, namespace, hpaName)
 	e.cache.Delete(cacheKey)
 
 	log.Debug().
