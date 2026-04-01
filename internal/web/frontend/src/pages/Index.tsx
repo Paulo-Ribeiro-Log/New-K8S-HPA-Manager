@@ -94,6 +94,9 @@ import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
 import { useVPNMonitor } from "@/hooks/useVPNMonitor";
 import { ClusterContextCard } from "@/components/ClusterContextCard";
+import { useCloudProvider } from "@/hooks/useCloudProvider";
+import { VpnWarningDialog } from "@/components/VpnWarningDialog";
+import { ClusterUnreachableDialog } from "@/components/ClusterUnreachableDialog";
 
 interface IndexProps {
   onLogout?: () => void;
@@ -107,6 +110,14 @@ const Index = ({ onLogout }: IndexProps) => {
   const [selectedHPA, setSelectedHPA] = useState<HPA | null>(null);
   const [selectedNodePool, setSelectedNodePool] = useState<NodePool | null>(null);
   const [nodePoolEditorKey, setNodePoolEditorKey] = useState(0);
+  const [vpnDialogState, setVpnDialogState] = useState<{ open: boolean; cloud: string; cluster: string }>({
+    open: false,
+    cloud: "",
+    cluster: "",
+  });
+  const [unreachableDialog, setUnreachableDialog] = useState<{
+    open: boolean; cluster: string; cloud: string; retrying: boolean;
+  }>({ open: false, cluster: "", cloud: "", retrying: false });
 
   // 🔄 Namespace independente por aba workload (evita interferência ao trocar namespaces em outras abas)
   // ✅ FIX: Inicializar com "__all__" para exibir todos os recursos (incluindo problemáticos) por padrão
@@ -345,10 +356,24 @@ const Index = ({ onLogout }: IndexProps) => {
 
   // API Hooks
   const { clusters, loading: clustersLoading } = useClusters();
+  const { detectCloudChange, commitCloudChange } = useCloudProvider(clusters);
+
+  // Mapa context → cloud_provider para badges nos selects
+  const clusterProviders = useMemo(
+    () => Object.fromEntries(clusters.map((c) => [c.context, c.cloud_provider ?? "unknown"])),
+    [clusters]
+  );
+
+  // Mapa context → nome de exibição (para normalizar ARNs EKS)
+  const clusterDisplayNames = useMemo(
+    () => Object.fromEntries(clusters.map((c) => [c.context, c.name])),
+    [clusters]
+  );
+
   const { namespaces, loading: namespacesLoading, refetch: refetchNamespaces } = useNamespaces(selectedCluster);
   // Para HPAs: sempre buscar de TODOS os namespaces (passar undefined ao invés de selectedNamespace)
   const { hpas, loading: hpasLoading, refetch: refetchHPAs } = useHPAs(selectedCluster, undefined, showSystemNamespaces);
-  const { nodePools, loading: nodePoolsLoading, refetch: refetchNodePools } = useNodePools(selectedCluster);
+  const { nodePools, loading: nodePoolsLoading, notSupported: nodePoolsNotSupported, error: nodePoolsError, refetch: refetchNodePools } = useNodePools(selectedCluster);
 
 
   // Auto-select first cluster (using context instead of name)
@@ -363,19 +388,23 @@ const Index = ({ onLogout }: IndexProps) => {
     if (newCluster === selectedCluster) return;
 
     console.log(`[ClusterSwitch] Switching from ${selectedCluster} to ${newCluster}`);
+
+    // Detectar mudança de cloud provider ANTES de efetuar a troca
+    const cloudChange = detectCloudChange(newCluster);
+
     setIsContextSwitching(true);
 
     try {
       // 1. Chamar endpoint de switch context no backend
       await apiClient.switchContext(newCluster);
       console.log(`[ClusterSwitch] Context switched successfully to ${newCluster}`);
-      
+
       // 2. Atualizar estado do frontend local
       setSelectedCluster(newCluster);
       setSelectedNamespace(""); // Reset namespace selection
-      setSelectedHPA(null); // Reset HPA selection  
+      setSelectedHPA(null); // Reset HPA selection
       setSelectedNodePool(null); // Reset NodePool selection
-      
+
       // 3. Sincronizar com TabManager (CRÍTICO para SaveSessionModal)
       updateActiveTabState({
         selectedCluster: newCluster,
@@ -384,14 +413,39 @@ const Index = ({ onLogout }: IndexProps) => {
         selectedNodePool: null,
         isContextSwitching: false
       });
-      
-      // 4. Mostrar toast de sucesso
+
+      // 4. Registrar novo cloud como atual
+      commitCloudChange(newCluster);
+
+      // 5. Aviso de VPN ao mudar de cloud provider
+      if (cloudChange.changed && cloudChange.to !== "unknown") {
+        if (cloudChange.firstWarning) {
+          setVpnDialogState({ open: true, cloud: cloudChange.to, cluster: newCluster });
+        } else {
+          const cloudLabel = cloudChange.to === "eks" ? "AWS EKS" : "Azure AKS";
+          const vpnLabel = cloudChange.to === "eks" ? "AWS" : "Azure";
+          toast.warning(`Cluster ${cloudLabel} — verifique a VPN ${vpnLabel}`, { duration: 5000 });
+        }
+      }
+
+      // 6. Toast de sucesso
       toast.success(`Contexto alterado para: ${newCluster}`);
-      
+
+      // 7. Testar conectividade TCP em background (sem autenticação — apenas verifica VPN/rede)
+      const clusterForTest = newCluster;
+      const cloudForTest = clusterProviders[newCluster] || cloudChange.to || "unknown";
+      apiClient.testCluster(clusterForTest, 5).then((res) => {
+        if (!res.data.reachable) {
+          setUnreachableDialog({ open: true, cluster: clusterForTest, cloud: cloudForTest, retrying: false });
+        }
+      }).catch(() => {
+        // Falha na própria requisição ao backend — não mostrar dialog (problema de rede local)
+      });
+
     } catch (error) {
       console.error(`[ClusterSwitch] Error switching context:`, error);
       toast.error(`Erro ao alterar contexto: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
-      
+
       // Não alterar o cluster selecionado se houve erro
       return;
     } finally {
@@ -472,11 +526,16 @@ const Index = ({ onLogout }: IndexProps) => {
     nodePools: nodePools.length,
   };
 
+  // Terminologia dinâmica: "Node Groups" para EKS, "Node Pools" para AKS/outros
+  const isEKSCluster = (clusterProviders[selectedCluster] ?? "") === "eks";
+  const nodeResourceLabel = isEKSCluster ? "Node Groups" : "Node Pools";
+  const nodeResourceSingular = isEKSCluster ? "Node Group" : "Node Pool";
+
   // Abas que ficam no TabNavigation (topo) - SEM as abas workload e tools
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "hpas", label: "HPAs", icon: Scale },
-    { id: "nodepools", label: "Node Pools", icon: Server },
+    { id: "nodepools", label: nodeResourceLabel, icon: Server },
     { id: "staging", label: "Staging", icon: FileText, badge: staging.getChangesCount().total },
   ];
 
@@ -850,7 +909,7 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <SplitView
             leftPanel={{
-              title: "Available Node Pools",
+              title: `Available ${nodeResourceLabel}`,
               titleAction: (
                 <div className="flex items-center gap-2">
                   <Button
@@ -858,7 +917,7 @@ const Index = ({ onLogout }: IndexProps) => {
                     size="sm"
                     onClick={() => refetchNodePools()}
                     disabled={!selectedCluster || nodePoolsLoading}
-                    title="Atualizar lista de Node Pools"
+                    title={`Atualizar lista de ${nodeResourceLabel}`}
                   >
                     <RefreshCcw className={`w-4 h-4 ${nodePoolsLoading ? 'animate-spin' : ''}`} />
                   </Button>
@@ -882,6 +941,18 @@ const Index = ({ onLogout }: IndexProps) => {
               content: nodePoolsLoading ? (
                 <div className="flex items-center justify-center h-64 text-muted-foreground">
                   Loading Node Pools...
+                </div>
+              ) : nodePoolsError ? (
+                <div className="flex flex-col items-center justify-center h-64 gap-2 text-sm text-center px-6">
+                  <p className="font-medium text-destructive">Erro ao carregar node groups</p>
+                  <p className="text-muted-foreground text-xs break-all max-w-sm">{nodePoolsError}</p>
+                </div>
+              ) : nodePoolsNotSupported ? (
+                <div className="flex flex-col items-center justify-center h-64 gap-2 text-muted-foreground text-sm text-center px-6">
+                  <span className="text-2xl">☁️</span>
+                  <p className="font-medium text-foreground">Node groups não disponíveis via UI</p>
+                  <p>Este cluster é AWS EKS. O gerenciamento de node groups via interface ainda não está implementado.</p>
+                  <p className="text-xs">Use <code className="bg-muted px-1 rounded">aws eks list-nodegroups</code> para visualizar via CLI.</p>
                 </div>
               ) : nodePools.length === 0 ? (
                 <div className="flex items-center justify-center h-64 text-muted-foreground">
@@ -950,13 +1021,13 @@ const Index = ({ onLogout }: IndexProps) => {
               ),
             }}
             rightPanel={{
-              title: "Node Pool Editor",
+              title: `${nodeResourceSingular} Editor`,
               titleAction: selectedNodePool ? (
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setNodePoolEditorKey((k) => k + 1)}
-                  title="Atualizar dados do Node Pool"
+                  title={`Atualizar dados do ${nodeResourceSingular}`}
                 >
                   <RefreshCcw className="w-4 h-4" />
                 </Button>
@@ -1184,10 +1255,40 @@ const Index = ({ onLogout }: IndexProps) => {
 
   return (
     <div className="flex flex-col h-screen bg-background overflow-hidden">
+      <VpnWarningDialog
+        open={vpnDialogState.open}
+        cloudProvider={vpnDialogState.cloud}
+        clusterName={vpnDialogState.cluster}
+        onClose={() => setVpnDialogState((s) => ({ ...s, open: false }))}
+      />
+      <ClusterUnreachableDialog
+        open={unreachableDialog.open}
+        clusterName={unreachableDialog.cluster}
+        cloudProvider={unreachableDialog.cloud}
+        retrying={unreachableDialog.retrying}
+        onClose={() => setUnreachableDialog((s) => ({ ...s, open: false }))}
+        onRetry={() => {
+          setUnreachableDialog((s) => ({ ...s, retrying: true }));
+          apiClient.testCluster(unreachableDialog.cluster, 5).then((res) => {
+            if (res.data.reachable) {
+              setUnreachableDialog((s) => ({ ...s, open: false, retrying: false }));
+              toast.success(`Cluster ${unreachableDialog.cluster} acessível!`);
+            } else {
+              setUnreachableDialog((s) => ({ ...s, retrying: false }));
+              toast.error("Cluster ainda inacessível. Verifique a VPN e tente novamente.");
+            }
+          }).catch(() => {
+            setUnreachableDialog((s) => ({ ...s, retrying: false }));
+            toast.error("Falha ao testar conectividade.");
+          });
+        }}
+      />
       <Header
         selectedCluster={selectedCluster}
         onClusterChange={handleClusterChange}
         clusters={clusters.map((c) => c.context)}
+        clusterProviders={clusterProviders}
+        clusterDisplayNames={clusterDisplayNames}
         modifiedCount={staging.getChangesCount().total}
         onApplyAll={() => {
           const changesCount = staging.getChangesCount();
@@ -1257,7 +1358,7 @@ const Index = ({ onLogout }: IndexProps) => {
           <StatsCard
             icon={Database}
             value={nodePoolsLoading ? "..." : String(stats.nodePools)}
-            label="Node Pools"
+            label={nodeResourceLabel}
           />
           {/* Card de Alertas Críticos */}
           {selectedCluster && (

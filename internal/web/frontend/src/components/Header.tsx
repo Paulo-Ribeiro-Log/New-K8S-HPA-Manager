@@ -24,12 +24,17 @@ import { cn } from "@/lib/utils";
 import { apiClient } from "@/lib/api/client";
 import type { VersionInfo } from "@/lib/api/types";
 import { toast } from "sonner";
+import { cloudProviderBadge } from "@/hooks/useCloudProvider";
 import { Loader2 } from "lucide-react";
 
 interface HeaderProps {
   selectedCluster: string;
   onClusterChange: (value: string) => void;
   clusters: string[];
+  /** Mapa de context → cloud_provider para exibir badges */
+  clusterProviders?: Record<string, string>;
+  /** Mapa de context → nome de exibição (normaliza ARNs EKS) */
+  clusterDisplayNames?: Record<string, string>;
   modifiedCount: number;
   onApplyAll: () => void;
   onApplySequential?: () => void;
@@ -44,6 +49,8 @@ export const Header = ({
   selectedCluster,
   onClusterChange,
   clusters,
+  clusterProviders,
+  clusterDisplayNames,
   modifiedCount,
   onApplyAll,
   onApplySequential,
@@ -146,7 +153,7 @@ export const Header = ({
               className="w-[180px] sm:w-[240px] lg:w-[300px] xl:w-[400px] justify-between bg-white/20 border-white/30 text-white hover:bg-white/25 hover:text-white"
             >
               {selectedCluster
-                ? clusters.find((cluster) => cluster === selectedCluster)
+                ? (clusterDisplayNames?.[selectedCluster] ?? selectedCluster)
                 : "Selecione ou busque um cluster..."}
               <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
             </Button>
@@ -157,24 +164,34 @@ export const Header = ({
               <CommandList>
                 <CommandEmpty>Nenhum cluster encontrado.</CommandEmpty>
                 <CommandGroup>
-                  {clusters.map((cluster) => (
-                    <CommandItem
-                      key={cluster}
-                      value={cluster}
-                      onSelect={(currentValue) => {
-                        onClusterChange(currentValue === selectedCluster ? "" : currentValue);
-                        setOpen(false);
-                      }}
-                    >
-                      <Check
-                        className={cn(
-                          "mr-2 h-4 w-4",
-                          selectedCluster === cluster ? "opacity-100" : "opacity-0"
+                  {clusters.map((cluster) => {
+                    const badge = clusterProviders
+                      ? cloudProviderBadge(clusterProviders[cluster])
+                      : null;
+                    return (
+                      <CommandItem
+                        key={cluster}
+                        value={clusterDisplayNames?.[cluster] ?? cluster}
+                        onSelect={() => {
+                          onClusterChange(cluster === selectedCluster ? "" : cluster);
+                          setOpen(false);
+                        }}
+                      >
+                        <Check
+                          className={cn(
+                            "mr-2 h-4 w-4",
+                            selectedCluster === cluster ? "opacity-100" : "opacity-0"
+                          )}
+                        />
+                        {badge && (
+                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded mr-1.5 ${badge.className}`}>
+                            {badge.label}
+                          </span>
                         )}
-                      />
-                      {cluster}
-                    </CommandItem>
-                  ))}
+                        {clusterDisplayNames?.[cluster] ?? cluster}
+                      </CommandItem>
+                    );
+                  })}
                 </CommandGroup>
               </CommandList>
             </Command>
