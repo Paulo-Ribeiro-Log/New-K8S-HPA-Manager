@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -75,7 +74,7 @@ func (h *CronJobHandler) List(c *gin.Context) {
 		return
 	}
 
-	cronJobList, err := client.BatchV1().CronJobs(namespaceFilter).List(context.Background(), metav1.ListOptions{})
+	cronJobList, err := client.BatchV1().CronJobs(namespaceFilter).List(c.Request.Context(), metav1.ListOptions{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -370,7 +369,7 @@ func (h *CronJobHandler) Update(c *gin.Context) {
 		return
 	}
 
-	cronJob, err := client.BatchV1().CronJobs(namespace).Get(context.Background(), name, metav1.GetOptions{})
+	cronJob, err := client.BatchV1().CronJobs(namespace).Get(c.Request.Context(), name, metav1.GetOptions{})
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
 			"success": false,
@@ -389,7 +388,7 @@ func (h *CronJobHandler) Update(c *gin.Context) {
 	}
 
 	start := time.Now()
-	updatedCronJob, err := client.BatchV1().CronJobs(namespace).Update(context.Background(), cronJob, metav1.UpdateOptions{})
+	updatedCronJob, err := client.BatchV1().CronJobs(namespace).Update(c.Request.Context(), cronJob, metav1.UpdateOptions{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,

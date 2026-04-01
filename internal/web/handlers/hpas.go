@@ -66,29 +66,28 @@ func (h *HPAHandler) List(c *gin.Context) {
 
 	var allHPAs []models.HPA
 
-	// Se namespace não especificado, listar de TODOS os namespaces
+	// Se namespace não especificado, listar de TODOS os namespaces (única query)
 	if namespace == "" {
-		// Primeiro listar todos os namespaces
-		namespaces, err := kubeClient.ListNamespaces(c.Request.Context(), showSystem)
+		hpas, err := kubeClient.ListHPAs(c.Request.Context(), "")
 		if err != nil {
 			c.JSON(500, gin.H{
 				"success": false,
 				"error": gin.H{
 					"code":    "LIST_ERROR",
-					"message": fmt.Sprintf("Failed to list namespaces: %v", err),
+					"message": fmt.Sprintf("Failed to list HPAs: %v", err),
 				},
 			})
 			return
 		}
-
-		// Listar HPAs de cada namespace
-		for _, ns := range namespaces {
-			hpas, err := kubeClient.ListHPAs(c.Request.Context(), ns.Name)
-			if err != nil {
-				// Ignorar erros de namespaces individuais, continuar
-				continue
+		// Filtrar namespaces de sistema se necessário
+		if !showSystem {
+			for _, hpa := range hpas {
+				if !kubeclient.IsSystemNamespace(hpa.Namespace) {
+					allHPAs = append(allHPAs, hpa)
+				}
 			}
-			allHPAs = append(allHPAs, hpas...)
+		} else {
+			allHPAs = hpas
 		}
 	} else {
 		// Listar HPAs de um namespace específico

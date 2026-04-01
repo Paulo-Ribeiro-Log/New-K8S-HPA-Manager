@@ -18,6 +18,7 @@ type MemoryCache struct {
 	entries map[string]*CacheEntry
 	mu      sync.RWMutex
 	ttl     time.Duration
+	stopCh  chan struct{}
 }
 
 // NewMemoryCache cria um novo cache em memória
@@ -25,6 +26,7 @@ func NewMemoryCache(ttl time.Duration) *MemoryCache {
 	cache := &MemoryCache{
 		entries: make(map[string]*CacheEntry),
 		ttl:     ttl,
+		stopCh:  make(chan struct{}),
 	}
 
 	// Inicia limpeza periódica de entries expirados
@@ -35,6 +37,16 @@ func NewMemoryCache(ttl time.Duration) *MemoryCache {
 		Msg("Cache em memória criado")
 
 	return cache
+}
+
+// Stop encerra a goroutine de cleanup do cache
+func (c *MemoryCache) Stop() {
+	select {
+	case <-c.stopCh:
+		// já parado
+	default:
+		close(c.stopCh)
+	}
 }
 
 // Set adiciona um item ao cache
@@ -116,8 +128,13 @@ func (c *MemoryCache) cleanupLoop() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		c.cleanup()
+	for {
+		select {
+		case <-ticker.C:
+			c.cleanup()
+		case <-c.stopCh:
+			return
+		}
 	}
 }
 
