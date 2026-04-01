@@ -395,8 +395,8 @@ func (e *MonitoringEngineV2) ClearCache() {
 
 // ClearCacheForHPA limpa cache de um HPA específico
 func (e *MonitoringEngineV2) ClearCacheForHPA(cluster, namespace, hpaName string) {
-	cacheKey := fmt.Sprintf("hpa_metrics:%s:%s:%s", cluster, namespace, hpaName)
-	e.cache.Delete(cacheKey)
+	e.cache.Delete(fmt.Sprintf("hpa:%s:%s:%s", cluster, namespace, hpaName))
+	e.cache.Delete(fmt.Sprintf("hpa_metrics:%s:%s:%s", cluster, namespace, hpaName))
 
 	log.Debug().
 		Str("cluster", cluster).
