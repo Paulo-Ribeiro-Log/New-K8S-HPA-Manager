@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +25,9 @@ import (
 	"k8s.io/client-go/tools/clientcmd/api"
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 
+	"k8s-hpa-manager/internal/cloudprovider"
+	azureprovider "k8s-hpa-manager/internal/cloudprovider/azure"
+	awsprovider "k8s-hpa-manager/internal/cloudprovider/aws"
 	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
@@ -30,10 +35,12 @@ import (
 
 // ClusterConfig representa a configuração de um cluster no arquivo JSON
 type ClusterConfig struct {
-	Name           string `json:"clusterName"` // Mudado para "clusterName" para coincidir com o formato original
+	Name           string `json:"clusterName"`              // Coincide com o formato original
 	ResourceGroup  string `json:"resourceGroup"`
-	Subscription   string `json:"subscription"`             // Nome legível: "PRD - ONLINE 2"
-	SubscriptionID string `json:"subscriptionId,omitempty"` // UUID do Azure: "a1b2c3d4-..."
+	Subscription   string `json:"subscription"`             // AKS: nome legível ("PRD - ONLINE 2")
+	SubscriptionID string `json:"subscriptionId,omitempty"` // AKS: UUID do Azure
+	AwsRegion      string `json:"awsRegion,omitempty"`      // EKS: região AWS (ex: "us-east-1")
+	AwsProfile     string `json:"awsProfile,omitempty"`     // EKS: perfil AWS CLI (ex: "prod")
 }
 
 // clientTTL define por quanto tempo um client inativo é mantido em memória
@@ -165,40 +172,67 @@ func (k *KubeConfigManager) GetK8sClient(clusterName string) (*kubeclient.Client
 	return client, nil
 }
 
-// DiscoverClusters descobre clusters do kubeconfig que começam com "akspriv-" em ordem alfabética
+// DiscoverClusters descobre todos os clusters do kubeconfig em ordem alfabética.
+// Detecta automaticamente o cloud provider (AKS/EKS) via URL do API server.
 func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
-	var clusters []models.Cluster
-
-	// Mapa para armazenar: cluster name -> context name
+	// clusterName (kubeconfig) → context name
 	clusterToContext := make(map[string]string)
 
-	// Coletar clusters que começam com "akspriv-" e mapear para seus contexts
-	for contextName, context := range k.config.Contexts {
-		clusterName := context.Cluster
-		if strings.HasPrefix(clusterName, "akspriv-") {
-			// Armazenar mapeamento cluster -> context
-			clusterToContext[clusterName] = contextName
-		}
+	for contextName, ctx := range k.config.Contexts {
+		clusterToContext[ctx.Cluster] = contextName
 	}
 
-	// Extrair nomes dos clusters e ordenar alfabeticamente
 	var clusterNames []string
 	for clusterName := range clusterToContext {
 		clusterNames = append(clusterNames, clusterName)
 	}
 	sort.Strings(clusterNames)
 
-	// Criar os objetos Cluster na ordem alfabética
+	var clusters []models.Cluster
 	for _, clusterName := range clusterNames {
-		cluster := models.Cluster{
-			Name:    clusterName,
-			Context: clusterToContext[clusterName], // Context name correto (ex: akspriv-xxx-admin)
-			Status:  models.StatusUnknown,
+		serverURL := ""
+		if c, ok := k.config.Clusters[clusterName]; ok {
+			serverURL = c.Server
 		}
-		clusters = append(clusters, cluster)
+		cloudProvider := DetectCloudProvider(serverURL)
+		region := ""
+		if cloudProvider == CloudProviderEKS {
+			region = ExtractRegionFromEKSURL(serverURL)
+		} else if cloudProvider == CloudProviderAKS {
+			region = extractAKSRegion(serverURL)
+		}
+
+		displayName := clusterName
+		if cloudProvider == CloudProviderEKS {
+			// ARN arn:aws:eks:REGION:ACCOUNT:cluster/NAME → NAME
+			if idx := strings.LastIndex(clusterName, "/"); idx >= 0 {
+				displayName = clusterName[idx+1:]
+			}
+		}
+
+		clusters = append(clusters, models.Cluster{
+			Name:          displayName,
+			Context:       clusterToContext[clusterName],
+			Status:        models.StatusUnknown,
+			CloudProvider: cloudProvider,
+			Region:        region,
+		})
 	}
 
 	return clusters
+}
+
+// extractAKSRegion extrai a região de uma URL AKS.
+// Exemplo: https://akspriv-abc.hcp.brazilsouth.azmk8s.io → "brazilsouth"
+func extractAKSRegion(serverURL string) string {
+	// Padrão: .hcp.<region>.azmk8s.io
+	parts := strings.Split(serverURL, ".")
+	for i, part := range parts {
+		if part == "hcp" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
 }
 
 // loadClustersFromConfig carrega clusters do arquivo clusters-config.json no diretório home
@@ -251,6 +285,37 @@ func (k *KubeConfigManager) TestClusterConnection(ctx context.Context, clusterNa
 	}
 
 	return models.StatusConnected
+}
+
+// TestClusterTCPConnection testa conectividade TCP pura com o API server do cluster.
+// Não requer autenticação — apenas verifica se o endpoint está acessível via rede/VPN.
+// Retorna true se a conexão TCP foi estabelecida dentro do timeout.
+func (k *KubeConfigManager) TestClusterTCPConnection(clusterName string, timeout time.Duration) bool {
+	serverURL := k.getServerURL(clusterName)
+	if serverURL == "" {
+		return false
+	}
+
+	u, err := url.Parse(serverURL)
+	if err != nil {
+		return false
+	}
+
+	host := u.Host
+	// Garantir que a porta está presente (HTTPS default = 443)
+	if host != "" && !strings.Contains(host, ":") {
+		host = host + ":443"
+	}
+	if host == "" {
+		return false
+	}
+
+	conn, err := net.DialTimeout("tcp", host, timeout)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 // resolveContext encontra o nome real do contexto no kubeconfig a partir de um nome informado.
@@ -437,7 +502,8 @@ func (k *KubeConfigManager) GetCurrentContext() string {
 	return k.config.CurrentContext
 }
 
-// ValidateConfig valida a configuração do kubeconfig
+// ValidateConfig valida a configuração do kubeconfig.
+// Aceita qualquer cluster com contexto válido (AKS, EKS ou outro).
 func (k *KubeConfigManager) ValidateConfig() error {
 	if k.config == nil {
 		return fmt.Errorf("kubeconfig is not loaded")
@@ -447,20 +513,109 @@ func (k *KubeConfigManager) ValidateConfig() error {
 		return fmt.Errorf("no contexts found in kubeconfig")
 	}
 
-	// Verificar se existem clusters akspriv-*
-	hasAksprivClusters := false
-	for contextName := range k.config.Contexts {
-		if strings.HasPrefix(contextName, "akspriv-") {
-			hasAksprivClusters = true
-			break
+	return nil
+}
+
+// GetNodeGroupProvider retorna o NodeGroupProvider correto para o cluster.
+// Detecta o cloud provider via URL do API server no kubeconfig.
+// AKS → AzureNodeGroupProvider; EKS → AWSNodeGroupProvider; fallback por clusters-config.json.
+func (k *KubeConfigManager) GetNodeGroupProvider(clusterName string) cloudprovider.NodeGroupProvider {
+	normalizedName := strings.TrimSuffix(clusterName, "-admin")
+
+	// Detectar cloud provider pela URL do API server
+	serverURL := k.getServerURL(clusterName)
+	cloudProvider := DetectCloudProvider(serverURL)
+
+	configEntries := k.loadClustersFromConfig()
+
+	switch cloudProvider {
+	case CloudProviderAKS:
+		for _, c := range configEntries {
+			if strings.TrimSuffix(c.Name, "-admin") == normalizedName {
+				return azureprovider.NewAzureNodeGroupProvider(c.Name, c.ResourceGroup, c.Subscription)
+			}
+		}
+		// Kubeconfig diz AKS mas não está no clusters-config.json
+		return azureprovider.NewAzureNodeGroupProvider(normalizedName, "", "")
+
+	case CloudProviderEKS:
+		region := ExtractRegionFromEKSURL(serverURL)
+		// Perfil extraído do exec plugin no kubeconfig como base
+		profile := k.getAWSProfileFromKubeconfig(clusterName)
+		// clusters-config.json tem prioridade (override explícito)
+		for _, c := range configEntries {
+			if strings.TrimSuffix(c.Name, "-admin") == normalizedName {
+				if c.AwsRegion != "" {
+					region = c.AwsRegion
+				}
+				if c.AwsProfile != "" {
+					profile = c.AwsProfile
+				}
+				break
+			}
+		}
+		return awsprovider.NewAWSNodeGroupProvider(normalizedName, region, profile)
+
+	default:
+		// URL não conclusiva — fallback por clusters-config.json
+		for _, c := range configEntries {
+			if strings.TrimSuffix(c.Name, "-admin") == normalizedName {
+				return azureprovider.NewAzureNodeGroupProvider(c.Name, c.ResourceGroup, c.Subscription)
+			}
+		}
+		return awsprovider.NewAWSNodeGroupProvider(normalizedName, "", "")
+	}
+}
+
+// getServerURL retorna a URL do API server de um cluster/context pelo nome.
+func (k *KubeConfigManager) getServerURL(name string) string {
+	// Tenta como context name
+	if ctx, ok := k.config.Contexts[name]; ok {
+		if c, ok := k.config.Clusters[ctx.Cluster]; ok {
+			return c.Server
 		}
 	}
-
-	if !hasAksprivClusters {
-		return fmt.Errorf("no akspriv-* clusters found in kubeconfig")
+	// Tenta adicionando -admin
+	if ctx, ok := k.config.Contexts[name+"-admin"]; ok {
+		if c, ok := k.config.Clusters[ctx.Cluster]; ok {
+			return c.Server
+		}
 	}
+	// Tenta como cluster name direto
+	if c, ok := k.config.Clusters[name]; ok {
+		return c.Server
+	}
+	return ""
+}
 
-	return nil
+// getAWSProfileFromKubeconfig extrai o perfil AWS do exec plugin do contexto EKS no kubeconfig.
+// Procura em duas fontes (em ordem de prioridade):
+//  1. env: [{name: AWS_PROFILE, value: "..."}] no exec plugin
+//  2. args: [..., "--profile", "<value>", ...] no exec plugin
+func (k *KubeConfigManager) getAWSProfileFromKubeconfig(clusterName string) string {
+	resolvedCtx := k.resolveContext(clusterName)
+	ctx, ok := k.config.Contexts[resolvedCtx]
+	if !ok {
+		return ""
+	}
+	authInfo, ok := k.config.AuthInfos[ctx.AuthInfo]
+	if !ok || authInfo == nil || authInfo.Exec == nil {
+		return ""
+	}
+	// 1. Verificar variáveis de ambiente do exec plugin (AWS_PROFILE)
+	for _, env := range authInfo.Exec.Env {
+		if env.Name == "AWS_PROFILE" && env.Value != "" {
+			return env.Value
+		}
+	}
+	// 2. Verificar flag --profile nos args
+	args := authInfo.Exec.Args
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--profile" {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 // GetClusterInfo retorna informações detalhadas sobre um cluster

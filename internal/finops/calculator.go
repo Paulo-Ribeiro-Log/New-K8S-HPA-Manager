@@ -34,12 +34,12 @@ type rawWorkload struct {
 
 // Calculator realiza a análise FinOps de um cluster
 type Calculator struct {
-	pricer   *AzurePricer
+	pricer   CloudPricer
 	exchange *ExchangeRateProvider
 }
 
 // NewCalculator cria um novo calculator com as dependências injetadas
-func NewCalculator(pricer *AzurePricer, exchange *ExchangeRateProvider) *Calculator {
+func NewCalculator(pricer CloudPricer, exchange *ExchangeRateProvider) *Calculator {
 	return &Calculator{pricer: pricer, exchange: exchange}
 }
 
@@ -120,7 +120,7 @@ func (c *Calculator) calculatePoolCosts(
 			continue
 		}
 
-		cpuCores, memGB := GetVMSpecs(p.VMSize)
+		cpuCores, memGB := c.pricer.GetVMSpecs(p.VMSize)
 
 		monthlyCostUSD := round2(price * HoursPerMonth * float64(p.NodeCount))
 		totalCPUMillis := int64(cpuCores) * int64(p.NodeCount) * 1000
