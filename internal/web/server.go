@@ -117,6 +117,11 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 	}
 	// gin.New() ao invés de gin.Default() para controle manual dos middlewares
 	router := gin.New()
+	// UseRawPath=true: Gin usa r.URL.RawPath para routing, preservando %2F nos path params.
+	// Necessário porque ARNs EKS contêm "/" (ex: arn:aws:eks:REGION:ACCT:cluster/NAME)
+	// que o encodeURIComponent do JS codifica como %2F, mas o net/http decodifica antes de rotear.
+	router.UseRawPath = true
+	router.UnescapePathValues = true
 
 	// Criar buffer de logs (mantém últimos 1000 logs em memória)
 	logBuffer := handlers.NewLogBuffer(1000)

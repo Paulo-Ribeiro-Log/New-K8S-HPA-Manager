@@ -430,11 +430,13 @@ type GlobalPositionMemory struct {
 
 // Cluster representa um cluster Kubernetes
 type Cluster struct {
-	Name     string           `json:"name"`
-	Context  string           `json:"context"`
-	Status   ConnectionStatus `json:"status"`
-	Error    string           `json:"error,omitempty"`
-	Selected bool             `json:"selected"`
+	Name          string           `json:"name"`
+	Context       string           `json:"context"`
+	Status        ConnectionStatus `json:"status"`
+	Error         string           `json:"error,omitempty"`
+	Selected      bool             `json:"selected"`
+	CloudProvider string           `json:"cloud_provider,omitempty"` // "aks", "eks", "unknown"
+	Region        string           `json:"region,omitempty"`         // ex: "brazilsouth", "us-east-1"
 }
 
 // ConnectionStatus indica o status de conectividade do cluster

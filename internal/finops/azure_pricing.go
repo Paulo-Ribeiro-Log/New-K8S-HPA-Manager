@@ -172,6 +172,11 @@ func (p *AzurePricer) GetPrice(vmSize string) (price float64, source string, err
 	return 0, "unknown", fmt.Errorf("preço não encontrado para SKU: %s", vmSize)
 }
 
+// GetVMSpecs implementa CloudPricer.GetVMSpecs para AzurePricer.
+func (p *AzurePricer) GetVMSpecs(vmSize string) (cpuCores, memGB int) {
+	return GetVMSpecs(vmSize)
+}
+
 // GetVMSpecs retorna (vCPU, RAM GB) para um SKU. Retorna (0,0) se desconhecido.
 func GetVMSpecs(vmSize string) (cpuCores, memGB int) {
 	if specs, ok := vmSpecs[vmSize]; ok {

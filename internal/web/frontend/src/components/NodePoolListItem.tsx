@@ -83,18 +83,22 @@ export const NodePoolListItem = ({
             {applyResult === "error" && (
               <Badge variant="destructive" className="text-xs">Erro</Badge>
             )}
-            <Badge variant={nodePool.is_system_pool ? "default" : "secondary"} className="text-xs">
-              {nodePool.is_system_pool ? "System" : "User"}
-            </Badge>
-            {nodePool.status === "Succeeded" ? (
-              <Badge variant="outline" className="text-xs">
-                Active
-              </Badge>
-            ) : (
-              <Badge variant="destructive" className="text-xs">
-                {nodePool.status}
-              </Badge>
+            {nodePool.is_system_pool && (
+              <Badge variant="default" className="text-xs">System</Badge>
             )}
+            {(() => {
+              const s = nodePool.status ?? "";
+              const ok = s === "Succeeded" || s.startsWith("ACTIVE");
+              const warn = s.includes("CREATING") || s.includes("UPDATING") || s.includes("DELETING");
+              return (
+                <Badge
+                  variant={ok ? "outline" : warn ? "secondary" : "destructive"}
+                  className="text-xs"
+                >
+                  {ok ? "Active" : s}
+                </Badge>
+              );
+            })()}
           </div>
         </div>
 
@@ -125,9 +129,9 @@ export const NodePoolListItem = ({
           </div>
         </div>
 
-        {/* Resource Group */}
+        {/* Resource Group / Cluster info */}
         <div className="text-xs text-muted-foreground border-t pt-2">
-          {nodePool.resource_group}
+          {nodePool.resource_group || nodePool.cluster_name}
         </div>
 
         {/* Mensagem de erro + botão Reconcile */}
