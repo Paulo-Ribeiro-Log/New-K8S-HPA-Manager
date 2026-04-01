@@ -27,9 +27,9 @@ Gerado em: 2026-03-29
 - [x] **Token POC hardcoded** — `"token"` → `"auth_token"`, fallback `"poc-token-123"` → `""` em todas as 4 ocorrências (`src/hooks/useNotifications.ts`)
 - [x] **`useSSE` reconecta a cada render** — callbacks movidos para refs (`onEventRef`, `onErrorRef`, `onCompleteRef`); removidos das deps do `useEffect` (`src/hooks/useSSE.ts`)
 - [x] **`useSSE` acumula eventos sem limite** — array limitado a `MAX_EVENTS = 200`; entradas antigas descartadas automaticamente (`src/hooks/useSSE.ts`)
-- [ ] **7 hooks duplicados em `useAPI.ts`** — `useConfigMaps`, `useSecrets`, `useDeployments`, `useDaemonSets`, `useStatefulSets`, `useIngresses`, `usePods` são quase idênticos; `useIngresses`/`usePods` sem auto-refresh (inconsistência)
+- [ ] **7 hooks duplicados em `useAPI.ts`** — `useConfigMaps`, `useSecrets`, `useDeployments`, `useDaemonSets`, `useStatefulSets`, `useIngresses`, `usePods` são quase idênticos; `useIngresses`/`usePods` sem auto-refresh (inconsistência) ⏸ *adiado*
 - [x] **Código morto** — removidos `useCronJobsOld`, `usePrometheusOld` e `ApplyAllModal_old.tsx`
-- [ ] **Padrão de resposta HTTP inconsistente** — campo de erro ora `"error"`, ora `"message"`, ora `"error.message"` entre handlers
+- [ ] **Padrão de resposta HTTP inconsistente** — campo de erro ora `"error"`, ora `"message"`, ora `"error.message"` entre handlers ⏸ *adiado — requer testes completos*
 
 ---
 

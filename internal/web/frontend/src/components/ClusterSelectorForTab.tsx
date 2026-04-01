@@ -9,6 +9,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Loader2, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cloudProviderBadge } from "@/hooks/useCloudProvider";
 
 interface ClusterSelectorForTabProps {
   selectedCluster: string;
@@ -16,6 +17,8 @@ interface ClusterSelectorForTabProps {
   clusters: string[];
   tabLabel: string;
   isLoading?: boolean;
+  /** Mapa de context → cloud_provider para exibir badges */
+  clusterProviders?: Record<string, string>;
 }
 
 export const ClusterSelectorForTab = ({
@@ -23,7 +26,8 @@ export const ClusterSelectorForTab = ({
   onClusterChange,
   clusters,
   tabLabel,
-  isLoading = false
+  isLoading = false,
+  clusterProviders,
 }: ClusterSelectorForTabProps) => {
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -88,11 +92,23 @@ export const ClusterSelectorForTab = ({
             </SelectTrigger>
             <SelectContent>
               {filteredClusters.length > 0 ? (
-                filteredClusters.map((cluster) => (
-                  <SelectItem key={cluster} value={cluster}>
-                    {cluster}
-                  </SelectItem>
-                ))
+                filteredClusters.map((cluster) => {
+                  const badge = clusterProviders
+                    ? cloudProviderBadge(clusterProviders[cluster])
+                    : null;
+                  return (
+                    <SelectItem key={cluster} value={cluster}>
+                      <span className="flex items-center gap-2">
+                        {badge && (
+                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${badge.className}`}>
+                            {badge.label}
+                          </span>
+                        )}
+                        {cluster}
+                      </span>
+                    </SelectItem>
+                  );
+                })
               ) : (
                 <div className="px-2 py-6 text-center text-sm text-muted-foreground">
                   Nenhum cluster encontrado com "{searchTerm}"

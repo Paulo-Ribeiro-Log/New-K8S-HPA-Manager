@@ -256,8 +256,9 @@ class APIClient {
     return response.data || [];
   }
 
-  async testCluster(clusterName: string): Promise<{ online: boolean }> {
-    return this.request(`/clusters/${encodeURIComponent(clusterName)}/test`);
+  async testCluster(clusterName: string, timeoutSec?: number): Promise<{ data: { cluster: string; status: string; reachable: boolean } }> {
+    const url = `/clusters/${encodeURIComponent(clusterName)}/test${timeoutSec ? `?timeout=${timeoutSec}` : ""}`;
+    return this.request(url);
   }
 
   async switchContext(context: string): Promise<{ success: boolean; message: string }> {
@@ -1609,12 +1610,16 @@ class APIClient {
   }
 
   // Node Pools
-  async getNodePools(cluster?: string): Promise<NodePool[]> {
+  async getNodePools(cluster?: string): Promise<{ pools: NodePool[]; notSupported: boolean; message?: string }> {
     const query = cluster ? `?cluster=${encodeURIComponent(cluster)}` : "";
-    const response = await this.request<APIResponse<NodePool[]>>(
+    const response = await this.request<APIResponse<NodePool[]> & { not_supported?: boolean; message?: string }>(
       `/nodepools${query}`
     );
-    return response.data || [];
+    return {
+      pools: response.data || [],
+      notSupported: response.not_supported ?? false,
+      message: response.message,
+    };
   }
 
   async getNodePoolDiskMetrics(cluster: string, nodePoolName?: string): Promise<{ success: boolean; data: any[] }> {

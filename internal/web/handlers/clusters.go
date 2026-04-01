@@ -3,6 +3,8 @@ package handlers
 import (
 	"log"
 	"net/http"
+	"strconv"
+	"time"
 
 	"k8s-hpa-manager/internal/config"
 
@@ -28,9 +30,11 @@ func (h *ClusterHandler) List(c *gin.Context) {
 	response := make([]gin.H, len(clusters))
 	for i, cluster := range clusters {
 		response[i] = gin.H{
-			"name":    cluster.Name,
-			"context": cluster.Context,
-			"status":  cluster.Status.String(),
+			"name":           cluster.Name,
+			"context":        cluster.Context,
+			"status":         cluster.Status.String(),
+			"cloud_provider": cluster.CloudProvider,
+			"region":         cluster.Region,
 		}
 	}
 
@@ -41,18 +45,32 @@ func (h *ClusterHandler) List(c *gin.Context) {
 	})
 }
 
-// Test testa a conexão com um cluster específico
+// Test testa a conectividade com um cluster específico via TCP (sem autenticação).
+// Verifica apenas se o endpoint do API server está acessível — útil para validar VPN.
+// Query param opcional: ?timeout=N (segundos, default 5, max 15)
 func (h *ClusterHandler) Test(c *gin.Context) {
 	clusterName := c.Param("name")
 
-	// Testar conexão (reutilizar código existente)
-	status := h.kubeManager.TestClusterConnection(c.Request.Context(), clusterName)
+	timeoutSec := 5
+	if t := c.Query("timeout"); t != "" {
+		if v, err := strconv.Atoi(t); err == nil && v > 0 && v <= 15 {
+			timeoutSec = v
+		}
+	}
+
+	reachable := h.kubeManager.TestClusterTCPConnection(clusterName, time.Duration(timeoutSec)*time.Second)
+
+	status := "Unreachable"
+	if reachable {
+		status = "Connected"
+	}
 
 	c.JSON(200, gin.H{
 		"success": true,
 		"data": gin.H{
-			"cluster": clusterName,
-			"status":  status.String(),
+			"cluster":   clusterName,
+			"status":    status,
+			"reachable": reachable,
 		},
 	})
 }

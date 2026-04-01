@@ -199,23 +199,31 @@ export function useNodePools(cluster?: string) {
   const [nodePools, setNodePools] = useState<NodePool[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notSupported, setNotSupported] = useState(false);
 
   const fetchNodePools = async () => {
     if (!cluster) {
       console.log('[useNodePools] No cluster selected, clearing node pools');
       setNodePools([]);
+      setNotSupported(false);
       return;
     }
+
+    // Limpa dados do cluster anterior imediatamente para evitar exibir dados stale
+    setNodePools([]);
+    setNotSupported(false);
 
     console.log('[useNodePools] Fetching node pools for cluster:', cluster);
     try {
       setLoading(true);
       setError(null);
-      const data = await apiClient.getNodePools(cluster);
-      console.log('[useNodePools] Received data:', data);
-      setNodePools(data);
+      const { pools, notSupported: ns } = await apiClient.getNodePools(cluster);
+      console.log('[useNodePools] Received data:', pools, 'notSupported:', ns);
+      setNodePools(pools);
+      setNotSupported(ns);
     } catch (err) {
       console.error('[useNodePools] Error fetching node pools:', err);
+      setNodePools([]);
       setError(
         err instanceof Error ? err.message : "Failed to fetch node pools"
       );
@@ -238,7 +246,12 @@ export function useNodePools(cluster?: string) {
     let cancelled = false;
     const interval = setInterval(() => {
       apiClient.getNodePools(cluster)
-        .then(data => { if (!cancelled) setNodePools(data); })
+        .then(({ pools, notSupported: ns }) => {
+          if (!cancelled) {
+            setNodePools(pools);
+            setNotSupported(ns);
+          }
+        })
         .catch(() => {});
     }, 60000);
     return () => { cancelled = true; clearInterval(interval); };
@@ -280,6 +293,7 @@ export function useNodePools(cluster?: string) {
     nodePools,
     loading,
     error,
+    notSupported,
     refetch: fetchNodePools,
     applySequential,
   };

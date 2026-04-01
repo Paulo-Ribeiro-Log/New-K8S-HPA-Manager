@@ -3,23 +3,23 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"k8s-hpa-manager/internal/cloudprovider"
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/history"
 	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
 	promclient "k8s-hpa-manager/internal/monitoring/client"
 	"k8s-hpa-manager/internal/web/sse"
-	"k8s-hpa-manager/internal/web/validators"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
@@ -44,62 +44,32 @@ func NewNodePoolHandler(km *config.KubeConfigManager, ht *history.HistoryTracker
 	}
 }
 
-// Abort cancela uma operação em andamento de um node pool via Azure ARM abort API
-// Usa: az aks nodepool operation-abort --resource-group <rg> --cluster-name <cluster> --name <pool>
-// Isso efetivamente para a operação no Azure (não apenas o polling local).
+// Abort cancela uma operação em andamento de um node pool via ARM abort API.
 func (h *NodePoolHandler) Abort(c *gin.Context) {
 	cluster := c.Param("cluster")
-	resourceGroup := c.Param("resource_group")
 	nodePoolName := c.Param("name")
 
-	// Buscar configuração do cluster
-	clusterConfig, err := findClusterInConfig(cluster)
-	if err != nil {
-		c.JSON(404, gin.H{"success": false, "message": fmt.Sprintf("Cluster não encontrado: %v", err)})
-		return
-	}
-
-	clusterNameForAzure := strings.TrimSuffix(clusterConfig.ClusterName, "-admin")
-
-	// Configurar subscription
-	{
-		abortSubCtx, abortSubCancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
-		out, err := exec.CommandContext(abortSubCtx, "az", "account", "set", "--subscription", clusterConfig.Subscription).CombinedOutput()
-		abortSubCancel()
-		if err != nil {
-			c.JSON(500, gin.H{"success": false, "message": fmt.Sprintf("Erro ao configurar subscription: %s", string(out))})
+	provider := h.kubeManager.GetNodeGroupProvider(cluster)
+	if err := provider.AbortOperation(c.Request.Context(), cluster, nodePoolName); err != nil {
+		if errors.Is(err, cloudprovider.ErrNotSupported) {
+			c.JSON(http.StatusNotImplemented, gin.H{
+				"success": false,
+				"message": "Abort não é suportado por este cloud provider",
+			})
 			return
 		}
-	}
-
-	// Chamar az aks nodepool operation-abort — cancela a operação ARM em andamento
-	abortCtx, abortCancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
-	defer abortCancel()
-	out, err := exec.CommandContext(abortCtx,
-		"az", "aks", "nodepool", "operation-abort",
-		"--resource-group", resourceGroup,
-		"--cluster-name", clusterNameForAzure,
-		"--name", nodePoolName,
-	).CombinedOutput()
-
-	if err != nil {
-		log.Error().Str("output", string(out)).Err(err).Msg("Falha ao abortar operação do node pool")
+		log.Error().Err(err).Str("cluster", cluster).Str("pool", nodePoolName).Msg("Falha ao abortar operação do node pool")
 		c.JSON(500, gin.H{
 			"success": false,
-			"message": fmt.Sprintf("Falha ao abortar operação no Azure: %s", strings.TrimSpace(string(out))),
+			"message": fmt.Sprintf("Falha ao abortar operação: %v", err),
 		})
 		return
 	}
 
-	log.Info().
-		Str("cluster", clusterNameForAzure).
-		Str("resource_group", resourceGroup).
-		Str("node_pool", nodePoolName).
-		Msg("Operação de node pool abortada via ARM abort API")
-
+	log.Info().Str("cluster", cluster).Str("node_pool", nodePoolName).Msg("Operação de node pool abortada")
 	c.JSON(200, gin.H{
 		"success": true,
-		"message": "Operação abortada no Azure. O provisioningState mudará para Canceled. Aguarde antes de tentar Reconcile.",
+		"message": "Operação abortada. O provisioningState mudará para Canceled. Aguarde antes de tentar Reconcile.",
 	})
 }
 
@@ -195,63 +165,45 @@ func (h *NodePoolHandler) List(c *gin.Context) {
 		return
 	}
 
-	// Buscar configuração do cluster no clusters-config.json
-	clusterConfig, err := findClusterInConfig(cluster)
-	if err != nil {
-		c.JSON(404, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "CLUSTER_NOT_FOUND",
-				"message": fmt.Sprintf("Cluster not found in clusters-config.json: %v", err),
-			},
-		})
-		return
-	}
+	provider := h.kubeManager.GetNodeGroupProvider(cluster)
+	log.Debug().Str("cluster", cluster).Msgf("[NodePool.List] provider type: %T", provider)
 
-	// Validar Azure AD (faz login automático se necessário, igual ao TUI)
-	if err := validators.ValidateAzureAuth(); err != nil {
+	// ValidateAuth: ignorar ErrNotSupported (EKS usa exec plugin transparente, não precisa de az/aws CLI auth)
+	if err := provider.ValidateAuth(c.Request.Context()); err != nil && !errors.Is(err, cloudprovider.ErrNotSupported) {
 		c.JSON(401, gin.H{
 			"success": false,
 			"error": gin.H{
-				"code":    "AZURE_AUTH_FAILED",
-				"message": fmt.Sprintf("Azure authentication failed: %v", err),
+				"code":    "CLOUD_AUTH_FAILED",
+				"message": fmt.Sprintf("Cloud authentication failed: %v", err),
 			},
 		})
 		return
 	}
 
-	// Configurar subscription
-	{
-		subCtx, subCancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
-		err := exec.CommandContext(subCtx, "az", "account", "set", "--subscription", clusterConfig.Subscription).Run()
-		subCancel()
-		if err != nil {
-			c.JSON(500, gin.H{
-				"success": false,
-				"error": gin.H{
-					"code":    "AZURE_SUBSCRIPTION_ERROR",
-					"message": fmt.Sprintf("Failed to set subscription: %v", err),
-				},
+	nodePools, err := provider.ListNodeGroups(c.Request.Context(), cluster)
+	if err != nil {
+		if errors.Is(err, cloudprovider.ErrNotSupported) {
+			log.Warn().Str("cluster", cluster).Msg("[NodePool.List] ErrNotSupported retornado por ListNodeGroups")
+			c.JSON(200, gin.H{
+				"success":       true,
+				"data":          []models.NodePool{},
+				"count":         0,
+				"not_supported": true,
+				"message":       "Gerenciamento de node groups via UI ainda não está disponível para este cloud provider",
 			})
 			return
 		}
-	}
-
-	// Normalizar nome do cluster (remover -admin se existir)
-	clusterNameForAzure := strings.TrimSuffix(clusterConfig.ClusterName, "-admin")
-
-	// Listar node pools via Azure CLI
-	nodePools, err := loadNodePoolsFromAzure(c.Request.Context(), clusterNameForAzure, clusterConfig.ResourceGroup, clusterConfig.Subscription)
-	if err != nil {
+		log.Error().Err(err).Str("cluster", cluster).Msgf("[NodePool.List] ListNodeGroups falhou (provider: %T)", provider)
 		c.JSON(500, gin.H{
 			"success": false,
 			"error": gin.H{
-				"code":    "AZURE_CLI_ERROR",
-				"message": fmt.Sprintf("Failed to load node pools: %v", err),
+				"code":    "LIST_NODE_POOLS_FAILED",
+				"message": fmt.Sprintf("Failed to list node pools: %v", err),
 			},
 		})
 		return
 	}
+	log.Debug().Str("cluster", cluster).Int("count", len(nodePools)).Msgf("[NodePool.List] OK (provider: %T)", provider)
 
 	c.JSON(200, gin.H{
 		"success": true,
@@ -291,8 +243,7 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 	}
 
 	// Buscar configuração do cluster no clusters-config.json
-	clusterConfig, err := findClusterInConfig(cluster)
-	if err != nil {
+	if _, err := findClusterInConfig(cluster); err != nil {
 		c.JSON(404, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -303,38 +254,18 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 		return
 	}
 
-	// Validar Azure AD
-	if err := validators.ValidateAzureAuth(); err != nil {
+	// Obter provider e validar autenticação
+	provider := h.kubeManager.GetNodeGroupProvider(cluster)
+	if err := provider.ValidateAuth(c.Request.Context()); err != nil {
 		c.JSON(401, gin.H{
 			"success": false,
 			"error": gin.H{
-				"code":    "AZURE_AUTH_FAILED",
-				"message": fmt.Sprintf("Azure authentication failed: %v", err),
+				"code":    "CLOUD_AUTH_FAILED",
+				"message": fmt.Sprintf("Cloud authentication failed: %v", err),
 			},
 		})
 		return
 	}
-
-	// Configurar subscription
-	{
-		updateSubCtx, updateSubCancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
-		cmd := exec.CommandContext(updateSubCtx, "az", "account", "set", "--subscription", clusterConfig.Subscription)
-		err := cmd.Run()
-		updateSubCancel()
-		if err != nil {
-			c.JSON(500, gin.H{
-				"success": false,
-				"error": gin.H{
-					"code":    "AZURE_SUBSCRIPTION_ERROR",
-					"message": fmt.Sprintf("Failed to set subscription: %v", err),
-				},
-			})
-			return
-		}
-	}
-
-	// Normalizar nome do cluster
-	clusterNameForAzure := strings.TrimSuffix(clusterConfig.ClusterName, "-admin")
 
 	// Converter request para NodePoolOperation
 	op := NodePoolOperation{
@@ -626,20 +557,20 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 		reporter.SendAzureStarted()
 	}
 
-	// Aplicar mudanças via Azure CLI (reutiliza função de sequential)
+	// Aplicar mudanças via provider cloud-agnóstico
 	// Enviar evento Azure Started se não foi enviado durante Cordon/Drain
 	if req.CordonDrainConfig == nil {
 		reporter.SendAzureStarted()
 	}
 
-	if err := applyNodePoolChanges(c.Request.Context(), clusterNameForAzure, resourceGroup, op); err != nil {
+	if err := applyOpViaProvider(c.Request.Context(), provider, cluster, op); err != nil {
 		if reporter != nil {
 			reporter.SendError("azure", fmt.Sprintf("Failed to update node pool: %v", err))
 		}
 		c.JSON(500, gin.H{
 			"success": false,
 			"error": gin.H{
-				"code":    "AZURE_OPERATION_FAILED",
+				"code":    "CLOUD_OPERATION_FAILED",
 				"message": fmt.Sprintf("Failed to update node pool: %v", err),
 			},
 		})
@@ -651,7 +582,7 @@ func (h *NodePoolHandler) Update(c *gin.Context) {
 	}
 
 	// Recarregar node pools para retornar o estado atualizado
-	nodePools, err := loadNodePoolsFromAzure(c.Request.Context(), clusterNameForAzure, clusterConfig.ResourceGroup, clusterConfig.Subscription)
+	nodePools, err := provider.ListNodeGroups(c.Request.Context(), cluster)
 	if err != nil {
 		if reporter != nil {
 			reporter.SendError("azure", fmt.Sprintf("Failed to reload node pools: %v", err))
@@ -779,166 +710,26 @@ func loadClusterConfig() ([]models.ClusterConfig, error) {
 	return clusters, nil
 }
 
-// loadNodePoolsFromAzure carrega node pools via Azure CLI
-func loadNodePoolsFromAzure(ctx context.Context, clusterName, resourceGroup, subscription string) ([]models.NodePool, error) {
-	// Executar comando Azure CLI
-	listCtx, listCancel := context.WithTimeout(ctx, 60*time.Second)
-	defer listCancel()
-	cmd := exec.CommandContext(listCtx, "az", "aks", "nodepool", "list",
-		"--resource-group", resourceGroup,
-		"--cluster-name", clusterName,
-		"--output", "json")
-
-	output, err := cmd.Output()
-	if err != nil {
-		// Capturar stderr para melhor debugging
-		if exitError, ok := err.(*exec.ExitError); ok {
-			stderr := string(exitError.Stderr)
-
-			// Detectar erros de autenticação Azure AD
-			if strings.Contains(stderr, "AADSTS") ||
-				strings.Contains(stderr, "expired") ||
-				strings.Contains(stderr, "authentication") ||
-				strings.Contains(stderr, "az login") {
-				return nil, fmt.Errorf("Azure CLI not authenticated. Please run on server: az login")
-			}
-
-			return nil, fmt.Errorf("az command failed: %s", stderr)
-		}
-		return nil, fmt.Errorf("failed to execute az command: %w", err)
+// applyOpViaProvider aplica uma NodePoolOperation usando o provider cloud-agnóstico.
+func applyOpViaProvider(ctx context.Context, provider cloudprovider.NodeGroupProvider, cluster string, op NodePoolOperation) error {
+	if op.AutoscalingEnabled {
+		return provider.SetAutoscaling(ctx, cluster, op.Name, true, int(op.MinNodeCount), int(op.MaxNodeCount))
 	}
-
-	// Parse do JSON
-	var azureNodePools []AzureNodePool
-	if err := json.Unmarshal(output, &azureNodePools); err != nil {
-		return nil, fmt.Errorf("failed to parse Azure CLI output: %w", err)
+	if err := provider.SetAutoscaling(ctx, cluster, op.Name, false, 0, 0); err != nil {
+		return err
 	}
-
-	// Buscar tags do cluster (uma única vez para todos os node pools)
-	clusterTags, err := getClusterTags(ctx, clusterName, resourceGroup)
-	if err != nil {
-		log.Warn().Err(err).Msgf("Failed to fetch cluster tags for %s, continuing without tags", clusterName)
-		clusterTags = make(map[string]string) // Mapa vazio se falhar
-	}
-
-	// Buscar nome e UUID real da subscription (uma única vez para todos os node pools)
-	subscriptionName := getSubscriptionName(ctx, subscription)
-	subscriptionUUID := getSubscriptionUUID(ctx, subscription)
-
-	// Converter para nosso modelo
-	var nodePools []models.NodePool
-	for _, azPool := range azureNodePools {
-		// Converter pointers para valores diretos
-		var minCount, maxCount int32
-		if azPool.MinCount != nil {
-			minCount = *azPool.MinCount
-		}
-		if azPool.MaxCount != nil {
-			maxCount = *azPool.MaxCount
-		}
-
-		nodePool := models.NodePool{
-			Name:               azPool.Name,
-			VMSize:             azPool.VmSize,
-			NodeCount:          azPool.Count,
-			MinNodeCount:       minCount,
-			MaxNodeCount:       maxCount,
-			AutoscalingEnabled: azPool.EnableAutoScaling,
-			Status:             azPool.ProvisioningState,
-			IsSystemPool:       azPool.Mode == "System",
-			ClusterName:        clusterName,
-			ResourceGroup:      resourceGroup,
-			Subscription:       subscription,     // Valor da config (pode ser nome ou UUID)
-			SubscriptionName:   subscriptionName, // Nome legível da subscription
-			SubscriptionUUID:   subscriptionUUID, // UUID real resolvido via az account show
-			ClusterTags:        clusterTags,      // Tags do cluster
-		}
-
-		nodePools = append(nodePools, nodePool)
-	}
-
-	return nodePools, nil
+	return provider.ScaleNodeGroup(ctx, cluster, op.Name, int(op.NodeCount))
 }
 
-// getClusterTags busca as tags do cluster AKS
-func getClusterTags(ctx context.Context, clusterName, resourceGroup string) (map[string]string, error) {
-	tagCtx, tagCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer tagCancel()
-	cmd := exec.CommandContext(tagCtx, "az", "aks", "show",
-		"--resource-group", resourceGroup,
-		"--name", clusterName,
-		"--query", "tags",
-		"--output", "json")
-
-	output, err := cmd.Output()
-	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			stderr := string(exitError.Stderr)
-			return nil, fmt.Errorf("az aks show failed: %s", stderr)
-		}
-		return nil, fmt.Errorf("failed to execute az aks show: %w", err)
+// applyChangesViaProvider aplica um models.NodePoolChanges usando o provider cloud-agnóstico.
+func applyChangesViaProvider(ctx context.Context, provider cloudprovider.NodeGroupProvider, cluster, group string, changes *models.NodePoolChanges) error {
+	if changes.Autoscaling {
+		return provider.SetAutoscaling(ctx, cluster, group, true, int(changes.MinNodes), int(changes.MaxNodes))
 	}
-
-	var tags map[string]string
-	if err := json.Unmarshal(output, &tags); err != nil {
-		return nil, fmt.Errorf("failed to parse cluster tags: %w", err)
+	if err := provider.SetAutoscaling(ctx, cluster, group, false, 0, 0); err != nil {
+		return err
 	}
-
-	// Se tags for null, retornar mapa vazio
-	if tags == nil {
-		tags = make(map[string]string)
-	}
-
-	return tags, nil
-}
-
-// getSubscriptionName busca o nome da subscription via Azure CLI
-func getSubscriptionName(ctx context.Context, subscriptionID string) string {
-	nameCtx, nameCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer nameCancel()
-	cmd := exec.CommandContext(nameCtx, "az", "account", "show",
-		"--subscription", subscriptionID,
-		"--query", "name",
-		"--output", "tsv")
-
-	output, err := cmd.Output()
-	if err != nil {
-		log.Warn().Err(err).Msgf("Failed to fetch subscription name for %s", subscriptionID)
-		return "" // Retorna vazio se falhar
-	}
-
-	name := strings.TrimSpace(string(output))
-	return name
-}
-
-// getSubscriptionUUID busca o UUID real da subscription via Azure CLI
-func getSubscriptionUUID(ctx context.Context, subscription string) string {
-	uuidCtx, uuidCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer uuidCancel()
-	cmd := exec.CommandContext(uuidCtx, "az", "account", "show",
-		"--subscription", subscription,
-		"--query", "id",
-		"--output", "tsv")
-
-	output, err := cmd.Output()
-	if err != nil {
-		log.Warn().Err(err).Msgf("Failed to fetch subscription UUID for %s", subscription)
-		return ""
-	}
-
-	return strings.TrimSpace(string(output))
-}
-
-// AzureNodePool representa a estrutura retornada pela Azure CLI
-type AzureNodePool struct {
-	Name              string `json:"name"`
-	VmSize            string `json:"vmSize"`
-	Count             int32  `json:"count"`
-	MinCount          *int32 `json:"minCount"`          // Pointer pois pode ser null
-	MaxCount          *int32 `json:"maxCount"`          // Pointer pois pode ser null
-	EnableAutoScaling bool   `json:"enableAutoScaling"` // Campo correto do Azure
-	Mode              string `json:"mode"`              // "System" ou "User"
-	ProvisioningState string `json:"provisioningState"`
+	return provider.ScaleNodeGroup(ctx, cluster, group, int(changes.NodeCount))
 }
 
 // SequenceExecuteRequest representa a requisição para executar sequenciamento com cordon/drain
@@ -1191,8 +982,9 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 			dest.PreDrainChanges.MinNodes,
 			dest.PreDrainChanges.MaxNodes)
 
-		// Aplicar mudanças via Azure CLI
-		if err := h.applyNodePoolChanges(dest.Name, dest.ResourceGroup, dest.Subscription, dest.PreDrainChanges); err != nil {
+		// Aplicar mudanças via provider
+		seqProvider := h.kubeManager.GetNodeGroupProvider(req.Cluster)
+		if err := applyChangesViaProvider(ctx, seqProvider, req.Cluster, dest.Name, dest.PreDrainChanges); err != nil {
 			sendProgress(1, "PRE-DRAIN", "error", "Failed to apply PRE-DRAIN changes", 0, "", 0, 0, err)
 			fmt.Printf("❌ ERROR: Failed to apply PRE-DRAIN changes: %v\n", err)
 			return
@@ -1407,8 +1199,9 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 			origin.PostDrainChanges.Autoscaling,
 			origin.PostDrainChanges.NodeCount)
 
-		// Aplicar mudanças via Azure CLI
-		if err := h.applyNodePoolChanges(origin.Name, origin.ResourceGroup, origin.Subscription, origin.PostDrainChanges); err != nil {
+		// Aplicar mudanças via provider
+		seqProvider := h.kubeManager.GetNodeGroupProvider(req.Cluster)
+		if err := applyChangesViaProvider(ctx, seqProvider, req.Cluster, origin.Name, origin.PostDrainChanges); err != nil {
 			sendProgress(4, "POST-DRAIN", "error", "Failed to apply POST-DRAIN changes", 0, "", 0, 0, err)
 			fmt.Printf("❌ ERROR: Failed to apply POST-DRAIN changes: %v\n", err)
 			return
@@ -1457,66 +1250,6 @@ func (h *NodePoolHandler) executeSequenceAsync(client interface{}, origin, dest 
 	fmt.Printf("║                    SEQUENCING COMPLETE                             ║\n")
 	fmt.Printf("╚════════════════════════════════════════════════════════════════════╝\n")
 	fmt.Printf("\n")
-}
-
-// applyNodePoolChanges aplica mudanças em um node pool via Azure CLI
-func (h *NodePoolHandler) applyNodePoolChanges(poolName, resourceGroup, subscription string, changes *models.NodePoolChanges) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	// Configurar subscription (se necessário)
-	if subscription != "" {
-		subCtx, subCancel := context.WithTimeout(ctx, 30*time.Second)
-		err := exec.CommandContext(subCtx, "az", "account", "set", "--subscription", subscription).Run()
-		subCancel()
-		if err != nil {
-			return fmt.Errorf("failed to set subscription: %w", err)
-		}
-	}
-
-	// Construir comando baseado nas mudanças
-	var commands [][]string
-
-	if changes.Autoscaling {
-		// Habilitar autoscaling com min/max
-		commands = append(commands, []string{
-			"az", "aks", "nodepool", "update",
-			"--resource-group", resourceGroup,
-			"--cluster-name", poolName, // TODO: Obter cluster name correto
-			"--name", poolName,
-			"--enable-cluster-autoscaler",
-			"--min-count", fmt.Sprintf("%d", changes.MinNodes),
-			"--max-count", fmt.Sprintf("%d", changes.MaxNodes),
-		})
-	} else {
-		// Desabilitar autoscaling
-		commands = append(commands, []string{
-			"az", "aks", "nodepool", "update",
-			"--resource-group", resourceGroup,
-			"--cluster-name", poolName, // TODO: Obter cluster name correto
-			"--name", poolName,
-			"--disable-cluster-autoscaler",
-		})
-
-		// Scale para node count específico
-		commands = append(commands, []string{
-			"az", "aks", "nodepool", "scale",
-			"--resource-group", resourceGroup,
-			"--cluster-name", poolName, // TODO: Obter cluster name correto
-			"--name", poolName,
-			"--node-count", fmt.Sprintf("%d", changes.NodeCount),
-		})
-	}
-
-	// Executar comandos sequencialmente
-	for _, cmd := range commands {
-		output, err := exec.CommandContext(ctx, cmd[0], cmd[1:]...).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("command failed: %s\nOutput: %s", err, string(output))
-		}
-	}
-
-	return nil
 }
 
 // validateDrainOptions valida as opções de drain (placeholder)
