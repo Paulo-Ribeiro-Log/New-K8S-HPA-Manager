@@ -493,6 +493,17 @@ func (s *Server) setupRoutes() {
 	azureHandler := handlers.NewAzureHandler()
 	api.POST("/azure/subscription", azureHandler.SetSubscription)
 
+	// AWS SSO Auth
+	awsAuthHandler := handlers.NewAWSAuthHandler(s.kubeManager)
+	awsGroup := api.Group("/aws")
+	awsGroup.GET("/auth/status", awsAuthHandler.CheckStatus)
+	awsGroup.POST("/auth/login", awsAuthHandler.StartLogin)
+	awsGroup.GET("/auth/poll", awsAuthHandler.PollLogin)
+	awsGroup.GET("/config", awsAuthHandler.ListConfigs)
+	awsGroup.GET("/config/:profile", awsAuthHandler.GetConfig)
+	awsGroup.POST("/config", awsAuthHandler.SaveConfig)
+	awsGroup.DELETE("/config/:profile", awsAuthHandler.DeleteConfig)
+
 	// Namespaces
 	namespaceHandler := handlers.NewNamespaceHandler(s.kubeManager, s.historyTracker)
 	api.GET("/namespaces", namespaceHandler.List)
@@ -890,8 +901,9 @@ func (s *Server) setupRoutes() {
 		alertsGroup.GET("/nodepool", alertsHandler.GetNodePoolAlerts)            // GET /api/v1/alerts/nodepool?cluster=X
 	}
 
-	// VPN Status Check (sem auth para polling leve)
-	s.router.GET("/api/v1/vpn/status", handlers.CheckVPNConnection)
+	// VPN Status Check — testa cluster específico via ?cluster=<name>
+	vpnHandler := handlers.NewVPNHandler(s.kubeManager)
+	s.router.GET("/api/v1/vpn/status", vpnHandler.CheckStatus)
 
 	// Service Mesh (Istio/Kiali Integration) - SEM AUTH (operações de leitura públicas)
 	serviceMeshHandler := handlers.NewServiceMeshHandler(s.kubeManager)
