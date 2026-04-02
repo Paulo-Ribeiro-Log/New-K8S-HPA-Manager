@@ -280,7 +280,7 @@ func classifyAWSError(err error, profile string) error {
 	case strings.Contains(msg, "executable file not found") || strings.Contains(msg, "aws: command not found"):
 		return fmt.Errorf("AWS CLI não encontrado no PATH do servidor. Instale: https://aws.amazon.com/cli/")
 	case strings.Contains(msg, "cluster not found") || strings.Contains(msg, "ResourceNotFoundException"):
-		return fmt.Errorf("cluster '%s' não encontrado na AWS. Verifique se a VPN AWS está ativa", "")
+		return fmt.Errorf("cluster '%s' não encontrado na AWS. Verifique se a VPN AWS está ativa", profile)
 	default:
 		return fmt.Errorf("falha ao listar EKS node groups: %w", err)
 	}

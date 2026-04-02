@@ -228,6 +228,13 @@ class APIClient {
         }
       }
 
+      // Detectar token AWS SSO expirado e disparar evento global
+      if (message && (message.includes("aws sso login") || message.includes("token AWS expirado") || message.includes("SSO expirado"))) {
+        const profileMatch = message.match(/--profile\s+(\S+)/);
+        const profile = profileMatch?.[1] ?? "";
+        window.dispatchEvent(new CustomEvent("aws-sso-token-expired", { detail: { profile } }));
+      }
+
       throw new Error(message || `Request failed: ${response.status}`);
     }
 
@@ -3163,6 +3170,37 @@ class APIClient {
       body: JSON.stringify({ ai_email: aiEmail }),
       signal,
     });
+  }
+  // ─── AWS SSO Auth ─────────────────────────────────────────────────────────
+
+  async checkAwsSsoStatus(profile: string): Promise<{ profile: string; valid: boolean; login_in_progress: boolean }> {
+    return this.request(`/aws/auth/status?profile=${encodeURIComponent(profile)}`);
+  }
+
+  async startAwsSsoLogin(profile: string): Promise<{
+    profile: string;
+    url?: string;
+    user_code?: string;
+    already_valid?: boolean;
+    message?: string;
+  }> {
+    return this.request("/aws/auth/login", { method: "POST", body: JSON.stringify({ profile }) });
+  }
+
+  async pollAwsSsoLogin(profile: string): Promise<{ profile: string; done: boolean; success?: boolean; url?: string; user_code?: string }> {
+    return this.request(`/aws/auth/poll?profile=${encodeURIComponent(profile)}`);
+  }
+
+  async listAwsSsoConfigs(): Promise<{ profiles: Record<string, { sso: { start_url: string; region: string; account_id: string; role_name: string }; region: string }> }> {
+    return this.request("/aws/config");
+  }
+
+  async saveAwsSsoConfig(profile: string, sso: { start_url: string; region: string; account_id: string; role_name: string }, region: string): Promise<{ profile: string; message: string }> {
+    return this.request("/aws/config", { method: "POST", body: JSON.stringify({ profile, sso, region }) });
+  }
+
+  async deleteAwsSsoConfig(profile: string): Promise<{ profile: string; message: string }> {
+    return this.request(`/aws/config/${encodeURIComponent(profile)}`, { method: "DELETE" });
   }
 }
 
