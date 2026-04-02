@@ -97,6 +97,8 @@ import { ClusterContextCard } from "@/components/ClusterContextCard";
 import { useCloudProvider } from "@/hooks/useCloudProvider";
 import { VpnWarningDialog } from "@/components/VpnWarningDialog";
 import { ClusterUnreachableDialog } from "@/components/ClusterUnreachableDialog";
+import { useAwsSsoAuth } from "@/hooks/useAwsSsoAuth";
+import { AwsSsoLoginDialog } from "@/components/AwsSsoLoginDialog";
 
 interface IndexProps {
   onLogout?: () => void;
@@ -315,14 +317,17 @@ const Index = ({ onLogout }: IndexProps) => {
   // Staging context
   const staging = useStaging();
 
-  // VPN Monitor - polling a cada 2 minutos
-  const { isConnected: vpnConnected, checkVPN } = useVPNMonitor({
+  // AWS SSO Auth — detecta token expirado automaticamente via evento global
+  const { state: awsSsoState, checkForCluster: checkAwsToken, retryAfterConfig, close: closeAwsSso } = useAwsSsoAuth();
+
+  // VPN Monitor — testa o cluster selecionado, não um context global
+  const { isConnected: vpnConnected, lastStatus: vpnLastStatus, checkVPN } = useVPNMonitor({
+    cluster: selectedCluster,
     pollingInterval: 120000, // 2 minutos
-    showToastOnDisconnect: false, // Vamos usar banner ao invés de toast
     checkOnMount: true,
   });
 
-  // Mostrar/ocultar banner de VPN
+  // Mostrar/ocultar banner de VPN baseado no cluster atual
   useEffect(() => {
     setShowVPNWarning(!vpnConnected);
   }, [vpnConnected]);
@@ -426,6 +431,11 @@ const Index = ({ onLogout }: IndexProps) => {
           const vpnLabel = cloudChange.to === "eks" ? "AWS" : "Azure";
           toast.warning(`Cluster ${cloudLabel} — verifique a VPN ${vpnLabel}`, { duration: 5000 });
         }
+      }
+
+      // 5b. Para clusters EKS, verificar token AWS SSO proativamente
+      if (cloudChange.to === "eks" || getCloudProvider(newCluster) === "eks") {
+        checkAwsToken(newCluster);
       }
 
       // 6. Toast de sucesso
@@ -1261,6 +1271,11 @@ const Index = ({ onLogout }: IndexProps) => {
         clusterName={vpnDialogState.cluster}
         onClose={() => setVpnDialogState((s) => ({ ...s, open: false }))}
       />
+      <AwsSsoLoginDialog
+        state={awsSsoState}
+        onRetryAfterConfig={retryAfterConfig}
+        onClose={closeAwsSso}
+      />
       <ClusterUnreachableDialog
         open={unreachableDialog.open}
         clusterName={unreachableDialog.cluster}
@@ -1367,9 +1382,14 @@ const Index = ({ onLogout }: IndexProps) => {
         </div>
       )}
 
-      {/* Banner de VPN desconectada */}
+      {/* Banner de VPN desconectada — específico para o cluster/cloud selecionado */}
       {showVPNWarning && (
-        <VPNWarningBanner onDismiss={() => setShowVPNWarning(false)} />
+        <VPNWarningBanner
+          cloudProvider={vpnLastStatus?.cloud_provider ?? clusterProviders[selectedCluster]}
+          clusterName={selectedCluster}
+          onDismiss={() => setShowVPNWarning(false)}
+          onRetry={() => checkVPN(selectedCluster)}
+        />
       )}
 
       {/* TabNavigation com WorkloadMenu */}

@@ -143,6 +143,37 @@ func (k *KubeConfigManager) ConfigPath() string {
 	return k.configPath
 }
 
+// EvictClientsByAWSProfile remove do cache todos os clients K8s cujo perfil AWS
+// corresponde ao informado. Deve ser chamado após login SSO bem-sucedido para
+// forçar recriação com o novo token.
+func (k *KubeConfigManager) EvictClientsByAWSProfile(profile string) {
+	// Coletar contexts que correspondem ao perfil (sem locks).
+	var toEvict []string
+	k.clientMutex.RLock()
+	for contextName := range k.clients {
+		if k.getAWSProfileFromKubeconfig(contextName) == profile {
+			toEvict = append(toEvict, contextName)
+		}
+	}
+	k.clientMutex.RUnlock()
+
+	if len(toEvict) == 0 {
+		return
+	}
+
+	k.clientMutex.Lock()
+	for _, name := range toEvict {
+		delete(k.clients, name)
+	}
+	k.clientMutex.Unlock()
+
+	k.metricsMutex.Lock()
+	for _, name := range toEvict {
+		delete(k.metricsClients, name)
+	}
+	k.metricsMutex.Unlock()
+}
+
 // SetHistoryTracker configura o historyTracker para audit logging
 func (k *KubeConfigManager) SetHistoryTracker(tracker *history.HistoryTracker) {
 	k.historyTracker = tracker
@@ -319,9 +350,10 @@ func (k *KubeConfigManager) TestClusterTCPConnection(clusterName string, timeout
 }
 
 // resolveContext encontra o nome real do contexto no kubeconfig a partir de um nome informado.
-// Tenta: (1) nome exato, (2) sem sufixo -admin, (3) com sufixo -admin.
-// Isso permite que o sistema funcione em máquinas onde os contextos do kubeconfig
-// têm ou não o sufixo -admin, sem exigir normalização no frontend ou nos handlers.
+// Tenta: (1) nome exato, (2) sem sufixo -admin, (3) com sufixo -admin,
+// (4) busca reversa por ARN EKS terminando em "/<name>" (suporta nome curto do cluster).
+// Isso permite que o sistema funcione com AKS (com/sem -admin) e EKS
+// (ARN completo ou nome curto), sem exigir normalização no frontend ou nos handlers.
 func (k *KubeConfigManager) resolveContext(name string) string {
 	if _, ok := k.config.Contexts[name]; ok {
 		return name
@@ -336,6 +368,17 @@ func (k *KubeConfigManager) resolveContext(name string) string {
 	if with := name + "-admin"; name != "" {
 		if _, ok := k.config.Contexts[with]; ok {
 			return with
+		}
+	}
+	// Busca reversa para EKS: nome curto "my-cluster" → contexto ARN "arn:aws:eks:.../my-cluster"
+	// Só chega aqui se os passos 1-3 falharam (nunca afeta AKS).
+	suffix := "/" + name
+	for contextName, ctx := range k.config.Contexts {
+		if c, ok := k.config.Clusters[ctx.Cluster]; ok {
+			if strings.HasSuffix(c.Server, ".eks.amazonaws.com") &&
+				strings.HasSuffix(ctx.Cluster, suffix) {
+				return contextName
+			}
 		}
 	}
 	return name // retorna original para que o erro eventual seja descritivo
@@ -416,7 +459,66 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 	restConfig.QPS = 50
 	restConfig.Burst = 100
 
+	// Para clusters EKS, sempre injetar ExecProvider com `aws eks get-token --output json`
+	// para garantir refresh automático de token. Tokens estáticos no kubeconfig (formato
+	// eks_<cluster>) expiram em 15 minutos — usá-los diretamente causa 401 contínuos.
+	// Se o kubeconfig já tem exec plugin (formato padrão do aws eks update-kubeconfig),
+	// não sobrescrever (ExecProvider != nil).
+	if restConfig.ExecProvider == nil && len(restConfig.CertData) == 0 && restConfig.KeyFile == "" {
+		serverURL := k.getServerURL(clusterName)
+		if DetectCloudProvider(serverURL) == CloudProviderEKS {
+			if exec := k.buildEKSExecProvider(resolved, serverURL, clusterName); exec != nil {
+				restConfig.ExecProvider = exec
+				restConfig.BearerToken = "" // Limpar token estático expirado
+			}
+		}
+	}
+
 	return restConfig, nil
+}
+
+// buildEKSExecProvider constrói um ExecConfig para `aws eks get-token` a partir
+// das informações disponíveis no kubeconfig (contexto resolvido, URL do servidor).
+func (k *KubeConfigManager) buildEKSExecProvider(resolved, serverURL, clusterName string) *api.ExecConfig {
+	region := ExtractRegionFromEKSURL(serverURL)
+
+	// Nome curto do cluster: extraído do cluster entry do contexto (pode ser ARN).
+	shortName := ""
+	if ctx, ok := k.config.Contexts[resolved]; ok {
+		clusterEntry := ctx.Cluster
+		if idx := strings.LastIndex(clusterEntry, "/"); idx >= 0 {
+			shortName = clusterEntry[idx+1:]
+		} else {
+			shortName = clusterEntry
+		}
+	}
+	// Fallback: usar o clusterName normalizado
+	if shortName == "" {
+		shortName = strings.TrimSuffix(strings.TrimSuffix(clusterName, "-admin"), "/")
+		if idx := strings.LastIndex(shortName, "/"); idx >= 0 {
+			shortName = shortName[idx+1:]
+		}
+	}
+
+	profile := k.getAWSProfileFromKubeconfig(clusterName)
+
+	if shortName == "" || region == "" {
+		return nil
+	}
+
+	// --output json é obrigatório: sobrepõe o output=text que pode estar configurado
+	// no perfil ~/.aws/config. Sem isso, client-go não consegue parsear o ExecCredential.
+	args := []string{"eks", "get-token", "--cluster-name", shortName, "--region", region, "--output", "json"}
+	if profile != "" {
+		args = append(args, "--profile", profile)
+	}
+
+	return &api.ExecConfig{
+		APIVersion:      "client.authentication.k8s.io/v1beta1",
+		Command:         "aws",
+		Args:            args,
+		InteractiveMode: api.NeverExecInteractiveMode,
+	}
 }
 
 // getClient cria ou retorna um cliente existente para o cluster
@@ -442,38 +544,12 @@ func (k *KubeConfigManager) getClient(clusterName string) (kubernetes.Interface,
 		return client, nil
 	}
 
-	// Verificar se o arquivo kubeconfig existe e é válido
-	if k.configPath == "" {
-		return nil, fmt.Errorf("kubeconfig path is empty")
-	}
-
-	// Verificar se o arquivo kubeconfig existe
-	if _, err := os.Stat(k.configPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("kubeconfig file does not exist at path: %s", k.configPath)
-	}
-
-	// Criar configuração do cliente para o contexto resolvido
-	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: k.configPath}
-	configOverrides := &clientcmd.ConfigOverrides{CurrentContext: resolved}
-
-	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		loadingRules,
-		configOverrides,
-	)
-
-	// Tentar obter configuração REST com tratamento de erro melhorado
-	restConfig, err := clientConfig.ClientConfig()
+	// Usar GetRestConfig para obter a configuração REST — já inclui injeção de
+	// ExecProvider para EKS sem exec plugin no kubeconfig.
+	restConfig, err := k.GetRestConfig(clusterName)
 	if err != nil {
-		if strings.Contains(err.Error(), "yaml") || strings.Contains(err.Error(), "unmarshal") {
-			return nil, fmt.Errorf("kubeconfig file has invalid YAML format for cluster %s: %w", resolved, err)
-		}
-		return nil, fmt.Errorf("failed to create client config for %s: %w", resolved, err)
+		return nil, err
 	}
-
-	// Configurar timeouts
-	restConfig.Timeout = 30 * time.Second
-	restConfig.QPS = 50
-	restConfig.Burst = 100
 
 	// Criar cliente Kubernetes
 	client, err := kubernetes.NewForConfig(restConfig)
@@ -568,6 +644,9 @@ func (k *KubeConfigManager) GetNodeGroupProvider(clusterName string) cloudprovid
 }
 
 // getServerURL retorna a URL do API server de um cluster/context pelo nome.
+// GetServerURL expõe a URL do API server de um cluster (usado por handlers externos).
+func (k *KubeConfigManager) GetServerURL(name string) string { return k.getServerURL(name) }
+
 func (k *KubeConfigManager) getServerURL(name string) string {
 	// Tenta como context name
 	if ctx, ok := k.config.Contexts[name]; ok {
@@ -588,10 +667,11 @@ func (k *KubeConfigManager) getServerURL(name string) string {
 	return ""
 }
 
-// getAWSProfileFromKubeconfig extrai o perfil AWS do exec plugin do contexto EKS no kubeconfig.
-// Procura em duas fontes (em ordem de prioridade):
-//  1. env: [{name: AWS_PROFILE, value: "..."}] no exec plugin
-//  2. args: [..., "--profile", "<value>", ...] no exec plugin
+// getAWSProfileFromKubeconfig extrai o perfil AWS do contexto EKS no kubeconfig.
+// Procura em três fontes (em ordem de prioridade):
+//  1. env: [{name: AWS_PROFILE, value: "..."}] no exec plugin (formato antigo)
+//  2. args: [..., "--profile", "<value>", ...] no exec plugin (formato antigo)
+//  3. user name com prefixo "eks_" → infere perfil pelo nome base (formato novo, sem exec plugin)
 func (k *KubeConfigManager) getAWSProfileFromKubeconfig(clusterName string) string {
 	resolvedCtx := k.resolveContext(clusterName)
 	ctx, ok := k.config.Contexts[resolvedCtx]
@@ -599,23 +679,48 @@ func (k *KubeConfigManager) getAWSProfileFromKubeconfig(clusterName string) stri
 		return ""
 	}
 	authInfo, ok := k.config.AuthInfos[ctx.AuthInfo]
-	if !ok || authInfo == nil || authInfo.Exec == nil {
+	if !ok || authInfo == nil {
 		return ""
 	}
-	// 1. Verificar variáveis de ambiente do exec plugin (AWS_PROFILE)
-	for _, env := range authInfo.Exec.Env {
-		if env.Name == "AWS_PROFILE" && env.Value != "" {
-			return env.Value
+
+	if authInfo.Exec != nil {
+		// 1. Verificar variáveis de ambiente do exec plugin (AWS_PROFILE)
+		for _, env := range authInfo.Exec.Env {
+			if env.Name == "AWS_PROFILE" && env.Value != "" {
+				return env.Value
+			}
+		}
+		// 2. Verificar flag --profile nos args
+		args := authInfo.Exec.Args
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "--profile" {
+				return args[i+1]
+			}
 		}
 	}
-	// 2. Verificar flag --profile nos args
-	args := authInfo.Exec.Args
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == "--profile" {
-			return args[i+1]
-		}
+
+	// 3. Novo formato: user name "eks_<cluster-name>" sem exec plugin.
+	// Infere o perfil AWS removendo sufixos de ambiente conhecidos do nome do cluster.
+	// Exemplo: "eks_asaplog-preprod" → "asaplog", "eks_asaplog-staging-alderaan" → "asaplog"
+	if strings.HasPrefix(ctx.AuthInfo, "eks_") {
+		return inferAWSProfileFromEKSUserName(ctx.AuthInfo)
 	}
+
 	return ""
+}
+
+// inferAWSProfileFromEKSUserName extrai o perfil AWS do nome de usuário no formato "eks_<cluster>".
+// Remove sufixos de ambiente conhecidos para obter o nome da conta/org.
+func inferAWSProfileFromEKSUserName(userName string) string {
+	name := strings.TrimPrefix(userName, "eks_")
+	// Sufixos de ambiente: -staging-<qualquer-coisa>, -preprod, -production, -debezium
+	for _, suffix := range []string{"-staging-", "-preprod", "-production", "-debezium"} {
+		if idx := strings.Index(name, suffix); idx > 0 {
+			return name[:idx]
+		}
+	}
+	// Sem sufixo reconhecível — usa o nome completo como perfil (ex: "asapops")
+	return name
 }
 
 // GetClusterInfo retorna informações detalhadas sobre um cluster

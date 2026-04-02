@@ -1,52 +1,27 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { toast } from 'sonner';
 
 interface VPNStatus {
   connected: boolean;
   message: string;
   timestamp: number;
+  cloud_provider?: string;
 }
 
 interface UseVPNMonitorOptions {
+  /** Cluster selecionado atualmente */
+  cluster?: string;
   /** Intervalo de polling em milissegundos (padrão: 60000 = 1 minuto) */
   pollingInterval?: number;
-  /** Se deve exibir toast ao detectar desconexão (padrão: true) */
-  showToastOnDisconnect?: boolean;
   /** Se deve verificar VPN imediatamente ao montar (padrão: true) */
   checkOnMount?: boolean;
+  /** Não usado — mantido para compatibilidade */
+  showToastOnDisconnect?: boolean;
 }
 
-/**
- * Hook para monitoramento contínuo de VPN
- *
- * Funcionalidades:
- * - Polling periódico do status VPN (padrão: 1 minuto)
- * - Verificação on-demand via checkVPN()
- * - Toast notification ao detectar desconexão
- * - Previne múltiplas verificações simultâneas
- *
- * @example
- * ```typescript
- * const { isConnected, isChecking, checkVPN, lastCheck } = useVPNMonitor({
- *   pollingInterval: 60000, // 1 minuto
- *   showToastOnDisconnect: true
- * });
- *
- * // Verificar antes de operação crítica
- * const handleApplyChanges = async () => {
- *   const connected = await checkVPN();
- *   if (!connected) {
- *     toast.error("VPN desconectada. Conecte-se e tente novamente.");
- *     return;
- *   }
- *   // Prosseguir com operação...
- * };
- * ```
- */
 export function useVPNMonitor(options: UseVPNMonitorOptions = {}) {
   const {
-    pollingInterval = 60000, // 1 minuto
-    showToastOnDisconnect = true,
+    cluster,
+    pollingInterval = 60000,
     checkOnMount = true,
   } = options;
 
@@ -55,114 +30,66 @@ export function useVPNMonitor(options: UseVPNMonitorOptions = {}) {
   const [lastCheck, setLastCheck] = useState<Date | null>(null);
   const [lastStatus, setLastStatus] = useState<VPNStatus | null>(null);
 
-  // Ref para prevenir múltiplas verificações simultâneas
   const checkInProgressRef = useRef<boolean>(false);
 
-  // Ref para armazenar se já exibimos toast (evitar spam)
-  const toastShownRef = useRef<boolean>(false);
+  const checkVPN = useCallback(async (overrideCluster?: string): Promise<boolean> => {
+    if (checkInProgressRef.current) return isConnected;
 
-  /**
-   * Verifica status VPN fazendo chamada à API
-   * Retorna true se conectado, false se desconectado
-   */
-  const checkVPN = useCallback(async (): Promise<boolean> => {
-    // Prevenir múltiplas verificações simultâneas
-    if (checkInProgressRef.current) {
-      console.log('[VPN Monitor] Verificação já em andamento, aguardando...');
-      return isConnected;
+    const target = overrideCluster ?? cluster;
+
+    // Sem cluster selecionado — não mostrar banner
+    if (!target) {
+      setIsConnected(true);
+      return true;
     }
 
     checkInProgressRef.current = true;
     setIsChecking(true);
 
     try {
-      const response = await fetch('/api/v1/vpn/status', {
+      const response = await fetch(`/api/v1/vpn/status?cluster=${encodeURIComponent(target)}`, {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
       });
 
       const data: VPNStatus = await response.json();
-      const now = new Date();
 
-      setLastCheck(now);
+      setLastCheck(new Date());
       setLastStatus(data);
       setIsConnected(data.connected);
-
-      // Log status change
-      if (data.connected !== isConnected) {
-        console.log(`[VPN Monitor] Status mudou: ${isConnected ? 'Conectado' : 'Desconectado'} → ${data.connected ? 'Conectado' : 'Desconectado'}`);
-      }
-
-      // Exibir toast se desconectou
-      if (!data.connected && showToastOnDisconnect && !toastShownRef.current) {
-        toast.error('🔌 VPN Desconectada', {
-          description: 'Conecte-se à VPN para continuar operando. Algumas funcionalidades podem não funcionar.',
-          duration: 10000,
-        });
-        toastShownRef.current = true;
-      }
-
-      // Resetar flag de toast se reconectou
-      if (data.connected && toastShownRef.current) {
-        toast.success('✅ VPN Reconectada', {
-          description: 'Conexão com Kubernetes restabelecida.',
-          duration: 5000,
-        });
-        toastShownRef.current = false;
-      }
-
       return data.connected;
-    } catch (error) {
-      console.error('[VPN Monitor] Erro ao verificar VPN:', error);
-
-      // Em caso de erro, assumir desconectado
+    } catch {
       setIsConnected(false);
-
-      if (showToastOnDisconnect && !toastShownRef.current) {
-        toast.error('🔌 Erro ao Verificar VPN', {
-          description: 'Não foi possível verificar status da VPN. Conecte-se e tente novamente.',
-          duration: 10000,
-        });
-        toastShownRef.current = true;
-      }
-
       return false;
     } finally {
       setIsChecking(false);
       checkInProgressRef.current = false;
     }
-  }, [isConnected, showToastOnDisconnect]);
+  }, [cluster, isConnected]);
+
+  // Re-verificar quando o cluster mudar
+  useEffect(() => {
+    if (cluster) checkVPN();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cluster]);
 
   // Polling periódico
   useEffect(() => {
-    // Verificar imediatamente ao montar se configurado
-    if (checkOnMount) {
-      checkVPN();
-    }
+    if (checkOnMount && cluster) checkVPN();
 
-    // Setup intervalo de polling
     const intervalId = setInterval(() => {
-      checkVPN();
+      if (cluster) checkVPN();
     }, pollingInterval);
 
-    // Cleanup
-    return () => {
-      clearInterval(intervalId);
-    };
-  }, [checkVPN, pollingInterval, checkOnMount]);
+    return () => clearInterval(intervalId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pollingInterval, checkOnMount, cluster]);
 
   return {
-    /** Status atual da conexão VPN */
     isConnected,
-    /** Se está verificando VPN no momento */
     isChecking,
-    /** Data/hora da última verificação */
     lastCheck,
-    /** Dados completos do último status */
     lastStatus,
-    /** Função para verificar VPN on-demand (retorna Promise<boolean>) */
     checkVPN,
   };
 }
