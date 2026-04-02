@@ -1,80 +1,70 @@
 package handlers
 
 import (
-	"context"
 	"fmt"
 	"net/http"
-	"os/exec"
-	"strings"
 	"time"
+
+	"k8s-hpa-manager/internal/config"
 
 	"github.com/gin-gonic/gin"
 )
 
 // VPNStatusResponse representa o status da conexão VPN
 type VPNStatusResponse struct {
-	Connected bool   `json:"connected"`
-	Message   string `json:"message"`
-	Timestamp int64  `json:"timestamp"`
+	Connected    bool   `json:"connected"`
+	Message      string `json:"message"`
+	Timestamp    int64  `json:"timestamp"`
+	CloudProvider string `json:"cloud_provider,omitempty"`
 }
 
-// CheckVPNConnection verifica conectividade VPN usando kubectl cluster-info
-// Similar à função validateVPNConnection da TUI (internal/tui/message.go:754-785)
-func CheckVPNConnection(c *gin.Context) {
-	err := testKubernetesConnectivity()
+// VPNHandler verifica conectividade por cluster específico.
+type VPNHandler struct {
+	kubeManager *config.KubeConfigManager
+}
 
-	response := VPNStatusResponse{
-		Timestamp: time.Now().Unix(),
-	}
+func NewVPNHandler(km *config.KubeConfigManager) *VPNHandler {
+	return &VPNHandler{kubeManager: km}
+}
 
-	if err != nil {
-		response.Connected = false
-		response.Message = fmt.Sprintf("VPN desconectada: %s", err.Error())
-		c.JSON(http.StatusServiceUnavailable, response)
+// CheckStatus testa conectividade TCP com o cluster informado via ?cluster=.
+// Se não informado, retorna connected=true (sem bloquear o usuário).
+// GET /api/v1/vpn/status?cluster=<context-name>
+func (h *VPNHandler) CheckStatus(c *gin.Context) {
+	clusterName := c.Query("cluster")
+
+	resp := VPNStatusResponse{Timestamp: time.Now().Unix()}
+
+	if clusterName == "" {
+		// Sem cluster específico — não mostrar banner
+		resp.Connected = true
+		resp.Message = "Nenhum cluster selecionado"
+		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	response.Connected = true
-	response.Message = "VPN conectada - Kubernetes acessível"
-	c.JSON(http.StatusOK, response)
-}
+	const tcpTimeout = 5 * time.Second
+	reachable := h.kubeManager.TestClusterTCPConnection(clusterName, tcpTimeout)
 
-// testKubernetesConnectivity testa conectividade real com Kubernetes
-// Usa kubectl cluster-info com timeout de 6 segundos
-// Retorna nil se conectado, erro se VPN desconectada
-func testKubernetesConnectivity() error {
-	// Criar contexto com timeout de 6 segundos
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
+	serverURL := h.kubeManager.GetServerURL(clusterName)
+	provider := config.DetectCloudProvider(serverURL)
+	resp.CloudProvider = string(provider)
 
-	// kubectl cluster-info - comando leve para testar conectividade
-	testCmd := exec.CommandContext(ctx, "kubectl", "cluster-info")
-
-	// Canal para resultado
-	done := make(chan error, 1)
-
-	go func() {
-		output, err := testCmd.CombinedOutput()
-		outputStr := string(output)
-
-		// Se kubectl conseguiu responder (mesmo que seja erro de auth), VPN está OK
-		// Procurar por "Kubernetes control plane" ou "running at" na saída
-		if err == nil || strings.Contains(outputStr, "running at") || strings.Contains(outputStr, "Kubernetes") {
-			done <- nil
-		} else {
-			done <- fmt.Errorf("kubectl falhou: %w (output: %s)", err, outputStr)
-		}
-	}()
-
-	// Aguardar resultado ou timeout
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		// Timeout - VPN provavelmente desconectada
-		if testCmd.Process != nil {
-			testCmd.Process.Kill()
-		}
-		return fmt.Errorf("timeout ao acessar Kubernetes - VPN pode estar desconectada")
+	if reachable {
+		resp.Connected = true
+		resp.Message = fmt.Sprintf("Cluster %s acessível", clusterName)
+		c.JSON(http.StatusOK, resp)
+		return
 	}
+
+	resp.Connected = false
+	switch provider {
+	case config.CloudProviderEKS:
+		resp.Message = "Cluster AWS EKS inacessível — verifique a VPN AWS"
+	case config.CloudProviderAKS:
+		resp.Message = "Cluster Azure AKS inacessível — verifique a VPN Azure"
+	default:
+		resp.Message = fmt.Sprintf("Cluster %s inacessível — verifique a VPN", clusterName)
+	}
+	c.JSON(http.StatusServiceUnavailable, resp)
 }
