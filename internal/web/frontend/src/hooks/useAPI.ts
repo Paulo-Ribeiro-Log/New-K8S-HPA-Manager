@@ -338,8 +338,14 @@ export function useConfigMaps(cluster?: string, namespaces?: string[], showSyste
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchConfigMaps(true);
+  const silentRefetch = () => {
+    if (!cluster) return;
+    apiClient.getConfigMaps(cluster, namespaces, undefined, showSystem, true)
+      .then(data => setConfigMaps(data))
+      .catch(() => {});
+  };
 
-  return { configMaps, loading, error, refetch };
+  return { configMaps, loading, error, refetch, silentRefetch };
 }
 
 export function useSecrets(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
@@ -381,8 +387,14 @@ export function useSecrets(cluster?: string, namespaces?: string[], showSystem: 
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchSecrets(true);
+  const silentRefetch = () => {
+    if (!cluster) return;
+    apiClient.getSecrets(cluster, namespaces, showSystem, true)
+      .then(data => setSecrets(data))
+      .catch(() => {});
+  };
 
-  return { secrets, loading, error, refetch };
+  return { secrets, loading, error, refetch, silentRefetch };
 }
 
 export function useDeployments(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
@@ -557,8 +569,14 @@ export function useIngresses(cluster?: string, namespaces?: string[], showSystem
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchIngresses(true);
+  const silentRefetch = () => {
+    if (!cluster) return;
+    apiClient.getIngresses(cluster, namespaces, undefined, showSystem, true)
+      .then(data => setIngresses(data))
+      .catch(() => {});
+  };
 
-  return { ingresses, loading, error, refetch };
+  return { ingresses, loading, error, refetch, silentRefetch };
 }
 
 export function usePods(cluster?: string, namespaces?: string[], showSystem: boolean = false) {
@@ -731,8 +749,14 @@ export function useVPAs(cluster?: string, namespaces?: string[], showSystem: boo
   }, [cluster, namespaceKey, showSystem]);
 
   const refetch = () => fetchVPAs();
+  const silentRefetch = () => {
+    if (!cluster) return;
+    apiClient.getVPAs(cluster, namespaces, showSystem)
+      .then(result => setVPAs(result.data))
+      .catch(() => {});
+  };
 
-  return { vpas, crdNotInstalled, loading, error, refetch };
+  return { vpas, crdNotInstalled, loading, error, refetch, silentRefetch };
 }
 
 // Cache local para tipos de recursos (lista raramente muda)

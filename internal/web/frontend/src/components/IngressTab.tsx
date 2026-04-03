@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Network, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Copy } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, ChevronLeft, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Network, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Copy } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,6 +25,7 @@ import type {
   IngressManifest,
 } from "@/lib/api/types";
 import { useIngresses } from "@/hooks/useAPI";
+import { IngressMonitorTable } from "@/components/IngressMonitorTable";
 import { apiClient } from "@/lib/api/client";
 import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
@@ -101,7 +102,7 @@ export const IngressTab = ({
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
-  const { ingresses, loading, error, refetch } = useIngresses(
+  const { ingresses, loading, error, refetch, silentRefetch } = useIngresses(
     cluster,
     namespaceFilter,
     showSystemNamespaces
@@ -515,6 +516,26 @@ export const IngressTab = ({
     }
   };
 
+  const handleClearSelection = () => {
+    setSelectedIngress(null);
+    setManifest(null);
+    setEditorValue("");
+    setOriginalYaml("");
+    setViewMode("editor");
+    setHistory([]);
+    setHistoryIndex(-1);
+  };
+
+  const rightTitlePrefix = selectedIngress ? (
+    <button
+      onClick={handleClearSelection}
+      className="flex items-center justify-center w-7 h-7 rounded-full bg-primary/20 hover:bg-primary/40 active:bg-primary/60 border border-primary/30 text-primary transition-colors flex-shrink-0"
+      title="Voltar para lista"
+    >
+      <ChevronLeft className="w-4 h-4" />
+    </button>
+  ) : undefined;
+
   const rightTitleAction = (
     <div className="flex items-center gap-2">
       {selectedIngress && onOpenCompare && (
@@ -653,9 +674,13 @@ export const IngressTab = ({
 
     if (!selectedIngress) {
       return (
-        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Escolha um Ingress para visualizar o manifesto
-        </div>
+        <IngressMonitorTable
+          items={ingresses ?? []}
+          loading={loading}
+          headerLabel={`${(ingresses ?? []).length} Ingress(es)`}
+          onOpenEditor={handleSelectIngress}
+          onRequestRefresh={silentRefetch}
+        />
       );
     }
 
@@ -888,6 +913,15 @@ export const IngressTab = ({
 
   const leftContent = (
     <div className="space-y-3">
+      {selectedIngress && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-primary/10 border border-primary/20 text-xs text-primary font-medium">
+          <Network className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="truncate flex-1">{selectedIngress.namespace}/{selectedIngress.name}</span>
+          <button onClick={handleClearSelection} className="flex-shrink-0 hover:text-foreground transition-colors" title="Voltar para lista">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         {searchQuery && (
@@ -1286,7 +1320,8 @@ export const IngressTab = ({
           content: leftContent,
         }}
         rightPanel={{
-          title: "Visualização",
+          title: selectedIngress ? `${selectedIngress.namespace}/${selectedIngress.name}` : "Visualização",
+          titlePrefix: rightTitlePrefix,
           titleAction: rightTitleAction,
           content: renderManifestPanel(),
         }}
