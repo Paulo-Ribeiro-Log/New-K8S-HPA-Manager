@@ -112,6 +112,9 @@ func (h *AWSAuthHandler) PollLogin(c *gin.Context) {
 	// Sessão ativa — verificar se já terminou (non-blocking).
 	select {
 	case err := <-session.Done:
+		// success = token foi salvo com sucesso no cache AWS SSO.
+		// Não re-validamos via IsTokenValid aqui para evitar falso-negativo causado por
+		// latência de rede (portal.sso.amazonaws.com pode demorar mais que o timeout via VPN).
 		success := err == nil
 		if success {
 			h.kubeManager.EvictClientsByAWSProfile(profile)
