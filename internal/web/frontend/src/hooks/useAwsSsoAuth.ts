@@ -5,13 +5,20 @@ import { apiClient } from "@/lib/api/client";
  * Infere o perfil AWS a partir do nome do cluster EKS.
  * Replica a lógica de inferAWSProfileFromEKSUserName do backend.
  * Exemplos:
+ *   "arn:aws:eks:us-east-1:123456789:cluster/asaplog-staging-mandalore" → "asaplog"
  *   "asaplog-staging-tatooine-admin" → "asaplog"
  *   "asaplog-preprod"                → "asaplog"
  *   "asapops"                        → "asapops"
  */
 export function inferAWSProfile(clusterName: string): string {
+  // Extrair nome curto de ARNs EKS: arn:aws:eks:REGION:ACCOUNT:cluster/NAME → NAME
+  let name = clusterName;
+  if (name.startsWith("arn:aws:")) {
+    const slashIdx = name.lastIndexOf("/");
+    if (slashIdx >= 0) name = name.slice(slashIdx + 1);
+  }
   // Remover sufixo -admin
-  const name = clusterName.replace(/-admin$/, "");
+  name = name.replace(/-admin$/, "");
   const suffixes = ["-staging-", "-preprod", "-production", "-debezium"];
   for (const suffix of suffixes) {
     const idx = name.indexOf(suffix);
@@ -88,7 +95,8 @@ export function useAwsSsoAuth() {
             // Fechar automaticamente após 2s
             setTimeout(() => setState(INITIAL), 2000);
           } else {
-            setState((s) => ({ ...s, polling: false, error: "Login não concluído. Tente novamente." }));
+            const detail = res.error_detail || "Login não concluído. Verifique se a VPN AWS está ativa e tente novamente.";
+            setState((s) => ({ ...s, polling: false, error: detail }));
           }
         }
       } catch {
