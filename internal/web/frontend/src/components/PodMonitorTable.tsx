@@ -263,7 +263,11 @@ export const PodMonitorTable = ({
 
   const uniqueStatuses = useMemo(() => {
     const s = new Set<string>();
-    pods.forEach((p) => { const v = p.status || p.phase; if (v) s.add(v); });
+    pods.forEach((p) => {
+      // Pods Running-mas-não-prontos aparecem como "NotReady" no filtro
+      const v = p.statusReason === "NotReady" ? "NotReady" : (p.status || p.phase);
+      if (v) s.add(v);
+    });
     return Array.from(s).sort();
   }, [pods]);
 
@@ -303,7 +307,10 @@ export const PodMonitorTable = ({
       );
     }
     if (statusFilter.size > 0)
-      result = result.filter((p) => statusFilter.has(p.status || p.phase || ""));
+      result = result.filter((p) => {
+        const effectiveStatus = p.statusReason === "NotReady" ? "NotReady" : (p.status || p.phase || "");
+        return statusFilter.has(effectiveStatus);
+      });
     if (nodeFilter.size > 0)
       result = result.filter((p) => nodeFilter.has(p.nodeName ?? ""));
     if (namespaceFilter.size > 0)
@@ -621,7 +628,9 @@ export const PodMonitorTable = ({
               <span>{pod.readyContainers}/{pod.totalContainers}</span>
 
               {/* STATUS */}
-              <span className="truncate" title={pod.statusReason || pod.status || pod.phase}>{pod.status || pod.phase || "-"}</span>
+              <span className="truncate" title={pod.statusReason || pod.status || pod.phase}>
+                {pod.statusReason === "NotReady" ? "NotReady" : (pod.status || pod.phase || "-")}
+              </span>
 
               {/* REST. */}
               <span>{pod.restarts}</span>
