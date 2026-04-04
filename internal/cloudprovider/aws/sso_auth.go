@@ -80,8 +80,9 @@ func NewAWSSSOManager() *AWSSSOManager {
 // ─── Tipos internos do AWS SSO OIDC ──────────────────────────────────────────
 
 type oidcClientInfo struct {
-	ClientID     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret"`
+	ClientID              string `json:"clientId"`
+	ClientSecret          string `json:"clientSecret"`
+	ClientSecretExpiresAt int64  `json:"clientSecretExpiresAt"` // Unix timestamp
 }
 
 type deviceAuthInfo struct {
@@ -94,8 +95,9 @@ type deviceAuthInfo struct {
 }
 
 type oidcTokenInfo struct {
-	AccessToken string `json:"accessToken"`
-	ExpiresIn   int    `json:"expiresIn"`
+	AccessToken  string `json:"accessToken"`
+	ExpiresIn    int    `json:"expiresIn"`
+	RefreshToken string `json:"refreshToken,omitempty"`
 }
 
 // ─── IsTokenValid ─────────────────────────────────────────────────────────────
@@ -205,15 +207,16 @@ func (m *AWSSSOManager) StartLogin(ctx context.Context, profile string) (*LoginS
 				return
 			}
 
+			// Garantir que o perfil existe em ~/.aws/config ANTES de sinalizar conclusão,
+			// para que aws sts/eks get-token já encontre o perfil ao ser chamado em seguida.
+			_ = m.ensureAWSProfile(profile, cfg)
+
 			// Token obtido — salvar no cache AWS SSO.
-			if saveErr := m.saveTokenCache(cfg.SSO.StartURL, ssoRegion, token); saveErr != nil {
+			if saveErr := m.saveTokenCache(profile, cfg.SSO.StartURL, ssoRegion, oidcClient, token); saveErr != nil {
 				session.Done <- fmt.Errorf("token obtido mas falha ao salvar cache: %w", saveErr)
 			} else {
 				session.Done <- nil
 			}
-
-			// Garantir que o perfil existe em ~/.aws/config para uso pelo aws CLI.
-			_ = m.ensureAWSProfile(profile, cfg)
 
 			time.AfterFunc(60*time.Second, func() { m.removeSession(profile) })
 			return
@@ -326,37 +329,107 @@ func (m *AWSSSOManager) oidcPost(ctx context.Context, url string, body interface
 
 // ─── Token cache ──────────────────────────────────────────────────────────────
 
-// saveTokenCache salva o token no formato que o AWS CLI espera em ~/.aws/sso/cache/.
-func (m *AWSSSOManager) saveTokenCache(startURL, region string, token *oidcTokenInfo) error {
+// sha1Hex retorna o hash SHA1 hex de uma string.
+func sha1Hex(s string) string {
+	h := sha1.Sum([]byte(s))
+	return fmt.Sprintf("%x", h)
+}
+
+// saveTokenCache salva o OIDC token nos locais corretos do cache AWS SSO.
+//
+// O AWS CLI v2 tem dois formatos:
+//   - Legado (sso_start_url direto no perfil): cache em SHA1(startURL).json com expiresAt "UTC"
+//   - Novo   (sso_session no perfil):          cache em SHA1(sessionName).json com expiresAt "Z"
+//     e campos adicionais: clientId, clientSecret, registrationExpiresAt, refreshToken
+//
+// Para garantir compatibilidade, salvamos em AMBOS os locais.
+func (m *AWSSSOManager) saveTokenCache(profile, startURL, region string, oidcClient *oidcClientInfo, token *oidcTokenInfo) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-
 	cacheDir := filepath.Join(homeDir, ".aws", "sso", "cache")
 	if err := os.MkdirAll(cacheDir, 0700); err != nil {
 		return err
 	}
 
-	// Nome do arquivo: SHA1 hex do startURL (sem \n).
-	h := sha1.Sum([]byte(startURL))
-	filename := fmt.Sprintf("%x.json", h)
-
 	expiresAt := time.Now().UTC().Add(time.Duration(token.ExpiresIn) * time.Second)
 
-	cache := map[string]interface{}{
+	// 1. Formato legado: SHA1(startURL), expiresAt com sufixo "UTC".
+	legacy := map[string]interface{}{
 		"startUrl":    startURL,
 		"region":      region,
 		"accessToken": token.AccessToken,
 		"expiresAt":   expiresAt.Format("2006-01-02T15:04:05UTC"),
 	}
-
-	data, err := json.MarshalIndent(cache, "", "  ")
-	if err != nil {
-		return err
+	if data, jsonErr := json.MarshalIndent(legacy, "", "  "); jsonErr == nil {
+		_ = os.WriteFile(filepath.Join(cacheDir, sha1Hex(startURL)+".json"), data, 0600)
 	}
 
-	return os.WriteFile(filepath.Join(cacheDir, filename), data, 0600)
+	// 2. Novo formato: SHA1(sessionName), expiresAt ISO 8601 com "Z".
+	// Detectar o nome da sessão SSO lendo sso_session no ~/.aws/config.
+	if sessionName := m.getAWSSessionName(profile); sessionName != "" {
+		sessionFile := filepath.Join(cacheDir, sha1Hex(sessionName)+".json")
+
+		// Ler cache existente para preservar clientId, clientSecret, refreshToken, etc.
+		sessionCache := make(map[string]interface{})
+		if existing, readErr := os.ReadFile(sessionFile); readErr == nil {
+			_ = json.Unmarshal(existing, &sessionCache)
+		}
+
+		// Atualizar apenas token e expiração (preservar outros campos do arquivo existente).
+		sessionCache["startUrl"] = startURL
+		sessionCache["region"] = region
+		sessionCache["accessToken"] = token.AccessToken
+		sessionCache["expiresAt"] = expiresAt.UTC().Format(time.RFC3339) // "Z" format
+		if token.RefreshToken != "" {
+			sessionCache["refreshToken"] = token.RefreshToken
+		}
+		// Preencher clientId/clientSecret se o arquivo não os tiver.
+		if _, ok := sessionCache["clientId"]; !ok && oidcClient != nil {
+			sessionCache["clientId"] = oidcClient.ClientID
+			sessionCache["clientSecret"] = oidcClient.ClientSecret
+			if oidcClient.ClientSecretExpiresAt > 0 {
+				sessionCache["registrationExpiresAt"] = time.Unix(oidcClient.ClientSecretExpiresAt, 0).UTC().Format(time.RFC3339)
+			}
+		}
+
+		if data, jsonErr := json.MarshalIndent(sessionCache, "", "  "); jsonErr == nil {
+			_ = os.WriteFile(sessionFile, data, 0600)
+		}
+	}
+
+	return nil
+}
+
+// getAWSSessionName lê o valor de sso_session para o perfil em ~/.aws/config.
+// Retorna "" se o perfil usa o formato legado (sem sso_session).
+func (m *AWSSSOManager) getAWSSessionName(profile string) string {
+	homeDir, _ := os.UserHomeDir()
+	data, err := os.ReadFile(filepath.Join(homeDir, ".aws", "config"))
+	if err != nil {
+		return ""
+	}
+	header := fmt.Sprintf("[profile %s]", profile)
+	inSection := false
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == header {
+			inSection = true
+			continue
+		}
+		if inSection {
+			if strings.HasPrefix(line, "[") {
+				break
+			}
+			if strings.HasPrefix(line, "sso_session") {
+				if parts := strings.SplitN(line, "=", 2); len(parts) == 2 {
+					return strings.TrimSpace(parts[1])
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────

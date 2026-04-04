@@ -143,6 +143,26 @@ func (k *KubeConfigManager) ConfigPath() string {
 	return k.configPath
 }
 
+// resolveAWSProfile retorna o perfil AWS para um contexto EKS, incluindo fallback
+// por inferência do nome curto do cluster quando o kubeconfig não tem --profile explícito.
+func (k *KubeConfigManager) resolveAWSProfile(contextName string) string {
+	profile := k.getAWSProfileFromKubeconfig(contextName)
+	if profile != "" {
+		return profile
+	}
+	// Fallback: inferir do nome curto do cluster (ex: "asaplog-staging-naboo-admin" → "asaplog")
+	serverURL := k.getServerURL(contextName)
+	if DetectCloudProvider(serverURL) != CloudProviderEKS {
+		return ""
+	}
+	shortName := contextName
+	if idx := strings.LastIndex(contextName, "/"); idx >= 0 {
+		shortName = contextName[idx+1:]
+	}
+	shortName = strings.TrimSuffix(shortName, "-admin")
+	return inferAWSProfileFromEKSUserName(shortName)
+}
+
 // EvictClientsByAWSProfile remove do cache todos os clients K8s cujo perfil AWS
 // corresponde ao informado. Deve ser chamado após login SSO bem-sucedido para
 // forçar recriação com o novo token.
@@ -151,7 +171,7 @@ func (k *KubeConfigManager) EvictClientsByAWSProfile(profile string) {
 	var toEvict []string
 	k.clientMutex.RLock()
 	for contextName := range k.clients {
-		if k.getAWSProfileFromKubeconfig(contextName) == profile {
+		if k.resolveAWSProfile(contextName) == profile {
 			toEvict = append(toEvict, contextName)
 		}
 	}
@@ -459,18 +479,28 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 	restConfig.QPS = 50
 	restConfig.Burst = 100
 
-	// Para clusters EKS, sempre injetar ExecProvider com `aws eks get-token --output json`
-	// para garantir refresh automático de token. Tokens estáticos no kubeconfig (formato
-	// eks_<cluster>) expiram em 15 minutos — usá-los diretamente causa 401 contínuos.
-	// Se o kubeconfig já tem exec plugin (formato padrão do aws eks update-kubeconfig),
-	// não sobrescrever (ExecProvider != nil).
-	if restConfig.ExecProvider == nil && len(restConfig.CertData) == 0 && restConfig.KeyFile == "" {
-		serverURL := k.getServerURL(clusterName)
-		if DetectCloudProvider(serverURL) == CloudProviderEKS {
-			if exec := k.buildEKSExecProvider(resolved, serverURL, clusterName); exec != nil {
-				restConfig.ExecProvider = exec
-				restConfig.BearerToken = "" // Limpar token estático expirado
-			}
+	// Para clusters EKS, SEMPRE injetar nosso ExecProvider com `aws eks get-token --output json`
+	// e o --profile correto (inferido via resolveAWSProfile).
+	//
+	// Razões para sobrescrever mesmo quando ExecProvider != nil:
+	// 1. kubeconfigs criados por `aws eks update-kubeconfig` frequentemente não incluem
+	//    --profile, causando exit code 255 quando as credenciais default não existem.
+	// 2. Tokens estáticos (formato eks_<cluster>) expiram em 15 minutos — precisam de refresh.
+	// 3. Nossa versão garante --output json (evita falha de parse quando output=text no perfil).
+	//
+	// Exceção: clusters com mTLS (CertData/KeyFile) não usam token AWS — ignorar.
+	//
+	// Nota: usar getServerURL(resolved) e não getServerURL(clusterName) para garantir que
+	// clusters EKS no formato ARN (ex: "arn:aws:eks:.../asaplog-staging-mandalore") sejam
+	// encontrados — o nome curto não existe como chave de contexto nem de cluster no kubeconfig.
+	serverURL := k.getServerURL(resolved)
+	if serverURL == "" {
+		serverURL = k.getServerURL(clusterName)
+	}
+	if DetectCloudProvider(serverURL) == CloudProviderEKS && len(restConfig.CertData) == 0 && restConfig.KeyFile == "" {
+		if exec := k.buildEKSExecProvider(resolved, serverURL, clusterName); exec != nil {
+			restConfig.ExecProvider = exec
+			restConfig.BearerToken = "" // Limpar token estático expirado
 		}
 	}
 
@@ -500,7 +530,7 @@ func (k *KubeConfigManager) buildEKSExecProvider(resolved, serverURL, clusterNam
 		}
 	}
 
-	profile := k.getAWSProfileFromKubeconfig(clusterName)
+	profile := k.resolveAWSProfile(clusterName)
 
 	if shortName == "" || region == "" {
 		return nil
