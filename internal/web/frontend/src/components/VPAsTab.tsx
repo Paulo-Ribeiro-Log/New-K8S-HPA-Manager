@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/select";
 import {
   Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert,
-  FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X,
+  FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, ChevronLeft,
   FileText, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle,
   TrendingUp, Info, Copy
 } from "lucide-react";
@@ -19,6 +19,7 @@ import { toast } from "sonner";
 
 import type { Namespace, VPASummary, VPAManifest } from "@/lib/api/types";
 import { useVPAs } from "@/hooks/useAPI";
+import { VPAMonitorTable } from "@/components/VPAMonitorTable";
 import { apiClient } from "@/lib/api/client";
 import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
@@ -108,7 +109,7 @@ export const VPAsTab = ({
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
-  const { vpas, crdNotInstalled, loading, error, refetch } = useVPAs(
+  const { vpas, crdNotInstalled, loading, error, refetch, silentRefetch } = useVPAs(
     cluster,
     namespaceFilter,
     showSystemNamespaces
@@ -368,6 +369,15 @@ export const VPAsTab = ({
 
   const leftContent = (
     <div className="space-y-3">
+      {selectedVPA && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-primary/10 border border-primary/20 text-xs text-primary font-medium">
+          <TrendingUp className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="truncate flex-1">{selectedVPA.namespace}/{selectedVPA.name}</span>
+          <button onClick={handleClearSelection} className="flex-shrink-0 hover:text-foreground transition-colors" title="Voltar para lista">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       {/* Namespace select + busca */}
       <Select value={selectedNamespace || "__all__"} onValueChange={(v) => onNamespaceChange(v === "__all__" ? "" : v)}>
         <SelectTrigger className="h-8 w-full">
@@ -466,6 +476,26 @@ export const VPAsTab = ({
   );
 
   // ─── Right panel ─────────────────────────────────────────────────────────
+  const handleClearSelection = () => {
+    setSelectedVPA(null);
+    setManifest(null);
+    setEditorValue("");
+    setOriginalYaml("");
+    setViewMode("editor");
+    setHistory([]);
+    setHistoryIndex(-1);
+  };
+
+  const rightTitlePrefix = selectedVPA ? (
+    <button
+      onClick={handleClearSelection}
+      className="flex items-center justify-center w-7 h-7 rounded-full bg-primary/20 hover:bg-primary/40 active:bg-primary/60 border border-primary/30 text-primary transition-colors flex-shrink-0"
+      title="Voltar para lista"
+    >
+      <ChevronLeft className="w-4 h-4" />
+    </button>
+  ) : undefined;
+
   const rightTitleAction = selectedVPA ? (
     <div className="flex items-center gap-1">
       <Button variant="outline" size="sm" onClick={handleReloadYaml} disabled={manifestLoading}>
@@ -501,10 +531,13 @@ export const VPAsTab = ({
   const renderManifestPanel = () => {
     if (!selectedVPA) {
       return (
-        <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
-          <TrendingUp className="h-12 w-12 opacity-30" />
-          <p className="text-sm">Selecione um VPA para editar</p>
-        </div>
+        <VPAMonitorTable
+          items={vpas ?? []}
+          loading={loading}
+          headerLabel={`${(vpas ?? []).length} VPA(s)`}
+          onOpenEditor={handleSelectVPA}
+          onRequestRefresh={silentRefetch}
+        />
       );
     }
 
@@ -592,6 +625,7 @@ export const VPAsTab = ({
         }}
         rightPanel={{
           title: selectedVPA ? `${selectedVPA.namespace}/${selectedVPA.name}` : "Visualização",
+          titlePrefix: rightTitlePrefix,
           titleAction: rightTitleAction,
           content: renderManifestPanel(),
         }}

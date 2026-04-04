@@ -13,8 +13,8 @@ import { ProtectedAction } from "@/components/rbac";
 
 const REFRESH_INTERVAL_MS = 10000;
 
-// Colunas: SEL | NAME/NS | READY | UP-TO-DATE | AVAILABLE | AGE | EDIT
-const GRID = "28px 1fr 80px 90px 80px 64px 28px";
+// Colunas: SEL | NAME/NS | VERSION | READY | UP-TO-DATE | AVAILABLE | AGE | EDIT
+const GRID = "28px 1fr 90px 80px 90px 80px 64px 28px";
 
 function useSecondsTick(date: Date | null): string {
   const [, setTick] = useState(0);
@@ -528,6 +528,7 @@ export const DeploymentMonitorTable = ({
             <SortBtn label="NAME" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           )}
         </span>
+        <span className="text-muted-foreground uppercase text-[10px]">VERSION</span>
         {/* READY com filtro + sort */}
         <span className="flex items-center">
           <ColumnFilter label="READY" options={uniqueStatuses} selected={statusFilter} onChange={setStatusFilter} />
@@ -604,6 +605,9 @@ export const DeploymentMonitorTable = ({
                   <span className="text-muted-foreground text-[10px] block leading-tight">{dep.namespace}</span>
                 )}
                 <span className="truncate block" title={`${dep.namespace}/${dep.name}`}>{dep.name}</span>
+              </span>
+              <span className="truncate text-muted-foreground" title={dep.labels?.["app.kubernetes.io/version"] ?? dep.labels?.["version"] ?? dep.labels?.["app.version"] ?? ""}>
+                {dep.labels?.["app.kubernetes.io/version"] ?? dep.labels?.["version"] ?? dep.labels?.["app.version"] ?? "-"}
               </span>
               <span className={readyColor}>{ready}/{desired}</span>
               <span>{updated}</span>

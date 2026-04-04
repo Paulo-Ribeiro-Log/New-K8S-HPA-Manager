@@ -95,8 +95,14 @@ function useSecondsTick(date: Date | null): string {
   return `${Math.floor(secs / 60)}m atrás`;
 }
 
-// Colunas: SEL | NAME/NS | dot | READY | STATUS | REST. | CPU | MEM | NODE | AGE
-const GRID = "32px minmax(180px,1fr) 22px 56px 140px 50px 90px 90px minmax(130px,1fr) 56px";
+// Colunas: SEL | NAME/NS | VERSION | dot | READY | STATUS | REST. | CPU | MEM | NODE | AGE
+const GRID = "32px minmax(180px,1fr) 70px 22px 56px 140px 50px 90px 90px minmax(130px,1fr) 56px";
+
+function extractImageVersion(image?: string): string {
+  if (!image) return "-";
+  const tag = image.split(":").pop();
+  return tag && tag !== image ? tag : "-";
+}
 
 type PodSortKey = "name" | "ready" | "restarts" | "cpu" | "mem" | "age" | "node";
 type StatusSortMode = null | "running" | "error" | "completed";
@@ -525,6 +531,7 @@ export const PodMonitorTable = ({
             ? <><ColumnFilter label="NAME/NS" options={uniqueNamespaces} selected={namespaceFilter} onChange={setNamespaceFilter} /><SortIcon colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></>
             : <SortBtn label="NAME" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />}
         </span>
+        <span className="text-muted-foreground uppercase text-[10px]">VERSION</span>
         <span></span>
         <span><SortBtn label="READY" colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
         <span className="flex items-center">
@@ -598,6 +605,11 @@ export const PodMonitorTable = ({
                   <span className="text-muted-foreground text-[9px] block leading-tight">{pod.namespace}</span>
                 )}
                 <span className="truncate block" title={pod.name}>{pod.name}</span>
+              </span>
+
+              {/* VERSION */}
+              <span className="truncate text-muted-foreground text-[10px] flex items-center" title={pod.containers[0]?.image ?? ""}>
+                {extractImageVersion(pod.containers[0]?.image)}
               </span>
 
               {/* dot */}

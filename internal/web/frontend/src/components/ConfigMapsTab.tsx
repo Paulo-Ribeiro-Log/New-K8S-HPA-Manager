@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Plus, Copy } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, ChevronLeft, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Plus, Copy } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,6 +25,7 @@ import type {
   ConfigMapManifest,
 } from "@/lib/api/types";
 import { useConfigMaps } from "@/hooks/useAPI";
+import { ConfigMapMonitorTable } from "@/components/ConfigMapMonitorTable";
 import { apiClient } from "@/lib/api/client";
 import { setHistoryCacheEntry } from "@/lib/historyCache";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
@@ -110,7 +111,7 @@ export const ConfigMapsTab = ({
   }, [filteredNamespaces, onNamespaceChange, selectedNamespace]);
 
   const namespaceFilter = selectedNamespace ? [selectedNamespace] : undefined;
-  const { configMaps, loading, error, refetch } = useConfigMaps(
+  const { configMaps, loading, error, refetch, silentRefetch } = useConfigMaps(
     cluster,
     namespaceFilter,
     showSystemNamespaces
@@ -580,6 +581,26 @@ data:
     }
   };
 
+  const handleClearSelection = () => {
+    setSelectedConfigMap(null);
+    setManifest(null);
+    setEditorValue("");
+    setOriginalYaml("");
+    setViewMode("editor");
+    setHistory([]);
+    setHistoryIndex(-1);
+  };
+
+  const rightTitlePrefix = selectedConfigMap ? (
+    <button
+      onClick={handleClearSelection}
+      className="flex items-center justify-center w-7 h-7 rounded-full bg-primary/20 hover:bg-primary/40 active:bg-primary/60 border border-primary/30 text-primary transition-colors flex-shrink-0"
+      title="Voltar para lista"
+    >
+      <ChevronLeft className="w-4 h-4" />
+    </button>
+  ) : undefined;
+
   const rightTitleAction = (
     <div className="flex items-center gap-2">
       <ProtectedAction>
@@ -719,9 +740,13 @@ data:
 
     if (!selectedConfigMap) {
       return (
-        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          Escolha um ConfigMap para visualizar o manifesto
-        </div>
+        <ConfigMapMonitorTable
+          items={configMaps ?? []}
+          loading={loading}
+          headerLabel={`${(configMaps ?? []).length} ConfigMap(s)`}
+          onOpenEditor={handleSelectConfigMap}
+          onRequestRefresh={silentRefetch}
+        />
       );
     }
 
@@ -959,6 +984,15 @@ data:
 
   const leftContent = (
     <div className="space-y-3">
+      {selectedConfigMap && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-primary/10 border border-primary/20 text-xs text-primary font-medium">
+          <FileText className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="truncate flex-1">{selectedConfigMap.namespace}/{selectedConfigMap.name}</span>
+          <button onClick={handleClearSelection} className="flex-shrink-0 hover:text-foreground transition-colors" title="Voltar para lista">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         {searchQuery && (
@@ -1359,7 +1393,8 @@ data:
           content: leftContent,
         }}
         rightPanel={{
-          title: "Visualização",
+          title: selectedConfigMap ? `${selectedConfigMap.namespace}/${selectedConfigMap.name}` : "Visualização",
+          titlePrefix: rightTitlePrefix,
           titleAction: rightTitleAction,
           content: renderManifestPanel(),
         }}
