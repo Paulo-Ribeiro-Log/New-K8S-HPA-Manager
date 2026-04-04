@@ -79,6 +79,7 @@ export function podRowColor(phase: string, reason?: string): string {
   if (r.includes("crashloop") || r.includes("error") || r.includes("oomkilled") || p === "failed") {
     return "text-red-400";
   }
+  if (p === "running" && r === "notready") return "text-orange-400";
   if (p === "running") return "text-green-400";
   if (p === "pending") return "text-orange-400";
   if (p === "succeeded") return "text-gray-400";
@@ -95,6 +96,7 @@ export function podDotColor(phase: string, reason?: string): string {
   if (r.includes("crashloop") || r.includes("error") || r.includes("oomkilled") || p === "failed") {
     return "bg-red-500";
   }
+  if (p === "running" && r === "notready") return "bg-orange-500";
   if (p === "running") return "bg-green-500";
   if (p === "pending") return "bg-orange-500";
   if (p === "succeeded") return "bg-gray-500";

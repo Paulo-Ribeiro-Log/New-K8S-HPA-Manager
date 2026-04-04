@@ -780,7 +780,18 @@ func getPodStatus(pod *corev1.Pod, isTerminating bool) (status, reason string) {
 			return "Init:" + cs.State.Terminated.Reason, cs.State.Terminated.Message
 		}
 	}
-	
+
+	// Pod em Running phase mas com container(s) não prontos (readiness probe falhando).
+	// O kubectl exibe "Running" no STATUS mas usa a coluna READY para indicar isso;
+	// aqui usamos statusReason="NotReady" para que o frontend pinte laranja.
+	if pod.Status.Phase == "Running" {
+		for _, cs := range pod.Status.ContainerStatuses {
+			if !cs.Ready {
+				return string(pod.Status.Phase), "NotReady"
+			}
+		}
+	}
+
 	// Fallback to phase
 	return string(pod.Status.Phase), ""
 }
