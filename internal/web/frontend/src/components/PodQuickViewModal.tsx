@@ -1,11 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, RefreshCw, Copy, Check, FileText } from "lucide-react";
+import { Loader2, RefreshCw, Copy, Check, FileText, Search, X as XIcon } from "lucide-react";
 import type { PodSummary, PodMetricsSingle } from "@/lib/api/types";
 import { formatAge, formatMillicores, formatBytes, formatPercent } from "@/lib/monitorUtils";
 import { apiClient } from "@/lib/api/client";
@@ -63,16 +63,34 @@ function DualGauge({ cpuPct, memPct, cpuVal, memVal }: {
   );
 }
 
-function logLineColor(line: string): string {
+type LogLevel = "error" | "warn" | "info" | "debug";
+
+function getLogLevel(line: string): LogLevel | null {
   const l = line.toUpperCase();
-  if (/\b(ERROR|FATAL|EXCEPTION|PANIC)\b/.test(l)) return "text-red-400";
-  if (/\b(WARN|WARNING)\b/.test(l)) return "text-yellow-400";
-  if (/\b(DEBUG|TRACE)\b/.test(l)) return "text-purple-400";
-  if (/\b(INFO)\b/.test(l)) return "text-blue-400";
+  if (/\b(ERROR|FATAL|EXCEPTION|PANIC)\b/.test(l)) return "error";
+  if (/\b(WARN|WARNING)\b/.test(l)) return "warn";
+  if (/\b(INFO)\b/.test(l)) return "info";
+  if (/\b(DEBUG|TRACE)\b/.test(l)) return "debug";
+  return null;
+}
+
+function logLineColor(line: string): string {
+  const level = getLogLevel(line);
+  if (level === "error") return "text-red-400";
+  if (level === "warn") return "text-yellow-400";
+  if (level === "debug") return "text-purple-400";
+  if (level === "info") return "text-blue-400";
   if (/\s[45]\d{2}\s/.test(line)) return "text-orange-400";
   if (/\s2\d{2}\s/.test(line)) return "text-green-400";
   return "";
 }
+
+const LOG_LEVEL_CONFIG: Record<LogLevel, { label: string; active: string; inactive: string }> = {
+  error: { label: "ERR",   active: "bg-red-500/20 text-red-400 border-red-500/50",    inactive: "text-muted-foreground border-border hover:border-red-500/40 hover:text-red-400" },
+  warn:  { label: "WARN",  active: "bg-yellow-500/20 text-yellow-400 border-yellow-500/50", inactive: "text-muted-foreground border-border hover:border-yellow-500/40 hover:text-yellow-400" },
+  info:  { label: "INFO",  active: "bg-blue-500/20 text-blue-400 border-blue-500/50",  inactive: "text-muted-foreground border-border hover:border-blue-500/40 hover:text-blue-400" },
+  debug: { label: "DEBUG", active: "bg-purple-500/20 text-purple-400 border-purple-500/50", inactive: "text-muted-foreground border-border hover:border-purple-500/40 hover:text-purple-400" },
+};
 
 type PendingAction = "restart" | "kill" | "delete" | null;
 
@@ -98,12 +116,44 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   const [describeLoading, setDescribeLoading] = useState(false);
   const [showDescribe, setShowDescribe] = useState(false);
 
+  // Log filter state
+  const [logLevelFilter, setLogLevelFilter] = useState<Set<LogLevel>>(new Set());
+  const [logSearch, setLogSearch] = useState("");
+
   // Action state
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Resize state
+  const [modalSize, setModalSize] = useState({ width: 900, height: 680 });
+  const resizing = useRef(false);
+  const resizeDir = useRef<"se" | "e" | "s">("se");
+  const lastResizePos = useRef({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!resizing.current) return;
+      const dx = e.clientX - lastResizePos.current.x;
+      const dy = e.clientY - lastResizePos.current.y;
+      lastResizePos.current = { x: e.clientX, y: e.clientY };
+      setModalSize(prev => ({
+        width:  resizeDir.current !== "s" ? Math.max(480, prev.width  + dx) : prev.width,
+        height: resizeDir.current !== "e" ? Math.max(400, prev.height + dy) : prev.height,
+      }));
+    };
+    const onUp = () => {
+      if (!resizing.current) return;
+      resizing.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, []);
 
   const containerNames = pod?.containers?.map(c => c.name) ?? [];
 
@@ -116,6 +166,8 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
     setSelectedContainer(pod.containers?.[0]?.name ?? "");
     setDescribe("");
     setShowDescribe(false);
+    setLogLevelFilter(new Set());
+    setLogSearch("");
   }, [pod?.namespace, pod?.name]);
 
   const fetchLogs = useCallback(async () => {
@@ -149,8 +201,36 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [activeTab, autoRefresh, fetchLogs]);
 
+  const filteredLines = useMemo(() => {
+    const lines = (logs || "").split("\n");
+    let result = lines;
+    if (logLevelFilter.size > 0) {
+      result = result.filter(line => {
+        const level = getLogLevel(line);
+        return level !== null && logLevelFilter.has(level);
+      });
+    }
+    if (logSearch.trim()) {
+      const q = logSearch.toLowerCase();
+      result = result.filter(line => line.toLowerCase().includes(q));
+    }
+    return result;
+  }, [logs, logLevelFilter, logSearch]);
+
+  const toggleLevelFilter = (level: LogLevel) => {
+    setLogLevelFilter(prev => {
+      const next = new Set(prev);
+      if (next.has(level)) next.delete(level);
+      else next.add(level);
+      return next;
+    });
+  };
+
   const copyLogs = () => {
-    navigator.clipboard.writeText(logs);
+    const content = (logLevelFilter.size > 0 || logSearch.trim())
+      ? filteredLines.join("\n")
+      : logs;
+    navigator.clipboard.writeText(content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -236,7 +316,8 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
   return (
     <Dialog open={!!pod} onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent
-        className="max-w-5xl w-[95vw] max-h-[90vh] flex flex-col p-0 gap-0"
+        className="flex flex-col p-0 gap-0 overflow-hidden"
+        style={{ width: modalSize.width, height: modalSize.height, maxWidth: "96vw", maxHeight: "96vh" }}
         onInteractOutside={(e) => e.preventDefault()}
       >
         <DialogHeader className="px-4 pt-4 pb-3 border-b border-border flex-shrink-0">
@@ -492,6 +573,55 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
               </Button>
             </div>
 
+            {/* Barra de filtros de nível + busca */}
+            <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/50 flex-shrink-0 bg-muted/10">
+              {(["error", "warn", "info", "debug"] as LogLevel[]).map(level => {
+                const cfg = LOG_LEVEL_CONFIG[level];
+                const active = logLevelFilter.has(level);
+                return (
+                  <button
+                    key={level}
+                    onClick={() => toggleLevelFilter(level)}
+                    className={`h-6 px-2 rounded text-[10px] font-mono font-medium border transition-colors ${active ? cfg.active : cfg.inactive}`}
+                  >
+                    {cfg.label}
+                  </button>
+                );
+              })}
+              <div className="w-px h-4 bg-border/50 mx-0.5" />
+              <div className="relative flex-1 max-w-56">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
+                <input
+                  type="text"
+                  value={logSearch}
+                  onChange={e => setLogSearch(e.target.value)}
+                  placeholder="Buscar nos logs..."
+                  className="w-full h-6 pl-6 pr-6 text-[11px] bg-background border border-border rounded focus:outline-none focus:border-primary font-mono"
+                />
+                {logSearch && (
+                  <button
+                    onClick={() => setLogSearch("")}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    <XIcon className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+              {(logLevelFilter.size > 0 || logSearch.trim()) && (
+                <span className="text-[10px] text-muted-foreground ml-auto font-mono">
+                  {filteredLines.length} linha{filteredLines.length !== 1 ? "s" : ""}
+                </span>
+              )}
+              {(logLevelFilter.size > 0 || logSearch.trim()) && (
+                <button
+                  onClick={() => { setLogLevelFilter(new Set()); setLogSearch(""); }}
+                  className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-0.5"
+                >
+                  <XIcon className="w-3 h-3" /> Limpar
+                </button>
+              )}
+            </div>
+
             {/* Área de scroll de logs */}
             <div className="flex-1 min-h-0 overflow-auto bg-black/50">
               <div className="p-3 font-mono text-xs leading-5">
@@ -500,11 +630,15 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                     <Loader2 className="w-3 h-3 animate-spin" /> Carregando logs...
                   </div>
                 ) : logs ? (
-                  logs.split("\n").map((line, i) => (
-                    <div key={i} className={`whitespace-pre-wrap break-all ${logLineColor(line)}`}>
-                      {line || " "}
-                    </div>
-                  ))
+                  filteredLines.length > 0 ? (
+                    filteredLines.map((line, i) => (
+                      <div key={i} className={`whitespace-pre-wrap break-all ${logLineColor(line)}`}>
+                        {line || " "}
+                      </div>
+                    ))
+                  ) : (
+                    <span className="text-muted-foreground">Nenhuma linha corresponde ao filtro.</span>
+                  )
                 ) : (
                   <span className="text-muted-foreground">Nenhum log disponível.</span>
                 )}
@@ -513,6 +647,49 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
             </div>
           </TabsContent>
         </Tabs>
+
+        {/* Handles de resize */}
+        {/* Borda direita */}
+        <div
+          className="absolute top-0 right-0 w-1.5 h-full cursor-e-resize hover:bg-primary/20 transition-colors z-50"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            resizing.current = true;
+            resizeDir.current = "e";
+            lastResizePos.current = { x: e.clientX, y: e.clientY };
+            document.body.style.cursor = "e-resize";
+            document.body.style.userSelect = "none";
+          }}
+        />
+        {/* Borda inferior */}
+        <div
+          className="absolute bottom-0 left-0 w-full h-1.5 cursor-s-resize hover:bg-primary/20 transition-colors z-50"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            resizing.current = true;
+            resizeDir.current = "s";
+            lastResizePos.current = { x: e.clientX, y: e.clientY };
+            document.body.style.cursor = "s-resize";
+            document.body.style.userSelect = "none";
+          }}
+        />
+        {/* Canto inferior direito (se-resize) */}
+        <div
+          className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize z-50 flex items-end justify-end pr-0.5 pb-0.5"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            resizing.current = true;
+            resizeDir.current = "se";
+            lastResizePos.current = { x: e.clientX, y: e.clientY };
+            document.body.style.cursor = "se-resize";
+            document.body.style.userSelect = "none";
+          }}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" className="text-muted-foreground/40 hover:text-primary/60">
+            <path d="M9 1 L9 9 L1 9" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+            <path d="M9 5 L9 9 L5 9" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+          </svg>
+        </div>
       </DialogContent>
 
       {/* Modal Describe */}
