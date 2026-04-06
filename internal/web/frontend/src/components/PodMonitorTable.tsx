@@ -11,6 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProtectedAction } from "@/components/rbac/ProtectedAction";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
+import { useResizableColumns, ResizeHandle } from "@/lib/resizableColumns";
 
 const REFRESH_INTERVAL_MS = 5000;
 
@@ -96,7 +97,8 @@ function useSecondsTick(date: Date | null): string {
 }
 
 // Colunas: SEL | NAME/NS | VERSION | dot | READY | STATUS | REST. | CPU | MEM | NODE | AGE
-const GRID = "32px minmax(180px,1fr) 70px 22px 56px 140px 50px 90px 90px minmax(130px,1fr) 56px";
+// SEL(32) e dot(22) são fixos e não têm ResizeHandle por serem muito pequenos.
+const INITIAL_WIDTHS = [32, 200, 80, 22, 60, 140, 50, 90, 90, 180, 60];
 
 function extractImageVersion(image?: string): string {
   if (!image) return "-";
@@ -180,6 +182,7 @@ export const PodMonitorTable = ({
   const [sortKey, setSortKey] = useState<PodSortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [statusSortMode, setStatusSortMode] = useState<StatusSortMode>(null);
+  const { resize, gridTemplate } = useResizableColumns(INITIAL_WIDTHS);
 
   const handleSort = (key: PodSortKey) => {
     setStatusSortMode(null);
@@ -520,9 +523,9 @@ export const PodMonitorTable = ({
       {/* Cabeçalho das colunas */}
       <div
         className="grid font-mono text-[10px] px-3 py-1.5 border-b border-border bg-muted/20 flex-shrink-0"
-        style={{ gridTemplateColumns: GRID }}
+        style={{ gridTemplateColumns: gridTemplate }}
       >
-        {/* Select-all circular */}
+        {/* SEL — fixo, sem resize */}
         <span className="flex items-center">
           <Checkbox
             checked={allFilteredSelected}
@@ -533,26 +536,48 @@ export const PodMonitorTable = ({
             disabled={filtered.length === 0}
           />
         </span>
-        <span className="flex items-center">
+        <span className="relative overflow-hidden pr-3 flex items-center">
           {uniqueNamespaces.length > 1
             ? <><ColumnFilter label="NAME/NS" options={uniqueNamespaces} selected={namespaceFilter} onChange={setNamespaceFilter} /><SortIcon colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></>
             : <SortBtn label="NAME" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />}
+          <ResizeHandle onResize={(d) => resize(1, d)} />
         </span>
-        <span className="text-muted-foreground uppercase text-[10px]">VERSION</span>
+        <span className="relative overflow-hidden pr-3 text-muted-foreground uppercase text-[10px]">
+          VERSION
+          <ResizeHandle onResize={(d) => resize(2, d)} />
+        </span>
+        {/* dot — fixo, sem resize */}
         <span></span>
-        <span><SortBtn label="READY" colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
-        <span className="flex items-center">
+        <span className="relative overflow-hidden pr-3">
+          <SortBtn label="READY" colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          <ResizeHandle onResize={(d) => resize(4, d)} />
+        </span>
+        <span className="relative overflow-hidden pr-3 flex items-center">
           <ColumnFilter label="STATUS" options={uniqueStatuses} selected={statusFilter} onChange={setStatusFilter} />
           <StatusSortIcon mode={statusSortMode} onCycle={cycleStatusSort} />
+          <ResizeHandle onResize={(d) => resize(5, d)} />
         </span>
-        <span><SortBtn label="REST." colKey="restarts" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
-        <span className="text-right pr-2"><SortBtn label="CPU" colKey="cpu" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
-        <span className="text-right pr-2"><SortBtn label="MEM" colKey="mem" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
-        <span className="flex items-center">
+        <span className="relative overflow-hidden pr-3">
+          <SortBtn label="REST." colKey="restarts" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          <ResizeHandle onResize={(d) => resize(6, d)} />
+        </span>
+        <span className="relative overflow-hidden pr-3 text-right">
+          <SortBtn label="CPU" colKey="cpu" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          <ResizeHandle onResize={(d) => resize(7, d)} />
+        </span>
+        <span className="relative overflow-hidden pr-3 text-right">
+          <SortBtn label="MEM" colKey="mem" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          <ResizeHandle onResize={(d) => resize(8, d)} />
+        </span>
+        <span className="relative overflow-hidden pr-3 flex items-center">
           <ColumnFilter label="NODE" options={uniqueNodes} selected={nodeFilter} onChange={setNodeFilter} />
           <SortIcon colKey="node" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          <ResizeHandle onResize={(d) => resize(9, d)} />
         </span>
-        <span><SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
+        <span className="relative overflow-hidden pr-3">
+          <SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          <ResizeHandle onResize={(d) => resize(10, d)} />
+        </span>
       </div>
 
       {/* Linhas */}
@@ -573,7 +598,7 @@ export const PodMonitorTable = ({
               key={`${pod.namespace}/${pod.name}`}
               data-row-index={index}
               className={`grid w-full px-3 py-1.5 hover:bg-muted/40 text-left transition-colors border-b border-border/40 font-mono text-xs ${rowColor} cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60 ${isSelected ? "bg-primary/10 hover:bg-primary/15 ring-inset ring-1 ring-primary/30" : ""}`}
-              style={{ gridTemplateColumns: GRID }}
+              style={{ gridTemplateColumns: gridTemplate }}
               onClick={() => onOpenDetail(pod)}
               onKeyDown={(e) => {
                 if (e.key === " ") {
