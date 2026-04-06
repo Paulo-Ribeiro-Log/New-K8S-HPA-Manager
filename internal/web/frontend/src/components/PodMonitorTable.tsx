@@ -98,12 +98,22 @@ function useSecondsTick(date: Date | null): string {
 
 // Colunas: SEL | NAME/NS | VERSION | dot | READY | STATUS | REST. | CPU | MEM | NODE | AGE
 // SEL(32) e dot(22) são fixos e não têm ResizeHandle por serem muito pequenos.
-const INITIAL_WIDTHS = [32, 200, 80, 22, 60, 140, 50, 90, 90, 180, 60];
+const INITIAL_WIDTHS = [32, 200, 120, 22, 60, 140, 50, 90, 90, 180, 60];
 
 function extractImageVersion(image?: string): string {
   if (!image) return "-";
   const tag = image.split(":").pop();
-  return tag && tag !== image ? tag : "-";
+  if (!tag || tag === image) return "-";
+  // Converter x-x-x-x → x.x.x-x (tags semver com hífens no lugar de pontos)
+  const parts = tag.split("-");
+  if (parts.length === 4 && parts.every((p) => /^\d+$/.test(p))) {
+    return `${parts[0]}.${parts[1]}.${parts[2]}-${parts[3]}`;
+  }
+  if (parts.length >= 3 && parts.slice(0, 3).every((p) => /^\d+$/.test(p))) {
+    const semver = `${parts[0]}.${parts[1]}.${parts[2]}`;
+    return parts.length > 3 ? `${semver}-${parts.slice(3).join("-")}` : semver;
+  }
+  return tag;
 }
 
 type PodSortKey = "name" | "ready" | "restarts" | "cpu" | "mem" | "age" | "node";
@@ -589,8 +599,10 @@ export const PodMonitorTable = ({
         )}
         {filtered.map((pod, index) => {
           const m = metrics?.pods[pod.name];
-          const rowColor = podRowColor(pod.phase ?? "", pod.statusReason);
-          const dotColor = podDotColor(pod.phase ?? "", pod.statusReason);
+          // Prioridade da cor: "NotReady" (statusReason explícito) > pod.status (CrashLoopBackOff, Error, etc.)
+          const effectiveReason = pod.statusReason === "NotReady" ? "NotReady" : (pod.status ?? "");
+          const rowColor = podRowColor(pod.phase ?? "", effectiveReason);
+          const dotColor = podDotColor(pod.phase ?? "", effectiveReason);
           const isSelected = selectedPods.has(podKey(pod));
 
           return (
