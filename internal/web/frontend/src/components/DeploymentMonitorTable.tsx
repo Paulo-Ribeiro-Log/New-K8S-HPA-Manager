@@ -13,6 +13,18 @@ import { ProtectedAction } from "@/components/rbac";
 
 const REFRESH_INTERVAL_MS = 10000;
 
+function formatVersion(v: string | undefined): string {
+  if (!v) return "-";
+  const parts = v.split("-");
+  if (parts.length === 4 && parts.every((p) => /^\d+$/.test(p)))
+    return `${parts[0]}.${parts[1]}.${parts[2]}-${parts[3]}`;
+  if (parts.length >= 3 && parts.slice(0, 3).every((p) => /^\d+$/.test(p))) {
+    const semver = `${parts[0]}.${parts[1]}.${parts[2]}`;
+    return parts.length > 3 ? `${semver}-${parts.slice(3).join("-")}` : semver;
+  }
+  return v;
+}
+
 // Colunas: SEL | NAME/NS | VERSION | READY | UP-TO-DATE | AVAILABLE | AGE | EDIT
 const GRID = "28px 1fr 90px 80px 90px 80px 64px 28px";
 
@@ -607,7 +619,7 @@ export const DeploymentMonitorTable = ({
                 <span className="truncate block" title={`${dep.namespace}/${dep.name}`}>{dep.name}</span>
               </span>
               <span className="truncate text-muted-foreground" title={dep.labels?.["app.kubernetes.io/version"] ?? dep.labels?.["version"] ?? dep.labels?.["app.version"] ?? ""}>
-                {dep.labels?.["app.kubernetes.io/version"] ?? dep.labels?.["version"] ?? dep.labels?.["app.version"] ?? "-"}
+                {formatVersion(dep.labels?.["app.kubernetes.io/version"] ?? dep.labels?.["version"] ?? dep.labels?.["app.version"])}
               </span>
               <span className={readyColor}>{ready}/{desired}</span>
               <span>{updated}</span>
