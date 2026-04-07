@@ -412,7 +412,8 @@ func parseNamespaces(raw string) []string {
 	var namespaces []string
 	for _, part := range parts {
 		clean := strings.TrimSpace(part)
-		if clean == "" {
+		// Ignorar valores especiais do frontend usados como placeholder de "todos os namespaces"
+		if clean == "" || clean == "__all__" || clean == "_all_" {
 			continue
 		}
 		namespaces = append(namespaces, clean)
