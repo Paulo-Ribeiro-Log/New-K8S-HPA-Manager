@@ -177,9 +177,14 @@ export function useAwsSsoAuth() {
    * Verifica proativamente se o token está válido para um cluster EKS.
    * Se inválido, abre o dialog de login automaticamente.
    * Deve ser chamado ao trocar para um cluster EKS.
+   *
+   * @param clusterName - Nome/contexto do cluster (usado como fallback para inferência)
+   * @param awsProfile  - Perfil AWS real do kubeconfig (retornado pelo backend). Quando
+   *                      fornecido, evita a inferência por nome que pode estar errada.
    */
-  const checkForCluster = useCallback(async (clusterName: string) => {
-    const profile = inferAWSProfile(clusterName);
+  const checkForCluster = useCallback(async (clusterName: string, awsProfile?: string) => {
+    // Usar perfil real do kubeconfig quando disponível; inferir como último recurso
+    const profile = (awsProfile && awsProfile.trim()) ? awsProfile.trim() : inferAWSProfile(clusterName);
     if (!profile) return;
     try {
       const res = await apiClient.checkAwsSsoStatus(profile);
