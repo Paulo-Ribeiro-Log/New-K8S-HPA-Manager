@@ -318,6 +318,7 @@ const Index = ({ onLogout }: IndexProps) => {
   const staging = useStaging();
 
   // AWS SSO Auth — detecta token expirado automaticamente via evento global
+  // onLoginSuccess é passado depois que os hooks de dados estiverem disponíveis (ver abaixo)
   const { state: awsSsoState, checkForCluster: checkAwsToken, retryAfterConfig, close: closeAwsSso } = useAwsSsoAuth();
 
   // VPN Monitor — testa o cluster selecionado, não um context global
@@ -384,9 +385,25 @@ const Index = ({ onLogout }: IndexProps) => {
   // Auto-select first cluster (using context instead of name)
   useEffect(() => {
     if (clusters.length > 0 && !selectedCluster) {
-      setSelectedCluster(clusters[0].context);
+      const firstCluster = clusters[0];
+      setSelectedCluster(firstCluster.context);
+      // Para clusters EKS, verificar token SSO proativamente no carregamento inicial
+      if (firstCluster.cloud_provider === "eks") {
+        checkAwsToken(firstCluster.context);
+      }
     }
-  }, [clusters, selectedCluster]);
+  }, [clusters, selectedCluster, checkAwsToken]);
+
+  // Após login SSO bem-sucedido, re-buscar dados do cluster EKS (namespaces, HPAs, node pools)
+  useEffect(() => {
+    const handler = () => {
+      refetchNamespaces();
+      refetchHPAs();
+      refetchNodePools();
+    };
+    window.addEventListener("aws-sso-login-success", handler);
+    return () => window.removeEventListener("aws-sso-login-success", handler);
+  }, [refetchNamespaces, refetchHPAs, refetchNodePools]);
 
   // 🔧 FIX: Handler para mudança de cluster com switch de contexto
   const handleClusterChange = async (newCluster: string) => {
@@ -434,7 +451,7 @@ const Index = ({ onLogout }: IndexProps) => {
       }
 
       // 5b. Para clusters EKS, verificar token AWS SSO proativamente
-      if (cloudChange.to === "eks" || getCloudProvider(newCluster) === "eks") {
+      if (cloudChange.to === "eks" || clusterProviders[newCluster] === "eks") {
         checkAwsToken(newCluster);
       }
 

@@ -62,6 +62,7 @@ func (h *NamespaceHandler) List(c *gin.Context) {
 	// Listar namespaces (reutilizar código existente)
 	namespaces, err := kubeClient.ListNamespaces(c.Request.Context(), showSystem)
 	if err != nil {
+		err = h.kubeManager.EnrichEKSError(err, cluster)
 		c.JSON(500, gin.H{
 			"success": false,
 			"error": gin.H{
