@@ -503,14 +503,14 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 	restConfig.QPS = 50
 	restConfig.Burst = 100
 
-	// Para clusters EKS, SEMPRE injetar nosso ExecProvider com `aws eks get-token --output json`
-	// e o --profile correto (inferido via resolveAWSProfile).
+	// Para clusters EKS, garantir que existe um ExecProvider funcional com `aws eks get-token`.
 	//
-	// Razões para sobrescrever mesmo quando ExecProvider != nil:
-	// 1. kubeconfigs criados por `aws eks update-kubeconfig` frequentemente não incluem
-	//    --profile, causando exit code 255 quando as credenciais default não existem.
-	// 2. Tokens estáticos (formato eks_<cluster>) expiram em 15 minutos — precisam de refresh.
-	// 3. Nossa versão garante --output json (evita falha de parse quando output=text no perfil).
+	// Estratégia (por ordem de prioridade):
+	// 1. Se o kubeconfig já tem ExecProvider → usar como está (comportamento igual ao K9s/kubectl).
+	//    O usuário configurou o perfil correto via `aws eks update-kubeconfig --profile X`.
+	// 2. Se só tem token estático (formato eks_<cluster>, expira em 15min) → substituir pelo
+	//    nosso ExecProvider com o perfil inferido para renovação automática.
+	// 3. Se não tem nem ExecProvider nem token → injetar nosso ExecProvider.
 	//
 	// Exceção: clusters com mTLS (CertData/KeyFile) não usam token AWS — ignorar.
 	//
@@ -522,9 +522,16 @@ func (k *KubeConfigManager) GetRestConfig(clusterName string) (*rest.Config, err
 		serverURL = k.getServerURL(clusterName)
 	}
 	if DetectCloudProvider(serverURL) == CloudProviderEKS && len(restConfig.CertData) == 0 && restConfig.KeyFile == "" {
-		if exec := k.buildEKSExecProvider(resolved, serverURL, clusterName); exec != nil {
-			restConfig.ExecProvider = exec
-			restConfig.BearerToken = "" // Limpar token estático expirado
+		if restConfig.ExecProvider != nil {
+			// Kubeconfig já tem exec provider configurado (ex: `aws eks update-kubeconfig --profile X`).
+			// Respeitar como está — mesmo comportamento do K9s/kubectl.
+		} else {
+			// Sem exec provider: token estático expira em 15min ou kubeconfig sem auth.
+			// Injetar nosso exec provider com perfil inferido para renovação automática.
+			if exec := k.buildEKSExecProvider(resolved, serverURL, clusterName); exec != nil {
+				restConfig.ExecProvider = exec
+				restConfig.BearerToken = "" // Limpar token estático expirado
+			}
 		}
 	}
 
