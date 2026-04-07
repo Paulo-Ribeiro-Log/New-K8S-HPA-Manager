@@ -70,6 +70,7 @@ func (h *HPAHandler) List(c *gin.Context) {
 	if namespace == "" {
 		hpas, err := kubeClient.ListHPAs(c.Request.Context(), "")
 		if err != nil {
+			err = h.kubeManager.EnrichEKSError(err, cluster)
 			c.JSON(500, gin.H{
 				"success": false,
 				"error": gin.H{
@@ -93,6 +94,7 @@ func (h *HPAHandler) List(c *gin.Context) {
 		// Listar HPAs de um namespace específico
 		hpas, err := kubeClient.ListHPAs(c.Request.Context(), namespace)
 		if err != nil {
+			err = h.kubeManager.EnrichEKSError(err, cluster)
 			c.JSON(500, gin.H{
 				"success": false,
 				"error": gin.H{
