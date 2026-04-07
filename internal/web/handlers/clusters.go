@@ -35,6 +35,7 @@ func (h *ClusterHandler) List(c *gin.Context) {
 			"status":         cluster.Status.String(),
 			"cloud_provider": cluster.CloudProvider,
 			"region":         cluster.Region,
+			"aws_profile":    cluster.AWSProfile,
 		}
 	}
 
