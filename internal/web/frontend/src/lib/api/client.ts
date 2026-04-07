@@ -228,9 +228,22 @@ class APIClient {
         }
       }
 
-      // Detectar token AWS SSO expirado e disparar evento global
-      if (message && (message.includes("aws sso login") || message.includes("token AWS expirado") || message.includes("SSO expirado"))) {
-        const profileMatch = message.match(/--profile\s+(\S+)/);
+      // Detectar token AWS SSO expirado ou falha do exec provider EKS e disparar evento global
+      const isAwsSsoError = message && (
+        message.includes("aws sso login") ||
+        message.includes("token AWS expirado") ||
+        message.includes("SSO expirado") ||
+        message.includes("credenciais AWS incompletas") ||
+        message.includes("NoCredentialProviders") ||
+        // Erros do exec credential provider do client-go (aws eks get-token retornou erro)
+        message.includes("exec plugin: execute command") ||
+        message.includes("couldn't get token: exec plugin") ||
+        message.includes("exec format error") ||
+        // AWS CLI: perfil sem token SSO (exit 255 = aws cli retornou erro)
+        (message.includes("exit status 255") && message.includes("eks"))
+      );
+      if (isAwsSsoError) {
+        const profileMatch = message!.match(/--profile\s+(\S+)/);
         const profile = profileMatch?.[1] ?? "";
         window.dispatchEvent(new CustomEvent("aws-sso-token-expired", { detail: { profile } }));
       }

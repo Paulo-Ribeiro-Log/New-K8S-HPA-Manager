@@ -143,6 +143,30 @@ func (k *KubeConfigManager) ConfigPath() string {
 	return k.configPath
 }
 
+// EnrichEKSError verifica se o erro é uma falha do exec credential provider do EKS
+// (client-go rodando `aws eks get-token`) e enriquece a mensagem com "aws sso login --profile X"
+// para que o frontend possa detectar e abrir o dialog de re-autenticação.
+func (k *KubeConfigManager) EnrichEKSError(err error, clusterName string) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	isExecError := strings.Contains(msg, "exec plugin") ||
+		strings.Contains(msg, "couldn't get token") ||
+		strings.Contains(msg, "exit status 255") ||
+		strings.Contains(msg, "NoCredentialProviders") ||
+		strings.Contains(msg, "ExpiredToken") ||
+		strings.Contains(msg, "Partial credentials")
+	if !isExecError {
+		return err
+	}
+	profile := k.resolveAWSProfile(clusterName)
+	if profile == "" {
+		return err
+	}
+	return fmt.Errorf("%w. Execute: aws sso login --profile %s", err, profile)
+}
+
 // resolveAWSProfile retorna o perfil AWS para um contexto EKS, incluindo fallback
 // por inferência do nome curto do cluster quando o kubeconfig não tem --profile explícito.
 func (k *KubeConfigManager) resolveAWSProfile(contextName string) string {

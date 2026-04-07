@@ -92,6 +92,8 @@ export function useAwsSsoAuth() {
           stopPolling();
           if (res.success) {
             setState((s) => ({ ...s, polling: false, success: true }));
+            // Notificar outros componentes para re-buscar dados do cluster EKS
+            window.dispatchEvent(new CustomEvent("aws-sso-login-success"));
             // Fechar automaticamente após 2s
             setTimeout(() => setState(INITIAL), 2000);
           } else {
