@@ -15,6 +15,7 @@ export interface Cluster {
   region?: string;
   resourceGroup?: string;
   subscription?: string;
+  aws_profile?: string; // EKS: perfil AWS real do kubeconfig (não inferido)
 }
 
 export interface ClusterInfo {

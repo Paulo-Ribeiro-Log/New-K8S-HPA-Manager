@@ -278,11 +278,15 @@ func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
 		}
 
 		displayName := clusterName
+		awsProfile := ""
 		if cloudProvider == CloudProviderEKS {
 			// ARN arn:aws:eks:REGION:ACCOUNT:cluster/NAME → NAME
 			if idx := strings.LastIndex(clusterName, "/"); idx >= 0 {
 				displayName = clusterName[idx+1:]
 			}
+			// Expor o perfil AWS real (do kubeconfig) para que o frontend use sem inferência
+			contextName := clusterToContext[clusterName]
+			awsProfile = k.resolveAWSProfile(contextName)
 		}
 
 		clusters = append(clusters, models.Cluster{
@@ -291,6 +295,7 @@ func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
 			Status:        models.StatusUnknown,
 			CloudProvider: cloudProvider,
 			Region:        region,
+			AWSProfile:    awsProfile,
 		})
 	}
 
