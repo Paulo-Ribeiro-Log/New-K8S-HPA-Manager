@@ -389,7 +389,7 @@ const Index = ({ onLogout }: IndexProps) => {
       setSelectedCluster(firstCluster.context);
       // Para clusters EKS, verificar token SSO proativamente no carregamento inicial
       if (firstCluster.cloud_provider === "eks") {
-        checkAwsToken(firstCluster.context);
+        checkAwsToken(firstCluster.context, firstCluster.aws_profile);
       }
     }
   }, [clusters, selectedCluster, checkAwsToken]);
@@ -452,7 +452,8 @@ const Index = ({ onLogout }: IndexProps) => {
 
       // 5b. Para clusters EKS, verificar token AWS SSO proativamente
       if (cloudChange.to === "eks" || clusterProviders[newCluster] === "eks") {
-        checkAwsToken(newCluster);
+        const clusterObj = clusters.find((c) => c.context === newCluster);
+        checkAwsToken(newCluster, clusterObj?.aws_profile);
       }
 
       // 6. Toast de sucesso

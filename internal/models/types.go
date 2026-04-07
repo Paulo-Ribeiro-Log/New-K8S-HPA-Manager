@@ -437,6 +437,7 @@ type Cluster struct {
 	Selected      bool             `json:"selected"`
 	CloudProvider string           `json:"cloud_provider,omitempty"` // "aks", "eks", "unknown"
 	Region        string           `json:"region,omitempty"`         // ex: "brazilsouth", "us-east-1"
+	AWSProfile    string           `json:"aws_profile,omitempty"`    // EKS: perfil AWS real do kubeconfig
 }
 
 // ConnectionStatus indica o status de conectividade do cluster
