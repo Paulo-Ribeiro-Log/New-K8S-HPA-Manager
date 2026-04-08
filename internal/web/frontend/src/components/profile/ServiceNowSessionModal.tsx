@@ -41,13 +41,54 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
   const [isLoading, setIsLoading] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  const [forceWindowsBrowser, setForceWindowsBrowser] = useState(false);
+  const [wslAutoMode, setWslAutoMode] = useState(false);
+  const [savingBrowserConfig, setSavingBrowserConfig] = useState(false);
 
   // Carregar status ao abrir modal
   useEffect(() => {
     if (open) {
       fetchSessionStatus();
+      fetchBrowserConfig();
     }
   }, [open]);
+
+  const fetchBrowserConfig = async () => {
+    try {
+      const response = await fetch('/api/v1/servicenow/browser-config', {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}` },
+      });
+      const data = await response.json();
+      setForceWindowsBrowser(data.force_windows_browser ?? false);
+      setWslAutoMode(data.needs_windows_browser && !data.force_windows_browser);
+    } catch {
+      // silencioso — config opcional
+    }
+  };
+
+  const handleToggleWindowsBrowser = async (value: boolean) => {
+    setSavingBrowserConfig(true);
+    try {
+      await fetch('/api/v1/servicenow/browser-config', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ force_windows_browser: value }),
+      });
+      setForceWindowsBrowser(value);
+      toast.success(
+        value
+          ? 'Modo Windows ativado. Chrome/Edge do Windows será usado para autenticar.'
+          : 'Modo automático restaurado.'
+      );
+    } catch {
+      toast.error('Erro ao salvar configuração de browser.');
+    } finally {
+      setSavingBrowserConfig(false);
+    }
+  };
 
   const fetchSessionStatus = async () => {
     setIsLoading(true);
@@ -100,10 +141,16 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
 
   const handleTestSession = async () => {
     setIsTesting(true);
-    toast.info('Abrindo browser para login...', {
-      description: 'Complete o login no Azure AD na janela que abrir.',
-      duration: 10000,
-    });
+    const usingWindows = forceWindowsBrowser || wslAutoMode;
+    toast.info(
+      usingWindows ? 'Abrindo Chrome/Edge do Windows...' : 'Abrindo browser para login...',
+      {
+        description: usingWindows
+          ? 'Uma janela do Chrome/Edge será aberta no Windows. Complete o login no Azure AD.'
+          : 'Complete o login no Azure AD na janela que abrir.',
+        duration: 10000,
+      }
+    );
 
     try {
       const response = await fetch('/api/v1/servicenow/session/test', {
@@ -286,6 +333,37 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
               </Alert>
             </div>
           )}
+
+          {/* Toggle: Usar Chrome/Edge do Windows */}
+          <Separator />
+          <div className="flex items-center justify-between py-1">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium">Usar Chrome/Edge do Windows</p>
+              <p className="text-xs text-muted-foreground">
+                {wslAutoMode
+                  ? 'Ativo automaticamente (WSL sem display gráfico)'
+                  : forceWindowsBrowser
+                  ? 'Ativo — Chrome/Edge Windows abre para autenticar (CDP porta 9223)'
+                  : 'Usar o Chrome/Edge instalado no Windows em vez do Chromium local'}
+              </p>
+            </div>
+            <button
+              onClick={() => handleToggleWindowsBrowser(!forceWindowsBrowser)}
+              disabled={savingBrowserConfig || wslAutoMode}
+              title={wslAutoMode ? 'Ativado automaticamente no WSL sem display' : undefined}
+              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
+                forceWindowsBrowser || wslAutoMode ? 'bg-blue-600' : 'bg-input'
+              }`}
+              role="switch"
+              aria-checked={forceWindowsBrowser || wslAutoMode}
+            >
+              <span
+                className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform ${
+                  forceWindowsBrowser || wslAutoMode ? 'translate-x-4' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
         </div>
 
         <DialogFooter className="flex justify-between sm:justify-between">

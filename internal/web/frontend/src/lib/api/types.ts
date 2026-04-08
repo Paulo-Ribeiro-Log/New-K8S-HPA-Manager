@@ -1269,6 +1269,18 @@ export interface PlaywrightStatusResponse {
   script_exists: boolean;
   npx_available: boolean;
   ts_node_available: boolean;
+  // Modo de browser
+  wsl_mode: boolean;     // true = WSL sem display, usa Chrome Windows via CDP automaticamente
+  is_wsl: boolean;       // true = rodando no WSL (com ou sem display)
+  has_display: boolean;  // true = display gráfico disponível no WSL
+}
+
+export interface ServiceNowBrowserConfig {
+  force_windows_browser: boolean;
+  needs_windows_browser: boolean;
+  is_wsl: boolean;
+  has_display: boolean;
+  active_mode?: string;
 }
 
 // ==================== Resource Explorer Types ====================

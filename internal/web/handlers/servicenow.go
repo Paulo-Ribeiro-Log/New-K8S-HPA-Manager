@@ -236,3 +236,52 @@ func (h *ServiceNowHandler) TestSession(c *gin.Context) {
 		"status":  status,
 	})
 }
+
+// GetBrowserConfig retorna a configuração de browser para autenticação ServiceNow
+// GET /api/v1/servicenow/browser-config
+func (h *ServiceNowHandler) GetBrowserConfig(c *gin.Context) {
+	cfg := servicenow.LoadBrowserConfig()
+	c.JSON(http.StatusOK, gin.H{
+		"force_windows_browser": cfg.ForceWindowsBrowser,
+		"needs_windows_browser": servicenow.NeedsWindowsBrowser(),
+		"is_wsl":                servicenow.IsWSL(),
+		"has_display":           servicenow.HasGraphicalDisplay(),
+	})
+}
+
+// SetBrowserConfig atualiza a configuração de browser para autenticação ServiceNow
+// POST /api/v1/servicenow/browser-config
+func (h *ServiceNowHandler) SetBrowserConfig(c *gin.Context) {
+	var req struct {
+		ForceWindowsBrowser bool `json:"force_windows_browser"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	cfg := servicenow.BrowserConfig{
+		ForceWindowsBrowser: req.ForceWindowsBrowser,
+	}
+	if err := servicenow.SaveBrowserConfig(cfg); err != nil {
+		h.logger.Error().Err(err).Msg("[ServiceNow] Erro ao salvar configuração de browser")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	mode := "local (Chromium WSL/Linux)"
+	if servicenow.NeedsWindowsBrowser() {
+		mode = "Windows (Chrome/Edge via CDP)"
+	}
+	h.logger.Info().
+		Bool("force_windows_browser", req.ForceWindowsBrowser).
+		Str("active_mode", mode).
+		Msg("[ServiceNow] Configuração de browser atualizada")
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":               true,
+		"force_windows_browser": cfg.ForceWindowsBrowser,
+		"needs_windows_browser": servicenow.NeedsWindowsBrowser(),
+		"active_mode":           mode,
+	})
+}
