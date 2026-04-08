@@ -121,11 +121,12 @@ func wslToWindowsPath(wslPath string) string {
 // LaunchWindowsBrowserForCDP lança o browser Windows com remote debugging na porta especificada.
 // browserWSLPath: path do browser no formato WSL (/mnt/c/...).
 // userDataWSLDir: diretório de dados do usuário no formato WSL — será convertido para Windows.
-func LaunchWindowsBrowserForCDP(browserWSLPath string, port int, userDataWSLDir string) (*exec.Cmd, error) {
+// initialURL: se não vazio, Chrome abre diretamente nessa URL (sem aba em branco inicial).
+func LaunchWindowsBrowserForCDP(browserWSLPath string, port int, userDataWSLDir string, initialURL string) (*exec.Cmd, error) {
 	winBrowserPath := wslToWindowsPath(browserWSLPath)
 	winUserDataDir := wslToWindowsPath(userDataWSLDir)
 
-	// cmd.exe /c start "" "C:\...\chrome.exe" --flags...
+	// cmd.exe /c start "" "C:\...\chrome.exe" --flags... [URL]
 	// O "" vazio é necessário para que o cmd.exe trate o próximo arg como o executável, não o título da janela
 	args := []string{
 		"/c", "start", `""`,
@@ -136,6 +137,10 @@ func LaunchWindowsBrowserForCDP(browserWSLPath string, port int, userDataWSLDir 
 		"--no-first-run",
 		"--disable-default-apps",
 		"--no-default-browser-check",
+	}
+	if initialURL != "" {
+		// Passando a URL como argumento posicional: Chrome abre diretamente nela, sem aba em branco
+		args = append(args, initialURL)
 	}
 
 	cmd := exec.Command("cmd.exe", args...)
