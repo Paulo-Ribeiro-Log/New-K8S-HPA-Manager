@@ -88,7 +88,11 @@ export function ServiceNowImportModal({
   const [playwrightStatus, setPlaywrightStatus] = useState<{
     configured: boolean;
     checked: boolean;
-  }>({ configured: false, checked: false });
+    isWsl: boolean;
+    wslMode: boolean;
+  }>({ configured: false, checked: false, isWsl: false, wslMode: false });
+  const [forceWindowsBrowser, setForceWindowsBrowser] = useState(false);
+  const [savingBrowserConfig, setSavingBrowserConfig] = useState(false);
 
   // Verificar status do Playwright ao abrir o modal
   useEffect(() => {
@@ -99,18 +103,43 @@ export function ServiceNowImportModal({
 
   const checkPlaywrightStatus = async () => {
     try {
-      const status = await apiClient.getPlaywrightStatus();
+      const [status, browserCfg] = await Promise.all([
+        apiClient.getPlaywrightStatus(),
+        apiClient.getServiceNowBrowserConfig(),
+      ]);
       setPlaywrightStatus({
         configured: status.playwright_configured && status.script_exists,
         checked: true,
+        isWsl: status.is_wsl ?? false,
+        wslMode: status.wsl_mode ?? false,
       });
+      setForceWindowsBrowser(browserCfg.force_windows_browser);
       // Se Playwright não configurado, mudar para aba manual
       if (!status.playwright_configured || !status.script_exists) {
         setActiveTab("manual");
       }
     } catch {
-      setPlaywrightStatus({ configured: false, checked: true });
+      setPlaywrightStatus({ configured: false, checked: true, isWsl: false, wslMode: false });
       setActiveTab("manual");
+    }
+  };
+
+  const handleToggleWindowsBrowser = async (value: boolean) => {
+    setSavingBrowserConfig(true);
+    try {
+      await apiClient.setServiceNowBrowserConfig(value);
+      setForceWindowsBrowser(value);
+      toast.success(
+        value
+          ? "Modo Windows ativado. Chrome/Edge do Windows será usado para autenticação."
+          : "Modo automático restaurado."
+      );
+      // Recarregar status para refletir o novo modo
+      await checkPlaywrightStatus();
+    } catch {
+      toast.error("Erro ao salvar configuração de browser.");
+    } finally {
+      setSavingBrowserConfig(false);
     }
   };
 
@@ -138,9 +167,11 @@ export function ServiceNowImportModal({
     setResult(null);
 
     try {
-      toast.info("Abrindo browser... Faça login no Azure AD se necessário.", {
-        duration: 10000,
-      });
+      const browserMsg =
+        forceWindowsBrowser || playwrightStatus.wslMode
+          ? "Abrindo Chrome/Edge do Windows... Faça login no Azure AD se necessário."
+          : "Abrindo browser... Faça login no Azure AD se necessário.";
+      toast.info(browserMsg, { duration: 10000 });
 
       const response = await apiClient.extractServiceNowWithPlaywright(chgUrl);
 
@@ -325,11 +356,53 @@ export function ServiceNowImportModal({
               <div className="text-sm text-blue-800 dark:text-blue-200">
                 <p className="font-medium">Como funciona:</p>
                 <ol className="list-decimal list-inside mt-1 space-y-1 text-blue-700 dark:text-blue-300">
-                  <li>O sistema abre um navegador Chromium</li>
-                  <li>Se necessário, faça login no Azure AD</li>
-                  <li>Os dados serão extraídos automaticamente</li>
+                  {forceWindowsBrowser || playwrightStatus.wslMode ? (
+                    <>
+                      <li>O sistema abre o Chrome/Edge <strong>do Windows</strong> para autenticação</li>
+                      <li>Faça login no Azure AD se solicitado</li>
+                      <li>Os dados serão extraídos automaticamente</li>
+                    </>
+                  ) : (
+                    <>
+                      <li>O sistema abre um navegador Chromium</li>
+                      <li>Se necessário, faça login no Azure AD</li>
+                      <li>Os dados serão extraídos automaticamente</li>
+                    </>
+                  )}
                 </ol>
               </div>
+            </div>
+
+            {/* Toggle: usar Chrome Windows via CDP */}
+            <div className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+              <div className="space-y-0.5">
+                <p className="font-medium">Usar Chrome/Edge do Windows</p>
+                <p className="text-xs text-muted-foreground">
+                  {playwrightStatus.wslMode
+                    ? "Ativo automaticamente (WSL sem display gráfico)"
+                    : forceWindowsBrowser
+                    ? "Ativo — Chrome/Edge Windows abre para autenticar (CDP)"
+                    : "Ativar para usar o Chrome/Edge instalado no Windows"}
+                </p>
+              </div>
+              <button
+                onClick={() => handleToggleWindowsBrowser(!forceWindowsBrowser)}
+                disabled={savingBrowserConfig || playwrightStatus.wslMode}
+                title={playwrightStatus.wslMode ? "Ativado automaticamente no WSL sem display" : undefined}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
+                  forceWindowsBrowser || playwrightStatus.wslMode
+                    ? "bg-blue-600"
+                    : "bg-input"
+                }`}
+                role="switch"
+                aria-checked={forceWindowsBrowser || playwrightStatus.wslMode}
+              >
+                <span
+                  className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform ${
+                    forceWindowsBrowser || playwrightStatus.wslMode ? "translate-x-4" : "translate-x-0"
+                  }`}
+                />
+              </button>
             </div>
 
             <Button

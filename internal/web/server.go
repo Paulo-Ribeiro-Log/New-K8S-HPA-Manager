@@ -979,6 +979,9 @@ func (s *Server) setupRoutes() {
 		servicenow.GET("/session-status", serviceNowHandler.GetSessionStatus)
 		servicenow.DELETE("/session", serviceNowHandler.ClearSession)
 		servicenow.POST("/session/test", serviceNowHandler.TestSession)
+		// Configuração de browser (modo Windows via CDP)
+		servicenow.GET("/browser-config", serviceNowHandler.GetBrowserConfig)
+		servicenow.POST("/browser-config", serviceNowHandler.SetBrowserConfig)
 	}
 	fmt.Println("✅ ServiceNow Integration routes registradas (HTTP + Playwright + Session)")
 
