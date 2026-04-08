@@ -186,9 +186,12 @@ func (r *RodExtractor) ClearSession() error {
 // Detecta automaticamente o ambiente:
 //   - WSL sem display gráfico → Chrome/Edge Windows via CDP (porta 9223)
 //   - Demais casos → Chromium local via launcher padrão do Rod
-func (r *RodExtractor) launchBrowser(headless bool) (*rod.Browser, func(), error) {
+//
+// initialURL: se não vazio, o browser abre diretamente nessa URL (apenas no modo Windows;
+// no modo local a URL é passada via browser.Page pelo caller).
+func (r *RodExtractor) launchBrowser(headless bool, initialURL string) (*rod.Browser, func(), error) {
 	if NeedsWindowsBrowser() {
-		return r.launchWindowsBrowser()
+		return r.launchWindowsBrowser(initialURL)
 	}
 	return r.launchLocalBrowser(headless)
 }
@@ -222,8 +225,9 @@ func (r *RodExtractor) launchLocalBrowser(headless bool) (*rod.Browser, func(), 
 
 // launchWindowsBrowser conecta ao Chrome/Edge do Windows via CDP.
 // Lança o browser Windows se ainda não estiver rodando com a porta de debug.
+// initialURL: se não vazio, Chrome abre diretamente nessa URL (sem aba em branco).
 // O browser Windows NÃO é fechado no cleanup — apenas desconectamos.
-func (r *RodExtractor) launchWindowsBrowser() (*rod.Browser, func(), error) {
+func (r *RodExtractor) launchWindowsBrowser(initialURL string) (*rod.Browser, func(), error) {
 	port := WindowsCDPPort
 
 	// Verificar se CDP já está disponível (browser já aberto com a porta de debug)
@@ -238,9 +242,10 @@ func (r *RodExtractor) launchWindowsBrowser() (*rod.Browser, func(), error) {
 			Str("browser", browserPath).
 			Int("port", port).
 			Str("session_dir", r.windowsSessionDir).
+			Str("initial_url", initialURL).
 			Msg("[Rod WSL] Lançando Chrome/Edge Windows com remote debugging...")
 
-		if _, launchErr := LaunchWindowsBrowserForCDP(browserPath, port, r.windowsSessionDir); launchErr != nil {
+		if _, launchErr := LaunchWindowsBrowserForCDP(browserPath, port, r.windowsSessionDir, initialURL); launchErr != nil {
 			return nil, nil, launchErr
 		}
 
@@ -258,7 +263,7 @@ func (r *RodExtractor) launchWindowsBrowser() (*rod.Browser, func(), error) {
 		return nil, nil, fmt.Errorf("[Rod WSL] erro ao conectar ao browser Windows via CDP: %v", err)
 	}
 
-	r.logger.Info().Msg("[Rod WSL] Conectado ao browser Windows com sucesso! (Chrome permanecerá aberto)")
+	r.logger.Info().Msg("[Rod WSL] Conectado ao browser Windows com sucesso!")
 
 	// Cleanup apenas desconecta — NÃO fecha o Chrome do usuário
 	cleanup := func() {
@@ -280,17 +285,22 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 	os.RemoveAll(sessionDir)
 	os.MkdirAll(sessionDir, 0755)
 
-	// Iniciar browser (local ou Windows via CDP conforme ambiente e configuração)
-	browser, closeFunc, err := r.launchBrowser(false)
+	// Iniciar browser abrindo diretamente no ServiceNow (sem aba em branco)
+	const serviceNowHome = "https://viavarejo.service-now.com"
+	browser, closeFunc, err := r.launchBrowser(false, serviceNowHome)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao iniciar browser: %v", err)
 	}
 
-	// Navegar para ServiceNow
-	page, err := browser.Page(proto.TargetCreateTarget{URL: "https://viavarejo.service-now.com"})
+	// Navegar para ServiceNow (modo local: abrir nova aba; modo Windows: já abriu na URL)
+	page, err := browser.Page(proto.TargetCreateTarget{URL: serviceNowHome})
 	if err != nil {
 		closeFunc()
 		return nil, fmt.Errorf("erro ao criar página: %v", err)
+	}
+	// Trazer a aba para frente (necessário no modo Windows: Chrome abre com aba em branco, Rod cria segunda aba)
+	if _, activateErr := page.Activate(); activateErr != nil {
+		r.logger.Warn().Err(activateErr).Msg("[Rod] Aviso: não foi possível ativar aba do ServiceNow")
 	}
 
 	r.logger.Info().Msg("[Rod] Navegando para ServiceNow...")
@@ -508,7 +518,9 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 		Str("session_dir", r.activeSessionDir()).
 		Msg("[Rod] Iniciando browser para extração...")
 
-	browser, closeFunc, err := r.launchBrowser(headless)
+	// No modo Windows: Chrome já abre na URL da CHG (sem aba em branco)
+	// No modo local: Chromium abre em branco e browser.Page() navega para a URL
+	browser, closeFunc, err := r.launchBrowser(headless, chgURL)
 	if err != nil {
 		r.logger.Error().Err(err).Msg("[Rod] ERRO ao iniciar browser")
 		return nil, err
@@ -527,6 +539,10 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 		return nil, fmt.Errorf("erro ao criar página: %v", err)
 	}
 	defer page.Close() //nolint:errcheck
+	// Trazer a aba para frente (necessário no modo Windows: Chrome abre com aba em branco, Rod cria segunda aba)
+	if _, activateErr := page.Activate(); activateErr != nil {
+		r.logger.Warn().Err(activateErr).Msg("[Rod] Aviso: não foi possível ativar aba da CHG")
+	}
 	r.logger.Info().Msg("[Rod] Página criada com sucesso, aguardando carregamento...")
 
 	// Timeout de 5 minutos para login se necessário
@@ -1123,8 +1139,8 @@ func (r *RodExtractor) ExtractWithSSE(ctx context.Context, chgURL string, progre
 func (r *RodExtractor) extractWithVisibleLogin(ctx context.Context, chgURL string) (*PlaywrightResult, error) {
 	r.logger.Info().Str("url", chgURL).Msg("[Rod] Iniciando extração com login visível...")
 
-	// Iniciar browser visível (local ou Windows via CDP conforme configuração)
-	browser, closeFunc, err := r.launchBrowser(false)
+	// Iniciar browser visível abrindo diretamente na URL da CHG
+	browser, closeFunc, err := r.launchBrowser(false, chgURL)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao iniciar browser para login: %v", err)
 	}
@@ -1136,6 +1152,10 @@ func (r *RodExtractor) extractWithVisibleLogin(ctx context.Context, chgURL strin
 		return nil, fmt.Errorf("erro ao criar página: %v", err)
 	}
 	defer page.Close() //nolint:errcheck
+	// Trazer a aba para frente (necessário no modo Windows)
+	if _, activateErr := page.Activate(); activateErr != nil {
+		r.logger.Warn().Err(activateErr).Msg("[Rod] Aviso: não foi possível ativar aba")
+	}
 
 	r.logger.Info().Msg("[Rod] Browser aberto - faça login no Azure AD...")
 
