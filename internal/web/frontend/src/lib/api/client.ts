@@ -84,6 +84,7 @@ import type {
   ServiceNowParseResponse,
   ServiceNowPlaywrightResponse,
   PlaywrightStatusResponse,
+  ServiceNowBrowserConfig,
   APIResourceInfo,
   GenericResourceSummary,
   GenericResourceManifest,
@@ -2771,6 +2772,23 @@ class APIClient {
    */
   async getPlaywrightStatus(): Promise<PlaywrightStatusResponse> {
     return this.request("/servicenow/playwright-status");
+  }
+
+  /**
+   * GET /api/v1/servicenow/browser-config
+   */
+  async getServiceNowBrowserConfig(): Promise<ServiceNowBrowserConfig> {
+    return this.request("/servicenow/browser-config");
+  }
+
+  /**
+   * POST /api/v1/servicenow/browser-config
+   */
+  async setServiceNowBrowserConfig(forceWindowsBrowser: boolean): Promise<ServiceNowBrowserConfig> {
+    return this.request("/servicenow/browser-config", {
+      method: "POST",
+      body: JSON.stringify({ force_windows_browser: forceWindowsBrowser }),
+    });
   }
 
   // ==================== NodePool Predictive Analysis ====================
