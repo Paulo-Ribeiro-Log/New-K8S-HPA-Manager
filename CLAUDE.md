@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual: verificar com `git describe --tags --always`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent.
+**IMPORTANTE**: Versão atual estável: `v1.3.32`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent.
 **IMPORTANTE**: Após `make build`, sempre reiniciar o servidor (`kill <PID> && ./build/new-k8s-hpa web -f`) — o processo não recarrega o binário automaticamente.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
@@ -54,7 +54,7 @@ tail -f /tmp/k8s-hpa-manager-web-*.log  # Logs do servidor
 # Release
 make release                  # Build multi-plataforma (linux, darwin Intel, darwin ARM64)
 make build-all                # Alias para release
-./create-v1-release.sh        # Criar release no GitHub
+# Publicar release no GitHub (ver seção Release no Fluxo de Desenvolvimento)
 
 # Outros
 make test-coverage            # Testes com cobertura HTML
@@ -351,6 +351,67 @@ Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fa
 - Sem isso, caracteres como `═══`, `→`, `—`, `•` geram `%P%P%P` no documento
 - `removeEmojis()` mantido apenas para uso fora do PDF
 
+### Conntrack Viewer (Node Pools)
+
+`internal/web/handlers/nodepools_conntrack.go` — dois endpoints:
+- `GET /api/v1/nodepools/conntrack` — snapshot atual via `exec` em pod efêmero com `hostNetwork:true`, lê `/proc/net/nf_conntrack` (conta linhas) e `/proc/sys/net/netfilter/nf_conntrack_max` + `nf_conntrack_buckets`
+- `GET /api/v1/nodepools/conntrack/history/:node` — histórico 24h via Prometheus (`node_nf_conntrack_entries`, `node_nf_conntrack_max`), retorna array de pontos time-series
+
+**Cache**: snapshot fica em memória por 5 minutos por nó (`conntrackCache` + `conntrackCacheTTL`). Evitar exec repetitivo; pods efêmeros são caros em custo de scheduling.
+
+**Fallback gracioso**: se Prometheus indisponível, histórico retorna array vazio — frontend exibe apenas snapshot atual sem mensagem de erro ao usuário.
+
+**Frontend**: `ConntrackViewerTab.tsx` — BarChart comparando snapshot atual vs histórico 24h. Recomendação automática por nó: OK / Monitorar tendência / Spike ativo / Aumentar limite.
+
+### shadcn Tabs em Modais com Altura Fixa
+
+`TabsContent` do Radix UI usa `[data-state=active]:block` — o `display: block` quebra qualquer cadeia de `flex-1 min-h-0`. **Nunca usar shadcn `<Tabs>` em contextos onde a aba precisa preencher altura restante** (ex: modais, painéis com `flex-1`).
+
+**Solução**: implementação manual com `div` + estado local + renderização condicional:
+
+```tsx
+// ✅ CORRETO — controle total do flex chain
+const [activeTab, setActiveTab] = useState<"details" | "logs">("details");
+
+<div className="flex-1 flex flex-col min-h-0">
+  <div className="flex border-b border-border px-4 pt-3 gap-1 flex-shrink-0">
+    {(["details", "logs"] as const).map(tab => (
+      <button key={tab} onClick={() => setActiveTab(tab)}
+        className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-px ${
+          activeTab === tab ? "border-primary text-foreground" : "border-transparent text-muted-foreground"
+        }`}>
+        {tab === "details" ? "Detalhes" : "Logs"}
+      </button>
+    ))}
+  </div>
+  {activeTab === "details" && (
+    <div className="flex-1 min-h-0 overflow-y-auto">...</div>
+  )}
+  {activeTab === "logs" && (
+    <div className="flex-1 flex flex-col min-h-0">...</div>
+  )}
+</div>
+```
+
+Ver implementação em `PodQuickViewModal.tsx`.
+
+### MonitorUtils — Conversão de Recursos K8s
+
+`internal/web/frontend/src/lib/monitorUtils.ts` centraliza funções de formatação e parsing de recursos K8s:
+
+- `parseCpuToMillicores(s)` — converte `"300m"` → 300, `"1"` → 1000, `"0.5"` → 500
+- `parseMemoryToBytes(s)` — converte `"500Mi"`, `"4Gi"`, `"1024Ki"`, `"1G"` para bytes
+- `formatMillicores(m)` — formata millicores para exibição (`"250m"`, `"1.5"`)
+- `formatBytes(b)` — formata bytes para exibição (`"128Mi"`, `"2.50Gi"`)
+
+Usar essas funções ao calcular percentuais de uso vs. limit/request. **Nunca calcular percentuais inline em componentes** — usar os parsers do `monitorUtils`.
+
+### ServiceNow — WSL2 CDP Browser
+
+`internal/servicenow/` — integração com ServiceNow via API + autenticação SAML/SSO reutilizando sessão do Chrome/Edge do Windows a partir do WSL2 via Chrome DevTools Protocol (CDP).
+
+`internal/web/handlers/servicenow.go` + `wsl_browser.go`: abre URLs do ServiceNow diretamente no Chrome Windows (não no navegador Linux do WSL). O CDP conecta na porta `9222` do `localhost` Windows (mapeada via WSL2 networking). Fallback: abre via `cmd.exe /c start` se CDP não disponível.
+
 ### Certificates
 
 `internal/certificates/` + `internal/web/handlers/certificates.go`: discovery de certs TLS em secrets K8s, validação de expiração, import/export. Usar para qualquer operação envolvendo TLS no cluster.
@@ -395,6 +456,11 @@ Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fa
 | GitHub Releases: erro "token SAML" | PAT não tem SSO autorizado para a org. Classic PAT: GitHub → Settings → PAT → Configure SSO. Fine-grained: criar novo com org selecionada |
 | GitHub Releases: org errada | Editar org no modal de credenciais GitHub (ícone de perfil). Padrão: `casas-bahia` |
 | Export PDF com "%P%P%P" no texto | Caracteres Unicode fora do WinAnsi na resposta da IA (═══, →, —). `sanitizePDF()` já converte — verificar se está sendo chamada em todos os `doc.text()` dentro de `exportPDF` |
+| Tab detalhes de modal não preenche a altura | shadcn `<Tabs>` usa `display:block` que quebra `flex-1 min-h-0`. Substituir por implementação manual de tabs com `div` + estado local (ver `PodQuickViewModal.tsx`) |
+| Colunas CPU/MEM no monitor se movem juntas | Data cells com `text-right` criam ilusão de movimento ao arrastar — manter alinhamento à esquerda nas células de dados |
+| Conntrack: snapshot sempre vazio | Pod efêmero precisa de permissão `hostNetwork: true` e acesso ao node. Verificar se o cluster permite pods privilegiados |
+| Conntrack: histórico não carrega | Prometheus indisponível — comportamento esperado (fallback gracioso). Verificar URL do Prometheus em `/api/v1/monitoring/v2/` |
+| ServiceNow não abre no navegador (WSL2) | CDP não conectou na porta 9222. Iniciar Chrome com `--remote-debugging-port=9222` ou verificar firewall WSL2 |
 
 ---
 
@@ -421,7 +487,22 @@ cd internal/web/frontend && npm run dev  # porta 5173
 
 ### Release
 ```bash
+# Merge branch → main
+git checkout main && git merge --no-ff <branch> && git push origin main
+
+# Tag e push
 git tag v1.3.X && git push origin v1.3.X
-make release           # binários multi-plataforma
-./create-v1-release.sh # publica no GitHub
+
+# Build multi-plataforma
+make release   # gera: build/new-k8s-hpa-linux-amd64, darwin-amd64, darwin-arm64
+
+# Criar release no GitHub (com upload de binários)
+gh release create v1.3.X \
+  build/new-k8s-hpa-linux-amd64 \
+  build/new-k8s-hpa-darwin-amd64 \
+  build/new-k8s-hpa-darwin-arm64 \
+  --title "v1.3.X" \
+  --notes "Descrição das mudanças"
 ```
+
+> `create-v1-release.sh` era específico para v1.0.0 — **não usar** para releases correntes.
