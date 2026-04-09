@@ -664,5 +664,66 @@ func buildFinOpsPrompt(r finops.FinOpsReport) string {
 		}
 	}
 
+	// Seção de armazenamento (se disponível)
+	if r.Storage.TotalMonthlyCostBRL > 0 {
+		sb.WriteString("\n## === ARMAZENAMENTO ===\n")
+		sb.WriteString(fmt.Sprintf("- Custo total storage: R$ %.2f/mês (USD %.2f)\n", r.Storage.TotalMonthlyCostBRL, r.Storage.TotalMonthlyCostUSD))
+		sb.WriteString(fmt.Sprintf("- Disco OS (node pools): R$ %.2f/mês\n", r.Storage.OSDiskCostBRL))
+		sb.WriteString(fmt.Sprintf("- PVCs: %d total · %d montados · %d orfãos\n", r.Storage.PVCCount, r.Storage.BoundPVCCount, r.Storage.OrphanedPVCCount))
+		sb.WriteString(fmt.Sprintf("- Capacidade total: %.0f GB\n", r.Storage.TotalCapacityGB))
+		if r.Storage.OrphanedCostBRL > 0 {
+			sb.WriteString(fmt.Sprintf("- CUSTO DESPERDIÇADO (orfãos): R$ %.2f/mês\n", r.Storage.OrphanedCostBRL))
+		}
+		if len(r.Storage.ByStorageClass) > 0 {
+			sb.WriteString("\n### Breakdown por tipo:\n")
+			for _, sc := range r.Storage.ByStorageClass {
+				sb.WriteString(fmt.Sprintf("- %s (%s): %d PVCs · %.0f GB · R$ %.2f/mês\n",
+					sc.StorageClass, sc.AzureType, sc.PVCCount, sc.TotalGB, sc.MonthlyCostBRL))
+			}
+		}
+		// Top 5 workloads por custo de storage
+		type wlStorage struct {
+			ref  string
+			cost float64
+		}
+		var wlList []wlStorage
+		for _, w := range r.Workloads {
+			if w.StorageCostBRL > 0 {
+				wlList = append(wlList, wlStorage{ref: w.Namespace + "/" + w.Workload, cost: w.StorageCostBRL})
+			}
+		}
+		// sort descending
+		for i := 0; i < len(wlList)-1; i++ {
+			for j := i + 1; j < len(wlList); j++ {
+				if wlList[j].cost > wlList[i].cost {
+					wlList[i], wlList[j] = wlList[j], wlList[i]
+				}
+			}
+		}
+		if len(wlList) > 0 {
+			sb.WriteString("\n### Top 5 workloads por storage:\n")
+			for i, wl := range wlList {
+				if i >= 5 {
+					break
+				}
+				sb.WriteString(fmt.Sprintf("- %s: R$ %.2f/mês\n", wl.ref, wl.cost))
+			}
+		}
+		// PVCs orfãos com Retain
+		var retainOrphans []finops.PVCCostItem
+		for _, pvc := range r.PVCs {
+			if pvc.IsOrphaned && pvc.ReclaimPolicy == "Retain" {
+				retainOrphans = append(retainOrphans, pvc)
+			}
+		}
+		if len(retainOrphans) > 0 {
+			sb.WriteString("\n### PVCs orfãos com reclaimPolicy=Retain (disco persiste após delete):\n")
+			for _, pvc := range retainOrphans {
+				sb.WriteString(fmt.Sprintf("- %s/%s: %s · %.0f GB · R$ %.2f/mês\n",
+					pvc.Namespace, pvc.Name, pvc.AzureDiskType, pvc.CapacityGB, pvc.MonthlyCostBRL))
+			}
+		}
+	}
+
 	return sb.String()
 }
