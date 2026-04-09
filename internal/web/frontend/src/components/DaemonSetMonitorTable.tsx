@@ -261,23 +261,23 @@ export const DaemonSetMonitorTable = ({
               disabled={filtered.length === 0}
             />
           </span>
-          <span className="relative flex items-center overflow-hidden pr-3">
+          <span className="relative flex items-center overflow-hidden pr-4">
             <SortBtn label="NAME/NS" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(1, d)} />
           </span>
-          <span className="relative overflow-hidden pr-3">
+          <span className="relative overflow-hidden pr-4">
             <SortBtn label="READY" colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(2, d)} />
           </span>
-          <span className="relative overflow-hidden pr-3">
+          <span className="relative overflow-hidden pr-4">
             <SortBtn label="DESIRED" colKey="desired" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(3, d)} />
           </span>
-          <span className="relative overflow-hidden pr-3">
+          <span className="relative overflow-hidden pr-4">
             <SortBtn label="AVAILABLE" colKey="available" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(4, d)} />
           </span>
-          <span className="relative overflow-hidden pr-3">
+          <span className="relative overflow-hidden pr-4">
             <SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(5, d)} />
           </span>

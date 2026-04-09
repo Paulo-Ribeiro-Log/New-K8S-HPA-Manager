@@ -16,7 +16,7 @@ export function useResizableColumns(initial: number[]) {
   return { widths, resize, gridTemplate };
 }
 
-/** Alça de redimensionamento — coloque dentro de um container `relative overflow-hidden pr-3` */
+/** Alça de redimensionamento — coloque dentro de um container `relative overflow-hidden pr-4` */
 export function ResizeHandle({ onResize }: { onResize: (delta: number) => void }) {
   const dragging = useRef(false);
   const lastX = useRef(0);
