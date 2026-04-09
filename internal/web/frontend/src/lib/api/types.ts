@@ -1400,6 +1400,26 @@ export interface NodePoolLookupResult {
   found: boolean;
 }
 
+// ─── Conntrack Stats ──────────────────────────────────────────────────────────
+
+export interface ConntrackNodeStats {
+  node_name: string;
+  count: number;
+  max: number;
+  buckets: number;
+  usage_pct: number;
+  status: 'ok' | 'warning' | 'critical' | 'error';
+  probe_method: string;
+  error?: string;
+}
+
+export interface ConntrackResponse {
+  node_pool: string;
+  cluster: string;
+  nodes: ConntrackNodeStats[];
+  fetched_at: string;
+}
+
 export interface CommandRunnerSSEEvent {
   id: string;
   type: 'init' | 'output' | 'output_error' | 'cluster_done' | 'complete' | 'error';

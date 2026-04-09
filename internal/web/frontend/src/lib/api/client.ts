@@ -96,6 +96,7 @@ import type {
   BatchPodMetrics,
   NodePoolRegistryEntry,
   NodePoolLookupResult,
+  ConntrackResponse,
 } from "./types";
 
 import type {
@@ -1652,6 +1653,12 @@ class APIClient {
       `/nodepools/disk-metrics${query}`
     );
     return response;
+  }
+
+  async getConntrackStats(cluster: string, nodepool: string): Promise<ConntrackResponse> {
+    return this.request<ConntrackResponse>(
+      `/nodepools/conntrack?cluster=${encodeURIComponent(cluster)}&nodepool=${encodeURIComponent(nodepool)}`
+    );
   }
 
   async getStorageOverview(cluster: string): Promise<{ success: boolean; data: any }> {
