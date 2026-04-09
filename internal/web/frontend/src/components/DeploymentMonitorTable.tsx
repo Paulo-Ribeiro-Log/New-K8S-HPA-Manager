@@ -570,9 +570,6 @@ export const DeploymentMonitorTable = ({
           const rowColor = isHealthy
             ? "text-green-600 dark:text-green-400"
             : "text-orange-600 dark:text-orange-400";
-          const readyColor = ready < desired
-            ? "text-orange-600 dark:text-orange-400"
-            : "text-green-600 dark:text-green-400";
           const isSelected = selectedDeps.has(depKey(dep));
 
           return (
@@ -621,7 +618,7 @@ export const DeploymentMonitorTable = ({
               <span className="truncate text-muted-foreground" title={dep.labels?.["app.kubernetes.io/version"] ?? dep.labels?.["version"] ?? dep.labels?.["app.version"] ?? ""}>
                 {formatVersion(dep.labels?.["app.kubernetes.io/version"] ?? dep.labels?.["version"] ?? dep.labels?.["app.version"])}
               </span>
-              <span className={readyColor}>{ready}/{desired}</span>
+              <span>{ready}/{desired}</span>
               <span>{updated}</span>
               <span>{available}</span>
               <span className="text-muted-foreground">
