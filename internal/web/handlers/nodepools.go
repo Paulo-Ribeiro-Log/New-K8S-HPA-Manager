@@ -33,6 +33,8 @@ type NodePoolHandler struct {
 	kubeManager     *config.KubeConfigManager
 	progressManager *SequenceProgressManager
 	historyTracker  *history.HistoryTracker
+	promClients     map[string]*promclient.PrometheusClient
+	promClientsMu   sync.RWMutex
 }
 
 // NewNodePoolHandler cria um novo handler de Node Pools
@@ -41,7 +43,30 @@ func NewNodePoolHandler(km *config.KubeConfigManager, ht *history.HistoryTracker
 		kubeManager:     km,
 		progressManager: NewSequenceProgressManager(),
 		historyTracker:  ht,
+		promClients:     make(map[string]*promclient.PrometheusClient),
 	}
+}
+
+// getPromClient retorna PrometheusClient cacheado por cluster (cria na primeira chamada).
+func (h *NodePoolHandler) getPromClient(cluster string) (*promclient.PrometheusClient, error) {
+	h.promClientsMu.RLock()
+	if c, ok := h.promClients[cluster]; ok {
+		h.promClientsMu.RUnlock()
+		return c, nil
+	}
+	h.promClientsMu.RUnlock()
+
+	h.promClientsMu.Lock()
+	defer h.promClientsMu.Unlock()
+	if c, ok := h.promClients[cluster]; ok {
+		return c, nil
+	}
+	c, err := promclient.NewPrometheusClient(cluster)
+	if err != nil {
+		return nil, err
+	}
+	h.promClients[cluster] = c
+	return c, nil
 }
 
 // Abort cancela uma operação em andamento de um node pool via ARM abort API.

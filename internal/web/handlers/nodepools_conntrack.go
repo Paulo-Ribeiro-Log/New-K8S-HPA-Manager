@@ -11,16 +11,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/prometheus/common/model"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
-
-	"k8s-hpa-manager/internal/monitoring/discovery"
-	"k8s-hpa-manager/internal/monitoring/prometheus"
 )
 
 // ConntrackNodeStats estatísticas de conntrack de um nó
@@ -335,16 +331,9 @@ func (h *NodePoolHandler) GetConntrackNodeHistory(c *gin.Context) {
 		return
 	}
 
-	// Tentar conectar ao Prometheus
-	endpoint, discErr := discovery.DiscoverEndpoint(cluster)
-	if discErr != nil || !endpoint.Available {
-		resp.PrometheusAvailable = false
-		c.JSON(http.StatusOK, resp)
-		return
-	}
-
-	promClient, err := prometheus.NewClient(cluster, endpoint.URL)
-	if err != nil {
+	// Reutiliza cliente cacheado por cluster (evita redescoberta do endpoint a cada request)
+	prom, promErr := h.getPromClient(cluster)
+	if promErr != nil {
 		resp.PrometheusAvailable = false
 		c.JSON(http.StatusOK, resp)
 		return
@@ -363,37 +352,38 @@ func (h *NodePoolHandler) GetConntrackNodeHistory(c *gin.Context) {
 	entriesQuery := fmt.Sprintf(`node_nf_conntrack_entries{instance=~"%s"}`, instanceLabel)
 	limitQuery := fmt.Sprintf(`node_nf_conntrack_entries_limit{instance=~"%s"}`, instanceLabel)
 
-	entriesResult, err := promClient.QueryRange(ctx, entriesQuery, start, end, step)
+	entriesResult, err := prom.QueryRange(ctx, entriesQuery, start, end, step)
 	if err != nil {
 		resp.Error = fmt.Sprintf("erro ao consultar Prometheus (entries): %v", err)
 		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	// Mapa timestamp → limit (opcional — melhor esforço)
+	// Mapa timestamp → limit (melhor esforço)
 	limitByTS := map[int64]float64{}
-	if limitResult, limitErr := promClient.QueryRange(ctx, limitQuery, start, end, step); limitErr == nil {
-		if matrix, ok := limitResult.(model.Matrix); ok {
-			for _, stream := range matrix {
-				for _, pair := range stream.Values {
-					limitByTS[int64(pair.Timestamp)/1000] = float64(pair.Value)
+	if limitResult, limitErr := prom.QueryRange(ctx, limitQuery, start, end, step); limitErr == nil {
+		for _, series := range limitResult.Data.Result {
+			for _, pair := range series.Values {
+				ts, val, ok := parseRangePair(pair)
+				if ok {
+					limitByTS[ts] = val
 				}
 			}
 		}
 	}
 
-	// Converter resultado de entries em pontos históricos
-	matrix, ok := entriesResult.(model.Matrix)
-	if !ok || len(matrix) == 0 {
+	if len(entriesResult.Data.Result) == 0 {
 		resp.Error = "sem dados de conntrack no Prometheus para este nó (node_exporter instalado?)"
 		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	points := make([]ConntrackHistoryPoint, 0, len(matrix[0].Values))
-	for _, pair := range matrix[0].Values {
-		ts := int64(pair.Timestamp) / 1000
-		count := float64(pair.Value)
+	points := make([]ConntrackHistoryPoint, 0)
+	for _, pair := range entriesResult.Data.Result[0].Values {
+		ts, count, ok := parseRangePair(pair)
+		if !ok {
+			continue
+		}
 		max := limitByTS[ts]
 		var usagePct float64
 		if max > 0 {
@@ -409,6 +399,25 @@ func (h *NodePoolHandler) GetConntrackNodeHistory(c *gin.Context) {
 	resp.Points = points
 
 	c.JSON(http.StatusOK, resp)
+}
+
+// parseRangePair extrai (timestamp, value) de um elemento []interface{} do Prometheus query_range.
+// Formato: [unix_float, "value_string"]
+func parseRangePair(pair interface{}) (ts int64, val float64, ok bool) {
+	arr, isArr := pair.([]interface{})
+	if !isArr || len(arr) < 2 {
+		return 0, 0, false
+	}
+	tsFloat, tsOK := arr[0].(float64)
+	valStr, valOK := arr[1].(string)
+	if !tsOK || !valOK {
+		return 0, 0, false
+	}
+	v, err := strconv.ParseFloat(valStr, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return int64(tsFloat), v, true
 }
 
 // getNodeInternalIP retorna o IP interno (InternalIP) de um nó pelo nome
