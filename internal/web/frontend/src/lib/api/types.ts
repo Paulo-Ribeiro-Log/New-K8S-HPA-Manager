@@ -1400,6 +1400,42 @@ export interface NodePoolLookupResult {
   found: boolean;
 }
 
+// ─── Conntrack Stats ──────────────────────────────────────────────────────────
+
+export interface ConntrackNodeStats {
+  node_name: string;
+  count: number;
+  max: number;
+  buckets: number;
+  usage_pct: number;
+  status: 'ok' | 'warning' | 'critical' | 'error';
+  probe_method: string;
+  error?: string;
+}
+
+export interface ConntrackResponse {
+  node_pool: string;
+  cluster: string;
+  nodes: ConntrackNodeStats[];
+  fetched_at: string;
+}
+
+export interface ConntrackHistoryPoint {
+  ts: number;       // Unix timestamp (segundos)
+  count: number;    // nf_conntrack_entries
+  max: number;      // nf_conntrack_entries_limit (0 se indisponível)
+  usage_pct: number;
+}
+
+export interface ConntrackNodeHistoryResponse {
+  node_name: string;
+  hours: number;
+  step_minutes: number;
+  points: ConntrackHistoryPoint[];
+  prometheus_available: boolean;
+  error?: string;
+}
+
 export interface CommandRunnerSSEEvent {
   id: string;
   type: 'init' | 'output' | 'output_error' | 'cluster_done' | 'complete' | 'error';

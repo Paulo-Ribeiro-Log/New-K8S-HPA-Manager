@@ -12,7 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { NodePool, NodeInfo } from "@/lib/api/types";
-import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Tags, AlertTriangle, Copy, TrendingUp, History } from "lucide-react";
+import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Tags, AlertTriangle, Copy, TrendingUp, History, Activity } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
@@ -26,6 +26,7 @@ import { ProtectedAction } from "@/components/rbac";
 import { NodePoolPredictionModal } from "./NodePoolPredictionModal";
 import { NodePoolPredictionHistoryModal } from "./NodePoolPredictionHistoryModal";
 import { useAnalyzeNodePool } from "@/hooks/useNodePoolPredictions";
+import { ConntrackTab } from "./ConntrackTab";
 
 interface NodePoolEditorProps {
   nodePool: NodePool | null;
@@ -680,7 +681,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
 
       {/* Tabs para organizar visualizações */}
       <Tabs defaultValue="configuration" className="w-full">
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="configuration">
             <Settings className="w-4 h-4 mr-2" />
             Configuration
@@ -692,6 +693,10 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           <TabsTrigger value="disk">
             <Database className="w-4 h-4 mr-2" />
             Disk
+          </TabsTrigger>
+          <TabsTrigger value="conntrack">
+            <Activity className="w-4 h-4 mr-2" />
+            Conntrack
           </TabsTrigger>
         </TabsList>
 
@@ -1259,6 +1264,13 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                 </div>
               </CardContent>
             </Card>
+          )}
+        </TabsContent>
+
+        {/* Tab Conntrack */}
+        <TabsContent value="conntrack">
+          {nodePool && (
+            <ConntrackTab cluster={clusterWithAdmin} nodepool={nodePool.name} />
           )}
         </TabsContent>
       </Tabs>
