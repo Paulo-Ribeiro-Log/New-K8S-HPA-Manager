@@ -52,7 +52,7 @@ func TestCalculatePoolCosts(t *testing.T) {
 	defer pricer.Close()
 
 	exchange := NewExchangeRateProvider()
-	calc := NewCalculator(pricer, exchange)
+	calc := NewCalculator(pricer, nil, exchange)
 	rate, _ := exchange.Get()
 
 	pools := []storage.NodePoolRegistryEntry{

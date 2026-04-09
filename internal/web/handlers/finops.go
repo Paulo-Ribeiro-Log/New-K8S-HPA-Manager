@@ -23,22 +23,28 @@ type FinOpsHandler struct {
 	npRegistryStore *storage.NodePoolRegistryStore
 	timelineStore   *storage.FinOpsTimelineStore // pode ser nil se DB não disponível
 	pricer          *finops.AzurePricer
+	diskPricer      *finops.DiskPricer // nil = análise de storage omitida
 	exchange        *finops.ExchangeRateProvider
 	aiHandler       *AIDiagnosticsHandler // opcional — nil se AI não configurado
 }
 
 // NewFinOpsHandler cria o handler com as dependências compartilhadas.
-// AzurePricer é inicializado uma única vez (cache SQLite interno).
+// AzurePricer e DiskPricer são inicializados uma única vez (cache SQLite interno).
 func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *storage.NodePoolRegistryStore, timelineStore *storage.FinOpsTimelineStore, aiHandler *AIDiagnosticsHandler) *FinOpsHandler {
 	pricer, err := finops.NewAzurePricer("")
 	if err != nil {
 		log.Warn().Err(err).Msg("FinOps: falha ao inicializar AzurePricer, usando apenas fallback")
+	}
+	diskPricer, err := finops.NewDiskPricer("")
+	if err != nil {
+		log.Warn().Err(err).Msg("FinOps: falha ao inicializar DiskPricer, análise de storage omitida")
 	}
 	return &FinOpsHandler{
 		kubeManager:     kubeManager,
 		npRegistryStore: npRegistryStore,
 		timelineStore:   timelineStore,
 		pricer:          pricer,
+		diskPricer:      diskPricer,
 		exchange:        finops.NewExchangeRateProvider(),
 		aiHandler:       aiHandler,
 	}
@@ -115,8 +121,8 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		return
 	}
 
-	// Gerar relatório (com Prometheus opcional)
-	calc := finops.NewCalculator(h.pricer, h.exchange)
+	// Gerar relatório (com Prometheus e Storage opcionais)
+	calc := finops.NewCalculator(h.pricer, h.diskPricer, h.exchange)
 	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces, enricher)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao gerar relatório")
@@ -189,6 +195,24 @@ func (h *FinOpsHandler) RefreshPricing(c *gin.Context) {
 
 	log.Info().Msg("FinOps: cache de preços Azure invalidado")
 	c.JSON(http.StatusOK, gin.H{"message": "Cache de preços invalidado. Próxima consulta buscará preços atualizados da Azure Pricing API."})
+}
+
+// RefreshDiskPricing godoc
+// POST /api/v1/finops/storage/refresh
+//
+// Invalida o cache de preços de storage (discos managed, Azure Files, Blob).
+func (h *FinOpsHandler) RefreshDiskPricing(c *gin.Context) {
+	if h.diskPricer == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "DiskPricer não está disponível"})
+		return
+	}
+	if err := h.diskPricer.InvalidateDiskCache(); err != nil {
+		log.Error().Err(err).Msg("FinOps: falha ao invalidar cache de preços de disco")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao invalidar cache: " + err.Error()})
+		return
+	}
+	log.Info().Msg("FinOps: cache de preços de storage invalidado")
+	c.JSON(http.StatusOK, gin.H{"message": "Cache de preços de storage invalidado."})
 }
 
 // GetExchangeRate godoc
