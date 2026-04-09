@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import type { PodSummary, BatchPodMetrics } from "@/lib/api/types";
-import { formatAge, formatBytes, formatMillicores, podRowColor, podDotColor } from "@/lib/monitorUtils";
+import { formatAge, formatBytes, formatMillicores, parseCpuToMillicores, parseMemoryToBytes, podRowColor, podDotColor } from "@/lib/monitorUtils";
 import { Loader2, ChevronLeft, Search, X, ListFilter, Check, RefreshCw, ChevronUp, ChevronDown, ArrowUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -98,7 +98,7 @@ function useSecondsTick(date: Date | null): string {
 
 // Colunas: SEL | NAME/NS | VERSION | dot | READY | STATUS | REST. | CPU | MEM | NODE | AGE
 // SEL(32) e dot(22) são fixos e não têm ResizeHandle por serem muito pequenos.
-const INITIAL_WIDTHS = [32, 200, 120, 22, 60, 140, 50, 90, 90, 180, 60];
+const INITIAL_WIDTHS = [32, 200, 120, 22, 60, 140, 50, 110, 110, 180, 60];
 
 function extractImageVersion(image?: string): string {
   if (!image) return "-";
@@ -546,45 +546,45 @@ export const PodMonitorTable = ({
             disabled={filtered.length === 0}
           />
         </span>
-        <span className="relative overflow-hidden pr-3 flex items-center">
+        <span className="relative overflow-hidden pr-4 flex items-center">
           {uniqueNamespaces.length > 1
             ? <><ColumnFilter label="NAME/NS" options={uniqueNamespaces} selected={namespaceFilter} onChange={setNamespaceFilter} /><SortIcon colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></>
             : <SortBtn label="NAME" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />}
           <ResizeHandle onResize={(d) => resize(1, d)} />
         </span>
-        <span className="relative overflow-hidden pr-3 text-muted-foreground uppercase text-[10px]">
+        <span className="relative overflow-hidden pr-4 text-muted-foreground uppercase text-[10px]">
           VERSION
           <ResizeHandle onResize={(d) => resize(2, d)} />
         </span>
         {/* dot — fixo, sem resize */}
         <span></span>
-        <span className="relative overflow-hidden pr-3">
+        <span className="relative overflow-hidden pr-4">
           <SortBtn label="READY" colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           <ResizeHandle onResize={(d) => resize(4, d)} />
         </span>
-        <span className="relative overflow-hidden pr-3 flex items-center">
+        <span className="relative overflow-hidden pr-4 flex items-center">
           <ColumnFilter label="STATUS" options={uniqueStatuses} selected={statusFilter} onChange={setStatusFilter} />
           <StatusSortIcon mode={statusSortMode} onCycle={cycleStatusSort} />
           <ResizeHandle onResize={(d) => resize(5, d)} />
         </span>
-        <span className="relative overflow-hidden pr-3">
+        <span className="relative overflow-hidden pr-4">
           <SortBtn label="REST." colKey="restarts" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           <ResizeHandle onResize={(d) => resize(6, d)} />
         </span>
-        <span className="relative overflow-hidden pr-3 text-right">
+        <span className="relative overflow-hidden pr-4">
           <SortBtn label="CPU" colKey="cpu" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           <ResizeHandle onResize={(d) => resize(7, d)} />
         </span>
-        <span className="relative overflow-hidden pr-3 text-right">
+        <span className="relative overflow-hidden pr-4">
           <SortBtn label="MEM" colKey="mem" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           <ResizeHandle onResize={(d) => resize(8, d)} />
         </span>
-        <span className="relative overflow-hidden pr-3 flex items-center">
+        <span className="relative overflow-hidden pr-4 flex items-center">
           <ColumnFilter label="NODE" options={uniqueNodes} selected={nodeFilter} onChange={setNodeFilter} />
           <SortIcon colKey="node" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           <ResizeHandle onResize={(d) => resize(9, d)} />
         </span>
-        <span className="relative overflow-hidden pr-3">
+        <span className="relative overflow-hidden pr-4">
           <SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           <ResizeHandle onResize={(d) => resize(10, d)} />
         </span>
@@ -673,17 +673,31 @@ export const PodMonitorTable = ({
               <span>{pod.restarts}</span>
 
               {/* CPU */}
-              <div className="flex flex-col text-right pr-2">
-                <span>{m ? formatMillicores(m.cpuMillicores) : "-"}</span>
-                <span className="text-muted-foreground/70 text-[10px] -mt-0.5">
+              <div className="flex flex-col min-w-0 overflow-hidden">
+                <span className="truncate">
+                  {m ? (() => {
+                    const cur = formatMillicores(m.cpuMillicores);
+                    const limitM = parseCpuToMillicores(pod.cpuLimit || "");
+                    const pct = limitM > 0 ? Math.round(m.cpuMillicores / limitM * 100) : null;
+                    return pct !== null ? `${cur} / ${pct}%` : cur;
+                  })() : "-"}
+                </span>
+                <span className="truncate text-muted-foreground/70 text-[10px] -mt-0.5">
                   {pod.cpuRequest || "0"} / {pod.cpuLimit || "∞"}
                 </span>
               </div>
 
               {/* MEM */}
-              <div className="flex flex-col text-right pr-2">
-                <span>{m ? formatBytes(m.memoryBytes) : "-"}</span>
-                <span className="text-muted-foreground/70 text-[10px] -mt-0.5">
+              <div className="flex flex-col min-w-0 overflow-hidden">
+                <span className="truncate">
+                  {m ? (() => {
+                    const cur = formatBytes(m.memoryBytes);
+                    const limitB = parseMemoryToBytes(pod.memoryLimit || "");
+                    const pct = limitB > 0 ? Math.round(m.memoryBytes / limitB * 100) : null;
+                    return pct !== null ? `${cur} / ${pct}%` : cur;
+                  })() : "-"}
+                </span>
+                <span className="truncate text-muted-foreground/70 text-[10px] -mt-0.5">
                   {pod.memoryRequest || "0"} / {pod.memoryLimit || "∞"}
                 </span>
               </div>

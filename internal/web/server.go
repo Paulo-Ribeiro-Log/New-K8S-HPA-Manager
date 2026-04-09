@@ -527,9 +527,11 @@ func (s *Server) setupRoutes() {
 	// Node Pools
 	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager, s.historyTracker)
 	api.GET("/nodepools", nodePoolHandler.List)
-	api.GET("/nodepools/disk-metrics", nodePoolHandler.GetNodePoolDiskMetrics) // NOVO: Métricas de disco
-	api.GET("/nodepools/storage-overview", nodePoolHandler.GetStorageOverview) // NOVO: Visão geral de storage
-	api.GET("/nodepools/sequence/progress", nodePoolHandler.SequenceProgress)  // NOVO: SSE progress tracking
+	api.GET("/nodepools/disk-metrics", nodePoolHandler.GetNodePoolDiskMetrics) // Métricas de disco
+	api.GET("/nodepools/storage-overview", nodePoolHandler.GetStorageOverview) // Visão geral de storage
+	api.GET("/nodepools/sequence/progress", nodePoolHandler.SequenceProgress)  // SSE progress tracking
+	api.GET("/nodepools/conntrack", nodePoolHandler.GetConntrackStats)                 // Conntrack stats por node
+	api.GET("/nodepools/conntrack/history", nodePoolHandler.GetConntrackNodeHistory) // Histórico via Prometheus
 
 	// Node Pools - Write Operations (SRE-only)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)
@@ -979,6 +981,9 @@ func (s *Server) setupRoutes() {
 		servicenow.GET("/session-status", serviceNowHandler.GetSessionStatus)
 		servicenow.DELETE("/session", serviceNowHandler.ClearSession)
 		servicenow.POST("/session/test", serviceNowHandler.TestSession)
+		// Configuração de browser (modo Windows via CDP)
+		servicenow.GET("/browser-config", serviceNowHandler.GetBrowserConfig)
+		servicenow.POST("/browser-config", serviceNowHandler.SetBrowserConfig)
 	}
 	fmt.Println("✅ ServiceNow Integration routes registradas (HTTP + Playwright + Session)")
 

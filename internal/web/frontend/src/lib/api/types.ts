@@ -1269,6 +1269,18 @@ export interface PlaywrightStatusResponse {
   script_exists: boolean;
   npx_available: boolean;
   ts_node_available: boolean;
+  // Modo de browser
+  wsl_mode: boolean;     // true = WSL sem display, usa Chrome Windows via CDP automaticamente
+  is_wsl: boolean;       // true = rodando no WSL (com ou sem display)
+  has_display: boolean;  // true = display gráfico disponível no WSL
+}
+
+export interface ServiceNowBrowserConfig {
+  force_windows_browser: boolean;
+  needs_windows_browser: boolean;
+  is_wsl: boolean;
+  has_display: boolean;
+  active_mode?: string;
 }
 
 // ==================== Resource Explorer Types ====================
@@ -1386,6 +1398,42 @@ export interface NodePoolLookupResult {
   nodepool: string;    // nome do pool extraído do entity_name
   matches: NodePoolRegistryEntry[];
   found: boolean;
+}
+
+// ─── Conntrack Stats ──────────────────────────────────────────────────────────
+
+export interface ConntrackNodeStats {
+  node_name: string;
+  count: number;
+  max: number;
+  buckets: number;
+  usage_pct: number;
+  status: 'ok' | 'warning' | 'critical' | 'error';
+  probe_method: string;
+  error?: string;
+}
+
+export interface ConntrackResponse {
+  node_pool: string;
+  cluster: string;
+  nodes: ConntrackNodeStats[];
+  fetched_at: string;
+}
+
+export interface ConntrackHistoryPoint {
+  ts: number;       // Unix timestamp (segundos)
+  count: number;    // nf_conntrack_entries
+  max: number;      // nf_conntrack_entries_limit (0 se indisponível)
+  usage_pct: number;
+}
+
+export interface ConntrackNodeHistoryResponse {
+  node_name: string;
+  hours: number;
+  step_minutes: number;
+  points: ConntrackHistoryPoint[];
+  prometheus_available: boolean;
+  error?: string;
 }
 
 export interface CommandRunnerSSEEvent {

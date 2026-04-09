@@ -84,6 +84,7 @@ import type {
   ServiceNowParseResponse,
   ServiceNowPlaywrightResponse,
   PlaywrightStatusResponse,
+  ServiceNowBrowserConfig,
   APIResourceInfo,
   GenericResourceSummary,
   GenericResourceManifest,
@@ -95,6 +96,8 @@ import type {
   BatchPodMetrics,
   NodePoolRegistryEntry,
   NodePoolLookupResult,
+  ConntrackResponse,
+  ConntrackNodeHistoryResponse,
 } from "./types";
 
 import type {
@@ -1653,6 +1656,23 @@ class APIClient {
     return response;
   }
 
+  async getConntrackStats(cluster: string, nodepool: string): Promise<ConntrackResponse> {
+    return this.request<ConntrackResponse>(
+      `/nodepools/conntrack?cluster=${encodeURIComponent(cluster)}&nodepool=${encodeURIComponent(nodepool)}`
+    );
+  }
+
+  async getConntrackNodeHistory(
+    cluster: string,
+    node: string,
+    hours = 6,
+    step = 5,
+  ): Promise<ConntrackNodeHistoryResponse> {
+    return this.request<ConntrackNodeHistoryResponse>(
+      `/nodepools/conntrack/history?cluster=${encodeURIComponent(cluster)}&node=${encodeURIComponent(node)}&hours=${hours}&step=${step}`
+    );
+  }
+
   async getStorageOverview(cluster: string): Promise<{ success: boolean; data: any }> {
     const response = await this.request<{ success: boolean; data: any }>(
       `/nodepools/storage-overview?cluster=${encodeURIComponent(cluster)}`
@@ -2771,6 +2791,23 @@ class APIClient {
    */
   async getPlaywrightStatus(): Promise<PlaywrightStatusResponse> {
     return this.request("/servicenow/playwright-status");
+  }
+
+  /**
+   * GET /api/v1/servicenow/browser-config
+   */
+  async getServiceNowBrowserConfig(): Promise<ServiceNowBrowserConfig> {
+    return this.request("/servicenow/browser-config");
+  }
+
+  /**
+   * POST /api/v1/servicenow/browser-config
+   */
+  async setServiceNowBrowserConfig(forceWindowsBrowser: boolean): Promise<ServiceNowBrowserConfig> {
+    return this.request("/servicenow/browser-config", {
+      method: "POST",
+      body: JSON.stringify({ force_windows_browser: forceWindowsBrowser }),
+    });
   }
 
   // ==================== NodePool Predictive Analysis ====================

@@ -318,19 +318,19 @@ export const VPAMonitorTable = ({
               disabled={filtered.length === 0}
             />
           </span>
-          <span className="relative flex items-center overflow-hidden pr-3">
+          <span className="relative flex items-center overflow-hidden pr-4">
             <SortBtn label="NAME/NS" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(1, d)} />
           </span>
-          <span className="relative flex items-center overflow-hidden pr-3">
+          <span className="relative flex items-center overflow-hidden pr-4">
             <SortBtn label="TARGET" colKey="target" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(2, d)} />
           </span>
-          <span className="relative flex items-center overflow-hidden pr-3">
+          <span className="relative flex items-center overflow-hidden pr-4">
             <ColumnFilter label="MODE" options={uniqueModes} selected={modeFilter} onChange={setModeFilter} />
             <ResizeHandle onResize={(d) => resize(3, d)} />
           </span>
-          <span className="relative uppercase text-muted-foreground overflow-hidden pr-3">
+          <span className="relative uppercase text-muted-foreground overflow-hidden pr-4">
             RECS
             <ResizeHandle onResize={(d) => resize(4, d)} />
           </span>
