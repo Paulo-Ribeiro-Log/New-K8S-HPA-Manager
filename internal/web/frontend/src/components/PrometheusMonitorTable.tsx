@@ -185,27 +185,27 @@ export const PrometheusMonitorTable = ({
               disabled={filtered.length === 0}
             />
           </span>
-          <span className="relative overflow-hidden pr-3">
+          <span className="relative overflow-hidden pr-4">
             <SortBtn label="NAME/NS" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(1, d)} />
           </span>
-          <span className="relative overflow-hidden pr-3">
+          <span className="relative overflow-hidden pr-4">
             <SortBtn label="TYPE" colKey="type" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(2, d)} />
           </span>
-          <span className="relative overflow-hidden pr-3">
+          <span className="relative overflow-hidden pr-4">
             <SortBtn label="COMPONENT" colKey="component" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(3, d)} />
           </span>
-          <span className="relative overflow-hidden pr-3">
+          <span className="relative overflow-hidden pr-4">
             <SortBtn label="REP." colKey="replicas" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(4, d)} />
           </span>
-          <span className="relative uppercase text-muted-foreground overflow-hidden pr-3">
+          <span className="relative uppercase text-muted-foreground overflow-hidden pr-4">
             CPU REQ
             <ResizeHandle onResize={(d) => resize(5, d)} />
           </span>
-          <span className="relative uppercase text-muted-foreground overflow-hidden pr-3">
+          <span className="relative uppercase text-muted-foreground overflow-hidden pr-4">
             MEM REQ
             <ResizeHandle onResize={(d) => resize(6, d)} />
           </span>
