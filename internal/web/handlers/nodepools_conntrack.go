@@ -11,12 +11,16 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/common/model"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
+
+	"k8s-hpa-manager/internal/monitoring/discovery"
+	"k8s-hpa-manager/internal/monitoring/prometheus"
 )
 
 // ConntrackNodeStats estatísticas de conntrack de um nó
@@ -261,4 +265,162 @@ func parseInt64(s string) int64 {
 	s = strings.TrimSpace(s)
 	v, _ := strconv.ParseInt(s, 10, 64)
 	return v
+}
+
+// ─── Conntrack History ────────────────────────────────────────────────────────
+
+// ConntrackHistoryPoint representa um ponto no tempo da série histórica de conntrack
+type ConntrackHistoryPoint struct {
+	Timestamp  int64   `json:"ts"`        // Unix timestamp (segundos)
+	Count      float64 `json:"count"`     // nf_conntrack_entries naquele instante
+	Max        float64 `json:"max"`       // nf_conntrack_entries_limit (pode ser 0 se não disponível)
+	UsagePct   float64 `json:"usage_pct"` // count/max*100 (0 se max=0)
+}
+
+// ConntrackNodeHistoryResponse resposta do endpoint de histórico por nó
+type ConntrackNodeHistoryResponse struct {
+	NodeName            string                  `json:"node_name"`
+	Hours               int                     `json:"hours"`
+	StepMinutes         int                     `json:"step_minutes"`
+	Points              []ConntrackHistoryPoint `json:"points"`
+	PrometheusAvailable bool                    `json:"prometheus_available"`
+	Error               string                  `json:"error,omitempty"`
+}
+
+// GetConntrackNodeHistory retorna série histórica de conntrack de um nó via Prometheus.
+// GET /api/v1/nodepools/conntrack/history?cluster=X&node=Y&hours=6&step=5
+// Se Prometheus não estiver disponível, retorna prometheus_available=false sem dados.
+func (h *NodePoolHandler) GetConntrackNodeHistory(c *gin.Context) {
+	cluster := c.Query("cluster")
+	nodeName := c.Query("node")
+	if cluster == "" || nodeName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetros cluster e node são obrigatórios"})
+		return
+	}
+
+	hours := 6
+	if v := c.Query("hours"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 168 {
+			hours = n
+		}
+	}
+	stepMinutes := 5
+	if v := c.Query("step"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 60 {
+			stepMinutes = n
+		}
+	}
+
+	resp := ConntrackNodeHistoryResponse{
+		NodeName:    nodeName,
+		Hours:       hours,
+		StepMinutes: stepMinutes,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Obter IP interno do nó via K8s API
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		resp.Error = fmt.Sprintf("erro ao conectar ao cluster: %v", err)
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+	nodeIP, err := getNodeInternalIP(ctx, clientset, nodeName)
+	if err != nil {
+		resp.Error = fmt.Sprintf("nó não encontrado: %v", err)
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+	// Tentar conectar ao Prometheus
+	endpoint, discErr := discovery.DiscoverEndpoint(cluster)
+	if discErr != nil || !endpoint.Available {
+		resp.PrometheusAvailable = false
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+	promClient, err := prometheus.NewClient(cluster, endpoint.URL)
+	if err != nil {
+		resp.PrometheusAvailable = false
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+	resp.PrometheusAvailable = true
+
+	// Instance no formato que o node_exporter registra: <IP>:9100
+	// Dots escapados para PromQL regex: "10.0.0.1:9100" → "10\\.0\\.0\\.1:9100"
+	instanceLabel := strings.ReplaceAll(nodeIP+":9100", ".", `\\.`)
+
+	end := time.Now()
+	start := end.Add(-time.Duration(hours) * time.Hour)
+	step := time.Duration(stepMinutes) * time.Minute
+
+	entriesQuery := fmt.Sprintf(`node_nf_conntrack_entries{instance=~"%s"}`, instanceLabel)
+	limitQuery := fmt.Sprintf(`node_nf_conntrack_entries_limit{instance=~"%s"}`, instanceLabel)
+
+	entriesResult, err := promClient.QueryRange(ctx, entriesQuery, start, end, step)
+	if err != nil {
+		resp.Error = fmt.Sprintf("erro ao consultar Prometheus (entries): %v", err)
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+	// Mapa timestamp → limit (opcional — melhor esforço)
+	limitByTS := map[int64]float64{}
+	if limitResult, limitErr := promClient.QueryRange(ctx, limitQuery, start, end, step); limitErr == nil {
+		if matrix, ok := limitResult.(model.Matrix); ok {
+			for _, stream := range matrix {
+				for _, pair := range stream.Values {
+					limitByTS[int64(pair.Timestamp)/1000] = float64(pair.Value)
+				}
+			}
+		}
+	}
+
+	// Converter resultado de entries em pontos históricos
+	matrix, ok := entriesResult.(model.Matrix)
+	if !ok || len(matrix) == 0 {
+		resp.Error = "sem dados de conntrack no Prometheus para este nó (node_exporter instalado?)"
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+	points := make([]ConntrackHistoryPoint, 0, len(matrix[0].Values))
+	for _, pair := range matrix[0].Values {
+		ts := int64(pair.Timestamp) / 1000
+		count := float64(pair.Value)
+		max := limitByTS[ts]
+		var usagePct float64
+		if max > 0 {
+			usagePct = count / max * 100
+		}
+		points = append(points, ConntrackHistoryPoint{
+			Timestamp: ts,
+			Count:     count,
+			Max:       max,
+			UsagePct:  usagePct,
+		})
+	}
+	resp.Points = points
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// getNodeInternalIP retorna o IP interno (InternalIP) de um nó pelo nome
+func getNodeInternalIP(ctx context.Context, clientset kubernetes.Interface, nodeName string) (string, error) {
+	node, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	for _, addr := range node.Status.Addresses {
+		if addr.Type == corev1.NodeInternalIP && addr.Address != "" {
+			return addr.Address, nil
+		}
+	}
+	return "", fmt.Errorf("IP interno não encontrado para o nó %s", nodeName)
 }

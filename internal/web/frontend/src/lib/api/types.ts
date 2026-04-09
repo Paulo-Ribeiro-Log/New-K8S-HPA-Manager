@@ -1420,6 +1420,22 @@ export interface ConntrackResponse {
   fetched_at: string;
 }
 
+export interface ConntrackHistoryPoint {
+  ts: number;       // Unix timestamp (segundos)
+  count: number;    // nf_conntrack_entries
+  max: number;      // nf_conntrack_entries_limit (0 se indisponível)
+  usage_pct: number;
+}
+
+export interface ConntrackNodeHistoryResponse {
+  node_name: string;
+  hours: number;
+  step_minutes: number;
+  points: ConntrackHistoryPoint[];
+  prometheus_available: boolean;
+  error?: string;
+}
+
 export interface CommandRunnerSSEEvent {
   id: string;
   type: 'init' | 'output' | 'output_error' | 'cluster_done' | 'complete' | 'error';

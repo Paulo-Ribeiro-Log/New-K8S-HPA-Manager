@@ -97,6 +97,7 @@ import type {
   NodePoolRegistryEntry,
   NodePoolLookupResult,
   ConntrackResponse,
+  ConntrackNodeHistoryResponse,
 } from "./types";
 
 import type {
@@ -1658,6 +1659,17 @@ class APIClient {
   async getConntrackStats(cluster: string, nodepool: string): Promise<ConntrackResponse> {
     return this.request<ConntrackResponse>(
       `/nodepools/conntrack?cluster=${encodeURIComponent(cluster)}&nodepool=${encodeURIComponent(nodepool)}`
+    );
+  }
+
+  async getConntrackNodeHistory(
+    cluster: string,
+    node: string,
+    hours = 6,
+    step = 5,
+  ): Promise<ConntrackNodeHistoryResponse> {
+    return this.request<ConntrackNodeHistoryResponse>(
+      `/nodepools/conntrack/history?cluster=${encodeURIComponent(cluster)}&node=${encodeURIComponent(node)}&hours=${hours}&step=${step}`
     );
   }
 
