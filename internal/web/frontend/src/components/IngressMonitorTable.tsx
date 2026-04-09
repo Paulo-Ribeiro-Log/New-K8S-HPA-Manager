@@ -258,19 +258,19 @@ export const IngressMonitorTable = ({
               disabled={filtered.length === 0}
             />
           </span>
-          <span className="relative flex items-center overflow-hidden pr-3">
+          <span className="relative flex items-center overflow-hidden pr-4">
             <SortBtn label="NAME/NS" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(1, d)} />
           </span>
-          <span className="relative overflow-hidden pr-3">
+          <span className="relative overflow-hidden pr-4">
             <SortBtn label="CLASS" colKey="class" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(2, d)} />
           </span>
-          <span className="relative uppercase text-muted-foreground overflow-hidden pr-3">
+          <span className="relative uppercase text-muted-foreground overflow-hidden pr-4">
             HOSTS
             <ResizeHandle onResize={(d) => resize(3, d)} />
           </span>
-          <span className="relative overflow-hidden pr-3">
+          <span className="relative overflow-hidden pr-4">
             <SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
             <ResizeHandle onResize={(d) => resize(4, d)} />
           </span>
