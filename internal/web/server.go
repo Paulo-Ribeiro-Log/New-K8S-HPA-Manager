@@ -530,7 +530,8 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools/disk-metrics", nodePoolHandler.GetNodePoolDiskMetrics) // Métricas de disco
 	api.GET("/nodepools/storage-overview", nodePoolHandler.GetStorageOverview) // Visão geral de storage
 	api.GET("/nodepools/sequence/progress", nodePoolHandler.SequenceProgress)  // SSE progress tracking
-	api.GET("/nodepools/conntrack", nodePoolHandler.GetConntrackStats)         // Conntrack stats por node
+	api.GET("/nodepools/conntrack", nodePoolHandler.GetConntrackStats)                 // Conntrack stats por node
+	api.GET("/nodepools/conntrack/history", nodePoolHandler.GetConntrackNodeHistory) // Histórico via Prometheus
 
 	// Node Pools - Write Operations (SRE-only)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)
