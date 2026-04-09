@@ -61,6 +61,26 @@ export function formatMillicores(m: number): string {
   return `${(m / 1000).toFixed(2).replace(/\.?0+$/, "")}`;
 }
 
+/** Converte string de CPU (ex: "300m", "1", "0.5") para millicores */
+export function parseCpuToMillicores(s: string): number {
+  if (!s || s === "0") return 0;
+  if (s.endsWith("m")) return parseInt(s, 10);
+  return Math.round(parseFloat(s) * 1000);
+}
+
+/** Converte string de memória (ex: "500Mi", "4Gi", "1024Ki") para bytes */
+export function parseMemoryToBytes(s: string): number {
+  if (!s || s === "0") return 0;
+  if (s.endsWith("Ki")) return parseFloat(s) * 1024;
+  if (s.endsWith("Mi")) return parseFloat(s) * 1024 * 1024;
+  if (s.endsWith("Gi")) return parseFloat(s) * 1024 * 1024 * 1024;
+  if (s.endsWith("Ti")) return parseFloat(s) * 1024 * 1024 * 1024 * 1024;
+  if (s.endsWith("K") || s.endsWith("k")) return parseFloat(s) * 1000;
+  if (s.endsWith("M")) return parseFloat(s) * 1000 * 1000;
+  if (s.endsWith("G")) return parseFloat(s) * 1000 * 1000 * 1000;
+  return parseFloat(s);
+}
+
 /**
  * Formata porcentagem ou retorna "n/a" se < 0
  */
