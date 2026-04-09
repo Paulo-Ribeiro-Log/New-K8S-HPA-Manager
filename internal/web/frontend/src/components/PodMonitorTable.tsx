@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import type { PodSummary, BatchPodMetrics } from "@/lib/api/types";
-import { formatAge, formatBytes, formatMillicores, podRowColor, podDotColor } from "@/lib/monitorUtils";
+import { formatAge, formatBytes, formatMillicores, parseCpuToMillicores, parseMemoryToBytes, podRowColor, podDotColor } from "@/lib/monitorUtils";
 import { Loader2, ChevronLeft, Search, X, ListFilter, Check, RefreshCw, ChevronUp, ChevronDown, ArrowUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -674,7 +674,14 @@ export const PodMonitorTable = ({
 
               {/* CPU */}
               <div className="flex flex-col min-w-0 overflow-hidden">
-                <span className="truncate">{m ? formatMillicores(m.cpuMillicores) : "-"}</span>
+                <span className="truncate">
+                  {m ? (() => {
+                    const cur = formatMillicores(m.cpuMillicores);
+                    const limitM = parseCpuToMillicores(pod.cpuLimit || "");
+                    const pct = limitM > 0 ? Math.round(m.cpuMillicores / limitM * 100) : null;
+                    return pct !== null ? `${cur} / ${pct}%` : cur;
+                  })() : "-"}
+                </span>
                 <span className="truncate text-muted-foreground/70 text-[10px] -mt-0.5">
                   {pod.cpuRequest || "0"} / {pod.cpuLimit || "∞"}
                 </span>
@@ -682,7 +689,14 @@ export const PodMonitorTable = ({
 
               {/* MEM */}
               <div className="flex flex-col min-w-0 overflow-hidden">
-                <span className="truncate">{m ? formatBytes(m.memoryBytes) : "-"}</span>
+                <span className="truncate">
+                  {m ? (() => {
+                    const cur = formatBytes(m.memoryBytes);
+                    const limitB = parseMemoryToBytes(pod.memoryLimit || "");
+                    const pct = limitB > 0 ? Math.round(m.memoryBytes / limitB * 100) : null;
+                    return pct !== null ? `${cur} / ${pct}%` : cur;
+                  })() : "-"}
+                </span>
                 <span className="truncate text-muted-foreground/70 text-[10px] -mt-0.5">
                   {pod.memoryRequest || "0"} / {pod.memoryLimit || "∞"}
                 </span>

@@ -3,7 +3,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Loader2, RefreshCw, Copy, Check, FileText, Search, X as XIcon } from "lucide-react";
 import type { PodSummary, PodMetricsSingle } from "@/lib/api/types";
@@ -348,14 +347,27 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
           </div>
         </DialogHeader>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0">
-          <TabsList className="mx-4 mt-3 flex-shrink-0 w-fit">
-            <TabsTrigger value="details" className="text-xs">Detalhes</TabsTrigger>
-            <TabsTrigger value="logs" className="text-xs">Logs</TabsTrigger>
-          </TabsList>
+        <div className="flex-1 flex flex-col min-h-0">
+          {/* Tab bar manual */}
+          <div className="flex border-b border-border px-4 pt-3 gap-1 flex-shrink-0">
+            {(["details", "logs"] as const).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-px ${
+                  activeTab === tab
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {tab === "details" ? "Detalhes" : "Logs"}
+              </button>
+            ))}
+          </div>
 
           {/* ── DETALHES ── */}
-          <TabsContent value="details" className="flex-1 overflow-auto mt-0">
+          {activeTab === "details" && (
+            <div className="flex-1 min-h-0 overflow-y-auto">
             <div className="p-4 space-y-4">
 
               {/* Gauge + Info lado a lado */}
@@ -519,10 +531,12 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                 )}
               </div>
             </div>
-          </TabsContent>
+            </div>
+          )}
 
           {/* ── LOGS ── */}
-          <TabsContent value="logs" className="flex-1 flex flex-col min-h-0 mt-0">
+          {activeTab === "logs" && (
+          <div className="flex-1 flex flex-col min-h-0">
             <div className="flex items-center gap-2 px-4 py-2 border-b border-border flex-shrink-0">
               <Select value={selectedContainer} onValueChange={setSelectedContainer}>
                 <SelectTrigger className="h-7 text-xs w-44">
@@ -645,8 +659,9 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                 <div ref={logsEndRef} />
               </div>
             </div>
-          </TabsContent>
-        </Tabs>
+          </div>
+          )}
+        </div>
 
         {/* Handles de resize */}
         {/* Borda direita */}
