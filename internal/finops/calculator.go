@@ -34,13 +34,15 @@ type rawWorkload struct {
 
 // Calculator realiza a análise FinOps de um cluster
 type Calculator struct {
-	pricer   CloudPricer
-	exchange *ExchangeRateProvider
+	pricer     CloudPricer
+	diskPricer *DiskPricer // nil = análise de storage desabilitada
+	exchange   *ExchangeRateProvider
 }
 
-// NewCalculator cria um novo calculator com as dependências injetadas
-func NewCalculator(pricer CloudPricer, exchange *ExchangeRateProvider) *Calculator {
-	return &Calculator{pricer: pricer, exchange: exchange}
+// NewCalculator cria um novo calculator com as dependências injetadas.
+// diskPricer pode ser nil — nesse caso a análise de storage é omitida sem erro.
+func NewCalculator(pricer CloudPricer, diskPricer *DiskPricer, exchange *ExchangeRateProvider) *Calculator {
+	return &Calculator{pricer: pricer, diskPricer: diskPricer, exchange: exchange}
 }
 
 // BuildReport coleta dados do cluster e monta o FinOpsReport completo.
@@ -82,8 +84,64 @@ func (c *Calculator) BuildReport(
 	// 5. Agregar por namespace
 	nsMap := aggregateNamespaces(workloads)
 
-	// 6. Montar summary
+	// 6. Montar summary base (compute)
 	summary := buildSummary(workloads, nsMap, clusterCostUSD, rate)
+
+	// 7. Storage: PVCs + disco OS por pool (não fatal — relatório retorna mesmo sem dados de storage)
+	var pvcs []PVCCostItem
+	var storageSummary StorageSummary
+	if c.diskPricer != nil {
+		storageCalc := NewStorageCalculator(c.diskPricer)
+
+		pvcs, storageSummary, err = storageCalc.Calculate(ctx, client, rate)
+		if err != nil {
+			log.Warn().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao calcular storage (relatório retorna sem dados de storage)")
+		}
+
+		// 7a. Custo de disco OS por node pool
+		var totalOSDiskCostBRL float64
+		for i := range finOpsPools {
+			sizeGB, _ := storageCalc.OSDiskForNodePool(ctx, client, finOpsPools[i].Name)
+			tier := ResolveManagedDiskTier("Premium SSD", float64(sizeGB)) // AKS default: Premium SSD
+			priceUSD, _, pErr := c.diskPricer.GetDiskPrice("Premium SSD", tier, defaultPricingRegion)
+			if pErr != nil {
+				log.Debug().Err(pErr).Str("pool", finOpsPools[i].Name).Msg("FinOps: preço de OS disk não encontrado")
+				continue
+			}
+			osDiskCostUSD := round2(priceUSD * float64(finOpsPools[i].NodeCount))
+			finOpsPools[i].OSDiskSKU = "Premium SSD"
+			finOpsPools[i].OSDiskTier = tier
+			finOpsPools[i].OSDiskGB = sizeGB
+			finOpsPools[i].OSDiskCostUSD = osDiskCostUSD
+			finOpsPools[i].OSDiskCostBRL = round2(osDiskCostUSD * rate)
+			finOpsPools[i].TotalCostUSD = round2(finOpsPools[i].MonthlyCostUSD + osDiskCostUSD)
+			finOpsPools[i].TotalCostBRL = round2(finOpsPools[i].MonthlyCostBRL + finOpsPools[i].OSDiskCostBRL)
+			totalOSDiskCostBRL = round2(totalOSDiskCostBRL + finOpsPools[i].OSDiskCostBRL)
+			storageSummary.OSDiskCostUSD = round2(storageSummary.OSDiskCostUSD + osDiskCostUSD)
+			storageSummary.OSDiskCostBRL = round2(storageSummary.OSDiskCostBRL + finOpsPools[i].OSDiskCostBRL)
+		}
+
+		// 7b. Enriquecer workloads com custo de PVCs correlacionados
+		pvcByWorkload := groupPVCsByWorkload(pvcs)
+		for i := range workloads {
+			key := workloads[i].Namespace + "/" + workloads[i].Workload
+			if pvcItems, ok := pvcByWorkload[key]; ok {
+				for _, p := range pvcItems {
+					workloads[i].StorageCostUSD = round2(workloads[i].StorageCostUSD + p.MonthlyCostUSD)
+					workloads[i].StorageCostBRL = round2(workloads[i].StorageCostBRL + p.MonthlyCostBRL)
+					workloads[i].PVCCount++
+					workloads[i].PVCCapacityGB = round2(workloads[i].PVCCapacityGB + p.CapacityGB)
+				}
+			}
+		}
+
+		// 7c. Atualizar summary com totais de storage
+		summary.StorageMonthlyCostUSD = storageSummary.TotalMonthlyCostUSD
+		summary.StorageMonthlyCostBRL = storageSummary.TotalMonthlyCostBRL
+		summary.OSDiskCostBRL = totalOSDiskCostBRL
+		summary.OrphanedStorageCostBRL = storageSummary.OrphanedCostBRL
+		summary.TotalWithStorageBRL = round2(summary.TotalMonthlyCostBRL + storageSummary.TotalMonthlyCostBRL + totalOSDiskCostBRL)
+	}
 
 	return &FinOpsReport{
 		Cluster:      cluster,
@@ -94,6 +152,8 @@ func (c *Calculator) BuildReport(
 		NodePools:    finOpsPools,
 		Namespaces:   nsMap,
 		Workloads:    workloads,
+		PVCs:         pvcs,
+		Storage:      storageSummary,
 		Summary:      summary,
 	}, nil
 }
