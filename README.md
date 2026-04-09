@@ -12,8 +12,7 @@
 
 **New K8s HPA Manager** é uma solução para gerenciar recursos Kubernetes em larga escala, com suporte a múltiplos clusters, Azure AKS e análise preditiva com IA. Oferece duas interfaces: **TUI** (terminal) e **Web** (React/TypeScript).
 
-**Última release estável:** `v1.3.1`
-**Branch de desenvolvimento:** `new-k8s-hpa-dev`
+**Última release estável:** `v1.3.32`
 
 ---
 
@@ -24,7 +23,7 @@
 | Recurso | Funcionalidades |
 |---------|----------------|
 | **HPAs** | Edição em lote de Min/Max Replicas, Targets CPU/Memory, Resources Request/Limit, staging area com preview |
-| **Node Pools (AKS)** | Controle de autoscaling, node count, min/max, sequenciamento de operações |
+| **Node Pools (AKS)** | Controle de autoscaling, node count, min/max, sequenciamento de operações, **Conntrack Viewer** |
 | **Deployments** | Monaco YAML Editor, Rollout Restart, Delete, histórico de undo/redo, diff side-by-side |
 | **DaemonSets** | Monaco YAML Editor, Rollout Restart, Delete, dry-run, apply com confirmação |
 | **StatefulSets** | Monaco YAML Editor, Rollout Restart, Delete, dry-run, apply com confirmação |
@@ -34,10 +33,18 @@
 | **ConfigMaps** | Monaco YAML Editor, diff side-by-side, dry-run, apply, kubectl describe |
 | **Secrets** | Monaco YAML Editor, diff, dry-run, apply |
 | **Services** | Monaco YAML Editor, criar, editar, deletar |
-| **Pods** | Listagem com filtros, métricas inline, logs com syntax highlighting, delete |
+| **Pods** | Listagem com filtros, métricas inline (atual / % do limit), logs com syntax highlighting, delete, modal de detalhes |
 | **Containers** | Tree view de pods/containers, logs com auto-refresh, download |
 | **Ingress** | Visualização e edição |
 | **Events** | Monitoramento de eventos do cluster |
+
+### Conntrack Viewer (Node Pools)
+
+- **Snapshot atual** via `exec` em pod com `hostNetwork:true` (sem agente no node)
+- **Histórico 24h via Prometheus**: BarChart comparando comportamento histórico vs snapshot atual
+- **Recomendação automática de capacidade** por nó: OK / Monitorar tendência / Spike ativo / Aumentar limite
+- Métricas: `nf_conntrack_count`, `nf_conntrack_max`, `nf_conntrack_buckets`, usage %
+- Fallback gracioso quando Prometheus não está disponível
 
 ### Operações Avançadas
 
@@ -53,6 +60,14 @@
 - **Gráficos Interativos**: CPU, Memory, Replicas com comparação histórica D-1/D-2/D-3
 - **Alertas Ativos**: Todos os alertas Prometheus com filtro por período (5min–24h)
 - **Notificações In-App**: Sistema de notificações clicáveis com navegação contextual
+
+### Monitor Tables (Painel Direito)
+
+- Colunas redimensionáveis com drag handles em todas as tabelas de workloads
+- Seleção múltipla com ações em lote (Restart, Delete, Kill)
+- CPU/MEM: exibe `valor atual / % do limit` + `request / limit` na segunda linha
+- Cor da linha reflete status do recurso (verde=Running, cinza=Completed, laranja=Error)
+- Ordenação e filtro por coluna
 
 ### Análise Preditiva com IA
 
@@ -86,7 +101,6 @@
 - Monaco Editor nas abas Values e Manifest com undo/redo, diff, dry-run
 - Apply com SSE streaming de progresso (0-100% com fases)
 - Rollback, Uninstall, Export Values
-- Invalidação automática de cache após operações (sem reload de página)
 
 ### Service Mesh (Istio/Kiali)
 
@@ -94,14 +108,18 @@
 - Sistema de cores dinâmico por error rate e tráfego
 - Badges: Missing Sidecars, Virtual Services, mTLS
 - Modo fullscreen com controles de Traffic e Display
-- Detecção automática de clusters sem Istio instalado
+
+### Integração ServiceNow
+
+- Importação de incidentes e CIs via ServiceNow API
+- **Autenticação SAML/SSO via Chrome/Edge do Windows** (WSL CDP): reutiliza sessão autenticada do navegador sem reinserir credenciais
+- Abertura direta de URLs do ServiceNow no Chrome Windows a partir do WSL2
 
 ### Infraestrutura e Segurança
 
 - **RBAC com Azure AD**: Controle de acesso baseado em grupos (VV_CLOUD_SRE)
   - Operações destrutivas protegidas no backend e frontend
   - Cache de permissões com TTL de 1 hora
-  - Badge de status SRE no header
 
 - **Audit Log**: Rastreabilidade completa de operações Cordon/Drain e Rollouts
 - **Sessions**: Save/Load/Edit de sessões compatíveis entre TUI e Web
@@ -120,30 +138,24 @@
 curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/main/install-from-github.sh | bash
 ```
 
-### Método 2: Branch de desenvolvimento (main)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/main/install-from-main.sh | bash
-```
-
-### Método 3: Binários pré-compilados (v1.3.1)
+### Método 2: Binários pré-compilados (v1.3.32)
 
 **Linux (amd64)**
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.1/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.32/new-k8s-hpa-linux-amd64 -o new-k8s-hpa
 chmod +x new-k8s-hpa
 sudo mv new-k8s-hpa /usr/local/bin/
 ```
 
 **macOS (Intel)**
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.1/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.32/new-k8s-hpa-darwin-amd64 -o new-k8s-hpa
 chmod +x new-k8s-hpa && sudo mv new-k8s-hpa /usr/local/bin/
 ```
 
 **macOS (Apple Silicon)**
 ```bash
-curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.1/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
+curl -L https://github.com/Paulo-Ribeiro-Log/New-K8S-HPA-Manager/releases/download/v1.3.32/new-k8s-hpa-darwin-arm64 -o new-k8s-hpa
 chmod +x new-k8s-hpa && sudo mv new-k8s-hpa /usr/local/bin/
 ```
 
@@ -188,9 +200,10 @@ new-k8s-hpa version          # Ver versão e updates disponíveis
 | Obrigatório | Opcional |
 |-------------|----------|
 | Go 1.24+ (compilação) | Azure CLI (Node Pools) |
-| kubectl configurado | Prometheus (métricas) |
+| kubectl configurado | Prometheus (métricas + Conntrack histórico) |
 | Git | Ollama ou API key Claude (AI) |
 | | Kiali/Istio (Service Mesh) |
+| | Chrome/Edge Windows (ServiceNow SSO via CDP) |
 
 ---
 
@@ -219,7 +232,7 @@ new-k8s-hpa web
 | **Backend** | Go 1.24.0, Gin 1.11.0, client-go v0.34.1 |
 | **Azure** | azcore v1.19.1, azidentity v1.12.0, Azure CLI |
 | **Frontend** | React 18.3.1, TypeScript 5.8.3, Vite 5.4.21 |
-| **UI** | shadcn/ui (Radix UI), Tailwind CSS 3.4.17 |
+| **UI** | shadcn/ui (Radix UI), Tailwind CSS 3.4.17, Recharts |
 | **Editor** | Monaco Editor 0.52.2 |
 | **Terminal** | xterm.js 5.3.0 (WebSocket) |
 | **Gráficos** | Recharts 2.15.4, Cytoscape 3.33.1 |
