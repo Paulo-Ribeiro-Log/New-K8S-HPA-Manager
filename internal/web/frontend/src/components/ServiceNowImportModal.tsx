@@ -373,37 +373,6 @@ export function ServiceNowImportModal({
               </div>
             </div>
 
-            {/* Toggle: usar Chrome Windows via CDP */}
-            <div className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
-              <div className="space-y-0.5">
-                <p className="font-medium">Usar Chrome/Edge do Windows</p>
-                <p className="text-xs text-muted-foreground">
-                  {playwrightStatus.wslMode
-                    ? "Ativo automaticamente (WSL sem display gráfico)"
-                    : forceWindowsBrowser
-                    ? "Ativo — Chrome/Edge Windows abre para autenticar (CDP)"
-                    : "Ativar para usar o Chrome/Edge instalado no Windows"}
-                </p>
-              </div>
-              <button
-                onClick={() => handleToggleWindowsBrowser(!forceWindowsBrowser)}
-                disabled={savingBrowserConfig}
-                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
-                  forceWindowsBrowser || playwrightStatus.wslMode
-                    ? "bg-blue-600"
-                    : "bg-input"
-                }`}
-                role="switch"
-                aria-checked={forceWindowsBrowser || playwrightStatus.wslMode}
-              >
-                <span
-                  className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform ${
-                    forceWindowsBrowser || playwrightStatus.wslMode ? "translate-x-4" : "translate-x-0"
-                  }`}
-                />
-              </button>
-            </div>
-
             <Button
               onClick={handleExtractWithPlaywright}
               disabled={isLoading || !chgUrl.trim()}
