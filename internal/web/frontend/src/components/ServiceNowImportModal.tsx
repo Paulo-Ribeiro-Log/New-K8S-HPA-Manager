@@ -387,8 +387,7 @@ export function ServiceNowImportModal({
               </div>
               <button
                 onClick={() => handleToggleWindowsBrowser(!forceWindowsBrowser)}
-                disabled={savingBrowserConfig || playwrightStatus.wslMode}
-                title={playwrightStatus.wslMode ? "Ativado automaticamente no WSL sem display" : undefined}
+                disabled={savingBrowserConfig}
                 className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
                   forceWindowsBrowser || playwrightStatus.wslMode
                     ? "bg-blue-600"
