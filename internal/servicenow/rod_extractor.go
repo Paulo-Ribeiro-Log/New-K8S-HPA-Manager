@@ -184,29 +184,15 @@ func (r *RodExtractor) ClearSession() error {
 
 // launchBrowser inicia um browser e retorna o browser, uma função de cleanup e erro.
 // Detecta automaticamente o ambiente:
-//   - WSL sem display gráfico + sessão válida → Chromium local headless com sessão salva (sem CDP)
-//   - WSL sem display gráfico + sem sessão → Chrome/Edge Windows via CDP (porta 9223)
+//   - WSL sem display gráfico → Chrome/Edge Windows via CDP (porta 9223)
+//     Chrome Windows é obrigatório neste modo pois gerencia os cookies DPAPI do Windows.
+//     O Chromium Linux não consegue descriptografar o perfil do Chrome Windows.
 //   - Demais casos → Chromium local via launcher padrão do Rod
 //
-// initialURL: se não vazio, o browser abre diretamente nessa URL (apenas no modo Windows via CDP;
+// initialURL: se não vazio, o browser abre diretamente nessa URL (apenas no modo Windows;
 // no modo local a URL é passada via browser.Page pelo caller).
 func (r *RodExtractor) launchBrowser(headless bool, initialURL string) (*rod.Browser, func(), error) {
 	if NeedsWindowsBrowser() {
-		// Se já há sessão válida, usar Chromium local headless com o diretório de sessão Windows.
-		// Isso evita depender do CDP (Chrome Windows rodando com --remote-debugging-port),
-		// que pode falhar em ambientes WSL2 onde o localhost forwarding não está ativo.
-		sessionStatus := r.GetSessionStatus()
-		if sessionStatus.Valid && r.windowsSessionDir != "" {
-			r.logger.Info().
-				Str("session_dir", r.windowsSessionDir).
-				Msg("[Rod WSL] Sessão válida — usando Chromium local headless (sem CDP)")
-			b, cleanup, err := r.launchLocalBrowserWithDir(true, r.windowsSessionDir)
-			if err == nil {
-				return b, cleanup, nil
-			}
-			// Se o Chromium local falhar (ex: perfil incompatível), cai no CDP como fallback
-			r.logger.Warn().Err(err).Msg("[Rod WSL] Chromium local falhou com sessão Windows, tentando CDP como fallback...")
-		}
 		return r.launchWindowsBrowser(initialURL)
 	}
 	return r.launchLocalBrowser(headless)
@@ -526,9 +512,21 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 
 	r.logger.Info().Msg("[Rod] URL validada com sucesso")
 
-	// Verificar se tem sessão válida
+	// Verificar sessão antes de qualquer tentativa de browser.
+	// Se não há sessão válida, não tenta autenticar — retorna erro claro.
 	sessionStatus := r.GetSessionStatus()
-	headless := sessionStatus.Valid // Se tem sessão válida, pode rodar headless
+	if !sessionStatus.Valid {
+		r.logger.Warn().
+			Str("session_status", sessionStatus.Status).
+			Str("session_dir", sessionStatus.SessionDir).
+			Msg("[Rod] Sessão inválida ou ausente — extração bloqueada")
+		return &PlaywrightResult{
+			Success: false,
+			Error:   "Sessão não autenticada. Acesse Menu de Perfil → ServiceNow Session e faça login antes de extrair dados.",
+		}, nil
+	}
+
+	headless := true // sessão válida confirmada — Chrome pode rodar silenciosamente
 
 	r.logger.Info().
 		Str("url", chgURL).
