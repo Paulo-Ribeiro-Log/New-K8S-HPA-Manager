@@ -44,7 +44,7 @@ func NewRodExtractor(logger *zerolog.Logger) *RodExtractor {
 	// Inicializar diretório de sessão Windows quando rodando no WSL
 	var windowsSessionDir string
 	if IsWSL() {
-		windowsSessionDir = WindowsSessionWSLDir
+		windowsSessionDir = WindowsSessionWSLDir()
 		if err := os.MkdirAll(windowsSessionDir, 0755); err != nil {
 			logger.Warn().Err(err).Str("dir", windowsSessionDir).Msg("[Rod] Erro ao criar diretório de sessão Windows")
 		}
