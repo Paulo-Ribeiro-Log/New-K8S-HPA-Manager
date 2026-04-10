@@ -184,13 +184,29 @@ func (r *RodExtractor) ClearSession() error {
 
 // launchBrowser inicia um browser e retorna o browser, uma função de cleanup e erro.
 // Detecta automaticamente o ambiente:
-//   - WSL sem display gráfico → Chrome/Edge Windows via CDP (porta 9223)
+//   - WSL sem display gráfico + sessão válida → Chromium local headless com sessão salva (sem CDP)
+//   - WSL sem display gráfico + sem sessão → Chrome/Edge Windows via CDP (porta 9223)
 //   - Demais casos → Chromium local via launcher padrão do Rod
 //
-// initialURL: se não vazio, o browser abre diretamente nessa URL (apenas no modo Windows;
+// initialURL: se não vazio, o browser abre diretamente nessa URL (apenas no modo Windows via CDP;
 // no modo local a URL é passada via browser.Page pelo caller).
 func (r *RodExtractor) launchBrowser(headless bool, initialURL string) (*rod.Browser, func(), error) {
 	if NeedsWindowsBrowser() {
+		// Se já há sessão válida, usar Chromium local headless com o diretório de sessão Windows.
+		// Isso evita depender do CDP (Chrome Windows rodando com --remote-debugging-port),
+		// que pode falhar em ambientes WSL2 onde o localhost forwarding não está ativo.
+		sessionStatus := r.GetSessionStatus()
+		if sessionStatus.Valid && r.windowsSessionDir != "" {
+			r.logger.Info().
+				Str("session_dir", r.windowsSessionDir).
+				Msg("[Rod WSL] Sessão válida — usando Chromium local headless (sem CDP)")
+			b, cleanup, err := r.launchLocalBrowserWithDir(true, r.windowsSessionDir)
+			if err == nil {
+				return b, cleanup, nil
+			}
+			// Se o Chromium local falhar (ex: perfil incompatível), cai no CDP como fallback
+			r.logger.Warn().Err(err).Msg("[Rod WSL] Chromium local falhou com sessão Windows, tentando CDP como fallback...")
+		}
 		return r.launchWindowsBrowser(initialURL)
 	}
 	return r.launchLocalBrowser(headless)
@@ -198,7 +214,12 @@ func (r *RodExtractor) launchBrowser(headless bool, initialURL string) (*rod.Bro
 
 // launchLocalBrowser usa o launcher padrão do Rod (baixa Chromium automaticamente)
 func (r *RodExtractor) launchLocalBrowser(headless bool) (*rod.Browser, func(), error) {
-	sessionDir := r.activeSessionDir()
+	return r.launchLocalBrowserWithDir(headless, r.activeSessionDir())
+}
+
+// launchLocalBrowserWithDir inicia o Chromium local com um diretório de sessão específico.
+// Usado para reutilizar sessão salva (ex: sessão Windows acessível via /mnt/c/).
+func (r *RodExtractor) launchLocalBrowserWithDir(headless bool, sessionDir string) (*rod.Browser, func(), error) {
 	l := launcher.New().
 		UserDataDir(sessionDir).
 		Headless(headless).
@@ -230,8 +251,10 @@ func (r *RodExtractor) launchLocalBrowser(headless bool) (*rod.Browser, func(), 
 func (r *RodExtractor) launchWindowsBrowser(initialURL string) (*rod.Browser, func(), error) {
 	port := WindowsCDPPort
 
-	// Verificar se CDP já está disponível (browser já aberto com a porta de debug)
-	if err := WaitCDPReady(port, 1*time.Second); err != nil {
+	// Verificar se CDP já está disponível (browser já aberto com a porta de debug).
+	// Tenta 127.0.0.1 E o IP do host Windows (WSL2 pode não ter localhost forwarding ativo).
+	cdpHost, checkErr := WaitCDPReadyHost(port, 3*time.Second)
+	if checkErr != nil {
 		// CDP não disponível — precisamos lançar o browser Windows
 		browserPath, findErr := FindWindowsBrowser()
 		if findErr != nil {
@@ -249,21 +272,25 @@ func (r *RodExtractor) launchWindowsBrowser(initialURL string) (*rod.Browser, fu
 			return nil, nil, launchErr
 		}
 
-		// Aguardar o browser Windows iniciar e responder ao CDP (até 20s)
-		r.logger.Info().Msg("[Rod WSL] Aguardando browser Windows iniciar (até 20s)...")
-		if waitErr := WaitCDPReady(port, 20*time.Second); waitErr != nil {
-			return nil, nil, fmt.Errorf("[Rod WSL] browser Windows não respondeu ao CDP na porta %d: %v", port, waitErr)
+		// Aguardar o browser Windows iniciar e responder ao CDP (até 40s).
+		// Chrome no Windows pode demorar mais em máquinas lentas ou com muitos processos.
+		r.logger.Info().Msg("[Rod WSL] Aguardando browser Windows iniciar (até 40s)...")
+		var waitErr error
+		cdpHost, waitErr = WaitCDPReadyHost(port, 40*time.Second)
+		if waitErr != nil {
+			return nil, nil, fmt.Errorf("[Rod WSL] browser Windows não respondeu ao CDP na porta %d: %v\n"+
+				"Dica: abra o Chrome/Edge manualmente com: chrome.exe --remote-debugging-port=%d", port, waitErr, port)
 		}
 	}
 
-	r.logger.Info().Int("port", port).Msg("[Rod WSL] Conectando ao browser Windows via CDP...")
-	wsURL := fmt.Sprintf("ws://127.0.0.1:%d", port)
+	r.logger.Info().Str("host", cdpHost).Int("port", port).Msg("[Rod WSL] Conectando ao browser Windows via CDP...")
+	wsURL := fmt.Sprintf("ws://%s:%d", cdpHost, port)
 	b := rod.New().ControlURL(wsURL)
 	if err := b.Connect(); err != nil {
 		return nil, nil, fmt.Errorf("[Rod WSL] erro ao conectar ao browser Windows via CDP: %v", err)
 	}
 
-	r.logger.Info().Msg("[Rod WSL] Conectado ao browser Windows com sucesso!")
+	r.logger.Info().Str("host", cdpHost).Msg("[Rod WSL] Conectado ao browser Windows com sucesso!")
 
 	// Cleanup apenas desconecta — NÃO fecha o Chrome do usuário
 	cleanup := func() {
