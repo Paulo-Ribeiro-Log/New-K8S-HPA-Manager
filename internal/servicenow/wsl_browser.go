@@ -122,35 +122,47 @@ func wslToWindowsPath(wslPath string) string {
 // browserWSLPath: path do browser no formato WSL (/mnt/c/...).
 // userDataWSLDir: diretório de dados do usuário no formato WSL — será convertido para Windows.
 // initialURL: se não vazio, Chrome abre diretamente nessa URL (sem aba em branco inicial).
+//
+// Usa PowerShell Start-Process em vez de cmd.exe /c start para garantir que os flags chegam ao
+// Chrome sem problemas de quoting — cmd.exe via exec.Command do Go pode descartar os argumentos.
 func LaunchWindowsBrowserForCDP(browserWSLPath string, port int, userDataWSLDir string, initialURL string) (*exec.Cmd, error) {
 	winBrowserPath := wslToWindowsPath(browserWSLPath)
 	winUserDataDir := wslToWindowsPath(userDataWSLDir)
 
-	// cmd.exe /c start "" "C:\...\chrome.exe" --flags... [URL]
-	// O "" vazio é necessário para que o cmd.exe trate o próximo arg como o executável, não o título da janela
-	args := []string{
-		"/c", "start", `""`,
-		winBrowserPath,
+	chromeArgs := []string{
 		fmt.Sprintf("--remote-debugging-port=%d", port),
 		// Necessário para o WSL2 conseguir conectar: por padrão Chrome só escuta em
 		// 127.0.0.1 (loopback Windows), que não é alcançável a partir do WSL2.
 		// Com 0.0.0.0, escuta em todas as interfaces incluindo a 172.22.x.x do WSL2.
 		"--remote-debugging-address=0.0.0.0",
 		"--remote-allow-origins=*",
-		fmt.Sprintf("--user-data-dir=%s", winUserDataDir),
+		fmt.Sprintf(`--user-data-dir=%s`, winUserDataDir),
 		"--profile-directory=HPA-Manager",
 		"--no-first-run",
 		"--disable-default-apps",
 		"--no-default-browser-check",
 	}
 	if initialURL != "" {
-		// Passando a URL como argumento posicional: Chrome abre diretamente nela, sem aba em branco
-		args = append(args, initialURL)
+		chromeArgs = append(chromeArgs, initialURL)
 	}
 
-	cmd := exec.Command("cmd.exe", args...)
+	// Monta -ArgumentList para PowerShell: cada arg entre aspas duplas, aspas internas escapadas
+	quotedArgs := make([]string, len(chromeArgs))
+	for i, a := range chromeArgs {
+		// Escapa aspas duplas existentes e envolve em aspas duplas
+		quotedArgs[i] = `"` + strings.ReplaceAll(a, `"`, `\"`) + `"`
+	}
+	argList := strings.Join(quotedArgs, ", ")
+
+	// Escapa o path do browser (aspas duplas internas → `"`)
+	escapedBrowserPath := strings.ReplaceAll(winBrowserPath, `"`, `\"`)
+
+	// Start-Process lança o processo desanexado e passa os args sem reinterpretar quoting do shell
+	psCmd := fmt.Sprintf(`Start-Process -FilePath "%s" -ArgumentList %s`, escapedBrowserPath, argList)
+
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", psCmd)
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("erro ao lançar browser Windows via cmd.exe: %v", err)
+		return nil, fmt.Errorf("erro ao lançar browser Windows via PowerShell: %v", err)
 	}
 	return cmd, nil
 }
@@ -221,6 +233,34 @@ func WaitCDPReadyHost(port int, timeout time.Duration) (string, error) {
 // Usa 9223 (e não 9222) para evitar conflito com instâncias de Chrome já abertas com debug.
 const WindowsCDPPort = 9223
 
-// WindowsSessionWSLDir é o diretório de sessão para o browser Windows, acessível via WSL.
-// Armazenado em C:\k8s-hpa-manager-session para ser acessível tanto pelo Chrome Windows quanto pelo WSL.
-const WindowsSessionWSLDir = "/mnt/c/k8s-hpa-manager-session"
+// WindowsSessionWSLDir retorna o diretório de sessão para o browser Windows, no formato WSL.
+// Usa o perfil do usuário Windows (C:\Users\{username}\k8s-hpa-manager-session) para evitar
+// bloqueios de política de segurança que impedem escrita na raiz de C:\.
+// Fallback para /mnt/c/k8s-hpa-manager-session se não conseguir obter o perfil Windows.
+func WindowsSessionWSLDir() string {
+	// Tenta obter o USERPROFILE Windows via cmd.exe
+	// Em WSL, cmd.exe está disponível e %USERPROFILE% aponta para C:\Users\{username}
+	out, err := exec.Command("cmd.exe", "/c", "echo", "%USERPROFILE%").Output()
+	if err == nil {
+		winProfile := strings.TrimSpace(string(out))
+		// Resultado esperado: "C:\Users\username"
+		if strings.HasPrefix(winProfile, `C:\`) || strings.HasPrefix(winProfile, `c:\`) {
+			// Converte C:\Users\username → /mnt/c/Users/username
+			wslPath := windowsToWSLPath(winProfile)
+			if wslPath != "" {
+				return filepath.Join(wslPath, "k8s-hpa-manager-session")
+			}
+		}
+	}
+	return "/mnt/c/k8s-hpa-manager-session"
+}
+
+// windowsToWSLPath converte um path Windows (C:\foo\bar) para formato WSL (/mnt/c/foo/bar)
+func windowsToWSLPath(winPath string) string {
+	if len(winPath) < 3 || winPath[1] != ':' {
+		return ""
+	}
+	drive := strings.ToLower(string(winPath[0]))
+	rest := strings.ReplaceAll(winPath[3:], `\`, "/")
+	return "/mnt/" + drive + "/" + rest
+}
