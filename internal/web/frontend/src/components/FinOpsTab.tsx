@@ -2670,6 +2670,391 @@ function deriveActionType(w: FinOpsWorkload, rec: Recommendation): string {
   return "other";
 }
 
+// ─── Aba: Relatório Executivo ─────────────────────────────────────────────────
+
+interface Finding {
+  priority: "critical" | "high" | "medium";
+  category: "compute" | "storage" | "hpa" | "nodepool";
+  title: string;
+  detail: string;
+  savingBRL: number;
+  action: string;
+}
+
+const CATEGORY_LABEL: Record<string, string> = {
+  compute: "Compute",
+  storage: "Storage",
+  hpa: "HPA",
+  nodepool: "Node Pool",
+};
+
+const CATEGORY_COLOR: Record<string, string> = {
+  compute: "#6366f1",
+  storage: "#8b5cf6",
+  hpa: "#f59e0b",
+  nodepool: "#0ea5e9",
+};
+
+function RelatorioTab({ report, windowDays }: { report: FinOpsReport; windowDays: number }) {
+  const { summary, workloads, node_pools } = report;
+  const storage = report.storage;
+  const pvcs = report.pvcs ?? [];
+
+  // ── Breakdown de custo ────────────────────────────────────────────────────
+  const computeCost  = summary.total_monthly_cost_brl;
+  const storageCost  = storage?.total_monthly_cost_brl ?? 0;
+  const totalCost    = computeCost + storageCost;
+  const osDiskCost   = storage?.os_disk_cost_brl ?? 0;
+  const pvcOnlyCost  = storageCost - osDiskCost;
+  const orphanedCost = storage?.orphaned_cost_brl ?? 0;
+
+  // Desperdício identificado no compute
+  const prometheusWaste = workloads.reduce((s, w) => s + (w.waste_brl ?? 0), 0);
+  const hpaExcessCost   = workloads
+    .filter(w => w.verdict === "superprovisioned" || w.verdict === "hpa_removable")
+    .reduce((s, w) => s + Math.max(0, w.hpa_cost_current_brl - w.hpa_cost_min_brl), 0);
+  const computeWaste        = prometheusWaste > 0 ? prometheusWaste : hpaExcessCost;
+  const totalIdentifiedWaste = computeWaste + orphanedCost;
+  const savingPct = totalCost > 0 ? Math.round(totalIdentifiedWaste / totalCost * 100) : 0;
+
+  // ── Pie chart ─────────────────────────────────────────────────────────────
+  const prodCompute  = Math.max(0, computeCost - computeWaste);
+  const prodStorage  = Math.max(0, storageCost - orphanedCost);
+  const pieData = [
+    ...(prodCompute > 0   ? [{ name: "Compute produtivo",  value: Math.round(prodCompute),  fill: "#6366f1" }] : []),
+    ...(osDiskCost > 0    ? [{ name: "Disco OS",           value: Math.round(osDiskCost),   fill: "#0ea5e9" }] : []),
+    ...(pvcOnlyCost - orphanedCost > 0 ? [{ name: "PVCs ativos", value: Math.round(pvcOnlyCost - orphanedCost), fill: "#8b5cf6" }] : []),
+    ...(totalIdentifiedWaste > 0 ? [{ name: "Desperdício identificado", value: Math.round(totalIdentifiedWaste), fill: "#ef4444" }] : []),
+  ];
+
+  // ── Achados ───────────────────────────────────────────────────────────────
+  const findings: Finding[] = [];
+
+  // 1. PVCs orfãos
+  if (orphanedCost > 0 && (storage?.orphaned_pvc_count ?? 0) > 0) {
+    const retainCount = pvcs.filter(p => p.is_orphaned && p.reclaim_policy === "Retain").length;
+    findings.push({
+      priority: "critical",
+      category: "storage",
+      title: `${storage!.orphaned_pvc_count} PVC(s) orfão(s) sem workload`,
+      detail: `Discos provisionados sem nenhum pod montando${retainCount > 0 ? ` · ${retainCount} com reclaimPolicy=Retain (disco persiste após delete do PVC)` : ""}`,
+      savingBRL: orphanedCost,
+      action: "Aba Armazenamento → seção PVCs Orfãos",
+    });
+  }
+
+  // 2. Desperdício Prometheus
+  if (prometheusWaste > 50) {
+    const wasteful = workloads
+      .filter(w => (w.waste_brl ?? 0) > 50)
+      .sort((a, b) => (b.waste_brl ?? 0) - (a.waste_brl ?? 0));
+    findings.push({
+      priority: prometheusWaste > 500 ? "critical" : "high",
+      category: "compute",
+      title: `${wasteful.length} workload(s) com CPU/Mem acima do uso real (Prometheus)`,
+      detail: wasteful.slice(0, 3).map(w =>
+        `${w.workload}: ${Math.round(w.cpu_request_millis)}m req vs ${Math.round(w.cpu_avg_millis ?? 0)}m uso (desperd. ${fmtBRL(w.waste_brl!)})`
+      ).join(" · "),
+      savingBRL: prometheusWaste,
+      action: "Aba Oportunidades → reduzir CPU/Mem requests",
+    });
+  }
+
+  // 3. Superprovisionados (HPA, sem Prometheus)
+  const superWkl = workloads.filter(w => w.verdict === "superprovisioned");
+  if (superWkl.length > 0 && prometheusWaste <= 50) {
+    const saving = superWkl.reduce((s, w) => s + Math.max(0, w.hpa_cost_current_brl - w.hpa_cost_min_brl), 0);
+    findings.push({
+      priority: saving > 500 ? "critical" : "high",
+      category: "hpa",
+      title: `${superWkl.length} workload(s) superprovisionados (HPA ≤ 35% do máximo)`,
+      detail: superWkl.slice(0, 3).map(w =>
+        `${w.workload}: ${w.hpa_current}/${w.hpa_max} réplicas (min ${w.hpa_min})`
+      ).join(" · "),
+      savingBRL: saving,
+      action: "Aba Oportunidades → reduzir minReplicas",
+    });
+  }
+
+  // 4. HPA removível
+  const hpaRem = workloads.filter(w => w.verdict === "hpa_removable");
+  if (hpaRem.length > 0) {
+    const saving = hpaRem.reduce((s, w) => s + Math.max(0, w.hpa_cost_current_brl - w.hpa_cost_min_brl), 0);
+    findings.push({
+      priority: "medium",
+      category: "hpa",
+      title: `${hpaRem.length} workload(s) com HPA que nunca escalou`,
+      detail: hpaRem.slice(0, 3).map(w =>
+        `${w.workload}: HPA ${w.hpa_min}–${w.hpa_max} rep, sempre em ${w.hpa_min}`
+      ).join(" · "),
+      savingBRL: saving,
+      action: "Aba HPA Histórico → considerar remover HPA",
+    });
+  }
+
+  // 5. Scale-down de Node Pool
+  const totalCPU    = node_pools.reduce((s, p) => s + p.total_cpu_millicores, 0);
+  const totalCPUReq = workloads.reduce((s, w) => s + w.cpu_request_millis, 0);
+  const totalNodes  = node_pools.reduce((s, p) => s + p.node_count, 0);
+  const allocPct    = totalCPU > 0 ? Math.round(totalCPUReq / totalCPU * 100) : null;
+  if (allocPct !== null && allocPct < 45 && totalNodes > 3) {
+    const userPools = node_pools.filter(p => p.mode !== "System" && p.node_count > 2);
+    const potSaving = userPools.reduce((s, p) => {
+      const removable = Math.max(0, Math.floor(p.node_count * (1 - (allocPct / 60))));
+      return s + removable * (p.monthly_cost_brl / p.node_count);
+    }, 0);
+    if (potSaving > 0) {
+      findings.push({
+        priority: allocPct < 30 ? "high" : "medium",
+        category: "nodepool",
+        title: `Cluster com ${allocPct}% de CPU alocada — candidato a scale-down`,
+        detail: `${totalNodes} nodes · ${(totalCPUReq / 1000).toFixed(0)} vCPUs requested de ${(totalCPU / 1000).toFixed(0)} disponíveis`,
+        savingBRL: Math.round(potSaving),
+        action: "Aba Node Pools → verificar recomendações de scale-down",
+      });
+    }
+  }
+
+  // 6. Sem requests definidos
+  const noReq = workloads.filter(w => w.verdict === "no_request");
+  if (noReq.length > 0) {
+    findings.push({
+      priority: "medium",
+      category: "compute",
+      title: `${noReq.length} workload(s) sem CPU/Mem requests — custo não mensurável`,
+      detail: `${noReq.slice(0, 3).map(w => w.workload).join(", ")}${noReq.length > 3 ? ` +${noReq.length - 3}` : ""}`,
+      savingBRL: 0,
+      action: "Definir resources.requests em todos os Deployments",
+    });
+  }
+
+  findings.sort((a, b) => b.savingBRL - a.savingBRL);
+  const totalSaving = findings.reduce((s, f) => s + f.savingBRL, 0);
+
+  // ── Top workloads por custo total ─────────────────────────────────────────
+  const topWorkloads = workloads
+    .map(w => ({ ...w, totalCostBRL: w.cost_share_brl + (w.storage_cost_brl ?? 0) }))
+    .sort((a, b) => b.totalCostBRL - a.totalCostBRL)
+    .slice(0, 10);
+
+  const PRIORITY_COLOR = { critical: "#ef4444", high: "#f59e0b", medium: "#6366f1" };
+  const PRIORITY_LABEL = { critical: "Crítico", high: "Alto", medium: "Médio" };
+
+  return (
+    <div className="space-y-4">
+
+      {/* ── KPI cards ──────────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <Card>
+          <CardContent className="p-3">
+            <p className="text-[10px] text-muted-foreground">Custo Total Real/mês</p>
+            <p className="text-lg font-bold text-foreground leading-tight">{fmtBRL(totalCost)}</p>
+            <p className="text-[10px] text-muted-foreground">
+              {storageCost > 0
+                ? `Compute ${fmtBRL(computeCost)} · Storage ${fmtBRL(storageCost)}`
+                : fmtUSD(summary.total_monthly_cost_usd)}
+            </p>
+          </CardContent>
+        </Card>
+        <Card className={totalIdentifiedWaste > 0 ? "border-red-200 dark:border-red-900/40" : ""}>
+          <CardContent className="p-3">
+            <p className="text-[10px] text-muted-foreground">Desperdício Identificado</p>
+            <p className={`text-lg font-bold leading-tight ${totalIdentifiedWaste > 0 ? "text-red-500" : "text-green-500"}`}>
+              {totalIdentifiedWaste > 0 ? fmtBRL(totalIdentifiedWaste) : "Nenhum"}
+            </p>
+            <p className="text-[10px] text-muted-foreground">
+              {savingPct > 0 ? `${savingPct}% do orçamento total` : "nenhum desperdício confirmado"}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-3">
+            <p className="text-[10px] text-muted-foreground">Achados</p>
+            <p className="text-lg font-bold leading-tight">{findings.length}</p>
+            <p className="text-[10px] text-muted-foreground">
+              {findings.filter(f => f.priority === "critical").length} críticos ·{" "}
+              {findings.filter(f => f.priority === "high").length} altos
+            </p>
+          </CardContent>
+        </Card>
+        <Card className={totalSaving > 0 ? "border-green-200 dark:border-green-900/40" : ""}>
+          <CardContent className="p-3">
+            <p className="text-[10px] text-muted-foreground">Saving Potencial/mês</p>
+            <p className={`text-lg font-bold leading-tight ${totalSaving > 0 ? "text-green-500" : "text-muted-foreground"}`}>
+              {totalSaving > 0 ? fmtBRL(totalSaving) : "—"}
+            </p>
+            <p className="text-[10px] text-muted-foreground">
+              {totalCost > 0 && totalSaving > 0
+                ? `${Math.round(totalSaving / totalCost * 100)}% de redução possível`
+                : "sem ações identificadas"}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Composição do custo + achados ─────────────────────────────────── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+        {/* Pie chart */}
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-4">
+            <CardTitle className="text-sm">Composição do Custo</CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-3">
+            <ResponsiveContainer width="100%" height={180}>
+              <PieChart>
+                <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%"
+                  innerRadius={50} outerRadius={75} paddingAngle={2}>
+                  {pieData.map((e, i) => <Cell key={i} fill={e.fill} />)}
+                </Pie>
+                <Tooltip
+                  cursor={false}
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null;
+                    const d = payload[0];
+                    return (
+                      <div style={{ background: "hsl(var(--card) / 0.97)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.4)" }}>
+                        <p className="font-semibold mb-1" style={{ color: d.payload.fill }}>{d.name}</p>
+                        <p className="text-foreground">{fmtBRL(d.value as number)}</p>
+                      </div>
+                    );
+                  }}
+                />
+                <Legend iconType="circle" iconSize={8}
+                  formatter={(v) => <span className="text-[11px]">{v}</span>}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        {/* Resumo por dimensão */}
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-4">
+            <CardTitle className="text-sm">Dimensões de Custo</CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-3 space-y-2">
+            {[
+              { label: "VM Compute", value: computeCost, sub: `${node_pools.reduce((s, p) => s + p.node_count, 0)} nodes · ${node_pools.length} pools`, color: "#6366f1" },
+              ...(osDiskCost > 0 ? [{ label: "Disco OS", value: osDiskCost, sub: `${node_pools.reduce((s, p) => s + p.node_count, 0)} discos OS`, color: "#0ea5e9" }] : []),
+              ...(pvcOnlyCost > 0 ? [{ label: "PVCs", value: pvcOnlyCost, sub: `${storage?.pvc_count ?? 0} PVCs · ${Math.round(storage?.total_capacity_gb ?? 0)} GB`, color: "#8b5cf6" }] : []),
+              ...(totalIdentifiedWaste > 0 ? [{ label: "Desperdício identificado", value: totalIdentifiedWaste, sub: `${savingPct}% do total`, color: "#ef4444" }] : []),
+            ].map((row, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: row.color }} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-xs font-medium">{row.label}</span>
+                    <span className="text-xs font-bold">{fmtBRL(row.value)}</span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-muted mt-0.5 overflow-hidden">
+                    <div className="h-full rounded-full" style={{ width: `${Math.min(100, totalCost > 0 ? row.value / totalCost * 100 : 0)}%`, background: row.color }} />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">{row.sub}</p>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Achados prioritizados ─────────────────────────────────────────── */}
+      {findings.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2 pt-3 px-4">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-orange-500" />
+              Achados ({findings.length}) — saving potencial total: <span className="text-green-500 font-bold">{fmtBRL(totalSaving)}/mês</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4 space-y-2">
+            {findings.map((f, i) => (
+              <div key={i} className="flex items-start gap-3 p-3 rounded-lg border border-border bg-muted/20 hover:bg-muted/40 transition-colors">
+                {/* Priority indicator */}
+                <div className="w-1 self-stretch rounded-full shrink-0" style={{ background: PRIORITY_COLOR[f.priority] }} />
+                <div className="flex-1 min-w-0 space-y-1">
+                  <div className="flex items-start justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <Badge className="text-[9px] px-1.5 py-0" style={{ background: PRIORITY_COLOR[f.priority] + "22", color: PRIORITY_COLOR[f.priority], border: `1px solid ${PRIORITY_COLOR[f.priority]}40` }}>
+                        {PRIORITY_LABEL[f.priority]}
+                      </Badge>
+                      <Badge variant="outline" className="text-[9px] px-1.5 py-0" style={{ color: CATEGORY_COLOR[f.category] }}>
+                        {CATEGORY_LABEL[f.category]}
+                      </Badge>
+                      <span className="text-xs font-semibold">{f.title}</span>
+                    </div>
+                    {f.savingBRL > 0 && (
+                      <span className="text-xs font-bold text-green-500 shrink-0">−{fmtBRL(f.savingBRL)}/mês</span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-snug">{f.detail}</p>
+                  <p className="text-[10px] text-blue-400 flex items-center gap-1">
+                    <Info className="h-3 w-3 inline" /> {f.action}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {findings.length === 0 && (
+        <Card className="border-green-200 dark:border-green-900/40">
+          <CardContent className="p-4 flex items-center gap-2 text-green-600">
+            <CheckCircle2 className="h-4 w-4" />
+            <span className="text-sm font-medium">Nenhum problema identificado — cluster otimizado.</span>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Top 10 workloads por custo total ──────────────────────────────── */}
+      <Card>
+        <CardHeader className="pb-2 pt-3 px-4">
+          <CardTitle className="text-sm">Top 10 Workloads — Custo Total (Compute + Storage)</CardTitle>
+        </CardHeader>
+        <Table>
+          <TableHeader>
+            <TableRow className="text-[11px]">
+              <TableHead>Namespace / Workload</TableHead>
+              <TableHead className="text-right">Compute</TableHead>
+              {topWorkloads.some(w => (w.storage_cost_brl ?? 0) > 0) && (
+                <TableHead className="text-right text-purple-400">Storage</TableHead>
+              )}
+              <TableHead className="text-right font-bold">Total</TableHead>
+              <TableHead className="text-right">% do total</TableHead>
+              <TableHead>Veredicto</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {topWorkloads.map((w, i) => (
+              <TableRow key={i} className="text-xs">
+                <TableCell className="max-w-[180px]">
+                  <p className="text-muted-foreground text-[10px] truncate">{w.namespace}</p>
+                  <p className="font-medium truncate">{w.workload}</p>
+                </TableCell>
+                <TableCell className="text-right font-mono">{fmtBRL(w.cost_share_brl)}</TableCell>
+                {topWorkloads.some(x => (x.storage_cost_brl ?? 0) > 0) && (
+                  <TableCell className="text-right font-mono text-purple-400">
+                    {(w.storage_cost_brl ?? 0) > 0 ? fmtBRL(w.storage_cost_brl!) : <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                )}
+                <TableCell className="text-right font-bold">{fmtBRL(w.totalCostBRL)}</TableCell>
+                <TableCell className="text-right">
+                  <span className="text-muted-foreground text-[10px]">
+                    {totalCost > 0 ? `${Math.round(w.totalCostBRL / totalCost * 100)}%` : "—"}
+                  </span>
+                </TableCell>
+                <TableCell><VerdictBadge verdict={w.verdict} /></TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </Card>
+
+    </div>
+  );
+}
+
 // ─── Aba: Armazenamento ───────────────────────────────────────────────────────
 
 function StorageTab({ pvcs, storage }: { pvcs: PVCCostItem[]; storage: StorageSummary }) {
@@ -2769,7 +3154,8 @@ function StorageTab({ pvcs, storage }: { pvcs: PVCCostItem[]; storage: StorageSu
                 <XAxis dataKey="name" tick={{ fontSize: 10 }} />
                 <YAxis tick={{ fontSize: 10 }} tickFormatter={v => `R$${(v/1000).toFixed(0)}k`} />
                 <Tooltip
-                  content={({ active, payload, label }) => {
+                  cursor={{ fill: 'transparent' }}
+                  content={({ active, payload }) => {
                     if (!active || !payload?.length) return null;
                     const d = payload[0].payload;
                     return (
@@ -3557,14 +3943,6 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                   <Badge className="ml-1 text-[10px] bg-purple-600">{report.summary.hpa_removable_count}</Badge>
                 )}
               </TabsTrigger>
-              <TabsTrigger value="opportunities">
-                Oportunidades
-                {(report.summary.superprovisioned_count + report.summary.oom_risk_count + (report.summary.fixed_high_cost_count ?? 0)) > 0 && (
-                  <Badge variant="destructive" className="ml-1 text-[10px]">
-                    {report.summary.superprovisioned_count + report.summary.oom_risk_count + (report.summary.fixed_high_cost_count ?? 0)}
-                  </Badge>
-                )}
-              </TabsTrigger>
               {report.storage && (
                 <TabsTrigger value="storage">
                   Armazenamento
@@ -3573,6 +3951,22 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                   )}
                 </TabsTrigger>
               )}
+              <TabsTrigger value="opportunities">
+                Oportunidades
+                {(report.summary.superprovisioned_count + report.summary.oom_risk_count + (report.summary.fixed_high_cost_count ?? 0)) > 0 && (
+                  <Badge variant="destructive" className="ml-1 text-[10px]">
+                    {report.summary.superprovisioned_count + report.summary.oom_risk_count + (report.summary.fixed_high_cost_count ?? 0)}
+                  </Badge>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="report">
+                Relatório
+                {(report.summary.superprovisioned_count + report.summary.oom_risk_count + (report.storage?.orphaned_pvc_count ?? 0)) > 0 && (
+                  <Badge className="ml-1 text-[10px] bg-orange-500">
+                    {report.summary.superprovisioned_count + report.summary.oom_risk_count + (report.storage?.orphaned_pvc_count ?? 0)}
+                  </Badge>
+                )}
+              </TabsTrigger>
             </TabsList>
 
             <div className="flex-1 overflow-auto mt-3">
@@ -3588,14 +3982,17 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
               <TabsContent value="hpa-history" className="mt-0 h-full">
                 <HPAHistoryTab cluster={cluster} days={hpaHistoryDays} setDays={setHpaHistoryDays} />
               </TabsContent>
-              <TabsContent value="opportunities" className="mt-0 h-full">
-                <OpportunitiesTab workloads={report.workloads} summary={report.summary} windowDays={report.window_days || windowDays} />
-              </TabsContent>
               {report.storage && (
                 <TabsContent value="storage" className="mt-0 h-full">
                   <StorageTab pvcs={report.pvcs ?? []} storage={report.storage} />
                 </TabsContent>
               )}
+              <TabsContent value="opportunities" className="mt-0 h-full">
+                <OpportunitiesTab workloads={report.workloads} summary={report.summary} windowDays={report.window_days || windowDays} />
+              </TabsContent>
+              <TabsContent value="report" className="mt-0 h-full">
+                <RelatorioTab report={report} windowDays={report.window_days || windowDays} />
+              </TabsContent>
             </div>
           </Tabs>
         </>
