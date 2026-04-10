@@ -150,24 +150,66 @@ func LaunchWindowsBrowserForCDP(browserWSLPath string, port int, userDataWSLDir 
 	return cmd, nil
 }
 
+// getWSL2WindowsHostIP retorna o IP do host Windows acessível a partir do WSL2.
+// Em WSL2, o host Windows é acessível via o nameserver configurado em /etc/resolv.conf.
+// Retorna "" se não estiver em WSL2 ou se o IP não puder ser determinado.
+func getWSL2WindowsHostIP() string {
+	data, err := os.ReadFile("/etc/resolv.conf")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "nameserver ") {
+			ip := strings.TrimSpace(strings.TrimPrefix(line, "nameserver "))
+			if ip != "" && ip != "127.0.0.1" && ip != "::1" {
+				return ip
+			}
+		}
+	}
+	return ""
+}
+
+// cdpHosts retorna a lista de hosts a tentar para conectar ao CDP.
+// Em WSL2: tenta 127.0.0.1 (localhost forwarding) e o IP do host Windows.
+// Fora do WSL2: apenas 127.0.0.1.
+func cdpHosts() []string {
+	hosts := []string{"127.0.0.1"}
+	if winIP := getWSL2WindowsHostIP(); winIP != "" {
+		hosts = append(hosts, winIP)
+	}
+	return hosts
+}
+
 // WaitCDPReady aguarda o endpoint CDP ficar disponível na porta especificada.
-// Faz polling em http://127.0.0.1:<port>/json/version até receber HTTP 200 ou timeout.
+// Em WSL2, tenta tanto 127.0.0.1 quanto o IP do host Windows (fallback para quando
+// o localhost forwarding não está ativo). Retorna o host que respondeu.
 func WaitCDPReady(port int, timeout time.Duration) error {
+	_, err := WaitCDPReadyHost(port, timeout)
+	return err
+}
+
+// WaitCDPReadyHost igual ao WaitCDPReady mas retorna o host que respondeu.
+// Útil para usar o mesmo host na URL de conexão WebSocket do Rod.
+func WaitCDPReadyHost(port int, timeout time.Duration) (string, error) {
+	hosts := cdpHosts()
 	deadline := time.Now().Add(timeout)
-	url := fmt.Sprintf("http://127.0.0.1:%d/json/version", port)
 	client := &http.Client{Timeout: 2 * time.Second}
 
 	for time.Now().Before(deadline) {
-		resp, err := client.Get(url)
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == 200 {
-				return nil
+		for _, host := range hosts {
+			url := fmt.Sprintf("http://%s:%d/json/version", host, port)
+			resp, err := client.Get(url)
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == 200 {
+					return host, nil
+				}
 			}
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return fmt.Errorf("CDP não ficou disponível na porta %d após %v", port, timeout)
+	return "", fmt.Errorf("CDP não ficou disponível na porta %d após %v (hosts tentados: %v)", port, timeout, hosts)
 }
 
 // WindowsCDPPort é a porta padrão usada para conectar ao browser Windows via CDP.
