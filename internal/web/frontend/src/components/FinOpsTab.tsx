@@ -2700,6 +2700,7 @@ function RelatorioTab({ report, windowDays, cluster }: { report: FinOpsReport; w
   const storage = report.storage;
   const pvcs = report.pvcs ?? [];
   const contentRef = useRef<HTMLDivElement>(null);
+  const pieChartRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
 
   // ── Breakdown de custo ────────────────────────────────────────────────────
@@ -2866,44 +2867,194 @@ function RelatorioTab({ report, windowDays, cluster }: { report: FinOpsReport; w
 
   // ── Exportar PDF ──────────────────────────────────────────────────────────
   const exportPDF = async () => {
-    if (!contentRef.current) return;
     setExporting(true);
     try {
-      const html2canvas = (await import("html2canvas")).default;
       const { default: jsPDF } = await import("jspdf");
+      const { default: autoTable } = await import("jspdf-autotable");
 
-      const canvas = await html2canvas(contentRef.current, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: "#0f1117",
-        logging: false,
-      });
-
-      const imgData = canvas.toDataURL("image/png");
-      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-      const pageW = pdf.internal.pageSize.getWidth();
-      const pageH = pdf.internal.pageSize.getHeight();
-      const margin = 10;
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const pageW = 210;
+      const margin = 14;
       const contentW = pageW - margin * 2;
-      const totalH = contentW * canvas.height / canvas.width;
-      const pageContentH = pageH - margin * 2;
-      const slicePx = Math.floor(canvas.height * pageContentH / totalH);
+      let y = margin;
 
-      let offset = 0;
-      while (offset < canvas.height) {
-        const sliceH = Math.min(slicePx, canvas.height - offset);
-        const pageCanvas = document.createElement("canvas");
-        pageCanvas.width = canvas.width;
-        pageCanvas.height = sliceH;
-        pageCanvas.getContext("2d")!.drawImage(canvas, 0, offset, canvas.width, sliceH, 0, 0, canvas.width, sliceH);
-        const sliceImg = pageCanvas.toDataURL("image/png");
-        const renderedH = sliceH / canvas.height * totalH;
-        pdf.addImage(sliceImg, "PNG", margin, margin, contentW, renderedH);
-        offset += sliceH;
-        if (offset < canvas.height) pdf.addPage();
+      // ── Helpers de desenho ───────────────────────────────────────────────
+      // Desenha um setor de donut diretamente em coordenadas PDF (mm)
+      const drawDonutSlice = (
+        cx: number, cy: number, rIn: number, rOut: number,
+        startA: number, endA: number, col: [number, number, number],
+      ) => {
+        const steps = Math.max(24, Math.ceil(Math.abs(endA - startA) * 18));
+        const pts: [number, number][] = [];
+        for (let s = 0; s <= steps; s++) {
+          const a = startA + (s / steps) * (endA - startA);
+          pts.push([cx + rOut * Math.cos(a), cy + rOut * Math.sin(a)]);
+        }
+        for (let s = steps; s >= 0; s--) {
+          const a = startA + (s / steps) * (endA - startA);
+          pts.push([cx + rIn * Math.cos(a), cy + rIn * Math.sin(a)]);
+        }
+        doc.setFillColor(...col);
+        doc.setDrawColor(255, 255, 255);
+        doc.setLineWidth(0.4);
+        const rel = pts.slice(1).map((p, i) => [p[0] - pts[i][0], p[1] - pts[i][1]] as [number, number]);
+        doc.lines(rel, pts[0][0], pts[0][1], [1, 1], "FD", true);
+      };
+
+      // ── Cabeçalho ───────────────────────────────────────────────────────
+      doc.setFillColor(15, 23, 42);
+      doc.rect(0, 0, pageW, 20, "F");
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(13); doc.setFont("helvetica", "bold");
+      doc.text("FinOps — Relatório Executivo", margin, 12);
+      doc.setFontSize(8.5); doc.setFont("helvetica", "normal");
+      doc.text(`Cluster: ${cluster}   ·   ${new Date().toLocaleDateString("pt-BR", { dateStyle: "long" })}`, margin, 17.5);
+      y = 28;
+
+      // ── KPI cards ───────────────────────────────────────────────────────
+      const kpis = [
+        { label: "Custo Total/mês",         value: fmtBRL(totalCost),      sub: storageCost > 0 ? "Compute + Storage" : fmtUSD(summary.total_monthly_cost_usd) },
+        { label: "Desperdício Identificado", value: totalIdentifiedWaste > 0 ? fmtBRL(totalIdentifiedWaste) : "Nenhum", sub: savingPct > 0 ? `${savingPct}% do orçamento` : "" },
+        { label: "Achados",                 value: `${findings.length}`,   sub: `${findings.filter(f => f.priority === "critical").length} críticos · ${findings.filter(f => f.priority === "high").length} altos` },
+        { label: "Saving Potencial/mês",    value: totalSaving > 0 ? fmtBRL(totalSaving) : "—", sub: totalCost > 0 && totalSaving > 0 ? `${Math.round(totalSaving / totalCost * 100)}% de redução` : "" },
+      ];
+      const kpiW = (contentW - 6) / 4;
+      kpis.forEach((kpi, i) => {
+        const kx = margin + i * (kpiW + 2);
+        doc.setFillColor(241, 245, 249); doc.roundedRect(kx, y, kpiW, 18, 1.5, 1.5, "F");
+        doc.setFontSize(6.5); doc.setTextColor(100, 116, 139); doc.setFont("helvetica", "normal");
+        doc.text(kpi.label, kx + 3, y + 5.5);
+        doc.setFontSize(10); doc.setTextColor(30, 41, 59); doc.setFont("helvetica", "bold");
+        doc.text(kpi.value, kx + 3, y + 12);
+        if (kpi.sub) {
+          doc.setFontSize(6); doc.setTextColor(100, 116, 139); doc.setFont("helvetica", "normal");
+          doc.text(kpi.sub, kx + 3, y + 17);
+        }
+      });
+      y += 24;
+
+      // ── Gráfico donut + legenda ──────────────────────────────────────────
+      doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
+      doc.text("Composição do Custo", margin, y);
+      y += 5;
+
+      const totalPie = pieData.reduce((s, d) => s + d.value, 0);
+      const pieColors: [number, number, number][] = [[99, 102, 241], [14, 165, 233], [139, 92, 246], [239, 68, 68]];
+      const donutCX = margin + 36;
+      const donutCY = y + 30;
+      const rOut = 26;
+      const rIn  = 13;
+
+      if (totalPie > 0) {
+        let startA = -Math.PI / 2;
+        pieData.forEach((seg, i) => {
+          const angle = (seg.value / totalPie) * Math.PI * 2;
+          drawDonutSlice(donutCX, donutCY, rIn, rOut, startA, startA + angle, pieColors[i] ?? [150, 150, 150]);
+          startA += angle;
+        });
+        // Furo central branco
+        doc.setFillColor(255, 255, 255);
+        doc.setDrawColor(255, 255, 255);
+        doc.circle(donutCX, donutCY, rIn - 0.3, "F");
+        // Percentual total no centro
+        doc.setFontSize(7); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
+        doc.text("Total", donutCX - 4, donutCY - 1.5);
+        doc.setFontSize(6.5); doc.setFont("helvetica", "normal");
+        doc.text(fmtBRL(totalPie), donutCX - 6, donutCY + 3.5);
       }
 
-      pdf.save(`finops-relatorio-${cluster}-${new Date().toISOString().slice(0, 10)}.pdf`);
+      // Legenda ao lado
+      const lx = margin + 72;
+      let ly = y + 4;
+      pieData.forEach((seg, i) => {
+        const col = pieColors[i] ?? [150, 150, 150] as [number, number, number];
+        const pct = totalPie > 0 ? Math.round(seg.value / totalPie * 100) : 0;
+        // barra colorida de proporção
+        const barMaxW = 38;
+        doc.setFillColor(230, 232, 240); doc.rect(lx, ly + 4.5, barMaxW, 2.5, "F");
+        doc.setFillColor(...col); doc.rect(lx, ly + 4.5, barMaxW * pct / 100, 2.5, "F");
+        // ícone + nome
+        doc.setFillColor(...col); doc.rect(lx, ly, 3.5, 3.5, "F");
+        doc.setFontSize(8.5); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
+        doc.text(seg.name, lx + 5.5, ly + 3.2);
+        // valor + percentual
+        doc.setFontSize(7.5); doc.setFont("helvetica", "normal"); doc.setTextColor(100, 116, 139);
+        doc.text(`${fmtBRL(seg.value)}  (${pct}%)`, lx, ly + 10.5);
+        ly += 17;
+      });
+      y += 68;
+
+      // ── Divisor ─────────────────────────────────────────────────────────
+      doc.setDrawColor(226, 232, 240); doc.setLineWidth(0.3);
+      doc.line(margin, y, margin + contentW, y);
+      y += 6;
+
+      // ── Achados priorizados ──────────────────────────────────────────────
+      if (findings.length > 0) {
+        doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
+        doc.text(`Achados Priorizados  —  Saving potencial: ${fmtBRL(totalSaving)}/mês`, margin, y);
+        y += 2;
+        autoTable(doc, {
+          startY: y,
+          head: [["Prioridade", "Categoria", "Título", "Evidência", "Saving/mês"]],
+          body: findings.map(f => [
+            PRIORITY_LABEL[f.priority],
+            CATEGORY_LABEL[f.category],
+            f.title,
+            f.detail.length > 70 ? f.detail.slice(0, 70) + "…" : f.detail,
+            f.savingBRL > 0 ? fmtBRL(f.savingBRL) : "—",
+          ]),
+          theme: "grid",
+          styles: { fontSize: 7, cellPadding: 2.2, overflow: "linebreak" },
+          headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.5 },
+          columnStyles: {
+            0: { cellWidth: 18, fontStyle: "bold" },
+            1: { cellWidth: 20 },
+            2: { cellWidth: 52 },
+            3: { cellWidth: 64 },
+            4: { cellWidth: 24, halign: "right" },
+          },
+          didParseCell: (data: any) => {
+            if (data.section === "body" && data.column.index === 0) {
+              const p = findings[data.row.index]?.priority;
+              if (p === "critical") data.cell.styles.textColor = [220, 38, 38];
+              else if (p === "high") data.cell.styles.textColor = [217, 119, 6];
+              else data.cell.styles.textColor = [99, 102, 241];
+            }
+          },
+          margin: { left: margin, right: margin },
+        });
+        y = (doc as any).lastAutoTable.finalY + 8;
+      }
+
+      // ── Top 10 Workloads ─────────────────────────────────────────────────
+      if (y > 240) { doc.addPage(); y = margin; }
+      const hasStorageCols = topWorkloads.some(w => (w.storage_cost_brl ?? 0) > 0);
+      doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
+      doc.text("Top 10 Workloads — Custo Total (Compute + Storage)", margin, y);
+      y += 2;
+      autoTable(doc, {
+        startY: y,
+        head: [hasStorageCols
+          ? ["#", "Namespace", "Workload", "Compute", "Storage", "Total/mês", "%", "Veredicto"]
+          : ["#", "Namespace", "Workload", "Compute/mês", "Total/mês", "%", "Veredicto"]
+        ],
+        body: topWorkloads.map((w, i) => hasStorageCols
+          ? [`${i + 1}`, w.namespace, w.workload, fmtBRL(w.cost_share_brl), fmtBRL(w.storage_cost_brl ?? 0), fmtBRL(w.totalCostBRL), totalCost > 0 ? `${Math.round(w.totalCostBRL / totalCost * 100)}%` : "—", w.verdict]
+          : [`${i + 1}`, w.namespace, w.workload, fmtBRL(w.cost_share_brl), fmtBRL(w.totalCostBRL), totalCost > 0 ? `${Math.round(w.totalCostBRL / totalCost * 100)}%` : "—", w.verdict]
+        ),
+        theme: "striped",
+        styles: { fontSize: 7, cellPadding: 2 },
+        headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.5 },
+        margin: { left: margin, right: margin },
+      });
+
+      // ── Rodapé ───────────────────────────────────────────────────────────
+      const finalY = (doc as any).lastAutoTable.finalY + 6;
+      doc.setFontSize(7); doc.setFont("helvetica", "italic"); doc.setTextColor(148, 163, 184);
+      doc.text(`Gerado em ${new Date().toLocaleString("pt-BR")} · K8s HPA Manager · FinOps`, margin, finalY);
+
+      doc.save(`finops-relatorio-${cluster}-${new Date().toISOString().slice(0, 10)}.pdf`);
       toast.success("PDF exportado com sucesso");
     } catch (err) {
       toast.error("Erro ao exportar PDF: " + (err as Error).message);
@@ -2981,7 +3132,7 @@ function RelatorioTab({ report, windowDays, cluster }: { report: FinOpsReport; w
           <CardHeader className="pb-1 pt-3 px-4">
             <CardTitle className="text-sm">Composição do Custo</CardTitle>
           </CardHeader>
-          <CardContent className="px-4 pb-3">
+          <CardContent className="px-4 pb-3" ref={pieChartRef}>
             <ResponsiveContainer width="100%" height={240}>
               <PieChart margin={{ top: 30, right: 80, bottom: 30, left: 80 }}>
                 <Pie
