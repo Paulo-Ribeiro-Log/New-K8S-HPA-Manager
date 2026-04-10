@@ -132,6 +132,11 @@ func LaunchWindowsBrowserForCDP(browserWSLPath string, port int, userDataWSLDir 
 		"/c", "start", `""`,
 		winBrowserPath,
 		fmt.Sprintf("--remote-debugging-port=%d", port),
+		// Necessário para o WSL2 conseguir conectar: por padrão Chrome só escuta em
+		// 127.0.0.1 (loopback Windows), que não é alcançável a partir do WSL2.
+		// Com 0.0.0.0, escuta em todas as interfaces incluindo a 172.22.x.x do WSL2.
+		"--remote-debugging-address=0.0.0.0",
+		"--remote-allow-origins=*",
 		fmt.Sprintf("--user-data-dir=%s", winUserDataDir),
 		"--profile-directory=HPA-Manager",
 		"--no-first-run",
