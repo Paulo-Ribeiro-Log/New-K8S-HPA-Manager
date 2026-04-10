@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -2695,10 +2695,12 @@ const CATEGORY_COLOR: Record<string, string> = {
   nodepool: "#0ea5e9",
 };
 
-function RelatorioTab({ report, windowDays }: { report: FinOpsReport; windowDays: number }) {
+function RelatorioTab({ report, windowDays, cluster }: { report: FinOpsReport; windowDays: number; cluster: string }) {
   const { summary, workloads, node_pools } = report;
   const storage = report.storage;
   const pvcs = report.pvcs ?? [];
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [exporting, setExporting] = useState(false);
 
   // ── Breakdown de custo ────────────────────────────────────────────────────
   const computeCost  = summary.total_monthly_cost_brl;
@@ -2840,8 +2842,87 @@ function RelatorioTab({ report, windowDays }: { report: FinOpsReport; windowDays
   const PRIORITY_COLOR = { critical: "#ef4444", high: "#f59e0b", medium: "#6366f1" };
   const PRIORITY_LABEL = { critical: "Crítico", high: "Alto", medium: "Médio" };
 
+  // ── Rótulos externos do pie com linhas ────────────────────────────────────
+  const RADIAN = Math.PI / 180;
+  const renderPieLabel = ({ cx, cy, midAngle, outerRadius, name, value, percent }: {
+    cx: number; cy: number; midAngle: number; outerRadius: number;
+    name: string; value: number; percent: number;
+  }) => {
+    // Para segmentos muito pequenos usar raio maior para não colar no pie
+    const radius = percent < 0.04 ? outerRadius + 50 : outerRadius + 32;
+    const x = cx + radius * Math.cos(-midAngle * RADIAN);
+    const y = cy + radius * Math.sin(-midAngle * RADIAN);
+    const anchor = x > cx ? "start" : "end";
+    const shortName = name.split(" ").slice(0, 2).join(" ");
+    return (
+      <g>
+        <text x={x} y={y - 5} textAnchor={anchor} fontSize={9} fontWeight={600} fill="#e2e8f0">{shortName}</text>
+        <text x={x} y={y + 7} textAnchor={anchor} fontSize={9} fill="#94a3b8">
+          {fmtBRL(value)} ({Math.round(percent * 100)}%)
+        </text>
+      </g>
+    );
+  };
+
+  // ── Exportar PDF ──────────────────────────────────────────────────────────
+  const exportPDF = async () => {
+    if (!contentRef.current) return;
+    setExporting(true);
+    try {
+      const html2canvas = (await import("html2canvas")).default;
+      const { default: jsPDF } = await import("jspdf");
+
+      const canvas = await html2canvas(contentRef.current, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#0f1117",
+        logging: false,
+      });
+
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const pageW = pdf.internal.pageSize.getWidth();
+      const pageH = pdf.internal.pageSize.getHeight();
+      const margin = 10;
+      const contentW = pageW - margin * 2;
+      const totalH = contentW * canvas.height / canvas.width;
+      const pageContentH = pageH - margin * 2;
+      const slicePx = Math.floor(canvas.height * pageContentH / totalH);
+
+      let offset = 0;
+      while (offset < canvas.height) {
+        const sliceH = Math.min(slicePx, canvas.height - offset);
+        const pageCanvas = document.createElement("canvas");
+        pageCanvas.width = canvas.width;
+        pageCanvas.height = sliceH;
+        pageCanvas.getContext("2d")!.drawImage(canvas, 0, offset, canvas.width, sliceH, 0, 0, canvas.width, sliceH);
+        const sliceImg = pageCanvas.toDataURL("image/png");
+        const renderedH = sliceH / canvas.height * totalH;
+        pdf.addImage(sliceImg, "PNG", margin, margin, contentW, renderedH);
+        offset += sliceH;
+        if (offset < canvas.height) pdf.addPage();
+      }
+
+      pdf.save(`finops-relatorio-${cluster}-${new Date().toISOString().slice(0, 10)}.pdf`);
+      toast.success("PDF exportado com sucesso");
+    } catch (err) {
+      toast.error("Erro ao exportar PDF: " + (err as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
+      {/* ── Botão exportar ─────────────────────────────────────────────────── */}
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" onClick={exportPDF} disabled={exporting} className="gap-1.5">
+          {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+          {exporting ? "Gerando PDF…" : "Exportar PDF"}
+        </Button>
+      </div>
+
+      <div ref={contentRef} className="space-y-4">
 
       {/* ── KPI cards ──────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -2901,10 +2982,20 @@ function RelatorioTab({ report, windowDays }: { report: FinOpsReport; windowDays
             <CardTitle className="text-sm">Composição do Custo</CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-3">
-            <ResponsiveContainer width="100%" height={180}>
-              <PieChart>
-                <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%"
-                  innerRadius={50} outerRadius={75} paddingAngle={2}>
+            <ResponsiveContainer width="100%" height={240}>
+              <PieChart margin={{ top: 30, right: 80, bottom: 30, left: 80 }}>
+                <Pie
+                  data={pieData}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={48}
+                  outerRadius={70}
+                  paddingAngle={2}
+                  label={renderPieLabel}
+                  labelLine={{ stroke: "#94a3b8", strokeWidth: 1, opacity: 0.7 }}
+                >
                   {pieData.map((e, i) => <Cell key={i} fill={e.fill} />)}
                 </Pie>
                 <Tooltip
@@ -2919,9 +3010,6 @@ function RelatorioTab({ report, windowDays }: { report: FinOpsReport; windowDays
                       </div>
                     );
                   }}
-                />
-                <Legend iconType="circle" iconSize={8}
-                  formatter={(v) => <span className="text-[11px]">{v}</span>}
                 />
               </PieChart>
             </ResponsiveContainer>
@@ -3051,6 +3139,7 @@ function RelatorioTab({ report, windowDays }: { report: FinOpsReport; windowDays
         </Table>
       </Card>
 
+      </div>{/* fim ref={contentRef} */}
     </div>
   );
 }
@@ -3695,7 +3784,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
 
   const [cluster, setCluster] = useState(defaultCluster);
   const [triggerKey, setTriggerKey] = useState(0);
-  const [withPrometheus, setWithPrometheus] = useState(false);
+  const [withPrometheus, setWithPrometheus] = useState(true);
   const [windowDays, setWindowDays] = useState(30);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
@@ -3991,7 +4080,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 <OpportunitiesTab workloads={report.workloads} summary={report.summary} windowDays={report.window_days || windowDays} />
               </TabsContent>
               <TabsContent value="report" className="mt-0 h-full">
-                <RelatorioTab report={report} windowDays={report.window_days || windowDays} />
+                <RelatorioTab report={report} windowDays={report.window_days || windowDays} cluster={cluster} />
               </TabsContent>
             </div>
           </Tabs>

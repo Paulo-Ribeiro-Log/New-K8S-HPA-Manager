@@ -22,7 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [RBAC Azure AD](docs/guides/RBAC_AZURE_AD_IMPLEMENTATION.md)
 - [Changelog](docs/history/CHANGELOG.md)
 - [**Plano: Dynatrace × Health Check**](docs/planning/DYNATRACE_HEALTHCHECK_INTEGRATION.md) ← work in progress
-- [**Plano: FinOps Dashboard**](FINOPS_PLAN.md) ← work in progress — custo real AKS via Azure Pricing API, alocação por workload/HPA, conversão USD→BRL
+- [**Plano: FinOps Storage**](docs/planning/FINOPS_STORAGE_PLAN.md) ← ✅ CONCLUÍDA — PVCs, discos OS dos nodes, Azure Files/Blob, Relatório Executivo integrado
 
 ---
 
@@ -350,6 +350,38 @@ Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fa
 - `sanitizePDF()` substitui todos os caracteres Unicode fora do WinAnsi antes de passar ao jsPDF
 - Sem isso, caracteres como `═══`, `→`, `—`, `•` geram `%P%P%P` no documento
 - `removeEmojis()` mantido apenas para uso fora do PDF
+
+### FinOps — Storage & Relatório Executivo
+
+**Tab FinOps possui 7 abas** (ordem): Dashboard → Node Pools → Workloads → HPA Histórico → Armazenamento → Oportunidades → Relatório
+
+**`StorageTab`** (`FinOpsTab.tsx`):
+- 4 KPI cards: Custo Total Storage, Nº PVCs, Disco OS R$/mês, Custo Orfãos
+- BarChart de custo por tipo de storage (Premium SSD, Standard SSD, Azure Files, etc.)
+- Tabela de PVCs com filtro por namespace/tipo, ordenação, badge "orfão" vermelho
+- Seção "PVCs Orfãos" colapsável com sugestão `kubectl delete pvc` e botão de cópia
+- Aba só aparece quando `report.storage` presente (feature flag implícita)
+
+**`RelatorioTab`** (`FinOpsTab.tsx`):
+- Pie chart com composição de custo total: Compute Produtivo + Disco OS + PVCs Ativos + Desperdício (superprovisioning + orfãos)
+- Findings priorizados (`critical`/`high`/`medium`) com evidência e ponteiro para a aba correta de ação
+- Top 10 workloads por custo total (compute + storage)
+- Botão "Exportar PDF": usa `html2canvas` + `jsPDF` (imports dinâmicos); divide canvas em fatias de página A4; arquivo gerado: `finops-relatorio-<cluster>-<date>.pdf`
+
+**Recharts — `renderPieLabel`** (padrão para labels externas em `PieChart`):
+- Função retorna `<g>` com dois `<text>` (nome curto + valor/percentual)
+- Segmentos < 4% usam `outerRadius + 50` (evita label cair dentro do donut hole)
+- `labelLine` deve ser objeto SVG `{ stroke, strokeWidth, opacity }` — **não função** (causa falha de renderização)
+- `cursor={{ fill: 'transparent' }}` no `<Tooltip>` para suprimir fundo cinza no hover
+
+**FinOps Prometheus**: checkbox "Análise histórica Prometheus" é **`true` por padrão** (era `false`)
+
+**Backend storage** (`internal/finops/`):
+- `azure_disk_pricing.go`: `DiskPricer` com cache SQLite + fallback hardcoded por tier (P/E/S series, Azure Files, Blob)
+- `storage_calculator.go`: `StorageCalculator.Calculate()` lista PVCs, correlaciona com workloads via ownerRef chain, calcula custo por tier ou por GB
+- `storage_calculator_test.go`: 7 funções de teste — `MapStorageClassToAzureType`, `ResolveManagedDiskTier`, custo PVC, Files/Blob, `buildStorageSummary`, detecção de orfãos
+
+**`buildFinOpsPrompt`** (`internal/web/handlers/finops.go`): seção `=== ARMAZENAMENTO ===` com total storage, breakdown por tipo, top 5 workloads por storage, PVCs orfãos com Retain policy destacados
 
 ### Conntrack Viewer (Node Pools)
 
