@@ -243,9 +243,11 @@ func (h *ServiceNowHandler) GetBrowserConfig(c *gin.Context) {
 	cfg := servicenow.LoadBrowserConfig()
 	c.JSON(http.StatusOK, gin.H{
 		"force_windows_browser": cfg.ForceWindowsBrowser,
+		"windows_session_dir":   cfg.WindowsSessionDir,
 		"needs_windows_browser": servicenow.NeedsWindowsBrowser(),
 		"is_wsl":                servicenow.IsWSL(),
 		"has_display":           servicenow.HasGraphicalDisplay(),
+		"effective_session_dir": servicenow.WindowsSessionWSLDir(),
 	})
 }
 
@@ -253,7 +255,8 @@ func (h *ServiceNowHandler) GetBrowserConfig(c *gin.Context) {
 // POST /api/v1/servicenow/browser-config
 func (h *ServiceNowHandler) SetBrowserConfig(c *gin.Context) {
 	var req struct {
-		ForceWindowsBrowser bool `json:"force_windows_browser"`
+		ForceWindowsBrowser bool   `json:"force_windows_browser"`
+		WindowsSessionDir   string `json:"windows_session_dir"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -262,6 +265,7 @@ func (h *ServiceNowHandler) SetBrowserConfig(c *gin.Context) {
 
 	cfg := servicenow.BrowserConfig{
 		ForceWindowsBrowser: req.ForceWindowsBrowser,
+		WindowsSessionDir:   req.WindowsSessionDir,
 	}
 	if err := servicenow.SaveBrowserConfig(cfg); err != nil {
 		h.logger.Error().Err(err).Msg("[ServiceNow] Erro ao salvar configuração de browser")

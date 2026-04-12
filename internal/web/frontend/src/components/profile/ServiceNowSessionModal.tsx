@@ -22,6 +22,9 @@ import {
   Globe,
   Clock,
   FolderOpen,
+  Pencil,
+  Check,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { CredentialModalProps } from '@/types/profile';
@@ -44,6 +47,10 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
   const [forceWindowsBrowser, setForceWindowsBrowser] = useState(false);
   const [wslAutoMode, setWslAutoMode] = useState(false);
   const [savingBrowserConfig, setSavingBrowserConfig] = useState(false);
+  const [effectiveSessionDir, setEffectiveSessionDir] = useState('');
+  const [customSessionDir, setCustomSessionDir] = useState('');
+  const [editingDir, setEditingDir] = useState(false);
+  const [editDirValue, setEditDirValue] = useState('');
 
   // Carregar status ao abrir modal
   useEffect(() => {
@@ -61,6 +68,8 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
       const data = await response.json();
       setForceWindowsBrowser(data.force_windows_browser ?? false);
       setWslAutoMode(data.needs_windows_browser && !data.force_windows_browser);
+      setEffectiveSessionDir(data.effective_session_dir ?? '');
+      setCustomSessionDir(data.windows_session_dir ?? '');
     } catch {
       // silencioso — config opcional
     }
@@ -75,7 +84,7 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
           'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ force_windows_browser: value }),
+        body: JSON.stringify({ force_windows_browser: value, windows_session_dir: customSessionDir }),
       });
       setForceWindowsBrowser(value);
       toast.success(
@@ -85,6 +94,30 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
       );
     } catch {
       toast.error('Erro ao salvar configuração de browser.');
+    } finally {
+      setSavingBrowserConfig(false);
+    }
+  };
+
+  const handleSaveSessionDir = async () => {
+    setSavingBrowserConfig(true);
+    try {
+      const response = await fetch('/api/v1/servicenow/browser-config', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ force_windows_browser: forceWindowsBrowser, windows_session_dir: editDirValue.trim() }),
+      });
+      const data = await response.json();
+      setCustomSessionDir(editDirValue.trim());
+      setEffectiveSessionDir(data.effective_session_dir ?? editDirValue.trim());
+      setEditingDir(false);
+      toast.success('Diretório de sessão salvo.');
+      fetchSessionStatus();
+    } catch {
+      toast.error('Erro ao salvar diretório de sessão.');
     } finally {
       setSavingBrowserConfig(false);
     }
@@ -316,8 +349,37 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
                   <FolderOpen className="h-4 w-4" />
                   <span>Diretorio:</span>
                 </div>
-                <div className="font-mono text-xs truncate" title={sessionStatus.session_dir}>
-                  {sessionStatus.session_dir}
+                <div className="flex items-center gap-1">
+                  {editingDir ? (
+                    <>
+                      <input
+                        className="font-mono text-xs border border-border rounded px-1 py-0.5 bg-background w-48 focus:outline-none focus:ring-1 focus:ring-ring"
+                        value={editDirValue}
+                        onChange={e => setEditDirValue(e.target.value)}
+                        placeholder={effectiveSessionDir}
+                        autoFocus
+                      />
+                      <button onClick={handleSaveSessionDir} disabled={savingBrowserConfig} className="text-green-600 hover:text-green-500">
+                        <Check className="h-3.5 w-3.5" />
+                      </button>
+                      <button onClick={() => setEditingDir(false)} className="text-muted-foreground hover:text-foreground">
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-mono text-xs truncate max-w-[180px]" title={effectiveSessionDir || sessionStatus.session_dir}>
+                        {effectiveSessionDir || sessionStatus.session_dir}
+                      </span>
+                      <button
+                        onClick={() => { setEditDirValue(customSessionDir || effectiveSessionDir); setEditingDir(true); }}
+                        className="text-muted-foreground hover:text-foreground"
+                        title="Personalizar diretório"
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
 
