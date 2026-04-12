@@ -1277,6 +1277,8 @@ export interface PlaywrightStatusResponse {
 
 export interface ServiceNowBrowserConfig {
   force_windows_browser: boolean;
+  windows_session_dir: string;       // caminho configurado pelo usuário (vazio = auto)
+  effective_session_dir: string;     // caminho efetivo em uso (após auto-detecção)
   needs_windows_browser: boolean;
   is_wsl: boolean;
   has_display: boolean;

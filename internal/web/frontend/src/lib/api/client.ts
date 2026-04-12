@@ -2803,10 +2803,16 @@ class APIClient {
   /**
    * POST /api/v1/servicenow/browser-config
    */
-  async setServiceNowBrowserConfig(forceWindowsBrowser: boolean): Promise<ServiceNowBrowserConfig> {
+  async setServiceNowBrowserConfig(
+    forceWindowsBrowser: boolean,
+    windowsSessionDir?: string
+  ): Promise<ServiceNowBrowserConfig> {
     return this.request("/servicenow/browser-config", {
       method: "POST",
-      body: JSON.stringify({ force_windows_browser: forceWindowsBrowser }),
+      body: JSON.stringify({
+        force_windows_browser: forceWindowsBrowser,
+        windows_session_dir: windowsSessionDir ?? "",
+      }),
     });
   }
 
