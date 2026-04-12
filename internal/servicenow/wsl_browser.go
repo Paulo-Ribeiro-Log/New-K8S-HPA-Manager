@@ -14,7 +14,8 @@ import (
 // BrowserConfig armazena a preferência de browser para autenticação ServiceNow.
 // Salva em ~/.k8s-hpa-manager/servicenow-browser.json (configuração da máquina, não por usuário).
 type BrowserConfig struct {
-	ForceWindowsBrowser bool `json:"force_windows_browser"`
+	ForceWindowsBrowser bool   `json:"force_windows_browser"`
+	WindowsSessionDir   string `json:"windows_session_dir,omitempty"` // caminho WSL customizado, ex: /mnt/c/Users/matricula/k8s-hpa-manager-session
 }
 
 func browserConfigPath() string {
@@ -234,24 +235,27 @@ func WaitCDPReadyHost(port int, timeout time.Duration) (string, error) {
 const WindowsCDPPort = 9223
 
 // WindowsSessionWSLDir retorna o diretório de sessão para o browser Windows, no formato WSL.
-// Usa o perfil do usuário Windows (C:\Users\{username}\k8s-hpa-manager-session) para evitar
-// bloqueios de política de segurança que impedem escrita na raiz de C:\.
-// Fallback para /mnt/c/k8s-hpa-manager-session se não conseguir obter o perfil Windows.
+// Precedência:
+//  1. Configuração salva pelo usuário (BrowserConfig.WindowsSessionDir)
+//  2. Auto-detecção via USERPROFILE Windows (C:\Users\{username}\k8s-hpa-manager-session)
+//  3. Fallback fixo: /mnt/c/k8s-hpa-manager-session
 func WindowsSessionWSLDir() string {
-	// Tenta obter o USERPROFILE Windows via cmd.exe
-	// Em WSL, cmd.exe está disponível e %USERPROFILE% aponta para C:\Users\{username}
+	// 1. Configuração persistida pelo usuário
+	if cfg := LoadBrowserConfig(); cfg.WindowsSessionDir != "" {
+		return cfg.WindowsSessionDir
+	}
+	// 2. Auto-detecção via USERPROFILE Windows
 	out, err := exec.Command("cmd.exe", "/c", "echo", "%USERPROFILE%").Output()
 	if err == nil {
 		winProfile := strings.TrimSpace(string(out))
-		// Resultado esperado: "C:\Users\username"
 		if strings.HasPrefix(winProfile, `C:\`) || strings.HasPrefix(winProfile, `c:\`) {
-			// Converte C:\Users\username → /mnt/c/Users/username
 			wslPath := windowsToWSLPath(winProfile)
 			if wslPath != "" {
 				return filepath.Join(wslPath, "k8s-hpa-manager-session")
 			}
 		}
 	}
+	// 3. Fallback
 	return "/mnt/c/k8s-hpa-manager-session"
 }
 
