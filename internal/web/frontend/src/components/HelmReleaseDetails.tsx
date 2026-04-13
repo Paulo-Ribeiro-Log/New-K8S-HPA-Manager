@@ -888,6 +888,29 @@ const HistoryTab = ({
   currentValuesRendered: string;
 }) => {
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
+  const [deletingRevision, setDeletingRevision] = useState<number | null>(null);
+
+  const handleDeleteRevisionSecret = async (revision: number) => {
+    // Nome do secret que o Helm usa para armazenar o estado de cada revisão
+    const secretName = `sh.helm.release.v1.${release}.v${revision}`;
+    setDeletingRevision(revision);
+    try {
+      const token = localStorage.getItem('auth_token') || 'poc-token-123';
+      const response = await fetch(
+        `/api/v1/secrets/${cluster}/${namespace}/${secretName}`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err?.error?.message || `HTTP ${response.status}`);
+      }
+    } catch (err) {
+      console.error('[HistoryTab] Erro ao deletar secret da revisão:', err);
+      alert(`Erro ao deletar secret da revisão ${revision}: ${err instanceof Error ? err.message : 'Erro desconhecido'}`);
+    } finally {
+      setDeletingRevision(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -945,10 +968,25 @@ const HistoryTab = ({
                   Ver Values
                 </Button>
                 {revision.revision !== currentRevision && (
-                  <Button size="sm" variant="outline" className="gap-1">
-                    <RotateCcw className="h-3 w-3" />
-                    Rollback
-                  </Button>
+                  <>
+                    <Button size="sm" variant="outline" className="gap-1">
+                      <RotateCcw className="h-3 w-3" />
+                      Rollback
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="gap-1 text-destructive hover:text-destructive hover:bg-destructive/10"
+                      title={`Deletar secret da revisão ${revision.revision} (sh.helm.release.v1.${release}.v${revision.revision})`}
+                      disabled={deletingRevision === revision.revision}
+                      onClick={() => handleDeleteRevisionSecret(revision.revision)}
+                    >
+                      {deletingRevision === revision.revision
+                        ? <Loader2 className="h-3 w-3 animate-spin" />
+                        : <Trash2 className="h-3 w-3" />
+                      }
+                    </Button>
+                  </>
                 )}
               </div>
             </div>

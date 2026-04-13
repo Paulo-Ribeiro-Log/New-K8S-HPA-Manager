@@ -256,18 +256,22 @@ export const SecretMonitorTable = ({
     if (bulkProcessing || selectedObjects.length === 0) return;
     setBulkProcessing(true);
     let succeeded = 0, failed = 0;
+    const errors: string[] = [];
     try {
       await Promise.all(
         selectedObjects.map(async (i) => {
           try {
             await apiClient.delete(`/api/v1/secrets/${i.cluster}/${i.namespace}/${i.name}`);
             succeeded++;
-          } catch { failed++; }
+          } catch (err) {
+            failed++;
+            if (err instanceof Error) errors.push(`${i.name}: ${err.message}`);
+          }
         })
       );
       if (succeeded > 0 && failed === 0) toast.success(`${succeeded} Secret(s) deletado(s) com sucesso.`);
-      else if (succeeded > 0) toast.warning(`${succeeded} sucesso(s), ${failed} falha(s).`);
-      else toast.error("Falha na operação em lote.");
+      else if (succeeded > 0) toast.warning(`${succeeded} sucesso(s), ${failed} falha(s).`, { description: errors.join("\n") });
+      else toast.error("Falha ao deletar secret(s).", { description: errors[0] ?? "Erro desconhecido" });
     } catch (err) {
       toast.error("Erro na operação em lote", { description: err instanceof Error ? err.message : "Erro desconhecido" });
     } finally {
@@ -424,11 +428,18 @@ export const SecretMonitorTable = ({
                 <span className="font-medium text-foreground">{selectedKeys.size}</span> Secret(s) selecionado(s)
               </span>
               <div className="flex-1" />
-              <ProtectedAction showWarning={false}>
+              {/* Helm revision secrets podem ser deletados por qualquer usuário autenticado */}
+              {selectedObjects.every(i => i.name.startsWith("sh.helm.release.")) ? (
                 <Button variant="outline" size="sm" className="h-7 text-xs text-destructive border-destructive/40 hover:bg-destructive/10 hover:border-destructive gap-1" onClick={() => setBulkAction("delete")}>
                   <Trash2 className="w-3 h-3" /> Deletar ({selectedKeys.size})
                 </Button>
-              </ProtectedAction>
+              ) : (
+                <ProtectedAction showWarning={false}>
+                  <Button variant="outline" size="sm" className="h-7 text-xs text-destructive border-destructive/40 hover:bg-destructive/10 hover:border-destructive gap-1" onClick={() => setBulkAction("delete")}>
+                    <Trash2 className="w-3 h-3" /> Deletar ({selectedKeys.size})
+                  </Button>
+                </ProtectedAction>
+              )}
             </div>
           )}
         </div>

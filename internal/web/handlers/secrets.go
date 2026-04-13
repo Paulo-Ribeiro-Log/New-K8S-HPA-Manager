@@ -629,11 +629,31 @@ func (h *SecretHandler) Describe(c *gin.Context) {
 	})
 }
 
-// Delete deleta um Secret específico
+// Delete deleta um Secret específico.
+// Secrets de revisão Helm (sh.helm.release.*) podem ser removidos por qualquer usuário autenticado.
+// Outros secrets requerem membership no grupo SRE.
 func (h *SecretHandler) Delete(c *gin.Context) {
 	cluster := c.Param("cluster")
 	namespace := c.Param("namespace")
 	name := c.Param("name")
+
+	// Verificar permissão: Helm revision secrets são removíveis por qualquer autenticado;
+	// secrets regulares requerem SRE.
+	isHelmRevision := strings.HasPrefix(name, "sh.helm.release.")
+	if !isHelmRevision {
+		isSREVal, exists := c.Get("isSRE")
+		isSRE, _ := isSREVal.(bool)
+		if !exists || !isSRE {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "FORBIDDEN",
+					"message": "Remoção de secrets requer permissão SRE (grupo VV_CLOUD_SRE)",
+				},
+			})
+			return
+		}
+	}
 
 	if cluster == "" || namespace == "" || name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
