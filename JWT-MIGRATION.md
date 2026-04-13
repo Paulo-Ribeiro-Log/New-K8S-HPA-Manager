@@ -32,23 +32,16 @@ Checklist de implementação. Continuar de qualquer chat lendo este arquivo + `C
 
 ---
 
-## Fase 2 — Middleware dual-mode
+## Fase 2 — Middleware dual-mode ✅ CONCLUÍDA
 
-- [ ] Adicionar em `internal/web/middleware/auth.go`:
-  - `func JWTAuthMiddleware(jwtManager *auth.JWTManager, staticToken string) gin.HandlerFunc`:
-    - Se `!jwtManager.IsConfigured()`: delegar para lógica atual de token estático (backward compat)
-    - Se configurado: `jwtManager.Validate(token)` → 401 se inválido/expirado; injetar `c.Set("jwt_claims", claims)` se OK
-  - `func WebSocketJWTAuthMiddleware(jwtManager *auth.JWTManager, staticToken string) gin.HandlerFunc`: mesmo dual-mode aceitando query param `?token=`
-- [ ] Adaptar `internal/web/middleware/rbac.go` — todos os handlers verificam `c.Get("jwt_claims")` primeiro:
-  - `RequireSREGroup()`: se claims presente → `claims.IsSRE` diretamente; senão → comportamento atual (az CLI)
-  - `OptionalSRECheck()`: idem
-  - `GetUserPermissions()`: se claims presente → montar resposta `{ email, isSRE, groups:[] }` do JWT; senão → chamar az CLI
-  - `InjectUserEmail()`: se claims presente → `c.Set("user_email", claims.Email)`; senão → az CLI
-- [ ] Em `internal/web/server.go`:
-  - Substituir `api.Use(middleware.AuthMiddleware(s.token))` → `api.Use(middleware.JWTAuthMiddleware(s.jwtManager, s.token))`
-  - Substituir `wsShell.Use(middleware.WebSocketAuthMiddleware(s.token))` → `wsShell.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))`
-- [ ] `make build` + testar com token estático (deve continuar funcionando quando `K8S_HPA_JWT_SECRET` ausente)
-- [ ] Testar com `K8S_HPA_JWT_SECRET` configurado + JWT obtido na Fase 1
+- [x] Adicionar em `internal/web/middleware/auth.go`:
+  - `JWTAuthMiddleware`: dual-mode (JWT quando configurado, token estático como fallback)
+  - `WebSocketJWTAuthMiddleware`: mesmo dual-mode aceitando query param `?token=`
+- [x] Adaptar `internal/web/middleware/rbac.go` — helper `jwtClaimsFromCtx` + todos leem claims primeiro:
+  - `RequireSREGroup()`, `OptionalSRECheck()`, `GetUserPermissions()`, `InjectUserEmail()`
+- [x] `server.go`: `api.Use` → `JWTAuthMiddleware`; todos `WebSocketAuthMiddleware` → `WebSocketJWTAuthMiddleware`
+- [x] Testado: token estático funciona sem `K8S_HPA_JWT_SECRET` (200/401 corretos)
+- [x] Testado: JWT válido → 200; token estático rejeitado quando JWT configurado (401); `/permissions` retorna claims do JWT
 
 ---
 

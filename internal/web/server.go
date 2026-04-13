@@ -477,16 +477,16 @@ func (s *Server) setupRoutes() {
 	s.router.POST("/api/v1/auth/logout", authHandler.Logout)
 	s.router.POST("/api/v1/auth/refresh", authHandler.RefreshToken)
 
-	// API v1 (com auth)
+	// API v1 (com auth — dual-mode: JWT quando configurado, token estático como fallback)
 	api := s.router.Group("/api/v1")
-	api.Use(middleware.AuthMiddleware(s.token))
+	api.Use(middleware.JWTAuthMiddleware(s.jwtManager, s.token))
 
 	// WebSocket endpoints (com auth via query param + RBAC SRE-only)
-	// Usa WebSocketAuthMiddleware para aceitar token via query parameter
+	// Usa WebSocketJWTAuthMiddleware para aceitar token via query parameter (dual-mode JWT/estático)
 	podExecHandler := handlers.NewPodExecHandler(s.kubeManager)
 
 	wsShell := s.router.Group("/api/v1/pods/:cluster/:namespace/:name")
-	wsShell.Use(middleware.WebSocketAuthMiddleware(s.token))
+	wsShell.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))
 	wsShell.Use(rbacMiddleware.RequireSREGroup())
 	{
 		wsShell.GET("/shell", podExecHandler.HandleShell)
@@ -783,7 +783,7 @@ func (s *Server) setupRoutes() {
 	commandRunnerHandler := handlers.NewCommandRunnerHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker, s.aiHandler)
 	// SSE stream: usa WebSocketAuthMiddleware para aceitar token via query param
 	s.router.GET("/api/v1/command-runner/stream/:sessionId",
-		middleware.WebSocketAuthMiddleware(s.token),
+		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
 		commandRunnerHandler.Stream)
 	cmdRunner := api.Group("/command-runner")
 	{
@@ -1247,7 +1247,7 @@ func (s *Server) setupRoutes() {
 
 		// SSE stream - requer token via query param (EventSource não suporta headers)
 		sseGroup := s.router.Group("/api/v1/healthcheck")
-		sseGroup.Use(middleware.WebSocketAuthMiddleware(s.token))
+		sseGroup.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))
 		{
 			sseGroup.GET("/progress", healthCheckHandler.Progress)                      // Original: 1 conexão por cluster
 			sseGroup.GET("/progress-multiplex", healthCheckHandler.ProgressMultiplexed) // 🆕 Multiplexado: 1 conexão para TODOS os clusters
