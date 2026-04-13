@@ -6,31 +6,29 @@ Checklist de implementação. Continuar de qualquer chat lendo este arquivo + `C
 
 ---
 
-## Fase 1 — Backend JWT core
+## Fase 1 — Backend JWT core ✅ CONCLUÍDA
 
-- [ ] Verificar se `github.com/golang-jwt/jwt/v5` está no vendor; se não, adicionar com `go get` + `go mod vendor`
-- [ ] Criar `internal/auth/jwt.go`:
+- [x] Verificar se `github.com/golang-jwt/jwt/v5` está no vendor — já presente (v5.3.0)
+- [x] Criar `internal/auth/jwt.go`:
   - Struct `JWTClaims { Email, Name string; IsSRE bool; jwt.RegisteredClaims }`
   - Struct `JWTManager { secret []byte; ttl time.Duration; issuer string }`
   - `NewJWTManager(secret []byte, ttl time.Duration) *JWTManager`
   - `func (m *JWTManager) IsConfigured() bool` → `len(m.secret) >= 32`
   - `func (m *JWTManager) Generate(email, name string, isSRE bool) (string, error)` → HS256, exp = now+ttl
   - `func (m *JWTManager) Validate(tokenStr string) (*JWTClaims, error)` → valida assinatura + expiração
-- [ ] Criar `internal/web/handlers/auth.go`:
+- [x] Criar `internal/web/handlers/auth.go`:
   - Struct `AuthHandler { jwtManager *auth.JWTManager; rbacManager *rbac.RBACManager; disableAD bool }`
   - `NewAuthHandler(jwtManager, rbacManager, disableAD) *AuthHandler`
   - `func (h *AuthHandler) Login(c *gin.Context)`:
-    - Se `disableAD=true`: gerar JWT com `email="bypass@emergency.mode"`, `isSRE=true`
-    - Se `!jwtManager.IsConfigured()`: retornar 501 `{ error: "JWT não configurado" }`
-    - Caso normal: chamar `rbacManager.GetCurrentUserEmail(ctx)` → `GetUserPermissions(ctx, email)` → `jwtManager.Generate(email, "", isSRE)` → retornar `{ token, email, isSRE, expiresAt }`
-  - `func (h *AuthHandler) Logout(c *gin.Context)`: retornar 200 `{ message: "ok" }` (stateless)
-  - `func (h *AuthHandler) RefreshToken(c *gin.Context)`: validar JWT atual → gerar novo com mesmos claims
-- [ ] Registrar endpoints no `internal/web/server.go` **fora** do grupo autenticado (sem AuthMiddleware):
-  - `POST /api/v1/auth/login` → `authHandler.Login`
-  - `POST /api/v1/auth/logout` → `authHandler.Logout`
-  - `POST /api/v1/auth/refresh` → `authHandler.RefreshToken`
-- [ ] Ler `K8S_HPA_JWT_SECRET` e `K8S_HPA_JWT_TTL` (padrão 8h) em `cmd/web.go` ou `NewServer`; criar `JWTManager`; passar para `NewAuthHandler` e demais componentes
-- [ ] Testar: `curl -X POST http://localhost:8080/api/v1/auth/login` → retorna JWT (em modo `--ad`)
+    - Se `!jwtManager.IsConfigured()`: retorna 501 `{ error: "JWT não configurado", code: "JWT_NOT_CONFIGURED" }`
+    - Se `disableAD=true`: gera JWT com `email="bypass@emergency.mode"`, `isSRE=true`
+    - Caso normal: `GetCurrentUserEmail` → `GetUserPermissions` → `Generate` → retorna `{ token, email, is_sre, expires_at, ttl_hours }`
+  - `func (h *AuthHandler) Logout(c *gin.Context)`: 200 stateless
+  - `func (h *AuthHandler) RefreshToken(c *gin.Context)`: valida JWT atual → emite novo com mesmos claims
+- [x] Registrar endpoints no `internal/web/server.go` **fora** do grupo autenticado:
+  - `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `POST /api/v1/auth/refresh`
+- [x] Ler `K8S_HPA_JWT_SECRET` e `K8S_HPA_JWT_TTL` em `NewServer`; `jwtManager` adicionado ao struct `Server`
+- [x] Testado: `POST /auth/login` com `--ad` → JWT válido; sem `K8S_HPA_JWT_SECRET` → `IsConfigured()=false` (501)
 
 ---
 
