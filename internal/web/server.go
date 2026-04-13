@@ -854,10 +854,10 @@ func (s *Server) setupRoutes() {
 		secrets.POST("/diff", secretHandler.Diff)
 		secrets.POST("/validate", secretHandler.Validate)
 
-		// Secrets - Write Operations (SRE-only)
+		// Secrets - Write Operations (SRE-only, exceto remoção de revision secrets do Helm)
 		secrets.POST("/:cluster/:namespace", rbacMiddleware.RequireSREGroup(), secretHandler.Create)
 		secrets.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), secretHandler.Apply)
-		secrets.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), secretHandler.Delete)
+		secrets.DELETE("/:cluster/:namespace/:name", rbacMiddleware.OptionalSRECheck(), secretHandler.Delete)
 	}
 
 	// Certificates TLS

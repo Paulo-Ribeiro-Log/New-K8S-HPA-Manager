@@ -767,13 +767,19 @@ export const SecretsTab = ({
     if (!selectedSecret) return;
     setIsDeleting(true);
     try {
+      const token = localStorage.getItem("auth_token") || "poc-token-123";
       const response = await fetch(
         `/api/v1/secrets/${selectedSecret.cluster}/${selectedSecret.namespace}/${selectedSecret.name}`,
-        { method: "DELETE", headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` } }
+        { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }
       );
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error?.message || `HTTP ${response.status}`);
+        const error = await response.json().catch(() => ({}));
+        const msg =
+          error.error?.message ||
+          (typeof error.error === "string" ? error.error : null) ||
+          error.message ||
+          `HTTP ${response.status}`;
+        throw new Error(msg);
       }
       toast.success("Secret deletado com sucesso!", { description: `${selectedSecret.namespace}/${selectedSecret.name}` });
       setSelectedSecret(null);
