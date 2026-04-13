@@ -140,6 +140,59 @@ class APIClient {
     localStorage.removeItem("auth_token");
   }
 
+  /** Tenta login via JWT no backend. Retorna os dados do token emitido. */
+  async login(): Promise<{ token: string; email: string; isSRE: boolean; expiresAt: string }> {
+    const res = await fetch(`${API_BASE_URL}/auth/login`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw Object.assign(new Error(data.error || "Login failed"), { status: res.status, code: data.code });
+    this.setToken(data.token);
+    return { token: data.token, email: data.email, isSRE: data.is_sre, expiresAt: data.expires_at };
+  }
+
+  /** Logout stateless — descarta token localmente. */
+  async logout(): Promise<void> {
+    try {
+      await fetch(`${API_BASE_URL}/auth/logout`, {
+        method: "POST",
+        headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
+      });
+    } finally {
+      this.clearToken();
+    }
+  }
+
+  /**
+   * Verifica se o token armazenado é um JWT expirado.
+   * Retorna false para tokens não-JWT (backward compat com token estático).
+   */
+  isTokenExpired(): boolean {
+    const token = this.token;
+    if (!token) return false;
+    const parts = token.split(".");
+    if (parts.length !== 3) return false; // não é JWT
+    try {
+      const payload = JSON.parse(atob(parts[1]));
+      if (!payload.exp) return false;
+      return Date.now() / 1000 > payload.exp;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Decodifica claims do JWT localmente (sem verificar assinatura). */
+  getTokenClaims(): { email?: string; isSRE?: boolean } | null {
+    const token = this.token;
+    if (!token) return null;
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    try {
+      const payload = JSON.parse(atob(parts[1]));
+      return { email: payload.email, isSRE: payload.is_sre };
+    } catch {
+      return null;
+    }
+  }
+
   setGitHubEmail(email: string) {
     console.log('🔧 [APIClient] Setting GitHub email:', email);
     this.gitHubEmail = email;

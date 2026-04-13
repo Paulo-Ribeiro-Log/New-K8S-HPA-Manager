@@ -29,7 +29,12 @@ const App = () => {
     const token = localStorage.getItem("auth_token");
     if (token) {
       apiClient.setToken(token);
-      setIsAuthenticated(true);
+      // JWT expirado → forçar novo login
+      if (apiClient.isTokenExpired()) {
+        apiClient.clearToken();
+      } else {
+        setIsAuthenticated(true);
+      }
     }
     setIsChecking(false);
   }, []);

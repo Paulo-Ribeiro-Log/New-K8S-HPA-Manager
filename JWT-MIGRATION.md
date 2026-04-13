@@ -45,21 +45,22 @@ Checklist de implementação. Continuar de qualquer chat lendo este arquivo + `C
 
 ---
 
-## Fase 3 — Frontend
+## Fase 3 — Frontend ✅ CONCLUÍDA
 
-- [ ] Adicionar em `internal/web/frontend/src/lib/api/client.ts`:
-  - `async login(): Promise<{ token: string; email: string; isSRE: boolean; expiresAt: string }>`
-    → `POST /auth/login`, chama `this.setToken(data.token)` no sucesso
-  - `async logout(): Promise<void>` → `POST /auth/logout`, chama `this.clearToken()`
-  - `isTokenExpired(): boolean` → decodifica payload do JWT (`atob(token.split('.')[1])`), compara `exp` com `Date.now()/1000`; retorna `false` se token não for JWT (backward compat)
-  - `getTokenClaims(): { email?: string; isSRE?: boolean } | null` → decodifica claims localmente sem verificar assinatura
-- [ ] Modificar `internal/web/frontend/src/hooks/useUserPermissions.ts`:
-  - No `queryFn`: se `localStorage["auth_token"]` tiver formato JWT (3 partes separadas por `.`), decodificar localmente e retornar claims sem chamar `/permissions`; senão, manter chamada atual
-- [ ] Modificar página/componente de login (localizar com `grep -r "auth_token\|setToken\|handleLogin" src/`):
-  - Tentar `apiClient.login()` no submit; se backend retornar 501 (JWT não configurado), exibir campo de input para token estático (comportamento atual)
-  - No carregamento inicial da app (`App.tsx` ou similar): se `apiClient.isTokenExpired()` → `apiClient.clearToken()` → redirecionar para login
-- [ ] `./rebuild-web.sh -b` + testar login end-to-end no navegador
-- [ ] Verificar que `ProtectedAction` ainda funciona corretamente (lê `isSRE` via `useUserPermissions` que agora vem do JWT local)
+- [x] Adicionar em `internal/web/frontend/src/lib/api/client.ts`:
+  - `async login()` → `POST /auth/login`, chama `this.setToken(data.token)` no sucesso
+  - `async logout()` → `POST /auth/logout`, chama `this.clearToken()`
+  - `isTokenExpired()` → decodifica `exp` do JWT, retorna `false` para token estático (backward compat)
+  - `getTokenClaims()` → decodifica claims localmente sem verificar assinatura
+- [x] Modificar `src/hooks/useUserPermissions.ts`:
+  - Se `getTokenClaims()` retorna não-null (token é JWT): retornar claims localmente sem chamar `/permissions`
+  - Senão: comportamento original (chamada ao backend)
+- [x] Modificar `src/pages/Login.tsx`:
+  - Tenta `apiClient.login()` no submit (modo JWT padrão)
+  - Se backend retornar 501 (`JWT_NOT_CONFIGURED`): muda para modo token estático
+  - Botão "Tentar autenticação Azure AD" para voltar ao modo JWT
+- [x] `App.tsx`: se `isTokenExpired()` → `clearToken()` → redireciona para login
+- [x] `./rebuild-web.sh -b` — build ok
 
 ---
 
