@@ -512,28 +512,44 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 
 	r.logger.Info().Msg("[Rod] URL validada com sucesso")
 
-	// Verificar sessão antes de qualquer tentativa de browser.
-	// Se não há sessão válida, não tenta autenticar — retorna erro claro.
-	sessionStatus := r.GetSessionStatus()
-	if !sessionStatus.Valid {
-		r.logger.Warn().
-			Str("session_status", sessionStatus.Status).
-			Str("session_dir", sessionStatus.SessionDir).
-			Msg("[Rod] Sessão inválida ou ausente — extração bloqueada")
-		return &PlaywrightResult{
-			Success: false,
-			Error:   "Sessão não autenticada. Acesse Menu de Perfil → ServiceNow Session e faça login antes de extrair dados.",
-		}, nil
-	}
+	// Verificação de sessão:
+	// - Modo Windows (CDP): verifica se o Chrome Windows está rodando com debug port.
+	//   Não faz check de arquivos — o Chrome gerencia os cookies internamente.
+	//   Se o CDP não estiver disponível, informa o usuário para fazer login.
+	// - Modo local (Chromium): verifica o diretório de sessão local.
+	headless := true
 
-	headless := true // sessão válida confirmada — Chrome pode rodar silenciosamente
+	if NeedsWindowsBrowser() {
+		_, cdpErr := WaitCDPReadyHost(WindowsCDPPort, 3*time.Second)
+		if cdpErr != nil {
+			r.logger.Warn().
+				Int("port", WindowsCDPPort).
+				Msg("[Rod WSL] Chrome Windows não está rodando com debug port — login necessário")
+			return &PlaywrightResult{
+				Success: false,
+				Error:   fmt.Sprintf("Chrome Windows não está ativo na porta %d. Acesse Menu de Perfil → ServiceNow Session e clique em 'Fazer Login'.", WindowsCDPPort),
+			}, nil
+		}
+		r.logger.Info().Int("port", WindowsCDPPort).Msg("[Rod WSL] CDP disponível — usando sessão do Chrome Windows")
+	} else {
+		sessionStatus := r.GetSessionStatus()
+		if !sessionStatus.Valid {
+			r.logger.Warn().
+				Str("session_status", sessionStatus.Status).
+				Str("session_dir", sessionStatus.SessionDir).
+				Msg("[Rod] Sessão local inválida ou ausente — extração bloqueada")
+			return &PlaywrightResult{
+				Success: false,
+				Error:   "Sessão não autenticada. Acesse Menu de Perfil → ServiceNow Session e faça login antes de extrair dados.",
+			}, nil
+		}
+	}
 
 	r.logger.Info().
 		Str("url", chgURL).
 		Bool("headless", headless).
-		Bool("session_valid", sessionStatus.Valid).
-		Str("session_status", sessionStatus.Status).
-		Str("session_dir", r.sessionDir).
+		Bool("wsl_mode", NeedsWindowsBrowser()).
+		Str("session_dir", r.activeSessionDir()).
 		Msg("[Rod] Configuração de sessão verificada")
 
 	// Iniciar browser (local ou Windows via CDP conforme ambiente e configuração)
