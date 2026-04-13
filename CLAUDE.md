@@ -438,11 +438,28 @@ Ver implementação em `PodQuickViewModal.tsx`.
 
 Usar essas funções ao calcular percentuais de uso vs. limit/request. **Nunca calcular percentuais inline em componentes** — usar os parsers do `monitorUtils`.
 
-### ServiceNow — WSL2 CDP Browser
+### ServiceNow — Rod (Go nativo) + WSL2 CDP
 
-`internal/servicenow/` — integração com ServiceNow via API + autenticação SAML/SSO reutilizando sessão do Chrome/Edge do Windows a partir do WSL2 via Chrome DevTools Protocol (CDP).
+`internal/servicenow/` — extração de CHGs via browser automation com **go-rod v0.116.2** (Go nativo, sem Node.js/npm). Suporta autenticação SAML/SSO do Azure AD com persistência de sessão.
 
-`internal/web/handlers/servicenow.go` + `wsl_browser.go`: abre URLs do ServiceNow diretamente no Chrome Windows (não no navegador Linux do WSL). O CDP conecta na porta `9222` do `localhost` Windows (mapeada via WSL2 networking). Fallback: abre via `cmd.exe /c start` se CDP não disponível.
+**Dois modos de execução** (selecionados automaticamente por `NeedsWindowsBrowser()`):
+- **Modo local**: Chromium baixado automaticamente pelo Rod (`launcher.New()`). Sessão em `~/.k8s-hpa-manager/rod-session/`.
+- **Modo Windows/WSL2**: Chrome/Edge do Windows via CDP na porta **`9223`** (não 9222 — evita conflito com instâncias existentes). Rod conecta em `ws://<windows-host>:9223`. Sessão no caminho Windows configurado em `BrowserConfig.WindowsSessionDir`.
+
+**Precedência de `NeedsWindowsBrowser()`:**
+1. Env var `K8S_HPA_WINDOWS_BROWSER=true` — força modo Windows
+2. Config persistida em `~/.k8s-hpa-manager/servicenow-browser.json`
+3. Auto-detect: WSL sem display gráfico (`DISPLAY`/`WAYLAND_DISPLAY` vazios)
+
+**Sessão Azure AD**: expira em ~8h. `RodExtractor.GetSessionStatus()` valida pelo timestamp de modificação do diretório. `ClearSession()` remove e recria o diretório vazio.
+
+**Endpoints de gerenciamento de sessão:**
+- `GET /api/v1/servicenow/session-status` — status da sessão atual
+- `DELETE /api/v1/servicenow/session` — limpar sessão
+- `POST /api/v1/servicenow/session/test` — testar autenticação
+- `GET/PUT /api/v1/servicenow/browser-config` — ler/gravar `BrowserConfig`
+
+**Compatibilidade de frontend**: `RodExtractor.GetStatus()` retorna campos `playwright_configured`/`script_exists` como `true` para não quebrar o frontend legado (que esperava Playwright).
 
 ### Certificates
 
@@ -492,7 +509,8 @@ Usar essas funções ao calcular percentuais de uso vs. limit/request. **Nunca c
 | Colunas CPU/MEM no monitor se movem juntas | Data cells com `text-right` criam ilusão de movimento ao arrastar — manter alinhamento à esquerda nas células de dados |
 | Conntrack: snapshot sempre vazio | Pod efêmero precisa de permissão `hostNetwork: true` e acesso ao node. Verificar se o cluster permite pods privilegiados |
 | Conntrack: histórico não carrega | Prometheus indisponível — comportamento esperado (fallback gracioso). Verificar URL do Prometheus em `/api/v1/monitoring/v2/` |
-| ServiceNow não abre no navegador (WSL2) | CDP não conectou na porta 9222. Iniciar Chrome com `--remote-debugging-port=9222` ou verificar firewall WSL2 |
+| ServiceNow não abre no navegador (WSL2) | CDP não conectou na porta 9223. Iniciar Chrome com `--remote-debugging-port=9223` ou verificar firewall WSL2. Ver `WindowsCDPPort` em `wsl_browser.go` |
+| ServiceNow extrai mas não autentica | Sessão expirada (>8h). Limpar sessão via `DELETE /api/v1/servicenow/session` e re-autenticar no Chrome Windows |
 
 ---
 

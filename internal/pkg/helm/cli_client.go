@@ -74,7 +74,9 @@ func NewCLIClient(opts ...Option) *CLIClient {
 
 // ListReleases executes `helm list` and returns the parsed releases.
 func (c *CLIClient) ListReleases(ctx context.Context, opts ListReleasesOptions) ([]ReleaseSummary, error) {
-	args := []string{"list", "--output", "json"}
+	// --all retorna releases em todos os estados (deployed, failed, pending-*, uninstalling, superseded).
+	// Sem esse flag, `helm list` exibe apenas releases com status "deployed".
+	args := []string{"list", "--output", "json", "--all"}
 
 	if opts.Namespace != "" {
 		args = append(args, "--namespace", opts.Namespace)
