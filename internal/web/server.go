@@ -449,7 +449,7 @@ func (s *Server) setupRoutes() {
 	})
 
 	// Shutdown endpoint (com auth)
-	s.router.POST("/shutdown", middleware.AuthMiddleware(s.token), func(c *gin.Context) {
+	s.router.POST("/shutdown", middleware.JWTAuthMiddleware(s.jwtManager, s.token), func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"message": "Servidor será desligado em 1 segundo...",
 		})

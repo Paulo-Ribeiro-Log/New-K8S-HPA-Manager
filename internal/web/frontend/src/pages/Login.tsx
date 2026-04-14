@@ -13,7 +13,7 @@ export const Login = ({ onLogin }: LoginProps) => {
   // jwtMode=true → tenta /auth/login automaticamente
   // jwtMode=false → backend respondeu 501 (JWT não configurado), usa token estático
   const [jwtMode, setJwtMode] = useState(true);
-  const [token, setToken] = useState("poc-token-123");
+  const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 

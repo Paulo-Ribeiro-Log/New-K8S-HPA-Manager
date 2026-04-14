@@ -767,7 +767,7 @@ export const SecretsTab = ({
     if (!selectedSecret) return;
     setIsDeleting(true);
     try {
-      const token = localStorage.getItem("auth_token") || "poc-token-123";
+      const token = localStorage.getItem("auth_token");
       const response = await fetch(
         `/api/v1/secrets/${selectedSecret.cluster}/${selectedSecret.namespace}/${selectedSecret.name}`,
         { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }

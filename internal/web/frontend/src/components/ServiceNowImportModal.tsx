@@ -225,7 +225,7 @@ export function ServiceNowImportModal({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`,
+          "Authorization": `Bearer ${localStorage.getItem("auth_token")}`,
         },
         body: JSON.stringify({ description: description.trim() }),
       });

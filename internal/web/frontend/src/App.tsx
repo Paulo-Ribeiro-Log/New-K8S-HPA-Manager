@@ -37,6 +37,13 @@ const App = () => {
       }
     }
     setIsChecking(false);
+
+    // Evento disparado pelo APIClient quando refresh falha (sessão expirada)
+    const onExpired = () => {
+      setIsAuthenticated(false);
+    };
+    window.addEventListener("jwt-expired", onExpired);
+    return () => window.removeEventListener("jwt-expired", onExpired);
   }, []);
 
   const handleLogin = () => {

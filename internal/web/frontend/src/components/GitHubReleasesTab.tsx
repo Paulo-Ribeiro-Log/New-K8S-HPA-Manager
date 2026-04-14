@@ -187,7 +187,7 @@ export const GitHubReleasesTab = () => {
         const response = await fetch(`/api/v1/github/deployments/scan?cluster=${encodeURIComponent(clusterName)}`, {
           method: "POST",
           headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`,
+            'Authorization': `Bearer ${localStorage.getItem("auth_token")}`,
           },
         });
 
@@ -262,7 +262,7 @@ export const GitHubReleasesTab = () => {
         `/api/v1/github/deployments/production?app_name=${encodeURIComponent(deploymentName)}`,
         {
           headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`
+            'Authorization': `Bearer ${localStorage.getItem("auth_token")}`
           }
         }
       );
@@ -285,7 +285,7 @@ export const GitHubReleasesTab = () => {
         `/api/v1/github/deployments/registry`,
         {
           headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`
+            'Authorization': `Bearer ${localStorage.getItem("auth_token")}`
           }
         }
       );
@@ -310,7 +310,7 @@ export const GitHubReleasesTab = () => {
       
       const githubEmail = localStorage.getItem('github_email');
       const headers: Record<string, string> = {
-        'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`
+        'Authorization': `Bearer ${localStorage.getItem("auth_token")}`
       };
 
       // Adicionar X-GitHub-Email se existir
@@ -434,7 +434,7 @@ export const GitHubReleasesTab = () => {
 
       const githubEmail = localStorage.getItem('github_email');
       const headers: Record<string, string> = {
-        'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`
+        'Authorization': `Bearer ${localStorage.getItem("auth_token")}`
       };
 
       if (githubEmail) {
@@ -621,7 +621,7 @@ export const GitHubReleasesTab = () => {
           `/api/v1/github/deployments/production?app_name=${encodeURIComponent(data.deploymentName)}`,
           {
             headers: {
-              'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`
+              'Authorization': `Bearer ${localStorage.getItem("auth_token")}`
             }
           }
         );

@@ -895,7 +895,7 @@ const HistoryTab = ({
     const secretName = `sh.helm.release.v1.${release}.v${revision}`;
     setDeletingRevision(revision);
     try {
-      const token = localStorage.getItem('auth_token') || 'poc-token-123';
+      const token = localStorage.getItem('auth_token');
       const response = await fetch(
         `/api/v1/secrets/${cluster}/${namespace}/${secretName}`,
         { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }

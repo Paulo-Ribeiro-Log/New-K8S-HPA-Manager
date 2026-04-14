@@ -74,7 +74,7 @@ export function useHealthCheckProgressMultiplexed(options: UseHealthCheckProgres
     setCompletedClusters(new Set());
 
     // Criar conexão SSE multiplexada (com token via query param)
-    const token = localStorage.getItem("auth_token") || "poc-token-123";
+    const token = localStorage.getItem("auth_token");
     const clustersParam = clusters.join(',');
     const url = `/api/v1/healthcheck/progress-multiplex?session=${sessionId}&clusters=${encodeURIComponent(clustersParam)}&token=${token}`;
 

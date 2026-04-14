@@ -97,6 +97,32 @@ func (m *JWTManager) Validate(tokenStr string) (*JWTClaims, error) {
 	return claims, nil
 }
 
+// ValidateForRefresh valida assinatura e issuer do token, aceitando tokens expirados
+// há no máximo 24h. Usado exclusivamente pelo endpoint de refresh para que o
+// analista não precise refazer az login durante o dia de trabalho.
+func (m *JWTManager) ValidateForRefresh(tokenStr string) (*JWTClaims, error) {
+	if !m.IsConfigured() {
+		return nil, errors.New("JWT não configurado")
+	}
+
+	token, err := jwt.ParseWithClaims(tokenStr, &JWTClaims{}, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("algoritmo de assinatura inesperado: %v", t.Header["alg"])
+		}
+		return m.secret, nil
+	}, jwt.WithIssuer(m.issuer), jwt.WithLeeway(24*time.Hour))
+
+	if err != nil {
+		return nil, fmt.Errorf("token inválido para refresh: %w", err)
+	}
+
+	claims, ok := token.Claims.(*JWTClaims)
+	if !ok {
+		return nil, errors.New("claims inválidos")
+	}
+	return claims, nil
+}
+
 // TTL retorna o tempo de vida configurado para os tokens.
 func (m *JWTManager) TTL() time.Duration {
 	return m.ttl

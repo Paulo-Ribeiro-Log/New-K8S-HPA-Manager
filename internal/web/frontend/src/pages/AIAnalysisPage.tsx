@@ -50,7 +50,7 @@ export function AIAnalysisPage() {
         console.log("[AIAnalysisPage] Fetching from backend:", `/api/v1/ai/history/${id}`);
         const response = await fetch(`/api/v1/ai/history/${id}`, {
           headers: {
-            Authorization: `Bearer ${localStorage.getItem("token")}`,
+            Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
           },
         });
 
