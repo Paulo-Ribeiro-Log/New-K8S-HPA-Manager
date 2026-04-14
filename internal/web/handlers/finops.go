@@ -148,7 +148,13 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 	}
 
 	// Gerar relatório (com Prometheus e Storage opcionais)
-	calc := finops.NewCalculator(h.pricer, h.diskPricer, h.exchange)
+	// prometheusURL também é passado ao StorageCalculator para obter uso real de Blob/Files
+	// via kubelet_volume_stats_used_bytes (capacidade placeholder > 50 TB → fallback para uso real)
+	storagePromURL := strings.TrimSpace(c.Query("prometheus_url"))
+	if storagePromURL == "" {
+		storagePromURL = discovery.GetPrometheusURL(cluster)
+	}
+	calc := finops.NewCalculator(h.pricer, h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL)
 	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces, dtEnricher, enricher)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao gerar relatório")
