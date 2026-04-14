@@ -142,8 +142,24 @@ func NewAzurePricer(region string) (*AzurePricer, error) {
 	return &AzurePricer{db: db, region: region}, nil
 }
 
+// normalizeVMSize converte o SKU para o formato canônico Azure (Standard_F4s_v2).
+// K8s/AKS às vezes reporta a letra da família em minúsculo (Standard_f4s_v2).
+func normalizeVMSize(vmSize string) string {
+	for _, prefix := range []string{"Standard_", "Basic_"} {
+		if strings.HasPrefix(vmSize, prefix) {
+			rest := vmSize[len(prefix):]
+			if len(rest) > 0 {
+				return prefix + strings.ToUpper(rest[:1]) + rest[1:]
+			}
+		}
+	}
+	return vmSize
+}
+
 // GetPrice retorna o preço USD/hora de um VM SKU, buscando na API se não estiver em cache.
 func (p *AzurePricer) GetPrice(vmSize string) (price float64, source string, err error) {
+	vmSize = normalizeVMSize(vmSize)
+
 	// 1. Verificar cache SQLite
 	cached, err := p.getFromCache(vmSize)
 	if err == nil {
@@ -179,6 +195,7 @@ func (p *AzurePricer) GetVMSpecs(vmSize string) (cpuCores, memGB int) {
 
 // GetVMSpecs retorna (vCPU, RAM GB) para um SKU. Retorna (0,0) se desconhecido.
 func GetVMSpecs(vmSize string) (cpuCores, memGB int) {
+	vmSize = normalizeVMSize(vmSize)
 	if specs, ok := vmSpecs[vmSize]; ok {
 		return specs[0], specs[1]
 	}
