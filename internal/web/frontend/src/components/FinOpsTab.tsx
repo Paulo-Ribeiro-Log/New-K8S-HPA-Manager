@@ -2767,7 +2767,8 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
   const STORAGE_COLORS = ["#0ea5e9", "#8b5cf6", "#06b6d4", "#a78bfa", "#38bdf8", "#7c3aed"];
 
   // Quebrar storage por tipo real (by_storage_class) excluindo custo de orfãos
-  // proporcionalmente — o desperdício já entra no slice "Desperdício identificado"
+  // proporcionalmente — o desperdício já entra no slice "Desperdício identificado".
+  // Nota: osDiskCost NÃO faz parte de by_storage_class — é adicionado separadamente.
   const byClass = (storage?.by_storage_class ?? [])
     .filter(sc => sc.monthly_cost_brl > 0)
     .sort((a, b) => b.monthly_cost_brl - a.monthly_cost_brl);
@@ -2775,24 +2776,39 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
   // orphanedCost é de PVCs — ratio contra pvcCost (não storageCost que inclui OS disk)
   const orphanRatio = pvcCost > 0 ? orphanedCost / pvcCost : 0;
   const storageSlices: { name: string; value: number; fill: string }[] = [];
+
+  // 1. Disco OS (sempre separado — não é PVC, não sofre orphan ratio)
+  if (osDiskCost > 0) {
+    storageSlices.push({ name: "Disco OS", value: Math.round(osDiskCost), fill: STORAGE_COLORS[0] });
+  }
+
+  // 2. PVCs: breakdown por tipo se disponível, senão bucket genérico
   if (byClass.length > 0) {
-    const TOP = 5;
+    const TOP = 4; // 4 tipos + "Outros" para não ultrapassar 6 cores
     const topItems = byClass.slice(0, TOP);
     const restCost = byClass.slice(TOP).reduce((s, sc) => s + sc.monthly_cost_brl, 0);
+    let pvcSliceTotal = 0;
     topItems.forEach((sc, i) => {
       const prodCost = Math.round(sc.monthly_cost_brl * (1 - orphanRatio));
       if (prodCost > 0) {
-        storageSlices.push({ name: sc.azure_type, value: prodCost, fill: STORAGE_COLORS[i] ?? "#64748b" });
+        storageSlices.push({ name: sc.azure_type || sc.storage_class, value: prodCost, fill: STORAGE_COLORS[i + 1] ?? "#64748b" });
+        pvcSliceTotal += prodCost;
       }
     });
     if (restCost > 0) {
       const prodRest = Math.round(restCost * (1 - orphanRatio));
-      if (prodRest > 0) storageSlices.push({ name: "Outros storage", value: prodRest, fill: "#64748b" });
+      if (prodRest > 0) {
+        storageSlices.push({ name: "Outros PVCs", value: prodRest, fill: "#64748b" });
+        pvcSliceTotal += prodRest;
+      }
     }
-  } else if (osDiskCost > 0 || pvcActiveCost > 0) {
-    // Fallback: sem breakdown por tipo, usar buckets genéricos
-    if (osDiskCost > 0) storageSlices.push({ name: "Disco OS", value: Math.round(osDiskCost), fill: STORAGE_COLORS[0] });
-    if (pvcActiveCost > 0) storageSlices.push({ name: "PVCs ativos", value: Math.round(pvcActiveCost), fill: STORAGE_COLORS[1] });
+    // Fallback: se todos ficaram zerados pelo orphanRatio mas há PVCs ativos, mostra agregado
+    if (pvcSliceTotal === 0 && pvcActiveCost > 0) {
+      storageSlices.push({ name: "PVCs ativos", value: Math.round(pvcActiveCost), fill: STORAGE_COLORS[1] });
+    }
+  } else if (pvcActiveCost > 0) {
+    // Sem breakdown por tipo — bucket genérico
+    storageSlices.push({ name: "PVCs ativos", value: Math.round(pvcActiveCost), fill: STORAGE_COLORS[1] });
   }
 
   const pieData = [
