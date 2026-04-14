@@ -175,6 +175,20 @@ func (e *PrometheusEnricher) EnrichWorkloads(ctx context.Context, workloads []Fi
 		Msg("FinOps/Prom: enriquecimento concluído")
 }
 
+// EnrichWorkloadsPartial é igual a EnrichWorkloads mas pula workloads já enriquecidos
+// pelo Dynatrace (presentes em dtEnriched). Marca MetricsSource="prometheus" nos enriquecidos.
+func (e *PrometheusEnricher) EnrichWorkloadsPartial(ctx context.Context, workloads []FinOpsWorkload, dtEnriched map[string]bool) {
+	e.EnrichWorkloads(ctx, workloads)
+	// Ajustar source: workloads não marcados pelo DT que agora têm dados = prometheus
+	for i := range workloads {
+		wl := &workloads[i]
+		key := wl.Namespace + "/" + wl.Workload
+		if !dtEnriched[key] && wl.MetricsSource == "" && (wl.CPUP95Millis > 0 || wl.MemP95Mi > 0) {
+			wl.MetricsSource = "prometheus"
+		}
+	}
+}
+
 // queryContainerMetric executa uma query que retorna métricas por container
 // e agrega por pod (soma containers do mesmo pod). Retorna map["ns/pod"] → valor.
 func (e *PrometheusEnricher) queryContainerMetric(ctx context.Context, query, label string) map[string]float64 {

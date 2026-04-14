@@ -86,6 +86,7 @@ interface FinOpsWorkload {
   hpa_never_scaled?: boolean;
   avg_replicas_cost_brl?: number;
   waste_brl?: number;
+  metrics_source?: "dynatrace" | "prometheus" | "";
   // Storage — PVCs correlacionados
   storage_cost_usd?: number;
   storage_cost_brl?: number;
@@ -1778,9 +1779,17 @@ function WorkloadsTab({ workloads, windowDays }: { workloads: FinOpsWorkload[]; 
                   <TableCell className="text-right font-semibold">{fmtBRL(w.cost_share_brl)}</TableCell>
                   {hasPrometheus && (
                     <TableCell className="text-right font-semibold">
-                      {(w.waste_brl ?? 0) > 0
-                        ? <span className="text-red-500">{fmtBRL(w.waste_brl!)}</span>
-                        : <span className="text-muted-foreground">—</span>}
+                      {(w.waste_brl ?? 0) > 0 ? (
+                        <span className="flex items-center justify-end gap-1">
+                          <span className="text-red-500">{fmtBRL(w.waste_brl!)}</span>
+                          {w.metrics_source === "dynatrace" && (
+                            <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">DT</span>
+                          )}
+                          {w.metrics_source === "prometheus" && (
+                            <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">Prom</span>
+                          )}
+                        </span>
+                      ) : <span className="text-muted-foreground">—</span>}
                     </TableCell>
                   )}
                   <TableCell className="text-center font-mono text-[11px]">
@@ -4123,7 +4132,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 className="h-3.5 w-3.5 cursor-pointer"
               />
               <Activity className="h-3 w-3" />
-              Análise histórica Prometheus
+              <span title="Fonte primária: Dynatrace (quando configurado). Fallback: Prometheus">Análise histórica</span>
             </label>
             {withPrometheus && (
               <Select value={String(windowDays)} onValueChange={v => setWindowDays(Number(v))}>
