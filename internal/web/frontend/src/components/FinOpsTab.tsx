@@ -1757,7 +1757,11 @@ function WorkloadsTab({ workloads, windowDays }: { workloads: FinOpsWorkload[]; 
                     <TableCell className="text-right font-mono text-[11px]">
                       {(w.cpu_p95_millis ?? 0) > 0 ? (
                         <span className="flex flex-col items-end leading-tight">
-                          <span className="text-muted-foreground">{Math.round(w.cpu_avg_millis ?? 0)}m / {Math.round(w.cpu_p95_millis!)}m</span>
+                          <span className="flex items-center gap-1 text-muted-foreground">
+                            <span>{Math.round(w.cpu_avg_millis ?? 0)}m / {Math.round(w.cpu_p95_millis!)}m</span>
+                            {w.metrics_source === "dynatrace" && <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">DT</span>}
+                            {w.metrics_source === "prometheus" && <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">Prom</span>}
+                          </span>
                           <span className="text-blue-500 font-semibold">→ {Math.round(w.cpu_recommended_millis ?? 0)}m</span>
                         </span>
                       ) : "—"}
@@ -1770,13 +1774,26 @@ function WorkloadsTab({ workloads, windowDays }: { workloads: FinOpsWorkload[]; 
                     <TableCell className="text-right font-mono text-[11px]">
                       {(w.mem_p95_mi ?? 0) > 0 ? (
                         <span className="flex flex-col items-end leading-tight">
-                          <span className="text-muted-foreground">{Math.round(w.mem_avg_mi ?? 0)}Mi / {Math.round(w.mem_p95_mi!)}Mi</span>
+                          <span className="flex items-center gap-1 text-muted-foreground">
+                            <span>{Math.round(w.mem_avg_mi ?? 0)}Mi / {Math.round(w.mem_p95_mi!)}Mi</span>
+                            {w.metrics_source === "dynatrace" && <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">DT</span>}
+                            {w.metrics_source === "prometheus" && <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">Prom</span>}
+                          </span>
                           <span className="text-blue-500 font-semibold">→ {Math.round(w.mem_recommended_mi ?? 0)}Mi</span>
                         </span>
                       ) : "—"}
                     </TableCell>
                   )}
-                  <TableCell className="text-right font-semibold">{fmtBRL(w.cost_share_brl)}</TableCell>
+                  <TableCell className="text-right font-semibold">
+                    <span className="flex flex-col items-end leading-tight">
+                      <span>{fmtBRL(w.cost_share_brl)}</span>
+                      {(w.avg_replicas_cost_brl ?? 0) > 0 && w.avg_replicas_cost_brl !== w.cost_share_brl && (
+                        <span className="text-[9px] text-muted-foreground" title="Custo estimado com base na média real de réplicas (HPA)">
+                          avg répl.: {fmtBRL(w.avg_replicas_cost_brl!)}
+                        </span>
+                      )}
+                    </span>
+                  </TableCell>
                   {hasPrometheus && (
                     <TableCell className="text-right font-semibold">
                       {(w.waste_brl ?? 0) > 0 ? (
@@ -1789,7 +1806,17 @@ function WorkloadsTab({ workloads, windowDays }: { workloads: FinOpsWorkload[]; 
                             <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">Prom</span>
                           )}
                         </span>
-                      ) : <span className="text-muted-foreground">—</span>}
+                      ) : (
+                        <span className="flex items-center justify-end gap-1">
+                          <span className="text-muted-foreground">—</span>
+                          {w.metrics_source === "dynatrace" && (
+                            <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">DT</span>
+                          )}
+                          {w.metrics_source === "prometheus" && (
+                            <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">Prom</span>
+                          )}
+                        </span>
+                      )}
                     </TableCell>
                   )}
                   <TableCell className="text-center font-mono text-[11px]">
@@ -2704,7 +2731,7 @@ const CATEGORY_COLOR: Record<string, string> = {
   nodepool: "#0ea5e9",
 };
 
-function RelatorioTab({ report, windowDays, cluster }: { report: FinOpsReport; windowDays: number; cluster: string }) {
+function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: FinOpsReport; windowDays: number; cluster: string }) {
   const { summary, workloads, node_pools } = report;
   const storage = report.storage;
   const pvcs = report.pvcs ?? [];
@@ -3699,6 +3726,11 @@ function OpportunitiesTab({ workloads, windowDays }: {
               <div className="text-right flex-shrink-0 space-y-0.5">
                 <p className="text-[10px] text-muted-foreground">custo atual</p>
                 <p className="text-sm font-semibold">{fmtBRL(w.cost_share_brl)}/mês</p>
+                {(w.avg_replicas_cost_brl ?? 0) > 0 && w.avg_replicas_cost_brl !== w.cost_share_brl && (
+                  <p className="text-[10px] text-muted-foreground">
+                    custo real (avg répl.): <span className="text-foreground font-medium">{fmtBRL(w.avg_replicas_cost_brl!)}</span>
+                  </p>
+                )}
                 {w.saving > 0 ? (
                   <>
                     <p className="text-[10px] text-muted-foreground mt-1">economia estimada</p>
@@ -3727,9 +3759,13 @@ function OpportunitiesTab({ workloads, windowDays }: {
               </p>
             )}
             {(w.cpu_p95_millis ?? 0) > 0 && (
-              <p>CPU — request: <span className="font-mono">{fmtMillis(w.cpu_request_millis)}</span>
-                {" · "}P95: <span className="font-mono">{fmtMillis(w.cpu_p95_millis!)}</span>
-                {w.cpu_recommended_millis && <span> · recomendado: <span className="font-mono text-amber-600">{fmtMillis(w.cpu_recommended_millis)}</span></span>}
+              <p className="flex items-center gap-1 flex-wrap">
+                <span>CPU — request: <span className="font-mono">{fmtMillis(w.cpu_request_millis)}</span>
+                  {" · "}P95: <span className="font-mono">{fmtMillis(w.cpu_p95_millis!)}</span>
+                  {w.cpu_recommended_millis && <span> · recomendado: <span className="font-mono text-amber-600">{fmtMillis(w.cpu_recommended_millis)}</span></span>}
+                </span>
+                {w.metrics_source === "dynatrace" && <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">DT</span>}
+                {w.metrics_source === "prometheus" && <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">Prom</span>}
               </p>
             )}
             {(w.mem_p95_mi ?? 0) > 0 && (
