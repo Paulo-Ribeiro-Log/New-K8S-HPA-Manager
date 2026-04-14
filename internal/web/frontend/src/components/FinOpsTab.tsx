@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,7 @@ import {
   DollarSign, TrendingDown, TrendingUp, AlertTriangle, CheckCircle2,
   Loader2, RefreshCw, Server, Layers, CircleDollarSign,
   ArrowUpDown, Info, ChevronDown, ChevronUp, Download, Brain, Activity, Cpu, MemoryStick,
-  GitCompare, Database, Copy, Check, ChevronsUpDown,
+  GitCompare, Database, Copy, Check, ChevronsUpDown, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
@@ -484,7 +484,10 @@ const LINE_COLORS = ["#6366f1","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4"
 // ─── Aba: Dashboard ───────────────────────────────────────────────────────────
 
 function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsReport }) {
-  const { summary, namespaces, node_pools, workloads } = report;
+  const { summary } = report;
+  const node_pools = report.node_pools ?? [];
+  const workloads  = report.workloads  ?? [];
+  const namespaces = report.namespaces ?? [];
   const [days, setDays] = useState(30);
 
   // ── Fetch timeline ──────────────────────────────────────────────────────────
@@ -2733,7 +2736,9 @@ const CATEGORY_COLOR: Record<string, string> = {
 };
 
 function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: FinOpsReport; windowDays: number; cluster: string }) {
-  const { summary, workloads, node_pools } = report;
+  const { summary } = report;
+  const workloads  = report.workloads  ?? [];
+  const node_pools = report.node_pools ?? [];
   const storage = report.storage;
   const pvcs = report.pvcs ?? [];
   const contentRef = useRef<HTMLDivElement>(null);
@@ -3512,7 +3517,8 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
 
 // ─── Aba: Armazenamento ───────────────────────────────────────────────────────
 
-function StorageTab({ pvcs, storage }: { pvcs: PVCCostItem[]; storage: StorageSummary }) {
+function StorageTab({ pvcs: pvcsRaw, storage }: { pvcs: PVCCostItem[]; storage: StorageSummary }) {
+  const pvcs = pvcsRaw ?? [];
   const [filterNs, setFilterNs] = useState("all");
   const [filterType, setFilterType] = useState("all");
   const [sortBy, setSortBy] = useState<"cost" | "gb" | "name">("cost");
@@ -4159,24 +4165,27 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
 
   const [cluster, setCluster] = useState(defaultCluster);
   const [clusterOpen, setClusterOpen] = useState(false);
-  const [triggerKey, setTriggerKey] = useState(0);
   const [withPrometheus, setWithPrometheus] = useState(true);
   const [windowDays, setWindowDays] = useState(30);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiExpanded, setAiExpanded] = useState(true);
+  const aiAbortRef = useRef<AbortController | null>(null);
 
   // Estado persistente da aba HPA Histórico (sobrevive a troca de tabs)
   const [hpaHistoryDays, setHpaHistoryDays] = useState(30);
 
+  const queryClient = useQueryClient();
+
   const { data: report, isLoading, error, refetch } = useQuery<FinOpsReport>({
-    queryKey: ["finops-report", cluster, triggerKey],
-    queryFn: async () => {
+    queryKey: ["finops-report", cluster],
+    queryFn: async ({ signal }) => {
       let url = `/api/v1/finops/report?cluster=${encodeURIComponent(cluster)}`;
       if (withPrometheus) {
         url += `&with_prometheus=true&window_days=${windowDays}`;
       }
       const r = await fetch(url, {
+        signal,
         headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
       });
       if (!r.ok) {
@@ -4185,8 +4194,8 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
       }
       return r.json();
     },
-    enabled: !!cluster,
-    staleTime: 5 * 60 * 1000,
+    enabled: false,        // nunca re-fetcha automaticamente ao montar
+    staleTime: Infinity,   // cache permanece válido indefinidamente
     retry: false,
   });
 
@@ -4222,16 +4231,25 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
   };
 
   const analyzeWithAI = async () => {
+    // Se já está carregando, cancela
+    if (aiLoading) {
+      aiAbortRef.current?.abort();
+      setAiLoading(false);
+      toast.info("Análise AI cancelada");
+      return;
+    }
     if (!report) return;
     const aiEmail = localStorage.getItem("ai_email") ?? "";
     if (!aiEmail) {
       toast.error("Configure seu e-mail de AI em Configurações → AI Settings");
       return;
     }
+    aiAbortRef.current = new AbortController();
     setAiLoading(true);
     setAiAnalysis(null);
     try {
       const r = await fetch("/api/v1/finops/analyze", {
+        signal: aiAbortRef.current.signal,
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -4248,6 +4266,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
       setAiExpanded(true);
       toast.success("Análise AI concluída");
     } catch (err) {
+      if ((err as Error).name === "AbortError") return; // cancelado pelo usuário
       toast.error("Falha na análise AI: " + (err as Error).message);
     } finally {
       setAiLoading(false);
@@ -4297,11 +4316,19 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 </Command>
               </PopoverContent>
             </Popover>
-            <Button size="sm" variant="outline" className="h-8 gap-1"
-              onClick={() => { setTriggerKey(k => k + 1); refetch(); setAiAnalysis(null); }}
-              disabled={isLoading}>
-              <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
-              Analisar
+            <Button size="sm" variant={isLoading ? "destructive" : "outline"} className="h-8 gap-1"
+              onClick={() => {
+                if (isLoading) {
+                  queryClient.cancelQueries({ queryKey: ["finops-report", cluster] });
+                } else {
+                  setAiAnalysis(null);
+                  refetch();
+                }
+              }}>
+              {isLoading
+                ? <X className="h-3.5 w-3.5" />
+                : <RefreshCw className="h-3.5 w-3.5" />}
+              {isLoading ? "Cancelar" : "Analisar"}
             </Button>
             {report && (
               <>
@@ -4309,12 +4336,12 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                   <Download className="h-3.5 w-3.5" />
                   CSV
                 </Button>
-                <Button size="sm" variant="outline" className="h-8 gap-1"
-                  onClick={analyzeWithAI} disabled={aiLoading}>
+                <Button size="sm" variant={aiLoading ? "destructive" : "outline"} className="h-8 gap-1"
+                  onClick={analyzeWithAI}>
                   {aiLoading
-                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ? <X className="h-3.5 w-3.5" />
                     : <Brain className="h-3.5 w-3.5" />}
-                  {aiLoading ? "Analisando..." : "Analisar com AI"}
+                  {aiLoading ? "Cancelar AI" : "Analisar com AI"}
                 </Button>
               </>
             )}
@@ -4377,7 +4404,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
             <span>
               {report.cluster.replace("-admin", "")} · gerado em {new Date(report.generated_at).toLocaleTimeString("pt-BR")}
               {" · "}câmbio USD/BRL: <strong>R$ {report.exchange_rate.toFixed(4)}</strong> ({report.exchange_date})
-              {" · "}{report.node_pools.length} node pools · {report.summary.workloads_analyzed} workloads
+              {" · "}{(report.node_pools ?? []).length} node pools · {report.summary.workloads_analyzed} workloads
             </span>
             {!withPrometheus && report.window_days === 0 && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border border-amber-300 dark:border-amber-700">
@@ -4414,7 +4441,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
               <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
               <TabsTrigger value="nodepools">
                 Node Pools
-                <Badge variant="secondary" className="ml-1 text-[10px]">{report.node_pools.length}</Badge>
+                <Badge variant="secondary" className="ml-1 text-[10px]">{(report.node_pools ?? []).length}</Badge>
               </TabsTrigger>
               <TabsTrigger value="workloads">
                 Workloads
@@ -4457,10 +4484,10 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 <DashboardTab cluster={cluster} report={report} />
               </TabsContent>
               <TabsContent value="nodepools" className="mt-0 h-full">
-                <NodePoolsTab pools={report.node_pools} workloads={report.workloads} cluster={cluster} />
+                <NodePoolsTab pools={report.node_pools ?? []} workloads={report.workloads ?? []} cluster={cluster} />
               </TabsContent>
               <TabsContent value="workloads" className="mt-0 h-full">
-                <WorkloadsTab workloads={report.workloads} windowDays={report.window_days || windowDays} />
+                <WorkloadsTab workloads={report.workloads ?? []} windowDays={report.window_days || windowDays} />
               </TabsContent>
               <TabsContent value="hpa-history" className="mt-0 h-full">
                 <HPAHistoryTab cluster={cluster} days={hpaHistoryDays} setDays={setHpaHistoryDays} />
@@ -4471,7 +4498,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 </TabsContent>
               )}
               <TabsContent value="opportunities" className="mt-0 h-full">
-                <OpportunitiesTab workloads={report.workloads} summary={report.summary} windowDays={report.window_days || windowDays} />
+                <OpportunitiesTab workloads={report.workloads ?? []} summary={report.summary} windowDays={report.window_days || windowDays} />
               </TabsContent>
               <TabsContent value="report" className="mt-0 h-full">
                 <RelatorioTab report={report} windowDays={report.window_days || windowDays} cluster={cluster} />
