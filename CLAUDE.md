@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual estável: `v1.3.32`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent.
+**IMPORTANTE**: Versão atual estável: `v1.3.32`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-3 concluídas): backend JWT core, middleware dual-mode e login automático Azure AD no frontend.
 **IMPORTANTE**: Após `make build`, sempre reiniciar o servidor (`kill <PID> && ./build/new-k8s-hpa web -f`) — o processo não recarrega o binário automaticamente.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
@@ -255,9 +255,33 @@ history.Log(entry)
 
 `internal/sanitizer/` mascara automaticamente IPv4, JWT, Bearer tokens, passwords, API keys antes de enviar contexto para IA. Nunca enviar dados brutos de log diretamente para AI providers — sempre passar pelo sanitizer.
 
-### Variável de Ambiente
+### Variáveis de Ambiente (Auth)
 
-`K8S_HPA_WEB_TOKEN` — token de autenticação da API (default: `poc-token-123` se não definido).
+| Variável | Descrição | Padrão |
+|----------|-----------|--------|
+| `K8S_HPA_WEB_TOKEN` | Token estático legado (backward compat) | `poc-token-123` |
+| `K8S_HPA_JWT_SECRET` | Secret para assinar JWTs (mín. 32 bytes — ativa modo JWT) | não definido |
+| `K8S_HPA_JWT_TTL` | TTL dos tokens JWT (ex: `8h`, `24h`) | `8h` |
+
+### Autenticação JWT (branch `migracao-jwt`)
+
+**Dual-mode**: quando `K8S_HPA_JWT_SECRET` está definido, o sistema opera em modo JWT; caso contrário, cai para token estático (`K8S_HPA_WEB_TOKEN`). O middleware `JWTAuthMiddleware` em `internal/web/middleware/auth.go` decide automaticamente.
+
+**Pacote `internal/auth/`**:
+- `jwt.go` — `JWTManager`: `Generate()`, `Validate()`, `IsConfigured()`, `TTL()`. Claims: `email`, `name`, `is_sre`.
+
+**Endpoints de auth** (`internal/web/handlers/auth.go`) — sem middleware de autenticação prévia:
+- `POST /auth/login` — obtém email via `az account show`, verifica grupo AD, emite JWT. Retorna `TOKEN_EXPIRED` (código `401`) quando expirado ou `JWT_NOT_CONFIGURED` (`501`) quando secret ausente.
+- `POST /auth/logout` — stateless, apenas instrui o frontend a descartar o token.
+- `POST /auth/refresh` — valida JWT atual, emite novo com mesmo email/isSRE sem re-consultar Azure AD.
+
+**Frontend**:
+- `Login.tsx`: tenta `/auth/login` automaticamente (modo JWT). Se receber `501 JWT_NOT_CONFIGURED`, cai para campo de token estático.
+- `apiClient.isTokenExpired()`: decodifica JWT do localStorage e verifica `exp` localmente sem requisição.
+- Auto-refresh: antes de cada requisição, se o token expirou, `apiClient` tenta `POST /auth/refresh`. Se falhar, dispara evento `jwt-expired` (capturado em `App.tsx` → logout).
+- `App.tsx`: ouve evento `jwt-expired` via `window.addEventListener` para forçar re-login.
+
+**WebSocket**: `WebSocketJWTAuthMiddleware` aceita JWT via query param `?token=<JWT>` (mesmo dual-mode).
 
 ### Monitoring V2
 
@@ -470,7 +494,7 @@ Usar essas funções ao calcular percentuais de uso vs. limit/request. **Nunca c
 ## RBAC Azure AD
 
 - **Grupo SRE**: `VV_CLOUD_SRE` (ID: `eb865ea5-2672-49be-abc8-74c248c556b0`)
-- Backend: `internal/rbac/azure_ad.go` + middleware em `internal/web/middleware/rbac.go`
+- Backend: `internal/rbac/azure_ad.go` + middleware em `internal/web/middleware/rbac.go` (RBAC de grupo). Auth de request: `internal/web/middleware/auth.go` (`JWTAuthMiddleware`)
 - Frontend: hook `useUserPermissions()` + componente `<ProtectedAction>` para proteger botões
 - Cache: TTL de 1 hora para permissões
 - Rotas destrutivas (POST/PUT/DELETE) protegidas automaticamente pelo middleware
@@ -481,6 +505,10 @@ Usar essas funções ao calcular percentuais de uso vs. limit/request. **Nunca c
 
 | Problema | Solução |
 |----------|---------|
+| JWT: login retorna 501 | `K8S_HPA_JWT_SECRET` não definido no servidor — frontend cai para token estático automaticamente |
+| JWT: login retorna "AZ_CLI_ERROR" | Azure CLI não autenticado no servidor — executar `az login` no servidor |
+| JWT: token expira antes do esperado | Verificar `K8S_HPA_JWT_TTL` (padrão `8h`); refresh automático falhou — verificar logs do servidor |
+| JWT: frontend em loop de login | `isTokenExpired()` retornando true mas refresh retornando 401 — limpar `localStorage` manualmente |
 | Frontend não atualiza | `./rebuild-web.sh -b` + Ctrl+Shift+R |
 | Build falha sem versão | `git fetch --tags --prune` |
 | Race condition em testes | Verificar mutex em `internal/config/kubeconfig.go` |

@@ -98,7 +98,7 @@ export function useSaveSession() {
       const response = await fetch('/api/v1/sessions', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer poc-token-123`,
+          'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(sessionData),

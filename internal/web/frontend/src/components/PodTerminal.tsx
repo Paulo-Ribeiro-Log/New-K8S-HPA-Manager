@@ -122,7 +122,7 @@ export const PodTerminal = ({
     const endpoint = ephemeral ? "debug" : "shell";
     
     // Obter token de autenticação
-    const token = localStorage.getItem("auth_token") || "poc-token-123";
+    const token = localStorage.getItem("auth_token");
     
     const wsUrl = `${protocol}//${host}/api/v1/pods/${cluster}/${namespace}/${pod}/${endpoint}?container=${container}&shell=${shell}${ephemeral ? '&image=nicolaka/netshoot' : ''}&token=${encodeURIComponent(token)}`;
 

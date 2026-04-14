@@ -92,7 +92,7 @@ export const PrometheusEditor = ({ resource, selectedCluster, onRefetch }: Prome
         {
           method: 'POST',
           headers: {
-            'Authorization': 'Bearer poc-token-123',
+            'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}`,
             'Content-Type': 'application/json',
           },
         }

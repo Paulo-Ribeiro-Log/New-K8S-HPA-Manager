@@ -56,7 +56,7 @@ export function EditSessionModal({ session, open, onOpenChange, onSave }: EditSe
         {
           method: 'PUT',
           headers: {
-            'Authorization': `Bearer poc-token-123`,
+            'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(editedSession),
@@ -76,7 +76,7 @@ export function EditSessionModal({ session, open, onOpenChange, onSave }: EditSe
           `/api/v1/sessions/${encodeURIComponent(editedSession.name)}${folderQuery}`,
           {
             headers: {
-              'Authorization': `Bearer poc-token-123`,
+              'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}`,
               'Content-Type': 'application/json',
             },
           }

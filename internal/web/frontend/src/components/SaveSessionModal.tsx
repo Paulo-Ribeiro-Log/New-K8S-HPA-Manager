@@ -185,7 +185,7 @@ export function SaveSessionModal({ open, onOpenChange, onSuccess }: SaveSessionM
       console.log('[fetchClusterDataForSnapshot] Buscando HPAs:', hpaUrl);
 
       const hpaResponse = await fetch(hpaUrl, {
-        headers: { 'Authorization': 'Bearer poc-token-123' }
+        headers: { 'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}` }
       });
 
       if (!hpaResponse.ok) {
@@ -198,7 +198,7 @@ export function SaveSessionModal({ open, onOpenChange, onSuccess }: SaveSessionM
       // Buscar Node Pools
       const npUrl = `/api/v1/nodepools?cluster=${encodeURIComponent(selectedCluster)}`;
       const npResponse = await fetch(npUrl, {
-        headers: { 'Authorization': 'Bearer poc-token-123' }
+        headers: { 'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}` }
       });
 
       if (!npResponse.ok) {

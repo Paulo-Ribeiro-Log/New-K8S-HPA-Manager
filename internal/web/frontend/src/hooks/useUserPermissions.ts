@@ -21,8 +21,14 @@ export function useUserPermissions() {
   return useQuery<UserPermissions>({
     queryKey: ['user-permissions'],
     queryFn: async () => {
+      // Modo JWT: decodificar claims localmente sem chamar o backend
+      const claims = apiClient.getTokenClaims();
+      if (claims !== null) {
+        return { email: claims.email ?? '', isSRE: claims.isSRE ?? false, groups: [] };
+      }
+      // Modo token estático: comportamento original
       const response = await apiClient.get<UserPermissions>('/permissions');
-      return response; // Backend retorna diretamente {email, isSRE, groups}, sem wrapping
+      return response;
     },
     staleTime: 1000 * 60 * 60, // Cache por 1 hora
     retry: 1,

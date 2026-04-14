@@ -355,7 +355,7 @@ export const DependenciesTab = () => {
 
       const response = await fetch(`/api/v1/dependencies/export?${params}`, {
         headers: {
-          Authorization: `Bearer ${localStorage.getItem("auth_token") || "poc-token-123"}`,
+          Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
         },
       });
 

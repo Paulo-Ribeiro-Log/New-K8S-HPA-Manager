@@ -490,7 +490,7 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
     queryFn: async () => {
       const r = await fetch(
         `/api/v1/finops/timeline?cluster=${encodeURIComponent(cluster)}&days=${days}`,
-        { headers: { Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}` } }
+        { headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` } }
       );
       if (!r.ok) throw new Error(`Timeline: ${r.status}`);
       return r.json();
@@ -1162,7 +1162,7 @@ function PoolSKUAlternatives({ pool, cpuPct, memPct }: {
     queryFn: async () => {
       const r = await fetch(
         `/api/v1/finops/vm-alternatives?sku=${encodeURIComponent(pool.vm_size)}&cpu_pct=${cpuPct}&mem_pct=${memPct}&node_count=${pool.node_count}`,
-        { headers: { Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}` } }
+        { headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` } }
       );
       if (!r.ok) throw new Error("vm-alternatives error");
       return r.json();
@@ -1246,7 +1246,7 @@ function NodePoolsTab({ pools, workloads, cluster }: {
     queryFn: async () => {
       const r = await fetch(
         `/api/v1/finops/timeline?cluster=${encodeURIComponent(cluster)}&days=30`,
-        { headers: { Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}` } }
+        { headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` } }
       );
       if (!r.ok) throw new Error("Timeline error");
       return r.json();
@@ -2188,7 +2188,7 @@ function HPAHistoryTab({
   const [selectedSnap1, setSelectedSnap1] = useState<string>("");
   const [selectedSnap2, setSelectedSnap2] = useState<string>("");
 
-  const token = localStorage.getItem("token") || "poc-token-123";
+  const token = localStorage.getItem("auth_token");
   const authHeaders = { Authorization: `Bearer ${token}` };
 
   // ── Timeline principal (useQuery preserva dados ao trocar de aba) ──────────
@@ -2704,12 +2704,14 @@ function RelatorioTab({ report, windowDays, cluster }: { report: FinOpsReport; w
   const [exporting, setExporting] = useState(false);
 
   // ── Breakdown de custo ────────────────────────────────────────────────────
+  // storage.total_monthly_cost_brl = somente PVCs (OS disk fica em os_disk_cost_brl)
   const computeCost  = summary.total_monthly_cost_brl;
-  const storageCost  = storage?.total_monthly_cost_brl ?? 0;
-  const totalCost    = computeCost + storageCost;
-  const osDiskCost   = storage?.os_disk_cost_brl ?? 0;
-  const pvcOnlyCost  = storageCost - osDiskCost;
+  const pvcCost      = storage?.total_monthly_cost_brl ?? 0;   // PVCs apenas
+  const osDiskCost   = storage?.os_disk_cost_brl ?? 0;          // Disco OS separado
+  const storageCost  = pvcCost + osDiskCost;                    // storage real = PVC + OS disk
+  const totalCost    = summary.total_with_storage_brl ?? (computeCost + storageCost);
   const orphanedCost = storage?.orphaned_cost_brl ?? 0;
+  const pvcActiveCost = Math.max(0, pvcCost - orphanedCost);   // PVCs montados (sem orfãos)
 
   // Desperdício identificado no compute
   const prometheusWaste = workloads.reduce((s, w) => s + (w.waste_brl ?? 0), 0);
@@ -2721,12 +2723,43 @@ function RelatorioTab({ report, windowDays, cluster }: { report: FinOpsReport; w
   const savingPct = totalCost > 0 ? Math.round(totalIdentifiedWaste / totalCost * 100) : 0;
 
   // ── Pie chart ─────────────────────────────────────────────────────────────
-  const prodCompute  = Math.max(0, computeCost - computeWaste);
-  const prodStorage  = Math.max(0, storageCost - orphanedCost);
+  const prodCompute = Math.max(0, computeCost - computeWaste);
+
+  // Cores para tipos de storage (até 6 tipos individuais antes de agrupar em "Outros")
+  const STORAGE_COLORS = ["#0ea5e9", "#8b5cf6", "#06b6d4", "#a78bfa", "#38bdf8", "#7c3aed"];
+
+  // Quebrar storage por tipo real (by_storage_class) excluindo custo de orfãos
+  // proporcionalmente — o desperdício já entra no slice "Desperdício identificado"
+  const byClass = (storage?.by_storage_class ?? [])
+    .filter(sc => sc.monthly_cost_brl > 0)
+    .sort((a, b) => b.monthly_cost_brl - a.monthly_cost_brl);
+
+  // orphanedCost é de PVCs — ratio contra pvcCost (não storageCost que inclui OS disk)
+  const orphanRatio = pvcCost > 0 ? orphanedCost / pvcCost : 0;
+  const storageSlices: { name: string; value: number; fill: string }[] = [];
+  if (byClass.length > 0) {
+    const TOP = 5;
+    const topItems = byClass.slice(0, TOP);
+    const restCost = byClass.slice(TOP).reduce((s, sc) => s + sc.monthly_cost_brl, 0);
+    topItems.forEach((sc, i) => {
+      const prodCost = Math.round(sc.monthly_cost_brl * (1 - orphanRatio));
+      if (prodCost > 0) {
+        storageSlices.push({ name: sc.azure_type, value: prodCost, fill: STORAGE_COLORS[i] ?? "#64748b" });
+      }
+    });
+    if (restCost > 0) {
+      const prodRest = Math.round(restCost * (1 - orphanRatio));
+      if (prodRest > 0) storageSlices.push({ name: "Outros storage", value: prodRest, fill: "#64748b" });
+    }
+  } else if (osDiskCost > 0 || pvcActiveCost > 0) {
+    // Fallback: sem breakdown por tipo, usar buckets genéricos
+    if (osDiskCost > 0) storageSlices.push({ name: "Disco OS", value: Math.round(osDiskCost), fill: STORAGE_COLORS[0] });
+    if (pvcActiveCost > 0) storageSlices.push({ name: "PVCs ativos", value: Math.round(pvcActiveCost), fill: STORAGE_COLORS[1] });
+  }
+
   const pieData = [
-    ...(prodCompute > 0   ? [{ name: "Compute produtivo",  value: Math.round(prodCompute),  fill: "#6366f1" }] : []),
-    ...(osDiskCost > 0    ? [{ name: "Disco OS",           value: Math.round(osDiskCost),   fill: "#0ea5e9" }] : []),
-    ...(pvcOnlyCost - orphanedCost > 0 ? [{ name: "PVCs ativos", value: Math.round(pvcOnlyCost - orphanedCost), fill: "#8b5cf6" }] : []),
+    ...(prodCompute > 0          ? [{ name: "Compute produtivo",       value: Math.round(prodCompute),       fill: "#6366f1" }] : []),
+    ...storageSlices,
     ...(totalIdentifiedWaste > 0 ? [{ name: "Desperdício identificado", value: Math.round(totalIdentifiedWaste), fill: "#ef4444" }] : []),
   ];
 
@@ -2849,11 +2882,14 @@ function RelatorioTab({ report, windowDays, cluster }: { report: FinOpsReport; w
     cx: number; cy: number; midAngle: number; outerRadius: number;
     name: string; value: number; percent: number;
   }) => {
-    // Para segmentos muito pequenos usar raio maior para não colar no pie
-    const radius = percent < 0.04 ? outerRadius + 50 : outerRadius + 32;
+    const radius = percent < 0.04 ? outerRadius + 52 : outerRadius + 34;
     const x = cx + radius * Math.cos(-midAngle * RADIAN);
     const y = cy + radius * Math.sin(-midAngle * RADIAN);
-    const anchor = x > cx ? "start" : "end";
+    // Próximo do topo ou base: centralizar; nos lados: alinhar à direita/esquerda
+    const normAngle = ((midAngle % 360) + 360) % 360;
+    const anchor = (normAngle > 75 && normAngle < 105) || (normAngle > 255 && normAngle < 285)
+      ? "middle"
+      : x > cx ? "start" : "end";
     const shortName = name.split(" ").slice(0, 2).join(" ");
     return (
       <g>
@@ -3133,8 +3169,8 @@ function RelatorioTab({ report, windowDays, cluster }: { report: FinOpsReport; w
             <CardTitle className="text-sm">Composição do Custo</CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-3" ref={pieChartRef}>
-            <ResponsiveContainer width="100%" height={240}>
-              <PieChart margin={{ top: 30, right: 80, bottom: 30, left: 80 }}>
+            <ResponsiveContainer width="100%" height={260}>
+              <PieChart margin={{ top: 40, right: 90, bottom: 40, left: 90 }} {...({ overflow: "visible" } as any)}>
                 <Pie
                   data={pieData}
                   dataKey="value"
@@ -3144,6 +3180,7 @@ function RelatorioTab({ report, windowDays, cluster }: { report: FinOpsReport; w
                   innerRadius={48}
                   outerRadius={70}
                   paddingAngle={2}
+                  minAngle={4}
                   label={renderPieLabel}
                   labelLine={{ stroke: "#94a3b8", strokeWidth: 1, opacity: 0.7 }}
                 >
@@ -3176,7 +3213,7 @@ function RelatorioTab({ report, windowDays, cluster }: { report: FinOpsReport; w
             {[
               { label: "VM Compute", value: computeCost, sub: `${node_pools.reduce((s, p) => s + p.node_count, 0)} nodes · ${node_pools.length} pools`, color: "#6366f1" },
               ...(osDiskCost > 0 ? [{ label: "Disco OS", value: osDiskCost, sub: `${node_pools.reduce((s, p) => s + p.node_count, 0)} discos OS`, color: "#0ea5e9" }] : []),
-              ...(pvcOnlyCost > 0 ? [{ label: "PVCs", value: pvcOnlyCost, sub: `${storage?.pvc_count ?? 0} PVCs · ${Math.round(storage?.total_capacity_gb ?? 0)} GB`, color: "#8b5cf6" }] : []),
+              ...(pvcCost > 0 ? [{ label: "PVCs", value: pvcCost, sub: `${storage?.pvc_count ?? 0} PVCs · ${Math.round(storage?.total_capacity_gb ?? 0)} GB`, color: "#8b5cf6" }] : []),
               ...(totalIdentifiedWaste > 0 ? [{ label: "Desperdício identificado", value: totalIdentifiedWaste, sub: `${savingPct}% do total`, color: "#ef4444" }] : []),
             ].map((row, i) => (
               <div key={i} className="flex items-center gap-2">
@@ -3952,7 +3989,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
         url += `&with_prometheus=true&window_days=${windowDays}`;
       }
       const r = await fetch(url, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}` },
+        headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
@@ -4010,7 +4047,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}`,
+          Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
         },
         body: JSON.stringify({ ai_email: aiEmail, report }),
       });

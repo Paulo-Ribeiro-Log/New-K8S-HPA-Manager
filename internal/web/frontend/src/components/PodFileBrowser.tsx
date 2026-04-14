@@ -75,7 +75,7 @@ export const PodFileBrowser = ({
       }
 
       const url = `/api/v1/pods/${cluster}/${namespace}/${podName}/browse?${params.toString()}`;
-      const token = localStorage.getItem('auth_token') || 'poc-token-123';
+      const token = localStorage.getItem('auth_token');
 
       const response = await fetch(url, {
         headers: {
@@ -184,7 +184,7 @@ export const PodFileBrowser = ({
   const handleBatchDownload = async (paths: string[]) => {
     try {
       const url = `/api/v1/pods/${cluster}/${namespace}/${podName}/download/batch?container=${container}`;
-      const token = localStorage.getItem('auth_token') || 'poc-token-123';
+      const token = localStorage.getItem('auth_token');
 
       const response = await fetch(url, {
         method: 'POST',
