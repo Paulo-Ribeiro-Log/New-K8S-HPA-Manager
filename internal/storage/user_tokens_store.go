@@ -258,6 +258,20 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	return &tokens, nil
 }
 
+// GetDynatraceConfig retorna URL e token Dynatrace do primeiro usuário que os tenha configurados.
+// Satisfaz a interface dtTokenReader usada pelo FinOpsHandler.
+func (s *UserTokensStore) GetDynatraceConfig() (url string, token string, ok bool) {
+	query := `SELECT dynatrace_url, dynatrace_token FROM user_ai_tokens
+	           WHERE dynatrace_url != '' AND dynatrace_token != ''
+	           ORDER BY updated_at DESC LIMIT 1`
+	row := s.client.db.QueryRow(query)
+	var u, t string
+	if err := row.Scan(&u, &t); err != nil {
+		return "", "", false
+	}
+	return u, t, true
+}
+
 // DeleteTokens remove tokens de um usuário
 func (s *UserTokensStore) DeleteTokens(userEmail string) error {
 	if userEmail == "" {
