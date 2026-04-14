@@ -2773,10 +2773,6 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
     .filter(sc => sc.monthly_cost_brl > 0)
     .sort((a, b) => b.monthly_cost_brl - a.monthly_cost_brl);
 
-  // DEBUG — remover após diagnóstico
-  console.log("[FinOps storage] by_storage_class raw:", storage?.by_storage_class);
-  console.log("[FinOps storage] byClass (filtrado > 0):", byClass);
-
   // orphanedCost é de PVCs — ratio contra pvcCost (não storageCost que inclui OS disk)
   const orphanRatio = pvcCost > 0 ? orphanedCost / pvcCost : 0;
   const storageSlices: { name: string; value: number; fill: string }[] = [];
@@ -2820,10 +2816,6 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
     ...storageSlices,
     ...(totalIdentifiedWaste > 0 ? [{ name: "Desperdício identificado", value: Math.round(totalIdentifiedWaste), fill: "#ef4444" }] : []),
   ];
-  // DEBUG — remover após diagnóstico
-  console.log("[FinOps storage] storageSlices:", storageSlices);
-  console.log("[FinOps storage] pieData final:", pieData.map(d => `${d.name}=${d.value}`));
-
   // ── Achados ───────────────────────────────────────────────────────────────
   const findings: Finding[] = [];
 
