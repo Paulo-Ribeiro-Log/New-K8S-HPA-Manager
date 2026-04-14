@@ -120,7 +120,7 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
       const queryString = params.toString();
       const url = `/api/v1/history${queryString ? `?${queryString}` : ""}`;
 
-      const token = localStorage.getItem("auth_token") || "poc-token-123";
+      const token = localStorage.getItem("auth_token");
       const response = await fetch(url, {
         headers: {
           "Authorization": `Bearer ${token}`,
@@ -151,7 +151,7 @@ export function HistoryViewer({ open, onOpenChange }: HistoryViewerProps) {
 
   const fetchStats = async () => {
     try {
-      const token = localStorage.getItem("auth_token") || "poc-token-123";
+      const token = localStorage.getItem("auth_token");
       const response = await fetch("/api/v1/history/stats", {
         headers: {
           "Authorization": `Bearer ${token}`,

@@ -58,26 +58,17 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 		defer cancel()
 
-		var err error
-		email, err = h.rbacManager.GetCurrentUserEmail(ctx)
+		perms, err := h.rbacManager.GetCurrentUserPermissions(ctx)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Não foi possível identificar o usuário. Verifique se o Azure CLI está autenticado no servidor (`az login`).",
-				"code":  "AZ_CLI_ERROR",
+				"error":  "Não foi possível identificar o usuário. Verifique se o Azure CLI está autenticado no servidor (`az login`).",
+				"code":   "AZ_CLI_ERROR",
 				"detail": err.Error(),
 			})
 			return
 		}
-
-		perms, err := h.rbacManager.GetUserPermissions(ctx, email)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":  "Erro ao verificar permissões no Azure AD.",
-				"code":   "AD_PERMISSIONS_ERROR",
-				"detail": err.Error(),
-			})
-			return
-		}
+		email = perms.Email
+		name = email // display name não disponível via az CLI sem chamada Graph extra
 		isSRE = perms.IsSRE
 	}
 
@@ -139,10 +130,12 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	}
 	tokenStr := authHeader[7:]
 
-	claims, err := h.jwtManager.Validate(tokenStr)
+	// ValidateForRefresh aceita tokens expirados há até 24h — o analista não
+	// precisa refazer az login durante o dia de trabalho.
+	claims, err := h.jwtManager.ValidateForRefresh(tokenStr)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{
-			"error":  "Token inválido ou expirado. Faça login novamente.",
+			"error":  "Sessão expirada há mais de 24h. Faça login novamente.",
 			"code":   "INVALID_TOKEN",
 			"detail": err.Error(),
 		})

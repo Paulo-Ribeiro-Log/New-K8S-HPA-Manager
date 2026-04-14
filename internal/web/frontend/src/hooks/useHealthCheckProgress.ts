@@ -76,7 +76,7 @@ export function useHealthCheckProgress(options: UseHealthCheckProgressOptions) {
     }
 
     // Criar conexão SSE (com token via query param pois EventSource não suporta headers)
-    const token = localStorage.getItem("auth_token") || "poc-token-123";
+    const token = localStorage.getItem("auth_token");
     const url = `/api/v1/healthcheck/progress?session=${sessionId}&token=${token}`;
 
     console.log('[useHealthCheckProgress] Criando nova conexão SSE:', { sessionId, url });

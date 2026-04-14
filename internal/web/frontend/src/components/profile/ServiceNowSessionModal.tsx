@@ -63,7 +63,7 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
   const fetchBrowserConfig = async () => {
     try {
       const response = await fetch('/api/v1/servicenow/browser-config', {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}` },
+        headers: { 'Authorization': `Bearer ${localStorage.getItem("auth_token")}` },
       });
       const data = await response.json();
       setForceWindowsBrowser(data.force_windows_browser ?? false);
@@ -81,7 +81,7 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
       await fetch('/api/v1/servicenow/browser-config', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`,
+          'Authorization': `Bearer ${localStorage.getItem("auth_token")}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ force_windows_browser: value, windows_session_dir: customSessionDir }),
@@ -105,7 +105,7 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
       const response = await fetch('/api/v1/servicenow/browser-config', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`,
+          'Authorization': `Bearer ${localStorage.getItem("auth_token")}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ force_windows_browser: forceWindowsBrowser, windows_session_dir: editDirValue.trim() }),
@@ -128,7 +128,7 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
     try {
       const response = await fetch('/api/v1/servicenow/session-status', {
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`,
+          'Authorization': `Bearer ${localStorage.getItem("auth_token")}`,
         },
       });
       const data = await response.json();
@@ -151,7 +151,7 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
       const response = await fetch('/api/v1/servicenow/session', {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`,
+          'Authorization': `Bearer ${localStorage.getItem("auth_token")}`,
         },
       });
       const data = await response.json();
@@ -189,7 +189,7 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
       const response = await fetch('/api/v1/servicenow/session/test', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`,
+          'Authorization': `Bearer ${localStorage.getItem("auth_token")}`,
         },
       });
       const data = await response.json();

@@ -62,6 +62,12 @@ case "$ACTION" in
     start)
         echo "🚀 Iniciando servidor web na porta $PORT..."
 
+        # JWT: usar secret definido no ambiente ou aplicar padrão do projeto
+        if [ -z "$K8S_HPA_JWT_SECRET" ]; then
+            export K8S_HPA_JWT_SECRET="k8s-hpa-manager-jwt-viavarejo-2026-secret"
+        fi
+        export K8S_HPA_JWT_TTL="${K8S_HPA_JWT_TTL:-8h}"
+
         # Verificar se a porta já está em uso
         if netstat -tuln 2>/dev/null | grep -q ":$PORT "; then
             echo "⚠️  Porta $PORT já está em uso"
@@ -80,7 +86,7 @@ case "$ACTION" in
         if curl -s http://localhost:$PORT/health > /dev/null 2>&1; then
             echo "✅ Servidor rodando em http://localhost:$PORT"
             echo "📝 Logs: tail -f $LOG_FILE"
-            echo "🔐 Token: poc-token-123"
+            echo "🔐 Autenticação: Azure AD via JWT (TTL: $K8S_HPA_JWT_TTL)"
         else
             echo "❌ Erro ao iniciar servidor. Verifique logs:"
             tail -20 $LOG_FILE

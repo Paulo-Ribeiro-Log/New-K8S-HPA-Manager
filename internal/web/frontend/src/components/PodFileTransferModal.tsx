@@ -76,7 +76,7 @@ export const PodFileTransferModal = ({
       const url = `/api/v1/pods/${cluster}/${namespace}/${podName}/download?${params.toString()}`;
 
       // Fazer download via fetch com autenticação
-      const token = localStorage.getItem('auth_token') || 'poc-token-123';
+      const token = localStorage.getItem('auth_token');
       const response = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -149,7 +149,7 @@ export const PodFileTransferModal = ({
 
       const url = `/api/v1/pods/${cluster}/${namespace}/${podName}/download?${params.toString()}`;
 
-      const token = localStorage.getItem('auth_token') || 'poc-token-123';
+      const token = localStorage.getItem('auth_token');
       const response = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${token}`,

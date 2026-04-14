@@ -64,11 +64,11 @@ Checklist de implementação. Continuar de qualquer chat lendo este arquivo + `C
 
 ---
 
-## Fase 4 — Fluxo real de produção (Azure CLI no login)
+## Fase 4 — Fluxo real de produção (Azure CLI no login) ✅ CONCLUÍDA
 
-- [ ] Validar que `AuthHandler.Login` no modo não-bypass chama corretamente `GetCurrentUserEmail` + `GetUserPermissions` e emite JWT com `isSRE` real do grupo Azure AD `VV_CLOUD_SRE`
-- [ ] Testar com ambiente VPN + Azure CLI autenticado no servidor
-- [ ] Implementar auto-refresh: frontend chama `POST /auth/refresh` quando `isTokenExpired()` for verdadeiro (no interceptor do `apiClient.request()` ou via `useEffect` periódico)
+- [x] `AuthHandler.Login` simplificado para usar `rbacManager.GetCurrentUserPermissions()` (encapsula `GetCurrentUserEmail` + `GetUserPermissions` em uma chamada). JWT emitido com `isSRE` real do grupo `VV_CLOUD_SRE`. Bug de `name` vazio corrigido: `name = perms.Email` (display name não disponível via az CLI sem chamada extra ao Graph API — KISS).
+- [x] Auto-refresh já implementado em Fase 3: `apiClient.tryRefreshToken()` chamado automaticamente no interceptor `request()` quando `isTokenExpired()` retornar true. Falha no refresh → limpa token → dispara `jwt-expired` → App.tsx redireciona para login.
+- [ ] **Pendente (manual):** Testar fluxo completo com VPN + `az login` ativo no servidor — verificar que login retorna JWT com `is_sre` correto e que refresh funciona end-to-end.
 
 ---
 

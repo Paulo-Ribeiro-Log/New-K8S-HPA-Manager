@@ -52,7 +52,7 @@ export const DeploymentScanModal = ({ open, onOpenChange }: DeploymentScanModalP
           const response = await fetch(`/api/v1/github/deployments/scan?cluster=${cluster}`, {
             method: "POST",
             headers: {
-              'Authorization': `Bearer ${localStorage.getItem('token') || 'poc-token-123'}`
+              'Authorization': `Bearer ${localStorage.getItem("auth_token")}`
             }
           });
 

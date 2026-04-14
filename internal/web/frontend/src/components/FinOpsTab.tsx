@@ -490,7 +490,7 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
     queryFn: async () => {
       const r = await fetch(
         `/api/v1/finops/timeline?cluster=${encodeURIComponent(cluster)}&days=${days}`,
-        { headers: { Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}` } }
+        { headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` } }
       );
       if (!r.ok) throw new Error(`Timeline: ${r.status}`);
       return r.json();
@@ -1162,7 +1162,7 @@ function PoolSKUAlternatives({ pool, cpuPct, memPct }: {
     queryFn: async () => {
       const r = await fetch(
         `/api/v1/finops/vm-alternatives?sku=${encodeURIComponent(pool.vm_size)}&cpu_pct=${cpuPct}&mem_pct=${memPct}&node_count=${pool.node_count}`,
-        { headers: { Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}` } }
+        { headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` } }
       );
       if (!r.ok) throw new Error("vm-alternatives error");
       return r.json();
@@ -1246,7 +1246,7 @@ function NodePoolsTab({ pools, workloads, cluster }: {
     queryFn: async () => {
       const r = await fetch(
         `/api/v1/finops/timeline?cluster=${encodeURIComponent(cluster)}&days=30`,
-        { headers: { Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}` } }
+        { headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` } }
       );
       if (!r.ok) throw new Error("Timeline error");
       return r.json();
@@ -2188,7 +2188,7 @@ function HPAHistoryTab({
   const [selectedSnap1, setSelectedSnap1] = useState<string>("");
   const [selectedSnap2, setSelectedSnap2] = useState<string>("");
 
-  const token = localStorage.getItem("token") || "poc-token-123";
+  const token = localStorage.getItem("auth_token");
   const authHeaders = { Authorization: `Bearer ${token}` };
 
   // ── Timeline principal (useQuery preserva dados ao trocar de aba) ──────────
@@ -3952,7 +3952,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
         url += `&with_prometheus=true&window_days=${windowDays}`;
       }
       const r = await fetch(url, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}` },
+        headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
@@ -4010,7 +4010,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("token") || "poc-token-123"}`,
+          Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
         },
         body: JSON.stringify({ ai_email: aiEmail, report }),
       });
