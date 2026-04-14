@@ -2,10 +2,16 @@ package finops
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/prometheus/client_golang/api"
+	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/model"
 	"github.com/rs/zerolog/log"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,12 +26,58 @@ type scInfo struct {
 
 // StorageCalculator enumera PVCs do cluster e calcula seus custos mensais
 type StorageCalculator struct {
-	diskPricer *DiskPricer
+	diskPricer    *DiskPricer
+	prometheusAPI v1.API // opcional — usado para obter uso real de Blob/Files
 }
 
 // NewStorageCalculator cria um StorageCalculator com DiskPricer injetado
 func NewStorageCalculator(diskPricer *DiskPricer) *StorageCalculator {
 	return &StorageCalculator{diskPricer: diskPricer}
+}
+
+// WithPrometheus adiciona um cliente Prometheus para consultar uso real de Blob/Files.
+func (s *StorageCalculator) WithPrometheus(prometheusURL string) {
+	if prometheusURL == "" {
+		return
+	}
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		},
+		Timeout: 10 * time.Second,
+	}
+	apiClient, err := api.NewClient(api.Config{
+		Address:      prometheusURL,
+		RoundTripper: httpClient.Transport,
+	})
+	if err != nil {
+		log.Warn().Err(err).Str("url", prometheusURL).Msg("FinOps storage: falha ao criar cliente Prometheus para uso de volume")
+		return
+	}
+	s.prometheusAPI = v1.NewAPI(apiClient)
+}
+
+// queryVolumeUsedBytes consulta o uso real de um PVC via kubelet_volume_stats_used_bytes.
+// Retorna (usedGB, true) se disponível, (0, false) caso contrário.
+func (s *StorageCalculator) queryVolumeUsedBytes(ctx context.Context, namespace, pvcName string) (float64, bool) {
+	if s.prometheusAPI == nil {
+		return 0, false
+	}
+	query := fmt.Sprintf(`kubelet_volume_stats_used_bytes{namespace=%q,persistentvolumeclaim=%q}`, namespace, pvcName)
+	result, _, err := s.prometheusAPI.Query(ctx, query, time.Now())
+	if err != nil {
+		log.Debug().Err(err).Str("pvc", namespace+"/"+pvcName).Msg("FinOps storage: falha ao consultar uso de volume no Prometheus")
+		return 0, false
+	}
+	vec, ok := result.(model.Vector)
+	if !ok || len(vec) == 0 {
+		return 0, false
+	}
+	usedBytes := float64(vec[0].Value)
+	if usedBytes <= 0 {
+		return 0, false
+	}
+	return usedBytes / (1024 * 1024 * 1024), true
 }
 
 // Calculate coleta todos os PVCs do cluster, calcula o custo de cada um e retorna
@@ -72,7 +124,7 @@ func (s *StorageCalculator) Calculate(
 	// 5. Calcular custo de cada PVC
 	items := make([]PVCCostItem, 0, len(pvcList.Items))
 	for _, pvc := range pvcList.Items {
-		item := s.calculatePVCCost(pvc, pvMap, scMap, pvcToWorkload, rate, region)
+		item := s.calculatePVCCost(ctx, pvc, pvMap, scMap, pvcToWorkload, rate, region)
 		items = append(items, item)
 	}
 
@@ -119,6 +171,7 @@ func groupPVCsByWorkload(items []PVCCostItem) map[string][]PVCCostItem {
 // ── internals ─────────────────────────────────────────────────────────────────
 
 func (s *StorageCalculator) calculatePVCCost(
+	ctx context.Context,
 	pvc corev1.PersistentVolumeClaim,
 	pvMap map[string]corev1.PersistentVolume,
 	scMap map[string]scInfo,
@@ -135,22 +188,40 @@ func (s *StorageCalculator) calculatePVCCost(
 		ReclaimPolicy: "Delete",
 	}
 
-	// Capacidade: preferir PV provisionado (reflete tier real) sobre o requisitado
+	// Capacidade: preferir PV provisionado (reflete tier real) sobre o requisitado.
+	// Azure Blob NFS e Azure Files definem capacidade placeholder gigante (ex: 5242880Gi ≈ 5 PB)
+	// tanto no PV quanto na request do PVC, pois não têm limite físico real. Acima de 50 TB
+	// o valor é tratado como placeholder e a capacidade fica em 0 (custo não estimável).
+	const maxReasonableGB = 50 * 1024.0 // 50 TB
 	if pv, ok := pvMap[pvc.Spec.VolumeName]; ok {
 		if capQ, cok := pv.Spec.Capacity[corev1.ResourceStorage]; cok {
-			item.CapacityGB = float64(capQ.Value()) / (1024 * 1024 * 1024)
+			cap := float64(capQ.Value()) / (1024 * 1024 * 1024)
+			if cap <= maxReasonableGB {
+				item.CapacityGB = cap
+			}
 		}
 		item.ReclaimPolicy = string(pv.Spec.PersistentVolumeReclaimPolicy)
 	}
 	if item.CapacityGB == 0 {
 		if req, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
-			item.CapacityGB = float64(req.Value()) / (1024 * 1024 * 1024)
+			cap := float64(req.Value()) / (1024 * 1024 * 1024)
+			if cap <= maxReasonableGB {
+				item.CapacityGB = cap
+			}
 		}
+	}
+	// Blob/Files com capacidade placeholder (> 50 TB) → usar uso real via kubelet_volume_stats_used_bytes
+	if item.CapacityGB == 0 {
+		if usedGB, ok := s.queryVolumeUsedBytes(ctx, pvc.Namespace, pvc.Name); ok {
+			item.CapacityGB = usedGB
+			item.PriceSource = "prometheus_usage"
+		}
+		// Se Prometheus também não tem dados → CapacityGB = 0, custo = 0 (não estimável)
 	}
 
 	// Resolver tipo Azure a partir da StorageClass
 	sc := scMap[item.StorageClass]
-	azureType, _ := MapStorageClassToAzureType(item.StorageClass, sc.Provisioner, sc.SkuName)
+	azureType, method := MapStorageClassToAzureType(item.StorageClass, sc.Provisioner, sc.SkuName)
 	item.AzureDiskType = azureType
 
 	// Calcular custo conforme o tipo
@@ -179,6 +250,15 @@ func (s *StorageCalculator) calculatePVCCost(
 		item.MonthlyCostUSD = round2(item.CapacityGB * pricePerGB)
 	}
 	item.MonthlyCostBRL = round2(item.MonthlyCostUSD * rate)
+	log.Info().
+		Str("pvc", pvc.Namespace+"/"+pvc.Name).
+		Str("storage_class", item.StorageClass).
+		Str("provisioner", sc.Provisioner).
+		Str("azure_type", azureType).
+		Str("method", method).
+		Float64("capacity_gb", item.CapacityGB).
+		Float64("cost_brl", item.MonthlyCostBRL).
+		Msg("FinOps storage: classificação de PVC")
 
 	// Correlação com workload
 	pvcKey := pvc.Namespace + "/" + pvc.Name

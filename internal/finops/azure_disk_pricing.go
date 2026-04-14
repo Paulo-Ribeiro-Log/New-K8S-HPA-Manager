@@ -91,11 +91,15 @@ var storageClassNameHints = []struct {
 }{
 	{"premium", "Premium SSD"},
 	{"standard-ssd", "Standard SSD"},
+	{"standardssd", "Standard SSD"},
 	{"managed-csi", "Standard SSD"}, // AKS default
 	{"managed", "Standard HDD"},
+	{"standard-hdd", "Standard HDD"},
+	{"hdd", "Standard HDD"},
 	{"azurefile-premium", "Azure Files Premium"},
 	{"azurefile", "Azure Files Standard"},
 	{"blob", "Azure Blob Hot"},
+	{"blobfuse", "Azure Blob Hot"},
 }
 
 // DiskPricer busca e armazena em cache preços de storage Azure (discos managed e Azure Files/Blob)
@@ -190,10 +194,28 @@ func (p *DiskPricer) GetFilesPricePerGB(filesType, region string) (float64, stri
 }
 
 // MapStorageClassToAzureType determina o tipo Azure de uma StorageClass.
-// Prioridade: skuName param > provisioner > nome da SC > default.
+// Prioridade para files/blob: provisioner primeiro (skuName nesses CSI = tier de replicação LRS/ZRS, não disk type).
+// Prioridade para disk: skuName param > provisioner > nome da SC > default.
 // Retorna (azureType, method) onde method é "sku_param", "provisioner", "name_hint" ou "default".
 func MapStorageClassToAzureType(scName, provisioner, skuName string) (string, string) {
-	// 1. skuName explícito no parâmetro da SC (mais confiável)
+	scLower := strings.ToLower(scName)
+
+	// 1. Provisioner files/blob — tem prioridade máxima porque o skuName nesses CSI drivers
+	//    indica replication tier (Standard_LRS, Premium_LRS), não o tipo de armazenamento.
+	if provType, ok := storageClassProvisioners[provisioner]; ok {
+		switch provType {
+		case "files":
+			if strings.Contains(scLower, "premium") || strings.Contains(strings.ToLower(skuName), "premium") {
+				return "Azure Files Premium", "provisioner"
+			}
+			return "Azure Files Standard", "provisioner"
+		case "blob":
+			return "Azure Blob Hot", "provisioner"
+		}
+		// provType == "disk": continua para sku_param abaixo
+	}
+
+	// 2. skuName explícito (apenas para discos managed — disk CSI ou in-tree)
 	if skuName != "" {
 		lower := strings.ToLower(skuName)
 		if azType, ok := skuNameToAzureType[lower]; ok {
@@ -204,22 +226,6 @@ func MapStorageClassToAzureType(scName, provisioner, skuName string) (string, st
 		}
 		if strings.Contains(lower, "standardssd") || (strings.Contains(lower, "standard") && strings.Contains(lower, "ssd")) {
 			return "Standard SSD", "sku_param"
-		}
-	}
-
-	// 2. Provisioner
-	scLower := strings.ToLower(scName)
-	if provType, ok := storageClassProvisioners[provisioner]; ok {
-		switch provType {
-		case "files":
-			if strings.Contains(scLower, "premium") {
-				return "Azure Files Premium", "provisioner"
-			}
-			return "Azure Files Standard", "provisioner"
-		case "blob":
-			return "Azure Blob Hot", "provisioner"
-		case "disk":
-			// disk sem skuName → cair no hint por nome da SC
 		}
 	}
 

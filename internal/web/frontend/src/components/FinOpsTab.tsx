@@ -2773,6 +2773,10 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
     .filter(sc => sc.monthly_cost_brl > 0)
     .sort((a, b) => b.monthly_cost_brl - a.monthly_cost_brl);
 
+  // DEBUG — remover após diagnóstico
+  console.log("[FinOps storage] by_storage_class raw:", storage?.by_storage_class);
+  console.log("[FinOps storage] byClass (filtrado > 0):", byClass);
+
   // orphanedCost é de PVCs — ratio contra pvcCost (não storageCost que inclui OS disk)
   const orphanRatio = pvcCost > 0 ? orphanedCost / pvcCost : 0;
   const storageSlices: { name: string; value: number; fill: string }[] = [];
@@ -2816,6 +2820,9 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
     ...storageSlices,
     ...(totalIdentifiedWaste > 0 ? [{ name: "Desperdício identificado", value: Math.round(totalIdentifiedWaste), fill: "#ef4444" }] : []),
   ];
+  // DEBUG — remover após diagnóstico
+  console.log("[FinOps storage] storageSlices:", storageSlices);
+  console.log("[FinOps storage] pieData final:", pieData.map(d => `${d.name}=${d.value}`));
 
   // ── Achados ───────────────────────────────────────────────────────────────
   const findings: Finding[] = [];
@@ -2930,26 +2937,116 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
   const PRIORITY_COLOR = { critical: "#ef4444", high: "#f59e0b", medium: "#6366f1" };
   const PRIORITY_LABEL = { critical: "Crítico", high: "Alto", medium: "Médio" };
 
-  // ── Rótulos externos do pie com linhas ────────────────────────────────────
+  // ── Rótulos externos do pie com anti-colisão (stacking lateral) ─────────────
+  // Algoritmo: pré-computa midAngles a partir dos dados, separa em grupos
+  // esquerdo/direito, resolve sobreposições empurrando labels verticalmente,
+  // e desenha connector em cotovelo (polyline) do segmento até o label ajustado.
   const RADIAN = Math.PI / 180;
-  const renderPieLabel = ({ cx, cy, midAngle, outerRadius, name, value, percent }: {
+
+  const _labelCache = useRef<{ key: string; positions: Map<number, {
+    lx: number; ly: number; origY: number; isLeft: boolean; pct: number;
+  }> }>({ key: "", positions: new Map() });
+
+  const _getLabelPositions = (cx: number, cy: number, outerRadius: number) => {
+    const cacheKey = `${cx.toFixed(0)},${cy.toFixed(0)},${outerRadius},${pieData.map(d => d.value).join(",")}`;
+    if (_labelCache.current.key === cacheKey) return _labelCache.current.positions;
+
+    const total = pieData.reduce((s, d) => s + d.value, 0);
+    if (total === 0) return new Map();
+    const R = outerRadius + 34;
+    const MIN_GAP = 24; // px mínimo entre centros; cada bloco de texto ocupa ~20px (2 linhas × 9px + espaço)
+    const Y_MIN = cy - outerRadius - 20; // limite superior visível
+    const Y_MAX = cy + outerRadius + 40; // limite inferior visível
+
+    // 1. Posição bruta de cada segmento (midAngle calculado pelos dados)
+    let cumAngle = 0;
+    const raw = pieData.map((d, i) => {
+      const pct = d.value / total;
+      const mid = cumAngle + pct * 180; // midAngle = start + span/2
+      cumAngle += pct * 360;
+      const cosA = Math.cos(-mid * RADIAN);
+      const sinA = Math.sin(-mid * RADIAN);
+      return { i, cosA, sinA, origY: cy + R * sinA, adjY: cy + R * sinA, pct, isLeft: cosA < 0 };
+    });
+
+    // 2. Separar em grupos, ordenar por Y
+    const left  = raw.filter(x => x.isLeft).sort((a, b) => a.adjY - b.adjY);
+    const right = raw.filter(x => !x.isLeft).sort((a, b) => a.adjY - b.adjY);
+
+    // 3. Resolver colisões: push-down → push-up → shift do grupo para dentro dos limites
+    const resolve = (grp: typeof left) => {
+      if (grp.length === 0) return;
+
+      // Pass 1: empurrar para baixo
+      for (let i = 1; i < grp.length; i++) {
+        if (grp[i].adjY - grp[i - 1].adjY < MIN_GAP)
+          grp[i] = { ...grp[i], adjY: grp[i - 1].adjY + MIN_GAP };
+      }
+      // Pass 2: empurrar para cima
+      for (let i = grp.length - 2; i >= 0; i--) {
+        if (grp[i + 1].adjY - grp[i].adjY < MIN_GAP)
+          grp[i] = { ...grp[i], adjY: grp[i + 1].adjY - MIN_GAP };
+      }
+      // Pass 3: se o grupo extrapolou o limite inferior, subir o grupo inteiro
+      const overflow = grp[grp.length - 1].adjY - Y_MAX;
+      if (overflow > 0) {
+        for (let i = 0; i < grp.length; i++)
+          grp[i] = { ...grp[i], adjY: grp[i].adjY - overflow };
+      }
+      // Pass 4: se extrapolou o limite superior, descer o grupo inteiro
+      const underflow = Y_MIN - grp[0].adjY;
+      if (underflow > 0) {
+        for (let i = 0; i < grp.length; i++)
+          grp[i] = { ...grp[i], adjY: grp[i].adjY + underflow };
+      }
+    };
+    resolve(left);
+    resolve(right);
+
+    // 4. Coluna x fixa por lado (labels alinhados numa régua vertical)
+    const COL_L = cx - R - 10;
+    const COL_R = cx + R + 10;
+
+    const positions = new Map<number, { lx: number; ly: number; origY: number; isLeft: boolean; pct: number }>();
+    for (const it of [...left, ...right]) {
+      positions.set(it.i, { lx: it.isLeft ? COL_L : COL_R, ly: it.adjY, origY: it.origY, isLeft: it.isLeft, pct: it.pct });
+    }
+
+    _labelCache.current = { key: cacheKey, positions };
+    return positions;
+  };
+
+  const renderPieLabel = ({ cx, cy, midAngle, outerRadius, index, name, value }: {
     cx: number; cy: number; midAngle: number; outerRadius: number;
-    name: string; value: number; percent: number;
+    index: number; name: string; value: number;
   }) => {
-    const radius = percent < 0.04 ? outerRadius + 52 : outerRadius + 34;
-    const x = cx + radius * Math.cos(-midAngle * RADIAN);
-    const y = cy + radius * Math.sin(-midAngle * RADIAN);
-    // Próximo do topo ou base: centralizar; nos lados: alinhar à direita/esquerda
-    const normAngle = ((midAngle % 360) + 360) % 360;
-    const anchor = (normAngle > 75 && normAngle < 105) || (normAngle > 255 && normAngle < 285)
-      ? "middle"
-      : x > cx ? "start" : "end";
-    const shortName = name.split(" ").slice(0, 2).join(" ");
+    const pos = _getLabelPositions(cx, cy, outerRadius).get(index);
+    if (!pos) return null;
+
+    // Ponto na borda do segmento
+    const cosA = Math.cos(-midAngle * RADIAN);
+    const sinA = Math.sin(-midAngle * RADIAN);
+    const sx = cx + (outerRadius + 5) * cosA;
+    const sy = cy + (outerRadius + 5) * sinA;
+
+    // Joelho do conector: mesma x da coluna, y original (sem ajuste)
+    const kneeX = pos.lx + (pos.isLeft ? 12 : -12);
+    const anchor = pos.isLeft ? "end" : "start";
+    const tx = pos.lx + (pos.isLeft ? -3 : 3);
+    const shortName = name.length > 18 ? name.slice(0, 17) + "…" : name;
+
     return (
       <g>
-        <text x={x} y={y - 5} textAnchor={anchor} fontSize={9} fontWeight={600} fill="#e2e8f0">{shortName}</text>
-        <text x={x} y={y + 7} textAnchor={anchor} fontSize={9} fill="#94a3b8">
-          {fmtBRL(value)} ({Math.round(percent * 100)}%)
+        <polyline
+          points={`${sx},${sy} ${kneeX},${pos.origY} ${pos.lx},${pos.ly}`}
+          fill="none" stroke="#64748b" strokeWidth={0.8} opacity={0.7}
+        />
+        <circle cx={pos.lx} cy={pos.ly} r={1.5} fill="#64748b" opacity={0.7} />
+        <text x={tx} y={pos.ly - 5} textAnchor={anchor} fontSize={9} fontWeight={600} fill="#e2e8f0">
+          {shortName}
+        </text>
+        <text x={tx} y={pos.ly + 6} textAnchor={anchor} fontSize={9} fill="#94a3b8">
+          {fmtBRL(value)} ({Math.round(pos.pct * 100)}%)
         </text>
       </g>
     );
@@ -2969,19 +3066,20 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
       let y = margin;
 
       // ── Helpers de desenho ───────────────────────────────────────────────
-      // Desenha um setor de donut diretamente em coordenadas PDF (mm)
       const drawDonutSlice = (
         cx: number, cy: number, rIn: number, rOut: number,
         startA: number, endA: number, col: [number, number, number],
       ) => {
-        const steps = Math.max(24, Math.ceil(Math.abs(endA - startA) * 18));
+        const span = endA - startA;
+        if (Math.abs(span) < 0.002) return; // skip slices too thin to draw
+        const steps = Math.max(24, Math.ceil(Math.abs(span) * 18));
         const pts: [number, number][] = [];
         for (let s = 0; s <= steps; s++) {
-          const a = startA + (s / steps) * (endA - startA);
+          const a = startA + (s / steps) * span;
           pts.push([cx + rOut * Math.cos(a), cy + rOut * Math.sin(a)]);
         }
         for (let s = steps; s >= 0; s--) {
-          const a = startA + (s / steps) * (endA - startA);
+          const a = startA + (s / steps) * span;
           pts.push([cx + rIn * Math.cos(a), cy + rIn * Math.sin(a)]);
         }
         doc.setFillColor(...col);
@@ -3023,13 +3121,19 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
       });
       y += 24;
 
-      // ── Gráfico donut + legenda ──────────────────────────────────────────
+      // ── Gráfico donut + legenda (vetorial) ──────────────────────────────
       doc.setFontSize(9); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
       doc.text("Composição do Custo", margin, y);
       y += 5;
 
-      const totalPie = pieData.reduce((s, d) => s + d.value, 0);
-      const pieColors: [number, number, number][] = [[99, 102, 241], [14, 165, 233], [139, 92, 246], [239, 68, 68]];
+      const hexToRGB = (hex: string): [number, number, number] => {
+        const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [150, 150, 150];
+      };
+
+      // Filtrar itens com valor > 0 para não quebrar o desenho
+      const pieDataValid = pieData.filter(seg => seg.value > 0);
+      const totalPie = pieDataValid.reduce((s, d) => s + d.value, 0);
       const donutCX = margin + 36;
       const donutCY = y + 30;
       const rOut = 26;
@@ -3037,42 +3141,40 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
 
       if (totalPie > 0) {
         let startA = -Math.PI / 2;
-        pieData.forEach((seg, i) => {
+        pieDataValid.forEach(seg => {
           const angle = (seg.value / totalPie) * Math.PI * 2;
-          drawDonutSlice(donutCX, donutCY, rIn, rOut, startA, startA + angle, pieColors[i] ?? [150, 150, 150]);
+          drawDonutSlice(donutCX, donutCY, rIn, rOut, startA, startA + angle, hexToRGB(seg.fill));
           startA += angle;
         });
-        // Furo central branco
         doc.setFillColor(255, 255, 255);
         doc.setDrawColor(255, 255, 255);
         doc.circle(donutCX, donutCY, rIn - 0.3, "F");
-        // Percentual total no centro
         doc.setFontSize(7); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
         doc.text("Total", donutCX - 4, donutCY - 1.5);
         doc.setFontSize(6.5); doc.setFont("helvetica", "normal");
         doc.text(fmtBRL(totalPie), donutCX - 6, donutCY + 3.5);
       }
 
-      // Legenda ao lado
+      // Legenda ao lado — apenas itens com valor > 0
       const lx = margin + 72;
       let ly = y + 4;
-      pieData.forEach((seg, i) => {
-        const col = pieColors[i] ?? [150, 150, 150] as [number, number, number];
+      const barMaxW = 38;
+      pieDataValid.forEach(seg => {
+        const col = hexToRGB(seg.fill);
         const pct = totalPie > 0 ? Math.round(seg.value / totalPie * 100) : 0;
-        // barra colorida de proporção
-        const barMaxW = 38;
+        // barra de fundo sempre visível; barra preenchida só se pct > 0
         doc.setFillColor(230, 232, 240); doc.rect(lx, ly + 4.5, barMaxW, 2.5, "F");
-        doc.setFillColor(...col); doc.rect(lx, ly + 4.5, barMaxW * pct / 100, 2.5, "F");
-        // ícone + nome
+        const barW = barMaxW * pct / 100;
+        if (barW > 0.1) { doc.setFillColor(...col); doc.rect(lx, ly + 4.5, barW, 2.5, "F"); }
         doc.setFillColor(...col); doc.rect(lx, ly, 3.5, 3.5, "F");
         doc.setFontSize(8.5); doc.setFont("helvetica", "bold"); doc.setTextColor(30, 41, 59);
         doc.text(seg.name, lx + 5.5, ly + 3.2);
-        // valor + percentual
         doc.setFontSize(7.5); doc.setFont("helvetica", "normal"); doc.setTextColor(100, 116, 139);
         doc.text(`${fmtBRL(seg.value)}  (${pct}%)`, lx, ly + 10.5);
         ly += 17;
       });
-      y += 68;
+      // Avança y pela altura real da seção
+      y += Math.max(68, pieDataValid.length * 17 + 8);
 
       // ── Divisor ─────────────────────────────────────────────────────────
       doc.setDrawColor(226, 232, 240); doc.setLineWidth(0.3);
@@ -3223,20 +3325,23 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
             <CardTitle className="text-sm">Composição do Custo</CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-3" ref={pieChartRef}>
+            {/* [&_svg]:bg-transparent → remove o fundo branco que o Recharts injeta no SVG */}
+            <div className="[&_svg]:bg-transparent [&_svg]:!fill-none">
             <ResponsiveContainer width="100%" height={260}>
-              <PieChart margin={{ top: 40, right: 90, bottom: 40, left: 90 }} {...({ overflow: "visible" } as any)}>
+              <PieChart margin={{ top: 20, right: 10, bottom: 20, left: 10 }}
+                {...({ overflow: "visible" } as any)}>
                 <Pie
                   data={pieData}
                   dataKey="value"
                   nameKey="name"
                   cx="50%"
                   cy="50%"
-                  innerRadius={48}
-                  outerRadius={70}
+                  innerRadius={50}
+                  outerRadius={72}
                   paddingAngle={2}
-                  minAngle={4}
+                  minAngle={3}
                   label={renderPieLabel}
-                  labelLine={{ stroke: "#94a3b8", strokeWidth: 1, opacity: 0.7 }}
+                  labelLine={false}
                 >
                   {pieData.map((e, i) => <Cell key={i} fill={e.fill} />)}
                 </Pie>
@@ -3255,6 +3360,7 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
                 />
               </PieChart>
             </ResponsiveContainer>
+            </div>
           </CardContent>
         </Card>
 
@@ -3264,26 +3370,37 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
             <CardTitle className="text-sm">Dimensões de Custo</CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-3 space-y-2">
-            {[
-              { label: "VM Compute", value: computeCost, sub: `${node_pools.reduce((s, p) => s + p.node_count, 0)} nodes · ${node_pools.length} pools`, color: "#6366f1" },
-              ...(osDiskCost > 0 ? [{ label: "Disco OS", value: osDiskCost, sub: `${node_pools.reduce((s, p) => s + p.node_count, 0)} discos OS`, color: "#0ea5e9" }] : []),
-              ...(pvcCost > 0 ? [{ label: "PVCs", value: pvcCost, sub: `${storage?.pvc_count ?? 0} PVCs · ${Math.round(storage?.total_capacity_gb ?? 0)} GB`, color: "#8b5cf6" }] : []),
-              ...(totalIdentifiedWaste > 0 ? [{ label: "Desperdício identificado", value: totalIdentifiedWaste, sub: `${savingPct}% do total`, color: "#ef4444" }] : []),
-            ].map((row, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: row.color }} />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-baseline justify-between">
-                    <span className="text-xs font-medium">{row.label}</span>
-                    <span className="text-xs font-bold">{fmtBRL(row.value)}</span>
+            {pieData.map((slice, i) => {
+              // Subtítulo contextual por tipo de slice
+              const nodeCount = node_pools.reduce((s, p) => s + p.node_count, 0);
+              const sub =
+                slice.name === "Compute produtivo" ? `${nodeCount} nodes · ${node_pools.length} pools` :
+                slice.name === "Disco OS"           ? `${nodeCount} discos OS` :
+                slice.name === "Desperdício identificado" ? `${savingPct}% do custo total` :
+                slice.name === "PVCs ativos" || slice.name.startsWith("Outros") ?
+                  `${storage?.pvc_count ?? 0} PVCs · ${Math.round(storage?.total_capacity_gb ?? 0)} GB` :
+                  // tipos de storage class individuais (Premium SSD, Standard HDD, etc.)
+                  (() => {
+                    const sc = storage?.by_storage_class?.find(s => s.azure_type === slice.name || s.storage_class === slice.name);
+                    return sc ? `${sc.pvc_count} PVC${sc.pvc_count !== 1 ? "s" : ""} · ${Math.round(sc.total_gb)} GB` : "";
+                  })();
+              return (
+                <div key={i} className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: slice.fill }} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline justify-between gap-1">
+                      <span className="text-xs font-medium truncate">{slice.name}</span>
+                      <span className="text-xs font-bold shrink-0">{fmtBRL(slice.value)}</span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-muted mt-0.5 overflow-hidden">
+                      <div className="h-full rounded-full"
+                        style={{ width: `${Math.min(100, totalCost > 0 ? slice.value / totalCost * 100 : 0)}%`, background: slice.fill }} />
+                    </div>
+                    {sub && <p className="text-[10px] text-muted-foreground mt-0.5">{sub}</p>}
                   </div>
-                  <div className="h-1.5 rounded-full bg-muted mt-0.5 overflow-hidden">
-                    <div className="h-full rounded-full" style={{ width: `${Math.min(100, totalCost > 0 ? row.value / totalCost * 100 : 0)}%`, background: row.color }} />
-                  </div>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">{row.sub}</p>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </CardContent>
         </Card>
       </div>
