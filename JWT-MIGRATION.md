@@ -6,77 +6,69 @@ Checklist de implementação. Continuar de qualquer chat lendo este arquivo + `C
 
 ---
 
-## Fase 1 — Backend JWT core
+## Fase 1 — Backend JWT core ✅ CONCLUÍDA
 
-- [ ] Verificar se `github.com/golang-jwt/jwt/v5` está no vendor; se não, adicionar com `go get` + `go mod vendor`
-- [ ] Criar `internal/auth/jwt.go`:
+- [x] Verificar se `github.com/golang-jwt/jwt/v5` está no vendor — já presente (v5.3.0)
+- [x] Criar `internal/auth/jwt.go`:
   - Struct `JWTClaims { Email, Name string; IsSRE bool; jwt.RegisteredClaims }`
   - Struct `JWTManager { secret []byte; ttl time.Duration; issuer string }`
   - `NewJWTManager(secret []byte, ttl time.Duration) *JWTManager`
   - `func (m *JWTManager) IsConfigured() bool` → `len(m.secret) >= 32`
   - `func (m *JWTManager) Generate(email, name string, isSRE bool) (string, error)` → HS256, exp = now+ttl
   - `func (m *JWTManager) Validate(tokenStr string) (*JWTClaims, error)` → valida assinatura + expiração
-- [ ] Criar `internal/web/handlers/auth.go`:
+- [x] Criar `internal/web/handlers/auth.go`:
   - Struct `AuthHandler { jwtManager *auth.JWTManager; rbacManager *rbac.RBACManager; disableAD bool }`
   - `NewAuthHandler(jwtManager, rbacManager, disableAD) *AuthHandler`
   - `func (h *AuthHandler) Login(c *gin.Context)`:
-    - Se `disableAD=true`: gerar JWT com `email="bypass@emergency.mode"`, `isSRE=true`
-    - Se `!jwtManager.IsConfigured()`: retornar 501 `{ error: "JWT não configurado" }`
-    - Caso normal: chamar `rbacManager.GetCurrentUserEmail(ctx)` → `GetUserPermissions(ctx, email)` → `jwtManager.Generate(email, "", isSRE)` → retornar `{ token, email, isSRE, expiresAt }`
-  - `func (h *AuthHandler) Logout(c *gin.Context)`: retornar 200 `{ message: "ok" }` (stateless)
-  - `func (h *AuthHandler) RefreshToken(c *gin.Context)`: validar JWT atual → gerar novo com mesmos claims
-- [ ] Registrar endpoints no `internal/web/server.go` **fora** do grupo autenticado (sem AuthMiddleware):
-  - `POST /api/v1/auth/login` → `authHandler.Login`
-  - `POST /api/v1/auth/logout` → `authHandler.Logout`
-  - `POST /api/v1/auth/refresh` → `authHandler.RefreshToken`
-- [ ] Ler `K8S_HPA_JWT_SECRET` e `K8S_HPA_JWT_TTL` (padrão 8h) em `cmd/web.go` ou `NewServer`; criar `JWTManager`; passar para `NewAuthHandler` e demais componentes
-- [ ] Testar: `curl -X POST http://localhost:8080/api/v1/auth/login` → retorna JWT (em modo `--ad`)
+    - Se `!jwtManager.IsConfigured()`: retorna 501 `{ error: "JWT não configurado", code: "JWT_NOT_CONFIGURED" }`
+    - Se `disableAD=true`: gera JWT com `email="bypass@emergency.mode"`, `isSRE=true`
+    - Caso normal: `GetCurrentUserEmail` → `GetUserPermissions` → `Generate` → retorna `{ token, email, is_sre, expires_at, ttl_hours }`
+  - `func (h *AuthHandler) Logout(c *gin.Context)`: 200 stateless
+  - `func (h *AuthHandler) RefreshToken(c *gin.Context)`: valida JWT atual → emite novo com mesmos claims
+- [x] Registrar endpoints no `internal/web/server.go` **fora** do grupo autenticado:
+  - `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `POST /api/v1/auth/refresh`
+- [x] Ler `K8S_HPA_JWT_SECRET` e `K8S_HPA_JWT_TTL` em `NewServer`; `jwtManager` adicionado ao struct `Server`
+- [x] Testado: `POST /auth/login` com `--ad` → JWT válido; sem `K8S_HPA_JWT_SECRET` → `IsConfigured()=false` (501)
 
 ---
 
-## Fase 2 — Middleware dual-mode
+## Fase 2 — Middleware dual-mode ✅ CONCLUÍDA
 
-- [ ] Adicionar em `internal/web/middleware/auth.go`:
-  - `func JWTAuthMiddleware(jwtManager *auth.JWTManager, staticToken string) gin.HandlerFunc`:
-    - Se `!jwtManager.IsConfigured()`: delegar para lógica atual de token estático (backward compat)
-    - Se configurado: `jwtManager.Validate(token)` → 401 se inválido/expirado; injetar `c.Set("jwt_claims", claims)` se OK
-  - `func WebSocketJWTAuthMiddleware(jwtManager *auth.JWTManager, staticToken string) gin.HandlerFunc`: mesmo dual-mode aceitando query param `?token=`
-- [ ] Adaptar `internal/web/middleware/rbac.go` — todos os handlers verificam `c.Get("jwt_claims")` primeiro:
-  - `RequireSREGroup()`: se claims presente → `claims.IsSRE` diretamente; senão → comportamento atual (az CLI)
-  - `OptionalSRECheck()`: idem
-  - `GetUserPermissions()`: se claims presente → montar resposta `{ email, isSRE, groups:[] }` do JWT; senão → chamar az CLI
-  - `InjectUserEmail()`: se claims presente → `c.Set("user_email", claims.Email)`; senão → az CLI
-- [ ] Em `internal/web/server.go`:
-  - Substituir `api.Use(middleware.AuthMiddleware(s.token))` → `api.Use(middleware.JWTAuthMiddleware(s.jwtManager, s.token))`
-  - Substituir `wsShell.Use(middleware.WebSocketAuthMiddleware(s.token))` → `wsShell.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))`
-- [ ] `make build` + testar com token estático (deve continuar funcionando quando `K8S_HPA_JWT_SECRET` ausente)
-- [ ] Testar com `K8S_HPA_JWT_SECRET` configurado + JWT obtido na Fase 1
+- [x] Adicionar em `internal/web/middleware/auth.go`:
+  - `JWTAuthMiddleware`: dual-mode (JWT quando configurado, token estático como fallback)
+  - `WebSocketJWTAuthMiddleware`: mesmo dual-mode aceitando query param `?token=`
+- [x] Adaptar `internal/web/middleware/rbac.go` — helper `jwtClaimsFromCtx` + todos leem claims primeiro:
+  - `RequireSREGroup()`, `OptionalSRECheck()`, `GetUserPermissions()`, `InjectUserEmail()`
+- [x] `server.go`: `api.Use` → `JWTAuthMiddleware`; todos `WebSocketAuthMiddleware` → `WebSocketJWTAuthMiddleware`
+- [x] Testado: token estático funciona sem `K8S_HPA_JWT_SECRET` (200/401 corretos)
+- [x] Testado: JWT válido → 200; token estático rejeitado quando JWT configurado (401); `/permissions` retorna claims do JWT
 
 ---
 
-## Fase 3 — Frontend
+## Fase 3 — Frontend ✅ CONCLUÍDA
 
-- [ ] Adicionar em `internal/web/frontend/src/lib/api/client.ts`:
-  - `async login(): Promise<{ token: string; email: string; isSRE: boolean; expiresAt: string }>`
-    → `POST /auth/login`, chama `this.setToken(data.token)` no sucesso
-  - `async logout(): Promise<void>` → `POST /auth/logout`, chama `this.clearToken()`
-  - `isTokenExpired(): boolean` → decodifica payload do JWT (`atob(token.split('.')[1])`), compara `exp` com `Date.now()/1000`; retorna `false` se token não for JWT (backward compat)
-  - `getTokenClaims(): { email?: string; isSRE?: boolean } | null` → decodifica claims localmente sem verificar assinatura
-- [ ] Modificar `internal/web/frontend/src/hooks/useUserPermissions.ts`:
-  - No `queryFn`: se `localStorage["auth_token"]` tiver formato JWT (3 partes separadas por `.`), decodificar localmente e retornar claims sem chamar `/permissions`; senão, manter chamada atual
-- [ ] Modificar página/componente de login (localizar com `grep -r "auth_token\|setToken\|handleLogin" src/`):
-  - Tentar `apiClient.login()` no submit; se backend retornar 501 (JWT não configurado), exibir campo de input para token estático (comportamento atual)
-  - No carregamento inicial da app (`App.tsx` ou similar): se `apiClient.isTokenExpired()` → `apiClient.clearToken()` → redirecionar para login
-- [ ] `./rebuild-web.sh -b` + testar login end-to-end no navegador
-- [ ] Verificar que `ProtectedAction` ainda funciona corretamente (lê `isSRE` via `useUserPermissions` que agora vem do JWT local)
+- [x] Adicionar em `internal/web/frontend/src/lib/api/client.ts`:
+  - `async login()` → `POST /auth/login`, chama `this.setToken(data.token)` no sucesso
+  - `async logout()` → `POST /auth/logout`, chama `this.clearToken()`
+  - `isTokenExpired()` → decodifica `exp` do JWT, retorna `false` para token estático (backward compat)
+  - `getTokenClaims()` → decodifica claims localmente sem verificar assinatura
+- [x] Modificar `src/hooks/useUserPermissions.ts`:
+  - Se `getTokenClaims()` retorna não-null (token é JWT): retornar claims localmente sem chamar `/permissions`
+  - Senão: comportamento original (chamada ao backend)
+- [x] Modificar `src/pages/Login.tsx`:
+  - Tenta `apiClient.login()` no submit (modo JWT padrão)
+  - Se backend retornar 501 (`JWT_NOT_CONFIGURED`): muda para modo token estático
+  - Botão "Tentar autenticação Azure AD" para voltar ao modo JWT
+- [x] `App.tsx`: se `isTokenExpired()` → `clearToken()` → redireciona para login
+- [x] `./rebuild-web.sh -b` — build ok
 
 ---
 
-## Fase 4 — Fluxo real de produção (Azure CLI no login)
+## Fase 4 — Fluxo real de produção (Azure CLI no login) ✅ CONCLUÍDA
 
-- [ ] Validar que `AuthHandler.Login` no modo não-bypass chama corretamente `GetCurrentUserEmail` + `GetUserPermissions` e emite JWT com `isSRE` real do grupo Azure AD `VV_CLOUD_SRE`
-- [ ] Testar com ambiente VPN + Azure CLI autenticado no servidor
-- [ ] Implementar auto-refresh: frontend chama `POST /auth/refresh` quando `isTokenExpired()` for verdadeiro (no interceptor do `apiClient.request()` ou via `useEffect` periódico)
+- [x] `AuthHandler.Login` simplificado para usar `rbacManager.GetCurrentUserPermissions()` (encapsula `GetCurrentUserEmail` + `GetUserPermissions` em uma chamada). JWT emitido com `isSRE` real do grupo `VV_CLOUD_SRE`. Bug de `name` vazio corrigido: `name = perms.Email` (display name não disponível via az CLI sem chamada extra ao Graph API — KISS).
+- [x] Auto-refresh já implementado em Fase 3: `apiClient.tryRefreshToken()` chamado automaticamente no interceptor `request()` quando `isTokenExpired()` retornar true. Falha no refresh → limpa token → dispara `jwt-expired` → App.tsx redireciona para login.
+- [ ] **Pendente (manual):** Testar fluxo completo com VPN + `az login` ativo no servidor — verificar que login retorna JWT com `is_sre` correto e que refresh funciona end-to-end.
 
 ---
 

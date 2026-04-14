@@ -148,7 +148,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
       const folderQuery = folder ? `?folder=${encodeURIComponent(folder)}` : '';
       const response = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionName)}${folderQuery}`, {
         headers: {
-          'Authorization': `Bearer poc-token-123`,
+          'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}`,
           'Content-Type': 'application/json',
         },
       });
@@ -185,7 +185,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
       
       const response = await fetch(endpoint, {
         headers: {
-          'Authorization': `Bearer poc-token-123`,
+          'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}`,
           'Content-Type': 'application/json',
         },
       });
@@ -250,7 +250,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
           // Buscar configuração do cluster
           const clusterConfigResponse = await fetch(`/api/v1/clusters/${encodeURIComponent(clusterName)}/config`, {
             headers: {
-              'Authorization': `Bearer poc-token-123`,
+              'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}`,
               'Content-Type': 'application/json',
             },
           });
@@ -263,7 +263,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
               await fetch(`/api/v1/azure/subscription`, {
                 method: 'POST',
                 headers: {
-                  'Authorization': `Bearer poc-token-123`,
+                  'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}`,
                   'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({ subscription: clusterConfig.subscription }),
@@ -274,7 +274,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
             await fetch(`/api/v1/clusters/switch-context`, {
               method: 'POST',
               headers: {
-                'Authorization': `Bearer poc-token-123`,
+                'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}`,
                 'Content-Type': 'application/json',
               },
               body: JSON.stringify({ context: contextName }),
@@ -320,7 +320,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
       const response = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionToDelete.name)}${folderQuery}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer poc-token-123`,
+          'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}`,
         },
       });
 
@@ -355,7 +355,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
       const response = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionToRename.name)}/rename${folderQuery}`, {
         method: 'PUT',
         headers: {
-          'Authorization': `Bearer poc-token-123`,
+          'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ new_name: newSessionName.trim() }),
@@ -505,7 +505,7 @@ export function LoadSessionModal({ open, onOpenChange, onSessionLoaded }: LoadSe
                                         `/api/v1/sessions/${encodeURIComponent(session.name)}${folderQuery}`,
                                         {
                                           headers: {
-                                            'Authorization': `Bearer poc-token-123`,
+                                            'Authorization': `Bearer ${localStorage.getItem("auth_token") || ""}`,
                                             'Content-Type': 'application/json',
                                           },
                                         }

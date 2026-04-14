@@ -140,6 +140,79 @@ class APIClient {
     localStorage.removeItem("auth_token");
   }
 
+  /** Tenta login via JWT no backend. Retorna os dados do token emitido. */
+  async login(): Promise<{ token: string; email: string; isSRE: boolean; expiresAt: string }> {
+    const res = await fetch(`${API_BASE_URL}/auth/login`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw Object.assign(new Error(data.error || "Login failed"), { status: res.status, code: data.code });
+    this.setToken(data.token);
+    return { token: data.token, email: data.email, isSRE: data.is_sre, expiresAt: data.expires_at };
+  }
+
+  /** Logout stateless — descarta token localmente. */
+  async logout(): Promise<void> {
+    try {
+      await fetch(`${API_BASE_URL}/auth/logout`, {
+        method: "POST",
+        headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
+      });
+    } finally {
+      this.clearToken();
+    }
+  }
+
+  /**
+   * Verifica se o token armazenado é um JWT expirado.
+   * Retorna false para tokens não-JWT (backward compat com token estático).
+   */
+  isTokenExpired(): boolean {
+    const token = this.token;
+    if (!token) return false;
+    const parts = token.split(".");
+    if (parts.length !== 3) return false; // não é JWT
+    try {
+      const payload = JSON.parse(atob(parts[1]));
+      if (!payload.exp) return false;
+      return Date.now() / 1000 > payload.exp;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Retorna true quando o JWT expira em menos de 60 minutos.
+   * Permite refresh proativo antes de expirar — evita que o analista
+   * precise refazer az login durante o dia de trabalho.
+   */
+  private isTokenNearExpiry(): boolean {
+    const token = this.token;
+    if (!token) return false;
+    const parts = token.split(".");
+    if (parts.length !== 3) return false;
+    try {
+      const payload = JSON.parse(atob(parts[1]));
+      if (!payload.exp) return false;
+      const oneHourFromNow = Date.now() / 1000 + 3600;
+      return oneHourFromNow > payload.exp;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Decodifica claims do JWT localmente (sem verificar assinatura). */
+  getTokenClaims(): { email?: string; isSRE?: boolean } | null {
+    const token = this.token;
+    if (!token) return null;
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    try {
+      const payload = JSON.parse(atob(parts[1]));
+      return { email: payload.email, isSRE: payload.is_sre };
+    } catch {
+      return null;
+    }
+  }
+
   setGitHubEmail(email: string) {
     console.log('🔧 [APIClient] Setting GitHub email:', email);
     this.gitHubEmail = email;
@@ -164,10 +237,37 @@ class APIClient {
     localStorage.setItem("github_org", org);
   }
 
+  /** Tenta renovar o JWT antes de fazer a requisição. Limpa token se refresh falhar. */
+  private async tryRefreshToken(): Promise<void> {
+    if (!this.token) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/auth/refresh`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.token}` },
+      });
+      if (!res.ok) { this.clearToken(); return; }
+      const data = await res.json();
+      if (data.token) this.setToken(data.token);
+    } catch {
+      // Sem conectividade — não limpa token, tenta a requisição original
+    }
+  }
+
   private async request<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
+    // Auto-refresh: renova proativamente quando falta < 1h para expirar
+    // ou quando já expirou (backend aceita grace period de 24h no refresh)
+    if (this.isTokenExpired() || this.isTokenNearExpiry()) {
+      await this.tryRefreshToken();
+      // Se token foi limpo (refresh falhou após 24h de grace), força re-login
+      if (!this.token) {
+        window.dispatchEvent(new CustomEvent("jwt-expired"));
+        throw new Error("Sessão expirada. Faça login novamente.");
+      }
+    }
+
     // ✅ CRÍTICO: Recarregar gitHubEmail do localStorage antes de cada requisição
     this.gitHubEmail = localStorage.getItem("github_email") || null;
 
@@ -249,6 +349,16 @@ class APIClient {
         const profileMatch = message!.match(/--profile\s+(\S+)/);
         const profile = profileMatch?.[1] ?? "";
         window.dispatchEvent(new CustomEvent("aws-sso-token-expired", { detail: { profile } }));
+      }
+
+      // Token rejeitado pelo servidor (inválido, expirado ou formato errado)
+      // Força re-login para que o usuário obtenha um JWT válido
+      if (response.status === 401) {
+        const code = rawError?.error?.code ?? rawError?.code ?? "";
+        if (code === "INVALID_TOKEN" || code === "TOKEN_EXPIRED" || code === "UNAUTHORIZED") {
+          this.clearToken();
+          window.dispatchEvent(new CustomEvent("jwt-expired"));
+        }
       }
 
       throw new Error(message || `Request failed: ${response.status}`);
@@ -3078,7 +3188,7 @@ class APIClient {
 
   /** URL do SSE stream de uma execução */
   getCommandRunnerStreamURL(sessionId: string): string {
-    const token = localStorage.getItem("auth_token") || "poc-token-123";
+    const token = localStorage.getItem("auth_token");
     return `/api/v1/command-runner/stream/${sessionId}?token=${encodeURIComponent(token)}`;
   }
 

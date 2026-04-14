@@ -29,9 +29,21 @@ const App = () => {
     const token = localStorage.getItem("auth_token");
     if (token) {
       apiClient.setToken(token);
-      setIsAuthenticated(true);
+      // JWT expirado → forçar novo login
+      if (apiClient.isTokenExpired()) {
+        apiClient.clearToken();
+      } else {
+        setIsAuthenticated(true);
+      }
     }
     setIsChecking(false);
+
+    // Evento disparado pelo APIClient quando refresh falha (sessão expirada)
+    const onExpired = () => {
+      setIsAuthenticated(false);
+    };
+    window.addEventListener("jwt-expired", onExpired);
+    return () => window.removeEventListener("jwt-expired", onExpired);
   }, []);
 
   const handleLogin = () => {

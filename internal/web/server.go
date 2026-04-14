@@ -17,6 +17,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"k8s-hpa-manager/internal/ai"
+	"k8s-hpa-manager/internal/auth"
 	"k8s-hpa-manager/internal/config"
 	"k8s-hpa-manager/internal/healthcheck"
 	"k8s-hpa-manager/internal/history"
@@ -47,6 +48,7 @@ type Server struct {
 	kubeManager    *config.KubeConfigManager
 	port           int
 	token          string
+	jwtManager     *auth.JWTManager // nil quando K8S_HPA_JWT_SECRET não configurado
 	disableADAuth  bool // Flag para desabilitar verificação RBAC (emergências)
 	lastHeartbeat  time.Time
 	heartbeatMutex sync.RWMutex
@@ -103,12 +105,25 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		return nil, fmt.Errorf("failed to create kube manager: %w", err)
 	}
 
-	// Token de autenticação (opcional para POC)
+	// Token de autenticação (backward compat — usado quando JWT não configurado)
 	token := os.Getenv("K8S_HPA_WEB_TOKEN")
 	if token == "" {
 		token = "poc-token-123" // Token padrão para POC
 		fmt.Println("⚠️  Usando token padrão para POC: poc-token-123")
-		fmt.Println("💡 Para produção, defina K8S_HPA_WEB_TOKEN")
+		fmt.Println("💡 Para produção, defina K8S_HPA_WEB_TOKEN ou K8S_HPA_JWT_SECRET")
+	}
+
+	// JWT Manager (ativo apenas quando K8S_HPA_JWT_SECRET está configurado)
+	jwtSecret := []byte(os.Getenv("K8S_HPA_JWT_SECRET"))
+	jwtTTL := 8 * time.Hour
+	if ttlStr := os.Getenv("K8S_HPA_JWT_TTL"); ttlStr != "" {
+		if parsed, err := time.ParseDuration(ttlStr); err == nil && parsed > 0 {
+			jwtTTL = parsed
+		}
+	}
+	jwtManager := auth.NewJWTManager(jwtSecret, jwtTTL)
+	if jwtManager.IsConfigured() {
+		fmt.Printf("🔑 JWT habilitado (TTL: %s)\n", jwtTTL)
 	}
 
 	// Setup Gin
@@ -292,6 +307,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		kubeManager:         kubeManager,
 		port:                port,
 		token:               token,
+		jwtManager:          jwtManager,
 		disableADAuth:       disableADAuth,
 		lastHeartbeat:       time.Now(),
 		logBuffer:           logBuffer,
@@ -433,7 +449,7 @@ func (s *Server) setupRoutes() {
 	})
 
 	// Shutdown endpoint (com auth)
-	s.router.POST("/shutdown", middleware.AuthMiddleware(s.token), func(c *gin.Context) {
+	s.router.POST("/shutdown", middleware.JWTAuthMiddleware(s.jwtManager, s.token), func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"message": "Servidor será desligado em 1 segundo...",
 		})
@@ -451,20 +467,26 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/api/v1/version", versionHandler.GetVersion)
 	s.router.POST("/api/v1/version/update", versionHandler.SelfUpdate)
 
-	// API v1 (com auth)
-	api := s.router.Group("/api/v1")
-	api.Use(middleware.AuthMiddleware(s.token))
-
-	// RBAC - Inicializar manager e middleware
+	// RBAC - Inicializar manager e middleware (compartilhado com auth handler)
 	rbacManager := rbac.NewRBACManager(s.disableADAuth)
 	rbacMiddleware := middleware.NewRBACMiddleware(rbacManager)
 
+	// Auth JWT endpoints (sem autenticação prévia — são os endpoints de login)
+	authHandler := handlers.NewAuthHandler(s.jwtManager, rbacManager, s.disableADAuth)
+	s.router.POST("/api/v1/auth/login", authHandler.Login)
+	s.router.POST("/api/v1/auth/logout", authHandler.Logout)
+	s.router.POST("/api/v1/auth/refresh", authHandler.RefreshToken)
+
+	// API v1 (com auth — dual-mode: JWT quando configurado, token estático como fallback)
+	api := s.router.Group("/api/v1")
+	api.Use(middleware.JWTAuthMiddleware(s.jwtManager, s.token))
+
 	// WebSocket endpoints (com auth via query param + RBAC SRE-only)
-	// Usa WebSocketAuthMiddleware para aceitar token via query parameter
+	// Usa WebSocketJWTAuthMiddleware para aceitar token via query parameter (dual-mode JWT/estático)
 	podExecHandler := handlers.NewPodExecHandler(s.kubeManager)
 
 	wsShell := s.router.Group("/api/v1/pods/:cluster/:namespace/:name")
-	wsShell.Use(middleware.WebSocketAuthMiddleware(s.token))
+	wsShell.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))
 	wsShell.Use(rbacMiddleware.RequireSREGroup())
 	{
 		wsShell.GET("/shell", podExecHandler.HandleShell)
@@ -761,7 +783,7 @@ func (s *Server) setupRoutes() {
 	commandRunnerHandler := handlers.NewCommandRunnerHandler(s.kubeManager, handlers.GetProgressTracker(), s.historyTracker, s.aiHandler)
 	// SSE stream: usa WebSocketAuthMiddleware para aceitar token via query param
 	s.router.GET("/api/v1/command-runner/stream/:sessionId",
-		middleware.WebSocketAuthMiddleware(s.token),
+		middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
 		commandRunnerHandler.Stream)
 	cmdRunner := api.Group("/command-runner")
 	{
@@ -1225,7 +1247,7 @@ func (s *Server) setupRoutes() {
 
 		// SSE stream - requer token via query param (EventSource não suporta headers)
 		sseGroup := s.router.Group("/api/v1/healthcheck")
-		sseGroup.Use(middleware.WebSocketAuthMiddleware(s.token))
+		sseGroup.Use(middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token))
 		{
 			sseGroup.GET("/progress", healthCheckHandler.Progress)                      // Original: 1 conexão por cluster
 			sseGroup.GET("/progress-multiplex", healthCheckHandler.ProgressMultiplexed) // 🆕 Multiplexado: 1 conexão para TODOS os clusters

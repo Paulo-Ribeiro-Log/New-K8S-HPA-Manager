@@ -16,7 +16,7 @@ const API_BASE = '/api/v1/helm';
 
 // Helper to get auth headers
 const getAuthHeaders = () => {
-  const token = localStorage.getItem('auth_token') || localStorage.getItem('token') || 'poc-token-123';
+  const token = localStorage.getItem('auth_token') || localStorage.getItem("auth_token");
   return {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${token}`,
