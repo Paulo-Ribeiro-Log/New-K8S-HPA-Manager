@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"k8s-hpa-manager/internal/config"
+	"k8s-hpa-manager/internal/dynatrace"
 	"k8s-hpa-manager/internal/finops"
 	"k8s-hpa-manager/internal/monitoring/discovery"
 	"k8s-hpa-manager/internal/storage"
@@ -26,11 +27,17 @@ type FinOpsHandler struct {
 	diskPricer      *finops.DiskPricer // nil = análise de storage omitida
 	exchange        *finops.ExchangeRateProvider
 	aiHandler       *AIDiagnosticsHandler // opcional — nil se AI não configurado
+	dtTokenStore    dtTokenReader          // para criar DTEnricher sob demanda
+}
+
+// dtTokenReader é satisfeito por *storage.UserTokensStore — evita import circular.
+type dtTokenReader interface {
+	GetDynatraceConfig() (url string, token string, ok bool)
 }
 
 // NewFinOpsHandler cria o handler com as dependências compartilhadas.
 // AzurePricer e DiskPricer são inicializados uma única vez (cache SQLite interno).
-func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *storage.NodePoolRegistryStore, timelineStore *storage.FinOpsTimelineStore, aiHandler *AIDiagnosticsHandler) *FinOpsHandler {
+func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *storage.NodePoolRegistryStore, timelineStore *storage.FinOpsTimelineStore, aiHandler *AIDiagnosticsHandler, dtTokens dtTokenReader) *FinOpsHandler {
 	pricer, err := finops.NewAzurePricer("")
 	if err != nil {
 		log.Warn().Err(err).Msg("FinOps: falha ao inicializar AzurePricer, usando apenas fallback")
@@ -47,6 +54,7 @@ func NewFinOpsHandler(kubeManager *config.KubeConfigManager, npRegistryStore *st
 		diskPricer:      diskPricer,
 		exchange:        finops.NewExchangeRateProvider(),
 		aiHandler:       aiHandler,
+		dtTokenStore:    dtTokens,
 	}
 }
 
@@ -73,7 +81,26 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		}
 	}
 
-	// Prometheus P95 (opcional) — URL auto-descoberta pelo cluster se não fornecida
+	windowDays, _ := strconv.Atoi(c.Query("window_days"))
+	if windowDays <= 0 {
+		windowDays = 30
+	}
+
+	// Dynatrace (primário) — criado automaticamente se token configurado
+	var dtEnricher *finops.DTEnricher
+	if h.dtTokenStore != nil {
+		if dtURL, dtToken, ok := h.dtTokenStore.GetDynatraceConfig(); ok {
+			dtClient, err := dynatrace.NewClient(dtURL, dtToken)
+			if err != nil {
+				log.Warn().Err(err).Msg("FinOps: falha ao criar cliente DT, enriquecimento DT desativado")
+			} else {
+				dtEnricher = finops.NewDTEnricher(dtClient, windowDays)
+				log.Info().Str("cluster", cluster).Msg("FinOps: DT enricher ativado como fonte primária")
+			}
+		}
+	}
+
+	// Prometheus (fallback) — URL auto-descoberta pelo cluster se não fornecida
 	var enricher *finops.PrometheusEnricher
 	if c.Query("with_prometheus") == "true" {
 		promURL := strings.TrimSpace(c.Query("prometheus_url"))
@@ -81,7 +108,6 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 			promURL = discovery.GetPrometheusURL(cluster)
 			log.Info().Str("cluster", cluster).Str("prometheus_url", promURL).Msg("FinOps: URL Prometheus auto-descoberta")
 		}
-		windowDays, _ := strconv.Atoi(c.Query("window_days"))
 		var err error
 		enricher, err = finops.NewPrometheusEnricher(promURL, windowDays)
 		if err != nil {
@@ -122,8 +148,14 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 	}
 
 	// Gerar relatório (com Prometheus e Storage opcionais)
-	calc := finops.NewCalculator(h.pricer, h.diskPricer, h.exchange)
-	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces, enricher)
+	// prometheusURL também é passado ao StorageCalculator para obter uso real de Blob/Files
+	// via kubelet_volume_stats_used_bytes (capacidade placeholder > 50 TB → fallback para uso real)
+	storagePromURL := strings.TrimSpace(c.Query("prometheus_url"))
+	if storagePromURL == "" {
+		storagePromURL = discovery.GetPrometheusURL(cluster)
+	}
+	calc := finops.NewCalculator(h.pricer, h.diskPricer, h.exchange).WithPrometheusURL(storagePromURL)
+	report, err := calc.BuildReport(c.Request.Context(), cluster, k8sClient, pools, namespaces, dtEnricher, enricher)
 	if err != nil {
 		log.Error().Err(err).Str("cluster", cluster).Msg("FinOps: falha ao gerar relatório")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Falha ao gerar relatório FinOps: " + err.Error()})
@@ -135,6 +167,7 @@ func (h *FinOpsHandler) GetReport(c *gin.Context) {
 		Int("workloads", report.Summary.WorkloadsAnalyzed).
 		Float64("cost_brl", report.Summary.TotalMonthlyCostBRL).
 		Float64("waste_brl", report.Summary.PotentialSavingsBRL).
+		Bool("dynatrace", dtEnricher != nil).
 		Bool("prometheus", enricher != nil).
 		Msg("FinOps: relatório gerado")
 

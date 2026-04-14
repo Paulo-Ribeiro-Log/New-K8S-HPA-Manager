@@ -34,9 +34,10 @@ type rawWorkload struct {
 
 // Calculator realiza a análise FinOps de um cluster
 type Calculator struct {
-	pricer     CloudPricer
-	diskPricer *DiskPricer // nil = análise de storage desabilitada
-	exchange   *ExchangeRateProvider
+	pricer        CloudPricer
+	diskPricer    *DiskPricer // nil = análise de storage desabilitada
+	exchange      *ExchangeRateProvider
+	prometheusURL string // opcional — usado para kubelet_volume_stats_used_bytes (Blob/Files)
 }
 
 // NewCalculator cria um novo calculator com as dependências injetadas.
@@ -45,15 +46,25 @@ func NewCalculator(pricer CloudPricer, diskPricer *DiskPricer, exchange *Exchang
 	return &Calculator{pricer: pricer, diskPricer: diskPricer, exchange: exchange}
 }
 
+// WithPrometheusURL define a URL do Prometheus para consultar uso real de Blob/Files.
+func (c *Calculator) WithPrometheusURL(url string) *Calculator {
+	c.prometheusURL = url
+	return c
+}
+
 // BuildReport coleta dados do cluster e monta o FinOpsReport completo.
 // namespaces: filtra namespaces específicos; vazio = todos (exceto kube-system/kube-public).
-// enricher: opcional — se não nil, enriquece workloads com dados históricos do Prometheus.
+// BuildReport gera o relatório FinOps para o cluster.
+// dtEnricher: fonte primária de métricas históricas (Dynatrace). Pode ser nil.
+// enricher:   fonte secundária (Prometheus). Usado como fallback quando DT não tem dados
+//             para um workload, ou quando dtEnricher é nil.
 func (c *Calculator) BuildReport(
 	ctx context.Context,
 	cluster string,
 	client kubernetes.Interface,
 	pools []storage.NodePoolRegistryEntry,
 	namespaces []string,
+	dtEnricher *DTEnricher,
 	enricher *PrometheusEnricher,
 ) (*FinOpsReport, error) {
 	rate, rateDate := c.exchange.Get()
@@ -73,12 +84,26 @@ func (c *Calculator) BuildReport(
 	// 3. Alocar custo proporcional a cada workload
 	workloads := allocateCosts(rawWorkloads, capacity, clusterCostUSD, rate)
 
-	// 4. Enriquecer com Prometheus (histórico 30d — opcional)
+	// 4. Enriquecer com métricas históricas: Dynatrace (primário) → Prometheus (fallback)
 	windowDays := 0
+	var dtEnriched map[string]bool
+
+	if dtEnricher != nil {
+		dtEnriched = dtEnricher.EnrichWorkloads(ctx, workloads)
+		windowDays = dtEnricher.windowDays
+	}
+
 	if enricher != nil {
 		enricher.SetPodMapping(podToWorkload)
-		enricher.EnrichWorkloads(ctx, workloads)
-		windowDays = enricher.window
+		if len(dtEnriched) > 0 {
+			// Aplicar Prometheus apenas nos workloads sem dados DT
+			enricher.EnrichWorkloadsPartial(ctx, workloads, dtEnriched)
+		} else {
+			enricher.EnrichWorkloads(ctx, workloads)
+		}
+		if windowDays == 0 {
+			windowDays = enricher.window
+		}
 	}
 
 	// 5. Agregar por namespace
@@ -92,6 +117,7 @@ func (c *Calculator) BuildReport(
 	var storageSummary StorageSummary
 	if c.diskPricer != nil {
 		storageCalc := NewStorageCalculator(c.diskPricer)
+		storageCalc.WithPrometheus(c.prometheusURL)
 
 		pvcs, storageSummary, err = storageCalc.Calculate(ctx, client, rate)
 		if err != nil {
