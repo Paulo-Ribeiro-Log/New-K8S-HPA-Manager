@@ -95,7 +95,8 @@ type FinOpsWorkload struct {
 	AvgReplicasCostBRL float64 `json:"avg_replicas_cost_brl,omitempty"`
 
 	// Desperdício financeiro mensal: recursos provisionados além do P95×1.20
-	WasteBRL float64 `json:"waste_brl,omitempty"`
+	WasteBRL      float64 `json:"waste_brl,omitempty"`
+	MetricsSource string  `json:"metrics_source,omitempty"` // "dynatrace" | "prometheus" | ""
 
 	// ── Storage: PVCs correlacionados a este workload ─────────────────────────
 	StorageCostUSD float64 `json:"storage_cost_usd,omitempty"`
