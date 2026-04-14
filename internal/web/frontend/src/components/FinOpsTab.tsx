@@ -4,6 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -17,7 +19,7 @@ import {
   DollarSign, TrendingDown, TrendingUp, AlertTriangle, CheckCircle2,
   Loader2, RefreshCw, Server, Layers, CircleDollarSign,
   ArrowUpDown, Info, ChevronDown, ChevronUp, Download, Brain, Activity, Cpu, MemoryStick,
-  GitCompare, Database, Copy, Check,
+  GitCompare, Database, Copy, Check, ChevronsUpDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
@@ -4016,6 +4018,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
     : clusterOptions[0] ?? "";
 
   const [cluster, setCluster] = useState(defaultCluster);
+  const [clusterOpen, setClusterOpen] = useState(false);
   const [triggerKey, setTriggerKey] = useState(0);
   const [withPrometheus, setWithPrometheus] = useState(true);
   const [windowDays, setWindowDays] = useState(30);
@@ -4126,16 +4129,34 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
         </div>
         <div className="flex flex-col gap-2 items-end">
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <Select value={cluster} onValueChange={setCluster}>
-              <SelectTrigger className="w-64 h-8 text-sm">
-                <SelectValue placeholder="Selecionar cluster..." />
-              </SelectTrigger>
-              <SelectContent>
-                {clusterOptions.map(c => (
-                  <SelectItem key={c} value={c}>{c.replace("-admin", "")}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Popover open={clusterOpen} onOpenChange={setClusterOpen}>
+              <PopoverTrigger asChild>
+                <Button variant="outline" role="combobox" aria-expanded={clusterOpen}
+                  className="w-64 h-8 text-sm justify-between font-normal">
+                  <span className="truncate">
+                    {cluster ? cluster.replace("-admin", "") : "Selecionar cluster..."}
+                  </span>
+                  <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-64 p-0" align="start">
+                <Command>
+                  <CommandInput placeholder="Buscar cluster..." className="h-8 text-sm" />
+                  <CommandList>
+                    <CommandEmpty>Nenhum cluster encontrado.</CommandEmpty>
+                    <CommandGroup>
+                      {clusterOptions.map(c => (
+                        <CommandItem key={c} value={c.replace("-admin", "")}
+                          onSelect={() => { setCluster(c); setClusterOpen(false); }}>
+                          <Check className={`mr-2 h-3.5 w-3.5 ${cluster === c ? "opacity-100" : "opacity-0"}`} />
+                          {c.replace("-admin", "")}
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
             <Button size="sm" variant="outline" className="h-8 gap-1"
               onClick={() => { setTriggerKey(k => k + 1); refetch(); setAiAnalysis(null); }}
               disabled={isLoading}>
