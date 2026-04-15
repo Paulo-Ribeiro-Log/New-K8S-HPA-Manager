@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,7 @@ import {
   DollarSign, TrendingDown, TrendingUp, AlertTriangle, CheckCircle2,
   Loader2, RefreshCw, Server, Layers, CircleDollarSign,
   ArrowUpDown, Info, ChevronDown, ChevronUp, Download, Brain, Activity, Cpu, MemoryStick,
-  GitCompare, Database, Copy, Check, ChevronsUpDown,
+  GitCompare, Database, Copy, Check, ChevronsUpDown, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useClusters } from "@/hooks/useAPI";
@@ -484,7 +484,10 @@ const LINE_COLORS = ["#6366f1","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4"
 // ─── Aba: Dashboard ───────────────────────────────────────────────────────────
 
 function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsReport }) {
-  const { summary, namespaces, node_pools, workloads } = report;
+  const { summary } = report;
+  const node_pools = report.node_pools ?? [];
+  const workloads  = report.workloads  ?? [];
+  const namespaces = report.namespaces ?? [];
   const [days, setDays] = useState(30);
 
   // ── Fetch timeline ──────────────────────────────────────────────────────────
@@ -769,7 +772,8 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
         )}
       </div>
 
-      {/* ── 3. Chart central: Custo Diário + Eficiência % ────────────────────── */}
+      {/* ── 3. Custo Diário × Eficiência | Custo por Namespace ───────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <Card>
         <CardHeader className="pb-1 pt-3 px-4">
           <CardTitle className="text-sm flex items-center gap-2">
@@ -866,8 +870,6 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
         </CardContent>
       </Card>
 
-      {/* ── 4. Namespace breakdown | Opportunities ──────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Namespace: custo com breakdown de veredicto */}
         <Card>
           <CardHeader className="pb-1 pt-3 px-4">
@@ -883,7 +885,7 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
                 <XAxis type="number"
                   tickFormatter={v => v === 0 ? "R$0" : v >= 1000 ? `R$${(v/1000).toFixed(0)}k` : `R$${Math.round(v)}`}
                   tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
-                <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={130} axisLine={false} tickLine={false} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={110} axisLine={false} tickLine={false} />
                 <Tooltip cursor={{ fill: "rgba(100,100,100,0.1)" }} content={({ active, payload, label }) => {
                   if (!active || !payload?.length) return null;
                   const extra = nsExtraMap.get(label as string);
@@ -904,7 +906,6 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
                 <Bar dataKey="desperdicio" name="Desperdício"  stackId="a" fill="#ef4444" fillOpacity={0.8} maxBarSize={20} />
                 <Bar dataKey="risco"       name="Risco OOM"   stackId="a" fill="#f59e0b" fillOpacity={0.8} maxBarSize={20} />
                 <Bar dataKey="sem_req"     name="Sem Request"  stackId="a" fill="#9ca3af" fillOpacity={0.8} maxBarSize={20} radius={[0,3,3,0]} />
-
               </BarChart>
             </ResponsiveContainer>
             <div className="flex gap-3 mt-1 px-2 flex-wrap">
@@ -916,125 +917,11 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
             </div>
           </CardContent>
         </Card>
-
-        {/* Tabela de Oportunidades */}
-        <Card className="border-amber-200 dark:border-amber-900/40">
-          <CardHeader className="pb-1 pt-3 px-4">
-            <CardTitle className="text-sm flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <TrendingDown className="h-4 w-4 text-red-500" />
-                Oportunidades de Economia
-                {windowDays > 0 && (
-                  <span className="text-[10px] font-normal text-muted-foreground">({windowDays}d de histórico Prometheus)</span>
-                )}
-              </span>
-              {opTotalSaving > 0 && (
-                <span className="text-[10px] font-semibold text-green-600 dark:text-green-400">
-                  Potencial total: {fmtBRL(opTotalSaving)}/mês
-                </span>
-              )}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            {opportunities.length === 0 ? (
-              <div className="flex items-center justify-center py-8 text-xs text-muted-foreground gap-2">
-                <CheckCircle2 className="h-4 w-4 text-green-500" />
-                Nenhuma oportunidade significativa identificada
-              </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow className="text-[10px] text-muted-foreground">
-                    <TableHead className="pl-4">Workload</TableHead>
-                    <TableHead>Recomendação concreta</TableHead>
-                    <TableHead className="text-right">Custo atual</TableHead>
-                    <TableHead className="text-right text-green-600">Economia/mês</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {opportunities.map((w, i) => (
-                    <TableRow key={i} className={`text-xs align-top ${
-                      w.verdict === "superprovisioned" ? "bg-red-50/40 dark:bg-red-950/10" :
-                      w.verdict === "oom_risk"         ? "bg-yellow-50/40 dark:bg-yellow-950/10" :
-                      w.verdict === "hpa_removable"    ? "bg-purple-50/40 dark:bg-purple-950/10" : ""
-                    }`}>
-                      <TableCell className="pl-4 py-2 min-w-[130px]">
-                        <p className="font-medium truncate max-w-[160px]">{w.workload}</p>
-                        <p className="text-[10px] text-muted-foreground truncate max-w-[160px]">{w.namespace}</p>
-                        <div className="mt-1">
-                          <VerdictBadge verdict={w.verdict} />
-                        </div>
-                        {/* HPA config atual */}
-                        {w.hpa_max > 0 && (
-                          <p className="text-[10px] text-muted-foreground mt-1 font-mono">
-                            HPA: {w.hpa_min}↔{w.hpa_current}↔{w.hpa_max}
-                            {w.hpa_avg_replicas ? ` · avg ${w.hpa_avg_replicas.toFixed(1)}` : ""}
-                          </p>
-                        )}
-                      </TableCell>
-                      <TableCell className="py-2 max-w-[340px]">
-                        <div className="space-y-0.5">
-                          {w.rec.lines.map((line, li) => (
-                            <p key={li} className={`text-[11px] leading-snug ${
-                              line.highlight
-                                ? "font-semibold text-foreground"
-                                : "text-muted-foreground"
-                            }`}>
-                              {line.highlight && (
-                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 mr-1.5 mb-px" />
-                              )}
-                              {line.text}
-                            </p>
-                          ))}
-                          {(w.rec.kubectlList ?? []).length > 0 && (
-                            <p className="text-[10px] font-mono bg-muted/50 rounded px-1.5 py-0.5 mt-1 truncate text-muted-foreground" title={w.rec.kubectlList[0]}>
-                              $ {w.rec.kubectlList[0]}
-                            </p>
-                          )}
-                          {w.rec.safeMin !== undefined && w.hpa_min > 0 && (
-                            <p className="text-[10px] text-green-600 dark:text-green-400 font-medium mt-0.5">
-                              Economia estimada: {fmtBRL((w.hpa_min - w.rec.safeMin) * (w.pods > 0 ? w.cost_share_brl / w.pods : 0))}/mês por réplica removida
-                            </p>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-[11px] py-2 whitespace-nowrap">
-                        {fmtBRL(w.cost_share_brl)}
-                        {w.hpa_cost_min_brl > 0 && w.hpa_cost_min_brl < w.cost_share_brl && (
-                          <p className="text-[10px] text-muted-foreground">
-                            mín: {fmtBRL(w.hpa_cost_min_brl)}
-                          </p>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right py-2 whitespace-nowrap">
-                        {w.saving > 0
-                          ? (
-                            <div>
-                              <span className="text-green-600 font-bold text-sm">-{fmtBRL(w.saving)}</span>
-                              <p className="text-[10px] text-muted-foreground">/ano: -{fmtBRL(w.saving * 12)}</p>
-                            </div>
-                          )
-                          : <span className="text-muted-foreground font-mono text-[11px]">—</span>}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-            {opTotalSaving > 0 && (
-              <div className="px-4 py-2 border-t bg-green-50/50 dark:bg-green-950/10 flex justify-between items-center">
-                <span className="text-[10px] text-muted-foreground">Aplicando todas as recomendações acima:</span>
-                <span className="text-xs font-bold text-green-600">
-                  -{fmtBRL(opTotalSaving)}/mês · -{fmtBRL(opTotalSaving * 12)}/ano
-                </span>
-              </div>
-            )}
-          </CardContent>
-        </Card>
       </div>
 
-      {/* ── 5. HPA | Nodes ──────────────────────────────────────────────────── */}
+      {/* ── 4. HPA Réplicas | Nodes Ready ────────────────────────────────────── */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* HPA Réplicas */}
         <Card>
           <CardHeader className="pb-1 pt-3 px-4">
             <CardTitle className="text-sm flex items-center gap-2">
@@ -1083,6 +970,7 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
           </CardContent>
         </Card>
 
+        {/* Nodes Ready */}
         <Card>
           <CardHeader className="pb-1 pt-3 px-4">
             <CardTitle className="text-sm flex items-center gap-2">
@@ -1125,6 +1013,120 @@ function DashboardTab({ cluster, report }: { cluster: string; report: FinOpsRepo
           </CardContent>
         </Card>
       </div>
+
+      {/* ── 5. Oportunidades de Economia (último painel) ──────────────────────── */}
+      <Card className="border-amber-200 dark:border-amber-900/40">
+        <CardHeader className="pb-1 pt-3 px-4">
+          <CardTitle className="text-sm flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <TrendingDown className="h-4 w-4 text-red-500" />
+              Oportunidades de Economia
+              {windowDays > 0 && (
+                <span className="text-[10px] font-normal text-muted-foreground">({windowDays}d de histórico Prometheus)</span>
+              )}
+            </span>
+            {opTotalSaving > 0 && (
+              <span className="text-[10px] font-semibold text-green-600 dark:text-green-400">
+                Potencial total: {fmtBRL(opTotalSaving)}/mês
+              </span>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {opportunities.length === 0 ? (
+            <div className="flex items-center justify-center py-8 text-xs text-muted-foreground gap-2">
+              <CheckCircle2 className="h-4 w-4 text-green-500" />
+              Nenhuma oportunidade significativa identificada
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow className="text-[10px] text-muted-foreground">
+                  <TableHead className="pl-4">Workload</TableHead>
+                  <TableHead>Recomendação concreta</TableHead>
+                  <TableHead className="text-right">Custo atual</TableHead>
+                  <TableHead className="text-right text-green-600">Economia/mês</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {opportunities.map((w, i) => (
+                  <TableRow key={i} className={`text-xs align-top ${
+                    w.verdict === "superprovisioned" ? "bg-red-50/40 dark:bg-red-950/10" :
+                    w.verdict === "oom_risk"         ? "bg-yellow-50/40 dark:bg-yellow-950/10" :
+                    w.verdict === "hpa_removable"    ? "bg-purple-50/40 dark:bg-purple-950/10" : ""
+                  }`}>
+                    <TableCell className="pl-4 py-2 min-w-[130px]">
+                      <p className="font-medium truncate max-w-[160px]">{w.workload}</p>
+                      <p className="text-[10px] text-muted-foreground truncate max-w-[160px]">{w.namespace}</p>
+                      <div className="mt-1">
+                        <VerdictBadge verdict={w.verdict} />
+                      </div>
+                      {w.hpa_max > 0 && (
+                        <p className="text-[10px] text-muted-foreground mt-1 font-mono">
+                          HPA: {w.hpa_min}↔{w.hpa_current}↔{w.hpa_max}
+                          {w.hpa_avg_replicas ? ` · avg ${w.hpa_avg_replicas.toFixed(1)}` : ""}
+                        </p>
+                      )}
+                    </TableCell>
+                    <TableCell className="py-2 max-w-[340px]">
+                      <div className="space-y-0.5">
+                        {w.rec.lines.map((line, li) => (
+                          <p key={li} className={`text-[11px] leading-snug ${
+                            line.highlight
+                              ? "font-semibold text-foreground"
+                              : "text-muted-foreground"
+                          }`}>
+                            {line.highlight && (
+                              <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 mr-1.5 mb-px" />
+                            )}
+                            {line.text}
+                          </p>
+                        ))}
+                        {(w.rec.kubectlList ?? []).length > 0 && (
+                          <p className="text-[10px] font-mono bg-muted/50 rounded px-1.5 py-0.5 mt-1 truncate text-muted-foreground" title={w.rec.kubectlList[0]}>
+                            $ {w.rec.kubectlList[0]}
+                          </p>
+                        )}
+                        {w.rec.safeMin !== undefined && w.hpa_min > 0 && (
+                          <p className="text-[10px] text-green-600 dark:text-green-400 font-medium mt-0.5">
+                            Economia estimada: {fmtBRL((w.hpa_min - w.rec.safeMin) * (w.pods > 0 ? w.cost_share_brl / w.pods : 0))}/mês por réplica removida
+                          </p>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-[11px] py-2 whitespace-nowrap">
+                      {fmtBRL(w.cost_share_brl)}
+                      {w.hpa_cost_min_brl > 0 && w.hpa_cost_min_brl < w.cost_share_brl && (
+                        <p className="text-[10px] text-muted-foreground">
+                          mín: {fmtBRL(w.hpa_cost_min_brl)}
+                        </p>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right py-2 whitespace-nowrap">
+                      {w.saving > 0
+                        ? (
+                          <div>
+                            <span className="text-green-600 font-bold text-sm">-{fmtBRL(w.saving)}</span>
+                            <p className="text-[10px] text-muted-foreground">/ano: -{fmtBRL(w.saving * 12)}</p>
+                          </div>
+                        )
+                        : <span className="text-muted-foreground font-mono text-[11px]">—</span>}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+          {opTotalSaving > 0 && (
+            <div className="px-4 py-2 border-t bg-green-50/50 dark:bg-green-950/10 flex justify-between items-center">
+              <span className="text-[10px] text-muted-foreground">Aplicando todas as recomendações acima:</span>
+              <span className="text-xs font-bold text-green-600">
+                -{fmtBRL(opTotalSaving)}/mês · -{fmtBRL(opTotalSaving * 12)}/ano
+              </span>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -2734,7 +2736,9 @@ const CATEGORY_COLOR: Record<string, string> = {
 };
 
 function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: FinOpsReport; windowDays: number; cluster: string }) {
-  const { summary, workloads, node_pools } = report;
+  const { summary } = report;
+  const workloads  = report.workloads  ?? [];
+  const node_pools = report.node_pools ?? [];
   const storage = report.storage;
   const pvcs = report.pvcs ?? [];
   const contentRef = useRef<HTMLDivElement>(null);
@@ -2772,10 +2776,6 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
   const byClass = (storage?.by_storage_class ?? [])
     .filter(sc => sc.monthly_cost_brl > 0)
     .sort((a, b) => b.monthly_cost_brl - a.monthly_cost_brl);
-
-  // DEBUG — remover após diagnóstico
-  console.log("[FinOps storage] by_storage_class raw:", storage?.by_storage_class);
-  console.log("[FinOps storage] byClass (filtrado > 0):", byClass);
 
   // orphanedCost é de PVCs — ratio contra pvcCost (não storageCost que inclui OS disk)
   const orphanRatio = pvcCost > 0 ? orphanedCost / pvcCost : 0;
@@ -2820,10 +2820,6 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
     ...storageSlices,
     ...(totalIdentifiedWaste > 0 ? [{ name: "Desperdício identificado", value: Math.round(totalIdentifiedWaste), fill: "#ef4444" }] : []),
   ];
-  // DEBUG — remover após diagnóstico
-  console.log("[FinOps storage] storageSlices:", storageSlices);
-  console.log("[FinOps storage] pieData final:", pieData.map(d => `${d.name}=${d.value}`));
-
   // ── Achados ───────────────────────────────────────────────────────────────
   const findings: Finding[] = [];
 
@@ -2943,76 +2939,80 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
   // e desenha connector em cotovelo (polyline) do segmento até o label ajustado.
   const RADIAN = Math.PI / 180;
 
+  // Armazena os midAngles REAIS que o Recharts passa ao renderPieLabel.
+  // O Recharts aplica minAngle={3} e paddingAngle={2}, então os ângulos reais diferem
+  // dos calculados por proporção bruta. Usamos os reais para isLeft e origY precisos.
+  const _realMidAngles = useRef<Map<number, number>>(new Map());
+
   const _labelCache = useRef<{ key: string; positions: Map<number, {
     lx: number; ly: number; origY: number; isLeft: boolean; pct: number;
   }> }>({ key: "", positions: new Map() });
 
-  const _getLabelPositions = (cx: number, cy: number, outerRadius: number) => {
-    const cacheKey = `${cx.toFixed(0)},${cy.toFixed(0)},${outerRadius},${pieData.map(d => d.value).join(",")}`;
-    if (_labelCache.current.key === cacheKey) return _labelCache.current.positions;
-
+  const _computeLabelPositions = (
+    cx: number, cy: number, outerRadius: number,
+    angles: Map<number, number>, // index → midAngle real do Recharts
+  ) => {
     const total = pieData.reduce((s, d) => s + d.value, 0);
-    if (total === 0) return new Map();
-    const R = outerRadius + 34;
-    const MIN_GAP = 24; // px mínimo entre centros; cada bloco de texto ocupa ~20px (2 linhas × 9px + espaço)
-    const Y_MIN = cy - outerRadius - 20; // limite superior visível
-    const Y_MAX = cy + outerRadius + 40; // limite inferior visível
+    if (total === 0) return new Map<number, { lx: number; ly: number; origY: number; isLeft: boolean; pct: number }>();
 
-    // 1. Posição bruta de cada segmento (midAngle calculado pelos dados)
-    let cumAngle = 0;
+    const R = outerRadius + 34;
+    const MIN_GAP = 28; // bloco de texto = ~20px; 28px garante 8px de espaço entre labels
+    const Y_MIN = cy - outerRadius - 30;
+    const Y_MAX = cy + outerRadius + 50;
+
+    // 1. Posição bruta usando midAngles REAIS do Recharts (ou fallback por proporção se ainda não disponíveis)
     const raw = pieData.map((d, i) => {
-      const pct = d.value / total;
-      const mid = cumAngle + pct * 180; // midAngle = start + span/2
-      cumAngle += pct * 360;
-      const cosA = Math.cos(-mid * RADIAN);
-      const sinA = Math.sin(-mid * RADIAN);
-      return { i, cosA, sinA, origY: cy + R * sinA, adjY: cy + R * sinA, pct, isLeft: cosA < 0 };
+      const realAngle = angles.get(i);
+      let cosA: number, sinA: number;
+      if (realAngle !== undefined) {
+        cosA = Math.cos(-realAngle * RADIAN);
+        sinA = Math.sin(-realAngle * RADIAN);
+      } else {
+        // fallback: proporcional (só no primeiro render antes de _realMidAngles estar preenchido)
+        const pct = d.value / total;
+        const cumPct = pieData.slice(0, i).reduce((s, dd) => s + dd.value / total, 0);
+        const mid = (cumPct + pct / 2) * 360;
+        cosA = Math.cos(-mid * RADIAN);
+        sinA = Math.sin(-mid * RADIAN);
+      }
+      return {
+        i, cosA, sinA,
+        origY: cy + R * sinA, adjY: cy + R * sinA,
+        pct: d.value / total,
+        isLeft: cosA < 0,
+      };
     });
 
-    // 2. Separar em grupos, ordenar por Y
+    // 2. Separar em grupos L/R, ordenar por Y
     const left  = raw.filter(x => x.isLeft).sort((a, b) => a.adjY - b.adjY);
     const right = raw.filter(x => !x.isLeft).sort((a, b) => a.adjY - b.adjY);
 
-    // 3. Resolver colisões: push-down → push-up → shift do grupo para dentro dos limites
+    // 3. Resolver colisões: push-down → push-up → shift de grupo para dentro dos limites
     const resolve = (grp: typeof left) => {
-      if (grp.length === 0) return;
-
-      // Pass 1: empurrar para baixo
-      for (let i = 1; i < grp.length; i++) {
+      if (grp.length <= 1) return;
+      for (let i = 1; i < grp.length; i++)
         if (grp[i].adjY - grp[i - 1].adjY < MIN_GAP)
           grp[i] = { ...grp[i], adjY: grp[i - 1].adjY + MIN_GAP };
-      }
-      // Pass 2: empurrar para cima
-      for (let i = grp.length - 2; i >= 0; i--) {
+      for (let i = grp.length - 2; i >= 0; i--)
         if (grp[i + 1].adjY - grp[i].adjY < MIN_GAP)
           grp[i] = { ...grp[i], adjY: grp[i + 1].adjY - MIN_GAP };
-      }
-      // Pass 3: se o grupo extrapolou o limite inferior, subir o grupo inteiro
       const overflow = grp[grp.length - 1].adjY - Y_MAX;
-      if (overflow > 0) {
-        for (let i = 0; i < grp.length; i++)
-          grp[i] = { ...grp[i], adjY: grp[i].adjY - overflow };
-      }
-      // Pass 4: se extrapolou o limite superior, descer o grupo inteiro
+      if (overflow > 0)
+        for (let i = 0; i < grp.length; i++) grp[i] = { ...grp[i], adjY: grp[i].adjY - overflow };
       const underflow = Y_MIN - grp[0].adjY;
-      if (underflow > 0) {
-        for (let i = 0; i < grp.length; i++)
-          grp[i] = { ...grp[i], adjY: grp[i].adjY + underflow };
-      }
+      if (underflow > 0)
+        for (let i = 0; i < grp.length; i++) grp[i] = { ...grp[i], adjY: grp[i].adjY + underflow };
     };
     resolve(left);
     resolve(right);
 
-    // 4. Coluna x fixa por lado (labels alinhados numa régua vertical)
+    // 4. Coluna x fixa por lado
     const COL_L = cx - R - 10;
     const COL_R = cx + R + 10;
 
     const positions = new Map<number, { lx: number; ly: number; origY: number; isLeft: boolean; pct: number }>();
-    for (const it of [...left, ...right]) {
+    for (const it of [...left, ...right])
       positions.set(it.i, { lx: it.isLeft ? COL_L : COL_R, ly: it.adjY, origY: it.origY, isLeft: it.isLeft, pct: it.pct });
-    }
-
-    _labelCache.current = { key: cacheKey, positions };
     return positions;
   };
 
@@ -3020,16 +3020,28 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
     cx: number; cy: number; midAngle: number; outerRadius: number;
     index: number; name: string; value: number;
   }) => {
-    const pos = _getLabelPositions(cx, cy, outerRadius).get(index);
+    // Registrar o midAngle real do Recharts (inclui minAngle e paddingAngle)
+    _realMidAngles.current.set(index, midAngle);
+
+    // Recalcular posições apenas quando o conjunto de ângulos mudar
+    const angleKey = Array.from(_realMidAngles.current.entries())
+      .sort(([a], [b]) => a - b).map(([i, v]) => `${i}:${v.toFixed(1)}`).join(",");
+    const cacheKey = `${cx.toFixed(0)},${cy.toFixed(0)},${outerRadius},${angleKey}`;
+
+    if (_labelCache.current.key !== cacheKey) {
+      _labelCache.current = {
+        key: cacheKey,
+        positions: _computeLabelPositions(cx, cy, outerRadius, _realMidAngles.current),
+      };
+    }
+
+    const pos = _labelCache.current.positions.get(index);
     if (!pos) return null;
 
-    // Ponto na borda do segmento
     const cosA = Math.cos(-midAngle * RADIAN);
     const sinA = Math.sin(-midAngle * RADIAN);
     const sx = cx + (outerRadius + 5) * cosA;
     const sy = cy + (outerRadius + 5) * sinA;
-
-    // Joelho do conector: mesma x da coluna, y original (sem ajuste)
     const kneeX = pos.lx + (pos.isLeft ? 12 : -12);
     const anchor = pos.isLeft ? "end" : "start";
     const tx = pos.lx + (pos.isLeft ? -3 : 3);
@@ -3505,7 +3517,8 @@ function RelatorioTab({ report, windowDays: _windowDays, cluster }: { report: Fi
 
 // ─── Aba: Armazenamento ───────────────────────────────────────────────────────
 
-function StorageTab({ pvcs, storage }: { pvcs: PVCCostItem[]; storage: StorageSummary }) {
+function StorageTab({ pvcs: pvcsRaw, storage }: { pvcs: PVCCostItem[]; storage: StorageSummary }) {
+  const pvcs = pvcsRaw ?? [];
   const [filterNs, setFilterNs] = useState("all");
   const [filterType, setFilterType] = useState("all");
   const [sortBy, setSortBy] = useState<"cost" | "gb" | "name">("cost");
@@ -4152,24 +4165,27 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
 
   const [cluster, setCluster] = useState(defaultCluster);
   const [clusterOpen, setClusterOpen] = useState(false);
-  const [triggerKey, setTriggerKey] = useState(0);
   const [withPrometheus, setWithPrometheus] = useState(true);
   const [windowDays, setWindowDays] = useState(30);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiExpanded, setAiExpanded] = useState(true);
+  const aiAbortRef = useRef<AbortController | null>(null);
 
   // Estado persistente da aba HPA Histórico (sobrevive a troca de tabs)
   const [hpaHistoryDays, setHpaHistoryDays] = useState(30);
 
+  const queryClient = useQueryClient();
+
   const { data: report, isLoading, error, refetch } = useQuery<FinOpsReport>({
-    queryKey: ["finops-report", cluster, triggerKey],
-    queryFn: async () => {
+    queryKey: ["finops-report", cluster],
+    queryFn: async ({ signal }) => {
       let url = `/api/v1/finops/report?cluster=${encodeURIComponent(cluster)}`;
       if (withPrometheus) {
         url += `&with_prometheus=true&window_days=${windowDays}`;
       }
       const r = await fetch(url, {
+        signal,
         headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
       });
       if (!r.ok) {
@@ -4178,8 +4194,8 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
       }
       return r.json();
     },
-    enabled: !!cluster,
-    staleTime: 5 * 60 * 1000,
+    enabled: false,        // nunca re-fetcha automaticamente ao montar
+    staleTime: Infinity,   // cache permanece válido indefinidamente
     retry: false,
   });
 
@@ -4215,16 +4231,25 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
   };
 
   const analyzeWithAI = async () => {
+    // Se já está carregando, cancela
+    if (aiLoading) {
+      aiAbortRef.current?.abort();
+      setAiLoading(false);
+      toast.info("Análise AI cancelada");
+      return;
+    }
     if (!report) return;
     const aiEmail = localStorage.getItem("ai_email") ?? "";
     if (!aiEmail) {
       toast.error("Configure seu e-mail de AI em Configurações → AI Settings");
       return;
     }
+    aiAbortRef.current = new AbortController();
     setAiLoading(true);
     setAiAnalysis(null);
     try {
       const r = await fetch("/api/v1/finops/analyze", {
+        signal: aiAbortRef.current.signal,
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -4241,6 +4266,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
       setAiExpanded(true);
       toast.success("Análise AI concluída");
     } catch (err) {
+      if ((err as Error).name === "AbortError") return; // cancelado pelo usuário
       toast.error("Falha na análise AI: " + (err as Error).message);
     } finally {
       setAiLoading(false);
@@ -4290,11 +4316,19 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 </Command>
               </PopoverContent>
             </Popover>
-            <Button size="sm" variant="outline" className="h-8 gap-1"
-              onClick={() => { setTriggerKey(k => k + 1); refetch(); setAiAnalysis(null); }}
-              disabled={isLoading}>
-              <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
-              Analisar
+            <Button size="sm" variant={isLoading ? "destructive" : "outline"} className="h-8 gap-1"
+              onClick={() => {
+                if (isLoading) {
+                  queryClient.cancelQueries({ queryKey: ["finops-report", cluster] });
+                } else {
+                  setAiAnalysis(null);
+                  refetch();
+                }
+              }}>
+              {isLoading
+                ? <X className="h-3.5 w-3.5" />
+                : <RefreshCw className="h-3.5 w-3.5" />}
+              {isLoading ? "Cancelar" : "Analisar"}
             </Button>
             {report && (
               <>
@@ -4302,12 +4336,12 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                   <Download className="h-3.5 w-3.5" />
                   CSV
                 </Button>
-                <Button size="sm" variant="outline" className="h-8 gap-1"
-                  onClick={analyzeWithAI} disabled={aiLoading}>
+                <Button size="sm" variant={aiLoading ? "destructive" : "outline"} className="h-8 gap-1"
+                  onClick={analyzeWithAI}>
                   {aiLoading
-                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ? <X className="h-3.5 w-3.5" />
                     : <Brain className="h-3.5 w-3.5" />}
-                  {aiLoading ? "Analisando..." : "Analisar com AI"}
+                  {aiLoading ? "Cancelar AI" : "Analisar com AI"}
                 </Button>
               </>
             )}
@@ -4370,7 +4404,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
             <span>
               {report.cluster.replace("-admin", "")} · gerado em {new Date(report.generated_at).toLocaleTimeString("pt-BR")}
               {" · "}câmbio USD/BRL: <strong>R$ {report.exchange_rate.toFixed(4)}</strong> ({report.exchange_date})
-              {" · "}{report.node_pools.length} node pools · {report.summary.workloads_analyzed} workloads
+              {" · "}{(report.node_pools ?? []).length} node pools · {report.summary.workloads_analyzed} workloads
             </span>
             {!withPrometheus && report.window_days === 0 && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border border-amber-300 dark:border-amber-700">
@@ -4407,7 +4441,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
               <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
               <TabsTrigger value="nodepools">
                 Node Pools
-                <Badge variant="secondary" className="ml-1 text-[10px]">{report.node_pools.length}</Badge>
+                <Badge variant="secondary" className="ml-1 text-[10px]">{(report.node_pools ?? []).length}</Badge>
               </TabsTrigger>
               <TabsTrigger value="workloads">
                 Workloads
@@ -4450,10 +4484,10 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 <DashboardTab cluster={cluster} report={report} />
               </TabsContent>
               <TabsContent value="nodepools" className="mt-0 h-full">
-                <NodePoolsTab pools={report.node_pools} workloads={report.workloads} cluster={cluster} />
+                <NodePoolsTab pools={report.node_pools ?? []} workloads={report.workloads ?? []} cluster={cluster} />
               </TabsContent>
               <TabsContent value="workloads" className="mt-0 h-full">
-                <WorkloadsTab workloads={report.workloads} windowDays={report.window_days || windowDays} />
+                <WorkloadsTab workloads={report.workloads ?? []} windowDays={report.window_days || windowDays} />
               </TabsContent>
               <TabsContent value="hpa-history" className="mt-0 h-full">
                 <HPAHistoryTab cluster={cluster} days={hpaHistoryDays} setDays={setHpaHistoryDays} />
@@ -4464,7 +4498,7 @@ export const FinOpsTab = ({ selectedCluster }: { selectedCluster?: string }) => 
                 </TabsContent>
               )}
               <TabsContent value="opportunities" className="mt-0 h-full">
-                <OpportunitiesTab workloads={report.workloads} summary={report.summary} windowDays={report.window_days || windowDays} />
+                <OpportunitiesTab workloads={report.workloads ?? []} summary={report.summary} windowDays={report.window_days || windowDays} />
               </TabsContent>
               <TabsContent value="report" className="mt-0 h-full">
                 <RelatorioTab report={report} windowDays={report.window_days || windowDays} cluster={cluster} />

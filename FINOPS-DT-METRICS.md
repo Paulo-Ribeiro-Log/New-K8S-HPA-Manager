@@ -64,16 +64,18 @@ DT parcial? → workloads sem dados DT → Prometheus preenche o restante
 
 ---
 
-## Fase 4 — Frontend: indicar fonte dos dados
+## Fase 4 — Frontend: indicar fonte dos dados ✅ CONCLUÍDA
 
-**Arquivo:** `internal/web/frontend/src/components/FinOpsTab.tsx` ← MODIFICAR
+**Arquivo:** `internal/web/frontend/src/components/FinOpsTab.tsx` ← MODIFICADO
 
-- [ ] Ler `workload.metrics_source` ao exibir a coluna de desperdício na aba Oportunidades
+- [x] Ler `workload.metrics_source` ao exibir a coluna de desperdício na aba Oportunidades
   - Badge pequeno ao lado do valor: `DT` (azul) ou `Prom` (laranja) ou nenhum badge se sem dados
 
-- [ ] Tooltip no checkbox "Análise histórica" indicar: `"Fonte: Dynatrace (com fallback Prometheus)"`
+- [x] Badge DT/Prom também exibido em CPU P95, Mem P95 e avg_replicas_cost_brl na aba HPA Histórico
 
-- [ ] Nenhuma mudança na lógica de cálculo — `waste_brl` já vem pronto do backend
+- [x] Tooltip no checkbox "Análise histórica" indicar: `"Fonte: Dynatrace (com fallback Prometheus)"`
+
+- [x] Nenhuma mudança na lógica de cálculo — `waste_brl` já vem pronto do backend
 
 ---
 
@@ -100,5 +102,5 @@ internal/finops/calculator.go                     ← MODIFICADO (Fase 2)
 internal/web/handlers/finops.go                   ← MODIFICADO (Fase 3)
 internal/web/server.go                            ← MODIFICADO (Fase 3)
 internal/storage/user_tokens_store.go             ← MODIFICADO (Fase 3)
-internal/web/frontend/src/components/FinOpsTab.tsx ← PENDENTE (Fase 4)
+internal/web/frontend/src/components/FinOpsTab.tsx ← MODIFICADO (Fase 4)
 ```
