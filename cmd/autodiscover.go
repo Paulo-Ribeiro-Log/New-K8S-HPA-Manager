@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"k8s-hpa-manager/internal/config"
 
@@ -11,38 +12,27 @@ import (
 
 var autodiscoverCmd = &cobra.Command{
 	Use:   "autodiscover",
-	Short: "Auto-descobre resource groups e subscriptions de todos os clusters",
-	Long: `Descobre automaticamente resource groups e subscriptions para todos os clusters
-no kubeconfig e salva em ~/.k8s-hpa-manager/clusters-config.json.
+	Short: "Auto-descobre configurações de todos os clusters AKS e EKS",
+	Long: `Descobre automaticamente configurações de clusters AKS (Azure) e EKS (AWS)
+a partir do kubeconfig local, rodando ambos em paralelo.
 
-Esta funcionalidade:
-1. Lê todos os clusters 'akspriv-*' do kubeconfig
-2. Extrai o resource group do campo 'user' (formato: clusterAdmin_{RG}_{CLUSTER})
-3. Descobre a subscription via Azure CLI
-4. Salva ou atualiza clusters-config.json
+AKS: extrai resource group + subscription via Azure CLI
+     → salva em ~/.k8s-hpa-manager/clusters-config.json
 
-Útil para:
-- Configuração inicial de múltiplos clusters (26, 70+ clusters)
-- Atualizar configurações após adicionar novos clusters ao kubeconfig
-- Regenerar clusters-config.json após mudanças de subscriptions`,
-	Example: `  # Descobrir todos os clusters automaticamente
-  k8s-hpa-manager autodiscover
+EKS: varre perfis AWS × regiões via AWS CLI
+     → salva em ~/.k8s-hpa-manager/eks-clusters-config.json
+
+Útil para configuração inicial ou após adicionar novos clusters ao kubeconfig.`,
+	Example: `  # Descobrir todos os clusters (AKS + EKS) automaticamente
+  ./build/new-k8s-hpa autodiscover
 
   # Com kubeconfig customizado
-  k8s-hpa-manager --kubeconfig /path/to/config autodiscover`,
+  ./build/new-k8s-hpa --kubeconfig /path/to/config autodiscover`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("🚀 K8s HPA Manager - Auto-Descoberta de Clusters")
-		fmt.Println("=" + "================================================")
+		fmt.Println("🚀 K8s HPA Manager - Auto-Descoberta de Clusters (AKS + EKS)")
+		fmt.Println("=============================================================")
 		fmt.Println()
 
-		// Validar Azure CLI
-		fmt.Println("🔍 Validando Azure CLI...")
-		if err := validateAzureAuth(); err != nil {
-			return fmt.Errorf("Azure CLI não está disponível ou não autenticado: %w\nExecute: az login", err)
-		}
-		fmt.Println()
-
-		// Criar KubeConfigManager
 		kubeconfigPath := kubeconfig
 		if kubeconfigPath == "" {
 			if home, exists := os.LookupEnv("HOME"); exists {
@@ -59,37 +49,74 @@ Esta funcionalidade:
 			return fmt.Errorf("erro ao carregar kubeconfig: %w", err)
 		}
 
-		// Auto-descobrir todos os clusters (com log para terminal)
-		configs, errors := manager.AutoDiscoverAllClusters(func(msg string) {
-			fmt.Println(msg)
-		})
+		log := func(msg string) { fmt.Println(msg) }
 
-		// Salvar configurações
-		if len(configs) > 0 {
-			fmt.Println()
-			if err := manager.SaveClusterConfigs(configs, func(msg string) {
-				fmt.Println(msg)
-			}); err != nil {
-				return fmt.Errorf("erro ao salvar configurações: %w", err)
+		var (
+			aksConfigs []config.ClusterConfig
+			eksConfigs []config.EKSClusterConfig
+			aksErrors  []error
+			eksErrors  []error
+			wg         sync.WaitGroup
+			mu         sync.Mutex
+		)
+
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			cfgs, errs := manager.AutoDiscoverAllClusters(log)
+			mu.Lock()
+			aksConfigs, aksErrors = cfgs, errs
+			mu.Unlock()
+		}()
+
+		go func() {
+			defer wg.Done()
+			cfgs, errs := manager.AutoDiscoverEKSClusters(log)
+			mu.Lock()
+			eksConfigs, eksErrors = cfgs, errs
+			mu.Unlock()
+		}()
+
+		wg.Wait()
+
+		fmt.Println()
+
+		// Salvar AKS
+		if len(aksConfigs) > 0 {
+			if err := manager.SaveClusterConfigs(aksConfigs, log); err != nil {
+				fmt.Printf("❌ Erro ao salvar clusters AKS: %v\n", err)
 			}
 		}
 
-		// Mostrar erros se houver
-		if len(errors) > 0 {
+		// Salvar EKS
+		if len(eksConfigs) > 0 {
+			if err := manager.SaveEKSClusterConfigs(eksConfigs, log); err != nil {
+				fmt.Printf("❌ Erro ao salvar clusters EKS: %v\n", err)
+			}
+		}
+
+		// Erros
+		allErrors := append(aksErrors, eksErrors...)
+		if len(allErrors) > 0 {
 			fmt.Println("\n⚠️  Erros encontrados:")
-			for _, err := range errors {
-				fmt.Printf("  • %v\n", err)
+			for _, e := range allErrors {
+				fmt.Printf("  • %v\n", e)
 			}
 		}
 
-		// Resumo final
-		fmt.Println("\n✅ Auto-descoberta concluída!")
-		if len(configs) > 0 {
-			fmt.Printf("✅ %d clusters configurados com sucesso\n", len(configs))
+		// Resumo
+		fmt.Println()
+		fmt.Printf("✅ AKS: %d cluster(s) configurado(s)", len(aksConfigs))
+		if len(aksErrors) > 0 {
+			fmt.Printf(" | ⚠️  %d erro(s)", len(aksErrors))
 		}
-		if len(errors) > 0 {
-			fmt.Printf("⚠️  %d clusters com erros\n", len(errors))
+		fmt.Println()
+		fmt.Printf("✅ EKS: %d cluster(s) configurado(s)", len(eksConfigs))
+		if len(eksErrors) > 0 {
+			fmt.Printf(" | ⚠️  %d erro(s)", len(eksErrors))
 		}
+		fmt.Println()
 
 		return nil
 	},
