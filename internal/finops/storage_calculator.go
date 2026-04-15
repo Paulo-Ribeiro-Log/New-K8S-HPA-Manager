@@ -250,7 +250,7 @@ func (s *StorageCalculator) calculatePVCCost(
 		item.MonthlyCostUSD = round2(item.CapacityGB * pricePerGB)
 	}
 	item.MonthlyCostBRL = round2(item.MonthlyCostUSD * rate)
-	log.Info().
+	log.Debug().
 		Str("pvc", pvc.Namespace+"/"+pvc.Name).
 		Str("storage_class", item.StorageClass).
 		Str("provisioner", sc.Provisioner).
