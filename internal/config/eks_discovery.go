@@ -8,13 +8,10 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/rs/zerolog/log"
 )
 
-// regiões AWS padrão a escanear durante o autodiscover EKS.
-// Cobre as regiões mais comuns para workloads brasileiros/globais.
-var defaultEKSRegions = []string{
+// regiões AWS padrão a escanear no autodiscover EKS
+var eksDefaultRegions = []string{
 	"us-east-1",
 	"us-east-2",
 	"us-west-2",
@@ -22,231 +19,203 @@ var defaultEKSRegions = []string{
 }
 
 // AutoDiscoverEKSClusters descobre automaticamente todos os clusters EKS acessíveis
-// nos perfis AWS configurados localmente, varrendo as regiões padrão em paralelo.
+// usando AWS CLI: lista profiles → para cada profile×região chama aws eks list-clusters.
 //
 // Fluxo:
-//  1. aws configure list-profiles → lista perfis disponíveis
-//  2. Para cada profile × região (paralelo, semáforo cap. 5):
+//  1. aws configure list-profiles → lista todos os profiles configurados (filtra ARNs)
+//  2. Para cada profile × região (paralelo, semáforo cap. 2 — conservador para WSL2):
 //     aws eks list-clusters → lista clusters
-//     aws eks describe-cluster → extrai região, VPC, nodegroups, accountId
-//  3. Retorna []EKSClusterConfig com todos os clusters encontrados
+//     aws eks describe-cluster → extrai ARN, accountId, VPC
+//  3. Retorna []EKSClusterConfig deduplicado por (profile, region, name)
 func (k *KubeConfigManager) AutoDiscoverEKSClusters(logFunc func(string)) ([]EKSClusterConfig, []error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	if logFunc != nil {
-		logFunc("[EKS] 🔍 Listando perfis AWS configurados...")
+		logFunc("[EKS] 🔍 Listando profiles AWS configurados...")
 	}
 
-	profiles, err := listEKSProfiles(ctx)
+	// Verificar se aws CLI está instalado
+	if _, err := exec.LookPath("aws"); err != nil {
+		if logFunc != nil {
+			logFunc("[EKS] ⚠️  aws CLI não encontrado — pulando discovery EKS")
+		}
+		return nil, nil
+	}
+
+	profiles, err := listAWSProfiles(ctx)
 	if err != nil {
-		return nil, []error{fmt.Errorf("falha ao listar perfis AWS: %w", err)}
+		return nil, []error{fmt.Errorf("erro ao listar profiles AWS: %w", err)}
 	}
 	if len(profiles) == 0 {
 		if logFunc != nil {
-			logFunc("[EKS] ⚠️  Nenhum perfil AWS encontrado (aws configure list-profiles)")
+			logFunc("[EKS] ⚠️  Nenhum profile AWS encontrado (~/.aws/config)")
 		}
 		return nil, nil
 	}
 
 	if logFunc != nil {
-		logFunc(fmt.Sprintf("[EKS] 📋 %d perfil(s) encontrado(s): %s", len(profiles), strings.Join(profiles, ", ")))
+		logFunc(fmt.Sprintf("[EKS] 📋 %d profile(s) encontrado(s): %s", len(profiles), strings.Join(profiles, ", ")))
 	}
 
-	// Disparar descoberta profile × região em paralelo
 	type result struct {
 		configs []EKSClusterConfig
-		err     error
-		label   string // "profile/region" para logging
+		errs    []error
 	}
 
-	combinations := len(profiles) * len(defaultEKSRegions)
-	resultChan := make(chan result, combinations)
-	semaphore := make(chan struct{}, 5)
+	// Semáforo conservador (2) — evita freeze no WSL2 com múltiplos processos aws em paralelo
+	sem := make(chan struct{}, 2)
+	resultCh := make(chan result, len(profiles)*len(eksDefaultRegions))
 	var wg sync.WaitGroup
 
 	for _, profile := range profiles {
-		for _, region := range defaultEKSRegions {
+		for _, region := range eksDefaultRegions {
 			wg.Add(1)
-			go func(prof, reg string) {
+			go func(profile, region string) {
 				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
 
-				select {
-				case semaphore <- struct{}{}:
-					defer func() { <-semaphore }()
-				case <-ctx.Done():
-					resultChan <- result{label: prof + "/" + reg, err: ctx.Err()}
-					return
-				}
-
-				configs, err := discoverEKSClustersInRegion(ctx, prof, reg)
-				resultChan <- result{configs: configs, err: err, label: prof + "/" + reg}
+				cfgs, errs := discoverEKSClustersInRegion(ctx, profile, region, logFunc)
+				resultCh <- result{configs: cfgs, errs: errs}
 			}(profile, region)
 		}
 	}
 
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
+	wg.Wait()
+	close(resultCh)
 
+	seen := make(map[string]bool)
 	var allConfigs []EKSClusterConfig
 	var allErrors []error
-	seen := make(map[string]bool) // evita duplicatas (mesmo cluster em múltiplos perfis)
 
-	for res := range resultChan {
-		if res.err != nil {
-			// Erros de "sem clusters nesta região" são normais — logar apenas em debug
-			if !isNoClusterFoundError(res.err) {
-				allErrors = append(allErrors, fmt.Errorf("%s: %w", res.label, res.err))
-				if logFunc != nil {
-					logFunc(fmt.Sprintf("[EKS] ⚠️  %s: %v", res.label, res.err))
-				}
-			}
-			continue
-		}
-		for _, cfg := range res.configs {
-			if !seen[cfg.Name] {
-				seen[cfg.Name] = true
-				allConfigs = append(allConfigs, cfg)
-				if logFunc != nil {
-					logFunc(fmt.Sprintf("[EKS] ✅ %s — região: %s, perfil: %s", cfg.Name, cfg.AwsRegion, cfg.AwsProfile))
-				}
+	for r := range resultCh {
+		allErrors = append(allErrors, r.errs...)
+		for _, c := range r.configs {
+			key := c.AwsProfile + "|" + c.AwsRegion + "|" + c.Name
+			if !seen[key] {
+				seen[key] = true
+				allConfigs = append(allConfigs, c)
 			}
 		}
 	}
 
 	if logFunc != nil {
-		logFunc(fmt.Sprintf("[EKS] 📊 Resumo: ✅ %d cluster(s) | ❌ %d erro(s)", len(allConfigs), len(allErrors)))
+		logFunc(fmt.Sprintf("[EKS] 📊 Resumo: ✅ %d cluster(s) encontrado(s)", len(allConfigs)))
 	}
 
 	return allConfigs, allErrors
 }
 
-// listEKSProfiles retorna os perfis AWS CLI configurados localmente.
-func listEKSProfiles(ctx context.Context) ([]string, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+// listAWSProfiles lista todos os profiles configurados via aws configure list-profiles.
+// Filtra entradas que parecem ARNs (arn:aws:...) — geradas pelo aws eks update-kubeconfig
+// e inválidas como nome de profile.
+func listAWSProfiles(ctx context.Context) ([]string, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	out, err := exec.CommandContext(cmdCtx, "aws", "configure", "list-profiles").Output()
 	if err != nil {
-		return nil, fmt.Errorf("aws configure list-profiles falhou: %w", err)
+		return nil, fmt.Errorf("aws configure list-profiles: %w", err)
 	}
 
 	var profiles []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		p := strings.TrimSpace(line)
-		if p != "" {
-			profiles = append(profiles, p)
+		if p == "" || strings.HasPrefix(p, "arn:") {
+			// ARNs (ex: arn:aws:eks:...) não são nomes de profile válidos —
+			// são artefatos de `aws eks update-kubeconfig` gravados no ~/.aws/config
+			continue
 		}
+		profiles = append(profiles, p)
 	}
 	return profiles, nil
 }
 
-// discoverEKSClustersInRegion lista e descreve todos os clusters EKS de um profile+região.
-func discoverEKSClustersInRegion(ctx context.Context, profile, region string) ([]EKSClusterConfig, error) {
-	// 1. Listar clusters
+// discoverEKSClustersInRegion lista e descreve os clusters EKS de um profile+região.
+func discoverEKSClustersInRegion(ctx context.Context, profile, region string, logFunc func(string)) ([]EKSClusterConfig, []error) {
 	listCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(listCtx, "aws", "eks", "list-clusters",
-		"--profile", profile,
+	args := []string{"eks", "list-clusters",
 		"--region", region,
+		"--profile", profile,
 		"--output", "json",
-	).Output()
+	}
+	out, err := exec.CommandContext(listCtx, "aws", args...).CombinedOutput()
 	if err != nil {
-		if isAccessDeniedError(err, out) {
-			return nil, fmt.Errorf("sem permissão (profile=%s, region=%s)", profile, region)
+		// Logar apenas se o erro não for "no clusters nessa região" (exit code normal)
+		errMsg := strings.TrimSpace(string(out))
+		if logFunc != nil && errMsg != "" && !strings.Contains(errMsg, "NotFoundException") {
+			logFunc(fmt.Sprintf("[EKS] ⚠️  %s/%s: %s", profile, region, errMsg))
 		}
-		// Região sem acesso ou sem clusters — não é erro fatal
 		return nil, nil
 	}
 
-	var listResp struct {
+	var resp struct {
 		Clusters []string `json:"clusters"`
 	}
-	if err := json.Unmarshal(out, &listResp); err != nil {
+	if err := json.Unmarshal(out, &resp); err != nil || len(resp.Clusters) == 0 {
 		return nil, nil
 	}
-	if len(listResp.Clusters) == 0 {
-		return nil, nil
-	}
-
-	// 2. Descrever cada cluster em paralelo (cap. 3 dentro da região)
-	type descResult struct {
-		cfg EKSClusterConfig
-		err error
-	}
-	descChan := make(chan descResult, len(listResp.Clusters))
-	descSem := make(chan struct{}, 3)
-	var wg sync.WaitGroup
-
-	for _, clusterName := range listResp.Clusters {
-		wg.Add(1)
-		go func(name string) {
-			defer wg.Done()
-			descSem <- struct{}{}
-			defer func() { <-descSem }()
-
-			cfg, err := describeEKSCluster(ctx, profile, region, name)
-			descChan <- descResult{cfg: cfg, err: err}
-		}(clusterName)
-	}
-
-	go func() {
-		wg.Wait()
-		close(descChan)
-	}()
 
 	var configs []EKSClusterConfig
-	for res := range descChan {
-		if res.err != nil {
-			log.Debug().Err(res.err).Str("profile", profile).Str("region", region).
-				Msg("[EKS] falha ao descrever cluster")
+	for _, name := range resp.Clusters {
+		cfg, err := describeEKSCluster(ctx, profile, region, name)
+		if err != nil {
+			if logFunc != nil {
+				logFunc(fmt.Sprintf("[EKS] ⚠️  describe-cluster %s (%s/%s): %v", name, profile, region, err))
+			}
+			// Inclui mesmo sem detalhes
+			configs = append(configs, EKSClusterConfig{
+				Name:       name,
+				AwsRegion:  region,
+				AwsProfile: profile,
+			})
 			continue
 		}
-		configs = append(configs, res.cfg)
+		if logFunc != nil {
+			logFunc(fmt.Sprintf("[EKS] ✅ %s — região: %s, perfil: %s, account: %s", cfg.Name, cfg.AwsRegion, cfg.AwsProfile, cfg.AccountID))
+		}
+		configs = append(configs, *cfg)
 	}
 
 	return configs, nil
 }
 
-// describeEKSCluster busca os detalhes de um cluster EKS via aws eks describe-cluster.
-func describeEKSCluster(ctx context.Context, profile, region, clusterName string) (EKSClusterConfig, error) {
+// describeEKSCluster obtém detalhes de um cluster EKS (ARN, accountId, VPC).
+func describeEKSCluster(ctx context.Context, profile, region, name string) (*EKSClusterConfig, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(cmdCtx, "aws", "eks", "describe-cluster",
-		"--name", clusterName,
-		"--profile", profile,
+	args := []string{"eks", "describe-cluster",
+		"--name", name,
 		"--region", region,
+		"--profile", profile,
 		"--output", "json",
-	).Output()
+	}
+	out, err := exec.CommandContext(cmdCtx, "aws", args...).Output()
 	if err != nil {
-		return EKSClusterConfig{}, fmt.Errorf("describe-cluster %s: %w", clusterName, err)
+		return nil, fmt.Errorf("aws eks describe-cluster: %w", err)
 	}
 
 	var resp struct {
 		Cluster struct {
-			Name        string `json:"name"`
-			Arn         string `json:"arn"`
+			Arn              string `json:"arn"`
 			ResourcesVpcConfig struct {
 				VpcId string `json:"vpcId"`
 			} `json:"resourcesVpcConfig"`
 		} `json:"cluster"`
 	}
 	if err := json.Unmarshal(out, &resp); err != nil {
-		return EKSClusterConfig{}, fmt.Errorf("parse describe-cluster %s: %w", clusterName, err)
+		return nil, fmt.Errorf("parse describe-cluster: %w", err)
 	}
 
-	// Extrair accountId do ARN: arn:aws:eks:REGION:ACCOUNT:cluster/NAME
-	accountID := extractAccountIDFromARN(resp.Cluster.Arn)
-
-	return EKSClusterConfig{
-		Name:       resp.Cluster.Name,
+	return &EKSClusterConfig{
+		Name:       name,
 		AwsRegion:  region,
 		AwsProfile: profile,
-		AccountID:  accountID,
+		AccountID:  extractAccountIDFromARN(resp.Cluster.Arn),
 		VpcID:      resp.Cluster.ResourcesVpcConfig.VpcId,
 	}, nil
 }
@@ -259,25 +228,4 @@ func extractAccountIDFromARN(arn string) string {
 		return parts[4]
 	}
 	return ""
-}
-
-// isNoClusterFoundError retorna true se o erro indica simplesmente ausência de clusters
-// (não um problema real de autenticação ou conectividade).
-func isNoClusterFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "no clusters") || strings.Contains(msg, "not found")
-}
-
-// isAccessDeniedError verifica se o output indica erro de permissão AWS.
-func isAccessDeniedError(err error, output []byte) bool {
-	if err == nil {
-		return false
-	}
-	combined := strings.ToLower(string(output)) + strings.ToLower(err.Error())
-	return strings.Contains(combined, "accessdenied") ||
-		strings.Contains(combined, "unauthorized") ||
-		strings.Contains(combined, "not authorized")
 }
