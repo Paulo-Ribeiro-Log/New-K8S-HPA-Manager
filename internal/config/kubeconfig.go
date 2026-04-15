@@ -33,14 +33,13 @@ import (
 	"k8s-hpa-manager/internal/models"
 )
 
-// ClusterConfig representa a configuração de um cluster no arquivo JSON
+// ClusterConfig representa a configuração de um cluster AKS no arquivo clusters-config.json.
+// Campos exclusivamente Azure — para EKS use EKSClusterConfig em eks_config.go.
 type ClusterConfig struct {
-	Name           string `json:"clusterName"`              // Coincide com o formato original
+	Name           string `json:"clusterName"`
 	ResourceGroup  string `json:"resourceGroup"`
-	Subscription   string `json:"subscription"`             // AKS: nome legível ("PRD - ONLINE 2")
-	SubscriptionID string `json:"subscriptionId,omitempty"` // AKS: UUID do Azure
-	AwsRegion      string `json:"awsRegion,omitempty"`      // EKS: região AWS (ex: "us-east-1")
-	AwsProfile     string `json:"awsProfile,omitempty"`     // EKS: perfil AWS CLI (ex: "prod")
+	Subscription   string `json:"subscription"`             // Nome legível ("PRD - ONLINE 2")
+	SubscriptionID string `json:"subscriptionId,omitempty"` // UUID do Azure
 }
 
 // clientTTL define por quanto tempo um client inativo é mantido em memória
@@ -681,19 +680,16 @@ func (k *KubeConfigManager) GetNodeGroupProvider(clusterName string) cloudprovid
 		return azureprovider.NewAzureNodeGroupProvider(normalizedName, "", "")
 
 	case CloudProviderEKS:
+		// Base: extrair região e perfil do kubeconfig
 		region := ExtractRegionFromEKSURL(serverURL)
-		// Perfil extraído do exec plugin no kubeconfig como base
 		profile := k.getAWSProfileFromKubeconfig(clusterName)
-		// clusters-config.json tem prioridade (override explícito)
-		for _, c := range configEntries {
-			if strings.TrimSuffix(c.Name, "-admin") == normalizedName {
-				if c.AwsRegion != "" {
-					region = c.AwsRegion
-				}
-				if c.AwsProfile != "" {
-					profile = c.AwsProfile
-				}
-				break
+		// eks-clusters-config.json tem prioridade (override explícito via autodiscover EKS)
+		if eksConfig := k.GetEKSClusterConfig(clusterName); eksConfig != nil {
+			if eksConfig.AwsRegion != "" {
+				region = eksConfig.AwsRegion
+			}
+			if eksConfig.AwsProfile != "" {
+				profile = eksConfig.AwsProfile
 			}
 		}
 		return awsprovider.NewAWSNodeGroupProvider(normalizedName, region, profile)
@@ -817,17 +813,15 @@ type ClusterInfo struct {
 	Namespace string
 }
 
-// AutoDiscoverClusterConfig descobre automaticamente resource group e subscription a partir do kubeconfig e Azure CLI
-func (k *KubeConfigManager) AutoDiscoverClusterConfig(clusterName string) (*ClusterConfig, error) {
-	// 1. Extrair resource group do campo user no kubeconfig
-	// Padrão: clusterAdmin_{RESOURCE_GROUP}_{CLUSTER_NAME}
+// AutoDiscoverClusterConfig descobre resource group e subscription de um cluster AKS.
+// subscriptions deve ser pré-carregado via loadAllAzureSubscriptions (evita N chamadas redundantes).
+func (k *KubeConfigManager) AutoDiscoverClusterConfig(ctx context.Context, clusterName string, subscriptions []string) (*ClusterConfig, error) {
 	resourceGroup, err := k.extractResourceGroupFromKubeconfig(clusterName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract resource group: %w", err)
 	}
 
-	// 2. Descobrir subscription via Azure CLI (retorna UUID e nome legível)
-	subscriptionID, subscriptionName, err := k.discoverSubscriptionViaAzureCLI(clusterName, resourceGroup)
+	subscriptionID, subscriptionName, err := k.discoverSubscriptionViaAzureCLI(ctx, clusterName, resourceGroup, subscriptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover subscription: %w", err)
 	}
@@ -835,8 +829,8 @@ func (k *KubeConfigManager) AutoDiscoverClusterConfig(clusterName string) (*Clus
 	return &ClusterConfig{
 		Name:           clusterName,
 		ResourceGroup:  resourceGroup,
-		Subscription:   subscriptionName, // Nome legível: "PRD - ONLINE 2"
-		SubscriptionID: subscriptionID,   // UUID do Azure
+		Subscription:   subscriptionName,
+		SubscriptionID: subscriptionID,
 	}, nil
 }
 
@@ -872,72 +866,68 @@ func (k *KubeConfigManager) extractResourceGroupFromKubeconfig(clusterName strin
 	return resourceGroup, nil
 }
 
-// discoverSubscriptionViaAzureCLI descobre a subscription buscando em todas as subscriptions disponíveis (paralelo controlado).
-// Retorna (subscriptionID, subscriptionName, error). O nome é resolvido via "az account show" após encontrar o UUID.
-func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourceGroup string) (string, string, error) {
-	// 0. Validar que o token do Azure está válido antes de tentar qualquer operação
-	validateTokenCmd := exec.Command("az", "account", "get-access-token", "--only-show-errors")
-	if err := validateTokenCmd.Run(); err != nil {
-		return "", "", fmt.Errorf("token Azure expirado ou inválido - execute 'az login' novamente: %w", err)
+// loadAllAzureSubscriptions carrega a lista de subscription IDs disponíveis via Azure CLI.
+// Chamada uma única vez em AutoDiscoverAllClusters e compartilhada entre todos os clusters,
+// eliminando N chamadas redundantes a "az account list".
+func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context) ([]string, error) {
+	// Validar token antes de qualquer operação
+	tokCtx, tokCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer tokCancel()
+	if err := exec.CommandContext(tokCtx, "az", "account", "get-access-token", "--only-show-errors").Run(); err != nil {
+		return nil, fmt.Errorf("token Azure expirado ou inválido - execute 'az login' novamente: %w", err)
 	}
 
-	// 1. Listar todas as subscriptions disponíveis
-	cmd := exec.Command("az", "account", "list", "--query", "[].id", "-o", "tsv", "--only-show-errors")
-	output, err := cmd.CombinedOutput()
+	listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer listCancel()
+	out, err := exec.CommandContext(listCtx, "az", "account", "list",
+		"--query", "[].id", "-o", "tsv", "--only-show-errors").CombinedOutput()
 	if err != nil {
-		return "", "", fmt.Errorf("failed to list subscriptions (erro 401 indica token expirado - execute 'az login'): %w\nOutput: %s", err, string(output))
+		return nil, fmt.Errorf("failed to list subscriptions (erro 401 indica token expirado - execute 'az login'): %w\nOutput: %s", err, string(out))
 	}
 
-	subscriptions := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(subscriptions) == 0 {
-		return "", "", fmt.Errorf("no subscriptions found")
-	}
-
-	// Filtrar subscriptions vazias
-	var validSubscriptions []string
-	for _, subID := range subscriptions {
-		subID = strings.TrimSpace(subID)
-		if subID != "" {
-			validSubscriptions = append(validSubscriptions, subID)
+	var valid []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			valid = append(valid, s)
 		}
 	}
-
-	if len(validSubscriptions) == 0 {
-		return "", "", fmt.Errorf("no valid subscriptions found")
+	if len(valid) == 0 {
+		return nil, fmt.Errorf("no valid subscriptions found")
 	}
+	return valid, nil
+}
 
-	// 2. Testar subscriptions com paralelismo controlado (máximo 5 simultâneas)
+// discoverSubscriptionViaAzureCLI descobre a subscription de um cluster AKS buscando na lista
+// pré-carregada de subscriptions (paralelo controlado, semáforo cap. 15).
+// Retorna (subscriptionID, subscriptionName, error).
+func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(ctx context.Context, clusterName, resourceGroup string, validSubscriptions []string) (string, string, error) {
 	type result struct {
 		subscriptionID string
 		resourceID     string
 		err            error
 	}
 
-	// Contexto com timeout para evitar goroutines órfãs
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
 	resultChan := make(chan result, len(validSubscriptions))
-	semaphore := make(chan struct{}, 5) // Limitar a 5 processos az CLI simultâneos
+	semaphore := make(chan struct{}, 15) // aumentado de 5 → 15
 	var wg sync.WaitGroup
 
-	// Disparar goroutines controladas
+	subCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
 	for _, subscriptionID := range validSubscriptions {
 		wg.Add(1)
 		go func(subID string) {
 			defer wg.Done()
 
-			// Adquirir slot do semáforo
 			select {
 			case semaphore <- struct{}{}:
 				defer func() { <-semaphore }()
-			case <-ctx.Done():
-				resultChan <- result{subscriptionID: subID, err: ctx.Err()}
+			case <-subCtx.Done():
+				resultChan <- result{subscriptionID: subID, err: subCtx.Err()}
 				return
 			}
 
-			// Criar comando com timeout
-			cmdCtx, cmdCancel := context.WithTimeout(ctx, 30*time.Second)
+			cmdCtx, cmdCancel := context.WithTimeout(subCtx, 20*time.Second) // reduzido 30s → 20s
 			defer cmdCancel()
 
 			cmd := exec.CommandContext(cmdCtx, "az", "aks", "show",
@@ -949,42 +939,34 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 				"--only-show-errors")
 
 			output, err := cmd.CombinedOutput()
-
 			if err != nil {
-				// Verificar se é erro de autenticação (401/Unauthorized)
 				if strings.Contains(strings.ToLower(string(output)), "401") ||
 					strings.Contains(strings.ToLower(string(output)), "unauthorized") ||
 					strings.Contains(strings.ToLower(string(output)), "authentication") {
 					resultChan <- result{subscriptionID: subID, err: fmt.Errorf("erro de autenticação (401) - token Azure expirado. Execute 'az login' novamente")}
 					return
 				}
-				// Cluster não encontrado nesta subscription (esperado)
 				resultChan <- result{subscriptionID: subID, err: err}
 				return
 			}
 
-			resourceID := strings.TrimSpace(string(output))
-			resultChan <- result{subscriptionID: subID, resourceID: resourceID, err: nil}
+			resultChan <- result{subscriptionID: subID, resourceID: strings.TrimSpace(string(output))}
 		}(subscriptionID)
 	}
 
-	// Goroutine para fechar canal quando todas goroutines terminarem
 	go func() {
 		wg.Wait()
 		close(resultChan)
 	}()
 
-	// 3. Coletar resultados - retornar assim que encontrar a primeira match
-	// MAS continuar drenando o canal para evitar vazamento de goroutines
 	var foundSubscriptionID string
 	for res := range resultChan {
 		if foundSubscriptionID == "" && res.err == nil && res.resourceID != "" {
-			// Cluster encontrado! Extrair subscription ID do resource ID
 			parts := strings.Split(res.resourceID, "/")
 			for j, part := range parts {
 				if part == "subscriptions" && j+1 < len(parts) {
 					foundSubscriptionID = parts[j+1]
-					cancel() // Cancelar goroutines restantes
+					cancel()
 					break
 				}
 			}
@@ -995,74 +977,89 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(clusterName, resourc
 		return "", "", fmt.Errorf("cluster not found in any subscription or no access")
 	}
 
-	// 4. Resolver o nome legível da subscription via "az account show"
 	nameCtx, nameCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer nameCancel()
-	nameCmd := exec.CommandContext(nameCtx, "az", "account", "show",
+	nameOut, nameErr := exec.CommandContext(nameCtx, "az", "account", "show",
 		"--subscription", foundSubscriptionID,
-		"--query", "name",
-		"-o", "tsv",
-		"--only-show-errors")
-	nameOut, nameErr := nameCmd.Output()
+		"--query", "name", "-o", "tsv", "--only-show-errors").Output()
 	if nameErr == nil {
 		if name := strings.TrimSpace(string(nameOut)); name != "" {
 			return foundSubscriptionID, name, nil
 		}
 	}
 
-	// Fallback: usar o UUID como nome (compatibilidade com ambientes sem acesso ao account show)
 	return foundSubscriptionID, foundSubscriptionID, nil
 }
 
-// AutoDiscoverAllClusters descobre automaticamente configurações de todos os clusters do kubeconfig (paralelo)
+// AutoDiscoverAllClusters descobre automaticamente configurações de todos os clusters AKS do kubeconfig.
+// Pré-carrega a lista de subscriptions Azure uma única vez e a compartilha entre todos os clusters,
+// eliminando N chamadas redundantes a "az account list". Semáforo aumentado de 3 → 10 clusters simultâneos.
 func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]ClusterConfig, []error) {
 	clusters := k.DiscoverClusters()
 
-	if logFunc != nil {
-		logFunc(fmt.Sprintf("🔍 Iniciando auto-descoberta paralela para %d clusters...", len(clusters)))
+	// Filtrar apenas clusters AKS (EKS é tratado em AutoDiscoverEKSClusters)
+	var aksClusters []models.Cluster
+	for _, c := range clusters {
+		if c.CloudProvider != CloudProviderEKS {
+			aksClusters = append(aksClusters, c)
+		}
 	}
 
-	// Criar contexto com timeout de 5 minutos para toda a operação
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	if logFunc != nil {
+		logFunc(fmt.Sprintf("[AKS] 🔍 Iniciando auto-descoberta paralela para %d clusters AKS...", len(aksClusters)))
+	}
+
+	if len(aksClusters) == 0 {
+		return nil, nil
+	}
+
+	// Timeout global de 10 minutos (aumentado de 5)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	// Canais para resultados
+	// Pré-carregar subscriptions uma única vez — elimina N chamadas redundantes
+	if logFunc != nil {
+		logFunc("[AKS] 📋 Carregando subscriptions Azure...")
+	}
+	subscriptions, err := k.loadAllAzureSubscriptions(ctx)
+	if err != nil {
+		return nil, []error{err}
+	}
+	if logFunc != nil {
+		logFunc(fmt.Sprintf("[AKS] 📋 %d subscription(s) encontrada(s)", len(subscriptions)))
+	}
+
 	type result struct {
 		index  int
 		config *ClusterConfig
 		err    error
 	}
 
-	resultChan := make(chan result, len(clusters))
-
-	// WaitGroup para garantir que todas as goroutines terminem
+	resultChan := make(chan result, len(aksClusters))
 	var wg sync.WaitGroup
 
-	// Processar clusters em paralelo (máximo 3 simultaneamente para não sobrecarregar Azure CLI)
-	// Cada cluster pode disparar até 5 processos az CLI internos, então 3×5 = 15 processos máx
-	semaphore := make(chan struct{}, 3)
+	// Semáforo aumentado de 3 → 10 (cada cluster usa até 15 processos az internos → 150 máx)
+	semaphore := make(chan struct{}, 10)
 
-	for i, cluster := range clusters {
+	for i, cluster := range aksClusters {
 		wg.Add(1)
 		go func(idx int, clusterName string) {
 			defer wg.Done()
 
-			// Adquirir slot do semáforo com timeout
 			select {
 			case semaphore <- struct{}{}:
-				defer func() { <-semaphore }() // Liberar slot
+				defer func() { <-semaphore }()
 			case <-ctx.Done():
-				resultChan <- result{index: idx, config: nil, err: fmt.Errorf("timeout aguardando slot")}
+				resultChan <- result{index: idx, err: fmt.Errorf("timeout aguardando slot")}
 				return
 			}
 
-			// Verificar se contexto ainda está ativo
 			if ctx.Err() != nil {
-				resultChan <- result{index: idx, config: nil, err: ctx.Err()}
+				resultChan <- result{index: idx, err: ctx.Err()}
 				return
 			}
 
-			config, err := k.AutoDiscoverClusterConfig(clusterName)
+			config, err := k.AutoDiscoverClusterConfig(ctx, clusterName, subscriptions)
 			resultChan <- result{index: idx, config: config, err: err}
 		}(i, cluster.Name)
 	}
@@ -1074,25 +1071,24 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 	}()
 
 	// Coletar resultados
-	results := make([]result, len(clusters))
+	results := make([]result, len(aksClusters))
 	count := 0
 
 	for res := range resultChan {
 		results[res.index] = res
 		count++
 
-		// Mostrar progresso
 		if logFunc != nil {
 			if res.err != nil {
-				logFunc(fmt.Sprintf("[%d/%d] ❌ %s: %v", count, len(clusters), clusters[res.index].Name, res.err))
+				logFunc(fmt.Sprintf("[AKS] [%d/%d] ❌ %s: %v", count, len(aksClusters), aksClusters[res.index].Name, res.err))
 			} else {
 				subIDPreview := res.config.SubscriptionID
 				if len(subIDPreview) > 8 {
 					subIDPreview = subIDPreview[:8] + "..."
 				}
-				logFunc(fmt.Sprintf("[%d/%d] ✅ %s - RG: %s, Sub: %s (ID: %s)",
-					count, len(clusters),
-					clusters[res.index].Name,
+				logFunc(fmt.Sprintf("[AKS] [%d/%d] ✅ %s — RG: %s, Sub: %s (ID: %s)",
+					count, len(aksClusters),
+					aksClusters[res.index].Name,
 					res.config.ResourceGroup,
 					res.config.Subscription,
 					subIDPreview))
@@ -1106,14 +1102,14 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 
 	for i, res := range results {
 		if res.err != nil {
-			errors = append(errors, fmt.Errorf("cluster %s: %w", clusters[i].Name, res.err))
+			errors = append(errors, fmt.Errorf("cluster %s: %w", aksClusters[i].Name, res.err))
 		} else if res.config != nil {
 			configs = append(configs, *res.config)
 		}
 	}
 
 	if logFunc != nil {
-		logFunc(fmt.Sprintf("📊 Resumo: ✅ %d sucesso | ❌ %d erros", len(configs), len(errors)))
+		logFunc(fmt.Sprintf("[AKS] 📊 Resumo: ✅ %d sucesso | ❌ %d erros", len(configs), len(errors)))
 	}
 
 	return configs, errors
@@ -1215,22 +1211,31 @@ func (k *KubeConfigManager) SwitchContext(context string) error {
 
 // SwitchAzureContext muda o contexto do Azure CLI para corresponder ao cluster Kubernetes
 func (k *KubeConfigManager) SwitchAzureContext(contextName string) error {
-	// Tentar descobrir a configuração do cluster automaticamente
-	clusterConfig, err := k.AutoDiscoverClusterConfig(contextName)
-	if err != nil {
-		// Se falhar a auto-descoberta, tentar usar configuração salva
-		configs := k.loadClustersFromConfig()
-		for _, cfg := range configs {
-			if cfg.Name == contextName {
-				clusterConfig = &cfg
-				break
-			}
-		}
-
-		if clusterConfig == nil {
-			return fmt.Errorf("could not find Azure configuration for cluster %s", contextName)
+	// Tentar primeiro na config salva (mais rápido que redescobrir)
+	var clusterConfig *ClusterConfig
+	configs := k.loadClustersFromConfig()
+	for _, cfg := range configs {
+		if cfg.Name == contextName {
+			clusterConfig = &cfg
+			break
 		}
 	}
+
+	// Fallback: auto-descoberta completa
+	if clusterConfig == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		subscriptions, err := k.loadAllAzureSubscriptions(ctx)
+		if err != nil {
+			return fmt.Errorf("could not find Azure configuration for cluster %s: %w", contextName, err)
+		}
+		discovered, err := k.AutoDiscoverClusterConfig(ctx, contextName, subscriptions)
+		if err != nil {
+			return fmt.Errorf("could not find Azure configuration for cluster %s", contextName)
+		}
+		clusterConfig = discovered
+	}
+	_ = clusterConfig // usado abaixo
 
 	// Mudar para a subscription correta
 	cmd := exec.Command("az", "account", "set", "--subscription", clusterConfig.Subscription)
