@@ -908,7 +908,7 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(ctx context.Context,
 	}
 
 	resultChan := make(chan result, len(validSubscriptions))
-	semaphore := make(chan struct{}, 15) // aumentado de 5 → 15
+	semaphore := make(chan struct{}, 4) // reduzido 15 → 4 — az é Python (~50MB/proc), WSL2 congela com muitos paralelos
 	var wg sync.WaitGroup
 
 	subCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -1038,8 +1038,8 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 	resultChan := make(chan result, len(aksClusters))
 	var wg sync.WaitGroup
 
-	// Semáforo aumentado de 3 → 10 (cada cluster usa até 15 processos az internos → 150 máx)
-	semaphore := make(chan struct{}, 10)
+	// Semáforo conservador: 3 clusters × 4 subscriptions = 12 processos az máx simultâneos no WSL2
+	semaphore := make(chan struct{}, 3)
 
 	for i, cluster := range aksClusters {
 		wg.Add(1)
