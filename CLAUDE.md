@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual estável: `v1.3.32`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Branch `finops-dynatrace` (baseado em `migracao-jwt`): Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — DTEnricher batch (4 queries splitBy), PrometheusEnricher parcial, campo MetricsSource, badge DT/Prom na UI (Fases 1-4 concluídas, cheklist em FINOPS-DT-METRICS.md).
+**IMPORTANTE**: Versão atual estável: `v1.3.32`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Branch `finops-dynatrace` (baseado em `migracao-jwt`): Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — DTEnricher batch (4 queries splitBy), PrometheusEnricher parcial, campo MetricsSource, badge DT/Prom na UI (Fases 1-4 concluídas, cheklist em FINOPS-DT-METRICS.md). New Relic planejado como camada intermediária para clusters EKS (cadeia: DT → NR → Prometheus), cheklist em FINOPS-NR-METRICS.md — `internal/newrelic/` ainda não criado.
 **IMPORTANTE**: Após `make build`, sempre reiniciar o servidor (`kill <PID> && ./build/new-k8s-hpa web -f`) — o processo não recarrega o binário automaticamente.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
@@ -23,6 +23,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [Changelog](docs/history/CHANGELOG.md)
 - [**Plano: Dynatrace × Health Check**](docs/planning/DYNATRACE_HEALTHCHECK_INTEGRATION.md) ← work in progress
 - [**Plano: FinOps Storage**](docs/planning/FINOPS_STORAGE_PLAN.md) ← ✅ CONCLUÍDA — PVCs, discos OS dos nodes, Azure Files/Blob, Relatório Executivo integrado
+- [**Plano: FinOps DT Metrics**](FINOPS-DT-METRICS.md) ← ✅ Fases 1-4 concluídas — DT como fonte primária, Prometheus parcial
+- [**Plano: FinOps NR Metrics**](FINOPS-NR-METRICS.md) ← work in progress — New Relic para clusters EKS (nenhuma fase iniciada)
+- [**Plano: FinOps Isenções**](FINOPS-EXEMPTIONS-PLAN.md) ← work in progress — whitelist por workload com threshold de réplicas (nenhuma fase iniciada)
 
 ---
 
@@ -397,6 +400,8 @@ Credenciais salvas via `UserTokensStore` (`DynatraceURL` + `DynatraceToken`). Fa
 - Segmentos < 4% usam `outerRadius + 50` (evita label cair dentro do donut hole)
 - `labelLine` deve ser objeto SVG `{ stroke, strokeWidth, opacity }` — **não função** (causa falha de renderização)
 - `cursor={{ fill: 'transparent' }}` no `<Tooltip>` para suprimir fundo cinza no hover
+
+**FinOps — cadeia de métricas históricas**: `MetricsSource` em `FinOpsWorkload` indica a fonte usada: `"dynatrace"` (AKS primário), `"newrelic"` (EKS — planejado, `internal/newrelic/` ainda não existe), `""` (sem dados). Cadeia final planejada: DT → NR → Prometheus. Badge cores na UI: DT=azul, NR=âmbar, Prom=laranja.
 
 **FinOps Prometheus**: checkbox "Análise histórica Prometheus" é **`true` por padrão** (era `false`)
 
