@@ -896,9 +896,6 @@ func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context, logFu
 		if loginErr := loginCmd.Run(); loginErr != nil {
 			return nil, fmt.Errorf("az login falhou: %w — execute 'az login' manualmente e tente novamente", loginErr)
 		}
-		if logFunc != nil {
-			logFunc("[AKS] ✅ Login Azure concluído — continuando discovery...")
-		}
 	}
 
 	listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
