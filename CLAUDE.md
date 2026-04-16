@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual estável: `v1.3.32`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Branch `finops-dynatrace` (baseado em `migracao-jwt`): Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — DTEnricher batch (4 queries splitBy), PrometheusEnricher parcial, campo MetricsSource, badge DT/Prom na UI (Fases 1-4 concluídas, cheklist em FINOPS-DT-METRICS.md). New Relic planejado como camada intermediária para clusters EKS (cadeia: DT → NR → Prometheus), cheklist em FINOPS-NR-METRICS.md — `internal/newrelic/` ainda não criado.
+**IMPORTANTE**: Versão atual estável: `v1.3.32`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Branch `finops-dynatrace` (baseado em `migracao-jwt`): Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — DTEnricher batch (4 queries splitBy), PrometheusEnricher parcial, campo MetricsSource, badge DT/Prom na UI (Fases 1-4 concluídas, cheklist em FINOPS-DT-METRICS.md). New Relic planejado como camada intermediária para clusters EKS (cadeia: DT → NR → Prometheus), cheklist em FINOPS-NR-METRICS.md — `internal/newrelic/` ainda não criado. Branch `fix-auto-discovery` (baseado em `finops-dynatrace`): auto-discovery paralelo AKS+EKS concluído (Fases 1-5 de CLUSTER-DISCOVERY-PLAN.md) — struct `ClusterConfig` AKS-only, `EKSClusterConfig` em arquivo separado (`eks-clusters-config.json`), semáforos ampliados (10 clusters × 15 subscriptions), `NodeGroupProvider` interface com impl. Azure e AWS.
 **IMPORTANTE**: Após `make build`, sempre reiniciar o servidor (`kill <PID> && ./build/new-k8s-hpa web -f`) — o processo não recarrega o binário automaticamente.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
@@ -26,6 +26,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [**Plano: FinOps DT Metrics**](FINOPS-DT-METRICS.md) ← ✅ Fases 1-4 concluídas — DT como fonte primária, Prometheus parcial
 - [**Plano: FinOps NR Metrics**](FINOPS-NR-METRICS.md) ← work in progress — New Relic para clusters EKS (nenhuma fase iniciada)
 - [**Plano: FinOps Isenções**](FINOPS-EXEMPTIONS-PLAN.md) ← work in progress — whitelist por workload com threshold de réplicas (nenhuma fase iniciada)
+- [**Plano: Cluster Discovery AKS+EKS**](CLUSTER-DISCOVERY-PLAN.md) ← ✅ Fases 1-5 concluídas — discovery paralelo, config EKS separada, semáforos ampliados, frontend com badges AKS/EKS
 
 ---
 
@@ -36,6 +37,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 make build                    # Compilar backend Go
 ./rebuild-web.sh -b           # Build frontend + backend (RECOMENDADO após mudanças React)
 make build-web                # Build completo (frontend + backend)
+
+# Discovery
+./build/new-k8s-hpa autodiscover   # Descobre clusters AKS+EKS em paralelo (salva configs separadas)
 
 # Run
 ./build/new-k8s-hpa web       # Servidor web (porta 8080)
@@ -101,11 +105,20 @@ k8s-hpa-manager/
 │   ├── azure/                # Azure SDK auth
 │   ├── models/               # types.go - fonte de verdade de todos os tipos
 │   ├── config/               # Kubeconfig, cache de clients K8s
+│   │                         # + eks_config.go (EKSClusterConfig, load/save)
+│   │                         # + eks_discovery.go (AutoDiscoverEKSClusters via AWS CLI)
+│   ├── cloudprovider/        # Interface NodeGroupProvider + impls por cloud
+│   │   ├── interface.go      # NodeGroupProvider: List/Scale/SetAutoscaling/AbortOperation
+│   │   ├── azure/            # AzureNodeGroupProvider (az CLI)
+│   │   └── aws/              # AWSNodeGroupProvider (aws CLI, normaliza ARN → nome curto)
+│   ├── collectors/           # Coletores K8s: deployment, HPA, pod, node, investigator
+│   ├── metrics/              # Cliente Prometheus (prometheus.go)
 │   ├── session/              # Sessions TUI ↔ Web (formato JSON compatível)
 │   ├── monitoring/           # Prometheus, predictions/, nodepoolpredictions/
 │   │   └── engine/           # monitoring_v2.go — discovery automático sem port-forwards
 │   ├── rbac/                 # Azure AD RBAC (azure_ad.go)
 │   ├── ai/                   # AI Diagnostics (Ollama/Claude/Gemini), reports/
+│   ├── aierrors/             # Tipos de erro normalizados para AI providers
 │   ├── sanitizer/            # Sanitização de logs antes de enviar para IA
 │   ├── storage/              # SQLite: predictions.db, health_check.db, ai_diagnostics.db
 │   │                         # + ai_history_store.go, dependency_registry.go, user_tokens_store.go
@@ -113,7 +126,15 @@ k8s-hpa-manager/
 │   ├── dynatrace/            # Integração Dynatrace API v2 (problems, entities, metrics)
 │   ├── servicenow/           # Integração ServiceNow
 │   ├── healthcheck/          # Health checking: orchestrator, deployment/hpa/event/pv checkers
-│   └── history/              # History tracker
+│   ├── history/              # History tracker
+│   ├── logs/                 # Gerenciamento de logs da aplicação
+│   ├── notifications/        # Notificações in-app e Windows (WSL2)
+│   ├── sreapproval/          # Integração com sistema SRE Approval
+│   ├── updater/              # Auto-update: verificação de versão no GitHub
+│   ├── validation/           # Validação de recursos K8s
+│   └── pkg/
+│       ├── helm/             # Cliente Helm via CLI
+│       └── nexus/            # Cliente Nexus (artefatos)
 ├── build/                    # Binários compilados
 ├── vendor/                   # Go modules vendored (go build -mod=vendor)
 ├── scripts/                  # Scripts de diagnóstico e utilitários
@@ -208,6 +229,35 @@ go build -ldflags "-X main.version=$(VERSION)" -o build/new-k8s-hpa
 ---
 
 ## Peculiaridades Críticas
+
+### CloudProvider Abstraction (Node Groups)
+
+`internal/cloudprovider/interface.go` define `NodeGroupProvider` para abstrair operações de node groups por cloud:
+
+```go
+type NodeGroupProvider interface {
+    ListNodeGroups(ctx, cluster) ([]models.NodePool, error)
+    ScaleNodeGroup(ctx, cluster, group string, count int) error
+    SetAutoscaling(ctx, cluster, group string, enable bool, min, max int) error
+    AbortOperation(ctx, cluster, group string) error  // retorna ErrNotSupported se N/A
+    ValidateAuth(ctx) error
+}
+```
+
+- **Azure** (`cloudprovider/azure/`): usa `az aks nodepool` CLI — mesma lógica de `buildNodePoolCommands()`, mas encapsulada.
+- **AWS** (`cloudprovider/aws/`): usa `aws eks` CLI. Normaliza ARN completo → nome curto via `parseEKSClusterName()`. Região pode ser extraída do ARN se não fornecida.
+- `GetNodeGroupProvider()` em `internal/config/kubeconfig.go` seleciona o provider pelo prefixo do context name: se ARN (`arn:aws:eks:...`), usa AWS; caso contrário, usa Azure.
+
+### Config EKS Separada
+
+Após `fix-auto-discovery`, a config de clusters foi dividida em dois arquivos:
+
+| Arquivo | Provider | Struct |
+|---------|----------|--------|
+| `~/.k8s-hpa-manager/clusters-config.json` | AKS | `ClusterConfig` (Name, ResourceGroup, Subscription) |
+| `~/.k8s-hpa-manager/eks-clusters-config.json` | EKS | `EKSClusterConfig` (Name, AwsRegion, AwsProfile, AccountID) |
+
+`GetNodeGroupProvider()` lê do arquivo correto. Retrocompatibilidade: `clusters-config.json` com campos `awsRegion`/`awsProfile` é aceito como fallback até o usuário rodar o novo `autodiscover`.
 
 ### Azure CLI — Timeout Obrigatório
 
