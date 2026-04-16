@@ -13,7 +13,7 @@ import { formatAge } from "@/lib/monitorUtils";
 const REFRESH_INTERVAL_MS = 10000;
 
 // SEL(fixed) | NAME/NS | CLASS | HOSTS | AGE | EDIT(fixed)
-const INITIAL_WIDTHS = [28, 200, 100, 200, 70, 28];
+const INITIAL_WIDTHS = [28, 400, 100, 200, 70, 28];
 
 function useSecondsTick(date: Date | null): string {
   const [, setTick] = useState(0);

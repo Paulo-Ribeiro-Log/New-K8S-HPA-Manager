@@ -1745,9 +1745,10 @@ export const SecretsTab = ({
     );
   };
 
-  if (isSidebarCollapsed) {
-    return (
-      <>
+  return (
+    <>
+      {/* Layout: painel único (colapsado) ou split view */}
+      {isSidebarCollapsed ? (
         <div className="p-4 h-full">
           <div className="grid grid-cols-1 h-full">
             <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
@@ -1764,45 +1765,37 @@ export const SecretsTab = ({
             </div>
           </div>
         </div>
-
-        {renderDiffDialog()}
-        {renderEditorFullScreen()}
-        {renderApplyConfirmDialog()}
-      </>
-    );
-  }
-
-  return (
-    <>
-      <SplitView
-        leftPanel={{
-          title: "Secrets",
-          titleAction: (
-            <div className="flex items-center gap-2">
-              {namespaceSelector}
-              <Button
-                variant={showSystemNamespaces ? "secondary" : "outline"}
-                size="sm"
-                onClick={onToggleSystemNamespaces}
-                title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
-              >
-                {showSystemNamespaces ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-              </Button>
-              <Button variant="outline" size="sm" onClick={refreshSecrets} disabled={!cluster || loading}>
-                <RefreshCcw className="w-4 h-4" />
-              </Button>
-              {collapseButton}
-            </div>
-          ),
-          content: leftContent,
-        }}
-        rightPanel={{
-          title: selectedSecret ? `${selectedSecret.namespace}/${selectedSecret.name}` : "Visualização",
-          titlePrefix: rightTitlePrefix,
-          titleAction: rightTitleAction,
-          content: renderManifestPanel(),
-        }}
-      />
+      ) : (
+        <SplitView
+          leftPanel={{
+            title: "Secrets",
+            titleAction: (
+              <div className="flex items-center gap-2">
+                {namespaceSelector}
+                <Button
+                  variant={showSystemNamespaces ? "secondary" : "outline"}
+                  size="sm"
+                  onClick={onToggleSystemNamespaces}
+                  title={showSystemNamespaces ? "Ocultar namespaces de sistema" : "Mostrar namespaces de sistema"}
+                >
+                  {showSystemNamespaces ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                </Button>
+                <Button variant="outline" size="sm" onClick={refreshSecrets} disabled={!cluster || loading}>
+                  <RefreshCcw className="w-4 h-4" />
+                </Button>
+                {collapseButton}
+              </div>
+            ),
+            content: leftContent,
+          }}
+          rightPanel={{
+            title: selectedSecret ? `${selectedSecret.namespace}/${selectedSecret.name}` : "Visualização",
+            titlePrefix: rightTitlePrefix,
+            titleAction: rightTitleAction,
+            content: renderManifestPanel(),
+          }}
+        />
+      )}
 
       {renderDiffDialog()}
       {renderEditorFullScreen()}

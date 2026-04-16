@@ -10,7 +10,7 @@ import { ProtectedAction } from "@/components/rbac";
 import { useResizableColumns, ResizeHandle } from "@/lib/resizableColumns";
 
 // SEL(fixed) | NAME/NS | TYPE | COMPONENT | REP. | CPU REQ | MEM REQ | EDIT(fixed)
-const INITIAL_WIDTHS = [28, 200, 95, 140, 55, 85, 95, 28];
+const INITIAL_WIDTHS = [28, 400, 95, 140, 55, 85, 95, 28];
 
 type PromSortKey = "name" | "type" | "component" | "replicas";
 

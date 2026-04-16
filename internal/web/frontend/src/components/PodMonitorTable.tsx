@@ -98,7 +98,7 @@ function useSecondsTick(date: Date | null): string {
 
 // Colunas: SEL | NAME/NS | VERSION | dot | READY | STATUS | REST. | CPU | MEM | NODE | AGE
 // SEL(32) e dot(22) são fixos e não têm ResizeHandle por serem muito pequenos.
-const INITIAL_WIDTHS = [32, 200, 120, 22, 60, 140, 50, 110, 110, 180, 60];
+const INITIAL_WIDTHS = [32, 400, 120, 22, 60, 140, 50, 110, 110, 180, 60];
 
 function extractImageVersion(image?: string): string {
   if (!image) return "-";

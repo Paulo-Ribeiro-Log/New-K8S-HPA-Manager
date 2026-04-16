@@ -12,7 +12,7 @@ import { useResizableColumns, ResizeHandle } from "@/lib/resizableColumns";
 const REFRESH_INTERVAL_MS = 10000;
 
 // SEL(fixed) | NAME/NS | SCHEDULE | STATUS | ACTIVE | LAST RUN | EDIT(fixed)
-const INITIAL_WIDTHS = [28, 200, 150, 85, 55, 130, 28];
+const INITIAL_WIDTHS = [28, 400, 150, 85, 55, 130, 28];
 
 function useSecondsTick(date: Date | null): string {
   const [, setTick] = useState(0);

@@ -1715,343 +1715,8 @@ export const PodsPanel = ({
     </div>
   );
 
-  // Renderização quando sidebar está recolhido
-  if (isSidebarCollapsed) {
-    return (
-      <>
-        <div className="p-4 h-full">
-          <div className="grid grid-cols-1 h-full">
-            <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
-              <div className="flex items-center justify-between mb-3 pb-2 border-b-2 border-primary">
-                <div className="flex items-center gap-3 flex-wrap">
-                  {collapseButton}
-                  <p className="text-base font-semibold text-primary">Detalhes do Pod</p>
-                </div>
-                {rightTitleAction}
-              </div>
-              <div className="flex-1 overflow-auto min-h-0">
-                {renderPodDetails()}
-              </div>
-            </div>
-          </div>
-        </div>
+  // (collapsed early-return removed — modals now always rendered in the single return below)
 
-        {/* Modal de Confirmação de Deleção */}
-        <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Confirmar Deleção</DialogTitle>
-              <DialogDescription>
-                Tem certeza que deseja deletar o pod <strong>{deletingPod?.name}</strong>?
-                <br />
-                Esta ação não pode ser desfeita.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setDeleteConfirmOpen(false)}>
-                Cancelar
-              </Button>
-              <ProtectedAction>
-                <Button variant="destructive" onClick={handleDeletePod}>
-                  Deletar Pod
-                </Button>
-              </ProtectedAction>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Modal de Confirmação de Restart */}
-        <Dialog open={restartConfirmOpen} onOpenChange={setRestartConfirmOpen}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Confirmar Restart do Pod</DialogTitle>
-              <DialogDescription>
-                Tem certeza que deseja reiniciar o pod <strong>{restartingPod?.name}</strong>?
-                <br />
-                <br />
-                O pod será deletado e recriado automaticamente pelo controller (Deployment/StatefulSet).
-                {restartingPod && (
-                  <div className="mt-2 p-2 bg-muted rounded text-sm">
-                    <strong>Namespace:</strong> {restartingPod.namespace}
-                  </div>
-                )}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setRestartConfirmOpen(false)}>
-                Cancelar
-              </Button>
-              <ProtectedAction>
-                <Button onClick={handleRestartPod}>
-                  <RotateCw className="w-4 h-4 mr-2" />
-                  Restart Pod
-                </Button>
-              </ProtectedAction>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Modal de Confirmação de Kill */}
-        <Dialog open={killConfirmOpen} onOpenChange={setKillConfirmOpen}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 text-orange-600">
-                <Skull className="w-5 h-5" />
-                Confirmar Kill do Pod
-              </DialogTitle>
-              <DialogDescription>
-                Tem certeza que deseja <strong className="text-orange-600">FORÇAR</strong> a terminação imediata do pod <strong>{killingPod?.name}</strong>?
-                <br />
-                <br />
-                <div className="p-3 bg-orange-500/10 border border-orange-500/20 rounded-lg text-sm">
-                  <strong className="text-orange-600">Atenção:</strong> Esta ação força a terminação imediata do pod (gracePeriod=0),
-                  sem aguardar o shutdown gracioso. O container será encerrado abruptamente.
-                </div>
-                {killingPod && (
-                  <div className="mt-2 p-2 bg-muted rounded text-sm">
-                    <strong>Namespace:</strong> {killingPod.namespace}
-                  </div>
-                )}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setKillConfirmOpen(false)}>
-                Cancelar
-              </Button>
-              <ProtectedAction>
-                <Button variant="destructive" className="bg-orange-600 hover:bg-orange-700" onClick={handleKillPod}>
-                  <Skull className="w-4 h-4 mr-2" />
-                  Kill Pod
-                </Button>
-              </ProtectedAction>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Modal de Confirmação de Batch */}
-        <Dialog open={batchConfirmOpen} onOpenChange={setBatchConfirmOpen}>
-          <DialogContent className="max-w-lg">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                {(() => {
-                  const config = getBatchActionConfig();
-                  const Icon = config.icon;
-                  return Icon ? <Icon className="w-5 h-5" /> : null;
-                })()}
-                {getBatchActionConfig().label} {selectedPods.size} Pod(s)
-              </DialogTitle>
-              <DialogDescription>
-                <div className="mt-2">
-                  {getBatchActionConfig().description}
-                </div>
-                <div className="mt-4 p-3 bg-muted rounded-lg max-h-48 overflow-y-auto">
-                  <div className="text-xs font-medium mb-2">Pods selecionados:</div>
-                  <div className="space-y-1">
-                    {getSelectedPodsData().map(pod => (
-                      <div key={getPodKey(pod)} className="text-xs flex items-center gap-2">
-                        <Badge variant="outline" className={`text-[10px] ${getPhaseColor(pod.statusReason || pod.phase)}`}>
-                          {pod.statusReason || pod.phase}
-                        </Badge>
-                        <span className="text-muted-foreground">{pod.namespace}/</span>
-                        <span className="font-medium">{pod.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setBatchConfirmOpen(false)} disabled={batchOperationLoading}>
-                Cancelar
-              </Button>
-              <ProtectedAction>
-                <Button
-                  className={getBatchActionConfig().color}
-                  onClick={executeBatchAction}
-                  disabled={batchOperationLoading}
-                >
-                  {batchOperationLoading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Processando...
-                    </>
-                  ) : (
-                    (() => {
-                      const config = getBatchActionConfig();
-                      const Icon = config.icon;
-                      return (
-                        <>
-                          {Icon && <Icon className="w-4 h-4 mr-2" />}
-                          {config.label} {selectedPods.size} Pod(s)
-                        </>
-                      );
-                    })()
-                  )}
-                </Button>
-              </ProtectedAction>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Modal de Resultados do Batch */}
-        <Dialog open={batchResultsOpen} onOpenChange={setBatchResultsOpen}>
-          <DialogContent className="max-w-lg">
-            <DialogHeader>
-              <DialogTitle>Resultado da Operação</DialogTitle>
-              <DialogDescription>
-                {batchResults && (
-                  <div className="mt-2">
-                    <div className="flex items-center gap-4 mb-4">
-                      <Badge variant="outline" className="bg-green-500/10 text-green-700 border-green-500/20">
-                        <CheckCircle2 className="w-3 h-3 mr-1" />
-                        {batchResults.filter(r => r.success).length} sucesso
-                      </Badge>
-                      {batchResults.filter(r => !r.success).length > 0 && (
-                        <Badge variant="outline" className="bg-red-500/10 text-red-700 border-red-500/20">
-                          <XSquare className="w-3 h-3 mr-1" />
-                          {batchResults.filter(r => !r.success).length} falha(s)
-                        </Badge>
-                      )}
-                    </div>
-                    <ScrollArea className="max-h-64">
-                      <div className="space-y-2">
-                        {batchResults.map((result, idx) => (
-                          <div
-                            key={idx}
-                            className={`p-2 rounded-lg text-xs ${
-                              result.success
-                                ? "bg-green-500/10 border border-green-500/20"
-                                : "bg-red-500/10 border border-red-500/20"
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              {result.success ? (
-                                <CheckCircle2 className="w-4 h-4 text-green-600" />
-                              ) : (
-                                <XSquare className="w-4 h-4 text-red-600" />
-                              )}
-                              <span className="font-medium">{result.namespace}/{result.name}</span>
-                            </div>
-                            <div className="ml-6 mt-1 text-muted-foreground">
-                              {result.message}
-                              {result.error && <span className="text-red-600"> - {result.error}</span>}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </ScrollArea>
-                  </div>
-                )}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button onClick={() => setBatchResultsOpen(false)}>
-                Fechar
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Modal de Logs */}
-        <Dialog open={logsModalOpen} onOpenChange={(open) => {
-          setLogsModalOpen(open);
-          if (open && selectedPod && selectedPod.containers.length > 0) {
-            if (!selectedContainerForLogs) {
-              setSelectedContainerForLogs(selectedPod.containers[0].name);
-            }
-            // Inicia auto-refresh automaticamente ao abrir
-            setIsAutoRefreshingLogs(true);
-          } else {
-            // Para auto-refresh ao fechar
-            setIsAutoRefreshingLogs(false);
-          }
-        }}>
-          <DialogContent className="max-w-6xl max-h-[90vh] flex flex-col p-0">
-            <DialogHeader className="border-b border-border px-6 py-4 flex-shrink-0">
-              <div className="flex items-center justify-between gap-4 pr-8">
-                <div>
-                  <DialogTitle className="text-xl font-semibold">
-                    Logs do Pod
-                  </DialogTitle>
-                  <DialogDescription className="text-sm text-muted-foreground mt-1">
-                    {selectedPod?.namespace}/{selectedPod?.name}
-                  </DialogDescription>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">Container:</span>
-                    <Select
-                      value={selectedContainerForLogs}
-                      onValueChange={setSelectedContainerForLogs}
-                    >
-                      <SelectTrigger className="w-[200px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {selectedPod?.containers.map((container) => (
-                          <SelectItem key={container.name} value={container.name}>
-                            {container.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <Button
-                    variant={isAutoRefreshingLogs ? "destructive" : "default"}
-                    size="sm"
-                    onClick={() => setIsAutoRefreshingLogs(!isAutoRefreshingLogs)}
-                  >
-                    {isAutoRefreshingLogs ? (
-                      <>
-                        <X className="w-4 h-4 mr-2" />
-                        Parar
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCcw className="w-4 h-4 mr-2" />
-                        Iniciar
-                      </>
-                    )}
-                  </Button>
-                  {podLogs[selectedContainerForLogs] && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleDownloadLogs(selectedContainerForLogs)}
-                    >
-                      <Download className="w-4 h-4 mr-2" />
-                      Download
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </DialogHeader>
-
-            <div className="flex-1 overflow-hidden p-6">
-              {podLogs[selectedContainerForLogs] ? (
-                <ScrollArea className="h-[calc(90vh-200px)] border rounded-lg bg-black/95">
-                  <div className="p-4">
-                    {renderHighlightedLogs(podLogs[selectedContainerForLogs])}
-                  </div>
-                </ScrollArea>
-              ) : (
-                <div className="flex items-center justify-center h-[calc(90vh-200px)] border border-dashed rounded-lg text-muted-foreground text-sm">
-                  {isAutoRefreshingLogs ? (
-                    <div className="flex flex-col items-center gap-2">
-                      <RefreshCcw className="w-6 h-6 animate-spin" />
-                      <span>Carregando logs automaticamente...</span>
-                    </div>
-                  ) : (
-                    <span>Clique em "Iniciar" para carregar os logs</span>
-                  )}
-                </div>
-              )}
-            </div>
-          </DialogContent>
-        </Dialog>
-      </>
-    );
-  }
 
   return (
     <>
@@ -2224,18 +1889,38 @@ export const PodsPanel = ({
         </DialogContent>
       </Dialog>
 
-      <SplitView
-        leftPanel={{
-          title: `Pods (${filteredPods.length})`,
-          titleAction: leftTitleAction,
-          content: leftContent,
-        }}
-        rightPanel={{
-          title: selectedPod ? selectedPod.name : "Detalhes do Pod",
-          titleAction: rightTitleAction,
-          content: renderPodDetails(),
-        }}
-      />
+      {/* Layout: painel único (colapsado) ou split view */}
+      {isSidebarCollapsed ? (
+        <div className="p-4 h-full">
+          <div className="grid grid-cols-1 h-full">
+            <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
+              <div className="flex items-center justify-between mb-3 pb-2 border-b-2 border-primary">
+                <div className="flex items-center gap-3 flex-wrap">
+                  {collapseButton}
+                  <p className="text-base font-semibold text-primary">Detalhes do Pod</p>
+                </div>
+                {rightTitleAction}
+              </div>
+              <div className="flex-1 overflow-auto min-h-0">
+                {renderPodDetails()}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <SplitView
+          leftPanel={{
+            title: `Pods (${filteredPods.length})`,
+            titleAction: leftTitleAction,
+            content: leftContent,
+          }}
+          rightPanel={{
+            title: selectedPod ? selectedPod.name : "Detalhes do Pod",
+            titleAction: rightTitleAction,
+            content: renderPodDetails(),
+          }}
+        />
+      )}
 
       {/* Modal de Confirmação de Deleção */}
       <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
