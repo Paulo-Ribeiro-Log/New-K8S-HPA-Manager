@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +60,15 @@ func (k *KubeConfigManager) AutoDiscoverEKSClusters(logFunc func(string)) ([]EKS
 		logFunc(fmt.Sprintf("[EKS] 📋 %d profile(s) encontrado(s): %s", len(profiles), strings.Join(profiles, ", ")))
 	}
 
+	// Verificar e renovar credenciais SSO para cada profile antes do discovery paralelo
+	for _, profile := range profiles {
+		if err := ensureAWSSSOAuth(profile, logFunc); err != nil {
+			if logFunc != nil {
+				logFunc(fmt.Sprintf("[EKS] ⚠️  Autenticação falhou para profile %s: %v", profile, err))
+			}
+		}
+	}
+
 	type result struct {
 		configs []EKSClusterConfig
 		errs    []error
@@ -103,7 +114,14 @@ func (k *KubeConfigManager) AutoDiscoverEKSClusters(logFunc func(string)) ([]EKS
 	for r := range resultCh {
 		allErrors = append(allErrors, r.errs...)
 		for _, c := range r.configs {
-			key := c.AwsProfile + "|" + c.AwsRegion + "|" + c.Name
+			// Dedup por accountID quando disponível: dois profiles com acesso ao mesmo
+			// cluster (mesma conta) produzem o mesmo key e não entram duplicados.
+			var key string
+			if c.AccountID != "" {
+				key = c.AccountID + "|" + c.AwsRegion + "|" + c.Name
+			} else {
+				key = c.AwsProfile + "|" + c.AwsRegion + "|" + c.Name
+			}
 			if !seen[key] {
 				seen[key] = true
 				allConfigs = append(allConfigs, c)
@@ -116,6 +134,74 @@ func (k *KubeConfigManager) AutoDiscoverEKSClusters(logFunc func(string)) ([]EKS
 	}
 
 	return allConfigs, allErrors
+}
+
+// ensureAWSSSOAuth verifica se as credenciais do profile AWS estão válidas.
+// Se o profile não for SSO (sem sso_start_url), ignora silenciosamente.
+// Se as credenciais estiverem expiradas e for SSO, abre aws sso login interativamente.
+func ensureAWSSSOAuth(profile string, logFunc func(string)) error {
+	if checkAWSCredentials(profile) {
+		return nil
+	}
+	if !isAWSSSOProfile(profile) {
+		// Profile sem SSO (credenciais estáticas, env vars, etc.) — não há como renovar
+		return nil
+	}
+	if logFunc != nil {
+		logFunc(fmt.Sprintf("[EKS] 🔑 Credenciais expiradas para profile %q — iniciando aws sso login...", profile))
+	}
+	loginCmd := exec.CommandContext(context.Background(), "aws", "sso", "login", "--profile", profile)
+	loginCmd.Stdin = os.Stdin
+	loginCmd.Stdout = os.Stdout
+	loginCmd.Stderr = os.Stderr
+	if err := loginCmd.Run(); err != nil {
+		return fmt.Errorf("aws sso login --profile %s falhou: %w", profile, err)
+	}
+	if logFunc != nil {
+		logFunc(fmt.Sprintf("[EKS] ✅ Autenticação SSO concluída para profile %q", profile))
+	}
+	return nil
+}
+
+// isAWSSSOProfile retorna true se o profile tiver sso_start_url em ~/.aws/config.
+func isAWSSSOProfile(profile string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".aws", "config"))
+	if err != nil {
+		return false
+	}
+	targetSection := "[profile " + profile + "]"
+	if profile == "default" {
+		targetSection = "[default]"
+	}
+	inSection := false
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			inSection = strings.EqualFold(line, targetSection)
+			continue
+		}
+		if inSection && strings.HasPrefix(strings.ToLower(line), "sso_start_url") {
+			return true
+		}
+	}
+	return false
+}
+
+// checkAWSCredentials testa se as credenciais do profile estão válidas com um
+// aws sts get-caller-identity --profile <profile> com timeout curto.
+// Retorna true se as credenciais são válidas, false caso contrário.
+func checkAWSCredentials(profile string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err := exec.CommandContext(ctx, "aws", "sts", "get-caller-identity",
+		"--profile", profile,
+		"--output", "json",
+	).Run()
+	return err == nil
 }
 
 // listAWSProfiles lista todos os profiles configurados via aws configure list-profiles.
