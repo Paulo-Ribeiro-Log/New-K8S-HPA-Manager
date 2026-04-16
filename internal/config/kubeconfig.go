@@ -878,11 +878,11 @@ func (k *KubeConfigManager) extractResourceGroupFromKubeconfig(clusterName strin
 	return parts[1], nil
 }
 
-// loadAllAzureSubscriptions carrega a lista de subscription IDs disponíveis via Azure CLI.
-// Chamada uma única vez em AutoDiscoverAllClusters e compartilhada entre todos os clusters,
-// eliminando N chamadas redundantes a "az account list".
-// Se o token estiver expirado, tenta renovar automaticamente via az login --use-device-code.
-func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context, logFunc func(string)) ([]string, error) {
+// loadAllAzureSubscriptions carrega IDs e nomes das subscriptions disponíveis via Azure CLI.
+// Retorna (ids []string, names map[id]name, error).
+// Chamada uma única vez em AutoDiscoverAllClusters.
+// Se o token estiver expirado, tenta renovar automaticamente via az login.
+func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context, logFunc func(string)) ([]string, map[string]string, error) {
 	// Validar token antes de qualquer operação
 	tokCtx, tokCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer tokCancel()
@@ -890,38 +890,150 @@ func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context, logFu
 		if logFunc != nil {
 			logFunc("[AKS] 🔑 Token Azure expirado — abrindo autenticador...")
 		}
-		// Usar contexto separado sem timeout — az login abre o browser para autenticação
 		loginCmd := exec.CommandContext(context.Background(), "az", "login")
-		loginCmd.Stdout = io.Discard // suprime o JSON de contas retornado após login
+		loginCmd.Stdout = io.Discard
 		loginCmd.Stderr = os.Stderr
 		if loginErr := loginCmd.Run(); loginErr != nil {
-			return nil, fmt.Errorf("az login falhou: %w — execute 'az login' manualmente e tente novamente", loginErr)
+			return nil, nil, fmt.Errorf("az login falhou: %w — execute 'az login' manualmente e tente novamente", loginErr)
 		}
 	}
 
 	listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer listCancel()
 	out, err := exec.CommandContext(listCtx, "az", "account", "list",
-		"--query", "[].id", "-o", "tsv", "--only-show-errors").CombinedOutput()
+		"--query", "[].{id:id,name:name}", "-o", "json", "--only-show-errors").CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list subscriptions (erro 401 indica token expirado - execute 'az login'): %w\nOutput: %s", err, string(out))
+		return nil, nil, fmt.Errorf("failed to list subscriptions (erro 401 indica token expirado - execute 'az login'): %w\nOutput: %s", err, string(out))
 	}
 
-	var valid []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if s := strings.TrimSpace(line); s != "" {
-			valid = append(valid, s)
+	var entries []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if jsonErr := json.Unmarshal(out, &entries); jsonErr != nil {
+		return nil, nil, fmt.Errorf("parse az account list: %w", jsonErr)
+	}
+	if len(entries) == 0 {
+		return nil, nil, fmt.Errorf("no valid subscriptions found")
+	}
+
+	ids := make([]string, 0, len(entries))
+	names := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if e.ID != "" {
+			ids = append(ids, e.ID)
+			names[e.ID] = e.Name
 		}
 	}
-	if len(valid) == 0 {
-		return nil, fmt.Errorf("no valid subscriptions found")
-	}
-	return valid, nil
+	return ids, names, nil
 }
 
-// discoverSubscriptionViaAzureCLI descobre a subscription de um cluster AKS buscando na lista
-// pré-carregada de subscriptions (paralelo controlado, semáforo cap. 15).
-// Retorna (subscriptionID, subscriptionName, error).
+// aksListEntry representa um cluster retornado por "az aks list".
+type aksListEntry struct {
+	Name          string `json:"name"`
+	ResourceGroup string `json:"resourceGroup"`
+	ID            string `json:"id"`
+}
+
+// buildAKSClusterIndex chama "az aks list --subscription X" uma vez por subscription
+// (paralelo, semáforo 4) e devolve um índice pelo nome do cluster (lowercase).
+//
+// Custo: M chamadas az (M = nº de subscriptions) em vez de N×M (N clusters × M subs).
+// Cada "az aks list" retorna todos os clusters da subscription de uma vez.
+func (k *KubeConfigManager) buildAKSClusterIndex(
+	ctx context.Context,
+	subscriptions []string,
+	subNames map[string]string,
+	logFunc func(string),
+) map[string]ClusterConfig {
+	type subResult struct {
+		entries []aksListEntry
+		subID   string
+	}
+
+	sem := make(chan struct{}, 4)
+	ch := make(chan subResult, len(subscriptions))
+	var wg sync.WaitGroup
+
+	for _, subID := range subscriptions {
+		wg.Add(1)
+		go func(sID string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+
+			out, err := exec.CommandContext(cmdCtx, "az", "aks", "list",
+				"--subscription", sID,
+				"--query", "[].{name:name,resourceGroup:resourceGroup,id:id}",
+				"-o", "json",
+				"--only-show-errors",
+			).Output()
+			if err != nil {
+				if logFunc != nil {
+					preview := sID
+					if len(preview) > 8 {
+						preview = preview[:8] + "..."
+					}
+					logFunc(fmt.Sprintf("[AKS] ⚠️  az aks list sub %s: %v", preview, err))
+				}
+				ch <- subResult{subID: sID}
+				return
+			}
+
+			var entries []aksListEntry
+			if jsonErr := json.Unmarshal(out, &entries); jsonErr != nil {
+				ch <- subResult{subID: sID}
+				return
+			}
+			ch <- subResult{entries: entries, subID: sID}
+		}(subID)
+	}
+
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	index := make(map[string]ClusterConfig)
+	for res := range ch {
+		for _, e := range res.entries {
+			subID := extractSubscriptionIDFromARMID(e.ID)
+			if subID == "" {
+				subID = res.subID
+			}
+			subName := subNames[subID]
+			if subName == "" {
+				subName = subID
+			}
+			index[strings.ToLower(e.Name)] = ClusterConfig{
+				Name:           e.Name,
+				ResourceGroup:  e.ResourceGroup,
+				Subscription:   subName,
+				SubscriptionID: subID,
+			}
+		}
+	}
+	return index
+}
+
+// extractSubscriptionIDFromARMID extrai o subscription ID de um ARM ID.
+// Formato: /subscriptions/SUBID/resourceGroups/...
+func extractSubscriptionIDFromARMID(armID string) string {
+	parts := strings.Split(armID, "/")
+	for i, p := range parts {
+		if strings.EqualFold(p, "subscriptions") && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+// discoverSubscriptionViaAzureCLI descobre a subscription de um único cluster AKS
+// verificando cada subscription via "az aks show" (path de fallback — usado apenas
+// quando o cluster não foi encontrado via buildAKSClusterIndex).
 func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(ctx context.Context, clusterName, resourceGroup string, validSubscriptions []string) (string, string, error) {
 	type result struct {
 		subscriptionID string
@@ -930,7 +1042,7 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(ctx context.Context,
 	}
 
 	resultChan := make(chan result, len(validSubscriptions))
-	semaphore := make(chan struct{}, 10) // cap. 10 — subscriptions por cluster (inner loop)
+	semaphore := make(chan struct{}, 3) // cap. 3 — az é Python, cold-start caro
 	var wg sync.WaitGroup
 
 	subCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -949,7 +1061,7 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(ctx context.Context,
 				return
 			}
 
-			cmdCtx, cmdCancel := context.WithTimeout(subCtx, 20*time.Second) // reduzido 30s → 20s
+			cmdCtx, cmdCancel := context.WithTimeout(subCtx, 20*time.Second)
 			defer cmdCancel()
 
 			cmd := exec.CommandContext(cmdCtx, "az", "aks", "show",
@@ -1014,12 +1126,17 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(ctx context.Context,
 }
 
 // AutoDiscoverAllClusters descobre automaticamente configurações de todos os clusters AKS do kubeconfig.
-// Pré-carrega a lista de subscriptions Azure uma única vez e a compartilha entre todos os clusters,
-// eliminando N chamadas redundantes a "az account list". Semáforo aumentado de 3 → 10 clusters simultâneos.
+//
+// Estratégia O(M) em vez de O(N×M):
+//   - Chama "az aks list --subscription X" uma vez por subscription (M chamadas, paralelo 4)
+//   - Constrói índice clusterName → ClusterConfig
+//   - Faz lookup de cada cluster do kubeconfig no índice (zero chamadas az extras)
+//
+// Antes: 5 clusters × 10 subscriptions = 50 processos az simultâneos (cada az = Python cold-start ~100MB)
+// Agora: 4 subscriptions simultâneas → ≤4 processos az ao mesmo tempo
 func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]ClusterConfig, []error) {
 	clusters := k.DiscoverClusters()
 
-	// Filtrar apenas clusters AKS (EKS é tratado em AutoDiscoverEKSClusters)
 	var aksClusters []models.Cluster
 	for _, c := range clusters {
 		if c.CloudProvider != CloudProviderEKS {
@@ -1028,110 +1145,63 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 	}
 
 	if logFunc != nil {
-		logFunc(fmt.Sprintf("[AKS] 🔍 Iniciando auto-descoberta paralela para %d clusters AKS...", len(aksClusters)))
+		logFunc(fmt.Sprintf("[AKS] 🔍 Iniciando auto-descoberta para %d clusters AKS...", len(aksClusters)))
 	}
 
 	if len(aksClusters) == 0 {
 		return nil, nil
 	}
 
-	// Timeout global de 10 minutos (aumentado de 5)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	// Pré-carregar subscriptions uma única vez — elimina N chamadas redundantes
 	if logFunc != nil {
 		logFunc("[AKS] 📋 Carregando subscriptions Azure...")
 	}
-	subscriptions, err := k.loadAllAzureSubscriptions(ctx, logFunc)
+	subscriptions, subNames, err := k.loadAllAzureSubscriptions(ctx, logFunc)
 	if err != nil {
 		return nil, []error{err}
 	}
 	if logFunc != nil {
-		logFunc(fmt.Sprintf("[AKS] 📋 %d subscription(s) encontrada(s)", len(subscriptions)))
+		logFunc(fmt.Sprintf("[AKS] 📋 %d subscription(s) — construindo índice de clusters...", len(subscriptions)))
 	}
 
-	type result struct {
-		index  int
-		config *ClusterConfig
-		err    error
+	// Uma chamada "az aks list" por subscription → índice completo
+	index := k.buildAKSClusterIndex(ctx, subscriptions, subNames, logFunc)
+
+	if logFunc != nil {
+		logFunc(fmt.Sprintf("[AKS] 📋 Índice construído: %d cluster(s) encontrado(s) nas subscriptions", len(index)))
 	}
 
-	resultChan := make(chan result, len(aksClusters))
-	var wg sync.WaitGroup
-
-	// Semáforo externo conservador para WSL2: 5 clusters simultâneos (outer) × 10 subscriptions (inner) = máx 50 processos az
-	semaphore := make(chan struct{}, 5)
-
-	for i, cluster := range aksClusters {
-		wg.Add(1)
-		go func(idx int, clusterName string) {
-			defer wg.Done()
-
-			select {
-			case semaphore <- struct{}{}:
-				defer func() { <-semaphore }()
-			case <-ctx.Done():
-				resultChan <- result{index: idx, err: fmt.Errorf("timeout aguardando slot")}
-				return
-			}
-
-			if ctx.Err() != nil {
-				resultChan <- result{index: idx, err: ctx.Err()}
-				return
-			}
-
-			config, err := k.AutoDiscoverClusterConfig(ctx, clusterName, subscriptions)
-			resultChan <- result{index: idx, config: config, err: err}
-		}(i, cluster.Name)
-	}
-
-	// Goroutine para fechar o canal quando todas as goroutines terminarem
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// Coletar resultados
-	results := make([]result, len(aksClusters))
-	count := 0
-
-	for res := range resultChan {
-		results[res.index] = res
-		count++
-
-		if logFunc != nil {
-			if res.err != nil {
-				logFunc(fmt.Sprintf("[AKS] [%d/%d] ❌ %s: %v", count, len(aksClusters), aksClusters[res.index].Name, res.err))
-			} else {
-				subIDPreview := res.config.SubscriptionID
-				if len(subIDPreview) > 8 {
-					subIDPreview = subIDPreview[:8] + "..."
-				}
-				logFunc(fmt.Sprintf("[AKS] [%d/%d] ✅ %s — RG: %s, Sub: %s (ID: %s)",
-					count, len(aksClusters),
-					aksClusters[res.index].Name,
-					res.config.ResourceGroup,
-					res.config.Subscription,
-					subIDPreview))
-			}
-		}
-	}
-
-	// Separar sucessos e erros
 	var configs []ClusterConfig
 	var errors []error
 
-	for i, res := range results {
-		if res.err != nil {
-			errors = append(errors, fmt.Errorf("cluster %s: %w", aksClusters[i].Name, res.err))
-		} else if res.config != nil {
-			configs = append(configs, *res.config)
+	for i, cluster := range aksClusters {
+		// Normaliza: remove sufixo -admin e lowercase para lookup
+		lookupName := strings.ToLower(strings.TrimSuffix(cluster.Name, "-admin"))
+		cfg, found := index[lookupName]
+		if !found {
+			errors = append(errors, fmt.Errorf("cluster %s: não encontrado em nenhuma subscription", cluster.Name))
+			if logFunc != nil {
+				logFunc(fmt.Sprintf("[AKS] [%d/%d] ❌ %s: não encontrado no índice", i+1, len(aksClusters), cluster.Name))
+			}
+			continue
+		}
+		// Preserva o nome original do kubeconfig (pode ter -admin)
+		cfg.Name = cluster.Name
+		configs = append(configs, cfg)
+		if logFunc != nil {
+			subIDPreview := cfg.SubscriptionID
+			if len(subIDPreview) > 8 {
+				subIDPreview = subIDPreview[:8] + "..."
+			}
+			logFunc(fmt.Sprintf("[AKS] [%d/%d] ✅ %s — RG: %s, Sub: %s (ID: %s)",
+				i+1, len(aksClusters), cluster.Name, cfg.ResourceGroup, cfg.Subscription, subIDPreview))
 		}
 	}
 
 	if logFunc != nil {
-		logFunc(fmt.Sprintf("[AKS] 📊 Resumo: ✅ %d sucesso | ❌ %d erros", len(configs), len(errors)))
+		logFunc(fmt.Sprintf("[AKS] 📊 Resumo: ✅ %d sucesso | ❌ %d não encontrados", len(configs), len(errors)))
 	}
 
 	return configs, errors
@@ -1247,7 +1317,7 @@ func (k *KubeConfigManager) SwitchAzureContext(contextName string) error {
 	if clusterConfig == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		subscriptions, err := k.loadAllAzureSubscriptions(ctx, nil)
+		subscriptions, _, err := k.loadAllAzureSubscriptions(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("could not find Azure configuration for cluster %s: %w", contextName, err)
 		}
