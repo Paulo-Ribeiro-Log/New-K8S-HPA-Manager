@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -887,18 +888,14 @@ func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context, logFu
 	defer tokCancel()
 	if err := exec.CommandContext(tokCtx, "az", "account", "get-access-token", "--only-show-errors").Run(); err != nil {
 		if logFunc != nil {
-			logFunc("[AKS] 🔑 Token Azure expirado — iniciando az login --use-device-code...")
-			logFunc("[AKS] 💡 Abra https://microsoft.com/devicelogin e insira o código exibido abaixo:")
+			logFunc("[AKS] 🔑 Token Azure expirado — abrindo autenticador...")
 		}
-		// Usar contexto separado sem timeout (az login --use-device-code aguarda o usuário)
-		loginCmd := exec.CommandContext(context.Background(), "az", "login", "--use-device-code", "--only-show-errors")
-		loginCmd.Stdout = os.Stdout
+		// Usar contexto separado sem timeout — az login abre o browser para autenticação
+		loginCmd := exec.CommandContext(context.Background(), "az", "login")
+		loginCmd.Stdout = io.Discard // suprime o JSON de contas retornado após login
 		loginCmd.Stderr = os.Stderr
 		if loginErr := loginCmd.Run(); loginErr != nil {
 			return nil, fmt.Errorf("az login falhou: %w — execute 'az login' manualmente e tente novamente", loginErr)
-		}
-		if logFunc != nil {
-			logFunc("[AKS] ✅ Login Azure concluído — continuando discovery...")
 		}
 	}
 
