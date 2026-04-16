@@ -891,7 +891,8 @@ func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context, logFu
 			logFunc("[AKS] 💡 Abra https://microsoft.com/devicelogin e insira o código exibido abaixo:")
 		}
 		// Usar contexto separado sem timeout (az login --use-device-code aguarda o usuário)
-		loginCmd := exec.CommandContext(context.Background(), "az", "login", "--use-device-code", "--only-show-errors")
+		// Sem --only-show-errors: o device code e a URL são mensagens informacionais que seriam suprimidas
+		loginCmd := exec.CommandContext(context.Background(), "az", "login", "--use-device-code")
 		loginCmd.Stdout = os.Stdout
 		loginCmd.Stderr = os.Stderr
 		if loginErr := loginCmd.Run(); loginErr != nil {
