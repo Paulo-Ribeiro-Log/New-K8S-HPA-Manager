@@ -1810,32 +1810,6 @@ export const NamespacesTab = ({
     </>
   );
 
-  if (isSidebarCollapsed) {
-    return (
-      <div className="p-4 h-full">
-        <div className="grid grid-cols-1 h-full">
-          <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
-            <div className="flex items-center justify-between mb-3 pb-2 border-b-2 border-primary">
-              <div className="flex items-center gap-3 flex-wrap">
-                {collapseButton}
-                <p className="text-base font-semibold text-primary">Visualização</p>
-              </div>
-              <ProtectedAction>
-                <Button variant="outline" size="sm" onClick={() => setCreateModalOpen(true)}>
-                  <Plus className="w-4 h-4 mr-1" />
-                  Criar Namespace
-                </Button>
-              </ProtectedAction>
-            </div>
-            <div className="flex-1 overflow-auto min-h-0">
-              {renderMetricsPanel()}
-            </div>
-          </div>
-        </div>
-        {renderGlobalModals()}
-      </div>
-    );
-  }
 
   const rightTitleAction = (
     <div className="flex gap-2">
@@ -2380,18 +2354,38 @@ export const NamespacesTab = ({
 
   return (
     <>
-      <SplitView
-        leftPanel={{
-          title: "Namespaces",
-          titleAction: leftTitleAction,
-          content: leftContent,
-        }}
-        rightPanel={{
-          title: "Visualização",
-          titleAction: rightTitleAction,
-          content: renderMetricsPanel(),
-        }}
-      />
+      {/* Layout: painel único (colapsado) ou split view */}
+      {isSidebarCollapsed ? (
+        <div className="p-4 h-full">
+          <div className="grid grid-cols-1 h-full">
+            <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
+              <div className="flex items-center justify-between mb-3 pb-2 border-b-2 border-primary">
+                <div className="flex items-center gap-3 flex-wrap">
+                  {collapseButton}
+                  <p className="text-base font-semibold text-primary">Visualização</p>
+                </div>
+                {rightTitleAction}
+              </div>
+              <div className="flex-1 overflow-auto min-h-0">
+                {renderMetricsPanel()}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <SplitView
+          leftPanel={{
+            title: "Namespaces",
+            titleAction: leftTitleAction,
+            content: leftContent,
+          }}
+          rightPanel={{
+            title: "Visualização",
+            titleAction: rightTitleAction,
+            content: renderMetricsPanel(),
+          }}
+        />
+      )}
 
       {renderDiffDialog()}
       {renderApplyConfirmDialog()}

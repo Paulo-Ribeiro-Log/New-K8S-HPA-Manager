@@ -10,8 +10,12 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import { ProtectedAction } from "@/components/rbac";
+import { useResizableColumns, ResizeHandle } from "@/lib/resizableColumns";
 
 const REFRESH_INTERVAL_MS = 10000;
+
+// SEL | NAME/NS | VERSION | READY | UP-TO-DATE | AVAILABLE | AGE | EDIT
+const INITIAL_WIDTHS = [28, 400, 90, 80, 100, 80, 64, 28];
 
 function formatVersion(v: string | undefined): string {
   if (!v) return "-";
@@ -25,8 +29,6 @@ function formatVersion(v: string | undefined): string {
   return v;
 }
 
-// Colunas: SEL | NAME/NS | VERSION | READY | UP-TO-DATE | AVAILABLE | AGE | EDIT
-const GRID = "28px 1fr 90px 80px 90px 80px 64px 28px";
 
 function useSecondsTick(date: Date | null): string {
   const [, setTick] = useState(0);
@@ -166,6 +168,8 @@ export const DeploymentMonitorTable = ({
   onBack,
   backLabel,
 }: DeploymentMonitorTableProps) => {
+  const { resize, gridTemplate } = useResizableColumns(INITIAL_WIDTHS);
+
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
   const [namespaceFilter, setNamespaceFilter] = useState<Set<string>>(new Set());
@@ -516,9 +520,9 @@ export const DeploymentMonitorTable = ({
       {/* Column headers */}
       <div
         className="grid font-mono text-[10px] px-3 py-1.5 border-b border-border bg-muted/20 flex-shrink-0"
-        style={{ gridTemplateColumns: GRID }}
+        style={{ gridTemplateColumns: gridTemplate }}
       >
-        {/* Select-all */}
+        {/* SEL — fixo, sem resize */}
         <span className="flex items-center">
           <Checkbox
             checked={allFilteredSelected}
@@ -530,7 +534,7 @@ export const DeploymentMonitorTable = ({
           />
         </span>
         {/* NAME / NAMESPACE */}
-        <span className="flex items-center">
+        <span className="relative overflow-hidden pr-4 flex items-center">
           {uniqueNamespaces.length > 1 ? (
             <>
               <ColumnFilter label="NAME/NS" options={uniqueNamespaces} selected={namespaceFilter} onChange={setNamespaceFilter} />
@@ -539,16 +543,35 @@ export const DeploymentMonitorTable = ({
           ) : (
             <SortBtn label="NAME" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
           )}
+          <ResizeHandle onResize={(d) => resize(1, d)} />
         </span>
-        <span className="text-muted-foreground uppercase text-[10px]">VERSION</span>
-        {/* READY com filtro + sort */}
-        <span className="flex items-center">
+        {/* VERSION */}
+        <span className="relative overflow-hidden pr-4 flex items-center text-muted-foreground uppercase text-[10px]">
+          VERSION
+          <ResizeHandle onResize={(d) => resize(2, d)} />
+        </span>
+        {/* READY */}
+        <span className="relative overflow-hidden pr-4 flex items-center">
           <ColumnFilter label="READY" options={uniqueStatuses} selected={statusFilter} onChange={setStatusFilter} />
           <SortIcon colKey="ready" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          <ResizeHandle onResize={(d) => resize(3, d)} />
         </span>
-        <span><SortBtn label="UP-TO-DATE" colKey="upToDate" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
-        <span><SortBtn label="AVAILABLE" colKey="available" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
-        <span><SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} /></span>
+        {/* UP-TO-DATE */}
+        <span className="relative overflow-hidden pr-4 flex items-center">
+          <SortBtn label="UP-TO-DATE" colKey="upToDate" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          <ResizeHandle onResize={(d) => resize(4, d)} />
+        </span>
+        {/* AVAILABLE */}
+        <span className="relative overflow-hidden pr-4 flex items-center">
+          <SortBtn label="AVAILABLE" colKey="available" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          <ResizeHandle onResize={(d) => resize(5, d)} />
+        </span>
+        {/* AGE */}
+        <span className="relative overflow-hidden pr-4 flex items-center">
+          <SortBtn label="AGE" colKey="age" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+          <ResizeHandle onResize={(d) => resize(6, d)} />
+        </span>
+        {/* EDIT — fixo, sem resize */}
         <span></span>
       </div>
 
@@ -577,7 +600,7 @@ export const DeploymentMonitorTable = ({
               key={`${dep.namespace}/${dep.name}`}
               data-row-index={index}
               className={`grid w-full px-3 py-1.5 hover:bg-muted/40 text-left transition-colors border-b border-border/40 font-mono text-xs ${rowColor} cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60 ${isSelected ? "bg-primary/10 hover:bg-primary/15 ring-inset ring-1 ring-primary/30" : ""}`}
-              style={{ gridTemplateColumns: GRID }}
+              style={{ gridTemplateColumns: gridTemplate }}
               onClick={() => onSelectDeployment(dep)}
               onKeyDown={(e) => {
                 if (e.key === " ") {
