@@ -3307,9 +3307,10 @@ export const DeploymentsTab = ({
     );
   };
 
-  if (isSidebarCollapsed) {
-    return (
-      <>
+  return (
+    <>
+      {/* Layout: painel único (colapsado) ou split view */}
+      {isSidebarCollapsed ? (
         <div className="p-4 h-full">
           <div className="grid grid-cols-1 h-full">
             <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
@@ -3326,68 +3327,21 @@ export const DeploymentsTab = ({
             </div>
           </div>
         </div>
+      ) : (
+        <SplitView
+          leftPanel={{
+            title: "Deployments",
+            titleAction: leftTitleAction,
+            content: leftContent,
+          }}
+          rightPanel={{
+            title: "Visualização",
+            titleAction: rightTitleAction,
+            content: renderManifestPanel(),
+          }}
+        />
+      )}
 
-        {renderDiffDialog()}
-        {renderEditorFullScreen()}
-        {renderApplyConfirmDialog()}
-
-        {/* Modal Describe */}
-        <Dialog open={describeModalOpen} onOpenChange={setDescribeModalOpen}>
-          <DialogContent className="max-w-6xl max-h-[90vh]">
-            <DialogHeader>
-              <DialogTitle>Kubectl Describe - {selectedDeployment?.name}</DialogTitle>
-              <DialogDescription className="text-sm text-muted-foreground">
-                {selectedDeployment?.namespace}/{selectedDeployment?.name}
-              </DialogDescription>
-            </DialogHeader>
-            <ScrollArea className="h-[70vh]">
-              {describeLoading ? (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="w-6 h-6 animate-spin" />
-                </div>
-              ) : (
-                <pre className="text-xs font-mono bg-muted p-4 rounded whitespace-pre-wrap">{describeContent}</pre>
-              )}
-            </ScrollArea>
-
-            <DialogFooter className="gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleRefreshDescribe}
-                disabled={describeLoading}
-                className="text-xs"
-              >
-                {describeLoading ? (
-                  <Loader2 className="w-3 h-3 animate-spin mr-1" />
-                ) : (
-                  <RefreshCcw className="w-3 h-3 mr-1" />
-                )}
-                Atualizar
-              </Button>
-
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  navigator.clipboard.writeText(describeContent);
-                  toast.success("Describe copiado para a área de transferência!");
-                }}
-                disabled={!describeContent || describeLoading}
-                className="text-xs"
-              >
-                <Copy className="w-3 h-3 mr-1" />
-                Copiar
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </>
-    );
-  }
-
-  return (
-    <>
       {/* Modal de detalhes rápidos do pod (click na tabela de pods do deployment) */}
       <PodQuickViewModal
         pod={quickViewPod}
@@ -3395,19 +3349,6 @@ export const DeploymentsTab = ({
         metrics={quickViewPod ? batchMetrics?.pods[quickViewPod.name] : null}
         onClose={() => setQuickViewPod(null)}
         onRefresh={refreshMonitorPods}
-      />
-
-      <SplitView
-        leftPanel={{
-          title: "Deployments",
-          titleAction: leftTitleAction,
-          content: leftContent,
-        }}
-        rightPanel={{
-          title: "Visualização",
-          titleAction: rightTitleAction,
-          content: renderManifestPanel(),
-        }}
       />
 
       {renderDiffDialog()}
