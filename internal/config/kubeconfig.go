@@ -856,25 +856,50 @@ func (k *KubeConfigManager) extractResourceGroupFromKubeconfig(clusterName strin
 
 	// Extrair resource group do user name
 	// Formato: clusterAdmin_{RESOURCE_GROUP}_{CLUSTER_NAME}
+	// O RG pode conter underscores (ex: clusterAdmin_rg_aks_prod_mycluster → rg_aks_prod)
+	firstUnderscore := strings.Index(userName, "_")
+	if firstUnderscore < 0 {
+		return "", fmt.Errorf("unexpected user name format: %s", userName)
+	}
+	withoutPrefix := userName[firstUnderscore+1:] // "RESOURCE_GROUP_CLUSTER_NAME"
+
+	// Remover o sufixo "_CLUSTER_NAME" para obter o RG completo
+	suffix := "_" + clusterName
+	if strings.HasSuffix(withoutPrefix, suffix) {
+		return strings.TrimSuffix(withoutPrefix, suffix), nil
+	}
+
+	// Fallback: comportamento original (segundo segmento)
 	parts := strings.Split(userName, "_")
 	if len(parts) < 3 {
 		return "", fmt.Errorf("unexpected user name format: %s", userName)
 	}
-
-	// Resource group é o segundo elemento (index 1)
-	resourceGroup := parts[1]
-	return resourceGroup, nil
+	return parts[1], nil
 }
 
 // loadAllAzureSubscriptions carrega a lista de subscription IDs disponíveis via Azure CLI.
 // Chamada uma única vez em AutoDiscoverAllClusters e compartilhada entre todos os clusters,
 // eliminando N chamadas redundantes a "az account list".
-func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context) ([]string, error) {
+// Se o token estiver expirado, tenta renovar automaticamente via az login --use-device-code.
+func (k *KubeConfigManager) loadAllAzureSubscriptions(ctx context.Context, logFunc func(string)) ([]string, error) {
 	// Validar token antes de qualquer operação
 	tokCtx, tokCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer tokCancel()
 	if err := exec.CommandContext(tokCtx, "az", "account", "get-access-token", "--only-show-errors").Run(); err != nil {
-		return nil, fmt.Errorf("token Azure expirado ou inválido - execute 'az login' novamente: %w", err)
+		if logFunc != nil {
+			logFunc("[AKS] 🔑 Token Azure expirado — iniciando az login --use-device-code...")
+			logFunc("[AKS] 💡 Abra https://microsoft.com/devicelogin e insira o código exibido abaixo:")
+		}
+		// Usar contexto separado sem timeout (az login --use-device-code aguarda o usuário)
+		loginCmd := exec.CommandContext(context.Background(), "az", "login", "--use-device-code", "--only-show-errors")
+		loginCmd.Stdout = os.Stdout
+		loginCmd.Stderr = os.Stderr
+		if loginErr := loginCmd.Run(); loginErr != nil {
+			return nil, fmt.Errorf("az login falhou: %w — execute 'az login' manualmente e tente novamente", loginErr)
+		}
+		if logFunc != nil {
+			logFunc("[AKS] ✅ Login Azure concluído — continuando discovery...")
+		}
 	}
 
 	listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
@@ -908,7 +933,7 @@ func (k *KubeConfigManager) discoverSubscriptionViaAzureCLI(ctx context.Context,
 	}
 
 	resultChan := make(chan result, len(validSubscriptions))
-	semaphore := make(chan struct{}, 4) // reduzido 15 → 4 — az é Python (~50MB/proc), WSL2 congela com muitos paralelos
+	semaphore := make(chan struct{}, 10) // cap. 10 — subscriptions por cluster (inner loop)
 	var wg sync.WaitGroup
 
 	subCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -1021,7 +1046,7 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 	if logFunc != nil {
 		logFunc("[AKS] 📋 Carregando subscriptions Azure...")
 	}
-	subscriptions, err := k.loadAllAzureSubscriptions(ctx)
+	subscriptions, err := k.loadAllAzureSubscriptions(ctx, logFunc)
 	if err != nil {
 		return nil, []error{err}
 	}
@@ -1038,8 +1063,8 @@ func (k *KubeConfigManager) AutoDiscoverAllClusters(logFunc func(string)) ([]Clu
 	resultChan := make(chan result, len(aksClusters))
 	var wg sync.WaitGroup
 
-	// Semáforo conservador: 3 clusters × 4 subscriptions = 12 processos az máx simultâneos no WSL2
-	semaphore := make(chan struct{}, 3)
+	// Semáforo externo conservador para WSL2: 5 clusters simultâneos (outer) × 10 subscriptions (inner) = máx 50 processos az
+	semaphore := make(chan struct{}, 5)
 
 	for i, cluster := range aksClusters {
 		wg.Add(1)
@@ -1225,7 +1250,7 @@ func (k *KubeConfigManager) SwitchAzureContext(contextName string) error {
 	if clusterConfig == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		subscriptions, err := k.loadAllAzureSubscriptions(ctx)
+		subscriptions, err := k.loadAllAzureSubscriptions(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("could not find Azure configuration for cluster %s: %w", contextName, err)
 		}

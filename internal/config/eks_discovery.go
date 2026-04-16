@@ -63,9 +63,12 @@ func (k *KubeConfigManager) AutoDiscoverEKSClusters(logFunc func(string)) ([]EKS
 		errs    []error
 	}
 
-	// Semáforo conservador (2) — evita freeze no WSL2 com múltiplos processos aws em paralelo
-	sem := make(chan struct{}, 2)
+	sem := make(chan struct{}, 5) // máx 5 goroutines profile×região simultâneas
 	resultCh := make(chan result, len(profiles)*len(eksDefaultRegions))
+
+	// warnedProfiles evita repetir "aws sso login --profile X" para cada região do mesmo profile
+	warnedProfiles := make(map[string]bool)
+	var warnMu sync.Mutex
 	var wg sync.WaitGroup
 
 	for _, profile := range profiles {
@@ -76,7 +79,15 @@ func (k *KubeConfigManager) AutoDiscoverEKSClusters(logFunc func(string)) ([]EKS
 				sem <- struct{}{}
 				defer func() { <-sem }()
 
-				cfgs, errs := discoverEKSClustersInRegion(ctx, profile, region, logFunc)
+				cfgs, errs := discoverEKSClustersInRegion(ctx, profile, region, logFunc, func() bool {
+					warnMu.Lock()
+					defer warnMu.Unlock()
+					if warnedProfiles[profile] {
+						return false
+					}
+					warnedProfiles[profile] = true
+					return true
+				})
 				resultCh <- result{configs: cfgs, errs: errs}
 			}(profile, region)
 		}
@@ -133,7 +144,8 @@ func listAWSProfiles(ctx context.Context) ([]string, error) {
 }
 
 // discoverEKSClustersInRegion lista e descreve os clusters EKS de um profile+região.
-func discoverEKSClustersInRegion(ctx context.Context, profile, region string, logFunc func(string)) ([]EKSClusterConfig, []error) {
+// canWarn é chamado para controlar se a sugestão de auth deve ser emitida (evita repetição por região).
+func discoverEKSClustersInRegion(ctx context.Context, profile, region string, logFunc func(string), canWarn func() bool) ([]EKSClusterConfig, []error) {
 	listCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -144,10 +156,14 @@ func discoverEKSClustersInRegion(ctx context.Context, profile, region string, lo
 	}
 	out, err := exec.CommandContext(listCtx, "aws", args...).CombinedOutput()
 	if err != nil {
-		// Logar apenas se o erro não for "no clusters nessa região" (exit code normal)
 		errMsg := strings.TrimSpace(string(out))
-		if logFunc != nil && errMsg != "" && !strings.Contains(errMsg, "NotFoundException") {
-			logFunc(fmt.Sprintf("[EKS] ⚠️  %s/%s: %s", profile, region, errMsg))
+		if logFunc != nil && errMsg != "" && !strings.Contains(errMsg, "NotFoundException") && canWarn() {
+			logFunc(fmt.Sprintf("[EKS] ⚠️  profile %s: %s", profile, firstLine(errMsg)))
+			if strings.Contains(errMsg, "SSO") || strings.Contains(errMsg, "sso") {
+				logFunc(fmt.Sprintf("[EKS] 💡 Execute: aws sso login --profile %s", profile))
+			} else if strings.Contains(errMsg, "NoCredentials") || strings.Contains(errMsg, "Unable to locate credentials") {
+				logFunc(fmt.Sprintf("[EKS] 💡 Configure credenciais: aws configure --profile %s", profile))
+			}
 		}
 		return nil, nil
 	}
@@ -218,6 +234,14 @@ func describeEKSCluster(ctx context.Context, profile, region, name string) (*EKS
 		AccountID:  extractAccountIDFromARN(resp.Cluster.Arn),
 		VpcID:      resp.Cluster.ResourcesVpcConfig.VpcId,
 	}, nil
+}
+
+// firstLine retorna apenas a primeira linha de uma string multiline.
+func firstLine(s string) string {
+	if i := strings.Index(s, "\n"); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // extractAccountIDFromARN extrai o accountId de um ARN AWS.

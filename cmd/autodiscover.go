@@ -89,9 +89,11 @@ EKS: varre perfis AWS × regiões via AWS CLI
 			}
 		}
 
-		// Salvar EKS (mesmo se vazio — grava arquivo com [] para confirmar que o discovery rodou)
-		if err := manager.SaveEKSClusterConfigs(eksConfigs, log); err != nil {
-			fmt.Printf("❌ Erro ao salvar clusters EKS: %v\n", err)
+		// Salvar EKS apenas se clusters foram descobertos
+		if len(eksConfigs) > 0 {
+			if err := manager.SaveEKSClusterConfigs(eksConfigs, log); err != nil {
+				fmt.Printf("❌ Erro ao salvar clusters EKS: %v\n", err)
+			}
 		}
 
 		// Erros
