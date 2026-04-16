@@ -1357,9 +1357,10 @@ data:
     );
   };
 
-  if (isSidebarCollapsed) {
-    return (
-      <>
+  return (
+    <>
+      {/* Layout: painel único (colapsado) ou split view */}
+      {isSidebarCollapsed ? (
         <div className="p-4 h-full">
           <div className="grid grid-cols-1 h-full">
             <div className="p-4 bg-gradient-card border-border/50 rounded-xl flex flex-col min-h-0">
@@ -1376,29 +1377,21 @@ data:
             </div>
           </div>
         </div>
-
-        {renderDiffDialog()}
-        {renderEditorFullScreen()}
-        {renderApplyConfirmDialog()}
-      </>
-    );
-  }
-
-  return (
-    <>
-      <SplitView
-        leftPanel={{
-          title: "ConfigMaps",
-          titleAction: leftTitleAction,
-          content: leftContent,
-        }}
-        rightPanel={{
-          title: selectedConfigMap ? `${selectedConfigMap.namespace}/${selectedConfigMap.name}` : "Visualização",
-          titlePrefix: rightTitlePrefix,
-          titleAction: rightTitleAction,
-          content: renderManifestPanel(),
-        }}
-      />
+      ) : (
+        <SplitView
+          leftPanel={{
+            title: "ConfigMaps",
+            titleAction: leftTitleAction,
+            content: leftContent,
+          }}
+          rightPanel={{
+            title: selectedConfigMap ? `${selectedConfigMap.namespace}/${selectedConfigMap.name}` : "Visualização",
+            titlePrefix: rightTitlePrefix,
+            titleAction: rightTitleAction,
+            content: renderManifestPanel(),
+          }}
+        />
+      )}
 
       {renderDiffDialog()}
       {renderEditorFullScreen()}
