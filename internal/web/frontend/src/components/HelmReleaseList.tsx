@@ -9,16 +9,8 @@ import type { ReleaseSummary } from '../types/helm';
 const formatVersion = (version: string | undefined): string => {
   if (!version) return '';
   const parts = version.split('-');
-  if (parts.length === 4 && parts.every(p => /^\d+$/.test(p))) {
+  if (parts.length === 4 && parts.every(p => /^\d+$/.test(p)))
     return `${parts[0]}.${parts[1]}.${parts[2]}-${parts[3]}`;
-  }
-  if (parts.length >= 3 && parts.slice(0, 3).every(p => /^\d+$/.test(p))) {
-    const semver = `${parts[0]}.${parts[1]}.${parts[2]}`;
-    if (parts.length > 3) {
-      return `${semver}-${parts.slice(3).join('-')}`;
-    }
-    return semver;
-  }
   return version;
 };
 
