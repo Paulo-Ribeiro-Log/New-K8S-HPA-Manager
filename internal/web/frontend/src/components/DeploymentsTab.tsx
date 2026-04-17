@@ -61,20 +61,9 @@ import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
 const formatVersion = (version: string | undefined): string => {
   if (!version) return '';
-  // Se a versão tem formato x-x-x-x (4 partes separadas por hífen), converter para x.x.x-x
   const parts = version.split('-');
-  if (parts.length === 4 && parts.every(p => /^\d+$/.test(p))) {
-    // Formato: major.minor.patch-build
+  if (parts.length === 4 && parts.every(p => /^\d+$/.test(p)))
     return `${parts[0]}.${parts[1]}.${parts[2]}-${parts[3]}`;
-  }
-  // Se tem 3 partes numéricas seguidas de mais, também formata
-  if (parts.length >= 3 && parts.slice(0, 3).every(p => /^\d+$/.test(p))) {
-    const semver = `${parts[0]}.${parts[1]}.${parts[2]}`;
-    if (parts.length > 3) {
-      return `${semver}-${parts.slice(3).join('-')}`;
-    }
-    return semver;
-  }
   return version;
 };
 
