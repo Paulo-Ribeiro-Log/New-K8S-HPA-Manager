@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { SplitView } from "@/components/SplitView";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { CertificateDetailModal } from "@/components/CertificateDetailModal";
+import { AWXCertForm } from "@/components/AWXCertForm";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -48,6 +50,7 @@ import { addLogoHeaderToPDF, getMarkdownHeader, addFooterToPDF } from "@/lib/log
 
 import { useClusters } from "@/hooks/useAPI";
 import { useCertificates } from "@/hooks/useCertificates";
+import { apiClient } from "@/lib/api/client";
 import type { Cluster } from "@/lib/api/types";
 import type {
   CertificateInfo,
@@ -62,6 +65,8 @@ interface CertificatesTabProps {
 
 type SortField = "status" | "secretName" | "namespace" | "cluster" | "subject" | "daysRemaining";
 type SortDirection = "asc" | "desc";
+
+const displayCluster = (name: string) => name.replace(/-admin$/i, "");
 
 // Remover emojis para compatibilidade jsPDF
 const removeEmojis = (text: string): string => {
@@ -121,6 +126,20 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
   // Report state
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
 
+  // AWX / upload mode state
+  const [awxConfigured, setAwxConfigured] = useState(false);
+  const [uploadOuterMode, setUploadOuterMode] = useState<"install" | "batch">("install");
+  const [uploadMode, setUploadMode] = useState<"manual" | "awx">("manual");
+  const [awxCluster, setAwxCluster] = useState("");
+  const [awxNamespace, setAwxNamespace] = useState("");
+
+  // Batch update state
+  const [batchSecretName, setBatchSecretName] = useState("");
+  const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set());
+  const [batchCrt, setBatchCrt] = useState("");
+  const [batchKey, setBatchKey] = useState("");
+  const [isBatchUpdating, setIsBatchUpdating] = useState(false);
+
   // Extrair contextos dos clusters (com sufixo -admin)
   const clusterNames = useMemo(() => {
     if (!allClusters) return [] as string[];
@@ -163,6 +182,58 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
 
   const clearClusterSelection = () => {
     setSelectedClusters([]);
+  };
+
+  // Checar se AWX está configurado e acessível
+  useEffect(() => {
+    apiClient.getAWXStatus()
+      .then((s) => setAwxConfigured(s.configured && s.reachable))
+      .catch(() => setAwxConfigured(false));
+  }, []);
+
+  // Clusters onde o cert batchSecretName existe no scan atual
+  const batchEntries = useMemo(() => {
+    if (!scanResult || !batchSecretName.trim()) return [];
+    return scanResult.certificates
+      .filter((c) => c.secretName === batchSecretName)
+      .map((c) => ({ cluster: c.cluster, namespace: c.namespace }));
+  }, [scanResult, batchSecretName]);
+
+  const batchKey2 = (cluster: string, ns: string) => `${cluster}||${ns}`;
+
+  // Handler batch update — agrupa por namespace para evitar combinações erradas
+  const handleBatchUpdate = async () => {
+    const targets = batchEntries.filter((e) => batchSelected.has(batchKey2(e.cluster, e.namespace)));
+    if (!batchCrt.trim() || !batchKey.trim() || targets.length === 0) {
+      toast.error("Preencha o certificado, a chave e selecione ao menos um cluster.");
+      return;
+    }
+    setIsBatchUpdating(true);
+    try {
+      const byNs = new Map<string, string[]>();
+      targets.forEach((e) => {
+        byNs.set(e.namespace, [...(byNs.get(e.namespace) ?? []), e.cluster]);
+      });
+      let total = 0;
+      for (const [ns, clusters] of byNs) {
+        const count = await uploadCertificate({
+          name: batchSecretName,
+          tlsCrt: batchCrt,
+          tlsKey: batchKey,
+          targetClusters: clusters,
+          targetNamespaces: [ns],
+        });
+        total += count;
+      }
+      toast.success(`Certificado atualizado em ${total} destino(s)`);
+      setUploadModalOpen(false);
+    } catch (err) {
+      toast.error("Erro ao atualizar certificado", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsBatchUpdating(false);
+    }
   };
 
   const toggleStatusFilter = (status: string) => {
@@ -721,7 +792,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                   onCheckedChange={() => toggleCluster(cluster)}
                 />
                 <Label htmlFor={`cluster-${cluster}`} className="text-xs cursor-pointer truncate">
-                  {cluster}
+                  {displayCluster(cluster)}
                 </Label>
               </div>
             ))}
@@ -832,7 +903,11 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
               variant="outline"
               size="sm"
               className="w-full"
-              onClick={() => setUploadModalOpen(true)}
+              onClick={() => {
+                setAwxCluster(selectedCert?.cluster ?? (clusterNames[0] ?? ""));
+                setAwxNamespace(selectedCert?.namespace ?? "");
+                setUploadModalOpen(true);
+              }}
             >
               <Upload className="h-3 w-3 mr-2" />
               Upload Certificado
@@ -1009,20 +1084,43 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
         onOpenChange={setDetailModalOpen}
         cert={selectedCert}
         footerExtra={
-          <ProtectedAction>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setCopyTargetClusters([]);
-                setCopyTargetNamespaces("");
-                setDetailModalOpen(false);
-                setCopyModalOpen(true);
-              }}
-            >
-              <Copy className="h-4 w-4 mr-2" />
-              Copiar para...
-            </Button>
-          </ProtectedAction>
+          <div className="flex gap-2">
+            <ProtectedAction>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setCopyTargetClusters([]);
+                  setCopyTargetNamespaces("");
+                  setDetailModalOpen(false);
+                  setCopyModalOpen(true);
+                }}
+              >
+                <Copy className="h-4 w-4 mr-2" />
+                Copiar para...
+              </Button>
+            </ProtectedAction>
+            <ProtectedAction>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  const name = selectedCert?.secretName ?? "";
+                  setBatchSecretName(name);
+                  const found = scanResult?.certificates
+                    .filter((c) => c.secretName === name)
+                    .map((c) => `${c.cluster}||${c.namespace}`) ?? [];
+                  setBatchSelected(new Set(found));
+                  setBatchCrt("");
+                  setBatchKey("");
+                  setUploadOuterMode("batch");
+                  setDetailModalOpen(false);
+                  setUploadModalOpen(true);
+                }}
+              >
+                <RefreshCcw className="h-4 w-4 mr-2" />
+                Atualizar em Massa
+              </Button>
+            </ProtectedAction>
+          </div>
         }
       />
 
@@ -1049,7 +1147,7 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
                         );
                       }}
                     />
-                    <Label className="text-xs cursor-pointer">{cluster}</Label>
+                    <Label className="text-xs cursor-pointer">{displayCluster(cluster)}</Label>
                   </div>
                 ))}
               </ScrollArea>
@@ -1080,82 +1178,260 @@ export default function CertificatesTab({ selectedCluster }: CertificatesTabProp
       </Dialog>
 
       {/* Modal de Upload */}
-      <Dialog open={uploadModalOpen} onOpenChange={setUploadModalOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Upload de Certificado TLS</DialogTitle>
-            <DialogDescription>
-              Enviar certificado PEM para clusters e namespaces selecionados
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label className="text-sm">Nome do Secret</Label>
-              <Input
-                value={uploadName}
-                onChange={(e) => setUploadName(e.target.value)}
-                placeholder="meu-certificado-tls"
-                className="mt-1"
-              />
-            </div>
-            <div>
-              <Label className="text-sm">Certificado (tls.crt - PEM)</Label>
-              <textarea
-                value={uploadCrt}
-                onChange={(e) => setUploadCrt(e.target.value)}
-                placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
-                className="w-full mt-1 h-32 p-2 text-xs font-mono bg-background border rounded resize-none"
-              />
-            </div>
-            <div>
-              <Label className="text-sm">Chave Privada (tls.key - PEM)</Label>
-              <textarea
-                value={uploadKey}
-                onChange={(e) => setUploadKey(e.target.value)}
-                placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
-                className="w-full mt-1 h-32 p-2 text-xs font-mono bg-background border rounded resize-none"
-              />
-            </div>
-            <div>
-              <Label className="text-sm">Clusters destino</Label>
-              <ScrollArea className="h-[120px] mt-1 border rounded p-2">
-                {clusterNames.map((cluster: string) => (
-                  <div key={cluster} className="flex items-center gap-2 py-1">
-                    <Checkbox
-                      checked={uploadTargetClusters.includes(cluster)}
-                      onCheckedChange={() => {
-                        setUploadTargetClusters(prev =>
-                          prev.includes(cluster) ? prev.filter(c => c !== cluster) : [...prev, cluster]
-                        );
+      <Dialog open={uploadModalOpen} onOpenChange={(open) => {
+        if (!open) { setUploadMode("manual"); setUploadOuterMode("install"); setBatchCrt(""); setBatchKey(""); }
+        setUploadModalOpen(open);
+      }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col">
+          <DialogHeader className="flex-shrink-0">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <DialogTitle>Upload de Certificado TLS</DialogTitle>
+                <DialogDescription className="mt-1">
+                  {uploadOuterMode === "batch"
+                    ? `Atualizar "${batchSecretName}" nos clusters onde já existe`
+                    : uploadMode === "awx"
+                    ? "Instalar ou renovar via AWX"
+                    : "Enviar certificado PEM para clusters e namespaces selecionados"}
+                </DialogDescription>
+              </div>
+              {/* Toggle outer: Instalação ↔ Atualização em Massa (só quando há scan) */}
+              {scanResult && (
+                <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs ${uploadOuterMode === "install" ? "font-medium text-foreground" : "text-muted-foreground"}`}>
+                      Instalação
+                    </span>
+                    <Switch
+                      checked={uploadOuterMode === "batch"}
+                      onCheckedChange={(v) => {
+                        setUploadOuterMode(v ? "batch" : "install");
+                        if (v) {
+                          const name = batchSecretName || selectedCert?.secretName || "";
+                          setBatchSecretName(name);
+                          const found = scanResult.certificates
+                            .filter((c) => c.secretName === name)
+                            .map((c) => `${c.cluster}||${c.namespace}`);
+                          setBatchSelected(new Set(found));
+                        }
                       }}
+                      disabled={isUploading || isBatchUpdating}
                     />
-                    <Label className="text-xs cursor-pointer">{cluster}</Label>
+                    <span className={`text-xs ${uploadOuterMode === "batch" ? "font-medium text-foreground" : "text-muted-foreground"}`}>
+                      Atualização em Massa
+                    </span>
                   </div>
-                ))}
-              </ScrollArea>
+                  {/* Toggle inner AWX (só no modo instalação) */}
+                  {uploadOuterMode === "install" && awxConfigured && (
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs ${uploadMode === "manual" ? "font-medium text-foreground" : "text-muted-foreground"}`}>
+                        Manual
+                      </span>
+                      <Switch
+                        checked={uploadMode === "awx"}
+                        onCheckedChange={(checked) => {
+                          setUploadMode(checked ? "awx" : "manual");
+                          if (checked && !awxCluster && clusterNames.length > 0)
+                            setAwxCluster(clusterNames[0]);
+                        }}
+                      />
+                      <span className={`text-xs ${uploadMode === "awx" ? "font-medium text-foreground" : "text-muted-foreground"}`}>
+                        AWX
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-            <div>
-              <Label className="text-sm">Namespaces destino (separados por virgula)</Label>
-              <Input
-                value={uploadTargetNamespaces}
-                onChange={(e) => setUploadTargetNamespaces(e.target.value)}
-                placeholder="default, production"
-                className="mt-1"
-              />
+          </DialogHeader>
+
+          {/* ── MODO INSTALAÇÃO ── */}
+          {uploadOuterMode === "install" && uploadMode === "manual" && (
+            <>
+              <div className="space-y-4 overflow-y-auto flex-1 min-h-0">
+                <div>
+                  <Label className="text-sm">Nome do Secret</Label>
+                  <Input value={uploadName} onChange={(e) => setUploadName(e.target.value)}
+                    placeholder="meu-certificado-tls" className="mt-1" />
+                </div>
+                <div>
+                  <Label className="text-sm">Certificado (tls.crt - PEM)</Label>
+                  <textarea value={uploadCrt} onChange={(e) => setUploadCrt(e.target.value)}
+                    placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                    className="w-full mt-1 h-32 p-2 text-xs font-mono bg-background border rounded resize-none" />
+                </div>
+                <div>
+                  <Label className="text-sm">Chave Privada (tls.key - PEM)</Label>
+                  <textarea value={uploadKey} onChange={(e) => setUploadKey(e.target.value)}
+                    placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+                    className="w-full mt-1 h-32 p-2 text-xs font-mono bg-background border rounded resize-none" />
+                </div>
+                <div>
+                  <Label className="text-sm">Clusters destino</Label>
+                  <ScrollArea className="h-[120px] mt-1 border rounded p-2">
+                    {clusterNames.map((cluster: string) => (
+                      <div key={cluster} className="flex items-center gap-2 py-1">
+                        <Checkbox checked={uploadTargetClusters.includes(cluster)}
+                          onCheckedChange={() => setUploadTargetClusters(prev =>
+                            prev.includes(cluster) ? prev.filter(c => c !== cluster) : [...prev, cluster])} />
+                        <Label className="text-xs cursor-pointer">{displayCluster(cluster)}</Label>
+                      </div>
+                    ))}
+                  </ScrollArea>
+                </div>
+                <div>
+                  <Label className="text-sm">Namespaces destino (separados por vírgula)</Label>
+                  <Input value={uploadTargetNamespaces} onChange={(e) => setUploadTargetNamespaces(e.target.value)}
+                    placeholder="default, production" className="mt-1" />
+                </div>
+              </div>
+              <DialogFooter className="flex-shrink-0">
+                <Button variant="outline" onClick={() => setUploadModalOpen(false)}>Cancelar</Button>
+                <Button onClick={handleUpload}
+                  disabled={isUploading || !uploadName || !uploadCrt || !uploadKey || uploadTargetClusters.length === 0 || !uploadTargetNamespaces.trim()}>
+                  {isUploading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
+                  Upload
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+
+          {uploadOuterMode === "install" && uploadMode === "awx" && (
+            <div className="space-y-4 overflow-y-auto flex-1 min-h-0">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Cluster</Label>
+                  <Select value={awxCluster} onValueChange={setAwxCluster}>
+                    <SelectTrigger className="text-sm">
+                      <SelectValue placeholder="Selecione o cluster..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {clusterNames.map((c: string) => (
+                        <SelectItem key={c} value={c}>{displayCluster(c)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Namespace</Label>
+                  <Input value={awxNamespace} onChange={(e) => setAwxNamespace(e.target.value)}
+                    placeholder="ex: meu-namespace" className="text-sm" />
+                </div>
+              </div>
+              {awxCluster && awxNamespace ? (
+                <AWXCertForm key={`${awxCluster}-${awxNamespace}`} cluster={awxCluster} namespace={awxNamespace}
+                  onCancel={() => { setUploadMode("manual"); setUploadModalOpen(false); }}
+                  onSuccess={() => { setUploadMode("manual"); setUploadModalOpen(false); }} />
+              ) : (
+                <p className="text-sm text-muted-foreground text-center py-4">
+                  Selecione o cluster e informe o namespace para continuar.
+                </p>
+              )}
             </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setUploadModalOpen(false)}>
-              Cancelar
-            </Button>
-            <Button
-              onClick={handleUpload}
-              disabled={isUploading || !uploadName || !uploadCrt || !uploadKey || uploadTargetClusters.length === 0 || !uploadTargetNamespaces.trim()}
-            >
-              {isUploading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
-              Upload
-            </Button>
-          </DialogFooter>
+          )}
+
+          {/* ── MODO ATUALIZAÇÃO EM MASSA ── */}
+          {uploadOuterMode === "batch" && (
+            <>
+              <div className="space-y-4 overflow-y-auto flex-1 min-h-0">
+                {/* Nome do secret */}
+                <div>
+                  <Label className="text-xs font-medium">Nome do Secret</Label>
+                  <Input
+                    value={batchSecretName}
+                    onChange={(e) => {
+                      setBatchSecretName(e.target.value);
+                      const found = scanResult?.certificates
+                        .filter((c) => c.secretName === e.target.value)
+                        .map((c) => `${c.cluster}||${c.namespace}`) ?? [];
+                      setBatchSelected(new Set(found));
+                    }}
+                    placeholder="meuapp-tls"
+                    className="mt-1 text-sm"
+                    disabled={isBatchUpdating}
+                  />
+                </div>
+
+                {/* Lista de clusters encontrados */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <Label className="text-xs font-medium">
+                      Clusters encontrados no scan
+                      {batchEntries.length > 0 && (
+                        <span className="ml-1 text-muted-foreground">({batchEntries.length})</span>
+                      )}
+                    </Label>
+                    {batchEntries.length > 0 && (
+                      <div className="flex gap-2">
+                        <button className="text-xs text-primary hover:underline" disabled={isBatchUpdating}
+                          onClick={() => setBatchSelected(new Set(batchEntries.map((e) => batchKey2(e.cluster, e.namespace))))}>
+                          todos
+                        </button>
+                        <span className="text-muted-foreground text-xs">·</span>
+                        <button className="text-xs text-primary hover:underline" disabled={isBatchUpdating}
+                          onClick={() => setBatchSelected(new Set())}>
+                          nenhum
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {batchSecretName && batchEntries.length === 0 ? (
+                    <p className="text-xs text-muted-foreground border rounded p-3 text-center">
+                      Nenhum cluster encontrado no scan para "{batchSecretName}"
+                    </p>
+                  ) : (
+                    <ScrollArea className="h-52 border rounded p-2">
+                      <div className="space-y-1">
+                        {batchEntries.map((entry) => {
+                          const key = batchKey2(entry.cluster, entry.namespace);
+                          return (
+                            <div key={key} className="flex items-center gap-2 py-0.5">
+                              <Checkbox
+                                checked={batchSelected.has(key)}
+                                onCheckedChange={() => setBatchSelected((prev) => {
+                                  const next = new Set(prev);
+                                  next.has(key) ? next.delete(key) : next.add(key);
+                                  return next;
+                                })}
+                                disabled={isBatchUpdating}
+                              />
+                              <span className="text-xs">{displayCluster(entry.cluster)}</span>
+                              <span className="text-xs text-muted-foreground">/ {entry.namespace}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </ScrollArea>
+                  )}
+                </div>
+
+                <div>
+                  <Label className="text-xs">Novo Certificado (tls.crt — PEM)</Label>
+                  <textarea value={batchCrt} onChange={(e) => setBatchCrt(e.target.value)}
+                    placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                    className="w-full mt-1 h-28 p-2 text-xs font-mono bg-background border rounded resize-none"
+                    disabled={isBatchUpdating} />
+                </div>
+                <div>
+                  <Label className="text-xs">Nova Chave Privada (tls.key — PEM)</Label>
+                  <textarea value={batchKey} onChange={(e) => setBatchKey(e.target.value)}
+                    placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+                    className="w-full mt-1 h-28 p-2 text-xs font-mono bg-background border rounded resize-none"
+                    disabled={isBatchUpdating} />
+                </div>
+              </div>
+              <DialogFooter className="flex-shrink-0">
+                <Button variant="outline" onClick={() => setUploadModalOpen(false)} disabled={isBatchUpdating}>
+                  Cancelar
+                </Button>
+                <Button onClick={handleBatchUpdate}
+                  disabled={isBatchUpdating || batchSelected.size === 0 || !batchCrt.trim() || !batchKey.trim()}>
+                  {isBatchUpdating && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                  Atualizar em {batchSelected.size} entrada(s)
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 
