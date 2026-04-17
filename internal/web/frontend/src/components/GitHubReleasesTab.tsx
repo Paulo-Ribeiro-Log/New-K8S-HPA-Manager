@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import * as React from "react";
 import { SplitView } from "@/components/SplitView";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,7 @@ import {
   AlertCircle,
   Settings,
   Play,
-  Key,
+
   Plus,
   Trash2,
   CheckCircle2,
@@ -134,6 +134,19 @@ export const GitHubReleasesTab = () => {
   const [showTokenModal, setShowTokenModal] = useState(false);
   const [showScanModal, setShowScanModal] = useState(false);
   const [showServiceNowModal, setShowServiceNowModal] = useState(false);
+
+  // Detecta largura disponível no header do painel esquerdo para modo compacto
+  const titleBarRef = useRef<HTMLDivElement>(null);
+  const [compactButtons, setCompactButtons] = useState(false);
+  useEffect(() => {
+    const el = titleBarRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      setCompactButtons(entry.contentRect.width < 270);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const [showSuggestions, setShowSuggestions] = useState(false);  // Mostrar dropdown de sugestões
   const [deploymentSelected, setDeploymentSelected] = useState(false);  // ✅ Rastreia se usuário selecionou do dropdown
   const [autoScanRunning, setAutoScanRunning] = useState(false);
@@ -744,40 +757,36 @@ export const GitHubReleasesTab = () => {
         leftPanel={{
           title: "Configuração",
           titleAction: (
-            <div className="flex gap-2">
+            <div ref={titleBarRef} className="flex gap-1.5 min-w-0">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => setShowServiceNowModal(true)}
                 title="Importar dados de uma CHG do ServiceNow"
+                className={compactButtons ? "h-7 w-7 p-0" : "h-7"}
               >
-                <Download className="h-4 w-4 mr-2" />
-                ServiceNow
+                <Download className="h-3.5 w-3.5 flex-shrink-0" />
+                {!compactButtons && <span className="ml-1.5">ServiceNow</span>}
               </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={handleRefetch}
                 title="Recarregar dados da base"
+                className={compactButtons ? "h-7 w-7 p-0" : "h-7"}
               >
-                <Search className="h-4 w-4 mr-2" />
-                Refetch
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowTokenModal(true)}
-              >
-                <Key className="h-4 w-4 mr-2" />
-                Token
+                <Search className="h-3.5 w-3.5 flex-shrink-0" />
+                {!compactButtons && <span className="ml-1.5">Refetch</span>}
               </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => setShowScanModal(true)}
+                title="Escanear repositórios"
+                className={compactButtons ? "h-7 w-7 p-0" : "h-7"}
               >
-                <Play className="h-4 w-4 mr-2" />
-                Scan
+                <Play className="h-3.5 w-3.5 flex-shrink-0" />
+                {!compactButtons && <span className="ml-1.5">Scan</span>}
               </Button>
             </div>
           ),

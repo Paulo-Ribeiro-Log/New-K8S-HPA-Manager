@@ -41,6 +41,14 @@ import { ProtectedAction } from "@/components/rbac";
 import { CreateSecretModal } from "@/components/CreateSecretModal";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 
+const formatVersion = (version: string | undefined): string => {
+  if (!version) return '';
+  const parts = version.split('-');
+  if (parts.length === 4 && parts.every(p => /^\d+$/.test(p)))
+    return `${parts[0]}.${parts[1]}.${parts[2]}-${parts[3]}`;
+  return version;
+};
+
 interface SecretsTabProps {
   cluster: string;
   namespaces: Namespace[];
@@ -1121,7 +1129,7 @@ export const SecretsTab = ({
           {appVersion && (
             <div className="flex flex-col">
               <span className="text-muted-foreground uppercase mb-0.5">Versão</span>
-              <span className="font-mono text-primary">{appVersion}</span>
+              <span className="font-mono text-primary">{formatVersion(appVersion)}</span>
             </div>
           )}
           <div className="flex flex-col">

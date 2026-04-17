@@ -22,10 +22,6 @@ function formatVersion(v: string | undefined): string {
   const parts = v.split("-");
   if (parts.length === 4 && parts.every((p) => /^\d+$/.test(p)))
     return `${parts[0]}.${parts[1]}.${parts[2]}-${parts[3]}`;
-  if (parts.length >= 3 && parts.slice(0, 3).every((p) => /^\d+$/.test(p))) {
-    const semver = `${parts[0]}.${parts[1]}.${parts[2]}`;
-    return parts.length > 3 ? `${semver}-${parts.slice(3).join("-")}` : semver;
-  }
   return v;
 }
 
