@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -60,8 +61,13 @@ func IsWSL() bool {
 	return strings.Contains(lower, "microsoft") || strings.Contains(lower, "wsl")
 }
 
-// HasGraphicalDisplay retorna true se há um servidor gráfico (X11/Wayland) disponível no ambiente atual
+// HasGraphicalDisplay retorna true se há um display gráfico disponível.
+// macOS (darwin) sempre tem display nativo (Quartz/Aqua — sem DISPLAY/WAYLAND).
+// Linux/WSL: verifica variáveis X11/Wayland.
 func HasGraphicalDisplay() bool {
+	if runtime.GOOS == "darwin" {
+		return true
+	}
 	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
 }
 
@@ -85,23 +91,52 @@ func NeedsWindowsBrowser() bool {
 	return IsWSL() && !HasGraphicalDisplay()
 }
 
-// windowsBrowserCandidates lista paths conhecidos de Chrome/Edge no Windows acessíveis via WSL
-var windowsBrowserCandidates = []string{
+// windowsBrowserSystemPaths lista instalações de sistema (Program Files) — Chrome, Edge, Brave
+var windowsBrowserSystemPaths = []string{
 	"/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
 	"/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe",
 	"/mnt/c/Program Files/Microsoft/Edge/Application/msedge.exe",
 	"/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+	"/mnt/c/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe",
+	"/mnt/c/Program Files (x86)/BraveSoftware/Brave-Browser/Application/brave.exe",
 }
 
-// FindWindowsBrowser localiza o primeiro browser Windows disponível nos paths conhecidos
+// windowsBrowserUserPaths retorna paths de instalação por usuário (sem admin) para o username informado.
+// Instalações via Microsoft Store ou sem privilégios ficam em %LOCALAPPDATA%.
+func windowsBrowserUserPaths(username string) []string {
+	base := fmt.Sprintf("/mnt/c/Users/%s/AppData/Local", username)
+	return []string{
+		base + "/Google/Chrome/Application/chrome.exe",
+		base + "/Microsoft/Edge/Application/msedge.exe",
+		base + "/BraveSoftware/Brave-Browser/Application/brave.exe",
+	}
+}
+
+// FindWindowsBrowser localiza o primeiro browser Chromium disponível no Windows.
+// Verifica instalações de sistema (Program Files) e por usuário (%LOCALAPPDATA%).
+// Suporta Chrome, Edge (pré-instalado no Windows 10/11) e Brave.
 func FindWindowsBrowser() (string, error) {
-	for _, path := range windowsBrowserCandidates {
+	// 1. Paths de sistema
+	for _, path := range windowsBrowserSystemPaths {
 		if _, err := os.Stat(path); err == nil {
 			return path, nil
 		}
 	}
+	// 2. Paths de instalação por usuário (sem admin)
+	out, err := exec.Command("cmd.exe", "/c", "echo", "%USERNAME%").Output()
+	if err == nil {
+		username := strings.TrimSpace(string(out))
+		if username != "" && username != "%USERNAME%" {
+			for _, path := range windowsBrowserUserPaths(username) {
+				if _, err := os.Stat(path); err == nil {
+					return path, nil
+				}
+			}
+		}
+	}
 	return "", fmt.Errorf(
-		"nenhum browser Windows encontrado (Chrome/Edge). Instale o Google Chrome ou Microsoft Edge no Windows",
+		"nenhum browser Chromium encontrado (Chrome, Edge ou Brave). " +
+			"O Microsoft Edge vem pré-instalado no Windows 10/11 — verifique se não foi removido",
 	)
 }
 
@@ -230,9 +265,53 @@ func WaitCDPReadyHost(port int, timeout time.Duration) (string, error) {
 	return "", fmt.Errorf("CDP não ficou disponível na porta %d após %v (hosts tentados: %v)", port, timeout, hosts)
 }
 
-// WindowsCDPPort é a porta padrão usada para conectar ao browser Windows via CDP.
-// Usa 9223 (e não 9222) para evitar conflito com instâncias de Chrome já abertas com debug.
+// WindowsCDPPort é a porta CDP que o Chrome/Edge usa para remote debugging.
 const WindowsCDPPort = 9223
+
+// WindowsCDPRelayPort é a porta do relay PowerShell.
+// O relay fica em 0.0.0.0:9224 (WSL2 acessível) e repassa para 127.0.0.1:9223 (Chrome).
+const WindowsCDPRelayPort = 9224
+
+// cdpRelayPS é um script C# embutido no PowerShell que cria um relay TCP bidirecional.
+// Funciona sem admin: Windows Firewall prompta para powershell.exe (não para chrome.exe).
+const cdpRelayPS = `
+Add-Type @"
+using System;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
+public class TcpRelay {
+    public static void Start(int listenPort, int targetPort) {
+        var listener = new TcpListener(IPAddress.Any, listenPort);
+        listener.Start();
+        Console.WriteLine("CDP relay listening on 0.0.0.0:" + listenPort + " -> 127.0.0.1:" + targetPort);
+        Console.Out.Flush();
+        while (true) {
+            var client = listener.AcceptTcpClient();
+            var target = new TcpClient("127.0.0.1", targetPort);
+            var cs = client.GetStream(); var ts = target.GetStream();
+            var t1 = new Thread(() => { var b = new byte[65536]; int n; try { while ((n = cs.Read(b,0,65536)) > 0) ts.Write(b,0,n); } catch {} });
+            var t2 = new Thread(() => { var b = new byte[65536]; int n; try { while ((n = ts.Read(b,0,65536)) > 0) cs.Write(b,0,n); } catch {} });
+            t1.IsBackground = true; t2.IsBackground = true; t1.Start(); t2.Start();
+        }
+    }
+}
+"@
+[TcpRelay]::Start(%d, %d)
+`
+
+// StartCDPRelay lança um PowerShell que faz bridge TCP 0.0.0.0:relayPort → 127.0.0.1:cdpPort.
+// Isso contorna o Windows Firewall que bloqueia chrome.exe de aceitar conexões do WSL2:
+// o prompt de firewall aparece para powershell.exe (user-level, sem admin) na primeira vez.
+// Retorna o processo iniciado para que o caller possa fechá-lo quando não precisar mais.
+func StartCDPRelay(relayPort, cdpPort int) (*exec.Cmd, error) {
+	script := fmt.Sprintf(cdpRelayPS, relayPort, cdpPort)
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("não foi possível iniciar relay TCP CDP: %v", err)
+	}
+	return cmd, nil
+}
 
 // WindowsSessionWSLDir retorna o diretório de sessão para o browser Windows, no formato WSL.
 // Precedência:
