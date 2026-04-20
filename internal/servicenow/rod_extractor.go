@@ -18,9 +18,8 @@ import (
 // RodExtractor usa a biblioteca Rod (Go nativo) para extrair dados do ServiceNow
 // Não precisa de Node.js, npm ou dependências externas
 type RodExtractor struct {
-	logger            *zerolog.Logger
-	sessionDir        string // Diretório de sessão local (WSL/Linux/Mac)
-	windowsSessionDir string // Diretório de sessão Windows via CDP (apenas no WSL sem display)
+	logger     *zerolog.Logger
+	sessionDir string // Diretório de sessão Chromium (~/.k8s-hpa-manager/rod-session)
 }
 
 // NewRodExtractor cria um novo extrator Rod
@@ -41,19 +40,9 @@ func NewRodExtractor(logger *zerolog.Logger) *RodExtractor {
 		Str("session_dir", sessionDir).
 		Msg("[Rod] Extrator inicializado (Go nativo - sem dependências externas)")
 
-	// Inicializar diretório de sessão Windows quando rodando no WSL
-	var windowsSessionDir string
-	if IsWSL() {
-		windowsSessionDir = WindowsSessionWSLDir()
-		if err := os.MkdirAll(windowsSessionDir, 0755); err != nil {
-			logger.Warn().Err(err).Str("dir", windowsSessionDir).Msg("[Rod] Erro ao criar diretório de sessão Windows")
-		}
-	}
-
 	return &RodExtractor{
-		logger:            logger,
-		sessionDir:        sessionDir,
-		windowsSessionDir: windowsSessionDir,
+		logger:     logger,
+		sessionDir: sessionDir,
 	}
 }
 
@@ -65,28 +54,23 @@ func (r *RodExtractor) IsConfigured() bool {
 // GetStatus retorna o status da configuração do Rod
 // Retorna campos compatíveis com o frontend (playwright_configured, script_exists)
 func (r *RodExtractor) GetStatus() map[string]interface{} {
-	wslMode := NeedsWindowsBrowser()
-	activeDir := r.activeSessionDir()
-
 	status := map[string]interface{}{
-		// Campos para compatibilidade com frontend (espera playwright_configured e script_exists)
-		"playwright_configured": true, // Rod está sempre configurado (Go nativo)
-		"script_exists":         true, // Não precisa de script externo
+		// Campos para compatibilidade com frontend
+		"playwright_configured": true,
+		"script_exists":         true,
 		"configured":            true,
-		"session_dir":           activeDir,
+		"session_dir":           r.sessionDir,
 		"type":                  "rod-go-native",
 		"dependencies":          "none (Go native)",
-		"npx_available":         true, // Não precisa de npx
-		"ts_node_available":     true, // Não precisa de ts-node
-		"npm_installed":         true, // Não precisa de npm
-		// Informações sobre o modo de execução
-		"wsl_mode":    wslMode,                  // true = WSL sem display, usa Chrome Windows via CDP
-		"is_wsl":      IsWSL(),                  // true = rodando no WSL (com ou sem display)
-		"has_display": HasGraphicalDisplay(),    // true = display gráfico disponível
+		"npx_available":         true,
+		"ts_node_available":     true,
+		"npm_installed":         true,
+		"is_wsl":                IsWSL(),
+		"has_display":           HasGraphicalDisplay(),
+		"xvfb_installed":        IsXvfbInstalled(),
 	}
 
-	// Verificar se sessão existe
-	if _, err := os.Stat(activeDir); err == nil {
+	if _, err := os.Stat(r.sessionDir); err == nil {
 		status["session_exists"] = true
 	} else {
 		status["session_exists"] = false
@@ -95,23 +79,16 @@ func (r *RodExtractor) GetStatus() map[string]interface{} {
 	return status
 }
 
-// activeSessionDir retorna o diretório de sessão ativo conforme o ambiente.
-// No WSL sem display gráfico usa o diretório Windows; caso contrário usa o local.
 func (r *RodExtractor) activeSessionDir() string {
-	if NeedsWindowsBrowser() && r.windowsSessionDir != "" {
-		return r.windowsSessionDir
-	}
 	return r.sessionDir
 }
 
-// GetSessionStatus retorna o status da sessão
+// GetSessionStatus retorna o status da sessão Chromium local.
 func (r *RodExtractor) GetSessionStatus() *SessionStatus {
-	sessionDir := r.activeSessionDir()
-	status := &SessionStatus{
-		SessionDir: sessionDir,
-	}
+	sessionDir := r.sessionDir
+	status := &SessionStatus{SessionDir: sessionDir}
 
-	// Verificar se o diretório de sessão existe
+	// Verificar diretório de sessão
 	info, err := os.Stat(sessionDir)
 	if os.IsNotExist(err) {
 		status.Exists = false
@@ -120,7 +97,6 @@ func (r *RodExtractor) GetSessionStatus() *SessionStatus {
 		status.Message = "Sessão não encontrada. Será necessário fazer login no Azure AD na próxima extração."
 		return status
 	}
-
 	if err != nil {
 		status.Exists = false
 		status.Valid = false
@@ -132,18 +108,13 @@ func (r *RodExtractor) GetSessionStatus() *SessionStatus {
 	status.Exists = true
 	lastMod := info.ModTime()
 	status.LastModified = &lastMod
-
-	// Calcular tempo desde última modificação
 	hoursSince := time.Since(lastMod).Hours()
 	status.HoursSinceUpdate = hoursSince
 
-	// Verificar se existem arquivos de sessão
 	entries, _ := os.ReadDir(sessionDir)
 	hasSession := len(entries) > 0
 
-	// Sessões do Azure AD geralmente expiram em 8-12 horas
 	const maxSessionHours = 8.0
-
 	if !hasSession {
 		status.Valid = false
 		status.Status = "empty"
@@ -157,7 +128,6 @@ func (r *RodExtractor) GetSessionStatus() *SessionStatus {
 		status.Status = "valid"
 		status.Message = fmt.Sprintf("Sessão válida (última atualização: %.1f horas atrás).", hoursSince)
 	}
-
 	return status
 }
 
@@ -182,19 +152,9 @@ func (r *RodExtractor) ClearSession() error {
 	return nil
 }
 
-// launchBrowser inicia um browser e retorna o browser, uma função de cleanup e erro.
-// Detecta automaticamente o ambiente:
-//   - WSL sem display gráfico → Chrome/Edge Windows via CDP (porta 9223)
-//     Chrome Windows é obrigatório neste modo pois gerencia os cookies DPAPI do Windows.
-//     O Chromium Linux não consegue descriptografar o perfil do Chrome Windows.
-//   - Demais casos → Chromium local via launcher padrão do Rod
-//
-// initialURL: se não vazio, o browser abre diretamente nessa URL (apenas no modo Windows;
-// no modo local a URL é passada via browser.Page pelo caller).
-func (r *RodExtractor) launchBrowser(headless bool, initialURL string) (*rod.Browser, func(), error) {
-	if NeedsWindowsBrowser() {
-		return r.launchWindowsBrowser(initialURL)
-	}
+// launchBrowser inicia o Chromium local via Rod (baixa automaticamente se necessário).
+// Para sessões visíveis (headless=false) sem display gráfico, usa Xvfb como fallback.
+func (r *RodExtractor) launchBrowser(headless bool, _ string) (*rod.Browser, func(), error) {
 	return r.launchLocalBrowser(headless)
 }
 
@@ -204,8 +164,22 @@ func (r *RodExtractor) launchLocalBrowser(headless bool) (*rod.Browser, func(), 
 }
 
 // launchLocalBrowserWithDir inicia o Chromium local com um diretório de sessão específico.
-// Usado para reutilizar sessão salva (ex: sessão Windows acessível via /mnt/c/).
+// Para sessões visíveis (headless=false) sem display gráfico, tenta Xvfb automaticamente.
 func (r *RodExtractor) launchLocalBrowserWithDir(headless bool, sessionDir string) (*rod.Browser, func(), error) {
+	var xvfbCleanup func()
+
+	// Browser visível sem display → tentar Xvfb (X Virtual Framebuffer)
+	if !headless && !HasGraphicalDisplay() {
+		display, cleanup, err := EnsureVirtualDisplay()
+		if err != nil {
+			r.logger.Warn().Err(err).Msg("[Rod] Sem display gráfico e Xvfb indisponível — tentando mesmo assim")
+		} else {
+			r.logger.Info().Str("display", display).Msg("[Rod] Display virtual configurado (Xvfb)")
+			os.Setenv("DISPLAY", display) //nolint:errcheck
+			xvfbCleanup = cleanup
+		}
+	}
+
 	l := launcher.New().
 		UserDataDir(sessionDir).
 		Headless(headless).
@@ -214,83 +188,54 @@ func (r *RodExtractor) launchLocalBrowserWithDir(headless bool, sessionDir strin
 	r.logger.Info().
 		Bool("headless", headless).
 		Str("session_dir", sessionDir).
+		Bool("has_display", HasGraphicalDisplay()).
 		Msg("[Rod] Iniciando Chromium local...")
 
 	ctrlURL, err := l.Launch()
 	if err != nil {
+		if xvfbCleanup != nil {
+			xvfbCleanup()
+		}
 		return nil, nil, fmt.Errorf("erro ao iniciar browser: %v", err)
 	}
 
 	b := rod.New().ControlURL(ctrlURL)
 	if err := b.Connect(); err != nil {
+		if xvfbCleanup != nil {
+			xvfbCleanup()
+		}
 		return nil, nil, fmt.Errorf("erro ao conectar ao browser: %v", err)
 	}
 
 	r.logger.Info().Msg("[Rod] Chromium local iniciado com sucesso")
-	return b, func() { b.Close() }, nil
+	return b, func() {
+		b.Close()
+		if xvfbCleanup != nil {
+			xvfbCleanup()
+		}
+	}, nil
 }
 
-// launchWindowsBrowser conecta ao Chrome/Edge do Windows via CDP.
-// Lança o browser Windows se ainda não estiver rodando com a porta de debug.
-// initialURL: se não vazio, Chrome abre diretamente nessa URL (sem aba em branco).
-// O browser Windows NÃO é fechado no cleanup — apenas desconectamos.
-func (r *RodExtractor) launchWindowsBrowser(initialURL string) (*rod.Browser, func(), error) {
-	port := WindowsCDPPort
 
-	// Verificar se CDP já está disponível (browser já aberto com a porta de debug).
-	// Tenta 127.0.0.1 E o IP do host Windows (WSL2 pode não ter localhost forwarding ativo).
-	cdpHost, checkErr := WaitCDPReadyHost(port, 3*time.Second)
-	if checkErr != nil {
-		// CDP não disponível — precisamos lançar o browser Windows
-		browserPath, findErr := FindWindowsBrowser()
-		if findErr != nil {
-			return nil, nil, fmt.Errorf("[Rod WSL] %v", findErr)
-		}
-
-		r.logger.Info().
-			Str("browser", browserPath).
-			Int("port", port).
-			Str("session_dir", r.windowsSessionDir).
-			Str("initial_url", initialURL).
-			Msg("[Rod WSL] Lançando Chrome/Edge Windows com remote debugging...")
-
-		if _, launchErr := LaunchWindowsBrowserForCDP(browserPath, port, r.windowsSessionDir, initialURL); launchErr != nil {
-			return nil, nil, launchErr
-		}
-
-		// Aguardar o browser Windows iniciar e responder ao CDP (até 40s).
-		// Chrome no Windows pode demorar mais em máquinas lentas ou com muitos processos.
-		r.logger.Info().Msg("[Rod WSL] Aguardando browser Windows iniciar (até 40s)...")
-		var waitErr error
-		cdpHost, waitErr = WaitCDPReadyHost(port, 40*time.Second)
-		if waitErr != nil {
-			return nil, nil, fmt.Errorf("[Rod WSL] browser Windows não respondeu ao CDP na porta %d: %v\n"+
-				"Dica: abra o Chrome/Edge manualmente com: chrome.exe --remote-debugging-port=%d", port, waitErr, port)
-		}
-	}
-
-	r.logger.Info().Str("host", cdpHost).Int("port", port).Msg("[Rod WSL] Conectando ao browser Windows via CDP...")
-	wsURL := fmt.Sprintf("ws://%s:%d", cdpHost, port)
-	b := rod.New().ControlURL(wsURL)
-	if err := b.Connect(); err != nil {
-		return nil, nil, fmt.Errorf("[Rod WSL] erro ao conectar ao browser Windows via CDP: %v", err)
-	}
-
-	r.logger.Info().Str("host", cdpHost).Msg("[Rod WSL] Conectado ao browser Windows com sucesso!")
-
-	// Cleanup apenas desconecta — NÃO fecha o Chrome do usuário
-	cleanup := func() {
-		r.logger.Debug().Msg("[Rod WSL] Desconectando do browser Windows (Chrome permanece aberto)")
-	}
-	return b, cleanup, nil
-}
-
-// TestSession abre o browser para o usuário fazer login
+// TestSession abre o Chromium para o usuário fazer login no ServiceNow.
+// Em WSL sem display gráfico, usa Xvfb (X Virtual Framebuffer) como display virtual.
+// O browser é invisível no Xvfb — use WSLg ou x11vnc para visualizá-lo,
+// ou confie no SSO silencioso se a máquina for domain-joined.
 func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) {
 	sessionDir := r.activeSessionDir()
+	if IsWSL() && !HasGraphicalDisplay() {
+		if IsXvfbInstalled() {
+			r.logger.Info().Msg("[Rod] WSL sem display gráfico — usando Xvfb (:99) como display virtual")
+			r.logger.Info().Msg("[Rod] Para ver o browser: instale WSLg (Windows 11) ou use 'x11vnc -display :99 -forever'")
+		} else {
+			r.logger.Warn().Msgf("[Rod] WSL sem display gráfico e Xvfb não instalado. Instale com: %s", XvfbInstallHint())
+		}
+	}
+
 	r.logger.Info().
 		Str("session_dir", sessionDir).
-		Bool("wsl_mode", NeedsWindowsBrowser()).
+		Bool("is_wsl", IsWSL()).
+		Bool("has_display", HasGraphicalDisplay()).
 		Msg("[Rod] Iniciando login - abrindo browser visível")
 
 	// Limpar sessão anterior para garantir login fresco
@@ -512,37 +457,19 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 
 	r.logger.Info().Msg("[Rod] URL validada com sucesso")
 
-	// Verificação de sessão:
-	// - Modo Windows (CDP): verifica se o Chrome Windows está rodando com debug port.
-	//   Não faz check de arquivos — o Chrome gerencia os cookies internamente.
-	//   Se o CDP não estiver disponível, informa o usuário para fazer login.
-	// - Modo local (Chromium): verifica o diretório de sessão local.
+	// Verificação de sessão (Chromium headless — funciona sem display em qualquer ambiente):
 	headless := true
 
-	if NeedsWindowsBrowser() {
-		_, cdpErr := WaitCDPReadyHost(WindowsCDPPort, 3*time.Second)
-		if cdpErr != nil {
-			r.logger.Warn().
-				Int("port", WindowsCDPPort).
-				Msg("[Rod WSL] Chrome Windows não está rodando com debug port — login necessário")
-			return &PlaywrightResult{
-				Success: false,
-				Error:   fmt.Sprintf("Chrome Windows não está ativo na porta %d. Acesse Menu de Perfil → ServiceNow Session e clique em 'Fazer Login'.", WindowsCDPPort),
-			}, nil
-		}
-		r.logger.Info().Int("port", WindowsCDPPort).Msg("[Rod WSL] CDP disponível — usando sessão do Chrome Windows")
-	} else {
-		sessionStatus := r.GetSessionStatus()
-		if !sessionStatus.Valid {
-			r.logger.Warn().
-				Str("session_status", sessionStatus.Status).
-				Str("session_dir", sessionStatus.SessionDir).
-				Msg("[Rod] Sessão local inválida ou ausente — extração bloqueada")
-			return &PlaywrightResult{
-				Success: false,
-				Error:   "Sessão não autenticada. Acesse Menu de Perfil → ServiceNow Session e faça login antes de extrair dados.",
-			}, nil
-		}
+	sessionStatus := r.GetSessionStatus()
+	if !sessionStatus.Valid {
+		r.logger.Warn().
+			Str("session_status", sessionStatus.Status).
+			Str("session_dir", sessionStatus.SessionDir).
+			Msg("[Rod] Sessão local inválida ou ausente — extração bloqueada")
+		return &PlaywrightResult{
+			Success: false,
+			Error:   "Sessão não autenticada. Acesse Menu de Perfil → ServiceNow Session e faça login antes de extrair dados.",
+		}, nil
 	}
 
 	r.logger.Info().
@@ -1370,3 +1297,4 @@ func (r *RodExtractor) extractWithVisibleLogin(ctx context.Context, chgURL strin
 		Extracted:        extracted,
 	}, nil
 }
+
