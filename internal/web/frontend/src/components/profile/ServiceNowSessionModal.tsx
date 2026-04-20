@@ -22,9 +22,7 @@ import {
   Globe,
   Clock,
   FolderOpen,
-  Pencil,
-  Check,
-  X,
+  Monitor,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { CredentialModalProps } from '@/types/profile';
@@ -39,87 +37,36 @@ interface SessionStatus {
   message: string;
 }
 
+interface BrowserEnv {
+  is_wsl: boolean;
+  has_display: boolean;
+  xvfb_installed: boolean;
+  xvfb_hint: string;
+}
+
 export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: CredentialModalProps) {
   const [sessionStatus, setSessionStatus] = useState<SessionStatus | null>(null);
+  const [browserEnv, setBrowserEnv] = useState<BrowserEnv | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
-  const [forceWindowsBrowser, setForceWindowsBrowser] = useState(false);
-  const [wslAutoMode, setWslAutoMode] = useState(false);
-  const [savingBrowserConfig, setSavingBrowserConfig] = useState(false);
-  const [effectiveSessionDir, setEffectiveSessionDir] = useState('');
-  const [customSessionDir, setCustomSessionDir] = useState('');
-  const [editingDir, setEditingDir] = useState(false);
-  const [editDirValue, setEditDirValue] = useState('');
 
-  // Carregar status ao abrir modal
   useEffect(() => {
     if (open) {
       fetchSessionStatus();
-      fetchBrowserConfig();
+      fetchBrowserEnv();
     }
   }, [open]);
 
-  const fetchBrowserConfig = async () => {
+  const fetchBrowserEnv = async () => {
     try {
       const response = await fetch('/api/v1/servicenow/browser-config', {
         headers: { 'Authorization': `Bearer ${localStorage.getItem("auth_token")}` },
       });
       const data = await response.json();
-      setForceWindowsBrowser(data.force_windows_browser ?? false);
-      setWslAutoMode(data.needs_windows_browser && !data.force_windows_browser);
-      setEffectiveSessionDir(data.effective_session_dir ?? '');
-      setCustomSessionDir(data.windows_session_dir ?? '');
+      setBrowserEnv(data);
     } catch {
-      // silencioso — config opcional
-    }
-  };
-
-  const handleToggleWindowsBrowser = async (value: boolean) => {
-    setSavingBrowserConfig(true);
-    try {
-      await fetch('/api/v1/servicenow/browser-config', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem("auth_token")}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ force_windows_browser: value, windows_session_dir: customSessionDir }),
-      });
-      setForceWindowsBrowser(value);
-      toast.success(
-        value
-          ? 'Modo Windows ativado. Chrome/Edge do Windows será usado para autenticar.'
-          : 'Modo automático restaurado.'
-      );
-    } catch {
-      toast.error('Erro ao salvar configuração de browser.');
-    } finally {
-      setSavingBrowserConfig(false);
-    }
-  };
-
-  const handleSaveSessionDir = async () => {
-    setSavingBrowserConfig(true);
-    try {
-      const response = await fetch('/api/v1/servicenow/browser-config', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem("auth_token")}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ force_windows_browser: forceWindowsBrowser, windows_session_dir: editDirValue.trim() }),
-      });
-      const data = await response.json();
-      setCustomSessionDir(editDirValue.trim());
-      setEffectiveSessionDir(data.effective_session_dir ?? editDirValue.trim());
-      setEditingDir(false);
-      toast.success('Diretório de sessão salvo.');
-      fetchSessionStatus();
-    } catch {
-      toast.error('Erro ao salvar diretório de sessão.');
-    } finally {
-      setSavingBrowserConfig(false);
+      // silencioso — info opcional
     }
   };
 
@@ -127,9 +74,7 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
     setIsLoading(true);
     try {
       const response = await fetch('/api/v1/servicenow/session-status', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem("auth_token")}`,
-        },
+        headers: { 'Authorization': `Bearer ${localStorage.getItem("auth_token")}` },
       });
       const data = await response.json();
       setSessionStatus(data);
@@ -145,17 +90,13 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
     if (!confirm('Tem certeza que deseja limpar a sessao? Voce precisara fazer login novamente no Azure AD.')) {
       return;
     }
-
     setIsClearing(true);
     try {
       const response = await fetch('/api/v1/servicenow/session', {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem("auth_token")}`,
-        },
+        headers: { 'Authorization': `Bearer ${localStorage.getItem("auth_token")}` },
       });
       const data = await response.json();
-
       if (data.success) {
         toast.success('Sessao limpa com sucesso', {
           description: 'Novo login sera necessario na proxima extracao.',
@@ -165,7 +106,7 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
       } else {
         toast.error('Erro ao limpar sessao', { description: data.error });
       }
-    } catch (error) {
+    } catch {
       toast.error('Erro ao limpar sessao');
     } finally {
       setIsClearing(false);
@@ -174,23 +115,18 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
 
   const handleTestSession = async () => {
     setIsTesting(true);
-    const usingWindows = forceWindowsBrowser || wslAutoMode;
-    toast.info(
-      usingWindows ? 'Abrindo Chrome/Edge do Windows...' : 'Abrindo browser para login...',
-      {
-        description: usingWindows
-          ? 'Uma janela do Chrome/Edge será aberta no Windows. Complete o login no Azure AD.'
-          : 'Complete o login no Azure AD na janela que abrir.',
-        duration: 10000,
-      }
-    );
+    const usesXvfb = browserEnv?.is_wsl && !browserEnv?.has_display;
+    toast.info('Abrindo Chromium para login...', {
+      description: usesXvfb
+        ? 'WSL sem display gráfico: Xvfb será usado. Para ver o browser instale WSLg (Windows 11) ou use x11vnc.'
+        : 'Complete o login no Azure AD na janela que abrir.',
+      duration: 12000,
+    });
 
     try {
       const response = await fetch('/api/v1/servicenow/session/test', {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem("auth_token")}`,
-        },
+        headers: { 'Authorization': `Bearer ${localStorage.getItem("auth_token")}` },
       });
       const data = await response.json();
 
@@ -203,10 +139,9 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
           description: 'Verifique se completou o login corretamente.',
         });
       }
-
       fetchSessionStatus();
       onSaved?.();
-    } catch (error) {
+    } catch {
       toast.error('Erro ao testar sessao');
     } finally {
       setIsTesting(false);
@@ -215,23 +150,15 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
 
   const getStatusIcon = () => {
     if (!sessionStatus) return <Info className="h-4 w-4" />;
-
     switch (sessionStatus.status) {
-      case 'valid':
-        return <CheckCircle2 className="h-4 w-4 text-green-600" />;
-      case 'expired':
-        return <AlertTriangle className="h-4 w-4 text-yellow-600" />;
-      case 'not_found':
-      case 'empty':
-        return <XCircle className="h-4 w-4 text-muted-foreground" />;
-      default:
-        return <XCircle className="h-4 w-4 text-red-600" />;
+      case 'valid': return <CheckCircle2 className="h-4 w-4 text-green-600" />;
+      case 'expired': return <AlertTriangle className="h-4 w-4 text-yellow-600" />;
+      default: return <XCircle className="h-4 w-4 text-muted-foreground" />;
     }
   };
 
   const getStatusBadge = () => {
     if (!sessionStatus) return null;
-
     switch (sessionStatus.status) {
       case 'valid':
         return <Badge className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100">Valida</Badge>;
@@ -248,16 +175,13 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
 
   const getStatusAlert = () => {
     if (!sessionStatus) return null;
-
     switch (sessionStatus.status) {
       case 'valid':
         return (
           <Alert className="border-green-200 bg-green-50 dark:bg-green-950 dark:border-green-800">
             <CheckCircle2 className="h-4 w-4 text-green-600" />
             <AlertTitle className="text-green-900 dark:text-green-100">Sessao Valida</AlertTitle>
-            <AlertDescription className="text-green-800 dark:text-green-200">
-              {sessionStatus.message}
-            </AlertDescription>
+            <AlertDescription className="text-green-800 dark:text-green-200">{sessionStatus.message}</AlertDescription>
           </Alert>
         );
       case 'expired':
@@ -265,27 +189,14 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
           <Alert className="border-yellow-200 bg-yellow-50 dark:bg-yellow-950 dark:border-yellow-800">
             <AlertTriangle className="h-4 w-4 text-yellow-600" />
             <AlertTitle className="text-yellow-900 dark:text-yellow-100">Sessao Expirada</AlertTitle>
-            <AlertDescription className="text-yellow-800 dark:text-yellow-200">
-              {sessionStatus.message}
-            </AlertDescription>
-          </Alert>
-        );
-      case 'not_found':
-      case 'empty':
-        return (
-          <Alert>
-            <Info className="h-4 w-4" />
-            <AlertTitle>Sessao Nao Encontrada</AlertTitle>
-            <AlertDescription>
-              {sessionStatus.message}
-            </AlertDescription>
+            <AlertDescription className="text-yellow-800 dark:text-yellow-200">{sessionStatus.message}</AlertDescription>
           </Alert>
         );
       default:
         return (
-          <Alert variant="destructive">
-            <XCircle className="h-4 w-4" />
-            <AlertTitle>Erro</AlertTitle>
+          <Alert>
+            <Info className="h-4 w-4" />
+            <AlertTitle>Sessao Nao Encontrada</AlertTitle>
             <AlertDescription>{sessionStatus.message}</AlertDescription>
           </Alert>
         );
@@ -293,15 +204,15 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
   };
 
   const formatHours = (hours: number) => {
-    if (hours < 1) {
-      return `${Math.round(hours * 60)} minutos`;
-    }
+    if (hours < 1) return `${Math.round(hours * 60)} minutos`;
     return `${hours.toFixed(1)} horas`;
   };
 
+  const showXvfbWarning = browserEnv?.is_wsl && !browserEnv?.has_display;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg" onInteractOutside={(e) => e.preventDefault()}>
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto" onInteractOutside={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Globe className="h-5 w-5" />
@@ -313,7 +224,6 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
         </DialogHeader>
 
         <div className="space-y-4 py-2">
-          {/* Status da Sessao */}
           {isLoading ? (
             <Alert>
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -323,7 +233,6 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
             getStatusAlert()
           )}
 
-          {/* Detalhes da Sessao */}
           {sessionStatus && !isLoading && (
             <div className="space-y-3 text-sm">
               <Separator />
@@ -349,43 +258,15 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
                   <FolderOpen className="h-4 w-4" />
                   <span>Diretorio:</span>
                 </div>
-                <div className="flex items-center gap-1">
-                  {editingDir ? (
-                    <>
-                      <input
-                        className="font-mono text-xs border border-border rounded px-1 py-0.5 bg-background w-48 focus:outline-none focus:ring-1 focus:ring-ring"
-                        value={editDirValue}
-                        onChange={e => setEditDirValue(e.target.value)}
-                        placeholder={effectiveSessionDir}
-                        autoFocus
-                      />
-                      <button onClick={handleSaveSessionDir} disabled={savingBrowserConfig} className="text-green-600 hover:text-green-500">
-                        <Check className="h-3.5 w-3.5" />
-                      </button>
-                      <button onClick={() => setEditingDir(false)} className="text-muted-foreground hover:text-foreground">
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <span className="font-mono text-xs truncate max-w-[180px]" title={effectiveSessionDir || sessionStatus.session_dir}>
-                        {effectiveSessionDir || sessionStatus.session_dir}
-                      </span>
-                      <button
-                        onClick={() => { setEditDirValue(customSessionDir || effectiveSessionDir); setEditingDir(true); }}
-                        className="text-muted-foreground hover:text-foreground"
-                        title="Personalizar diretório"
-                      >
-                        <Pencil className="h-3 w-3" />
-                      </button>
-                    </>
-                  )}
+                <div>
+                  <span className="font-mono text-xs truncate max-w-[200px] block" title={sessionStatus.session_dir}>
+                    {sessionStatus.session_dir}
+                  </span>
                 </div>
               </div>
 
               <Separator />
 
-              {/* Informacoes sobre o Azure AD */}
               <Alert>
                 <Info className="h-4 w-4" />
                 <AlertDescription className="text-xs">
@@ -396,39 +277,38 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
             </div>
           )}
 
-          {/* Toggle: Usar Chrome/Edge do Windows */}
-          <Separator />
-          <div className="flex items-center justify-between py-1">
-            <div className="space-y-0.5">
-              <p className="text-sm font-medium">Usar Chrome/Edge do Windows</p>
-              <p className="text-xs text-muted-foreground">
-                {wslAutoMode
-                  ? 'Ativo automaticamente (WSL sem display gráfico)'
-                  : forceWindowsBrowser
-                  ? 'Ativo — Chrome/Edge Windows abre para autenticar (CDP porta 9223)'
-                  : 'Usar o Chrome/Edge instalado no Windows em vez do Chromium local'}
-              </p>
-            </div>
-            <button
-              onClick={() => handleToggleWindowsBrowser(!forceWindowsBrowser)}
-              disabled={savingBrowserConfig || wslAutoMode}
-              title={wslAutoMode ? 'Ativado automaticamente no WSL sem display' : undefined}
-              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
-                forceWindowsBrowser || wslAutoMode ? 'bg-blue-600' : 'bg-input'
-              }`}
-              role="switch"
-              aria-checked={forceWindowsBrowser || wslAutoMode}
-            >
-              <span
-                className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform ${
-                  forceWindowsBrowser || wslAutoMode ? 'translate-x-4' : 'translate-x-0'
-                }`}
-              />
-            </button>
-          </div>
+          {/* Aviso WSL sem display */}
+          {showXvfbWarning && (
+            <>
+              <Separator />
+              <Alert className={browserEnv.xvfb_installed
+                ? 'border-blue-200 bg-blue-50 dark:bg-blue-950 dark:border-blue-800'
+                : 'border-yellow-200 bg-yellow-50 dark:bg-yellow-950 dark:border-yellow-800'
+              }>
+                <Monitor className="h-4 w-4" />
+                <AlertTitle className="text-sm">
+                  {browserEnv.xvfb_installed ? 'WSL — Display Virtual (Xvfb)' : 'WSL — Sem Display Grafico'}
+                </AlertTitle>
+                <AlertDescription className="text-xs space-y-1">
+                  {browserEnv.xvfb_installed ? (
+                    <>
+                      <p>O Chromium abrira no display virtual Xvfb <code className="bg-muted px-1 rounded">:99</code>. O browser e invisivel por padrao.</p>
+                      <p>Para visualizar: instale <strong>WSLg</strong> (Windows 11) ou use <code className="bg-muted px-1 rounded">x11vnc -display :99 -forever</code>.</p>
+                      <p>O SSO corporativo pode autenticar silenciosamente sem interacao visual.</p>
+                    </>
+                  ) : (
+                    <>
+                      <p>Xvfb nao instalado. Instale para habilitar o browser no WSL:</p>
+                      <code className="block bg-muted px-2 py-1 rounded mt-1">{browserEnv.xvfb_hint}</code>
+                    </>
+                  )}
+                </AlertDescription>
+              </Alert>
+            </>
+          )}
         </div>
 
-        <DialogFooter className="flex justify-between sm:justify-between">
+        <DialogFooter className="flex flex-wrap justify-between gap-y-2 sm:justify-between">
           <div className="flex gap-2">
             {sessionStatus?.exists && (
               <Button
@@ -438,11 +318,7 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
                 disabled={isClearing || isTesting}
                 className="text-destructive hover:text-destructive"
               >
-                {isClearing ? (
-                  <Loader2 className="h-4 w-4 animate-spin mr-1" />
-                ) : (
-                  <Trash2 className="h-4 w-4 mr-1" />
-                )}
+                {isClearing ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Trash2 className="h-4 w-4 mr-1" />}
                 Limpar
               </Button>
             )}
