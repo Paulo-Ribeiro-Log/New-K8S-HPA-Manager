@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -15,51 +16,33 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// findSystemChrome localiza o Chrome/Chromium instalado no sistema operacional.
-// Prefere versões mais novas para compatibilidade com Teams.
-func findSystemChrome() string {
-	candidates := []string{
-		"/usr/bin/google-chrome-stable",
-		"/usr/bin/google-chrome",
-		"/usr/bin/chromium-browser",
-		"/usr/bin/chromium",
-		"/snap/bin/chromium",
-		// macOS
-		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-		"/Applications/Chromium.app/Contents/MacOS/Chromium",
-	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	// Fallback: buscar no PATH
-	for _, name := range []string{"google-chrome-stable", "google-chrome", "chromium-browser", "chromium"} {
-		if p, err := exec.LookPath(name); err == nil {
-			return p
-		}
-	}
-	return ""
-}
-
 // CapturedRequest representa uma requisição/resposta capturada do Teams.
 type CapturedRequest struct {
 	URL        string            `json:"url"`
 	Method     string            `json:"method"`
 	ReqHeaders map[string]string `json:"req_headers,omitempty"`
-	Status     int               `json:"status"`
-	Body       string            `json:"body,omitempty"` // JSON truncado a 8KB
+	Status     int               `json:"status,omitempty"`
+	Body       string            `json:"body,omitempty"`
 	CapturedAt time.Time         `json:"captured_at"`
+}
+
+// CapturedWS representa um frame WebSocket capturado.
+type CapturedWS struct {
+	URL        string    `json:"url"`
+	Direction  string    `json:"direction"` // "recv" | "send"
+	Payload    string    `json:"payload"`
+	CapturedAt time.Time `json:"captured_at"`
 }
 
 // DiscoveryResult é o resultado completo da sessão de descoberta.
 type DiscoveryResult struct {
-	CapturedAt   time.Time          `json:"captured_at"`
-	AuthRequests []CapturedRequest  `json:"auth_requests"`   // authsvc — contém X-Skypetoken
-	ChatRequests []CapturedRequest  `json:"chat_requests"`   // chatsvcagg — conversas e mensagens
-	OtherAPIs    []CapturedRequest  `json:"other_apis"`      // outras APIs internas do Teams
-	SkypeToken   string             `json:"skype_token"`     // extraído automaticamente se encontrado
-	Conversations []ConversationHint `json:"conversations"`  // lista de chats encontrados
+	CapturedAt    time.Time          `json:"captured_at"`
+	AuthRequests  []CapturedRequest  `json:"auth_requests"`
+	ChatRequests  []CapturedRequest  `json:"chat_requests"`
+	OtherAPIs     []CapturedRequest  `json:"other_apis"`
+	WebSockets    []CapturedWS       `json:"websockets"`
+	SkypeToken    string             `json:"skype_token"`
+	Conversations []ConversationHint `json:"conversations"`
 }
 
 // ConversationHint é uma conversa identificada na descoberta.
@@ -69,56 +52,49 @@ type ConversationHint struct {
 	ThreadType  string `json:"thread_type"`
 }
 
-// domínios de interesse para interceptação
-var teamsInterestDomains = []string{
-	"authsvc.teams.microsoft.com",
-	"chatsvcagg.teams.microsoft.com",
-	"teams.microsoft.com/api",
-	"teams.microsoft.com/v1",
-	"ng.msg.teams.microsoft.com",
-	"api.spaces.skype.com",
-}
-
-func isInteresting(url string) bool {
-	for _, d := range teamsInterestDomains {
-		if strings.Contains(url, d) {
-			return true
-		}
-	}
-	return false
-}
-
 func isAuthURL(url string) bool {
-	return strings.Contains(url, "authsvc") || strings.Contains(url, "/authz")
+	return strings.Contains(url, "authsvc") ||
+		strings.Contains(url, "/authz") ||
+		strings.Contains(url, "microsoftonline.com")
 }
 
 func isChatURL(url string) bool {
 	return strings.Contains(url, "chatsvcagg") ||
 		strings.Contains(url, "/conversations") ||
 		strings.Contains(url, "/messages") ||
-		strings.Contains(url, "api.spaces.skype.com")
+		strings.Contains(url, "api.spaces.skype") ||
+		strings.Contains(url, "ng.msg.teams")
 }
 
-// RunDiscovery lança o Chromium com a sessão existente, navega para o Teams,
-// intercepta todas as chamadas de rede relevantes e salva em outputDir.
+func isTeamsRelevant(url string) bool {
+	keywords := []string{
+		"teams.microsoft.com",
+		"api.spaces.skype.com",
+		"chatsvcagg",
+		"authsvc",
+		"ng.msg.teams",
+		"microsoftonline.com",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(url, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// RunDiscovery lança o Chrome do sistema, navega para o Teams,
+// intercepta TODA atividade de rede via CDP Network events e salva em outputDir.
 func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout time.Duration) (*DiscoveryResult, error) {
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return nil, fmt.Errorf("erro ao criar diretório de saída: %v", err)
 	}
 
-	logger.Info().
-		Str("session_dir", sessionDir).
-		Str("output_dir", outputDir).
-		Dur("timeout", timeout).
-		Msg("[Teams] Iniciando descoberta de APIs do Teams...")
-
-	// Preferir Chrome do sistema (mais atualizado) em vez do Chromium do Rod.
-	// Teams exige versões recentes e rejeita browsers muito antigos.
 	chromeBin := findSystemChrome()
 	if chromeBin != "" {
 		logger.Info().Str("bin", chromeBin).Msg("[Teams] Usando Chrome do sistema")
 	} else {
-		logger.Warn().Msg("[Teams] Chrome do sistema não encontrado — usando Chromium do Rod (pode falhar no Teams)")
+		logger.Warn().Msg("[Teams] Chrome do sistema não encontrado — usando Chromium do Rod")
 	}
 
 	l := launcher.New().
@@ -135,7 +111,7 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 
 	ctrlURL, err := l.Launch()
 	if err != nil {
-		return nil, fmt.Errorf("erro ao iniciar Chromium: %v", err)
+		return nil, fmt.Errorf("erro ao iniciar Chrome: %v", err)
 	}
 
 	browser := rod.New().ControlURL(ctrlURL)
@@ -150,242 +126,255 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	}
 
 	result := &DiscoveryResult{CapturedAt: time.Now()}
-	var captured []CapturedRequest
+	var mu sync.Mutex
 
-	// Interceptar todas as requisições relevantes
-	router := browser.HijackRequests()
-	router.MustAdd("*teams.microsoft.com*", func(ctx *rod.Hijack) {
-		url := ctx.Request.URL().String()
-		if !isInteresting(url) {
-			ctx.ContinueRequest(&proto.FetchContinueRequest{})
+	// Mapa requestId → URL para correlacionar request com response
+	pendingReqs := map[proto.NetworkRequestID]CapturedRequest{}
+
+	// ── Habilitar Network domain via CDP ──────────────────────────────────
+	netEnable := proto.NetworkEnable{}
+	if err := netEnable.Call(page); err != nil {
+		return nil, fmt.Errorf("erro ao habilitar CDP Network: %v", err)
+	}
+
+	// ── Capturar requests ─────────────────────────────────────────────────
+	go page.EachEvent(func(e *proto.NetworkRequestWillBeSent) {
+		if !isTeamsRelevant(e.Request.URL) {
 			return
 		}
-
-		// Copiar headers da requisição
 		reqHeaders := map[string]string{}
-		for k, v := range ctx.Request.Headers() {
+		for k, v := range e.Request.Headers {
 			lk := strings.ToLower(k)
-			if lk == "authorization" || lk == "x-skypetoken" || lk == "client-request-id" {
+			if lk == "authorization" || lk == "x-skypetoken" || lk == "client-request-id" || lk == "x-ms-client-request-id" {
 				reqHeaders[k] = fmt.Sprintf("%v", v)
 			}
 		}
-
-		ctx.MustLoadResponse()
-
-		body := ctx.Response.Body()
-		if len(body) > 8192 {
-			body = body[:8192] + "...[truncado]"
-		}
-
-		cap := CapturedRequest{
-			URL:        url,
-			Method:     ctx.Request.Method(),
+		mu.Lock()
+		pendingReqs[e.RequestID] = CapturedRequest{
+			URL:        e.Request.URL,
+			Method:     e.Request.Method,
 			ReqHeaders: reqHeaders,
-			Status:     ctx.Response.Payload().ResponseCode,
-			Body:       body,
 			CapturedAt: time.Now(),
 		}
-		captured = append(captured, cap)
+		mu.Unlock()
+	})()
+
+	// ── Capturar responses e body ─────────────────────────────────────────
+	go page.EachEvent(func(e *proto.NetworkResponseReceived) {
+		mu.Lock()
+		req, ok := pendingReqs[e.RequestID]
+		if !ok {
+			mu.Unlock()
+			return
+		}
+		req.Status = e.Response.Status
+		delete(pendingReqs, e.RequestID)
+		mu.Unlock()
+
+		// Buscar body da resposta
+		getBody := proto.NetworkGetResponseBody{RequestID: e.RequestID}
+		bodyResp, err := getBody.Call(page)
+		body := ""
+		if err == nil && bodyResp != nil {
+			body = bodyResp.Body
+			if len(body) > 8192 {
+				body = body[:8192] + "...[truncado]"
+			}
+		}
+		req.Body = body
 
 		// Extrair X-Skypetoken do body de authsvc
-		if isAuthURL(url) && result.SkypeToken == "" {
+		mu.Lock()
+		if result.SkypeToken == "" && isAuthURL(req.URL) && body != "" {
 			var authResp map[string]interface{}
 			if json.Unmarshal([]byte(body), &authResp) == nil {
 				if tokens, ok := authResp["tokens"].(map[string]interface{}); ok {
 					if st, ok := tokens["skypeToken"].(string); ok && st != "" {
 						result.SkypeToken = st
-						logger.Info().Str("token_prefix", st[:min(20, len(st))]+"...").Msg("[Teams] X-Skypetoken capturado!")
+						logger.Info().Str("prefix", st[:min(20, len(st))]+"...").Msg("[Teams] ✅ X-Skypetoken capturado!")
 					}
 				}
-				// Formato alternativo: campo direto "skypeToken"
 				if st, ok := authResp["skypeToken"].(string); ok && st != "" {
 					result.SkypeToken = st
-					logger.Info().Msg("[Teams] X-Skypetoken capturado (formato alternativo)!")
+					logger.Info().Msg("[Teams] ✅ X-Skypetoken capturado (formato alt)!")
 				}
 			}
 		}
+		mu.Unlock()
+
+		mu.Lock()
+		switch {
+		case isAuthURL(req.URL):
+			result.AuthRequests = append(result.AuthRequests, req)
+		case isChatURL(req.URL):
+			result.ChatRequests = append(result.ChatRequests, req)
+			logger.Info().Str("url", req.URL).Int("status", req.Status).Msg("[Teams] 💬 Chat API capturada!")
+		default:
+			result.OtherAPIs = append(result.OtherAPIs, req)
+		}
+		total := len(result.AuthRequests) + len(result.ChatRequests) + len(result.OtherAPIs)
+		mu.Unlock()
 
 		logger.Debug().
-			Str("url", url).
-			Int("status", cap.Status).
-			Int("body_len", len(body)).
-			Msg("[Teams] Requisição capturada")
-	})
-	go router.Run()
+			Str("url", req.URL).
+			Int("status", req.Status).
+			Int("total", total).
+			Msg("[Teams] req capturada")
+	})()
 
-	// Também interceptar api.spaces.skype.com (outro domínio do Teams)
-	router2 := browser.HijackRequests()
-	router2.MustAdd("*api.spaces.skype.com*", func(ctx *rod.Hijack) {
-		ctx.MustLoadResponse()
-		body := ctx.Response.Body()
-		if len(body) > 8192 {
-			body = body[:8192] + "...[truncado]"
+	// ── Capturar WebSockets ───────────────────────────────────────────────
+	go page.EachEvent(func(e *proto.NetworkWebSocketCreated) {
+		if isTeamsRelevant(e.URL) {
+			logger.Info().Str("url", e.URL).Msg("[Teams] 🔌 WebSocket criado")
 		}
-		cap := CapturedRequest{
-			URL:        ctx.Request.URL().String(),
-			Method:     ctx.Request.Method(),
-			Status:     ctx.Response.Payload().ResponseCode,
-			Body:       body,
-			CapturedAt: time.Now(),
-		}
-		captured = append(captured, cap)
-	})
-	go router2.Run()
+	})()
 
-	// Navegar para Teams — usar URL com parâmetro para evitar detecção
+	go page.EachEvent(func(e *proto.NetworkWebSocketFrameReceived) {
+		payload := e.Response.PayloadData
+		if len(payload) > 2048 {
+			payload = payload[:2048] + "...[truncado]"
+		}
+		if strings.Contains(payload, "message") || strings.Contains(payload, "conversation") {
+			mu.Lock()
+			result.WebSockets = append(result.WebSockets, CapturedWS{
+				Direction:  "recv",
+				Payload:    payload,
+				CapturedAt: time.Now(),
+			})
+			mu.Unlock()
+			logger.Info().Int("len", len(payload)).Msg("[Teams] 🔌 WS frame com mensagem capturado")
+		}
+	})()
+
+	// ── Navegar para Teams ────────────────────────────────────────────────
 	logger.Info().Msg("[Teams] Navegando para teams.microsoft.com...")
 	if err := page.Navigate("https://teams.microsoft.com/_#/"); err != nil {
-		return nil, fmt.Errorf("erro ao navegar para Teams: %v", err)
+		return nil, fmt.Errorf("erro ao navegar: %v", err)
 	}
-	// Remover flag de automação via JavaScript antes do Teams carregar
 	page.MustEval(`() => {
 		Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 	}`)
 
-	// Aguardar Teams carregar completamente
-	logger.Info().Msgf("[Teams] Aguardando Teams carregar (até %v)...", timeout)
-	logger.Info().Msg("[Teams] =============================================")
-	logger.Info().Msg("[Teams] Navegue até o chat do MR.ViaBot no Teams")
-	logger.Info().Msg("[Teams] As requisições serão capturadas automaticamente")
-	logger.Info().Msg("[Teams] =============================================")
+	logger.Info().Msgf("[Teams] Aguardando (até %v) — navegue até o chat do MR.ViaBot...", timeout)
+	logger.Info().Msg("[Teams] ═══════════════════════════════════════════════")
+	logger.Info().Msg("[Teams]  Abra o chat do MR.ViaBot e role as mensagens")
+	logger.Info().Msg("[Teams] ═══════════════════════════════════════════════")
 
+	// Aguardar com log de progresso a cada 15s
 	deadline := time.Now().Add(timeout)
-	lastCount := 0
+	lastTotal := 0
 	for time.Now().Before(deadline) {
-		time.Sleep(3 * time.Second)
-		if len(captured) != lastCount {
+		time.Sleep(15 * time.Second)
+		mu.Lock()
+		total := len(result.AuthRequests) + len(result.ChatRequests) + len(result.OtherAPIs)
+		ws := len(result.WebSockets)
+		token := result.SkypeToken != ""
+		mu.Unlock()
+
+		if total != lastTotal || ws > 0 {
 			logger.Info().
-				Int("total_capturadas", len(captured)).
-				Str("tempo_restante", time.Until(deadline).Round(time.Second).String()).
-				Msg("[Teams] Progresso...")
-			lastCount = len(captured)
+				Int("auth", len(result.AuthRequests)).
+				Int("chat", len(result.ChatRequests)).
+				Int("ws_frames", ws).
+				Bool("skype_token", token).
+				Str("restante", time.Until(deadline).Round(time.Second).String()).
+				Msg("[Teams] Progresso")
+			lastTotal = total
 		}
 	}
 
-	// Tentar extrair X-Skypetoken do localStorage se não capturado via intercept
+	// Tentar extrair token do localStorage se não encontrado via CDP
 	if result.SkypeToken == "" {
-		logger.Info().Msg("[Teams] Tentando extrair token do localStorage...")
+		logger.Info().Msg("[Teams] Tentando localStorage para X-Skypetoken...")
 		val, err := page.Eval(`() => {
-			for (let key of Object.keys(localStorage)) {
-				try {
-					const val = JSON.parse(localStorage[key]);
-					if (val && val.secret) return val.secret;
-					if (val && val.skypeToken) return val.skypeToken;
-				} catch {}
-			}
-			// Tentar sessionStorage também
-			for (let key of Object.keys(sessionStorage)) {
-				try {
-					const val = JSON.parse(sessionStorage[key]);
-					if (val && val.secret) return val.secret;
-					if (val && val.skypeToken) return val.skypeToken;
-				} catch {}
+			const stores = [localStorage, sessionStorage];
+			for (const store of stores) {
+				for (let key of Object.keys(store)) {
+					try {
+						const val = JSON.parse(store[key]);
+						if (val && val.secret) return val.secret;
+						if (val && val.skypeToken) return val.skypeToken;
+						if (val && val.tokens && val.tokens.skypeToken) return val.tokens.skypeToken;
+					} catch {}
+				}
 			}
 			return null;
 		}`)
 		if err == nil && !val.Value.Nil() && val.Value.String() != "" {
+			mu.Lock()
 			result.SkypeToken = val.Value.String()
-			logger.Info().Msg("[Teams] X-Skypetoken extraído do localStorage!")
+			mu.Unlock()
+			logger.Info().Msg("[Teams] ✅ X-Skypetoken extraído do localStorage!")
 		}
 	}
 
-	// Tentar listar conversas via JavaScript (Teams pode expor via window.__teamsAppState ou similar)
-	logger.Info().Msg("[Teams] Tentando extrair lista de conversas via JavaScript...")
-	convResult, err := page.Eval(`() => {
-		try {
-			// Tentar acessar React fiber (Teams é React)
-			const el = document.querySelector('[data-tid="chat-list"]') ||
-			           document.querySelector('[data-app-section-id="chatList"]');
-			if (!el) return null;
-			const items = el.querySelectorAll('[data-tid="chat-list-item"], [role="listitem"]');
-			const convs = [];
-			items.forEach(item => {
-				const nameEl = item.querySelector('[data-tid="chat-item-title"], .css-175oi2r span');
-				if (nameEl) convs.push({ name: nameEl.textContent.trim() });
-			});
-			return JSON.stringify(convs);
-		} catch(e) { return null; }
-	}`)
-	if err == nil && !convResult.Value.Nil() && convResult.Value.String() != "" {
-		var convs []map[string]string
-		if json.Unmarshal([]byte(convResult.Value.String()), &convs) == nil {
-			for _, c := range convs {
-				result.Conversations = append(result.Conversations, ConversationHint{
-					DisplayName: c["name"],
-				})
-			}
-			logger.Info().Int("count", len(result.Conversations)).Msg("[Teams] Conversas encontradas via DOM")
-		}
-	}
+	// Salvar resultados
+	timestamp := time.Now().Format("2006-01-02-150405")
+	saveJSON(filepath.Join(outputDir, "auth-requests.json"), result.AuthRequests, logger)
+	saveJSON(filepath.Join(outputDir, "chat-requests.json"), result.ChatRequests, logger)
+	saveJSON(filepath.Join(outputDir, "websocket-frames.json"), result.WebSockets, logger)
+	saveJSON(filepath.Join(outputDir, "other-apis.json"), result.OtherAPIs, logger)
 
-	// Classificar as requisições capturadas
-	for _, cap := range captured {
-		if isAuthURL(cap.URL) {
-			result.AuthRequests = append(result.AuthRequests, cap)
-		} else if isChatURL(cap.URL) {
-			result.ChatRequests = append(result.ChatRequests, cap)
-		} else {
-			result.OtherAPIs = append(result.OtherAPIs, cap)
-		}
-	}
-
-	// Salvar resultado completo
-	resultPath := filepath.Join(outputDir, fmt.Sprintf("discovery-%s.json", time.Now().Format("2006-01-02-150405")))
+	fullPath := filepath.Join(outputDir, fmt.Sprintf("discovery-%s.json", timestamp))
 	data, _ := json.MarshalIndent(result, "", "  ")
-	if err := os.WriteFile(resultPath, data, 0600); err != nil {
-		logger.Error().Err(err).Msg("[Teams] Erro ao salvar resultado")
-	} else {
-		logger.Info().Str("file", resultPath).Msg("[Teams] Resultado salvo")
-	}
+	os.WriteFile(fullPath, data, 0600) //nolint:errcheck
 
-	// Salvar arquivos separados por categoria para facilitar análise
-	saveCategory(filepath.Join(outputDir, "auth-requests.json"), result.AuthRequests, logger)
-	saveCategory(filepath.Join(outputDir, "chat-requests.json"), result.ChatRequests, logger)
-	saveCategory(filepath.Join(outputDir, "other-apis.json"), result.OtherAPIs, logger)
-
-	// Relatório no terminal
-	printSummary(result, resultPath, logger)
-
+	printSummary(result, outputDir, logger)
 	return result, nil
 }
 
-func saveCategory(path string, items []CapturedRequest, logger *zerolog.Logger) {
-	if len(items) == 0 {
+func saveJSON(path string, v interface{}, logger *zerolog.Logger) {
+	data, _ := json.MarshalIndent(v, "", "  ")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		logger.Error().Err(err).Str("file", path).Msg("[Teams] Erro ao salvar")
 		return
 	}
-	data, _ := json.MarshalIndent(items, "", "  ")
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		logger.Error().Err(err).Str("file", path).Msg("[Teams] Erro ao salvar categoria")
-	}
+	logger.Info().Str("file", path).Msg("[Teams] Salvo")
 }
 
-func printSummary(result *DiscoveryResult, resultPath string, logger *zerolog.Logger) {
-	logger.Info().Msg("[Teams] ============ RESUMO DA DESCOBERTA ============")
-	logger.Info().Msgf("[Teams] Auth requests capturadas : %d", len(result.AuthRequests))
-	logger.Info().Msgf("[Teams] Chat requests capturadas : %d", len(result.ChatRequests))
-	logger.Info().Msgf("[Teams] Outras APIs capturadas   : %d", len(result.OtherAPIs))
-
+func printSummary(result *DiscoveryResult, outputDir string, logger *zerolog.Logger) {
+	logger.Info().Msg("[Teams] ════════════════ RESUMO ════════════════")
+	logger.Info().Msgf("[Teams] Auth requests : %d", len(result.AuthRequests))
+	logger.Info().Msgf("[Teams] Chat requests : %d", len(result.ChatRequests))
+	logger.Info().Msgf("[Teams] WS frames     : %d", len(result.WebSockets))
 	if result.SkypeToken != "" {
-		logger.Info().Msgf("[Teams] X-Skypetoken             : %s...", result.SkypeToken[:min(30, len(result.SkypeToken))])
+		logger.Info().Msgf("[Teams] SkypeToken    : %s...", result.SkypeToken[:min(30, len(result.SkypeToken))])
 	} else {
-		logger.Warn().Msg("[Teams] X-Skypetoken             : NÃO ENCONTRADO")
-		logger.Warn().Msg("[Teams]   → Tente navegar para o chat do MR.ViaBot durante a sessão")
+		logger.Warn().Msg("[Teams] SkypeToken    : NÃO ENCONTRADO — inspecione auth-requests.json")
 	}
+	logger.Info().Msg("[Teams] ════════════════ PRÓXIMOS PASSOS ══════")
+	logger.Info().Msgf("[Teams] 1. Abrir %s/auth-requests.json", outputDir)
+	logger.Info().Msg("[Teams]    → procurar campo skypeToken ou tokens.skypeToken")
+	logger.Info().Msgf("[Teams] 2. Abrir %s/chat-requests.json", outputDir)
+	logger.Info().Msg("[Teams]    → identificar URL de listagem de conversas")
+	logger.Info().Msg("[Teams]    → identificar threadId do MR.ViaBot")
+	logger.Info().Msgf("[Teams] 3. Abrir %s/websocket-frames.json", outputDir)
+	logger.Info().Msg("[Teams]    → inspecionar formato das mensagens em tempo real")
+	logger.Info().Msg("[Teams] ═════════════════════════════════════════")
+}
 
-	if len(result.Conversations) > 0 {
-		logger.Info().Msg("[Teams] Conversas encontradas:")
-		for _, c := range result.Conversations {
-			logger.Info().Msgf("[Teams]   - %s (id: %s)", c.DisplayName, c.ID)
+// findSystemChrome localiza o Chrome/Chromium instalado no sistema.
+func findSystemChrome() string {
+	candidates := []string{
+		"/usr/bin/google-chrome-stable",
+		"/usr/bin/google-chrome",
+		"/usr/bin/chromium-browser",
+		"/usr/bin/chromium",
+		"/snap/bin/chromium",
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/Applications/Chromium.app/Contents/MacOS/Chromium",
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
 		}
 	}
-
-	logger.Info().Msgf("[Teams] Arquivo completo: %s", resultPath)
-	logger.Info().Msg("[Teams] =================================================")
-	logger.Info().Msg("[Teams] Próximos passos:")
-	logger.Info().Msg("[Teams]   1. Inspecionar auth-requests.json → encontrar campo com X-Skypetoken")
-	logger.Info().Msg("[Teams]   2. Inspecionar chat-requests.json → identificar URL de listagem de chats")
-	logger.Info().Msg("[Teams]   3. Localizar threadId do MR.ViaBot na lista de conversas")
-	logger.Info().Msg("[Teams]   4. Atualizar TEAMS-EXTRACTION-PLAN.md com URLs reais encontradas")
+	for _, name := range []string{"google-chrome-stable", "google-chrome", "chromium-browser", "chromium"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 func min(a, b int) int {
