@@ -128,132 +128,167 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	result := &DiscoveryResult{CapturedAt: time.Now()}
 	var mu sync.Mutex
 
-	// Mapa requestId → URL para correlacionar request com response
-	pendingReqs := map[proto.NetworkRequestID]CapturedRequest{}
+	// attachListeners habilita CDP Network e registra handlers em uma page.
+	// Chamado para cada aba que abre o Teams (v2 pode abrir em nova aba).
+	attachListeners := func(p *rod.Page, label string) {
+		pendingReqs := map[proto.NetworkRequestID]CapturedRequest{}
+		var pendingMu sync.Mutex
 
-	// ── Habilitar Network domain via CDP ──────────────────────────────────
-	netEnable := proto.NetworkEnable{}
-	if err := netEnable.Call(page); err != nil {
-		return nil, fmt.Errorf("erro ao habilitar CDP Network: %v", err)
-	}
-
-	// ── Capturar requests ─────────────────────────────────────────────────
-	go page.EachEvent(func(e *proto.NetworkRequestWillBeSent) {
-		if !isTeamsRelevant(e.Request.URL) {
+		netEnable := proto.NetworkEnable{}
+		if err := netEnable.Call(p); err != nil {
+			logger.Warn().Err(err).Str("page", label).Msg("[Teams] Falha ao habilitar Network CDP")
 			return
 		}
-		reqHeaders := map[string]string{}
-		for k, v := range e.Request.Headers {
-			lk := strings.ToLower(k)
-			if lk == "authorization" || lk == "x-skypetoken" || lk == "client-request-id" || lk == "x-ms-client-request-id" {
-				reqHeaders[k] = fmt.Sprintf("%v", v)
+		logger.Info().Str("page", label).Msg("[Teams] CDP Network habilitado")
+
+		go p.EachEvent(func(e *proto.NetworkRequestWillBeSent) {
+			if !isTeamsRelevant(e.Request.URL) {
+				return
 			}
-		}
-		mu.Lock()
-		pendingReqs[e.RequestID] = CapturedRequest{
-			URL:        e.Request.URL,
-			Method:     e.Request.Method,
-			ReqHeaders: reqHeaders,
-			CapturedAt: time.Now(),
-		}
-		mu.Unlock()
-	})()
-
-	// ── Capturar responses e body ─────────────────────────────────────────
-	go page.EachEvent(func(e *proto.NetworkResponseReceived) {
-		mu.Lock()
-		req, ok := pendingReqs[e.RequestID]
-		if !ok {
-			mu.Unlock()
-			return
-		}
-		req.Status = e.Response.Status
-		delete(pendingReqs, e.RequestID)
-		mu.Unlock()
-
-		// Buscar body da resposta
-		getBody := proto.NetworkGetResponseBody{RequestID: e.RequestID}
-		bodyResp, err := getBody.Call(page)
-		body := ""
-		if err == nil && bodyResp != nil {
-			body = bodyResp.Body
-			if len(body) > 8192 {
-				body = body[:8192] + "...[truncado]"
+			reqHeaders := map[string]string{}
+			for k, v := range e.Request.Headers {
+				lk := strings.ToLower(k)
+				if lk == "authorization" || lk == "x-skypetoken" || lk == "client-request-id" {
+					reqHeaders[k] = fmt.Sprintf("%v", v)
+				}
 			}
-		}
-		req.Body = body
+			pendingMu.Lock()
+			pendingReqs[e.RequestID] = CapturedRequest{
+				URL:        e.Request.URL,
+				Method:     e.Request.Method,
+				ReqHeaders: reqHeaders,
+				CapturedAt: time.Now(),
+			}
+			pendingMu.Unlock()
+		})()
 
-		// Extrair X-Skypetoken do body de authsvc
-		mu.Lock()
-		if result.SkypeToken == "" && isAuthURL(req.URL) && body != "" {
-			var authResp map[string]interface{}
-			if json.Unmarshal([]byte(body), &authResp) == nil {
-				if tokens, ok := authResp["tokens"].(map[string]interface{}); ok {
-					if st, ok := tokens["skypeToken"].(string); ok && st != "" {
+		go p.EachEvent(func(e *proto.NetworkResponseReceived) {
+			pendingMu.Lock()
+			req, ok := pendingReqs[e.RequestID]
+			if !ok {
+				pendingMu.Unlock()
+				return
+			}
+			req.Status = e.Response.Status
+			delete(pendingReqs, e.RequestID)
+			pendingMu.Unlock()
+
+			getBody := proto.NetworkGetResponseBody{RequestID: e.RequestID}
+			bodyResp, err := getBody.Call(p)
+			body := ""
+			if err == nil && bodyResp != nil {
+				body = bodyResp.Body
+				if len(body) > 8192 {
+					body = body[:8192] + "...[truncado]"
+				}
+			}
+			req.Body = body
+
+			mu.Lock()
+			if result.SkypeToken == "" && isAuthURL(req.URL) && body != "" {
+				var authResp map[string]interface{}
+				if json.Unmarshal([]byte(body), &authResp) == nil {
+					if tokens, ok := authResp["tokens"].(map[string]interface{}); ok {
+						if st, ok2 := tokens["skypeToken"].(string); ok2 && st != "" {
+							result.SkypeToken = st
+							logger.Info().Str("prefix", st[:min(20, len(st))]).Msg("[Teams] SkypeToken capturado!")
+						}
+					}
+					if st, ok2 := authResp["skypeToken"].(string); ok2 && st != "" {
 						result.SkypeToken = st
-						logger.Info().Str("prefix", st[:min(20, len(st))]+"...").Msg("[Teams] ✅ X-Skypetoken capturado!")
+						logger.Info().Msg("[Teams] SkypeToken capturado (alt)!")
 					}
 				}
-				if st, ok := authResp["skypeToken"].(string); ok && st != "" {
-					result.SkypeToken = st
-					logger.Info().Msg("[Teams] ✅ X-Skypetoken capturado (formato alt)!")
+			}
+			switch {
+			case isAuthURL(req.URL):
+				result.AuthRequests = append(result.AuthRequests, req)
+			case isChatURL(req.URL):
+				result.ChatRequests = append(result.ChatRequests, req)
+				logger.Info().Str("url", req.URL).Int("status", req.Status).Msg("[Teams] Chat API capturada!")
+			default:
+				result.OtherAPIs = append(result.OtherAPIs, req)
+			}
+			mu.Unlock()
+		})()
+
+		go p.EachEvent(func(e *proto.NetworkWebSocketCreated) {
+			if isTeamsRelevant(e.URL) {
+				logger.Info().Str("url", e.URL).Msg("[Teams] WebSocket criado")
+			}
+		})()
+
+		go p.EachEvent(func(e *proto.NetworkWebSocketFrameReceived) {
+			payload := e.Response.PayloadData
+			if len(payload) > 2048 {
+				payload = payload[:2048] + "...[truncado]"
+			}
+			if strings.Contains(payload, "message") || strings.Contains(payload, "conversation") {
+				mu.Lock()
+				result.WebSockets = append(result.WebSockets, CapturedWS{
+					Direction:  "recv",
+					Payload:    payload,
+					CapturedAt: time.Now(),
+				})
+				mu.Unlock()
+				logger.Info().Int("len", len(payload)).Msg("[Teams] WS frame capturado")
+			}
+		})()
+	}
+
+	// ── Navegar diretamente para Teams v2 ────────────────────────────────
+	logger.Info().Msg("[Teams] Navegando para teams.microsoft.com/v2/ ...")
+	if err := page.Navigate("https://teams.microsoft.com/v2/"); err != nil {
+		return nil, fmt.Errorf("erro ao navegar: %v", err)
+	}
+	attachListeners(page, "main")
+
+	// Monitorar novas abas — Teams v2 pode abrir em aba separada
+	seenPages := map[string]bool{}
+	go func() {
+		for {
+			time.Sleep(3 * time.Second)
+			pages, err := browser.Pages()
+			if err != nil {
+				return
+			}
+			for _, p := range pages {
+				info, err := p.Info()
+				if err != nil || seenPages[string(info.TargetID)] {
+					continue
+				}
+				if strings.Contains(info.URL, "teams.microsoft.com") {
+					seenPages[string(info.TargetID)] = true
+					logger.Info().Str("url", info.URL).Msg("[Teams] Nova aba detectada — anexando listeners")
+					attachListeners(p, info.URL)
 				}
 			}
 		}
-		mu.Unlock()
+	}()
 
-		mu.Lock()
-		switch {
-		case isAuthURL(req.URL):
-			result.AuthRequests = append(result.AuthRequests, req)
-		case isChatURL(req.URL):
-			result.ChatRequests = append(result.ChatRequests, req)
-			logger.Info().Str("url", req.URL).Int("status", req.Status).Msg("[Teams] 💬 Chat API capturada!")
-		default:
-			result.OtherAPIs = append(result.OtherAPIs, req)
+	// Aguardar Teams v2 carregar (pode levar até 2 minutos)
+	logger.Info().Msg("[Teams] Aguardando Teams v2 carregar (pode levar ~2min)...")
+	loadDeadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(loadDeadline) {
+		info, _ := page.Info()
+		if info != nil && strings.Contains(info.URL, "teams.microsoft.com") &&
+			!strings.Contains(info.URL, "error") && !strings.Contains(info.URL, "eoa") {
+			logger.Info().Str("url", info.URL).Msg("[Teams] Teams v2 carregado!")
+			break
 		}
-		total := len(result.AuthRequests) + len(result.ChatRequests) + len(result.OtherAPIs)
-		mu.Unlock()
-
-		logger.Debug().
-			Str("url", req.URL).
-			Int("status", req.Status).
-			Int("total", total).
-			Msg("[Teams] req capturada")
-	})()
-
-	// ── Capturar WebSockets ───────────────────────────────────────────────
-	go page.EachEvent(func(e *proto.NetworkWebSocketCreated) {
-		if isTeamsRelevant(e.URL) {
-			logger.Info().Str("url", e.URL).Msg("[Teams] 🔌 WebSocket criado")
+		// Verificar se Teams abriu em outra aba
+		pages, _ := browser.Pages()
+		for _, p := range pages {
+			pInfo, err := p.Info()
+			if err == nil && strings.Contains(pInfo.URL, "teams.microsoft.com/v2") {
+				page = p // usar esta aba como referência
+				logger.Info().Str("url", pInfo.URL).Msg("[Teams] Teams v2 encontrado em aba separada!")
+				goto teamsLoaded
+			}
 		}
-	})()
-
-	go page.EachEvent(func(e *proto.NetworkWebSocketFrameReceived) {
-		payload := e.Response.PayloadData
-		if len(payload) > 2048 {
-			payload = payload[:2048] + "...[truncado]"
-		}
-		if strings.Contains(payload, "message") || strings.Contains(payload, "conversation") {
-			mu.Lock()
-			result.WebSockets = append(result.WebSockets, CapturedWS{
-				Direction:  "recv",
-				Payload:    payload,
-				CapturedAt: time.Now(),
-			})
-			mu.Unlock()
-			logger.Info().Int("len", len(payload)).Msg("[Teams] 🔌 WS frame com mensagem capturado")
-		}
-	})()
-
-	// ── Navegar para Teams ────────────────────────────────────────────────
-	logger.Info().Msg("[Teams] Navegando para teams.microsoft.com...")
-	if err := page.Navigate("https://teams.microsoft.com/_#/"); err != nil {
-		return nil, fmt.Errorf("erro ao navegar: %v", err)
+		time.Sleep(5 * time.Second)
 	}
-	page.MustEval(`() => {
-		Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-	}`)
+teamsLoaded:
 
 	logger.Info().Msgf("[Teams] Aguardando (até %v) — navegue até o chat do MR.ViaBot...", timeout)
 	logger.Info().Msg("[Teams] ═══════════════════════════════════════════════")
