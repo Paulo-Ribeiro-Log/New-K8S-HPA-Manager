@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,6 +14,33 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog"
 )
+
+// findSystemChrome localiza o Chrome/Chromium instalado no sistema operacional.
+// Prefere versões mais novas para compatibilidade com Teams.
+func findSystemChrome() string {
+	candidates := []string{
+		"/usr/bin/google-chrome-stable",
+		"/usr/bin/google-chrome",
+		"/usr/bin/chromium-browser",
+		"/usr/bin/chromium",
+		"/snap/bin/chromium",
+		// macOS
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/Applications/Chromium.app/Contents/MacOS/Chromium",
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	// Fallback: buscar no PATH
+	for _, name := range []string{"google-chrome-stable", "google-chrome", "chromium-browser", "chromium"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	return ""
+}
 
 // CapturedRequest representa uma requisição/resposta capturada do Teams.
 type CapturedRequest struct {
@@ -84,12 +112,26 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 		Dur("timeout", timeout).
 		Msg("[Teams] Iniciando descoberta de APIs do Teams...")
 
+	// Preferir Chrome do sistema (mais atualizado) em vez do Chromium do Rod.
+	// Teams exige versões recentes e rejeita browsers muito antigos.
+	chromeBin := findSystemChrome()
+	if chromeBin != "" {
+		logger.Info().Str("bin", chromeBin).Msg("[Teams] Usando Chrome do sistema")
+	} else {
+		logger.Warn().Msg("[Teams] Chrome do sistema não encontrado — usando Chromium do Rod (pode falhar no Teams)")
+	}
+
 	l := launcher.New().
 		UserDataDir(sessionDir).
-		Headless(false). // visível para debug — Teams pode detectar headless
+		Headless(false).
+		Delete("enable-automation").
 		Set("disable-blink-features", "AutomationControlled").
-		Set("disable-web-security", "").
-		Set("disable-features", "IsolateOrigins,site-per-process")
+		Set("no-first-run", "").
+		Set("no-default-browser-check", "")
+
+	if chromeBin != "" {
+		l = l.Bin(chromeBin)
+	}
 
 	ctrlURL, err := l.Launch()
 	if err != nil {
@@ -190,11 +232,15 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	})
 	go router2.Run()
 
-	// Navegar para Teams
+	// Navegar para Teams — usar URL com parâmetro para evitar detecção
 	logger.Info().Msg("[Teams] Navegando para teams.microsoft.com...")
-	if err := page.Navigate("https://teams.microsoft.com"); err != nil {
+	if err := page.Navigate("https://teams.microsoft.com/_#/"); err != nil {
 		return nil, fmt.Errorf("erro ao navegar para Teams: %v", err)
 	}
+	// Remover flag de automação via JavaScript antes do Teams carregar
+	page.MustEval(`() => {
+		Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+	}`)
 
 	// Aguardar Teams carregar completamente
 	logger.Info().Msgf("[Teams] Aguardando Teams carregar (até %v)...", timeout)
