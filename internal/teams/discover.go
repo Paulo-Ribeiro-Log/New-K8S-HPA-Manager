@@ -3,6 +3,9 @@ package teams
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +46,7 @@ type DiscoveryResult struct {
 	WebSockets    []CapturedWS       `json:"websockets"`
 	SkypeToken    string             `json:"skype_token"`
 	Conversations []ConversationHint `json:"conversations"`
+	OnChatRequest func(url string)   `json:"-"` // callback quando Chat API é capturada
 }
 
 // ConversationHint é uma conversa identificada na descoberta.
@@ -52,10 +56,22 @@ type ConversationHint struct {
 	ThreadType  string `json:"thread_type"`
 }
 
+// isTeamsURL verifica se a URL pertence ao Teams — direto ou via proxy MCAS.
+func isTeamsURL(url string) bool {
+	return strings.Contains(url, "teams.microsoft.com")
+}
+
+// isTeamsV2URL verifica especificamente a interface v2 do Teams (incluindo MCAS).
+func isTeamsV2URL(url string) bool {
+	return strings.Contains(url, "teams.microsoft.com") && strings.Contains(url, "/v2")
+}
+
 func isAuthURL(url string) bool {
 	return strings.Contains(url, "authsvc") ||
 		strings.Contains(url, "/authz") ||
-		strings.Contains(url, "microsoftonline.com")
+		strings.Contains(url, "microsoftonline.com") ||
+		strings.Contains(url, "aad_login") ||
+		strings.Contains(url, "login.microsoftonline")
 }
 
 func isChatURL(url string) bool {
@@ -63,7 +79,13 @@ func isChatURL(url string) bool {
 		strings.Contains(url, "/conversations") ||
 		strings.Contains(url, "/messages") ||
 		strings.Contains(url, "api.spaces.skype") ||
-		strings.Contains(url, "ng.msg.teams")
+		strings.Contains(url, "ng.msg.teams") ||
+		// MCAS proxy: chat via API interna do Teams (teams.microsoft.com.mcas.ms/api/mt/...)
+		strings.Contains(url, "/api/mt/") ||
+		strings.Contains(url, "/v1/users/ME/conversations") ||
+		strings.Contains(url, "/v1/threads") ||
+		// async gateway usado para buscar objetos de mensagens
+		strings.Contains(url, "asyncgw.teams.microsoft.com")
 }
 
 func isTeamsRelevant(url string) bool {
@@ -74,6 +96,10 @@ func isTeamsRelevant(url string) bool {
 		"authsvc",
 		"ng.msg.teams",
 		"microsoftonline.com",
+		// MCAS proxy — empresa redireciona Teams via Microsoft Cloud App Security
+		"mcas.ms",
+		"access.mcas.ms",
+		"trouter",
 	}
 	for _, kw := range keywords {
 		if strings.Contains(url, kw) {
@@ -85,6 +111,27 @@ func isTeamsRelevant(url string) bool {
 
 // RunDiscovery lança o Chrome do sistema, navega para o Teams,
 // intercepta TODA atividade de rede via CDP Network events e salva em outputDir.
+// killExistingChrome encerra processos Chrome/Chromium que usam o sessionDir como perfil.
+// Necessário porque o Rod não consegue lançar uma instância de debug se o perfil já está bloqueado.
+func killExistingChrome(sessionDir string, logger *zerolog.Logger) {
+	// Listar PIDs de Chrome/Chromium usando o perfil
+	out, err := exec.Command("pgrep", "-f", sessionDir).Output()
+	if err != nil || len(out) == 0 {
+		return
+	}
+	pids := strings.Fields(string(out))
+	logger.Info().Strs("pids", pids).Msg("[Teams] Encerrando instâncias Chrome existentes com o perfil rod-session")
+	for _, pid := range pids {
+		exec.Command("kill", "-TERM", pid).Run() //nolint:errcheck
+	}
+	time.Sleep(500 * time.Millisecond)
+	// SIGKILL se ainda houver processos
+	out2, _ := exec.Command("pgrep", "-f", sessionDir).Output()
+	for _, pid := range strings.Fields(string(out2)) {
+		exec.Command("kill", "-9", pid).Run() //nolint:errcheck
+	}
+}
+
 func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout time.Duration) (*DiscoveryResult, error) {
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return nil, fmt.Errorf("erro ao criar diretório de saída: %v", err)
@@ -96,6 +143,11 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	} else {
 		logger.Warn().Msg("[Teams] Chrome do sistema não encontrado — usando Chromium do Rod")
 	}
+
+	// Matar instâncias Chrome existentes que usam o mesmo perfil para evitar conflito de lock.
+	// O Rod não consegue lançar uma nova instância de debug se o perfil já está em uso.
+	killExistingChrome(sessionDir, logger)
+	time.Sleep(1 * time.Second)
 
 	l := launcher.New().
 		UserDataDir(sessionDir).
@@ -152,6 +204,24 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 					reqHeaders[k] = fmt.Sprintf("%v", v)
 				}
 			}
+			// Extrair SkypeToken diretamente do header da requisição.
+			// No ambiente MCAS o token não aparece no body da resposta — é
+			// enviado como "X-Skypetoken" ou "authorization: skype_token ..." nos requests.
+			mu.Lock()
+			if result.SkypeToken == "" {
+				for k, v := range reqHeaders {
+					lk := strings.ToLower(k)
+					val := fmt.Sprintf("%v", v)
+					if lk == "x-skypetoken" && val != "" {
+						result.SkypeToken = val
+						logger.Info().Str("prefix", val[:min(20, len(val))]).Msg("[Teams] SkypeToken capturado (req header X-Skypetoken)!")
+					} else if lk == "authorization" && strings.HasPrefix(val, "skype_token ") {
+						result.SkypeToken = strings.TrimPrefix(val, "skype_token ")
+						logger.Info().Msg("[Teams] SkypeToken capturado (req header authorization: skype_token)!")
+					}
+				}
+			}
+			mu.Unlock()
 			pendingMu.Lock()
 			pendingReqs[e.RequestID] = CapturedRequest{
 				URL:        e.Request.URL,
@@ -185,18 +255,19 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 			req.Body = body
 
 			mu.Lock()
+			// Fallback: tentar extrair SkypeToken do body da resposta
 			if result.SkypeToken == "" && isAuthURL(req.URL) && body != "" {
 				var authResp map[string]interface{}
 				if json.Unmarshal([]byte(body), &authResp) == nil {
 					if tokens, ok := authResp["tokens"].(map[string]interface{}); ok {
 						if st, ok2 := tokens["skypeToken"].(string); ok2 && st != "" {
 							result.SkypeToken = st
-							logger.Info().Str("prefix", st[:min(20, len(st))]).Msg("[Teams] SkypeToken capturado!")
+							logger.Info().Str("prefix", st[:min(20, len(st))]).Msg("[Teams] SkypeToken capturado (body)!")
 						}
 					}
 					if st, ok2 := authResp["skypeToken"].(string); ok2 && st != "" {
 						result.SkypeToken = st
-						logger.Info().Msg("[Teams] SkypeToken capturado (alt)!")
+						logger.Info().Msg("[Teams] SkypeToken capturado (body alt)!")
 					}
 				}
 			}
@@ -206,6 +277,9 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 			case isChatURL(req.URL):
 				result.ChatRequests = append(result.ChatRequests, req)
 				logger.Info().Str("url", req.URL).Int("status", req.Status).Msg("[Teams] Chat API capturada!")
+				if cb := result.OnChatRequest; cb != nil {
+					go cb(req.URL)
+				}
 			default:
 				result.OtherAPIs = append(result.OtherAPIs, req)
 			}
@@ -236,15 +310,22 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 		})()
 	}
 
-	// ── Navegar diretamente para Teams v2 ────────────────────────────────
+	// ── Navegar para Teams v2 — suporta MCAS proxy e acesso direto ──────
+	// MCAS (Microsoft Cloud App Security) redireciona teams.microsoft.com →
+	// teams.microsoft.com.mcas.ms. Navegar para a URL direta e deixar o
+	// redirect acontecer garante compatibilidade com ambos os cenários.
 	logger.Info().Msg("[Teams] Navegando para teams.microsoft.com/v2/ ...")
 	if err := page.Navigate("https://teams.microsoft.com/v2/"); err != nil {
 		return nil, fmt.Errorf("erro ao navegar: %v", err)
 	}
 	attachListeners(page, "main")
 
-	// Monitorar novas abas — Teams v2 pode abrir em aba separada
+	// Monitorar novas abas — Teams v2 pode abrir em aba separada (MCAS inclusive)
+	// Marcar a aba principal como já processada para evitar listeners duplicados.
 	seenPages := map[string]bool{}
+	if mainInfo, err := page.Info(); err == nil && mainInfo != nil {
+		seenPages[string(mainInfo.TargetID)] = true
+	}
 	go func() {
 		for {
 			time.Sleep(3 * time.Second)
@@ -257,7 +338,7 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 				if err != nil || seenPages[string(info.TargetID)] {
 					continue
 				}
-				if strings.Contains(info.URL, "teams.microsoft.com") {
+				if isTeamsURL(info.URL) {
 					seenPages[string(info.TargetID)] = true
 					logger.Info().Str("url", info.URL).Msg("[Teams] Nova aba detectada — anexando listeners")
 					attachListeners(p, info.URL)
@@ -271,16 +352,16 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	loadDeadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(loadDeadline) {
 		info, _ := page.Info()
-		if info != nil && strings.Contains(info.URL, "teams.microsoft.com") &&
+		if info != nil && isTeamsURL(info.URL) &&
 			!strings.Contains(info.URL, "error") && !strings.Contains(info.URL, "eoa") {
 			logger.Info().Str("url", info.URL).Msg("[Teams] Teams v2 carregado!")
 			break
 		}
-		// Verificar se Teams abriu em outra aba
+		// Verificar se Teams abriu em outra aba (inclui URL MCAS)
 		pages, _ := browser.Pages()
 		for _, p := range pages {
 			pInfo, err := p.Info()
-			if err == nil && strings.Contains(pInfo.URL, "teams.microsoft.com/v2") {
+			if err == nil && isTeamsV2URL(pInfo.URL) {
 				page = p // usar esta aba como referência
 				logger.Info().Str("url", pInfo.URL).Msg("[Teams] Teams v2 encontrado em aba separada!")
 				goto teamsLoaded
@@ -290,32 +371,132 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	}
 teamsLoaded:
 
-	logger.Info().Msgf("[Teams] Aguardando (até %v) — navegue até o chat do MR.ViaBot...", timeout)
-	logger.Info().Msg("[Teams] ═══════════════════════════════════════════════")
-	logger.Info().Msg("[Teams]  Abra o chat do MR.ViaBot e role as mensagens")
-	logger.Info().Msg("[Teams] ═══════════════════════════════════════════════")
+	// ThreadId do Mr.ViaBot (descoberto na Fase 0)
+	const mrViaBotThreadID = "19:eab1be93-5589-4a3f-9f47-d6cfcbc50a0c_61740f97-9be2-4459-b054-5230364585a7@unq.gbl.spaces"
 
-	// Aguardar com log de progresso a cada 15s
-	deadline := time.Now().Add(timeout)
-	lastTotal := 0
-	for time.Now().Before(deadline) {
-		time.Sleep(15 * time.Second)
+	// Aguardar SkypeToken ser capturado (indica sessão ativa). Máximo 30s.
+	for i := 0; i < 6; i++ {
+		time.Sleep(5 * time.Second)
 		mu.Lock()
-		total := len(result.AuthRequests) + len(result.ChatRequests) + len(result.OtherAPIs)
-		ws := len(result.WebSockets)
-		token := result.SkypeToken != ""
+		captured := result.SkypeToken != ""
 		mu.Unlock()
-
-		if total != lastTotal || ws > 0 {
-			logger.Info().
-				Int("auth", len(result.AuthRequests)).
-				Int("chat", len(result.ChatRequests)).
-				Int("ws_frames", ws).
-				Bool("skype_token", token).
-				Str("restante", time.Until(deadline).Round(time.Second).String()).
-				Msg("[Teams] Progresso")
-			lastTotal = total
+		if captured {
+			logger.Info().Msg("[Teams] SkypeToken capturado — navegando ao chat do Mr.ViaBot")
+			break
 		}
+	}
+
+	// Navegar ao chat do Mr.ViaBot via JS (altera hash SPA sem criar nova aba).
+	// page.Navigate() para outro path causa nova aba e cancela o contexto atual.
+	navJS := fmt.Sprintf(`() => {
+		window.location.hash = '#/conversations/%s?ctx=chat';
+		return window.location.href;
+	}`, mrViaBotThreadID)
+	navRes, navErr := page.Eval(navJS)
+	if navErr == nil {
+		logger.Info().Str("href", navRes.Value.String()).Msg("[Teams] Navegação SPA via hash disparada")
+	} else {
+		logger.Warn().Err(navErr).Msg("[Teams] Falha ao navegar via hash")
+	}
+	time.Sleep(8 * time.Second)
+
+	// Se o hash não abriu a conversa, tentar clicar no item da lista de chats
+	clickJS := `() => {
+		const keywords = ['viabot', 'mr.viabot', 'mr viabot'];
+		const selectors = [
+			'[data-tid="chat-list-item"]',
+			'[class*="listItem"]',
+			'[class*="chatListItem"]',
+			'[role="listitem"]',
+			'[class*="conversationItem"]',
+			'[class*="chat-item"]'
+		];
+		for (const sel of selectors) {
+			for (const item of document.querySelectorAll(sel)) {
+				const text = (item.textContent || '').toLowerCase();
+				if (keywords.some(k => text.includes(k))) {
+					item.click();
+					return { clicked: true, selector: sel, text: item.textContent.substring(0, 80) };
+				}
+			}
+		}
+		for (const el of document.querySelectorAll('[aria-label]')) {
+			const label = (el.getAttribute('aria-label') || '').toLowerCase();
+			if (keywords.some(k => label.includes(k))) {
+				el.click();
+				return { clicked: true, label: el.getAttribute('aria-label') };
+			}
+		}
+		return { clicked: false };
+	}`
+	clickRes, clickErr := page.Eval(clickJS)
+	if clickErr == nil && !clickRes.Value.Nil() {
+		logger.Info().Str("result", clickRes.Value.String()).Msg("[Teams] Tentativa de click na conversa Mr.ViaBot")
+	}
+	time.Sleep(10 * time.Second)
+
+	// Extrair mensagens diretamente do DOM (não depende de HTTP — MCAS bloqueia fetch() externo)
+	domMsgJS := `() => {
+		const selectors = [
+			'[data-tid="messageBody"]',
+			'[class*="messageBodyContent"]',
+			'[class*="message-body"]',
+			'[class*="messageBody"]',
+			'[class*="bubble-wrapper"] [class*="content"]',
+			'[class*="itemContent"]'
+		];
+		const messages = [];
+		for (const sel of selectors) {
+			const els = document.querySelectorAll(sel);
+			if (els.length > 0) {
+				els.forEach(el => {
+					const text = (el.innerText || el.textContent || '').trim();
+					if (text.length > 5) messages.push(text);
+				});
+				if (messages.length > 0) break;
+			}
+		}
+		// Fallback: qualquer elemento com texto contendo CHG ou sre-approval
+		if (messages.length === 0) {
+			const allEls = document.querySelectorAll('*');
+			for (const el of allEls) {
+				if (el.children.length === 0) {
+					const t = (el.innerText || '').trim();
+					if ((t.includes('CHG') || t.includes('sre-approval') || t.includes('SRE APPROVAL')) && t.length < 2000) {
+						messages.push(t);
+					}
+				}
+			}
+		}
+		return JSON.stringify({ url: window.location.href, count: messages.length, messages: messages });
+	}`
+	domResult, domErr := page.Eval(domMsgJS)
+	if domErr == nil && !domResult.Value.Nil() {
+		domStr := domResult.Value.String()
+		msgPath := filepath.Join(outputDir, "viabot-dom-messages.json")
+		os.WriteFile(msgPath, []byte(domStr), 0600) //nolint:errcheck
+		logger.Info().Str("file", msgPath).Int("bytes", len(domStr)).Msg("[Teams] Mensagens DOM salvas")
+		// Logar preview
+		var domData map[string]interface{}
+		if json.Unmarshal([]byte(domStr), &domData) == nil {
+			count, _ := domData["count"].(float64)
+			currentURL, _ := domData["url"].(string)
+			logger.Info().Float64("count", count).Str("url", currentURL).Msg("[Teams] Resultado extração DOM")
+			if msgs, ok := domData["messages"].([]interface{}); ok {
+				for i, m := range msgs {
+					if i >= 5 {
+						break
+					}
+					text, _ := m.(string)
+					if len(text) > 300 {
+						text = text[:300]
+					}
+					logger.Info().Int("msg_n", i+1).Str("text", text).Msg("[Teams] Mensagem DOM")
+				}
+			}
+		}
+	} else if domErr != nil {
+		logger.Warn().Err(domErr).Msg("[Teams] Falha na extração DOM")
 	}
 
 	// Tentar extrair token do localStorage se não encontrado via CDP
@@ -343,6 +524,256 @@ teamsLoaded:
 		}
 	}
 
+	// ── Coletar URLs de conversas via performance API ─────────────────────
+	// O Teams carrega conversas via cache/IndexedDB — não aparecem no CDP.
+	// Usamos performance.getEntriesByType para ver todas as URLs que foram
+	// chamadas pela página, incluindo as de conversas/mensagens.
+	logger.Info().Msg("[Teams] Coletando URLs de conversas via performance API...")
+	perfResult, perfErr := page.Eval(`() => {
+		const entries = performance.getEntriesByType('resource');
+		const convURLs = entries
+			.map(e => e.name)
+			.filter(u => u.includes('conversation') || u.includes('/messages') || u.includes('/threads') || u.includes('chatsvcagg'));
+		return JSON.stringify(convURLs);
+	}`)
+	if perfErr == nil && !perfResult.Value.Nil() {
+		perfPath := filepath.Join(outputDir, "performance-conv-urls.json")
+		os.WriteFile(perfPath, []byte(perfResult.Value.String()), 0600) //nolint:errcheck
+		logger.Info().Str("file", perfPath).Msg("[Teams] URLs de performance salvas")
+	}
+
+	// ── Tentar múltiplos endpoints de conversas via JS fetch ──────────────
+	// O Teams usa o protocolo Skype (chatsvcagg) para conversas — não o /api/mt/.
+	// No ambiente MCAS o host é prefixado com .mcas.ms.
+	// startTime = sexta-feira passada (18/abr/2026) em ms para cobrir ausência de msgs hoje.
+	// Injetar o SkypeToken no JS para autenticar o fetch no chatsvcagg.
+	// O chatsvcagg requer "Authorization: skype_token <jwt>" — não usa cookies.
+	mu.Lock()
+	skypeToken := result.SkypeToken
+	mu.Unlock()
+
+	// MCAS bloqueia fetch() direto ao chatsvcagg mesmo com SkypeToken.
+	// O Teams armazena todas as conversas no IndexedDB — lemos de lá sem HTTP.
+	logger.Info().Msg("[Teams] Buscando Mr.ViaBot no IndexedDB do Teams...")
+	// O store 'conversations' só tem metadata (sem conteúdo de mensagens).
+	// Buscar topics nos metadados + varrer skypexspaces que tem mensagens reais.
+	fetchJS := `async () => {
+		const openDB = (name) => new Promise((resolve, reject) => {
+			const r = indexedDB.open(name);
+			r.onsuccess = e => resolve(e.target.result);
+			r.onerror = () => reject(r.error);
+		});
+		const getAll = (db, storeName) => new Promise((resolve) => {
+			try {
+				const tx = db.transaction(storeName, 'readonly');
+				const req = tx.objectStore(storeName).getAll();
+				req.onsuccess = () => resolve(req.result || []);
+				req.onerror = () => resolve([]);
+			} catch(e) { resolve([]); }
+		});
+
+		const dbs = await indexedDB.databases().catch(() => []);
+		const keywords = ['mr.viabot', 'viavarejo.service-now.com', 'devstartcd.via', 'chg0', 'sre-approval', 'sre approval'];
+		const hasKw = (s) => keywords.some(k => s.includes(k)) || /chg\d{5,}/i.test(s);
+		const results = { total_dbs: dbs.length, viabot: null, all_matches: [], conv_topics: [], skypexspaces_stores: [], error: null };
+
+		// 1. conversation-manager: buscar nos campos botMembers, threadProperties, lastMessage
+		for (const {name} of dbs) {
+			if (!name || !name.includes('conversation-manager:react-web-client')) continue;
+			if (name.endsWith(':pt-br')) continue;
+			try {
+				const db = await openDB(name);
+				if (!db.objectStoreNames.contains('conversations')) { db.close(); continue; }
+				const rows = await getAll(db, 'conversations');
+				results.total_convs = rows.length;
+				const botSamples = [];
+				for (const row of rows) {
+					const bots = row.botMembers || [];
+					const tp = row.threadProperties || {};
+					const topic = tp.topic || tp.name || '';
+					const lastMsg = typeof row.lastMessage === 'string' ? row.lastMessage : JSON.stringify(row.lastMessage || '');
+					const raw = (JSON.stringify(bots) + lastMsg + topic).toLowerCase();
+					if (bots.length > 0 && botSamples.length < 5) {
+						botSamples.push({ id: row.id, bots, topic });
+					}
+					if (hasKw(raw)) {
+						// Para o thread do Mr.ViaBot, retornar lastMessage completo e messages[]
+						const isViaBot = row.id && row.id.includes('unq.gbl.spaces');
+						const fullLastMsg = isViaBot ? (row.lastMessage || null) : undefined;
+						const msgs = isViaBot ? (Array.isArray(row.messages) ? row.messages : []) : undefined;
+						const match = { id: row.id, topic, bots, source: 'conv-manager', snippet: raw.substring(0, 600),
+							...(isViaBot ? { lastMessage: fullLastMsg, messages: msgs } : {}) };
+						results.all_matches.push(match);
+						if (!results.viabot) results.viabot = match;
+					}
+				}
+				results.bot_samples = botSamples;
+				db.close();
+				break;
+			} catch(e) { results.error = String(e); }
+		}
+
+		// 2. chat-info-pane-manager: stores com mensagens pinadas e histórico de chats
+		for (const {name} of dbs) {
+			if (!name || !name.includes('chat-info-pane-manager')) continue;
+			if (name.endsWith(':pt-br')) continue;
+			try {
+				const db = await openDB(name);
+				const storeNames = Array.from(db.objectStoreNames);
+				for (const sn of storeNames) {
+					const rows = await getAll(db, sn);
+					if (rows.length === 0) continue;
+					if (!results.chat_info_sample) {
+						const r0 = rows[0];
+						results.chat_info_sample = { store: sn, keys: Object.keys(r0), snippet: JSON.stringify(r0).substring(0, 300) };
+					}
+					for (const row of rows) {
+						const raw = JSON.stringify(row).toLowerCase();
+						if (hasKw(raw)) {
+							// conversationId (camelCase) é o thread real; id é o ID da mensagem pinada
+							const threadId = row.conversationId || row.conversationid || row.threadId || row.id;
+							const match = { id: threadId, msg_id: row.id, source: 'chat-info/' + sn, raw_keys: Object.keys(row), snippet: JSON.stringify(row).substring(0, 600) };
+							results.all_matches.push(match);
+							if (!results.viabot) results.viabot = match;
+						}
+					}
+				}
+				db.close();
+				break;
+			} catch(e) {}
+		}
+
+		// 3. skypexspaces: banco de mensagens reais
+		for (const {name} of dbs) {
+			if (!name || !name.includes('skypexspaces')) continue;
+			try {
+				const db = await openDB(name);
+				const storeNames = Array.from(db.objectStoreNames);
+				results.skypexspaces_stores = storeNames;
+				for (const sn of storeNames) {
+					const rows = await getAll(db, sn);
+					if (rows.length > 0 && !results.skypex_sample) {
+						results.skypex_sample = { store: sn, count: rows.length, snippet: JSON.stringify(rows[0]).substring(0, 300) };
+					}
+					for (const row of rows) {
+						const raw = JSON.stringify(row).toLowerCase();
+						if (hasKw(raw)) {
+							results.viabot = { id: row.id || row.threadId, source: 'skypexspaces/' + sn, snippet: raw.substring(0, 400) };
+						}
+					}
+				}
+				db.close();
+			} catch(e) {}
+		}
+
+		return JSON.stringify(results);
+	}`
+	fetchResult, err := page.Eval(fetchJS)
+	if err == nil && !fetchResult.Value.Nil() {
+		rawConvs := fetchResult.Value.String()
+		convPath := filepath.Join(outputDir, "conversations-raw.json")
+		os.WriteFile(convPath, []byte(rawConvs), 0600) //nolint:errcheck
+		logger.Info().Str("file", convPath).Int("bytes", len(rawConvs)).Msg("[Teams] Resultados de conversas salvos")
+
+		// Processar resultado do IndexedDB
+		var convResults map[string]interface{}
+		if json.Unmarshal([]byte(rawConvs), &convResults) == nil {
+			totalConvs, _ := convResults["total_convs"].(float64)
+			totalDBs, _ := convResults["total_dbs"].(float64)
+			logger.Info().
+				Int("total_dbs", int(totalDBs)).
+				Int("total_convs", int(totalConvs)).
+				Msg("[Teams] IndexedDB escaneado")
+
+			// Logar todos os matches encontrados
+			if allMatchesRaw, ok := convResults["all_matches"].([]interface{}); ok && len(allMatchesRaw) > 0 {
+				logger.Info().Int("count", len(allMatchesRaw)).Msg("[Teams] Matches com keywords SRE Approval encontrados")
+				for i, mRaw := range allMatchesRaw {
+					m, _ := mRaw.(map[string]interface{})
+					if m == nil {
+						continue
+					}
+					id, _ := m["id"].(string)
+					source, _ := m["source"].(string)
+					topic, _ := m["topic"].(string)
+					snippet, _ := m["snippet"].(string)
+					if len(snippet) > 200 {
+						snippet = snippet[:200]
+					}
+					logger.Info().
+						Int("match_n", i+1).
+						Str("id", id).
+						Str("source", source).
+						Str("topic", topic).
+						Str("snippet", snippet).
+						Msg("[Teams] Match encontrado")
+					// Preferir IDs no formato Teams thread (19:...@thread.v2)
+					if strings.HasPrefix(id, "19:") && strings.Contains(id, "@thread") {
+						result.Conversations = append(result.Conversations, ConversationHint{ID: id, DisplayName: topic})
+					}
+				}
+			}
+
+			// Verificar se encontrou MR.ViaBot diretamente
+			if viabotRaw := convResults["viabot"]; viabotRaw != nil {
+				viabot, _ := viabotRaw.(map[string]interface{})
+				if viabot != nil {
+					id, _ := viabot["id"].(string)
+					topic, _ := viabot["topic"].(string)
+					threadType, _ := viabot["threadType"].(string)
+					source, _ := viabot["source"].(string)
+					logger.Info().
+						Str("thread_id", id).
+						Str("topic", topic).
+						Str("thread_type", threadType).
+						Str("source", source).
+						Msg("[Teams] ✅ MR.ViaBot encontrado no IndexedDB!")
+					// Adicionar se ainda não foi adicionado via all_matches
+					found := false
+					for _, c := range result.Conversations {
+						if c.ID == id {
+							found = true
+							break
+						}
+					}
+					if !found {
+						result.Conversations = append(result.Conversations, ConversationHint{ID: id, DisplayName: topic, ThreadType: threadType})
+					}
+				}
+			} else {
+				logger.Warn().Msg("[Teams] Mr.ViaBot não encontrado no IndexedDB — listando topics disponíveis")
+				if topics, ok := convResults["conv_topics"].([]interface{}); ok {
+					logger.Info().Int("count", len(topics)).Msg("[Teams] Topics coletados (buscar 'viabot' manualmente)")
+					for _, c := range topics {
+						conv, _ := c.(map[string]interface{})
+						if conv == nil {
+							continue
+						}
+						topic, _ := conv["topic"].(string)
+						id, _ := conv["id"].(string)
+						tl := strings.ToLower(topic)
+						if strings.Contains(tl, "via") || strings.Contains(tl, "bot") || strings.Contains(tl, "mr") {
+							logger.Info().Str("topic", topic).Str("id", id).Msg("[Teams] Candidato")
+						}
+					}
+				}
+				if stores, ok := convResults["skypexspaces_stores"].([]interface{}); ok {
+					logger.Info().Int("stores", len(stores)).Msg("[Teams] Stores do skypexspaces escaneados")
+				}
+			}
+		}
+
+		// Tentativa HTTP direta (esperada falhar com MCAS — mantida para diagnóstico)
+		if skypeToken != "" {
+			msgPath := filepath.Join(outputDir, "viabot-messages.json")
+			if err2 := fetchViaBotMessages(skypeToken, mrViaBotThreadID, msgPath, logger); err2 != nil {
+				logger.Debug().Err(err2).Msg("[Teams] HTTP chatsvcagg bloqueado pelo MCAS (esperado)")
+			}
+		}
+	} else {
+		logger.Warn().Err(err).Msg("[Teams] Falha ao buscar conversas via JS")
+	}
+
 	// Salvar resultados
 	timestamp := time.Now().Format("2006-01-02-150405")
 	saveJSON(filepath.Join(outputDir, "auth-requests.json"), result.AuthRequests, logger)
@@ -356,6 +787,84 @@ teamsLoaded:
 
 	printSummary(result, outputDir, logger)
 	return result, nil
+}
+
+// fetchViaBotMessages faz chamada HTTP direta ao chatsvcagg (bypassa MCAS do browser).
+// startTime: hoje às 00:00 UTC em ms. Tenta 3 endpoints (prod/gov/mcas).
+func fetchViaBotMessages(skypeToken, threadID, outputPath string, logger *zerolog.Logger) error {
+	// startTime = hoje 00:00 UTC
+	now := time.Now().UTC()
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	startTimeMs := startOfDay.UnixMilli()
+
+	encodedThread := url.PathEscape(threadID)
+	endpoints := []string{
+		fmt.Sprintf("https://chatsvcagg.teams.microsoft.com/v1/users/ME/conversations/%s/messages?startTime=%d&pageSize=200", encodedThread, startTimeMs),
+		fmt.Sprintf("https://api.flightproxy.teams.microsoft.com/api/v2/ep/conv-svc-aggregator/conv/v1/users/ME/conversations/%s/messages?startTime=%d&pageSize=200", encodedThread, startTimeMs),
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	for _, endpoint := range endpoints {
+		req, err := http.NewRequest("GET", endpoint, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Authorization", "skype_token "+skypeToken)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		req.Header.Set("X-Ms-Client-Version", "49/24112107003")
+		req.Header.Set("X-Ms-Skypetoken", skypeToken)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			logger.Debug().Err(err).Str("url", endpoint).Msg("[Teams] HTTP endpoint falhou")
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		logger.Info().Int("status", resp.StatusCode).Str("url", endpoint).Int("bytes", len(body)).Msg("[Teams] Resposta chatsvcagg")
+
+		if resp.StatusCode == http.StatusOK {
+			os.WriteFile(outputPath, body, 0600) //nolint:errcheck
+			logger.Info().Str("file", outputPath).Msg("[Teams] ✅ Mensagens do MR.ViaBot salvas!")
+			return nil
+		}
+		// Salvar resposta de erro para diagnóstico
+		errPath := outputPath + ".error.json"
+		os.WriteFile(errPath, body, 0600) //nolint:errcheck
+		logger.Warn().Int("status", resp.StatusCode).Str("error_file", errPath).Msg("[Teams] Endpoint retornou erro — salvo para diagnóstico")
+	}
+	return fmt.Errorf("todos os endpoints falharam para threadId=%s", threadID)
+}
+
+func extractConversations(convResp map[string]interface{}, result *DiscoveryResult, logger *zerolog.Logger) {
+	// Suporta campo "value" (OData), "conversations" ou array direto
+	var list []interface{}
+	switch {
+	case convResp["value"] != nil:
+		list, _ = convResp["value"].([]interface{})
+	case convResp["conversations"] != nil:
+		list, _ = convResp["conversations"].([]interface{})
+	}
+	logger.Info().Int("total", len(list)).Msg("[Teams] Total de conversas encontradas")
+	for _, c := range list {
+		conv, _ := c.(map[string]interface{})
+		if conv == nil {
+			continue
+		}
+		topic, _ := conv["topic"].(string)
+		id, _ := conv["id"].(string)
+		threadType, _ := conv["threadType"].(string)
+		tl := strings.ToLower(topic)
+		isBot := strings.Contains(tl, "mrviabot") || strings.Contains(tl, "mr.viabot") || strings.Contains(tl, "viabot")
+		if isBot {
+			logger.Info().Str("thread_id", id).Str("topic", topic).Msg("[Teams] ✅ MR.ViaBot threadId encontrado!")
+		}
+		result.Conversations = append(result.Conversations, ConversationHint{
+			ID: id, DisplayName: topic, ThreadType: threadType,
+		})
+	}
 }
 
 func saveJSON(path string, v interface{}, logger *zerolog.Logger) {

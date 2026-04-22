@@ -75,29 +75,35 @@ func (c *chromeCookieExtractor) chromeLocalStatePath(username string) string {
 	return fmt.Sprintf("/mnt/c/Users/%s/AppData/Local/Google/Chrome/User Data/Local State", username)
 }
 
-// chromeCookieDBPath retorna o path WSL para o banco de cookies do Chrome (testa dois locais)
+// chromeCookieDBPath retorna o path WSL para o banco de cookies do Chrome.
+// Prioriza o perfil HPA-Manager (usado pelo LaunchWindowsBrowserForCDP), depois Default.
 func (c *chromeCookieExtractor) chromeCookieDBPath(username string) string {
-	paths := []string{
-		fmt.Sprintf("/mnt/c/Users/%s/AppData/Local/Google/Chrome/User Data/Default/Network/Cookies", username),
-		fmt.Sprintf("/mnt/c/Users/%s/AppData/Local/Google/Chrome/User Data/Default/Cookies", username),
-	}
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p
+	base := fmt.Sprintf("/mnt/c/Users/%s/AppData/Local/Google/Chrome/User Data", username)
+	profiles := []string{"HPA-Manager", "Default"}
+	suffixes := []string{"Network/Cookies", "Cookies"}
+	for _, profile := range profiles {
+		for _, suffix := range suffixes {
+			p := fmt.Sprintf("%s/%s/%s", base, profile, suffix)
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
 		}
 	}
 	return ""
 }
 
-// edgeCookieDBPath retorna o path WSL para o banco de cookies do Edge
+// edgeCookieDBPath retorna o path WSL para o banco de cookies do Edge.
+// Prioriza o perfil HPA-Manager, depois Default.
 func (c *chromeCookieExtractor) edgeCookieDBPath(username string) string {
-	paths := []string{
-		fmt.Sprintf("/mnt/c/Users/%s/AppData/Local/Microsoft/Edge/User Data/Default/Network/Cookies", username),
-		fmt.Sprintf("/mnt/c/Users/%s/AppData/Local/Microsoft/Edge/User Data/Default/Cookies", username),
-	}
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p
+	base := fmt.Sprintf("/mnt/c/Users/%s/AppData/Local/Microsoft/Edge/User Data", username)
+	profiles := []string{"HPA-Manager", "Default"}
+	suffixes := []string{"Network/Cookies", "Cookies"}
+	for _, profile := range profiles {
+		for _, suffix := range suffixes {
+			p := fmt.Sprintf("%s/%s/%s", base, profile, suffix)
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
 		}
 	}
 	return ""

@@ -3368,6 +3368,63 @@ class APIClient {
   async deleteAwsSsoConfig(profile: string): Promise<{ profile: string; message: string }> {
     return this.request(`/aws/config/${encodeURIComponent(profile)}`, { method: "DELETE" });
   }
+
+  // ==================== Teams Integration ====================
+
+  async getTeamsApprovalsToday(): Promise<{
+    success: boolean;
+    items: Array<{ chg: string; approval_url: string; extracted_at: string }>;
+    last_updated: string | null;
+    needs_refresh: boolean;
+    refreshing: boolean;
+  }> {
+    return this.request("/teams/approvals/today");
+  }
+
+  async refreshTeamsApprovals(): Promise<{
+    success: boolean;
+    items: Array<{ chg: string; approval_url: string; extracted_at: string }>;
+    last_updated: string | null;
+    error?: string;
+  }> {
+    return this.request("/teams/approvals/refresh", { method: "POST" });
+  }
+
+  // ==================== SRE Approval ====================
+
+  async getSreApprovalInfo(approvalUrl: string): Promise<{
+    success: boolean;
+    approval_info?: {
+      id: string;
+      change_number: string;
+      title: string;
+      application: string;
+      version: string;
+      squad_owner: string;
+      status: string;
+      is_finalized: boolean;
+      approver_email?: string;
+      approver_squad?: string;
+    };
+    error?: string;
+  }> {
+    return this.request(`/sre-approval/info?url=${encodeURIComponent(approvalUrl)}`);
+  }
+
+  async sreApprove(approvalUrl: string, approverEmail?: string): Promise<{
+    success: boolean;
+    message?: string;
+    error?: string;
+  }> {
+    return this.request("/sre-approval/approve", {
+      method: "POST",
+      body: JSON.stringify({ approval_url: approvalUrl, approver_email: approverEmail || "" }),
+    });
+  }
+
+  async getSreCurrentUser(): Promise<{ success: boolean; email: string; error?: string }> {
+    return this.request("/sre-approval/current-user");
+  }
 }
 
 // Singleton instance

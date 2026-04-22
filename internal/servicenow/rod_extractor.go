@@ -183,7 +183,12 @@ func (r *RodExtractor) launchLocalBrowserWithDir(headless bool, sessionDir strin
 	l := launcher.New().
 		UserDataDir(sessionDir).
 		Headless(headless).
-		Set("disable-blink-features", "AutomationControlled")
+		Set("disable-blink-features", "AutomationControlled").
+		// Flags de estabilidade para WSL2/Linux: evitam crash por /dev/shm limitado
+		Set("disable-dev-shm-usage", "").
+		Set("no-sandbox", "").
+		Set("disable-gpu", "").
+		Set("disable-setuid-sandbox", "")
 
 	r.logger.Info().
 		Bool("headless", headless).
@@ -450,9 +455,10 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 	}
 
 	sysIDRegex := regexp.MustCompile(`sys_id=([a-f0-9]{32})`)
-	if !sysIDRegex.MatchString(chgURL) {
-		r.logger.Error().Str("url", chgURL).Msg("[Rod] URL inválida - sys_id não encontrado")
-		return nil, fmt.Errorf("URL inválida: sys_id não encontrado")
+	chgNumberRegex := regexp.MustCompile(`(?i)(number=CHG\d+|CHG\d{5,})`)
+	if !sysIDRegex.MatchString(chgURL) && !chgNumberRegex.MatchString(chgURL) {
+		r.logger.Error().Str("url", chgURL).Msg("[Rod] URL inválida - sys_id nem número de CHG encontrado")
+		return nil, fmt.Errorf("URL inválida: informe uma URL com sys_id ou número da CHG (ex: ?number=CHG0454511)")
 	}
 
 	r.logger.Info().Msg("[Rod] URL validada com sucesso")

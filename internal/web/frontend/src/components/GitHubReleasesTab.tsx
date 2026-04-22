@@ -40,6 +40,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CredentialRedirectDialog } from "./profile/CredentialRedirectDialog";
 import { DeploymentScanModal } from "./DeploymentScanModal";
 import { ServiceNowImportModal } from "./ServiceNowImportModal";
+import { SreApprovalButton } from "./SreApprovalButton";
 import { useClusters } from "@/hooks/useAPI";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -105,6 +106,7 @@ interface ComparisonItem {
   productionTag: string;
   newTag: string;
   chgNumber?: string;  // Número da mudança ServiceNow
+  approvalUrl?: string; // URL de aprovação SRE (capturada do Teams/Mr.ViaBot)
   status: 'pending' | 'loading' | 'success' | 'error';
   result?: ComparisonResult;
   error?: string;
@@ -620,12 +622,8 @@ export const GitHubReleasesTab = () => {
     newVersion: string;
     xlReleaseUrl?: string;
     changeNumber?: string;
+    approvalUrl?: string;
   }) => {
-    if (!data.newVersion) {
-      toast.error('Versão não identificada na CHG - verifique o texto extraído');
-      return;
-    }
-
     // Buscar tag de produção via API
     let prodTag = '';
     if (data.deploymentName) {
@@ -663,6 +661,7 @@ export const GitHubReleasesTab = () => {
       productionTag: prodTag,
       newTag: data.newVersion,
       chgNumber: data.changeNumber || undefined,
+      approvalUrl: data.approvalUrl || undefined,
       status: 'pending',
     };
 
@@ -1458,19 +1457,31 @@ export const GitHubReleasesTab = () => {
                           </div>
                         </div>
 
-                        {/* CHG Number do ServiceNow (se disponível) */}
+                        {/* CHG Number + SRE Approval (se disponível) */}
                         {(() => {
                           const comparison = comparisonBatch.find(item => item.id === selectedComparison);
-                          return comparison?.chgNumber && (
-                            <div className="pt-2 pb-1">
-                              <div className="text-center">
-                                <Label className="text-[10px] text-muted-foreground">CHG ServiceNow</Label>
-                                <div className="mt-1">
-                                  <Badge variant="outline" className="font-mono text-xs bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800">
-                                    {comparison.chgNumber}
-                                  </Badge>
+                          if (!comparison?.chgNumber && !comparison?.approvalUrl) return null;
+                          return (
+                            <div className="pt-2 pb-1 space-y-2">
+                              {comparison.chgNumber && (
+                                <div className="text-center">
+                                  <Label className="text-[10px] text-muted-foreground">CHG ServiceNow</Label>
+                                  <div className="mt-1">
+                                    <Badge variant="outline" className="font-mono text-xs bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800">
+                                      {comparison.chgNumber}
+                                    </Badge>
+                                  </div>
                                 </div>
-                              </div>
+                              )}
+                              {comparison.approvalUrl && (
+                                <div>
+                                  <Label className="text-[10px] text-muted-foreground block text-center mb-1">Aprovação SRE</Label>
+                                  <SreApprovalButton
+                                    approvalUrl={comparison.approvalUrl}
+                                    chgNumber={comparison.chgNumber}
+                                  />
+                                </div>
+                              )}
                             </div>
                           );
                         })()}

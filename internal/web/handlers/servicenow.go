@@ -139,21 +139,32 @@ func (h *ServiceNowHandler) ExtractWithPlaywright(c *gin.Context) {
 		return
 	}
 
-	// Se temos description, reprocessar com o parser Go para consistência
-	if result.Success && result.Description != "" {
-		extractedData := h.client.ImportFromDescription(result.Description)
+	if !result.Success {
 		c.JSON(http.StatusOK, gin.H{
-			"success":           true,
-			"change_number":     result.ChangeNumber,
-			"short_description": result.ShortDescription,
-			"description":       result.Description,
-			"state":             result.State,
-			"extracted_data":    extractedData,
+			"success": false,
+			"error":   result.Error,
 		})
 		return
 	}
 
-	c.JSON(http.StatusOK, result)
+	// Parser Go (parser.go) tem regexes mais completos; parser Rod (rod_extractor.go parseDescription) é fallback
+	extractedData := h.client.ImportFromDescription(result.Description)
+	if extractedData == nil {
+		extractedData = &servicenow.ExtractedData{}
+	}
+	// Se o parser Go não encontrou aplicação, usar resultado do Rod
+	if extractedData.Application == "" && result.Extracted != nil {
+		extractedData = result.Extracted
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":           true,
+		"change_number":     result.ChangeNumber,
+		"short_description": result.ShortDescription,
+		"description":       result.Description,
+		"state":             result.State,
+		"extracted_data":    extractedData,
+	})
 }
 
 // GetPlaywrightStatus verifica o status da configuração do Playwright
