@@ -149,6 +149,16 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	killExistingChrome(sessionDir, logger)
 	time.Sleep(1 * time.Second)
 
+	// Limpar cache do Chrome antes de lançar — cresce sem limite e pode esgotar o disco.
+	// Apenas cache e Code Cache são removidos; cookies/LocalStorage/IndexedDB são preservados.
+	for _, cacheSubDir := range []string{"Default/Cache", "Default/Code Cache", "Default/GPUCache"} {
+		cacheDir := filepath.Join(sessionDir, cacheSubDir)
+		if _, err := os.Stat(cacheDir); err == nil {
+			os.RemoveAll(cacheDir) //nolint:errcheck
+			logger.Info().Str("dir", cacheDir).Msg("[Teams] Cache Chrome removido antes do launch")
+		}
+	}
+
 	l := launcher.New().
 		UserDataDir(sessionDir).
 		Headless(false).
@@ -156,7 +166,11 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 		Set("disable-blink-features", "AutomationControlled").
 		// Sem segundo argumento: Rod gera --flag (sem =), correto para flags booleanas
 		Set("no-first-run").
-		Set("no-default-browser-check")
+		Set("no-default-browser-check").
+		// Limitar cache em disco a 32 MB para evitar esgotamento de espaço
+		Set("disk-cache-size", "33554432").
+		Set("aggressive-cache-discard").
+		Set("disable-application-cache")
 
 	if chromeBin != "" {
 		l = l.Bin(chromeBin)
@@ -244,22 +258,27 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 			delete(pendingReqs, e.RequestID)
 			pendingMu.Unlock()
 
-			getBody := proto.NetworkGetResponseBody{RequestID: e.RequestID}
-			bodyResp, err := getBody.Call(p)
-			body := ""
-			if err == nil && bodyResp != nil {
-				body = bodyResp.Body
-				if len(body) > 8192 {
-					body = body[:8192] + "...[truncado]"
+			// Body só é capturado para requisições de auth e chat — OtherAPIs não precisam
+			// de body e representariam centenas de assets (JS/CSS/imagens) acumulando em RAM/disco.
+			isAuth := isAuthURL(req.URL)
+			isChat := isChatURL(req.URL)
+			if isAuth || isChat {
+				getBody := proto.NetworkGetResponseBody{RequestID: e.RequestID}
+				bodyResp, err := getBody.Call(p)
+				if err == nil && bodyResp != nil {
+					body := bodyResp.Body
+					if len(body) > 8192 {
+						body = body[:8192] + "...[truncado]"
+					}
+					req.Body = body
 				}
 			}
-			req.Body = body
 
 			mu.Lock()
-			// Fallback: tentar extrair SkypeToken do body da resposta
-			if result.SkypeToken == "" && isAuthURL(req.URL) && body != "" {
+			// Fallback: tentar extrair SkypeToken do body da resposta de auth
+			if result.SkypeToken == "" && isAuth && req.Body != "" {
 				var authResp map[string]interface{}
-				if json.Unmarshal([]byte(body), &authResp) == nil {
+				if json.Unmarshal([]byte(req.Body), &authResp) == nil {
 					if tokens, ok := authResp["tokens"].(map[string]interface{}); ok {
 						if st, ok2 := tokens["skypeToken"].(string); ok2 && st != "" {
 							result.SkypeToken = st
@@ -273,16 +292,19 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 				}
 			}
 			switch {
-			case isAuthURL(req.URL):
+			case isAuth:
 				result.AuthRequests = append(result.AuthRequests, req)
-			case isChatURL(req.URL):
+			case isChat:
 				result.ChatRequests = append(result.ChatRequests, req)
 				logger.Info().Str("url", req.URL).Int("status", req.Status).Msg("[Teams] Chat API capturada!")
 				if cb := result.OnChatRequest; cb != nil {
 					go cb(req.URL)
 				}
 			default:
-				result.OtherAPIs = append(result.OtherAPIs, req)
+				// OtherAPIs: guardar apenas URL+status (sem body) e limitar a 100 entradas
+				if len(result.OtherAPIs) < 100 {
+					result.OtherAPIs = append(result.OtherAPIs, req)
+				}
 			}
 			mu.Unlock()
 		})()
@@ -794,17 +816,9 @@ teamsLoaded:
 		logger.Warn().Err(err).Msg("[Teams] Falha ao buscar conversas via JS")
 	}
 
-	// Salvar resultados
-	timestamp := time.Now().Format("2006-01-02-150405")
-	saveJSON(filepath.Join(outputDir, "auth-requests.json"), result.AuthRequests, logger)
-	saveJSON(filepath.Join(outputDir, "chat-requests.json"), result.ChatRequests, logger)
-	saveJSON(filepath.Join(outputDir, "websocket-frames.json"), result.WebSockets, logger)
-	saveJSON(filepath.Join(outputDir, "other-apis.json"), result.OtherAPIs, logger)
-
-	fullPath := filepath.Join(outputDir, fmt.Sprintf("discovery-%s.json", timestamp))
-	data, _ := json.MarshalIndent(result, "", "  ")
-	os.WriteFile(fullPath, data, 0600) //nolint:errcheck
-
+	// Apenas viabot-dom-messages.json e conversations-raw.json são lidos de volta pelo extractor.
+	// Os demais arquivos de debug (auth-requests, chat-requests, discovery-*.json, etc.) foram
+	// removidos — eram escritos e nunca lidos, consumindo disco desnecessariamente.
 	printSummary(result, outputDir, logger)
 	return result, nil
 }
