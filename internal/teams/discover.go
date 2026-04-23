@@ -901,33 +901,18 @@ func extractConversations(convResp map[string]interface{}, result *DiscoveryResu
 	}
 }
 
-func saveJSON(path string, v interface{}, logger *zerolog.Logger) {
-	data, _ := json.MarshalIndent(v, "", "  ")
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		logger.Error().Err(err).Str("file", path).Msg("[Teams] Erro ao salvar")
-		return
-	}
-	logger.Info().Str("file", path).Msg("[Teams] Salvo")
-}
 
-func printSummary(result *DiscoveryResult, outputDir string, logger *zerolog.Logger) {
+func printSummary(result *DiscoveryResult, _ string, logger *zerolog.Logger) {
 	logger.Info().Msg("[Teams] ════════════════ RESUMO ════════════════")
 	logger.Info().Msgf("[Teams] Auth requests : %d", len(result.AuthRequests))
 	logger.Info().Msgf("[Teams] Chat requests : %d", len(result.ChatRequests))
 	logger.Info().Msgf("[Teams] WS frames     : %d", len(result.WebSockets))
+	logger.Info().Msgf("[Teams] Conversas     : %d", len(result.Conversations))
 	if result.SkypeToken != "" {
 		logger.Info().Msgf("[Teams] SkypeToken    : %s...", result.SkypeToken[:min(30, len(result.SkypeToken))])
 	} else {
-		logger.Warn().Msg("[Teams] SkypeToken    : NÃO ENCONTRADO — inspecione auth-requests.json")
+		logger.Warn().Msg("[Teams] SkypeToken    : NÃO ENCONTRADO")
 	}
-	logger.Info().Msg("[Teams] ════════════════ PRÓXIMOS PASSOS ══════")
-	logger.Info().Msgf("[Teams] 1. Abrir %s/auth-requests.json", outputDir)
-	logger.Info().Msg("[Teams]    → procurar campo skypeToken ou tokens.skypeToken")
-	logger.Info().Msgf("[Teams] 2. Abrir %s/chat-requests.json", outputDir)
-	logger.Info().Msg("[Teams]    → identificar URL de listagem de conversas")
-	logger.Info().Msg("[Teams]    → identificar threadId do MR.ViaBot")
-	logger.Info().Msgf("[Teams] 3. Abrir %s/websocket-frames.json", outputDir)
-	logger.Info().Msg("[Teams]    → inspecionar formato das mensagens em tempo real")
 	logger.Info().Msg("[Teams] ═════════════════════════════════════════")
 }
 
