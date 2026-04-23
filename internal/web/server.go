@@ -1010,6 +1010,17 @@ func (s *Server) setupRoutes() {
 	}
 	fmt.Println("✅ ServiceNow Integration routes registradas (HTTP + Playwright + Session)")
 
+	// Teams Integration (Mr.ViaBot — lista de CHGs do dia)
+	teamsHandler := handlers.NewTeamsHandler(&githubLogger)
+	teamsGroup := api.Group("/teams")
+	{
+		teamsGroup.GET("/approvals/today", teamsHandler.GetApprovalsToday)
+		teamsGroup.GET("/approvals/search", teamsHandler.SearchCHG)
+		teamsGroup.POST("/approvals/refresh", teamsHandler.RefreshApprovals)
+	}
+	fmt.Println("✅ Teams Integration routes registradas")
+
+
 	// SRE Approval Integration (aprovação de deployments)
 	sreApprovalHandler := handlers.NewSREApprovalHandler(&githubLogger)
 	sreApproval := api.Group("/sre-approval")

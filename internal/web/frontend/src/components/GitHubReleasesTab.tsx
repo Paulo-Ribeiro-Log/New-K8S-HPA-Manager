@@ -40,6 +40,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CredentialRedirectDialog } from "./profile/CredentialRedirectDialog";
 import { DeploymentScanModal } from "./DeploymentScanModal";
 import { ServiceNowImportModal } from "./ServiceNowImportModal";
+import { SreApprovalButton } from "./SreApprovalButton";
 import { useClusters } from "@/hooks/useAPI";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -105,6 +106,7 @@ interface ComparisonItem {
   productionTag: string;
   newTag: string;
   chgNumber?: string;  // Número da mudança ServiceNow
+  approvalUrl?: string; // URL de aprovação SRE (capturada do Teams/Mr.ViaBot)
   status: 'pending' | 'loading' | 'success' | 'error';
   result?: ComparisonResult;
   error?: string;
@@ -620,12 +622,8 @@ export const GitHubReleasesTab = () => {
     newVersion: string;
     xlReleaseUrl?: string;
     changeNumber?: string;
+    approvalUrl?: string;
   }) => {
-    if (!data.newVersion) {
-      toast.error('Versão não identificada na CHG - verifique o texto extraído');
-      return;
-    }
-
     // Buscar tag de produção via API
     let prodTag = '';
     if (data.deploymentName) {
@@ -663,6 +661,7 @@ export const GitHubReleasesTab = () => {
       productionTag: prodTag,
       newTag: data.newVersion,
       chgNumber: data.changeNumber || undefined,
+      approvalUrl: data.approvalUrl || undefined,
       status: 'pending',
     };
 
@@ -1276,8 +1275,14 @@ export const GitHubReleasesTab = () => {
                 return `Comparação: ${deploymentName}${chgNumber ? ` (CHG: ${chgNumber})` : ''}`;
               })()
             : "Comparação",
-          titleAction: displayedComparison && (
-            <div className="flex items-center gap-4">
+          titleSuffix: selectedBatchItem?.approvalUrl ? (
+            <SreApprovalButton
+              approvalUrl={selectedBatchItem.approvalUrl}
+              chgNumber={selectedBatchItem.chgNumber}
+            />
+          ) : undefined,
+          titleAction: displayedComparison ? (
+            <div className="flex items-center gap-3">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <GitCompare className="h-4 w-4" />
                 <span>{displayedComparison?.commits?.length || 0} commit(s)</span>
@@ -1295,7 +1300,7 @@ export const GitHubReleasesTab = () => {
                 />
               </div>
             </div>
-          ),
+          ) : undefined,
           content: (
             <div className="h-full flex flex-col">
               {!searchTriggered && !displayedComparison && !isComparing && (
@@ -1458,22 +1463,17 @@ export const GitHubReleasesTab = () => {
                           </div>
                         </div>
 
-                        {/* CHG Number do ServiceNow (se disponível) */}
-                        {(() => {
-                          const comparison = comparisonBatch.find(item => item.id === selectedComparison);
-                          return comparison?.chgNumber && (
-                            <div className="pt-2 pb-1">
-                              <div className="text-center">
-                                <Label className="text-[10px] text-muted-foreground">CHG ServiceNow</Label>
-                                <div className="mt-1">
-                                  <Badge variant="outline" className="font-mono text-xs bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800">
-                                    {comparison.chgNumber}
-                                  </Badge>
-                                </div>
-                              </div>
+                        {/* CHG Number (badge) */}
+                        {selectedBatchItem?.chgNumber && (
+                          <div className="pt-2 pb-1 text-center">
+                            <Label className="text-[10px] text-muted-foreground">CHG ServiceNow</Label>
+                            <div className="mt-1">
+                              <Badge variant="outline" className="font-mono text-xs bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800">
+                                {selectedBatchItem.chgNumber}
+                              </Badge>
                             </div>
-                          );
-                        })()}
+                          </div>
+                        )}
 
                         {/* Estatísticas */}
                         <div className="flex items-center justify-around pt-1.5 border-t">

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os/exec"
 	"strings"
 	"sync"
@@ -52,7 +54,8 @@ func (r *RBACManager) GetCurrentUserEmail(ctx context.Context) (string, error) {
 	return email, nil
 }
 
-// GetUserGroups obtém grupos do usuário via Azure CLI
+// GetUserGroups obtém grupos do usuário via Graph API REST.
+// Usa az account get-access-token para evitar o bloqueio CAE do az ad user get-member-groups.
 func (r *RBACManager) GetUserGroups(ctx context.Context, email string) ([]ADGroup, error) {
 	// Verificar cache primeiro
 	r.cacheMutex.RLock()
@@ -64,17 +67,47 @@ func (r *RBACManager) GetUserGroups(ctx context.Context, email string) ([]ADGrou
 	}
 	r.cacheMutex.RUnlock()
 
-	// Executar comando Azure CLI
-	cmd := exec.CommandContext(ctx, "az", "ad", "user", "get-member-groups",
-		"--id", email, "-o", "json")
-	output, err := cmd.Output()
+	// Obter token Graph via az CLI (não sofre bloqueio CAE como az ad user get-member-groups)
+	tokenCmd := exec.CommandContext(ctx, "az", "account", "get-access-token",
+		"--resource", "https://graph.microsoft.com", "--query", "accessToken", "-o", "tsv")
+	tokenOut, err := tokenCmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get user groups: %w", err)
+		return nil, fmt.Errorf("failed to get graph token: %w", err)
 	}
+	token := strings.TrimSpace(string(tokenOut))
 
+	// Buscar grupos via Graph API com paginação
 	var groups []ADGroup
-	if err := json.Unmarshal(output, &groups); err != nil {
-		return nil, fmt.Errorf("failed to parse groups: %w", err)
+	nextURL := "https://graph.microsoft.com/v1.0/me/memberOf?$select=displayName,id&$top=100"
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	for nextURL != "" {
+		req, err := http.NewRequestWithContext(ctx, "GET", nextURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build graph request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to call graph api: %w", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("graph api returned %d: %s", resp.StatusCode, string(body))
+		}
+
+		var page struct {
+			Value    []ADGroup `json:"value"`
+			NextLink string    `json:"@odata.nextLink"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			return nil, fmt.Errorf("failed to parse graph response: %w", err)
+		}
+		groups = append(groups, page.Value...)
+		nextURL = page.NextLink
 	}
 
 	// Atualizar cache

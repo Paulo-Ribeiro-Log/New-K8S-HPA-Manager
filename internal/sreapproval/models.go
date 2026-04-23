@@ -55,7 +55,9 @@ type ApproveActionRequest struct {
 
 // ApproveActionResponse resposta da ação de aprovar
 type ApproveActionResponse struct {
-	Success   bool   `json:"success"`
-	Message   string `json:"message,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Success          bool   `json:"success"`
+	Message          string `json:"message,omitempty"`
+	Error            string `json:"error,omitempty"`
+	AlreadyFinalized bool   `json:"already_finalized,omitempty"`
+	ApproverEmail    string `json:"approver_email,omitempty"`
 }

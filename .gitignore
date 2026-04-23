@@ -86,3 +86,4 @@ internal/web/frontend/dist/
 
 # GitHub tokens (nunca commitar)
 github_token*.txt
+internal/teams/testdata/

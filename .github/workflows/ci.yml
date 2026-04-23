@@ -17,7 +17,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25'
 
       - name: Cache Go modules
         uses: actions/cache@v4
@@ -52,6 +52,6 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: k8s-hpa-manager-dev
-          path: build/k8s-hpa-manager
+          name: new-k8s-hpa-dev
+          path: build/new-k8s-hpa
           retention-days: 7
