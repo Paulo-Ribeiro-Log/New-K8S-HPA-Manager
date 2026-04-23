@@ -579,7 +579,6 @@ Usar essas funções ao calcular percentuais de uso vs. limit/request. **Nunca c
 **`ServiceNowImportModal.tsx`**: modal com 3 abas — **"Teams (Mr.ViaBot)"** (padrão), "Playwright/Rod" e "Manual". A aba Teams carrega `getTeamsApprovalsToday()` na abertura e permite selecionar CHGs para extração em lote via ServiceNow.
 
 **`internal/teams/testdata/`** está no `.gitignore` — contém tokens de sessão capturados durante debug.
-
 ### Certificates
 
 `internal/certificates/` + `internal/web/handlers/certificates.go`: discovery de certs TLS em secrets K8s, validação de expiração, import/export. Usar para qualquer operação envolvendo TLS no cluster.

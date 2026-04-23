@@ -1020,6 +1020,7 @@ func (s *Server) setupRoutes() {
 	}
 	fmt.Println("✅ Teams Integration routes registradas")
 
+
 	// SRE Approval Integration (aprovação de deployments)
 	sreApprovalHandler := handlers.NewSREApprovalHandler(&githubLogger)
 	sreApproval := api.Group("/sre-approval")
