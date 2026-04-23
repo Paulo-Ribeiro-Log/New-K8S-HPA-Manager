@@ -348,9 +348,9 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 		}
 	}()
 
-	// Aguardar Teams v2 carregar (pode levar até 2 minutos)
-	logger.Info().Msg("[Teams] Aguardando Teams v2 carregar (pode levar ~2min)...")
-	loadDeadline := time.Now().Add(3 * time.Minute)
+	// Aguardar Teams v2 carregar (pode levar até 5 minutos em WSL/máquinas lentas)
+	logger.Info().Msg("[Teams] Aguardando Teams v2 carregar (pode levar ~5min em WSL)...")
+	loadDeadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(loadDeadline) {
 		info, _ := page.Info()
 		if info != nil && isTeamsURL(info.URL) &&
@@ -375,8 +375,8 @@ teamsLoaded:
 	// ThreadId do Mr.ViaBot (descoberto na Fase 0)
 	const mrViaBotThreadID = "19:eab1be93-5589-4a3f-9f47-d6cfcbc50a0c_61740f97-9be2-4459-b054-5230364585a7@unq.gbl.spaces"
 
-	// Aguardar SkypeToken ser capturado (indica sessão ativa). Máximo 30s.
-	for i := 0; i < 6; i++ {
+	// Aguardar SkypeToken ser capturado (indica sessão ativa). Máximo 90s.
+	for i := 0; i < 18; i++ {
 		time.Sleep(5 * time.Second)
 		mu.Lock()
 		captured := result.SkypeToken != ""
@@ -399,7 +399,7 @@ teamsLoaded:
 	} else {
 		logger.Warn().Err(navErr).Msg("[Teams] Falha ao navegar via hash")
 	}
-	time.Sleep(8 * time.Second)
+	time.Sleep(15 * time.Second)
 
 	// Se o hash não abriu a conversa, tentar clicar no item da lista de chats
 	clickJS := `() => {
@@ -434,7 +434,7 @@ teamsLoaded:
 	if clickErr == nil && !clickRes.Value.Nil() {
 		logger.Info().Str("result", clickRes.Value.String()).Msg("[Teams] Tentativa de click na conversa Mr.ViaBot")
 	}
-	time.Sleep(10 * time.Second)
+	time.Sleep(20 * time.Second)
 
 	// Extrair mensagens diretamente do DOM (não depende de HTTP — MCAS bloqueia fetch() externo)
 	domMsgJS := `() => {
