@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Loader2, ShieldCheck, ShieldAlert } from "lucide-react";
+import { Loader2, ShieldCheck, ShieldAlert, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 
@@ -9,7 +9,7 @@ interface SreApprovalButtonProps {
   chgNumber?: string;
 }
 
-type ApprovalStatus = "unknown" | "loading" | "pending" | "approved" | "finalized" | "approving" | "error";
+type ApprovalStatus = "unknown" | "loading" | "pending" | "confirming" | "approved" | "finalized" | "approving" | "error";
 
 export function SreApprovalButton({ approvalUrl, chgNumber }: SreApprovalButtonProps) {
   const [status, setStatus] = useState<ApprovalStatus>("unknown");
@@ -79,11 +79,37 @@ export function SreApprovalButton({ approvalUrl, chgNumber }: SreApprovalButtonP
   const canApprove = status === "pending" || status === "unknown";
   const isLoading = status === "loading" || status === "approving";
 
+  // Etapa de confirmação: dois botões inline substituem o botão original
+  if (status === "confirming") {
+    return (
+      <div className="flex items-center gap-1">
+        <span className="text-xs text-yellow-300 mr-1">Confirmar aprovação?</span>
+        <Button
+          size="sm"
+          onClick={handleApprove}
+          className="h-6 px-2 text-xs bg-green-600 hover:bg-green-700 text-white"
+        >
+          <Check className="h-3 w-3 mr-1" />
+          Sim
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => setStatus("pending")}
+          className="h-6 px-2 text-xs text-white hover:bg-white/10"
+        >
+          <X className="h-3 w-3 mr-1" />
+          Não
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex items-center gap-2">
       <Button
         size="sm"
-        onClick={canApprove ? handleApprove : undefined}
+        onClick={canApprove ? () => setStatus("confirming") : undefined}
         disabled={isLoading || isApprovedOrFinalized}
         className="h-6 px-2.5 text-xs bg-blue-600 hover:bg-blue-700 text-white disabled:bg-blue-400"
         title={`Aprovar ${chgNumber || ""} — preenche email automaticamente`}
