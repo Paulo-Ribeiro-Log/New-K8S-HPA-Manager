@@ -2,10 +2,11 @@ package sreapproval
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -13,6 +14,16 @@ import (
 
 	"github.com/rs/zerolog"
 )
+
+// ErrAlreadyFinalized indica que a solicitação já foi finalizada, com o email do aprovador.
+type ErrAlreadyFinalized struct {
+	ApproverEmail string
+	ApproverSquad string
+}
+
+func (e *ErrAlreadyFinalized) Error() string {
+	return "esta solicitação de aprovação já foi finalizada"
+}
 
 // Client é o cliente para o sistema SRE Approval
 type Client struct {
@@ -32,58 +43,13 @@ func NewClient(logger *zerolog.Logger) *Client {
 	}
 }
 
-// GetApprovalInfo obtém informações de uma solicitação de aprovação
+// GetApprovalInfo obtém informações de uma solicitação de aprovação via scraping HTML.
 func (c *Client) GetApprovalInfo(ctx context.Context, approvalURL string) (*ApprovalInfo, error) {
-	// Extrair ID da URL
-	approvalID, err := ExtractApprovalID(approvalURL)
+	_, err := ExtractApprovalID(approvalURL)
 	if err != nil {
 		return nil, err
 	}
-
-	c.logger.Info().
-		Str("approval_id", approvalID).
-		Str("url", approvalURL).
-		Msg("Buscando informações de aprovação SRE")
-
-	// Tentar API primeiro
-	info, err := c.getFromAPI(ctx, approvalID)
-	if err == nil {
-		return info, nil
-	}
-
-	c.logger.Warn().Err(err).Msg("API não disponível, tentando scraping da página")
-
-	// Fallback: scraping da página HTML
 	return c.getFromHTML(ctx, approvalURL)
-}
-
-// getFromAPI tenta obter dados via API REST
-func (c *Client) getFromAPI(ctx context.Context, approvalID string) (*ApprovalInfo, error) {
-	url := fmt.Sprintf("%s/sre-approval/api/approval/%s", c.baseURL, approvalID)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API retornou status %d", resp.StatusCode)
-	}
-
-	var info ApprovalInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, err
-	}
-
-	return &info, nil
 }
 
 // getFromHTML faz scraping da página HTML para extrair informações
@@ -93,8 +59,8 @@ func (c *Client) getFromHTML(ctx context.Context, approvalURL string) (*Approval
 		return nil, err
 	}
 
-	req.Header.Set("Accept", "text/html")
-	req.Header.Set("User-Agent", "K8s-HPA-Manager/1.0")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -163,14 +129,10 @@ func (c *Client) parseHTML(html, approvalURL string) (*ApprovalInfo, error) {
 	return info, nil
 }
 
-// Approve executa a aprovação de uma solicitação
+// Approve submete o formulário de aprovação SRE com o email do aprovador.
+// Fluxo: GET página → extrai CSRF + campos hidden → POST com email.
 func (c *Client) Approve(ctx context.Context, approvalURL string, approverEmail string) error {
-	approvalID, err := ExtractApprovalID(approvalURL)
-	if err != nil {
-		return err
-	}
-
-	// Se email não fornecido, obter do Azure CLI
+	var err error
 	if approverEmail == "" {
 		approverEmail, err = GetCurrentUserEmail(ctx)
 		if err != nil {
@@ -178,38 +140,99 @@ func (c *Client) Approve(ctx context.Context, approvalURL string, approverEmail 
 		}
 	}
 
-	c.logger.Info().
-		Str("approval_id", approvalID).
-		Str("approver_email", approverEmail).
-		Msg("Executando aprovação SRE")
+	// Cookie jar mantém sessão entre GET e POST (necessário para CSRF session-based)
+	jar, _ := cookiejar.New(nil)
+	sessionClient := &http.Client{Timeout: 30 * time.Second, Jar: jar}
 
-	// Tentar aprovar via API
-	url := fmt.Sprintf("%s/sre-approval/api/approve", c.baseURL)
-
-	payload := map[string]string{
-		"approval_id": approvalID,
-		"email":       approverEmail,
-	}
-
-	payloadBytes, _ := json.Marshal(payload)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(payloadBytes)))
+	// GET: carregar o formulário
+	getReq, err := http.NewRequestWithContext(ctx, "GET", approvalURL, nil)
 	if err != nil {
 		return err
 	}
+	getReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	getReq.Header.Set("Accept", "text/html,application/xhtml+xml")
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
+	getResp, err := sessionClient.Do(getReq)
 	if err != nil {
-		return fmt.Errorf("erro ao chamar API de aprovação: %w", err)
+		return fmt.Errorf("erro ao carregar formulário de aprovação: %w", err)
 	}
-	defer resp.Body.Close()
+	rawBody, _ := io.ReadAll(getResp.Body)
+	getResp.Body.Close()
+	html := string(rawBody)
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("aprovação falhou (status %d): %s", resp.StatusCode, string(body))
+	if strings.Contains(html, "já foi finalizada") {
+		finErr := &ErrAlreadyFinalized{}
+		emailRe := regexp.MustCompile(`Email:\s*([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})`)
+		if m := emailRe.FindStringSubmatch(html); len(m) > 1 {
+			finErr.ApproverEmail = m[1]
+		}
+		squadRe := regexp.MustCompile(`Squad:\s*([^\n<]+)`)
+		if m := squadRe.FindStringSubmatch(html); len(m) > 1 {
+			finErr.ApproverSquad = strings.TrimSpace(m[1])
+		}
+		return finErr
+	}
+
+	// Extrair action do <form> (default: POST para a mesma URL)
+	formAction := approvalURL
+	if m := regexp.MustCompile(`(?i)<form[^>]+action="([^"]+)"`).FindStringSubmatch(html); len(m) > 1 {
+		action := m[1]
+		switch {
+		case strings.HasPrefix(action, "http"):
+			formAction = action
+		case strings.HasPrefix(action, "/"):
+			formAction = c.baseURL + action
+		}
+	}
+
+	// Coletar todos os campos <input type="hidden"> (inclui csrf_token se presente)
+	formData := url.Values{}
+	hiddenRe := regexp.MustCompile(`(?i)<input[^>]+type=["']?hidden["']?[^>]*>`)
+	nameRe := regexp.MustCompile(`(?i)\sname=["']([^"']+)["']`)
+	valueRe := regexp.MustCompile(`(?i)\svalue=["']([^"']*)["']`)
+	for _, field := range hiddenRe.FindAllString(html, -1) {
+		nm := nameRe.FindStringSubmatch(field)
+		if len(nm) < 2 {
+			continue
+		}
+		val := ""
+		if vm := valueRe.FindStringSubmatch(field); len(vm) > 1 {
+			val = vm[1]
+		}
+		formData.Set(nm[1], val)
+	}
+	formData.Set("email", approverEmail)
+
+	c.logger.Info().
+		Str("form_action", formAction).
+		Str("approver_email", approverEmail).
+		Int("hidden_fields", len(formData)-1).
+		Msg("[SRE] Submetendo aprovação via form POST")
+
+	// POST: enviar formulário
+	postReq, err := http.NewRequestWithContext(ctx, "POST", formAction, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return err
+	}
+	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	postReq.Header.Set("Referer", approvalURL)
+	postReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	postReq.Header.Set("Accept", "text/html,application/xhtml+xml")
+
+	postResp, err := sessionClient.Do(postReq)
+	if err != nil {
+		return fmt.Errorf("erro ao submeter aprovação: %w", err)
+	}
+	defer postResp.Body.Close()
+	respBody, _ := io.ReadAll(postResp.Body)
+
+	if postResp.StatusCode >= 400 {
+		return fmt.Errorf("aprovação falhou (status %d) — verifique se a URL está correta", postResp.StatusCode)
+	}
+
+	respHTML := string(respBody)
+	if strings.Contains(respHTML, "já foi finalizada") || strings.Contains(strings.ToLower(respHTML), "aprovad") {
+		c.logger.Info().Str("url", approvalURL).Msg("[SRE] Aprovação confirmada")
 	}
 
 	return nil

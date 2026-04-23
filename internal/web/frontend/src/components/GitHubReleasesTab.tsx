@@ -1275,8 +1275,14 @@ export const GitHubReleasesTab = () => {
                 return `Comparação: ${deploymentName}${chgNumber ? ` (CHG: ${chgNumber})` : ''}`;
               })()
             : "Comparação",
-          titleAction: displayedComparison && (
-            <div className="flex items-center gap-4">
+          titleSuffix: selectedBatchItem?.approvalUrl ? (
+            <SreApprovalButton
+              approvalUrl={selectedBatchItem.approvalUrl}
+              chgNumber={selectedBatchItem.chgNumber}
+            />
+          ) : undefined,
+          titleAction: displayedComparison ? (
+            <div className="flex items-center gap-3">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <GitCompare className="h-4 w-4" />
                 <span>{displayedComparison?.commits?.length || 0} commit(s)</span>
@@ -1294,7 +1300,7 @@ export const GitHubReleasesTab = () => {
                 />
               </div>
             </div>
-          ),
+          ) : undefined,
           content: (
             <div className="h-full flex flex-col">
               {!searchTriggered && !displayedComparison && !isComparing && (
@@ -1457,34 +1463,17 @@ export const GitHubReleasesTab = () => {
                           </div>
                         </div>
 
-                        {/* CHG Number + SRE Approval (se disponível) */}
-                        {(() => {
-                          const comparison = comparisonBatch.find(item => item.id === selectedComparison);
-                          if (!comparison?.chgNumber && !comparison?.approvalUrl) return null;
-                          return (
-                            <div className="pt-2 pb-1 space-y-2">
-                              {comparison.chgNumber && (
-                                <div className="text-center">
-                                  <Label className="text-[10px] text-muted-foreground">CHG ServiceNow</Label>
-                                  <div className="mt-1">
-                                    <Badge variant="outline" className="font-mono text-xs bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800">
-                                      {comparison.chgNumber}
-                                    </Badge>
-                                  </div>
-                                </div>
-                              )}
-                              {comparison.approvalUrl && (
-                                <div>
-                                  <Label className="text-[10px] text-muted-foreground block text-center mb-1">Aprovação SRE</Label>
-                                  <SreApprovalButton
-                                    approvalUrl={comparison.approvalUrl}
-                                    chgNumber={comparison.chgNumber}
-                                  />
-                                </div>
-                              )}
+                        {/* CHG Number (badge) */}
+                        {selectedBatchItem?.chgNumber && (
+                          <div className="pt-2 pb-1 text-center">
+                            <Label className="text-[10px] text-muted-foreground">CHG ServiceNow</Label>
+                            <div className="mt-1">
+                              <Badge variant="outline" className="font-mono text-xs bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800">
+                                {selectedBatchItem.chgNumber}
+                              </Badge>
                             </div>
-                          );
-                        })()}
+                          </div>
+                        )}
 
                         {/* Estatísticas */}
                         <div className="flex items-center justify-around pt-1.5 border-t">

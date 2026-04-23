@@ -3390,6 +3390,13 @@ class APIClient {
     return this.request("/teams/approvals/refresh", { method: "POST" });
   }
 
+  async searchTeamsCHG(chg: string): Promise<{
+    found: boolean;
+    item?: { chg: string; servicenow_url?: string; approval_url: string; description?: string; extracted_at: string };
+  }> {
+    return this.request(`/teams/approvals/search?chg=${encodeURIComponent(chg.toUpperCase())}`);
+  }
+
   // ==================== SRE Approval ====================
 
   async getSreApprovalInfo(approvalUrl: string): Promise<{
@@ -3415,6 +3422,8 @@ class APIClient {
     success: boolean;
     message?: string;
     error?: string;
+    already_finalized?: boolean;
+    approver_email?: string;
   }> {
     return this.request("/sre-approval/approve", {
       method: "POST",

@@ -75,6 +75,15 @@ func (h *SREApprovalHandler) Approve(c *gin.Context) {
 
 	err := h.client.Approve(c.Request.Context(), req.ApprovalURL, req.ApproverEmail)
 	if err != nil {
+		if finErr, ok := err.(*sreapproval.ErrAlreadyFinalized); ok {
+			c.JSON(http.StatusOK, sreapproval.ApproveActionResponse{
+				Success:          true,
+				AlreadyFinalized: true,
+				ApproverEmail:    finErr.ApproverEmail,
+				Message:          "Esta solicitação já foi finalizada",
+			})
+			return
+		}
 		h.logger.Error().Err(err).Msg("Erro ao aprovar")
 		c.JSON(http.StatusInternalServerError, sreapproval.ApproveActionResponse{
 			Success: false,

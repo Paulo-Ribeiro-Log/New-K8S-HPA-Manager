@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Loader2, ShieldCheck, ShieldAlert, ShieldX } from "lucide-react";
+import { Loader2, ShieldCheck, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 
@@ -15,17 +14,13 @@ type ApprovalStatus = "unknown" | "loading" | "pending" | "approved" | "finalize
 export function SreApprovalButton({ approvalUrl, chgNumber }: SreApprovalButtonProps) {
   const [status, setStatus] = useState<ApprovalStatus>("unknown");
   const [approverEmail, setApproverEmail] = useState<string>("");
-  const [approverSquad, setApproverSquad] = useState<string>("");
-  const [justApproved, setJustApproved] = useState(false);
 
   useEffect(() => {
-    if (approvalUrl) {
-      checkStatus();
-    }
+    if (approvalUrl) checkStatus();
   }, [approvalUrl]);
 
-  const checkStatus = async () => {
-    setStatus("loading");
+  const checkStatus = async (silent = false) => {
+    if (!silent) setStatus("loading");
     try {
       const res = await apiClient.getSreApprovalInfo(approvalUrl);
       if (res.success && res.approval_info) {
@@ -33,19 +28,17 @@ export function SreApprovalButton({ approvalUrl, chgNumber }: SreApprovalButtonP
         if (info.is_finalized || info.status === "FINALIZED") {
           setStatus("finalized");
           setApproverEmail(info.approver_email || "");
-          setApproverSquad(info.approver_squad || "");
         } else if (info.status === "APPROVED") {
           setStatus("approved");
           setApproverEmail(info.approver_email || "");
-          setApproverSquad(info.approver_squad || "");
-        } else {
+        } else if (!silent) {
           setStatus("pending");
         }
-      } else {
+      } else if (!silent) {
         setStatus("pending");
       }
     } catch {
-      setStatus("pending");
+      if (!silent) setStatus("pending");
     }
   };
 
@@ -62,11 +55,15 @@ export function SreApprovalButton({ approvalUrl, chgNumber }: SreApprovalButtonP
 
       const res = await apiClient.sreApprove(approvalUrl, userEmail);
       if (res.success) {
-        setJustApproved(true);
-        setStatus("approved");
-        setApproverEmail(userEmail);
-        toast.success(`${chgNumber || "CHG"} aprovada com sucesso!`);
-        setTimeout(checkStatus, 2000);
+        if (res.already_finalized) {
+          setStatus("finalized");
+          setApproverEmail(res.approver_email || "");
+          toast.info(`${chgNumber || "CHG"} já havia sido finalizada`);
+        } else {
+          setStatus("approved");
+          setApproverEmail(userEmail);
+          toast.success(`${chgNumber || "CHG"} aprovada com sucesso!`);
+        }
       } else {
         toast.error(res.error || "Falha ao aprovar");
         setStatus("pending");
@@ -78,59 +75,47 @@ export function SreApprovalButton({ approvalUrl, chgNumber }: SreApprovalButtonP
     }
   };
 
-  if (status === "loading") {
-    return (
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground py-1">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        Verificando aprovação...
-      </div>
-    );
-  }
+  const isApprovedOrFinalized = status === "approved" || status === "finalized";
+  const canApprove = status === "pending" || status === "unknown";
+  const isLoading = status === "loading" || status === "approving";
 
-  if (status === "approving") {
-    return (
-      <Button disabled size="sm" className="w-full h-7 text-xs">
-        <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-        Aprovando...
-      </Button>
-    );
-  }
-
-  if (status === "approved" || status === "finalized") {
-    const label = status === "finalized"
-      ? "Mudança finalizada"
-      : justApproved
-        ? "Aprovado com sucesso"
-        : "Mudança já aprovada";
-
-    return (
-      <div className="space-y-0.5">
-        <Badge
-          variant="outline"
-          className="w-full justify-center gap-1.5 py-1 text-xs bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300 border-green-200 dark:border-green-800"
-        >
-          <ShieldCheck className="h-3 w-3 flex-shrink-0" />
-          {label}
-        </Badge>
-        {approverEmail && (
-          <p className="text-[10px] text-center text-muted-foreground truncate" title={approverEmail}>
-            por {approverEmail}{approverSquad ? ` · ${approverSquad}` : ""}
-          </p>
-        )}
-      </div>
-    );
-  }
-
-  // pending / unknown
   return (
-    <Button
-      size="sm"
-      onClick={handleApprove}
-      className="w-full h-7 text-xs bg-orange-500 hover:bg-orange-600 text-white"
-      title={`Aprovar ${chgNumber || "SRE"} — preenche email automaticamente`}
-    >
-      <ShieldAlert className="h-3 w-3 mr-1 flex-shrink-0" />
-      Aprovar SRE
-    </Button>
+    <div className="flex items-center gap-2">
+      <Button
+        size="sm"
+        onClick={canApprove ? handleApprove : undefined}
+        disabled={isLoading || isApprovedOrFinalized}
+        className="h-6 px-2.5 text-xs bg-blue-600 hover:bg-blue-700 text-white disabled:bg-blue-400"
+        title={`Aprovar ${chgNumber || ""} — preenche email automaticamente`}
+      >
+        {isLoading ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : isApprovedOrFinalized ? (
+          <ShieldCheck className="h-3 w-3" />
+        ) : (
+          <ShieldAlert className="h-3 w-3 mr-1" />
+        )}
+        {!isLoading && "Aprovar"}
+      </Button>
+
+      {status === "loading" && (
+        <span className="text-xs text-muted-foreground">Verificando...</span>
+      )}
+      {status === "approving" && (
+        <span className="text-xs text-muted-foreground">Enviando...</span>
+      )}
+      {isApprovedOrFinalized && (
+        <span className="text-xs text-white flex items-center gap-1 max-w-[600px] truncate" title={approverEmail || undefined}>
+          {approverEmail ? (
+            <>
+              <span className="shrink-0">Já aprovado por</span>
+              <span className="text-yellow-400 truncate">{approverEmail}</span>
+            </>
+          ) : (
+            status === "finalized" ? "Já finalizado" : "Já aprovado"
+          )}
+        </span>
+      )}
+    </div>
   );
 }

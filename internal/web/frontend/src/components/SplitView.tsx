@@ -5,12 +5,14 @@ interface SplitViewProps {
   leftPanel: {
     title: string;
     titlePrefix?: ReactNode;
+    titleSuffix?: ReactNode;
     titleAction?: ReactNode;
     content: ReactNode;
   };
   rightPanel: {
     title: string;
     titlePrefix?: ReactNode;
+    titleSuffix?: ReactNode;
     titleAction?: ReactNode;
     content: ReactNode;
   };
@@ -69,6 +71,7 @@ export const SplitView = ({ leftPanel, rightPanel }: SplitViewProps) => {
             <h3 className="text-sm font-semibold text-primary whitespace-nowrap">
               {leftPanel.title}
             </h3>
+            {leftPanel.titleSuffix}
           </div>
           {leftPanel.titleAction && (
             <div className="flex items-center gap-1 flex-wrap min-w-0">
@@ -93,6 +96,7 @@ export const SplitView = ({ leftPanel, rightPanel }: SplitViewProps) => {
             <h3 className="text-sm font-semibold text-primary whitespace-nowrap">
               {rightPanel.title}
             </h3>
+            {rightPanel.titleSuffix}
           </div>
           {rightPanel.titleAction && (
             <div className="flex items-center gap-1 flex-wrap min-w-0">
