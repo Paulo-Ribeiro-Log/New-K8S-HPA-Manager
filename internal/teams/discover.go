@@ -154,8 +154,9 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 		Headless(false).
 		Delete("enable-automation").
 		Set("disable-blink-features", "AutomationControlled").
-		Set("no-first-run", "").
-		Set("no-default-browser-check", "")
+		// Sem segundo argumento: Rod gera --flag (sem =), correto para flags booleanas
+		Set("no-first-run").
+		Set("no-default-browser-check")
 
 	if chromeBin != "" {
 		l = l.Bin(chromeBin)
@@ -456,17 +457,36 @@ teamsLoaded:
 				if (messages.length > 0) break;
 			}
 		}
-		// Fallback: qualquer elemento com texto contendo CHG ou sre-approval
+		// Fallback: encontrar <a> com CHGxxxxx e subir na DOM até o container
+		// que também contenha a URL sre-approval (captura "Nome e versão" junto)
 		if (messages.length === 0) {
-			const allEls = document.querySelectorAll('*');
-			for (const el of allEls) {
-				if (el.children.length === 0) {
-					const t = (el.innerText || '').trim();
-					if ((t.includes('CHG') || t.includes('sre-approval') || t.includes('SRE APPROVAL')) && t.length < 2000) {
-						messages.push(t);
+			const chgRe = /CHG\d{5,}/i;
+			const added = new Set();
+			for (const el of document.querySelectorAll('*')) {
+				if (el.children.length > 0) continue; // só leaf nodes
+				const t = (el.innerText || el.textContent || '').trim();
+				if (!chgRe.test(t) || t.length > 40) continue; // leaf com número CHG
+				// Subir até achar container com sre-approval
+				let ancestor = el.parentElement;
+				for (let d = 0; d < 15 && ancestor; d++) {
+					const at = (ancestor.innerText || '').trim();
+					if (at.includes('sre-approval') && at.length < 3000) {
+						if (!added.has(at)) { added.add(at); messages.push(at); }
+						break;
 					}
+					ancestor = ancestor.parentElement;
 				}
 			}
+			// Remover substrings: manter apenas o maior container por mensagem
+			const deduped = [];
+			for (const m of messages) {
+				const supIdx = deduped.findIndex(d => d.includes(m));
+				const subIdx = deduped.findIndex(d => m.includes(d));
+				if (supIdx >= 0) { /* já coberto pelo maior */ }
+				else if (subIdx >= 0) { deduped[subIdx] = m; }
+				else { deduped.push(m); }
+			}
+			messages.splice(0, messages.length, ...deduped);
 		}
 		return JSON.stringify({ url: window.location.href, count: messages.length, messages: messages });
 	}`
@@ -792,9 +812,9 @@ teamsLoaded:
 // fetchViaBotMessages faz chamada HTTP direta ao chatsvcagg (bypassa MCAS do browser).
 // startTime: hoje às 00:00 UTC em ms. Tenta 3 endpoints (prod/gov/mcas).
 func fetchViaBotMessages(skypeToken, threadID, outputPath string, logger *zerolog.Logger) error {
-	// startTime = hoje 00:00 UTC
+	// startTime = ontem 00:00 UTC (últimos 2 dias)
 	now := time.Now().UTC()
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Add(-24 * time.Hour)
 	startTimeMs := startOfDay.UnixMilli()
 
 	encodedThread := url.PathEscape(threadID)

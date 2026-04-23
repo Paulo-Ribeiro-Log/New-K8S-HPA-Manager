@@ -111,6 +111,7 @@ export function ServiceNowImportModal({
   const [teamsLoading, setTeamsLoading] = useState(false);
   const [teamsLastUpdated, setTeamsLastUpdated] = useState<string | null>(null);
   const [teamsNeedsRefresh, setTeamsNeedsRefresh] = useState(true);
+  const [chgSearch, setChgSearch] = useState("");
   // Multi-select: set de CHGs selecionados
   const [selectedTeamsChgs, setSelectedTeamsChgs] = useState<Set<string>>(new Set());
   // CHG pendente para extração via browser (aba Via Browser)
@@ -163,57 +164,111 @@ export function ServiceNowImportModal({
     }
   };
 
+  const chgSearchNorm = chgSearch.trim().toUpperCase();
+  const isValidChgInput = /^CHG\d{5,}$/.test(chgSearchNorm);
+  const filteredTeamsItems = chgSearch
+    ? teamsItems.filter(i =>
+        i.chg.includes(chgSearchNorm) ||
+        (i.description || "").toLowerCase().includes(chgSearch.toLowerCase())
+      )
+    : teamsItems;
+  const chgInList = filteredTeamsItems.some(i => i.chg === chgSearchNorm);
+
+  const handleExtractDirectChg = async () => {
+    const chg = chgSearchNorm;
+    setTeamsExtracting({ current: 0, total: 1, chg });
+
+    // 1. Verificar cache local (últimos 2 dias) — evita re-scan do Teams
+    let snUrl = `https://viavarejo.service-now.com/change_request.do?sysparm_query=number=${chg}`;
+    let cachedApprovalUrl = "";
+    try {
+      const cached = await apiClient.searchTeamsCHG(chg);
+      if (cached.found && cached.item) {
+        if (cached.item.servicenow_url) snUrl = cached.item.servicenow_url;
+        cachedApprovalUrl = cached.item.approval_url || "";
+      }
+    } catch { /* ignora — usa URL construída */ }
+
+    // 2. Extrair dados do ServiceNow
+    try {
+      const response = await apiClient.extractServiceNowWithPlaywright(snUrl);
+      if (response.success && response.extracted_data) {
+        const d = response.extracted_data as ExtractedData;
+        onImportSuccess({
+          deploymentName: d.application || chg,
+          githubRepo: d.github_repo || d.application || "",
+          newVersion: d.version || "",
+          xlReleaseUrl: d.xlrelease_url,
+          changeNumber: response.change_number || chg,
+          approvalUrl: cachedApprovalUrl,
+        });
+        setAddedCount(c => c + 1);
+        toast.success(`${chg} adicionada a comparações`);
+        setChgSearch("");
+      } else {
+        toast.error(`${chg}: ${response.error || "falha na extração"}`);
+      }
+    } catch (err) {
+      toast.error(`${chg}: ${err instanceof Error ? err.message : "erro"}`);
+    }
+    setTeamsExtracting(null);
+  };
+
   // Extrai cada CHG selecionada via browser (Rod) para obter githubRepo + versão completos
   const handleImportSelectedTeams = async () => {
     const selected = teamsItems.filter(i => selectedTeamsChgs.has(i.chg));
     if (selected.length === 0) return;
 
-    let successCount = 0;
-    const errors: string[] = [];
+    const successChgs: string[] = [];
+    const errorItems: string[] = [];
+    let completed = 0;
 
-    for (let idx = 0; idx < selected.length; idx++) {
-      const item = selected[idx];
+    setTeamsExtracting({ current: 0, total: selected.length, chg: "iniciando..." });
+
+    const processItem = async (item: TeamsApprovalItem) => {
       const snUrl = item.servicenow_url;
-
       if (!snUrl) {
-        errors.push(`${item.chg}: sem URL do ServiceNow`);
-        continue;
+        errorItems.push(`${item.chg}: sem URL do ServiceNow`);
+        setTeamsExtracting({ current: ++completed, total: selected.length, chg: item.chg });
+        return;
       }
-
-      setTeamsExtracting({ current: idx + 1, total: selected.length, chg: item.chg });
-
       try {
         const response = await apiClient.extractServiceNowWithPlaywright(snUrl);
-
         if (response.success && response.extracted_data) {
-          const data = response.extracted_data as ExtractedData;
+          const d = response.extracted_data as ExtractedData;
           onImportSuccess({
-            deploymentName: data.application || item.description || item.chg,
-            githubRepo: data.github_repo || "",
-            newVersion: data.version || "",
-            xlReleaseUrl: data.xlrelease_url,
+            deploymentName: d.application || item.description || item.chg,
+            githubRepo: d.github_repo || d.application || "",
+            newVersion: d.version || "",
+            xlReleaseUrl: d.xlrelease_url,
             changeNumber: response.change_number || item.chg,
             approvalUrl: item.approval_url,
           });
-          successCount++;
+          successChgs.push(item.chg);
         } else {
-          errors.push(`${item.chg}: ${response.error || "falha na extração"}`);
+          errorItems.push(`${item.chg}: ${response.error || "falha na extração"}`);
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "erro desconhecido";
-        errors.push(`${item.chg}: ${msg}`);
+        errorItems.push(`${item.chg}: ${err instanceof Error ? err.message : "erro desconhecido"}`);
       }
+      setTeamsExtracting({ current: ++completed, total: selected.length, chg: item.chg });
+    };
+
+    // Processar em lotes de 3 em paralelo (N CHGs = 1 browser, N abas)
+    const BATCH = 3;
+    for (let i = 0; i < selected.length; i += BATCH) {
+      await Promise.allSettled(selected.slice(i, i + BATCH).map(processItem));
     }
 
     setTeamsExtracting(null);
     setSelectedTeamsChgs(new Set());
 
-    if (successCount > 0) {
-      setAddedCount(c => c + successCount);
-      toast.success(`${successCount} CHG${successCount > 1 ? "s" : ""} adicionada${successCount > 1 ? "s" : ""} a comparações`);
+    if (successChgs.length > 0) {
+      setAddedCount(c => c + successChgs.length);
+      toast.success(`${successChgs.length} CHG${successChgs.length > 1 ? "s" : ""} adicionada${successChgs.length > 1 ? "s" : ""} a comparações`);
     }
-    if (errors.length > 0) {
-      toast.error(`${errors.length} CHG${errors.length > 1 ? "s" : ""} com erro: ${errors.join("; ")}`);
+    if (errorItems.length > 0) {
+      toast.error(`${errorItems.length} com erro: ${errorItems.join("; ")}`);
     }
   };
 
@@ -445,7 +500,7 @@ export function ServiceNowImportModal({
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              disabled={tab.id === "playwright" && !playwrightStatus.configured && tab.id !== "teams"}
+              disabled={tab.id === "playwright" && !playwrightStatus.configured}
               className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors
                 ${activeTab === tab.id
                   ? "border-primary text-foreground"
@@ -509,6 +564,30 @@ export function ServiceNowImportModal({
               </div>
             )}
 
+            {/* Campo de busca por CHG — sempre visível na aba Teams */}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={chgSearch}
+                onChange={e => setChgSearch(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && isValidChgInput && !chgInList && !teamsExtracting && handleExtractDirectChg()}
+                placeholder="Buscar CHG (ex: CHG0455046)"
+                className="flex-1 h-8 px-2.5 text-xs rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                disabled={!!teamsExtracting}
+              />
+              {isValidChgInput && !chgInList && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleExtractDirectChg}
+                  disabled={!!teamsExtracting}
+                  className="h-8 text-xs whitespace-nowrap"
+                >
+                  Extrair {chgSearchNorm}
+                </Button>
+              )}
+            </div>
+
             {teamsItems.length > 0 && (
               <>
                 <div className="flex items-center justify-between mb-1">
@@ -517,9 +596,9 @@ export function ServiceNowImportModal({
                       ? `${selectedTeamsChgs.size} selecionada${selectedTeamsChgs.size > 1 ? "s" : ""}`
                       : "Selecione uma ou mais CHGs"}
                   </span>
-                  {selectedTeamsChgs.size < teamsItems.length ? (
+                  {selectedTeamsChgs.size < filteredTeamsItems.length ? (
                     <button
-                      onClick={() => setSelectedTeamsChgs(new Set(teamsItems.map(i => i.chg)))}
+                      onClick={() => setSelectedTeamsChgs(new Set(filteredTeamsItems.map(i => i.chg)))}
                       className="text-xs text-primary hover:underline"
                     >
                       Selecionar todas
@@ -534,7 +613,7 @@ export function ServiceNowImportModal({
                   )}
                 </div>
                 <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-                  {teamsItems.map((item) => {
+                  {filteredTeamsItems.map((item) => {
                     const checked = selectedTeamsChgs.has(item.chg);
                     return (
                       <div

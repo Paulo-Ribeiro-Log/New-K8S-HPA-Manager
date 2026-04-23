@@ -18,10 +18,14 @@ type Extractor struct {
 	Logger     *zerolog.Logger
 }
 
-// NewExtractor cria um Extractor usando o diretório de sessão padrão da aplicação.
+// NewExtractor cria um Extractor usando o diretório de sessão exclusivo do Teams.
+// Diretório separado do ServiceNow (rod-session) pois usa o Chrome do sistema,
+// não o Chromium do Rod — perfis incompatíveis corrompem a sessão um do outro.
 func NewExtractor(homeDir string, logger *zerolog.Logger) *Extractor {
+	sessionDir := filepath.Join(homeDir, ".k8s-hpa-manager", "teams-session")
+	os.MkdirAll(sessionDir, 0700) //nolint:errcheck
 	return &Extractor{
-		SessionDir: filepath.Join(homeDir, ".k8s-hpa-manager", "rod-session"),
+		SessionDir: sessionDir,
 		Logger:     logger,
 	}
 }
@@ -29,8 +33,9 @@ func NewExtractor(homeDir string, logger *zerolog.Logger) *Extractor {
 // Extract abre o Teams, navega até o Mr.ViaBot e extrai as aprovações do dia atual.
 // Reutiliza a sessão Azure AD existente (compartilhada com ServiceNow).
 func (e *Extractor) Extract() (*ExtractionResult, error) {
-	if _, err := os.Stat(e.SessionDir); os.IsNotExist(err) {
-		return nil, fmt.Errorf("sessão não encontrada em %s — faça login primeiro", e.SessionDir)
+	// Garante que o diretório existe (Chrome cria a sessão na primeira execução)
+	if err := os.MkdirAll(e.SessionDir, 0700); err != nil {
+		return nil, fmt.Errorf("erro ao criar diretório de sessão: %v", err)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "teams-extract-*")

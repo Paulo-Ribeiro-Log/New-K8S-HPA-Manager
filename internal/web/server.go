@@ -1015,6 +1015,7 @@ func (s *Server) setupRoutes() {
 	teamsGroup := api.Group("/teams")
 	{
 		teamsGroup.GET("/approvals/today", teamsHandler.GetApprovalsToday)
+		teamsGroup.GET("/approvals/search", teamsHandler.SearchCHG)
 		teamsGroup.POST("/approvals/refresh", teamsHandler.RefreshApprovals)
 	}
 	fmt.Println("✅ Teams Integration routes registradas")

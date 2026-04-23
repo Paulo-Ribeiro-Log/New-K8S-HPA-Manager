@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,9 +46,8 @@ func NewTeamsHandler(logger *zerolog.Logger) *TeamsHandler {
 	return h
 }
 
-// GetApprovalsToday retorna as aprovações SRE capturadas do Mr.ViaBot.
-// Sempre retorna os dados em cache (mesmo expirados) para que a lista fique visível.
-// needs_refresh indica se o cache tem mais de 8 horas.
+// GetApprovalsToday retorna apenas as CHGs do dia atual (filtradas por ExtractedAt).
+// O cache interno guarda até 2 dias — use SearchCHG para buscar além da lista de hoje.
 // GET /api/v1/teams/approvals/today
 func (h *TeamsHandler) GetApprovalsToday(c *gin.Context) {
 	h.cacheMu.RLock()
@@ -56,10 +56,20 @@ func (h *TeamsHandler) GetApprovalsToday(c *gin.Context) {
 	h.cacheMu.RUnlock()
 
 	if cached != nil {
+		today := time.Now()
+		var todayItems []teams.ApprovalItem
+		for _, item := range cached.Items {
+			if item.ExtractedAt.Year() == today.Year() && item.ExtractedAt.YearDay() == today.YearDay() {
+				todayItems = append(todayItems, item)
+			}
+		}
+		if todayItems == nil {
+			todayItems = []teams.ApprovalItem{}
+		}
 		needsRefresh := time.Since(cached.LastUpdated) >= 8*time.Hour
 		c.JSON(http.StatusOK, gin.H{
 			"success":       true,
-			"items":         cached.Items,
+			"items":         todayItems,
 			"last_updated":  cached.LastUpdated,
 			"needs_refresh": needsRefresh,
 			"refreshing":    refreshing,
@@ -74,6 +84,31 @@ func (h *TeamsHandler) GetApprovalsToday(c *gin.Context) {
 		"needs_refresh": true,
 		"refreshing":    refreshing,
 	})
+}
+
+// SearchCHG busca uma CHG em todo o cache (últimos 2 dias).
+// Mais rápido que uma varredura do Teams — responde em ms se estiver no cache.
+// GET /api/v1/teams/approvals/search?chg=CHG0455046
+func (h *TeamsHandler) SearchCHG(c *gin.Context) {
+	chg := strings.ToUpper(strings.TrimSpace(c.Query("chg")))
+	if chg == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro chg obrigatório"})
+		return
+	}
+
+	h.cacheMu.RLock()
+	cached := h.cache
+	h.cacheMu.RUnlock()
+
+	if cached != nil {
+		for _, item := range cached.Items {
+			if strings.ToUpper(item.CHG) == chg {
+				c.JSON(http.StatusOK, gin.H{"found": true, "item": item})
+				return
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"found": false})
 }
 
 // RefreshApprovals dispara extração completa do Teams e atualiza o cache.
@@ -114,8 +149,26 @@ func (h *TeamsHandler) RefreshApprovals(c *gin.Context) {
 		return
 	}
 
+	// Mesclar: manter itens das últimas 48h que não foram capturados hoje
+	twoDaysAgo := time.Now().Add(-48 * time.Hour)
+	newCHGs := map[string]bool{}
+	for _, item := range result.Items {
+		newCHGs[strings.ToUpper(item.CHG)] = true
+	}
+	mergedItems := append([]teams.ApprovalItem{}, result.Items...)
+	h.cacheMu.RLock()
+	oldCache := h.cache
+	h.cacheMu.RUnlock()
+	if oldCache != nil {
+		for _, item := range oldCache.Items {
+			if item.ExtractedAt.After(twoDaysAgo) && !newCHGs[strings.ToUpper(item.CHG)] {
+				mergedItems = append(mergedItems, item)
+			}
+		}
+	}
+
 	newCache := &teamsCache{
-		Items:       result.Items,
+		Items:       mergedItems,
 		LastUpdated: result.ExtractedAt,
 	}
 	h.cacheMu.Lock()
