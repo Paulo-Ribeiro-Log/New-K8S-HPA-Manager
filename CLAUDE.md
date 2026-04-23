@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual estável: `v1.3.32`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Branch `finops-dynatrace` (baseado em `migracao-jwt`): Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — DTEnricher batch (4 queries splitBy), PrometheusEnricher parcial, campo MetricsSource, badge DT/Prom na UI (Fases 1-4 concluídas, cheklist em FINOPS-DT-METRICS.md). New Relic planejado como camada intermediária para clusters EKS (cadeia: DT → NR → Prometheus), cheklist em FINOPS-NR-METRICS.md — `internal/newrelic/` ainda não criado. Branch `fix-auto-discovery` (baseado em `finops-dynatrace`): auto-discovery paralelo AKS+EKS concluído (Fases 1-5 de CLUSTER-DISCOVERY-PLAN.md) — struct `ClusterConfig` AKS-only, `EKSClusterConfig` em arquivo separado (`eks-clusters-config.json`), semáforos ampliados (10 clusters × 15 subscriptions), `NodeGroupProvider` interface com impl. Azure e AWS.
+**IMPORTANTE**: Versão atual estável: `v1.3.32`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Branch `finops-dynatrace` (baseado em `migracao-jwt`): Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — DTEnricher batch (4 queries splitBy), PrometheusEnricher parcial, campo MetricsSource, badge DT/Prom na UI (Fases 1-4 concluídas, cheklist em FINOPS-DT-METRICS.md). New Relic planejado como camada intermediária para clusters EKS (cadeia: DT → NR → Prometheus), cheklist em FINOPS-NR-METRICS.md — `internal/newrelic/` ainda não criado. Branch `fix-auto-discovery` (baseado em `finops-dynatrace`): auto-discovery paralelo AKS+EKS concluído (Fases 1-5 de CLUSTER-DISCOVERY-PLAN.md) — struct `ClusterConfig` AKS-only, `EKSClusterConfig` em arquivo separado (`eks-clusters-config.json`), semáforos ampliados (10 clusters × 15 subscriptions), `NodeGroupProvider` interface com impl. Azure e AWS. Branch `integracao-teams`: automação de browser para extração de CHGs do Mr.ViaBot no Teams via go-rod (DOM + IndexedDB, sem HTTP direto — MCAS bloqueia) e aprovação inline via SRE Approval system (devstartcd.via.com.br) com `SreApprovalButton` inline e `ServiceNowImportModal` com aba "Teams" como padrão; busca em lote de CHGs via ServiceNow após seleção.
 **IMPORTANTE**: Após `make build`, sempre reiniciar o servidor (`kill <PID> && ./build/new-k8s-hpa web -f`) — o processo não recarrega o binário automaticamente.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
@@ -129,7 +129,8 @@ k8s-hpa-manager/
 │   ├── history/              # History tracker
 │   ├── logs/                 # Gerenciamento de logs da aplicação
 │   ├── notifications/        # Notificações in-app e Windows (WSL2)
-│   ├── sreapproval/          # Integração com sistema SRE Approval
+│   ├── sreapproval/          # Integração com sistema SRE Approval (devstartcd.via.com.br)
+│   ├── teams/                # Extração de CHGs do Mr.ViaBot via browser automation (go-rod)
 │   ├── updater/              # Auto-update: verificação de versão no GitHub
 │   ├── validation/           # Validação de recursos K8s
 │   └── pkg/
@@ -540,6 +541,45 @@ Usar essas funções ao calcular percentuais de uso vs. limit/request. **Nunca c
 
 **Compatibilidade de frontend**: `RodExtractor.GetStatus()` retorna campos `playwright_configured`/`script_exists` como `true` para não quebrar o frontend legado (que esperava Playwright).
 
+### Teams Mr.ViaBot + SRE Approval (branch `integracao-teams`)
+
+**`internal/teams/`** — extrai CHGs de aprovação SRE das mensagens do Mr.ViaBot no Microsoft Teams via automação de browser (go-rod). O acesso HTTP direto ao `chatsvcagg` é bloqueado pelo MCAS (Microsoft Cloud App Security) — a extração ocorre inteiramente via DOM JS e IndexedDB do browser.
+
+**Dois mecanismos de extração** (aplicados em ordem):
+1. **DOM**: seletores CSS em `[data-tid="messageBody"]` e similares. Fallback: percorre leaf nodes com regex `CHG\d{5,}`, sobe a árvore DOM até achar container com `sre-approval` (max 15 ancestors), deduplica por substring.
+2. **IndexedDB**: varre `conversation-manager:react-web-client`, `chat-info-pane-manager` e `skypexspaces` — busca keywords (`chg0`, `sre-approval`, `viabot`) e thread IDs do formato `19:...@thread.v2`.
+
+**SkypeToken**: capturado do CDP Network (`X-Skypetoken` ou `authorization: skype_token`) antes do body da resposta. Fallback: `localStorage`/`sessionStorage` após carga do Teams. Necessário apenas para o endpoint HTTP de fallback (que falha com MCAS mesmo com token).
+
+**Sessões separadas**:
+- `~/.k8s-hpa-manager/teams-session/` — perfil Chrome para Teams (go-rod). **Nunca misturar com `rod-session`** do ServiceNow — perfis Chrome incompatíveis corrompem um ao outro.
+- `~/.k8s-hpa-manager/teams-cache/approvals-cache.json` — cache de CHGs em disco. Persiste 48h por merge; `needs_refresh` na resposta JSON é apenas indicativo (não oculta dados).
+
+**Refresh é síncrono e lento** (`POST /api/v1/teams/approvals/refresh`): abre o Chrome, navega para `teams.microsoft.com/v2/`, aguarda carregamento (~2min max), navega para o chat do Mr.ViaBot via hash SPA `#/conversations/<threadID>`, extrai o DOM e fecha. Pode levar **~90s**. O handler bloqueia e retorna `409 Conflict` se já houver extração em andamento (`h.refreshing`).
+
+**Navegação Teams v2 + MCAS**: o redirect `teams.microsoft.com → teams.microsoft.com.mcas.ms` é automático. O `RunDiscovery` monitora novas abas (`browser.Pages()` a cada 3s) e anexa listeners CDP a cada aba com URL do Teams — necessário porque o v2 pode abrir em aba separada.
+
+**Thread ID do Mr.ViaBot** é hardcoded em `discover.go` e `extractor.go`: `19:eab1be93-5589-4a3f-9f47-d6cfcbc50a0c_61740f97-9be2-4459-b054-5230364585a7@unq.gbl.spaces`. Se o bot mudar de conta, atualizar ambos os arquivos.
+
+**`internal/sreapproval/`** — aprovação de deployments em `https://devstartcd.via.com.br`. Fluxo CSRF-aware: GET página → `cookiejar` mantém sessão → extrai campos `<input type="hidden">` e `<form action>` → POST com `email`. Detecta `já foi finalizada` no HTML e retorna `*ErrAlreadyFinalized{ApproverEmail, ApproverSquad}` — o handler retorna `200 OK` com `already_finalized: true` (não erro HTTP).
+
+**Endpoints Teams**:
+- `GET /api/v1/teams/approvals/today` — CHGs do dia (filtro por `ExtractedAt.YearDay`)
+- `GET /api/v1/teams/approvals/search?chg=CHG0455046` — busca no cache 48h (resposta em ms)
+- `POST /api/v1/teams/approvals/refresh` — extração completa (~90s, bloqueante)
+
+**Endpoints SRE Approval**:
+- `GET /api/v1/sre-approval/info?url=...` — scraping HTML da página de aprovação
+- `POST /api/v1/sre-approval/approve` — submete aprovação (**requer `RequireSREGroup()`**)
+- `GET /api/v1/sre-approval/extract-id?url=...` — extrai ID da URL
+- `GET /api/v1/sre-approval/current-user` — email via `az account show`
+
+**`SreApprovalButton.tsx`**: botão inline no header do Health Check SRE. Chama `getSreApprovalInfo()` automaticamente no mount (sem click). Exibe email do aprovador quando `finalized`. Obtém email do usuário logado via `/sre-approval/current-user` antes de aprovar.
+
+**`ServiceNowImportModal.tsx`**: modal com 3 abas — **"Teams (Mr.ViaBot)"** (padrão), "Playwright/Rod" e "Manual". A aba Teams carrega `getTeamsApprovalsToday()` na abertura e permite selecionar CHGs para extração em lote via ServiceNow.
+
+**`internal/teams/testdata/`** está no `.gitignore` — contém tokens de sessão capturados durante debug.
+
 ### Certificates
 
 `internal/certificates/` + `internal/web/handlers/certificates.go`: discovery de certs TLS em secrets K8s, validação de expiração, import/export. Usar para qualquer operação envolvendo TLS no cluster.
@@ -594,6 +634,12 @@ Usar essas funções ao calcular percentuais de uso vs. limit/request. **Nunca c
 | Conntrack: histórico não carrega | Prometheus indisponível — comportamento esperado (fallback gracioso). Verificar URL do Prometheus em `/api/v1/monitoring/v2/` |
 | ServiceNow não abre no navegador (WSL2) | CDP não conectou na porta 9223. Iniciar Chrome com `--remote-debugging-port=9223` ou verificar firewall WSL2. Ver `WindowsCDPPort` em `wsl_browser.go` |
 | ServiceNow extrai mas não autentica | Sessão expirada (>8h). Limpar sessão via `DELETE /api/v1/servicenow/session` e re-autenticar no Chrome Windows |
+| Teams: refresh retorna 409 Conflict | Extração já em andamento — aguardar os ~90s ou reiniciar o servidor |
+| Teams: CHGs não aparecem (DOM vazio) | Mr.ViaBot não carregou no prazo. Verificar se a sessão `~/.k8s-hpa-manager/teams-session/` está válida (Azure AD pode ter expirado — deletar a pasta para re-autenticar na próxima abertura do Chrome) |
+| Teams: thread ID do Mr.ViaBot mudou | Atualizar constante `mrViaBotThreadID` em ambos `discover.go` e `extractor.go` |
+| Teams: Chrome não abre (WSL2 sem display) | Adicionar `--no-sandbox` e verificar se há Chrome instalado em `/usr/bin/google-chrome*`. Rod tenta Chromium como fallback mas pode não estar disponível |
+| SRE Approval: aprovação retorna "já finalizada" mas é 200 | Comportamento correto — `ErrAlreadyFinalized` retorna `already_finalized: true` na resposta JSON com o email do aprovador original |
+| SreApprovalButton não carrega status | `getSreApprovalInfo` falhou silenciosamente — inspecionar o response de `/api/v1/sre-approval/info?url=...`. A página `devstartcd.via.com.br` pode estar inacessível fora da rede corporativa |
 
 ---
 
