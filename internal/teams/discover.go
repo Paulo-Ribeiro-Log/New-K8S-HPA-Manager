@@ -149,6 +149,16 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 	killExistingChrome(sessionDir, logger)
 	time.Sleep(1 * time.Second)
 
+	// Limpar cache do Chrome antes de lançar — cresce sem limite e pode esgotar o disco.
+	// Apenas cache e Code Cache são removidos; cookies/LocalStorage/IndexedDB são preservados.
+	for _, cacheSubDir := range []string{"Default/Cache", "Default/Code Cache", "Default/GPUCache"} {
+		cacheDir := filepath.Join(sessionDir, cacheSubDir)
+		if _, err := os.Stat(cacheDir); err == nil {
+			os.RemoveAll(cacheDir) //nolint:errcheck
+			logger.Info().Str("dir", cacheDir).Msg("[Teams] Cache Chrome removido antes do launch")
+		}
+	}
+
 	l := launcher.New().
 		UserDataDir(sessionDir).
 		Headless(false).
@@ -156,7 +166,11 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 		Set("disable-blink-features", "AutomationControlled").
 		// Sem segundo argumento: Rod gera --flag (sem =), correto para flags booleanas
 		Set("no-first-run").
-		Set("no-default-browser-check")
+		Set("no-default-browser-check").
+		// Limitar cache em disco a 32 MB para evitar esgotamento de espaço
+		Set("disk-cache-size", "33554432").
+		Set("aggressive-cache-discard").
+		Set("disable-application-cache")
 
 	if chromeBin != "" {
 		l = l.Bin(chromeBin)
@@ -244,22 +258,27 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 			delete(pendingReqs, e.RequestID)
 			pendingMu.Unlock()
 
-			getBody := proto.NetworkGetResponseBody{RequestID: e.RequestID}
-			bodyResp, err := getBody.Call(p)
-			body := ""
-			if err == nil && bodyResp != nil {
-				body = bodyResp.Body
-				if len(body) > 8192 {
-					body = body[:8192] + "...[truncado]"
+			// Body só é capturado para requisições de auth e chat — OtherAPIs não precisam
+			// de body e representariam centenas de assets (JS/CSS/imagens) acumulando em RAM/disco.
+			isAuth := isAuthURL(req.URL)
+			isChat := isChatURL(req.URL)
+			if isAuth || isChat {
+				getBody := proto.NetworkGetResponseBody{RequestID: e.RequestID}
+				bodyResp, err := getBody.Call(p)
+				if err == nil && bodyResp != nil {
+					body := bodyResp.Body
+					if len(body) > 8192 {
+						body = body[:8192] + "...[truncado]"
+					}
+					req.Body = body
 				}
 			}
-			req.Body = body
 
 			mu.Lock()
-			// Fallback: tentar extrair SkypeToken do body da resposta
-			if result.SkypeToken == "" && isAuthURL(req.URL) && body != "" {
+			// Fallback: tentar extrair SkypeToken do body da resposta de auth
+			if result.SkypeToken == "" && isAuth && req.Body != "" {
 				var authResp map[string]interface{}
-				if json.Unmarshal([]byte(body), &authResp) == nil {
+				if json.Unmarshal([]byte(req.Body), &authResp) == nil {
 					if tokens, ok := authResp["tokens"].(map[string]interface{}); ok {
 						if st, ok2 := tokens["skypeToken"].(string); ok2 && st != "" {
 							result.SkypeToken = st
@@ -273,16 +292,19 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 				}
 			}
 			switch {
-			case isAuthURL(req.URL):
+			case isAuth:
 				result.AuthRequests = append(result.AuthRequests, req)
-			case isChatURL(req.URL):
+			case isChat:
 				result.ChatRequests = append(result.ChatRequests, req)
 				logger.Info().Str("url", req.URL).Int("status", req.Status).Msg("[Teams] Chat API capturada!")
 				if cb := result.OnChatRequest; cb != nil {
 					go cb(req.URL)
 				}
 			default:
-				result.OtherAPIs = append(result.OtherAPIs, req)
+				// OtherAPIs: guardar apenas URL+status (sem body) e limitar a 100 entradas
+				if len(result.OtherAPIs) < 100 {
+					result.OtherAPIs = append(result.OtherAPIs, req)
+				}
 			}
 			mu.Unlock()
 		})()
@@ -348,9 +370,9 @@ func RunDiscovery(sessionDir, outputDir string, logger *zerolog.Logger, timeout 
 		}
 	}()
 
-	// Aguardar Teams v2 carregar (pode levar até 2 minutos)
-	logger.Info().Msg("[Teams] Aguardando Teams v2 carregar (pode levar ~2min)...")
-	loadDeadline := time.Now().Add(3 * time.Minute)
+	// Aguardar Teams v2 carregar (pode levar até 5 minutos em WSL/máquinas lentas)
+	logger.Info().Msg("[Teams] Aguardando Teams v2 carregar (pode levar ~5min em WSL)...")
+	loadDeadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(loadDeadline) {
 		info, _ := page.Info()
 		if info != nil && isTeamsURL(info.URL) &&
@@ -375,8 +397,8 @@ teamsLoaded:
 	// ThreadId do Mr.ViaBot (descoberto na Fase 0)
 	const mrViaBotThreadID = "19:eab1be93-5589-4a3f-9f47-d6cfcbc50a0c_61740f97-9be2-4459-b054-5230364585a7@unq.gbl.spaces"
 
-	// Aguardar SkypeToken ser capturado (indica sessão ativa). Máximo 30s.
-	for i := 0; i < 6; i++ {
+	// Aguardar SkypeToken ser capturado (indica sessão ativa). Máximo 90s.
+	for i := 0; i < 18; i++ {
 		time.Sleep(5 * time.Second)
 		mu.Lock()
 		captured := result.SkypeToken != ""
@@ -399,7 +421,7 @@ teamsLoaded:
 	} else {
 		logger.Warn().Err(navErr).Msg("[Teams] Falha ao navegar via hash")
 	}
-	time.Sleep(8 * time.Second)
+	time.Sleep(15 * time.Second)
 
 	// Se o hash não abriu a conversa, tentar clicar no item da lista de chats
 	clickJS := `() => {
@@ -434,7 +456,7 @@ teamsLoaded:
 	if clickErr == nil && !clickRes.Value.Nil() {
 		logger.Info().Str("result", clickRes.Value.String()).Msg("[Teams] Tentativa de click na conversa Mr.ViaBot")
 	}
-	time.Sleep(10 * time.Second)
+	time.Sleep(20 * time.Second)
 
 	// Extrair mensagens diretamente do DOM (não depende de HTTP — MCAS bloqueia fetch() externo)
 	domMsgJS := `() => {
@@ -794,17 +816,9 @@ teamsLoaded:
 		logger.Warn().Err(err).Msg("[Teams] Falha ao buscar conversas via JS")
 	}
 
-	// Salvar resultados
-	timestamp := time.Now().Format("2006-01-02-150405")
-	saveJSON(filepath.Join(outputDir, "auth-requests.json"), result.AuthRequests, logger)
-	saveJSON(filepath.Join(outputDir, "chat-requests.json"), result.ChatRequests, logger)
-	saveJSON(filepath.Join(outputDir, "websocket-frames.json"), result.WebSockets, logger)
-	saveJSON(filepath.Join(outputDir, "other-apis.json"), result.OtherAPIs, logger)
-
-	fullPath := filepath.Join(outputDir, fmt.Sprintf("discovery-%s.json", timestamp))
-	data, _ := json.MarshalIndent(result, "", "  ")
-	os.WriteFile(fullPath, data, 0600) //nolint:errcheck
-
+	// Apenas viabot-dom-messages.json e conversations-raw.json são lidos de volta pelo extractor.
+	// Os demais arquivos de debug (auth-requests, chat-requests, discovery-*.json, etc.) foram
+	// removidos — eram escritos e nunca lidos, consumindo disco desnecessariamente.
 	printSummary(result, outputDir, logger)
 	return result, nil
 }
@@ -887,33 +901,18 @@ func extractConversations(convResp map[string]interface{}, result *DiscoveryResu
 	}
 }
 
-func saveJSON(path string, v interface{}, logger *zerolog.Logger) {
-	data, _ := json.MarshalIndent(v, "", "  ")
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		logger.Error().Err(err).Str("file", path).Msg("[Teams] Erro ao salvar")
-		return
-	}
-	logger.Info().Str("file", path).Msg("[Teams] Salvo")
-}
 
-func printSummary(result *DiscoveryResult, outputDir string, logger *zerolog.Logger) {
+func printSummary(result *DiscoveryResult, _ string, logger *zerolog.Logger) {
 	logger.Info().Msg("[Teams] ════════════════ RESUMO ════════════════")
 	logger.Info().Msgf("[Teams] Auth requests : %d", len(result.AuthRequests))
 	logger.Info().Msgf("[Teams] Chat requests : %d", len(result.ChatRequests))
 	logger.Info().Msgf("[Teams] WS frames     : %d", len(result.WebSockets))
+	logger.Info().Msgf("[Teams] Conversas     : %d", len(result.Conversations))
 	if result.SkypeToken != "" {
 		logger.Info().Msgf("[Teams] SkypeToken    : %s...", result.SkypeToken[:min(30, len(result.SkypeToken))])
 	} else {
-		logger.Warn().Msg("[Teams] SkypeToken    : NÃO ENCONTRADO — inspecione auth-requests.json")
+		logger.Warn().Msg("[Teams] SkypeToken    : NÃO ENCONTRADO")
 	}
-	logger.Info().Msg("[Teams] ════════════════ PRÓXIMOS PASSOS ══════")
-	logger.Info().Msgf("[Teams] 1. Abrir %s/auth-requests.json", outputDir)
-	logger.Info().Msg("[Teams]    → procurar campo skypeToken ou tokens.skypeToken")
-	logger.Info().Msgf("[Teams] 2. Abrir %s/chat-requests.json", outputDir)
-	logger.Info().Msg("[Teams]    → identificar URL de listagem de conversas")
-	logger.Info().Msg("[Teams]    → identificar threadId do MR.ViaBot")
-	logger.Info().Msgf("[Teams] 3. Abrir %s/websocket-frames.json", outputDir)
-	logger.Info().Msg("[Teams]    → inspecionar formato das mensagens em tempo real")
 	logger.Info().Msg("[Teams] ═════════════════════════════════════════")
 }
 

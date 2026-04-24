@@ -88,42 +88,57 @@ func (c *Client) parseHTML(html, approvalURL string) (*ApprovalInfo, error) {
 	id, _ := ExtractApprovalID(approvalURL)
 	info.ID = id
 
-	// Padrões para extrair dados do HTML
-	// CHG0436696
-	chgPattern := regexp.MustCompile(`(CHG\d+)`)
-	if match := chgPattern.FindStringSubmatch(html); len(match) > 1 {
+	// Título preferencial: <title>SRE Approval | CHGxxxxx | [Squad] app - version</title>
+	titleTagRe := regexp.MustCompile(`(?i)<title>[^<]*\|\s*(CHG\d+)\s*\|\s*([^<]+)</title>`)
+	if match := titleTagRe.FindStringSubmatch(html); len(match) > 2 {
 		info.ChangeNumber = match[1]
+		raw := strings.TrimSpace(match[2])
+		info.Title = raw
+		// Extrair [Squad] app - version do título
+		if m := regexp.MustCompile(`\[([^\]]+)\]\s*([a-zA-Z0-9_.-]+(?:-[a-zA-Z][a-zA-Z0-9_.-]*)*)\s*-\s*([0-9][0-9.\-]+\S*)`).FindStringSubmatch(raw); len(m) > 3 {
+			info.SquadOwner = m[1]
+			info.Application = m[2]
+			info.Version = m[3]
+		}
+	} else {
+		// Fallback: CHG no corpo do HTML
+		if match := regexp.MustCompile(`(CHG\d+)`).FindStringSubmatch(html); len(match) > 1 {
+			info.ChangeNumber = match[1]
+		}
+		// Fallback: [Squad] app - version no corpo
+		if match := regexp.MustCompile(`\[([^\]]+)\]\s*([a-zA-Z0-9_-]+)\s*-\s*([0-9][0-9.\-]+)`).FindStringSubmatch(html); len(match) > 3 {
+			info.SquadOwner = match[1]
+			info.Application = match[2]
+			info.Version = match[3]
+			info.Title = fmt.Sprintf("[%s] %s - %s", match[1], match[2], match[3])
+		}
 	}
 
-	// Título: [Squad] app - version
-	// Procura no HTML entre tags ou em texto
-	titlePattern := regexp.MustCompile(`\[([^\]]+)\]\s*([a-zA-Z0-9_-]+)\s*-\s*([0-9][0-9.\-]+)`)
-	if match := titlePattern.FindStringSubmatch(html); len(match) > 3 {
-		info.SquadOwner = match[1]
-		info.Application = match[2]
-		info.Version = match[3]
-		info.Title = fmt.Sprintf("[%s] %s - %s", match[1], match[2], match[3])
-	}
-
-	// Status: verificar se já foi finalizada
+	// Status: página finalizada tem texto explícito; pendente tem o botão submit
 	if strings.Contains(html, "já foi finalizada") || strings.Contains(html, "finalizada!") {
 		info.Status = StatusFinalized
 		info.IsFinalized = true
-	} else if strings.Contains(html, "aguardando") || strings.Contains(html, "pendente") {
+	} else if regexp.MustCompile(`(?i)<input[^>]+type=["']?submit["']?`).MatchString(html) {
+		// Formulário ainda aberto (botão "Aprovar Mudança" presente)
 		info.Status = StatusPending
 		info.IsFinalized = false
 	}
 
-	// Email do aprovador
+	// Email do aprovador (quando já aprovado/finalizado)
 	emailPattern := regexp.MustCompile(`Email:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})`)
 	if match := emailPattern.FindStringSubmatch(html); len(match) > 1 {
 		info.ApproverEmail = match[1]
 	}
 
-	// Squad do aprovador
-	squadPattern := regexp.MustCompile(`Squad:\s*([^\n<]+)`)
-	if match := squadPattern.FindStringSubmatch(html); len(match) > 1 {
+	// Squad do aprovador: elemento com classe sre_group_name
+	sreGroupRe := regexp.MustCompile(`(?i)class="[^"]*sre_group_name[^"]*"[^>]*>([^<]+)<`)
+	if match := sreGroupRe.FindStringSubmatch(html); len(match) > 1 {
 		info.ApproverSquad = strings.TrimSpace(match[1])
+	} else {
+		// Fallback texto "Squad: ..."
+		if match := regexp.MustCompile(`Squad:\s*([^\n<]+)`).FindStringSubmatch(html); len(match) > 1 {
+			info.ApproverSquad = strings.TrimSpace(match[1])
+		}
 	}
 
 	return info, nil
@@ -174,6 +189,7 @@ func (c *Client) Approve(ctx context.Context, approvalURL string, approverEmail 
 	}
 
 	// Extrair action do <form> (default: POST para a mesma URL)
+	baseURL := ExtractBaseURL(approvalURL)
 	formAction := approvalURL
 	if m := regexp.MustCompile(`(?i)<form[^>]+action="([^"]+)"`).FindStringSubmatch(html); len(m) > 1 {
 		action := m[1]
@@ -181,7 +197,7 @@ func (c *Client) Approve(ctx context.Context, approvalURL string, approverEmail 
 		case strings.HasPrefix(action, "http"):
 			formAction = action
 		case strings.HasPrefix(action, "/"):
-			formAction = c.baseURL + action
+			formAction = baseURL + action
 		}
 	}
 
@@ -202,6 +218,7 @@ func (c *Client) Approve(ctx context.Context, approvalURL string, approverEmail 
 		formData.Set(nm[1], val)
 	}
 	formData.Set("email", approverEmail)
+	formData.Set("submit", "Aprovar Mudança")
 
 	c.logger.Info().
 		Str("form_action", formAction).

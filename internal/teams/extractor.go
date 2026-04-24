@@ -46,7 +46,7 @@ func (e *Extractor) Extract() (*ExtractionResult, error) {
 
 	e.Logger.Info().Msg("[Teams] Iniciando extração de aprovações do Mr.ViaBot...")
 
-	_, err = RunDiscovery(e.SessionDir, tmpDir, e.Logger, 90*time.Second)
+	_, err = RunDiscovery(e.SessionDir, tmpDir, e.Logger, 10*time.Minute)
 	if err != nil {
 		return nil, fmt.Errorf("erro na descoberta Teams: %v", err)
 	}
