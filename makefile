@@ -19,24 +19,30 @@ BUILD_FLAGS=-mod=vendor
 
 # Build cache no tmpfs (/dev/shm) para evitar I/O pesado no VHD WSL2.
 # /dev/shm é RAM pura — zero disco. Sem isso, 2GB+ de cache no VHD trava o disco a 100%.
-# A cache é perdida ao reiniciar WSL, mas o build é muito mais rápido e não bloqueia o sistema.
+# SOMENTE em ambiente local: /dev/shm tem limite ~64MB em GitHub Actions, o que esgota
+# durante make release (3 cross-compilações) e causa GOTMPDIR a falhar (exit code 2).
+ifeq ($(CI),)
 GOCACHE_DIR=/dev/shm/go-build-cache
 GOTMPDIR_DIR=/dev/shm/go-tmp
 export GOCACHE=$(GOCACHE_DIR)
 export GOTMPDIR=$(GOTMPDIR_DIR)
+BUILD_CACHE_DIRS=$(GOCACHE_DIR) $(GOTMPDIR_DIR)
+else
+BUILD_CACHE_DIRS=
+endif
 
 # Comandos Go
 .PHONY: build
 build:
 	@echo "Building ${BINARY_NAME} v${VERSION_CLEAN}..."
-	@mkdir -p ${BUILD_DIR} $(GOCACHE_DIR) $(GOTMPDIR_DIR)
+	@mkdir -p ${BUILD_DIR} $(BUILD_CACHE_DIRS)
 	@go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME} ${MAIN_PACKAGE}
 	@echo "✅ Build complete: ./${BUILD_DIR}/${BINARY_NAME} v${VERSION_CLEAN}"
 
 .PHONY: build-all
 build-all:
 	@echo "Building for multiple platforms..."
-	@mkdir -p ${BUILD_DIR} $(GOCACHE_DIR) $(GOTMPDIR_DIR)
+	@mkdir -p ${BUILD_DIR} $(BUILD_CACHE_DIRS)
 	@GOOS=linux GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-linux-amd64 ${MAIN_PACKAGE}
 	@GOOS=darwin GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-darwin-amd64 ${MAIN_PACKAGE}
 	@GOOS=darwin GOARCH=arm64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-darwin-arm64 ${MAIN_PACKAGE}
@@ -136,7 +142,7 @@ version:
 .PHONY: release
 release:
 	@echo "Creating release v${VERSION_CLEAN}..."
-	@mkdir -p ${BUILD_DIR}/release $(GOCACHE_DIR) $(GOTMPDIR_DIR)
+	@mkdir -p ${BUILD_DIR}/release $(BUILD_CACHE_DIRS)
 	@GOOS=linux GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-linux-amd64 ${MAIN_PACKAGE}
 	@GOOS=darwin GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-darwin-amd64 ${MAIN_PACKAGE}
 	@GOOS=darwin GOARCH=arm64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-darwin-arm64 ${MAIN_PACKAGE}
