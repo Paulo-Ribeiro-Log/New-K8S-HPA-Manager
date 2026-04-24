@@ -515,6 +515,23 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 
 	r.logger.Info().Msg("[Rod] URL validada com sucesso")
 
+	// Caminho rápido: REST API com cookies do Chrome (sem abrir browser).
+	// Funciona em WSL2 quando o usuário já está logado no Chrome do Windows.
+	// Só aceita o resultado se a descrição/justificativa veio preenchida —
+	// o ServiceNow pode retornar o registro com campos restritos vazios via ACL.
+	if IsWSL() {
+		if cookies, cerr := ExtractChromeCookiesWSL(snCookieDomain); cerr == nil {
+			snd := NewSNDirectClient(cookies)
+			if apiResult, apiErr := snd.FetchFromURL(chgURL); apiErr == nil && apiResult.Success && apiResult.Description != "" {
+				r.logger.Info().Str("chg", apiResult.ChangeNumber).Msg("[Rod] Extração via REST API concluída (caminho rápido, sem browser)")
+				return apiResult, nil
+			}
+			r.logger.Debug().Msg("[Rod] REST API sem descrição ou falhou — usando browser como fallback")
+		} else {
+			r.logger.Debug().Err(cerr).Msg("[Rod] Sem cookies do Chrome no Windows — usando browser")
+		}
+	}
+
 	// Verificação de sessão (Chromium headless — funciona sem display em qualquer ambiente)
 	headless := true
 
@@ -620,18 +637,17 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 			break
 		}
 
-		time.Sleep(2 * time.Second)
+		time.Sleep(300 * time.Millisecond)
 	}
 
-	// Aguardar carregamento completo
-	r.logger.Info().Msg("[Rod] Aguardando carregamento completo da página (5s)...")
-	time.Sleep(5 * time.Second)
+	// Aguardar carregamento completo.
+	// ServiceNow é SPA: o evento "load" dispara antes do router interno terminar de
+	// renderizar o formulário, então 1s de buffer evita document.body == null no eval JS.
+	r.logger.Info().Msg("[Rod] Aguardando carregamento da página...")
 	if err := page.WaitLoad(); err != nil {
 		r.logger.Warn().Err(err).Msg("[Rod] Aviso: erro ao aguardar WaitLoad (continuando mesmo assim)")
 	}
-
-	r.logger.Info().Msg("[Rod] Aguardando elementos dinâmicos (3s adicionais)...")
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	r.logger.Info().Msg("[Rod] Página carregada, buscando iframes...")
 
@@ -667,8 +683,48 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 		r.logger.Info().Msg("[Rod] Usando página principal para extração (sem iframe)")
 	}
 
-	r.logger.Info().Msg("[Rod] Aguardando formulário carregar (3s)...")
-	time.Sleep(3 * time.Second)
+	// Aguardar o conteúdo do template CHG aparecer na página.
+	// Marcadores do template (github.com/, * Aplicação, * Versão:) só surgem depois
+	// que o AJAX do ServiceNow preenche o campo "Motivo da mudança" (u_motivo_mudanca).
+	r.logger.Info().Msg("[Rod] Aguardando conteúdo do template CHG carregar...")
+	hasTemplateJS := `() => {
+		function hasTemplate(text) {
+			if (!text || text.length < 20) return false;
+			return text.includes('github.com/') ||
+			       text.includes('* Aplicação') ||
+			       text.includes('* Versão:') ||
+			       text.includes('* Repositório:');
+		}
+		for (const ta of document.querySelectorAll('textarea')) {
+			if (hasTemplate(ta.value || ta.textContent || '')) return true;
+		}
+		for (const el of document.querySelectorAll('div, span, pre, td')) {
+			if (el.children.length > 3) continue;
+			if (hasTemplate(el.innerText || el.textContent || '')) return true;
+		}
+		return false;
+	}`
+	formReady := false
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if res, err := targetPage.Eval(hasTemplateJS); err == nil && res != nil && res.Value.Bool() {
+			r.logger.Info().Msg("[Rod] Conteúdo do template CHG detectado — pronto para extrair")
+			formReady = true
+			break
+		}
+		if targetPage != page {
+			if res, err := page.Eval(hasTemplateJS); err == nil && res != nil && res.Value.Bool() {
+				r.logger.Info().Msg("[Rod] Conteúdo do template CHG detectado na página externa")
+				formReady = true
+				break
+			}
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	if !formReady {
+		r.logger.Warn().Msg("[Rod] Template não detectado em 20s — usando 3s de fallback")
+		time.Sleep(3 * time.Second)
+	}
 
 	r.logger.Info().Msg("[Rod] ========== EXECUTANDO JAVASCRIPT PARA EXTRAIR DADOS ==========")
 
@@ -822,7 +878,7 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 		}
 
 		if (!changeNumber) {
-			const allText = document.body.innerText || '';
+			const allText = (document.body && document.body.innerText) || '';
 			const chgMatch = allText.match(/CHG[0-9]{7,}/i);
 			if (chgMatch) {
 				changeNumber = chgMatch[0];
@@ -849,58 +905,61 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 			} catch(e) {}
 		}
 
+		// Extrair o campo "Motivo da mudança" (u_motivo_mudanca / justification).
+		// O conteúdo tem o template da esteira com github.com, versão, aplicação, etc.
+		function hasTemplate(text) {
+			if (!text || text.length < 20) return false;
+			return text.includes('github.com/') ||
+			       text.includes('* Aplicação') ||
+			       text.includes('* Versão:') ||
+			       text.includes('* Repositório:') ||
+			       (text.includes('Aplicação') && text.includes('Versão'));
+		}
+		function getText(el) {
+			return (el.value || el.innerText || el.textContent || '').trim();
+		}
+
 		let description = '';
-		const descSelectors = [
-			'#sys_readonly\\.change_request\\.justification',
+
+		// 1. Seletores diretos — u_motivo_mudanca tem prioridade (campo PT-BR da via)
+		const directSels = [
+			'[name="change_request.u_motivo_mudanca"]',
+			'#change_request\\.u_motivo_mudanca',
+			'#sys_readonly\\.change_request\\.u_motivo_mudanca',
+			'textarea[id*="u_motivo"]',
+			'textarea[id*="motivo"]',
 			'[name="change_request.justification"]',
-			'[aria-label="Motivo da mudança"]',
-			'[aria-label="Justification"]',
-			'[data-field-name="justification"]',
+			'#sys_readonly\\.change_request\\.justification',
 			'textarea[id*="justification"]',
-			'#sys_readonly\\.change_request\\.description',
-			'[name="change_request.description"]',
-			'textarea[id*="description"]',
-			'[data-field-name="description"]',
 			'[data-field-name="u_motivo_mudanca"]',
+			'[data-field-name="justification"]',
+			'[aria-label*="motivo"]',
+			'[aria-label*="Motivo"]',
+			'[aria-label="Justification"]',
 		];
-		for (const sel of descSelectors) {
+		for (const sel of directSels) {
 			try {
 				const el = document.querySelector(sel);
-				if (el && (el.value || el.textContent)) {
-					const val = (el.value || el.textContent).trim();
-					if (val.length > 50) {
-						description = val;
-						break;
-					}
-				}
+				if (!el) continue;
+				const text = getText(el);
+				if (hasTemplate(text)) { description = text; break; }
 			} catch(e) {}
 		}
 
+		// 2. Varrer todas as textareas (campo editável)
 		if (!description) {
-			const textareas = document.querySelectorAll('textarea');
-			for (const ta of textareas) {
-				const val = ta.value || ta.textContent || '';
-				if (val.length > 100 && (
-					val.includes('Aplicação') ||
-					val.includes('Versão') ||
-					val.includes('Squad') ||
-					val.includes('github') ||
-					val.includes('Repositório')
-				)) {
-					description = val;
-					break;
-				}
+			for (const ta of document.querySelectorAll('textarea')) {
+				const text = getText(ta);
+				if (hasTemplate(text)) { description = text; break; }
 			}
 		}
 
+		// 3. Varrer divs/spans/pre (campo read-only no ServiceNow clássico usa innerText)
 		if (!description) {
-			const contentDivs = document.querySelectorAll('.sn-widget-textblock-body, .activity-stream-message, .sn-card-component_content');
-			for (const div of contentDivs) {
-				const text = div.textContent || '';
-				if (text.length > 100 && (text.includes('Aplicação') || text.includes('Squad'))) {
-					description = text.trim();
-					break;
-				}
+			for (const el of document.querySelectorAll('div, span, pre, td')) {
+				if (el.children.length > 3) continue;
+				const text = getText(el);
+				if (hasTemplate(text) && text.length > 30) { description = text; break; }
 			}
 		}
 
@@ -1136,15 +1195,12 @@ func (r *RodExtractor) extractWithVisibleLogin(ctx context.Context, chgURL strin
 
 		if strings.Contains(currentURL, "service-now.com") && !isOnLogin && !strings.Contains(currentURL, "saml") {
 			r.logger.Info().Str("url", currentURL).Msg("[Rod] Login completado! Aguardando página carregar...")
-
-			time.Sleep(5 * time.Second)
 			page.WaitLoad() //nolint:errcheck
-			time.Sleep(3 * time.Second)
-
+			time.Sleep(1 * time.Second)
 			break
 		}
 
-		time.Sleep(2 * time.Second)
+		time.Sleep(300 * time.Millisecond)
 	}
 
 	r.logger.Info().Msg("[Rod] Extraindo dados da CHG...")
@@ -1168,7 +1224,36 @@ func (r *RodExtractor) extractWithVisibleLogin(ctx context.Context, chgURL strin
 		targetPage = page
 	}
 
-	time.Sleep(2 * time.Second)
+	// Aguardar conteúdo do template CHG (mesma lógica do caminho principal)
+	hasTemplateJSVL := `() => {
+		function hasTemplate(text) {
+			if (!text || text.length < 20) return false;
+			return text.includes('github.com/') ||
+			       text.includes('* Aplicação') ||
+			       text.includes('* Versão:') ||
+			       text.includes('* Repositório:');
+		}
+		for (const ta of document.querySelectorAll('textarea')) {
+			if (hasTemplate(ta.value || ta.textContent || '')) return true;
+		}
+		for (const el of document.querySelectorAll('div, span, pre, td')) {
+			if (el.children.length > 3) continue;
+			if (hasTemplate(el.innerText || el.textContent || '')) return true;
+		}
+		return false;
+	}`
+	deadlineVL := time.Now().Add(20 * time.Second)
+	formReadyVL := false
+	for time.Now().Before(deadlineVL) {
+		if res, err := targetPage.Eval(hasTemplateJSVL); err == nil && res != nil && res.Value.Bool() {
+			formReadyVL = true
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	if !formReadyVL {
+		time.Sleep(3 * time.Second)
+	}
 
 	jsResult, err := targetPage.Eval(`() => {
 		function getFieldValue(fieldName) {
@@ -1193,7 +1278,7 @@ func (r *RodExtractor) extractWithVisibleLogin(ctx context.Context, chgURL strin
 		const titleMatch = document.title.match(/(CHG[0-9]+)/i);
 		if (titleMatch) changeNumber = titleMatch[1];
 		if (!changeNumber) {
-			const allText = document.body.innerText || '';
+			const allText = (document.body && document.body.innerText) || '';
 			const chgMatch = allText.match(/CHG[0-9]{7,}/i);
 			if (chgMatch) changeNumber = chgMatch[0];
 		}
@@ -1201,18 +1286,48 @@ func (r *RodExtractor) extractWithVisibleLogin(ctx context.Context, chgURL strin
 		let shortDescription = getFieldValue('short_description') ||
 			getFieldValue('sys_readonly.change_request.short_description') || '';
 
-		let description = getFieldValue('justification') ||
-			getFieldValue('sys_readonly.change_request.justification') ||
-			getFieldValue('description') || '';
+		function hasTemplate(text) {
+			if (!text || text.length < 20) return false;
+			return text.includes('github.com/') ||
+			       text.includes('* Aplicação') ||
+			       text.includes('* Versão:') ||
+			       text.includes('* Repositório:') ||
+			       (text.includes('Aplicação') && text.includes('Versão'));
+		}
+		function getText(el) {
+			return (el.value || el.innerText || el.textContent || '').trim();
+		}
 
+		let description = '';
+		const directSels = [
+			'[name="change_request.u_motivo_mudanca"]',
+			'#change_request\\.u_motivo_mudanca',
+			'#sys_readonly\\.change_request\\.u_motivo_mudanca',
+			'textarea[id*="u_motivo"]',
+			'[name="change_request.justification"]',
+			'#sys_readonly\\.change_request\\.justification',
+			'[data-field-name="u_motivo_mudanca"]',
+			'[data-field-name="justification"]',
+		];
+		for (const sel of directSels) {
+			try {
+				const el = document.querySelector(sel);
+				if (!el) continue;
+				const text = getText(el);
+				if (hasTemplate(text)) { description = text; break; }
+			} catch(e) {}
+		}
 		if (!description) {
-			const textareas = document.querySelectorAll('textarea');
-			for (const ta of textareas) {
-				const val = ta.value || '';
-				if (val.length > 100 && (val.includes('Aplicação') || val.includes('Squad'))) {
-					description = val;
-					break;
-				}
+			for (const ta of document.querySelectorAll('textarea')) {
+				const text = getText(ta);
+				if (hasTemplate(text)) { description = text; break; }
+			}
+		}
+		if (!description) {
+			for (const el of document.querySelectorAll('div, span, pre, td')) {
+				if (el.children.length > 3) continue;
+				const text = getText(el);
+				if (hasTemplate(text) && text.length > 30) { description = text; break; }
 			}
 		}
 
