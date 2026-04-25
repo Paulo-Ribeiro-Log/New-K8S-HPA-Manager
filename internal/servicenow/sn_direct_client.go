@@ -162,12 +162,29 @@ func (c *SNDirectClient) parseResult(raw json.RawMessage) (*PlaywrightResult, er
 
 	number := str("number")
 	shortDesc := str("short_description")
-	description := str("justification")
-	if description == "" {
-		description = str("u_motivo_mudanca")
+
+	// Prefere o campo que contém o template da esteira CHG (marcadores: github.com/, * Aplicação, etc.)
+	// u_motivo_mudanca é o campo PT-BR customizado — tem prioridade sobre justification (genérico).
+	candidates := []string{
+		str("u_motivo_mudanca"),
+		str("justification"),
+		str("description"),
 	}
+	description := ""
+	for _, c := range candidates {
+		if c != "" && snHasTemplate(c) {
+			description = c
+			break
+		}
+	}
+	// Nenhum campo tem template (todos vazios ou ACL bloqueou) — usar o primeiro não-vazio
 	if description == "" {
-		description = str("description")
+		for _, c := range candidates {
+			if c != "" {
+				description = c
+				break
+			}
+		}
 	}
 	state := str("state")
 
@@ -190,6 +207,16 @@ func (c *SNDirectClient) parseResult(raw json.RawMessage) (*PlaywrightResult, er
 		State:            state,
 		Extracted:        extracted,
 	}, nil
+}
+
+// snHasTemplate verifica se o texto contém os marcadores do template CHG da esteira.
+// Usado para distinguir o "Motivo da mudança" (com github.com/, * Aplicação, etc.)
+// de campos genéricos como justification (ex: "Realizar deploy conforme planejado").
+func snHasTemplate(s string) bool {
+	return strings.Contains(s, "github.com/") ||
+		strings.Contains(s, "* Aplicação") ||
+		strings.Contains(s, "* Versão:") ||
+		strings.Contains(s, "* Repositório:")
 }
 
 // FetchFromURL extrai sys_id ou número da URL e busca via API.

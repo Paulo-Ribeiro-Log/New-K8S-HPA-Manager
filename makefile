@@ -17,18 +17,35 @@ LDFLAGS=-ldflags "-X k8s-hpa-manager/internal/updater.Version=${VERSION_CLEAN}"
 # Build flags
 BUILD_FLAGS=-mod=vendor
 
+# Limita workers paralelos do compilador Go para evitar OOM no WSL2.
+# /dev/shm (RAM) + 12 workers = pico de ~10GB → derruba a instância WSL2.
+# Sobrescrever se necessário: make build BUILD_PARALLEL=8
+BUILD_PARALLEL ?= 4
+
 # Build cache no tmpfs (/dev/shm) para evitar I/O pesado no VHD WSL2.
 # /dev/shm é RAM pura — zero disco. Sem isso, 2GB+ de cache no VHD trava o disco a 100%.
 # SOMENTE em ambiente local: /dev/shm tem limite ~64MB em GitHub Actions, o que esgota
 # durante make release (3 cross-compilações) e causa GOTMPDIR a falhar (exit code 2).
+# Limite de 900MB: um build limpo gera ~768MB de cache; threshold de 900MB permite
+# reutilizar o cache em builds incrementais (só compila o que mudou) e só limpa quando
+# o cache acumula além disso — prevenindo OOM sem penalizar cada build.
+GOCACHE_MAX_MB := 900
 ifeq ($(CI),)
 GOCACHE_DIR=/dev/shm/go-build-cache
 GOTMPDIR_DIR=/dev/shm/go-tmp
 export GOCACHE=$(GOCACHE_DIR)
 export GOTMPDIR=$(GOTMPDIR_DIR)
 BUILD_CACHE_DIRS=$(GOCACHE_DIR) $(GOTMPDIR_DIR)
+TRIM_CACHE=if [ -d "$(GOCACHE_DIR)" ]; then \
+  CACHE_MB=$$(du -sm $(GOCACHE_DIR) 2>/dev/null | awk '{print $$1}'); \
+  if [ "$${CACHE_MB:-0}" -gt $(GOCACHE_MAX_MB) ]; then \
+    echo "🧹 Go cache em /dev/shm: $${CACHE_MB}MB > $(GOCACHE_MAX_MB)MB — limpando..."; \
+    go clean -cache; \
+  fi; \
+fi
 else
 BUILD_CACHE_DIRS=
+TRIM_CACHE=true
 endif
 
 # Comandos Go
@@ -36,16 +53,17 @@ endif
 build:
 	@echo "Building ${BINARY_NAME} v${VERSION_CLEAN}..."
 	@mkdir -p ${BUILD_DIR} $(BUILD_CACHE_DIRS)
-	@go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME} ${MAIN_PACKAGE}
+	@$(TRIM_CACHE)
+	@go build -p $(BUILD_PARALLEL) ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME} ${MAIN_PACKAGE}
 	@echo "✅ Build complete: ./${BUILD_DIR}/${BINARY_NAME} v${VERSION_CLEAN}"
 
 .PHONY: build-all
 build-all:
 	@echo "Building for multiple platforms..."
 	@mkdir -p ${BUILD_DIR} $(BUILD_CACHE_DIRS)
-	@GOOS=linux GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-linux-amd64 ${MAIN_PACKAGE}
-	@GOOS=darwin GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-darwin-amd64 ${MAIN_PACKAGE}
-	@GOOS=darwin GOARCH=arm64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-darwin-arm64 ${MAIN_PACKAGE}
+	@GOOS=linux GOARCH=amd64 go build -p $(BUILD_PARALLEL) ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-linux-amd64 ${MAIN_PACKAGE}
+	@GOOS=darwin GOARCH=amd64 go build -p $(BUILD_PARALLEL) ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-darwin-amd64 ${MAIN_PACKAGE}
+	@GOOS=darwin GOARCH=arm64 go build -p $(BUILD_PARALLEL) ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/${BINARY_NAME}-darwin-arm64 ${MAIN_PACKAGE}
 
 .PHONY: run
 run: build
@@ -143,9 +161,9 @@ version:
 release:
 	@echo "Creating release v${VERSION_CLEAN}..."
 	@mkdir -p ${BUILD_DIR}/release $(BUILD_CACHE_DIRS)
-	@GOOS=linux GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-linux-amd64 ${MAIN_PACKAGE}
-	@GOOS=darwin GOARCH=amd64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-darwin-amd64 ${MAIN_PACKAGE}
-	@GOOS=darwin GOARCH=arm64 go build ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-darwin-arm64 ${MAIN_PACKAGE}
+	@GOOS=linux GOARCH=amd64 go build -p $(BUILD_PARALLEL) ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-linux-amd64 ${MAIN_PACKAGE}
+	@GOOS=darwin GOARCH=amd64 go build -p $(BUILD_PARALLEL) ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-darwin-amd64 ${MAIN_PACKAGE}
+	@GOOS=darwin GOARCH=arm64 go build -p $(BUILD_PARALLEL) ${BUILD_FLAGS} ${LDFLAGS} -o ${BUILD_DIR}/release/${BINARY_NAME}-darwin-arm64 ${MAIN_PACKAGE}
 	@echo "✅ Release builds complete (v${VERSION_CLEAN})"
 	@echo "📦 Plataformas: Linux amd64, macOS Intel, macOS ARM"
 	@ls -lh ${BUILD_DIR}/release/

@@ -214,26 +214,42 @@ export function ServiceNowImportModal({
     setTeamsExtracting(null);
   };
 
-  // Extrai cada CHG selecionada via browser (Rod) para obter githubRepo + versão completos
+  // Extrai cada CHG selecionada usando o mesmo mecanismo da aba "Via Browser"
   const handleImportSelectedTeams = async () => {
     const selected = teamsItems.filter(i => selectedTeamsChgs.has(i.chg));
     if (selected.length === 0) return;
 
     const successChgs: string[] = [];
     const errorItems: string[] = [];
-    let completed = 0;
 
-    setTeamsExtracting({ current: 0, total: selected.length, chg: "iniciando..." });
+    for (let idx = 0; idx < selected.length; idx++) {
+      const item = selected[idx];
+      setTeamsExtracting({ current: idx + 1, total: selected.length, chg: item.chg });
 
-    const processItem = async (item: TeamsApprovalItem) => {
-      const snUrl = item.servicenow_url;
-      if (!snUrl) {
-        errorItems.push(`${item.chg}: sem URL do ServiceNow`);
-        setTeamsExtracting({ current: ++completed, total: selected.length, chg: item.chg });
-        return;
-      }
+      const snUrl = item.servicenow_url ||
+        `https://viavarejo.service-now.com/change_request.do?sysparm_query=number=${item.chg}`;
+
       try {
-        const response = await apiClient.extractServiceNowWithPlaywright(snUrl);
+        let response = await apiClient.extractServiceNowWithPlaywright(snUrl);
+        console.log(`[SN Batch] ${item.chg} tentativa 1:`, {
+          success: response.success,
+          application: response.extracted_data?.application,
+          version: response.extracted_data?.version,
+          description_len: response.description?.length ?? 0,
+          error: response.error,
+        });
+        // Retry se falhou OU se retornou sem Application (resultado parcial após redirect SAML)
+        if (!response.success || !response.extracted_data?.application) {
+          await new Promise(r => setTimeout(r, 2000));
+          response = await apiClient.extractServiceNowWithPlaywright(snUrl);
+          console.log(`[SN Batch] ${item.chg} tentativa 2:`, {
+            success: response.success,
+            application: response.extracted_data?.application,
+            version: response.extracted_data?.version,
+            description_len: response.description?.length ?? 0,
+            error: response.error,
+          });
+        }
         if (response.success && response.extracted_data) {
           const d = response.extracted_data as ExtractedData;
           onImportSuccess({
@@ -249,15 +265,8 @@ export function ServiceNowImportModal({
           errorItems.push(`${item.chg}: ${response.error || "falha na extração"}`);
         }
       } catch (err) {
-        errorItems.push(`${item.chg}: ${err instanceof Error ? err.message : "erro desconhecido"}`);
+        errorItems.push(`${item.chg}: ${err instanceof Error ? err.message : "erro"}`);
       }
-      setTeamsExtracting({ current: ++completed, total: selected.length, chg: item.chg });
-    };
-
-    // Processar em lotes de 3 em paralelo (N CHGs = 1 browser, N abas)
-    const BATCH = 3;
-    for (let i = 0; i < selected.length; i += BATCH) {
-      await Promise.allSettled(selected.slice(i, i + BATCH).map(processItem));
     }
 
     setTeamsExtracting(null);
