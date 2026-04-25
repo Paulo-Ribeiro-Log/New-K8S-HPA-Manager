@@ -1285,6 +1285,29 @@ export interface ServiceNowBrowserConfig {
   active_mode?: string;
 }
 
+export interface ServiceNowBatchItem {
+  chg: string;
+  url: string;
+  approval_url?: string;
+}
+
+export interface ServiceNowBatchResultItem {
+  chg: string;
+  success: boolean;
+  change_number?: string;
+  short_description?: string;
+  description?: string;
+  state?: string;
+  extracted_data?: ServiceNowExtractedData;
+  error?: string;
+}
+
+export interface ServiceNowBatchResponse {
+  success: boolean;
+  results: ServiceNowBatchResultItem[];
+  error?: string;
+}
+
 // ==================== Resource Explorer Types ====================
 
 export interface APIResourceInfo {

@@ -516,20 +516,18 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 	r.logger.Info().Msg("[Rod] URL validada com sucesso")
 
 	// Caminho rápido: REST API com cookies do Chrome (sem abrir browser).
-	// Funciona em WSL2 quando o usuário já está logado no Chrome do Windows.
+	// Usa CDP (porta 9223) para obter cookies em Go puro — sem PowerShell nem DPAPI.
 	// Só aceita o resultado se a descrição/justificativa veio preenchida —
 	// o ServiceNow pode retornar o registro com campos restritos vazios via ACL.
-	if IsWSL() {
-		if cookies, cerr := ExtractChromeCookiesWSL(snCookieDomain); cerr == nil {
-			snd := NewSNDirectClient(cookies)
-			if apiResult, apiErr := snd.FetchFromURL(chgURL); apiErr == nil && apiResult.Success && apiResult.Description != "" {
-				r.logger.Info().Str("chg", apiResult.ChangeNumber).Msg("[Rod] Extração via REST API concluída (caminho rápido, sem browser)")
-				return apiResult, nil
-			}
-			r.logger.Debug().Msg("[Rod] REST API sem descrição ou falhou — usando browser como fallback")
-		} else {
-			r.logger.Debug().Err(cerr).Msg("[Rod] Sem cookies do Chrome no Windows — usando browser")
+	if cookies, cerr := ExtractCookiesViaCDP(WindowsCDPPort, snCookieDomain); cerr == nil {
+		snd := NewSNDirectClient(cookies)
+		if apiResult, apiErr := snd.FetchFromURL(chgURL); apiErr == nil && apiResult.Success && snHasTemplate(apiResult.Description) && apiResult.Extracted != nil && apiResult.Extracted.Application != "" {
+			r.logger.Info().Str("chg", apiResult.ChangeNumber).Str("app", apiResult.Extracted.Application).Msg("[Rod] Extração via REST API concluída (CDP, sem browser)")
+			return apiResult, nil
 		}
+		r.logger.Debug().Msg("[Rod] REST API sem Application parseada — usando browser para obter conteúdo completo")
+	} else {
+		r.logger.Debug().Err(cerr).Msg("[Rod] CDP indisponível — usando browser")
 	}
 
 	// Verificação de sessão (Chromium headless — funciona sem display em qualquer ambiente)
@@ -553,7 +551,6 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 		Str("session_dir", r.activeSessionDir()).
 		Msg("[Rod] Configuração de sessão verificada")
 
-	// Browser persistente: reutilizado entre extrações — N CHGs = 1 Chromium aberto
 	browser, err := r.getBrowser()
 	if err != nil {
 		r.logger.Error().Err(err).Msg("[Rod] ERRO ao obter browser")
@@ -625,11 +622,40 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 		}
 
 		if isLoginPage && headless {
-			r.logger.Warn().Bool("headless", headless).Str("url", currentURL).Msg("[Rod] Sessão expirada - login necessário mas estamos em modo headless")
-			return &PlaywrightResult{
-				Success: false,
-				Error:   "Sessão expirada. Faça login pelo Menu de Perfil > ServiceNow Session antes de extrair dados.",
-			}, nil
+			// Azure AD redirect detectado em modo headless.
+			// Em ambiente corporativo com SSO, o browser completa automaticamente sem interação.
+			// Aguardar até 45s para o redirect de volta ao ServiceNow antes de falhar.
+			r.logger.Info().Str("url", currentURL).Msg("[Rod] Azure AD redirect detectado — aguardando SSO automático (até 45s)...")
+			ssoDeadline := time.Now().Add(45 * time.Second)
+			ssoOK := false
+			for time.Now().Before(ssoDeadline) {
+				time.Sleep(1 * time.Second)
+				info, err := page.Info()
+				if err != nil {
+					continue
+				}
+				u := info.URL
+				isStillLogin := false
+				for _, p := range loginPatterns {
+					if strings.Contains(strings.ToLower(u), strings.ToLower(p)) {
+						isStillLogin = true
+						break
+					}
+				}
+				if !isStillLogin && strings.Contains(u, "service-now.com") && !strings.Contains(u, "login") {
+					r.logger.Info().Str("url", u).Msg("[Rod] SSO automático concluído — continuando extração")
+					ssoOK = true
+					break
+				}
+			}
+			if !ssoOK {
+				r.logger.Warn().Msg("[Rod] SSO automático não concluído em 45s — sessão expirada")
+				return &PlaywrightResult{
+					Success: false,
+					Error:   "Sessão expirada. Faça login pelo Menu de Perfil > ServiceNow Session antes de extrair dados.",
+				}, nil
+			}
+			break
 		}
 
 		if strings.Contains(currentURL, "service-now.com") && !isLoginPage && !strings.Contains(currentURL, "login") {
@@ -645,48 +671,17 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 	// renderizar o formulário, então 1s de buffer evita document.body == null no eval JS.
 	r.logger.Info().Msg("[Rod] Aguardando carregamento da página...")
 	if err := page.WaitLoad(); err != nil {
-		r.logger.Warn().Err(err).Msg("[Rod] Aviso: erro ao aguardar WaitLoad (continuando mesmo assim)")
-	}
-	time.Sleep(1 * time.Second)
-
-	r.logger.Info().Msg("[Rod] Página carregada, buscando iframes...")
-
-	// Tentar encontrar o iframe gsft_main
-	var targetPage *rod.Page
-	frames, err := page.Elements("iframe")
-	if err != nil {
-		r.logger.Warn().Err(err).Msg("[Rod] Aviso: erro ao buscar iframes")
-		frames = nil
-	} else {
-		r.logger.Info().Int("count", len(frames)).Msg("[Rod] Iframes encontrados")
+		// "Execution context was destroyed" é esperado quando o ServiceNow redireciona
+		// de change_request.do para nav_to.do durante o carregamento. O gsft_main ainda
+		// não está no DOM neste momento — a busca de iframe ocorre no loop abaixo.
+		r.logger.Warn().Err(err).Msg("[Rod] Aviso: WaitLoad interrompido por navegação (ServiceNow redirect) — continuando")
+		time.Sleep(1 * time.Second)
 	}
 
-	for _, frame := range frames {
-		name, _ := frame.Attribute("name")
-		if name != nil {
-			r.logger.Debug().Str("iframe_name", *name).Msg("[Rod] Verificando iframe...")
-			if *name == "gsft_main" {
-				framePage, err := frame.Frame()
-				if err == nil {
-					targetPage = framePage
-					r.logger.Info().Msg("[Rod] Usando iframe gsft_main para extração")
-					break
-				} else {
-					r.logger.Warn().Err(err).Msg("[Rod] Erro ao acessar iframe gsft_main")
-				}
-			}
-		}
-	}
-
-	if targetPage == nil {
-		targetPage = page
-		r.logger.Info().Msg("[Rod] Usando página principal para extração (sem iframe)")
-	}
-
-	// Aguardar o conteúdo do template CHG aparecer na página.
-	// Marcadores do template (github.com/, * Aplicação, * Versão:) só surgem depois
-	// que o AJAX do ServiceNow preenche o campo "Motivo da mudança" (u_motivo_mudanca).
-	r.logger.Info().Msg("[Rod] Aguardando conteúdo do template CHG carregar...")
+	// Loop integrado: detecta o iframe gsft_main E aguarda conteúdo do template.
+	// O gsft_main pode não estar no DOM imediatamente após o redirect do ServiceNow;
+	// por isso a busca é feita a cada iteração (não apenas uma vez após WaitLoad).
+	// Timeout total de 45s cobre o browser frio (primeira extração) + carregamento AJAX.
 	hasTemplateJS := `() => {
 		function hasTemplate(text) {
 			if (!text || text.length < 20) return false;
@@ -704,26 +699,55 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 		}
 		return false;
 	}`
+
+	var targetPage *rod.Page
 	formReady := false
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(45 * time.Second)
+
+	r.logger.Info().Msg("[Rod] Aguardando iframe gsft_main e conteúdo do template CHG...")
 	for time.Now().Before(deadline) {
-		if res, err := targetPage.Eval(hasTemplateJS); err == nil && res != nil && res.Value.Bool() {
-			r.logger.Info().Msg("[Rod] Conteúdo do template CHG detectado — pronto para extrair")
+		// Tentar encontrar gsft_main se ainda não encontrado
+		if targetPage == nil {
+			if frames, ferr := page.Elements("iframe"); ferr == nil {
+				for _, frame := range frames {
+					name, _ := frame.Attribute("name")
+					if name != nil && *name == "gsft_main" {
+						if framePage, ferr2 := frame.Frame(); ferr2 == nil {
+							targetPage = framePage
+							r.logger.Info().Msg("[Rod] iframe gsft_main encontrado")
+						}
+						break
+					}
+				}
+			}
+		}
+
+		checkPage := targetPage
+		if checkPage == nil {
+			checkPage = page
+		}
+		if res, err := checkPage.Eval(hasTemplateJS); err == nil && res != nil && res.Value.Bool() {
+			r.logger.Info().Bool("in_iframe", targetPage != nil).Msg("[Rod] Conteúdo do template CHG detectado — pronto para extrair")
 			formReady = true
 			break
 		}
-		if targetPage != page {
+		// Fallback: checar na página externa quando targetPage é o iframe
+		if targetPage != nil && targetPage != page {
 			if res, err := page.Eval(hasTemplateJS); err == nil && res != nil && res.Value.Bool() {
 				r.logger.Info().Msg("[Rod] Conteúdo do template CHG detectado na página externa")
 				formReady = true
 				break
 			}
 		}
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if targetPage == nil {
+		targetPage = page
+		r.logger.Info().Msg("[Rod] Usando página principal para extração (gsft_main não encontrado em 45s)")
 	}
 	if !formReady {
-		r.logger.Warn().Msg("[Rod] Template não detectado em 20s — usando 3s de fallback")
-		time.Sleep(3 * time.Second)
+		r.logger.Warn().Msg("[Rod] Template não detectado em 45s — prosseguindo com extração")
 	}
 
 	r.logger.Info().Msg("[Rod] ========== EXECUTANDO JAVASCRIPT PARA EXTRAIR DADOS ==========")

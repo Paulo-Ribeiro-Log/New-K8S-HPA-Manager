@@ -85,6 +85,8 @@ import type {
   ServiceNowPlaywrightResponse,
   PlaywrightStatusResponse,
   ServiceNowBrowserConfig,
+  ServiceNowBatchItem,
+  ServiceNowBatchResponse,
   APIResourceInfo,
   GenericResourceSummary,
   GenericResourceManifest,
@@ -2892,6 +2894,17 @@ class APIClient {
     return this.request("/servicenow/extract-playwright", {
       method: "POST",
       body: JSON.stringify({ url }),
+    });
+  }
+
+  /**
+   * Extract multiple CHGs sequentially in a single HTTP request — avoids concurrent Rod serialization timeouts.
+   * POST /api/v1/servicenow/parse-batch
+   */
+  async parseServiceNowBatch(items: ServiceNowBatchItem[]): Promise<ServiceNowBatchResponse> {
+    return this.request("/servicenow/parse-batch", {
+      method: "POST",
+      body: JSON.stringify({ items }),
     });
   }
 

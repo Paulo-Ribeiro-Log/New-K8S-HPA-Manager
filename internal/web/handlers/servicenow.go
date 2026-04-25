@@ -157,6 +157,22 @@ func (h *ServiceNowHandler) ExtractWithPlaywright(c *gin.Context) {
 		extractedData = result.Extracted
 	}
 
+	h.logger.Info().
+		Str("url", req.URL).
+		Str("change_number", result.ChangeNumber).
+		Str("short_description", result.ShortDescription).
+		Str("application", extractedData.Application).
+		Str("version", extractedData.Version).
+		Int("description_len", len(result.Description)).
+		Bool("has_extracted", result.Extracted != nil).
+		Str("extracted_app", func() string {
+			if result.Extracted != nil {
+				return result.Extracted.Application
+			}
+			return ""
+		}()).
+		Msg("[ServiceNow] ExtractWithPlaywright resultado")
+
 	c.JSON(http.StatusOK, gin.H{
 		"success":           true,
 		"change_number":     result.ChangeNumber,
@@ -165,6 +181,79 @@ func (h *ServiceNowHandler) ExtractWithPlaywright(c *gin.Context) {
 		"state":             result.State,
 		"extracted_data":    extractedData,
 	})
+}
+
+// ParseBatch extrai dados de múltiplas CHGs em sequência, reutilizando o mesmo fluxo do ExtractWithPlaywright.
+// Evita N requisições HTTP simultâneas que fariam o Rod serializar e estourar o timeout do cliente.
+// POST /api/v1/servicenow/parse-batch
+func (h *ServiceNowHandler) ParseBatch(c *gin.Context) {
+	var req struct {
+		Items []struct {
+			CHG         string `json:"chg"`
+			URL         string `json:"url"`
+			ApprovalURL string `json:"approval_url"`
+		} `json:"items" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Campo 'items' é obrigatório",
+		})
+		return
+	}
+
+	type batchResult struct {
+		CHG              string                    `json:"chg"`
+		Success          bool                      `json:"success"`
+		ChangeNumber     string                    `json:"change_number,omitempty"`
+		ShortDescription string                    `json:"short_description,omitempty"`
+		Description      string                    `json:"description,omitempty"`
+		State            string                    `json:"state,omitempty"`
+		ExtractedData    *servicenow.ExtractedData  `json:"extracted_data,omitempty"`
+		Error            string                    `json:"error,omitempty"`
+	}
+
+	results := make([]batchResult, 0, len(req.Items))
+
+	for _, item := range req.Items {
+		h.logger.Info().Str("chg", item.CHG).Msg("[ServiceNow] ParseBatch: extraindo")
+
+		if item.URL == "" {
+			results = append(results, batchResult{CHG: item.CHG, Success: false, Error: "URL ausente"})
+			continue
+		}
+
+		result, err := h.rod.Extract(c.Request.Context(), item.URL)
+		if err != nil {
+			h.logger.Error().Err(err).Str("chg", item.CHG).Msg("[ServiceNow] ParseBatch: erro")
+			results = append(results, batchResult{CHG: item.CHG, Success: false, Error: err.Error()})
+			continue
+		}
+		if !result.Success {
+			results = append(results, batchResult{CHG: item.CHG, Success: false, Error: result.Error})
+			continue
+		}
+
+		extractedData := h.client.ImportFromDescription(result.Description)
+		if extractedData == nil {
+			extractedData = &servicenow.ExtractedData{}
+		}
+		if extractedData.Application == "" && result.Extracted != nil {
+			extractedData = result.Extracted
+		}
+
+		results = append(results, batchResult{
+			CHG:              item.CHG,
+			Success:          true,
+			ChangeNumber:     result.ChangeNumber,
+			ShortDescription: result.ShortDescription,
+			Description:      result.Description,
+			State:            result.State,
+			ExtractedData:    extractedData,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "results": results})
 }
 
 // GetPlaywrightStatus verifica o status da configuração do Playwright

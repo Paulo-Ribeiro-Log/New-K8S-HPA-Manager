@@ -999,6 +999,7 @@ func (s *Server) setupRoutes() {
 		servicenow.GET("/extract-sysid", serviceNowHandler.ExtractSysID)
 		// Playwright (browser automation com Azure AD SSO)
 		servicenow.POST("/extract-playwright", serviceNowHandler.ExtractWithPlaywright)
+		servicenow.POST("/parse-batch", serviceNowHandler.ParseBatch)
 		servicenow.GET("/playwright-status", serviceNowHandler.GetPlaywrightStatus)
 		// Gerenciamento de sessão do Playwright
 		servicenow.GET("/session-status", serviceNowHandler.GetSessionStatus)

@@ -184,11 +184,15 @@ export const GitHubReleasesTab = () => {
     return availableClusters.map((cluster) => cluster.context).filter(Boolean);
   }, [availableClusters]);
 
-  // ✅ Executar scan automático (1x por dia) ao abrir a aba
+  // Executar scan automático (1x por dia) ao abrir a aba
   const runAutoScan = React.useCallback(async () => {
     if (scanClusters.length === 0) {
       return;
     }
+
+    // Marcar timestamp ANTES de iniciar — evita re-disparo se a aba for fechada e reaberta
+    // durante o scan (erro de VPN em clusters HLG não deve anular o registro do dia)
+    localStorage.setItem("github-deployments-last-scan", Date.now().toString());
 
     setAutoScanRunning(true);
     const toastId = "github-auto-scan";
@@ -218,15 +222,14 @@ export const GitHubReleasesTab = () => {
 
     if (failures.length === 0) {
       toast.success("Scan automático concluído com sucesso", { id: toastId });
-      localStorage.setItem("github-deployments-last-scan", Date.now().toString());
-      queryClient.invalidateQueries({ queryKey: ['github-deployments-all'] });
     } else {
-      toast.error(`Scan automático finalizado com erros em ${failures.length} cluster(s)`, {
+      toast.warning(`Scan automático: ${failures.length} cluster(s) inacessível(is) (VPN?)`, {
         id: toastId,
         description: failures.slice(0, 3).join(" • "),
       });
     }
 
+    queryClient.invalidateQueries({ queryKey: ['github-deployments-all'] });
     setAutoScanRunning(false);
   }, [scanClusters, queryClient]);
 
@@ -1160,13 +1163,14 @@ export const GitHubReleasesTab = () => {
                                         <Badge
                                           variant={item.productionTag ? "outline" : "destructive"}
                                           className="text-[10px] py-0"
+                                          title={item.productionTag ? undefined : "Versão atual em PRD não encontrada no registry de deployments.\nEscaneie os clusters na aba GitHub Releases para atualizar.\nOu clique no lápis para informar manualmente."}
                                         >
-                                          {item.productionTag || "? prod"}
+                                          {item.productionTag || "não encontrada em PRD"}
                                         </Badge>
                                         <Button
                                           size="sm" variant="ghost"
                                           className="h-4 w-4 p-0 text-muted-foreground hover:text-blue-600"
-                                          title="Editar versão em produção"
+                                          title="Informar versão atual em produção manualmente"
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             setEditingProductionTag(prev => ({ ...prev, [item.id]: item.productionTag }));
