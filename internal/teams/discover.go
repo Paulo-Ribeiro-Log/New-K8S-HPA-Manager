@@ -503,11 +503,26 @@ teamsLoaded:
 		];
 		// Inclui os href de <a> dentro do container — necessário quando o Teams
 		// renderiza o link devstartcd como hyperlink e não como texto visível.
+		// Em ambientes corporativos os links são embalados em Safe Links (Defender) ou
+		// MCAS proxy — decodificar aqui para que o regex do parser encontre a URL real.
 		const collectHrefs = (el) => {
 			const hrefs = [];
 			el.querySelectorAll('a[href]').forEach(a => {
-				const h = (a.href || a.getAttribute('href') || '').trim();
-				if (h && !h.startsWith('javascript') && !h.startsWith('#')) hrefs.push(h);
+				let h = (a.href || a.getAttribute('href') || '').trim();
+				if (!h || h.startsWith('javascript') || h.startsWith('#')) return;
+				// Safe Links: https://*.safelinks.protection.outlook.com/?url=<encoded>
+				if (h.includes('safelinks.protection.outlook.com')) {
+					try { const orig = new URL(h).searchParams.get('url'); if (orig) h = decodeURIComponent(orig); } catch {}
+				}
+				// Teams link proxy: https://teams.microsoft.com/l/link?url=<encoded>
+				if (h.includes('/l/link') && h.includes('url=')) {
+					try { const orig = new URL(h).searchParams.get('url'); if (orig) h = decodeURIComponent(orig); } catch {}
+				}
+				// MCAS proxy: devstartcd.via.com.br.mcas.ms → devstartcd.via.com.br
+				if (h.includes('.mcas.ms')) {
+					h = h.replace(/(devstartcd\.via\.com\.br)\.mcas\.ms/g, '$1');
+				}
+				hrefs.push(h);
 			});
 			return hrefs.join('\n');
 		};
