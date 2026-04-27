@@ -51,25 +51,49 @@ func (e *Extractor) Extract() (*ExtractionResult, error) {
 		return nil, fmt.Errorf("erro na descoberta Teams: %v", err)
 	}
 
+	// Coletar todas as strings de mensagem: DOM (lazy-loaded) + IndexedDB (histórico completo)
+	var allMessages []string
+
 	domFile := filepath.Join(tmpDir, "viabot-dom-messages.json")
-	data, err := os.ReadFile(domFile)
-	if err != nil {
-		return nil, fmt.Errorf("arquivo DOM não encontrado — conversa não foi carregada: %v", err)
+	if data, err := os.ReadFile(domFile); err == nil {
+		var domData struct {
+			Messages []string `json:"messages"`
+		}
+		if json.Unmarshal(data, &domData) == nil {
+			allMessages = append(allMessages, domData.Messages...)
+			e.Logger.Info().Int("count", len(domData.Messages)).Msg("[Teams] Mensagens DOM carregadas")
+		}
+	} else {
+		e.Logger.Warn().Err(err).Msg("[Teams] Arquivo DOM não encontrado — usando apenas IndexedDB")
 	}
 
-	var domData struct {
-		Messages []string `json:"messages"`
-	}
-	if err := json.Unmarshal(data, &domData); err != nil {
-		return nil, fmt.Errorf("erro ao parsear DOM messages: %v", err)
+	// IndexedDB: histórico completo sem lazy loading, cobre mensagens de dias anteriores
+	idbFile := filepath.Join(tmpDir, "viabot-indexeddb-messages.json")
+	if data, err := os.ReadFile(idbFile); err == nil {
+		var idbData struct {
+			Messages []string `json:"messages"`
+		}
+		if json.Unmarshal(data, &idbData) == nil {
+			allMessages = append(allMessages, idbData.Messages...)
+			e.Logger.Info().Int("count", len(idbData.Messages)).Msg("[Teams] Mensagens IndexedDB carregadas")
+		}
 	}
 
-	items := ParseDOMMessages(domData.Messages)
+	if len(allMessages) == 0 {
+		return nil, fmt.Errorf("nenhuma mensagem encontrada no DOM nem no IndexedDB — conversa não foi carregada")
+	}
+
+	items := ParseDOMMessages(allMessages)
 	e.Logger.Info().Int("count", len(items)).Msg("[Teams] Aprovações extraídas")
+
+	source := "dom"
+	if _, err := os.Stat(idbFile); err == nil {
+		source = "dom+indexeddb"
+	}
 
 	return &ExtractionResult{
 		Items:       items,
 		ExtractedAt: time.Now(),
-		Source:      "dom",
+		Source:      source,
 	}, nil
 }

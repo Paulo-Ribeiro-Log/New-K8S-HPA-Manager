@@ -747,7 +747,11 @@ teamsLoaded:
 			} catch(e) {}
 		}
 
-		// 3. skypexspaces: banco de mensagens reais
+		// 3. skypexspaces: banco de mensagens reais — extrair conteúdo completo para o parser
+		// O skypexspaces armazena o histórico offline sem lazy loading (independente do DOM).
+		// Empurrar o JSON bruto de cada mensagem relevante: o parser Go usa regex e
+		// encontra CHG + devstartcd URLs independente da estrutura exata do objeto.
+		const idbMessages = [];
 		for (const {name} of dbs) {
 			if (!name || !name.includes('skypexspaces')) continue;
 			try {
@@ -760,16 +764,32 @@ teamsLoaded:
 						results.skypex_sample = { store: sn, count: rows.length, snippet: JSON.stringify(rows[0]).substring(0, 300) };
 					}
 					for (const row of rows) {
-						const raw = JSON.stringify(row).toLowerCase();
-						if (hasKw(raw)) {
-							results.viabot = { id: row.id || row.threadId, source: 'skypexspaces/' + sn, snippet: raw.substring(0, 400) };
+						const raw = JSON.stringify(row);
+						const rawLow = raw.toLowerCase();
+						if (!hasKw(rawLow)) continue;
+						results.viabot = { id: row.id || row.threadId, source: 'skypexspaces/' + sn, snippet: rawLow.substring(0, 400) };
+						// Extrair conteúdo de todos os campos textuais conhecidos
+						const content = row.content || row.body || row.text || row.message || '';
+						if (typeof content === 'string' && content.length > 0) {
+							idbMessages.push(content); // HTML ou texto — parser e regex vão extrair
 						}
+						// Também empurrar o JSON bruto (truncado): URLs aparecem verbatim no JSON
+						idbMessages.push(raw.substring(0, 8000));
 					}
 				}
 				db.close();
 			} catch(e) {}
 		}
 
+		// Também extrair messages[] do conversation-manager (se disponível para o ViaBot)
+		if (results.viabot && Array.isArray(results.viabot.messages)) {
+			for (const msg of results.viabot.messages) {
+				const s = typeof msg === 'string' ? msg : JSON.stringify(msg);
+				if (s.length > 5) idbMessages.push(s.substring(0, 8000));
+			}
+		}
+
+		results.idb_messages = idbMessages;
 		return JSON.stringify(results);
 	}`
 	fetchResult, err := page.Eval(fetchJS)
@@ -779,7 +799,7 @@ teamsLoaded:
 		os.WriteFile(convPath, []byte(rawConvs), 0600) //nolint:errcheck
 		logger.Info().Str("file", convPath).Int("bytes", len(rawConvs)).Msg("[Teams] Resultados de conversas salvos")
 
-		// Processar resultado do IndexedDB
+		// Salvar mensagens extraídas do IndexedDB em arquivo separado para o extractor
 		var convResults map[string]interface{}
 		if json.Unmarshal([]byte(rawConvs), &convResults) == nil {
 			totalConvs, _ := convResults["total_convs"].(float64)
@@ -788,6 +808,22 @@ teamsLoaded:
 				Int("total_dbs", int(totalDBs)).
 				Int("total_convs", int(totalConvs)).
 				Msg("[Teams] IndexedDB escaneado")
+
+			// Salvar mensagens do IndexedDB para processamento pelo extractor
+			if idbMsgs, ok := convResults["idb_messages"].([]interface{}); ok && len(idbMsgs) > 0 {
+				var msgStrings []string
+				for _, m := range idbMsgs {
+					if s, ok := m.(string); ok && s != "" {
+						msgStrings = append(msgStrings, s)
+					}
+				}
+				if len(msgStrings) > 0 {
+					idbData, _ := json.Marshal(map[string]interface{}{"messages": msgStrings})
+					idbPath := filepath.Join(outputDir, "viabot-indexeddb-messages.json")
+					os.WriteFile(idbPath, idbData, 0600) //nolint:errcheck
+					logger.Info().Int("count", len(msgStrings)).Str("file", idbPath).Msg("[Teams] Mensagens IndexedDB salvas para processamento")
+				}
+			}
 
 			// Logar todos os matches encontrados
 			if allMatchesRaw, ok := convResults["all_matches"].([]interface{}); ok && len(allMatchesRaw) > 0 {
