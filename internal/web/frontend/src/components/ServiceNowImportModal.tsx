@@ -164,6 +164,12 @@ export function ServiceNowImportModal({
     }
   };
 
+  const extractApprovalUrlFromDescription = (description?: string): string => {
+    if (!description) return "";
+    const m = description.match(/https?:\/\/devstartcd\.via\.com\.br\/sre-approval\/form\/[a-f0-9-]+/);
+    return m ? m[0] : "";
+  };
+
   const chgSearchNorm = chgSearch.trim().toUpperCase();
   const isValidChgInput = /^CHG\d{5,}$/.test(chgSearchNorm);
   const isNameSearch = chgSearch.trim().length >= 3 && !isValidChgInput;
@@ -195,13 +201,14 @@ export function ServiceNowImportModal({
       const response = await apiClient.extractServiceNowWithPlaywright(snUrl);
       if (response.success && response.extracted_data) {
         const d = response.extracted_data as ExtractedData;
+        const approvalUrl = cachedApprovalUrl || extractApprovalUrlFromDescription(response.description);
         onImportSuccess({
           deploymentName: d.application || chg,
           githubRepo: d.github_repo || d.application || "",
           newVersion: d.version || "",
           xlReleaseUrl: d.xlrelease_url,
           changeNumber: response.change_number || chg,
-          approvalUrl: cachedApprovalUrl,
+          approvalUrl,
         });
         setAddedCount(c => c + 1);
         toast.success(`${chg} adicionada a comparações`);
@@ -245,7 +252,7 @@ export function ServiceNowImportModal({
                 newVersion: d.version || "",
                 xlReleaseUrl: d.xlrelease_url,
                 changeNumber: response.change_number || item.chg,
-                approvalUrl: item.approval_url,
+                approvalUrl: item.approval_url || extractApprovalUrlFromDescription(response.description),
               });
               successCount++;
             } else {
@@ -276,7 +283,7 @@ export function ServiceNowImportModal({
               newVersion: d.version || "",
               xlReleaseUrl: d.xlrelease_url,
               changeNumber: response.change_number || "",
-              approvalUrl: "",
+              approvalUrl: extractApprovalUrlFromDescription(response.description),
             });
             setAddedCount(c => c + 1);
             toast.success(`${d.application || term} adicionado via ServiceNow`);
@@ -333,13 +340,14 @@ export function ServiceNowImportModal({
         }
         if (response.success && response.extracted_data) {
           const d = response.extracted_data as ExtractedData;
+          const approvalUrl = item.approval_url || extractApprovalUrlFromDescription(response.description);
           onImportSuccess({
             deploymentName: d.application || item.description || item.chg,
             githubRepo: d.github_repo || d.application || "",
             newVersion: d.version || "",
             xlReleaseUrl: d.xlrelease_url,
             changeNumber: response.change_number || item.chg,
-            approvalUrl: item.approval_url,
+            approvalUrl,
           });
           successChgs.push(item.chg);
         } else {
@@ -506,8 +514,8 @@ export function ServiceNowImportModal({
 
     const data = result.extracted_data;
     const chgNumber = result.change_request?.number;
-    // Se viemos do Teams, pegar a approvalUrl do item pendente
-    const approvalUrl = pendingTeamsItem?.approval_url;
+    const approvalUrl = pendingTeamsItem?.approval_url ||
+      extractApprovalUrlFromDescription(result.change_request?.description);
 
     onImportSuccess({
       deploymentName: data.application,
