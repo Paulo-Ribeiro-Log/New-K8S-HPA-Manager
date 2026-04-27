@@ -16,7 +16,8 @@ import (
 // Salva em ~/.k8s-hpa-manager/servicenow-browser.json (configuração da máquina, não por usuário).
 type BrowserConfig struct {
 	ForceWindowsBrowser bool   `json:"force_windows_browser"`
-	WindowsSessionDir   string `json:"windows_session_dir,omitempty"` // caminho WSL customizado, ex: /mnt/c/Users/matricula/k8s-hpa-manager-session
+	WindowsSessionDir   string `json:"windows_session_dir,omitempty"`  // caminho WSL customizado
+	SSOLoginIdentifier  string `json:"sso_login_identifier,omitempty"` // "email" ou "matricula" — qual campo do Perfil SSO usar no login Azure AD (padrão: "email")
 }
 
 func browserConfigPath() string {

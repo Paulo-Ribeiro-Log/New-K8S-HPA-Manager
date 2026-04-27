@@ -398,7 +398,10 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 	}
 
 	// FASE 2: Aguardar o usuário completar o login (até 3 minutos)
-	r.logger.Info().Msg("[Rod] Aguardando você completar o login no Azure AD...")
+	// Se Perfil SSO corporativo estiver configurado, auto-preenche o formulário Azure AD.
+	r.logger.Info().Msg("[Rod] Aguardando login no Azure AD (auto-login via Perfil SSO se configurado)...")
+
+	autoLoginAttempted := false
 
 	for {
 		elapsed := time.Since(startTime)
@@ -425,6 +428,18 @@ func (r *RodExtractor) TestSession(ctx context.Context) (*SessionStatus, error) 
 			if strings.Contains(currentURL, pattern) {
 				isOnLogin = true
 				break
+			}
+		}
+
+		// Tentar auto-login via Perfil SSO quando na página do Azure AD
+		if isOnLogin {
+			if ssoAutoLoginAttempt(page, r.sessionDir, r.logger) {
+				if !autoLoginAttempted {
+					autoLoginAttempted = true
+					r.logger.Info().Msg("[Rod] Auto-login SSO iniciado — aguardando redirect...")
+				}
+				time.Sleep(2 * time.Second)
+				continue
 			}
 		}
 
@@ -623,13 +638,17 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 
 		if isLoginPage && headless {
 			// Azure AD redirect detectado em modo headless.
-			// Em ambiente corporativo com SSO, o browser completa automaticamente sem interação.
-			// Aguardar até 45s para o redirect de volta ao ServiceNow antes de falhar.
-			r.logger.Info().Str("url", currentURL).Msg("[Rod] Azure AD redirect detectado — aguardando SSO automático (até 45s)...")
+			// Tenta auto-login via Perfil SSO corporativo; fallback: aguarda SSO silencioso (até 45s).
+			r.logger.Info().Str("url", currentURL).Msg("[Rod] Azure AD redirect detectado — tentando auto-login via Perfil SSO...")
+			ssoAutoLoginAttempt(page, r.sessionDir, r.logger)
+
 			ssoDeadline := time.Now().Add(45 * time.Second)
 			ssoOK := false
 			for time.Now().Before(ssoDeadline) {
 				time.Sleep(1 * time.Second)
+				// Continuar tentando preencher formulário (múltiplas fases: email → senha → "stay signed in")
+				ssoAutoLoginAttempt(page, r.sessionDir, r.logger)
+
 				info, err := page.Info()
 				if err != nil {
 					continue
@@ -643,7 +662,7 @@ func (r *RodExtractor) Extract(ctx context.Context, chgURL string) (result *Play
 					}
 				}
 				if !isStillLogin && strings.Contains(u, "service-now.com") && !strings.Contains(u, "login") {
-					r.logger.Info().Str("url", u).Msg("[Rod] SSO automático concluído — continuando extração")
+					r.logger.Info().Str("url", u).Msg("[Rod] Login concluído (SSO auto ou corporativo) — continuando extração")
 					ssoOK = true
 					break
 				}

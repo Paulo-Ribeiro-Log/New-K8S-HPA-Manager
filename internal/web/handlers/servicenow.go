@@ -340,22 +340,48 @@ func (h *ServiceNowHandler) TestSession(c *gin.Context) {
 // GetBrowserConfig retorna o estado do ambiente de browser para autenticação ServiceNow
 // GET /api/v1/servicenow/browser-config
 func (h *ServiceNowHandler) GetBrowserConfig(c *gin.Context) {
+	cfg := servicenow.LoadBrowserConfig()
+	identifier := cfg.SSOLoginIdentifier
+	if identifier == "" {
+		identifier = "email"
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"is_wsl":          servicenow.IsWSL(),
-		"has_display":     servicenow.HasGraphicalDisplay(),
-		"xvfb_installed":  servicenow.IsXvfbInstalled(),
-		"xvfb_hint":       servicenow.XvfbInstallHint(),
-		"browser_mode":    "chromium-local",
-		"active_mode":     "Chromium local (headless/Xvfb)",
+		"is_wsl":               servicenow.IsWSL(),
+		"has_display":          servicenow.HasGraphicalDisplay(),
+		"xvfb_installed":       servicenow.IsXvfbInstalled(),
+		"xvfb_hint":            servicenow.XvfbInstallHint(),
+		"browser_mode":         "chromium-local",
+		"active_mode":          "Chromium local (headless/Xvfb)",
+		"sso_login_identifier": identifier,
 	})
 }
 
-// SetBrowserConfig é mantido para compatibilidade — configuração não é mais necessária.
+// SetBrowserConfig salva configurações de browser (incluindo sso_login_identifier).
 // PUT /api/v1/servicenow/browser-config
 func (h *ServiceNowHandler) SetBrowserConfig(c *gin.Context) {
+	var req struct {
+		SSOLoginIdentifier string `json:"sso_login_identifier"` // "email" ou "matricula"
+	}
+	// Ignorar erro — campos são todos opcionais
+	c.ShouldBindJSON(&req) //nolint:errcheck
+
+	if req.SSOLoginIdentifier != "" {
+		cfg := servicenow.LoadBrowserConfig()
+		if req.SSOLoginIdentifier == "email" || req.SSOLoginIdentifier == "matricula" {
+			cfg.SSOLoginIdentifier = req.SSOLoginIdentifier
+			servicenow.SaveBrowserConfig(cfg) //nolint:errcheck
+		}
+	}
+
+	cfg := servicenow.LoadBrowserConfig()
+	identifier := cfg.SSOLoginIdentifier
+	if identifier == "" {
+		identifier = "email"
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"success":      true,
-		"active_mode":  "Chromium local (headless/Xvfb)",
-		"browser_mode": "chromium-local",
+		"success":              true,
+		"active_mode":          "Chromium local (headless/Xvfb)",
+		"browser_mode":         "chromium-local",
+		"sso_login_identifier": identifier,
 	})
 }

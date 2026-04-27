@@ -19,11 +19,14 @@ import (
 	"k8s-hpa-manager/internal/pkg/nexus"
 )
 
-// awxCredentials armazena URL + credenciais SSO do AWX.
+// awxCredentials armazena URL + credenciais do AWX.
+// Quando UseSSOProfile=true, username/senha vêm do perfil SSO centralizado.
 type awxCredentials struct {
 	BaseURL           string `json:"base_url"`
-	Username          string `json:"username"`
-	EncryptedPassword string `json:"encrypted_password"`
+	Username          string `json:"username"`            // modo manual
+	EncryptedPassword string `json:"encrypted_password"`  // modo manual
+	UseSSOProfile     bool   `json:"use_sso_profile"`     // usar perfil SSO central
+	LoginIdentifier   string `json:"login_identifier"`    // "email" ou "matricula" (SSO mode)
 }
 
 // AWXHandler integra com a API do AWX (Ansible AWX/Tower) para gerenciar certificados TLS.
@@ -47,31 +50,60 @@ func (h *AWXHandler) credentialsPath() string {
 	return filepath.Join(h.baseDir, "awx_credentials.json")
 }
 
-// loadCredentials carrega URL + credenciais do arquivo e descriptografa a senha.
-func (h *AWXHandler) loadCredentials() (*awxCredentials, error) {
+// loadRawConfig carrega a configuração AWX sem descriptografar.
+func (h *AWXHandler) loadRawConfig() (*awxCredentials, error) {
 	data, err := os.ReadFile(h.credentialsPath())
 	if err != nil {
 		return nil, fmt.Errorf("credenciais AWX não configuradas")
 	}
-
 	var creds awxCredentials
 	if err := json.Unmarshal(data, &creds); err != nil {
 		return nil, fmt.Errorf("arquivo de credenciais AWX inválido")
 	}
+	return &creds, nil
+}
 
+// loadCredentials carrega URL + credenciais do arquivo e descriptografa a senha.
+// Quando use_sso_profile=true, busca credenciais do perfil SSO centralizado.
+func (h *AWXHandler) loadCredentials() (*awxCredentials, error) {
+	creds, err := h.loadRawConfig()
+	if err != nil {
+		return nil, err
+	}
 	if creds.BaseURL == "" {
 		return nil, fmt.Errorf("URL do AWX não configurada")
 	}
+
+	if creds.UseSSOProfile {
+		sso, err := LoadSSOProfile(h.baseDir)
+		if err != nil {
+			return nil, fmt.Errorf("perfil SSO não configurado — configure em Credenciais → Perfil SSO: %w", err)
+		}
+		if creds.LoginIdentifier == "email" {
+			if sso.Email == "" {
+				return nil, fmt.Errorf("email não configurado no perfil SSO")
+			}
+			creds.Username = sso.Email
+		} else {
+			if sso.Matricula == "" {
+				return nil, fmt.Errorf("matrícula não configurada no perfil SSO")
+			}
+			creds.Username = sso.Matricula
+		}
+		creds.EncryptedPassword = sso.Password // já descriptografado
+		return creds, nil
+	}
+
+	// Modo manual
 	if creds.Username == "" || creds.EncryptedPassword == "" {
 		return nil, fmt.Errorf("usuário/senha AWX não configurados")
 	}
-
 	password, err := nexus.DecryptPassword(creds.EncryptedPassword)
 	if err != nil {
 		return nil, fmt.Errorf("erro ao descriptografar senha AWX: %w", err)
 	}
-	creds.EncryptedPassword = password // campo reutilizado como senha plaintext
-	return &creds, nil
+	creds.EncryptedPassword = password // campo reutilizado como plaintext
+	return creds, nil
 }
 
 // awxGet executa GET autenticado com Basic Auth na API do AWX.
@@ -148,46 +180,67 @@ func (h *AWXHandler) awxPost(path string, payload interface{}, out interface{}) 
 // ── Gerenciamento de Credenciais ──────────────────────────────────────────────
 
 // SaveCredentials — POST /api/v1/awx/credentials
-// Salva URL + usuário + senha (senha criptografada em AES-256-GCM).
+// Salva URL + configuração de login (modo manual ou perfil SSO).
 func (h *AWXHandler) SaveCredentials(c *gin.Context) {
 	var req struct {
-		BaseURL  string `json:"base_url"`
-		Username string `json:"username"`
-		Password string `json:"password"`
+		BaseURL         string `json:"base_url"`
+		Username        string `json:"username"`          // apenas modo manual
+		Password        string `json:"password"`          // apenas modo manual
+		UseSSOProfile   bool   `json:"use_sso_profile"`
+		LoginIdentifier string `json:"login_identifier"`  // "email" ou "matricula"
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.BaseURL == "" || req.Username == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "base_url e username são obrigatórios"})
+	if err := c.ShouldBindJSON(&req); err != nil || req.BaseURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "base_url é obrigatória"})
 		return
 	}
 
-	// Se não enviou senha, mantém a atual (se existir)
-	password := req.Password
-	if password == "" {
-		existing, err := h.loadCredentials()
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "senha é obrigatória na primeira configuração"})
-			return
-		}
-		password = existing.EncryptedPassword // já descriptografada pelo loadCredentials
-	}
-
-	encrypted, err := nexus.EncryptPassword(password)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "erro ao criptografar senha: " + err.Error()})
-		return
-	}
-
-	// Normaliza URL: remove fragmento (#/login etc.) e trailing slash
+	// Normaliza URL
 	cleanURL := req.BaseURL
 	if idx := strings.Index(cleanURL, "#"); idx != -1 {
 		cleanURL = cleanURL[:idx]
 	}
 	cleanURL = strings.TrimRight(cleanURL, "/")
 
-	creds := awxCredentials{
-		BaseURL:           cleanURL,
-		Username:          req.Username,
-		EncryptedPassword: encrypted,
+	var creds awxCredentials
+	creds.BaseURL = cleanURL
+
+	if req.UseSSOProfile {
+		// Validar que o perfil SSO existe antes de salvar
+		if _, err := LoadSSOProfile(h.baseDir); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "configure o Perfil SSO corporativo antes de habilitar esta opção"})
+			return
+		}
+		identifier := req.LoginIdentifier
+		if identifier != "email" && identifier != "matricula" {
+			identifier = "matricula"
+		}
+		creds.UseSSOProfile = true
+		creds.LoginIdentifier = identifier
+		log.Info().Str("base_url", cleanURL).Str("login_identifier", identifier).Msg("[AWX] Credenciais salvas via Perfil SSO")
+	} else {
+		// Modo manual: username obrigatório
+		if req.Username == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "username é obrigatório no modo manual"})
+			return
+		}
+		// Se não enviou senha, mantém a atual
+		password := req.Password
+		if password == "" {
+			existing, err := h.loadCredentials()
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "senha é obrigatória na primeira configuração"})
+				return
+			}
+			password = existing.EncryptedPassword // já descriptografada
+		}
+		encrypted, err := nexus.EncryptPassword(password)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "erro ao criptografar senha: " + err.Error()})
+			return
+		}
+		creds.Username = req.Username
+		creds.EncryptedPassword = encrypted
+		log.Info().Str("base_url", cleanURL).Str("username", req.Username).Msg("[AWX] Credenciais salvas modo manual")
 	}
 
 	data, err := json.MarshalIndent(creds, "", "  ")
@@ -195,7 +248,6 @@ func (h *AWXHandler) SaveCredentials(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
 	if err := os.MkdirAll(h.baseDir, 0700); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -205,27 +257,41 @@ func (h *AWXHandler) SaveCredentials(c *gin.Context) {
 		return
 	}
 
-	log.Info().Str("base_url", creds.BaseURL).Str("username", creds.Username).Msg("[AWX] Credenciais salvas")
 	c.JSON(http.StatusOK, gin.H{"message": "Credenciais AWX salvas com sucesso"})
 }
 
 // GetCredentialsStatus — GET /api/v1/awx/credentials/status
 // Verifica se credenciais estão configuradas e se o AWX está acessível.
 func (h *AWXHandler) GetCredentialsStatus(c *gin.Context) {
-	creds, err := h.loadCredentials()
+	raw, err := h.loadRawConfig()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"configured": false, "reachable": false, "reason": err.Error()})
+		return
+	}
+
+	creds, err := h.loadCredentials()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"configured":       false,
+			"reachable":        false,
+			"base_url":         raw.BaseURL,
+			"use_sso_profile":  raw.UseSSOProfile,
+			"login_identifier": raw.LoginIdentifier,
+			"reason":           err.Error(),
+		})
 		return
 	}
 
 	var info map[string]interface{}
 	if err := h.awxGet("/api/v2/", &info); err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"configured": true,
-			"reachable":  false,
-			"base_url":   creds.BaseURL,
-			"username":   creds.Username,
-			"error":      err.Error(),
+			"configured":       true,
+			"reachable":        false,
+			"base_url":         creds.BaseURL,
+			"username":         creds.Username,
+			"use_sso_profile":  raw.UseSSOProfile,
+			"login_identifier": raw.LoginIdentifier,
+			"error":            err.Error(),
 		})
 		return
 	}
@@ -235,11 +301,13 @@ func (h *AWXHandler) GetCredentialsStatus(c *gin.Context) {
 		version = v
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"configured": true,
-		"reachable":  true,
-		"base_url":   creds.BaseURL,
-		"username":   creds.Username,
-		"version":    version,
+		"configured":       true,
+		"reachable":        true,
+		"base_url":         creds.BaseURL,
+		"username":         creds.Username,
+		"use_sso_profile":  raw.UseSSOProfile,
+		"login_identifier": raw.LoginIdentifier,
+		"version":          version,
 	})
 }
 
