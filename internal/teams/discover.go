@@ -456,7 +456,40 @@ teamsLoaded:
 	if clickErr == nil && !clickRes.Value.Nil() {
 		logger.Info().Str("result", clickRes.Value.String()).Msg("[Teams] Tentativa de click na conversa Mr.ViaBot")
 	}
-	time.Sleep(20 * time.Second)
+	time.Sleep(10 * time.Second)
+
+	// Rolar para o topo da conversa para forçar carregamento lazy de mensagens antigas.
+	// O Teams só renderiza mensagens próximas ao viewport — sem scroll, CHGs de horas
+	// atrás ficam fora do DOM e não são capturadas. Três rodadas com pausa de 5s cada.
+	scrollJS := `() => {
+		const selectors = [
+			'[data-tid="messageList"]',
+			'[class*="messageListContainer"]',
+			'[class*="scrollContainer"]',
+			'[class*="chatContent"]',
+			'[class*="message-list"]',
+			'[role="log"]',
+			'[role="list"]',
+		];
+		for (const sel of selectors) {
+			const el = document.querySelector(sel);
+			if (el && el.scrollHeight > el.clientHeight) {
+				el.scrollTop = 0;
+				return { scrolled: true, selector: sel, scrollHeight: el.scrollHeight };
+			}
+		}
+		window.scrollTo(0, 0);
+		return { scrolled: false };
+	}`
+	for i := 0; i < 3; i++ {
+		scrollRes, scrollErr := page.Eval(scrollJS)
+		if scrollErr == nil && !scrollRes.Value.Nil() {
+			logger.Info().Str("result", scrollRes.Value.String()).Msgf("[Teams] Scroll %d/3 para carregar mensagens antigas", i+1)
+		} else if scrollErr != nil {
+			logger.Warn().Err(scrollErr).Msgf("[Teams] Erro no scroll %d/3", i+1)
+		}
+		time.Sleep(5 * time.Second)
+	}
 
 	// Extrair mensagens diretamente do DOM (não depende de HTTP — MCAS bloqueia fetch() externo)
 	domMsgJS := `() => {
@@ -468,13 +501,40 @@ teamsLoaded:
 			'[class*="bubble-wrapper"] [class*="content"]',
 			'[class*="itemContent"]'
 		];
+		// Inclui os href de <a> dentro do container — necessário quando o Teams
+		// renderiza o link devstartcd como hyperlink e não como texto visível.
+		// Em ambientes corporativos os links são embalados em Safe Links (Defender) ou
+		// MCAS proxy — decodificar aqui para que o regex do parser encontre a URL real.
+		const collectHrefs = (el) => {
+			const hrefs = [];
+			el.querySelectorAll('a[href]').forEach(a => {
+				let h = (a.href || a.getAttribute('href') || '').trim();
+				if (!h || h.startsWith('javascript') || h.startsWith('#')) return;
+				// Safe Links: https://*.safelinks.protection.outlook.com/?url=<encoded>
+				if (h.includes('safelinks.protection.outlook.com')) {
+					try { const orig = new URL(h).searchParams.get('url'); if (orig) h = decodeURIComponent(orig); } catch {}
+				}
+				// Teams link proxy: https://teams.microsoft.com/l/link?url=<encoded>
+				if (h.includes('/l/link') && h.includes('url=')) {
+					try { const orig = new URL(h).searchParams.get('url'); if (orig) h = decodeURIComponent(orig); } catch {}
+				}
+				// MCAS proxy: devstartcd.via.com.br.mcas.ms → devstartcd.via.com.br
+				if (h.includes('.mcas.ms')) {
+					h = h.replace(/(devstartcd\.via\.com\.br)\.mcas\.ms/g, '$1');
+				}
+				hrefs.push(h);
+			});
+			return hrefs.join('\n');
+		};
 		const messages = [];
 		for (const sel of selectors) {
 			const els = document.querySelectorAll(sel);
 			if (els.length > 0) {
 				els.forEach(el => {
 					const text = (el.innerText || el.textContent || '').trim();
-					if (text.length > 5) messages.push(text);
+					const hrefs = collectHrefs(el);
+					const combined = hrefs ? text + '\n' + hrefs : text;
+					if (combined.length > 5) messages.push(combined);
 				});
 				if (messages.length > 0) break;
 			}
@@ -488,12 +548,14 @@ teamsLoaded:
 				if (el.children.length > 0) continue; // só leaf nodes
 				const t = (el.innerText || el.textContent || '').trim();
 				if (!chgRe.test(t) || t.length > 40) continue; // leaf com número CHG
-				// Subir até achar container com sre-approval
+				// Subir até achar container com sre-approval (texto ou href)
 				let ancestor = el.parentElement;
 				for (let d = 0; d < 15 && ancestor; d++) {
 					const at = (ancestor.innerText || '').trim();
-					if (at.includes('sre-approval') && at.length < 3000) {
-						if (!added.has(at)) { added.add(at); messages.push(at); }
+					const ahrefs = collectHrefs(ancestor);
+					const combined = ahrefs ? at + '\n' + ahrefs : at;
+					if ((combined.includes('sre-approval') || combined.includes('devstartcd')) && combined.length < 3000) {
+						if (!added.has(combined)) { added.add(combined); messages.push(combined); }
 						break;
 					}
 					ancestor = ancestor.parentElement;
@@ -685,7 +747,11 @@ teamsLoaded:
 			} catch(e) {}
 		}
 
-		// 3. skypexspaces: banco de mensagens reais
+		// 3. skypexspaces: banco de mensagens reais — extrair conteúdo completo para o parser
+		// O skypexspaces armazena o histórico offline sem lazy loading (independente do DOM).
+		// Empurrar o JSON bruto de cada mensagem relevante: o parser Go usa regex e
+		// encontra CHG + devstartcd URLs independente da estrutura exata do objeto.
+		const idbMessages = [];
 		for (const {name} of dbs) {
 			if (!name || !name.includes('skypexspaces')) continue;
 			try {
@@ -698,16 +764,32 @@ teamsLoaded:
 						results.skypex_sample = { store: sn, count: rows.length, snippet: JSON.stringify(rows[0]).substring(0, 300) };
 					}
 					for (const row of rows) {
-						const raw = JSON.stringify(row).toLowerCase();
-						if (hasKw(raw)) {
-							results.viabot = { id: row.id || row.threadId, source: 'skypexspaces/' + sn, snippet: raw.substring(0, 400) };
+						const raw = JSON.stringify(row);
+						const rawLow = raw.toLowerCase();
+						if (!hasKw(rawLow)) continue;
+						results.viabot = { id: row.id || row.threadId, source: 'skypexspaces/' + sn, snippet: rawLow.substring(0, 400) };
+						// Extrair conteúdo de todos os campos textuais conhecidos
+						const content = row.content || row.body || row.text || row.message || '';
+						if (typeof content === 'string' && content.length > 0) {
+							idbMessages.push(content); // HTML ou texto — parser e regex vão extrair
 						}
+						// Também empurrar o JSON bruto (truncado): URLs aparecem verbatim no JSON
+						idbMessages.push(raw.substring(0, 8000));
 					}
 				}
 				db.close();
 			} catch(e) {}
 		}
 
+		// Também extrair messages[] do conversation-manager (se disponível para o ViaBot)
+		if (results.viabot && Array.isArray(results.viabot.messages)) {
+			for (const msg of results.viabot.messages) {
+				const s = typeof msg === 'string' ? msg : JSON.stringify(msg);
+				if (s.length > 5) idbMessages.push(s.substring(0, 8000));
+			}
+		}
+
+		results.idb_messages = idbMessages;
 		return JSON.stringify(results);
 	}`
 	fetchResult, err := page.Eval(fetchJS)
@@ -717,7 +799,7 @@ teamsLoaded:
 		os.WriteFile(convPath, []byte(rawConvs), 0600) //nolint:errcheck
 		logger.Info().Str("file", convPath).Int("bytes", len(rawConvs)).Msg("[Teams] Resultados de conversas salvos")
 
-		// Processar resultado do IndexedDB
+		// Salvar mensagens extraídas do IndexedDB em arquivo separado para o extractor
 		var convResults map[string]interface{}
 		if json.Unmarshal([]byte(rawConvs), &convResults) == nil {
 			totalConvs, _ := convResults["total_convs"].(float64)
@@ -726,6 +808,22 @@ teamsLoaded:
 				Int("total_dbs", int(totalDBs)).
 				Int("total_convs", int(totalConvs)).
 				Msg("[Teams] IndexedDB escaneado")
+
+			// Salvar mensagens do IndexedDB para processamento pelo extractor
+			if idbMsgs, ok := convResults["idb_messages"].([]interface{}); ok && len(idbMsgs) > 0 {
+				var msgStrings []string
+				for _, m := range idbMsgs {
+					if s, ok := m.(string); ok && s != "" {
+						msgStrings = append(msgStrings, s)
+					}
+				}
+				if len(msgStrings) > 0 {
+					idbData, _ := json.Marshal(map[string]interface{}{"messages": msgStrings})
+					idbPath := filepath.Join(outputDir, "viabot-indexeddb-messages.json")
+					os.WriteFile(idbPath, idbData, 0600) //nolint:errcheck
+					logger.Info().Int("count", len(msgStrings)).Str("file", idbPath).Msg("[Teams] Mensagens IndexedDB salvas para processamento")
+				}
+			}
 
 			// Logar todos os matches encontrados
 			if allMatchesRaw, ok := convResults["all_matches"].([]interface{}); ok && len(allMatchesRaw) > 0 {

@@ -164,6 +164,8 @@ export const GitHubReleasesTab = () => {
   });
   const [serviceNowCHG, setServiceNowCHG] = useState<string | null>(null); // CHG do ServiceNow
   const [editingProductionTag, setEditingProductionTag] = useState<Record<string, string>>({}); // Edição inline da productionTag
+  const [approvalUrlInput, setApprovalUrlInput] = useState(""); // Input manual de URL devstartcd
+  const [showApprovalInput, setShowApprovalInput] = useState(false); // Exibir campo de input manual
 
   // ✅ Persistir lote no localStorage sempre que mudar
   React.useEffect(() => {
@@ -695,6 +697,21 @@ export const GitHubReleasesTab = () => {
     }
     return null;
   }, [selectedComparison, comparisonBatch]);
+
+  // Reset do input manual de URL de aprovação ao trocar de item
+  React.useEffect(() => {
+    setShowApprovalInput(false);
+    setApprovalUrlInput("");
+  }, [selectedComparison]);
+
+  const saveApprovalUrl = () => {
+    if (!approvalUrlInput.trim() || !selectedBatchItem) return;
+    setComparisonBatch(prev => prev.map(i =>
+      i.id === selectedBatchItem.id ? { ...i, approvalUrl: approvalUrlInput.trim() } : i
+    ));
+    setShowApprovalInput(false);
+    setApprovalUrlInput("");
+  };
 
   // ✨ Normalizar versão de x-x-x-x para x.x.x-x (formato semver)
   const normalizeVersion = (version: string): string => {
@@ -1284,6 +1301,38 @@ export const GitHubReleasesTab = () => {
               approvalUrl={selectedBatchItem.approvalUrl}
               chgNumber={selectedBatchItem.chgNumber}
             />
+          ) : selectedBatchItem?.chgNumber ? (
+            showApprovalInput ? (
+              <div className="flex items-center gap-1">
+                <Input
+                  className="h-6 text-xs w-56 px-2"
+                  placeholder="https://devstartcd.via.com.br/..."
+                  value={approvalUrlInput}
+                  onChange={e => setApprovalUrlInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") saveApprovalUrl();
+                    if (e.key === "Escape") { setShowApprovalInput(false); setApprovalUrlInput(""); }
+                  }}
+                  autoFocus
+                />
+                <Button size="icon" variant="ghost" className="h-6 w-6" onClick={saveApprovalUrl}
+                  disabled={!approvalUrlInput.includes("devstartcd")}>
+                  <Check className="h-3 w-3" />
+                </Button>
+                <Button size="icon" variant="ghost" className="h-6 w-6"
+                  onClick={() => { setShowApprovalInput(false); setApprovalUrlInput(""); }}>
+                  <XCircle className="h-3 w-3" />
+                </Button>
+              </div>
+            ) : (
+              <Button size="sm" variant="ghost"
+                className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground gap-1"
+                onClick={() => setShowApprovalInput(true)}
+                title="Colar link de aprovação SRE (devstartcd)">
+                <ExternalLink className="h-3 w-3" />
+                Link SRE
+              </Button>
+            )
           ) : undefined,
           titleAction: displayedComparison ? (
             <div className="flex items-center gap-3">

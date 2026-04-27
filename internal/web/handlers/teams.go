@@ -88,11 +88,14 @@ func (h *TeamsHandler) GetApprovalsToday(c *gin.Context) {
 
 // SearchCHG busca uma CHG em todo o cache (últimos 2 dias).
 // Mais rápido que uma varredura do Teams — responde em ms se estiver no cache.
-// GET /api/v1/teams/approvals/search?chg=CHG0455046
+// GET /api/v1/teams/approvals/search?chg=CHG0455046   — match exato por número
+// GET /api/v1/teams/approvals/search?q=nome-da-app   — busca por descrição (retorna todos os matches)
 func (h *TeamsHandler) SearchCHG(c *gin.Context) {
 	chg := strings.ToUpper(strings.TrimSpace(c.Query("chg")))
-	if chg == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro chg obrigatório"})
+	q := strings.ToLower(strings.TrimSpace(c.Query("q")))
+
+	if chg == "" && q == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parâmetro chg ou q obrigatório"})
 		return
 	}
 
@@ -100,15 +103,35 @@ func (h *TeamsHandler) SearchCHG(c *gin.Context) {
 	cached := h.cache
 	h.cacheMu.RUnlock()
 
+	// Busca por número CHG (match exato)
+	if chg != "" {
+		if cached != nil {
+			for _, item := range cached.Items {
+				if strings.ToUpper(item.CHG) == chg {
+					c.JSON(http.StatusOK, gin.H{"found": true, "item": item})
+					return
+				}
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"found": false})
+		return
+	}
+
+	// Busca por nome/descrição (substring, case-insensitive)
+	if len(q) < 3 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "termo de busca deve ter ao menos 3 caracteres"})
+		return
+	}
+	var matches []interface{}
 	if cached != nil {
 		for _, item := range cached.Items {
-			if strings.ToUpper(item.CHG) == chg {
-				c.JSON(http.StatusOK, gin.H{"found": true, "item": item})
-				return
+			if strings.Contains(strings.ToLower(item.Description), q) ||
+				strings.Contains(strings.ToLower(item.CHG), q) {
+				matches = append(matches, item)
 			}
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"found": false})
+	c.JSON(http.StatusOK, gin.H{"found": len(matches) > 0, "items": matches, "count": len(matches)})
 }
 
 // RefreshApprovals dispara extração completa do Teams e atualiza o cache.

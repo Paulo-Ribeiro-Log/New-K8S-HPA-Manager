@@ -166,6 +166,7 @@ export function ServiceNowImportModal({
 
   const chgSearchNorm = chgSearch.trim().toUpperCase();
   const isValidChgInput = /^CHG\d{5,}$/.test(chgSearchNorm);
+  const isNameSearch = chgSearch.trim().length >= 3 && !isValidChgInput;
   const filteredTeamsItems = chgSearch
     ? teamsItems.filter(i =>
         i.chg.includes(chgSearchNorm) ||
@@ -180,18 +181,50 @@ export function ServiceNowImportModal({
 
     // 1. Verificar cache local (últimos 2 dias) — evita re-scan do Teams
     let snUrl = `https://viavarejo.service-now.com/change_request.do?sysparm_query=number=${chg}`;
-    let cachedApprovalUrl = "";
+    // Promise que resolve com a approval URL — do cache ou de um refresh disparado agora
+    let approvalUrlPromise: Promise<string>;
+
     try {
       const cached = await apiClient.searchTeamsCHG(chg);
       if (cached.found && cached.item) {
         if (cached.item.servicenow_url) snUrl = cached.item.servicenow_url;
-        cachedApprovalUrl = cached.item.approval_url || "";
+        approvalUrlPromise = Promise.resolve(cached.item.approval_url || "");
+      } else {
+        toast.info("Buscando no Teams para capturar link de aprovação...", {
+          id: "teams-bg-refresh",
+          duration: 150000,
+        });
+        approvalUrlPromise = apiClient.refreshTeamsApprovals()
+          .then(async res => {
+            toast.dismiss("teams-bg-refresh");
+            if (!res.success) return "";
+            // Buscar no cache completo (48h) após o merge — não só nos itens de hoje
+            const afterRefresh = await apiClient.searchTeamsCHG(chg);
+            if (afterRefresh.found && afterRefresh.item?.approval_url) {
+              const found = afterRefresh.item as TeamsApprovalItem;
+              setTeamsItems(prev => {
+                const exists = prev.some(p => p.chg === found.chg);
+                return exists ? prev : [...prev, found];
+              });
+              return found.approval_url;
+            }
+            return "";
+          })
+          .catch(() => {
+            toast.dismiss("teams-bg-refresh");
+            return "";
+          });
       }
-    } catch { /* ignora — usa URL construída */ }
+    } catch {
+      approvalUrlPromise = Promise.resolve("");
+    }
 
-    // 2. Extrair dados do ServiceNow
+    // 2. Extrair ServiceNow e aguardar Teams em paralelo
     try {
-      const response = await apiClient.extractServiceNowWithPlaywright(snUrl);
+      const [response, approvalUrl] = await Promise.all([
+        apiClient.extractServiceNowWithPlaywright(snUrl),
+        approvalUrlPromise,
+      ]);
       if (response.success && response.extracted_data) {
         const d = response.extracted_data as ExtractedData;
         onImportSuccess({
@@ -200,7 +233,7 @@ export function ServiceNowImportModal({
           newVersion: d.version || "",
           xlReleaseUrl: d.xlrelease_url,
           changeNumber: response.change_number || chg,
-          approvalUrl: cachedApprovalUrl,
+          approvalUrl,
         });
         setAddedCount(c => c + 1);
         toast.success(`${chg} adicionada a comparações`);
@@ -211,6 +244,83 @@ export function ServiceNowImportModal({
     } catch (err) {
       toast.error(`${chg}: ${err instanceof Error ? err.message : "erro"}`);
     }
+    setTeamsExtracting(null);
+  };
+
+  // Busca CHGs por nome/trecho no Teams: cache → refresh → cache de novo → extrai ServiceNow
+  const handleExtractByName = async () => {
+    const term = chgSearch.trim();
+    setTeamsExtracting({ current: 0, total: 1, chg: term });
+
+    try {
+      // 1. Buscar no cache Teams pelo nome (resposta em ms)
+      let searchRes = await apiClient.searchTeamsByName(term);
+
+      // 2. Se não encontrou, atualizar o Teams (mesmo mecanismo do "Atualizar")
+      if (!searchRes.found || !searchRes.items?.length) {
+        toast.info("Buscando no Teams para capturar links de aprovação...", {
+          id: "teams-bg-refresh-name",
+          duration: 150000,
+        });
+        try {
+          const refreshResult = await apiClient.refreshTeamsApprovals();
+          toast.dismiss("teams-bg-refresh-name");
+          if (refreshResult.success) {
+            // Buscar no cache completo (48h) após merge
+            searchRes = await apiClient.searchTeamsByName(term);
+          }
+        } catch {
+          toast.dismiss("teams-bg-refresh-name");
+        }
+      }
+
+      if (!searchRes.found || !searchRes.items?.length) {
+        toast.error(`"${term}" não encontrado no Teams — CHG pode não estar visível no Mr.ViaBot`);
+        setTeamsExtracting(null);
+        return;
+      }
+
+      // 3. Extrair ServiceNow para cada CHG encontrada (url + approval_url vêm do Teams)
+      const found = searchRes.items;
+      let successCount = 0;
+      const errors: string[] = [];
+
+      for (let idx = 0; idx < found.length; idx++) {
+        const item = found[idx];
+        setTeamsExtracting({ current: idx + 1, total: found.length, chg: item.chg });
+        const snUrl = item.servicenow_url ||
+          `https://viavarejo.service-now.com/change_request.do?sysparm_query=number=${item.chg}`;
+        try {
+          const response = await apiClient.extractServiceNowWithPlaywright(snUrl);
+          if (response.success && response.extracted_data) {
+            const d = response.extracted_data as ExtractedData;
+            onImportSuccess({
+              deploymentName: d.application || item.description || item.chg,
+              githubRepo: d.github_repo || d.application || "",
+              newVersion: d.version || "",
+              xlReleaseUrl: d.xlrelease_url,
+              changeNumber: response.change_number || item.chg,
+              approvalUrl: item.approval_url,
+            });
+            successCount++;
+          } else {
+            errors.push(`${item.chg}: ${response.error || "falha"}`);
+          }
+        } catch (err) {
+          errors.push(`${item.chg}: ${err instanceof Error ? err.message : "erro"}`);
+        }
+      }
+
+      if (successCount > 0) {
+        setAddedCount(c => c + successCount);
+        toast.success(`${successCount} CHG${successCount > 1 ? "s" : ""} adicionada${successCount > 1 ? "s" : ""} via busca por nome`);
+        setChgSearch("");
+      }
+      if (errors.length > 0) toast.error(errors.join("; "));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Erro na busca por nome");
+    }
+
     setTeamsExtracting(null);
   };
 
@@ -231,34 +341,21 @@ export function ServiceNowImportModal({
 
       try {
         let response = await apiClient.extractServiceNowWithPlaywright(snUrl);
-        console.log(`[SN Batch] ${item.chg} tentativa 1:`, {
-          success: response.success,
-          application: response.extracted_data?.application,
-          version: response.extracted_data?.version,
-          description_len: response.description?.length ?? 0,
-          error: response.error,
-        });
         // Retry se falhou OU se retornou sem Application (resultado parcial após redirect SAML)
         if (!response.success || !response.extracted_data?.application) {
           await new Promise(r => setTimeout(r, 2000));
           response = await apiClient.extractServiceNowWithPlaywright(snUrl);
-          console.log(`[SN Batch] ${item.chg} tentativa 2:`, {
-            success: response.success,
-            application: response.extracted_data?.application,
-            version: response.extracted_data?.version,
-            description_len: response.description?.length ?? 0,
-            error: response.error,
-          });
         }
         if (response.success && response.extracted_data) {
           const d = response.extracted_data as ExtractedData;
+          const approvalUrl = item.approval_url || "";
           onImportSuccess({
             deploymentName: d.application || item.description || item.chg,
             githubRepo: d.github_repo || d.application || "",
             newVersion: d.version || "",
             xlReleaseUrl: d.xlrelease_url,
             changeNumber: response.change_number || item.chg,
-            approvalUrl: item.approval_url,
+            approvalUrl,
           });
           successChgs.push(item.chg);
         } else {
@@ -425,8 +522,7 @@ export function ServiceNowImportModal({
 
     const data = result.extracted_data;
     const chgNumber = result.change_request?.number;
-    // Se viemos do Teams, pegar a approvalUrl do item pendente
-    const approvalUrl = pendingTeamsItem?.approval_url;
+    const approvalUrl = pendingTeamsItem?.approval_url || "";
 
     onImportSuccess({
       deploymentName: data.application,
@@ -573,14 +669,18 @@ export function ServiceNowImportModal({
               </div>
             )}
 
-            {/* Campo de busca por CHG — sempre visível na aba Teams */}
+            {/* Campo de busca por CHG ou nome de release */}
             <div className="flex gap-2">
               <input
                 type="text"
                 value={chgSearch}
                 onChange={e => setChgSearch(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && isValidChgInput && !chgInList && !teamsExtracting && handleExtractDirectChg()}
-                placeholder="Buscar CHG (ex: CHG0455046)"
+                onKeyDown={e => {
+                  if (e.key !== "Enter" || !!teamsExtracting) return;
+                  if (isValidChgInput && !chgInList) handleExtractDirectChg();
+                  else if (isNameSearch && filteredTeamsItems.length === 0) handleExtractByName();
+                }}
+                placeholder="CHG0455046 ou nome da release"
                 className="flex-1 h-8 px-2.5 text-xs rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
                 disabled={!!teamsExtracting}
               />
@@ -593,6 +693,17 @@ export function ServiceNowImportModal({
                   className="h-8 text-xs whitespace-nowrap"
                 >
                   Extrair {chgSearchNorm}
+                </Button>
+              )}
+              {isNameSearch && filteredTeamsItems.length === 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleExtractByName}
+                  disabled={!!teamsExtracting}
+                  className="h-8 text-xs whitespace-nowrap"
+                >
+                  Buscar "{chgSearch.trim()}"
                 </Button>
               )}
             </div>

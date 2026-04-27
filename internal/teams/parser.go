@@ -1,19 +1,41 @@
 package teams
 
 import (
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
 )
 
 var (
-	reCHG         = regexp.MustCompile(`(?i)CHG\d{5,}`)
-	reApprovalURL = regexp.MustCompile(`https?://devstartcd\.via\.com\.br/sre-approval/form/[a-f0-9-]+`)
+	reCHG = regexp.MustCompile(`(?i)CHG\d{5,}`)
+	// Casa URL direta, MCAS proxy (.mcas.ms) e URL-encoded (%2F em vez de /)
+	reApprovalURL = regexp.MustCompile(`https?://devstartcd\.via\.com\.br(?:\.mcas\.ms)?/sre-approval/form/[a-f0-9%-]+`)
+	// Safe Links: extrai a URL original de dentro do wrapper safelinks
+	reSafeLinks = regexp.MustCompile(`safelinks\.protection\.outlook\.com/\?url=([^&\s"']+)`)
 	// Captura "Nome e versão da aplicação: [Grupo] app-name - 1.2.3"
-	reNomeVersao  = regexp.MustCompile(`(?i)Nome e vers[aã]o da aplica[cç][aã]o:\s*(.+)`)
+	reNomeVersao = regexp.MustCompile(`(?i)Nome e vers[aã]o da aplica[cç][aã]o:\s*(.+)`)
 	// Captura padrão "[Grupo] app-name - versão" diretamente
-	reAppVersion  = regexp.MustCompile(`^\[.+?\]\s+\S+\s+-\s+[\w.\-]+$`)
+	reAppVersion = regexp.MustCompile(`^\[.+?\]\s+\S+\s+-\s+[\w.\-]+$`)
 )
+
+// findApprovalURL encontra a URL do devstartcd em um texto, tratando Safe Links e MCAS.
+func findApprovalURL(text string) string {
+	// Tentativa direta (URL já limpa ou MCAS)
+	if u := reApprovalURL.FindString(text); u != "" {
+		return strings.Replace(u, ".mcas.ms", "", 1)
+	}
+	// Safe Links como texto: extrair URL original do parâmetro ?url=
+	if m := reSafeLinks.FindStringSubmatch(text); len(m) > 1 {
+		decoded, err := url.QueryUnescape(m[1])
+		if err == nil {
+			if u := reApprovalURL.FindString(decoded); u != "" {
+				return strings.Replace(u, ".mcas.ms", "", 1)
+			}
+		}
+	}
+	return ""
+}
 
 // ParseDOMMessages analisa o array de strings extraído do DOM do Teams.
 // Suporta dois formatos:
@@ -34,11 +56,11 @@ func ParseDOMMessages(messages []string) []ApprovalItem {
 		}
 
 		// Formato completo: CHG e URL de aprovação no mesmo string (container DOM inteiro)
-		approvalURL := reApprovalURL.FindString(messages[i])
+		approvalURL := findApprovalURL(messages[i])
 		if approvalURL == "" {
 			// Formato separado: URL nos próximos 3 elementos
 			for j := i + 1; j < len(messages) && j <= i+3; j++ {
-				if u := reApprovalURL.FindString(messages[j]); u != "" {
+				if u := findApprovalURL(messages[j]); u != "" {
 					approvalURL = u
 					break
 				}

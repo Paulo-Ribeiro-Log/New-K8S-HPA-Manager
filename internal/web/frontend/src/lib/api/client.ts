@@ -3436,6 +3436,14 @@ class APIClient {
     return this.request(`/teams/approvals/search?chg=${encodeURIComponent(chg.toUpperCase())}`);
   }
 
+  async searchTeamsByName(q: string): Promise<{
+    found: boolean;
+    count: number;
+    items?: { chg: string; servicenow_url?: string; approval_url: string; description?: string; extracted_at: string }[];
+  }> {
+    return this.request(`/teams/approvals/search?q=${encodeURIComponent(q)}`);
+  }
+
   // ==================== SRE Approval ====================
 
   async getSreApprovalInfo(approvalUrl: string): Promise<{
