@@ -247,79 +247,76 @@ export function ServiceNowImportModal({
     setTeamsExtracting(null);
   };
 
-  // Extrai CHGs encontradas por nome de release no cache Teams (2 dias)
+  // Busca CHGs por nome/trecho no Teams: cache → refresh → cache de novo → extrai ServiceNow
   const handleExtractByName = async () => {
     const term = chgSearch.trim();
     setTeamsExtracting({ current: 0, total: 1, chg: term });
 
     try {
-      // 1. Buscar no cache Teams pelo nome
-      const res = await apiClient.searchTeamsByName(term);
+      // 1. Buscar no cache Teams pelo nome (resposta em ms)
+      let searchRes = await apiClient.searchTeamsByName(term);
 
-      if (res.found && res.items && res.items.length > 0) {
-        // Encontrou no cache — extrair cada CHG que bate
-        const found = res.items;
-        let successCount = 0;
-        const errors: string[] = [];
-
-        for (let idx = 0; idx < found.length; idx++) {
-          const item = found[idx];
-          setTeamsExtracting({ current: idx + 1, total: found.length, chg: item.chg });
-          const snUrl = item.servicenow_url ||
-            `https://viavarejo.service-now.com/change_request.do?sysparm_query=number=${item.chg}`;
-          try {
-            const response = await apiClient.extractServiceNowWithPlaywright(snUrl);
-            if (response.success && response.extracted_data) {
-              const d = response.extracted_data as ExtractedData;
-              onImportSuccess({
-                deploymentName: d.application || item.description || item.chg,
-                githubRepo: d.github_repo || d.application || "",
-                newVersion: d.version || "",
-                xlReleaseUrl: d.xlrelease_url,
-                changeNumber: response.change_number || item.chg,
-                approvalUrl: item.approval_url,
-              });
-              successCount++;
-            } else {
-              errors.push(`${item.chg}: ${response.error || "falha"}`);
-            }
-          } catch (err) {
-            errors.push(`${item.chg}: ${err instanceof Error ? err.message : "erro"}`);
+      // 2. Se não encontrou, atualizar o Teams (mesmo mecanismo do "Atualizar")
+      if (!searchRes.found || !searchRes.items?.length) {
+        toast.info("Buscando no Teams para capturar links de aprovação...", {
+          id: "teams-bg-refresh-name",
+          duration: 150000,
+        });
+        try {
+          const refreshResult = await apiClient.refreshTeamsApprovals();
+          toast.dismiss("teams-bg-refresh-name");
+          if (refreshResult.success) {
+            // Buscar no cache completo (48h) após merge
+            searchRes = await apiClient.searchTeamsByName(term);
           }
+        } catch {
+          toast.dismiss("teams-bg-refresh-name");
         }
+      }
 
-        if (successCount > 0) {
-          setAddedCount(c => c + successCount);
-          toast.success(`${successCount} CHG${successCount > 1 ? "s" : ""} adicionada${successCount > 1 ? "s" : ""} via busca por nome`);
-          setChgSearch("");
-        }
-        if (errors.length > 0) toast.error(errors.join("; "));
-      } else {
-        // Não encontrou no cache — tentar busca direta no ServiceNow por descrição
-        const snUrl = `https://viavarejo.service-now.com/change_request.do?sysparm_query=short_descriptionCONTAINS${encodeURIComponent(term)}^state!=7^state!=8^ORDERBYDESCsys_created_on`;
-        toast.info(`"${term}" não encontrado no cache — buscando no ServiceNow...`, { duration: 8000 });
+      if (!searchRes.found || !searchRes.items?.length) {
+        toast.error(`"${term}" não encontrado no Teams — CHG pode não estar visível no Mr.ViaBot`);
+        setTeamsExtracting(null);
+        return;
+      }
+
+      // 3. Extrair ServiceNow para cada CHG encontrada (url + approval_url vêm do Teams)
+      const found = searchRes.items;
+      let successCount = 0;
+      const errors: string[] = [];
+
+      for (let idx = 0; idx < found.length; idx++) {
+        const item = found[idx];
+        setTeamsExtracting({ current: idx + 1, total: found.length, chg: item.chg });
+        const snUrl = item.servicenow_url ||
+          `https://viavarejo.service-now.com/change_request.do?sysparm_query=number=${item.chg}`;
         try {
           const response = await apiClient.extractServiceNowWithPlaywright(snUrl);
           if (response.success && response.extracted_data) {
             const d = response.extracted_data as ExtractedData;
             onImportSuccess({
-              deploymentName: d.application || term,
+              deploymentName: d.application || item.description || item.chg,
               githubRepo: d.github_repo || d.application || "",
               newVersion: d.version || "",
               xlReleaseUrl: d.xlrelease_url,
-              changeNumber: response.change_number || "",
-              approvalUrl: "",
+              changeNumber: response.change_number || item.chg,
+              approvalUrl: item.approval_url,
             });
-            setAddedCount(c => c + 1);
-            toast.success(`${d.application || term} adicionado via ServiceNow`);
-            setChgSearch("");
+            successCount++;
           } else {
-            toast.error(`Nenhuma CHG encontrada para "${term}" no ServiceNow`);
+            errors.push(`${item.chg}: ${response.error || "falha"}`);
           }
         } catch (err) {
-          toast.error(`Erro ao buscar "${term}": ${err instanceof Error ? err.message : "erro"}`);
+          errors.push(`${item.chg}: ${err instanceof Error ? err.message : "erro"}`);
         }
       }
+
+      if (successCount > 0) {
+        setAddedCount(c => c + successCount);
+        toast.success(`${successCount} CHG${successCount > 1 ? "s" : ""} adicionada${successCount > 1 ? "s" : ""} via busca por nome`);
+        setChgSearch("");
+      }
+      if (errors.length > 0) toast.error(errors.join("; "));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Erro na busca por nome");
     }
