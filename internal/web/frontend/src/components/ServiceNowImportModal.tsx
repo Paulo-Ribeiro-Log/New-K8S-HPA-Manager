@@ -164,12 +164,6 @@ export function ServiceNowImportModal({
     }
   };
 
-  const extractApprovalUrlFromDescription = (description?: string): string => {
-    if (!description) return "";
-    const m = description.match(/https?:\/\/devstartcd\.via\.com\.br\/sre-approval\/form\/[a-f0-9-]+/);
-    return m ? m[0] : "";
-  };
-
   const chgSearchNorm = chgSearch.trim().toUpperCase();
   const isValidChgInput = /^CHG\d{5,}$/.test(chgSearchNorm);
   const isNameSearch = chgSearch.trim().length >= 3 && !isValidChgInput;
@@ -187,21 +181,52 @@ export function ServiceNowImportModal({
 
     // 1. Verificar cache local (últimos 2 dias) — evita re-scan do Teams
     let snUrl = `https://viavarejo.service-now.com/change_request.do?sysparm_query=number=${chg}`;
-    let cachedApprovalUrl = "";
+    // Promise que resolve com a approval URL — do cache ou de um refresh disparado agora
+    let approvalUrlPromise: Promise<string>;
+
     try {
       const cached = await apiClient.searchTeamsCHG(chg);
       if (cached.found && cached.item) {
         if (cached.item.servicenow_url) snUrl = cached.item.servicenow_url;
-        cachedApprovalUrl = cached.item.approval_url || "";
+        // Está no cache (48h) — approval_url garantida não-vazia pelo parser
+        approvalUrlPromise = Promise.resolve(cached.item.approval_url || "");
+      } else {
+        // Não está no cache — disparar refresh do Teams em paralelo com o ServiceNow
+        toast.info("Buscando no Teams para capturar link de aprovação...", {
+          id: "teams-bg-refresh",
+          duration: 150000,
+        });
+        approvalUrlPromise = apiClient.refreshTeamsApprovals()
+          .then(res => {
+            toast.dismiss("teams-bg-refresh");
+            if (res.success && res.items) {
+              const found = (res.items as TeamsApprovalItem[]).find(
+                i => i.chg.toUpperCase() === chg
+              );
+              if (found?.approval_url) {
+                setTeamsItems(prev => {
+                  const exists = prev.some(p => p.chg === found.chg);
+                  return exists ? prev : [...prev, found];
+                });
+              }
+              return found?.approval_url || "";
+            }
+            return "";
+          })
+          .catch(() => { toast.dismiss("teams-bg-refresh"); return ""; });
       }
-    } catch { /* ignora — usa URL construída */ }
+    } catch {
+      approvalUrlPromise = Promise.resolve("");
+    }
 
-    // 2. Extrair dados do ServiceNow
+    // 2. Extrair ServiceNow e aguardar Teams em paralelo
     try {
-      const response = await apiClient.extractServiceNowWithPlaywright(snUrl);
+      const [response, approvalUrl] = await Promise.all([
+        apiClient.extractServiceNowWithPlaywright(snUrl),
+        approvalUrlPromise,
+      ]);
       if (response.success && response.extracted_data) {
         const d = response.extracted_data as ExtractedData;
-        const approvalUrl = cachedApprovalUrl || extractApprovalUrlFromDescription(response.description);
         onImportSuccess({
           deploymentName: d.application || chg,
           githubRepo: d.github_repo || d.application || "",
@@ -252,7 +277,7 @@ export function ServiceNowImportModal({
                 newVersion: d.version || "",
                 xlReleaseUrl: d.xlrelease_url,
                 changeNumber: response.change_number || item.chg,
-                approvalUrl: item.approval_url || extractApprovalUrlFromDescription(response.description),
+                approvalUrl: item.approval_url,
               });
               successCount++;
             } else {
