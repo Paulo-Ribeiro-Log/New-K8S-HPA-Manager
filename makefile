@@ -18,28 +18,27 @@ LDFLAGS=-ldflags "-X k8s-hpa-manager/internal/updater.Version=${VERSION_CLEAN}"
 BUILD_FLAGS=-mod=vendor
 
 # Limita workers paralelos do compilador Go para evitar OOM no WSL2.
-# /dev/shm (RAM) + 12 workers = pico de ~10GB → derruba a instância WSL2.
-# Sobrescrever se necessário: make build BUILD_PARALLEL=8
-BUILD_PARALLEL ?= 4
+# Com VS Code + Chrome + servidor rodando, cada worker usa ~400MB no pico do linker.
+# 2 workers = pico ~1.5GB adicional — seguro com 7-10GB disponíveis no WSL2.
+# Sobrescrever se necessário: make build BUILD_PARALLEL=4
+BUILD_PARALLEL ?= 2
 
-# Build cache no tmpfs (/dev/shm) para evitar I/O pesado no VHD WSL2.
-# /dev/shm é RAM pura — zero disco. Sem isso, 2GB+ de cache no VHD trava o disco a 100%.
-# SOMENTE em ambiente local: /dev/shm tem limite ~64MB em GitHub Actions, o que esgota
-# durante make release (3 cross-compilações) e causa GOTMPDIR a falhar (exit code 2).
-# Limite de 900MB: um build limpo gera ~768MB de cache; threshold de 900MB permite
-# reutilizar o cache em builds incrementais (só compila o que mudou) e só limpa quando
-# o cache acumula além disso — prevenindo OOM sem penalizar cada build.
-GOCACHE_MAX_MB := 900
+# GOCACHE no disco (VHD ext4), não em /dev/shm.
+# /dev/shm é RAM pura — com 7.6GB de WSL2 e VS Code+Chrome+servidor já consumindo ~4.5GB,
+# colocar cache+tmp lá durante o build empurra o pico para ~8GB+ → OOM → WSL crashando.
+# O VHD do WSL2 tem I/O adequado para builds incrementais (apenas arquivos modificados).
+# SOMENTE em ambiente local: CI usa GOCACHE padrão do runner (sem variável de ambiente).
+GOCACHE_MAX_MB := 1500
 ifeq ($(CI),)
-GOCACHE_DIR=/dev/shm/go-build-cache
-GOTMPDIR_DIR=/dev/shm/go-tmp
+GOCACHE_DIR=$(HOME)/.cache/go-build-wsl
+GOTMPDIR_DIR=/tmp/go-tmp
 export GOCACHE=$(GOCACHE_DIR)
 export GOTMPDIR=$(GOTMPDIR_DIR)
 BUILD_CACHE_DIRS=$(GOCACHE_DIR) $(GOTMPDIR_DIR)
 TRIM_CACHE=if [ -d "$(GOCACHE_DIR)" ]; then \
   CACHE_MB=$$(du -sm $(GOCACHE_DIR) 2>/dev/null | awk '{print $$1}'); \
   if [ "$${CACHE_MB:-0}" -gt $(GOCACHE_MAX_MB) ]; then \
-    echo "🧹 Go cache em /dev/shm: $${CACHE_MB}MB > $(GOCACHE_MAX_MB)MB — limpando..."; \
+    echo "🧹 Go cache: $${CACHE_MB}MB > $(GOCACHE_MAX_MB)MB — limpando..."; \
     go clean -cache; \
   fi; \
 fi

@@ -89,6 +89,9 @@ type Server struct {
 	// AWX Integration Handler (pode ser nil se AWX não estiver configurado)
 	awxHandler *handlers.AWXHandler
 
+	// SSO Profile Handler (perfil SSO corporativo centralizado)
+	ssoProfileHandler *handlers.SSOProfileHandler
+
 	// Node Pool Registry (catálogo de node pools para correlação Dynatrace)
 	nodepoolRegistryHandler *handlers.NodePoolRegistryHandler
 	npRegistryStore         *storage.NodePoolRegistryStore
@@ -280,6 +283,10 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		fmt.Println("ℹ️  AWX Integration: URL e credenciais configuradas via perfil do usuário")
 	}
 
+	// SSO Profile (perfil SSO corporativo: email + matrícula + senha compartilhada)
+	ssoProfileHandler := handlers.NewSSOProfileHandler(baseDir)
+	fmt.Println("ℹ️  Perfil SSO corporativo: configure em Credenciais → Perfil SSO")
+
 	// Node Pool Registry (catálogo para correlação Dynatrace aks-<pool>-vmss*)
 	var nodepoolRegistryHandler *handlers.NodePoolRegistryHandler
 	var npRegistryStore *storage.NodePoolRegistryStore
@@ -327,6 +334,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		aiHistoryStore:     aiHistoryStore,     // Compartilhado com Dynatrace handler
 		kubeManagerWrapper: kubeManagerWrapper, // Para predictions RBAC
 		awxHandler:              awxHandler,              // AWX Integration (certificados TLS)
+		ssoProfileHandler:       ssoProfileHandler,       // Perfil SSO corporativo
 		nodepoolRegistryHandler: nodepoolRegistryHandler, // Catálogo de node pools Dynatrace
 		npRegistryStore:         npRegistryStore,         // Usado pelo healthcheck orchestrator
 		finopsTimelineStore:     finopsTimelineStore,     // Snapshots históricos HPA para comparação
@@ -892,6 +900,14 @@ func (s *Server) setupRoutes() {
 		// Write Operations (SRE-only)
 		certGroup.POST("/copy", rbacMiddleware.RequireSREGroup(), certificatesHandler.Copy)
 		certGroup.POST("/upload", rbacMiddleware.RequireSREGroup(), certificatesHandler.Upload)
+	}
+
+	// Perfil SSO corporativo (email + matrícula + senha compartilhada entre serviços)
+	ssoRoutes := api.Group("/sso")
+	{
+		ssoRoutes.GET("/profile",    s.ssoProfileHandler.GetProfile)
+		ssoRoutes.PUT("/profile",    s.ssoProfileHandler.SaveProfile)
+		ssoRoutes.DELETE("/profile", s.ssoProfileHandler.DeleteProfile)
 	}
 
 	// AWX Integration (gerenciamento de certificados TLS via Ansible AWX/Tower)

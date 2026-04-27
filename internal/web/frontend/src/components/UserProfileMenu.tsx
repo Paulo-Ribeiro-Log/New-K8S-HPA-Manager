@@ -21,6 +21,7 @@ import {
   CheckCircle2,
   XCircle,
   Loader2,
+  KeyRound,
 } from 'lucide-react';
 import { useTheme } from '@/components/theme-provider';
 import { useUserProfile } from '@/hooks/useUserProfile';
@@ -28,6 +29,7 @@ import { NexusCredentialModal } from '@/components/profile/NexusCredentialModal'
 import { GitHubCredentialModal } from '@/components/profile/GitHubCredentialModal';
 import { ServiceNowSessionModal } from '@/components/profile/ServiceNowSessionModal';
 import { AWXCredentialModal } from '@/components/profile/AWXCredentialModal';
+import { SSOProfileModal } from '@/components/profile/SSOProfileModal';
 import type { CredentialStatus } from '@/types/profile';
 
 interface UserProfileMenuProps {
@@ -43,6 +45,7 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
   const [githubModalOpen, setGithubModalOpen] = useState(false);
   const [serviceNowModalOpen, setServiceNowModalOpen] = useState(false);
   const [awxModalOpen, setAwxModalOpen] = useState(false);
+  const [ssoProfileModalOpen, setSsoProfileModalOpen] = useState(false);
 
   // Renderizar icone de status da credencial
   const renderStatusIcon = (status: CredentialStatus) => {
@@ -170,6 +173,13 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
               Credenciais
             </DropdownMenuLabel>
             <DropdownMenuItem
+              onClick={() => setSsoProfileModalOpen(true)}
+              className="cursor-pointer"
+            >
+              <KeyRound className="h-4 w-4 mr-2 text-blue-500" />
+              <span className="flex-1">Perfil SSO corporativo</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
               onClick={() => setNexusModalOpen(true)}
               className="cursor-pointer"
             >
@@ -231,6 +241,11 @@ export function UserProfileMenu({ onLogout }: UserProfileMenuProps) {
       <AWXCredentialModal
         open={awxModalOpen}
         onOpenChange={setAwxModalOpen}
+        onSaved={refreshCredentials}
+      />
+      <SSOProfileModal
+        open={ssoProfileModalOpen}
+        onOpenChange={setSsoProfileModalOpen}
         onSaved={refreshCredentials}
       />
     </>

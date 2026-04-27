@@ -3176,17 +3176,43 @@ class APIClient {
     return this.request(`/awx/cluster-info?cluster=${encodeURIComponent(cluster)}`);
   }
 
-  /** Salva credenciais AWX (URL + usuário + senha SSO) */
-  async saveAWXCredentials(baseURL: string, username: string, password: string): Promise<void> {
+  /** Salva credenciais AWX — modo manual (username + password) ou via Perfil SSO */
+  async saveAWXCredentials(
+    baseURL: string,
+    opts: { username: string; password: string } | { useSSOProfile: true; loginIdentifier: "email" | "matricula" }
+  ): Promise<void> {
+    const body = "useSSOProfile" in opts
+      ? { base_url: baseURL, use_sso_profile: true, login_identifier: opts.loginIdentifier }
+      : { base_url: baseURL, username: opts.username, password: opts.password, use_sso_profile: false };
     await this.request<void>("/awx/credentials", {
       method: "POST",
-      body: JSON.stringify({ base_url: baseURL, username, password }),
+      body: JSON.stringify(body),
     });
   }
 
   /** Remove credenciais AWX salvas */
   async deleteAWXCredentials(): Promise<void> {
     await this.request<void>("/awx/credentials", { method: "DELETE" });
+  }
+
+  // ─── SSO Profile ───────────────────────────────────────────────────────────
+
+  /** Busca perfil SSO corporativo (email + matrícula, sem senha) */
+  async getSSOProfile(): Promise<import("./types").SSOProfile> {
+    return this.request("/sso/profile");
+  }
+
+  /** Salva perfil SSO corporativo */
+  async saveSSOProfile(email: string, matricula: string, password: string): Promise<void> {
+    await this.request<void>("/sso/profile", {
+      method: "PUT",
+      body: JSON.stringify({ email, matricula, password }),
+    });
+  }
+
+  /** Remove perfil SSO corporativo */
+  async deleteSSOProfile(): Promise<void> {
+    await this.request<void>("/sso/profile", { method: "DELETE" });
   }
 
   // ─── Command Runner ────────────────────────────────────────────────────────

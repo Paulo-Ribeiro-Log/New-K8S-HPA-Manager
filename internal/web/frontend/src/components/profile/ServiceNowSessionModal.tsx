@@ -23,8 +23,10 @@ import {
   Clock,
   FolderOpen,
   Monitor,
+  KeyRound,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { apiClient } from '@/lib/api/client';
 import type { CredentialModalProps } from '@/types/profile';
 
 interface SessionStatus {
@@ -42,6 +44,7 @@ interface BrowserEnv {
   has_display: boolean;
   xvfb_installed: boolean;
   xvfb_hint: string;
+  sso_login_identifier?: string; // "email" ou "matricula"
 }
 
 export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: CredentialModalProps) {
@@ -50,11 +53,15 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
   const [isLoading, setIsLoading] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  const [ssoLoginIdentifier, setSsoLoginIdentifier] = useState<'email' | 'matricula'>('email');
+  const [isSavingIdentifier, setIsSavingIdentifier] = useState(false);
+  const [ssoProfileConfigured, setSsoProfileConfigured] = useState(false);
 
   useEffect(() => {
     if (open) {
       fetchSessionStatus();
       fetchBrowserEnv();
+      apiClient.getSSOProfile().then(p => setSsoProfileConfigured(p.configured)).catch(() => {});
     }
   }, [open]);
 
@@ -65,8 +72,30 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
       });
       const data = await response.json();
       setBrowserEnv(data);
+      if (data.sso_login_identifier) {
+        setSsoLoginIdentifier(data.sso_login_identifier as 'email' | 'matricula');
+      }
     } catch {
       // silencioso — info opcional
+    }
+  };
+
+  const handleSaveIdentifier = async (identifier: 'email' | 'matricula') => {
+    setSsoLoginIdentifier(identifier);
+    setIsSavingIdentifier(true);
+    try {
+      await fetch('/api/v1/servicenow/browser-config', {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem("auth_token")}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ sso_login_identifier: identifier }),
+      });
+    } catch {
+      // silencioso — falha não impede o uso
+    } finally {
+      setIsSavingIdentifier(false);
     }
   };
 
@@ -276,6 +305,49 @@ export function ServiceNowSessionModal({ open, onOpenChange, onSaved }: Credenti
               </Alert>
             </div>
           )}
+
+          {/* Auto-login SSO */}
+          <Separator />
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <KeyRound className="h-4 w-4 text-blue-500" />
+              <span className="text-sm font-medium">Auto-login SSO</span>
+              {isSavingIdentifier && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+            </div>
+
+            {!ssoProfileConfigured ? (
+              <Alert>
+                <Info className="h-4 w-4" />
+                <AlertDescription className="text-xs">
+                  <strong>Perfil SSO não configurado.</strong> Configure em{' '}
+                  <strong>Credenciais → Perfil SSO corporativo</strong> para que o browser
+                  preencha o Azure AD automaticamente no próximo login.
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <>
+                <p className="text-xs text-muted-foreground">
+                  Perfil SSO ativo. Selecione qual identificador usar no formulário Azure AD:
+                </p>
+                <div className="flex flex-col gap-1.5">
+                  {(['email', 'matricula'] as const).map((id) => (
+                    <label key={id} className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="radio"
+                        name="sn-login-identifier"
+                        value={id}
+                        checked={ssoLoginIdentifier === id}
+                        onChange={() => handleSaveIdentifier(id)}
+                        className="accent-blue-500"
+                        disabled={isSavingIdentifier}
+                      />
+                      <span>{id === 'matricula' ? 'Matrícula' : 'Email'}</span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
 
           {/* Aviso WSL sem display */}
           {showXvfbWarning && (

@@ -1351,11 +1351,20 @@ export interface ExplorerApplyResult {
 }
 
 // AWX Integration (certificados TLS via Ansible AWX/Tower)
+export interface SSOProfile {
+  configured: boolean;
+  email?: string;
+  matricula?: string;
+  has_password?: boolean;
+}
+
 export interface AWXStatus {
   configured: boolean;
   reachable: boolean;
   base_url?: string;
   username?: string;
+  use_sso_profile?: boolean;
+  login_identifier?: string;  // "email" | "matricula"
   version?: string;
   error?: string;
 }
