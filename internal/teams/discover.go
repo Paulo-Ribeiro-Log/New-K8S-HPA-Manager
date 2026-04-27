@@ -468,13 +468,25 @@ teamsLoaded:
 			'[class*="bubble-wrapper"] [class*="content"]',
 			'[class*="itemContent"]'
 		];
+		// Inclui os href de <a> dentro do container — necessário quando o Teams
+		// renderiza o link devstartcd como hyperlink e não como texto visível.
+		const collectHrefs = (el) => {
+			const hrefs = [];
+			el.querySelectorAll('a[href]').forEach(a => {
+				const h = (a.href || a.getAttribute('href') || '').trim();
+				if (h && !h.startsWith('javascript') && !h.startsWith('#')) hrefs.push(h);
+			});
+			return hrefs.join('\n');
+		};
 		const messages = [];
 		for (const sel of selectors) {
 			const els = document.querySelectorAll(sel);
 			if (els.length > 0) {
 				els.forEach(el => {
 					const text = (el.innerText || el.textContent || '').trim();
-					if (text.length > 5) messages.push(text);
+					const hrefs = collectHrefs(el);
+					const combined = hrefs ? text + '\n' + hrefs : text;
+					if (combined.length > 5) messages.push(combined);
 				});
 				if (messages.length > 0) break;
 			}
@@ -488,12 +500,14 @@ teamsLoaded:
 				if (el.children.length > 0) continue; // só leaf nodes
 				const t = (el.innerText || el.textContent || '').trim();
 				if (!chgRe.test(t) || t.length > 40) continue; // leaf com número CHG
-				// Subir até achar container com sre-approval
+				// Subir até achar container com sre-approval (texto ou href)
 				let ancestor = el.parentElement;
 				for (let d = 0; d < 15 && ancestor; d++) {
 					const at = (ancestor.innerText || '').trim();
-					if (at.includes('sre-approval') && at.length < 3000) {
-						if (!added.has(at)) { added.add(at); messages.push(at); }
+					const ahrefs = collectHrefs(ancestor);
+					const combined = ahrefs ? at + '\n' + ahrefs : at;
+					if ((combined.includes('sre-approval') || combined.includes('devstartcd')) && combined.length < 3000) {
+						if (!added.has(combined)) { added.add(combined); messages.push(combined); }
 						break;
 					}
 					ancestor = ancestor.parentElement;
