@@ -188,32 +188,32 @@ export function ServiceNowImportModal({
       const cached = await apiClient.searchTeamsCHG(chg);
       if (cached.found && cached.item) {
         if (cached.item.servicenow_url) snUrl = cached.item.servicenow_url;
-        // Está no cache (48h) — approval_url garantida não-vazia pelo parser
         approvalUrlPromise = Promise.resolve(cached.item.approval_url || "");
       } else {
-        // Não está no cache — disparar refresh do Teams em paralelo com o ServiceNow
         toast.info("Buscando no Teams para capturar link de aprovação...", {
           id: "teams-bg-refresh",
           duration: 150000,
         });
         approvalUrlPromise = apiClient.refreshTeamsApprovals()
-          .then(res => {
+          .then(async res => {
             toast.dismiss("teams-bg-refresh");
-            if (res.success && res.items) {
-              const found = (res.items as TeamsApprovalItem[]).find(
-                i => i.chg.toUpperCase() === chg
-              );
-              if (found?.approval_url) {
-                setTeamsItems(prev => {
-                  const exists = prev.some(p => p.chg === found.chg);
-                  return exists ? prev : [...prev, found];
-                });
-              }
-              return found?.approval_url || "";
+            if (!res.success) return "";
+            // Buscar no cache completo (48h) após o merge — não só nos itens de hoje
+            const afterRefresh = await apiClient.searchTeamsCHG(chg);
+            if (afterRefresh.found && afterRefresh.item?.approval_url) {
+              const found = afterRefresh.item as TeamsApprovalItem;
+              setTeamsItems(prev => {
+                const exists = prev.some(p => p.chg === found.chg);
+                return exists ? prev : [...prev, found];
+              });
+              return found.approval_url;
             }
             return "";
           })
-          .catch(() => { toast.dismiss("teams-bg-refresh"); return ""; });
+          .catch(() => {
+            toast.dismiss("teams-bg-refresh");
+            return "";
+          });
       }
     } catch {
       approvalUrlPromise = Promise.resolve("");
@@ -308,7 +308,7 @@ export function ServiceNowImportModal({
               newVersion: d.version || "",
               xlReleaseUrl: d.xlrelease_url,
               changeNumber: response.change_number || "",
-              approvalUrl: extractApprovalUrlFromDescription(response.description),
+              approvalUrl: "",
             });
             setAddedCount(c => c + 1);
             toast.success(`${d.application || term} adicionado via ServiceNow`);
@@ -344,28 +344,14 @@ export function ServiceNowImportModal({
 
       try {
         let response = await apiClient.extractServiceNowWithPlaywright(snUrl);
-        console.log(`[SN Batch] ${item.chg} tentativa 1:`, {
-          success: response.success,
-          application: response.extracted_data?.application,
-          version: response.extracted_data?.version,
-          description_len: response.description?.length ?? 0,
-          error: response.error,
-        });
         // Retry se falhou OU se retornou sem Application (resultado parcial após redirect SAML)
         if (!response.success || !response.extracted_data?.application) {
           await new Promise(r => setTimeout(r, 2000));
           response = await apiClient.extractServiceNowWithPlaywright(snUrl);
-          console.log(`[SN Batch] ${item.chg} tentativa 2:`, {
-            success: response.success,
-            application: response.extracted_data?.application,
-            version: response.extracted_data?.version,
-            description_len: response.description?.length ?? 0,
-            error: response.error,
-          });
         }
         if (response.success && response.extracted_data) {
           const d = response.extracted_data as ExtractedData;
-          const approvalUrl = item.approval_url || extractApprovalUrlFromDescription(response.description);
+          const approvalUrl = item.approval_url || "";
           onImportSuccess({
             deploymentName: d.application || item.description || item.chg,
             githubRepo: d.github_repo || d.application || "",
@@ -539,8 +525,7 @@ export function ServiceNowImportModal({
 
     const data = result.extracted_data;
     const chgNumber = result.change_request?.number;
-    const approvalUrl = pendingTeamsItem?.approval_url ||
-      extractApprovalUrlFromDescription(result.change_request?.description);
+    const approvalUrl = pendingTeamsItem?.approval_url || "";
 
     onImportSuccess({
       deploymentName: data.application,
