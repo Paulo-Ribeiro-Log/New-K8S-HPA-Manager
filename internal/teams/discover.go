@@ -456,7 +456,40 @@ teamsLoaded:
 	if clickErr == nil && !clickRes.Value.Nil() {
 		logger.Info().Str("result", clickRes.Value.String()).Msg("[Teams] Tentativa de click na conversa Mr.ViaBot")
 	}
-	time.Sleep(20 * time.Second)
+	time.Sleep(10 * time.Second)
+
+	// Rolar para o topo da conversa para forçar carregamento lazy de mensagens antigas.
+	// O Teams só renderiza mensagens próximas ao viewport — sem scroll, CHGs de horas
+	// atrás ficam fora do DOM e não são capturadas. Três rodadas com pausa de 5s cada.
+	scrollJS := `() => {
+		const selectors = [
+			'[data-tid="messageList"]',
+			'[class*="messageListContainer"]',
+			'[class*="scrollContainer"]',
+			'[class*="chatContent"]',
+			'[class*="message-list"]',
+			'[role="log"]',
+			'[role="list"]',
+		];
+		for (const sel of selectors) {
+			const el = document.querySelector(sel);
+			if (el && el.scrollHeight > el.clientHeight) {
+				el.scrollTop = 0;
+				return { scrolled: true, selector: sel, scrollHeight: el.scrollHeight };
+			}
+		}
+		window.scrollTo(0, 0);
+		return { scrolled: false };
+	}`
+	for i := 0; i < 3; i++ {
+		scrollRes, scrollErr := page.Eval(scrollJS)
+		if scrollErr == nil && !scrollRes.Value.Nil() {
+			logger.Info().Str("result", scrollRes.Value.String()).Msgf("[Teams] Scroll %d/3 para carregar mensagens antigas", i+1)
+		} else if scrollErr != nil {
+			logger.Warn().Err(scrollErr).Msgf("[Teams] Erro no scroll %d/3", i+1)
+		}
+		time.Sleep(5 * time.Second)
+	}
 
 	// Extrair mensagens diretamente do DOM (não depende de HTTP — MCAS bloqueia fetch() externo)
 	domMsgJS := `() => {
