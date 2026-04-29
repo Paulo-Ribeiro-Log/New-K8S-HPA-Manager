@@ -10,6 +10,7 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog"
+	"github.com/ysmood/gson"
 )
 
 // SendResult representa o resultado do envio para um destinatário.
@@ -18,11 +19,17 @@ type SendResult struct {
 	OK       bool   `json:"ok"`
 	Status   int    `json:"status"`
 	Error    string `json:"error,omitempty"`
+	Index    int    `json:"index"`
+	Total    int    `json:"total"`
 }
 
+// ProgressFunc é chamada a cada destinatário concluído (sucesso ou falha).
+type ProgressFunc func(result SendResult)
+
 // SendBatch abre o Teams via go-rod e envia htmlContent para cada threadID em lote.
+// onProgress é chamada após cada envio individual — pode ser nil.
 // Todo o tráfego HTTP passa pela página do Teams (same-origin) para contornar o MCAS.
-func SendBatch(sessionDir string, threadIDs []string, htmlContent string, logger *zerolog.Logger) ([]SendResult, error) {
+func SendBatch(sessionDir string, threadIDs []string, htmlContent string, onProgress ProgressFunc, logger *zerolog.Logger) ([]SendResult, error) {
 	killExistingChrome(sessionDir, logger)
 	time.Sleep(800 * time.Millisecond)
 
@@ -88,10 +95,27 @@ loaded:
 	// Timeout generoso: 10min para envios em lote grandes.
 	page = page.Timeout(10 * time.Minute)
 
-	// Escapar o htmlContent para uso seguro dentro de um template JS.
-	escapedHTML := escapeJSString(htmlContent)
+	// Expor callback Go → JS: chamado após cada send individual.
+	// O CDP binding é awaitable do lado JS.
+	stopExpose, err := page.Expose("onSendProgress", func(j gson.JSON) (interface{}, error) {
+		if onProgress == nil {
+			return nil, nil
+		}
+		var r SendResult
+		if err := j.Unmarshal(&r); err != nil {
+			logger.Warn().Err(err).Msg("[Sender] Falha ao parsear progresso")
+			return nil, nil
+		}
+		onProgress(r)
+		return nil, nil
+	})
+	if err != nil {
+		logger.Warn().Err(err).Msg("[Sender] Falha ao expor onSendProgress — continuando sem callbacks")
+	} else {
+		defer stopExpose() //nolint:errcheck
+	}
 
-	// Serializar thread IDs como array JSON.
+	escapedHTML := escapeJSString(htmlContent)
 	threadIDsJSON, _ := json.Marshal(threadIDs)
 
 	js := fmt.Sprintf(`async () => {
@@ -108,7 +132,6 @@ loaded:
 			const val = localStorage.getItem(key);
 			if (!val) continue;
 
-			// Chave MSAL contém "accesstoken" e "teams.officeclient" ou "ic3.teams"
 			if (key.toLowerCase().includes('accesstoken') &&
 				(key.toLowerCase().includes('ic3.teams') ||
 				 key.toLowerCase().includes('teams.officeclient') ||
@@ -116,17 +139,13 @@ loaded:
 				try {
 					const obj = JSON.parse(val);
 					const token = obj.secret || obj.access_token || obj.token || '';
-					if (token && token.length > 50) {
-						bearerToken = token;
-					}
+					if (token && token.length > 50) bearerToken = token;
 				} catch {}
 			}
-			// MRI + displayName: chave MSAL "idtoken" ou "account"
 			if (!userMRI && key.toLowerCase().includes('account')) {
 				try {
 					const obj = JSON.parse(val);
 					const mri = obj.localAccountId || obj.homeAccountId || '';
-					// Formato MRI esperado: 8:orgid:UUID
 					if (mri && !mri.includes('login.windows') && !mri.includes('.')) {
 						userMRI = '8:orgid:' + (obj.localAccountId || '');
 					}
@@ -135,7 +154,7 @@ loaded:
 			}
 		}
 
-		// Fallback: varrer todas as chaves do localStorage procurando tokens Bearer
+		// Fallback: qualquer chave com token Bearer longo
 		if (!bearerToken) {
 			for (let i = 0; i < localStorage.length; i++) {
 				const key = localStorage.key(i);
@@ -144,10 +163,9 @@ loaded:
 				if (!val) continue;
 				try {
 					const obj = JSON.parse(val);
-					const candidates = [obj.secret, obj.access_token, obj.token, obj.skypeToken, obj.skypetoken];
-					for (const c of candidates) {
-						if (typeof c === 'string' && c.length > 100 && (c.startsWith('eyJ') || c.startsWith('Bearer'))) {
-							bearerToken = c.replace(/^Bearer\s+/i, '');
+					for (const c of [obj.secret, obj.access_token, obj.token]) {
+						if (typeof c === 'string' && c.length > 100 && c.startsWith('eyJ')) {
+							bearerToken = c;
 							break;
 						}
 					}
@@ -160,43 +178,7 @@ loaded:
 			return JSON.stringify({ error: 'Bearer token não encontrado no localStorage' });
 		}
 
-		// ── 2. Extrair MRI e displayName do IndexedDB se ainda não temos ──────
-		if (!userMRI || !displayName) {
-			try {
-				const allDbs = await indexedDB.databases().catch(() => []);
-				for (const {name} of allDbs) {
-					if (!name || !name.includes('conversation-manager')) continue;
-					const db = await new Promise((res, rej) => {
-						const r = indexedDB.open(name);
-						r.onsuccess = e => res(e.target.result);
-						r.onerror   = () => rej(r.error);
-					});
-					// Tentar store "userInfo" ou "profile"
-					for (const store of ['userInfo', 'profile', 'profiles', 'users']) {
-						if (!db.objectStoreNames.contains(store)) continue;
-						const rows = await new Promise(res => {
-							const tx  = db.transaction(store, 'readonly');
-							const req = tx.objectStore(store).getAll();
-							req.onsuccess = () => res(req.result || []);
-							req.onerror   = () => res([]);
-						});
-						for (const row of rows) {
-							const mri = row.mri || row.MRI || row.id || '';
-							if (mri && (mri.startsWith('8:orgid:') || mri.startsWith('8:live:'))) {
-								if (!userMRI) userMRI = mri;
-							}
-							const dn = row.displayName || row.name || row.imdisplayname || '';
-							if (dn && !displayName) displayName = dn;
-						}
-						if (userMRI && displayName) break;
-					}
-					db.close();
-					if (userMRI && displayName) break;
-				}
-			} catch {}
-		}
-
-		// Fallback MRI: extrair do token JWT (sub ou upn)
+		// ── 2. MRI via JWT se não encontrado ──────────────────────────────────
 		if (!userMRI) {
 			try {
 				const parts = bearerToken.split('.');
@@ -208,93 +190,72 @@ loaded:
 				}
 			} catch {}
 		}
-
 		if (!userMRI)     userMRI     = '8:orgid:unknown';
 		if (!displayName) displayName = 'Unknown User';
 
-		// ── 3. Detectar host base (MCAS proxy ou direto) ──────────────────────
-		const currentHost = location.host; // ex: teams.microsoft.com.mcas.ms
-		const baseURL = location.protocol + '//' + currentHost;
+		// ── 3. Host base (MCAS ou direto) ────────────────────────────────────
+		const baseURL = location.protocol + '//' + location.host;
 
-		// ── 4. Enviar em lote (grupos de 10 com 600ms entre grupos) ──────────
+		// ── 4. Envio em lote com callback de progresso após cada item ─────────
 		const threadIDs   = %s;
 		const htmlContent = '%s';
 		const batchSize   = 10;
+		const total       = threadIDs.length;
+		const results     = [];
 
-		const results = [];
 		for (let i = 0; i < threadIDs.length; i += batchSize) {
 			const batch = threadIDs.slice(i, i + batchSize);
-			const batchResults = await Promise.all(batch.map(async (threadId) => {
+			const batchResults = await Promise.all(batch.map(async (threadId, batchIdx) => {
+				const globalIdx = i + batchIdx;
 				const now   = new Date().toISOString();
-				// Teams valida que clientmessageid seja um número em formato string (max int64 = 19 dígitos).
-				// Date.now() tem 13 dígitos; concatenamos 6 dígitos aleatórios para chegar em 19.
 				const msgId = String(Date.now()) + String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
 
-				// URL: encode o threadId (contém : e @ que precisam ser encoded)
 				const encodedThread = encodeURIComponent(threadId);
 				const url = baseURL + '/api/chatsvc/amer/v1/users/ME/conversations/' + encodedThread + '/messages';
 
 				const body = JSON.stringify({
-					amsreferences:      [],
-					callId:             '',
-					clientmessageid:    msgId,
-					composetime:        now,
-					content:            htmlContent,
-					contenttype:        'Text',
-					conversationLink:   baseURL + '/api/chatsvc/amer/v1/users/ME/conversations/' + encodedThread,
-					conversationid:     threadId,
-					crossPostChannels:  [],
-					from:               userMRI,
-					fromUserId:         userMRI,
-					id:                 '-1',
-					imdisplayname:      displayName,
-					messagetype:        'RichText/Html',
+					amsreferences: [], callId: '', clientmessageid: msgId,
+					composetime: now, content: htmlContent, contenttype: 'Text',
+					conversationLink: baseURL + '/api/chatsvc/amer/v1/users/ME/conversations/' + encodedThread,
+					conversationid: threadId, crossPostChannels: [],
+					from: userMRI, fromUserId: userMRI, id: '-1',
+					imdisplayname: displayName, messagetype: 'RichText/Html',
 					originalarrivaltime: now,
-					properties: {
-						cards:          '[]',
-						files:          '[]',
-						formatVariant:  'TEAMS',
-						importance:     '',
-						links:          '[]',
-						mentions:       '[]',
-						onbehalfof:     null,
-						policyViolation: null,
-						subject:        '',
-						title:          '',
-					},
-					state:   0,
-					type:    'Message',
-					version: '0',
+					properties: { cards:'[]', files:'[]', formatVariant:'TEAMS',
+						importance:'', links:'[]', mentions:'[]',
+						onbehalfof:null, policyViolation:null, subject:'', title:'' },
+					state: 0, type: 'Message', version: '0',
 				});
 
+				let result;
 				try {
 					const resp = await fetch(url, {
 						method: 'POST',
 						headers: {
-							'authorization':        'Bearer ' + bearerToken,
-							'content-type':         'application/json',
-							'behavioroverride':     'redirectAs404',
-							'x-ms-migration':       'True',
+							'authorization': 'Bearer ' + bearerToken,
+							'content-type': 'application/json',
+							'behavioroverride': 'redirectAs404',
+							'x-ms-migration': 'True',
 							'x-ms-request-priority': '0',
-							'x-ms-test-user':       'False',
+							'x-ms-test-user': 'False',
 						},
 						body,
 					});
-					const status = resp.status;
 					let errMsg = '';
 					if (!resp.ok) {
-						try { errMsg = await resp.text(); } catch {}
-						errMsg = errMsg.slice(0, 200);
+						try { errMsg = (await resp.text()).slice(0, 200); } catch {}
 					}
-					return { thread_id: threadId, ok: resp.ok, status, error: errMsg };
+					result = { thread_id: threadId, ok: resp.ok, status: resp.status, error: errMsg, index: globalIdx, total };
 				} catch(e) {
-					return { thread_id: threadId, ok: false, status: 0, error: String(e) };
+					result = { thread_id: threadId, ok: false, status: 0, error: String(e), index: globalIdx, total };
 				}
+
+				// Notificar Go sobre este envio individual
+				try { await window.onSendProgress(JSON.stringify(result)); } catch {}
+				return result;
 			}));
 			results.push(...batchResults);
-			if (i + batchSize < threadIDs.length) {
-				await sleep(600);
-			}
+			if (i + batchSize < threadIDs.length) await sleep(600);
 		}
 
 		return JSON.stringify({ results, mri: userMRI, display_name: displayName });
@@ -307,16 +268,14 @@ loaded:
 		return nil, fmt.Errorf("erro ao executar envio JS: %w", err)
 	}
 
-	raw := res.Value.String()
-
 	var out struct {
 		Error       string       `json:"error"`
 		Results     []SendResult `json:"results"`
 		MRI         string       `json:"mri"`
 		DisplayName string       `json:"display_name"`
 	}
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return nil, fmt.Errorf("erro ao parsear resultado do envio: %w (raw: %.200s)", err, raw)
+	if err := json.Unmarshal([]byte(res.Value.String()), &out); err != nil {
+		return nil, fmt.Errorf("erro ao parsear resultado: %w (raw: %.200s)", err, res.Value.String())
 	}
 	if out.Error != "" {
 		return nil, fmt.Errorf("erro no JS de envio: %s", out.Error)
@@ -328,17 +287,11 @@ loaded:
 			ok++
 		}
 	}
-	logger.Info().
-		Str("mri", out.MRI).
-		Str("display_name", out.DisplayName).
-		Int("sent", ok).
-		Int("failed", len(out.Results)-ok).
-		Msg("[Sender] Envio concluído")
-
+	logger.Info().Str("mri", out.MRI).Int("sent", ok).Int("failed", len(out.Results)-ok).Msg("[Sender] Envio concluído")
 	return out.Results, nil
 }
 
-// escapeJSString escapa uma string para ser embutida com segurança em um template JS
+// escapeJSString escapa uma string para ser embutida com segurança em template JS
 // delimitado por aspas simples.
 func escapeJSString(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)

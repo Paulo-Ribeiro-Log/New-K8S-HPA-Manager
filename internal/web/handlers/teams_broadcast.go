@@ -17,6 +17,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"k8s-hpa-manager/internal/teams"
+	"k8s-hpa-manager/internal/web/sse"
 )
 
 type BroadcastChat struct {
@@ -33,6 +34,7 @@ type BroadcastChatsResponse struct {
 }
 
 type SendBroadcastRequest struct {
+	SessionID string   `json:"session_id"` // UUID gerado pelo frontend para o stream SSE
 	ThreadIDs []string `json:"thread_ids"`
 	Markdown  string   `json:"markdown"`
 	HTML      string   `json:"html"` // conteúdo já renderizado do painel de preview
@@ -51,12 +53,18 @@ type SaveTemplateRequest struct {
 
 type TeamsBroadcastHandler struct {
 	logger   *zerolog.Logger
+	tracker  *sse.ProgressTracker
 	scanning bool
 	scanMu   sync.Mutex
+	sending  bool
+	sendMu   sync.Mutex
 }
 
 func NewTeamsBroadcastHandler(logger *zerolog.Logger) *TeamsBroadcastHandler {
-	return &TeamsBroadcastHandler{logger: logger}
+	return &TeamsBroadcastHandler{
+		logger:  logger,
+		tracker: GetProgressTracker(),
+	}
 }
 
 // normalizeSearch remove acentos e converte para minúsculas para busca tolerante.
@@ -269,11 +277,16 @@ func (h *TeamsBroadcastHandler) DeleteTemplate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"deleted": filename})
 }
 
-// Send envia uma mensagem HTML para os chats selecionados via browser automation.
+// Send inicia o envio em lote de forma assíncrona e retorna 202 imediatamente.
+// O progresso é publicado via SSE no stream identificado por session_id.
 func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
 	var req SendBroadcastRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.SessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id é obrigatório"})
 		return
 	}
 	if len(req.ThreadIDs) == 0 {
@@ -281,42 +294,160 @@ func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
 		return
 	}
 
-	// Usar HTML renderizado quando disponível; fallback: converter markdown manualmente.
+	h.sendMu.Lock()
+	if h.sending {
+		h.sendMu.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"error": "envio já em andamento"})
+		return
+	}
+	h.sending = true
+	h.sendMu.Unlock()
+
 	htmlContent := req.HTML
 	if htmlContent == "" {
 		if req.Markdown == "" {
+			h.sendMu.Lock()
+			h.sending = false
+			h.sendMu.Unlock()
 			c.JSON(http.StatusBadRequest, gin.H{"error": "html ou markdown é obrigatório"})
 			return
 		}
 		htmlContent = markdownToTeamsHTML(req.Markdown)
 	}
 
-	h.logger.Info().Int("chats", len(req.ThreadIDs)).Msg("[Broadcast] Iniciando envio em lote")
-
+	sessionID := req.SessionID
+	total := len(req.ThreadIDs)
 	homeDir, _ := os.UserHomeDir()
-	sessionDir := filepath.Join(homeDir, ".k8s-hpa-manager", "teams-session")
+	teamsSessionDir := filepath.Join(homeDir, ".k8s-hpa-manager", "teams-session")
 
-	results, err := teams.SendBatch(sessionDir, req.ThreadIDs, htmlContent, h.logger)
-	if err != nil {
-		h.logger.Error().Err(err).Msg("[Broadcast] Erro no envio em lote")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	h.logger.Info().Str("session", sessionID).Int("total", total).Msg("[Broadcast] Iniciando envio assíncrono")
+
+	// Publicar evento inicial para o cliente SSE saber que começou.
+	h.tracker.SendToClient(sessionID, sse.ProgressEvent{
+		ID:       sessionID,
+		Type:     "broadcast_start",
+		Phase:    "started",
+		Message:  "Iniciando envio...",
+		Progress: 0,
+	})
+
+	go func() {
+		defer func() {
+			h.sendMu.Lock()
+			h.sending = false
+			h.sendMu.Unlock()
+		}()
+
+		sent := 0
+		failed := 0
+		var allResults []teams.SendResult
+
+		onProgress := func(r teams.SendResult) {
+			allResults = append(allResults, r)
+			if r.OK {
+				sent++
+			} else {
+				failed++
+			}
+			done := sent + failed
+			progress := float64(done) / float64(total)
+
+			// Serializar result para Details
+			raw, _ := json.Marshal(r)
+
+			h.tracker.SendToClient(sessionID, sse.ProgressEvent{
+				ID:       sessionID,
+				Type:     "broadcast_progress",
+				Phase:    "in_progress",
+				Message:  r.ThreadID,
+				Progress: progress,
+				Details:  string(raw),
+				Error:    r.Error,
+			})
+		}
+
+		results, err := teams.SendBatch(teamsSessionDir, req.ThreadIDs, htmlContent, onProgress, h.logger)
+		if err != nil {
+			h.logger.Error().Err(err).Msg("[Broadcast] Erro no envio")
+			h.tracker.SendToClient(sessionID, sse.ProgressEvent{
+				ID:      sessionID,
+				Type:    "error",
+				Phase:   "failed",
+				Message: err.Error(),
+				Error:   err.Error(),
+			})
+			return
+		}
+
+		// Calcular totais finais a partir dos resultados completos.
+		sent, failed = 0, 0
+		for _, r := range results {
+			if r.OK {
+				sent++
+			} else {
+				failed++
+			}
+		}
+
+		raw, _ := json.Marshal(gin.H{"sent": sent, "failed": failed, "results": results})
+		h.tracker.SendToClient(sessionID, sse.ProgressEvent{
+			ID:       sessionID,
+			Type:     "complete",
+			Phase:    "completed",
+			Message:  "Envio concluído",
+			Progress: 1.0,
+			Details:  string(raw),
+		})
+		h.logger.Info().Int("sent", sent).Int("failed", failed).Msg("[Broadcast] Envio concluído")
+	}()
+
+	c.JSON(http.StatusAccepted, gin.H{"session_id": sessionID, "total": total})
+}
+
+// StreamSend abre o stream SSE de progresso do envio em lote.
+// GET /api/v1/teams/broadcast/send/stream/:sessionId
+func (h *TeamsBroadcastHandler) StreamSend(c *gin.Context) {
+	sessionID := c.Param("sessionId")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sessionId obrigatório"})
 		return
 	}
 
-	sent, failed := 0, 0
-	for _, r := range results {
-		if r.OK {
-			sent++
-		} else {
-			failed++
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	// Replay de eventos já publicados (ex: cliente conectou depois do início).
+	for _, evt := range h.tracker.GetReplayEvents(sessionID) {
+		if _, err := c.Writer.WriteString(sse.FormatSSE(evt)); err != nil {
+			return
+		}
+		c.Writer.Flush()
+	}
+
+	client := sse.NewClient(sessionID)
+	h.tracker.AddClient(client)
+	defer h.tracker.RemoveClient(sessionID)
+
+	ctx := c.Request.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-client.Channel:
+			if !ok {
+				return
+			}
+			if _, err := c.Writer.WriteString(sse.FormatSSE(event)); err != nil {
+				return
+			}
+			c.Writer.Flush()
+			if event.Type == "complete" || event.Type == "error" {
+				return
+			}
 		}
 	}
-	h.logger.Info().Int("sent", sent).Int("failed", failed).Msg("[Broadcast] Envio concluído")
-	c.JSON(http.StatusOK, gin.H{
-		"sent":    sent,
-		"failed":  failed,
-		"results": results,
-	})
 }
 
 // markdownToTeamsHTML converte markdown simples para HTML aceito pelo Teams.

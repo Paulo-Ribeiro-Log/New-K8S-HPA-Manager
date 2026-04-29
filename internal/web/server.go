@@ -1043,6 +1043,10 @@ func (s *Server) setupRoutes() {
 		teamsGroup.GET("/broadcast/templates/:filename", broadcastHandler.GetTemplate)
 		teamsGroup.DELETE("/broadcast/templates/:filename", broadcastHandler.DeleteTemplate)
 		teamsGroup.POST("/broadcast/send", broadcastHandler.Send)
+		// SSE stream: EventSource não suporta headers → token via query param
+		s.router.GET("/api/v1/teams/broadcast/send/stream/:sessionId",
+			middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+			broadcastHandler.StreamSend)
 	}
 	fmt.Println("✅ Teams Integration routes registradas")
 

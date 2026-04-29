@@ -582,6 +582,7 @@ export const TeamsBroadcastTab = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sendProgress, setSendProgress] = useState<{ done: number; total: number } | null>(null);
   const [sendStatus, setSendStatus] = useState<{ ok: boolean; msg: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -664,32 +665,83 @@ export const TeamsBroadcastTab = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const [sendResults, setSendResults] = useState<SendResult[] | null>(null);
+  const [sendResults, setSendResults] = useState<Map<string, SendResult>>(new Map());
+  const sseRef = useRef<EventSource | null>(null);
 
   const handleSend = async () => {
     if (selected.size === 0 || !content.trim()) return;
+
+    const sessionId = crypto.randomUUID();
+    const total = selected.size;
+    const htmlContent = previewRef.current?.innerHTML ?? "";
+
     setSending(true);
     setSendStatus(null);
-    setSendResults(null);
-    // Capturar HTML renderizado do painel de preview para enviar ao Teams.
-    const htmlContent = previewRef.current?.innerHTML ?? "";
+    setSendProgress({ done: 0, total });
+    setSendResults(new Map());
+
+    // Fechar SSE anterior se existir.
+    sseRef.current?.close();
+
+    // Conectar ao stream SSE antes de disparar o POST.
+    const token = localStorage.getItem("auth_token") ?? "";
+    const sse = new EventSource(
+      `/api/v1/teams/broadcast/send/stream/${sessionId}?token=${encodeURIComponent(token)}`
+    );
+    sseRef.current = sse;
+
+    sse.addEventListener("message", (e) => {
+      try {
+        const evt = JSON.parse(e.data) as {
+          type: string; phase: string; message: string;
+          progress: number; details: string; error: string;
+        };
+
+        if (evt.type === "broadcast_progress" && evt.details) {
+          const r = JSON.parse(evt.details) as SendResult;
+          setSendResults(prev => new Map(prev).set(r.thread_id, r));
+          setSendProgress({ done: Math.round(evt.progress * total), total });
+        }
+
+        if (evt.type === "complete" && evt.details) {
+          const final = JSON.parse(evt.details) as { sent: number; failed: number; results: SendResult[] };
+          setSendStatus({
+            ok: final.failed === 0,
+            msg: final.failed === 0
+              ? `Enviado para ${final.sent} chat(s)`
+              : `${final.sent} enviados, ${final.failed} falharam`,
+          });
+          setSendProgress(null);
+          setSending(false);
+          sse.close();
+        }
+
+        if (evt.type === "error") {
+          setSendStatus({ ok: false, msg: evt.error || evt.message });
+          setSendProgress(null);
+          setSending(false);
+          sse.close();
+        }
+      } catch { /* ignorar eventos mal formados */ }
+    });
+
+    sse.onerror = () => {
+      // SSE pode desconectar ao fechar o stream — ignorar se já concluído.
+    };
+
     try {
-      const resp = await apiClient.sendBroadcastMessage({
+      await apiClient.sendBroadcastMessage({
+        session_id: sessionId,
         thread_ids: Array.from(selected.keys()),
         markdown: content,
         html: htmlContent,
       });
-      const { sent, failed, results } = resp as { sent: number; failed: number; results: SendResult[] };
-      setSendResults(results ?? []);
-      if (failed === 0) {
-        setSendStatus({ ok: true, msg: `Enviado para ${sent} chat(s)` });
-      } else {
-        setSendStatus({ ok: sent > 0, msg: `${sent} enviados, ${failed} falharam` });
-      }
+      // 202 retornado — aguardar eventos SSE para concluir.
     } catch (e: unknown) {
       setSendStatus({ ok: false, msg: e instanceof Error ? e.message : String(e) });
-    } finally {
+      setSendProgress(null);
       setSending(false);
+      sse.close();
     }
   };
 
@@ -870,8 +922,21 @@ export const TeamsBroadcastTab = () => {
           ))}
         </div>
 
-        {/* Status + Enviar */}
+        {/* Progress bar + Status + Enviar */}
         <div className="flex items-center gap-2 flex-shrink-0">
+          {sendProgress && (
+            <div className="flex items-center gap-1.5 min-w-[120px]">
+              <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-all duration-300 rounded-full"
+                  style={{ width: `${(sendProgress.done / sendProgress.total) * 100}%` }}
+                />
+              </div>
+              <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                {sendProgress.done}/{sendProgress.total}
+              </span>
+            </div>
+          )}
           {sendStatus && (
             <span className={`text-xs ${sendStatus.ok ? "text-green-400" : "text-destructive"}`}>
               {sendStatus.ok ? "✅" : "❌"} {sendStatus.msg}
@@ -895,26 +960,31 @@ export const TeamsBroadcastTab = () => {
         </div>
       </div>
 
-      {/* Resultados por destinatário */}
-      {sendResults && sendResults.length > 0 && (
+      {/* Resultados por destinatário — atualizado em tempo real via SSE */}
+      {sendResults.size > 0 && (
         <div className="flex-shrink-0 border-t border-border bg-card/50 px-3 py-2 max-h-40 overflow-y-auto">
-          <div className="text-[10px] text-muted-foreground mb-1 font-medium uppercase tracking-wide">Resultado do envio</div>
+          <div className="text-[10px] text-muted-foreground mb-1 font-medium uppercase tracking-wide">
+            Resultado do envio
+          </div>
           <div className="flex flex-wrap gap-1.5">
-            {sendResults.map((r) => {
-              const chat = selected.get(r.thread_id);
-              const label = chat?.display_name ?? r.thread_id.slice(0, 20);
+            {Array.from(selected.values()).map((chat) => {
+              const r = sendResults.get(chat.id);
               return (
                 <span
-                  key={r.thread_id}
-                  title={r.error || (r.ok ? "Enviado" : `HTTP ${r.status}`)}
-                  className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border ${
-                    r.ok
+                  key={chat.id}
+                  title={r ? (r.error || (r.ok ? "Enviado" : `HTTP ${r.status}`)) : "Aguardando..."}
+                  className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                    !r
+                      ? "bg-muted/30 border-border text-muted-foreground"
+                      : r.ok
                       ? "bg-green-950/40 border-green-800/50 text-green-400"
                       : "bg-red-950/40 border-red-800/50 text-red-400"
                   }`}
                 >
-                  {r.ok ? "✓" : "✗"} <span className="max-w-[120px] truncate">{label}</span>
-                  {!r.ok && r.status > 0 && <span className="opacity-60">{r.status}</span>}
+                  {!r ? "⋯" : r.ok ? "✓" : "✗"}
+                  {" "}
+                  <span className="max-w-[120px] truncate">{chat.display_name}</span>
+                  {r && !r.ok && r.status > 0 && <span className="opacity-60">{r.status}</span>}
                 </span>
               );
             })}

@@ -3480,10 +3480,11 @@ class APIClient {
   }
 
   async sendBroadcastMessage(payload: {
+    session_id: string;
     thread_ids: string[];
     markdown: string;
     html?: string;
-  }): Promise<{ sent?: number; failed?: number; results?: { thread_id: string; ok: boolean; status: number; error?: string }[]; error?: string }> {
+  }): Promise<{ session_id?: string; total?: number; error?: string }> {
     return this.request("/teams/broadcast/send", {
       method: "POST",
       body: JSON.stringify(payload),
