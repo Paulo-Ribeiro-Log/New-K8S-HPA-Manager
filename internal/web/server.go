@@ -1034,6 +1034,19 @@ func (s *Server) setupRoutes() {
 		teamsGroup.GET("/approvals/today", teamsHandler.GetApprovalsToday)
 		teamsGroup.GET("/approvals/search", teamsHandler.SearchCHG)
 		teamsGroup.POST("/approvals/refresh", teamsHandler.RefreshApprovals)
+
+		broadcastHandler := handlers.NewTeamsBroadcastHandler(&githubLogger)
+		teamsGroup.GET("/broadcast/chats", broadcastHandler.GetChats)
+		teamsGroup.POST("/broadcast/chats/scan", broadcastHandler.ScanChats)
+		teamsGroup.GET("/broadcast/templates", broadcastHandler.ListTemplates)
+		teamsGroup.POST("/broadcast/templates", broadcastHandler.SaveTemplate)
+		teamsGroup.GET("/broadcast/templates/:filename", broadcastHandler.GetTemplate)
+		teamsGroup.DELETE("/broadcast/templates/:filename", broadcastHandler.DeleteTemplate)
+		teamsGroup.POST("/broadcast/send", broadcastHandler.Send)
+		// SSE stream: EventSource não suporta headers → token via query param
+		s.router.GET("/api/v1/teams/broadcast/send/stream/:sessionId",
+			middleware.WebSocketJWTAuthMiddleware(s.jwtManager, s.token),
+			broadcastHandler.StreamSend)
 	}
 	fmt.Println("✅ Teams Integration routes registradas")
 

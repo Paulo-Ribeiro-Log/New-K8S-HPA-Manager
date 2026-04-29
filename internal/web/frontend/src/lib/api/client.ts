@@ -3444,6 +3444,53 @@ class APIClient {
     return this.request(`/teams/approvals/search?q=${encodeURIComponent(q)}`);
   }
 
+  // ==================== Teams Broadcast ====================
+
+  async getBroadcastChats(q?: string): Promise<{
+    query?: string;
+    searched_at?: string;
+    count: number;
+    chats: { id: string; display_name: string; source: string }[];
+  }> {
+    const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+    return this.request(`/teams/broadcast/chats${qs}`);
+  }
+
+  async scanBroadcastChats(): Promise<{ count: number; path: string; error?: string }> {
+    return this.request("/teams/broadcast/chats/scan", { method: "POST" });
+  }
+
+  async listBroadcastTemplates(): Promise<{ templates: { filename: string; updated_at: string; size: number }[] }> {
+    return this.request("/teams/broadcast/templates");
+  }
+
+  async saveBroadcastTemplate(filename: string, content: string): Promise<{ filename: string }> {
+    return this.request("/teams/broadcast/templates", {
+      method: "POST",
+      body: JSON.stringify({ filename, content }),
+    });
+  }
+
+  async getBroadcastTemplate(filename: string): Promise<{ filename: string; content: string }> {
+    return this.request(`/teams/broadcast/templates/${encodeURIComponent(filename)}`);
+  }
+
+  async deleteBroadcastTemplate(filename: string): Promise<{ deleted: string }> {
+    return this.request(`/teams/broadcast/templates/${encodeURIComponent(filename)}`, { method: "DELETE" });
+  }
+
+  async sendBroadcastMessage(payload: {
+    session_id: string;
+    thread_ids: string[];
+    markdown: string;
+    html?: string;
+  }): Promise<{ session_id?: string; total?: number; error?: string }> {
+    return this.request("/teams/broadcast/send", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
   // ==================== SRE Approval ====================
 
   async getSreApprovalInfo(approvalUrl: string): Promise<{
