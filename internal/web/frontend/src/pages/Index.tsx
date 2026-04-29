@@ -58,6 +58,7 @@ import CertificatesTab from "@/components/CertificatesTab";
 import { CommandRunnerTab } from "@/components/CommandRunnerTab";
 import { DynatraceTab } from "@/components/DynatraceTab";
 import { FinOpsTab } from "@/components/FinOpsTab";
+import { TeamsBroadcastTab } from "@/components/TeamsBroadcastTab";
 import { ResourceCompareModal } from "@/components/ResourceCompareModal";
 import type { CompareInitial } from "@/components/ResourceCompareModal";
 import {
@@ -1259,6 +1260,13 @@ const Index = ({ onLogout }: IndexProps) => {
         return (
           <ErrorBoundary componentName="FinOps Tab">
             <FinOpsTab selectedCluster={selectedCluster} />
+          </ErrorBoundary>
+        );
+
+      case "teams-broadcast":
+        return (
+          <ErrorBoundary componentName="Teams Broadcast Tab">
+            <TeamsBroadcastTab />
           </ErrorBoundary>
         );
 

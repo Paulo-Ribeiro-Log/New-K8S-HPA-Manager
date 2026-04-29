@@ -18,6 +18,7 @@ import {
   Terminal,
   AlertTriangle,
   CircleDollarSign,
+  MessageSquarePlus,
 } from "lucide-react";
 
 interface ToolsMenuProps {
@@ -44,6 +45,7 @@ const toolsTabs: ToolsTab[] = [
   { id: "command-runner", label: "Command Runner", icon: Terminal },
   { id: "dynatrace", label: "Dynatrace", icon: AlertTriangle },
   { id: "finops", label: "FinOps", icon: CircleDollarSign },
+  { id: "teams-broadcast", label: "Teams Broadcast", icon: MessageSquarePlus },
 ];
 
 export const ToolsMenu = ({ activeTab, onTabChange }: ToolsMenuProps) => {
