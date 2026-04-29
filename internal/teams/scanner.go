@@ -155,22 +155,42 @@ loaded:
 			}
 		} catch {}
 
-		// ── 2. DOM sidebar: simple-collab-dnd-rail (role=tree) ────────────────
-		// Teams v2 armazena o thread ID em data-fui-tree-item-value.
-		// Formato: OneGQL_...|tenantId~userId~RecentChats~19:THREADID@thread.v2
-		// Itens de pasta têm aria-expanded="true"/"false"; conversas têm aria-expanded="".
-		const extractId = val => {
-			const m = (val || '').match(/((19|28|48):[a-zA-Z0-9!@._~%+-]{15,})/);
-			return m ? m[1] : '';
+		// ── 2. DOM sidebar: simple-collab-dnd-rail ───────────────────────────
+		// Teams v2 codifica o tipo e ID de cada item em data-fui-tree-item-value.
+		// Conversas têm OneGQL_*Conversation| no valor; o ID vem após o último |.
+		// Self-chat: OneGQL_SelfChatConversation|48:notes
+		// 1:1:      OneGQL_OneOnOneChatConversation|19:UUID_UUID@unq.gbl.spaces
+		// Grupo:    OneGQL_GroupChatConversation|19:UUID@thread.v2
+		// Reunião:  OneGQL_MeetingChatConversation|19:meeting_...
+		// NÃO usar aria-expanded para distinguir — todos os itens têm true/false.
+		const CONV_TYPES = [
+			'OneOnOneChatConversation',
+			'GroupChatConversation',
+			'MeetingChatConversation',
+			'SelfChatConversation',
+		];
+		const isConvValue = val => CONV_TYPES.some(t => val.includes(t));
+		const extractIdFromValue = val => {
+			const bar = val.lastIndexOf('|');
+			if (bar === -1) return '';
+			const after = val.slice(bar + 1).trim();
+			return /^(19|28|48):/.test(after) ? after : '';
 		};
 		const SKIP_TEXTS = new Set([
 			'see more','see all your teams','mentions','followed threads',
 			'drafts','quick views','chats','favorites','copilot',
 		]);
+		const srcFromValue = val => {
+			if (val.includes('OneOnOneChat'))  return 'dm';
+			if (val.includes('GroupChat'))     return 'group';
+			if (val.includes('MeetingChat'))   return 'meeting';
+			if (val.includes('SelfChat'))      return 'self';
+			return 'dom-tree';
+		};
 
 		const tree = document.querySelector('[data-tid="simple-collab-dnd-rail"]');
 		if (tree) {
-			// Expandir "Recent Chats" e "Favorites" se ainda não expandidos
+			// Expandir Favorites e RecentChats se ainda não expandidos.
 			for (const folder of ['RecentChats', 'Favorites']) {
 				const el = tree.querySelector('[data-fui-tree-item-value*="' + folder + '"]');
 				if (el && el.getAttribute('aria-expanded') !== 'true') {
@@ -181,16 +201,15 @@ loaded:
 
 			const processTreeItems = () => {
 				for (const el of tree.querySelectorAll('[data-fui-tree-item-value]')) {
-					const expanded = el.getAttribute('aria-expanded');
-					if (expanded === 'true' || expanded === 'false') continue; // pular pastas
-
 					const val = el.getAttribute('data-fui-tree-item-value') || '';
-					const id  = extractId(val);
-					if (!id || !isConvId(id)) continue;
+					if (!isConvValue(val)) continue;
 
-					const name = (el.textContent || '').trim().split(/\n|\r|  {2,}/)[0].trim();
+					const id = extractIdFromValue(val);
+					if (!id) continue;
+
+					const name = (el.textContent || '').trim().split(/\n|\r|\s{2,}/)[0].trim();
 					if (!name || name.length < 2 || SKIP_TEXTS.has(name.toLowerCase())) continue;
-					addChat(id, name, 'dom-tree');
+					addChat(id, name, srcFromValue(val));
 				}
 			};
 

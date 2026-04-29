@@ -537,24 +537,41 @@ func scrollAndCapture(page *rod.Page) ([]ChatEntry, string) {
 			if (id && name && !seen.has(id)) { seen.add(id); chats.push({id, display_name: name, source: src}); }
 		};
 
-		// Teams v2 usa data-fui-tree-item-value para identificar cada item da tree.
-		// Formato de conversa:
-		//   OneGQL_SystemDefinedConversationFolder|tenantId~userId~RecentChats~19:THREADID@thread.v2
-		// Itens de pasta têm aria-expanded="true"/"false"; conversas têm aria-expanded="".
-		const extractId = val => {
-			const m = (val || '').match(/((19|28|48):[a-zA-Z0-9!@._~%+-]{15,})/);
-			return m ? m[1] : '';
+		// Teams v2: tipo e ID do chat estão no data-fui-tree-item-value.
+		// Conversas contêm OneGQL_*Conversation|; o ID vem após o último |.
+		// NÃO usar aria-expanded — todos os itens têm true/false, inclusive conversas.
+		const CONV_TYPES = [
+			'OneOnOneChatConversation',
+			'GroupChatConversation',
+			'MeetingChatConversation',
+			'SelfChatConversation',
+		];
+		const isConvValue = val => CONV_TYPES.some(t => val.includes(t));
+		const extractIdFromValue = val => {
+			const bar = val.lastIndexOf('|');
+			if (bar === -1) return '';
+			const after = val.slice(bar + 1).trim();
+			return /^(19|28|48):/.test(after) ? after : '';
+		};
+		const srcFromValue = val => {
+			if (val.includes('OneOnOneChat'))  return 'dm';
+			if (val.includes('GroupChat'))     return 'group';
+			if (val.includes('MeetingChat'))   return 'meeting';
+			if (val.includes('SelfChat'))      return 'self';
+			return 'dom-tree';
 		};
 
 		// ── 1. Encontrar a tree de chats ─────────────────────────────────────
 		const tree = document.querySelector('[data-tid="simple-collab-dnd-rail"]');
 		if (!tree) return JSON.stringify({chats: [], desc: 'tree not found', total: 0});
 
-		// ── 2. Expandir "Recent Chats" se ainda não estiver expandido ─────────
-		const rcEl = tree.querySelector('[data-fui-tree-item-value*="RecentChats"]');
-		if (rcEl && rcEl.getAttribute('aria-expanded') !== 'true') {
-			rcEl.click();
-			await sleep(1500);
+		// ── 2. Expandir Favorites e RecentChats ───────────────────────────────
+		for (const folder of ['RecentChats', 'Favorites']) {
+			const el = tree.querySelector('[data-fui-tree-item-value*="' + folder + '"]');
+			if (el && el.getAttribute('aria-expanded') !== 'true') {
+				el.click();
+				await sleep(1000);
+			}
 		}
 
 		const SKIP_TEXTS = new Set([
@@ -563,16 +580,14 @@ func scrollAndCapture(page *rod.Page) ([]ChatEntry, string) {
 			'calendar','calls','new message',
 		]);
 
-		// Processa todos os itens FOLHA da tree (aria-expanded="" = conversa)
+		// Processa itens de conversa pelo conteúdo do data-fui-tree-item-value
 		const processItems = () => {
 			for (const el of tree.querySelectorAll('[data-fui-tree-item-value]')) {
-				const expanded = el.getAttribute('aria-expanded');
-				// Pular pastas (expandidas ou colapsadas)
-				if (expanded === 'true' || expanded === 'false') continue;
-
 				const val = el.getAttribute('data-fui-tree-item-value') || '';
-				const id  = extractId(val);
-				if (!id || !isId(id)) continue;
+				if (!isConvValue(val)) continue;
+
+				const id = extractIdFromValue(val);
+				if (!id) continue;
 
 				// Nome: primeiro bloco de texto do elemento (sem texto dos filhos se houver)
 				const rawText = (el.textContent || '').trim();
