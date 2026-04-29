@@ -3482,7 +3482,8 @@ class APIClient {
   async sendBroadcastMessage(payload: {
     thread_ids: string[];
     markdown: string;
-  }): Promise<{ success?: boolean; error?: string }> {
+    html?: string;
+  }): Promise<{ sent?: number; failed?: number; results?: { thread_id: string; ok: boolean; status: number; error?: string }[]; error?: string }> {
     return this.request("/teams/broadcast/send", {
       method: "POST",
       body: JSON.stringify(payload),

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ type BroadcastChatsResponse struct {
 type SendBroadcastRequest struct {
 	ThreadIDs []string `json:"thread_ids"`
 	Markdown  string   `json:"markdown"`
+	HTML      string   `json:"html"` // conteúdo já renderizado do painel de preview
 }
 
 type BroadcastTemplate struct {
@@ -267,17 +269,146 @@ func (h *TeamsBroadcastHandler) DeleteTemplate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"deleted": filename})
 }
 
-// Send envia uma mensagem markdown para os chats selecionados.
+// Send envia uma mensagem HTML para os chats selecionados via browser automation.
 func (h *TeamsBroadcastHandler) Send(c *gin.Context) {
 	var req SendBroadcastRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if len(req.ThreadIDs) == 0 || req.Markdown == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "thread_ids e markdown são obrigatórios"})
+	if len(req.ThreadIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "thread_ids é obrigatório"})
 		return
 	}
-	h.logger.Info().Int("chats", len(req.ThreadIDs)).Msg("[Broadcast] Solicitação de envio")
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "envio via browser ainda não implementado"})
+
+	// Usar HTML renderizado quando disponível; fallback: converter markdown manualmente.
+	htmlContent := req.HTML
+	if htmlContent == "" {
+		if req.Markdown == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "html ou markdown é obrigatório"})
+			return
+		}
+		htmlContent = markdownToTeamsHTML(req.Markdown)
+	}
+
+	h.logger.Info().Int("chats", len(req.ThreadIDs)).Msg("[Broadcast] Iniciando envio em lote")
+
+	homeDir, _ := os.UserHomeDir()
+	sessionDir := filepath.Join(homeDir, ".k8s-hpa-manager", "teams-session")
+
+	results, err := teams.SendBatch(sessionDir, req.ThreadIDs, htmlContent, h.logger)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("[Broadcast] Erro no envio em lote")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	sent, failed := 0, 0
+	for _, r := range results {
+		if r.OK {
+			sent++
+		} else {
+			failed++
+		}
+	}
+	h.logger.Info().Int("sent", sent).Int("failed", failed).Msg("[Broadcast] Envio concluído")
+	c.JSON(http.StatusOK, gin.H{
+		"sent":    sent,
+		"failed":  failed,
+		"results": results,
+	})
+}
+
+// markdownToTeamsHTML converte markdown simples para HTML aceito pelo Teams.
+// Suporta: negrito, itálico, código, quebras de linha, cabeçalhos e listas.
+func markdownToTeamsHTML(md string) string {
+	lines := strings.Split(md, "\n")
+	var sb strings.Builder
+	inList := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, " \t")
+
+		// Cabeçalho
+		if strings.HasPrefix(trimmed, "### ") {
+			if inList {
+				sb.WriteString("</ul>")
+				inList = false
+			}
+			sb.WriteString("<p><b>" + htmlEscape(trimmed[4:]) + "</b></p>")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			if inList {
+				sb.WriteString("</ul>")
+				inList = false
+			}
+			sb.WriteString("<p><b>" + htmlEscape(trimmed[3:]) + "</b></p>")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "# ") {
+			if inList {
+				sb.WriteString("</ul>")
+				inList = false
+			}
+			sb.WriteString("<p><b>" + htmlEscape(trimmed[2:]) + "</b></p>")
+			continue
+		}
+
+		// Item de lista
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			if !inList {
+				sb.WriteString("<ul>")
+				inList = true
+			}
+			content := applyInlineMarkdown(trimmed[2:])
+			sb.WriteString("<li>" + content + "</li>")
+			continue
+		}
+
+		// Linha vazia
+		if trimmed == "" {
+			if inList {
+				sb.WriteString("</ul>")
+				inList = false
+			}
+			continue
+		}
+
+		// Parágrafo normal
+		if inList {
+			sb.WriteString("</ul>")
+			inList = false
+		}
+		sb.WriteString("<p>" + applyInlineMarkdown(trimmed) + "</p>")
+	}
+
+	if inList {
+		sb.WriteString("</ul>")
+	}
+	return sb.String()
+}
+
+var (
+	reBold1   = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reBold2   = regexp.MustCompile(`__(.+?)__`)
+	reItalic1 = regexp.MustCompile(`\*(.+?)\*`)
+	reItalic2 = regexp.MustCompile(`_(.+?)_`)
+	reCode    = regexp.MustCompile("`(.+?)`")
+)
+
+func applyInlineMarkdown(s string) string {
+	s = reBold1.ReplaceAllString(s, "<b>$1</b>")
+	s = reBold2.ReplaceAllString(s, "<b>$1</b>")
+	s = reItalic1.ReplaceAllString(s, "<i>$1</i>")
+	s = reItalic2.ReplaceAllString(s, "<i>$1</i>")
+	s = reCode.ReplaceAllString(s, "<code>$1</code>")
+	return s
+}
+
+func htmlEscape(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }

@@ -29,6 +29,13 @@ interface BroadcastChat {
   source: string;
 }
 
+interface SendResult {
+  thread_id: string;
+  ok: boolean;
+  status: number;
+  error?: string;
+}
+
 // ── Monaco theme ──────────────────────────────────────────────────────────────
 
 const beforeMount: BeforeMount = (monaco) => {
@@ -657,16 +664,28 @@ export const TeamsBroadcastTab = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const [sendResults, setSendResults] = useState<SendResult[] | null>(null);
+
   const handleSend = async () => {
     if (selected.size === 0 || !content.trim()) return;
     setSending(true);
     setSendStatus(null);
+    setSendResults(null);
+    // Capturar HTML renderizado do painel de preview para enviar ao Teams.
+    const htmlContent = previewRef.current?.innerHTML ?? "";
     try {
-      await apiClient.sendBroadcastMessage({
+      const resp = await apiClient.sendBroadcastMessage({
         thread_ids: Array.from(selected.keys()),
         markdown: content,
+        html: htmlContent,
       });
-      setSendStatus({ ok: true, msg: `Enviado para ${selected.size} chat(s)` });
+      const { sent, failed, results } = resp as { sent: number; failed: number; results: SendResult[] };
+      setSendResults(results ?? []);
+      if (failed === 0) {
+        setSendStatus({ ok: true, msg: `Enviado para ${sent} chat(s)` });
+      } else {
+        setSendStatus({ ok: sent > 0, msg: `${sent} enviados, ${failed} falharam` });
+      }
     } catch (e: unknown) {
       setSendStatus({ ok: false, msg: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -875,6 +894,33 @@ export const TeamsBroadcastTab = () => {
           </Button>
         </div>
       </div>
+
+      {/* Resultados por destinatário */}
+      {sendResults && sendResults.length > 0 && (
+        <div className="flex-shrink-0 border-t border-border bg-card/50 px-3 py-2 max-h-40 overflow-y-auto">
+          <div className="text-[10px] text-muted-foreground mb-1 font-medium uppercase tracking-wide">Resultado do envio</div>
+          <div className="flex flex-wrap gap-1.5">
+            {sendResults.map((r) => {
+              const chat = selected.get(r.thread_id);
+              const label = chat?.display_name ?? r.thread_id.slice(0, 20);
+              return (
+                <span
+                  key={r.thread_id}
+                  title={r.error || (r.ok ? "Enviado" : `HTTP ${r.status}`)}
+                  className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border ${
+                    r.ok
+                      ? "bg-green-950/40 border-green-800/50 text-green-400"
+                      : "bg-red-950/40 border-red-800/50 text-red-400"
+                  }`}
+                >
+                  {r.ok ? "✓" : "✗"} <span className="max-w-[120px] truncate">{label}</span>
+                  {!r.ok && r.status > 0 && <span className="opacity-60">{r.status}</span>}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── Modal de destinatários ── */}
       <ChatSelectorModal
