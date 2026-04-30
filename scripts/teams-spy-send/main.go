@@ -37,7 +37,8 @@ func main() {
 	fmt.Println("  1. Aguarde o Teams carregar completamente")
 	fmt.Println("  2. Abra qualquer chat e envie UMA mensagem de teste")
 	fmt.Println("  3. O script vai capturar e imprimir a requisição")
-	fmt.Println("  4. Ctrl+C para encerrar\n")
+	fmt.Println("  4. Ctrl+C para encerrar")
+	fmt.Println()
 
 	if _, err := os.Stat(sessionDir); os.IsNotExist(err) {
 		fmt.Fprintln(os.Stderr, "ERRO: sessão não encontrada em", sessionDir)
@@ -85,7 +86,8 @@ func main() {
 	page = page.Timeout(10 * time.Minute)
 
 	fmt.Println("\n[2/2] HijackRouter ativo — interceptando POSTs...")
-	fmt.Println("      >> Envie uma mensagem de teste no Teams agora <<\n")
+	fmt.Println("      >> Envie uma mensagem de teste no Teams agora <<")
+	fmt.Println()
 
 	router := page.HijackRequests()
 
