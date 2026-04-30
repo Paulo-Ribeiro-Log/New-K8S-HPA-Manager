@@ -29,6 +29,7 @@ import {
   Plus,
   RefreshCw,
   MessageSquare,
+  ShieldCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -118,6 +119,12 @@ export function ServiceNowImportModal({
   const [pendingTeamsItem, setPendingTeamsItem] = useState<TeamsApprovalItem | null>(null);
   // Progresso da extração multi-CHG
   const [teamsExtracting, setTeamsExtracting] = useState<{ current: number; total: number; chg: string } | null>(null);
+  // Status de aprovação SRE por CHG (read-only — apenas exibição)
+  const [approvalStatuses, setApprovalStatuses] = useState<Map<string, {
+    loading: boolean;
+    approved: boolean;
+    approverEmail: string;
+  }>>(new Map());
 
   useEffect(() => {
     if (open) {
@@ -126,13 +133,56 @@ export function ServiceNowImportModal({
     }
   }, [open]);
 
+  const checkApprovalStatuses = (items: TeamsApprovalItem[]) => {
+    const withUrl = items.filter(i => i.approval_url);
+    if (withUrl.length === 0) return;
+
+    // Marcar como loading apenas os que têm URL
+    setApprovalStatuses(prev => {
+      const next = new Map(prev);
+      withUrl.forEach(i => {
+        if (!next.has(i.chg)) next.set(i.chg, { loading: true, approved: false, approverEmail: "" });
+      });
+      return next;
+    });
+
+    // Checar em lotes de 5 para não sobrecarregar devstartcd
+    const checkBatch = async (batch: TeamsApprovalItem[]) => {
+      await Promise.all(batch.map(async (item) => {
+        try {
+          const res = await apiClient.getSreApprovalInfo(item.approval_url);
+          const info = res.approval_info;
+          const approved = !!(info && (info.is_finalized || info.status === "FINALIZED" || info.status === "APPROVED"));
+          setApprovalStatuses(prev => new Map(prev).set(item.chg, {
+            loading: false,
+            approved,
+            approverEmail: info?.approver_email || "",
+          }));
+        } catch {
+          setApprovalStatuses(prev => new Map(prev).set(item.chg, {
+            loading: false, approved: false, approverEmail: "",
+          }));
+        }
+      }));
+    };
+
+    (async () => {
+      for (let i = 0; i < withUrl.length; i += 5) {
+        await checkBatch(withUrl.slice(i, i + 5));
+      }
+    })();
+  };
+
   const loadTeamsApprovals = async () => {
     setTeamsLoading(true);
     try {
       const res = await apiClient.getTeamsApprovalsToday();
-      setTeamsItems(res.items || []);
+      const items = res.items || [];
+      setTeamsItems(items);
+      setApprovalStatuses(new Map()); // resetar ao recarregar
       setTeamsLastUpdated(res.last_updated);
       setTeamsNeedsRefresh(res.needs_refresh);
+      checkApprovalStatuses(items);
     } catch {
       setTeamsNeedsRefresh(true);
     } finally {
@@ -375,6 +425,9 @@ export function ServiceNowImportModal({
     }
     if (errorItems.length > 0) {
       toast.error(`${errorItems.length} com erro: ${errorItems.join("; ")}`);
+    }
+    if (successChgs.length > 0 && errorItems.length === 0) {
+      setTimeout(onClose, 1500);
     }
   };
 
@@ -757,6 +810,26 @@ export function ServiceNowImportModal({
                             <p className="text-sm text-muted-foreground italic">sem descrição</p>
                           )}
                         </div>
+                        {/* Status de aprovação SRE (read-only) */}
+                        {item.approval_url && (() => {
+                          const s = approvalStatuses.get(item.chg);
+                          if (!s || s.loading) return (
+                            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground flex-shrink-0" />
+                          );
+                          if (s.approved) return (
+                            <span
+                              onClick={e => e.stopPropagation()}
+                              title={s.approverEmail ? `Aprovado por ${s.approverEmail}` : "Aprovado"}
+                              className="flex items-center gap-1 text-[10px] text-green-400 flex-shrink-0 max-w-[140px]"
+                            >
+                              <ShieldCheck className="h-3 w-3 flex-shrink-0" />
+                              {s.approverEmail
+                                ? <span className="truncate">{s.approverEmail}</span>
+                                : <span>Aprovado</span>}
+                            </span>
+                          );
+                          return null;
+                        })()}
                         {/* Link ServiceNow */}
                         {item.servicenow_url && (
                           <a
