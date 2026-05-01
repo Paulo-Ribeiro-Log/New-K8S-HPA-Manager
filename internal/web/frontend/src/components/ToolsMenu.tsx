@@ -72,7 +72,7 @@ export const ToolsMenu = ({ activeTab, onTabChange }: ToolsMenuProps) => {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56 p-0">
-        <div className="max-h-[calc(100vh-80px)] overflow-y-auto py-1">
+        <div className="overflow-y-auto py-1" style={{ maxHeight: "var(--radix-popper-available-height, 80vh)" }}>
           {toolsTabs.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
