@@ -343,15 +343,15 @@ function ChatSelectorModal({
               : ""}
           </span>
           {sortedChats.length > 0 && (() => {
-            const allVisibleSelected = sortedChats.every(c => selected.has(c.id));
+            const anyVisibleSelected = sortedChats.some(c => selected.has(c.id));
             return (
               <Button
                 variant="outline"
                 size="sm"
                 className="h-8 text-xs flex-shrink-0"
-                onClick={() => onSelectMany(sortedChats, !allVisibleSelected)}
+                onClick={() => onSelectMany(sortedChats, !anyVisibleSelected)}
               >
-                {allVisibleSelected ? "Desmarcar visíveis" : "Selecionar tudo"}
+                {anyVisibleSelected ? "Desmarcar tudo" : "Selecionar tudo"}
               </Button>
             );
           })()}
