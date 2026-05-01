@@ -17,8 +17,9 @@ import {
   Bold, Italic, Strikethrough, Code, Link2, Image, List,
   ListOrdered, Quote, Minus, Table2, Eye, Code2,
   RefreshCw, X, MessageSquarePlus, ScanSearch, Type, Users, Copy, Check,
-  Save, FolderOpen, Trash2, FileText,
+  Save, FolderOpen, Trash2, FileText, FilePlus,
 } from "lucide-react";
+import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
@@ -378,7 +379,7 @@ function TemplatesModal({
   open: boolean;
   onClose: () => void;
   currentContent: string;
-  onLoad: (content: string) => void;
+  onLoad: (content: string, filename: string) => void;
 }) {
   const [templates, setTemplates] = useState<{ filename: string; updated_at: string; size: number }[]>([]);
   const [loading, setLoading] = useState(false);
@@ -425,7 +426,7 @@ function TemplatesModal({
   const handleLoad = async (filename: string) => {
     try {
       const data = await apiClient.getBroadcastTemplate(filename);
-      onLoad(data.content);
+      onLoad(data.content, filename);
       onClose();
     } catch {
       // silencioso — arquivo pode ter sido removido externamente
@@ -567,6 +568,92 @@ function TemplatesModal({
   );
 }
 
+// ── Modal Salvar Como ─────────────────────────────────────────────────────────
+
+function SaveAsModal({
+  open,
+  initialName,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  initialName: string;
+  onClose: () => void;
+  onSave: (filename: string) => Promise<void>;
+}) {
+  const [name, setName] = useState(initialName);
+  const [ext, setExt] = useState<Ext>(".md");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      // Preenche com o nome atual sem extensão
+      const base = initialName.replace(/\.(md|txt)$/, "");
+      setName(base || "");
+      setErr(null);
+      setTimeout(() => inputRef.current?.select(), 50);
+    }
+  }, [open, initialName]);
+
+  const doSave = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const filename = trimmed.endsWith(ext) ? trimmed : trimmed + ext;
+    setSaving(true);
+    setErr(null);
+    try {
+      await onSave(filename);
+      onClose();
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Erro ao salvar");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-sm w-full">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-sm">
+            <FilePlus className="w-4 h-4" />
+            Salvar como
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex gap-2 mt-1">
+          <Input
+            ref={inputRef}
+            className="h-8 text-xs flex-1"
+            placeholder="Nome do arquivo..."
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") doSave(); if (e.key === "Escape") onClose(); }}
+          />
+          <select
+            value={ext}
+            onChange={(e) => setExt(e.target.value as Ext)}
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {EXTENSIONS.map((e) => <option key={e} value={e}>{e}</option>)}
+          </select>
+        </div>
+        {err && <p className="text-[11px] text-destructive">{err}</p>}
+        <div className="flex justify-end gap-2 mt-2">
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button size="sm" className="h-8 text-xs gap-1.5" onClick={doSave} disabled={!name.trim() || saving}>
+            {saving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            Salvar
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ── Template padrão ───────────────────────────────────────────────────────────
 
 const DEFAULT_MARKDOWN = `# Título da Mensagem
@@ -596,10 +683,19 @@ export const TeamsBroadcastTab = () => {
   const [selected, setSelected] = useState<Map<string, BroadcastChat>>(new Map());
   const [modalOpen, setModalOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [saveAsOpen, setSaveAsOpen] = useState(false);
+  const [currentFilename, setCurrentFilename] = useState<string | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendProgress, setSendProgress] = useState<{ done: number; total: number } | null>(null);
   const [sendStatus, setSendStatus] = useState<{ ok: boolean; msg: string } | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Refs para evitar stale closure no atalho Ctrl+S do Monaco
+  const currentFilenameRef = useRef<string | null>(null);
+  const contentRef = useRef(content);
+  useEffect(() => { currentFilenameRef.current = currentFilename; }, [currentFilename]);
+  useEffect(() => { contentRef.current = content; }, [content]);
 
   // Divisor editor ↔ preview
   const [editorPct, setEditorPct] = useState(50);
@@ -608,7 +704,32 @@ export const TeamsBroadcastTab = () => {
   const editorRef = useRef<MonacoNS.editor.IStandaloneCodeEditor | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
 
-  const handleMount: OnMount = (editor) => { editorRef.current = editor; };
+  const saveToFilename = useCallback(async (filename: string) => {
+    await apiClient.saveBroadcastTemplate(filename, contentRef.current);
+    setCurrentFilename(filename);
+    setIsDirty(false);
+    toast.success(`Salvo: ${filename}`);
+  }, []);
+
+  const handleSaveRef = useRef<() => void>(null!);
+
+  const handleSave = useCallback(() => {
+    const fname = currentFilenameRef.current;
+    if (!fname) {
+      setSaveAsOpen(true);
+      return;
+    }
+    saveToFilename(fname).catch(() => toast.error("Erro ao salvar"));
+  }, [saveToFilename]);
+
+  useEffect(() => { handleSaveRef.current = handleSave; }, [handleSave]);
+
+  const handleMount: OnMount = (editor, monacoInstance) => {
+    editorRef.current = editor;
+    editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS, () => {
+      handleSaveRef.current?.();
+    });
+  };
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -795,13 +916,60 @@ export const TeamsBroadcastTab = () => {
 
         <div className="flex-1" />
 
+        {/* Novo arquivo */}
+        <button
+          onClick={() => {
+            if (isDirty && !window.confirm("Há alterações não salvas. Descartar e criar novo arquivo?")) return;
+            setContent(DEFAULT_MARKDOWN);
+            setCurrentFilename(null);
+            setIsDirty(false);
+          }}
+          title="Novo arquivo (descarta o conteúdo atual)"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+        >
+          <FileText className="w-3.5 h-3.5" />
+          Novo
+        </button>
+
+        <div className="w-px h-4 bg-border/60 mx-0.5" />
+
+        {/* Indicador do arquivo atual */}
+        {currentFilename && (
+          <span className="text-[11px] font-mono text-muted-foreground max-w-[140px] truncate flex items-center gap-1" title={currentFilename}>
+            {isDirty && <span className="text-amber-400 text-[13px] leading-none">●</span>}
+            {currentFilename}
+          </span>
+        )}
+
+        {/* Salvar (Ctrl+S) */}
+        <button
+          onClick={handleSave}
+          title={currentFilename ? `Salvar ${currentFilename} (Ctrl+S)` : "Salvar como... (Ctrl+S)"}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+        >
+          <Save className="w-3.5 h-3.5" />
+          Salvar
+        </button>
+
+        {/* Salvar como */}
+        <button
+          onClick={() => setSaveAsOpen(true)}
+          title="Salvar como novo arquivo..."
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+        >
+          <FilePlus className="w-3.5 h-3.5" />
+          Salvar como
+        </button>
+
+        <div className="w-px h-4 bg-border/60 mx-0.5" />
+
         <button
           onClick={() => setTemplatesOpen(true)}
-          title="Abrir / Salvar arquivos"
+          title="Abrir arquivo salvo"
           className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
         >
           <FolderOpen className="w-3.5 h-3.5" />
-          Arquivos
+          Abrir
         </button>
 
         <div className="w-px h-4 bg-border/60 mx-1" />
@@ -844,7 +1012,7 @@ export const TeamsBroadcastTab = () => {
               height="100%"
               language={isPlainText ? "plaintext" : "markdown"}
               value={content}
-              onChange={(v) => setContent(v ?? "")}
+              onChange={(v) => { setContent(v ?? ""); setIsDirty(true); }}
               theme="markdown-dark"
               beforeMount={beforeMount}
               onMount={handleMount}
@@ -1023,12 +1191,24 @@ export const TeamsBroadcastTab = () => {
         onSelectMany={selectManyChats}
       />
 
-      {/* ── Modal de templates ── */}
+      {/* ── Modal de templates (abrir/gerenciar) ── */}
       <TemplatesModal
         open={templatesOpen}
         onClose={() => setTemplatesOpen(false)}
         currentContent={content}
-        onLoad={(text) => setContent(text)}
+        onLoad={(text, filename) => {
+          setContent(text);
+          setCurrentFilename(filename);
+          setIsDirty(false);
+        }}
+      />
+
+      {/* ── Modal Salvar Como ── */}
+      <SaveAsModal
+        open={saveAsOpen}
+        initialName={currentFilename ?? ""}
+        onClose={() => setSaveAsOpen(false)}
+        onSave={saveToFilename}
       />
     </div>
   );

@@ -84,6 +84,12 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const [showNodeDetailsModal, setShowNodeDetailsModal] = useState(false);
   const [modalKey, setModalKey] = useState(0); // Force modal re-creation
   const [nodeSearch, setNodeSearch] = useState("");
+  const [removedNodes, setRemovedNodes] = useState<Array<{
+    name: string; removed_at: string; reason: string; source: string; details: string;
+  }>>([]);
+  const [removedLoading, setRemovedLoading] = useState(false);
+  const [removedDebug, setRemovedDebug] = useState<string[]>([]);
+  const [removedDetail, setRemovedDetail] = useState<{ name: string; details: string; reason: string; removed_at: string } | null>(null);
 
   // Fetch nodes from API (sem Azure CLI — resposta rápida)
   const { nodes, loading: nodesLoading, error: nodesError, refetch: refetchNodes } = useNodes(
@@ -681,7 +687,15 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
       <Separator />
 
       {/* Tabs para organizar visualizações */}
-      <Tabs defaultValue="configuration" className="w-full">
+      <Tabs defaultValue="configuration" className="w-full" onValueChange={(tab) => {
+        if (tab === "nodes" && clusterWithAdmin && nodePool?.name && removedNodes.length === 0 && !removedLoading) {
+          setRemovedLoading(true);
+          apiClient.getRemovedNodes(clusterWithAdmin, nodePool.name)
+            .then(r => { setRemovedNodes(r.removed_nodes ?? []); setRemovedDebug((r as any)._debug ?? []); })
+            .catch(() => {})
+            .finally(() => setRemovedLoading(false));
+        }
+      }}>
         <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="configuration">
             <Settings className="w-4 h-4 mr-2" />
@@ -1045,14 +1059,15 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                       Nodes - {nodePool.name}
                     </CardTitle>
                     <CardDescription>
-                      {nodeSearch
-                        ? (() => {
-                            const filtered = nodes.filter(n =>
-                              n.name.toLowerCase().includes(nodeSearch.toLowerCase())
-                            ).length;
-                            return `${filtered} de ${nodes.length} node${nodes.length !== 1 ? "s" : ""}`;
-                          })()
-                        : `${nodes.length} node${nodes.length !== 1 ? "s" : ""} in this pool`}
+                      {(() => {
+                        const q = nodeSearch.toLowerCase();
+                        const activeCount = q ? nodes.filter(n => n.name.toLowerCase().includes(q)).length : nodes.length;
+                        const removedCount = q ? removedNodes.filter(n => n.name.toLowerCase().includes(q)).length : removedNodes.length;
+                        const base = q
+                          ? `${activeCount} de ${nodes.length} node${nodes.length !== 1 ? "s" : ""}`
+                          : `${nodes.length} node${nodes.length !== 1 ? "s" : ""} in this pool`;
+                        return removedCount > 0 ? `${base} · ${removedCount} removido${removedCount !== 1 ? "s" : ""}` : base;
+                      })()}
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
@@ -1063,9 +1078,35 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                         placeholder="Buscar node..."
                         value={nodeSearch}
                         onChange={e => setNodeSearch(e.target.value)}
-                        className="h-8 w-44 pl-7 pr-3 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-8 w-44 pl-7 pr-7 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
                       />
+                      {nodeSearch && (
+                        <button
+                          onClick={() => setNodeSearch("")}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      )}
                     </div>
+                    <Button
+                      variant="outline" size="sm"
+                      title={removedDebug.length > 0 ? removedDebug.join("\n") : "Buscar nodes removidos nos logs do CA e eventos K8s"}
+                      disabled={removedLoading}
+                      onClick={() => {
+                        if (!clusterWithAdmin || !nodePool?.name) return;
+                        setRemovedLoading(true);
+                        setRemovedNodes([]);
+                        apiClient.getRemovedNodes(clusterWithAdmin, nodePool.name)
+                          .then(r => { setRemovedNodes(r.removed_nodes ?? []); setRemovedDebug((r as any)._debug ?? []); })
+                          .catch(() => {})
+                          .finally(() => setRemovedLoading(false));
+                      }}
+                    >
+                      {removedLoading
+                        ? <><RefreshCcw className="w-3.5 h-3.5 mr-1.5 animate-spin" />Buscando...</>
+                        : <><RefreshCcw className="w-3.5 h-3.5 mr-1.5" />Removidos</>}
+                    </Button>
                     <Button onClick={() => refetchNodes()} variant="outline" size="sm">
                       <RefreshCcw className="w-4 h-4 mr-2" />
                       Atualizar
@@ -1207,15 +1248,64 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                           </TableCell>
                         </TableRow>
                       ))}
-                      {nodeSearch && !nodes.some(n =>
-                        n.name.toLowerCase().includes(nodeSearch.toLowerCase())
-                      ) && (
-                        <TableRow>
-                          <TableCell colSpan={8} className="text-center text-muted-foreground text-sm py-8">
-                            Nenhum node encontrado para "{nodeSearch}"
-                          </TableCell>
-                        </TableRow>
-                      )}
+                      {/* Nodes removidos / não-saudáveis — aparecem na busca com badge */}
+                      {removedNodes
+                        .filter(n => !nodeSearch || n.name.toLowerCase().includes(nodeSearch.toLowerCase()))
+                        .map(n => {
+                          const isUnhealthy = n.source === "k8s-node-notready" || n.source === "k8s-node-cordoned";
+                          const badgeLabel = n.source === "k8s-node-cordoned" ? "Isolado"
+                            : n.source === "k8s-node-notready" ? "Não pronto"
+                            : "Removido";
+                          const badgeClass = isUnhealthy
+                            ? "text-[10px] px-1.5 py-0 h-4 flex-shrink-0 bg-amber-500/20 text-amber-600 border-amber-500/40"
+                            : "text-[10px] px-1.5 py-0 h-4 flex-shrink-0";
+                          return (
+                          <TableRow key={`removed-${n.name}`} className={isUnhealthy ? "hover:bg-muted/50" : "opacity-60 hover:opacity-80"}>
+                            <TableCell className="font-medium font-mono text-sm">
+                              <div className="flex items-center gap-2">
+                                {n.name}
+                                <Badge variant={isUnhealthy ? "outline" : "destructive"} className={badgeClass}>
+                                  {badgeLabel}
+                                </Badge>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <span className="text-muted-foreground text-xs">—</span>
+                            </TableCell>
+                            <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                            <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                            <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                            <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                            <TableCell>
+                              {n.removed_at
+                                ? <span className="text-xs text-muted-foreground">{new Date(n.removed_at).toLocaleString("pt-BR")}</span>
+                                : <span className="text-muted-foreground text-xs">—</span>}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs gap-1"
+                                onClick={() => setRemovedDetail({ name: n.name, details: n.details, reason: n.reason, removed_at: n.removed_at })}
+                              >
+                                <Info className="w-3 h-3" />
+                                Ver motivo
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                          );
+                        })}
+
+                      {/* Empty state: busca sem resultados em nenhuma das listas */}
+                      {nodeSearch &&
+                        !nodes.some(n => n.name.toLowerCase().includes(nodeSearch.toLowerCase())) &&
+                        !removedNodes.some(n => n.name.toLowerCase().includes(nodeSearch.toLowerCase())) && (
+                          <TableRow>
+                            <TableCell colSpan={8} className="text-center text-muted-foreground text-sm py-8">
+                              Nenhum node encontrado para "{nodeSearch}"
+                            </TableCell>
+                          </TableRow>
+                        )}
                     </TableBody>
                   </Table>
                 </div>
@@ -1405,6 +1495,37 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           setPredictionModalOpen(true);
         }}
       />
+
+      {/* Modal: motivo de remoção do node */}
+      {removedDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setRemovedDetail(null)}>
+          <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-2xl mx-4 flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold font-mono truncate">{removedDetail.name}</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {removedDetail.removed_at
+                    ? `Removido em ${new Date(removedDetail.removed_at).toLocaleString("pt-BR")}`
+                    : "Data de remoção desconhecida"}
+                </p>
+              </div>
+              <button onClick={() => setRemovedDetail(null)} className="ml-4 text-muted-foreground hover:text-foreground text-lg leading-none flex-shrink-0">✕</button>
+            </div>
+            {removedDetail.reason && (
+              <div className="px-4 py-2 bg-muted/30 border-b border-border flex-shrink-0">
+                <p className="text-xs font-medium text-muted-foreground mb-0.5">Motivo</p>
+                <p className="text-xs">{removedDetail.reason}</p>
+              </div>
+            )}
+            <div className="flex-1 overflow-y-auto min-h-0 p-4">
+              <p className="text-[11px] font-medium text-muted-foreground mb-2">Detalhes (logs / eventos)</p>
+              <pre className="text-[11px] font-mono whitespace-pre-wrap break-all bg-muted/40 rounded p-3 leading-relaxed">
+                {removedDetail.details || "Sem detalhes disponíveis"}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

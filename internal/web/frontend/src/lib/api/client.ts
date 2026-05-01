@@ -1768,6 +1768,20 @@ class APIClient {
     return response;
   }
 
+  async getRemovedNodes(cluster: string, pool: string): Promise<{
+    removed_nodes: Array<{
+      name: string;
+      removed_at: string;
+      reason: string;
+      source: string;
+      details: string;
+    }>;
+  }> {
+    return this.request(
+      `/nodepools/removed-nodes?cluster=${encodeURIComponent(cluster)}&pool=${encodeURIComponent(pool)}`
+    );
+  }
+
   async getConntrackStats(cluster: string, nodepool: string): Promise<ConntrackResponse> {
     return this.request<ConntrackResponse>(
       `/nodepools/conntrack?cluster=${encodeURIComponent(cluster)}&nodepool=${encodeURIComponent(nodepool)}`

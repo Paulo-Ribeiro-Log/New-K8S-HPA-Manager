@@ -334,6 +334,18 @@ func (k *KubeConfigManager) loadClustersFromConfig() []ClusterConfig {
 	return clusters
 }
 
+// GetClusterConfig retorna a configuração AKS de um cluster pelo nome (sem sufixo -admin).
+func (k *KubeConfigManager) GetClusterConfig(clusterName string) *ClusterConfig {
+	bare := strings.TrimSuffix(clusterName, "-admin")
+	for _, c := range k.loadClustersFromConfig() {
+		n := strings.TrimSuffix(c.Name, "-admin")
+		if n == bare || c.Name == clusterName {
+			return &c
+		}
+	}
+	return nil
+}
+
 // TestClusterConnection testa a conectividade com um cluster
 func (k *KubeConfigManager) TestClusterConnection(ctx context.Context, clusterName string) models.ConnectionStatus {
 	// Usar defer recover para capturar panics e converter em erro
