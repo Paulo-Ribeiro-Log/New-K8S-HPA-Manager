@@ -916,6 +916,23 @@ export const TeamsBroadcastTab = () => {
 
         <div className="flex-1" />
 
+        {/* Novo arquivo */}
+        <button
+          onClick={() => {
+            if (isDirty && !window.confirm("Há alterações não salvas. Descartar e criar novo arquivo?")) return;
+            setContent(DEFAULT_MARKDOWN);
+            setCurrentFilename(null);
+            setIsDirty(false);
+          }}
+          title="Novo arquivo (descarta o conteúdo atual)"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+        >
+          <FileText className="w-3.5 h-3.5" />
+          Novo
+        </button>
+
+        <div className="w-px h-4 bg-border/60 mx-0.5" />
+
         {/* Indicador do arquivo atual */}
         {currentFilename && (
           <span className="text-[11px] font-mono text-muted-foreground max-w-[140px] truncate flex items-center gap-1" title={currentFilename}>
