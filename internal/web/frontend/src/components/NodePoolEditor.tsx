@@ -12,7 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { NodePool, NodeInfo } from "@/lib/api/types";
-import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Tags, AlertTriangle, Copy, TrendingUp, History, Activity } from "lucide-react";
+import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Tags, AlertTriangle, Copy, TrendingUp, History, Activity, Search } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
 import { toast } from "sonner";
@@ -83,6 +83,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [showNodeDetailsModal, setShowNodeDetailsModal] = useState(false);
   const [modalKey, setModalKey] = useState(0); // Force modal re-creation
+  const [nodeSearch, setNodeSearch] = useState("");
 
   // Fetch nodes from API (sem Azure CLI — resposta rápida)
   const { nodes, loading: nodesLoading, error: nodesError, refetch: refetchNodes } = useNodes(
@@ -1037,20 +1038,39 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           ) : (
             <Card>
               <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
                     <CardTitle className="flex items-center gap-2">
-                      <Server className="w-5 h-5" />
+                      <Server className="w-5 h-5 flex-shrink-0" />
                       Nodes - {nodePool.name}
                     </CardTitle>
                     <CardDescription>
-                      {nodes.length} node{nodes.length !== 1 ? "s" : ""} in this pool
+                      {nodeSearch
+                        ? (() => {
+                            const filtered = nodes.filter(n =>
+                              n.name.toLowerCase().includes(nodeSearch.toLowerCase())
+                            ).length;
+                            return `${filtered} de ${nodes.length} node${nodes.length !== 1 ? "s" : ""}`;
+                          })()
+                        : `${nodes.length} node${nodes.length !== 1 ? "s" : ""} in this pool`}
                     </CardDescription>
                   </div>
-                  <Button onClick={() => refetchNodes()} variant="outline" size="sm">
-                    <RefreshCcw className="w-4 h-4 mr-2" />
-                    Atualizar
-                  </Button>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                      <input
+                        type="text"
+                        placeholder="Buscar node..."
+                        value={nodeSearch}
+                        onChange={e => setNodeSearch(e.target.value)}
+                        className="h-8 w-44 pl-7 pr-3 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </div>
+                    <Button onClick={() => refetchNodes()} variant="outline" size="sm">
+                      <RefreshCcw className="w-4 h-4 mr-2" />
+                      Atualizar
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent>
@@ -1069,7 +1089,9 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {nodes.map((node: NodeInfo) => (
+                      {nodes.filter(n =>
+                        !nodeSearch || n.name.toLowerCase().includes(nodeSearch.toLowerCase())
+                      ).map((node: NodeInfo) => (
                         <TableRow key={node.name} className="hover:bg-muted/50">
                           <TableCell className="font-medium font-mono text-sm">
                             {node.name}
@@ -1185,6 +1207,15 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                           </TableCell>
                         </TableRow>
                       ))}
+                      {nodeSearch && !nodes.some(n =>
+                        n.name.toLowerCase().includes(nodeSearch.toLowerCase())
+                      ) && (
+                        <TableRow>
+                          <TableCell colSpan={8} className="text-center text-muted-foreground text-sm py-8">
+                            Nenhum node encontrado para "{nodeSearch}"
+                          </TableCell>
+                        </TableRow>
+                      )}
                     </TableBody>
                   </Table>
                 </div>

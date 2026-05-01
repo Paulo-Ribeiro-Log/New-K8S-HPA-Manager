@@ -1479,83 +1479,50 @@ export const GitHubReleasesTab = () => {
 
               {!isComparing && !compareError && displayedComparison && (
                 <div className="flex-1 flex flex-col h-full">
-                  {/* Card superior com informações de comparação - COMPACTO */}
-                  <div className="p-2 border-b bg-muted/30">
-                    <Card>
-                      <CardHeader className="pb-2 pt-3">
-                        <div className="flex items-center justify-between">
-                          <CardTitle className="text-xs flex items-center gap-1.5">
-                            <GitBranch className="h-3.5 w-3.5" />
-                            Comparando Releases
-                          </CardTitle>
-                          <a
-                            href={displayedComparison.compare_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[10px] text-blue-600 hover:underline flex items-center gap-1"
-                          >
-                            <GitCompare className="h-3 w-3" />
-                            Ver no GitHub
-                          </a>
-                        </div>
-                      </CardHeader>
-                      <CardContent className="space-y-2 pb-3">
-                        {/* Comparação de versões */}
-                        <div className="grid grid-cols-2 gap-3">
-                          <div className="space-y-0.5">
-                            <Label className="text-[10px] text-muted-foreground">Base (Produção)</Label>
-                            <Badge variant="outline" className="w-full justify-center py-1 text-xs">
-                              {displayedComparison.base_tag}
-                            </Badge>
-                          </div>
-                          <div className="space-y-0.5">
-                            <Label className="text-[10px] text-muted-foreground">Nova Release</Label>
-                            <Badge variant="default" className="w-full justify-center py-1 text-xs">
-                              {displayedComparison.head_tag}
-                            </Badge>
-                          </div>
-                        </div>
-
-                        {/* CHG Number (badge) */}
-                        {selectedBatchItem?.chgNumber && (
-                          <div className="pt-2 pb-1 text-center">
-                            <Label className="text-[10px] text-muted-foreground">CHG ServiceNow</Label>
-                            <div className="mt-1">
-                              <Badge variant="outline" className="font-mono text-xs bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800">
-                                {selectedBatchItem.chgNumber}
-                              </Badge>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Estatísticas */}
-                        <div className="flex items-center justify-around pt-1.5 border-t">
-                          <div className="text-center">
-                            <p className="text-lg font-bold">{displayedComparison?.commits?.length || 0}</p>
-                            <p className="text-[10px] text-muted-foreground">Commits</p>
-                          </div>
-                          <Separator orientation="vertical" className="h-8" />
-                          <div className="text-center">
-                            <p className="text-lg font-bold">{displayedComparison?.files_changed?.length || 0}</p>
-                            <p className="text-[10px] text-muted-foreground">Arquivos</p>
-                          </div>
-                          <Separator orientation="vertical" className="h-8" />
-                          <div className="text-center">
-                            <p className="text-lg font-bold text-green-600">
-                              +{(displayedComparison?.files_changed || []).reduce((sum, f) => sum + f.additions, 0)}
-                            </p>
-                            <p className="text-[10px] text-muted-foreground">Adições</p>
-                          </div>
-                          <Separator orientation="vertical" className="h-8" />
-                          <div className="text-center">
-                            <p className="text-lg font-bold text-red-600">
-                              -{(displayedComparison?.files_changed || []).reduce((sum, f) => sum + f.deletions, 0)}
-                            </p>
-                            <p className="text-[10px] text-muted-foreground">Remoções</p>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
+                  {/* Barra de comparação compacta */}
+                  <div className="px-3 py-1.5 border-b bg-muted/30 flex items-center gap-3 flex-wrap">
+                    <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1 flex-shrink-0">
+                      <GitBranch className="h-3 w-3" />
+                      Comparando
+                    </span>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <Badge variant="outline" className="text-[11px] py-0 px-1.5 h-5">
+                        {displayedComparison.base_tag}
+                      </Badge>
+                      <span className="text-muted-foreground text-[11px]">→</span>
+                      <Badge variant="default" className="text-[11px] py-0 px-1.5 h-5">
+                        {displayedComparison.head_tag}
+                      </Badge>
+                    </div>
+                    {selectedBatchItem?.chgNumber && (
+                      <Badge variant="outline" className="font-mono text-[11px] py-0 px-1.5 h-5 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800 flex-shrink-0">
+                        {selectedBatchItem.chgNumber}
+                      </Badge>
+                    )}
+                    <Separator orientation="vertical" className="h-4 flex-shrink-0" />
+                    <div className="flex items-center gap-3 text-[11px] flex-shrink-0">
+                      <span className="text-muted-foreground">
+                        <span className="font-semibold text-foreground">{displayedComparison?.commits?.length || 0}</span> commit(s)
+                      </span>
+                      <span className="text-muted-foreground">
+                        <span className="font-semibold text-foreground">{displayedComparison?.files_changed?.length || 0}</span> arquivo(s)
+                      </span>
+                      <span className="text-green-600 font-semibold">
+                        +{(displayedComparison?.files_changed || []).reduce((sum, f) => sum + f.additions, 0)}
+                      </span>
+                      <span className="text-red-600 font-semibold">
+                        -{(displayedComparison?.files_changed || []).reduce((sum, f) => sum + f.deletions, 0)}
+                      </span>
+                    </div>
+                    <a
+                      href={displayedComparison.compare_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="ml-auto text-[10px] text-blue-600 hover:underline flex items-center gap-0.5 flex-shrink-0"
+                    >
+                      <GitCompare className="h-3 w-3" />
+                      Ver no GitHub
+                    </a>
                   </div>
 
                   {/* Painel de diff visual */}
