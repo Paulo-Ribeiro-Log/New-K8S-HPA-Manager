@@ -77,25 +77,27 @@ export const WorkloadMenu = ({ activeTab, onTabChange }: WorkloadMenuProps) => {
           <ChevronDown className="w-3 h-3" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-56 max-h-[calc(100vh-80px)] overflow-y-auto">
-        {workloadTabs.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
+      <DropdownMenuContent align="start" className="w-56 p-0">
+        <div className="max-h-[calc(100vh-80px)] overflow-y-auto py-1">
+          {workloadTabs.map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
 
-          return (
-            <DropdownMenuItem
-              key={tab.id}
-              onClick={() => onTabChange(tab.id)}
-              className={`
-                flex items-center gap-2 px-3 py-2 cursor-pointer
-                ${isActive ? "bg-accent text-accent-foreground font-medium" : ""}
-              `}
-            >
-              <Icon className="w-4 h-4" />
-              {tab.label}
-            </DropdownMenuItem>
-          );
-        })}
+            return (
+              <DropdownMenuItem
+                key={tab.id}
+                onClick={() => onTabChange(tab.id)}
+                className={`
+                  flex items-center gap-2 px-3 py-2 cursor-pointer
+                  ${isActive ? "bg-accent text-accent-foreground font-medium" : ""}
+                `}
+              >
+                <Icon className="w-4 h-4" />
+                {tab.label}
+              </DropdownMenuItem>
+            );
+          })}
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );
