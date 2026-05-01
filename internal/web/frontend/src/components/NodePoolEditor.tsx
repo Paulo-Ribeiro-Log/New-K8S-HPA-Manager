@@ -88,6 +88,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
     name: string; removed_at: string; reason: string; source: string; details: string;
   }>>([]);
   const [removedLoading, setRemovedLoading] = useState(false);
+  const [removedDebug, setRemovedDebug] = useState<string[]>([]);
   const [removedDetail, setRemovedDetail] = useState<{ name: string; details: string; reason: string; removed_at: string } | null>(null);
 
   // Fetch nodes from API (sem Azure CLI — resposta rápida)
@@ -690,7 +691,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         if (tab === "nodes" && clusterWithAdmin && nodePool?.name && removedNodes.length === 0 && !removedLoading) {
           setRemovedLoading(true);
           apiClient.getRemovedNodes(clusterWithAdmin, nodePool.name)
-            .then(r => setRemovedNodes(r.removed_nodes ?? []))
+            .then(r => { setRemovedNodes(r.removed_nodes ?? []); setRemovedDebug((r as any)._debug ?? []); })
             .catch(() => {})
             .finally(() => setRemovedLoading(false));
         }
@@ -1080,6 +1081,24 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                         className="h-8 w-44 pl-7 pr-3 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
                       />
                     </div>
+                    <Button
+                      variant="outline" size="sm"
+                      title={removedDebug.length > 0 ? removedDebug.join("\n") : "Buscar nodes removidos nos logs do CA e eventos K8s"}
+                      disabled={removedLoading}
+                      onClick={() => {
+                        if (!clusterWithAdmin || !nodePool?.name) return;
+                        setRemovedLoading(true);
+                        setRemovedNodes([]);
+                        apiClient.getRemovedNodes(clusterWithAdmin, nodePool.name)
+                          .then(r => { setRemovedNodes(r.removed_nodes ?? []); setRemovedDebug((r as any)._debug ?? []); })
+                          .catch(() => {})
+                          .finally(() => setRemovedLoading(false));
+                      }}
+                    >
+                      {removedLoading
+                        ? <><RefreshCcw className="w-3.5 h-3.5 mr-1.5 animate-spin" />Buscando...</>
+                        : <><RefreshCcw className="w-3.5 h-3.5 mr-1.5" />Removidos</>}
+                    </Button>
                     <Button onClick={() => refetchNodes()} variant="outline" size="sm">
                       <RefreshCcw className="w-4 h-4 mr-2" />
                       Atualizar

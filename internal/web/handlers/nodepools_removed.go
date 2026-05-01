@@ -3,7 +3,9 @@ package handlers
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"sort"
 	"strings"
@@ -20,7 +22,7 @@ type RemovedNodeInfo struct {
 	Name      string `json:"name"`
 	RemovedAt string `json:"removed_at"` // RFC3339 ou ""
 	Reason    string `json:"reason"`
-	Source    string `json:"source"`  // "cluster-autoscaler" | "k8s-events"
+	Source    string `json:"source"`  // "cluster-autoscaler" | "k8s-events" | "azure-activity"
 	Details   string `json:"details"` // linhas brutas para exibição
 }
 
@@ -31,10 +33,12 @@ var (
 )
 
 // GetRemovedNodes retorna nodes removidos recentemente a partir de:
-//  1. Logs do pod cluster-autoscaler (kube-system)
+//  1. Logs do pod cluster-autoscaler (tenta vários label selectors + busca por nome)
 //  2. Eventos Kubernetes com involvedObject.kind=Node
+//  3. Azure Activity Log via az CLI (AKS — fallback)
 //
-// Query params: cluster (obrigatório), pool (opcional — filtra por nome do pool)
+// Query params: cluster (obrigatório), pool (opcional)
+// O campo _debug na resposta descreve o que cada fonte encontrou.
 func (h *NodePoolHandler) GetRemovedNodes(c *gin.Context) {
 	cluster := strings.TrimSpace(c.Query("cluster"))
 	pool := strings.TrimSpace(c.Query("pool"))
@@ -43,7 +47,7 @@ func (h *NodePoolHandler) GetRemovedNodes(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	client, err := h.kubeManager.GetClient(cluster)
@@ -53,11 +57,28 @@ func (h *NodePoolHandler) GetRemovedNodes(c *gin.Context) {
 	}
 
 	removed := map[string]*RemovedNodeInfo{}
+	var debugLines []string
 
-	for _, n := range fetchCALogs(ctx, client, pool) {
+	// ── Fonte 1: CA logs ──────────────────────────────────────────────────────
+	caNodes, caDebug := fetchCALogsV2(ctx, client, pool)
+	debugLines = append(debugLines, caDebug...)
+	for _, n := range caNodes {
 		removed[n.Name] = n
 	}
-	for _, n := range fetchNodeEvents(ctx, client, pool) {
+
+	// ── Fonte 2: Eventos K8s em Node objects ──────────────────────────────────
+	evtNodes, evtDebug := fetchNodeEventsV2(ctx, client, pool)
+	debugLines = append(debugLines, evtDebug...)
+	for _, n := range evtNodes {
+		if _, exists := removed[n.Name]; !exists {
+			removed[n.Name] = n
+		}
+	}
+
+	// ── Fonte 3: Azure Activity Log (az CLI) ──────────────────────────────────
+	azNodes, azDebug := fetchAzureActivityLog(ctx, cluster, pool)
+	debugLines = append(debugLines, azDebug...)
+	for _, n := range azNodes {
 		if _, exists := removed[n.Name]; !exists {
 			removed[n.Name] = n
 		}
@@ -71,26 +92,71 @@ func (h *NodePoolHandler) GetRemovedNodes(c *gin.Context) {
 		return result[i].RemovedAt > result[j].RemovedAt
 	})
 
-	c.JSON(200, gin.H{"removed_nodes": result})
+	c.JSON(200, gin.H{
+		"removed_nodes": result,
+		"_debug":        debugLines,
+	})
 }
 
 // ── cluster-autoscaler logs ───────────────────────────────────────────────────
 
-func fetchCALogs(ctx context.Context, client kubernetes.Interface, pool string) []*RemovedNodeInfo {
-	pods, err := client.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
-		LabelSelector: "app=cluster-autoscaler",
-	})
-	if err != nil || len(pods.Items) == 0 {
-		return nil
+// labelCandidates lista os seletores de label a tentar para encontrar o pod CA.
+var labelCandidates = []string{
+	"app=cluster-autoscaler",
+	"component=cluster-autoscaler",
+	"k8s-app=cluster-autoscaler",
+	"app.kubernetes.io/name=cluster-autoscaler",
+}
+
+func fetchCALogsV2(ctx context.Context, client kubernetes.Interface, pool string) ([]*RemovedNodeInfo, []string) {
+	var debug []string
+
+	// Tentar encontrar o pod CA por vários label selectors
+	var caPodName string
+	for _, sel := range labelCandidates {
+		pods, err := client.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
+			LabelSelector: sel,
+		})
+		if err != nil {
+			debug = append(debug, fmt.Sprintf("[CA] label selector %q: erro %v", sel, err))
+			continue
+		}
+		if len(pods.Items) > 0 {
+			caPodName = pods.Items[0].Name
+			debug = append(debug, fmt.Sprintf("[CA] pod encontrado com label %q: %s", sel, caPodName))
+			break
+		}
+		debug = append(debug, fmt.Sprintf("[CA] label selector %q: nenhum pod", sel))
 	}
 
-	tailLines := int64(3000)
-	req := client.CoreV1().Pods("kube-system").GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{
+	// Fallback: busca pelo nome do pod
+	if caPodName == "" {
+		pods, err := client.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{})
+		if err == nil {
+			for _, p := range pods.Items {
+				if strings.Contains(strings.ToLower(p.Name), "cluster-autoscaler") ||
+					strings.Contains(strings.ToLower(p.Name), "autoscaler") {
+					caPodName = p.Name
+					debug = append(debug, fmt.Sprintf("[CA] pod encontrado por nome: %s", caPodName))
+					break
+				}
+			}
+		}
+	}
+
+	if caPodName == "" {
+		debug = append(debug, "[CA] pod cluster-autoscaler não encontrado em kube-system")
+		return nil, debug
+	}
+
+	tailLines := int64(5000)
+	req := client.CoreV1().Pods("kube-system").GetLogs(caPodName, &corev1.PodLogOptions{
 		TailLines: &tailLines,
 	})
 	stream, err := req.Stream(ctx)
 	if err != nil {
-		return nil
+		debug = append(debug, fmt.Sprintf("[CA] erro ao ler logs de %s: %v", caPodName, err))
+		return nil, debug
 	}
 	defer stream.Close() //nolint:errcheck
 
@@ -98,12 +164,14 @@ func fetchCALogs(ctx context.Context, client kubernetes.Interface, pool string) 
 	seen := map[string]*RemovedNodeInfo{}
 	contextBuf := map[string][]string{}
 	currentTS := ""
+	totalLines, matchLines := 0, 0
 
 	scanner := bufio.NewScanner(stream)
-	scanner.Buffer(make([]byte, 1*1024*1024), 1*1024*1024)
+	scanner.Buffer(make([]byte, 2*1024*1024), 2*1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		totalLines++
 
 		if m := reKlogPrefix.FindStringSubmatch(line); m != nil {
 			currentTS = parseKlogTS(m[1], m[2])
@@ -112,13 +180,17 @@ func fetchCALogs(ctx context.Context, client kubernetes.Interface, pool string) 
 		lineLower := strings.ToLower(line)
 		isRemoval := strings.Contains(lineLower, "removing node") ||
 			strings.Contains(lineLower, "deleting node") ||
-			(strings.Contains(lineLower, "scale-down") && strings.Contains(lineLower, "node"))
+			strings.Contains(lineLower, "node removed") ||
+			(strings.Contains(lineLower, "scale-down") && strings.Contains(lineLower, "node")) ||
+			(strings.Contains(lineLower, "scaledown") && strings.Contains(lineLower, "node"))
 		if !isRemoval {
 			continue
 		}
+		matchLines++
 
 		nodeName := extractNodeNameCA(line)
 		if nodeName == "" {
+			debug = append(debug, fmt.Sprintf("[CA] linha sem nome de node: %.120s", line))
 			continue
 		}
 		if pool != "" && !strings.Contains(strings.ToLower(nodeName), poolLower) {
@@ -141,6 +213,8 @@ func fetchCALogs(ctx context.Context, client kubernetes.Interface, pool string) 
 		}
 	}
 
+	debug = append(debug, fmt.Sprintf("[CA] %s: %d linhas lidas, %d com remoção, %d nodes únicos", caPodName, totalLines, matchLines, len(seen)))
+
 	for name, n := range seen {
 		n.Details = strings.Join(contextBuf[name], "\n")
 	}
@@ -149,7 +223,7 @@ func fetchCALogs(ctx context.Context, client kubernetes.Interface, pool string) 
 	for _, n := range seen {
 		result = append(result, n)
 	}
-	return result
+	return result, debug
 }
 
 func extractNodeNameCA(line string) string {
@@ -198,36 +272,44 @@ func parseKlogTS(mmdd, hhmmss string) string {
 
 // ── eventos Kubernetes em Node objects ───────────────────────────────────────
 
-func fetchNodeEvents(ctx context.Context, client kubernetes.Interface, pool string) []*RemovedNodeInfo {
-	events, err := client.CoreV1().Events("").List(ctx, metav1.ListOptions{
-		FieldSelector: "involvedObject.kind=Node",
-	})
+func fetchNodeEventsV2(ctx context.Context, client kubernetes.Interface, pool string) ([]*RemovedNodeInfo, []string) {
+	var debug []string
+
+	// Busca todos os eventos (sem field selector — compatibilidade máxima) e filtra em código
+	events, err := client.CoreV1().Events("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil
+		debug = append(debug, fmt.Sprintf("[Events] erro ao listar: %v", err))
+		return nil, debug
 	}
 
 	poolLower := strings.ToLower(pool)
 	removalReasons := map[string]bool{
 		"RemovingNode": true, "ScaleDown": true, "NodeNotReady": true,
 		"Killing": true, "PreemptingNode": true, "EvictionThresholdMet": true,
+		"NodeHasDiskPressure": true, "NodeHasMemoryPressure": true,
 	}
 
 	seen := map[string]*RemovedNodeInfo{}
+	total, matched := 0, 0
 
 	for _, evt := range events.Items {
+		if evt.InvolvedObject.Kind != "Node" {
+			continue
+		}
+		total++
+
 		msgLower := strings.ToLower(evt.Message)
 		if !removalReasons[evt.Reason] &&
 			!strings.Contains(msgLower, "remov") &&
 			!strings.Contains(msgLower, "delet") &&
 			!strings.Contains(msgLower, "scale down") &&
-			!strings.Contains(msgLower, "evict") {
+			!strings.Contains(msgLower, "evict") &&
+			!strings.Contains(msgLower, "terminat") {
 			continue
 		}
+		matched++
 
 		nodeName := evt.InvolvedObject.Name
-		if nodeName == "" {
-			continue
-		}
 		if pool != "" && !strings.Contains(strings.ToLower(nodeName), poolLower) {
 			continue
 		}
@@ -235,6 +317,8 @@ func fetchNodeEvents(ctx context.Context, client kubernetes.Interface, pool stri
 		ts := ""
 		if !evt.LastTimestamp.IsZero() {
 			ts = evt.LastTimestamp.UTC().Format(time.RFC3339)
+		} else if !evt.EventTime.IsZero() {
+			ts = evt.EventTime.UTC().Format(time.RFC3339)
 		}
 
 		detail := fmt.Sprintf("[%s] %s: %s", ts, evt.Reason, evt.Message)
@@ -256,11 +340,112 @@ func fetchNodeEvents(ctx context.Context, client kubernetes.Interface, pool stri
 		}
 	}
 
+	debug = append(debug, fmt.Sprintf("[Events] total=%d Node events=%d removal-related=%d nodes únicos=%d", len(events.Items), total, matched, len(seen)))
+
 	result := make([]*RemovedNodeInfo, 0, len(seen))
 	for _, n := range seen {
 		result = append(result, n)
 	}
-	return result
+	return result, debug
+}
+
+// ── Azure Activity Log (az CLI) ───────────────────────────────────────────────
+
+type azActivityEntry struct {
+	OperationName struct {
+		Value string `json:"value"`
+	} `json:"operationName"`
+	EventTimestamp string `json:"eventTimestamp"`
+	Status         struct {
+		Value string `json:"value"`
+	} `json:"status"`
+	ResourceID string `json:"resourceId"`
+	Caller     string `json:"caller"`
+	Properties struct {
+		StatusCode string `json:"statusCode"`
+		Message    string `json:"message"`
+	} `json:"properties"`
+}
+
+func fetchAzureActivityLog(ctx context.Context, cluster, pool string) ([]*RemovedNodeInfo, []string) {
+	var debug []string
+
+	// Verificar se az CLI está disponível
+	if _, err := exec.LookPath("az"); err != nil {
+		debug = append(debug, "[AzureActivity] az CLI não encontrado — ignorando")
+		return nil, debug
+	}
+
+	// Janela de 48h
+	since := time.Now().UTC().Add(-48 * time.Hour).Format("2006-01-02T15:04:05Z")
+	cmd := exec.CommandContext(ctx, "az", "monitor", "activity-log", "list",
+		"--start-time", since,
+		"--query", fmt.Sprintf("[?contains(to_string(operationName.value), 'delete') && contains(to_string(resourceId), '%s')]", strings.ToLower(cluster)),
+		"-o", "json",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		debug = append(debug, fmt.Sprintf("[AzureActivity] erro ao executar az: %v", err))
+		return nil, debug
+	}
+
+	var entries []azActivityEntry
+	if err := json.Unmarshal(out, &entries); err != nil {
+		debug = append(debug, fmt.Sprintf("[AzureActivity] erro ao parsear JSON: %v — raw: %.100s", err, string(out)))
+		return nil, debug
+	}
+
+	debug = append(debug, fmt.Sprintf("[AzureActivity] %d entradas retornadas", len(entries)))
+
+	poolLower := strings.ToLower(pool)
+	seen := map[string]*RemovedNodeInfo{}
+
+	for _, e := range entries {
+		op := strings.ToLower(e.OperationName.Value)
+		rid := strings.ToLower(e.ResourceID)
+		if !strings.Contains(op, "delete") {
+			continue
+		}
+		// Extrair nome do node/VM a partir do resourceId
+		// Formato típico: .../virtualMachineScaleSets/<vmss>/virtualMachines/<idx>
+		// ou .../virtualMachines/<name>
+		parts := strings.Split(rid, "/")
+		if len(parts) == 0 {
+			continue
+		}
+		candidate := parts[len(parts)-1]
+		// Tentar reconstruir nome do node AKS: aks-<pool>-XXXXX-vmss<idx>
+		if pool != "" && !strings.Contains(candidate, poolLower) {
+			continue
+		}
+		if candidate == "" || len(candidate) < 4 {
+			continue
+		}
+
+		ts := e.EventTimestamp
+		reason := fmt.Sprintf("Operação Azure: %s (status: %s)", e.OperationName.Value, e.Status.Value)
+		if e.Properties.Message != "" {
+			reason += " — " + rtrunc(e.Properties.Message, 100)
+		}
+		detail := fmt.Sprintf("[%s] %s\nResourceId: %s\nCaller: %s",
+			ts, e.OperationName.Value, e.ResourceID, e.Caller)
+
+		if _, exists := seen[candidate]; !exists {
+			seen[candidate] = &RemovedNodeInfo{
+				Name:      candidate,
+				RemovedAt: ts,
+				Reason:    reason,
+				Source:    "azure-activity",
+				Details:   detail,
+			}
+		}
+	}
+
+	result := make([]*RemovedNodeInfo, 0, len(seen))
+	for _, n := range seen {
+		result = append(result, n)
+	}
+	return result, debug
 }
 
 func rtrunc(s string, n int) string {
