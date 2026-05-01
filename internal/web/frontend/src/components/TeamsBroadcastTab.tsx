@@ -187,11 +187,13 @@ function ChatSelectorModal({
   onClose,
   selected,
   onToggle,
+  onSelectMany,
 }: {
   open: boolean;
   onClose: () => void;
   selected: Map<string, BroadcastChat>;
   onToggle: (chat: BroadcastChat) => void;
+  onSelectMany: (chats: BroadcastChat[], select: boolean) => void;
 }) {
   const [query, setQuery] = useState("");
   const [allChats, setAllChats] = useState<BroadcastChat[]>([]);
@@ -334,13 +336,26 @@ function ChatSelectorModal({
         </div>
 
         {/* Rodapé */}
-        <div className="flex items-center justify-between flex-shrink-0 pt-1">
-          <span className="text-[11px] text-muted-foreground">
+        <div className="flex items-center justify-between flex-shrink-0 pt-1 gap-2">
+          <span className="text-[11px] text-muted-foreground flex-shrink-0">
             {allChats.length > 0
               ? `${sortedChats.length} de ${allChats.length} chat${allChats.length !== 1 ? "s" : ""}`
               : ""}
           </span>
-          <Button size="sm" className="h-8 text-xs" onClick={onClose}>
+          {sortedChats.length > 0 && (() => {
+            const allVisibleSelected = sortedChats.every(c => selected.has(c.id));
+            return (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs flex-shrink-0"
+                onClick={() => onSelectMany(sortedChats, !allVisibleSelected)}
+              >
+                {allVisibleSelected ? "Desmarcar visíveis" : "Selecionar tudo"}
+              </Button>
+            );
+          })()}
+          <Button size="sm" className="h-8 text-xs flex-shrink-0" onClick={onClose}>
             Confirmar seleção
           </Button>
         </div>
@@ -632,6 +647,13 @@ export const TeamsBroadcastTab = () => {
     setSelected((prev) => {
       const next = new Map(prev);
       next.has(chat.id) ? next.delete(chat.id) : next.set(chat.id, chat);
+      return next;
+    });
+
+  const selectManyChats = (chats: BroadcastChat[], select: boolean) =>
+    setSelected((prev) => {
+      const next = new Map(prev);
+      chats.forEach(c => select ? next.set(c.id, c) : next.delete(c.id));
       return next;
     });
 
@@ -998,6 +1020,7 @@ export const TeamsBroadcastTab = () => {
         onClose={() => setModalOpen(false)}
         selected={selected}
         onToggle={toggleChat}
+        onSelectMany={selectManyChats}
       />
 
       {/* ── Modal de templates ── */}
