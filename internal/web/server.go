@@ -562,6 +562,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools/sequence/progress", nodePoolHandler.SequenceProgress)  // SSE progress tracking
 	api.GET("/nodepools/conntrack", nodePoolHandler.GetConntrackStats)                 // Conntrack stats por node
 	api.GET("/nodepools/conntrack/history", nodePoolHandler.GetConntrackNodeHistory) // Histórico via Prometheus
+	api.GET("/nodepools/removed-nodes", nodePoolHandler.GetRemovedNodes)             // Nodes removidos (CA logs + K8s events)
 
 	// Node Pools - Write Operations (SRE-only)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)

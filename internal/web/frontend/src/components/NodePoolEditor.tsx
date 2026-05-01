@@ -84,6 +84,11 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const [showNodeDetailsModal, setShowNodeDetailsModal] = useState(false);
   const [modalKey, setModalKey] = useState(0); // Force modal re-creation
   const [nodeSearch, setNodeSearch] = useState("");
+  const [removedNodes, setRemovedNodes] = useState<Array<{
+    name: string; removed_at: string; reason: string; source: string; details: string;
+  }>>([]);
+  const [removedLoading, setRemovedLoading] = useState(false);
+  const [removedDetail, setRemovedDetail] = useState<{ name: string; details: string; reason: string; removed_at: string } | null>(null);
 
   // Fetch nodes from API (sem Azure CLI — resposta rápida)
   const { nodes, loading: nodesLoading, error: nodesError, refetch: refetchNodes } = useNodes(
@@ -681,7 +686,15 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
       <Separator />
 
       {/* Tabs para organizar visualizações */}
-      <Tabs defaultValue="configuration" className="w-full">
+      <Tabs defaultValue="configuration" className="w-full" onValueChange={(tab) => {
+        if (tab === "nodes" && clusterWithAdmin && nodePool?.name && removedNodes.length === 0 && !removedLoading) {
+          setRemovedLoading(true);
+          apiClient.getRemovedNodes(clusterWithAdmin, nodePool.name)
+            .then(r => setRemovedNodes(r.removed_nodes ?? []))
+            .catch(() => {})
+            .finally(() => setRemovedLoading(false));
+        }
+      }}>
         <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="configuration">
             <Settings className="w-4 h-4 mr-2" />
@@ -1045,14 +1058,15 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                       Nodes - {nodePool.name}
                     </CardTitle>
                     <CardDescription>
-                      {nodeSearch
-                        ? (() => {
-                            const filtered = nodes.filter(n =>
-                              n.name.toLowerCase().includes(nodeSearch.toLowerCase())
-                            ).length;
-                            return `${filtered} de ${nodes.length} node${nodes.length !== 1 ? "s" : ""}`;
-                          })()
-                        : `${nodes.length} node${nodes.length !== 1 ? "s" : ""} in this pool`}
+                      {(() => {
+                        const q = nodeSearch.toLowerCase();
+                        const activeCount = q ? nodes.filter(n => n.name.toLowerCase().includes(q)).length : nodes.length;
+                        const removedCount = q ? removedNodes.filter(n => n.name.toLowerCase().includes(q)).length : removedNodes.length;
+                        const base = q
+                          ? `${activeCount} de ${nodes.length} node${nodes.length !== 1 ? "s" : ""}`
+                          : `${nodes.length} node${nodes.length !== 1 ? "s" : ""} in this pool`;
+                        return removedCount > 0 ? `${base} · ${removedCount} removido${removedCount !== 1 ? "s" : ""}` : base;
+                      })()}
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
@@ -1207,15 +1221,55 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                           </TableCell>
                         </TableRow>
                       ))}
-                      {nodeSearch && !nodes.some(n =>
-                        n.name.toLowerCase().includes(nodeSearch.toLowerCase())
-                      ) && (
-                        <TableRow>
-                          <TableCell colSpan={8} className="text-center text-muted-foreground text-sm py-8">
-                            Nenhum node encontrado para "{nodeSearch}"
-                          </TableCell>
-                        </TableRow>
-                      )}
+                      {/* Nodes removidos — aparecem na busca com badge */}
+                      {removedNodes
+                        .filter(n => !nodeSearch || n.name.toLowerCase().includes(nodeSearch.toLowerCase()))
+                        .map(n => (
+                          <TableRow key={`removed-${n.name}`} className="opacity-60 hover:opacity-80">
+                            <TableCell className="font-medium font-mono text-sm">
+                              <div className="flex items-center gap-2">
+                                {n.name}
+                                <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-4 flex-shrink-0">
+                                  Removido
+                                </Badge>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <span className="text-muted-foreground text-xs">—</span>
+                            </TableCell>
+                            <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                            <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                            <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                            <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
+                            <TableCell>
+                              {n.removed_at
+                                ? <span className="text-xs text-muted-foreground">{new Date(n.removed_at).toLocaleString("pt-BR")}</span>
+                                : <span className="text-muted-foreground text-xs">—</span>}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs gap-1"
+                                onClick={() => setRemovedDetail({ name: n.name, details: n.details, reason: n.reason, removed_at: n.removed_at })}
+                              >
+                                <Info className="w-3 h-3" />
+                                Ver motivo
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+
+                      {/* Empty state: busca sem resultados em nenhuma das listas */}
+                      {nodeSearch &&
+                        !nodes.some(n => n.name.toLowerCase().includes(nodeSearch.toLowerCase())) &&
+                        !removedNodes.some(n => n.name.toLowerCase().includes(nodeSearch.toLowerCase())) && (
+                          <TableRow>
+                            <TableCell colSpan={8} className="text-center text-muted-foreground text-sm py-8">
+                              Nenhum node encontrado para "{nodeSearch}"
+                            </TableCell>
+                          </TableRow>
+                        )}
                     </TableBody>
                   </Table>
                 </div>
@@ -1405,6 +1459,37 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           setPredictionModalOpen(true);
         }}
       />
+
+      {/* Modal: motivo de remoção do node */}
+      {removedDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setRemovedDetail(null)}>
+          <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-2xl mx-4 flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold font-mono truncate">{removedDetail.name}</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {removedDetail.removed_at
+                    ? `Removido em ${new Date(removedDetail.removed_at).toLocaleString("pt-BR")}`
+                    : "Data de remoção desconhecida"}
+                </p>
+              </div>
+              <button onClick={() => setRemovedDetail(null)} className="ml-4 text-muted-foreground hover:text-foreground text-lg leading-none flex-shrink-0">✕</button>
+            </div>
+            {removedDetail.reason && (
+              <div className="px-4 py-2 bg-muted/30 border-b border-border flex-shrink-0">
+                <p className="text-xs font-medium text-muted-foreground mb-0.5">Motivo</p>
+                <p className="text-xs">{removedDetail.reason}</p>
+              </div>
+            )}
+            <div className="flex-1 overflow-y-auto min-h-0 p-4">
+              <p className="text-[11px] font-medium text-muted-foreground mb-2">Detalhes (logs / eventos)</p>
+              <pre className="text-[11px] font-mono whitespace-pre-wrap break-all bg-muted/40 rounded p-3 leading-relaxed">
+                {removedDetail.details || "Sem detalhes disponíveis"}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
