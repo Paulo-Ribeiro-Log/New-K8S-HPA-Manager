@@ -1078,8 +1078,16 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                         placeholder="Buscar node..."
                         value={nodeSearch}
                         onChange={e => setNodeSearch(e.target.value)}
-                        className="h-8 w-44 pl-7 pr-3 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                        className="h-8 w-44 pl-7 pr-7 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
                       />
+                      {nodeSearch && (
+                        <button
+                          onClick={() => setNodeSearch("")}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      )}
                     </div>
                     <Button
                       variant="outline" size="sm"
