@@ -77,7 +77,7 @@ export const WorkloadMenu = ({ activeTab, onTabChange }: WorkloadMenuProps) => {
           <ChevronDown className="w-3 h-3" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-56">
+      <DropdownMenuContent align="start" className="w-56 max-h-[calc(100vh-80px)] overflow-y-auto">
         {workloadTabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
