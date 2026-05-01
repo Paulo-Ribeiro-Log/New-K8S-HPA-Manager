@@ -34,10 +34,11 @@ var (
 	reScaleDown  = regexp.MustCompile(`(?i)scale[- ]down[^"]*removing node[:\s]+([\w][\w.-]+)`)
 )
 
-// GetRemovedNodes retorna nodes removidos recentemente a partir de:
+// GetRemovedNodes retorna nodes removidos ou não-saudáveis a partir de:
 //  1. Logs do pod cluster-autoscaler (somente quando acessível — não em AKS managed CA)
 //  2. Eventos Kubernetes em kube-system (onde o CA do AKS registra scale-down)
-//  3. Azure Activity Log via az CLI usando o nodeResourceGroup do AKS
+//  3. Azure Activity Log via az CLI usando o nodeResourceGroup do AKS (janela 7 dias)
+//  4. Nodes K8s com status NotReady/Unknown ou cordoned (ainda existentes)
 func (h *NodePoolHandler) GetRemovedNodes(c *gin.Context) {
 	cluster := strings.TrimSpace(c.Query("cluster"))
 	pool := strings.TrimSpace(c.Query("pool"))
@@ -46,7 +47,7 @@ func (h *NodePoolHandler) GetRemovedNodes(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	client, err := h.kubeManager.GetClient(cluster)
@@ -76,10 +77,19 @@ func (h *NodePoolHandler) GetRemovedNodes(c *gin.Context) {
 		}
 	}
 
-	// ── Fonte 3: Azure Activity Log via nodeResourceGroup ────────────────────
+	// ── Fonte 3: Azure Activity Log via nodeResourceGroup (7 dias) ───────────
 	azNodes, azDebug := fetchAzureActivityLog(ctx, clusterCfg, pool)
 	debugLines = append(debugLines, azDebug...)
 	for _, n := range azNodes {
+		if _, exists := removed[n.Name]; !exists {
+			removed[n.Name] = n
+		}
+	}
+
+	// ── Fonte 4: Nodes K8s com NotReady/Unknown ou cordoned ──────────────────
+	unhealthyNodes, uhDebug := fetchUnhealthyNodes(ctx, client, pool)
+	debugLines = append(debugLines, uhDebug...)
+	for _, n := range unhealthyNodes {
 		if _, exists := removed[n.Name]; !exists {
 			removed[n.Name] = n
 		}
@@ -362,8 +372,8 @@ func fetchAzureActivityLog(ctx context.Context, clusterCfg *config.ClusterConfig
 	}
 	debug = append(debug, fmt.Sprintf("[AzureActivity] nodeResourceGroup=%s", nodeRG))
 
-	// Passo 2: activity log no nodeResourceGroup — últimas 48h
-	since := time.Now().UTC().Add(-48 * time.Hour).Format("2006-01-02T15:04:05Z")
+	// Passo 2: activity log no nodeResourceGroup — últimos 7 dias
+	since := time.Now().UTC().Add(-7 * 24 * time.Hour).Format("2006-01-02T15:04:05Z")
 	logArgs := []string{"monitor", "activity-log", "list",
 		"--resource-group", nodeRG,
 		"--start-time", since,
@@ -462,6 +472,70 @@ func vmssInstanceToNodeName(vmssName, instanceIdx string) string {
 		return ""
 	}
 	return fmt.Sprintf("%s%06x", vmssName, idx)
+}
+
+// ── Nodes K8s com NotReady/Unknown ou cordoned (ainda existentes no cluster) ─
+
+func fetchUnhealthyNodes(ctx context.Context, client kubernetes.Interface, pool string) ([]*RemovedNodeInfo, []string) {
+	var debug []string
+	poolLower := strings.ToLower(pool)
+
+	nodeList, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		debug = append(debug, fmt.Sprintf("[Unhealthy] erro ao listar nodes: %v", err))
+		return nil, debug
+	}
+
+	var result []*RemovedNodeInfo
+	for _, node := range nodeList.Items {
+		name := node.Name
+		if pool != "" && !strings.Contains(strings.ToLower(name), poolLower) {
+			continue
+		}
+
+		cordoned := node.Spec.Unschedulable
+		readyStatus := corev1.ConditionUnknown
+		readyMsg := ""
+		lastTS := ""
+		for _, cond := range node.Status.Conditions {
+			if cond.Type == corev1.NodeReady {
+				readyStatus = cond.Status
+				readyMsg = cond.Message
+				if !cond.LastTransitionTime.IsZero() {
+					lastTS = cond.LastTransitionTime.UTC().Format(time.RFC3339)
+				}
+				break
+			}
+		}
+
+		// Apenas inclui se não estiver pronto OU se estiver cordoned
+		if readyStatus == corev1.ConditionTrue && !cordoned {
+			continue
+		}
+
+		source := "k8s-node-notready"
+		label := "NotReady"
+		if cordoned && readyStatus == corev1.ConditionTrue {
+			source = "k8s-node-cordoned"
+			label = "Cordoned"
+		} else if cordoned {
+			source = "k8s-node-cordoned"
+			label = "Cordoned+NotReady"
+		}
+
+		reason := fmt.Sprintf("%s: %s", label, rtrunc(readyMsg, 200))
+		details := fmt.Sprintf("Status Ready: %s\nCordoned: %v\nMensagem: %s", readyStatus, cordoned, readyMsg)
+
+		result = append(result, &RemovedNodeInfo{
+			Name:      name,
+			RemovedAt: lastTS,
+			Reason:    reason,
+			Source:    source,
+			Details:   details,
+		})
+	}
+	debug = append(debug, fmt.Sprintf("[Unhealthy] %d nodes K8s analisados, %d não-saudáveis no pool", len(nodeList.Items), len(result)))
+	return result, debug
 }
 
 func rtrunc(s string, n int) string {

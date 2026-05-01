@@ -1248,16 +1248,24 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                           </TableCell>
                         </TableRow>
                       ))}
-                      {/* Nodes removidos — aparecem na busca com badge */}
+                      {/* Nodes removidos / não-saudáveis — aparecem na busca com badge */}
                       {removedNodes
                         .filter(n => !nodeSearch || n.name.toLowerCase().includes(nodeSearch.toLowerCase()))
-                        .map(n => (
-                          <TableRow key={`removed-${n.name}`} className="opacity-60 hover:opacity-80">
+                        .map(n => {
+                          const isUnhealthy = n.source === "k8s-node-notready" || n.source === "k8s-node-cordoned";
+                          const badgeLabel = n.source === "k8s-node-cordoned" ? "Isolado"
+                            : n.source === "k8s-node-notready" ? "Não pronto"
+                            : "Removido";
+                          const badgeClass = isUnhealthy
+                            ? "text-[10px] px-1.5 py-0 h-4 flex-shrink-0 bg-amber-500/20 text-amber-600 border-amber-500/40"
+                            : "text-[10px] px-1.5 py-0 h-4 flex-shrink-0";
+                          return (
+                          <TableRow key={`removed-${n.name}`} className={isUnhealthy ? "hover:bg-muted/50" : "opacity-60 hover:opacity-80"}>
                             <TableCell className="font-medium font-mono text-sm">
                               <div className="flex items-center gap-2">
                                 {n.name}
-                                <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-4 flex-shrink-0">
-                                  Removido
+                                <Badge variant={isUnhealthy ? "outline" : "destructive"} className={badgeClass}>
+                                  {badgeLabel}
                                 </Badge>
                               </div>
                             </TableCell>
@@ -1285,7 +1293,8 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                               </Button>
                             </TableCell>
                           </TableRow>
-                        ))}
+                          );
+                        })}
 
                       {/* Empty state: busca sem resultados em nenhuma das listas */}
                       {nodeSearch &&
