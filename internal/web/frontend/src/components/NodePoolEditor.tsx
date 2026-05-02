@@ -704,6 +704,11 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           <TabsTrigger value="nodes">
             <Server className="w-4 h-4 mr-2" />
             Nodes ({nodes.length})
+            {removedNodes.length > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-destructive/20 text-destructive leading-none">
+                NR-{removedNodes.length}
+              </span>
+            )}
           </TabsTrigger>
           <TabsTrigger value="disk">
             <Database className="w-4 h-4 mr-2" />
