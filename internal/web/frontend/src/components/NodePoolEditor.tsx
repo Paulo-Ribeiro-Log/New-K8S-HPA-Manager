@@ -28,6 +28,20 @@ import { NodePoolPredictionHistoryModal } from "./NodePoolPredictionHistoryModal
 import { useAnalyzeNodePool } from "@/hooks/useNodePoolPredictions";
 import { ConntrackTab } from "./ConntrackTab";
 
+function computeLifetime(createdAt: string, removedAt: string): string {
+  const start = createdAt ? new Date(createdAt).getTime() : 0;
+  const end = removedAt ? new Date(removedAt).getTime() : Date.now();
+  if (!start) return "—";
+  const diffMs = end - start;
+  if (diffMs < 0) return "—";
+  const days = Math.floor(diffMs / 86400000);
+  const hours = Math.floor((diffMs % 86400000) / 3600000);
+  const mins = Math.floor((diffMs % 3600000) / 60000);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
 interface NodePoolEditorProps {
   nodePool: NodePool | null;
   onApply?: (nodePool: NodePool, original: NodePool) => void;
@@ -85,11 +99,11 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   const [modalKey, setModalKey] = useState(0); // Force modal re-creation
   const [nodeSearch, setNodeSearch] = useState("");
   const [removedNodes, setRemovedNodes] = useState<Array<{
-    name: string; removed_at: string; reason: string; source: string; details: string;
+    name: string; removed_at: string; created_at: string; reason: string; source: string; details: string;
   }>>([]);
   const [removedLoading, setRemovedLoading] = useState(false);
   const [removedDebug, setRemovedDebug] = useState<string[]>([]);
-  const [removedDetail, setRemovedDetail] = useState<{ name: string; details: string; reason: string; removed_at: string } | null>(null);
+  const [removedDetail, setRemovedDetail] = useState<{ name: string; details: string; reason: string; removed_at: string; created_at: string } | null>(null);
 
   // Fetch nodes from API (sem Azure CLI — resposta rápida)
   const { nodes, loading: nodesLoading, error: nodesError, refetch: refetchNodes } = useNodes(
@@ -691,7 +705,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         if (tab === "nodes" && clusterWithAdmin && nodePool?.name && removedNodes.length === 0 && !removedLoading) {
           setRemovedLoading(true);
           apiClient.getRemovedNodes(clusterWithAdmin, nodePool.name)
-            .then(r => { setRemovedNodes(r.removed_nodes ?? []); setRemovedDebug((r as any)._debug ?? []); })
+            .then(r => { setRemovedNodes((r.removed_nodes ?? []) as any[]); setRemovedDebug((r as any)._debug ?? []); })
             .catch(() => {})
             .finally(() => setRemovedLoading(false));
         }
@@ -1103,7 +1117,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                         setRemovedLoading(true);
                         setRemovedNodes([]);
                         apiClient.getRemovedNodes(clusterWithAdmin, nodePool.name)
-                          .then(r => { setRemovedNodes(r.removed_nodes ?? []); setRemovedDebug((r as any)._debug ?? []); })
+                          .then(r => { setRemovedNodes((r.removed_nodes ?? []) as any[]); setRemovedDebug((r as any)._debug ?? []); })
                           .catch(() => {})
                           .finally(() => setRemovedLoading(false));
                       }}
@@ -1282,16 +1296,23 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                             <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
                             <TableCell><span className="text-muted-foreground text-xs">—</span></TableCell>
                             <TableCell>
-                              {n.removed_at
-                                ? <span className="text-xs text-muted-foreground">{new Date(n.removed_at).toLocaleString("pt-BR")}</span>
-                                : <span className="text-muted-foreground text-xs">—</span>}
+                              <div className="flex flex-col gap-0.5">
+                                <span className="text-xs font-medium">
+                                  {computeLifetime(n.created_at, n.removed_at)}
+                                </span>
+                                {n.removed_at && (
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {new Date(n.removed_at).toLocaleString("pt-BR")}
+                                  </span>
+                                )}
+                              </div>
                             </TableCell>
                             <TableCell className="text-right">
                               <Button
                                 variant="outline"
                                 size="sm"
                                 className="h-7 text-xs gap-1"
-                                onClick={() => setRemovedDetail({ name: n.name, details: n.details, reason: n.reason, removed_at: n.removed_at })}
+                                onClick={() => setRemovedDetail({ name: n.name, details: n.details, reason: n.reason, removed_at: n.removed_at, created_at: n.created_at })}
                               >
                                 <Info className="w-3 h-3" />
                                 Ver motivo
@@ -1512,9 +1533,31 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                   {removedDetail.removed_at
                     ? `Removido em ${new Date(removedDetail.removed_at).toLocaleString("pt-BR")}`
                     : "Data de remoção desconhecida"}
+                  {removedDetail.created_at && (
+                    <span className="ml-2">· Tempo de vida: <span className="font-medium text-foreground">{computeLifetime(removedDetail.created_at, removedDetail.removed_at)}</span></span>
+                  )}
                 </p>
               </div>
-              <button onClick={() => setRemovedDetail(null)} className="ml-4 text-muted-foreground hover:text-foreground text-lg leading-none flex-shrink-0">✕</button>
+              <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs gap-1.5"
+                  onClick={() => {
+                    const parts: string[] = [];
+                    parts.push(`Node: ${removedDetail.name}`);
+                    if (removedDetail.removed_at) parts.push(`Removido em: ${new Date(removedDetail.removed_at).toLocaleString("pt-BR")}`);
+                    if (removedDetail.created_at) parts.push(`Tempo de vida: ${computeLifetime(removedDetail.created_at, removedDetail.removed_at)}`);
+                    if (removedDetail.reason) parts.push(`\nMotivo: ${removedDetail.reason}`);
+                    parts.push(`\nDetalhes:\n${removedDetail.details || "Sem detalhes disponíveis"}`);
+                    navigator.clipboard.writeText(parts.join("\n")).then(() => toast.success("Copiado!"));
+                  }}
+                >
+                  <Copy className="w-3 h-3" />
+                  Copiar
+                </Button>
+                <button onClick={() => setRemovedDetail(null)} className="text-muted-foreground hover:text-foreground text-lg leading-none">✕</button>
+              </div>
             </div>
             {removedDetail.reason && (
               <div className="px-4 py-2 bg-muted/30 border-b border-border flex-shrink-0">

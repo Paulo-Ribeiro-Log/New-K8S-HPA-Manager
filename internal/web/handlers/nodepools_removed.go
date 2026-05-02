@@ -23,6 +23,7 @@ import (
 type RemovedNodeInfo struct {
 	Name      string `json:"name"`
 	RemovedAt string `json:"removed_at"` // RFC3339 ou ""
+	CreatedAt string `json:"created_at"` // RFC3339 ou "" — disponível apenas para nodes ainda no cluster
 	Reason    string `json:"reason"`
 	Source    string `json:"source"`  // "cluster-autoscaler" | "k8s-events" | "azure-activity"
 	Details   string `json:"details"` // linhas brutas para exibição
@@ -526,9 +527,14 @@ func fetchUnhealthyNodes(ctx context.Context, client kubernetes.Interface, pool 
 		reason := fmt.Sprintf("%s: %s", label, rtrunc(readyMsg, 200))
 		details := fmt.Sprintf("Status Ready: %s\nCordoned: %v\nMensagem: %s", readyStatus, cordoned, readyMsg)
 
+		createdAt := ""
+		if !node.CreationTimestamp.IsZero() {
+			createdAt = node.CreationTimestamp.UTC().Format(time.RFC3339)
+		}
 		result = append(result, &RemovedNodeInfo{
 			Name:      name,
 			RemovedAt: lastTS,
+			CreatedAt: createdAt,
 			Reason:    reason,
 			Source:    source,
 			Details:   details,
