@@ -300,6 +300,20 @@ export const DeploymentsTab = ({
     return false;
   };
 
+  // Helper: severidade em 3 níveis para colorização correta
+  // "error"    → replicas=0 ou condição de falha crítica  → vermelho
+  // "degraded" → algumas replicas prontas mas não todas    → amarelo
+  // "ok"       → todas as replicas prontas                → verde
+  const getDeploymentSeverity = (dep: DeploymentSummary): "ok" | "degraded" | "error" => {
+    if (dep.statusCondition === "ReplicaFailure") return "error";
+    if (dep.statusReason === "ProgressDeadlineExceeded") return "error";
+    if (dep.replicas > 0 && dep.readyReplicas === 0) return "error";
+    if (dep.readyReplicas < dep.replicas) return "degraded";
+    if (dep.availableReplicas < dep.replicas) return "degraded";
+    if (dep.statusCondition === "Available" && dep.statusReason) return "degraded";
+    return "ok";
+  };
+
   // Helper: Status label para exibição inline
   const getDeploymentStatusInfo = (dep: DeploymentSummary): { label: string; color: string; tooltip: string } | null => {
     if (dep.statusCondition === "ReplicaFailure") {
@@ -2526,21 +2540,24 @@ export const DeploymentsTab = ({
             selectedDeployment?.namespace === dep.namespace;
           const isChecked = selectedDeployments.has(getDeploymentKey(dep));
           const hasProblems = isDeploymentProblematic(dep);
-          const statusColor = hasProblems ? "text-red-400" : "text-green-400";
+          const severity = getDeploymentSeverity(dep);
+          const statusColor = severity === "error" ? "text-red-400" : severity === "degraded" ? "text-yellow-400" : "text-green-400";
           const statusInfo = getDeploymentStatusInfo(dep);
+
+          const cardBorder = isSelected
+            ? "border-primary bg-primary/10 text-primary-foreground"
+            : isChecked
+            ? "border-primary/50 bg-primary/5"
+            : severity === "error"
+            ? "border-red-500/40 hover:border-red-500/60 bg-red-500/5"
+            : severity === "degraded"
+            ? "border-yellow-500/40 hover:border-yellow-500/60 bg-yellow-500/5"
+            : "border-border/60 hover:border-primary/40";
 
           return (
             <div
               key={`${dep.cluster}-${dep.namespace}-${dep.name}`}
-              className={`flex items-start gap-2 p-3 rounded-lg border transition-colors relative ${
-                isSelected
-                  ? "border-primary bg-primary/10 text-primary-foreground"
-                  : isChecked
-                  ? "border-primary/50 bg-primary/5"
-                  : hasProblems
-                  ? "border-red-500/40 hover:border-red-500/60 bg-red-500/5"
-                  : "border-border/60 hover:border-primary/40"
-              }`}
+              className={`flex items-start gap-2 p-3 rounded-lg border transition-colors relative ${cardBorder}`}
             >
               <Checkbox
                 checked={isChecked}
@@ -2554,13 +2571,16 @@ export const DeploymentsTab = ({
                 className="flex-1 text-left"
                 title={statusInfo?.tooltip || undefined}
               >
-                {hasProblems && (
-                  <div className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full animate-pulse" title="Deployment com problemas" />
+                {severity !== "ok" && (
+                  <div
+                    className={`absolute top-2 right-2 w-2 h-2 rounded-full animate-pulse ${severity === "error" ? "bg-red-500" : "bg-yellow-500"}`}
+                    title={severity === "error" ? "Deployment com falha" : "Deployment degradado"}
+                  />
                 )}
                 <div className="flex items-center gap-2">
                   <div className="font-semibold text-sm">{dep.name}</div>
-                  {hasProblems && (
-                    <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[10px] font-medium rounded">
+                  {severity !== "ok" && (
+                    <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${severity === "error" ? "bg-red-500/20 text-red-400" : "bg-yellow-500/20 text-yellow-400"}`}>
                       !
                     </span>
                   )}
