@@ -1782,6 +1782,22 @@ class APIClient {
     );
   }
 
+  async getNodeEvents(cluster: string, node: string): Promise<{
+    events: Array<{
+      type: string;
+      reason: string;
+      age: string;
+      count: number;
+      from: string;
+      message: string;
+      timestamp: string;
+    }>;
+  }> {
+    return this.request(
+      `/nodepools/node-events?cluster=${encodeURIComponent(cluster)}&node=${encodeURIComponent(node)}`
+    );
+  }
+
   async getConntrackStats(cluster: string, nodepool: string): Promise<ConntrackResponse> {
     return this.request<ConntrackResponse>(
       `/nodepools/conntrack?cluster=${encodeURIComponent(cluster)}&nodepool=${encodeURIComponent(nodepool)}`

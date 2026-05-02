@@ -31,8 +31,9 @@ type RemovedNodeInfo struct {
 
 var (
 	reKlogPrefix = regexp.MustCompile(`^[IWEF](\d{4}) (\d{2}:\d{2}:\d{2})`)
-	reNodeRemove = regexp.MustCompile(`(?i)(?:removing|deleting) node[:\s]+([\w][\w.-]+)`)
-	reScaleDown  = regexp.MustCompile(`(?i)scale[- ]down[^"]*removing node[:\s]+([\w][\w.-]+)`)
+	// Aceita nomes com ou sem aspas: "removing empty node "aks-..." e "removing node aks-..."
+	reNodeRemove = regexp.MustCompile(`(?i)(?:removing|deleting)(?:\s+\w+)*\s+node[:\s]+"?([\w][\w.-]+)`)
+	reScaleDown  = regexp.MustCompile(`(?i)scale[- ]down.*?removing(?:\s+\w+)*\s+node[:\s]+"?([\w][\w.-]+)`)
 )
 
 // GetRemovedNodes retorna nodes removidos ou não-saudáveis a partir de:
@@ -550,3 +551,99 @@ func rtrunc(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
+
+// ── Eventos K8s filtrados por node específico ────────────────────────────────
+
+// NodeEvent representa um evento Kubernetes formatado para exibição.
+type NodeEvent struct {
+	Type      string `json:"type"`
+	Reason    string `json:"reason"`
+	Age       string `json:"age"`
+	Count     int32  `json:"count"`
+	From      string `json:"from"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"` // RFC3339
+}
+
+// GetNodeEvents retorna eventos K8s relacionados a um node específico,
+// buscando em todos os namespaces (útil para eventos do cluster-autoscaler em kube-system).
+func (h *NodePoolHandler) GetNodeEvents(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Query("cluster"))
+	nodeName := strings.TrimSpace(c.Query("node"))
+	if cluster == "" || nodeName == "" {
+		c.JSON(400, gin.H{"error": "cluster e node obrigatórios"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(500, gin.H{"error": fmt.Sprintf("cluster inacessível: %v", err)})
+		return
+	}
+
+	// Lista global (namespace="") para pegar eventos do kube-system e outros em uma chamada
+	evtList, err := client.CoreV1().Events("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		c.JSON(500, gin.H{"error": fmt.Sprintf("erro ao listar eventos: %v", err)})
+		return
+	}
+
+	nodeNameLower := strings.ToLower(nodeName)
+	seen := map[string]bool{}
+	var events []NodeEvent
+
+	for _, evt := range evtList.Items {
+		// Match: evento diretamente no node OU mensagem menciona o node pelo nome
+		directNode := evt.InvolvedObject.Kind == "Node" &&
+			strings.EqualFold(evt.InvolvedObject.Name, nodeName)
+		mentionsNode := strings.Contains(strings.ToLower(evt.Message), nodeNameLower)
+
+		if !directNode && !mentionsNode {
+			continue
+		}
+
+		// Deduplicar por UID
+		uid := string(evt.UID)
+		if seen[uid] {
+			continue
+		}
+		seen[uid] = true
+
+		var t time.Time
+		if !evt.LastTimestamp.IsZero() {
+			t = evt.LastTimestamp.UTC()
+		} else if !evt.EventTime.IsZero() {
+			t = evt.EventTime.UTC()
+		}
+
+		ts := ""
+		age := ""
+		if !t.IsZero() {
+			ts = t.Format(time.RFC3339)
+			age = formatAge(time.Since(t))
+		}
+
+		from := evt.Source.Component
+
+		events = append(events, NodeEvent{
+			Type:      evt.Type,
+			Reason:    evt.Reason,
+			Age:       age,
+			Count:     evt.Count,
+			From:      from,
+			Message:   evt.Message,
+			Timestamp: ts,
+		})
+	}
+
+	// Mais recente primeiro
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Timestamp > events[j].Timestamp
+	})
+
+	c.JSON(200, gin.H{"events": events})
+}
+
