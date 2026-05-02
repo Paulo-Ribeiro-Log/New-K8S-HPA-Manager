@@ -42,6 +42,18 @@ function computeLifetime(createdAt: string, removedAt: string): string {
   return `${mins}m`;
 }
 
+function relativeAge(ts: string): string {
+  if (!ts) return "—";
+  const diffMs = Date.now() - new Date(ts).getTime();
+  if (diffMs < 0) return "—";
+  const days = Math.floor(diffMs / 86400000);
+  const hours = Math.floor((diffMs % 86400000) / 3600000);
+  const mins = Math.floor((diffMs % 3600000) / 60000);
+  if (days > 0) return `${days}d`;
+  if (hours > 0) return `${hours}h`;
+  return `${mins}m`;
+}
+
 interface NodePoolEditorProps {
   nodePool: NodePool | null;
   onApply?: (nodePool: NodePool, original: NodePool) => void;
@@ -103,7 +115,11 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   }>>([]);
   const [removedLoading, setRemovedLoading] = useState(false);
   const [removedDebug, setRemovedDebug] = useState<string[]>([]);
-  const [removedDetail, setRemovedDetail] = useState<{ name: string; details: string; reason: string; removed_at: string; created_at: string } | null>(null);
+  const [removedDetail, setRemovedDetail] = useState<{
+    name: string; details: string; reason: string; removed_at: string; created_at: string;
+    events?: Array<{ type: string; reason: string; age: string; count: number; from: string; message: string; timestamp: string }>;
+    eventsLoading?: boolean;
+  } | null>(null);
 
   // Fetch nodes from API (sem Azure CLI — resposta rápida)
   const { nodes, loading: nodesLoading, error: nodesError, refetch: refetchNodes } = useNodes(
@@ -1298,13 +1314,12 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                             <TableCell>
                               <div className="flex flex-col gap-0.5">
                                 <span className="text-xs font-medium">
-                                  {computeLifetime(n.created_at, n.removed_at)}
+                                  {relativeAge(n.removed_at)} atrás
                                 </span>
-                                {n.removed_at && (
-                                  <span className="text-[10px] text-muted-foreground">
-                                    {new Date(n.removed_at).toLocaleString("pt-BR")}
-                                  </span>
-                                )}
+                                <span className="text-[10px] text-muted-foreground">
+                                  {n.removed_at && new Date(n.removed_at).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                                  {n.created_at && ` · viveu ${computeLifetime(n.created_at, n.removed_at)}`}
+                                </span>
                               </div>
                             </TableCell>
                             <TableCell className="text-right">
@@ -1312,7 +1327,14 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                                 variant="outline"
                                 size="sm"
                                 className="h-7 text-xs gap-1"
-                                onClick={() => setRemovedDetail({ name: n.name, details: n.details, reason: n.reason, removed_at: n.removed_at, created_at: n.created_at })}
+                                onClick={() => {
+                                  setRemovedDetail({ name: n.name, details: n.details, reason: n.reason, removed_at: n.removed_at, created_at: n.created_at, eventsLoading: true });
+                                  if (clusterWithAdmin) {
+                                    apiClient.getNodeEvents(clusterWithAdmin, n.name)
+                                      .then(r => setRemovedDetail(prev => prev ? { ...prev, events: r.events, eventsLoading: false } : null))
+                                      .catch(() => setRemovedDetail(prev => prev ? { ...prev, eventsLoading: false } : null));
+                                  }
+                                }}
                               >
                                 <Info className="w-3 h-3" />
                                 Ver motivo
@@ -1525,7 +1547,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
       {/* Modal: motivo de remoção do node */}
       {removedDetail && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setRemovedDetail(null)}>
-          <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-2xl mx-4 flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+          <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-4xl mx-4 flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
               <div className="min-w-0">
                 <p className="text-sm font-semibold font-mono truncate">{removedDetail.name}</p>
@@ -1549,7 +1571,15 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                     if (removedDetail.removed_at) parts.push(`Removido em: ${new Date(removedDetail.removed_at).toLocaleString("pt-BR")}`);
                     if (removedDetail.created_at) parts.push(`Tempo de vida: ${computeLifetime(removedDetail.created_at, removedDetail.removed_at)}`);
                     if (removedDetail.reason) parts.push(`\nMotivo: ${removedDetail.reason}`);
-                    parts.push(`\nDetalhes:\n${removedDetail.details || "Sem detalhes disponíveis"}`);
+                    if (removedDetail.events && removedDetail.events.length > 0) {
+                      parts.push("\nEventos K8s:");
+                      parts.push("Tipo\tMotivo\tIdade\tOrigem\tMensagem");
+                      removedDetail.events.forEach(e => {
+                        const age = e.count > 1 ? `${e.age} (x${e.count})` : e.age;
+                        parts.push(`${e.type}\t${e.reason}\t${age}\t${e.from}\t${e.message}`);
+                      });
+                    }
+                    if (removedDetail.details) parts.push(`\nLogs brutos:\n${removedDetail.details}`);
                     navigator.clipboard.writeText(parts.join("\n")).then(() => toast.success("Copiado!"));
                   }}
                 >
@@ -1565,11 +1595,64 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                 <p className="text-xs">{removedDetail.reason}</p>
               </div>
             )}
-            <div className="flex-1 overflow-y-auto min-h-0 p-4">
-              <p className="text-[11px] font-medium text-muted-foreground mb-2">Detalhes (logs / eventos)</p>
-              <pre className="text-[11px] font-mono whitespace-pre-wrap break-all bg-muted/40 rounded p-3 leading-relaxed">
-                {removedDetail.details || "Sem detalhes disponíveis"}
-              </pre>
+            <div className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4">
+              {/* Tabela de eventos K8s filtrados por este node */}
+              <div>
+                <p className="text-[11px] font-medium text-muted-foreground mb-2">Eventos K8s</p>
+                {removedDetail.eventsLoading ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Buscando eventos...
+                  </div>
+                ) : removedDetail.events && removedDetail.events.length > 0 ? (
+                  <div className="rounded border border-border overflow-hidden">
+                    <table className="w-full text-[11px]">
+                      <thead>
+                        <tr className="bg-muted/50 border-b border-border">
+                          <th className="px-2 py-1.5 text-left font-medium text-muted-foreground w-14 shrink-0">Tipo</th>
+                          <th className="px-2 py-1.5 text-left font-medium text-muted-foreground w-28 shrink-0">Motivo</th>
+                          <th className="px-2 py-1.5 text-left font-medium text-muted-foreground w-16 shrink-0">Idade</th>
+                          <th className="px-2 py-1.5 text-left font-medium text-muted-foreground w-32 shrink-0">Origem</th>
+                          <th className="px-2 py-1.5 text-left font-medium text-muted-foreground min-w-[16rem]">Mensagem</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {removedDetail.events.map((evt, i) => (
+                          <tr key={i} className="border-b border-border last:border-0 hover:bg-muted/20">
+                            <td className="px-2 py-1.5">
+                              <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                evt.type === "Warning"
+                                  ? "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400"
+                                  : "bg-muted text-muted-foreground"
+                              }`}>
+                                {evt.type}
+                              </span>
+                            </td>
+                            <td className="px-2 py-1.5 font-mono font-medium">{evt.reason}</td>
+                            <td className="px-2 py-1.5 text-muted-foreground whitespace-nowrap">
+                              {evt.age}{evt.count > 1 ? ` (x${evt.count})` : ""}
+                            </td>
+                            <td className="px-2 py-1.5 text-muted-foreground font-mono truncate max-w-[9rem]" title={evt.from}>{evt.from}</td>
+                            <td className="px-2 py-1.5 text-foreground break-words">{evt.message}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : removedDetail.events ? (
+                  <p className="text-[11px] text-muted-foreground italic">Nenhum evento K8s encontrado para este node.</p>
+                ) : null}
+              </div>
+
+              {/* Detalhes brutos (CA logs / azure activity) */}
+              {removedDetail.details && (
+                <div>
+                  <p className="text-[11px] font-medium text-muted-foreground mb-2">Logs brutos</p>
+                  <pre className="text-[11px] font-mono whitespace-pre-wrap break-all bg-muted/40 rounded p-3 leading-relaxed">
+                    {removedDetail.details}
+                  </pre>
+                </div>
+              )}
             </div>
           </div>
         </div>
