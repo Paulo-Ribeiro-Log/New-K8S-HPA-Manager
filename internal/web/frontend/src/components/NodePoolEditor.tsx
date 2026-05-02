@@ -762,15 +762,9 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <Label className="text-muted-foreground">VM Size</Label>
-              <p className="font-medium">{nodePool.vm_size}</p>
-            </div>
-            <div>
-              <Label className="text-muted-foreground">Current Nodes</Label>
-              <p className="font-medium">{nodePool.node_count}</p>
-            </div>
+          <div className="text-sm">
+            <Label className="text-muted-foreground">VM Size</Label>
+            <p className="font-medium">{nodePool.vm_size}</p>
           </div>
 
           {/* VM Specs */}
@@ -848,19 +842,25 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Autoscaling Toggle */}
+          {/* Current Nodes + Autoscaling Toggle */}
           <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label htmlFor="autoscaling">Autoscaling</Label>
-              <p className="text-sm text-muted-foreground">
-                Enable automatic scaling based on cluster load
-              </p>
+            <div className="text-sm">
+              <Label className="text-muted-foreground">Current Nodes</Label>
+              <p className="font-medium">{nodePool.node_count}</p>
             </div>
-            <Switch
-              id="autoscaling"
-              checked={autoscalingEnabled}
-              onCheckedChange={setAutoscalingEnabled}
-            />
+            <div className="flex items-center gap-2">
+              <div className="text-right space-y-0.5">
+                <Label htmlFor="autoscaling">Autoscaling</Label>
+                <p className="text-xs text-muted-foreground">
+                  Automatic scaling based on load
+                </p>
+              </div>
+              <Switch
+                id="autoscaling"
+                checked={autoscalingEnabled}
+                onCheckedChange={setAutoscalingEnabled}
+              />
+            </div>
           </div>
 
           <Separator />

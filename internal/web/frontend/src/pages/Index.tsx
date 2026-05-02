@@ -967,7 +967,7 @@ const Index = ({ onLogout }: IndexProps) => {
                   )}
                 </div>
               ),
-              content: nodePoolsLoading ? (
+              content: nodePoolsLoading && nodePools.length === 0 ? (
                 <div className="flex items-center justify-center h-64 text-muted-foreground">
                   Loading Node Pools...
                 </div>
@@ -1055,15 +1055,16 @@ const Index = ({ onLogout }: IndexProps) => {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setNodePoolEditorKey((k) => k + 1)}
+                  onClick={() => { setNodePoolEditorKey((k) => k + 1); refetchNodePools(); }}
+                  disabled={nodePoolsLoading}
                   title={`Atualizar dados do ${nodeResourceSingular}`}
                 >
-                  <RefreshCcw className="w-4 h-4" />
+                  <RefreshCcw className={`w-4 h-4 ${nodePoolsLoading ? "animate-spin" : ""}`} />
                 </Button>
               ) : undefined,
               content: <NodePoolEditor
                 key={nodePoolEditorKey}
-                nodePool={selectedNodePool}
+                nodePool={selectedNodePool ? (nodePools.find(np => np.name === selectedNodePool.name && np.cluster_name === selectedNodePool.cluster_name) ?? selectedNodePool) : selectedNodePool}
                 onApply={handleNodePoolApplyNow}
                 onApplied={refetchNodePools}
               />,

@@ -40,8 +40,6 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
   const reconcilingAbortRef = useRef<AbortController | null>(null);
   // Chave para forçar remount do NodePoolEditor com dados frescos após Atualizar
   const [editorKey, setEditorKey] = useState(0);
-  // Flag para sinalizar que o remount deve ocorrer após o próximo update de nodePools
-  const pendingEditorRemountRef = useRef(false);
   const [isSwitchingContext, setIsSwitchingContext] = useState(false);
 
   // API hooks - só executam quando cluster está selecionado
@@ -61,19 +59,14 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
     setSelectedNodePool(null);
   }, [selectedCluster]);
 
-  // Sincroniza selectedNodePool com dados frescos após refetchNodePools
+  // Deseleciona o pool caso ele desapareça da lista (ex: pool deletado externamente)
   useEffect(() => {
     if (!selectedNodePool || nodePools.length === 0) return;
-    const updated = nodePools.find(
+    const stillExists = nodePools.some(
       (np) => np.name === selectedNodePool.name && np.cluster_name === selectedNodePool.cluster_name
     );
-    if (!updated) return;
-    setSelectedNodePool(updated);
-    if (pendingEditorRemountRef.current) {
-      setEditorKey((k) => k + 1);
-      pendingEditorRemountRef.current = false;
-    }
-  }, [nodePools, selectedNodePool]);
+    if (!stillExists) setSelectedNodePool(null);
+  }, [nodePools]);
 
   // Escutar eventos de progresso de aplicação de node pools
   const handleApplyingEvent = useCallback((e: Event) => {
@@ -234,7 +227,7 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
                 <RefreshCcw className={`w-4 h-4 ${nodePoolsLoading ? 'animate-spin' : ''}`} />
               </Button>
             ),
-            content: nodePoolsLoading ? (
+            content: nodePoolsLoading && nodePools.length === 0 ? (
               <div className="flex items-center justify-center h-64 text-muted-foreground">
                 Loading Node Pools...
               </div>
@@ -270,7 +263,7 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  pendingEditorRemountRef.current = true;
+                  setEditorKey((k) => k + 1);
                   refetchNodePools();
                 }}
                 disabled={nodePoolsLoading}
@@ -282,7 +275,7 @@ export const NodePoolTab = ({ onNodePoolModified }: NodePoolTabProps) => {
             content: (
               <NodePoolEditor
                 key={editorKey}
-                nodePool={selectedNodePool}
+                nodePool={selectedNodePool ? (nodePools.find(np => np.name === selectedNodePool.name && np.cluster_name === selectedNodePool.cluster_name) ?? selectedNodePool) : selectedNodePool}
                 onApplied={() => {
                   refetchNodePools();
                   onNodePoolModified?.();

@@ -1,6 +1,6 @@
 // Custom React hook for API operations
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { apiClient } from "@/lib/api/client";
 import type {
   Cluster,
@@ -200,25 +200,27 @@ export function useNodePools(cluster?: string) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notSupported, setNotSupported] = useState(false);
+  const lastClusterRef = useRef<string | undefined>(undefined);
 
   const fetchNodePools = async () => {
     if (!cluster) {
-      console.log('[useNodePools] No cluster selected, clearing node pools');
       setNodePools([]);
       setNotSupported(false);
+      lastClusterRef.current = undefined;
       return;
     }
 
-    // Limpa dados do cluster anterior imediatamente para evitar exibir dados stale
-    setNodePools([]);
-    setNotSupported(false);
+    // Limpa dados apenas quando o cluster muda — evita flash no refresh manual
+    if (cluster !== lastClusterRef.current) {
+      setNodePools([]);
+      setNotSupported(false);
+      lastClusterRef.current = cluster;
+    }
 
-    console.log('[useNodePools] Fetching node pools for cluster:', cluster);
     try {
       setLoading(true);
       setError(null);
       const { pools, notSupported: ns } = await apiClient.getNodePools(cluster);
-      console.log('[useNodePools] Received data:', pools, 'notSupported:', ns);
       setNodePools(pools);
       setNotSupported(ns);
     } catch (err) {
