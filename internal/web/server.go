@@ -565,6 +565,8 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools/removed-nodes", nodePoolHandler.GetRemovedNodes)             // Nodes removidos (CA logs + K8s events)
 	api.GET("/nodepools/node-events", nodePoolHandler.GetNodeEvents)                     // Eventos K8s filtrados por node específico
 	api.GET("/nodepools/pending-workloads", nodePoolHandler.GetPendingWorkloads)          // Workloads com pods não prontos (DT → K8s fallback)
+	api.GET("/nodepools/node-resources", nodePoolHandler.GetNodeResources)               // Utilização CPU/Memory por node (K8s API)
+	api.GET("/nodepools/autoscaler-status", nodePoolHandler.GetAutoscalerStatus)         // Decisões recentes do cluster-autoscaler
 
 	// Node Pools - Write Operations (SRE-only)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)
