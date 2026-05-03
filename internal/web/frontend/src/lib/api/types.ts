@@ -710,6 +710,59 @@ export interface NodeEvent {
   source_host?: string;
 }
 
+export interface PendingWorkload {
+  namespace: string;
+  workload: string;
+  kind: string;
+  running: number;
+  not_ready: number;
+  oldest_age: string;
+  reason: string;
+  source: "dynatrace" | "k8s";
+}
+
+export interface PendingWorkloadsResponse {
+  workloads: PendingWorkload[];
+  source: "dynatrace" | "k8s";
+  total: number;
+}
+
+export interface NodeResourceInfo {
+  node_name: string;
+  cpu_allocatable_m: number;
+  cpu_requested_m: number;
+  cpu_pct: number;
+  mem_allocatable_bytes: number;
+  mem_requested_bytes: number;
+  mem_pct: number;
+  pod_count: number;
+  pod_capacity: number;
+}
+
+export interface NodeResourcesResponse {
+  nodes: NodeResourceInfo[];
+  total: number;
+}
+
+export interface AutoscalerNodeGroup {
+  name: string;
+  health: string;
+  scale_up: string;
+  scale_down: string;
+  min: number;
+  max: number;
+  current: number;
+}
+
+export interface AutoscalerStatus {
+  available: boolean;
+  health: string;
+  scale_up: string;
+  scale_down: string;
+  node_groups: AutoscalerNodeGroup[];
+  fetched_at: string;
+}
+
 export interface PodOnNode {
   name: string;
   namespace: string;

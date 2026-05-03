@@ -11,7 +11,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import type { NodePool, NodeInfo } from "@/lib/api/types";
+import type { NodePool, NodeInfo, PendingWorkload, NodeResourceInfo, AutoscalerStatus } from "@/lib/api/types";
+import { formatBytes, formatMillicores } from "@/lib/monitorUtils";
 import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Tags, AlertTriangle, Copy, TrendingUp, History, Activity, Search } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
@@ -53,6 +54,100 @@ function relativeAge(ts: string): string {
   if (hours > 0) return `${hours}h`;
   return `${mins}m`;
 }
+
+// ─── NodeResourcesTable ──────────────────────────────────────────────────────
+
+function resourceColor(pct: number): string {
+  if (pct >= 90) return "#ef4444";
+  if (pct >= 70) return "#eab308";
+  return "#22c55e";
+}
+
+function NodeResourcesTable({
+  nodes, loading, onRefresh,
+}: {
+  nodes: NodeResourceInfo[];
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-muted-foreground gap-2">
+        <Loader2 className="w-4 h-4 animate-spin" />
+        <span className="text-sm">Calculando utilização de recursos...</span>
+      </div>
+    );
+  }
+  if (nodes.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 gap-3 text-muted-foreground">
+        <Cpu className="w-8 h-8 opacity-40" />
+        <p className="text-sm">Clique em "Recursos" para carregar a utilização por node.</p>
+        <Button variant="outline" size="sm" onClick={onRefresh}>
+          <RefreshCcw className="w-3.5 h-3.5 mr-1.5" />Carregar
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <div className="flex justify-end mb-2">
+        <Button variant="outline" size="sm" onClick={onRefresh}>
+          <RefreshCcw className="w-3.5 h-3.5 mr-1.5" />Atualizar
+        </Button>
+      </div>
+      <div className="border rounded-lg overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="text-xs">Node</TableHead>
+              <TableHead className="text-xs">CPU Solicitado</TableHead>
+              <TableHead className="text-xs">Memória Solicitada</TableHead>
+              <TableHead className="text-xs text-center">Pods</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {nodes.map((n) => (
+              <TableRow key={n.node_name}>
+                <TableCell className="text-xs font-mono truncate max-w-[160px]" title={n.node_name}>
+                  {n.node_name}
+                </TableCell>
+                <TableCell className="text-xs min-w-[160px]">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px] text-muted-foreground">
+                      <span>{formatMillicores(n.cpu_requested_m)} / {formatMillicores(n.cpu_allocatable_m)}</span>
+                      <span style={{ color: resourceColor(n.cpu_pct) }}>{n.cpu_pct.toFixed(0)}%</span>
+                    </div>
+                    <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                      <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(n.cpu_pct, 100)}%`, backgroundColor: resourceColor(n.cpu_pct) }} />
+                    </div>
+                  </div>
+                </TableCell>
+                <TableCell className="text-xs min-w-[160px]">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px] text-muted-foreground">
+                      <span>{formatBytes(n.mem_requested_bytes)} / {formatBytes(n.mem_allocatable_bytes)}</span>
+                      <span style={{ color: resourceColor(n.mem_pct) }}>{n.mem_pct.toFixed(0)}%</span>
+                    </div>
+                    <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                      <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(n.mem_pct, 100)}%`, backgroundColor: resourceColor(n.mem_pct) }} />
+                    </div>
+                  </div>
+                </TableCell>
+                <TableCell className="text-xs text-center">
+                  <span className="tabular-nums">{n.pod_count}</span>
+                  {n.pod_capacity > 0 && <span className="text-muted-foreground"> / {n.pod_capacity}</span>}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+// ─── NodePoolEditorProps ──────────────────────────────────────────────────────
 
 interface NodePoolEditorProps {
   nodePool: NodePool | null;
@@ -115,6 +210,18 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   }>>([]);
   const [removedLoading, setRemovedLoading] = useState(false);
   const [removedDebug, setRemovedDebug] = useState<string[]>([]);
+  const [pendingWorkloads, setPendingWorkloads] = useState<PendingWorkload[]>([]);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const [pendingSource, setPendingSource] = useState<"dynatrace" | "k8s" | "">("");
+
+  // Recursos por node
+  const [nodesView, setNodesView] = useState<"list" | "resources">("list");
+  const [nodeResources, setNodeResources] = useState<NodeResourceInfo[]>([]);
+  const [nodeResourcesLoading, setNodeResourcesLoading] = useState(false);
+
+  // Status do cluster-autoscaler
+  const [autoscalerStatus, setAutoscalerStatus] = useState<AutoscalerStatus | null>(null);
+  const [autoscalerLoading, setAutoscalerLoading] = useState(false);
   const [removedDetail, setRemovedDetail] = useState<{
     name: string; details: string; reason: string; removed_at: string; created_at: string;
     events?: Array<{ type: string; reason: string; age: string; count: number; from: string; message: string; timestamp: string }>;
@@ -725,8 +832,23 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             .catch(() => {})
             .finally(() => setRemovedLoading(false));
         }
+        if (tab === "pending" && clusterWithAdmin && !pendingLoading) {
+          setPendingLoading(true);
+          const aiEmail = localStorage.getItem("ai_email") ?? undefined;
+          apiClient.getPendingWorkloads(clusterWithAdmin, aiEmail)
+            .then(r => { setPendingWorkloads(r.workloads ?? []); setPendingSource(r.source ?? ""); })
+            .catch(() => {})
+            .finally(() => setPendingLoading(false));
+        }
+        if (tab === "configuration" && clusterWithAdmin && !autoscalerStatus && !autoscalerLoading) {
+          setAutoscalerLoading(true);
+          apiClient.getAutoscalerStatus(clusterWithAdmin)
+            .then(r => setAutoscalerStatus(r))
+            .catch(() => {})
+            .finally(() => setAutoscalerLoading(false));
+        }
       }}>
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="configuration">
             <Settings className="w-4 h-4 mr-2" />
             Configuration
@@ -747,6 +869,15 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           <TabsTrigger value="conntrack">
             <Activity className="w-4 h-4 mr-2" />
             Conntrack
+          </TabsTrigger>
+          <TabsTrigger value="pending">
+            <AlertTriangle className="w-4 h-4 mr-2" />
+            Pendentes
+            {pendingWorkloads.length > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-600 dark:text-amber-400 leading-none">
+                {pendingWorkloads.length}
+              </span>
+            )}
           </TabsTrigger>
         </TabsList>
 
@@ -1061,6 +1192,95 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         </Card>
       )}
 
+      {/* Seção: Status do Cluster Autoscaler */}
+      <Card>
+        <CardHeader className="py-3 px-4 cursor-pointer select-none" onClick={() => {
+          if (!autoscalerStatus && !autoscalerLoading && clusterWithAdmin) {
+            setAutoscalerLoading(true);
+            apiClient.getAutoscalerStatus(clusterWithAdmin)
+              .then(r => setAutoscalerStatus(r))
+              .catch(() => {})
+              .finally(() => setAutoscalerLoading(false));
+          }
+        }}>
+          <CardTitle className="text-sm flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <TrendingUp className="w-4 h-4" />
+              Status do Cluster Autoscaler
+            </div>
+            <div className="flex items-center gap-2">
+              {autoscalerLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
+              {autoscalerStatus && (
+                <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                  autoscalerStatus.available
+                    ? autoscalerStatus.health.startsWith("Healthy")
+                      ? "bg-green-500/20 text-green-600 dark:text-green-400"
+                      : "bg-amber-500/20 text-amber-600 dark:text-amber-400"
+                    : "bg-muted text-muted-foreground"
+                }`}>
+                  {autoscalerStatus.available ? (autoscalerStatus.health.startsWith("Healthy") ? "Healthy" : "Degraded") : "N/A"}
+                </span>
+              )}
+              {!autoscalerStatus && !autoscalerLoading && (
+                <span className="text-xs text-muted-foreground">clique para carregar</span>
+              )}
+            </div>
+          </CardTitle>
+        </CardHeader>
+        {autoscalerStatus && (
+          <CardContent className="px-4 pb-4 space-y-3">
+            {!autoscalerStatus.available ? (
+              <p className="text-xs text-muted-foreground">{autoscalerStatus.health}</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div className="rounded-md border border-border/60 px-3 py-2 space-y-1">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Scale Up</p>
+                    <p className={`font-medium ${autoscalerStatus.scale_up.startsWith("NoActivity") ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}`}>
+                      {autoscalerStatus.scale_up || "—"}
+                    </p>
+                  </div>
+                  <div className="rounded-md border border-border/60 px-3 py-2 space-y-1">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Scale Down</p>
+                    <p className={`font-medium ${autoscalerStatus.scale_down.startsWith("NoCandidates") ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}`}>
+                      {autoscalerStatus.scale_down || "—"}
+                    </p>
+                  </div>
+                </div>
+                {autoscalerStatus.node_groups.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Node Groups ({autoscalerStatus.node_groups.length})</p>
+                    {autoscalerStatus.node_groups.map((ng) => (
+                      <div key={ng.name} className="rounded-md border border-border/60 px-3 py-2 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-mono truncate">{ng.name}</span>
+                          <span className="text-[10px] text-muted-foreground flex-shrink-0 ml-2">
+                            {ng.current}/{ng.max} nodes (min {ng.min})
+                          </span>
+                        </div>
+                        <div className="flex gap-3 text-[10px]">
+                          <span className={ng.scale_up === "NoActivity" ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
+                            ↑ {ng.scale_up || "—"}
+                          </span>
+                          <span className={ng.scale_down === "NoCandidates" ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400"}>
+                            ↓ {ng.scale_down || "—"}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {autoscalerStatus.fetched_at && (
+                  <p className="text-[10px] text-muted-foreground text-right">
+                    Atualizado: {new Date(autoscalerStatus.fetched_at).toLocaleTimeString("pt-BR")}
+                  </p>
+                )}
+              </>
+            )}
+          </CardContent>
+        )}
+      </Card>
+
         </TabsContent>
 
         {/* Tab Nodes */}
@@ -1106,6 +1326,26 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
+                    {/* Toggle Lista / Recursos */}
+                    <div className="flex rounded-md border border-input overflow-hidden text-xs">
+                      <button
+                        onClick={() => setNodesView("list")}
+                        className={`px-2.5 py-1 transition-colors ${nodesView === "list" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}
+                      >Lista</button>
+                      <button
+                        onClick={() => {
+                          setNodesView("resources");
+                          if (nodeResources.length === 0 && !nodeResourcesLoading && clusterWithAdmin && nodePool?.name) {
+                            setNodeResourcesLoading(true);
+                            apiClient.getNodeResources(clusterWithAdmin, nodePool.name)
+                              .then(r => setNodeResources(r.nodes ?? []))
+                              .catch(() => {})
+                              .finally(() => setNodeResourcesLoading(false));
+                          }
+                        }}
+                        className={`px-2.5 py-1 transition-colors ${nodesView === "resources" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}
+                      >Recursos</button>
+                    </div>
                     <div className="relative">
                       <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
                       <input
@@ -1150,6 +1390,20 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                 </div>
               </CardHeader>
               <CardContent>
+                {nodesView === "resources" ? (
+                  <NodeResourcesTable
+                    nodes={nodeSearch ? nodeResources.filter(n => n.node_name.toLowerCase().includes(nodeSearch.toLowerCase())) : nodeResources}
+                    loading={nodeResourcesLoading}
+                    onRefresh={() => {
+                      if (!clusterWithAdmin || !nodePool?.name) return;
+                      setNodeResourcesLoading(true);
+                      apiClient.getNodeResources(clusterWithAdmin, nodePool.name)
+                        .then(r => setNodeResources(r.nodes ?? []))
+                        .catch(() => {})
+                        .finally(() => setNodeResourcesLoading(false));
+                    }}
+                  />
+                ) : (
                 <div className="border rounded-lg overflow-hidden">
                   <Table>
                     <TableHeader>
@@ -1357,6 +1611,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                     </TableBody>
                   </Table>
                 </div>
+                )}
               </CardContent>
             </Card>
           )}
@@ -1440,6 +1695,96 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         <TabsContent value="conntrack">
           {nodePool && (
             <ConntrackTab cluster={clusterWithAdmin} nodepool={nodePool.name} />
+          )}
+        </TabsContent>
+
+        {/* Tab Pendentes */}
+        <TabsContent value="pending" className="mt-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              {pendingSource === "dynatrace" && (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-500/20 text-blue-600 dark:text-blue-400">DT</span>
+              )}
+              {pendingSource === "k8s" && (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-500/20 text-orange-600 dark:text-orange-400">K8s</span>
+              )}
+              {pendingWorkloads.length > 0 && <span>{pendingWorkloads.length} workload(s) com pods não prontos</span>}
+              {!pendingLoading && pendingWorkloads.length === 0 && pendingSource !== "" && (
+                <span className="text-green-600 dark:text-green-400">Nenhum workload pendente</span>
+              )}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setPendingLoading(true);
+                const aiEmail = localStorage.getItem("ai_email") ?? undefined;
+                apiClient.getPendingWorkloads(clusterWithAdmin, aiEmail)
+                  .then(r => { setPendingWorkloads(r.workloads ?? []); setPendingSource(r.source ?? ""); })
+                  .catch(() => {})
+                  .finally(() => setPendingLoading(false));
+              }}
+              disabled={pendingLoading}
+            >
+              <RefreshCcw className={`w-3.5 h-3.5 mr-1.5 ${pendingLoading ? "animate-spin" : ""}`} />
+              Atualizar
+            </Button>
+          </div>
+
+          {pendingLoading ? (
+            <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              Consultando workloads pendentes...
+            </div>
+          ) : pendingSource === "" ? (
+            <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+              Clique em Atualizar para verificar workloads pendentes
+            </div>
+          ) : pendingWorkloads.length === 0 ? (
+            <div className="flex items-center justify-center h-32 text-green-600 dark:text-green-400 text-sm">
+              Todos os workloads estão prontos
+            </div>
+          ) : (
+            <div className="rounded-md border border-border overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs">Namespace</TableHead>
+                    <TableHead className="text-xs">Workload</TableHead>
+                    <TableHead className="text-xs">Kind</TableHead>
+                    <TableHead className="text-xs text-right">Running</TableHead>
+                    <TableHead className="text-xs text-right">Não Prontos</TableHead>
+                    <TableHead className="text-xs">Desde</TableHead>
+                    <TableHead className="text-xs">Motivo</TableHead>
+                    <TableHead className="text-xs">Fonte</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pendingWorkloads.map((w, i) => (
+                    <TableRow key={i}>
+                      <TableCell className="text-xs font-mono">{w.namespace}</TableCell>
+                      <TableCell className="text-xs font-semibold">{w.workload}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{w.kind}</TableCell>
+                      <TableCell className="text-xs text-right">{w.running > 0 ? w.running : "—"}</TableCell>
+                      <TableCell className="text-xs text-right">
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-600 dark:text-amber-400">
+                          {w.not_ready}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{w.oldest_age || "—"}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground max-w-[180px] truncate" title={w.reason}>{w.reason || "—"}</TableCell>
+                      <TableCell className="text-xs">
+                        {w.source === "dynatrace" ? (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-500/20 text-blue-600 dark:text-blue-400">DT</span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-500/20 text-orange-600 dark:text-orange-400">K8s</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           )}
         </TabsContent>
       </Tabs>

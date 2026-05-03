@@ -1798,6 +1798,20 @@ class APIClient {
     );
   }
 
+  async getPendingWorkloads(cluster: string, aiEmail?: string): Promise<import("@/lib/api/types").PendingWorkloadsResponse> {
+    const params = new URLSearchParams({ cluster });
+    if (aiEmail) params.set("ai_email", aiEmail);
+    return this.request(`/nodepools/pending-workloads?${params}`);
+  }
+
+  async getNodeResources(cluster: string, nodepool: string): Promise<import("@/lib/api/types").NodeResourcesResponse> {
+    return this.request(`/nodepools/node-resources?cluster=${encodeURIComponent(cluster)}&nodepool=${encodeURIComponent(nodepool)}`);
+  }
+
+  async getAutoscalerStatus(cluster: string): Promise<import("@/lib/api/types").AutoscalerStatus> {
+    return this.request(`/nodepools/autoscaler-status?cluster=${encodeURIComponent(cluster)}`);
+  }
+
   async getConntrackStats(cluster: string, nodepool: string): Promise<ConntrackResponse> {
     return this.request<ConntrackResponse>(
       `/nodepools/conntrack?cluster=${encodeURIComponent(cluster)}&nodepool=${encodeURIComponent(nodepool)}`

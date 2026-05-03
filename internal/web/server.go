@@ -555,7 +555,7 @@ func (s *Server) setupRoutes() {
 	api.PUT("/hpas/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), hpaHandler.Update)
 
 	// Node Pools
-	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager, s.historyTracker)
+	nodePoolHandler := handlers.NewNodePoolHandler(s.kubeManager, s.historyTracker, s.aiTokensStore)
 	api.GET("/nodepools", nodePoolHandler.List)
 	api.GET("/nodepools/disk-metrics", nodePoolHandler.GetNodePoolDiskMetrics) // Métricas de disco
 	api.GET("/nodepools/storage-overview", nodePoolHandler.GetStorageOverview) // Visão geral de storage
@@ -563,7 +563,10 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools/conntrack", nodePoolHandler.GetConntrackStats)                 // Conntrack stats por node
 	api.GET("/nodepools/conntrack/history", nodePoolHandler.GetConntrackNodeHistory) // Histórico via Prometheus
 	api.GET("/nodepools/removed-nodes", nodePoolHandler.GetRemovedNodes)             // Nodes removidos (CA logs + K8s events)
-	api.GET("/nodepools/node-events", nodePoolHandler.GetNodeEvents)                  // Eventos K8s filtrados por node específico
+	api.GET("/nodepools/node-events", nodePoolHandler.GetNodeEvents)                     // Eventos K8s filtrados por node específico
+	api.GET("/nodepools/pending-workloads", nodePoolHandler.GetPendingWorkloads)          // Workloads com pods não prontos (DT → K8s fallback)
+	api.GET("/nodepools/node-resources", nodePoolHandler.GetNodeResources)               // Utilização CPU/Memory por node (K8s API)
+	api.GET("/nodepools/autoscaler-status", nodePoolHandler.GetAutoscalerStatus)         // Decisões recentes do cluster-autoscaler
 
 	// Node Pools - Write Operations (SRE-only)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)

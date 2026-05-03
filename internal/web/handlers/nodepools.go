@@ -19,6 +19,7 @@ import (
 	"k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
 	promclient "k8s-hpa-manager/internal/monitoring/client"
+	"k8s-hpa-manager/internal/storage"
 	"k8s-hpa-manager/internal/web/sse"
 
 	"github.com/gin-gonic/gin"
@@ -35,15 +36,17 @@ type NodePoolHandler struct {
 	historyTracker  *history.HistoryTracker
 	promClients     map[string]*promclient.PrometheusClient
 	promClientsMu   sync.RWMutex
+	tokensStore     *storage.UserTokensStore
 }
 
 // NewNodePoolHandler cria um novo handler de Node Pools
-func NewNodePoolHandler(km *config.KubeConfigManager, ht *history.HistoryTracker) *NodePoolHandler {
+func NewNodePoolHandler(km *config.KubeConfigManager, ht *history.HistoryTracker, tokensStore *storage.UserTokensStore) *NodePoolHandler {
 	return &NodePoolHandler{
 		kubeManager:     km,
 		progressManager: NewSequenceProgressManager(),
 		historyTracker:  ht,
 		promClients:     make(map[string]*promclient.PrometheusClient),
+		tokensStore:     tokensStore,
 	}
 }
 
