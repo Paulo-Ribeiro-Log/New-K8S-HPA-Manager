@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { useResizableColumns, ResizeHandle } from '@/lib/resizableColumns';
 import {
   Loader2, RefreshCw, AlertTriangle, CheckCircle2, XCircle, Activity,
   ChevronDown, ChevronUp, TrendingUp, TrendingDown, Minus, Search,
@@ -319,10 +319,12 @@ function SummaryStrip({
   );
 }
 
-// ─── TableRow expansível ──────────────────────────────────────────────────────
+// ─── ConntrackTableRow (grid-based, expansível) ───────────────────────────────
 
-function TableNodeRow({
-  node, history, histLoading, histStats, trend, capacityRec,
+const COL_WIDTHS = [220, 140, 160, 80, 80, 100, 140];
+
+function ConntrackTableRow({
+  node, history, histLoading, histStats, trend, capacityRec, gridTemplate,
 }: {
   node: ConntrackNodeStats;
   history?: ConntrackNodeHistoryResponse;
@@ -330,73 +332,67 @@ function TableNodeRow({
   histStats: HistStats | null;
   trend: Trend;
   capacityRec: CapRec;
+  gridTemplate: string;
 }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
     <>
-      <TableRow
-        className="cursor-pointer hover:bg-muted/40 transition-colors"
+      <div
+        className="grid border-b border-border/40 cursor-pointer hover:bg-muted/40 transition-colors"
+        style={{ gridTemplateColumns: gridTemplate }}
         onClick={() => setExpanded((v) => !v)}
       >
-        <TableCell className="py-2">
-          <div className="flex items-center gap-1.5">
-            {expanded ? <ChevronUp className="h-3 w-3 text-muted-foreground flex-shrink-0" /> : <ChevronDown className="h-3 w-3 text-muted-foreground flex-shrink-0" />}
-            <TrendIcon trend={trend} />
-            <span className="text-xs font-mono truncate max-w-[160px]" title={node.node_name}>{node.node_name}</span>
-          </div>
-        </TableCell>
-        <TableCell className="py-2">
-          <div className="text-xs text-muted-foreground tabular-nums">
-            {fmt(node.count)} <span className="text-muted-foreground/60">/ {fmt(node.max)}</span>
-          </div>
-        </TableCell>
-        <TableCell className="py-2">
+        <div className="py-2 px-3 flex items-center gap-1.5 min-w-0">
+          {expanded ? <ChevronUp className="h-3 w-3 text-muted-foreground flex-shrink-0" /> : <ChevronDown className="h-3 w-3 text-muted-foreground flex-shrink-0" />}
+          <TrendIcon trend={trend} />
+          <span className="text-xs font-mono truncate" title={node.node_name}>{node.node_name}</span>
+        </div>
+        <div className="py-2 px-3 flex items-center text-xs text-muted-foreground tabular-nums">
+          {fmt(node.count)} <span className="text-muted-foreground/60 ml-1">/ {fmt(node.max)}</span>
+        </div>
+        <div className="py-2 px-3 flex items-center">
           <MiniBar pct={node.usage_pct} />
-        </TableCell>
-        <TableCell className="py-2 text-xs tabular-nums text-center">
+        </div>
+        <div className="py-2 px-3 flex items-center justify-center text-xs tabular-nums">
           {histStats ? (
             <span style={{ color: barFill(histStats.p95) }}>{histStats.p95.toFixed(1)}%</span>
           ) : histLoading ? (
-            <Loader2 className="h-3 w-3 animate-spin mx-auto text-muted-foreground" />
-          ) : '—'}
-        </TableCell>
-        <TableCell className="py-2 text-xs tabular-nums text-center text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+          ) : <span className="text-muted-foreground">—</span>}
+        </div>
+        <div className="py-2 px-3 flex items-center justify-center text-xs tabular-nums text-muted-foreground">
           {node.buckets > 0 ? fmt(node.buckets) : '—'}
-        </TableCell>
-        <TableCell className="py-2">
+        </div>
+        <div className="py-2 px-3 flex items-center">
           <StatusBadge status={node.status} />
-        </TableCell>
-        <TableCell className="py-2">
+        </div>
+        <div className="py-2 px-3 flex items-center">
           <CapacityBadge rec={capacityRec} />
-        </TableCell>
-      </TableRow>
+        </div>
+      </div>
       {expanded && (
-        <TableRow className="bg-muted/20 hover:bg-muted/20">
-          <TableCell colSpan={7} className="py-3 px-6">
-            <div className="space-y-3">
-              <HistoryChart node={node} history={history} histLoading={histLoading} />
-              {histStats && (
-                <div className="grid grid-cols-4 gap-2 text-xs rounded-md border border-border/60 px-3 py-2 bg-background">
-                  {[
-                    { label: 'Atual', value: node.usage_pct },
-                    { label: 'Média 24h', value: histStats.avg },
-                    { label: 'P95', value: histStats.p95 },
-                    { label: 'Pico', value: histStats.max },
-                  ].map(({ label, value }) => (
-                    <div key={label} className="text-center">
-                      <p className="text-muted-foreground text-[10px]">{label}</p>
-                      <p className="font-semibold tabular-nums" style={{ color: barFill(value) }}>{value.toFixed(1)}%</p>
-                    </div>
-                  ))}
+        <div className="border-b border-border/40 bg-muted/20 px-6 py-3 space-y-3">
+          <HistoryChart node={node} history={history} histLoading={histLoading} />
+          {histStats && (
+            <div className="grid grid-cols-4 gap-2 text-xs rounded-md border border-border/60 px-3 py-2 bg-background">
+              {[
+                { label: 'Atual', value: node.usage_pct },
+                { label: 'Média 24h', value: histStats.avg },
+                { label: 'P95', value: histStats.p95 },
+                { label: 'Pico', value: histStats.max },
+              ].map(({ label, value }) => (
+                <div key={label} className="text-center">
+                  <p className="text-muted-foreground text-[10px]">{label}</p>
+                  <p className="font-semibold tabular-nums" style={{ color: barFill(value) }}>{value.toFixed(1)}%</p>
                 </div>
-              )}
-              <p className="text-[10px] text-muted-foreground">
-                via {node.probe_method}{node.buckets > 0 ? ` · buckets: ${fmt(node.buckets)}` : ''}
-              </p>
+              ))}
             </div>
-          </TableCell>
-        </TableRow>
+          )}
+          <p className="text-[10px] text-muted-foreground">
+            via {node.probe_method}{node.buckets > 0 ? ` · buckets: ${fmt(node.buckets)}` : ''}
+          </p>
+        </div>
       )}
     </>
   );
@@ -451,6 +447,7 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [sortKey, setSortKey] = useState<SortKey>('usage');
   const [tableHeight, setTableHeight] = useState(320);
+  const { resize, gridTemplate } = useResizableColumns(COL_WIDTHS);
 
   const fetchHistory = async (ns: ConntrackNodeStats[]) => {
     if (!ns.length) return;
@@ -597,33 +594,40 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
           {viewMode === 'table' && filteredSorted.length > 0 && (
             <div className="space-y-1">
               <div className="rounded-md border border-border overflow-hidden">
+                {/* Header fixo */}
+                <div
+                  className="grid border-b border-border bg-muted/30 text-[10px] uppercase tracking-wide text-muted-foreground font-medium"
+                  style={{ gridTemplateColumns: gridTemplate }}
+                >
+                  {[
+                    { label: 'Node', idx: 0 },
+                    { label: 'Conexões / Limite', idx: 1 },
+                    { label: 'Uso atual', idx: 2 },
+                    { label: 'P95 24h', idx: 3, center: true },
+                    { label: 'Buckets', idx: 4, center: true },
+                    { label: 'Status', idx: 5 },
+                    { label: 'Recomendação', idx: 6 },
+                  ].map(({ label, idx, center }) => (
+                    <span key={label} className={`relative overflow-hidden pr-4 flex items-center px-3 py-2 ${center ? 'justify-center' : ''}`}>
+                      {label}
+                      <ResizeHandle onResize={(d) => resize(idx, d)} />
+                    </span>
+                  ))}
+                </div>
+                {/* Rows com scroll */}
                 <div style={{ height: tableHeight, overflowY: 'auto' }}>
-                  <Table>
-                    <TableHeader className="sticky top-0 z-10 bg-background">
-                      <TableRow>
-                        <TableHead className="text-xs">Node</TableHead>
-                        <TableHead className="text-xs">Conexões / Limite</TableHead>
-                        <TableHead className="text-xs">Uso atual</TableHead>
-                        <TableHead className="text-xs text-center">P95 24h</TableHead>
-                        <TableHead className="text-xs text-center">Buckets</TableHead>
-                        <TableHead className="text-xs">Status</TableHead>
-                        <TableHead className="text-xs">Recomendação</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {filteredSorted.map(({ node, histStats, trend, capacityRec }) => (
-                        <TableNodeRow
-                          key={node.node_name}
-                          node={node}
-                          history={historyMap[node.node_name]}
-                          histLoading={histLoading}
-                          histStats={histStats}
-                          trend={trend}
-                          capacityRec={capacityRec}
-                        />
-                      ))}
-                    </TableBody>
-                  </Table>
+                  {filteredSorted.map(({ node, histStats, trend, capacityRec }) => (
+                    <ConntrackTableRow
+                      key={node.node_name}
+                      node={node}
+                      history={historyMap[node.node_name]}
+                      histLoading={histLoading}
+                      histStats={histStats}
+                      trend={trend}
+                      capacityRec={capacityRec}
+                      gridTemplate={gridTemplate}
+                    />
+                  ))}
                 </div>
               </div>
               <ResizeHDivider onDrag={(d) => setTableHeight((h) => Math.max(160, h + d))} />
