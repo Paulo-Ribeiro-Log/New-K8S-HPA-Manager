@@ -1392,7 +1392,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
               <CardContent>
                 {nodesView === "resources" ? (
                   <NodeResourcesTable
-                    nodes={nodeResources}
+                    nodes={nodeSearch ? nodeResources.filter(n => n.node_name.toLowerCase().includes(nodeSearch.toLowerCase())) : nodeResources}
                     loading={nodeResourcesLoading}
                     onRefresh={() => {
                       if (!clusterWithAdmin || !nodePool?.name) return;
