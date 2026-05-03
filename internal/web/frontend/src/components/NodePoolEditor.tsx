@@ -11,7 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import type { NodePool, NodeInfo } from "@/lib/api/types";
+import type { NodePool, NodeInfo, PendingWorkload } from "@/lib/api/types";
 import { Save, RotateCcw, Server, Cpu, HardDrive, ArrowDownUp, Loader2, Zap, Shield, Info, Eye, Settings, Database, RefreshCcw, Tag, Tags, AlertTriangle, Copy, TrendingUp, History, Activity, Search } from "lucide-react";
 import { useStaging } from "@/contexts/StagingContext";
 import { apiClient } from "@/lib/api/client";
@@ -115,6 +115,9 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
   }>>([]);
   const [removedLoading, setRemovedLoading] = useState(false);
   const [removedDebug, setRemovedDebug] = useState<string[]>([]);
+  const [pendingWorkloads, setPendingWorkloads] = useState<PendingWorkload[]>([]);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const [pendingSource, setPendingSource] = useState<"dynatrace" | "k8s" | "">("");
   const [removedDetail, setRemovedDetail] = useState<{
     name: string; details: string; reason: string; removed_at: string; created_at: string;
     events?: Array<{ type: string; reason: string; age: string; count: number; from: string; message: string; timestamp: string }>;
@@ -725,8 +728,16 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
             .catch(() => {})
             .finally(() => setRemovedLoading(false));
         }
+        if (tab === "pending" && clusterWithAdmin && !pendingLoading) {
+          setPendingLoading(true);
+          const aiEmail = localStorage.getItem("ai_email") ?? undefined;
+          apiClient.getPendingWorkloads(clusterWithAdmin, aiEmail)
+            .then(r => { setPendingWorkloads(r.workloads ?? []); setPendingSource(r.source ?? ""); })
+            .catch(() => {})
+            .finally(() => setPendingLoading(false));
+        }
       }}>
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="configuration">
             <Settings className="w-4 h-4 mr-2" />
             Configuration
@@ -747,6 +758,15 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
           <TabsTrigger value="conntrack">
             <Activity className="w-4 h-4 mr-2" />
             Conntrack
+          </TabsTrigger>
+          <TabsTrigger value="pending">
+            <AlertTriangle className="w-4 h-4 mr-2" />
+            Pendentes
+            {pendingWorkloads.length > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-600 dark:text-amber-400 leading-none">
+                {pendingWorkloads.length}
+              </span>
+            )}
           </TabsTrigger>
         </TabsList>
 
@@ -1440,6 +1460,96 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         <TabsContent value="conntrack">
           {nodePool && (
             <ConntrackTab cluster={clusterWithAdmin} nodepool={nodePool.name} />
+          )}
+        </TabsContent>
+
+        {/* Tab Pendentes */}
+        <TabsContent value="pending" className="mt-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              {pendingSource === "dynatrace" && (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-500/20 text-blue-600 dark:text-blue-400">DT</span>
+              )}
+              {pendingSource === "k8s" && (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-500/20 text-orange-600 dark:text-orange-400">K8s</span>
+              )}
+              {pendingWorkloads.length > 0 && <span>{pendingWorkloads.length} workload(s) com pods não prontos</span>}
+              {!pendingLoading && pendingWorkloads.length === 0 && pendingSource !== "" && (
+                <span className="text-green-600 dark:text-green-400">Nenhum workload pendente</span>
+              )}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setPendingLoading(true);
+                const aiEmail = localStorage.getItem("ai_email") ?? undefined;
+                apiClient.getPendingWorkloads(clusterWithAdmin, aiEmail)
+                  .then(r => { setPendingWorkloads(r.workloads ?? []); setPendingSource(r.source ?? ""); })
+                  .catch(() => {})
+                  .finally(() => setPendingLoading(false));
+              }}
+              disabled={pendingLoading}
+            >
+              <RefreshCcw className={`w-3.5 h-3.5 mr-1.5 ${pendingLoading ? "animate-spin" : ""}`} />
+              Atualizar
+            </Button>
+          </div>
+
+          {pendingLoading ? (
+            <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              Consultando workloads pendentes...
+            </div>
+          ) : pendingSource === "" ? (
+            <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+              Clique em Atualizar para verificar workloads pendentes
+            </div>
+          ) : pendingWorkloads.length === 0 ? (
+            <div className="flex items-center justify-center h-32 text-green-600 dark:text-green-400 text-sm">
+              Todos os workloads estão prontos
+            </div>
+          ) : (
+            <div className="rounded-md border border-border overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs">Namespace</TableHead>
+                    <TableHead className="text-xs">Workload</TableHead>
+                    <TableHead className="text-xs">Kind</TableHead>
+                    <TableHead className="text-xs text-right">Running</TableHead>
+                    <TableHead className="text-xs text-right">Não Prontos</TableHead>
+                    <TableHead className="text-xs">Desde</TableHead>
+                    <TableHead className="text-xs">Motivo</TableHead>
+                    <TableHead className="text-xs">Fonte</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pendingWorkloads.map((w, i) => (
+                    <TableRow key={i}>
+                      <TableCell className="text-xs font-mono">{w.namespace}</TableCell>
+                      <TableCell className="text-xs font-semibold">{w.workload}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{w.kind}</TableCell>
+                      <TableCell className="text-xs text-right">{w.running > 0 ? w.running : "—"}</TableCell>
+                      <TableCell className="text-xs text-right">
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-600 dark:text-amber-400">
+                          {w.not_ready}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{w.oldest_age || "—"}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground max-w-[180px] truncate" title={w.reason}>{w.reason || "—"}</TableCell>
+                      <TableCell className="text-xs">
+                        {w.source === "dynatrace" ? (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-500/20 text-blue-600 dark:text-blue-400">DT</span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-500/20 text-orange-600 dark:text-orange-400">K8s</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           )}
         </TabsContent>
       </Tabs>

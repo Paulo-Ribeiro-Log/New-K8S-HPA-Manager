@@ -710,6 +710,23 @@ export interface NodeEvent {
   source_host?: string;
 }
 
+export interface PendingWorkload {
+  namespace: string;
+  workload: string;
+  kind: string;
+  running: number;
+  not_ready: number;
+  oldest_age: string;
+  reason: string;
+  source: "dynatrace" | "k8s";
+}
+
+export interface PendingWorkloadsResponse {
+  workloads: PendingWorkload[];
+  source: "dynatrace" | "k8s";
+  total: number;
+}
+
 export interface PodOnNode {
   name: string;
   namespace: string;

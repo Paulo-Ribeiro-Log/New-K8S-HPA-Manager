@@ -1798,6 +1798,12 @@ class APIClient {
     );
   }
 
+  async getPendingWorkloads(cluster: string, aiEmail?: string): Promise<import("@/lib/api/types").PendingWorkloadsResponse> {
+    const params = new URLSearchParams({ cluster });
+    if (aiEmail) params.set("ai_email", aiEmail);
+    return this.request(`/nodepools/pending-workloads?${params}`);
+  }
+
   async getConntrackStats(cluster: string, nodepool: string): Promise<ConntrackResponse> {
     return this.request<ConntrackResponse>(
       `/nodepools/conntrack?cluster=${encodeURIComponent(cluster)}&nodepool=${encodeURIComponent(nodepool)}`
