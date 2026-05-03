@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -402,6 +402,42 @@ function TableNodeRow({
   );
 }
 
+// ─── ResizeHDivider ───────────────────────────────────────────────────────────
+
+function ResizeHDivider({ onDrag }: { onDrag: (delta: number) => void }) {
+  const dragging = useRef(false);
+  const lastY = useRef(0);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      onDrag(e.clientY - lastY.current);
+      lastY.current = e.clientY;
+    };
+    const onUp = () => {
+      dragging.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, [onDrag]);
+
+  return (
+    <div
+      className="h-1 flex-shrink-0 bg-border/40 hover:bg-primary/60 active:bg-primary cursor-row-resize transition-colors rounded-full"
+      onMouseDown={(e) => {
+        dragging.current = true;
+        lastY.current = e.clientY;
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+      }}
+    />
+  );
+}
+
 // ─── ConntrackTab (principal) ─────────────────────────────────────────────────
 
 export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
@@ -414,6 +450,7 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
   const [nodeSearch, setNodeSearch] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [sortKey, setSortKey] = useState<SortKey>('usage');
+  const [tableHeight, setTableHeight] = useState(320);
 
   const fetchHistory = async (ns: ConntrackNodeStats[]) => {
     if (!ns.length) return;
@@ -558,33 +595,38 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
 
           {/* View: tabela */}
           {viewMode === 'table' && filteredSorted.length > 0 && (
-            <div className="rounded-md border border-border overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs">Node</TableHead>
-                    <TableHead className="text-xs">Conexões / Limite</TableHead>
-                    <TableHead className="text-xs">Uso atual</TableHead>
-                    <TableHead className="text-xs text-center">P95 24h</TableHead>
-                    <TableHead className="text-xs text-center">Buckets</TableHead>
-                    <TableHead className="text-xs">Status</TableHead>
-                    <TableHead className="text-xs">Recomendação</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredSorted.map(({ node, histStats, trend, capacityRec }) => (
-                    <TableNodeRow
-                      key={node.node_name}
-                      node={node}
-                      history={historyMap[node.node_name]}
-                      histLoading={histLoading}
-                      histStats={histStats}
-                      trend={trend}
-                      capacityRec={capacityRec}
-                    />
-                  ))}
-                </TableBody>
-              </Table>
+            <div className="space-y-1">
+              <div className="rounded-md border border-border overflow-hidden">
+                <div style={{ height: tableHeight, overflowY: 'auto' }}>
+                  <Table>
+                    <TableHeader className="sticky top-0 z-10 bg-background">
+                      <TableRow>
+                        <TableHead className="text-xs">Node</TableHead>
+                        <TableHead className="text-xs">Conexões / Limite</TableHead>
+                        <TableHead className="text-xs">Uso atual</TableHead>
+                        <TableHead className="text-xs text-center">P95 24h</TableHead>
+                        <TableHead className="text-xs text-center">Buckets</TableHead>
+                        <TableHead className="text-xs">Status</TableHead>
+                        <TableHead className="text-xs">Recomendação</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredSorted.map(({ node, histStats, trend, capacityRec }) => (
+                        <TableNodeRow
+                          key={node.node_name}
+                          node={node}
+                          history={historyMap[node.node_name]}
+                          histLoading={histLoading}
+                          histStats={histStats}
+                          trend={trend}
+                          capacityRec={capacityRec}
+                        />
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+              <ResizeHDivider onDrag={(d) => setTableHeight((h) => Math.max(160, h + d))} />
             </div>
           )}
 
