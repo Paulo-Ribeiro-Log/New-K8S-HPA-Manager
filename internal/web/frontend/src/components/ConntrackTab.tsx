@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Input } from '@/components/ui/input';
 import {
   Loader2,
   RefreshCw,
@@ -14,6 +15,7 @@ import {
   ChevronDown,
   ChevronUp,
   TrendingUp,
+  Search,
 } from 'lucide-react';
 import {
   BarChart,
@@ -315,6 +317,7 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
   const [error, setError] = useState<string | null>(null);
   const [historyMap, setHistoryMap] = useState<Record<string, ConntrackNodeHistoryResponse>>({});
   const [histLoading, setHistLoading] = useState(false);
+  const [nodeSearch, setNodeSearch] = useState("");
 
   const fetchHistory = async (ns: ConntrackNodeStats[]) => {
     if (!ns.length) return;
@@ -346,11 +349,17 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
     }
   };
 
+  const filteredNodes = useMemo(() => {
+    const q = nodeSearch.trim().toLowerCase();
+    if (!q) return nodes;
+    return nodes.filter((n) => n.node_name.toLowerCase().includes(q));
+  }, [nodes, nodeSearch]);
+
   return (
     <div className="space-y-4 mt-4">
       {/* Cabeçalho */}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
           <p className="text-sm text-muted-foreground">
             Conexões rastreadas pelo kernel — pool <strong>{nodepool}</strong>
           </p>
@@ -361,10 +370,23 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
             </p>
           )}
         </div>
-        <Button size="sm" variant="outline" onClick={fetchStats} disabled={loading}>
-          {loading ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}
-          {nodes.length === 0 && !loading ? 'Carregar' : 'Atualizar'}
-        </Button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {nodes.length > 0 && (
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+              <Input
+                value={nodeSearch}
+                onChange={(e) => setNodeSearch(e.target.value)}
+                placeholder="Filtrar por nome..."
+                className="pl-8 h-8 text-xs w-48"
+              />
+            </div>
+          )}
+          <Button size="sm" variant="outline" onClick={fetchStats} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}
+            {nodes.length === 0 && !loading ? 'Carregar' : 'Atualizar'}
+          </Button>
+        </div>
       </div>
 
       {error && (
@@ -388,9 +410,15 @@ export function ConntrackTab({ cluster, nodepool }: ConntrackTabProps) {
         </div>
       )}
 
-      {nodes.length > 0 && (
+      {nodes.length > 0 && filteredNodes.length === 0 && (
+        <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
+          Nenhum node encontrado para "<strong>{nodeSearch}</strong>"
+        </div>
+      )}
+
+      {filteredNodes.length > 0 && (
         <div className="space-y-3">
-          {nodes.map((node) => (
+          {filteredNodes.map((node) => (
             <NodeCard
               key={node.node_name}
               node={node}
