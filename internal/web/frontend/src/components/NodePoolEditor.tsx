@@ -1219,13 +1219,13 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
               <button
                 disabled={autoscalerLoading}
                 onClick={() => {
-                  if (!autoscalerLoading && clusterWithAdmin) {
-                    setAutoscalerLoading(true);
-                    apiClient.getAutoscalerStatus(clusterWithAdmin)
-                      .then(r => setAutoscalerStatus(r))
-                      .catch(() => {})
-                      .finally(() => setAutoscalerLoading(false));
-                  }
+                  if (autoscalerLoading || !clusterWithAdmin) return;
+                  setAutoscalerStatus(null);
+                  setAutoscalerLoading(true);
+                  apiClient.getAutoscalerStatus(clusterWithAdmin)
+                    .then(r => { setAutoscalerStatus(r); toast.success("Autoscaler status atualizado"); })
+                    .catch(() => toast.error("Erro ao atualizar autoscaler status"))
+                    .finally(() => setAutoscalerLoading(false));
                 }}
                 className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40"
                 title="Atualizar status"
