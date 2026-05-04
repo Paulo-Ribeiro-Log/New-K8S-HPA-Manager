@@ -243,8 +243,8 @@ export const ResourceExplorerTab = ({
   // ── Select item → load manifest ────────────────────────────────────────
   const handleSelectItem = async (item: GenericResourceSummary) => {
     if (selectedItem && history.length > 0) {
-      const key = `${item.namespace}/${item.name}`;
-      setHistoryCacheEntry(historyCache.current, key, { history: [...history], index: historyIndex });
+      const currentKey = `${selectedItem.namespace}/${selectedItem.name}`;
+      setHistoryCacheEntry(historyCache.current, currentKey, { history: [...history], index: historyIndex });
     }
     setSelectedItem(item);
     setManifestLoading(true);
