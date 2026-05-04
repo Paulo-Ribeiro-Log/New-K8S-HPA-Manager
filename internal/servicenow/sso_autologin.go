@@ -72,17 +72,20 @@ func tryAutoFillAzureAD(page *rod.Page, username, password string, logger *zerol
 		return false
 	}
 
+	// Timeout curto para cada seletor: evita bloquear 3s quando o campo não existe na fase atual
+	const fieldTimeout = 800 * time.Millisecond
+
 	// Fase 1 — campo de email
-	if emailEl, err := page.Timeout(3 * time.Second).Element("input[name='loginfmt'], input[type='email']#i0116, input[type='email']"); err == nil {
-		val, _ := emailEl.Text()
+	if emailEl, err := page.Timeout(fieldTimeout).Element("input[name='loginfmt'], input[type='email']#i0116, input[type='email']"); err == nil {
+		// IMPORTANTE: usar JS (.value) em vez de Text() (.innerText) — inputs sempre têm innerText=""
+		val := ""
+		if res, evalErr := emailEl.Eval(`() => this.value`); evalErr == nil && res != nil {
+			val = res.Value.String()
+		}
 		if val == "" {
-			if err := emailEl.SelectAllText(); err == nil {
-				emailEl.Input(username) //nolint:errcheck
-			} else {
-				emailEl.Input(username) //nolint:errcheck
-			}
+			emailEl.SelectAllText() //nolint:errcheck
+			emailEl.Input(username) //nolint:errcheck
 			time.Sleep(500 * time.Millisecond)
-			// Clicar em Next
 			if nextBtn, err := page.Timeout(2 * time.Second).Element("#idSIButton9, input[type='submit']"); err == nil {
 				nextBtn.Click(proto.InputMouseButtonLeft, 1) //nolint:errcheck
 				logger.Info().Str("username", username).Msg("[Rod/SSO] Email preenchido e Next clicado")
@@ -92,15 +95,22 @@ func tryAutoFillAzureAD(page *rod.Page, username, password string, logger *zerol
 		}
 	}
 
-	// Fase 2 — campo de senha
-	if pwEl, err := page.Timeout(3 * time.Second).Element("input[name='passwd'], input[type='password']#i0118, input[type='password']"); err == nil {
-		pwEl.Input(password) //nolint:errcheck
-		time.Sleep(500 * time.Millisecond)
-		if signInBtn, err := page.Timeout(2 * time.Second).Element("#idSIButton9, input[type='submit']"); err == nil {
-			signInBtn.Click(proto.InputMouseButtonLeft, 1) //nolint:errcheck
-			logger.Info().Msg("[Rod/SSO] Senha preenchida e Sign In clicado")
-			time.Sleep(1500 * time.Millisecond)
-			return true
+	// Fase 2 — campo de senha (mesmo padrão: só preenche se vazio)
+	if pwEl, err := page.Timeout(fieldTimeout).Element("input[name='passwd'], input[type='password']#i0118, input[type='password']"); err == nil {
+		pwVal := ""
+		if res, evalErr := pwEl.Eval(`() => this.value`); evalErr == nil && res != nil {
+			pwVal = res.Value.String()
+		}
+		if pwVal == "" {
+			pwEl.SelectAllText() //nolint:errcheck
+			pwEl.Input(password) //nolint:errcheck
+			time.Sleep(500 * time.Millisecond)
+			if signInBtn, err := page.Timeout(2 * time.Second).Element("#idSIButton9, input[type='submit']"); err == nil {
+				signInBtn.Click(proto.InputMouseButtonLeft, 1) //nolint:errcheck
+				logger.Info().Msg("[Rod/SSO] Senha preenchida e Sign In clicado")
+				time.Sleep(1500 * time.Millisecond)
+				return true
+			}
 		}
 	}
 
