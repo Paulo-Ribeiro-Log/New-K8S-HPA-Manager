@@ -1429,6 +1429,18 @@ const Index = ({ onLogout }: IndexProps) => {
         <WorkloadMenu activeTab={activeTab} onTabChange={handleTabChange} />
         {/* Menu dropdown Tools */}
         <ToolsMenu activeTab={activeTab} onTabChange={handleTabChange} />
+        {/* Tab Explorer inline */}
+        <button
+          onClick={() => handleTabChange("explorer")}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg font-medium text-sm transition-all duration-200 ${
+            activeTab === "explorer"
+              ? "bg-gradient-primary text-white shadow-md"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground"
+          }`}
+        >
+          <Search className="w-4 h-4" />
+          Explorer
+        </button>
       </TabNavigation>
 
       {/* Conteúdo Principal */}
