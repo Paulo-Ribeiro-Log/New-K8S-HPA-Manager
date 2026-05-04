@@ -1214,33 +1214,32 @@ export const GitHubReleasesTab = () => {
                                       {item.githubRepo}
                                     </p>
                                     {item.chgNumber && (
-                                      <div className="flex items-center gap-1 flex-shrink-0">
-                                        <span className="text-[10px] font-mono text-white bg-blue-600 dark:bg-blue-700 px-2 py-1 rounded-md border border-blue-700 dark:border-blue-600">
-                                          CHG: {item.chgNumber}
-                                        </span>
-                                        {item.approvalUrl && (
-                                          <>
-                                            {item.approvalStatus === 'checking' && (
-                                              <span title="Verificando aprovação...">
+                                      <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
+                                        <div className="flex items-center gap-1">
+                                          <span className="text-[10px] font-mono text-white bg-blue-600 dark:bg-blue-700 px-2 py-1 rounded-md border border-blue-700 dark:border-blue-600">
+                                            CHG: {item.chgNumber}
+                                          </span>
+                                          {item.approvalUrl && (
+                                            <>
+                                              {item.approvalStatus === 'checking' && (
                                                 <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-                                              </span>
-                                            )}
-                                            {(item.approvalStatus === 'finalized' || item.approvalStatus === 'approved') && (
-                                              <span title={item.approverEmail ? `Já aprovado por: ${item.approverEmail}` : 'Já aprovado'}>
+                                              )}
+                                              {(item.approvalStatus === 'finalized' || item.approvalStatus === 'approved') && (
                                                 <ShieldCheck className="h-3.5 w-3.5 text-green-500" />
-                                              </span>
-                                            )}
-                                            {item.approvalStatus === 'pending' && (
-                                              <span title="Aguardando aprovação SRE">
+                                              )}
+                                              {item.approvalStatus === 'pending' && (
                                                 <ShieldAlert className="h-3.5 w-3.5 text-yellow-500" />
-                                              </span>
-                                            )}
-                                            {item.approvalStatus === 'error' && (
-                                              <span title="Erro ao verificar aprovação">
+                                              )}
+                                              {item.approvalStatus === 'error' && (
                                                 <ShieldAlert className="h-3.5 w-3.5 text-red-400" />
-                                              </span>
-                                            )}
-                                          </>
+                                              )}
+                                            </>
+                                          )}
+                                        </div>
+                                        {(item.approvalStatus === 'finalized' || item.approvalStatus === 'approved') && item.approverEmail && (
+                                          <span className="text-[10px] text-green-500 truncate max-w-[160px]" title={item.approverEmail}>
+                                            {item.approverEmail}
+                                          </span>
                                         )}
                                       </div>
                                     )}
