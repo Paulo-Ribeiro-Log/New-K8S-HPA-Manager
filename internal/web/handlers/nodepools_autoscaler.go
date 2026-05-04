@@ -65,9 +65,11 @@ func (h *NodePoolHandler) GetAutoscalerStatus(c *gin.Context) {
 }
 
 var (
-	reASHealth    = regexp.MustCompile(`(?m)^Health:\s+(.+)`)
-	reASScaleUp   = regexp.MustCompile(`(?m)^ScaleUp:\s*(.+)`)
-	reASScaleDown = regexp.MustCompile(`(?m)^ScaleDown:\s*(.+)`)
+	// Sem âncora ^ — o ConfigMap AKS indenta os campos dentro de "Cluster-wide:"
+	// Captura apenas a primeira palavra do status (ex: "Healthy", "NoActivity")
+	reASHealth    = regexp.MustCompile(`Health:\s+(\w+)`)
+	reASScaleUp   = regexp.MustCompile(`ScaleUp:\s*(\w+)`)
+	reASScaleDown = regexp.MustCompile(`ScaleDown:\s*(\w+)`)
 	reASNGName    = regexp.MustCompile(`Name:\s+(\S+)\s+\(min:\s*(\d+),\s*max:\s*(\d+),\s*current:\s*(\d+)\)`)
 	reASNGHealth  = regexp.MustCompile(`Health:\s+(\w+)`)
 	reASNGSUp     = regexp.MustCompile(`ScaleUp:\s*(\w+)`)
@@ -77,17 +79,26 @@ var (
 func parseAutoscalerStatus(raw string) AutoscalerStatus {
 	s := AutoscalerStatus{NodeGroups: make([]AutoscalerNodeGroup, 0)}
 
-	if m := reASHealth.FindStringSubmatch(raw); len(m) > 1 {
+	// Isola a seção cluster-wide (antes de NodeGroups:) para evitar
+	// capturar valores dos node groups individuais.
+	clusterWide := raw
+	nodeGroupsIdx := strings.Index(raw, "NodeGroups:")
+	if nodeGroupsIdx >= 0 {
+		clusterWide = raw[:nodeGroupsIdx]
+	}
+
+	if m := reASHealth.FindStringSubmatch(clusterWide); len(m) > 1 {
 		s.Health = strings.TrimSpace(m[1])
 	}
-	if m := reASScaleUp.FindStringSubmatch(raw); len(m) > 1 {
+	if m := reASScaleUp.FindStringSubmatch(clusterWide); len(m) > 1 {
 		s.ScaleUp = strings.TrimSpace(m[1])
 	}
-	if m := reASScaleDown.FindStringSubmatch(raw); len(m) > 1 {
+	if m := reASScaleDown.FindStringSubmatch(clusterWide); len(m) > 1 {
 		s.ScaleDown = strings.TrimSpace(m[1])
 	}
 
-	if idx := strings.Index(raw, "NodeGroups:"); idx >= 0 {
+	if nodeGroupsIdx >= 0 {
+		idx := nodeGroupsIdx
 		for _, part := range strings.Split(raw[idx:], "Name:")[1:] {
 			part = "Name:" + part
 			ng := AutoscalerNodeGroup{}
