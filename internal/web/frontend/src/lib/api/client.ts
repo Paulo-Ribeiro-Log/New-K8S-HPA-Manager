@@ -1812,6 +1812,10 @@ class APIClient {
     return this.request(`/nodepools/autoscaler-status?cluster=${encodeURIComponent(cluster)}`);
   }
 
+  async getNodeDiskStats(cluster: string, nodepool: string): Promise<import("@/lib/api/types").NodeDiskStatsResponse> {
+    return this.request(`/nodepools/node-disk-stats?cluster=${encodeURIComponent(cluster)}&nodepool=${encodeURIComponent(nodepool)}`);
+  }
+
   async getConntrackStats(cluster: string, nodepool: string): Promise<ConntrackResponse> {
     return this.request<ConntrackResponse>(
       `/nodepools/conntrack?cluster=${encodeURIComponent(cluster)}&nodepool=${encodeURIComponent(nodepool)}`

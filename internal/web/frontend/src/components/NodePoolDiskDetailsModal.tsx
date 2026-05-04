@@ -7,6 +7,7 @@ import { HardDrive, AlertTriangle, CheckCircle2, Info, Server, Database, Layers,
 import { Input } from "@/components/ui/input";
 import type { NodePoolDiskMetrics } from "@/hooks/useNodePoolDiskMetrics";
 import type { StorageOverview } from "@/lib/api/storage-types";
+import type { NodeDiskStats } from "@/lib/api/types";
 import { useEffect, useState } from "react";
 import { apiClient } from "@/lib/api/client";
 
@@ -19,16 +20,22 @@ interface NodePoolDiskDetailsModalProps {
   cluster?: string;
 }
 
+function formatBytesPerSec(bps: number): string {
+  if (bps < 1024) return `${bps.toFixed(0)} B/s`;
+  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
+  return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
+}
+
 // Componente de Gauge circular
-const CircularGauge = ({ 
-  value, 
-  label, 
+const CircularGauge = ({
+  value,
+  label,
   size = 120,
   strokeWidth = 10,
-  showPercentage = true 
-}: { 
-  value: number; 
-  label: string; 
+  showPercentage = true
+}: {
+  value: number;
+  label: string;
   size?: number;
   strokeWidth?: number;
   showPercentage?: boolean;
@@ -36,18 +43,17 @@ const CircularGauge = ({
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (value / 100) * circumference;
-  
+
   const getColor = () => {
-    if (value > 80) return "#ef4444"; // red
-    if (value > 60) return "#f59e0b"; // amber
-    return "#10b981"; // green
+    if (value > 80) return "#ef4444";
+    if (value > 60) return "#f59e0b";
+    return "#10b981";
   };
 
   return (
     <div className="flex flex-col items-center gap-2">
       <div className="relative" style={{ width: size, height: size }}>
         <svg width={size} height={size} className="transform -rotate-90">
-          {/* Background circle */}
           <circle
             cx={size / 2}
             cy={size / 2}
@@ -58,7 +64,6 @@ const CircularGauge = ({
             className="text-muted"
             opacity={0.2}
           />
-          {/* Progress circle */}
           <circle
             cx={size / 2}
             cy={size / 2}
@@ -82,35 +87,55 @@ const CircularGauge = ({
   );
 };
 
+function InodeBar({ pct }: { pct: number }) {
+  const color = pct > 80 ? "bg-destructive" : pct > 60 ? "bg-amber-500" : "bg-green-500";
+  const textColor = pct > 80 ? "text-destructive" : pct > 60 ? "text-amber-500" : "text-green-600";
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs mb-1">
+        <span className="text-muted-foreground">Inodes usados</span>
+        <span className={`font-medium ${textColor}`}>{pct.toFixed(1)}%</span>
+      </div>
+      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+        <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${Math.min(100, pct)}%` }} />
+      </div>
+    </div>
+  );
+}
+
 export default function NodePoolDiskDetailsModal({
   open,
   onOpenChange,
   diskMetrics,
-  loading,
+  loading: _loading,
   vmSize,
   cluster
 }: NodePoolDiskDetailsModalProps) {
   const [storageOverview, setStorageOverview] = useState<StorageOverview | null>(null);
   const [loadingStorage, setLoadingStorage] = useState(false);
   const [nodeSearch, setNodeSearch] = useState("");
+  const [diskStats, setDiskStats] = useState<NodeDiskStats[]>([]);
+  const [loadingDiskStats, setLoadingDiskStats] = useState(false);
 
   useEffect(() => {
-    if (open && cluster) {
-      setLoadingStorage(true);
-      apiClient.getStorageOverview(cluster)
-        .then(response => {
-          if (response.success && response.data) {
-            setStorageOverview(response.data);
-          }
-        })
-        .catch(error => {
-          console.error("Failed to load storage overview:", error);
-        })
-        .finally(() => {
-          setLoadingStorage(false);
-        });
-    }
-  }, [open, cluster]);
+    if (!open || !cluster || !diskMetrics) return;
+
+    setLoadingStorage(true);
+    apiClient.getStorageOverview(cluster)
+      .then(response => {
+        if (response.success && response.data) setStorageOverview(response.data);
+      })
+      .catch(err => console.error("Failed to load storage overview:", err))
+      .finally(() => setLoadingStorage(false));
+
+    setLoadingDiskStats(true);
+    apiClient.getNodeDiskStats(cluster, diskMetrics.node_pool_name)
+      .then(response => {
+        if (response.nodes) setDiskStats(response.nodes);
+      })
+      .catch(err => console.error("Failed to load disk stats:", err))
+      .finally(() => setLoadingDiskStats(false));
+  }, [open, cluster, diskMetrics]);
 
   if (!diskMetrics) return null;
 
@@ -143,8 +168,8 @@ export default function NodePoolDiskDetailsModal({
                 Pool Summary
               </h3>
               <div className="grid grid-cols-3 gap-4">
-                <CircularGauge 
-                  value={diskMetrics.usage_percent} 
+                <CircularGauge
+                  value={diskMetrics.usage_percent}
                   label="Disk Usage"
                 />
                 <div className="flex flex-col justify-center space-y-2">
@@ -172,6 +197,18 @@ export default function NodePoolDiskDetailsModal({
                       <span className="ml-2 font-medium">{vmSize}</span>
                     </div>
                   )}
+                  {diskStats.length > 0 && diskStats[0].prometheus_available && (
+                    <div className="text-xs text-muted-foreground flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+                      Prometheus ativo
+                    </div>
+                  )}
+                  {diskStats.length > 0 && !diskStats[0].prometheus_available && (
+                    <div className="text-xs text-muted-foreground flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" />
+                      Sem Prometheus
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -189,6 +226,7 @@ export default function NodePoolDiskDetailsModal({
                   <h3 className="text-sm font-semibold flex items-center gap-2">
                     <Server className="w-4 h-4" />
                     Individual Nodes ({filteredNodes.length}{nodeSearch ? ` de ${diskMetrics.nodes.length}` : ""})
+                    {loadingDiskStats && <span className="text-xs font-normal text-muted-foreground animate-pulse ml-1">carregando stats...</span>}
                   </h3>
                   <div className="relative">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
@@ -202,31 +240,43 @@ export default function NodePoolDiskDetailsModal({
                 </div>
                 <ScrollArea className="h-[350px] pr-4">
                   <div className="space-y-4">
-                  {filteredNodes.map((node, idx) => (
+                  {filteredNodes.map((node, idx) => {
+                    const stats = diskStats.find(s => s.node_name === node.node_name);
+                    const hasPressure = stats && (stats.disk_pressure || stats.memory_pressure || stats.pid_pressure);
+                    return (
                     <div key={idx} className="border rounded-lg p-4 bg-card">
                       <div className="flex items-start justify-between mb-3">
                         <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
                             <h4 className="font-medium text-sm">{node.node_name}</h4>
-                            <Badge 
+                            <Badge
                               variant={node.is_ephemeral ? "default" : "secondary"}
                               className="text-xs"
                             >
                               {node.is_ephemeral ? "Ephemeral" : "Managed Disk"}
                             </Badge>
+                            {stats?.disk_pressure && (
+                              <Badge variant="destructive" className="text-xs">DiskPressure</Badge>
+                            )}
+                            {stats?.memory_pressure && (
+                              <Badge variant="destructive" className="text-xs">MemPressure</Badge>
+                            )}
+                            {stats?.pid_pressure && (
+                              <Badge variant="destructive" className="text-xs">PIDPressure</Badge>
+                            )}
                           </div>
                           <p className="text-xs text-muted-foreground">{node.disk_type}</p>
                         </div>
-                        {node.usage_percent > 80 ? (
-                          <AlertTriangle className="w-5 h-5 text-destructive" />
+                        {(node.usage_percent > 80 || hasPressure) ? (
+                          <AlertTriangle className="w-5 h-5 text-destructive flex-shrink-0" />
                         ) : (
-                          <CheckCircle2 className="w-5 h-5 text-green-600" />
+                          <CheckCircle2 className="w-5 h-5 text-green-600 flex-shrink-0" />
                         )}
                       </div>
 
                       <div className="grid grid-cols-4 gap-4">
-                        <CircularGauge 
-                          value={node.usage_percent} 
+                        <CircularGauge
+                          value={node.usage_percent}
                           label="Usage"
                           size={100}
                           strokeWidth={8}
@@ -252,8 +302,36 @@ export default function NodePoolDiskDetailsModal({
                           </div>
                         </div>
                       </div>
-                      </div>
-                    ))}
+
+                      {/* Prometheus metrics: inodes + I/O */}
+                      {stats && stats.prometheus_available && (
+                        <div className="mt-3 pt-3 border-t space-y-2">
+                          {stats.inodes_total > 0 && (
+                            <InodeBar pct={stats.inodes_pct} />
+                          )}
+                          <div className="grid grid-cols-3 gap-2 text-xs">
+                            <div>
+                              <span className="text-muted-foreground">Leitura:</span>
+                              <span className="ml-1 font-medium">{formatBytesPerSec(stats.read_bytes_per_sec)}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Escrita:</span>
+                              <span className="ml-1 font-medium">{formatBytesPerSec(stats.write_bytes_per_sec)}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">I/O Util:</span>
+                              <span className={`ml-1 font-medium ${
+                                stats.io_util_pct > 80 ? "text-destructive" : stats.io_util_pct > 60 ? "text-amber-500" : ""
+                              }`}>
+                                {stats.io_util_pct.toFixed(1)}%
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    );
+                  })}
                   </div>
                 </ScrollArea>
               </div>
@@ -307,16 +385,16 @@ export default function NodePoolDiskDetailsModal({
                           </div>
                           {sc.used_capacity_bytes !== undefined && sc.used_capacity_bytes > 0 && (
                             <div className="ml-4">
-                              <CircularGauge 
-                                value={sc.usage_percentage || 0} 
-                                label="" 
+                              <CircularGauge
+                                value={sc.usage_percentage || 0}
+                                label=""
                                 size={70}
                                 strokeWidth={6}
                               />
                             </div>
                           )}
                         </div>
-                        
+
                         <div className="grid grid-cols-2 gap-3 text-xs">
                           <div>
                             <span className="text-muted-foreground">Reclaim Policy:</span>
@@ -396,7 +474,7 @@ export default function NodePoolDiskDetailsModal({
                               <div className="flex items-center gap-2">
                                 <Database className="w-4 h-4" />
                                 <h4 className="font-medium text-sm">{pvc.name}</h4>
-                                <Badge 
+                                <Badge
                                   variant={pvc.status === "Bound" ? "default" : "secondary"}
                                   className="text-xs"
                                 >
@@ -409,16 +487,16 @@ export default function NodePoolDiskDetailsModal({
                             </div>
                             {pvc.used_bytes !== undefined && pvc.used_bytes > 0 && (
                               <div className="ml-4">
-                                <CircularGauge 
-                                  value={pvc.usage_percentage || 0} 
-                                  label="" 
+                                <CircularGauge
+                                  value={pvc.usage_percentage || 0}
+                                  label=""
                                   size={70}
                                   strokeWidth={6}
                                 />
                               </div>
                             )}
                           </div>
-                        
+
                         <div className="grid grid-cols-3 gap-2 text-xs">
                           <div>
                             <span className="text-muted-foreground">Storage Class:</span>
