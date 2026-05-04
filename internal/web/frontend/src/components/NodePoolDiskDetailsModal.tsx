@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { HardDrive, AlertTriangle, CheckCircle2, Info, Server, Database, Layers, Search } from "lucide-react";
+import { HardDrive, AlertTriangle, CheckCircle2, Info, Server, Database, Layers, Search, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import type { NodePoolDiskMetrics } from "@/hooks/useNodePoolDiskMetrics";
 import type { StorageOverview } from "@/lib/api/storage-types";
@@ -228,14 +228,24 @@ export default function NodePoolDiskDetailsModal({
                     Individual Nodes ({filteredNodes.length}{nodeSearch ? ` de ${diskMetrics.nodes.length}` : ""})
                     {loadingDiskStats && <span className="text-xs font-normal text-muted-foreground animate-pulse ml-1">carregando stats...</span>}
                   </h3>
-                  <div className="relative">
-                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
-                    <Input
-                      value={nodeSearch}
-                      onChange={e => setNodeSearch(e.target.value)}
-                      placeholder="Buscar node..."
-                      className="pl-8 h-8 text-xs w-44"
-                    />
+                  <div className="relative flex items-center gap-1">
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                      <Input
+                        value={nodeSearch}
+                        onChange={e => setNodeSearch(e.target.value)}
+                        placeholder="Buscar node..."
+                        className="pl-8 h-8 text-xs w-44"
+                      />
+                    </div>
+                    {nodeSearch && (
+                      <button
+                        onClick={() => setNodeSearch("")}
+                        className="h-8 w-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
                 <ScrollArea className="h-[350px] pr-4">
