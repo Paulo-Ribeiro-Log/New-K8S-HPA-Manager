@@ -1194,15 +1194,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
 
       {/* Seção: Status do Cluster Autoscaler */}
       <Card>
-        <CardHeader className="py-3 px-4 cursor-pointer select-none" onClick={() => {
-          if (!autoscalerStatus && !autoscalerLoading && clusterWithAdmin) {
-            setAutoscalerLoading(true);
-            apiClient.getAutoscalerStatus(clusterWithAdmin)
-              .then(r => setAutoscalerStatus(r))
-              .catch(() => {})
-              .finally(() => setAutoscalerLoading(false));
-          }
-        }}>
+        <CardHeader className="py-3 px-4">
           <CardTitle className="text-sm flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <TrendingUp className="w-4 h-4" />
@@ -1224,6 +1216,22 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
               {!autoscalerStatus && !autoscalerLoading && (
                 <span className="text-xs text-muted-foreground">clique para carregar</span>
               )}
+              <button
+                disabled={autoscalerLoading}
+                onClick={() => {
+                  if (!autoscalerLoading && clusterWithAdmin) {
+                    setAutoscalerLoading(true);
+                    apiClient.getAutoscalerStatus(clusterWithAdmin)
+                      .then(r => setAutoscalerStatus(r))
+                      .catch(() => {})
+                      .finally(() => setAutoscalerLoading(false));
+                  }
+                }}
+                className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40"
+                title="Atualizar status"
+              >
+                <RefreshCcw className="w-3.5 h-3.5" />
+              </button>
             </div>
           </CardTitle>
         </CardHeader>
