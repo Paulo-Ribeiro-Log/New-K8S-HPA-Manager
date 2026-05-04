@@ -61,17 +61,20 @@ func (h *NodePoolHandler) GetNodeDiskStats(c *gin.Context) {
 		})
 	}
 
-	prom, promErr := h.getPromClient(cluster)
-	promAvailable := promErr == nil
-
-	result := make([]NodeDiskStats, 0, len(nodeList.Items))
+	// Mapa IP → nome do node e nome → node (para match com labels do Prometheus)
+	ipToName := make(map[string]string, len(nodeList.Items))
 	for _, node := range nodeList.Items {
-		s := NodeDiskStats{
-			NodeName:            node.Name,
-			PrometheusAvailable: promAvailable,
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == corev1.NodeInternalIP && addr.Address != "" {
+				ipToName[addr.Address] = node.Name
+			}
 		}
+	}
 
-		// ── Condições K8s ────────────────────────────────────────────────────
+	// Condições K8s (sempre disponíveis)
+	conditions := make(map[string]NodeDiskStats, len(nodeList.Items))
+	for _, node := range nodeList.Items {
+		s := NodeDiskStats{NodeName: node.Name}
 		for _, cond := range node.Status.Conditions {
 			if cond.Status != corev1.ConditionTrue {
 				continue
@@ -85,53 +88,140 @@ func (h *NodePoolHandler) GetNodeDiskStats(c *gin.Context) {
 				s.PIDPressure = true
 			}
 		}
+		conditions[node.Name] = s
+	}
 
-		if !promAvailable {
+	prom, promErr := h.getPromClient(cluster)
+	promAvailable := promErr == nil
+
+	// Sem Prometheus — retorna só condições K8s
+	if !promAvailable {
+		result := make([]NodeDiskStats, 0, len(nodeList.Items))
+		for _, node := range nodeList.Items {
+			s := conditions[node.Name]
+			s.PrometheusAvailable = false
 			result = append(result, s)
-			continue
 		}
+		c.JSON(200, gin.H{"nodes": result, "total": len(result), "prometheus_available": false})
+		return
+	}
 
-		// ── Prometheus ───────────────────────────────────────────────────────
-		nodeIP, ipErr := getNodeInternalIP(ctx, clientset, node.Name)
-		if ipErr != nil {
-			result = append(result, s)
-			continue
+	// Prometheus disponível — sem filtro de instance; match feito no Go por IP ou hostname
+	// (o label instance pode ser "IP:9100", "IP" ou hostname dependendo do scrape config)
+	extractHost := func(instance string) string {
+		if idx := strings.LastIndex(instance, ":"); idx > 0 {
+			return instance[:idx]
 		}
-		inst := strings.ReplaceAll(nodeIP+":9100", ".", `\.`)
+		return instance
+	}
 
-		// Inodes
-		qInodesTotal := fmt.Sprintf(`node_filesystem_files{instance=~"%s",mountpoint="/",fstype!="tmpfs"}`, inst)
-		qInodesFree := fmt.Sprintf(`node_filesystem_files_free{instance=~"%s",mountpoint="/",fstype!="tmpfs"}`, inst)
+	matchNodeName := func(instance string) string {
+		host := extractHost(instance)
+		if name, ok := ipToName[host]; ok {
+			return name
+		}
+		// Fallback: o próprio hostname pode ser o nome do node K8s
+		for _, node := range nodeList.Items {
+			if node.Name == host || strings.HasPrefix(node.Name, host) || strings.HasPrefix(host, node.Name) {
+				return node.Name
+			}
+		}
+		return ""
+	}
 
-		if r, qErr := prom.Query(ctx, qInodesTotal); qErr == nil && len(r.Data.Result) > 0 {
-			s.InodesTotal = parsePromScalar(r.Data.Result[0].Value)
+	parseVal := func(v []interface{}) float64 {
+		if len(v) < 2 {
+			return 0
 		}
-		if r, qErr := prom.Query(ctx, qInodesFree); qErr == nil && len(r.Data.Result) > 0 {
-			s.InodesFree = parsePromScalar(r.Data.Result[0].Value)
+		s, ok := v[1].(string)
+		if !ok {
+			return 0
 		}
-		if s.InodesTotal > 0 {
-			s.InodesPct = (1 - s.InodesFree/s.InodesTotal) * 100
-		}
+		f, _ := strconv.ParseFloat(s, 64)
+		return f
+	}
 
-		// I/O rates (5m)
-		qRead := fmt.Sprintf(`sum(rate(node_disk_read_bytes_total{instance=~"%s"}[5m]))`, inst)
-		qWrite := fmt.Sprintf(`sum(rate(node_disk_write_bytes_total{instance=~"%s"}[5m]))`, inst)
-		qUtil := fmt.Sprintf(`sum(rate(node_disk_io_time_seconds_total{instance=~"%s"}[5m])) * 100`, inst)
+	type nodeMetrics struct {
+		inodesTotal      float64
+		inodesFree       float64
+		readBytesPerSec  float64
+		writeBytesPerSec float64
+		ioUtilPct        float64
+	}
+	metrics := make(map[string]*nodeMetrics, len(nodeList.Items))
+	for _, node := range nodeList.Items {
+		metrics[node.Name] = &nodeMetrics{}
+	}
 
-		if r, qErr := prom.Query(ctx, qRead); qErr == nil && len(r.Data.Result) > 0 {
-			s.ReadBytesPerSec = parsePromScalar(r.Data.Result[0].Value)
-		}
-		if r, qErr := prom.Query(ctx, qWrite); qErr == nil && len(r.Data.Result) > 0 {
-			s.WriteBytesPerSec = parsePromScalar(r.Data.Result[0].Value)
-		}
-		if r, qErr := prom.Query(ctx, qUtil); qErr == nil && len(r.Data.Result) > 0 {
-			s.IOUtilPct = parsePromScalar(r.Data.Result[0].Value)
-		}
+	// Inodes
+	const qInodesTotal = `node_filesystem_files{mountpoint="/",fstype!="tmpfs",fstype!="overlay",fstype!="rootfs"}`
+	const qInodesFree = `node_filesystem_files_free{mountpoint="/",fstype!="tmpfs",fstype!="overlay",fstype!="rootfs"}`
 
+	if r, qErr := prom.Query(ctx, qInodesTotal); qErr == nil {
+		for _, res := range r.Data.Result {
+			name := matchNodeName(res.Metric["instance"])
+			if m, ok := metrics[name]; ok {
+				m.inodesTotal = parseVal(res.Value)
+			}
+		}
+	}
+	if r, qErr := prom.Query(ctx, qInodesFree); qErr == nil {
+		for _, res := range r.Data.Result {
+			name := matchNodeName(res.Metric["instance"])
+			if m, ok := metrics[name]; ok {
+				m.inodesFree = parseVal(res.Value)
+			}
+		}
+	}
+
+	// I/O rates — agrupados por instance para somar todos os discos do node
+	const qRead = `sum by (instance) (rate(node_disk_read_bytes_total[5m]))`
+	const qWrite = `sum by (instance) (rate(node_disk_write_bytes_total[5m]))`
+	const qUtil = `sum by (instance) (rate(node_disk_io_time_seconds_total[5m])) * 100`
+
+	if r, qErr := prom.Query(ctx, qRead); qErr == nil {
+		for _, res := range r.Data.Result {
+			name := matchNodeName(res.Metric["instance"])
+			if m, ok := metrics[name]; ok {
+				m.readBytesPerSec = parseVal(res.Value)
+			}
+		}
+	}
+	if r, qErr := prom.Query(ctx, qWrite); qErr == nil {
+		for _, res := range r.Data.Result {
+			name := matchNodeName(res.Metric["instance"])
+			if m, ok := metrics[name]; ok {
+				m.writeBytesPerSec = parseVal(res.Value)
+			}
+		}
+	}
+	if r, qErr := prom.Query(ctx, qUtil); qErr == nil {
+		for _, res := range r.Data.Result {
+			name := matchNodeName(res.Metric["instance"])
+			if m, ok := metrics[name]; ok {
+				m.ioUtilPct = parseVal(res.Value)
+			}
+		}
+	}
+
+	result := make([]NodeDiskStats, 0, len(nodeList.Items))
+	for _, node := range nodeList.Items {
+		s := conditions[node.Name]
+		s.PrometheusAvailable = true
+		if m, ok := metrics[node.Name]; ok {
+			s.InodesTotal = m.inodesTotal
+			s.InodesFree = m.inodesFree
+			if m.inodesTotal > 0 {
+				s.InodesPct = (1 - m.inodesFree/m.inodesTotal) * 100
+			}
+			s.ReadBytesPerSec = m.readBytesPerSec
+			s.WriteBytesPerSec = m.writeBytesPerSec
+			s.IOUtilPct = m.ioUtilPct
+		}
 		result = append(result, s)
 	}
 
-	c.JSON(200, gin.H{"nodes": result, "total": len(result), "prometheus_available": promAvailable})
+	c.JSON(200, gin.H{"nodes": result, "total": len(result), "prometheus_available": true})
 }
 
 // parsePromScalar extrai o valor float64 de um resultado escalar Prometheus [timestamp, "value"].
