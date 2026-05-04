@@ -636,7 +636,7 @@ export function ServiceNowImportModal({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Download className="h-5 w-5" />
@@ -785,7 +785,7 @@ export function ServiceNowImportModal({
                     </button>
                   )}
                 </div>
-                <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                <div className="space-y-1.5 max-h-64 overflow-y-auto overflow-x-hidden pr-1">
                   {filteredTeamsItems.map((item) => {
                     const checked = selectedTeamsChgs.has(item.chg);
                     return (
@@ -817,16 +817,17 @@ export function ServiceNowImportModal({
                             <Loader2 className="h-3 w-3 animate-spin text-muted-foreground flex-shrink-0" />
                           );
                           if (s.approved) return (
-                            <span
+                            <div
                               onClick={e => e.stopPropagation()}
-                              title={s.approverEmail ? `Aprovado por ${s.approverEmail}` : "Aprovado"}
-                              className="flex items-center gap-1 text-[10px] text-green-400 flex-shrink-0 max-w-[140px]"
+                              className="flex flex-col items-end gap-0.5 flex-shrink-0"
                             >
-                              <ShieldCheck className="h-3 w-3 flex-shrink-0" />
-                              {s.approverEmail
-                                ? <span className="truncate">{s.approverEmail}</span>
-                                : <span>Aprovado</span>}
-                            </span>
+                              <ShieldCheck className="h-3.5 w-3.5 text-green-400" />
+                              {s.approverEmail && (
+                                <span className="text-[10px] text-green-400 truncate max-w-[120px]" title={s.approverEmail}>
+                                  {s.approverEmail}
+                                </span>
+                              )}
+                            </div>
                           );
                           return null;
                         })()}

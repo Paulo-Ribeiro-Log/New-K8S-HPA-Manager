@@ -59,8 +59,10 @@ func (c *Client) getFromHTML(ctx context.Context, approvalURL string) (*Approval
 		return nil, err
 	}
 
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Cache-Control", "no-cache")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -68,13 +70,27 @@ func (c *Client) getFromHTML(ctx context.Context, approvalURL string) (*Approval
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("página retornou status %d", resp.StatusCode)
-	}
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
+	}
+
+	// devstartcd pode retornar 400 mesmo com HTML válido (ex: sem cookies de sessão).
+	// Tentamos parsear o body antes de rejeitar — se o HTML contiver o CHG, é suficiente.
+	if resp.StatusCode != http.StatusOK {
+		if strings.Contains(string(body), "CHG") || strings.Contains(string(body), "sre-approval") {
+			c.logger.Debug().
+				Int("status", resp.StatusCode).
+				Str("url", approvalURL).
+				Msg("[SRE] Status não-200 mas HTML válido — parseando mesmo assim")
+			return c.parseHTML(string(body), approvalURL)
+		}
+		c.logger.Warn().
+			Int("status", resp.StatusCode).
+			Str("url", approvalURL).
+			Str("body_preview", string(body[:min(len(body), 256)])).
+			Msg("[SRE] Resposta inesperada do devstartcd sem HTML válido")
+		return nil, fmt.Errorf("página retornou status %d", resp.StatusCode)
 	}
 
 	return c.parseHTML(string(body), approvalURL)
@@ -114,20 +130,37 @@ func (c *Client) parseHTML(html, approvalURL string) (*ApprovalInfo, error) {
 		}
 	}
 
-	// Status: página finalizada tem texto explícito; pendente tem o botão submit
-	if strings.Contains(html, "já foi finalizada") || strings.Contains(html, "finalizada!") {
-		info.Status = StatusFinalized
-		info.IsFinalized = true
-	} else if regexp.MustCompile(`(?i)<input[^>]+type=["']?submit["']?`).MatchString(html) {
-		// Formulário ainda aberto (botão "Aprovar Mudança" presente)
-		info.Status = StatusPending
-		info.IsFinalized = false
-	}
-
-	// Email do aprovador (quando já aprovado/finalizado)
+	// Email do aprovador — extraído antes da detecção de status (usado em todos os estados)
 	emailPattern := regexp.MustCompile(`Email:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})`)
 	if match := emailPattern.FindStringSubmatch(html); len(match) > 1 {
 		info.ApproverEmail = match[1]
+	}
+
+	htmlLower := strings.ToLower(html)
+	hasSubmitButton := regexp.MustCompile(`(?i)<input[^>]+type=["']?submit["']?`).MatchString(html)
+
+	// Status: detecta finalizado, aprovado ou pendente
+	switch {
+	case strings.Contains(html, "já foi finalizada") || strings.Contains(html, "finalizada!") ||
+		strings.Contains(htmlLower, "solicitação finalizada") || strings.Contains(htmlLower, "mudança finalizada"):
+		info.Status = StatusFinalized
+		info.IsFinalized = true
+
+	case !hasSubmitButton && info.ApproverEmail != "":
+		// Sem formulário de envio + email do aprovador visível → aprovado (não finalizado)
+		info.Status = StatusApproved
+		info.IsFinalized = false
+
+	case !hasSubmitButton && (strings.Contains(htmlLower, "aprovad") || strings.Contains(htmlLower, "aprovação registrada") ||
+		strings.Contains(htmlLower, "mudança aprovada") || strings.Contains(htmlLower, "aprovação realizada")):
+		// Sem formulário e texto indica aprovação
+		info.Status = StatusApproved
+		info.IsFinalized = false
+
+	case hasSubmitButton:
+		// Formulário ainda aberto (botão "Aprovar Mudança" presente)
+		info.Status = StatusPending
+		info.IsFinalized = false
 	}
 
 	// Squad do aprovador: elemento com classe sre_group_name
@@ -164,8 +197,10 @@ func (c *Client) Approve(ctx context.Context, approvalURL string, approverEmail 
 	if err != nil {
 		return err
 	}
-	getReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-	getReq.Header.Set("Accept", "text/html,application/xhtml+xml")
+	getReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	getReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	getReq.Header.Set("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
+	getReq.Header.Set("Cache-Control", "no-cache")
 
 	getResp, err := sessionClient.Do(getReq)
 	if err != nil {

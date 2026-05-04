@@ -32,6 +32,7 @@ import {
   RefreshCw,
   ExternalLink,
   ShieldAlert,
+  ShieldCheck,
   Download,
   Pencil,
   Check
@@ -107,6 +108,8 @@ interface ComparisonItem {
   newTag: string;
   chgNumber?: string;  // Número da mudança ServiceNow
   approvalUrl?: string; // URL de aprovação SRE (capturada do Teams/Mr.ViaBot)
+  approvalStatus?: 'checking' | 'pending' | 'approved' | 'finalized' | 'error'; // status pré-verificado no devstartcd
+  approverEmail?: string; // email do aprovador (preenchido após pré-verificação)
   status: 'pending' | 'loading' | 'success' | 'error';
   result?: ComparisonResult;
   error?: string;
@@ -667,10 +670,43 @@ export const GitHubReleasesTab = () => {
       newTag: data.newVersion,
       chgNumber: data.changeNumber || undefined,
       approvalUrl: data.approvalUrl || undefined,
+      approvalStatus: data.approvalUrl ? 'checking' : undefined,
       status: 'pending',
     };
 
     setComparisonBatch(prev => [...prev, newItem]);
+
+    // Pré-verificar status de aprovação no devstartcd assim que a CHG é importada
+    if (newItem.approvalUrl) {
+      const itemId = newItem.id;
+      const url = newItem.approvalUrl;
+      apiClient.getSreApprovalInfo(url).then(res => {
+        if (!res.success || !res.approval_info) {
+          // Backend retornou erro (URL inválida, devstartcd inacessível, etc.)
+          setComparisonBatch(prev => prev.map(i =>
+            i.id === itemId ? { ...i, approvalStatus: 'error' } : i
+          ));
+          return;
+        }
+        const info = res.approval_info;
+        let approvalStatus: ComparisonItem['approvalStatus'] = 'pending';
+        let approverEmail = '';
+        if (info.is_finalized || info.status === 'FINALIZED') {
+          approvalStatus = 'finalized';
+          approverEmail = info.approver_email || '';
+        } else if (info.status === 'APPROVED') {
+          approvalStatus = 'approved';
+          approverEmail = info.approver_email || '';
+        }
+        setComparisonBatch(prev => prev.map(i =>
+          i.id === itemId ? { ...i, approvalStatus, approverEmail } : i
+        ));
+      }).catch(() => {
+        setComparisonBatch(prev => prev.map(i =>
+          i.id === itemId ? { ...i, approvalStatus: 'error' } : i
+        ));
+      });
+    }
   };
 
   // ✅ CORRIGIDO: Auto-preencher tag em produção quando encontrar o deployment
@@ -680,6 +716,55 @@ export const GitHubReleasesTab = () => {
       setProductionTag(productionData.version);
     }
   }, [productionData, productionTag]);
+
+  // Re-verificar aprovação para itens já no batch com approvalUrl mas sem status definitivo.
+  // Cobre itens persistidos no localStorage antes desta funcionalidade existir.
+  React.useEffect(() => {
+    // Re-verificar tudo que não está definitivamente resolvido (inclui 'pending' do código antigo)
+    const toCheck = comparisonBatch.filter(i =>
+      i.approvalUrl && i.approvalStatus !== 'finalized' && i.approvalStatus !== 'approved'
+    );
+    if (toCheck.length === 0) return;
+
+    // Marcar como checking
+    setComparisonBatch(prev => prev.map(i =>
+      toCheck.some(c => c.id === i.id) ? { ...i, approvalStatus: 'checking' } : i
+    ));
+
+    // Verificar em paralelo (com pequeno delay entre cada para não sobrecarregar o backend)
+    toCheck.forEach((item, idx) => {
+      const itemId = item.id;
+      const url = item.approvalUrl!;
+      setTimeout(() => {
+        apiClient.getSreApprovalInfo(url).then(res => {
+          if (!res.success || !res.approval_info) {
+            setComparisonBatch(prev => prev.map(i =>
+              i.id === itemId ? { ...i, approvalStatus: 'error' } : i
+            ));
+            return;
+          }
+          const info = res.approval_info;
+          let approvalStatus: ComparisonItem['approvalStatus'] = 'pending';
+          let approverEmail = '';
+          if (info.is_finalized || info.status === 'FINALIZED') {
+            approvalStatus = 'finalized';
+            approverEmail = info.approver_email || '';
+          } else if (info.status === 'APPROVED') {
+            approvalStatus = 'approved';
+            approverEmail = info.approver_email || '';
+          }
+          setComparisonBatch(prev => prev.map(i =>
+            i.id === itemId ? { ...i, approvalStatus, approverEmail } : i
+          ));
+        }).catch(() => {
+          setComparisonBatch(prev => prev.map(i =>
+            i.id === itemId ? { ...i, approvalStatus: 'error' } : i
+          ));
+        });
+      }, idx * 300); // 300ms entre cada chamada
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // só na montagem do componente
 
   // ✨ NOVO: Determinar qual resultado mostrar (lote ou comparação individual)
   const displayedComparison = React.useMemo(() => {
@@ -1129,9 +1214,34 @@ export const GitHubReleasesTab = () => {
                                       {item.githubRepo}
                                     </p>
                                     {item.chgNumber && (
-                                      <span className="text-[10px] font-mono text-white bg-blue-600 dark:bg-blue-700 px-2 py-1 rounded-md border border-blue-700 dark:border-blue-600 flex-shrink-0">
-                                        CHG: {item.chgNumber}
-                                      </span>
+                                      <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
+                                        <div className="flex items-center gap-1">
+                                          <span className="text-[10px] font-mono text-white bg-blue-600 dark:bg-blue-700 px-2 py-1 rounded-md border border-blue-700 dark:border-blue-600">
+                                            CHG: {item.chgNumber}
+                                          </span>
+                                          {item.approvalUrl && (
+                                            <>
+                                              {item.approvalStatus === 'checking' && (
+                                                <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                                              )}
+                                              {(item.approvalStatus === 'finalized' || item.approvalStatus === 'approved') && (
+                                                <ShieldCheck className="h-3.5 w-3.5 text-green-500" />
+                                              )}
+                                              {item.approvalStatus === 'pending' && (
+                                                <ShieldAlert className="h-3.5 w-3.5 text-yellow-500" />
+                                              )}
+                                              {item.approvalStatus === 'error' && (
+                                                <ShieldAlert className="h-3.5 w-3.5 text-red-400" />
+                                              )}
+                                            </>
+                                          )}
+                                        </div>
+                                        {(item.approvalStatus === 'finalized' || item.approvalStatus === 'approved') && item.approverEmail && (
+                                          <span className="text-[10px] text-green-500 truncate max-w-[160px]" title={item.approverEmail}>
+                                            {item.approverEmail}
+                                          </span>
+                                        )}
+                                      </div>
                                     )}
                                   </div>
                                   <div className="flex items-center gap-2 mt-1">
@@ -1300,6 +1410,12 @@ export const GitHubReleasesTab = () => {
             <SreApprovalButton
               approvalUrl={selectedBatchItem.approvalUrl}
               chgNumber={selectedBatchItem.chgNumber}
+              preCheckedStatus={
+                selectedBatchItem.approvalStatus === 'finalized' ? 'finalized' :
+                selectedBatchItem.approvalStatus === 'approved' ? 'approved' :
+                selectedBatchItem.approvalStatus === 'pending' ? 'pending' : undefined
+              }
+              preCheckedApproverEmail={selectedBatchItem.approverEmail}
             />
           ) : selectedBatchItem?.chgNumber ? (
             showApprovalInput ? (
