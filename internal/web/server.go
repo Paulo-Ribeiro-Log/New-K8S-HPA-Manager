@@ -567,6 +567,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/nodepools/pending-workloads", nodePoolHandler.GetPendingWorkloads)          // Workloads com pods não prontos (DT → K8s fallback)
 	api.GET("/nodepools/node-resources", nodePoolHandler.GetNodeResources)               // Utilização CPU/Memory por node (K8s API)
 	api.GET("/nodepools/autoscaler-status", nodePoolHandler.GetAutoscalerStatus)         // Decisões recentes do cluster-autoscaler
+	api.GET("/nodepools/node-disk-stats", nodePoolHandler.GetNodeDiskStats)              // DiskPressure K8s + inodes + I/O via Prometheus
 
 	// Node Pools - Write Operations (SRE-only)
 	api.PUT("/nodepools/:cluster/:resource_group/:name", rbacMiddleware.RequireSREGroup(), nodePoolHandler.Update)

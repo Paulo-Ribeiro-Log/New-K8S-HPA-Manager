@@ -754,6 +754,27 @@ export interface AutoscalerNodeGroup {
   current: number;
 }
 
+export interface NodeDiskStats {
+  node_name: string;
+  disk_pressure: boolean;
+  memory_pressure: boolean;
+  pid_pressure: boolean;
+  inodes_total: number;
+  inodes_free: number;
+  inodes_pct: number;
+  read_bytes_per_sec: number;
+  write_bytes_per_sec: number;
+  io_util_pct: number;
+  prometheus_available: boolean;
+  error?: string;
+}
+
+export interface NodeDiskStatsResponse {
+  nodes: NodeDiskStats[];
+  total: number;
+  prometheus_available: boolean;
+}
+
 export interface AutoscalerStatus {
   available: boolean;
   health: string;
