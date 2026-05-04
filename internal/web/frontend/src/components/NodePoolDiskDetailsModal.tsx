@@ -3,7 +3,8 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { HardDrive, AlertTriangle, CheckCircle2, Info, Server, Database, Layers } from "lucide-react";
+import { HardDrive, AlertTriangle, CheckCircle2, Info, Server, Database, Layers, Search } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import type { NodePoolDiskMetrics } from "@/hooks/useNodePoolDiskMetrics";
 import type { StorageOverview } from "@/lib/api/storage-types";
 import { useEffect, useState } from "react";
@@ -91,6 +92,7 @@ export default function NodePoolDiskDetailsModal({
 }: NodePoolDiskDetailsModalProps) {
   const [storageOverview, setStorageOverview] = useState<StorageOverview | null>(null);
   const [loadingStorage, setLoadingStorage] = useState(false);
+  const [nodeSearch, setNodeSearch] = useState("");
 
   useEffect(() => {
     if (open && cluster) {
@@ -177,15 +179,30 @@ export default function NodePoolDiskDetailsModal({
             <Separator className="my-4" />
 
             {/* Individual Nodes */}
-            {diskMetrics.nodes && diskMetrics.nodes.length > 0 && (
+            {diskMetrics.nodes && diskMetrics.nodes.length > 0 && (() => {
+              const filteredNodes = nodeSearch
+                ? diskMetrics.nodes.filter(n => n.node_name.toLowerCase().includes(nodeSearch.toLowerCase()))
+                : diskMetrics.nodes;
+              return (
               <div>
-                <h3 className="text-sm font-semibold mb-3 flex items-center gap-2 pr-4">
-                  <Server className="w-4 h-4" />
-                  Individual Nodes ({diskMetrics.nodes.length})
-                </h3>
+                <div className="flex items-center justify-between mb-3 pr-4">
+                  <h3 className="text-sm font-semibold flex items-center gap-2">
+                    <Server className="w-4 h-4" />
+                    Individual Nodes ({filteredNodes.length}{nodeSearch ? ` de ${diskMetrics.nodes.length}` : ""})
+                  </h3>
+                  <div className="relative">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                    <Input
+                      value={nodeSearch}
+                      onChange={e => setNodeSearch(e.target.value)}
+                      placeholder="Buscar node..."
+                      className="pl-8 h-8 text-xs w-44"
+                    />
+                  </div>
+                </div>
                 <ScrollArea className="h-[350px] pr-4">
                   <div className="space-y-4">
-                  {diskMetrics.nodes.map((node, idx) => (
+                  {filteredNodes.map((node, idx) => (
                     <div key={idx} className="border rounded-lg p-4 bg-card">
                       <div className="flex items-start justify-between mb-3">
                         <div className="flex-1">
@@ -240,7 +257,8 @@ export default function NodePoolDiskDetailsModal({
                   </div>
                 </ScrollArea>
               </div>
-            )}
+              );
+            })()}
             </TabsContent>
 
             {/* Storage Classes Tab */}
