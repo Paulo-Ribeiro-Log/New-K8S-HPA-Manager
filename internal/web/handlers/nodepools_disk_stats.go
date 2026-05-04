@@ -176,7 +176,7 @@ func (h *NodePoolHandler) GetNodeDiskStats(c *gin.Context) {
 
 	// I/O rates — agrupados por instance para somar todos os discos do node
 	const qRead = `sum by (instance) (rate(node_disk_read_bytes_total[5m]))`
-	const qWrite = `sum by (instance) (rate(node_disk_write_bytes_total[5m]))`
+	const qWrite = `sum by (instance) (rate(node_disk_written_bytes_total[5m]))`
 	const qUtil = `sum by (instance) (rate(node_disk_io_time_seconds_total[5m])) * 100`
 
 	if r, qErr := prom.Query(ctx, qRead); qErr == nil {
