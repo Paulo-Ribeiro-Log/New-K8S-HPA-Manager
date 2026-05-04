@@ -75,7 +75,7 @@ var (
 )
 
 func parseAutoscalerStatus(raw string) AutoscalerStatus {
-	s := AutoscalerStatus{}
+	s := AutoscalerStatus{NodeGroups: make([]AutoscalerNodeGroup, 0)}
 
 	if m := reASHealth.FindStringSubmatch(raw); len(m) > 1 {
 		s.Health = strings.TrimSpace(m[1])

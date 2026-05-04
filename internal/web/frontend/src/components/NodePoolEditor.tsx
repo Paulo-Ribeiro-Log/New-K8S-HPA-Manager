@@ -1247,10 +1247,10 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                     </p>
                   </div>
                 </div>
-                {autoscalerStatus.node_groups.length > 0 && (
+                {(autoscalerStatus.node_groups ?? []).length > 0 && (
                   <div className="space-y-2">
                     <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Node Groups ({autoscalerStatus.node_groups.length})</p>
-                    {autoscalerStatus.node_groups.map((ng) => (
+                    {(autoscalerStatus.node_groups ?? []).map((ng) => (
                       <div key={ng.name} className="rounded-md border border-border/60 px-3 py-2 space-y-1.5">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-mono truncate">{ng.name}</span>
