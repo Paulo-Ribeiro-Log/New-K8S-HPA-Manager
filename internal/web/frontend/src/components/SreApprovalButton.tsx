@@ -7,38 +7,48 @@ import { apiClient } from "@/lib/api/client";
 interface SreApprovalButtonProps {
   approvalUrl: string;
   chgNumber?: string;
+  preCheckedStatus?: "pending" | "approved" | "finalized";
+  preCheckedApproverEmail?: string;
 }
 
 type ApprovalStatus = "unknown" | "loading" | "pending" | "confirming" | "approved" | "finalized" | "approving" | "error";
 
-export function SreApprovalButton({ approvalUrl, chgNumber }: SreApprovalButtonProps) {
-  const [status, setStatus] = useState<ApprovalStatus>("unknown");
-  const [approverEmail, setApproverEmail] = useState<string>("");
+export function SreApprovalButton({ approvalUrl, chgNumber, preCheckedStatus, preCheckedApproverEmail }: SreApprovalButtonProps) {
+  const definitivePreCheck = preCheckedStatus === "finalized" || preCheckedStatus === "approved";
+  const [status, setStatus] = useState<ApprovalStatus>(definitivePreCheck ? preCheckedStatus! : "unknown");
+  const [approverEmail, setApproverEmail] = useState<string>(preCheckedApproverEmail || "");
 
   useEffect(() => {
-    if (approvalUrl) checkStatus();
-  }, [approvalUrl]);
+    if (!approvalUrl) return;
+    // Já temos status definitivo — evita chamada API redundante
+    if (preCheckedStatus === "finalized" || preCheckedStatus === "approved") {
+      setStatus(preCheckedStatus);
+      setApproverEmail(preCheckedApproverEmail || "");
+      return;
+    }
+    checkStatus();
+  }, [approvalUrl, preCheckedStatus]);
 
   const checkStatus = async (silent = false) => {
     if (!silent) setStatus("loading");
     try {
       const res = await apiClient.getSreApprovalInfo(approvalUrl);
-      if (res.success && res.approval_info) {
-        const info = res.approval_info;
-        if (info.is_finalized || info.status === "FINALIZED") {
-          setStatus("finalized");
-          setApproverEmail(info.approver_email || "");
-        } else if (info.status === "APPROVED") {
-          setStatus("approved");
-          setApproverEmail(info.approver_email || "");
-        } else if (!silent) {
-          setStatus("pending");
-        }
+      if (!res.success || !res.approval_info) {
+        if (!silent) setStatus("error");
+        return;
+      }
+      const info = res.approval_info;
+      if (info.is_finalized || info.status === "FINALIZED") {
+        setStatus("finalized");
+        setApproverEmail(info.approver_email || "");
+      } else if (info.status === "APPROVED") {
+        setStatus("approved");
+        setApproverEmail(info.approver_email || "");
       } else if (!silent) {
         setStatus("pending");
       }
     } catch {
-      if (!silent) setStatus("pending");
+      if (!silent) setStatus("error");
     }
   };
 
