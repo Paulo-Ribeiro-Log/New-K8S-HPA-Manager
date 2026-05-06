@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiClient } from "@/lib/api/client";
 import { Shield, Loader2 } from "lucide-react";
@@ -10,10 +9,6 @@ interface LoginProps {
 }
 
 export const Login = ({ onLogin }: LoginProps) => {
-  // jwtMode=true → tenta /auth/login automaticamente
-  // jwtMode=false → backend respondeu 501 (JWT não configurado), usa token estático
-  const [jwtMode, setJwtMode] = useState(true);
-  const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -23,29 +18,13 @@ export const Login = ({ onLogin }: LoginProps) => {
     setLoading(true);
 
     try {
-      if (jwtMode) {
-        // Tenta login JWT (Azure CLI no servidor)
-        await apiClient.login();
-        onLogin();
-      } else {
-        // Fallback: token estático
-        apiClient.setToken(token);
-        const response = await fetch("/api/v1/clusters", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!response.ok) throw new Error("Token inválido");
-        onLogin();
-      }
+      await apiClient.login();
+      onLogin();
     } catch (err: any) {
-      if (err?.status === 501 || err?.code === "JWT_NOT_CONFIGURED") {
-        // Backend sem JWT configurado → mudar para modo de token estático
-        setJwtMode(false);
-        setError("Servidor sem JWT configurado. Insira o token de acesso.");
-      } else if (err?.status === 401 || err?.code === "AZ_CLI_ERROR") {
-        setError("Azure CLI não autenticado no servidor. Execute `az login` no servidor.");
+      if (err?.status === 401 || err?.code === "AZ_CLI_ERROR") {
+        setError("Azure CLI não autenticado. Execute `az login` no terminal e tente novamente.");
       } else {
-        setError(err?.message || "Falha na autenticação.");
-        if (!jwtMode) apiClient.clearToken();
+        setError(err?.message || "Falha na autenticação. Verifique se o Azure CLI está autenticado.");
       }
     } finally {
       setLoading(false);
@@ -61,56 +40,24 @@ export const Login = ({ onLogin }: LoginProps) => {
           </div>
           <CardTitle className="text-2xl">k8s HPA Manager</CardTitle>
           <CardDescription>
-            {jwtMode
-              ? "Autenticação via Azure AD"
-              : "Token de acesso estático"}
+            Autenticação via Azure AD
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleLogin} className="space-y-4">
-            {!jwtMode && (
-              <div className="space-y-2">
-                <label htmlFor="token" className="text-sm font-medium">
-                  Token de autenticação
-                </label>
-                <Input
-                  id="token"
-                  type="password"
-                  placeholder="Insira seu token"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  disabled={loading}
-                  className="font-mono"
-                />
-              </div>
-            )}
-
             {error && (
               <div className="p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md">
                 {error}
               </div>
             )}
 
-            <Button type="submit" className="w-full" disabled={loading || (!jwtMode && !token)}>
+            <Button type="submit" className="w-full" disabled={loading}>
               {loading ? (
                 <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Autenticando...</>
-              ) : jwtMode ? (
-                "Entrar com Azure AD"
               ) : (
-                "Entrar"
+                "Entrar com Azure AD"
               )}
             </Button>
-
-            {!jwtMode && (
-              <Button
-                type="button"
-                variant="ghost"
-                className="w-full text-xs text-muted-foreground"
-                onClick={() => { setJwtMode(true); setError(""); }}
-              >
-                Tentar autenticação Azure AD
-              </Button>
-            )}
           </form>
         </CardContent>
       </Card>

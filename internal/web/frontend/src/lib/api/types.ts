@@ -1555,3 +1555,27 @@ export interface CommandRunnerSSEEvent {
   timestamp: string;
   error?: string;
 }
+
+// Permissões reais do K8s — retornadas pelo SelfSubjectRulesReview.
+// Refletem o que o RBAC do cluster permite para o usuário atual (não grupos AD).
+export interface K8sNamespacePermissions {
+  cluster: string;
+  namespace: string;
+  canListHPA: boolean;
+  canGetHPA: boolean;
+  canUpdateHPA: boolean;
+  canListPods: boolean;
+  canExecPods: boolean;
+  canViewLogs: boolean;
+  canListDeployments: boolean;
+  canUpdateDeployment: boolean;
+  canWriteSecrets: boolean;
+  canWriteConfigMaps: boolean;
+  canWriteCronJobs: boolean;
+  canWriteServices: boolean;
+  canWriteIngress: boolean;
+  canWriteStatefulSets: boolean;
+  canWriteDaemonSets: boolean;
+  canWritePods: boolean;
+  incomplete: boolean;
+}

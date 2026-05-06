@@ -2,7 +2,9 @@ package web
 
 import (
 	// "context"  // TODO: Remover após migração completa para V2
+	"crypto/rand"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -100,6 +102,42 @@ type Server struct {
 	finopsTimelineStore *storage.FinOpsTimelineStore
 }
 
+// ensureJWTSecret retorna o secret JWT a usar, em ordem de prioridade:
+//  1. Variável de ambiente K8S_HPA_JWT_SECRET (controle manual)
+//  2. Arquivo ~/.k8s-hpa-manager/jwt.secret (gerado automaticamente em execuções anteriores)
+//  3. Gera novo secret aleatório de 48 bytes, persiste no arquivo e retorna
+//
+// Garante que JWT esteja sempre ativo sem exigir configuração manual do usuário.
+func ensureJWTSecret() []byte {
+	if secret := os.Getenv("K8S_HPA_JWT_SECRET"); len(secret) >= 32 {
+		return []byte(secret)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	secretFile := filepath.Join(home, ".k8s-hpa-manager", "jwt.secret")
+
+	if data, err := os.ReadFile(secretFile); err == nil && len(data) >= 32 {
+		return data
+	}
+
+	raw := make([]byte, 48)
+	if _, err := rand.Read(raw); err != nil {
+		panic("falha ao gerar JWT secret: " + err.Error())
+	}
+	encoded := []byte(base64.StdEncoding.EncodeToString(raw))
+
+	dir := filepath.Dir(secretFile)
+	if err := os.MkdirAll(dir, 0700); err == nil {
+		if err := os.WriteFile(secretFile, encoded, 0600); err == nil {
+			fmt.Printf("🔑 JWT secret gerado automaticamente em %s\n", secretFile)
+		}
+	}
+	return encoded
+}
+
 // NewServer cria uma nova instância do servidor web
 func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiProvider, ollamaURL, ollamaModel, claudeAPIKey, claudeModel, geminiAuthMode, geminiProject, geminiLocation string) (*Server, error) {
 	// Reutilizar gerenciador de kube existente
@@ -108,16 +146,16 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		return nil, fmt.Errorf("failed to create kube manager: %w", err)
 	}
 
-	// Token de autenticação (backward compat — usado quando JWT não configurado)
+	// Token estático legado — mantido apenas para backward compat via K8S_HPA_WEB_TOKEN.
+	// JWT é sempre habilitado agora (ensureJWTSecret garante isso), portanto este
+	// token raramente é usado na prática.
 	token := os.Getenv("K8S_HPA_WEB_TOKEN")
 	if token == "" {
-		token = "poc-token-123" // Token padrão para POC
-		fmt.Println("⚠️  Usando token padrão para POC: poc-token-123")
-		fmt.Println("💡 Para produção, defina K8S_HPA_WEB_TOKEN ou K8S_HPA_JWT_SECRET")
+		token = "poc-token-123"
 	}
 
-	// JWT Manager (ativo apenas quando K8S_HPA_JWT_SECRET está configurado)
-	jwtSecret := []byte(os.Getenv("K8S_HPA_JWT_SECRET"))
+	// JWT Manager — sempre ativo: ensureJWTSecret() gera/lê o secret automaticamente.
+	jwtSecret := ensureJWTSecret()
 	jwtTTL := 8 * time.Hour
 	if ttlStr := os.Getenv("K8S_HPA_JWT_TTL"); ttlStr != "" {
 		if parsed, err := time.ParseDuration(ttlStr); err == nil && parsed > 0 {
@@ -125,9 +163,7 @@ func NewServer(kubeconfig string, port int, debug bool, disableADAuth bool, aiPr
 		}
 	}
 	jwtManager := auth.NewJWTManager(jwtSecret, jwtTTL)
-	if jwtManager.IsConfigured() {
-		fmt.Printf("🔑 JWT habilitado (TTL: %s)\n", jwtTTL)
-	}
+	fmt.Printf("🔑 JWT habilitado (TTL: %s)\n", jwtTTL)
 
 	// Setup Gin
 	if !debug {
@@ -504,6 +540,10 @@ func (s *Server) setupRoutes() {
 	// RBAC - Endpoints públicos de permissões (apenas GET, sem proteção extra)
 	api.GET("/permissions", rbacMiddleware.GetUserPermissions())
 	api.POST("/permissions/refresh", rbacMiddleware.RefreshPermissions())
+
+	// Permissões reais do K8s via SelfSubjectRulesReview — fonte de verdade para botões de escrita
+	k8sPermHandler := handlers.NewK8sPermissionsHandler(s.kubeManager)
+	api.GET("/permissions/k8s", k8sPermHandler.GetNamespacePermissions)
 
 	// Clusters
 	clusterHandler := handlers.NewClusterHandler(s.kubeManager)

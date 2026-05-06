@@ -285,6 +285,9 @@ func (h *ServiceHandler) Apply(c *gin.Context) {
 	kc := kubeclient.NewClient(clientset, cluster)
 	result, err := kc.ApplyService(c.Request.Context(), req.YAML, namespace, name, req.DryRun, req.Force)
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", err.Error()))
 		return
 	}
@@ -345,6 +348,9 @@ func (h *ServiceHandler) Create(c *gin.Context) {
 	kc := kubeclient.NewClient(clientset, cluster)
 	result, err := kc.ApplyService(c.Request.Context(), req.YAML, namespace, "", false, false)
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, errorResponse("CREATE_ERROR", err.Error()))
 		return
 	}
@@ -391,6 +397,9 @@ func (h *ServiceHandler) Delete(c *gin.Context) {
 
 	kc := kubeclient.NewClient(clientset, cluster)
 	if err := kc.DeleteService(c.Request.Context(), namespace, name); err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{

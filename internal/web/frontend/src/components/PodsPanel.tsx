@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { ProtectedAction } from "@/components/rbac";
+import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { PodTerminal } from "@/components/PodTerminal";
 import { PodFileTransferModal } from "@/components/PodFileTransferModal";
 import ResourceGauge from "@/components/ResourceGauge";
@@ -59,6 +60,8 @@ export const PodsPanel = ({
   onToggleSystemNamespaces,
 }: PodsPanelProps) => {
   const { analyzeResource, isAnalyzing, cancelAnalysis } = useAIDiagnostics();
+  const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
+  const canWritePods = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWritePods : undefined;
 
   // ✅ Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('pods', 'searchQuery', "");
@@ -1037,7 +1040,7 @@ export const PodsPanel = ({
           Transferir Arquivos
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <ProtectedAction showWarning={false}>
+        <ProtectedAction showWarning={false} allowed={canWritePods}>
           <DropdownMenuItem
             onClick={() => {
               setRestartingPod(selectedPod);
@@ -1048,7 +1051,7 @@ export const PodsPanel = ({
             Restart Pod
           </DropdownMenuItem>
         </ProtectedAction>
-        <ProtectedAction showWarning={false}>
+        <ProtectedAction showWarning={false} allowed={canWritePods}>
           <DropdownMenuItem
             onClick={() => {
               setKillingPod(selectedPod);
@@ -1060,7 +1063,7 @@ export const PodsPanel = ({
             Kill Pod (Forçar)
           </DropdownMenuItem>
         </ProtectedAction>
-        <ProtectedAction showWarning={false}>
+        <ProtectedAction showWarning={false} allowed={canWritePods}>
           <DropdownMenuItem
             onClick={() => {
               setDeletingPod(selectedPod);
@@ -1127,7 +1130,7 @@ export const PodsPanel = ({
           </span>
           {selectedPods.size > 0 && (
             <div className="flex items-center gap-1 ml-auto">
-              <ProtectedAction>
+              <ProtectedAction allowed={canWritePods}>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -1137,7 +1140,7 @@ export const PodsPanel = ({
                   Reiniciar
                 </Button>
               </ProtectedAction>
-              <ProtectedAction>
+              <ProtectedAction allowed={canWritePods}>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -1147,7 +1150,7 @@ export const PodsPanel = ({
                   Kill
                 </Button>
               </ProtectedAction>
-              <ProtectedAction>
+              <ProtectedAction allowed={canWritePods}>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -1649,7 +1652,7 @@ export const PodsPanel = ({
                   Cancelar
                 </Button>
 
-                <ProtectedAction>
+                <ProtectedAction allowed={canWritePods}>
                   <Button
                     variant="secondary"
                     size="sm"
@@ -1665,7 +1668,7 @@ export const PodsPanel = ({
                   </Button>
                 </ProtectedAction>
 
-                <ProtectedAction>
+                <ProtectedAction allowed={canWritePods}>
                   <Button
                     variant="default"
                     size="sm"
@@ -1937,7 +1940,7 @@ export const PodsPanel = ({
             <Button variant="outline" onClick={() => setDeleteConfirmOpen(false)}>
               Cancelar
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWritePods}>
               <Button variant="destructive" onClick={handleDeletePod}>
                 Deletar Pod
               </Button>
@@ -1967,7 +1970,7 @@ export const PodsPanel = ({
             <Button variant="outline" onClick={() => setRestartConfirmOpen(false)}>
               Cancelar
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWritePods}>
               <Button onClick={handleRestartPod}>
                 <RotateCw className="w-4 h-4 mr-2" />
                 Restart Pod
@@ -2004,7 +2007,7 @@ export const PodsPanel = ({
             <Button variant="outline" onClick={() => setKillConfirmOpen(false)}>
               Cancelar
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWritePods}>
               <Button variant="destructive" className="bg-orange-600 hover:bg-orange-700" onClick={handleKillPod}>
                 <Skull className="w-4 h-4 mr-2" />
                 Kill Pod
@@ -2050,7 +2053,7 @@ export const PodsPanel = ({
             <Button variant="outline" onClick={() => setBatchConfirmOpen(false)} disabled={batchOperationLoading}>
               Cancelar
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWritePods}>
               <Button
                 className={getBatchActionConfig().color}
                 onClick={executeBatchAction}
@@ -2328,7 +2331,7 @@ export const PodsPanel = ({
                     </button>
                   </div>
 
-                  <ProtectedAction>
+                  <ProtectedAction allowed={canWritePods}>
                     <Button
                       variant="secondary"
                       size="sm"
@@ -2354,7 +2357,7 @@ export const PodsPanel = ({
                     Cancelar
                   </Button>
 
-                  <ProtectedAction>
+                  <ProtectedAction allowed={canWritePods}>
                     <Button
                       variant="default"
                       size="sm"

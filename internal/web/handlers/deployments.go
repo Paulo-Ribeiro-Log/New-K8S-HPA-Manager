@@ -626,6 +626,17 @@ func (h *DeploymentHandler) Scale(c *gin.Context) {
 			return
 		}
 
+		if apierrors.IsForbidden(err) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "K8S_FORBIDDEN",
+					"message": fmt.Sprintf("Permissão negada pelo K8s RBAC: %v", err),
+				},
+			})
+			return
+		}
+
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{

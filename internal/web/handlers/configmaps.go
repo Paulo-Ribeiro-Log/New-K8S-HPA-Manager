@@ -268,6 +268,7 @@ func (h *ConfigMapHandler) Apply(c *gin.Context) {
 
 	result, err := kubeClient.ApplyConfigMap(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun, req.Force)
 	if err != nil {
+		if checkForbidden(c, err) { return }
 		status := http.StatusInternalServerError
 		errorCode := "APPLY_ERROR"
 		if apierrors.IsConflict(err) {
@@ -521,6 +522,7 @@ func (h *ConfigMapHandler) Create(c *gin.Context) {
 
 	result, err := kubeClient.ApplyConfigMap(c.Request.Context(), req.YAML, req.FieldManager, namespace, cmName, false, false)
 	if err != nil {
+		if checkForbidden(c, err) { return }
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{"code": "CREATE_ERROR", "message": err.Error()},
@@ -589,6 +591,7 @@ func (h *ConfigMapHandler) Delete(c *gin.Context) {
 	kubeClient := kubeclient.NewClient(clientset, cluster)
 	err = kubeClient.DeleteConfigMap(c.Request.Context(), namespace, name)
 	if err != nil {
+		if checkForbidden(c, err) { return }
 		if apierrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"success": false,
