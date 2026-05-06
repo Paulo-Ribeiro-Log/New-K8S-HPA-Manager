@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 
 	"k8s-hpa-manager/internal/config"
@@ -10,6 +11,7 @@ import (
 	"k8s-hpa-manager/internal/models"
 
 	"github.com/gin-gonic/gin"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // HPAHandler gerencia requisições relacionadas a HPAs
@@ -270,7 +272,18 @@ func (h *HPAHandler) Update(c *gin.Context) {
 			})
 		}
 
-		c.JSON(500, gin.H{
+		if apierrors.IsForbidden(err) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "K8S_FORBIDDEN",
+					"message": fmt.Sprintf("Permissão negada pelo K8s RBAC: %v", err),
+				},
+			})
+			return
+		}
+
+		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "UPDATE_ERROR",

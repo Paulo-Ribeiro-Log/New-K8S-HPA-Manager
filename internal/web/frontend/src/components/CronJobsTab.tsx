@@ -5,6 +5,7 @@ import "@/styles/diff2html-dark.css";
 import { MonacoYamlEditor } from "@/components/MonacoYamlEditor";
 import { SplitView } from "@/components/SplitView";
 import { ProtectedAction } from "@/components/rbac";
+import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -87,6 +88,9 @@ export function CronJobsTab({
   showSystemNamespaces,
   onToggleSystemNamespaces,
 }: CronJobsTabProps) {
+  const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
+  const canWriteCronJobs = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWriteCronJobs : undefined;
+
   // ── State ─────────────────────────────────────────────────────────────────
   const [cronJobs, setCronJobs] = useState<CronJob[]>([]);
   const [loading, setLoading] = useState(false);
@@ -538,7 +542,7 @@ export function CronJobsTab({
   const rightTitleAction = selectedCronJob ? (
     <div className="flex items-center gap-1 flex-wrap">
       {/* Suspend / Ativar */}
-      <ProtectedAction>
+      <ProtectedAction allowed={canWriteCronJobs}>
         {isSuspended ? (
           <Button
             variant="outline" size="sm" className="h-7 text-xs text-green-600 border-green-300"
@@ -563,7 +567,7 @@ export function CronJobsTab({
       </ProtectedAction>
 
       {/* Trigger */}
-      <ProtectedAction>
+      <ProtectedAction allowed={canWriteCronJobs}>
         <Button
           variant="outline" size="sm" className="h-7 text-xs"
           onClick={() => setTriggerConfirmOpen(true)}
@@ -593,7 +597,7 @@ export function CronJobsTab({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <ProtectedAction>
+          <ProtectedAction allowed={canWriteCronJobs}>
             <DropdownMenuItem
               className="text-red-600 cursor-pointer"
               onClick={() => setDeleteConfirmOpen(true)}
@@ -683,7 +687,7 @@ export function CronJobsTab({
           >
             Cancelar
           </Button>
-          <ProtectedAction>
+          <ProtectedAction allowed={canWriteCronJobs}>
             <Button
               size="sm"
               onClick={() => setApplyConfirmOpen(true)}
@@ -888,7 +892,7 @@ export function CronJobsTab({
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setEditorFullScreen(false)}>Fechar</Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteCronJobs}>
               <Button
                 onClick={() => { setEditorFullScreen(false); setApplyConfirmOpen(true); }}
                 disabled={!hasChanges}

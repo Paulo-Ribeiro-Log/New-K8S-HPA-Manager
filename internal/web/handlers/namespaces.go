@@ -365,6 +365,9 @@ func (h *NamespaceHandler) Delete(c *gin.Context) {
 	start := time.Now()
 	err = kubeClient.DeleteNamespace(ctx, name)
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(500, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -445,6 +448,9 @@ func (h *NamespaceHandler) Create(c *gin.Context) {
 	start := time.Now()
 	err = kubeClient.CreateNamespace(c.Request.Context(), req.Name, req.IsSpotInstance, req.Annotations, req.Labels)
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(500, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -549,6 +555,9 @@ func (h *NamespaceHandler) Apply(c *gin.Context) {
 	// Aplicar namespace
 	result, err := kubeClient.ApplyNamespace(ctx, req.YAML, req.FieldManager, name, req.DryRun, req.Force)
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(500, gin.H{
 			"success": false,
 			"error": gin.H{

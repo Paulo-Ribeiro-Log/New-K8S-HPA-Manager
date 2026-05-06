@@ -57,6 +57,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 
 // Função para formatar versão de x-x-x-x para x.x.x-x (semver)
 const formatVersion = (version: string | undefined): string => {
@@ -92,6 +93,10 @@ export const DeploymentsTab = ({
   const [showLabels, setShowLabels] = usePersistedTabState<boolean>('deployments', 'showLabels', false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = usePersistedTabState<boolean>('deployments', 'isSidebarCollapsed', false);
   const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">('deployments', 'viewMode', "editor");
+
+  // Permissões K8s reais — usa namespace do deployment selecionado ou o namespace filtrado
+  const activeNamespace = selectedDeployment?.namespace || selectedNamespace;
+  const { permissions: k8sPerms } = useK8sPermissions(cluster, activeNamespace);
 
   // Estados locais (não persistidos)
   const [manifest, setManifest] = useState<DeploymentManifest | null>(null);
@@ -1326,8 +1331,15 @@ export const DeploymentsTab = ({
       );
 
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData?.error?.message || `HTTP ${response.status}`);
+        const errData = await response.json().catch(() => ({}));
+        const msg = errData?.error?.message || `HTTP ${response.status}`;
+        if (response.status === 403) {
+          toast.error("Permissão negada", {
+            description: "Você não tem permissão de escrita neste namespace (K8s RBAC).",
+          });
+          return;
+        }
+        throw new Error(msg);
       }
 
       toast.success(`Deployment escalado para ${replicasValue} réplicas`, {
@@ -2427,7 +2439,8 @@ export const DeploymentsTab = ({
             <DropdownMenuContent align="end">
               <DropdownMenuItem
                 onClick={openScaleModal}
-                disabled={isScaling}
+                disabled={isScaling || !k8sPerms.canUpdateDeployment}
+                title={!k8sPerms.canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}
               >
                 <ArrowUpDown className="w-4 h-4 mr-2" />
                 Scale
@@ -5558,7 +5571,8 @@ export const DeploymentsTab = ({
             </Button>
             <Button
               onClick={handleScaleDeployment}
-              disabled={isScaling}
+              disabled={isScaling || !k8sPerms.canUpdateDeployment}
+              title={!k8sPerms.canUpdateDeployment ? "Sem permissão de escrita neste namespace (K8s RBAC)" : undefined}
             >
               {isScaling ? (
                 <>

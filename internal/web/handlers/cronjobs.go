@@ -162,6 +162,9 @@ func (h *CronJobHandler) Apply(c *gin.Context) {
 	kc := kubeclient.NewClient(clientset, cluster)
 	result, err := kc.ApplyCronJob(c.Request.Context(), req.YAML, namespace, name, req.DryRun)
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", err.Error()))
 		return
 	}
@@ -309,6 +312,9 @@ func (h *CronJobHandler) Trigger(c *gin.Context) {
 	kc := kubeclient.NewClient(clientset, cluster)
 	jobName, err := kc.TriggerCronJob(c.Request.Context(), namespace, name)
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, errorResponse("TRIGGER_ERROR", err.Error()))
 		return
 	}
@@ -390,6 +396,9 @@ func (h *CronJobHandler) Update(c *gin.Context) {
 	start := time.Now()
 	updatedCronJob, err := client.BatchV1().CronJobs(namespace).Update(c.Request.Context(), cronJob, metav1.UpdateOptions{})
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error":   gin.H{"code": "KUBERNETES_UPDATE_ERROR", "message": fmt.Sprintf("Failed to update CronJob: %v", err)},

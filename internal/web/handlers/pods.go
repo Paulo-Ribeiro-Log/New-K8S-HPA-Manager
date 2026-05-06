@@ -336,6 +336,9 @@ func (h *PodHandler) Delete(c *gin.Context) {
 	start := time.Now()
 	err = clientset.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -429,6 +432,9 @@ func (h *PodHandler) Kill(c *gin.Context) {
 		GracePeriodSeconds: &gracePeriod,
 	})
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -531,6 +537,9 @@ func (h *PodHandler) Restart(c *gin.Context) {
 		GracePeriodSeconds: &gracePeriod,
 	})
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -1081,9 +1090,10 @@ func (h *PodHandler) Apply(c *gin.Context) {
 	start := time.Now()
 	result, err := kubeClient.ApplyPod(ctx, req.YAML, req.FieldManager, namespace, name, req.DryRun)
 	if err != nil {
-		status := http.StatusInternalServerError
-		errorCode := "APPLY_ERROR"
-		c.JSON(status, errorResponse(errorCode, err.Error()))
+		if checkForbidden(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, errorResponse("APPLY_ERROR", err.Error()))
 		return
 	}
 

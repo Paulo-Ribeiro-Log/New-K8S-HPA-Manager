@@ -35,6 +35,7 @@ import "@/styles/diff2html-dark.css";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProtectedAction } from "@/components/rbac";
+import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 
 interface IngressTabProps {
   cluster: string;
@@ -55,6 +56,9 @@ export const IngressTab = ({
   onToggleSystemNamespaces,
   onOpenCompare,
 }: IngressTabProps) => {
+  const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
+  const canWriteIngress = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWriteIngress : undefined;
+
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedIngress, setSelectedIngress] = useState<IngressSummary | null>(null);
   const [manifest, setManifest] = useState<IngressManifest | null>(null);
@@ -573,7 +577,7 @@ export const IngressTab = ({
         Recarregar YAML
       </Button>
       {selectedIngress && (
-        <ProtectedAction>
+        <ProtectedAction allowed={canWriteIngress}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" disabled={manifestLoading}>
@@ -876,7 +880,7 @@ export const IngressTab = ({
               <Maximize2 className="w-4 h-4" />
               Tela cheia
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteIngress}>
               <Button
                 variant="secondary"
                 size="sm"
@@ -894,7 +898,7 @@ export const IngressTab = ({
             >
               <X className="w-4 h-4 mr-2" /> Cancelar
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteIngress}>
               <Button
                 variant="default"
                 size="sm"
@@ -1097,7 +1101,7 @@ export const IngressTab = ({
                       Diff
                     </button>
                   </div>
-                  <ProtectedAction>
+                  <ProtectedAction allowed={canWriteIngress}>
                     <Button
                       variant="secondary"
                       size="sm"
@@ -1120,7 +1124,7 @@ export const IngressTab = ({
                   >
                     Cancelar
                   </Button>
-                  <ProtectedAction>
+                  <ProtectedAction allowed={canWriteIngress}>
                     <Button
                       variant="default"
                       size="sm"
@@ -1264,7 +1268,7 @@ export const IngressTab = ({
             >
               Cancelar
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteIngress}>
               <Button
                 variant="destructive"
                 onClick={confirmApplyChanges}

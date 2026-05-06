@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { DaemonSetMonitorTable } from "@/components/DaemonSetMonitorTable";
+import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 
 const formatVersion = (version: string | undefined): string => {
   if (!version) return '';
@@ -65,6 +66,9 @@ export const DaemonSetsTab = ({
   onToggleSystemNamespaces,
   onOpenCompare,
 }: DaemonSetsTabProps) => {
+  const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
+  const canWriteDaemonSets = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWriteDaemonSets : undefined;
+
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('daemonsets', 'searchQuery', "");
   const [selectedDaemonSet, setSelectedDaemonSet] = usePersistedTabState<DaemonSetSummary | null>('daemonsets', 'selectedDaemonSet', null);
@@ -673,7 +677,7 @@ export const DaemonSetsTab = ({
         Recarregar YAML
       </Button>
       {selectedDaemonSet && (
-        <ProtectedAction>
+        <ProtectedAction allowed={canWriteDaemonSets}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -907,7 +911,7 @@ export const DaemonSetsTab = ({
               <Maximize2 className="w-4 h-4" />
               Tela cheia
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteDaemonSets}>
               <Button
                 variant="secondary"
                 size="sm"
@@ -925,7 +929,7 @@ export const DaemonSetsTab = ({
             >
               <X className="w-4 h-4 mr-2" /> Cancelar
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteDaemonSets}>
               <Button
                 variant="default"
                 size="sm"
@@ -1137,7 +1141,7 @@ export const DaemonSetsTab = ({
                 >
                   Cancelar
                 </Button>
-                <ProtectedAction>
+                <ProtectedAction allowed={canWriteDaemonSets}>
                   <Button
                     variant="default"
                     size="sm"

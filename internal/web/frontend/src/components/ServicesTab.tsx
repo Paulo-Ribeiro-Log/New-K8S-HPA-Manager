@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProtectedAction } from "@/components/rbac";
+import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -85,6 +86,9 @@ export const ServicesTab = ({
   showSystemNamespaces,
   onToggleSystemNamespaces,
 }: ServicesTabProps) => {
+  const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
+  const canWriteServices = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWriteServices : undefined;
+
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>("services", "searchQuery", "");
   const [selectedService, setSelectedService] = usePersistedTabState<ServiceSummary | null>("services", "selectedService", null);
   const [viewMode, setViewMode] = usePersistedTabState<"editor" | "diff">("services", "viewMode", "editor");
@@ -414,7 +418,7 @@ export const ServicesTab = ({
       <Button variant="outline" size="sm" onClick={refetch} disabled={loading}>
         <RefreshCcw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
       </Button>
-      <ProtectedAction>
+      <ProtectedAction allowed={canWriteServices}>
         <Button
           size="sm"
           onClick={() => { setCreateYaml(SERVICE_TEMPLATE); setCreateModalOpen(true); }}
@@ -559,7 +563,7 @@ export const ServicesTab = ({
         <FileText className="w-4 h-4 mr-1" />
         Describe
       </Button>
-      <ProtectedAction>
+      <ProtectedAction allowed={canWriteServices}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
@@ -656,7 +660,7 @@ export const ServicesTab = ({
           >
             Cancelar
           </Button>
-          <ProtectedAction>
+          <ProtectedAction allowed={canWriteServices}>
             <Button size="sm" onClick={() => setApplyConfirmOpen(true)} disabled={!hasChanges || isApplying}>
               {isApplying && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
               Aplicar
@@ -852,7 +856,7 @@ export const ServicesTab = ({
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setEditorFullScreen(false)}>Fechar</Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteServices}>
               <Button
                 onClick={() => { setEditorFullScreen(false); setApplyConfirmOpen(true); }}
                 disabled={!hasChanges}

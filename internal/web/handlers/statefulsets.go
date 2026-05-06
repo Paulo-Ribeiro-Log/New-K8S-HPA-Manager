@@ -270,6 +270,9 @@ func (h *StatefulSetHandler) Apply(c *gin.Context) {
 
 	result, err := kubeClient.ApplyStatefulSet(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun, req.Force)
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		status := http.StatusInternalServerError
 		errorCode := "APPLY_ERROR"
 		if apierrors.IsConflict(err) {
@@ -463,6 +466,9 @@ func (h *StatefulSetHandler) Delete(c *gin.Context) {
 	kubeClient := kubeclient.NewClient(clientset, cluster)
 	err = kubeClient.DeleteStatefulSet(c.Request.Context(), namespace, name)
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		if apierrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"success": false,
@@ -524,6 +530,9 @@ func (h *StatefulSetHandler) RolloutRestart(c *gin.Context) {
 	kubeClient := kubeclient.NewClient(clientset, cluster)
 	err = kubeClient.RolloutRestartStatefulSet(c.Request.Context(), namespace, name)
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		if apierrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"success": false,

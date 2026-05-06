@@ -40,6 +40,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProtectedAction } from "@/components/rbac";
 import { CreateSecretModal } from "@/components/CreateSecretModal";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 
 const formatVersion = (version: string | undefined): string => {
   if (!version) return '';
@@ -68,6 +69,9 @@ export const SecretsTab = ({
   onToggleSystemNamespaces,
   onOpenCompare,
 }: SecretsTabProps) => {
+
+  const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
+  const canWriteSecrets = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWriteSecrets : undefined;
 
   // ✅ Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('secrets', 'searchQuery', "");
@@ -869,7 +873,7 @@ export const SecretsTab = ({
         Recarregar YAML
       </Button>
       {selectedSecret && (
-        <ProtectedAction>
+        <ProtectedAction allowed={canWriteSecrets}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" disabled={manifestLoading}>

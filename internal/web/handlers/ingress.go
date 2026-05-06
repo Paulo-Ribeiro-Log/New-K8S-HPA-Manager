@@ -268,6 +268,9 @@ func (h *IngressHandler) Apply(c *gin.Context) {
 
 	result, err := kubeClient.ApplyIngress(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun, req.Force)
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		status := http.StatusInternalServerError
 		errorCode := "APPLY_ERROR"
 		if apierrors.IsConflict(err) {
@@ -454,6 +457,9 @@ func (h *IngressHandler) Delete(c *gin.Context) {
 	kubeClient := kubeclient.NewClient(clientset, cluster)
 	err = kubeClient.DeleteIngress(c.Request.Context(), namespace, name)
 	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
 		if apierrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"success": false,

@@ -11,6 +11,7 @@ import { apiClient } from "@/lib/api/client";
 import { validateHPAUpdate, formatValidationErrors, type ValidationError } from "@/lib/validation";
 import { ProtectedAction } from "@/components/rbac";
 import { AITriggerButton } from "@/components/AITriggerButton";
+import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 
 interface HPAEditorProps {
   hpa: HPA | null;
@@ -20,6 +21,10 @@ interface HPAEditorProps {
 
 export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
   const staging = useStaging();
+
+  // Permissões reais do K8s — determina se botões de escrita são exibidos
+  const { permissions } = useK8sPermissions(hpa?.cluster ?? '', hpa?.namespace ?? '');
+  const canWrite = permissions.canUpdateHPA;
 
   // Refs for input fields to enable select-all behavior
   const minReplicasRef = useRef<HTMLInputElement>(null);
@@ -679,7 +684,7 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
             className="flex-1"
           />
         )}
-        <ProtectedAction>
+        <ProtectedAction allowed={canWrite}>
           <Button
             onClick={handleSave}
             disabled={!isModified || isSaving}
@@ -690,7 +695,7 @@ export const HPAEditor = ({ hpa, onApplied, onApply }: HPAEditorProps) => {
           </Button>
         </ProtectedAction>
 
-        <ProtectedAction>
+        <ProtectedAction allowed={canWrite}>
           <Button
             onClick={handleApply}
             variant="default"

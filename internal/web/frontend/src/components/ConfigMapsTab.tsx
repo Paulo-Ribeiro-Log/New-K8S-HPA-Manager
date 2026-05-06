@@ -36,6 +36,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProtectedAction } from "@/components/rbac";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
+import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 
 const formatVersion = (version: string | undefined): string => {
   if (!version) return '';
@@ -64,6 +65,9 @@ export const ConfigMapsTab = ({
   onToggleSystemNamespaces,
   onOpenCompare,
 }: ConfigMapsTabProps) => {
+  const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
+  const canWriteConfigMaps = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWriteConfigMaps : undefined;
+
   // ✅ Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('configmaps', 'searchQuery', "");
   const [selectedConfigMap, setSelectedConfigMap] = usePersistedTabState<ConfigMapSummary | null>('configmaps', 'selectedConfigMap', null);
@@ -611,7 +615,7 @@ data:
 
   const rightTitleAction = (
     <div className="flex items-center gap-2">
-      <ProtectedAction>
+      <ProtectedAction allowed={canWriteConfigMaps}>
         <Button
           variant="outline"
           size="sm"
@@ -657,7 +661,7 @@ data:
         Recarregar YAML
       </Button>
       {selectedConfigMap && (
-        <ProtectedAction>
+        <ProtectedAction allowed={canWriteConfigMaps}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" disabled={manifestLoading}>
@@ -955,7 +959,7 @@ data:
               <Maximize2 className="w-4 h-4" />
               Tela cheia
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteConfigMaps}>
               <Button
                 variant="secondary"
                 size="sm"
@@ -973,7 +977,7 @@ data:
             >
               <X className="w-4 h-4 mr-2" /> Cancelar
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteConfigMaps}>
               <Button
                 variant="default"
                 size="sm"
@@ -1178,7 +1182,7 @@ data:
                       Diff
                     </button>
                   </div>
-                  <ProtectedAction>
+                  <ProtectedAction allowed={canWriteConfigMaps}>
                     <Button
                       variant="secondary"
                       size="sm"
@@ -1201,7 +1205,7 @@ data:
                   >
                     Cancelar
                   </Button>
-                  <ProtectedAction>
+                  <ProtectedAction allowed={canWriteConfigMaps}>
                     <Button
                       variant="default"
                       size="sm"
@@ -1345,7 +1349,7 @@ data:
             >
               Cancelar
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteConfigMaps}>
               <Button
                 variant="destructive"
                 onClick={confirmApplyChanges}
@@ -1523,7 +1527,7 @@ data:
             <Button variant="ghost" onClick={() => setCreateModalOpen(false)} disabled={isCreating}>
               Cancelar
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteConfigMaps}>
               <Button onClick={handleCreateConfigMap} disabled={isCreating || !createYaml.trim()}>
                 {isCreating ? (
                   <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Criando...</>

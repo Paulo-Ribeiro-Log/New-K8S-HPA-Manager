@@ -270,6 +270,7 @@ func (h *SecretHandler) Apply(c *gin.Context) {
 
 	result, err := kubeClient.ApplySecret(ctx, sanitizedYAML, req.FieldManager, namespace, name, req.DryRun, req.Force)
 	if err != nil {
+		if checkForbidden(c, err) { return }
 		status := http.StatusInternalServerError
 		errorCode := "APPLY_ERROR"
 		if apierrors.IsConflict(err) {
@@ -557,6 +558,7 @@ func (h *SecretHandler) Create(c *gin.Context) {
 	// Aplicar o secret (usando apply para criar ou atualizar)
 	result, err := kubeClient.ApplySecret(c.Request.Context(), req.YAML, req.FieldManager, namespace, secretName, false, true)
 	if err != nil {
+		if checkForbidden(c, err) { return }
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -681,6 +683,7 @@ func (h *SecretHandler) Delete(c *gin.Context) {
 	kubeClient := kubeclient.NewClient(clientset, cluster)
 	err = kubeClient.DeleteSecret(c.Request.Context(), namespace, name)
 	if err != nil {
+		if checkForbidden(c, err) { return }
 		if apierrors.IsNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"success": false,

@@ -9,6 +9,7 @@ import type { PodSummary, PodMetricsSingle } from "@/lib/api/types";
 import { formatAge, formatMillicores, formatBytes, formatPercent } from "@/lib/monitorUtils";
 import { apiClient } from "@/lib/api/client";
 import { ProtectedAction } from "@/components/rbac";
+import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { toast } from "sonner";
 
 // Gauge duplo concêntrico: anel externo = MEM, anel interno = CPU
@@ -102,6 +103,9 @@ interface Props {
 }
 
 export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }: Props) {
+  const { permissions: k8sPerms } = useK8sPermissions(cluster, pod?.namespace || '');
+  const canWritePods = pod?.namespace ? k8sPerms.canWritePods : undefined;
+
   const [activeTab, setActiveTab] = useState("details");
   const [selectedContainer, setSelectedContainer] = useState("");
   const [tailLines, setTailLines] = useState("500");
@@ -472,7 +476,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
               <div className="pt-2 border-t border-border/50">
                 <div className="text-[10px] font-medium text-muted-foreground uppercase mb-2">Ações</div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <ProtectedAction showWarning={false}>
+                  <ProtectedAction showWarning={false} allowed={canWritePods}>
                     <Button
                       size="sm" variant="outline"
                       className="h-7 text-xs text-blue-400 border-blue-400/30 hover:bg-blue-400/10"
@@ -481,7 +485,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                       Rollout Restart
                     </Button>
                   </ProtectedAction>
-                  <ProtectedAction showWarning={false}>
+                  <ProtectedAction showWarning={false} allowed={canWritePods}>
                     <Button
                       size="sm" variant="outline"
                       className="h-7 text-xs text-orange-400 border-orange-400/30 hover:bg-orange-400/10"
@@ -490,7 +494,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                       Kill (Forçar)
                     </Button>
                   </ProtectedAction>
-                  <ProtectedAction showWarning={false}>
+                  <ProtectedAction showWarning={false} allowed={canWritePods}>
                     <Button
                       size="sm" variant="outline"
                       className="h-7 text-xs text-destructive border-destructive/30 hover:bg-destructive/10"

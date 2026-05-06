@@ -100,6 +100,7 @@ import type {
   NodePoolLookupResult,
   ConntrackResponse,
   ConntrackNodeHistoryResponse,
+  K8sNamespacePermissions,
 } from "./types";
 
 import type {
@@ -363,6 +364,12 @@ class APIClient {
         }
       }
 
+      // K8s RBAC negou a operação — erro amigável sem stack trace
+      if (response.status === 403) {
+        const friendly = "Permissão negada pelo K8s RBAC. Você não tem acesso de escrita neste namespace.";
+        throw Object.assign(new Error(message || friendly), { status: 403, code: "K8S_FORBIDDEN" });
+      }
+
       throw new Error(message || `Request failed: ${response.status}`);
     }
 
@@ -383,6 +390,13 @@ class APIClient {
 
   async delete<T = any>(endpoint: string): Promise<T> {
     return this.request<T>(endpoint, { method: 'DELETE' });
+  }
+
+  // Permissões K8s reais via SelfSubjectRulesReview
+  async getK8sPermissions(cluster: string, namespace: string): Promise<K8sNamespacePermissions> {
+    return this.request<K8sNamespacePermissions>(
+      `/permissions/k8s?cluster=${encodeURIComponent(cluster)}&namespace=${encodeURIComponent(namespace)}`
+    );
   }
 
   // Clusters

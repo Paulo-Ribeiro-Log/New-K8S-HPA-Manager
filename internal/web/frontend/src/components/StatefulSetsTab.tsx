@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { usePersistedTabState } from "@/hooks/usePersistedTabState";
 import { StatefulSetMonitorTable } from "@/components/StatefulSetMonitorTable";
+import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 
 const formatVersion = (version: string | undefined): string => {
   if (!version) return '';
@@ -65,6 +66,9 @@ export const StatefulSetsTab = ({
   onToggleSystemNamespaces,
   onOpenCompare,
 }: StatefulSetsTabProps) => {
+  const { permissions: k8sPerms } = useK8sPermissions(cluster, selectedNamespace || '');
+  const canWriteStatefulSets = selectedNamespace && selectedNamespace !== '__all__' ? k8sPerms.canWriteStatefulSets : undefined;
+
   // Estados com persistência entre trocas de aba
   const [searchQuery, setSearchQuery] = usePersistedTabState<string>('statefulsets', 'searchQuery', "");
   const [selectedStatefulSet, setSelectedStatefulSet] = usePersistedTabState<StatefulSetSummary | null>('statefulsets', 'selectedStatefulSet', null);
@@ -749,7 +753,7 @@ export const StatefulSetsTab = ({
         Recarregar YAML
       </Button>
       {selectedStatefulSet && (
-        <ProtectedAction>
+        <ProtectedAction allowed={canWriteStatefulSets}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -990,7 +994,7 @@ export const StatefulSetsTab = ({
               <Maximize2 className="w-4 h-4" />
               Tela cheia
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteStatefulSets}>
               <Button
                 variant="secondary"
                 size="sm"
@@ -1008,7 +1012,7 @@ export const StatefulSetsTab = ({
             >
               <X className="w-4 h-4 mr-2" /> Cancelar
             </Button>
-            <ProtectedAction>
+            <ProtectedAction allowed={canWriteStatefulSets}>
               <Button
                 variant="default"
                 size="sm"
@@ -1309,7 +1313,7 @@ export const StatefulSetsTab = ({
                 >
                   Cancelar
                 </Button>
-                <ProtectedAction>
+                <ProtectedAction allowed={canWriteStatefulSets}>
                   <Button
                     variant="default"
                     size="sm"
