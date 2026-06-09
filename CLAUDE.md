@@ -34,8 +34,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Build
-make build                    # Compilar backend Go
+make build                    # Compilar backend Go (BUILD_PARALLEL=2 por padrão — WSL2 RAM)
 ./rebuild-web.sh -b           # Build frontend + backend + reinicia servidor em background (RECOMENDADO após mudanças React)
+./rebuild-web.sh -b --ai-provider ollama --ollama-model llama3.2:3b  # Com AI provider
 make build-web                # Build completo (frontend + backend)
 
 # Discovery
@@ -59,8 +60,8 @@ go test -run TestGetClient        # Teste específico
 tail -f /tmp/k8s-hpa-manager-web-*.log  # Logs do servidor
 
 # Release
-make release                  # Build multi-plataforma (linux, darwin Intel, darwin ARM64)
-make build-all                # Alias para release
+make release                  # Build multi-plataforma → build/release/ (linux, darwin Intel, darwin ARM64)
+make build-all                # Build multi-plataforma → build/ (sem subpasta release)
 # Publicar release no GitHub (ver seção Release no Fluxo de Desenvolvimento)
 
 # Outros
@@ -146,7 +147,7 @@ k8s-hpa-manager/
 **Tech Stack:**
 | Categoria | Tecnologia |
 |-----------|------------|
-| Backend | Go 1.24.0+, client-go v0.34.1, Gin v1.11.0 |
+| Backend | Go 1.25.0, client-go v0.34.1, Gin v1.11.0 |
 | Frontend | React 18.3.1, TypeScript 5.8.3, Vite 5.4.21 |
 | UI | shadcn/ui (Radix UI), Tailwind CSS 3.4.17, Recharts |
 | Editor | Monaco Editor 0.52.2, xterm.js 5.3.0, diff2html |
@@ -742,13 +743,13 @@ git checkout main && git merge --no-ff <branch> && git push origin main
 git tag v1.3.X && git push origin v1.3.X
 
 # Build multi-plataforma
-make release   # gera: build/new-k8s-hpa-linux-amd64, darwin-amd64, darwin-arm64
+make release   # gera: build/release/new-k8s-hpa-linux-amd64, darwin-amd64, darwin-arm64
 
 # Criar release no GitHub (com upload de binários)
 gh release create v1.3.X \
-  build/new-k8s-hpa-linux-amd64 \
-  build/new-k8s-hpa-darwin-amd64 \
-  build/new-k8s-hpa-darwin-arm64 \
+  build/release/new-k8s-hpa-linux-amd64 \
+  build/release/new-k8s-hpa-darwin-amd64 \
+  build/release/new-k8s-hpa-darwin-arm64 \
   --title "v1.3.X" \
   --notes "Descrição das mudanças"
 ```

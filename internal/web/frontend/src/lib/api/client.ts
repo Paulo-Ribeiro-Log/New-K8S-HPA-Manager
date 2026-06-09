@@ -2552,7 +2552,7 @@ class APIClient {
   /**
    * Get available models for a specific AI provider
    */
-  async getAvailableModels(provider: string): Promise<{
+  async getAvailableModels(provider: string, mode?: string): Promise<{
     provider: string;
     models: Array<{
       id: string;
@@ -2561,7 +2561,8 @@ class APIClient {
       is_default: boolean;
     }>;
   }> {
-    return this.request(`/ai/models?provider=${provider}`);
+    const params = mode ? `provider=${provider}&mode=${mode}` : `provider=${provider}`;
+    return this.request(`/ai/models?${params}`);
   }
 
   /**

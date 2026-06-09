@@ -93,14 +93,26 @@ func (p *GeminiProvider) analyzeAPIKey(ctx context.Context, prompt string) (stri
 }
 
 // analyzeVertex usa o Vertex AI.
-// Estratégia para SSO corporativo (sem service account):
-//  1. AI Studio endpoint (generativelanguage.googleapis.com) + OAuth token SEM projeto
-//     → funciona para usuários Gemini for Google Workspace (quota individual)
-//  2. AI Studio endpoint + OAuth token + X-Goog-User-Project
-//     → requer Generative Language API habilitada no projeto
-//  3. Vertex AI endpoint (aiplatform.googleapis.com) + OAuth/ADC/service account
-//     → requer roles/aiplatform.user
+//
+// Quando `project` está configurado: Vertex AI direto (aiplatform.googleapis.com).
+// Sem `project` e com refresh token: AI Studio (generativelanguage.googleapis.com),
+// útil para usuários Gemini for Google Workspace sem projeto GCP dedicado.
 func (p *GeminiProvider) analyzeVertex(ctx context.Context, prompt string) (string, error) {
+	// Com projeto GCP configurado → Vertex AI endpoint diretamente.
+	// Evita tentativas no AI Studio que causam 503 visíveis quando o modelo está
+	// sobrecarregado lá mas disponível no Vertex AI.
+	if p.project != "" {
+		token, err := GetVertexAccessToken(ctx, p.serviceAccountJSON, p.refreshToken)
+		if err != nil {
+			return "", err
+		}
+		vertexURL := fmt.Sprintf(
+			"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent",
+			p.location, p.project, p.location, p.model)
+		return p.doRequest(ctx, vertexURL, token, "", prompt)
+	}
+
+	// Sem projeto: AI Studio com OAuth token (quota individual do Workspace).
 	if p.refreshToken != "" && p.serviceAccountJSON == "" {
 		token, err := GetAccessTokenFromRefreshToken(ctx, p.refreshToken)
 		if err != nil {
@@ -109,36 +121,23 @@ func (p *GeminiProvider) analyzeVertex(ctx context.Context, prompt string) (stri
 			aiStudioURL := fmt.Sprintf(
 				"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent",
 				p.model)
-
-			// Tentativa 1: sem X-Goog-User-Project (quota individual — Gemini Workspace)
 			if result, err := p.doRequest(ctx, aiStudioURL, token, "", prompt); err == nil {
 				return result, nil
 			} else {
 				log.Warn().Err(err).Str("attempt", "ai-studio-no-project").Msg("Vertex AI: AI Studio sem projeto falhou")
 			}
-
-			// Tentativa 2: com X-Goog-User-Project (quota do projeto)
-			if p.project != "" {
-				if result, err := p.doRequest(ctx, aiStudioURL, token, p.project, prompt); err == nil {
-					return result, nil
-				} else {
-					log.Warn().Err(err).Str("attempt", "ai-studio-with-project").Str("project", p.project).Msg("Vertex AI: AI Studio com projeto falhou")
-				}
-			}
 		}
 	}
 
-	// Tentativa 3: Vertex AI endpoint (service account / ADC / refresh token)
+	// Fallback: ADC ou service account sem projeto configurado (raro)
 	token, err := GetVertexAccessToken(ctx, p.serviceAccountJSON, p.refreshToken)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("projeto GCP não configurado e nenhuma credencial Vertex AI disponível: %w", err)
 	}
-
-	vertexURL := fmt.Sprintf(
-		"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent",
-		p.location, p.project, p.location, p.model)
-
-	return p.doRequest(ctx, vertexURL, token, "", prompt)
+	aiStudioURL := fmt.Sprintf(
+		"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent",
+		p.model)
+	return p.doRequest(ctx, aiStudioURL, token, "", prompt)
 }
 
 // doRequest executa a requisição HTTP para a API Gemini.

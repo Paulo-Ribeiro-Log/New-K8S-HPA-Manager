@@ -37,6 +37,7 @@ type SaveTokensRequest struct {
 	GeminiVertexProject      string `json:"gemini_vertex_project,omitempty"`       // projeto GCP para Vertex AI
 	GeminiVertexLocation     string `json:"gemini_vertex_location,omitempty"`      // região GCP (ex: us-central1)
 	GeminiServiceAccountJSON string `json:"gemini_service_account_json,omitempty"` // JSON do service account GCP
+	GeminiWifLoginURL        string `json:"gemini_wif_login_url,omitempty"`         // URL de login SSO corporativo (WIF)
 	OpenAIAPIKey             string `json:"openai_api_key,omitempty"`
 	OpenAIModel              string `json:"openai_model,omitempty"`
 	ClaudeAPIKey             string `json:"claude_api_key,omitempty"`
@@ -61,6 +62,7 @@ type TokensResponse struct {
 	GeminiVertexLocation    string `json:"gemini_vertex_location,omitempty"` // região GCP
 	HasGeminiServiceAccount bool   `json:"has_gemini_service_account"`       // true se service account JSON configurado
 	HasGeminiRefreshToken   bool   `json:"has_gemini_refresh_token"`         // true se autenticado via Device Auth Google
+	GeminiWifLoginURL       string `json:"gemini_wif_login_url,omitempty"`  // URL de login SSO corporativo (WIF)
 	HasOpenAI               bool   `json:"has_openai"`
 	OpenAIModel             string `json:"openai_model,omitempty"`
 	HasClaude               bool   `json:"has_claude"`
@@ -216,6 +218,11 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 		tokens.GeminiServiceAccountJSON = req.GeminiServiceAccountJSON
 	} else {
 		tokens.GeminiServiceAccountJSON = existingTokens.GeminiServiceAccountJSON
+	}
+	// WIF Login URL — campo informativo, pode ser limpo enviando string vazia
+	tokens.GeminiWifLoginURL = req.GeminiWifLoginURL
+	if req.GeminiWifLoginURL == "" {
+		tokens.GeminiWifLoginURL = existingTokens.GeminiWifLoginURL
 	}
 	// Refresh token OAuth2 nunca vem no request — sempre preservar o existente
 	tokens.GeminiRefreshToken = existingTokens.GeminiRefreshToken
@@ -394,6 +401,7 @@ func (h *AITokensHandler) GetTokens(c *gin.Context) {
 		GeminiVertexLocation:    tokens.GeminiVertexLocation,
 		HasGeminiServiceAccount: hasGeminiServiceAccount,
 		HasGeminiRefreshToken:   hasGeminiRefreshToken,
+		GeminiWifLoginURL:       tokens.GeminiWifLoginURL,
 		HasOpenAI:               tokens.OpenAIAPIKey != "",
 		OpenAIModel:             tokens.OpenAIModel,
 		HasClaude:               tokens.ClaudeAPIKey != "",
@@ -633,7 +641,9 @@ type ModelsResponse struct {
 	Models   []ModelInfo `json:"models"`
 }
 
-// GetAvailableModels retorna modelos disponíveis por provider
+// GetAvailableModels retorna modelos disponíveis por provider.
+// Para Gemini, aceita query param `mode=vertex` para retornar modelos do Vertex AI
+// (diferentes dos modelos do AI Studio / API Key).
 func (h *AITokensHandler) GetAvailableModels(c *gin.Context) {
 	provider := c.Query("provider")
 	if provider == "" {
@@ -643,15 +653,30 @@ func (h *AITokensHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
+	mode := c.Query("mode") // "vertex" ou "" (apikey)
+
 	var models []ModelInfo
 
 	switch provider {
 	case "gemini":
-		models = []ModelInfo{
-			{ID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", Description: "Mais recente e rápido (recomendado)", IsDefault: true},
-			{ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", Description: "Mais avançado com maior capacidade"},
-			{ID: "gemini-2.0-flash", Name: "Gemini 2.0 Flash", Description: "Versão estável anterior"},
-			{ID: "gemini-2.0-flash-exp", Name: "Gemini 2.0 Flash (Experimental)", Description: "Experimental - quotas limitadas no Free Tier"},
+		if mode == "vertex" {
+			// Modelos disponíveis no Vertex AI (aiplatform.googleapis.com)
+			// Nomes devem ser os IDs exatos aceitos pelo endpoint Vertex AI
+			models = []ModelInfo{
+				{ID: "gemini-2.0-flash-001", Name: "Gemini 2.0 Flash", Description: "Estável e rápido — disponível em todas as regiões Vertex AI (recomendado)", IsDefault: true},
+				{ID: "gemini-2.0-flash-lite-001", Name: "Gemini 2.0 Flash Lite", Description: "Mais econômico e leve"},
+				{ID: "gemini-1.5-flash-002", Name: "Gemini 1.5 Flash", Description: "Geração anterior — estável e amplamente disponível"},
+				{ID: "gemini-1.5-pro-002", Name: "Gemini 1.5 Pro", Description: "Geração anterior — mais robusto, contexto longo"},
+				{ID: "gemini-2.5-flash-preview-05-20", Name: "Gemini 2.5 Flash (Preview)", Description: "Preview — pode não estar disponível em todos os projetos"},
+			}
+		} else {
+			// Modelos do AI Studio (generativelanguage.googleapis.com) — modo API Key
+			models = []ModelInfo{
+				{ID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", Description: "Mais recente — Free Tier: 15 RPM / 1M tokens/dia (recomendado)", IsDefault: true},
+				{ID: "gemini-2.0-flash", Name: "Gemini 2.0 Flash", Description: "Versão anterior estável"},
+				{ID: "gemini-1.5-flash", Name: "Gemini 1.5 Flash", Description: "Geração anterior — muito estável"},
+				{ID: "gemini-1.5-pro", Name: "Gemini 1.5 Pro", Description: "Geração anterior — robusto, contexto 1M tokens"},
+			}
 		}
 	case "claude":
 		models = []ModelInfo{
