@@ -4,13 +4,15 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, RefreshCw, Copy, Check, FileText, Search, X as XIcon } from "lucide-react";
+import { Loader2, RefreshCw, Copy, Check, FileText, Search, X as XIcon, Braces } from "lucide-react";
 import type { PodSummary, PodMetricsSingle } from "@/lib/api/types";
 import { formatAge, formatMillicores, formatBytes, formatPercent } from "@/lib/monitorUtils";
 import { apiClient } from "@/lib/api/client";
 import { ProtectedAction } from "@/components/rbac";
 import { useK8sPermissions } from "@/hooks/useK8sPermissions";
 import { toast } from "sonner";
+import { useJsonInspector } from "@/hooks/useJsonInspector";
+import { JsonInspectorModal, JsonFloatingButton } from "@/components/JsonInspectorModal";
 
 // Gauge duplo concêntrico: anel externo = MEM, anel interno = CPU
 function DualGauge({ cpuPct, memPct, cpuVal, memVal }: {
@@ -129,6 +131,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const jsonInspector = useJsonInspector();
 
   // Resize state
   const [modalSize, setModalSize] = useState({ width: 900, height: 680 });
@@ -589,6 +592,15 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
                 {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
                 {copied ? "Copiado" : "Copiar"}
               </Button>
+              <Button
+                size="sm" variant="ghost"
+                className="h-7 text-xs gap-1 text-blue-400 hover:bg-blue-400/10"
+                onClick={() => jsonInspector.setOpen(true)}
+                title="Selecione texto no log para inspecionar JSON"
+              >
+                <Braces className="w-3 h-3" />
+                JSON
+              </Button>
             </div>
 
             {/* Barra de filtros de nível + busca */}
@@ -641,7 +653,7 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
             </div>
 
             {/* Área de scroll de logs */}
-            <div className="flex-1 min-h-0 overflow-auto bg-black/50">
+            <div className="flex-1 min-h-0 overflow-auto bg-black/50" onMouseUp={jsonInspector.handleMouseUp}>
               <div className="p-3 font-mono text-xs leading-5">
                 {logsLoading && !logs ? (
                   <div className="text-muted-foreground flex items-center gap-2">
@@ -666,6 +678,15 @@ export function PodQuickViewModal({ pod, cluster, metrics, onClose, onRefresh }:
           </div>
           )}
         </div>
+
+        {jsonInspector.floatingPos && (
+          <JsonFloatingButton pos={jsonInspector.floatingPos} onClick={jsonInspector.openInspector} />
+        )}
+        <JsonInspectorModal
+          open={jsonInspector.open}
+          onClose={() => jsonInspector.setOpen(false)}
+          initialText={jsonInspector.text}
+        />
 
         {/* Handles de resize */}
         {/* Borda direita */}
