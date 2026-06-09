@@ -25,6 +25,7 @@ interface TokenStatus {
   gemini_vertex_location?: string;
   has_gemini_service_account: boolean;
   has_gemini_refresh_token: boolean;
+  gemini_wif_login_url?: string;
   has_openai: boolean;
   openai_model?: string;
   has_claude: boolean;
@@ -65,6 +66,8 @@ export function AISettingsTab() {
   const [geminiServiceAccountJSON, setGeminiServiceAccountJSON] = useState("");
   const [hasGeminiServiceAccount, setHasGeminiServiceAccount] = useState(false);
   const [hasGeminiRefreshToken, setHasGeminiRefreshToken] = useState(false);
+
+  const [wifLoginURL, setWifLoginURL] = useState("");
 
   // App-callback OAuth flow (Google) — redireciona para /oauth/google/callback na porta do próprio app
   // Resolve o WSL2: porta 8080 é forwarded, portas aleatórias não eram.
@@ -150,11 +153,16 @@ export function AISettingsTab() {
 
       // Carregar modelos salvos
       if (response.gemini_model) setGeminiModel(response.gemini_model);
-      if (response.gemini_auth_mode) setGeminiAuthMode(response.gemini_auth_mode as "apikey" | "vertex");
+      const savedAuthMode = (response.gemini_auth_mode as "apikey" | "vertex") || "apikey";
+      if (response.gemini_auth_mode) setGeminiAuthMode(savedAuthMode);
       if (response.gemini_vertex_project) setGeminiVertexProject(response.gemini_vertex_project);
       if (response.gemini_vertex_location) setGeminiVertexLocation(response.gemini_vertex_location);
       setHasGeminiServiceAccount(!!response.has_gemini_service_account);
       setHasGeminiRefreshToken(!!response.has_gemini_refresh_token);
+      if (response.gemini_wif_login_url) setWifLoginURL(response.gemini_wif_login_url);
+      // Recarregar lista de modelos com o modo salvo (vertex vs apikey)
+      // keepCurrentModel=true para preservar o modelo salvo no banco
+      await loadAvailableModels(savedAuthMode, !!response.gemini_model);
       if (response.claude_model) setClaudeModel(response.claude_model);
       if (response.openai_model) setOpenaiModel(response.openai_model);
       if (response.ollama_model) setOllamaModel(response.ollama_model);
@@ -174,11 +182,13 @@ export function AISettingsTab() {
     }
   };
 
-  const loadAvailableModels = async () => {
+  const loadAvailableModels = async (authMode?: string, keepCurrentModel = false) => {
+    const geminiMode = authMode ?? geminiAuthMode;
     try {
       // Carregar modelos de todos os providers em paralelo
+      // Para Gemini, passa o modo para retornar os modelos corretos (vertex vs apikey)
       const [gemini, claude, openai, ollama, copilot] = await Promise.all([
-        apiClient.getAvailableModels("gemini"),
+        apiClient.getAvailableModels("gemini", geminiMode === "vertex" ? "vertex" : undefined),
         apiClient.getAvailableModels("claude"),
         apiClient.getAvailableModels("openai"),
         apiClient.getAvailableModels("ollama"),
@@ -191,11 +201,12 @@ export function AISettingsTab() {
       setOllamaModels(ollama.models);
       setCopilotModels(copilot.models);
 
-      // Definir modelos padrão se não houver selecionado
-      if (!geminiModel && gemini.models.length > 0) {
-        const defaultModel = gemini.models.find(m => m.is_default);
-        if (defaultModel) setGeminiModel(defaultModel.id);
+      // Só resetar o modelo se não for para preservar o atual (ex: ao carregar configurações salvas)
+      if (!keepCurrentModel) {
+        const defaultGemini = gemini.models.find(m => m.is_default);
+        if (defaultGemini) setGeminiModel(defaultGemini.id);
       }
+
       if (!claudeModel && claude.models.length > 0) {
         const defaultModel = claude.models.find(m => m.is_default);
         if (defaultModel) setClaudeModel(defaultModel.id);
@@ -325,6 +336,8 @@ export function AISettingsTab() {
         if (geminiServiceAccountJSON.trim()) {
           payload.gemini_service_account_json = geminiServiceAccountJSON.trim();
         }
+        // WIF Login URL — não é sensível, sempre enviar para permitir limpar
+        payload.gemini_wif_login_url = wifLoginURL.trim();
       }
       if (openaiKey) payload.openai_api_key = openaiKey;
       if (claudeKey) payload.claude_api_key = claudeKey;
@@ -497,6 +510,7 @@ export function AISettingsTab() {
       setGeminiAuthMode("apikey");
       setGeminiVertexProject("");
       setGeminiVertexLocation("us-central1");
+      setWifLoginURL("");
       setVertexTestResult(null);
       setOpenaiKey("");
       setClaudeKey("");
@@ -628,13 +642,19 @@ export function AISettingsTab() {
             {/* Modo de autenticação */}
             <div className="space-y-1">
               <Label htmlFor="gemini-auth-mode" className="text-xs text-muted-foreground">Modo de Autenticação</Label>
-              <Select value={geminiAuthMode} onValueChange={(v) => { setGeminiAuthMode(v as "apikey" | "vertex"); setVertexTestResult(null); setVertexTestError(null); }}>
+              <Select value={geminiAuthMode} onValueChange={(v) => {
+                const mode = v as "apikey" | "vertex";
+                setGeminiAuthMode(mode);
+                setVertexTestResult(null);
+                setVertexTestError(null);
+                loadAvailableModels(mode);
+              }}>
                 <SelectTrigger id="gemini-auth-mode">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="apikey">API Key (Google AI Studio)</SelectItem>
-                  <SelectItem value="vertex">Vertex AI — SSO da Organização (gcloud)</SelectItem>
+                  <SelectItem value="vertex">Vertex AI (SSO Corporativo / Service Account)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -680,15 +700,61 @@ export function AISettingsTab() {
             {/* Vertex AI mode */}
             {geminiAuthMode === "vertex" && (
               <div className="space-y-3 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 p-3">
-                {/* Autenticação via Device Auth Grant — funciona em WSL2 e servidor remoto */}
+
+                {/* SSO Corporativo (WIF) */}
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-blue-800 dark:text-blue-200">
+                    Login SSO Corporativo (Workforce Identity Federation)
+                  </p>
+                  <div className="space-y-1">
+                    <Label htmlFor="wif-login-url" className="text-xs text-muted-foreground">
+                      URL de Login SSO
+                    </Label>
+                    <Input
+                      id="wif-login-url"
+                      type="url"
+                      placeholder="https://auth.cloud.google/select-session?continueUrl=...&wiffid=..."
+                      value={wifLoginURL}
+                      onChange={(e) => setWifLoginURL(e.target.value)}
+                      className="font-mono text-xs"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Cole aqui a URL de login SSO da sua organização (fornecida pelo time de TI).
+                    </p>
+                  </div>
+                  {wifLoginURL && (
+                    <div className="rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-900 p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs text-blue-700 dark:text-blue-300 font-medium">
+                          Clique para fazer login com email e senha corporativos:
+                        </p>
+                        <Button
+                          size="sm"
+                          className="h-7 text-xs gap-1.5 shrink-0"
+                          onClick={() => window.open(wifLoginURL, "_blank")}
+                        >
+                          <LogIn className="h-3 w-3" /> Abrir Login SSO
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Após autenticar no browser, verifique se as credenciais estão ativas clicando em{" "}
+                        <strong>"Testar Conexão"</strong> abaixo.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                <Separator />
+
+                {/* OAuth2 PKCE (contas Google pessoais / Workspace via OAuth padrão) */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-xs font-medium text-blue-800 dark:text-blue-200">
-                        Autenticação via SSO corporativo
+                        Autenticação via OAuth2 (conta Google pessoal / Workspace)
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        Login com conta Google da empresa — funciona em WSL2 e acesso remoto
+                        Redireciona para o Google — funciona em WSL2 e acesso remoto
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -698,7 +764,7 @@ export function AISettingsTab() {
                         </Badge>
                       )}
                       {(googleStatus === "idle" || googleStatus === "error") && (
-                        <Button size="sm" onClick={startGoogleAuth}>
+                        <Button size="sm" variant="outline" onClick={startGoogleAuth}>
                           <LogIn className="h-4 w-4 mr-1" />
                           {hasGeminiRefreshToken ? "Re-autenticar" : "Autenticar com Google"}
                         </Button>
@@ -710,7 +776,7 @@ export function AISettingsTab() {
                     <div className="rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-900 p-3 space-y-2">
                       <div className="flex items-center gap-2 text-xs text-blue-700 dark:text-blue-300">
                         <Loader2 className="h-3 w-3 animate-spin shrink-0" />
-                        <span className="font-semibold">Browser aberto — faça login com sua conta corporativa Google.</span>
+                        <span className="font-semibold">Browser aberto — faça login com sua conta Google.</span>
                       </div>
                       {googleAuthURL && (
                         <div className="flex items-center gap-2">
