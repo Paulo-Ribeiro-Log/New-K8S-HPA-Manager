@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -9,8 +9,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Copy, Download, Trash2, RefreshCw, FileText } from "lucide-react";
+import { Copy, Download, Trash2, RefreshCw, FileText, Braces } from "lucide-react";
 import { toast } from "sonner";
+import { JsonInspectorModal } from "@/components/JsonInspectorModal";
 
 interface LogEntry {
   timestamp: string;
@@ -28,6 +29,10 @@ export const LogViewer = ({ open, onOpenChange }: LogViewerProps) => {
   const [logs, setLogs] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [jsonInspectorOpen, setJsonInspectorOpen] = useState(false);
+  const [jsonInspectorText, setJsonInspectorText] = useState("");
+  const [hasTextareaSelection, setHasTextareaSelection] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const fetchLogs = async () => {
     try {
@@ -71,6 +76,19 @@ export const LogViewer = ({ open, onOpenChange }: LogViewerProps) => {
   const handleCopy = () => {
     navigator.clipboard.writeText(logs);
     toast.success("Logs copiados para a área de transferência!");
+  };
+
+  const handleTextareaSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const ta = e.currentTarget;
+    setHasTextareaSelection(ta.selectionStart !== ta.selectionEnd);
+  };
+
+  const openJsonInspector = () => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const selected = ta.value.slice(ta.selectionStart, ta.selectionEnd).trim();
+    setJsonInspectorText(selected || "");
+    setJsonInspectorOpen(true);
   };
 
   const handleExportCSV = () => {
@@ -226,6 +244,17 @@ export const LogViewer = ({ open, onOpenChange }: LogViewerProps) => {
           </Button>
 
           <Button
+            onClick={openJsonInspector}
+            variant="outline"
+            size="sm"
+            className="gap-1 text-blue-400 border-blue-400/30 hover:bg-blue-400/10"
+            title={hasTextareaSelection ? "Inspecionar seleção como JSON" : "Inspecionar JSON (selecione um trecho do log)"}
+          >
+            <Braces className="h-4 w-4" />
+            {hasTextareaSelection ? "Inspecionar seleção" : "Inspecionar JSON"}
+          </Button>
+
+          <Button
             onClick={handleClear}
             variant="destructive"
             size="sm"
@@ -237,12 +266,20 @@ export const LogViewer = ({ open, onOpenChange }: LogViewerProps) => {
 
         <div className="flex-1 overflow-hidden">
           <Textarea
+            ref={textareaRef}
             value={logs}
             readOnly
+            onSelect={handleTextareaSelect}
             className="h-full font-mono text-xs resize-none"
             placeholder={loading ? "Carregando logs..." : "Nenhum log disponível"}
           />
         </div>
+
+        <JsonInspectorModal
+          open={jsonInspectorOpen}
+          onClose={() => setJsonInspectorOpen(false)}
+          initialText={jsonInspectorText}
+        />
 
         <div className="flex justify-between items-center text-xs text-muted-foreground">
           <div>

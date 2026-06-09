@@ -3,10 +3,12 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { ChevronLeft, Copy, RefreshCw, Loader2 } from "lucide-react";
+import { ChevronLeft, Copy, RefreshCw, Loader2, Braces } from "lucide-react";
 import { apiClient } from "@/lib/api/client";
 import type { PodSummary } from "@/lib/api/types";
 import { toast } from "sonner";
+import { useJsonInspector } from "@/hooks/useJsonInspector";
+import { JsonInspectorModal, JsonFloatingButton } from "@/components/JsonInspectorModal";
 
 interface PodLogsPanelProps {
   cluster: string;
@@ -47,6 +49,7 @@ export const PodLogsPanel = ({ cluster, pod, onBack, backLabel }: PodLogsPanelPr
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const jsonInspector = useJsonInspector();
 
   const fetchLogs = useCallback(async () => {
     if (!selectedContainer) return;
@@ -121,7 +124,7 @@ export const PodLogsPanel = ({ cluster, pod, onBack, backLabel }: PodLogsPanelPr
         </Select>
       </div>
 
-      {/* Header row 2: auto-refresh + copy */}
+      {/* Header row 2: auto-refresh + copy + json */}
       <div className="flex items-center gap-3 flex-shrink-0">
         <div className="flex items-center gap-2">
           <Switch id="auto-refresh-logs" checked={autoRefresh} onCheckedChange={setAutoRefresh} />
@@ -138,11 +141,22 @@ export const PodLogsPanel = ({ cluster, pod, onBack, backLabel }: PodLogsPanelPr
           <Copy className="w-3 h-3 mr-1" />
           Copiar
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs gap-1 text-blue-400 border-blue-400/30 hover:bg-blue-400/10"
+          onClick={() => jsonInspector.setOpen(true)}
+          title="Selecione texto no log para inspecionar JSON"
+        >
+          <Braces className="w-3 h-3" />
+          JSON
+        </Button>
       </div>
 
       {/* Log area */}
       <div
         ref={scrollRef}
+        onMouseUp={jsonInspector.handleMouseUp}
         className="flex-1 min-h-0 bg-black rounded-md overflow-auto font-mono text-xs p-2"
       >
         {logs.length === 0 && !loading && (
@@ -150,10 +164,19 @@ export const PodLogsPanel = ({ cluster, pod, onBack, backLabel }: PodLogsPanelPr
         )}
         {logs.map((line, i) => (
           <div key={i} className={`leading-5 whitespace-pre-wrap break-all ${highlightLogLine(line)}`}>
-            {line || "\u00A0"}
+            {line || " "}
           </div>
         ))}
       </div>
+
+      {jsonInspector.floatingPos && (
+        <JsonFloatingButton pos={jsonInspector.floatingPos} onClick={jsonInspector.openInspector} />
+      )}
+      <JsonInspectorModal
+        open={jsonInspector.open}
+        onClose={() => jsonInspector.setOpen(false)}
+        initialText={jsonInspector.text}
+      />
     </div>
   );
 };

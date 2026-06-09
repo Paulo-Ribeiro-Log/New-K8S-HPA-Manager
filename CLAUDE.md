@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANTE**: Mensagens de commit (git commit) devem ser sempre em português brasileiro.
 **IMPORTANTE**: Mantenha o foco na filosofia KISS.
 **IMPORTANTE**: Sempre compile o build em ./build/ - usar `./build/new-k8s-hpa` para executar a aplicação.
-**IMPORTANTE**: Versão atual estável: `v1.3.33`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Branch `finops-dynatrace` (baseado em `migracao-jwt`): Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — DTEnricher batch (4 queries splitBy), PrometheusEnricher parcial, campo MetricsSource, badge DT/Prom na UI (Fases 1-4 concluídas, cheklist em FINOPS-DT-METRICS.md). New Relic planejado como camada intermediária para clusters EKS (cadeia: DT → NR → Prometheus), cheklist em FINOPS-NR-METRICS.md — `internal/newrelic/` ainda não criado. Branch `fix-auto-discovery` (baseado em `finops-dynatrace`): auto-discovery paralelo AKS+EKS concluído (Fases 1-5 de CLUSTER-DISCOVERY-PLAN.md) — struct `ClusterConfig` AKS-only, `EKSClusterConfig` em arquivo separado (`eks-clusters-config.json`), semáforos ampliados (10 clusters × 15 subscriptions), `NodeGroupProvider` interface com impl. Azure e AWS. Branch `integracao-teams`: automação de browser para extração de CHGs do Mr.ViaBot no Teams via go-rod (DOM + IndexedDB, sem HTTP direto — MCAS bloqueia) e aprovação inline via SRE Approval system (devstartcd.via.com.br) com `SreApprovalButton` inline e `ServiceNowImportModal` com aba "Teams" como padrão; busca em lote de CHGs via ServiceNow após seleção.
+**IMPORTANTE**: Versão atual estável: `v1.3.33`. Branch `integracao-dyna` está à frente do `main` com Node Pool Registry, Device Auth Grant para Gemini, correlação bidirecional K8s↔Dynatrace no Health Check, aba "DT Sinais" com varredura OneAgent por threshold (Fases 1-5 concluídas), aba Diagnóstico unificada na tab Dynatrace com investigação profunda (HC K8s direcionado + métricas DT + AI), GitHub Releases com SSO/SAML (org configurável via `localStorage["github_org"]`, padrão `casas-bahia`) e aba GitHub na tab Dynatrace com fallback em 3 níveis para correlação sem OneAgent. Branch `migracao-jwt` introduz autenticação JWT (Fases 1-4 concluídas): backend JWT core, middleware dual-mode, login automático Azure AD no frontend, refresh proativo (<1h para expirar) e grace period 24h no backend. Branch `finops-dynatrace` (baseado em `migracao-jwt`): Dynatrace como fonte primária de métricas históricas FinOps com Prometheus como fallback — DTEnricher batch (4 queries splitBy), PrometheusEnricher parcial, campo MetricsSource, badge DT/Prom na UI (Fases 1-4 concluídas, cheklist em FINOPS-DT-METRICS.md). New Relic planejado como camada intermediária para clusters EKS (cadeia: DT → NR → Prometheus), cheklist em FINOPS-NR-METRICS.md — `internal/newrelic/` ainda não criado. Branch `fix-auto-discovery` (baseado em `finops-dynatrace`): auto-discovery paralelo AKS+EKS concluído (Fases 1-5 de CLUSTER-DISCOVERY-PLAN.md) — struct `ClusterConfig` AKS-only, `EKSClusterConfig` em arquivo separado (`eks-clusters-config.json`), semáforos ampliados (10 clusters × 15 subscriptions), `NodeGroupProvider` interface com impl. Azure e AWS. Branch `integracao-teams`: automação de browser para extração de CHGs do Mr.ViaBot no Teams via go-rod (DOM + IndexedDB, sem HTTP direto — MCAS bloqueia) e aprovação inline via SRE Approval system (devstartcd.via.com.br) com `SreApprovalButton` inline e `ServiceNowImportModal` com aba "Teams" como padrão; busca em lote de CHGs via ServiceNow após seleção. Branch `correcao-jwt`: RBAC K8s via `SelfSubjectRulesReview` em todos os recursos — permissões reais do cluster por namespace, independente de grupos AD, com cache 5min; `useK8sPermissions(cluster, namespace)` + prop `allowed` no `<ProtectedAction>` (ver seção "RBAC K8s via SelfSubjectRulesReview").
 **IMPORTANTE**: Após `make build`, sempre reiniciar o servidor (`kill <PID> && ./build/new-k8s-hpa web -f`) — o processo não recarrega o binário automaticamente.
 **IMPORTANTE**: Ao fazer alterações no frontend (React/TypeScript), sempre rebuild com `./rebuild-web.sh -b` E fazer hard refresh no navegador (Ctrl+Shift+R).
 
@@ -519,6 +519,35 @@ Ver implementação em `PodQuickViewModal.tsx`.
 
 Usar essas funções ao calcular percentuais de uso vs. limit/request. **Nunca calcular percentuais inline em componentes** — usar os parsers do `monitorUtils`.
 
+### JSON Inspector (Logs)
+
+Ferramenta de inspeção e formatação de JSON embutida em todos os visualizadores de log. Ativada por **seleção de texto** — o usuário seleciona um trecho do log e clica no botão flutuante que aparece.
+
+**Arquivos:**
+- `src/lib/jsonFormatter.ts` — `tryFormatJson(input)`, `tokenizeJson(line)` e `extractJsonBlock(text)`
+- `src/hooks/useJsonInspector.ts` — hook de detecção de seleção via `selectionchange` event + posicionamento do botão flutuante via `getRangeAt(0).getBoundingClientRect()`
+- `src/components/JsonInspectorModal.tsx` — modal split-view com entrada editável (esquerda) e saída formatada + syntax highlight + numeração de linhas (direita). Também exporta `JsonFloatingButton`
+
+**Componentes que usam o inspetor** (padrão idêntico nos 3 primeiros):
+- `PodLogsPanel.tsx` — `onMouseUp={jsonInspector.handleMouseUp}` no container de log
+- `PodQuickViewModal.tsx` — idem na área de scroll de logs
+- `ContainersTab.tsx` — wrapper `<div onMouseUp={...}>` em volta do `<ScrollArea>` de logs
+- `LogViewer.tsx` — abordagem diferente: `<Textarea ref={textareaRef} onSelect={...}>` + botão no toolbar (sem botão flutuante, pois `window.getSelection()` não funciona em textarea)
+
+**Comportamento crítico de `tryFormatJson`:**
+1. Tenta `JSON.parse()` no texto completo
+2. Se falhar, chama `extractJsonBlock()` que percorre o texto procurando o primeiro `{` ou `[` e extrai o bloco balanceado — necessário para logs com prefixo (`2024-01-01T12:00:00Z INFO {"msg":"..."}` → extrai `{"msg":"..."}`)
+3. Se a extração tiver sucesso, retorna `wasExtracted: true` → modal exibe aviso âmbar
+4. Se tudo falhar, retorna `errorLine`/`errorCol` extraídos da mensagem V8 (`"(line N column M)"`) → linha com erro é destacada em vermelho no painel direito
+
+**Renderização linha-a-linha** (design crítico): `ValidJsonPanel` e `InvalidJsonPanel` iteram `json.split("\n")` e tokenizam **cada linha individualmente** via `tokenizeJson(line)`. Isso garante que o número da linha N sempre corresponda ao conteúdo da linha N. **Não tokenizar o JSON completo** num único passo — o alinhamento com os números de linha quebra quando tokens `space` contêm `\n`.
+
+**Formato de log correto para FluentD + EventHub**: JSON puro por linha com timestamp embutido:
+```json
+{"time":"2024-06-08T12:00:00Z","level":"INFO","msg":"pod started","pod":"api-7d9f"}
+```
+O formato `TIMESTAMP LEVEL {JSON}` (timestamp fora do objeto) falha no FluentD `@type json` e no EventHub consumer. O inspetor detecta esse caso via `extractJsonBlock` e avisa com o badge âmbar.
+
 ### ServiceNow — Rod (Go nativo) + WSL2 CDP
 
 `internal/servicenow/` — extração de CHGs via browser automation com **go-rod v0.116.2** (Go nativo, sem Node.js/npm). Suporta autenticação SAML/SSO do Azure AD com persistência de sessão.
@@ -596,10 +625,45 @@ Usar essas funções ao calcular percentuais de uso vs. limit/request. **Nunca c
 
 ---
 
+## RBAC K8s via SelfSubjectRulesReview
+
+Camada adicional ao RBAC Azure AD (branch `correcao-jwt`): permissões reais do cluster por namespace, obtidas via `SelfSubjectRulesReview` da API do K8s. Independente de grupos AD — reflete exatamente o que o kubeconfig do servidor permite.
+
+**Backend** (`internal/kubernetes/permissions.go` + `internal/web/handlers/k8s_permissions.go`):
+- `NamespacePermissions` — struct com campos `canListHPA`, `canUpdateHPA`, `canExecPods`, `canWriteSecrets`, etc.
+- `K8sPermissionsHandler` — cache em memória com TTL de **5 minutos** por chave `cluster/namespace`
+- Endpoint: `GET /api/v1/k8s-permissions?cluster=<c>&namespace=<ns>`
+- Campo `Incomplete: true` quando o cluster usa wildcard policies complexas — nesse caso assume acesso total para não bloquear
+
+**Frontend** (`internal/hooks/useK8sPermissions.ts`):
+- `useK8sPermissions(cluster, namespace)` — React Query com `staleTime: 5min`, retry 1, sem refetch no foco
+- Fallback conservador: leitura permitida, escrita bloqueada (enquanto carrega ou cluster indefinido)
+- Retorna `{ permissions, canWrite }` onde `canWrite = permissions.canUpdateHPA`
+
+**`ProtectedAction` atualizado** — nova prop `allowed?: boolean`:
+```tsx
+// Sem prop: verifica grupo AD (isSRE) — comportamento original
+<ProtectedAction><Button>Escalar HPA</Button></ProtectedAction>
+
+// Com prop: usa permissão K8s real — ignora grupo AD
+const { permissions } = useK8sPermissions(cluster, namespace);
+<ProtectedAction allowed={permissions.canUpdateHPA}>
+  <Button>Escalar HPA</Button>
+</ProtectedAction>
+```
+
+**Quando usar qual verificação:**
+- `ProtectedAction` sem `allowed` → operações que requerem pertencer ao grupo SRE (ex: aprovar CHGs, operações de node pool)
+- `ProtectedAction allowed={...}` → operações que refletem o RBAC do cluster (ex: editar HPA, secret, deployment — depende do que o kubeconfig permite)
+
+---
+
 ## Troubleshooting Rápido
 
 | Problema | Solução |
 |----------|---------|
+| K8s RBAC: botão aparece disabled mesmo sendo SRE | `useK8sPermissions` ainda carregando ou cluster sem permissão real — verificar se `allowed` prop está sendo passada; se sim, o RBAC do cluster prevalece sobre o grupo AD |
+| K8s RBAC: `Incomplete: true` na resposta | Cluster usa wildcard policies — handler assume acesso total, botões ficam habilitados |
 | JWT: login retorna 501 | `K8S_HPA_JWT_SECRET` não definido no servidor — frontend cai para token estático automaticamente |
 | JWT: login retorna "AZ_CLI_ERROR" | Azure CLI não autenticado no servidor — executar `az login` no servidor |
 | JWT: token expira antes do esperado | Verificar `K8S_HPA_JWT_TTL` (padrão `8h`); refresh automático falhou — verificar logs do servidor |
@@ -610,6 +674,11 @@ Usar essas funções ao calcular percentuais de uso vs. limit/request. **Nunca c
 | Editor YAML "apiVersion not set" | Adicionar TypeMeta antes do yaml.Marshal |
 | AI Diagnostics timeout | Usar modelo llama3.2:3b (max viável com 6GB RAM) |
 | Cluster inacessível | VPN ou cluster desligado — testar `kubectl cluster-info --context <name>` |
+| JSON Inspector: botão flutuante não aparece | `selectionchange` não disparou — verificar se `onMouseUp={jsonInspector.handleMouseUp}` está no container correto; em `<textarea>` o inspetor usa botão fixo no toolbar, não botão flutuante |
+| JSON Inspector: badge âmbar "JSON extraído" | Normal para logs com prefixo (`TIMESTAMP LEVEL {...}`) — só o bloco JSON foi parseado; o formato completo da linha não é JSON puro |
+| JSON Inspector: linha de erro não destaca | V8 antigo pode não incluir `(line N column M)` na mensagem — só `at position N`; nesse caso `errorLine` é calculado a partir do offset |
+| JSON Inspector: painel direito em branco | Verificar se `ValidJsonPanel` está chamando `tokenizeJson(line)` linha a linha — **nunca** tokenizar o JSON completo numa chamada só; o alinhamento com line numbers quebra |
+| Logs FluentD/EventHub não estruturados | Formato `TIMESTAMP LEVEL {...}` não é JSON puro — FluentD `@type json` falha; usar `{"time":"...","level":"...","msg":"..."}` com todos os campos dentro do objeto |
 | Terminal duplica "ç" | Verificar `event.preventDefault()` antes de `ws.send()` em PodTerminal.tsx |
 | Command Runner sem resposta | Verificar se SSE broker está iniciado e session ID é único |
 | Dependency graph não carrega | Cytoscape requer container com dimensões definidas (não `height: 0`) |

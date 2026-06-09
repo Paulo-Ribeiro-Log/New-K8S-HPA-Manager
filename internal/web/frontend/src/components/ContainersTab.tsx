@@ -9,7 +9,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, Terminal, Trash2, FileText, AlertCircle, CheckCircle2, XCircle, Loader2, Download, ChevronDown, ChevronRight, Maximize2, X } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, Terminal, Trash2, FileText, AlertCircle, CheckCircle2, XCircle, Loader2, Download, ChevronDown, ChevronRight, Maximize2, X, Braces } from "lucide-react";
+import { useJsonInspector } from "@/hooks/useJsonInspector";
+import { JsonInspectorModal, JsonFloatingButton } from "@/components/JsonInspectorModal";
 import { toast } from "sonner";
 
 import type {
@@ -47,6 +49,7 @@ export const ContainersTab = ({
   const [selectedContainer, setSelectedContainer] = useState<string | null>(null);
   const [logs, setLogs] = useState<string>("");
   const [logsLoading, setLogsLoading] = useState(false);
+  const jsonInspector = useJsonInspector();
   const [showLabelsInDetails, setShowLabelsInDetails] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deletingPod, setDeletingPod] = useState(false);
@@ -433,18 +436,38 @@ export const ContainersTab = ({
               >
                 <Download className="w-4 h-4" />
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1 text-blue-400 border-blue-400/30 hover:bg-blue-400/10"
+                onClick={() => jsonInspector.setOpen(true)}
+                title="Selecione texto no log para inspecionar JSON"
+              >
+                <Braces className="w-4 h-4" />
+              </Button>
             </div>
           )}
 
-          <ScrollArea className="flex-1 border rounded-lg bg-black text-green-400 p-4">
-            {logsLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-6 h-6 animate-spin" />
-              </div>
-            ) : (
-              <pre className="text-xs font-mono whitespace-pre-wrap">{logs || "Select a container to view logs"}</pre>
-            )}
-          </ScrollArea>
+          <div onMouseUp={jsonInspector.handleMouseUp} className="flex-1 min-h-0">
+            <ScrollArea className="h-full border rounded-lg bg-black text-green-400 p-4">
+              {logsLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                </div>
+              ) : (
+                <pre className="text-xs font-mono whitespace-pre-wrap">{logs || "Select a container to view logs"}</pre>
+              )}
+            </ScrollArea>
+          </div>
+
+          {jsonInspector.floatingPos && (
+            <JsonFloatingButton pos={jsonInspector.floatingPos} onClick={jsonInspector.openInspector} />
+          )}
+          <JsonInspectorModal
+            open={jsonInspector.open}
+            onClose={() => jsonInspector.setOpen(false)}
+            initialText={jsonInspector.text}
+          />
         </TabsContent>
 
         <TabsContent value="details" className="flex-1 mt-0">
