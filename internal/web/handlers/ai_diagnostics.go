@@ -217,8 +217,13 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 		}
 		if tokens.GeminiModel != "" {
 			config.GeminiModel = tokens.GeminiModel
+			// conversão AI Studio → Vertex AI ocorre em NewGeminiProvider via ToVertexModelID
 		} else {
-			config.GeminiModel = "gemini-2.5-flash"
+			if config.GeminiAuthMode == "vertex" {
+				config.GeminiModel = "gemini-2.0-flash-001"
+			} else {
+				config.GeminiModel = "gemini-2.5-flash"
+			}
 		}
 		log.Info().
 			Str("ai_email", aiEmail).

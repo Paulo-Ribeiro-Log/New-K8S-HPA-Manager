@@ -23,6 +23,27 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// vertexModelMap converte IDs de modelo do AI Studio para o formato versionado do Vertex AI.
+// O Vertex AI exige nomes com sufixo de versão (ex: gemini-2.0-flash-001) enquanto o
+// AI Studio aceita aliases sem versão (ex: gemini-2.0-flash).
+var vertexModelMap = map[string]string{
+	"gemini-2.5-pro":        "gemini-2.5-pro-preview-06-05",
+	"gemini-2.5-flash":      "gemini-2.5-flash-preview-05-20",
+	"gemini-2.0-flash":      "gemini-2.0-flash-001",
+	"gemini-2.0-flash-lite": "gemini-2.0-flash-lite-001",
+	"gemini-1.5-pro":        "gemini-1.5-pro-002",
+	"gemini-1.5-flash":      "gemini-1.5-flash-002",
+}
+
+// ToVertexModelID converte ID de modelo do AI Studio para formato do Vertex AI.
+// Retorna o modelo sem alteração se já tiver sufixo de versão.
+func ToVertexModelID(model string) string {
+	if mapped, ok := vertexModelMap[model]; ok {
+		return mapped
+	}
+	return model
+}
+
 // GeminiProvider implementa Provider para Google Gemini API (AI Studio ou Vertex AI)
 type GeminiProvider struct {
 	apiKey             string
@@ -39,9 +60,13 @@ type GeminiProvider struct {
 
 // NewGeminiProvider cria um novo GeminiProvider
 func NewGeminiProvider(config *Config) *GeminiProvider {
+	model := config.GeminiModel
+	if config.GeminiAuthMode == "vertex" {
+		model = ToVertexModelID(model)
+	}
 	return &GeminiProvider{
 		apiKey:             config.GeminiAPIKey,
-		model:              config.GeminiModel,
+		model:              model,
 		timeout:            time.Duration(config.Timeout) * time.Second,
 		client:             &http.Client{Timeout: time.Duration(config.Timeout) * time.Second},
 		authMode:           config.GeminiAuthMode,

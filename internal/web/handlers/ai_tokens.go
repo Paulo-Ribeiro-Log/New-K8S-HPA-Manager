@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -488,13 +489,25 @@ func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 		// Buscar refresh token e wifPoolProvider armazenados
 		refreshToken := ""
 		wifPoolProvider := ""
+		vertexLocation := req.VertexLocation
+		vertexModel := ""
 		if req.AIEmail != "" && req.ServiceAccountJSON == "" {
 			if tokens, err := h.tokensStore.GetTokens(req.AIEmail); err == nil && tokens != nil {
 				refreshToken = tokens.GeminiRefreshToken
 				wifPoolProvider = tokens.GeminiWifLoginURL
+				if vertexLocation == "" {
+					vertexLocation = tokens.GeminiVertexLocation
+				}
+				vertexModel = tokens.GeminiModel
 			}
 		}
-		validationErr = validateGeminiVertexConnection(req.VertexProject, req.ServiceAccountJSON, refreshToken, wifPoolProvider)
+		if vertexLocation == "" {
+			vertexLocation = "us-central1"
+		}
+		if vertexModel == "" {
+			vertexModel = "gemini-2.0-flash-001"
+		}
+		validationErr = validateGeminiVertexConnection(req.VertexProject, vertexLocation, vertexModel, req.ServiceAccountJSON, refreshToken, wifPoolProvider)
 	case "claude":
 		validationErr = validateClaudeToken(req.APIKey)
 	case "openai":
@@ -522,18 +535,65 @@ func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 	})
 }
 
-// validateGeminiVertexConnection testa autenticação para Vertex AI.
-// Prioridade: WIF refresh → OAuth2 refresh → serviceAccountJSON → ADC file (gcloud)
-func validateGeminiVertexConnection(project, serviceAccountJSON, refreshToken, wifPoolProvider string) error {
+// validateGeminiVertexConnection testa autenticação E disponibilidade do modelo no Vertex AI.
+// Faz uma chamada real à API com um prompt mínimo para detectar erros de modelo além de erros de auth.
+func validateGeminiVertexConnection(project, location, model, serviceAccountJSON, refreshToken, wifPoolProvider string) error {
 	if project == "" {
 		return fmt.Errorf("projeto GCP é obrigatório para Vertex AI")
 	}
+	if location == "" {
+		location = "us-central1"
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	_, err := ai.GetVertexAccessToken(ctx, serviceAccountJSON, refreshToken, wifPoolProvider)
-	return err
+	token, err := ai.GetVertexAccessToken(ctx, serviceAccountJSON, refreshToken, wifPoolProvider)
+	if err != nil {
+		return fmt.Errorf("falha ao obter token de acesso: %w", err)
+	}
+
+	// Converter para ID de modelo do Vertex AI (ex: gemini-2.5-pro → gemini-2.5-pro-preview-06-05)
+	vertexModel := ai.ToVertexModelID(model)
+
+	// Testar chamada real ao modelo para verificar disponibilidade
+	apiURL := fmt.Sprintf(
+		"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent",
+		location, project, location, vertexModel)
+
+	reqBody := `{"contents":[{"parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":1}}`
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(reqBody))
+	if err != nil {
+		return fmt.Errorf("erro ao criar requisição: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("falha ao chamar Vertex AI: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+
+	// Diagnóstico específico por código de status
+	switch resp.StatusCode {
+	case 404:
+		return fmt.Errorf(
+			"modelo '%s' não encontrado no projeto '%s' (região: %s) — "+
+				"tente: gemini-2.0-flash-001, gemini-1.5-pro-002 ou gemini-1.5-flash-002",
+			vertexModel, project, location)
+	case 403:
+		return fmt.Errorf("permissão negada (403) — o token não tem acesso ao projeto '%s'. Detalhes: %s", project, string(body))
+	case 400:
+		return fmt.Errorf("requisição inválida (400) — modelo '%s' pode não estar disponível em '%s'. Detalhes: %s", vertexModel, location, string(body))
+	default:
+		return fmt.Errorf("Vertex AI retornou status %d para modelo '%s': %s", resp.StatusCode, vertexModel, string(body))
+	}
 }
 
 // validateGeminiToken valida token do Gemini
@@ -671,13 +731,14 @@ func (h *AITokensHandler) GetAvailableModels(c *gin.Context) {
 	case "gemini":
 		if mode == "vertex" {
 			// Modelos disponíveis no Vertex AI (aiplatform.googleapis.com)
-			// Nomes devem ser os IDs exatos aceitos pelo endpoint Vertex AI
+			// IDs devem ter sufixo de versão — AI Studio (gemini-2.0-flash) NÃO funciona aqui
 			models = []ModelInfo{
-				{ID: "gemini-2.0-flash-001", Name: "Gemini 2.0 Flash", Description: "Estável e rápido — disponível em todas as regiões Vertex AI (recomendado)", IsDefault: true},
+				{ID: "gemini-2.5-pro-preview-06-05", Name: "Gemini 2.5 Pro (Preview)", Description: "Mais avançado — use se disponível no seu projeto (recomendado)", IsDefault: true},
+				{ID: "gemini-2.5-flash-preview-05-20", Name: "Gemini 2.5 Flash (Preview)", Description: "Rápido e avançado — pode não estar em todas as regiões"},
+				{ID: "gemini-2.0-flash-001", Name: "Gemini 2.0 Flash", Description: "Estável e rápido — disponível em todas as regiões Vertex AI"},
 				{ID: "gemini-2.0-flash-lite-001", Name: "Gemini 2.0 Flash Lite", Description: "Mais econômico e leve"},
+				{ID: "gemini-1.5-pro-002", Name: "Gemini 1.5 Pro", Description: "Geração anterior — amplamente disponível, contexto longo"},
 				{ID: "gemini-1.5-flash-002", Name: "Gemini 1.5 Flash", Description: "Geração anterior — estável e amplamente disponível"},
-				{ID: "gemini-1.5-pro-002", Name: "Gemini 1.5 Pro", Description: "Geração anterior — mais robusto, contexto longo"},
-				{ID: "gemini-2.5-flash-preview-05-20", Name: "Gemini 2.5 Flash (Preview)", Description: "Preview — pode não estar disponível em todos os projetos"},
 			}
 		} else {
 			// Modelos do AI Studio (generativelanguage.googleapis.com) — modo API Key
