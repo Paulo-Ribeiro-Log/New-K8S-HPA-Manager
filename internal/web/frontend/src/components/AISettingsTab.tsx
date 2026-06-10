@@ -418,7 +418,7 @@ export function AISettingsTab() {
     setGoogleAuthURL("");
 
     try {
-      const result = await apiClient.startGoogleInstallAuth(aiEmail, window.location.origin);
+      const result = await apiClient.startGoogleInstallAuth(aiEmail, window.location.origin, wifLoginURL || undefined);
       setGoogleSessionId(result.session_id);
       if (result.auth_url) {
         setGoogleAuthURL(result.auth_url);
@@ -458,7 +458,7 @@ export function AISettingsTab() {
     setVertexTestResult(null);
     setVertexTestError(null);
     try {
-      const response = await apiClient.validateAIToken("gemini-vertex", "", undefined, undefined, geminiVertexProject, geminiVertexLocation, geminiServiceAccountJSON || undefined);
+      const response = await apiClient.validateAIToken("gemini-vertex", "", undefined, undefined, geminiVertexProject, geminiVertexLocation, geminiServiceAccountJSON || undefined, aiEmail || undefined);
       setVertexTestResult(response.valid);
       if (!response.valid) {
         setVertexTestError(response.error || "Falha na autenticação ADC");
@@ -624,8 +624,10 @@ export function AISettingsTab() {
               className="font-mono text-sm"
             />
             <p className="text-xs text-muted-foreground">
-              Este email identifica suas configurações AI (não precisa ser o mesmo do Azure AD).
-              Todas as suas API keys e preferências ficam vinculadas a este email.
+              Este email identifica suas configurações AI e é usado como <strong>login_hint</strong> no OAuth2 do Google.{" "}
+              {geminiAuthMode === "vertex"
+                ? <span className="text-blue-600 dark:text-blue-400">Para SSO corporativo (Azure AD → WIF), use seu email corporativo (ex: <code>voce@empresa.com.br</code>) — o Google redirecionará automaticamente para o Azure AD.</span>
+                : "Todas as suas API keys e preferências ficam vinculadas a este email."}
             </p>
           </div>
 
@@ -701,47 +703,29 @@ export function AISettingsTab() {
             {geminiAuthMode === "vertex" && (
               <div className="space-y-3 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 p-3">
 
-                {/* SSO Corporativo (WIF) */}
+                {/* WIF Pool / Provider */}
                 <div className="space-y-2">
                   <p className="text-xs font-medium text-blue-800 dark:text-blue-200">
-                    Login SSO Corporativo (Workforce Identity Federation)
+                    Workforce Identity Federation (WIF)
                   </p>
                   <div className="space-y-1">
                     <Label htmlFor="wif-login-url" className="text-xs text-muted-foreground">
-                      URL de Login SSO
+                      Pool ID / Provider ID
                     </Label>
                     <Input
                       id="wif-login-url"
-                      type="url"
-                      placeholder="https://auth.cloud.google/select-session?continueUrl=...&wiffid=..."
+                      type="text"
+                      placeholder="entraid-agentspace/entraid-federation-agentspace"
                       value={wifLoginURL}
                       onChange={(e) => setWifLoginURL(e.target.value)}
                       className="font-mono text-xs"
                     />
                     <p className="text-xs text-muted-foreground">
-                      Cole aqui a URL de login SSO da sua organização (fornecida pelo time de TI).
+                      Formato <code>poolID/providerID</code> do seu WIF no Google Cloud.
+                      Quando preenchido, o botão <strong>"Autenticar com Google"</strong> usa{" "}
+                      <code>auth.cloud.google/authorize</code> (WIF) em vez de <code>accounts.google.com</code>.
                     </p>
                   </div>
-                  {wifLoginURL && (
-                    <div className="rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-900 p-3 space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-xs text-blue-700 dark:text-blue-300 font-medium">
-                          Clique para fazer login com email e senha corporativos:
-                        </p>
-                        <Button
-                          size="sm"
-                          className="h-7 text-xs gap-1.5 shrink-0"
-                          onClick={() => window.open(wifLoginURL, "_blank")}
-                        >
-                          <LogIn className="h-3 w-3" /> Abrir Login SSO
-                        </Button>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Após autenticar no browser, verifique se as credenciais estão ativas clicando em{" "}
-                        <strong>"Testar Conexão"</strong> abaixo.
-                      </p>
-                    </div>
-                  )}
                 </div>
 
                 <Separator />
@@ -751,10 +735,10 @@ export function AISettingsTab() {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-xs font-medium text-blue-800 dark:text-blue-200">
-                        Autenticação via OAuth2 (conta Google pessoal / Workspace)
+                        Autenticar com Google (OAuth2)
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        Redireciona para o Google — funciona em WSL2 e acesso remoto
+                        Usa o email configurado acima como <code>login_hint</code> — se for um email corporativo, o Google redireciona automaticamente para o Azure AD (SSO WIF)
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -776,7 +760,7 @@ export function AISettingsTab() {
                     <div className="rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-900 p-3 space-y-2">
                       <div className="flex items-center gap-2 text-xs text-blue-700 dark:text-blue-300">
                         <Loader2 className="h-3 w-3 animate-spin shrink-0" />
-                        <span className="font-semibold">Browser aberto — faça login com sua conta Google.</span>
+                        <span className="font-semibold">Browser aberto — se redirecionar para o Azure AD, faça login com a conta corporativa.</span>
                       </div>
                       {googleAuthURL && (
                         <div className="flex items-center gap-2">

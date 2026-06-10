@@ -20,15 +20,16 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 
 type gAuthSession struct {
-	mu           sync.Mutex
-	status       string // "waiting_browser" | "authenticated" | "error"
-	authURL      string
-	errMsg       string
-	expiresAt    time.Time
-	// campos para o fluxo app-callback (sem servidor local)
-	pkceVerifier string
-	redirectURI  string
-	aiEmail      string
+	mu              sync.Mutex
+	status          string // "waiting_browser" | "authenticated" | "error"
+	authURL         string
+	errMsg          string
+	expiresAt       time.Time
+	pkceVerifier    string
+	redirectURI     string
+	aiEmail         string
+	isWIF           bool   // true quando usa auth.cloud.google (WIF)
+	wifPoolProvider string // "poolID/providerID" para salvar junto ao refresh token
 }
 
 var gAuthSessions sync.Map // sessionID -> *gAuthSession
@@ -62,20 +63,19 @@ func init() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // StartGoogleInstallAuth inicia o fluxo OAuth2 usando o callback do próprio app.
-// Recebe base_url (ex: "http://localhost:8080") para construir o redirect_uri.
-// Isso resolve o problema do WSL2 onde portas aleatórias não são forwardadas.
+// Quando wif_pool_provider está preenchido (ex: "entraid-agentspace/entraid-federation-agentspace"),
+// usa o endpoint WIF auth.cloud.google/authorize. Caso contrário, usa accounts.google.com.
 func (h *AITokensHandler) StartGoogleInstallAuth(c *gin.Context) {
 	var req struct {
-		BaseURL string `json:"base_url"`
-		AIEmail string `json:"ai_email"`
+		BaseURL         string `json:"base_url"`
+		AIEmail         string `json:"ai_email"`
+		WIFPoolProvider string `json:"wif_pool_provider"` // "poolID/providerID" para WIF
 	}
 	c.ShouldBindJSON(&req)
 
-	// Fallback: ai_email pode vir como query param
 	if req.AIEmail == "" {
 		req.AIEmail = c.Query("ai_email")
 	}
-	// Fallback: base_url padrão
 	if req.BaseURL == "" {
 		req.BaseURL = "http://localhost:8080"
 	}
@@ -83,7 +83,29 @@ func (h *AITokensHandler) StartGoogleInstallAuth(c *gin.Context) {
 	sessionID := newSessionID()
 	redirectURI := req.BaseURL + "/oauth/google/callback"
 
-	authURL, pkceVerifier, err := ai.StartOAuth2AppCallback(redirectURI, sessionID)
+	var authURL, pkceVerifier string
+	var err error
+	isWIF := false
+
+	// WIF flow: usa auth.cloud.google quando pool/provider estão configurados
+	if req.WIFPoolProvider != "" {
+		poolID, providerID, ok := ai.ParseWIFPoolProvider(req.WIFPoolProvider)
+		if ok {
+			authURL, pkceVerifier, err = ai.StartWIFAppCallback(redirectURI, sessionID, poolID, providerID)
+			isWIF = true
+			log.Info().
+				Str("pool", poolID).Str("provider", providerID).
+				Str("redirect_uri", redirectURI).
+				Msg("🔗 WIF auth.cloud.google iniciado")
+		}
+	}
+
+	// Fallback: OAuth2 padrão (accounts.google.com)
+	if !isWIF {
+		authURL, pkceVerifier, err = ai.StartOAuth2AppCallback(redirectURI, sessionID, req.AIEmail)
+		log.Info().Str("session", sessionID).Str("redirect_uri", redirectURI).Msg("🔗 OAuth2 app-callback iniciado")
+	}
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Falha ao gerar URL de autenticação: " + err.Error(),
@@ -98,15 +120,16 @@ func (h *AITokensHandler) StartGoogleInstallAuth(c *gin.Context) {
 		pkceVerifier: pkceVerifier,
 		redirectURI:  redirectURI,
 		aiEmail:      req.AIEmail,
+		isWIF:        isWIF,
+		wifPoolProvider: req.WIFPoolProvider,
 	}
 	gAuthSessions.Store(sessionID, session)
-
-	log.Info().Str("session", sessionID).Str("redirect_uri", redirectURI).Msg("🔗 OAuth2 app-callback iniciado")
 
 	c.JSON(http.StatusOK, gin.H{
 		"session_id": sessionID,
 		"auth_url":   authURL,
 		"status":     "waiting_browser",
+		"is_wif":     isWIF,
 	})
 }
 
@@ -176,27 +199,45 @@ func (h *AITokensHandler) GoogleOAuthCallback(c *gin.Context) {
 	pkceVerifier := s.pkceVerifier
 	redirectURI := s.redirectURI
 	aiEmail := s.aiEmail
+	isWIF := s.isWIF
+	wifPoolProvider := s.wifPoolProvider
 	s.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	accessToken, refreshToken, err := ai.ExchangeAuthCode(ctx, code, redirectURI, pkceVerifier)
-	if err != nil {
+	var accessToken, refreshToken string
+	var exchErr error
+
+	if isWIF {
+		// Troca de código WIF via auth.cloud.google/token
+		accessToken, refreshToken, exchErr = ai.ExchangeWIFCode(ctx, code, redirectURI, pkceVerifier)
+	} else {
+		accessToken, refreshToken, exchErr = ai.ExchangeAuthCode(ctx, code, redirectURI, pkceVerifier)
+	}
+
+	if exchErr != nil {
 		s.mu.Lock()
 		s.status = "error"
-		s.errMsg = "Falha ao trocar código por token: " + err.Error()
+		s.errMsg = "Falha ao trocar código por token: " + exchErr.Error()
 		s.mu.Unlock()
-		renderCallbackPage(c, "❌ Falha na autenticação", err.Error(), false)
+		renderCallbackPage(c, "❌ Falha na autenticação", exchErr.Error(), false)
 		return
 	}
 
-	// Salvar refresh_token
-	if aiEmail != "" && refreshToken != "" {
-		if err := h.saveGoogleRefreshToken(aiEmail, refreshToken); err != nil {
-			log.Warn().Err(err).Str("ai_email", aiEmail).Msg("⚠️ Falha ao salvar refresh_token")
-		} else {
-			log.Info().Str("ai_email", aiEmail).Msg("✅ Google refresh_token salvo")
+	// Salvar refresh_token (e wifPoolProvider se WIF)
+	if aiEmail != "" {
+		tokenToSave := refreshToken
+		// WIF às vezes retorna apenas access_token sem refresh_token — guardar o access como fallback
+		if tokenToSave == "" && accessToken != "" {
+			tokenToSave = accessToken
+		}
+		if tokenToSave != "" {
+			if err := h.saveGoogleRefreshToken(aiEmail, tokenToSave, wifPoolProvider); err != nil {
+				log.Warn().Err(err).Str("ai_email", aiEmail).Msg("⚠️ Falha ao salvar refresh_token")
+			} else {
+				log.Info().Str("ai_email", aiEmail).Bool("is_wif", isWIF).Msg("✅ Google token salvo")
+			}
 		}
 	}
 	_ = accessToken
@@ -209,13 +250,17 @@ func (h *AITokensHandler) GoogleOAuthCallback(c *gin.Context) {
 	renderCallbackPage(c, "✅ Autenticado com sucesso!", "Pode fechar esta aba e voltar à aplicação.", true)
 }
 
-func (h *AITokensHandler) saveGoogleRefreshToken(aiEmail, refreshToken string) error {
+func (h *AITokensHandler) saveGoogleRefreshToken(aiEmail, refreshToken string, wifPoolProvider ...string) error {
 	existing, _ := h.tokensStore.GetTokens(aiEmail)
 	if existing == nil {
 		existing = &storage.UserTokens{UserEmail: aiEmail}
 	}
 	existing.GeminiRefreshToken = refreshToken
 	existing.GeminiAuthMode = "vertex"
+	// Salvar pool/provider WIF para que o refresh funcione depois
+	if len(wifPoolProvider) > 0 && wifPoolProvider[0] != "" {
+		existing.GeminiWifLoginURL = wifPoolProvider[0]
+	}
 	return h.tokensStore.SaveTokens(aiEmail, existing)
 }
 
