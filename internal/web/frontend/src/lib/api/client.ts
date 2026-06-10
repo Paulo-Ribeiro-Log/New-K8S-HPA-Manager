@@ -2435,10 +2435,14 @@ class APIClient {
   }
 
   // ─── gcloud install + auth flow ───────────────────────────────────────────
-  async startGoogleInstallAuth(aiEmail?: string, baseUrl?: string): Promise<{ session_id: string; auth_url?: string; status?: string }> {
+  async startGoogleInstallAuth(aiEmail?: string, baseUrl?: string, wifPoolProvider?: string): Promise<{ session_id: string; auth_url?: string; status?: string; is_wif?: boolean }> {
     return this.request(`/ai/tokens/google-auth/install/start`, {
       method: "POST",
-      body: JSON.stringify({ ai_email: aiEmail || "", base_url: baseUrl || window.location.origin }),
+      body: JSON.stringify({
+        ai_email: aiEmail || "",
+        base_url: baseUrl || window.location.origin,
+        wif_pool_provider: wifPoolProvider || "",
+      }),
     });
   }
 
@@ -2534,7 +2538,8 @@ class APIClient {
     deployment?: string,
     vertexProject?: string,
     vertexLocation?: string,
-    serviceAccountJSON?: string
+    serviceAccountJSON?: string,
+    aiEmail?: string
   ): Promise<{ valid: boolean; error?: string; message?: string }> {
     const body: any = { provider, api_key: apiKey };
     if (endpoint) body.endpoint = endpoint;
@@ -2542,6 +2547,7 @@ class APIClient {
     if (vertexProject) body.vertex_project = vertexProject;
     if (vertexLocation) body.vertex_location = vertexLocation;
     if (serviceAccountJSON) body.service_account_json = serviceAccountJSON;
+    if (aiEmail) body.ai_email = aiEmail;
 
     return this.request(`/ai/tokens/validate`, {
       method: "POST",

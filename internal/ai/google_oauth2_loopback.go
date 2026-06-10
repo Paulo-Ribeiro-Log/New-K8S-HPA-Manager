@@ -193,8 +193,9 @@ func exchangeAuthCode(ctx context.Context, code, redirectURI, codeVerifier strin
 
 // StartOAuth2AppCallback gera a URL de autenticação OAuth2 usando o próprio app como callback.
 // Não abre servidor local — o callback é tratado pelo endpoint /oauth/google/callback do app.
-// Retorna authURL e o pkceVerifier (que deve ser guardado para trocar o code depois).
-func StartOAuth2AppCallback(redirectURI, sessionID string) (authURL, pkceVerifier string, err error) {
+// loginHint: email corporativo opcional — quando informado, o Google direciona para o provedor WIF
+// configurado pela empresa (ex: Azure AD), evitando que o usuário escolha uma conta pessoal.
+func StartOAuth2AppCallback(redirectURI, sessionID, loginHint string) (authURL, pkceVerifier string, err error) {
 	verifier, challenge, err := generatePKCE()
 	if err != nil {
 		return "", "", fmt.Errorf("erro ao gerar PKCE: %w", err)
@@ -211,6 +212,9 @@ func StartOAuth2AppCallback(redirectURI, sessionID string) (authURL, pkceVerifie
 		"access_type":           {"offline"},
 		"prompt":                {"consent"},
 	}
+	if loginHint != "" {
+		params.Set("login_hint", loginHint)
+	}
 	return googleAuthURL + "?" + params.Encode(), verifier, nil
 }
 
@@ -221,6 +225,141 @@ func ExchangeAuthCode(ctx context.Context, code, redirectURI, pkceVerifier strin
 		return "", "", err
 	}
 	return result.AccessToken, result.RefreshToken, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Workforce Identity Federation (WIF) — auth.cloud.google
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	wifAuthURL  = "https://auth.cloud.google/authorize"
+	wifTokenURL = "https://auth.cloud.google/token"
+)
+
+// ParseWIFPoolProvider extrai poolID e providerID de strings no formato "pool/provider"
+// ou "//iam.googleapis.com/locations/global/workforcePools/pool/providers/provider".
+func ParseWIFPoolProvider(s string) (poolID, providerID string, ok bool) {
+	// Formato curto: "entraid-agentspace/entraid-federation-agentspace"
+	if strings.Contains(s, "/") && !strings.HasPrefix(s, "//") {
+		parts := strings.SplitN(s, "/", 2)
+		return parts[0], parts[1], true
+	}
+	// Formato longo: //iam.googleapis.com/.../workforcePools/POOL/providers/PROVIDER
+	if strings.Contains(s, "workforcePools/") {
+		// Extrair após workforcePools/
+		after := s[strings.Index(s, "workforcePools/")+len("workforcePools/"):]
+		parts := strings.SplitN(after, "/providers/", 2)
+		if len(parts) == 2 {
+			return parts[0], parts[1], true
+		}
+	}
+	return "", "", false
+}
+
+// WIFAudience retorna o resource name completo do WIF pool+provider.
+func WIFAudience(poolID, providerID string) string {
+	return fmt.Sprintf(
+		"//iam.googleapis.com/locations/global/workforcePools/%s/providers/%s",
+		poolID, providerID,
+	)
+}
+
+// StartWIFAppCallback gera a URL de autenticação WIF via auth.cloud.google.
+// O callback é o endpoint /oauth/google/callback do próprio app.
+func StartWIFAppCallback(redirectURI, sessionID, poolID, providerID string) (authURL, pkceVerifier string, err error) {
+	verifier, challenge, err := generatePKCE()
+	if err != nil {
+		return "", "", fmt.Errorf("erro ao gerar PKCE WIF: %w", err)
+	}
+
+	params := url.Values{
+		"redirect_uri":          {redirectURI},
+		"response_type":         {"code"},
+		"scope":                 {googleOAuth2Scope},
+		"state":                 {sessionID},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"access_type":           {"offline"},
+		"audience":              {WIFAudience(poolID, providerID)},
+	}
+	return wifAuthURL + "?" + params.Encode(), verifier, nil
+}
+
+// ExchangeWIFCode troca o authorization code WIF por access_token (e refresh_token se disponível).
+func ExchangeWIFCode(ctx context.Context, code, redirectURI, pkceVerifier string) (accessToken, refreshToken string, err error) {
+	body := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+		"code_verifier": {pkceVerifier},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", wifTokenURL, strings.NewReader(body.Encode()))
+	if err != nil {
+		return "", "", fmt.Errorf("erro ao criar requisição WIF token: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("erro ao contatar auth.cloud.google/token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		Error        string `json:"error"`
+		ErrorDesc    string `json:"error_description"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", "", fmt.Errorf("resposta inválida do WIF token endpoint: %w", err)
+	}
+	if result.Error != "" {
+		return "", "", fmt.Errorf("WIF auth erro: %s — %s", result.Error, result.ErrorDesc)
+	}
+	if result.AccessToken == "" {
+		return "", "", fmt.Errorf("access_token vazio na resposta WIF")
+	}
+	return result.AccessToken, result.RefreshToken, nil
+}
+
+// RefreshWIFToken renova um access token WIF usando o refresh token.
+// Suporta o tipo "external_account_authorized_user" do ADC do gcloud.
+func RefreshWIFToken(ctx context.Context, refreshToken, poolID, providerID string) (string, error) {
+	body := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"audience":      {WIFAudience(poolID, providerID)},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", wifTokenURL, strings.NewReader(body.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("erro ao criar requisição refresh WIF: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("erro ao contatar auth.cloud.google/token (refresh): %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		AccessToken string `json:"access_token"`
+		Error       string `json:"error"`
+		ErrorDesc   string `json:"error_description"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("resposta inválida do WIF refresh: %w", err)
+	}
+	if result.Error != "" {
+		return "", fmt.Errorf("WIF refresh erro: %s — %s", result.Error, result.ErrorDesc)
+	}
+	if result.AccessToken == "" {
+		return "", fmt.Errorf("access_token vazio no refresh WIF")
+	}
+	return result.AccessToken, nil
 }
 
 func generatePKCE() (verifier, challenge string, err error) {

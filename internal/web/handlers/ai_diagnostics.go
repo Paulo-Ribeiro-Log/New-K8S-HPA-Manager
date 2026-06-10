@@ -207,6 +207,7 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 			}
 			config.GeminiRefreshToken = tokens.GeminiRefreshToken
 			config.GeminiServiceAccountJSON = tokens.GeminiServiceAccountJSON
+			config.GeminiWifPoolProvider = tokens.GeminiWifLoginURL // "poolID/providerID" WIF
 		} else {
 			// Modo API Key (padrão)
 			if tokens.GeminiAPIKey == "" {

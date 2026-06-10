@@ -465,11 +465,12 @@ func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 	var req struct {
 		Provider           string `json:"provider"`
 		APIKey             string `json:"api_key"`
-		Endpoint           string `json:"endpoint,omitempty"`             // Para Copilot
-		Deployment         string `json:"deployment,omitempty"`           // Para Copilot
-		VertexProject      string `json:"vertex_project,omitempty"`       // Para Gemini Vertex AI
-		VertexLocation     string `json:"vertex_location,omitempty"`      // Para Gemini Vertex AI
-		ServiceAccountJSON string `json:"service_account_json,omitempty"` // JSON do service account GCP
+		Endpoint           string `json:"endpoint,omitempty"`
+		Deployment         string `json:"deployment,omitempty"`
+		VertexProject      string `json:"vertex_project,omitempty"`
+		VertexLocation     string `json:"vertex_location,omitempty"`
+		ServiceAccountJSON string `json:"service_account_json,omitempty"`
+		AIEmail            string `json:"ai_email,omitempty"` // para buscar refresh token do DB
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -484,7 +485,16 @@ func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 	case "gemini":
 		validationErr = validateGeminiToken(req.APIKey)
 	case "gemini-vertex":
-		validationErr = validateGeminiVertexConnection(req.VertexProject, req.ServiceAccountJSON)
+		// Buscar refresh token e wifPoolProvider armazenados
+		refreshToken := ""
+		wifPoolProvider := ""
+		if req.AIEmail != "" && req.ServiceAccountJSON == "" {
+			if tokens, err := h.tokensStore.GetTokens(req.AIEmail); err == nil && tokens != nil {
+				refreshToken = tokens.GeminiRefreshToken
+				wifPoolProvider = tokens.GeminiWifLoginURL
+			}
+		}
+		validationErr = validateGeminiVertexConnection(req.VertexProject, req.ServiceAccountJSON, refreshToken, wifPoolProvider)
 	case "claude":
 		validationErr = validateClaudeToken(req.APIKey)
 	case "openai":
@@ -512,9 +522,9 @@ func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 	})
 }
 
-// validateGeminiVertexConnection testa autenticação para Vertex AI
-// Prioridade: service account JSON → ADC file (gcloud)
-func validateGeminiVertexConnection(project, serviceAccountJSON string) error {
+// validateGeminiVertexConnection testa autenticação para Vertex AI.
+// Prioridade: WIF refresh → OAuth2 refresh → serviceAccountJSON → ADC file (gcloud)
+func validateGeminiVertexConnection(project, serviceAccountJSON, refreshToken, wifPoolProvider string) error {
 	if project == "" {
 		return fmt.Errorf("projeto GCP é obrigatório para Vertex AI")
 	}
@@ -522,7 +532,7 @@ func validateGeminiVertexConnection(project, serviceAccountJSON string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, err := ai.GetVertexAccessToken(ctx, serviceAccountJSON, "")
+	_, err := ai.GetVertexAccessToken(ctx, serviceAccountJSON, refreshToken, wifPoolProvider)
 	return err
 }
 

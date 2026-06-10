@@ -33,7 +33,8 @@ type GeminiProvider struct {
 	project            string // projeto GCP (modo vertex)
 	location           string // região GCP (modo vertex, ex: us-central1)
 	serviceAccountJSON string // conteúdo JSON do service account (modo vertex sem gcloud)
-	refreshToken       string // OAuth refresh token do Device Auth flow
+	refreshToken       string // OAuth refresh token (Device Auth / WIF App Callback)
+	wifPoolProvider    string // "poolID/providerID" para WIF (ex: "entraid-agentspace/entraid-federation-agentspace")
 }
 
 // NewGeminiProvider cria um novo GeminiProvider
@@ -48,6 +49,7 @@ func NewGeminiProvider(config *Config) *GeminiProvider {
 		location:           config.GeminiVertexLocation,
 		serviceAccountJSON: config.GeminiServiceAccountJSON,
 		refreshToken:       config.GeminiRefreshToken,
+		wifPoolProvider:    config.GeminiWifPoolProvider,
 	}
 }
 
@@ -102,7 +104,7 @@ func (p *GeminiProvider) analyzeVertex(ctx context.Context, prompt string) (stri
 	// Evita tentativas no AI Studio que causam 503 visíveis quando o modelo está
 	// sobrecarregado lá mas disponível no Vertex AI.
 	if p.project != "" {
-		token, err := GetVertexAccessToken(ctx, p.serviceAccountJSON, p.refreshToken)
+		token, err := GetVertexAccessToken(ctx, p.serviceAccountJSON, p.refreshToken, p.wifPoolProvider)
 		if err != nil {
 			return "", err
 		}
@@ -130,7 +132,7 @@ func (p *GeminiProvider) analyzeVertex(ctx context.Context, prompt string) (stri
 	}
 
 	// Fallback: ADC ou service account sem projeto configurado (raro)
-	token, err := GetVertexAccessToken(ctx, p.serviceAccountJSON, p.refreshToken)
+	token, err := GetVertexAccessToken(ctx, p.serviceAccountJSON, p.refreshToken, p.wifPoolProvider)
 	if err != nil {
 		return "", fmt.Errorf("projeto GCP não configurado e nenhuma credencial Vertex AI disponível: %w", err)
 	}
@@ -515,14 +517,28 @@ func exchangeRefreshToken(ctx context.Context, clientID, clientSecret, refreshTo
 }
 
 // GetVertexAccessToken retorna access token para Vertex AI.
-// Prioridade: 1) OAuth refresh token (Device Auth)  2) Service Account JSON  3) ADC file (gcloud)
-func GetVertexAccessToken(ctx context.Context, serviceAccountJSON, refreshToken string) (string, error) {
-	if refreshToken != "" {
+// Prioridade: 1) WIF refresh token (poolID/providerID)  2) OAuth refresh token (Device Auth / App Callback)
+//             3) Service Account JSON  4) ADC file (gcloud)
+// wifPoolProvider: formato "poolID/providerID" (ex: "entraid-agentspace/entraid-federation-agentspace")
+func GetVertexAccessToken(ctx context.Context, serviceAccountJSON, refreshToken string, wifPoolProvider ...string) (string, error) {
+	// WIF refresh token — prioridade máxima quando pool/provider configurado
+	if len(wifPoolProvider) > 0 && wifPoolProvider[0] != "" && refreshToken != "" {
+		poolID, providerID, ok := ParseWIFPoolProvider(wifPoolProvider[0])
+		if ok {
+			token, err := RefreshWIFToken(ctx, refreshToken, poolID, providerID)
+			if err == nil {
+				return token, nil
+			}
+			log.Warn().Err(err).Str("pool", poolID).Str("provider", providerID).Msg("WIF: falha ao renovar token, tentando próxima opção")
+		}
+	}
+
+	// OAuth2 standard refresh token (Device Auth ou App Callback sem WIF)
+	if refreshToken != "" && (len(wifPoolProvider) == 0 || wifPoolProvider[0] == "") {
 		token, err := GetAccessTokenFromRefreshToken(ctx, refreshToken)
 		if err == nil {
 			return token, nil
 		}
-		// Se o refresh token falhou, tentar próxima opção
 	}
 
 	if serviceAccountJSON != "" {

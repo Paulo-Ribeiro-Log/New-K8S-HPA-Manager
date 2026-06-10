@@ -29,9 +29,14 @@ type Config struct {
 	// Obtido em: Google Cloud Console → IAM → Service Accounts → Create Key (JSON)
 	GeminiServiceAccountJSON string
 
-	// GeminiRefreshToken OAuth refresh token obtido via Device Authorization Grant
+	// GeminiRefreshToken OAuth refresh token obtido via Device Authorization Grant ou WIF App Callback
 	// Armazenado automaticamente após autenticação pelo botão "Autenticar com Google"
 	GeminiRefreshToken string
+
+	// GeminiWifPoolProvider "poolID/providerID" do Workforce Identity Federation
+	// Exemplo: "entraid-agentspace/entraid-federation-agentspace"
+	// Quando preenchido, o auth usa auth.cloud.google/authorize (WIF) em vez de accounts.google.com
+	GeminiWifPoolProvider string
 
 	// OllamaBaseURL URL base do Ollama (padrão: http://localhost:11434)
 	OllamaBaseURL string
