@@ -588,7 +588,12 @@ func validateGeminiVertexConnection(project, location, model, serviceAccountJSON
 				"tente: gemini-2.0-flash-001, gemini-1.5-pro-002 ou gemini-1.5-flash-002",
 			vertexModel, project, location)
 	case 403:
-		return fmt.Errorf("permissão negada (403) — o token não tem acesso ao projeto '%s'. Detalhes: %s", project, string(body))
+		return fmt.Errorf(
+			"permissão negada (403) — credenciais sem acesso ao projeto '%s'.\n"+
+				"Para acesso via WIF corporativo, execute no terminal:\n"+
+				"  gcloud auth application-default login --audiences="+
+				"//iam.googleapis.com/locations/global/workforcePools/entraid-agentspace/providers/entraid-federation-agentspace\n"+
+				"Detalhes: %s", project, string(body))
 	case 400:
 		return fmt.Errorf("requisição inválida (400) — modelo '%s' pode não estar disponível em '%s'. Detalhes: %s", vertexModel, location, string(body))
 	default:
@@ -731,12 +736,16 @@ func (h *AITokensHandler) GetAvailableModels(c *gin.Context) {
 	case "gemini":
 		if mode == "vertex" {
 			// Modelos disponíveis no Vertex AI (aiplatform.googleapis.com)
-			// IDs devem ter sufixo de versão — AI Studio (gemini-2.0-flash) NÃO funciona aqui
+			// IDs devem ter sufixo de versão — AI Studio (ex: gemini-2.5-pro) NÃO funciona aqui
+			// Use "Testar Conexão" para verificar quais modelos estão disponíveis no seu projeto
 			models = []ModelInfo{
-				{ID: "gemini-2.5-pro-preview-06-05", Name: "Gemini 2.5 Pro (Preview)", Description: "Mais avançado — use se disponível no seu projeto (recomendado)", IsDefault: true},
-				{ID: "gemini-2.5-flash-preview-05-20", Name: "Gemini 2.5 Flash (Preview)", Description: "Rápido e avançado — pode não estar em todas as regiões"},
-				{ID: "gemini-2.0-flash-001", Name: "Gemini 2.0 Flash", Description: "Estável e rápido — disponível em todas as regiões Vertex AI"},
-				{ID: "gemini-2.0-flash-lite-001", Name: "Gemini 2.0 Flash Lite", Description: "Mais econômico e leve"},
+				// Geração mais recente (Agentspace: "3.5 Flash" / "3.1 Pro" / "2.5 Pro")
+				{ID: "gemini-3.5-flash-preview-0514", Name: "Gemini 3.5 Flash (Preview)", Description: "Agentspace: '3.5 Flash' — Frontier intelligence built for speed", IsDefault: true},
+				{ID: "gemini-3.1-pro-preview-0514", Name: "Gemini 3.1 Pro (Preview)", Description: "Agentspace: '3.1 Pro' — Raciocínio de última geração"},
+				{ID: "gemini-2.5-pro-preview-06-05", Name: "Gemini 2.5 Pro (Preview)", Description: "Agentspace: '2.5 Pro' — Resolve problemas complexos"},
+				{ID: "gemini-2.5-flash-preview-05-20", Name: "Gemini 2.5 Flash (Preview)", Description: "Rápido e avançado"},
+				// Versões estáveis (amplamente disponíveis em todas as regiões)
+				{ID: "gemini-2.0-flash-001", Name: "Gemini 2.0 Flash", Description: "Estável — disponível em todas as regiões Vertex AI"},
 				{ID: "gemini-1.5-pro-002", Name: "Gemini 1.5 Pro", Description: "Geração anterior — amplamente disponível, contexto longo"},
 				{ID: "gemini-1.5-flash-002", Name: "Gemini 1.5 Flash", Description: "Geração anterior — estável e amplamente disponível"},
 			}

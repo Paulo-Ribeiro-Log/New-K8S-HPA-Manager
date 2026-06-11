@@ -27,6 +27,9 @@ import (
 // O Vertex AI exige nomes com sufixo de versão (ex: gemini-2.0-flash-001) enquanto o
 // AI Studio aceita aliases sem versão (ex: gemini-2.0-flash).
 var vertexModelMap = map[string]string{
+	// Nomes AI Studio → IDs versionados do Vertex AI
+	"gemini-3.5-flash":      "gemini-3.5-flash-preview-0514",
+	"gemini-3.1-pro":        "gemini-3.1-pro-preview-0514",
 	"gemini-2.5-pro":        "gemini-2.5-pro-preview-06-05",
 	"gemini-2.5-flash":      "gemini-2.5-flash-preview-05-20",
 	"gemini-2.0-flash":      "gemini-2.0-flash-001",
@@ -389,16 +392,21 @@ func GetServiceAccountAccessToken(ctx context.Context, serviceAccountJSON string
 // ADC (Application Default Credentials) — fallback quando não há service account
 // ---------------------------------------------------------------------------
 
-// adcCredentials representa o arquivo application_default_credentials.json do gcloud
+// adcCredentials representa o arquivo application_default_credentials.json do gcloud.
+// Suporta os tipos "authorized_user" (conta Google pessoal/workspace) e
+// "external_account_authorized_user" (Workforce Identity Federation — WIF).
 type adcCredentials struct {
 	Type         string `json:"type"`
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
 	RefreshToken string `json:"refresh_token"`
+	// Campos específicos de WIF (external_account_authorized_user)
+	TokenURL string `json:"token_url"`
+	Audience string `json:"audience"`
 }
 
 // GetADCAccessToken obtém access token via Application Default Credentials (ADC).
-// Lê o arquivo ADC do gcloud e troca o refresh_token pela API do Google.
+// Suporta authorized_user (conta pessoal) e external_account_authorized_user (WIF/Workforce).
 func GetADCAccessToken(ctx context.Context) (string, error) {
 	adcPath, err := findADCFile()
 	if err != nil {
@@ -415,14 +423,70 @@ func GetADCAccessToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("arquivo ADC inválido: %w", err)
 	}
 
-	if creds.Type != "authorized_user" {
-		return "", fmt.Errorf("tipo de credencial ADC não suportado: %q", creds.Type)
-	}
 	if creds.RefreshToken == "" {
 		return "", fmt.Errorf("refresh_token ausente no arquivo ADC")
 	}
 
-	return exchangeRefreshToken(ctx, creds.ClientID, creds.ClientSecret, creds.RefreshToken)
+	switch creds.Type {
+	case "authorized_user":
+		// Conta Google pessoal ou Workspace: oauth2.googleapis.com/token
+		return exchangeRefreshToken(ctx, creds.ClientID, creds.ClientSecret, creds.RefreshToken)
+
+	case "external_account_authorized_user":
+		// Workforce Identity Federation (WIF): auth.cloud.google/token
+		// Gerado por: gcloud auth application-default login --audiences=//iam.googleapis.com/...
+		tokenURL := creds.TokenURL
+		if tokenURL == "" {
+			tokenURL = "https://auth.cloud.google/token"
+		}
+		return refreshExternalAccountToken(ctx, tokenURL, creds.ClientID, creds.ClientSecret, creds.RefreshToken)
+
+	default:
+		return "", fmt.Errorf("tipo de credencial ADC não suportado: %q (suportados: authorized_user, external_account_authorized_user)", creds.Type)
+	}
+}
+
+// refreshExternalAccountToken renova um token WIF (external_account_authorized_user).
+// O endpoint auth.cloud.google/token aceita tokens de Workforce Identity Federation.
+func refreshExternalAccountToken(ctx context.Context, tokenURL, clientID, clientSecret, refreshToken string) (string, error) {
+	body := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+	}
+	if clientID != "" {
+		body.Set("client_id", clientID)
+	}
+	if clientSecret != "" {
+		body.Set("client_secret", clientSecret)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(body.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("erro ao criar requisição WIF token: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("erro ao contatar %s: %w", tokenURL, err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		AccessToken string `json:"access_token"`
+		Error       string `json:"error"`
+		ErrorDesc   string `json:"error_description"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("resposta inválida do WIF token endpoint: %w", err)
+	}
+	if result.Error != "" {
+		return "", fmt.Errorf("WIF token refresh falhou: %s — %s", result.Error, result.ErrorDesc)
+	}
+	if result.AccessToken == "" {
+		return "", fmt.Errorf("access_token vazio na resposta WIF")
+	}
+	return result.AccessToken, nil
 }
 
 // findADCFile localiza o arquivo Application Default Credentials.
@@ -558,9 +622,15 @@ func GetVertexAccessToken(ctx context.Context, serviceAccountJSON, refreshToken 
 		}
 	}
 
-	// OAuth2 standard refresh token (Device Auth ou App Callback sem WIF)
-	if refreshToken != "" && (len(wifPoolProvider) == 0 || wifPoolProvider[0] == "") {
+	// OAuth2 standard refresh token (Device Auth ou App Callback)
+	if refreshToken != "" {
 		token, err := GetAccessTokenFromRefreshToken(ctx, refreshToken)
+		if err == nil {
+			return token, nil
+		}
+		// Se o refresh padrão falhou, tentar via auth.cloud.google/token (WIF sem pool explícito).
+		// Tokens WIF armazenados sem gemini_wif_login_url configurado no DB chegam aqui.
+		token, err = refreshExternalAccountToken(ctx, "https://auth.cloud.google/token", "", "", refreshToken)
 		if err == nil {
 			return token, nil
 		}
