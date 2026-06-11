@@ -4,6 +4,7 @@ import { DiffEditor } from "@monaco-editor/react";
 import type { Monaco } from "@monaco-editor/react";
 import type * as MonacoEditorNS from "monaco-editor";
 import { configureMonacoYaml, type MonacoYaml } from "monaco-yaml";
+import { explainCronExpression, isValidCronExpression, textToCron } from "@/lib/cronParser";
 
 interface MonacoYamlEditorProps {
   value: string;
@@ -138,6 +139,44 @@ export const MonacoYamlEditor = ({ value, onChange, originalValue, mode = "edito
           } catch (error) {
             console.error("Erro ao decodar base64:", error);
           }
+        },
+      });
+
+      editor.addAction({
+        id: "cron-to-text-action",
+        label: "Cron → Texto legível",
+        contextMenuGroupId: "1_modification",
+        contextMenuOrder: 3,
+        run: (ed) => {
+          const selection = ed.getSelection();
+          if (!selection) return;
+          const selected = ed.getModel()?.getValueInRange(selection)?.trim();
+          if (!selected || !isValidCronExpression(selected)) return;
+          const explanation = explainCronExpression(selected);
+          if (!explanation) return;
+          ed.executeEdits("cron-to-text", [
+            { range: selection, text: explanation.readable, forceMoveMarkers: true },
+          ]);
+          if (onChange) onChange(ed.getValue());
+        },
+      });
+
+      editor.addAction({
+        id: "text-to-cron-action",
+        label: "Texto → Expressão Cron",
+        contextMenuGroupId: "1_modification",
+        contextMenuOrder: 4,
+        run: (ed) => {
+          const selection = ed.getSelection();
+          if (!selection) return;
+          const selected = ed.getModel()?.getValueInRange(selection)?.trim();
+          if (!selected) return;
+          const cron = textToCron(selected);
+          if (!cron) return;
+          ed.executeEdits("text-to-cron", [
+            { range: selection, text: cron, forceMoveMarkers: true },
+          ]);
+          if (onChange) onChange(ed.getValue());
         },
       });
     }

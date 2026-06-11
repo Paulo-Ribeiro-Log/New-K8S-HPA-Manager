@@ -195,6 +195,73 @@ export function explainCronExpression(cronExp: string): CronExplanation | null {
 }
 
 /**
+ * Converte texto em linguagem natural (pt-br) para expressão cron.
+ * Retorna null se não conseguir interpretar o texto.
+ *
+ * Exemplos:
+ *   "todos os dias às 20:23"         → "23 20 * * *"
+ *   "a cada 5 minutos"               → "*\/5 * * * *"
+ *   "toda segunda às 09:00"          → "0 9 * * 1"
+ *   "no dia 15 de cada mês às 08:30" → "30 8 15 * *"
+ *   "toda hora"                      → "0 * * * *"
+ */
+export function textToCron(text: string): string | null {
+  // Normalizar: lowercase + remover acentos
+  const s = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim();
+
+  // "toda hora" / "a cada hora"
+  if (/\b(toda|a\s+cada)\s+hora\b/.test(s)) return '0 * * * *';
+
+  // "a cada N minutos"
+  const mMin = s.match(/a\s+cada\s+(\d+)\s+minutos?/);
+  if (mMin) return `*/${mMin[1]} * * * *`;
+
+  // "a cada N horas"
+  const mHours = s.match(/a\s+cada\s+(\d+)\s+horas?/);
+  if (mHours) return `0 */${mHours[1]} * * *`;
+
+  // Extrair HH:MM do texto
+  const extractTime = (str: string): [string, string] | null => {
+    const m = str.match(/(\d{1,2}):(\d{2})/);
+    return m ? [m[1], m[2]] : null;
+  };
+
+  // "todos os dias" / "todo dia" / "diariamente"
+  if (/\b(todos\s+os\s+dias?|todo\s+dia|diariamente)\b/.test(s)) {
+    const t = extractTime(s);
+    return t ? `${t[1]} ${t[0]} * * *` : '0 0 * * *';
+  }
+
+  // Dias da semana: 0=domingo, 1=segunda, 2=terca, 3=quarta, 4=quinta, 5=sexta, 6=sabado
+  const weekdays = ['domingo', 'segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado'];
+  for (let i = 0; i < weekdays.length; i++) {
+    if (s.includes(weekdays[i])) {
+      const t = extractTime(s);
+      return t ? `${t[1]} ${t[0]} * * ${i}` : `0 0 * * ${i}`;
+    }
+  }
+
+  // "no dia D de cada mes" / "dia D de cada mes"
+  const mDay = s.match(/(?:no\s+)?dia\s+(\d{1,2})\s+de\s+cada\s+mes/);
+  if (mDay) {
+    const t = extractTime(s);
+    return t ? `${t[1]} ${t[0]} ${mDay[1]} * *` : `0 0 ${mDay[1]} * *`;
+  }
+
+  // "a cada dia às HH:MM" (forma alternativa)
+  if (/\ba\s+cada\s+dia\b/.test(s)) {
+    const t = extractTime(s);
+    return t ? `${t[1]} ${t[0]} * * *` : '0 0 * * *';
+  }
+
+  return null;
+}
+
+/**
  * Valida se uma expressão cron é válida
  */
 export function isValidCronExpression(cronExp: string): boolean {

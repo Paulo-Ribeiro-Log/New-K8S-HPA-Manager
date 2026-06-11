@@ -5162,6 +5162,104 @@ func (c *Client) TriggerCronJob(ctx context.Context, namespace, name string) (st
 	return result.Name, nil
 }
 
+// GetJobTemplateYAML retorna YAML de template de Job baseado em um CronJob.
+// Não cria o Job — retorna o template para edição antes de aplicar.
+func (c *Client) GetJobTemplateYAML(ctx context.Context, namespace, name string) (string, error) {
+	cj, err := c.clientset.BatchV1().CronJobs(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get cronjob %s/%s: %w", namespace, name, err)
+	}
+
+	job := &batchv1.Job{
+		TypeMeta: metav1.TypeMeta{APIVersion: "batch/v1", Kind: "Job"},
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: fmt.Sprintf("%s-manual-", cj.Name),
+			Annotations: map[string]string{
+				"cronjob.kubernetes.io/instantiate": "manual",
+			},
+		},
+		Spec: *cj.Spec.JobTemplate.Spec.DeepCopy(),
+	}
+
+	yamlBytes, err := yaml.Marshal(job)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal job template: %w", err)
+	}
+	return string(yamlBytes), nil
+}
+
+// CreateJobFromYAML cria um Job a partir de YAML via K8s API (Helm-safe).
+// Usa clientset diretamente — sem kubectl apply, sem conflito com Helm field manager.
+func (c *Client) CreateJobFromYAML(ctx context.Context, yamlContent, namespace string, dryRun bool) (*batchv1.Job, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("yaml do Job não pode ser vazio")
+	}
+
+	var job batchv1.Job
+	if err := yaml.Unmarshal([]byte(yamlContent), &job); err != nil {
+		return nil, fmt.Errorf("YAML inválido: %w", err)
+	}
+
+	// Namespace do request tem prioridade — ignora o que estiver no YAML.
+	if namespace == "" {
+		return nil, fmt.Errorf("namespace é obrigatório")
+	}
+	job.Namespace = namespace
+
+	// Garante que o Job terá um nome gerado automaticamente se não houver name nem generateName.
+	if job.Name == "" && job.GenerateName == "" {
+		job.GenerateName = "job-"
+	}
+
+	job.ManagedFields = nil
+
+	createOpts := metav1.CreateOptions{}
+	if dryRun {
+		createOpts.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.BatchV1().Jobs(job.Namespace).Create(ctx, &job, createOpts)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao criar Job: %w", err)
+	}
+	return result, nil
+}
+
+// CreateCronJobFromYAML cria um CronJob novo a partir de YAML via K8s API.
+// Falha se já existir — use ApplyCronJob para atualizar um existente.
+func (c *Client) CreateCronJobFromYAML(ctx context.Context, yamlContent, namespace string, dryRun bool) (*batchv1.CronJob, error) {
+	if strings.TrimSpace(yamlContent) == "" {
+		return nil, fmt.Errorf("yaml do CronJob não pode ser vazio")
+	}
+
+	var cj batchv1.CronJob
+	if err := yaml.Unmarshal([]byte(yamlContent), &cj); err != nil {
+		return nil, fmt.Errorf("YAML inválido: %w", err)
+	}
+
+	if namespace == "" {
+		return nil, fmt.Errorf("namespace é obrigatório")
+	}
+	cj.Namespace = namespace
+
+	if cj.Name == "" {
+		return nil, fmt.Errorf("metadata.name é obrigatório para CronJob")
+	}
+
+	cj.ManagedFields = nil
+
+	createOpts := metav1.CreateOptions{}
+	if dryRun {
+		createOpts.DryRun = []string{metav1.DryRunAll}
+	}
+
+	result, err := c.clientset.BatchV1().CronJobs(cj.Namespace).Create(ctx, &cj, createOpts)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao criar CronJob: %w", err)
+	}
+	return result, nil
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Resource Explorer — navegador universal de recursos Kubernetes
 // Suporta qualquer tipo: built-in (Pods, Deployments) e CRDs (ExternalSecret, etc.)

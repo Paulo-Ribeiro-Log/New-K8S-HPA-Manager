@@ -467,3 +467,116 @@ func getHistoryCount(limit *int32) int32 {
 	}
 	return *limit
 }
+
+// createJobRequest request para criação de Job standalone
+type createJobRequest struct {
+	Cluster   string `json:"cluster"`
+	Namespace string `json:"namespace"`
+	YAML      string `json:"yaml"`
+	DryRun    bool   `json:"dry_run"`
+}
+
+// CreateJob cria um Job a partir de YAML via K8s API (Helm-safe).
+// POST /api/v1/jobs
+func (h *CronJobHandler) CreateJob(c *gin.Context) {
+	var req createJobRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "campo 'cluster' é obrigatório"})
+		return
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "campo 'yaml' é obrigatório"})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(req.Cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("falha ao conectar no cluster: %v", err)})
+		return
+	}
+
+	kc := kubeclient.NewClient(clientset, req.Cluster)
+	job, err := kc.CreateJobFromYAML(c.Request.Context(), req.YAML, req.Namespace, req.DryRun)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":   true,
+		"name":      job.Name,
+		"namespace": job.Namespace,
+		"dry_run":   req.DryRun,
+	})
+}
+
+// GetJobTemplate retorna YAML de template de Job derivado de um CronJob.
+// GET /api/v1/cronjobs/:cluster/:namespace/:name/job-template
+func (h *CronJobHandler) GetJobTemplate(c *gin.Context) {
+	cluster := c.Param("cluster")
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("falha ao conectar no cluster: %v", err)})
+		return
+	}
+
+	kc := kubeclient.NewClient(clientset, cluster)
+	yamlContent, err := kc.GetJobTemplateYAML(c.Request.Context(), namespace, name)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"yaml": yamlContent})
+}
+
+// CreateCronJob cria um CronJob novo a partir de YAML via K8s API.
+// POST /api/v1/cronjobs/new
+func (h *CronJobHandler) CreateCronJob(c *gin.Context) {
+	var req struct {
+		Cluster   string `json:"cluster"`
+		Namespace string `json:"namespace"`
+		YAML      string `json:"yaml"`
+		DryRun    bool   `json:"dry_run"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Cluster == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "campo 'cluster' é obrigatório"})
+		return
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "campo 'yaml' é obrigatório"})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(req.Cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("falha ao conectar no cluster: %v", err)})
+		return
+	}
+
+	kc := kubeclient.NewClient(clientset, req.Cluster)
+	cj, err := kc.CreateCronJobFromYAML(c.Request.Context(), req.YAML, req.Namespace, req.DryRun)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":   true,
+		"name":      cj.Name,
+		"namespace": cj.Namespace,
+		"schedule":  cj.Spec.Schedule,
+		"dry_run":   req.DryRun,
+	})
+}

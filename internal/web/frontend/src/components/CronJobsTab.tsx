@@ -55,6 +55,11 @@ import {
   TriangleAlert,
   Copy,
   ChevronLeft,
+  Plus,
+  GitBranch,
+  ExternalLink,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
@@ -125,6 +130,22 @@ export function CronJobsTab({
   const [triggerConfirmOpen, setTriggerConfirmOpen] = useState(false);
   const [isTriggering, setIsTriggering] = useState(false);
   const [isSuspending, setIsSuspending] = useState(false);
+
+  // Novo recurso batch modal (Job ou CronJob)
+  const [newJobOpen, setNewJobOpen] = useState(false);
+  const [newJobType, setNewJobType] = useState<"job" | "cronjob">("job");
+  const [newJobYaml, setNewJobYaml] = useState("");
+  const [newJobNamespace, setNewJobNamespace] = useState("");
+  const [isCreatingJob, setIsCreatingJob] = useState(false);
+  const [isLoadingJobTemplate, setIsLoadingJobTemplate] = useState(false);
+
+  // GitHub commit section (dentro do modal Novo Job)
+  const [ghSectionOpen, setGhSectionOpen] = useState(false);
+  const [ghFolderUrl, setGhFolderUrl] = useState(() => localStorage.getItem("newjob_gh_folder") || "");
+  const [ghFilename, setGhFilename] = useState("job.yaml");
+  const [ghMessage, setGhMessage] = useState("");
+  const [isCommitting, setIsCommitting] = useState(false);
+  const [ghCommitResult, setGhCommitResult] = useState<{ fileUrl: string; commitUrl: string; created: boolean } | null>(null);
 
   // ── Computed ──────────────────────────────────────────────────────────────
   const hasChanges = editorValue !== originalYaml && editorValue !== "";
@@ -369,6 +390,148 @@ export function CronJobsTab({
     }
   };
 
+  const defaultJobTemplate = () => `apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: job-
+spec:
+  template:
+    spec:
+      containers:
+        - name: job
+          image: busybox:latest
+          command: ["echo", "Hello from Job"]
+      restartPolicy: Never
+  backoffLimit: 3
+`;
+
+  const defaultCronJobTemplate = () => `apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: meu-cronjob
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: job
+              image: busybox:latest
+              command: ["echo", "Hello from CronJob"]
+          restartPolicy: Never
+      backoffLimit: 3
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+`;
+
+  const handleOpenNewJob = (type: "job" | "cronjob" = "job") => {
+    const ns = selectedNamespace && selectedNamespace !== "__all__" ? selectedNamespace : "";
+    setNewJobType(type);
+    setNewJobNamespace(ns);
+    setNewJobYaml(type === "cronjob" ? defaultCronJobTemplate() : defaultJobTemplate());
+    setNewJobOpen(true);
+  };
+
+  const handleLoadJobTemplate = async () => {
+    if (!selectedCronJob) return;
+    setIsLoadingJobTemplate(true);
+    try {
+      const result = await apiClient.getJobTemplate(cluster, selectedCronJob.namespace, selectedCronJob.name);
+      setNewJobYaml(result.yaml);
+      setNewJobNamespace(selectedCronJob.namespace);
+    } catch (err) {
+      toast.error("Erro ao carregar template", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsLoadingJobTemplate(false);
+    }
+  };
+
+  const handleCreateResource = async (dryRun = false) => {
+    setIsCreatingJob(true);
+    try {
+      if (newJobType === "cronjob") {
+        const result = await apiClient.createCronJob(cluster, newJobNamespace, newJobYaml, dryRun);
+        if (dryRun) {
+          toast.success("Validação OK", {
+            description: `CronJob "${result.name}" seria criado em ${result.namespace} (schedule: ${result.schedule})`,
+          });
+        } else {
+          toast.success("CronJob criado com sucesso", {
+            description: `${result.namespace}/${result.name} · ${result.schedule}`,
+          });
+          setNewJobOpen(false);
+          fetchCronJobs();
+        }
+      } else {
+        const result = await apiClient.createJob(cluster, newJobNamespace, newJobYaml, dryRun);
+        if (dryRun) {
+          toast.success("Validação OK", {
+            description: `Job "${result.name || "(gerado no apply)"}" seria criado em ${result.namespace}`,
+          });
+        } else {
+          toast.success("Job criado com sucesso", {
+            description: `${result.namespace}/${result.name}`,
+          });
+          setNewJobOpen(false);
+          fetchCronJobs();
+        }
+      }
+    } catch (err) {
+      const label = newJobType === "cronjob" ? "CronJob" : "Job";
+      toast.error(dryRun ? "Erro na validação" : `Erro ao criar ${label}`, {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsCreatingJob(false);
+    }
+  };
+
+  // Parseia URL de pasta do GitHub:
+  // https://github.com/{owner}/{repo}/tree/{branch}/{path}
+  const parseGitHubFolderUrl = (url: string) => {
+    const m = url.match(/github\.com\/([^/]+)\/([^/]+)\/tree\/([^/]+)\/?(.*)$/);
+    if (!m) return null;
+    return { owner: m[1], repo: m[2], branch: m[3], basePath: m[4] || "" };
+  };
+
+  const handleCommitToGitHub = async () => {
+    const parsed = parseGitHubFolderUrl(ghFolderUrl);
+    if (!parsed) {
+      toast.error("URL de pasta inválida", {
+        description: "Use o formato: https://github.com/org/repo/tree/branch/pasta",
+      });
+      return;
+    }
+    if (!ghFilename.trim()) {
+      toast.error("Informe o nome do arquivo");
+      return;
+    }
+    setIsCommitting(true);
+    setGhCommitResult(null);
+    try {
+      const result = await apiClient.commitFileToGitHub({
+        ...parsed,
+        filename: ghFilename.trim(),
+        content: newJobYaml,
+        message: ghMessage.trim() || `chore: adiciona job em ${newJobNamespace || "kubernetes"}`,
+      });
+      setGhCommitResult({ fileUrl: result.file_url, commitUrl: result.commit_url, created: result.created });
+      localStorage.setItem("newjob_gh_folder", ghFolderUrl);
+      toast.success(result.created ? "Arquivo criado no GitHub" : "Arquivo atualizado no GitHub", {
+        description: ghFilename,
+      });
+    } catch (err) {
+      toast.error("Erro ao commitar no GitHub", {
+        description: err instanceof Error ? err.message : "Erro desconhecido",
+      });
+    } finally {
+      setIsCommitting(false);
+    }
+  };
+
   const handleToggleSuspend = async (suspend: boolean) => {
     if (!selectedCronJob) return;
     setIsSuspending(true);
@@ -426,6 +589,26 @@ export function CronJobsTab({
       <Button variant="ghost" size="sm" className="h-7 px-2" onClick={fetchCronJobs} title="Atualizar">
         <RefreshCcw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
       </Button>
+      <ProtectedAction>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1" title="Criar novo recurso batch">
+              <Plus className="w-3.5 h-3.5" />
+              <span>Novo</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => handleOpenNewJob("job")}>
+              <Play className="w-3.5 h-3.5 mr-2" />
+              Job (execução única)
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => handleOpenNewJob("cronjob")}>
+              <Clock className="w-3.5 h-3.5 mr-2" />
+              CronJob (agendado)
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </ProtectedAction>
     </div>
   );
 
@@ -918,6 +1101,182 @@ export function CronJobsTab({
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setErrorOpen(false)}>Fechar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Novo Job / CronJob */}
+      <Dialog open={newJobOpen} onOpenChange={setNewJobOpen}>
+        <DialogContent className="max-w-3xl flex flex-col" style={{ maxHeight: "90vh" }}>
+          <DialogHeader className="flex-shrink-0">
+            <DialogTitle className="flex items-center gap-2">
+              <Plus className="h-5 w-5" />
+              Novo {newJobType === "cronjob" ? "CronJob" : "Job"}
+            </DialogTitle>
+            <DialogDescription>
+              Cria {newJobType === "cronjob" ? "um CronJob agendado" : "um Job de execução única"} diretamente via API Kubernetes.
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Seletor de tipo */}
+          <div className="flex border-b border-border flex-shrink-0 -mx-6 px-6">
+            {(["job", "cronjob"] as const).map(t => (
+              <button
+                key={t}
+                onClick={() => {
+                  setNewJobType(t);
+                  setNewJobYaml(t === "cronjob" ? defaultCronJobTemplate() : defaultJobTemplate());
+                }}
+                className={`px-4 py-2 text-xs font-medium border-b-2 -mb-px transition-colors ${
+                  newJobType === t
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {t === "job" ? "Job (execução única)" : "CronJob (agendado)"}
+              </button>
+            ))}
+          </div>
+
+          {/* Aviso CronJob + Helm */}
+          {newJobType === "cronjob" && (
+            <div className="flex-shrink-0 flex items-start gap-2 px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300">
+              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+              <span>CronJobs criados diretamente podem ser removidos pelo Helm no próximo <code>helm upgrade</code>. Considere commitar o YAML no GitHub antes de criar.</span>
+            </div>
+          )}
+
+          {/* Namespace + ações de template */}
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <Select value={newJobNamespace || "__none__"} onValueChange={(v) => setNewJobNamespace(v === "__none__" ? "" : v)}>
+              <SelectTrigger className="h-8 flex-1">
+                <SelectValue placeholder="Namespace (obrigatório)" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">— Selecione o namespace —</SelectItem>
+                {namespaces
+                  .filter(ns => showSystemNamespaces || !systemNamespaces.has(ns.name))
+                  .map(ns => <SelectItem key={ns.name} value={ns.name}>{ns.name}</SelectItem>)
+                }
+              </SelectContent>
+            </Select>
+            {selectedCronJob && newJobType === "job" && (
+              <Button
+                variant="outline" size="sm" className="h-8 text-xs gap-1 flex-shrink-0"
+                onClick={handleLoadJobTemplate}
+                disabled={isLoadingJobTemplate}
+                title={`Usar spec do CronJob ${selectedCronJob.name}`}
+              >
+                {isLoadingJobTemplate ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
+                Template de {selectedCronJob.name}
+              </Button>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-hidden min-h-0" style={{ minHeight: 300 }}>
+            <MonacoYamlEditor
+              value={newJobYaml}
+              onChange={(v) => setNewJobYaml(v ?? "")}
+              height={400}
+            />
+          </div>
+
+          {/* Seção: Salvar no GitHub */}
+          <div className="flex-shrink-0 border border-border rounded-md overflow-hidden">
+            <button
+              className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+              onClick={() => { setGhSectionOpen(v => !v); setGhCommitResult(null); }}
+            >
+              <span className="flex items-center gap-1.5">
+                <GitBranch className="w-3.5 h-3.5" />
+                Salvar YAML no GitHub
+              </span>
+              {ghSectionOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+
+            {ghSectionOpen && (
+              <div className="px-3 pb-3 pt-1 flex flex-col gap-2 border-t border-border/50 bg-muted/20">
+                <p className="text-xs text-muted-foreground">
+                  Cole a URL da pasta no GitHub onde o arquivo será criado (ex: <code className="text-xs bg-muted px-1 rounded">github.com/org/repo/tree/main/jobs</code>)
+                </p>
+                <Input
+                  placeholder="https://github.com/org/repo/tree/main/jobs/pasta"
+                  value={ghFolderUrl}
+                  onChange={e => { setGhFolderUrl(e.target.value); setGhCommitResult(null); }}
+                  className="h-8 text-xs font-mono"
+                />
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Nome do arquivo (ex: relatorio-job.yaml)"
+                    value={ghFilename}
+                    onChange={e => setGhFilename(e.target.value)}
+                    className="h-8 text-xs flex-1"
+                  />
+                  <Input
+                    placeholder="Mensagem do commit (opcional)"
+                    value={ghMessage}
+                    onChange={e => setGhMessage(e.target.value)}
+                    className="h-8 text-xs flex-1"
+                  />
+                </div>
+                {/* Validação inline da URL */}
+                {ghFolderUrl && !parseGitHubFolderUrl(ghFolderUrl) && (
+                  <p className="text-xs text-red-500 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    URL inválida — use o formato: https://github.com/org/repo/tree/branch/pasta
+                  </p>
+                )}
+                {ghFolderUrl && parseGitHubFolderUrl(ghFolderUrl) && (() => {
+                  const p = parseGitHubFolderUrl(ghFolderUrl)!;
+                  return (
+                    <p className="text-xs text-muted-foreground">
+                      → <span className="text-foreground font-mono">{p.owner}/{p.repo}</span> · branch <span className="text-foreground font-mono">{p.branch}</span> · pasta <span className="text-foreground font-mono">{p.basePath || "/"}</span>
+                    </p>
+                  );
+                })()}
+                {ghCommitResult && (
+                  <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
+                    <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                    <span>{ghCommitResult.created ? "Arquivo criado" : "Arquivo atualizado"}:</span>
+                    <a href={ghCommitResult.fileUrl} target="_blank" rel="noopener noreferrer"
+                       className="flex items-center gap-0.5 underline truncate">
+                      {ghFilename} <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                    </a>
+                  </div>
+                )}
+                <div className="flex justify-end">
+                  <Button
+                    size="sm" variant="outline" className="h-7 text-xs gap-1"
+                    onClick={handleCommitToGitHub}
+                    disabled={isCommitting || !ghFolderUrl || !ghFilename || !parseGitHubFolderUrl(ghFolderUrl)}
+                  >
+                    {isCommitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <GitBranch className="w-3.5 h-3.5" />}
+                    {isCommitting ? "Commitando…" : "Commitar no GitHub"}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="flex-shrink-0 gap-2">
+            <Button variant="ghost" onClick={() => setNewJobOpen(false)}>Cancelar</Button>
+            <Button
+              variant="outline"
+              onClick={() => handleCreateResource(true)}
+              disabled={isCreatingJob || !newJobNamespace}
+            >
+              {isCreatingJob ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <CheckCircle2 className="w-4 h-4 mr-1" />}
+              Validar (dry-run)
+            </Button>
+            <ProtectedAction>
+              <Button
+                onClick={() => handleCreateResource(false)}
+                disabled={isCreatingJob || !newJobNamespace}
+              >
+                {isCreatingJob ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Play className="w-4 h-4 mr-1" />}
+                Criar {newJobType === "cronjob" ? "CronJob" : "Job"}
+              </Button>
+            </ProtectedAction>
           </DialogFooter>
         </DialogContent>
       </Dialog>

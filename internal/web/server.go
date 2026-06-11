@@ -651,6 +651,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/cronjobs", cronJobHandler.List)
 	api.GET("/cronjobs/:cluster/:namespace/:name", cronJobHandler.Get)
 	api.GET("/cronjobs/:cluster/:namespace/:name/describe", cronJobHandler.Describe)
+	api.GET("/cronjobs/:cluster/:namespace/:name/job-template", cronJobHandler.GetJobTemplate)
 	api.POST("/cronjobs/diff", cronJobHandler.Diff)
 	api.POST("/cronjobs/validate", cronJobHandler.Validate)
 
@@ -658,6 +659,8 @@ func (s *Server) setupRoutes() {
 	api.PUT("/cronjobs/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), cronJobHandler.Update)
 	api.PUT("/cronjobs/:cluster/:namespace/:name/yaml", rbacMiddleware.RequireSREGroup(), cronJobHandler.Apply)
 	api.POST("/cronjobs/:cluster/:namespace/:name/trigger", rbacMiddleware.RequireSREGroup(), cronJobHandler.Trigger)
+	api.POST("/jobs", rbacMiddleware.RequireSREGroup(), cronJobHandler.CreateJob)
+	api.POST("/cronjobs/new", rbacMiddleware.RequireSREGroup(), cronJobHandler.CreateCronJob)
 
 	// Prometheus Stack
 	prometheusHandler := handlers.NewPrometheusHandler(s.kubeManager, s.historyTracker)
@@ -1038,6 +1041,7 @@ func (s *Server) setupRoutes() {
 	api.GET("/github/deployments/registry", rbacMiddleware.InjectUserEmail(), githubHandler.GetDeploymentsRegistry)
 	api.GET("/github/compare", rbacMiddleware.InjectUserEmail(), githubHandler.CompareReleasesWithRegistry)
 	api.POST("/github/deployments/scan", rbacMiddleware.InjectUserEmail(), githubHandler.ScanDeployments)
+	api.POST("/github/commit-file", rbacMiddleware.InjectUserEmail(), githubHandler.CommitFile)
 	fmt.Println("✅ GitHub Releases routes registradas (com autenticação de usuário)")
 
 	// GitHub Tokens Management (gerenciamento de tokens individuais)

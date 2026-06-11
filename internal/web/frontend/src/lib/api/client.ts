@@ -2013,6 +2013,36 @@ class APIClient {
     return response.data;
   }
 
+  async getJobTemplate(cluster: string, namespace: string, name: string): Promise<{ yaml: string }> {
+    return this.request<{ yaml: string }>(
+      `/cronjobs/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/job-template`
+    );
+  }
+
+  async createJob(cluster: string, namespace: string, yamlContent: string, dryRun = false): Promise<{ name: string; namespace: string; dry_run: boolean }> {
+    const response = await this.request<APIResponse<{ name: string; namespace: string; dry_run: boolean }>>(
+      "/jobs",
+      {
+        method: "POST",
+        body: JSON.stringify({ cluster, namespace, yaml: yamlContent, dry_run: dryRun }),
+      }
+    );
+    if (!response.success) throw new Error((response as unknown as { error: string }).error || "Erro ao criar Job");
+    return response.data!;
+  }
+
+  async createCronJob(cluster: string, namespace: string, yamlContent: string, dryRun = false): Promise<{ name: string; namespace: string; schedule: string; dry_run: boolean }> {
+    const response = await this.request<APIResponse<{ name: string; namespace: string; schedule: string; dry_run: boolean }>>(
+      "/cronjobs/new",
+      {
+        method: "POST",
+        body: JSON.stringify({ cluster, namespace, yaml: yamlContent, dry_run: dryRun }),
+      }
+    );
+    if (!response.success) throw new Error((response as unknown as { error: string }).error || "Erro ao criar CronJob");
+    return response.data!;
+  }
+
   async updateCronJob(
     cluster: string,
     namespace: string,
@@ -2920,6 +2950,33 @@ class APIClient {
     this.clearGitHubEmail();
 
     return response;
+  }
+
+  /**
+   * POST /api/v1/github/commit-file
+   * Faz commit de um arquivo em um repositório GitHub a partir da URL de pasta.
+   */
+  async commitFileToGitHub(params: {
+    owner: string;
+    repo: string;
+    branch: string;
+    basePath: string;
+    filename: string;
+    content: string;
+    message: string;
+  }): Promise<{ success: boolean; file_url: string; commit_url: string; created: boolean }> {
+    return this.request("/github/commit-file", {
+      method: "POST",
+      body: JSON.stringify({
+        owner: params.owner,
+        repo: params.repo,
+        branch: params.branch,
+        base_path: params.basePath,
+        filename: params.filename,
+        content: params.content,
+        message: params.message,
+      }),
+    });
   }
 
   // ==================== ServiceNow Integration ====================
