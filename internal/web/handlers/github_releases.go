@@ -1501,3 +1501,85 @@ func (h *GitHubReleasesHandler) extractDaemonSetRecord(ds *appsv1.DaemonSet, clu
 		CreatedAt:       ds.CreationTimestamp.Time,
 	}
 }
+
+// CommitFile faz commit de um arquivo em um repositório GitHub.
+// Cria o arquivo se não existir; atualiza se já existir (busca SHA automaticamente).
+// POST /api/v1/github/commit-file
+func (h *GitHubReleasesHandler) CommitFile(c *gin.Context) {
+	var req struct {
+		// Destino resolvido a partir da URL de pasta colada pelo usuário
+		Owner    string `json:"owner"`
+		Repo     string `json:"repo"`
+		Branch   string `json:"branch"`
+		BasePath string `json:"base_path"` // caminho da pasta, ex: "jobs/producao"
+		Filename string `json:"filename"`  // nome do arquivo, ex: "relatorio-job.yaml"
+		Content  string `json:"content"`
+		Message  string `json:"message"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Owner == "" || req.Repo == "" || req.Filename == "" || req.Content == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "owner, repo, filename e content são obrigatórios"})
+		return
+	}
+	if req.Branch == "" {
+		req.Branch = "main"
+	}
+
+	// Montar caminho completo
+	filePath := req.Filename
+	if req.BasePath != "" {
+		filePath = strings.TrimRight(req.BasePath, "/") + "/" + req.Filename
+	}
+
+	if req.Message == "" {
+		req.Message = fmt.Sprintf("chore: adiciona %s", filePath)
+	}
+
+	client, err := h.getGitHubClient(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": err.Error(),
+			"hint":  "Configure seu token GitHub no modal de configurações",
+		})
+		return
+	}
+
+	ctx := context.Background()
+
+	// Buscar SHA do arquivo existente (necessário para update)
+	var existingSHA *string
+	existing, _, _, getErr := client.Repositories.GetContents(ctx, req.Owner, req.Repo, filePath,
+		&github.RepositoryContentGetOptions{Ref: req.Branch})
+	if getErr == nil && existing != nil {
+		existingSHA = existing.SHA
+	}
+
+	opts := &github.RepositoryContentFileOptions{
+		Message: github.String(req.Message),
+		Content: []byte(req.Content),
+		Branch:  github.String(req.Branch),
+		SHA:     existingSHA,
+	}
+
+	result, _, err := client.Repositories.CreateFile(ctx, req.Owner, req.Repo, filePath, opts)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("erro ao commitar: %v", err)})
+		return
+	}
+
+	fileURL := fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s", req.Owner, req.Repo, req.Branch, filePath)
+	commitURL := ""
+	if result.Commit.HTMLURL != nil {
+		commitURL = *result.Commit.HTMLURL
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":    true,
+		"file_url":   fileURL,
+		"commit_url": commitURL,
+		"created":    existingSHA == nil,
+	})
+}
