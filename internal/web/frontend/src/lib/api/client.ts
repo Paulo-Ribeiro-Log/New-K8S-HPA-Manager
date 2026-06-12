@@ -2498,6 +2498,7 @@ class APIClient {
     gemini_auth_mode?: string;
     gemini_vertex_project?: string;
     gemini_vertex_location?: string;
+    gemini_wif_login_url?: string;
     has_gemini_service_account: boolean;
     has_gemini_refresh_token: boolean;
     has_openai: boolean;

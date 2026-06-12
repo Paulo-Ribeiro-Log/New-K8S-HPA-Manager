@@ -701,80 +701,119 @@ export function AISettingsTab() {
 
             {/* Vertex AI mode */}
             {geminiAuthMode === "vertex" && (
-              <div className="space-y-3 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 p-3">
+              <div className="space-y-4 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/40 p-4">
 
-                {/* WIF Pool / Provider */}
+                {/* Passo 1: Projeto e Região */}
                 <div className="space-y-2">
-                  <p className="text-xs font-medium text-blue-800 dark:text-blue-200">
-                    Workforce Identity Federation (WIF)
-                  </p>
-                  <div className="space-y-1">
-                    <Label htmlFor="wif-login-url" className="text-xs text-muted-foreground">
-                      Pool ID / Provider ID
-                    </Label>
-                    <Input
-                      id="wif-login-url"
-                      type="text"
-                      placeholder="entraid-agentspace/entraid-federation-agentspace"
-                      value={wifLoginURL}
-                      onChange={(e) => setWifLoginURL(e.target.value)}
-                      className="font-mono text-xs"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Formato <code>poolID/providerID</code> do seu WIF no Google Cloud.
-                      Quando preenchido, o botão <strong>"Autenticar com Google"</strong> usa{" "}
-                      <code>auth.cloud.google/authorize</code> (WIF) em vez de <code>accounts.google.com</code>.
-                    </p>
+                  <p className="text-xs font-semibold text-blue-800 dark:text-blue-200 uppercase tracking-wide">1. Projeto GCP</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label htmlFor="vertex-project" className="text-xs text-muted-foreground">
+                        Project ID <span className="text-red-500">*</span>
+                      </Label>
+                      <Input
+                        id="vertex-project"
+                        placeholder="meu-projeto-gcp"
+                        value={geminiVertexProject}
+                        onChange={(e) => { setGeminiVertexProject(e.target.value); setVertexTestResult(null); setVertexTestError(null); }}
+                        className="font-mono text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="vertex-location" className="text-xs text-muted-foreground">Região</Label>
+                      <Select value={geminiVertexLocation} onValueChange={setGeminiVertexLocation}>
+                        <SelectTrigger id="vertex-location" className="text-sm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="us-central1">us-central1 (Iowa)</SelectItem>
+                          <SelectItem value="us-east1">us-east1 (Carolina do Sul)</SelectItem>
+                          <SelectItem value="europe-west1">europe-west1 (Bélgica)</SelectItem>
+                          <SelectItem value="europe-west4">europe-west4 (Holanda)</SelectItem>
+                          <SelectItem value="southamerica-east1">southamerica-east1 (São Paulo)</SelectItem>
+                          <SelectItem value="asia-northeast1">asia-northeast1 (Tóquio)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
                 </div>
 
                 <Separator />
 
-                {/* OAuth2 PKCE (contas Google pessoais / Workspace via OAuth padrão) */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs font-medium text-blue-800 dark:text-blue-200">
-                        Autenticar com Google (OAuth2)
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        Usa o email configurado acima como <code>login_hint</code> — se for um email corporativo, o Google redireciona automaticamente para o Azure AD (SSO WIF)
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {hasGeminiRefreshToken && googleStatus === "idle" && (
-                        <Badge variant="secondary" className="text-green-700 bg-green-100 border-green-300 text-xs">
-                          <CheckCircle2 className="h-3 w-3 mr-1" /> Autenticado
-                        </Badge>
-                      )}
-                      {(googleStatus === "idle" || googleStatus === "error") && (
-                        <Button size="sm" variant="outline" onClick={startGoogleAuth}>
-                          <LogIn className="h-4 w-4 mr-1" />
-                          {hasGeminiRefreshToken ? "Re-autenticar" : "Autenticar com Google"}
-                        </Button>
-                      )}
-                    </div>
+                {/* Passo 2: Autenticação OAuth2 / WIF */}
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold text-blue-800 dark:text-blue-200 uppercase tracking-wide">2. Autenticação</p>
+
+                  {/* WIF Pool/Provider — preencher ANTES de autenticar */}
+                  <div className="space-y-1">
+                    <Label htmlFor="wif-login-url" className="text-xs text-muted-foreground flex items-center gap-1">
+                      WIF Pool / Provider
+                      <span className="text-[10px] text-blue-600 dark:text-blue-400">(SSO corporativo — preencha antes de autenticar)</span>
+                    </Label>
+                    <Input
+                      id="wif-login-url"
+                      type="text"
+                      placeholder="poolID/providerID  ex: entraid-agentspace/entraid-federation-agentspace"
+                      value={wifLoginURL}
+                      onChange={(e) => setWifLoginURL(e.target.value)}
+                      className="font-mono text-xs"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Deixe em branco para conta Google pessoal. Com SSO corporativo (Azure AD → WIF), preencha o formato <code>poolID/providerID</code>.
+                    </p>
                   </div>
 
+                  {/* Botão de autenticar + status */}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    {(googleStatus === "idle" || googleStatus === "error") && (
+                      <Button
+                        size="sm"
+                        variant={hasGeminiRefreshToken ? "outline" : "default"}
+                        onClick={startGoogleAuth}
+                        disabled={!aiEmail}
+                        className="gap-1.5"
+                      >
+                        <LogIn className="h-4 w-4" />
+                        {hasGeminiRefreshToken ? "Re-autenticar" : "Autenticar com Google"}
+                        {wifLoginURL && <Badge variant="secondary" className="text-[10px] h-4 px-1 ml-1">WIF</Badge>}
+                      </Button>
+                    )}
+                    {!aiEmail && (
+                      <span className="text-xs text-amber-600 dark:text-amber-400">Preencha o email acima primeiro</span>
+                    )}
+                    {hasGeminiRefreshToken && googleStatus === "idle" && (
+                      <Badge variant="secondary" className="text-green-700 bg-green-100 border-green-300 text-xs gap-1">
+                        <CheckCircle2 className="h-3 w-3" /> Token salvo
+                      </Badge>
+                    )}
+                  </div>
+
+                  {/* Estado: aguardando browser */}
                   {googleStatus === "waiting" && (
                     <div className="rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-900 p-3 space-y-2">
-                      <div className="flex items-center gap-2 text-xs text-blue-700 dark:text-blue-300">
-                        <Loader2 className="h-3 w-3 animate-spin shrink-0" />
-                        <span className="font-semibold">Browser aberto — se redirecionar para o Azure AD, faça login com a conta corporativa.</span>
+                      <div className="flex items-center gap-2 text-xs text-blue-700 dark:text-blue-300 font-medium">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                        Aguardando conclusão do login no browser...
                       </div>
                       {googleAuthURL && (
-                        <div className="flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 text-xs gap-1.5"
-                            onClick={() => window.open(googleAuthURL, "_blank")}
+                        <div className="space-y-1">
+                          <p className="text-xs text-muted-foreground">
+                            {wifLoginURL ? "O browser deveria ter aberto com o login SSO corporativo." : "O browser deveria ter aberto com a página de login do Google."}{" "}
+                            Se não abriu ou foi bloqueado:
+                          </p>
+                          <a
+                            href={googleAuthURL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 text-xs text-blue-600 dark:text-blue-400 hover:underline font-medium"
                           >
-                            <LogIn className="h-3 w-3" /> Abrir novamente
-                          </Button>
-                          <span className="text-xs text-muted-foreground">Aguardando conclusão do login...</span>
+                            <LogIn className="h-3 w-3" /> Clique aqui para abrir o login
+                          </a>
                         </div>
                       )}
+                      <Button size="sm" variant="ghost" className="h-6 text-xs text-muted-foreground" onClick={() => setGoogleStatus("idle")}>
+                        Cancelar
+                      </Button>
                     </div>
                   )}
 
@@ -782,83 +821,62 @@ export function AISettingsTab() {
                     <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
                       <CheckCircle2 className="h-3.5 w-3.5" />
                       Autenticado com sucesso! Token salvo.
-                      <Button size="sm" variant="ghost" className="h-6 text-xs ml-auto" onClick={() => setGoogleStatus("idle")}>
-                        OK
-                      </Button>
+                      <Button size="sm" variant="ghost" className="h-6 text-xs ml-auto" onClick={() => setGoogleStatus("idle")}>OK</Button>
                     </div>
                   )}
 
                   {googleStatus === "error" && (
-                    <div className="flex items-start gap-2 text-xs text-red-500 dark:text-red-400">
+                    <div className="flex items-start gap-2 text-xs text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-950/40 rounded p-2">
                       <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
                       <span className="flex-1">{googleError}</span>
-                      <Button size="sm" variant="ghost" className="h-6 text-xs shrink-0" onClick={() => setGoogleStatus("idle")}>
-                        Fechar
-                      </Button>
+                      <Button size="sm" variant="ghost" className="h-6 text-xs shrink-0" onClick={() => setGoogleStatus("idle")}>Fechar</Button>
                     </div>
                   )}
                 </div>
+
                 <Separator />
-                <div className="space-y-1">
-                  <Label htmlFor="vertex-project" className="text-xs text-muted-foreground">
-                    Projeto GCP <span className="text-red-500">*</span>
-                  </Label>
-                  <Input
-                    id="vertex-project"
-                    placeholder="meu-projeto-gcp"
-                    value={geminiVertexProject}
-                    onChange={(e) => { setGeminiVertexProject(e.target.value); setVertexTestResult(null); setVertexTestError(null); }}
-                    className="font-mono text-sm"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="vertex-location" className="text-xs text-muted-foreground">Região GCP</Label>
-                  <Select value={geminiVertexLocation} onValueChange={setGeminiVertexLocation}>
-                    <SelectTrigger id="vertex-location" className="text-sm">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="us-central1">us-central1 (Iowa)</SelectItem>
-                      <SelectItem value="us-east1">us-east1 (Carolina do Sul)</SelectItem>
-                      <SelectItem value="europe-west1">europe-west1 (Bélgica)</SelectItem>
-                      <SelectItem value="europe-west4">europe-west4 (Holanda)</SelectItem>
-                      <SelectItem value="southamerica-east1">southamerica-east1 (São Paulo)</SelectItem>
-                      <SelectItem value="asia-northeast1">asia-northeast1 (Tóquio)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
 
-                {/* Service Account JSON */}
-                <div className="space-y-1">
-                  <Label htmlFor="vertex-sa-json" className="text-xs text-muted-foreground flex items-center gap-1">
-                    <FileJson className="h-3 w-3" />
-                    Service Account JSON
-                    {hasGeminiServiceAccount && !geminiServiceAccountJSON && (
-                      <Badge variant="secondary" className="text-xs ml-1">Configurado</Badge>
-                    )}
-                  </Label>
-                  <Textarea
-                    id="vertex-sa-json"
-                    placeholder='Cole aqui o conteúdo do arquivo JSON do Service Account do Google Cloud...'
-                    value={geminiServiceAccountJSON}
-                    onChange={(e) => { setGeminiServiceAccountJSON(e.target.value); setVertexTestResult(null); setVertexTestError(null); }}
-                    className="font-mono text-xs h-24 resize-none"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Obtenha em: GCP Console → IAM → Service Accounts → Criar chave (JSON).
-                    {hasGeminiServiceAccount && !geminiServiceAccountJSON && (
-                      <span className="text-green-600 ml-1">Um JSON já está armazenado — deixe em branco para mantê-lo.</span>
-                    )}
+                {/* Passo 3: Service Account JSON (alternativa) */}
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-blue-800 dark:text-blue-200 uppercase tracking-wide">
+                    3. Service Account JSON
+                    <span className="text-[10px] font-normal text-muted-foreground ml-2 normal-case">(alternativa ao OAuth2)</span>
                   </p>
+                  <div className="space-y-1">
+                    <Label htmlFor="vertex-sa-json" className="text-xs text-muted-foreground flex items-center gap-1">
+                      <FileJson className="h-3 w-3" />
+                      Conteúdo do arquivo JSON
+                      {hasGeminiServiceAccount && !geminiServiceAccountJSON && (
+                        <Badge variant="secondary" className="text-xs ml-1">Configurado</Badge>
+                      )}
+                    </Label>
+                    <Textarea
+                      id="vertex-sa-json"
+                      placeholder='Cole aqui o conteúdo do arquivo .json do Service Account (GCP Console → IAM → Service Accounts → Criar chave)'
+                      value={geminiServiceAccountJSON}
+                      onChange={(e) => { setGeminiServiceAccountJSON(e.target.value); setVertexTestResult(null); setVertexTestError(null); }}
+                      className="font-mono text-xs h-20 resize-none"
+                    />
+                    {hasGeminiServiceAccount && !geminiServiceAccountJSON && (
+                      <p className="text-xs text-green-600 dark:text-green-400">JSON armazenado — deixe em branco para mantê-lo.</p>
+                    )}
+                  </div>
                 </div>
 
-                <div className="flex items-center gap-2 pt-1">
+                <Separator />
+
+                {/* Testar conexão */}
+                <div className="flex items-center gap-3">
                   <Button size="sm" variant="outline" onClick={testVertexConnection}
                     disabled={!geminiVertexProject || testingVertex}>
-                    {testingVertex ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                    {testingVertex && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
                     Testar Conexão
                   </Button>
-                  {vertexTestResult === true && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 className="h-3 w-3" /> Autenticado</span>}
+                  {vertexTestResult === true && (
+                    <span className="text-xs text-green-600 flex items-center gap-1">
+                      <CheckCircle2 className="h-3 w-3" /> Autenticado com sucesso
+                    </span>
+                  )}
                   {vertexTestResult === false && (
                     <span className="text-xs text-red-600 flex items-center gap-1">
                       <XCircle className="h-3 w-3" />
