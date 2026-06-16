@@ -1,12 +1,10 @@
 package gcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -14,15 +12,12 @@ import (
 	"k8s-hpa-manager/internal/models"
 )
 
-const gkeAPIBase = "https://container.googleapis.com/v1"
-
-// GCPNodeGroupProvider implementa cloudprovider.NodeGroupProvider usando a GKE REST API.
-// Não depende do gcloud CLI — usa o ADC (Application Default Credentials) da própria app,
-// gravado pelo Device Auth Grant em AI Settings → Gemini.
+// GCPNodeGroupProvider implementa cloudprovider.NodeGroupProvider usando o gcloud CLI.
+// Requer que o gcloud esteja instalado e autenticado no servidor (gcloud auth login).
 type GCPNodeGroupProvider struct {
 	clusterName string
 	projectID   string
-	location    string // região (us-central1) ou zona (us-central1-a)
+	location    string // região (southamerica-east1) ou zona (us-central1-a)
 }
 
 // NewGCPNodeGroupProvider cria um provider GCP para um cluster GKE.
@@ -34,230 +29,151 @@ func NewGCPNodeGroupProvider(clusterName, projectID, location string) *GCPNodeGr
 	}
 }
 
-// ValidateAuth verifica se há credenciais GCP válidas (ADC acessível e token renovável).
+// ValidateAuth verifica se gcloud está instalado e com conta ativa.
 func (p *GCPNodeGroupProvider) ValidateAuth(ctx context.Context) error {
-	_, err := getGCPAccessToken(ctx)
-	return err
+	if _, err := exec.LookPath("gcloud"); err != nil {
+		return fmt.Errorf("gcloud CLI não encontrado — instale o Google Cloud SDK")
+	}
+
+	out, err := p.run(ctx, 10*time.Second,
+		"gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=json")
+	if err != nil {
+		return fmt.Errorf("gcloud auth list: %w", err)
+	}
+
+	var accounts []struct {
+		Account string `json:"account"`
+	}
+	if json.Unmarshal(out, &accounts) != nil || len(accounts) == 0 {
+		return fmt.Errorf("nenhuma conta GCP ativa — execute: gcloud auth login")
+	}
+	return nil
 }
 
-// ListNodeGroups lista os node pools do cluster via GKE REST API.
+// ListNodeGroups lista os node pools do cluster via gcloud CLI.
 func (p *GCPNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) ([]models.NodePool, error) {
-	token, err := getGCPAccessToken(ctx)
+	out, err := p.run(ctx, 60*time.Second,
+		"gcloud", "container", "node-pools", "list",
+		"--cluster", p.clusterName,
+		"--project", p.projectID,
+		p.locationFlag(), p.location,
+		"--format=json",
+	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("gcloud container node-pools list: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/projects/%s/locations/%s/clusters/%s/nodePools",
-		gkeAPIBase, p.projectID, p.location, p.clusterName)
-
-	var resp struct {
-		NodePools []gkeNodePool `json:"nodePools"`
+	var raw []struct {
+		Name   string `json:"name"`
+		Config struct {
+			MachineType string `json:"machineType"`
+		} `json:"config"`
+		InitialNodeCount int32 `json:"initialNodeCount"`
+		Autoscaling      struct {
+			Enabled      bool  `json:"enabled"`
+			MinNodeCount int32 `json:"minNodeCount"`
+			MaxNodeCount int32 `json:"maxNodeCount"`
+		} `json:"autoscaling"`
+		Status string `json:"status"`
 	}
-	if err := p.get(ctx, token, url, &resp); err != nil {
-		return nil, fmt.Errorf("GKE list node pools: %w", err)
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("parse node pools: %w", err)
 	}
 
-	pools := make([]models.NodePool, 0, len(resp.NodePools))
-	for _, np := range resp.NodePools {
-		pools = append(pools, np.toModel(p.clusterName))
+	pools := make([]models.NodePool, 0, len(raw))
+	for _, np := range raw {
+		pools = append(pools, models.NodePool{
+			Name:               np.Name,
+			VMSize:             np.Config.MachineType,
+			NodeCount:          np.InitialNodeCount,
+			MinNodeCount:       np.Autoscaling.MinNodeCount,
+			MaxNodeCount:       np.Autoscaling.MaxNodeCount,
+			AutoscalingEnabled: np.Autoscaling.Enabled,
+			Status:             strings.ToLower(np.Status),
+			ClusterName:        p.clusterName,
+			IsSystemPool:       np.Name == "default-pool",
+		})
 	}
 	return pools, nil
 }
 
-// ScaleNodeGroup define o número desejado de nodes em um node pool.
+// ScaleNodeGroup define o número de nodes no node pool via gcloud clusters resize.
 func (p *GCPNodeGroupProvider) ScaleNodeGroup(ctx context.Context, _, group string, count int) error {
-	token, err := getGCPAccessToken(ctx)
+	_, err := p.run(ctx, 10*time.Minute,
+		"gcloud", "container", "clusters", "resize", p.clusterName,
+		"--node-pool", group,
+		"--num-nodes", fmt.Sprintf("%d", count),
+		"--project", p.projectID,
+		p.locationFlag(), p.location,
+		"--quiet",
+	)
 	if err != nil {
-		return err
+		return fmt.Errorf("gcloud clusters resize node pool %s: %w", group, err)
 	}
-
-	url := fmt.Sprintf("%s/projects/%s/locations/%s/clusters/%s/nodePools/%s/setSize",
-		gkeAPIBase, p.projectID, p.location, p.clusterName, group)
-
-	body := map[string]any{"nodeCount": count}
-
-	var op gkeOperation
-	if err := p.post(ctx, token, url, body, &op); err != nil {
-		return fmt.Errorf("GKE resize node pool %s: %w", group, err)
-	}
-
-	return p.waitOperation(ctx, token, op.Name, 10*time.Minute)
+	return nil
 }
 
 // SetAutoscaling habilita ou desabilita o cluster autoscaler no node pool.
 func (p *GCPNodeGroupProvider) SetAutoscaling(ctx context.Context, _, group string, enable bool, min, max int) error {
-	token, err := getGCPAccessToken(ctx)
-	if err != nil {
-		return err
+	args := []string{
+		"gcloud", "container", "node-pools", "update", group,
+		"--cluster", p.clusterName,
+		"--project", p.projectID,
+		p.locationFlag(), p.location,
+		"--quiet",
+	}
+	if enable {
+		args = append(args,
+			"--enable-autoscaling",
+			"--min-nodes", fmt.Sprintf("%d", min),
+			"--max-nodes", fmt.Sprintf("%d", max),
+		)
+	} else {
+		args = append(args, "--no-enable-autoscaling")
 	}
 
-	url := fmt.Sprintf("%s/projects/%s/locations/%s/clusters/%s/nodePools/%s/setAutoscaling",
-		gkeAPIBase, p.projectID, p.location, p.clusterName, group)
-
-	body := map[string]any{
-		"autoscaling": map[string]any{
-			"enabled":      enable,
-			"minNodeCount": min,
-			"maxNodeCount": max,
-		},
+	if _, err := p.run(ctx, 5*time.Minute, args...); err != nil {
+		return fmt.Errorf("gcloud node-pools update autoscaling %s: %w", group, err)
 	}
-
-	var op gkeOperation
-	if err := p.post(ctx, token, url, body, &op); err != nil {
-		return fmt.Errorf("GKE set autoscaling node pool %s: %w", group, err)
-	}
-
-	return p.waitOperation(ctx, token, op.Name, 5*time.Minute)
+	return nil
 }
 
-// AbortOperation não é suportado na GKE REST API pública.
+// AbortOperation não tem equivalente no gcloud GKE.
 func (p *GCPNodeGroupProvider) AbortOperation(_ context.Context, _, _ string) error {
 	return cloudprovider.ErrNotSupported
 }
 
-// ─── helpers HTTP ─────────────────────────────────────────────────────────────
+// ─── helpers ──────────────────────────────────────────────────────────────────
 
-func (p *GCPNodeGroupProvider) get(ctx context.Context, token, url string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+// run executa um comando com timeout e retorna stdout.
+// O primeiro elemento de args é o executável; os demais são os argumentos.
+func (p *GCPNodeGroupProvider) run(ctx context.Context, timeout time.Duration, args ...string) ([]byte, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, args[0], args[1:]...)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("%s: %w\n%s",
+			strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Goog-User-Project", p.projectID)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("HTTP GET %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	return p.decodeResponse(resp, out)
+	return out, nil
 }
 
-func (p *GCPNodeGroupProvider) post(ctx context.Context, token, url string, body any, out any) error {
-	data, err := json.Marshal(body)
-	if err != nil {
-		return err
+// locationFlag retorna --region ou --zone dependendo da localização configurada.
+func (p *GCPNodeGroupProvider) locationFlag() string {
+	if isGKEZone(p.location) {
+		return "--zone"
 	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Goog-User-Project", p.projectID)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("HTTP POST %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	return p.decodeResponse(resp, out)
+	return "--region"
 }
 
-func (p *GCPNodeGroupProvider) decodeResponse(resp *http.Response, out any) error {
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("erro ao ler resposta: %w", err)
+// isGKEZone retorna true se a string for uma zona GCP (termina com -[a-f]).
+func isGKEZone(location string) bool {
+	if len(location) < 2 {
+		return false
 	}
-
-	if resp.StatusCode >= 400 {
-		var apiErr struct {
-			Error struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		json.Unmarshal(bodyBytes, &apiErr) //nolint:errcheck
-		msg := apiErr.Error.Message
-		if msg == "" {
-			msg = string(bodyBytes)
-		}
-		return fmt.Errorf("GKE API erro %d: %s", resp.StatusCode, msg)
-	}
-
-	return json.Unmarshal(bodyBytes, out)
-}
-
-// waitOperation aguarda a conclusão de uma operação GKE com polling a cada 5s.
-func (p *GCPNodeGroupProvider) waitOperation(ctx context.Context, token, operationName string, timeout time.Duration) error {
-	if operationName == "" {
-		return nil
-	}
-
-	// operationName vem no formato "projects/P/locations/L/operations/ID"
-	// ou apenas "operation-XXXX" dependendo da versão da API
-	opURL := operationName
-	if !strings.HasPrefix(operationName, "http") {
-		if strings.HasPrefix(operationName, "projects/") {
-			opURL = fmt.Sprintf("%s/%s", gkeAPIBase, operationName)
-		} else {
-			opURL = fmt.Sprintf("%s/projects/%s/locations/%s/operations/%s",
-				gkeAPIBase, p.projectID, p.location, operationName)
-		}
-	}
-
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		var op gkeOperation
-		if err := p.get(ctx, token, opURL, &op); err != nil {
-			return fmt.Errorf("erro ao verificar operação: %w", err)
-		}
-
-		switch op.Status {
-		case "DONE":
-			if op.StatusMessage != "" {
-				return fmt.Errorf("operação concluída com erro: %s", op.StatusMessage)
-			}
-			return nil
-		case "ABORTING":
-			return fmt.Errorf("operação abortada: %s", op.StatusMessage)
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
-		}
-	}
-
-	return fmt.Errorf("timeout aguardando operação GKE (%s)", timeout)
-}
-
-// ─── tipos da GKE API ─────────────────────────────────────────────────────────
-
-type gkeNodePool struct {
-	Name        string `json:"name"`
-	Config      struct {
-		MachineType string `json:"machineType"`
-	} `json:"config"`
-	InitialNodeCount int32 `json:"initialNodeCount"`
-	Autoscaling      struct {
-		Enabled      bool  `json:"enabled"`
-		MinNodeCount int32 `json:"minNodeCount"`
-		MaxNodeCount int32 `json:"maxNodeCount"`
-	} `json:"autoscaling"`
-	Status string `json:"status"`
-}
-
-func (np gkeNodePool) toModel(clusterName string) models.NodePool {
-	return models.NodePool{
-		Name:               np.Name,
-		VMSize:             np.Config.MachineType,
-		NodeCount:          np.InitialNodeCount,
-		MinNodeCount:       np.Autoscaling.MinNodeCount,
-		MaxNodeCount:       np.Autoscaling.MaxNodeCount,
-		AutoscalingEnabled: np.Autoscaling.Enabled,
-		Status:             strings.ToLower(np.Status),
-		ClusterName:        clusterName,
-		IsSystemPool:       np.Name == "default-pool",
-	}
-}
-
-type gkeOperation struct {
-	Name          string `json:"name"`
-	Status        string `json:"status"` // RUNNING, DONE, ABORTING
-	StatusMessage string `json:"statusMessage"`
+	last := location[len(location)-1]
+	prev := location[len(location)-2]
+	return prev == '-' && last >= 'a' && last <= 'f'
 }
