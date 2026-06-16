@@ -8,6 +8,7 @@ import (
 const (
 	CloudProviderAKS     = "aks"
 	CloudProviderEKS     = "eks"
+	CloudProviderGKE     = "gke"
 	CloudProviderUnknown = "unknown"
 )
 
@@ -19,17 +20,29 @@ var eksURLPattern = regexp.MustCompile(`\.eks\.amazonaws\.com`)
 // Exemplo: https://akspriv-abc.hcp.brazilsouth.azmk8s.io
 var aksURLPattern = regexp.MustCompile(`\.azmk8s\.io`)
 
+// gkeURLPattern detecta URLs de API server do GKE.
+// Exemplo: https://HASH.REGION.container.googleapis.com
+var gkeURLPattern = regexp.MustCompile(`\.container\.googleapis\.com`)
+
 // eksRegionPattern extrai a região de uma URL EKS.
 var eksRegionPattern = regexp.MustCompile(`\.([a-z]{2}-[a-z]+-\d)\.eks\.amazonaws\.com`)
 
-// DetectCloudProvider detecta o cloud provider a partir da URL do API server do kubeconfig.
-// Retorna "aks", "eks" ou "unknown".
-func DetectCloudProvider(serverURL string) string {
+// DetectCloudProvider detecta o cloud provider a partir da URL do API server e do nome do context.
+// contextName (opcional) é o nome do context no kubeconfig — usado para detectar GKE via prefixo gke_,
+// pois clusters GKE privados expõem apenas IPs como API server.
+// Retorna "aks", "eks", "gke" ou "unknown".
+func DetectCloudProvider(serverURL string, contextName ...string) string {
+	// Context GKE começa com "gke_" — mais confiável que URL para clusters privados
+	if len(contextName) > 0 && strings.HasPrefix(contextName[0], "gke_") {
+		return CloudProviderGKE
+	}
 	switch {
 	case aksURLPattern.MatchString(serverURL):
 		return CloudProviderAKS
 	case eksURLPattern.MatchString(serverURL):
 		return CloudProviderEKS
+	case gkeURLPattern.MatchString(serverURL):
+		return CloudProviderGKE
 	default:
 		return CloudProviderUnknown
 	}
