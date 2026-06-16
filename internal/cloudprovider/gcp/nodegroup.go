@@ -29,10 +29,15 @@ func NewGCPNodeGroupProvider(clusterName, projectID, location string) *GCPNodeGr
 	}
 }
 
-// ValidateAuth verifica se gcloud está instalado e com conta ativa.
+// ValidateAuth verifica se gcloud está instalado, com conta ativa, e garante
+// que o gke-gcloud-auth-plugin está presente e USE_GKE_GCLOUD_AUTH_PLUGIN=True definido.
 func (p *GCPNodeGroupProvider) ValidateAuth(ctx context.Context) error {
 	if _, err := exec.LookPath("gcloud"); err != nil {
 		return fmt.Errorf("gcloud CLI não encontrado — instale o Google Cloud SDK")
+	}
+
+	if err := EnsureGKEAuthPlugin(nil); err != nil {
+		return err
 	}
 
 	out, err := p.run(ctx, 10*time.Second,

@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	gcpprovider "k8s-hpa-manager/internal/cloudprovider/gcp"
 )
 
 // AutoDiscoverGKEClusters descobre clusters GKE de duas fontes em ordem de prioridade:
@@ -37,6 +39,15 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 		if logFunc != nil {
 			logFunc("[GKE] ⚠️  gcloud CLI não encontrado — usando apenas kubeconfig")
 		}
+		return configs, nil
+	}
+
+	// Garantir que o plugin de autenticação GKE está instalado antes de qualquer operação
+	if err := gcpprovider.EnsureGKEAuthPlugin(logFunc); err != nil {
+		if logFunc != nil {
+			logFunc(fmt.Sprintf("[GKE] ⚠️  %v", err))
+		}
+		// Não bloquear o discovery por causa do plugin — continuar com kubeconfig
 		return configs, nil
 	}
 
