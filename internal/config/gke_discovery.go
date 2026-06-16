@@ -4,8 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -13,21 +12,18 @@ import (
 )
 
 // AutoDiscoverGKEClusters descobre clusters GKE de duas fontes em ordem de prioridade:
-//  1. Contexts do kubeconfig com prefixo gke_ — extrai project/region/cluster sem credenciais
-//  2. GKE REST API (Cloud Resource Manager + Container API) — usa ADC da app (mesmo token do Gemini)
-//
-// Não depende do gcloud CLI.
+//  1. Contexts do kubeconfig com prefixo gke_ — sem credenciais, sempre disponível
+//  2. gcloud CLI — lista projetos e clusters ativos (requer gcloud auth login)
 func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKEClusterConfig, []error) {
 	if logFunc != nil {
-		logFunc("[GKE] 🔍 Descobrindo clusters GKE...")
+		logFunc("[GKE] Descobrindo clusters GKE...")
 	}
 
 	seen := make(map[string]bool)
 	var configs []GKEClusterConfig
 
-	// Fonte 1: kubeconfig contexts com prefixo gke_ (sem credenciais, sempre disponível)
-	kubeConfigs := k.discoverGKEFromKubeconfig()
-	for _, c := range kubeConfigs {
+	// Fonte 1: kubeconfig contexts com prefixo gke_ (sem credenciais)
+	for _, c := range k.discoverGKEFromKubeconfig() {
 		key := c.ProjectID + "|" + c.Region + "|" + c.Name
 		if !seen[key] {
 			seen[key] = true
@@ -38,41 +34,46 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 		}
 	}
 
-	// Fonte 2: GKE REST API — usa ADC da app (mesmo token OAuth2 do Gemini)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
+	// Fonte 2: gcloud CLI (requer autenticação)
+	if _, err := exec.LookPath("gcloud"); err != nil {
+		if logFunc != nil {
+			logFunc("[GKE] ⚠️  gcloud CLI não encontrado — usando apenas kubeconfig")
+		}
+		return configs, nil
+	}
 
-	token, err := gcpprovider.GetGCPAccessToken(ctx)
+	// Garantir que o plugin de autenticação GKE está instalado antes de qualquer operação
+	if err := gcpprovider.EnsureGKEAuthPlugin(logFunc); err != nil {
+		if logFunc != nil {
+			logFunc(fmt.Sprintf("[GKE] ⚠️  %v", err))
+		}
+		// Não bloquear o discovery por causa do plugin — continuar com kubeconfig
+		return configs, nil
+	}
+
+	if logFunc != nil {
+		logFunc("[GKE] Listando projetos via gcloud...")
+	}
+
+	projects, err := listGCPProjectsGcloud()
 	if err != nil {
 		if logFunc != nil {
 			if len(configs) == 0 {
-				logFunc("[GKE] ⚠️  Sem credenciais GCP — autentique em AI Settings → Gemini → Código de Dispositivo")
+				logFunc("[GKE] ⚠️  gcloud não autenticado — execute: gcloud auth login")
 			} else {
-				logFunc("[GKE] ℹ️  Sem credenciais GCP para busca via API — usando apenas kubeconfig")
+				logFunc("[GKE] ℹ️  gcloud sem autenticação — usando apenas kubeconfig")
 			}
 		}
 		return configs, nil
 	}
 
 	if logFunc != nil {
-		logFunc("[GKE] 📋 Listando projetos GCP via API...")
-	}
-
-	projects, err := listGCPProjectsAPI(ctx, token)
-	if err != nil {
-		if logFunc != nil {
-			logFunc(fmt.Sprintf("[GKE] ⚠️  Erro ao listar projetos: %v", err))
-		}
-		return configs, []error{err}
-	}
-
-	if logFunc != nil {
-		logFunc(fmt.Sprintf("[GKE] 📋 %d projeto(s) encontrado(s) via API", len(projects)))
+		logFunc(fmt.Sprintf("[GKE] %d projeto(s) encontrado(s)", len(projects)))
 	}
 
 	var allErrors []error
 	for _, project := range projects {
-		clusters, err := listGKEClustersAPI(ctx, token, project)
+		clusters, err := listGKEClustersGcloud(project)
 		if err != nil {
 			allErrors = append(allErrors, fmt.Errorf("projeto %s: %w", project, err))
 			continue
@@ -83,7 +84,7 @@ func (k *KubeConfigManager) AutoDiscoverGKEClusters(logFunc func(string)) ([]GKE
 				seen[key] = true
 				configs = append(configs, c)
 				if logFunc != nil {
-					logFunc(fmt.Sprintf("[GKE] ✅ %s — projeto: %s, região: %s (API)", c.Name, c.ProjectID, c.Region))
+					logFunc(fmt.Sprintf("[GKE] ✅ %s — projeto: %s, região: %s (gcloud)", c.Name, c.ProjectID, c.Region))
 				}
 			}
 		}
@@ -97,7 +98,6 @@ func (k *KubeConfigManager) discoverGKEFromKubeconfig() []GKEClusterConfig {
 	if k.config == nil {
 		return nil
 	}
-
 	var configs []GKEClusterConfig
 	for contextName := range k.config.Contexts {
 		project, region, cluster := splitGKEContext(contextName)
@@ -113,42 +113,27 @@ func (k *KubeConfigManager) discoverGKEFromKubeconfig() []GKEClusterConfig {
 	return configs
 }
 
-// listGCPProjectsAPI lista projetos GCP ativos via Cloud Resource Manager REST API.
-func listGCPProjectsAPI(ctx context.Context, token string) ([]string, error) {
-	url := "https://cloudresourcemanager.googleapis.com/v1/projects?filter=lifecycleState%3AACTIVE"
+// listGCPProjectsGcloud lista projetos GCP ativos via gcloud CLI.
+func listGCPProjectsGcloud() ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	cmd := exec.CommandContext(ctx, "gcloud", "projects", "list",
+		"--filter=lifecycleState:ACTIVE", "--format=json(projectId)")
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("Cloud Resource Manager API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		var apiErr struct {
-			Error struct{ Message string `json:"message"` } `json:"error"`
-		}
-		json.Unmarshal(body, &apiErr) //nolint:errcheck
-		return nil, fmt.Errorf("Cloud Resource Manager API %d: %s", resp.StatusCode, apiErr.Error.Message)
+		return nil, fmt.Errorf("gcloud projects list: %w", err)
 	}
 
-	var result struct {
-		Projects []struct {
-			ProjectID string `json:"projectId"`
-		} `json:"projects"`
+	var result []struct {
+		ProjectID string `json:"projectId"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse projects API: %w", err)
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, fmt.Errorf("parse projetos: %w", err)
 	}
 
-	ids := make([]string, 0, len(result.Projects))
-	for _, p := range result.Projects {
+	ids := make([]string, 0, len(result))
+	for _, p := range result {
 		if p.ProjectID != "" {
 			ids = append(ids, p.ProjectID)
 		}
@@ -156,55 +141,37 @@ func listGCPProjectsAPI(ctx context.Context, token string) ([]string, error) {
 	return ids, nil
 }
 
-// listGKEClustersAPI lista clusters GKE em um projeto usando a Container API.
-// Usa "-" como wildcard de localização para retornar clusters de todas as regiões/zonas.
-func listGKEClustersAPI(ctx context.Context, token, projectID string) ([]GKEClusterConfig, error) {
-	url := fmt.Sprintf("https://container.googleapis.com/v1/projects/%s/locations/-/clusters", projectID)
+// listGKEClustersGcloud lista clusters GKE de um projeto via gcloud CLI.
+func listGKEClustersGcloud(projectID string) ([]GKEClusterConfig, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	cmd := exec.CommandContext(ctx, "gcloud", "container", "clusters", "list",
+		"--project", projectID,
+		"--format=json(name,location,network)")
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Goog-User-Project", projectID)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("GKE clusters API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode == 403 || resp.StatusCode == 404 {
+		errMsg := strings.TrimSpace(string(out))
 		// API não habilitada ou sem permissão — ignorar silenciosamente
-		return nil, nil
-	}
-	if resp.StatusCode >= 400 {
-		var apiErr struct {
-			Error struct{ Message string `json:"message"` } `json:"error"`
-		}
-		json.Unmarshal(body, &apiErr) //nolint:errcheck
-		msg := apiErr.Error.Message
-		if strings.Contains(msg, "API has not been used") || strings.Contains(msg, "not enabled") {
+		if strings.Contains(errMsg, "API has not been used") ||
+			strings.Contains(errMsg, "not enabled") ||
+			strings.Contains(errMsg, "PERMISSION_DENIED") {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("GKE API %d: %s", resp.StatusCode, msg)
+		return nil, fmt.Errorf("gcloud container clusters list: %w", err)
 	}
 
-	var result struct {
-		Clusters []struct {
-			Name     string `json:"name"`
-			Location string `json:"location"`
-			Network  string `json:"network"`
-		} `json:"clusters"`
+	var result []struct {
+		Name     string `json:"name"`
+		Location string `json:"location"`
+		Network  string `json:"network"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse clusters API (project %s): %w", projectID, err)
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, fmt.Errorf("parse clusters (projeto %s): %w", projectID, err)
 	}
 
-	configs := make([]GKEClusterConfig, 0, len(result.Clusters))
-	for _, c := range result.Clusters {
+	configs := make([]GKEClusterConfig, 0, len(result))
+	for _, c := range result {
 		configs = append(configs, GKEClusterConfig{
 			Name:      c.Name,
 			ProjectID: projectID,

@@ -249,13 +249,25 @@ func (k *KubeConfigManager) GetK8sClient(clusterName string) (*kubeclient.Client
 }
 
 // DiscoverClusters descobre todos os clusters do kubeconfig em ordem alfabética.
-// Detecta automaticamente o cloud provider (AKS/EKS) via URL do API server.
+// Detecta automaticamente o cloud provider (AKS/EKS/GKE) via URL do API server.
+// Quando há clusters GKE, garante que gke-gcloud-auth-plugin está instalado.
 func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
 	// clusterName (kubeconfig) → context name
 	clusterToContext := make(map[string]string)
 
+	var hasGKE bool
 	for contextName, ctx := range k.config.Contexts {
 		clusterToContext[ctx.Cluster] = contextName
+		if strings.HasPrefix(contextName, "gke_") {
+			hasGKE = true
+		}
+	}
+
+	// Garantir o plugin de autenticação GKE antes de qualquer operação de cliente
+	if hasGKE {
+		if err := gcpprovider.EnsureGKEAuthPlugin(nil); err != nil {
+			fmt.Printf("⚠️  [GKE] %v\n", err)
+		}
 	}
 
 	var clusterNames []string
