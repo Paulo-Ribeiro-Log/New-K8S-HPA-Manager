@@ -29,6 +29,7 @@ import (
 	"k8s-hpa-manager/internal/cloudprovider"
 	azureprovider "k8s-hpa-manager/internal/cloudprovider/azure"
 	awsprovider "k8s-hpa-manager/internal/cloudprovider/aws"
+	gcpprovider "k8s-hpa-manager/internal/cloudprovider/gcp"
 	"k8s-hpa-manager/internal/history"
 	kubeclient "k8s-hpa-manager/internal/kubernetes"
 	"k8s-hpa-manager/internal/models"
@@ -269,12 +270,15 @@ func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
 		if c, ok := k.config.Clusters[clusterName]; ok {
 			serverURL = c.Server
 		}
-		cloudProvider := DetectCloudProvider(serverURL)
+		contextName := clusterToContext[clusterName]
+		cloudProvider := DetectCloudProvider(serverURL, contextName)
 		region := ""
 		if cloudProvider == CloudProviderEKS {
 			region = ExtractRegionFromEKSURL(serverURL)
 		} else if cloudProvider == CloudProviderAKS {
 			region = extractAKSRegion(serverURL)
+		} else if cloudProvider == CloudProviderGKE {
+			_, region, _ = splitGKEContext(contextName)
 		}
 
 		displayName := clusterName
@@ -285,13 +289,17 @@ func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
 				displayName = clusterName[idx+1:]
 			}
 			// Expor o perfil AWS real (do kubeconfig) para que o frontend use sem inferência
-			contextName := clusterToContext[clusterName]
 			awsProfile = k.resolveAWSProfile(contextName)
+		} else if cloudProvider == CloudProviderGKE {
+			_, _, shortName := splitGKEContext(contextName)
+			if shortName != "" {
+				displayName = shortName
+			}
 		}
 
 		clusters = append(clusters, models.Cluster{
 			Name:          displayName,
-			Context:       clusterToContext[clusterName],
+			Context:       contextName,
 			Status:        models.StatusUnknown,
 			CloudProvider: cloudProvider,
 			Region:        region,
@@ -671,14 +679,14 @@ func (k *KubeConfigManager) ValidateConfig() error {
 }
 
 // GetNodeGroupProvider retorna o NodeGroupProvider correto para o cluster.
-// Detecta o cloud provider via URL do API server no kubeconfig.
-// AKS → AzureNodeGroupProvider; EKS → AWSNodeGroupProvider; fallback por clusters-config.json.
+// Detecta o cloud provider via context name e URL do API server no kubeconfig.
+// AKS → AzureNodeGroupProvider; EKS → AWSNodeGroupProvider; GKE → GCPNodeGroupProvider.
 func (k *KubeConfigManager) GetNodeGroupProvider(clusterName string) cloudprovider.NodeGroupProvider {
 	normalizedName := strings.TrimSuffix(clusterName, "-admin")
 
-	// Detectar cloud provider pela URL do API server
+	// Detectar cloud provider pela URL + context name (GKE usa prefixo gke_)
 	serverURL := k.getServerURL(clusterName)
-	cloudProvider := DetectCloudProvider(serverURL)
+	cloudProvider := DetectCloudProvider(serverURL, clusterName)
 
 	configEntries := k.loadClustersFromConfig()
 
@@ -689,14 +697,11 @@ func (k *KubeConfigManager) GetNodeGroupProvider(clusterName string) cloudprovid
 				return azureprovider.NewAzureNodeGroupProvider(c.Name, c.ResourceGroup, c.Subscription)
 			}
 		}
-		// Kubeconfig diz AKS mas não está no clusters-config.json
 		return azureprovider.NewAzureNodeGroupProvider(normalizedName, "", "")
 
 	case CloudProviderEKS:
-		// Base: extrair região e perfil do kubeconfig
 		region := ExtractRegionFromEKSURL(serverURL)
 		profile := k.getAWSProfileFromKubeconfig(clusterName)
-		// eks-clusters-config.json tem prioridade (override explícito via autodiscover EKS)
 		if eksConfig := k.GetEKSClusterConfig(clusterName); eksConfig != nil {
 			if eksConfig.AwsRegion != "" {
 				region = eksConfig.AwsRegion
@@ -707,8 +712,23 @@ func (k *KubeConfigManager) GetNodeGroupProvider(clusterName string) cloudprovid
 		}
 		return awsprovider.NewAWSNodeGroupProvider(normalizedName, region, profile)
 
+	case CloudProviderGKE:
+		// gke-clusters-config.json tem prioridade; fallback: parsear context name
+		var project, region, shortName string
+		if gkeConfig := k.GetGKEClusterConfig(clusterName); gkeConfig != nil {
+			project = gkeConfig.ProjectID
+			region = gkeConfig.Region
+			shortName = gkeConfig.Name
+		} else {
+			project, region, shortName = splitGKEContext(clusterName)
+			if shortName == "" {
+				shortName = normalizedName
+			}
+		}
+		return gcpprovider.NewGCPNodeGroupProvider(shortName, project, region)
+
 	default:
-		// URL não conclusiva — fallback por clusters-config.json
+		// URL não conclusiva — fallback para AKS se estiver no clusters-config.json
 		for _, c := range configEntries {
 			if strings.TrimSuffix(c.Name, "-admin") == normalizedName {
 				return azureprovider.NewAzureNodeGroupProvider(c.Name, c.ResourceGroup, c.Subscription)
