@@ -38,6 +38,11 @@ type Config struct {
 	// Quando preenchido, o auth usa auth.cloud.google/authorize (WIF) em vez de accounts.google.com
 	GeminiWifPoolProvider string
 
+	// GeminiAgentspaceEngineID Engine ID do Vertex AI Agentspace (CID da URL vertexaisearch.cloud.google).
+	// Exemplo: "e27c3217-b2b0-4e85-8002-8b0070735c03"
+	// Quando preenchido no modo "vertex", usa Discovery Engine API em vez de aiplatform.googleapis.com.
+	GeminiAgentspaceEngineID string
+
 	// OllamaBaseURL URL base do Ollama (padrão: http://localhost:11434)
 	OllamaBaseURL string
 

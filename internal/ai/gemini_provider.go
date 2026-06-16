@@ -58,7 +58,8 @@ type GeminiProvider struct {
 	location           string // região GCP (modo vertex, ex: us-central1)
 	serviceAccountJSON string // conteúdo JSON do service account (modo vertex sem gcloud)
 	refreshToken       string // OAuth refresh token (Device Auth / WIF App Callback)
-	wifPoolProvider    string // "poolID/providerID" para WIF (ex: "entraid-agentspace/entraid-federation-agentspace")
+	wifPoolProvider      string // "poolID/providerID" para WIF (ex: "entraid-agentspace/entraid-federation-agentspace")
+	agentspaceEngineID  string // Engine ID do Agentspace (CID de vertexaisearch.cloud.google)
 }
 
 // NewGeminiProvider cria um novo GeminiProvider
@@ -68,16 +69,17 @@ func NewGeminiProvider(config *Config) *GeminiProvider {
 		model = ToVertexModelID(model)
 	}
 	return &GeminiProvider{
-		apiKey:             config.GeminiAPIKey,
-		model:              model,
-		timeout:            time.Duration(config.Timeout) * time.Second,
-		client:             &http.Client{Timeout: time.Duration(config.Timeout) * time.Second},
-		authMode:           config.GeminiAuthMode,
-		project:            config.GeminiVertexProject,
-		location:           config.GeminiVertexLocation,
-		serviceAccountJSON: config.GeminiServiceAccountJSON,
-		refreshToken:       config.GeminiRefreshToken,
-		wifPoolProvider:    config.GeminiWifPoolProvider,
+		apiKey:              config.GeminiAPIKey,
+		model:               model,
+		timeout:             time.Duration(config.Timeout) * time.Second,
+		client:              &http.Client{Timeout: time.Duration(config.Timeout) * time.Second},
+		authMode:            config.GeminiAuthMode,
+		project:             config.GeminiVertexProject,
+		location:            config.GeminiVertexLocation,
+		serviceAccountJSON:  config.GeminiServiceAccountJSON,
+		refreshToken:        config.GeminiRefreshToken,
+		wifPoolProvider:     config.GeminiWifPoolProvider,
+		agentspaceEngineID:  config.GeminiAgentspaceEngineID,
 	}
 }
 
@@ -124,10 +126,22 @@ func (p *GeminiProvider) analyzeAPIKey(ctx context.Context, prompt string) (stri
 
 // analyzeVertex usa o Vertex AI.
 //
+// Quando agentspaceEngineID configurado: usa Discovery Engine API (Agentspace) —
+// para usuários cujo WIF não tem aiplatform.endpoints.predict mas tem acesso ao Agentspace.
 // Quando `project` está configurado: Vertex AI direto (aiplatform.googleapis.com).
 // Sem `project` e com refresh token: AI Studio (generativelanguage.googleapis.com),
 // útil para usuários Gemini for Google Workspace sem projeto GCP dedicado.
 func (p *GeminiProvider) analyzeVertex(ctx context.Context, prompt string) (string, error) {
+	// Agentspace (Discovery Engine) — prioridade quando engine ID configurado.
+	// Usado quando WIF não tem aiplatform.endpoints.predict mas tem acesso ao Agentspace.
+	if p.agentspaceEngineID != "" && p.project != "" {
+		log.Info().
+			Str("project", p.project).
+			Str("engine_id", p.agentspaceEngineID).
+			Msg("Gemini: roteando para Agentspace (Discovery Engine)")
+		return p.analyzeAgentspace(ctx, prompt)
+	}
+
 	// Com projeto GCP configurado → Vertex AI endpoint diretamente.
 	// Evita tentativas no AI Studio que causam 503 visíveis quando o modelo está
 	// sobrecarregado lá mas disponível no Vertex AI.
@@ -274,6 +288,112 @@ func (p *GeminiProvider) doRequest(ctx context.Context, url, bearerToken, userPr
 	}
 
 	return geminiResp.Candidates[0].Content.Parts[0].Text, nil
+}
+
+// ---------------------------------------------------------------------------
+// Agentspace (Discovery Engine API) — alternativa ao Vertex AI direto
+// ---------------------------------------------------------------------------
+
+// agentspaceRequest é o body da Discovery Engine Answer API.
+type agentspaceRequest struct {
+	Query                agentspaceQuery       `json:"query"`
+	AnswerGenerationSpec agentspaceAnswerSpec  `json:"answerGenerationSpec"`
+}
+
+type agentspaceQuery struct {
+	Text string `json:"text"`
+}
+
+type agentspaceAnswerSpec struct {
+	ModelSpec   agentspaceModelSpec   `json:"modelSpec"`
+	PromptSpec  agentspacePromptSpec  `json:"promptSpec,omitempty"`
+	IncludeCitations bool             `json:"includeCitations"`
+}
+
+type agentspaceModelSpec struct {
+	ModelVersion string `json:"modelVersion"`
+}
+
+type agentspacePromptSpec struct {
+	Preamble string `json:"preamble,omitempty"`
+}
+
+// agentspaceResponse é a resposta da Discovery Engine Answer API.
+type agentspaceResponse struct {
+	Answer struct {
+		State      string `json:"state"`
+		AnswerText string `json:"answerText"`
+	} `json:"answer"`
+}
+
+// analyzeAgentspace chama a Discovery Engine Answer API (Vertex AI Agentspace).
+// Usa o mesmo WIF token do Vertex AI, mas o endpoint é discoveryengine.googleapis.com —
+// que o WIF pool tem acesso mesmo sem aiplatform.endpoints.predict.
+func (p *GeminiProvider) analyzeAgentspace(ctx context.Context, prompt string) (string, error) {
+	token, err := GetVertexAccessToken(ctx, p.serviceAccountJSON, p.refreshToken, p.wifPoolProvider)
+	if err != nil {
+		return "", fmt.Errorf("agentspace: falha ao obter token: %w", err)
+	}
+
+	apiURL := fmt.Sprintf(
+		"https://discoveryengine.googleapis.com/v1/projects/%s/locations/global/collections/default_collection/engines/%s/servingConfigs/default_serving_config:answer",
+		p.project, p.agentspaceEngineID)
+
+	log.Debug().
+		Str("project", p.project).
+		Str("engine_id", p.agentspaceEngineID).
+		Str("url", apiURL).
+		Msg("agentspace: enviando prompt")
+
+	reqBody := agentspaceRequest{
+		Query: agentspaceQuery{Text: prompt},
+		AnswerGenerationSpec: agentspaceAnswerSpec{
+			ModelSpec:        agentspaceModelSpec{ModelVersion: "stable"},
+			IncludeCitations: false,
+		},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("agentspace: erro ao serializar request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return "", fmt.Errorf("agentspace: erro ao criar request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	// X-Goog-User-Project: obrigatório para tokens WIF — especifica o projeto de billing
+	// sem ele, Discovery Engine não consegue inferir o projeto a partir do pool WIF
+	req.Header.Set("X-Goog-User-Project", p.project)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("agentspace: erro na requisição: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("agentspace: erro ao ler resposta: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("agentspace: erro HTTP %d — project=%s engine=%s — body: %s",
+			resp.StatusCode, p.project, p.agentspaceEngineID, string(respBody))
+	}
+
+	var agentResp agentspaceResponse
+	if err := json.Unmarshal(respBody, &agentResp); err != nil {
+		return "", fmt.Errorf("agentspace: resposta inválida: %w", err)
+	}
+
+	if agentResp.Answer.AnswerText == "" {
+		return "", fmt.Errorf("agentspace: resposta vazia (state=%s)", agentResp.Answer.State)
+	}
+
+	return agentResp.Answer.AnswerText, nil
 }
 
 // ---------------------------------------------------------------------------

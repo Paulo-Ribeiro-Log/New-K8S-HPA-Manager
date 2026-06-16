@@ -30,6 +30,7 @@ type gAuthSession struct {
 	aiEmail         string
 	isWIF           bool   // true quando usa auth.cloud.google (WIF)
 	wifPoolProvider string // "poolID/providerID" para salvar junto ao refresh token
+	wifClientID     string // client_id registrado no WIF provider (exigido por auth.cloud.google)
 }
 
 var gAuthSessions sync.Map // sessionID -> *gAuthSession
@@ -70,6 +71,7 @@ func (h *AITokensHandler) StartGoogleInstallAuth(c *gin.Context) {
 		BaseURL         string `json:"base_url"`
 		AIEmail         string `json:"ai_email"`
 		WIFPoolProvider string `json:"wif_pool_provider"` // "poolID/providerID" para WIF
+		WIFClientID     string `json:"wif_client_id"`     // client_id registrado no WIF provider
 	}
 	c.ShouldBindJSON(&req)
 
@@ -91,11 +93,19 @@ func (h *AITokensHandler) StartGoogleInstallAuth(c *gin.Context) {
 	if req.WIFPoolProvider != "" {
 		poolID, providerID, ok := ai.ParseWIFPoolProvider(req.WIFPoolProvider)
 		if ok {
-			authURL, pkceVerifier, err = ai.StartWIFAppCallback(redirectURI, sessionID, poolID, providerID)
+			clientID := req.WIFClientID
+			// Fallback: buscar client_id do banco se não vier no request
+			if clientID == "" && req.AIEmail != "" {
+				if stored, err2 := h.tokensStore.GetTokens(req.AIEmail); err2 == nil && stored != nil {
+					clientID = stored.GeminiWifClientID
+				}
+			}
+			authURL, pkceVerifier, err = ai.StartWIFAppCallback(redirectURI, sessionID, poolID, providerID, clientID)
 			isWIF = true
 			log.Info().
 				Str("pool", poolID).Str("provider", providerID).
 				Str("redirect_uri", redirectURI).
+				Bool("has_client_id", clientID != "").
 				Msg("🔗 WIF auth.cloud.google iniciado")
 		}
 	}
@@ -114,14 +124,15 @@ func (h *AITokensHandler) StartGoogleInstallAuth(c *gin.Context) {
 	}
 
 	session := &gAuthSession{
-		status:       "waiting_browser",
-		authURL:      authURL,
-		expiresAt:    time.Now().Add(15 * time.Minute),
-		pkceVerifier: pkceVerifier,
-		redirectURI:  redirectURI,
-		aiEmail:      req.AIEmail,
-		isWIF:        isWIF,
+		status:          "waiting_browser",
+		authURL:         authURL,
+		expiresAt:       time.Now().Add(15 * time.Minute),
+		pkceVerifier:    pkceVerifier,
+		redirectURI:     redirectURI,
+		aiEmail:         req.AIEmail,
+		isWIF:           isWIF,
 		wifPoolProvider: req.WIFPoolProvider,
+		wifClientID:     req.WIFClientID,
 	}
 	gAuthSessions.Store(sessionID, session)
 
@@ -201,6 +212,7 @@ func (h *AITokensHandler) GoogleOAuthCallback(c *gin.Context) {
 	aiEmail := s.aiEmail
 	isWIF := s.isWIF
 	wifPoolProvider := s.wifPoolProvider
+	wifClientID := s.wifClientID
 	s.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -211,7 +223,7 @@ func (h *AITokensHandler) GoogleOAuthCallback(c *gin.Context) {
 
 	if isWIF {
 		// Troca de código WIF via auth.cloud.google/token
-		accessToken, refreshToken, exchErr = ai.ExchangeWIFCode(ctx, code, redirectURI, pkceVerifier)
+		accessToken, refreshToken, exchErr = ai.ExchangeWIFCode(ctx, code, redirectURI, pkceVerifier, wifClientID)
 	} else {
 		accessToken, refreshToken, exchErr = ai.ExchangeAuthCode(ctx, code, redirectURI, pkceVerifier)
 	}

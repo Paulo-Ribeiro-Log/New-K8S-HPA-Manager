@@ -26,6 +26,8 @@ interface TokenStatus {
   has_gemini_service_account: boolean;
   has_gemini_refresh_token: boolean;
   gemini_wif_login_url?: string;
+  gemini_wif_client_id?: string;
+  gemini_agentspace_engine_id?: string;
   has_openai: boolean;
   openai_model?: string;
   has_claude: boolean;
@@ -68,6 +70,8 @@ export function AISettingsTab() {
   const [hasGeminiRefreshToken, setHasGeminiRefreshToken] = useState(false);
 
   const [wifLoginURL, setWifLoginURL] = useState("");
+  const [wifClientID, setWifClientID] = useState("");
+  const [agentspaceEngineID, setAgentspaceEngineID] = useState("");
 
   // App-callback OAuth flow (Google) — redireciona para /oauth/google/callback na porta do próprio app
   // Resolve o WSL2: porta 8080 é forwarded, portas aleatórias não eram.
@@ -75,6 +79,14 @@ export function AISettingsTab() {
   const [googleAuthURL, setGoogleAuthURL] = useState("");
   const [googleStatus, setGoogleStatus] = useState<"idle" | "waiting" | "authenticated" | "error">("idle");
   const [googleError, setGoogleError] = useState<string | null>(null);
+
+  // Device Auth Grant — alternativa sem client_id, sem gcloud, sem WIF
+  const [deviceCode, setDeviceCode] = useState("");
+  const [deviceUserCode, setDeviceUserCode] = useState("");
+  const [deviceVerifURL, setDeviceVerifURL] = useState("");
+  const [deviceStatus, setDeviceStatus] = useState<"idle" | "waiting" | "authenticated" | "error">("idle");
+  const [deviceError, setDeviceError] = useState<string | null>(null);
+  const [devicePollInterval, setDevicePollInterval] = useState<ReturnType<typeof setInterval> | null>(null);
 
   const [testingVertex, setTestingVertex] = useState(false);
   const [vertexTestResult, setVertexTestResult] = useState<boolean | null>(null);
@@ -160,6 +172,8 @@ export function AISettingsTab() {
       setHasGeminiServiceAccount(!!response.has_gemini_service_account);
       setHasGeminiRefreshToken(!!response.has_gemini_refresh_token);
       if (response.gemini_wif_login_url) setWifLoginURL(response.gemini_wif_login_url);
+      if (response.gemini_wif_client_id) setWifClientID(response.gemini_wif_client_id);
+      if (response.gemini_agentspace_engine_id) setAgentspaceEngineID(response.gemini_agentspace_engine_id);
       // Recarregar lista de modelos com o modo salvo (vertex vs apikey)
       // keepCurrentModel=true para preservar o modelo salvo no banco
       await loadAvailableModels(savedAuthMode, !!response.gemini_model);
@@ -338,6 +352,9 @@ export function AISettingsTab() {
         }
         // WIF Login URL — não é sensível, sempre enviar para permitir limpar
         payload.gemini_wif_login_url = wifLoginURL.trim();
+        payload.gemini_wif_client_id = wifClientID.trim();
+        // Agentspace Engine ID — pode ser vazio para desativar
+        payload.gemini_agentspace_engine_id = agentspaceEngineID.trim();
       }
       if (openaiKey) payload.openai_api_key = openaiKey;
       if (claudeKey) payload.claude_api_key = claudeKey;
@@ -406,6 +423,43 @@ export function AISettingsTab() {
     }
   };
 
+  const startDeviceAuth = async () => {
+    if (!aiEmail) {
+      toast({ title: "Preencha o email antes de autenticar", variant: "destructive" });
+      return;
+    }
+    if (devicePollInterval) clearInterval(devicePollInterval);
+    setDeviceStatus("waiting");
+    setDeviceError(null);
+    setDeviceCode("");
+    setDeviceUserCode("");
+    setDeviceVerifURL("");
+    try {
+      const res = await apiClient.startGoogleDeviceAuth();
+      setDeviceCode(res.device_code);
+      setDeviceUserCode(res.user_code);
+      setDeviceVerifURL(res.verification_url || "https://google.com/device");
+      // Polling a cada 5s
+      const interval = setInterval(async () => {
+        try {
+          const poll = await apiClient.pollGoogleDeviceAuth(res.device_code, aiEmail);
+          if (poll.status === "authenticated") {
+            clearInterval(interval);
+            setDeviceStatus("authenticated");
+            setHasGeminiRefreshToken(true);
+            toast({ title: "✅ Autenticado com sucesso!" });
+          }
+        } catch {
+          // authorization_pending — continua tentando
+        }
+      }, 5000);
+      setDevicePollInterval(interval);
+    } catch (e: unknown) {
+      setDeviceStatus("error");
+      setDeviceError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const startGoogleAuth = async () => {
     if (!aiEmail) {
       toast({ title: "Preencha o email antes de autenticar", variant: "destructive" });
@@ -418,7 +472,7 @@ export function AISettingsTab() {
     setGoogleAuthURL("");
 
     try {
-      const result = await apiClient.startGoogleInstallAuth(aiEmail, window.location.origin, wifLoginURL || undefined);
+      const result = await apiClient.startGoogleInstallAuth(aiEmail, window.location.origin, wifLoginURL || undefined, wifClientID || undefined);
       setGoogleSessionId(result.session_id);
       if (result.auth_url) {
         setGoogleAuthURL(result.auth_url);
@@ -511,6 +565,7 @@ export function AISettingsTab() {
       setGeminiVertexProject("");
       setGeminiVertexLocation("us-central1");
       setWifLoginURL("");
+      setWifClientID("");
       setVertexTestResult(null);
       setOpenaiKey("");
       setClaudeKey("");
@@ -736,6 +791,23 @@ export function AISettingsTab() {
                       </Select>
                     </div>
                   </div>
+                  {/* Agentspace Engine ID — opcional, substitui aiplatform.googleapis.com */}
+                  <div className="space-y-1">
+                    <Label htmlFor="agentspace-engine-id" className="text-xs text-muted-foreground flex items-center gap-1">
+                      Agentspace Engine ID
+                      <span className="text-[10px] text-amber-600 dark:text-amber-400">(opcional — use se receber 403 no Vertex AI direto)</span>
+                    </Label>
+                    <Input
+                      id="agentspace-engine-id"
+                      placeholder="ex: e27c3217-b2b0-4e85-8002-8b0070735c03"
+                      value={agentspaceEngineID}
+                      onChange={(e) => { setAgentspaceEngineID(e.target.value); setVertexTestResult(null); setVertexTestError(null); }}
+                      className="font-mono text-xs"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      CID da URL <code className="bg-muted px-1 rounded">vertexaisearch.cloud.google/home/cid/&lt;ID&gt;</code> — usa Discovery Engine API em vez de aiplatform.googleapis.com
+                    </p>
+                  </div>
                 </div>
 
                 <Separator />
@@ -762,6 +834,27 @@ export function AISettingsTab() {
                       Deixe em branco para conta Google pessoal. Com SSO corporativo (Azure AD → WIF), preencha o formato <code>poolID/providerID</code>.
                     </p>
                   </div>
+
+                  {/* WIF Client ID — obrigatório para auth.cloud.google/authorize */}
+                  {wifLoginURL && (
+                    <div className="space-y-1">
+                      <Label htmlFor="wif-client-id" className="text-xs text-muted-foreground flex items-center gap-1">
+                        WIF Client ID
+                        <span className="text-[10px] text-amber-600 dark:text-amber-400">(obrigatório para SSO corporativo)</span>
+                      </Label>
+                      <Input
+                        id="wif-client-id"
+                        type="text"
+                        placeholder="ex: 123456789-abcdef.apps.googleusercontent.com"
+                        value={wifClientID}
+                        onChange={(e) => setWifClientID(e.target.value)}
+                        className="font-mono text-xs"
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        Client ID registrado no WIF provider. Obtido pelo admin GCP em: IAM → Workforce Identity Pools → seu provider → Browser sign-in apps.
+                      </p>
+                    </div>
+                  )}
 
                   {/* Botão de autenticar + status */}
                   <div className="flex items-center gap-3 flex-wrap">
@@ -832,6 +925,61 @@ export function AISettingsTab() {
                       <Button size="sm" variant="ghost" className="h-6 text-xs shrink-0" onClick={() => setGoogleStatus("idle")}>Fechar</Button>
                     </div>
                   )}
+
+                  {/* Device Auth Grant — alternativa sem client_id */}
+                  <div className="pt-1 border-t border-dashed border-border/60 space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      <span className="font-medium text-foreground">Alternativa:</span> Autenticar via código de dispositivo (sem popup, sem client_id).
+                    </p>
+                    {(deviceStatus === "idle" || deviceStatus === "error") && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={startDeviceAuth}
+                        disabled={!aiEmail}
+                        className="gap-1.5"
+                      >
+                        <LogIn className="h-4 w-4" />
+                        Autenticar via Código de Dispositivo
+                      </Button>
+                    )}
+                    {deviceStatus === "waiting" && deviceUserCode && (
+                      <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 p-3 space-y-2">
+                        <p className="text-xs font-medium text-amber-800 dark:text-amber-200">
+                          1. Acesse{" "}
+                          <a href={deviceVerifURL} target="_blank" rel="noopener noreferrer"
+                            className="underline font-bold hover:text-amber-900">
+                            {deviceVerifURL}
+                          </a>
+                        </p>
+                        <p className="text-xs text-amber-800 dark:text-amber-200">
+                          2. Digite o código: <span className="font-mono font-bold text-sm tracking-widest">{deviceUserCode}</span>
+                        </p>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Aguardando confirmação...
+                          <Button size="sm" variant="ghost" className="h-6 text-xs ml-auto" onClick={() => {
+                            if (devicePollInterval) clearInterval(devicePollInterval);
+                            setDeviceStatus("idle");
+                          }}>Cancelar</Button>
+                        </div>
+                      </div>
+                    )}
+                    {deviceStatus === "authenticated" && (
+                      <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400">
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        Autenticado via código de dispositivo! Token salvo.
+                        <Button size="sm" variant="ghost" className="h-6 text-xs ml-auto" onClick={() => setDeviceStatus("idle")}>OK</Button>
+                      </div>
+                    )}
+                    {deviceStatus === "error" && deviceError && (
+                      <div className="flex items-start gap-2 text-xs text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-950/40 rounded p-2">
+                        <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        <span className="flex-1">{deviceError}</span>
+                        <Button size="sm" variant="ghost" className="h-6 text-xs shrink-0" onClick={() => setDeviceStatus("idle")}>Fechar</Button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <Separator />

@@ -2465,13 +2465,14 @@ class APIClient {
   }
 
   // ─── gcloud install + auth flow ───────────────────────────────────────────
-  async startGoogleInstallAuth(aiEmail?: string, baseUrl?: string, wifPoolProvider?: string): Promise<{ session_id: string; auth_url?: string; status?: string; is_wif?: boolean }> {
+  async startGoogleInstallAuth(aiEmail?: string, baseUrl?: string, wifPoolProvider?: string, wifClientID?: string): Promise<{ session_id: string; auth_url?: string; status?: string; is_wif?: boolean }> {
     return this.request(`/ai/tokens/google-auth/install/start`, {
       method: "POST",
       body: JSON.stringify({
         ai_email: aiEmail || "",
         base_url: baseUrl || window.location.origin,
         wif_pool_provider: wifPoolProvider || "",
+        wif_client_id: wifClientID || "",
       }),
     });
   }
@@ -2499,6 +2500,8 @@ class APIClient {
     gemini_vertex_project?: string;
     gemini_vertex_location?: string;
     gemini_wif_login_url?: string;
+    gemini_wif_client_id?: string;
+    gemini_agentspace_engine_id?: string;
     has_gemini_service_account: boolean;
     has_gemini_refresh_token: boolean;
     has_openai: boolean;
@@ -2534,6 +2537,9 @@ class APIClient {
     gemini_vertex_project?: string;
     gemini_vertex_location?: string;
     gemini_service_account_json?: string;
+    gemini_wif_login_url?: string;
+    gemini_wif_client_id?: string;
+    gemini_agentspace_engine_id?: string;
     openai_api_key?: string;
     openai_model?: string;
     claude_api_key?: string;

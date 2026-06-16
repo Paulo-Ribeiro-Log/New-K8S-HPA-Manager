@@ -38,7 +38,9 @@ type SaveTokensRequest struct {
 	GeminiVertexProject      string `json:"gemini_vertex_project,omitempty"`       // projeto GCP para Vertex AI
 	GeminiVertexLocation     string `json:"gemini_vertex_location,omitempty"`      // região GCP (ex: us-central1)
 	GeminiServiceAccountJSON string `json:"gemini_service_account_json,omitempty"` // JSON do service account GCP
-	GeminiWifLoginURL        string `json:"gemini_wif_login_url,omitempty"`         // URL de login SSO corporativo (WIF)
+	GeminiWifLoginURL        string `json:"gemini_wif_login_url,omitempty"`          // URL de login SSO corporativo (WIF)
+	GeminiWifClientID        string `json:"gemini_wif_client_id,omitempty"`          // client_id registrado no WIF provider
+	GeminiAgentspaceEngineID string `json:"gemini_agentspace_engine_id,omitempty"`   // Engine ID do Agentspace (CID)
 	OpenAIAPIKey             string `json:"openai_api_key,omitempty"`
 	OpenAIModel              string `json:"openai_model,omitempty"`
 	ClaudeAPIKey             string `json:"claude_api_key,omitempty"`
@@ -63,8 +65,10 @@ type TokensResponse struct {
 	GeminiVertexLocation    string `json:"gemini_vertex_location,omitempty"` // região GCP
 	HasGeminiServiceAccount bool   `json:"has_gemini_service_account"`       // true se service account JSON configurado
 	HasGeminiRefreshToken   bool   `json:"has_gemini_refresh_token"`         // true se autenticado via Device Auth Google
-	GeminiWifLoginURL       string `json:"gemini_wif_login_url,omitempty"`  // URL de login SSO corporativo (WIF)
-	HasOpenAI               bool   `json:"has_openai"`
+	GeminiWifLoginURL        string `json:"gemini_wif_login_url,omitempty"`          // URL de login SSO corporativo (WIF)
+	GeminiWifClientID        string `json:"gemini_wif_client_id,omitempty"`          // client_id registrado no WIF provider
+	GeminiAgentspaceEngineID string `json:"gemini_agentspace_engine_id,omitempty"`   // Engine ID do Agentspace (CID)
+	HasOpenAI                bool   `json:"has_openai"`
 	OpenAIModel             string `json:"openai_model,omitempty"`
 	HasClaude               bool   `json:"has_claude"`
 	ClaudeModel             string `json:"claude_model,omitempty"`
@@ -224,6 +228,16 @@ func (h *AITokensHandler) SaveTokens(c *gin.Context) {
 	tokens.GeminiWifLoginURL = req.GeminiWifLoginURL
 	if req.GeminiWifLoginURL == "" {
 		tokens.GeminiWifLoginURL = existingTokens.GeminiWifLoginURL
+	}
+	// WIF Client ID — client_id registrado no WIF provider (exigido por auth.cloud.google)
+	tokens.GeminiWifClientID = req.GeminiWifClientID
+	if req.GeminiWifClientID == "" {
+		tokens.GeminiWifClientID = existingTokens.GeminiWifClientID
+	}
+	// Agentspace Engine ID — preservar se não enviado
+	tokens.GeminiAgentspaceEngineID = req.GeminiAgentspaceEngineID
+	if req.GeminiAgentspaceEngineID == "" {
+		tokens.GeminiAgentspaceEngineID = existingTokens.GeminiAgentspaceEngineID
 	}
 	// Refresh token OAuth2 nunca vem no request — sempre preservar o existente
 	tokens.GeminiRefreshToken = existingTokens.GeminiRefreshToken
@@ -402,8 +416,10 @@ func (h *AITokensHandler) GetTokens(c *gin.Context) {
 		GeminiVertexLocation:    tokens.GeminiVertexLocation,
 		HasGeminiServiceAccount: hasGeminiServiceAccount,
 		HasGeminiRefreshToken:   hasGeminiRefreshToken,
-		GeminiWifLoginURL:       tokens.GeminiWifLoginURL,
-		HasOpenAI:               tokens.OpenAIAPIKey != "",
+		GeminiWifLoginURL:        tokens.GeminiWifLoginURL,
+		GeminiWifClientID:        tokens.GeminiWifClientID,
+		GeminiAgentspaceEngineID: tokens.GeminiAgentspaceEngineID,
+		HasOpenAI:                tokens.OpenAIAPIKey != "",
 		OpenAIModel:             tokens.OpenAIModel,
 		HasClaude:               tokens.ClaudeAPIKey != "",
 		ClaudeModel:             tokens.ClaudeModel,
@@ -486,15 +502,17 @@ func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 	case "gemini":
 		validationErr = validateGeminiToken(req.APIKey)
 	case "gemini-vertex":
-		// Buscar refresh token e wifPoolProvider armazenados
+		// Buscar refresh token, wifPoolProvider e agentspaceEngineID armazenados
 		refreshToken := ""
 		wifPoolProvider := ""
+		agentspaceEngineID := ""
 		vertexLocation := req.VertexLocation
 		vertexModel := ""
 		if req.AIEmail != "" && req.ServiceAccountJSON == "" {
 			if tokens, err := h.tokensStore.GetTokens(req.AIEmail); err == nil && tokens != nil {
 				refreshToken = tokens.GeminiRefreshToken
 				wifPoolProvider = tokens.GeminiWifLoginURL
+				agentspaceEngineID = tokens.GeminiAgentspaceEngineID
 				if vertexLocation == "" {
 					vertexLocation = tokens.GeminiVertexLocation
 				}
@@ -507,7 +525,7 @@ func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 		if vertexModel == "" {
 			vertexModel = "gemini-2.0-flash-001"
 		}
-		validationErr = validateGeminiVertexConnection(req.VertexProject, vertexLocation, vertexModel, req.ServiceAccountJSON, refreshToken, wifPoolProvider)
+		validationErr = validateGeminiVertexConnection(req.VertexProject, vertexLocation, vertexModel, req.ServiceAccountJSON, refreshToken, wifPoolProvider, agentspaceEngineID)
 	case "claude":
 		validationErr = validateClaudeToken(req.APIKey)
 	case "openai":
@@ -537,7 +555,7 @@ func (h *AITokensHandler) ValidateToken(c *gin.Context) {
 
 // validateGeminiVertexConnection testa autenticação E disponibilidade do modelo no Vertex AI.
 // Faz uma chamada real à API com um prompt mínimo para detectar erros de modelo além de erros de auth.
-func validateGeminiVertexConnection(project, location, model, serviceAccountJSON, refreshToken, wifPoolProvider string) error {
+func validateGeminiVertexConnection(project, location, model, serviceAccountJSON, refreshToken, wifPoolProvider string, agentspaceEngineID ...string) error {
 	if project == "" {
 		return fmt.Errorf("projeto GCP é obrigatório para Vertex AI")
 	}
@@ -551,6 +569,15 @@ func validateGeminiVertexConnection(project, location, model, serviceAccountJSON
 	token, err := ai.GetVertexAccessToken(ctx, serviceAccountJSON, refreshToken, wifPoolProvider)
 	if err != nil {
 		return fmt.Errorf("falha ao obter token de acesso: %w", err)
+	}
+
+	// Quando Agentspace Engine ID configurado: testar via Discovery Engine API
+	engineID := ""
+	if len(agentspaceEngineID) > 0 {
+		engineID = agentspaceEngineID[0]
+	}
+	if engineID != "" {
+		return validateAgentspaceConnection(ctx, token, project, engineID)
 	}
 
 	// Converter para ID de modelo do Vertex AI (ex: gemini-2.5-pro → gemini-2.5-pro-preview-06-05)
@@ -590,14 +617,50 @@ func validateGeminiVertexConnection(project, location, model, serviceAccountJSON
 	case 403:
 		return fmt.Errorf(
 			"permissão negada (403) — credenciais sem acesso ao projeto '%s'.\n"+
-				"Para acesso via WIF corporativo, execute no terminal:\n"+
-				"  gcloud auth application-default login --audiences="+
-				"//iam.googleapis.com/locations/global/workforcePools/entraid-agentspace/providers/entraid-federation-agentspace\n"+
+				"Para acesso via WIF corporativo, configure o Agentspace Engine ID acima\n"+
+				"ou solicite ao admin GCP a role roles/aiplatform.user no projeto.\n"+
 				"Detalhes: %s", project, string(body))
 	case 400:
 		return fmt.Errorf("requisição inválida (400) — modelo '%s' pode não estar disponível em '%s'. Detalhes: %s", vertexModel, location, string(body))
 	default:
 		return fmt.Errorf("Vertex AI retornou status %d para modelo '%s': %s", resp.StatusCode, vertexModel, string(body))
+	}
+}
+
+// validateAgentspaceConnection testa conectividade com a Discovery Engine API (Agentspace).
+func validateAgentspaceConnection(ctx context.Context, token, project, engineID string) error {
+	apiURL := fmt.Sprintf(
+		"https://discoveryengine.googleapis.com/v1/projects/%s/locations/global/collections/default_collection/engines/%s/servingConfigs/default_serving_config:answer",
+		project, engineID)
+
+	reqBody := `{"query":{"text":"hi"},"answerGenerationSpec":{"modelSpec":{"modelVersion":"stable"},"includeCitations":false}}`
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(reqBody))
+	if err != nil {
+		return fmt.Errorf("erro ao criar requisição Agentspace: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	// X-Goog-User-Project: obrigatório para tokens WIF — especifica o projeto de billing
+	httpReq.Header.Set("X-Goog-User-Project", project)
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("falha ao chamar Agentspace: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+
+	switch resp.StatusCode {
+	case 403:
+		return fmt.Errorf("Agentspace: permissão negada (403) — engine '%s' no projeto '%s'.\nPossíveis causas:\n• Discovery Engine API não habilitada no projeto GCP\n• Token WIF não tem role 'Discovery Engine Viewer' no projeto\n• Engine ID incorreto\nDetalhes: %s", engineID, project, string(body))
+	case 404:
+		return fmt.Errorf("Agentspace: engine '%s' não encontrado no projeto '%s' — verifique o Engine ID (CID da URL vertexaisearch.cloud.google). Detalhes: %s", engineID, project, string(body))
+	default:
+		return fmt.Errorf("Agentspace retornou status %d: %s", resp.StatusCode, string(body))
 	}
 }
 

@@ -26,8 +26,10 @@ type UserTokens struct {
 	GeminiVertexProject  string            `json:"gemini_vertex_project,omitempty"`  // projeto GCP para Vertex AI
 	GeminiVertexLocation     string            `json:"gemini_vertex_location,omitempty"`      // região GCP (ex: us-central1)
 	GeminiServiceAccountJSON string            `json:"gemini_service_account_json,omitempty"` // JSON do service account (sem gcloud)
-	GeminiRefreshToken       string            `json:"gemini_refresh_token,omitempty"`         // OAuth refresh token (Device Auth flow)
-	GeminiWifLoginURL        string            `json:"gemini_wif_login_url,omitempty"`         // URL de login SSO corporativo (WIF)
+	GeminiRefreshToken          string            `json:"gemini_refresh_token,omitempty"`         // OAuth refresh token (Device Auth flow)
+	GeminiWifLoginURL           string            `json:"gemini_wif_login_url,omitempty"`         // URL de login SSO corporativo (WIF)
+	GeminiWifClientID           string            `json:"gemini_wif_client_id,omitempty"`         // client_id registrado no WIF provider (exigido por auth.cloud.google)
+	GeminiAgentspaceEngineID    string            `json:"gemini_agentspace_engine_id,omitempty"` // Engine ID do Agentspace (CID da URL vertexaisearch.cloud.google)
 	OpenAIAPIKey             string            `json:"openai_api_key,omitempty"`
 	OpenAIModel         string            `json:"openai_model,omitempty"`
 	ClaudeAPIKey        string            `json:"claude_api_key,omitempty"`
@@ -93,6 +95,8 @@ func (s *UserTokensStore) CreateTable() error {
 		`ALTER TABLE user_ai_tokens ADD COLUMN dynatrace_token TEXT`,
 		`ALTER TABLE user_ai_tokens ADD COLUMN dynatrace_tag_filter TEXT`,
 		`ALTER TABLE user_ai_tokens ADD COLUMN gemini_wif_login_url TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN gemini_agentspace_engine_id TEXT`,
+		`ALTER TABLE user_ai_tokens ADD COLUMN gemini_wif_client_id TEXT`,
 	}
 
 	for _, migration := range migrations {
@@ -125,10 +129,11 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 	query := `
 	INSERT INTO user_ai_tokens (
 		user_email, gemini_api_key, gemini_model, gemini_auth_mode, gemini_vertex_project, gemini_vertex_location,
-		gemini_service_account_json, gemini_refresh_token, gemini_wif_login_url, openai_api_key, openai_model,
+		gemini_service_account_json, gemini_refresh_token, gemini_wif_login_url, gemini_wif_client_id, gemini_agentspace_engine_id,
+		openai_api_key, openai_model,
 		claude_api_key, claude_model, copilot_api_key, copilot_endpoint, copilot_deployment, ollama_model,
 		preferred_provider, dynatrace_url, dynatrace_token, dynatrace_tag_filter, metadata, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(user_email) DO UPDATE SET
 		gemini_api_key = excluded.gemini_api_key,
 		gemini_model = excluded.gemini_model,
@@ -138,6 +143,8 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 		gemini_service_account_json = excluded.gemini_service_account_json,
 		gemini_refresh_token = excluded.gemini_refresh_token,
 		gemini_wif_login_url = excluded.gemini_wif_login_url,
+		gemini_wif_client_id = excluded.gemini_wif_client_id,
+		gemini_agentspace_engine_id = excluded.gemini_agentspace_engine_id,
 		openai_api_key = excluded.openai_api_key,
 		openai_model = excluded.openai_model,
 		claude_api_key = excluded.claude_api_key,
@@ -164,6 +171,8 @@ func (s *UserTokensStore) SaveTokens(userEmail string, tokens *UserTokens) error
 		tokens.GeminiServiceAccountJSON,
 		tokens.GeminiRefreshToken,
 		tokens.GeminiWifLoginURL,
+		tokens.GeminiWifClientID,
+		tokens.GeminiAgentspaceEngineID,
 		tokens.OpenAIAPIKey,
 		tokens.OpenAIModel,
 		tokens.ClaudeAPIKey,
@@ -195,7 +204,8 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 
 	query := `
 	SELECT user_email, gemini_api_key, gemini_model, gemini_auth_mode, gemini_vertex_project, gemini_vertex_location,
-	       gemini_service_account_json, gemini_refresh_token, gemini_wif_login_url, openai_api_key, openai_model,
+	       gemini_service_account_json, gemini_refresh_token, gemini_wif_login_url, gemini_wif_client_id, gemini_agentspace_engine_id,
+	       openai_api_key, openai_model,
 	       claude_api_key, claude_model, copilot_api_key, copilot_endpoint, copilot_deployment, ollama_model,
 	       preferred_provider, dynatrace_url, dynatrace_token, dynatrace_tag_filter, metadata, updated_at, created_at
 	FROM user_ai_tokens
@@ -207,7 +217,7 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	var tokens UserTokens
 	var metadataJSON string
 	var geminiAuthMode, geminiVertexProject, geminiVertexLocation, geminiServiceAccountJSON, geminiRefreshToken sql.NullString
-	var geminiWifLoginURL sql.NullString
+	var geminiWifLoginURL, geminiWifClientID, geminiAgentspaceEngineID sql.NullString
 	var dynatraceURL, dynatraceToken, dynatraceTagFilter sql.NullString
 
 	err := row.Scan(
@@ -220,6 +230,8 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 		&geminiServiceAccountJSON,
 		&geminiRefreshToken,
 		&geminiWifLoginURL,
+		&geminiWifClientID,
+		&geminiAgentspaceEngineID,
 		&tokens.OpenAIAPIKey,
 		&tokens.OpenAIModel,
 		&tokens.ClaudeAPIKey,
@@ -242,6 +254,8 @@ func (s *UserTokensStore) GetTokens(userEmail string) (*UserTokens, error) {
 	tokens.GeminiServiceAccountJSON = geminiServiceAccountJSON.String
 	tokens.GeminiRefreshToken = geminiRefreshToken.String
 	tokens.GeminiWifLoginURL = geminiWifLoginURL.String
+	tokens.GeminiWifClientID = geminiWifClientID.String
+	tokens.GeminiAgentspaceEngineID = geminiAgentspaceEngineID.String
 	tokens.DynatraceURL = dynatraceURL.String
 	tokens.DynatraceToken = dynatraceToken.String
 	tokens.DynatraceTagFilter = dynatraceTagFilter.String

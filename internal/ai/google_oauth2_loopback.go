@@ -266,7 +266,9 @@ func WIFAudience(poolID, providerID string) string {
 
 // StartWIFAppCallback gera a URL de autenticação WIF via auth.cloud.google.
 // O callback é o endpoint /oauth/google/callback do próprio app.
-func StartWIFAppCallback(redirectURI, sessionID, poolID, providerID string) (authURL, pkceVerifier string, err error) {
+// clientID: client_id registrado no WIF provider (exigido por auth.cloud.google/authorize).
+// Obtido pelo admin GCP em: IAM → Workforce Identity Pools → provider → Browser sign-in apps.
+func StartWIFAppCallback(redirectURI, sessionID, poolID, providerID string, clientID ...string) (authURL, pkceVerifier string, err error) {
 	verifier, challenge, err := generatePKCE()
 	if err != nil {
 		return "", "", fmt.Errorf("erro ao gerar PKCE WIF: %w", err)
@@ -282,16 +284,25 @@ func StartWIFAppCallback(redirectURI, sessionID, poolID, providerID string) (aut
 		"access_type":           {"offline"},
 		"audience":              {WIFAudience(poolID, providerID)},
 	}
+	// client_id é obrigatório em auth.cloud.google/authorize.
+	// Configurado pelo admin GCP no WIF provider → Browser sign-in.
+	if len(clientID) > 0 && clientID[0] != "" {
+		params.Set("client_id", clientID[0])
+	}
 	return wifAuthURL + "?" + params.Encode(), verifier, nil
 }
 
 // ExchangeWIFCode troca o authorization code WIF por access_token (e refresh_token se disponível).
-func ExchangeWIFCode(ctx context.Context, code, redirectURI, pkceVerifier string) (accessToken, refreshToken string, err error) {
+// clientID: se fornecido, inclui client_id no body do token exchange (exigido pelo WIF provider).
+func ExchangeWIFCode(ctx context.Context, code, redirectURI, pkceVerifier string, clientID ...string) (accessToken, refreshToken string, err error) {
 	body := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {redirectURI},
 		"code_verifier": {pkceVerifier},
+	}
+	if len(clientID) > 0 && clientID[0] != "" {
+		body.Set("client_id", clientID[0])
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", wifTokenURL, strings.NewReader(body.Encode()))

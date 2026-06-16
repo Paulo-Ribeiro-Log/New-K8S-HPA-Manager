@@ -207,7 +207,8 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 			}
 			config.GeminiRefreshToken = tokens.GeminiRefreshToken
 			config.GeminiServiceAccountJSON = tokens.GeminiServiceAccountJSON
-			config.GeminiWifPoolProvider = tokens.GeminiWifLoginURL // "poolID/providerID" WIF
+			config.GeminiWifPoolProvider = tokens.GeminiWifLoginURL       // "poolID/providerID" WIF
+			config.GeminiAgentspaceEngineID = tokens.GeminiAgentspaceEngineID
 		} else {
 			// Modo API Key (padrão)
 			if tokens.GeminiAPIKey == "" {
@@ -230,6 +231,10 @@ func (h *AIDiagnosticsHandler) getAnalyzerForUser(aiEmail string) (*ai.Analyzer,
 			Str("provider", "gemini").
 			Str("auth_mode", config.GeminiAuthMode).
 			Str("model", config.GeminiModel).
+			Str("vertex_project", config.GeminiVertexProject).
+			Str("agentspace_engine_id", config.GeminiAgentspaceEngineID).
+			Bool("has_refresh_token", config.GeminiRefreshToken != "").
+			Bool("has_wif_pool", config.GeminiWifPoolProvider != "").
 			Msg("Using Gemini API")
 
 	case "claude":
