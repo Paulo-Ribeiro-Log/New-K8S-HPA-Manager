@@ -67,6 +67,8 @@ export function cloudProviderBadge(provider: string | undefined): { label: strin
       return { label: "AKS", className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300" };
     case "eks":
       return { label: "EKS", className: "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300" };
+    case "gke":
+      return { label: "GKE", className: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" };
     default:
       return null;
   }

@@ -11,7 +11,7 @@ export interface Cluster {
   name: string;
   context: string;
   status: "online" | "offline";
-  cloud_provider?: "aks" | "eks" | "unknown";
+  cloud_provider?: "aks" | "eks" | "gke" | "unknown";
   region?: string;
   resourceGroup?: string;
   subscription?: string;
