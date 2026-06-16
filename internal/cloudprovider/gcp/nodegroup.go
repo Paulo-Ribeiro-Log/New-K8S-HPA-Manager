@@ -1,10 +1,12 @@
 package gcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -12,172 +14,250 @@ import (
 	"k8s-hpa-manager/internal/models"
 )
 
-// GCPNodeGroupProvider implementa cloudprovider.NodeGroupProvider usando gcloud CLI.
+const gkeAPIBase = "https://container.googleapis.com/v1"
+
+// GCPNodeGroupProvider implementa cloudprovider.NodeGroupProvider usando a GKE REST API.
+// Não depende do gcloud CLI — usa o ADC (Application Default Credentials) da própria app,
+// gravado pelo Device Auth Grant em AI Settings → Gemini.
 type GCPNodeGroupProvider struct {
 	clusterName string
 	projectID   string
-	region      string // região (us-central1) ou zona (us-central1-a)
+	location    string // região (us-central1) ou zona (us-central1-a)
 }
 
 // NewGCPNodeGroupProvider cria um provider GCP para um cluster GKE.
-func NewGCPNodeGroupProvider(clusterName, projectID, region string) *GCPNodeGroupProvider {
+func NewGCPNodeGroupProvider(clusterName, projectID, location string) *GCPNodeGroupProvider {
 	return &GCPNodeGroupProvider{
 		clusterName: clusterName,
 		projectID:   projectID,
-		region:      region,
+		location:    location,
 	}
 }
 
-// ValidateAuth verifica se o gcloud CLI está instalado e autenticado.
-func (p *GCPNodeGroupProvider) ValidateAuth(_ context.Context) error {
-	if _, err := exec.LookPath("gcloud"); err != nil {
-		return fmt.Errorf("gcloud CLI não encontrado — instale o Google Cloud SDK")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "gcloud", "auth", "list",
-		"--filter=status:ACTIVE",
-		"--format=json",
-	).Output()
-	if err != nil {
-		return fmt.Errorf("gcloud auth list falhou: %w", err)
-	}
-	var accounts []struct {
-		Account string `json:"account"`
-	}
-	if json.Unmarshal(out, &accounts) != nil || len(accounts) == 0 {
-		return fmt.Errorf("nenhuma conta GCP ativa — execute: gcloud auth login")
-	}
-	return nil
+// ValidateAuth verifica se há credenciais GCP válidas (ADC acessível e token renovável).
+func (p *GCPNodeGroupProvider) ValidateAuth(ctx context.Context) error {
+	_, err := getGCPAccessToken(ctx)
+	return err
 }
 
-// ListNodeGroups lista os node pools do cluster via gcloud CLI.
+// ListNodeGroups lista os node pools do cluster via GKE REST API.
 func (p *GCPNodeGroupProvider) ListNodeGroups(ctx context.Context, _ string) ([]models.NodePool, error) {
-	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	args := p.baseArgs("container", "node-pools", "list",
-		"--cluster", p.clusterName,
-		"--format=json",
-	)
-	out, err := exec.CommandContext(cmdCtx, "gcloud", args...).Output()
+	token, err := getGCPAccessToken(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("gcloud container node-pools list: %w — cluster=%s project=%s region=%s",
-			err, p.clusterName, p.projectID, p.region)
+		return nil, err
 	}
 
-	var raw []struct {
-		Name              string `json:"name"`
-		Config            struct {
-			MachineType string `json:"machineType"`
-		} `json:"config"`
-		InitialNodeCount int32 `json:"initialNodeCount"`
-		Autoscaling      struct {
-			Enabled      bool  `json:"enabled"`
-			MinNodeCount int32 `json:"minNodeCount"`
-			MaxNodeCount int32 `json:"maxNodeCount"`
-		} `json:"autoscaling"`
-		Status    string `json:"status"`
-		Management struct {
-			AutoUpgrade bool `json:"autoUpgrade"`
-		} `json:"management"`
+	url := fmt.Sprintf("%s/projects/%s/locations/%s/clusters/%s/nodePools",
+		gkeAPIBase, p.projectID, p.location, p.clusterName)
+
+	var resp struct {
+		NodePools []gkeNodePool `json:"nodePools"`
 	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("parse node pools: %w", err)
+	if err := p.get(ctx, token, url, &resp); err != nil {
+		return nil, fmt.Errorf("GKE list node pools: %w", err)
 	}
 
-	pools := make([]models.NodePool, 0, len(raw))
-	for _, np := range raw {
-		nodeCount := np.InitialNodeCount
-		pools = append(pools, models.NodePool{
-			Name:               np.Name,
-			VMSize:             np.Config.MachineType,
-			NodeCount:          nodeCount,
-			MinNodeCount:       np.Autoscaling.MinNodeCount,
-			MaxNodeCount:       np.Autoscaling.MaxNodeCount,
-			AutoscalingEnabled: np.Autoscaling.Enabled,
-			Status:             strings.ToLower(np.Status),
-			ClusterName:        p.clusterName,
-			IsSystemPool:       np.Name == "default-pool",
-		})
+	pools := make([]models.NodePool, 0, len(resp.NodePools))
+	for _, np := range resp.NodePools {
+		pools = append(pools, np.toModel(p.clusterName))
 	}
 	return pools, nil
 }
 
-// ScaleNodeGroup define o número de nodes em um node pool.
+// ScaleNodeGroup define o número desejado de nodes em um node pool.
 func (p *GCPNodeGroupProvider) ScaleNodeGroup(ctx context.Context, _, group string, count int) error {
-	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	defer cancel()
-
-	args := p.baseArgs("container", "clusters", "resize", p.clusterName,
-		"--node-pool", group,
-		"--num-nodes", fmt.Sprintf("%d", count),
-		"--quiet",
-	)
-	out, err := exec.CommandContext(cmdCtx, "gcloud", args...).CombinedOutput()
+	token, err := getGCPAccessToken(ctx)
 	if err != nil {
-		return fmt.Errorf("gcloud clusters resize: %w — %s", err, strings.TrimSpace(string(out)))
+		return err
 	}
-	return nil
+
+	url := fmt.Sprintf("%s/projects/%s/locations/%s/clusters/%s/nodePools/%s/setSize",
+		gkeAPIBase, p.projectID, p.location, p.clusterName, group)
+
+	body := map[string]any{"nodeCount": count}
+
+	var op gkeOperation
+	if err := p.post(ctx, token, url, body, &op); err != nil {
+		return fmt.Errorf("GKE resize node pool %s: %w", group, err)
+	}
+
+	return p.waitOperation(ctx, token, op.Name, 10*time.Minute)
 }
 
 // SetAutoscaling habilita ou desabilita o cluster autoscaler no node pool.
 func (p *GCPNodeGroupProvider) SetAutoscaling(ctx context.Context, _, group string, enable bool, min, max int) error {
-	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-
-	var args []string
-	if enable {
-		args = p.baseArgs("container", "node-pools", "update", group,
-			"--cluster", p.clusterName,
-			"--enable-autoscaling",
-			"--min-nodes", fmt.Sprintf("%d", min),
-			"--max-nodes", fmt.Sprintf("%d", max),
-			"--quiet",
-		)
-	} else {
-		args = p.baseArgs("container", "node-pools", "update", group,
-			"--cluster", p.clusterName,
-			"--no-enable-autoscaling",
-			"--quiet",
-		)
-	}
-
-	out, err := exec.CommandContext(cmdCtx, "gcloud", args...).CombinedOutput()
+	token, err := getGCPAccessToken(ctx)
 	if err != nil {
-		return fmt.Errorf("gcloud node-pools update autoscaling: %w — %s", err, strings.TrimSpace(string(out)))
+		return err
 	}
-	return nil
+
+	url := fmt.Sprintf("%s/projects/%s/locations/%s/clusters/%s/nodePools/%s/setAutoscaling",
+		gkeAPIBase, p.projectID, p.location, p.clusterName, group)
+
+	body := map[string]any{
+		"autoscaling": map[string]any{
+			"enabled":      enable,
+			"minNodeCount": min,
+			"maxNodeCount": max,
+		},
+	}
+
+	var op gkeOperation
+	if err := p.post(ctx, token, url, body, &op); err != nil {
+		return fmt.Errorf("GKE set autoscaling node pool %s: %w", group, err)
+	}
+
+	return p.waitOperation(ctx, token, op.Name, 5*time.Minute)
 }
 
-// AbortOperation não é suportado no GKE (não há equivalente ao az aks nodepool operation-abort).
+// AbortOperation não é suportado na GKE REST API pública.
 func (p *GCPNodeGroupProvider) AbortOperation(_ context.Context, _, _ string) error {
 	return cloudprovider.ErrNotSupported
 }
 
-// baseArgs monta os args base para gcloud com --project e --region/--zone.
-func (p *GCPNodeGroupProvider) baseArgs(subcmd ...string) []string {
-	args := subcmd
-	if p.projectID != "" {
-		args = append(args, "--project", p.projectID)
+// ─── helpers HTTP ─────────────────────────────────────────────────────────────
+
+func (p *GCPNodeGroupProvider) get(ctx context.Context, token, url string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
 	}
-	if p.region != "" {
-		// Zona (ex: us-central1-a) vs Região (ex: us-central1)
-		if isGKEZone(p.region) {
-			args = append(args, "--zone", p.region)
-		} else {
-			args = append(args, "--region", p.region)
-		}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Goog-User-Project", p.projectID)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP GET %s: %w", url, err)
 	}
-	return args
+	defer resp.Body.Close()
+
+	return p.decodeResponse(resp, out)
 }
 
-// isGKEZone retorna true se a string parecer uma zona GCP (termina com -[a-f]).
-func isGKEZone(location string) bool {
-	if len(location) < 2 {
-		return false
+func (p *GCPNodeGroupProvider) post(ctx context.Context, token, url string, body any, out any) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
 	}
-	last := location[len(location)-1]
-	secondLast := location[len(location)-2]
-	return secondLast == '-' && last >= 'a' && last <= 'f'
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Goog-User-Project", p.projectID)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP POST %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	return p.decodeResponse(resp, out)
+}
+
+func (p *GCPNodeGroupProvider) decodeResponse(resp *http.Response, out any) error {
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("erro ao ler resposta: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		var apiErr struct {
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		json.Unmarshal(bodyBytes, &apiErr) //nolint:errcheck
+		msg := apiErr.Error.Message
+		if msg == "" {
+			msg = string(bodyBytes)
+		}
+		return fmt.Errorf("GKE API erro %d: %s", resp.StatusCode, msg)
+	}
+
+	return json.Unmarshal(bodyBytes, out)
+}
+
+// waitOperation aguarda a conclusão de uma operação GKE com polling a cada 5s.
+func (p *GCPNodeGroupProvider) waitOperation(ctx context.Context, token, operationName string, timeout time.Duration) error {
+	if operationName == "" {
+		return nil
+	}
+
+	// operationName vem no formato "projects/P/locations/L/operations/ID"
+	// ou apenas "operation-XXXX" dependendo da versão da API
+	opURL := operationName
+	if !strings.HasPrefix(operationName, "http") {
+		if strings.HasPrefix(operationName, "projects/") {
+			opURL = fmt.Sprintf("%s/%s", gkeAPIBase, operationName)
+		} else {
+			opURL = fmt.Sprintf("%s/projects/%s/locations/%s/operations/%s",
+				gkeAPIBase, p.projectID, p.location, operationName)
+		}
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var op gkeOperation
+		if err := p.get(ctx, token, opURL, &op); err != nil {
+			return fmt.Errorf("erro ao verificar operação: %w", err)
+		}
+
+		switch op.Status {
+		case "DONE":
+			if op.StatusMessage != "" {
+				return fmt.Errorf("operação concluída com erro: %s", op.StatusMessage)
+			}
+			return nil
+		case "ABORTING":
+			return fmt.Errorf("operação abortada: %s", op.StatusMessage)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	return fmt.Errorf("timeout aguardando operação GKE (%s)", timeout)
+}
+
+// ─── tipos da GKE API ─────────────────────────────────────────────────────────
+
+type gkeNodePool struct {
+	Name        string `json:"name"`
+	Config      struct {
+		MachineType string `json:"machineType"`
+	} `json:"config"`
+	InitialNodeCount int32 `json:"initialNodeCount"`
+	Autoscaling      struct {
+		Enabled      bool  `json:"enabled"`
+		MinNodeCount int32 `json:"minNodeCount"`
+		MaxNodeCount int32 `json:"maxNodeCount"`
+	} `json:"autoscaling"`
+	Status string `json:"status"`
+}
+
+func (np gkeNodePool) toModel(clusterName string) models.NodePool {
+	return models.NodePool{
+		Name:               np.Name,
+		VMSize:             np.Config.MachineType,
+		NodeCount:          np.InitialNodeCount,
+		MinNodeCount:       np.Autoscaling.MinNodeCount,
+		MaxNodeCount:       np.Autoscaling.MaxNodeCount,
+		AutoscalingEnabled: np.Autoscaling.Enabled,
+		Status:             strings.ToLower(np.Status),
+		ClusterName:        clusterName,
+		IsSystemPool:       np.Name == "default-pool",
+	}
+}
+
+type gkeOperation struct {
+	Name          string `json:"name"`
+	Status        string `json:"status"` // RUNNING, DONE, ABORTING
+	StatusMessage string `json:"statusMessage"`
 }
