@@ -6,11 +6,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Server, Activity, AlertTriangle, CheckCircle2, Package, Copy, Tag, Tags, Cpu, HardDrive } from "lucide-react";
-import type { NodeDetailsResponse, PodOnNode } from "@/lib/api/types";
+import type { NodeDetailsResponse, NodeResourceInfo, PodOnNode } from "@/lib/api/types";
 import { format } from "date-fns";
 import { toast } from "sonner";
 import { getVMSpecs, formatVMSpecs, formatDiskSpecs } from "@/lib/azure-vm-specs";
-import { parseCpuToMillicores, parseMemoryToBytes } from "@/lib/monitorUtils";
+import { parseCpuToMillicores, parseMemoryToBytes, formatMillicores, formatBytes } from "@/lib/monitorUtils";
 
 function nodeResourceColor(pct: number): string {
   if (pct >= 90) return "#ef4444";
@@ -24,6 +24,7 @@ interface NodeDetailsModalProps {
   nodeDetails: NodeDetailsResponse | null;
   loading?: boolean;
   vmSize?: string;
+  nodeResourceInfo?: NodeResourceInfo | null;
   azureInfo?: {
     cluster_tags: Record<string, string>;
     subscription_name: string;
@@ -116,6 +117,7 @@ export default function NodeDetailsModal({
   onOpenChange,
   nodeDetails,
   vmSize,
+  nodeResourceInfo,
   azureInfo,
 }: NodeDetailsModalProps) {
   if (!nodeDetails) return null;
@@ -404,32 +406,31 @@ export default function NodeDetailsModal({
                     <h4 className="text-xs font-medium flex items-center gap-1">
                       <Cpu className="w-3 h-3" /> CPU
                     </h4>
-                    {node.cpu_used ? (
-                      <>
+                    {nodeResourceInfo ? (
+                      <div className="space-y-2">
                         <div className="space-y-1">
                           <div className="flex justify-between text-xs">
-                            <span className="text-muted-foreground">Consumido / Alocável</span>
-                            <span className="font-semibold" style={{ color: nodeResourceColor(node.cpu_usage_percent) }}>
-                              {node.cpu_usage_percent.toFixed(1)}%
+                            <span className="text-muted-foreground">Solicitado / Alocável</span>
+                            <span className="font-semibold" style={{ color: nodeResourceColor(nodeResourceInfo.cpu_pct) }}>
+                              {nodeResourceInfo.cpu_pct.toFixed(1)}%
                             </span>
                           </div>
                           <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
-                            <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(node.cpu_usage_percent, 100)}%`, backgroundColor: nodeResourceColor(node.cpu_usage_percent) }} />
+                            <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(nodeResourceInfo.cpu_pct, 100)}%`, backgroundColor: nodeResourceColor(nodeResourceInfo.cpu_pct) }} />
                           </div>
                           <div className="flex justify-between text-[11px] text-muted-foreground font-mono">
-                            <span>{node.cpu_used}</span>
-                            <span>{node.cpu_allocatable}</span>
+                            <span>{formatMillicores(nodeResourceInfo.cpu_requested_m)}</span>
+                            <span>{formatMillicores(nodeResourceInfo.cpu_allocatable_m)}</span>
                           </div>
                         </div>
                         <div className="text-xs text-muted-foreground">
                           Capacity: <span className="font-mono">{node.cpu_capacity}</span>
                         </div>
-                      </>
+                      </div>
                     ) : (
                       <div className="space-y-1 text-sm">
                         <div><span className="text-muted-foreground">Capacity:</span> <span className="font-mono">{node.cpu_capacity}</span></div>
                         <div><span className="text-muted-foreground">Allocatable:</span> <span className="font-mono">{node.cpu_allocatable}</span></div>
-                        <p className="text-[11px] text-muted-foreground/60">Metrics Server indisponível</p>
                       </div>
                     )}
                   </div>
@@ -439,32 +440,31 @@ export default function NodeDetailsModal({
                     <h4 className="text-xs font-medium flex items-center gap-1">
                       <Activity className="w-3 h-3" /> Memória
                     </h4>
-                    {node.memory_used ? (
-                      <>
+                    {nodeResourceInfo ? (
+                      <div className="space-y-2">
                         <div className="space-y-1">
                           <div className="flex justify-between text-xs">
-                            <span className="text-muted-foreground">Consumido / Alocável</span>
-                            <span className="font-semibold" style={{ color: nodeResourceColor(node.memory_usage_percent) }}>
-                              {node.memory_usage_percent.toFixed(1)}%
+                            <span className="text-muted-foreground">Solicitada / Alocável</span>
+                            <span className="font-semibold" style={{ color: nodeResourceColor(nodeResourceInfo.mem_pct) }}>
+                              {nodeResourceInfo.mem_pct.toFixed(1)}%
                             </span>
                           </div>
                           <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
-                            <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(node.memory_usage_percent, 100)}%`, backgroundColor: nodeResourceColor(node.memory_usage_percent) }} />
+                            <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(nodeResourceInfo.mem_pct, 100)}%`, backgroundColor: nodeResourceColor(nodeResourceInfo.mem_pct) }} />
                           </div>
                           <div className="flex justify-between text-[11px] text-muted-foreground font-mono">
-                            <span>{node.memory_used}</span>
-                            <span>{node.memory_allocatable}</span>
+                            <span>{formatBytes(nodeResourceInfo.mem_requested_bytes)}</span>
+                            <span>{formatBytes(nodeResourceInfo.mem_allocatable_bytes)}</span>
                           </div>
                         </div>
                         <div className="text-xs text-muted-foreground">
                           Capacity: <span className="font-mono">{node.memory_capacity}</span>
                         </div>
-                      </>
+                      </div>
                     ) : (
                       <div className="space-y-1 text-sm">
                         <div><span className="text-muted-foreground">Capacity:</span> <span className="font-mono">{node.memory_capacity}</span></div>
                         <div><span className="text-muted-foreground">Allocatable:</span> <span className="font-mono">{node.memory_allocatable}</span></div>
-                        <p className="text-[11px] text-muted-foreground/60">Metrics Server indisponível</p>
                       </div>
                     )}
                   </div>

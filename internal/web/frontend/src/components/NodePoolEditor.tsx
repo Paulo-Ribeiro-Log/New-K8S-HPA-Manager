@@ -561,6 +561,15 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
     setShowNodeDetailsModal(false);
     setSelectedNode(null);
 
+    // Carregar nodeResources se ainda não carregado
+    if (nodeResources.length === 0 && !nodeResourcesLoading && clusterWithAdmin && nodePool?.name) {
+      setNodeResourcesLoading(true);
+      apiClient.getNodeResources(clusterWithAdmin, nodePool.name)
+        .then(r => setNodeResources(r.nodes ?? []))
+        .catch(() => {})
+        .finally(() => setNodeResourcesLoading(false));
+    }
+
     // Small delay to ensure state is cleared before opening new modal
     setTimeout(() => {
       setSelectedNode(nodeName);
@@ -1864,6 +1873,7 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
         nodeDetails={nodeDetails}
         loading={loadingNodeDetails}
         vmSize={nodePool?.vm_size}
+        nodeResourceInfo={nodeResources.find(n => n.node_name === selectedNode) ?? null}
         azureInfo={azureInfo}
       />
 
