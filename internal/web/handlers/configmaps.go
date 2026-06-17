@@ -520,7 +520,16 @@ func (h *ConfigMapHandler) Create(c *gin.Context) {
 	kubeClient := kubeclient.NewClient(clientset, cluster)
 	startTime := time.Now()
 
-	result, err := kubeClient.ApplyConfigMap(c.Request.Context(), req.YAML, req.FieldManager, namespace, cmName, false, false)
+	sanitizedYAML, err := sanitizeConfigMapYAML(req.YAML)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{"code": "INVALID_YAML", "message": err.Error()},
+		})
+		return
+	}
+
+	result, err := kubeClient.ApplyConfigMap(c.Request.Context(), sanitizedYAML, req.FieldManager, namespace, cmName, false, false)
 	if err != nil {
 		if checkForbidden(c, err) { return }
 		c.JSON(http.StatusInternalServerError, gin.H{
