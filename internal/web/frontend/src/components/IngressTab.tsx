@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, ChevronLeft, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Network, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Copy } from "lucide-react";
+import { Search, RefreshCcw, Eye, EyeOff, CheckCircle2, TriangleAlert, ChevronDown, ChevronRight, ChevronLeft, PanelLeftClose, PanelLeftOpen, FileDiff, Loader2, Undo2, Redo2, Maximize2, Minimize2, X, FileText, Network, MoreVertical, Trash2, SplitSquareHorizontal, AlertCircle, Copy, Plus } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -81,6 +81,9 @@ export const IngressTab = ({
   const [describeLoading, setDescribeLoading] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [createYaml, setCreateYaml] = useState("");
+  const [isCreating, setIsCreating] = useState(false);
 
   // Error Dialog para exibir erros de apply de forma mais proeminente
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
@@ -445,6 +448,51 @@ export const IngressTab = ({
     await fetchDescribe();
   };
 
+  const ingressTemplate = (ns: string) => `apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: meu-ingress
+  namespace: ${ns || selectedNamespace || "default"}
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: meu-servico.exemplo.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: meu-servico
+            port:
+              number: 80
+`;
+
+  const handleOpenCreateModal = () => {
+    setCreateYaml(ingressTemplate(selectedNamespace));
+    setCreateModalOpen(true);
+  };
+
+  const handleCreateIngress = async () => {
+    if (!cluster || !selectedNamespace || selectedNamespace === "__all__") {
+      toast.error("Selecione um namespace específico para criar o Ingress");
+      return;
+    }
+    setIsCreating(true);
+    try {
+      await apiClient.createIngress(cluster, selectedNamespace, { yaml: createYaml, fieldManager: "k8s-hpa-manager" });
+      toast.success("Ingress criado com sucesso!");
+      setCreateModalOpen(false);
+      await refetch();
+    } catch (err) {
+      toast.error("Erro ao criar Ingress", { description: err instanceof Error ? err.message : "Erro desconhecido" });
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
   const namespaceSelector = (
     <Select
       value={selectedNamespace || "__all__"}
@@ -542,6 +590,17 @@ export const IngressTab = ({
 
   const rightTitleAction = (
     <div className="flex items-center gap-2">
+      <ProtectedAction allowed={canWriteIngress}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleOpenCreateModal}
+          disabled={!cluster || !selectedNamespace || selectedNamespace === "__all__"}
+          title="Criar novo Ingress"
+        >
+          <Plus className="w-4 h-4 mr-2" /> Criar
+        </Button>
+      </ProtectedAction>
       {selectedIngress && onOpenCompare && (
         <Button
           variant="ghost"
@@ -1466,6 +1525,37 @@ export const IngressTab = ({
           <DialogFooter className="border-t border-border/50 pt-4">
             <Button variant="outline" onClick={() => setErrorDialogOpen(false)}>
               Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de criação de Ingress */}
+      <Dialog open={createModalOpen} onOpenChange={setCreateModalOpen}>
+        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Plus className="w-4 h-4" />
+              Criar Ingress
+            </DialogTitle>
+            <DialogDescription>
+              Namespace: <span className="font-mono font-semibold">{selectedNamespace}</span>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 min-h-0" style={{ height: "50vh" }}>
+            <MonacoYamlEditor
+              value={createYaml}
+              onChange={(v) => setCreateYaml(v ?? "")}
+              readOnly={isCreating}
+            />
+          </div>
+          <DialogFooter className="flex-shrink-0 gap-2">
+            <Button variant="outline" onClick={() => setCreateModalOpen(false)} disabled={isCreating}>
+              Cancelar
+            </Button>
+            <Button onClick={handleCreateIngress} disabled={isCreating || !createYaml.trim()}>
+              {isCreating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
+              Criar Ingress
             </Button>
           </DialogFooter>
         </DialogContent>

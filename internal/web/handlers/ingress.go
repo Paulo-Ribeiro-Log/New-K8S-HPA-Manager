@@ -397,6 +397,113 @@ func ingressToHistoryMap(cm *networkingv1.Ingress) map[string]interface{} {
 	}
 }
 
+// Create cria um novo Ingress a partir de um YAML completo
+func (h *IngressHandler) Create(c *gin.Context) {
+	cluster := strings.TrimSpace(c.Param("cluster"))
+	namespace := strings.TrimSpace(c.Param("namespace"))
+
+	if cluster == "" || namespace == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{"code": "MISSING_PARAMETER", "message": "Cluster and namespace must be provided"},
+		})
+		return
+	}
+
+	var req ingressApplyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{"code": "INVALID_REQUEST", "message": fmt.Sprintf("Invalid request body: %v", err)},
+		})
+		return
+	}
+
+	// Extrair nome do YAML
+	var obj map[string]interface{}
+	if err := yaml.Unmarshal([]byte(req.YAML), &obj); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{"code": "INVALID_YAML", "message": fmt.Sprintf("Invalid YAML: %v", err)},
+		})
+		return
+	}
+	metadata, _ := obj["metadata"].(map[string]interface{})
+	if metadata == nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{"code": "MISSING_METADATA", "message": "Ingress YAML must contain metadata"},
+		})
+		return
+	}
+	ingressName, _ := metadata["name"].(string)
+	if ingressName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{"code": "MISSING_NAME", "message": "Ingress YAML must contain metadata.name"},
+		})
+		return
+	}
+
+	clientset, err := h.kubeManager.GetClient(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{"code": "CLIENT_ERROR", "message": fmt.Sprintf("Failed to get client: %v", err)},
+		})
+		return
+	}
+
+	kubeClient := kubeclient.NewClient(clientset, cluster)
+	startTime := time.Now()
+
+	sanitizedYAML, err := sanitizeIngressYAML(req.YAML)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{"code": "INVALID_YAML", "message": err.Error()},
+		})
+		return
+	}
+
+	result, err := kubeClient.ApplyIngress(c.Request.Context(), sanitizedYAML, req.FieldManager, namespace, ingressName, false, false)
+	if err != nil {
+		if checkForbidden(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{"code": "CREATE_ERROR", "message": err.Error()},
+		})
+		return
+	}
+
+	if h.historyTracker != nil {
+		entry := history.HistoryEntry{
+			Action:   "create_ingress",
+			Resource: fmt.Sprintf("%s/%s", namespace, ingressName),
+			Cluster:  cluster,
+			After: map[string]interface{}{
+				"name":            ingressName,
+				"namespace":       namespace,
+				"resourceVersion": result.ResourceVersion,
+			},
+			Status:   "success",
+			Duration: time.Since(startTime).Milliseconds(),
+		}
+		_ = h.historyTracker.Log(entry)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"name":            result.Name,
+			"namespace":       result.Namespace,
+			"resourceVersion": result.ResourceVersion,
+		},
+	})
+}
+
 // Describe retorna a saída do kubectl describe para um Ingress
 func (h *IngressHandler) Describe(c *gin.Context) {
 	cluster := c.Param("cluster")

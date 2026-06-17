@@ -697,6 +697,7 @@ func (s *Server) setupRoutes() {
 		ingresses.POST("/validate", ingressHandler.Validate)
 
 		// Ingress - Write Operations (SRE-only)
+		ingresses.POST("/:cluster/:namespace", rbacMiddleware.RequireSREGroup(), ingressHandler.Create)
 		ingresses.PUT("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), ingressHandler.Apply)
 		ingresses.DELETE("/:cluster/:namespace/:name", rbacMiddleware.RequireSREGroup(), ingressHandler.Delete)
 	}

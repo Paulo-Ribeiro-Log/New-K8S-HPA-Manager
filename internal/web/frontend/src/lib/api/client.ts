@@ -1076,6 +1076,19 @@ class APIClient {
     return response.data;
   }
 
+  async createIngress(
+    cluster: string,
+    namespace: string,
+    body: { yaml: string; fieldManager?: string }
+  ): Promise<IngressApplyResult> {
+    const response = await this.request<APIResponse<IngressApplyResult>>(
+      `/ingresses/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}`,
+      { method: "POST", body: JSON.stringify(body) }
+    );
+    if (!response.data) throw new Error("Criação sem retorno");
+    return response.data;
+  }
+
   async describeIngress(cluster: string, namespace: string, name: string): Promise<{ describe: string }> {
     const response = await this.request<{ describe: string; cluster: string; namespace: string; name: string }>(
       `/ingresses/${encodeURIComponent(cluster)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/describe`
