@@ -655,15 +655,15 @@ export default function NodeDetailsModal({
                 return pods.map((pod: PodOnNode, index) => {
                   const hasMetrics = pod.cpu_usage !== undefined || pod.memory_usage !== undefined;
 
-                  // % do consumo real em relação ao allocatable do node
+                  // Gauge: % do request/limit do pod (igual ao comportamento anterior)
+                  const cpuGaugePct = pod.cpu_usage_pct ?? 0;
+                  const memGaugePct = pod.memory_usage_pct ?? 0;
+
+                  // Info extra: % do consumo real em relação ao allocatable do node
                   const podCpuMs = pod.cpu_usage ? parseCpuToMillicores(pod.cpu_usage) : 0;
                   const podMemBytes = pod.memory_usage ? parseMemoryToBytes(pod.memory_usage) : 0;
                   const cpuPctAllocatable = nodeAllocCpuMs > 0 ? (podCpuMs / nodeAllocCpuMs) * 100 : 0;
                   const memPctAllocatable = nodeAllocMemBytes > 0 ? (podMemBytes / nodeAllocMemBytes) * 100 : 0;
-
-                  // Gauge mostra % do allocatable quando há métricas, senão % do request/limit
-                  const cpuGaugePct = hasMetrics ? cpuPctAllocatable : (pod.cpu_usage_pct ?? 0);
-                  const memGaugePct = hasMetrics ? memPctAllocatable : (pod.memory_usage_pct ?? 0);
 
                   return (
                     <div key={index} className="p-4 border rounded-lg">
