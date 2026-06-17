@@ -268,6 +268,9 @@ func (k *KubeConfigManager) DiscoverClusters() []models.Cluster {
 		if err := gcpprovider.EnsureGKEAuthPlugin(nil); err != nil {
 			fmt.Printf("⚠️  [GKE] %v\n", err)
 		}
+		// Carregar ADC salvo pela app (gcp-adc.json) para que gke-gcloud-auth-plugin
+		// encontre as credenciais sem depender de gcloud auth login explícito.
+		gcpprovider.LoadSavedGCPADC()
 	}
 
 	var clusterNames []string

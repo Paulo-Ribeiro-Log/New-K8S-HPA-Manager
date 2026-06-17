@@ -1,4 +1,4 @@
-// AutoDiscoverDialog - Modal de auto-descoberta de clusters AKS + EKS com SSE progress
+// AutoDiscoverDialog - Modal de auto-descoberta de clusters AKS + EKS + GKE com SSE progress
 import { useState, useEffect, useRef } from "react";
 import {
   Dialog,
@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Input } from "@/components/ui/input";
 import {
   Loader2,
   CheckCircle2,
@@ -16,8 +17,11 @@ import {
   Search,
   Save,
   XCircle,
+  KeyRound,
+  Copy,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { toast } from "sonner";
 
 interface AutoDiscoverProgress {
   phase: string;       // discovering, processing, saving, completed, error
@@ -27,12 +31,12 @@ interface AutoDiscoverProgress {
   clusterName?: string;
   success: number;
   errors: number;
-  provider?: string;   // "aks" | "eks" | undefined
+  provider?: string;   // "aks" | "eks" | "gke"
 }
 
 interface LogEntry {
   message: string;
-  provider?: string;   // "aks" | "eks" | undefined
+  provider?: string;
   isError: boolean;
   isSuccess: boolean;
 }
@@ -41,6 +45,21 @@ interface ProviderStats {
   success: number;
   errors: number;
   done: boolean;
+}
+
+interface GCPAuthStatus {
+  authenticated: boolean;
+  account?: string;
+  has_gcloud: boolean;
+  has_adc: boolean;
+}
+
+interface GCPLoginSession {
+  session_id: string;
+  user_code: string;
+  verify_url: string;
+  expires_at: string;
+  interval_sec: number;
 }
 
 interface AutoDiscoverDialogProps {
@@ -60,7 +79,14 @@ export function AutoDiscoverDialog({
   const [hasError, setHasError] = useState(false);
   const [aksStats, setAksStats] = useState<ProviderStats>({ success: 0, errors: 0, done: false });
   const [eksStats, setEksStats] = useState<ProviderStats>({ success: 0, errors: 0, done: false });
+  const [gkeStats, setGkeStats] = useState<ProviderStats>({ success: 0, errors: 0, done: false });
   const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // GCP auth state
+  const [gcpStatus, setGcpStatus] = useState<GCPAuthStatus | null>(null);
+  const [gcpLoginSession, setGcpLoginSession] = useState<GCPLoginSession | null>(null);
+  const [gcpPolling, setGcpPolling] = useState(false);
+  const gcpPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -69,13 +95,93 @@ export function AutoDiscoverDialog({
       setHasError(false);
       setAksStats({ success: 0, errors: 0, done: false });
       setEksStats({ success: 0, errors: 0, done: false });
+      setGkeStats({ success: 0, errors: 0, done: false });
+      setGcpLoginSession(null);
+      setGcpPolling(false);
+      checkGCPAuth();
+    } else {
+      stopGCPPoll();
     }
   }, [open]);
 
-  // Auto-scroll ao final dos logs
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
+
+  // Cleanup GCP poll on unmount
+  useEffect(() => () => stopGCPPoll(), []);
+
+  const stopGCPPoll = () => {
+    if (gcpPollRef.current) {
+      clearInterval(gcpPollRef.current);
+      gcpPollRef.current = null;
+    }
+  };
+
+  const checkGCPAuth = async () => {
+    try {
+      const resp = await fetch("/api/v1/gcp/auth/status", {
+        headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
+      });
+      if (resp.ok) {
+        const data: GCPAuthStatus = await resp.json();
+        setGcpStatus(data);
+      }
+    } catch {
+      // Ignorar — GCP auth é opcional
+    }
+  };
+
+  const startGCPLogin = async () => {
+    try {
+      const resp = await fetch("/api/v1/gcp/auth/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
+        },
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data: GCPLoginSession = await resp.json();
+      setGcpLoginSession(data);
+      setGcpPolling(true);
+
+      // Iniciar polling
+      const interval = Math.max((data.interval_sec || 5), 5) * 1000;
+      gcpPollRef.current = setInterval(() => pollGCPLogin(data.session_id), interval);
+    } catch (err) {
+      toast.error("Erro ao iniciar autenticação GCP", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const pollGCPLogin = async (sessionID: string) => {
+    try {
+      const resp = await fetch(`/api/v1/gcp/auth/poll?session_id=${sessionID}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.done) {
+        stopGCPPoll();
+        setGcpPolling(false);
+        setGcpLoginSession(null);
+        if (data.success) {
+          toast.success("GCP autenticado com sucesso!");
+          await checkGCPAuth();
+        } else {
+          toast.error("Autenticação GCP falhou ou expirou");
+        }
+      }
+    } catch {
+      // ignorar erros de polling
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text).then(() => toast.success("Copiado!"));
+  };
 
   const startAutoDiscover = async () => {
     setIsRunning(true);
@@ -84,6 +190,7 @@ export function AutoDiscoverDialog({
     setHasError(false);
     setAksStats({ success: 0, errors: 0, done: false });
     setEksStats({ success: 0, errors: 0, done: false });
+    setGkeStats({ success: 0, errors: 0, done: false });
 
     try {
       const response = await fetch("/api/v1/clusters/autodiscover", {
@@ -115,21 +222,26 @@ export function AutoDiscoverDialog({
             };
             setLogs((prev) => [...prev, entry]);
 
-            // Atualizar contadores por provider nos eventos de saving/completed
             if (data.provider === "aks" && data.success > 0) {
               setAksStats((prev) => ({ ...prev, success: data.success, errors: data.errors }));
             }
             if (data.provider === "eks" && data.success > 0) {
               setEksStats((prev) => ({ ...prev, success: data.success, errors: data.errors }));
             }
+            if (data.provider === "gke" && data.success > 0) {
+              setGkeStats((prev) => ({ ...prev, success: data.success, errors: data.errors }));
+            }
 
             if (data.phase === "completed") {
               setHasCompleted(true);
-              // Parsear contagens finais da mensagem: "AKS: X ok / Y erro(s) | EKS: X ok / Y erro(s)"
-              const aksMatch = data.message.match(/AKS:\s*(\d+)\s*ok\s*\/\s*(\d+)/);
-              const eksMatch = data.message.match(/EKS:\s*(\d+)\s*ok\s*\/\s*(\d+)/);
-              if (aksMatch) setAksStats({ success: +aksMatch[1], errors: +aksMatch[2], done: true });
-              if (eksMatch) setEksStats({ success: +eksMatch[1], errors: +eksMatch[2], done: true });
+              const aksMatch = data.message.match(/AKS:\s*(\d+)/);
+              const eksMatch = data.message.match(/EKS:\s*(\d+)/);
+              const gkeMatch = data.message.match(/GKE:\s*(\d+)/);
+              if (aksMatch) setAksStats((p) => ({ ...p, success: +aksMatch[1], done: true }));
+              if (eksMatch) setEksStats((p) => ({ ...p, success: +eksMatch[1], done: true }));
+              if (gkeMatch) setGkeStats((p) => ({ ...p, success: +gkeMatch[1], done: true }));
+              // Atualizar status GCP após discovery
+              checkGCPAuth();
               if (onComplete) onComplete();
             }
             if (data.phase === "error") setHasError(true);
@@ -162,19 +274,18 @@ export function AutoDiscoverDialog({
 
   const ProviderBadge = ({ provider }: { provider?: string }) => {
     if (!provider) return null;
-    if (provider === "aks")
-      return (
-        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 mr-1.5 shrink-0">
-          AKS
-        </span>
-      );
-    if (provider === "eks")
-      return (
-        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300 mr-1.5 shrink-0">
-          EKS
-        </span>
-      );
-    return null;
+    const variants: Record<string, string> = {
+      aks: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+      eks: "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
+      gke: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+    };
+    const cls = variants[provider];
+    if (!cls) return null;
+    return (
+      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${cls} mr-1.5 shrink-0`}>
+        {provider.toUpperCase()}
+      </span>
+    );
   };
 
   const StatCard = ({
@@ -182,30 +293,32 @@ export function AutoDiscoverDialog({
     stats,
     label,
   }: {
-    provider: "aks" | "eks";
+    provider: "aks" | "eks" | "gke";
     stats: ProviderStats;
     label: string;
   }) => {
-    const isAks = provider === "aks";
-    const color = isAks
-      ? "border-blue-200 dark:border-blue-800"
-      : "border-orange-200 dark:border-orange-800";
-    const badgeBg = isAks
-      ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
-      : "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300";
+    const colorMap: Record<string, { border: string; badge: string }> = {
+      aks: {
+        border: "border-blue-200 dark:border-blue-800",
+        badge: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+      },
+      eks: {
+        border: "border-orange-200 dark:border-orange-800",
+        badge: "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
+      },
+      gke: {
+        border: "border-green-200 dark:border-green-800",
+        badge: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+      },
+    };
+    const { border, badge } = colorMap[provider];
 
     return (
-      <div className={`flex-1 p-3 rounded-lg border ${color} bg-card`}>
+      <div className={`flex-1 p-3 rounded-lg border ${border} bg-card`}>
         <div className="flex items-center gap-2 mb-2">
-          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${badgeBg}`}>
-            {label}
-          </span>
-          {stats.done && stats.errors === 0 && (
-            <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
-          )}
-          {isRunning && !stats.done && (
-            <Loader2 className="h-3.5 w-3.5 text-muted-foreground animate-spin" />
-          )}
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${badge}`}>{label}</span>
+          {stats.done && stats.errors === 0 && <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />}
+          {isRunning && !stats.done && <Loader2 className="h-3.5 w-3.5 text-muted-foreground animate-spin" />}
         </div>
         <div className="flex gap-3 text-xs">
           <span className="text-green-600 dark:text-green-400">
@@ -222,8 +335,11 @@ export function AutoDiscoverDialog({
     );
   };
 
-  const totalSuccess = aksStats.success + eksStats.success;
-  const totalErrors = aksStats.errors + eksStats.errors;
+  const totalSuccess = aksStats.success + eksStats.success + gkeStats.success;
+  const totalErrors = aksStats.errors + eksStats.errors + gkeStats.errors;
+
+  const gcpNeedsAuth = gcpStatus && !gcpStatus.authenticated;
+  const gcpLoginInProgress = gcpPolling && gcpLoginSession;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -234,16 +350,81 @@ export function AutoDiscoverDialog({
             Auto-Descoberta de Clusters
           </DialogTitle>
           <DialogDescription>
-            Descobre configurações AKS (Azure) e EKS (AWS) em paralelo a partir do kubeconfig local
+            Descobre configurações AKS (Azure), EKS (AWS) e GKE (GCP) em paralelo a partir do kubeconfig local
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-col gap-4 min-h-0 flex-1">
+
+          {/* Aviso e fluxo de autenticação GCP */}
+          {gcpNeedsAuth && !isRunning && !hasCompleted && (
+            <Alert className="border-yellow-500 bg-yellow-50 dark:bg-yellow-950/20 shrink-0">
+              <KeyRound className="h-4 w-4 text-yellow-600 shrink-0" />
+              <AlertDescription className="text-yellow-800 dark:text-yellow-300 w-full">
+                {gcpLoginInProgress ? (
+                  <div className="flex flex-col gap-2">
+                    <span className="font-medium">Autenticação GCP em andamento</span>
+                    <span className="text-xs">
+                      Acesse{" "}
+                      <a
+                        href={gcpLoginSession.verify_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline font-medium"
+                      >
+                        accounts.google.com/device
+                      </a>{" "}
+                      e insira o código abaixo:
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        readOnly
+                        value={gcpLoginSession.user_code}
+                        className="font-mono text-center text-lg tracking-widest h-10 bg-background border-yellow-400 max-w-[160px]"
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => copyToClipboard(gcpLoginSession.user_code)}
+                        className="gap-1"
+                      >
+                        <Copy className="h-3.5 w-3.5" /> Copiar
+                      </Button>
+                      <Loader2 className="h-4 w-4 animate-spin text-yellow-600" />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <span>
+                      <strong>GCP não autenticado.</strong> Autentique para incluir clusters GKE na descoberta.
+                    </span>
+                    <Button size="sm" variant="outline" onClick={startGCPLogin} className="gap-1 shrink-0">
+                      <KeyRound className="h-3.5 w-3.5" />
+                      Autenticar GCP
+                    </Button>
+                  </div>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {/* GCP autenticado */}
+          {gcpStatus?.authenticated && !isRunning && !hasCompleted && (
+            <Alert className="border-green-500 bg-green-50 dark:bg-green-950/20 shrink-0 py-2">
+              <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+              <AlertDescription className="text-green-800 dark:text-green-300 text-xs">
+                GCP autenticado{gcpStatus.account ? ` como ${gcpStatus.account}` : ""}
+                {gcpStatus.has_adc && !gcpStatus.has_gcloud ? " (via ADC)" : ""}
+              </AlertDescription>
+            </Alert>
+          )}
+
           {/* Stats por provider — aparece assim que a descoberta inicia */}
           {(isRunning || hasCompleted) && (
             <div className="flex gap-3">
               <StatCard provider="aks" stats={aksStats} label="AKS" />
               <StatCard provider="eks" stats={eksStats} label="EKS" />
+              <StatCard provider="gke" stats={gkeStats} label="GKE" />
               {hasCompleted && (
                 <div className="flex-none flex flex-col justify-center items-center px-3 rounded-lg border bg-card text-center min-w-[80px]">
                   <span className="text-lg font-bold text-foreground">{totalSuccess}</span>
@@ -299,7 +480,7 @@ export function AutoDiscoverDialog({
             <Alert className="border-yellow-500 bg-yellow-50 dark:bg-yellow-950/20 shrink-0">
               <AlertCircle className="h-4 w-4 text-yellow-600" />
               <AlertDescription className="text-yellow-700 dark:text-yellow-400">
-                Concluído com erros. {totalSuccess > 0 && <><strong>{totalSuccess}</strong> cluster{totalSuccess !== 1 ? "s" : ""} configurado{totalSuccess !== 1 ? "s" : ""} com sucesso. </>}
+                Concluído com erros.{totalSuccess > 0 && <> <strong>{totalSuccess}</strong> cluster{totalSuccess !== 1 ? "s" : ""} configurado{totalSuccess !== 1 ? "s" : ""} com sucesso.</>}{" "}
                 Verifique os logs acima para detalhes.
               </AlertDescription>
             </Alert>
@@ -331,6 +512,7 @@ export function AutoDiscoverDialog({
                     setHasError(false);
                     setAksStats({ success: 0, errors: 0, done: false });
                     setEksStats({ success: 0, errors: 0, done: false });
+                    setGkeStats({ success: 0, errors: 0, done: false });
                   }}
                   className="gap-2"
                 >
@@ -354,9 +536,9 @@ export function AutoDiscoverDialog({
   );
 }
 
-// Remove prefixos "[AKS] " e "[EKS] " da mensagem — o badge visual já indica o provider
+// Remove prefixos "[AKS] ", "[EKS] ", "[GKE] " da mensagem — o badge visual já indica o provider
 function stripProviderPrefix(msg: string): string {
-  return msg.replace(/^\[(AKS|EKS)\]\s*/i, "");
+  return msg.replace(/^\[(AKS|EKS|GKE)\]\s*/i, "");
 }
 
 // Ícone de fase mantido para uso externo (VPNWarningBanner, etc.)
