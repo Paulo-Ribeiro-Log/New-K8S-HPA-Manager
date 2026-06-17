@@ -1442,35 +1442,31 @@ export const NodePoolEditor = ({ nodePool, onApply, onApplied }: NodePoolEditorP
                               </Badge>
                             )}
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="min-w-[160px]">
                             {node.cpu_used ? (
                               <div className="space-y-1">
-                                <div className="text-sm font-mono">
-                                  {node.cpu_used} / {node.cpu_allocatable}
+                                <div className="flex justify-between text-[11px] text-muted-foreground">
+                                  <span className="font-mono">{node.cpu_used} / {node.cpu_allocatable}</span>
+                                  <span style={{ color: resourceColor(node.cpu_usage_percent) }} className="font-semibold">{node.cpu_usage_percent.toFixed(0)}%</span>
                                 </div>
-                                <Badge
-                                  variant={node.cpu_usage_percent > 80 ? "destructive" : "secondary"}
-                                  className="text-xs"
-                                >
-                                  {node.cpu_usage_percent.toFixed(1)}%
-                                </Badge>
+                                <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                                  <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(node.cpu_usage_percent, 100)}%`, backgroundColor: resourceColor(node.cpu_usage_percent) }} />
+                                </div>
                               </div>
                             ) : (
                               <span className="text-muted-foreground text-sm">N/A</span>
                             )}
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="min-w-[160px]">
                             {node.memory_used ? (
                               <div className="space-y-1">
-                                <div className="text-sm font-mono">
-                                  {node.memory_used} / {node.memory_allocatable}
+                                <div className="flex justify-between text-[11px] text-muted-foreground">
+                                  <span className="font-mono">{node.memory_used} / {node.memory_allocatable}</span>
+                                  <span style={{ color: resourceColor(node.memory_usage_percent) }} className="font-semibold">{node.memory_usage_percent.toFixed(0)}%</span>
                                 </div>
-                                <Badge
-                                  variant={node.memory_usage_percent > 80 ? "destructive" : "secondary"}
-                                  className="text-xs"
-                                >
-                                  {node.memory_usage_percent.toFixed(1)}%
-                                </Badge>
+                                <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                                  <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(node.memory_usage_percent, 100)}%`, backgroundColor: resourceColor(node.memory_usage_percent) }} />
+                                </div>
                               </div>
                             ) : (
                               <span className="text-muted-foreground text-sm">N/A</span>

@@ -10,6 +10,13 @@ import type { NodeDetailsResponse, PodOnNode } from "@/lib/api/types";
 import { format } from "date-fns";
 import { toast } from "sonner";
 import { getVMSpecs, formatVMSpecs, formatDiskSpecs } from "@/lib/azure-vm-specs";
+import { parseCpuToMillicores, parseMemoryToBytes } from "@/lib/monitorUtils";
+
+function nodeResourceColor(pct: number): string {
+  if (pct >= 90) return "#ef4444";
+  if (pct >= 70) return "#eab308";
+  return "#22c55e";
+}
 
 interface NodeDetailsModalProps {
   open: boolean;
@@ -393,61 +400,73 @@ export default function NodeDetailsModal({
                 </h3>
                 <div className="grid grid-cols-2 gap-4">
                   {/* CPU */}
-                  <div className="p-4 border rounded-lg">
-                    <h4 className="text-xs font-medium mb-2">CPU</h4>
-                    <div className="space-y-1 text-sm">
-                      <div>
-                        <span className="text-muted-foreground">Capacity:</span>{" "}
-                        <span className="font-mono">{node.cpu_capacity}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Allocatable:</span>{" "}
-                        <span className="font-mono">{node.cpu_allocatable}</span>
-                      </div>
-                      {node.cpu_used && (
-                        <>
-                          <div>
-                            <span className="text-muted-foreground">Used:</span>{" "}
-                            <span className="font-mono">{node.cpu_used}</span>
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Usage:</span>{" "}
-                            <Badge variant={node.cpu_usage_percent > 80 ? "destructive" : "secondary"}>
+                  <div className="p-4 border rounded-lg space-y-3">
+                    <h4 className="text-xs font-medium flex items-center gap-1">
+                      <Cpu className="w-3 h-3" /> CPU
+                    </h4>
+                    {node.cpu_used ? (
+                      <>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span className="text-muted-foreground">Consumido / Alocável</span>
+                            <span className="font-semibold" style={{ color: nodeResourceColor(node.cpu_usage_percent) }}>
                               {node.cpu_usage_percent.toFixed(1)}%
-                            </Badge>
+                            </span>
                           </div>
-                        </>
-                      )}
-                    </div>
+                          <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                            <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(node.cpu_usage_percent, 100)}%`, backgroundColor: nodeResourceColor(node.cpu_usage_percent) }} />
+                          </div>
+                          <div className="flex justify-between text-[11px] text-muted-foreground font-mono">
+                            <span>{node.cpu_used}</span>
+                            <span>{node.cpu_allocatable}</span>
+                          </div>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Capacity: <span className="font-mono">{node.cpu_capacity}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="space-y-1 text-sm">
+                        <div><span className="text-muted-foreground">Capacity:</span> <span className="font-mono">{node.cpu_capacity}</span></div>
+                        <div><span className="text-muted-foreground">Allocatable:</span> <span className="font-mono">{node.cpu_allocatable}</span></div>
+                        <p className="text-[11px] text-muted-foreground/60">Metrics Server indisponível</p>
+                      </div>
+                    )}
                   </div>
 
                   {/* Memory */}
-                  <div className="p-4 border rounded-lg">
-                    <h4 className="text-xs font-medium mb-2">Memory</h4>
-                    <div className="space-y-1 text-sm">
-                      <div>
-                        <span className="text-muted-foreground">Capacity:</span>{" "}
-                        <span className="font-mono">{node.memory_capacity}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Allocatable:</span>{" "}
-                        <span className="font-mono">{node.memory_allocatable}</span>
-                      </div>
-                      {node.memory_used && (
-                        <>
-                          <div>
-                            <span className="text-muted-foreground">Used:</span>{" "}
-                            <span className="font-mono">{node.memory_used}</span>
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Usage:</span>{" "}
-                            <Badge variant={node.memory_usage_percent > 80 ? "destructive" : "secondary"}>
+                  <div className="p-4 border rounded-lg space-y-3">
+                    <h4 className="text-xs font-medium flex items-center gap-1">
+                      <Activity className="w-3 h-3" /> Memória
+                    </h4>
+                    {node.memory_used ? (
+                      <>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs">
+                            <span className="text-muted-foreground">Consumido / Alocável</span>
+                            <span className="font-semibold" style={{ color: nodeResourceColor(node.memory_usage_percent) }}>
                               {node.memory_usage_percent.toFixed(1)}%
-                            </Badge>
+                            </span>
                           </div>
-                        </>
-                      )}
-                    </div>
+                          <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                            <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(node.memory_usage_percent, 100)}%`, backgroundColor: nodeResourceColor(node.memory_usage_percent) }} />
+                          </div>
+                          <div className="flex justify-between text-[11px] text-muted-foreground font-mono">
+                            <span>{node.memory_used}</span>
+                            <span>{node.memory_allocatable}</span>
+                          </div>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Capacity: <span className="font-mono">{node.memory_capacity}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="space-y-1 text-sm">
+                        <div><span className="text-muted-foreground">Capacity:</span> <span className="font-mono">{node.memory_capacity}</span></div>
+                        <div><span className="text-muted-foreground">Allocatable:</span> <span className="font-mono">{node.memory_allocatable}</span></div>
+                        <p className="text-[11px] text-muted-foreground/60">Metrics Server indisponível</p>
+                      </div>
+                    )}
                   </div>
 
                   {/* Pods */}
@@ -628,12 +647,23 @@ export default function NodeDetailsModal({
                 <div className="text-center text-muted-foreground py-8">
                   No pods running on this node
                 </div>
-              ) : (
-                pods.map((pod: PodOnNode, index) => {
+              ) : (() => {
+                // Allocatable do node em unidades base — para calcular % por pod
+                const nodeAllocCpuMs = parseCpuToMillicores(node.cpu_allocatable ?? "0");
+                const nodeAllocMemBytes = parseMemoryToBytes(node.memory_allocatable ?? "0");
+
+                return pods.map((pod: PodOnNode, index) => {
                   const hasMetrics = pod.cpu_usage !== undefined || pod.memory_usage !== undefined;
-                  // Fallback: usa request vs limit quando não há métricas reais
-                  const cpuPct = pod.cpu_usage_pct ?? 0;
-                  const memPct = pod.memory_usage_pct ?? 0;
+
+                  // % do consumo real em relação ao allocatable do node
+                  const podCpuMs = pod.cpu_usage ? parseCpuToMillicores(pod.cpu_usage) : 0;
+                  const podMemBytes = pod.memory_usage ? parseMemoryToBytes(pod.memory_usage) : 0;
+                  const cpuPctAllocatable = nodeAllocCpuMs > 0 ? (podCpuMs / nodeAllocCpuMs) * 100 : 0;
+                  const memPctAllocatable = nodeAllocMemBytes > 0 ? (podMemBytes / nodeAllocMemBytes) * 100 : 0;
+
+                  // Gauge mostra % do allocatable quando há métricas, senão % do request/limit
+                  const cpuGaugePct = hasMetrics ? cpuPctAllocatable : (pod.cpu_usage_pct ?? 0);
+                  const memGaugePct = hasMetrics ? memPctAllocatable : (pod.memory_usage_pct ?? 0);
 
                   return (
                     <div key={index} className="p-4 border rounded-lg">
@@ -660,14 +690,19 @@ export default function NodeDetailsModal({
                       <div className="grid grid-cols-2 gap-2 mt-1">
                         {/* CPU */}
                         <div className="flex items-center justify-center gap-5 p-3 bg-muted/30 rounded-lg">
-                          <ResourceGauge pct={cpuPct} label="CPU" dimmed={!hasMetrics} />
+                          <ResourceGauge pct={cpuGaugePct} label="CPU" dimmed={!hasMetrics} />
                           <div className="text-xs space-y-1">
-                            {hasMetrics && pod.cpu_usage && (
-                              <div>
-                                <span className="text-muted-foreground">Uso: </span>
-                                <span className="font-mono font-semibold">{pod.cpu_usage}</span>
-                              </div>
-                            )}
+                            {hasMetrics && pod.cpu_usage ? (
+                              <>
+                                <div>
+                                  <span className="text-muted-foreground">Uso: </span>
+                                  <span className="font-mono font-semibold">{pod.cpu_usage}</span>
+                                </div>
+                                <div className="text-[10px] text-muted-foreground">
+                                  {cpuPctAllocatable.toFixed(1)}% do alocável
+                                </div>
+                              </>
+                            ) : null}
                             <div>
                               <span className="text-muted-foreground">Req: </span>
                               <span className="font-mono">{pod.cpu_request || "—"}</span>
@@ -681,14 +716,19 @@ export default function NodeDetailsModal({
 
                         {/* Memory */}
                         <div className="flex items-center justify-center gap-5 p-3 bg-muted/30 rounded-lg">
-                          <ResourceGauge pct={memPct} label="MEM" dimmed={!hasMetrics} />
+                          <ResourceGauge pct={memGaugePct} label="MEM" dimmed={!hasMetrics} />
                           <div className="text-xs space-y-1">
-                            {hasMetrics && pod.memory_usage && (
-                              <div>
-                                <span className="text-muted-foreground">Uso: </span>
-                                <span className="font-mono font-semibold">{pod.memory_usage}</span>
-                              </div>
-                            )}
+                            {hasMetrics && pod.memory_usage ? (
+                              <>
+                                <div>
+                                  <span className="text-muted-foreground">Uso: </span>
+                                  <span className="font-mono font-semibold">{pod.memory_usage}</span>
+                                </div>
+                                <div className="text-[10px] text-muted-foreground">
+                                  {memPctAllocatable.toFixed(1)}% do alocável
+                                </div>
+                              </>
+                            ) : null}
                             <div>
                               <span className="text-muted-foreground">Req: </span>
                               <span className="font-mono">{pod.memory_request || "—"}</span>
@@ -703,13 +743,13 @@ export default function NodeDetailsModal({
 
                       {!hasMetrics && (
                         <p className="text-[10px] text-muted-foreground/50 mt-1.5 text-center">
-                          Metrics Server indisponível — exibindo requests/limits
+                          Metrics Server indisponível — gauge exibe % do request/limit
                         </p>
                       )}
                     </div>
                   );
-                })
-              )}
+                });
+              })()}
             </TabsContent>
 
             {/* Events Tab */}
