@@ -250,7 +250,7 @@ func (c *Client) enrichNodeWithMetrics(ctx context.Context, nodeInfo *models.Nod
 
 	// CPU
 	if cpu, ok := nodeMetrics.Usage[corev1.ResourceCPU]; ok {
-		nodeInfo.CPUUsed = cpu.String()
+		nodeInfo.CPUUsed = fmt.Sprintf("%dm", cpu.MilliValue())
 
 		// Calcular % (usado / allocatable * 100)
 		if allocatable := parseQuantityMilliCPU(nodeInfo.CPUAllocatable); allocatable > 0 {
@@ -497,10 +497,21 @@ func (c *Client) getNodeEvents(ctx context.Context, nodeName string) ([]models.N
 
 // executeKubectlDescribeNode executa kubectl describe node
 func (c *Client) executeKubectlDescribeNode(nodeName string) (string, error) {
-	cmd := exec.Command("kubectl", "describe", "node", nodeName, "--context", c.cluster)
+	// Contexts K8s têm sufixo -admin; tentar com sufixo primeiro
+	context := c.cluster
+	if !strings.HasSuffix(context, "-admin") {
+		context = context + "-admin"
+	}
+	cmd := exec.Command("kubectl", "describe", "node", nodeName, "--context", context)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("kubectl describe failed: %w\nOutput: %s", err, string(output))
+		// Fallback sem sufixo
+		cmd2 := exec.Command("kubectl", "describe", "node", nodeName, "--context", c.cluster)
+		output2, err2 := cmd2.CombinedOutput()
+		if err2 != nil {
+			return "", fmt.Errorf("kubectl describe failed: %w\nOutput: %s", err, string(output))
+		}
+		return string(output2), nil
 	}
 	return string(output), nil
 }
